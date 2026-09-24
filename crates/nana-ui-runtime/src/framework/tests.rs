@@ -1964,6 +1964,37 @@ fn a_read_only_number_input_draws_an_inert_spinner() {
 }
 
 #[test]
+fn accessibility_set_value_reaches_the_maximum_through_float_noise() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(0.2)
+                .range(0.0, 0.3)
+                .step(0.1)
+                .precision(1),
+        )
+        .unwrap();
+    // What a client computes as value + step, and an f32 bridge's 0.3.
+    for request in [format!("{}", 0.2 + 0.1), format!("{}", f64::from(0.3_f32))] {
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document,
+                    AccessibilityActionRequest {
+                        target: input.stable_id(),
+                        action: AccessibilityAction::SetValue(request.clone()),
+                    },
+                )
+                .unwrap(),
+            "{request}"
+        );
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 0.3);
+    }
+}
+
+#[test]
 fn a_hover_card_keeps_a_focused_number_input_editing() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
