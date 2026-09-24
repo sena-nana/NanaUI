@@ -81,61 +81,35 @@ impl FillClipRenderer {
 impl SceneGpuRenderer for FillClipRenderer {
     fn prepare(&self, _node: &SceneGpuNode, _context: SceneGpuPrepareContext<'_>) {}
 
-    fn render(&self, node: &SceneGpuNode, context: SceneGpuRenderContext<'_>) {
+    fn render(&self, node: &SceneGpuNode, mut context: SceneGpuRenderContext<'_>) {
         if context.bounds.width == 0 || context.bounds.height == 0 {
             return;
         }
-        let mut pass = context
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("nana-ui.test.fill"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: context.target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        self.draw_in_pass(
-            node,
-            &mut pass,
-            SceneGpuPassContext {
-                device: context.device,
-                queue: context.queue,
-                bounds: context.bounds,
-                clip: context.clip,
-                dest_size: [
-                    context.clip.x.saturating_add(context.clip.width).max(1),
-                    context.clip.y.saturating_add(context.clip.height).max(1),
-                ],
-                gpu_work: context.gpu_work,
-            },
-        );
+        let pass_context = SceneGpuPassContext {
+            gpu: context.gpu,
+            target_format: context.target_format,
+            bounds: context.bounds,
+            clip: context.clip,
+            dest_size: context.dest_size,
+            gpu_work: context.gpu_work,
+        };
+        context.with_pass("nana-ui.test.fill", |pass| {
+            self.draw_in_pass(node, pass, pass_context);
+        });
     }
 
     fn draw_in_pass(
         &self,
         _node: &SceneGpuNode,
-        pass: &mut wgpu::RenderPass<'_>,
+        pass: &mut ScenePass<'_, '_>,
         context: SceneGpuPassContext<'_>,
     ) -> bool {
         if context.clip.width == 0 || context.clip.height == 0 {
             return false;
         }
+        pass.set_scissor(context.clip);
+        let pass = pass.raw();
         pass.set_pipeline(&self.pipeline);
-        pass.set_scissor_rect(
-            context.clip.x,
-            context.clip.y,
-            context.clip.width,
-            context.clip.height,
-        );
         pass.draw(0..3, 0..1);
         true
     }

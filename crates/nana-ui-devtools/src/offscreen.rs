@@ -65,16 +65,14 @@ impl OffscreenSnapshots {
         self.painter.set_resource_fetch_host(host);
     }
 
-    /// Product GPU-node renderers bound to this snapshot's Device/Queue.
+    /// Product GPU-node renderers. They draw on the device of whichever
+    /// painter paints them, here the snapshot's.
     ///
     /// Without them a `GpuView` or `nana.host-texture` node paints nothing in a
     /// screenshot, so an Agent sees a hole where the real application shows
     /// content — and cannot tell that from a genuine layout bug.
     pub fn default_gpu_renderers(&self) -> SceneGpuRendererRegistry {
-        nana_ui::default_scene_gpu_renderers_with_host(
-            std::sync::Arc::new(self.gpu.wgpu().device().clone()),
-            std::sync::Arc::new(self.gpu.wgpu().queue().clone()),
-        )
+        nana_ui::default_scene_gpu_renderers()
     }
 
     pub fn paint(

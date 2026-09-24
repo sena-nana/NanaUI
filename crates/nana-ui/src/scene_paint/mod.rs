@@ -42,6 +42,7 @@ use crate::{
     scene_gpu::{
         SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode, SceneGpuPassContext,
         SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry,
+        ScenePass,
     },
 };
 
@@ -1454,9 +1455,8 @@ impl SceneWgpuPainter {
                             renderer.prepare(
                                 &node,
                                 SceneGpuPrepareContext {
-                                    device: &self.device,
-                                    queue: &self.queue,
-                                    target_format: self.format,
+                                    gpu: &self.gpu,
+                                    target_format: __framework::format_from_wgpu(self.format),
                                     bounds: custom_bounds.to_core(),
                                     scale_factor: scale,
                                     dest_size: dest_physical,
@@ -1612,8 +1612,8 @@ impl SceneWgpuPainter {
                     text: &self.text,
                     host_textures: &self.host_textures,
                     backdrop: &mut self.backdrop,
-                    device: &self.device,
-                    queue: &self.queue,
+                    gpu: &self.gpu,
+                    format: __framework::format_from_wgpu(self.format),
                     gpu_work: &gpu_work,
                     motion: self.motion.bind_group(),
                     group_extents: &group_extents,
@@ -2273,8 +2273,8 @@ struct EncodeOrdered<'a> {
     text: &'a TextPipeline,
     host_textures: &'a HostTexturePipeline,
     backdrop: &'a mut BackdropPipeline,
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
+    gpu: &'a GpuContext,
+    format: GpuTextureFormat,
     gpu_work: &'a GpuWorkSink,
     motion: &'a wgpu::BindGroup,
     /// What each group can change, by slot ([`group_extents`]).
@@ -2489,7 +2489,7 @@ fn encode_ordered(
                         dest_passes,
                     );
                     pipelines.backdrop.encode(
-                        pipelines.device,
+                        __framework::device(pipelines.gpu),
                         encoder,
                         dest.color_view(),
                         dest_physical,
@@ -2601,10 +2601,9 @@ fn encode_ordered(
                                     commands,
                                     index,
                                     renderer,
-                                    &mut pass,
-                                    dest_physical,
-                                    pipelines.device,
-                                    pipelines.queue,
+                                    &mut ScenePass::new(&mut pass, dest_physical),
+                                    pipelines.gpu,
+                                    pipelines.format,
                                     pipelines.gpu_work,
                                 );
                                 if encoded > 0 {
@@ -2614,10 +2613,10 @@ fn encode_ordered(
                                 }
                                 if renderer.draw_in_pass(
                                     node,
-                                    &mut pass,
+                                    &mut ScenePass::new(&mut pass, dest_physical),
                                     SceneGpuPassContext {
-                                        device: pipelines.device,
-                                        queue: pipelines.queue,
+                                        gpu: pipelines.gpu,
+                                        target_format: pipelines.format,
                                         bounds: *bounds,
                                         clip: *clip,
                                         dest_size: dest_physical,
@@ -2650,16 +2649,16 @@ fn encode_ordered(
                         };
                         renderer.render(
                             node,
-                            SceneGpuRenderContext {
-                                device: pipelines.device,
-                                queue: pipelines.queue,
+                            SceneGpuRenderContext::new(
+                                pipelines.gpu,
+                                pipelines.format,
+                                *bounds,
+                                *clip,
+                                dest_physical,
+                                Some(pipelines.gpu_work),
                                 encoder,
                                 target,
-                                bounds: *bounds,
-                                clip: *clip,
-                                dest_size: dest_physical,
-                                gpu_work: Some(pipelines.gpu_work),
-                            },
+                            ),
                         );
                     }
                     index += 1;
@@ -2684,10 +2683,9 @@ fn draw_custom_run(
     commands: &[DrawCommand],
     start: usize,
     renderer: &Arc<dyn SceneGpuRenderer>,
-    pass: &mut wgpu::RenderPass<'_>,
-    dest_physical: [u32; 2],
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    pass: &mut ScenePass<'_, '_>,
+    gpu: &GpuContext,
+    format: GpuTextureFormat,
     gpu_work: &GpuWorkSink,
 ) -> usize {
     let capacity = renderer.batch_capacity();
@@ -2726,9 +2724,9 @@ fn draw_custom_run(
         &run,
         pass,
         SceneGpuBatchPassContext {
-            device,
-            queue,
-            dest_size: dest_physical,
+            gpu,
+            target_format: format,
+            dest_size: pass.dest_size(),
             gpu_work: Some(gpu_work),
         },
     );

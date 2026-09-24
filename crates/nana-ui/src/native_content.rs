@@ -314,105 +314,86 @@ fn intersection(a: SceneRect, b: SceneRect) -> SceneRect {
 #[cfg(feature = "hosted")]
 #[derive(Debug, Default)]
 pub(crate) struct NativeContentRenderer {
-    pipeline: Mutex<Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>>,
+    /// Built for one device and target format; either changing rebuilds it.
+    pipeline: Mutex<Option<(PipelineKey, wgpu::RenderPipeline)>>,
 }
+
+#[cfg(feature = "hosted")]
+type PipelineKey = (nana_gpu::DeviceGeneration, nana_gpu::GpuTextureFormat);
 
 #[cfg(feature = "hosted")]
 impl SceneGpuRenderer for NativeContentRenderer {
     fn prepare(&self, _: &SceneGpuNode, context: SceneGpuPrepareContext<'_>) {
+        use crate::gpu_raw::GpuRaw;
+        let key = (context.gpu.generation(), context.target_format);
         let mut cached = self.pipeline.lock().expect("native content pipeline");
-        if cached
-            .as_ref()
-            .is_some_and(|(format, _)| *format == context.target_format)
-        {
+        if cached.as_ref().is_some_and(|(built, _)| *built == key) {
             return;
         }
-        let shader = context
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("native content opening"),
-                source: wgpu::ShaderSource::Wgsl(
-                    r#"
+        let device = context.gpu.raw_device();
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("native content opening"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
 @vertex fn vertex(@builtin(vertex_index) i:u32) -> @builtin(position) vec4<f32> {
     var p = array<vec2<f32>,3>(vec2(-1.0,-1.0),vec2(3.0,-1.0),vec2(-1.0,3.0));
     return vec4(p[i],0.0,1.0);
 }
 @fragment fn fragment() -> @location(0) vec4<f32> { return vec4(0.0); }
 "#
-                    .into(),
-                ),
-            });
-        let pipeline = context
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("native content opening"),
-                layout: None,
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vertex"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fragment"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: context.target_format,
-                        blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                multiview_mask: None,
-                cache: None,
-            });
-        *cached = Some((context.target_format, pipeline));
+                .into(),
+            ),
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("native content opening"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vertex"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fragment"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: nana_gpu::__framework::format_to_wgpu(context.target_format),
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        *cached = Some((key, pipeline));
     }
 
-    fn render(&self, node: &SceneGpuNode, context: SceneGpuRenderContext<'_>) {
+    fn render(&self, node: &SceneGpuNode, mut context: SceneGpuRenderContext<'_>) {
         if node.custom.param(0) == Some(0.0) {
             return;
         }
         let cached = self.pipeline.lock().expect("native content pipeline");
-        let Some((_, pipeline)) = cached.as_ref() else {
+        let Some((built, pipeline)) = cached.as_ref() else {
             return;
         };
+        if *built != (context.gpu.generation(), context.target_format) {
+            return;
+        }
         let bounds = crate::gpu_view::intersect_physical(context.bounds, context.clip);
         if bounds.width == 0 || bounds.height == 0 {
             return;
         }
-        let mut pass = context
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("native content opening"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: context.target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        pass.set_pipeline(pipeline);
-        pass.set_viewport(
-            bounds.x as f32,
-            bounds.y as f32,
-            bounds.width as f32,
-            bounds.height as f32,
-            0.0,
-            1.0,
-        );
-        pass.set_scissor_rect(bounds.x, bounds.y, bounds.width, bounds.height);
-        pass.draw(0..3, 0..1);
+        context.with_pass("native content opening", |pass| {
+            pass.set_viewport(bounds);
+            pass.set_scissor(bounds);
+            let raw = pass.raw();
+            raw.set_pipeline(pipeline);
+            raw.draw(0..3, 0..1);
+        });
     }
 }
 

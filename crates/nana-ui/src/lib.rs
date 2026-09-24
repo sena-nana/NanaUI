@@ -30,7 +30,7 @@ mod font_face_ingest;
 #[cfg(feature = "gpu")]
 mod frame_binding;
 pub mod geometry;
-#[cfg(feature = "hosted")]
+#[cfg(feature = "gpu")]
 mod gpu_raw;
 #[cfg(feature = "gpu")]
 pub mod gpu_texture;
@@ -188,8 +188,7 @@ pub use nana_ui_runtime::{
 pub use accessibility_tree::AccessTreeProjector;
 #[cfg(feature = "gpu")]
 pub use default_gpu_view::{
-    DefaultGpuViewRenderer, default_scene_gpu_renderers, default_scene_gpu_renderers_with_host,
-    resolve_scene_gpu_renderers,
+    DefaultGpuViewRenderer, default_scene_gpu_renderers, resolve_scene_gpu_renderers,
 };
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 #[cfg(feature = "gpu")]
@@ -341,7 +340,7 @@ pub use runtime_input::RuntimeInputAdapter;
 pub use scene_gpu::{
     PreparedSceneResources, SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode,
     SceneGpuPassContext, SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer,
-    SceneGpuRendererRegistry, SceneResourceEncodeContext, SceneResourceProduceError,
+    SceneGpuRendererRegistry, ScenePass, SceneResourceEncodeContext, SceneResourceProduceError,
     SceneResourceProducer, SceneResourceProducerRegistry,
 };
 #[cfg(feature = "hosted")]
