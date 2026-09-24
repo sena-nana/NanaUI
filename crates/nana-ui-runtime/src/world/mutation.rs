@@ -1297,7 +1297,8 @@ impl UiWorld {
                     self.dirty_entities.remove(&id);
                     self.non_scroll_hit_dirty.remove(&id);
                     self.remove_document_root(snapshot.document, id);
-                    if self.input.focused.get(&snapshot.document) == Some(&id) {
+                    let dropped_focus = self.input.focused.get(&snapshot.document) == Some(&id);
+                    if dropped_focus {
                         self.input.focused.remove(&snapshot.document);
                     }
                     if let Some(index) = self.hit_test_index.get_mut(&snapshot.document) {
@@ -1327,7 +1328,7 @@ impl UiWorld {
                     self.surface_motion.remove(&id);
                     self.closing_surfaces.remove(&id);
                     self.hover_transitions.remove(&id);
-                    self.clear_overlay_references(id);
+                    self.clear_overlay_references(id, dropped_focus.then_some(snapshot.document));
                     self.overlay_host_nodes.remove(&id);
                     self.drop_targets.remove(&id);
                     // Every other per-node side table is cleared here; this one

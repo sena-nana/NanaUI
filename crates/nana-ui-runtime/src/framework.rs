@@ -89,6 +89,12 @@ impl<T: Send + 'static> View for T {}
 
 trait EditableText: ComponentView {
     type Change: Send + 'static;
+    /// Whether the editor keeps an undo journal. Only editors whose whole
+    /// state is their text can be restored from a snapshot of it: undoing a
+    /// number field's text would leave its committed value behind, and a
+    /// picker's query would drift from its filtered list. The rest record no
+    /// step they could never take back.
+    const JOURNALED: bool = false;
     fn accepts_input(&self) -> bool;
     fn accepts_selection(&self) -> bool {
         self.accepts_input()
@@ -153,6 +159,7 @@ fn scroll_offset_on(axis: nana_ui_core::ScrollbarAxis, offset: f32, hold: f32) -
 
 impl EditableText for TextInput {
     type Change = TextChanged;
+    const JOURNALED: bool = true;
 
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.loading && !self.read_only
@@ -208,6 +215,7 @@ impl EditableText for NumberInput {
 
 impl EditableText for TextArea {
     type Change = TextChanged;
+    const JOURNALED: bool = true;
 
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.read_only

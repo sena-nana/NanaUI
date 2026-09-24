@@ -715,13 +715,14 @@ fn overlay_validation_walks_hosts_not_every_entity() {
 
 #[test]
 fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
-    // Focus on the menu, on an item inside it, or on an editor elsewhere;
-    // the menu despawned (root first) or parked (focus dropped first).
-    for (focus, park) in [3, 5, 4]
+    // Focus on the menu, on an item inside it, on an editor elsewhere, or
+    // cleared (0); the menu despawned (root first) or parked (focus dropped
+    // first).
+    for (focus, park) in [3, 5, 4, 0]
         .into_iter()
         .flat_map(|focus| [(focus, false), (focus, true)])
     {
-        let focus_in_menu = focus != 4;
+        let focus_in_menu = focus == 3 || focus == 5;
         let mut world = UiWorld::new();
         let mut create = MutationQueue::new();
         create.create(node(1), document(1), NodeKind::Document);
@@ -757,8 +758,8 @@ fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
                 restore_focus: Some(node(2)),
             },
         );
-        create.request_focus(document(1), Some(node(focus)));
-        if !focus_in_menu {
+        create.request_focus(document(1), (focus != 0).then(|| node(focus)));
+        if focus == 4 {
             // The user went on typing elsewhere, mid-composition.
             create.set_ime(
                 node(4),
@@ -783,13 +784,19 @@ fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
                 Some(node(2)),
                 "focus leaving with the menu (from {focus}, parked: {park}) returns to where it came from"
             );
-        } else {
+        } else if focus == 4 {
             assert_eq!(
                 world.focused(document(1)),
                 Some(node(4)),
                 "the menu's host does not take focus back from the editor"
             );
             assert!(world.ime(node(4)).is_some(), "nor end its composition");
+        } else {
+            assert_eq!(
+                world.focused(document(1)),
+                None,
+                "focus the user cleared stays cleared (parked: {park})"
+            );
         }
         assert_eq!(world.text_input(node(4)).unwrap().value, "value");
     }

@@ -2353,12 +2353,25 @@ impl UiWorld {
         self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
     }
 
-    fn clear_overlay_references(&mut self, removed: StableNodeId) {
-        self.clear_overlay_references_for(&[removed]);
+    /// `dropped_focus`: the document whose focus removing `removed` just
+    /// took away, if it did.
+    fn clear_overlay_references(
+        &mut self,
+        removed: StableNodeId,
+        dropped_focus: Option<DocumentId>,
+    ) {
+        self.clear_overlay_references_for(&[removed], dropped_focus.as_slice());
     }
 
     /// Drop references through the reverse index; unrelated hosts are untouched.
-    fn clear_overlay_references_for(&mut self, removed: &[StableNodeId]) {
+    /// `dropped_focus` lists the documents whose focus this removal already
+    /// took away: that focus left with the removal, where a document with no
+    /// focus otherwise had it cleared by the user beforehand.
+    fn clear_overlay_references_for(
+        &mut self,
+        removed: &[StableNodeId],
+        dropped_focus: &[DocumentId],
+    ) {
         if self.overlay_host_nodes.is_empty() || removed.is_empty() {
             return;
         }
@@ -2402,16 +2415,20 @@ impl UiWorld {
             let Some((overlay, restore_focus)) = restore_focus else {
                 continue;
             };
-            // Focus goes back only if it left with the overlay: it is gone
-            // already (a retired subtree drops it first) or still on the
-            // overlay or inside it (a despawn removes the root first). Focus
-            // the user moved to another node stays there, with whatever
+            // Focus goes back only if it left with the overlay: this removal
+            // dropped it already, or it is still on the overlay or inside it
+            // (a despawn removes the root first). Focus the user moved to
+            // another node, or cleared, stays that way, with whatever
             // composition it has going.
-            let focus_left = self.input.focused.get(&document).is_none_or(|focused| {
-                removed.contains(focused)
-                    || !self.contains(*focused)
-                    || self.is_descendant_or_self(*focused, overlay)
-            });
+            let focused = self.input.focused.get(&document).copied();
+            let focus_left = match focused {
+                None => dropped_focus.contains(&document),
+                Some(focused) => {
+                    removed.contains(&focused)
+                        || !self.contains(focused)
+                        || self.is_descendant_or_self(focused, overlay)
+                }
+            };
             if focus_left
                 && self.contains(restore_focus)
                 && self.is_mounted(restore_focus)
@@ -2420,6 +2437,13 @@ impl UiWorld {
                 && self.record(restore_focus).resolved.0.visible
                 && self.active_modal_allows_focus_now(document, restore_focus)
             {
+                // The node focus leaves, if it is still here, loses it as a
+                // RequestFocus would take it: composition ended, style redrawn.
+                if let Some(old) =
+                    focused.filter(|old| *old != restore_focus && self.contains(*old))
+                {
+                    self.release_focus(old);
+                }
                 self.input.focused.insert(document, restore_focus);
                 self.mark_focus_changed(restore_focus);
             }
@@ -2637,10 +2661,12 @@ impl UiWorld {
 
     fn retire_subtree_from_document(&mut self, subtree: &[StableNodeId]) {
         let parked = subtree.iter().copied().collect::<HashSet<_>>();
+        let mut dropped_focus = Vec::new();
         for &id in subtree {
             let document = self.record(id).document;
             if self.input.focused.get(&document) == Some(&id) {
                 self.input.focused.remove(&document);
+                dropped_focus.push(document);
             }
             self.remove_ime(id);
             if let Some(index) = self.hit_test_index.get_mut(&document) {
@@ -2686,7 +2712,7 @@ impl UiWorld {
                 self.write_overlay_host(id, Some(OverlayHostState::default()));
             }
         }
-        self.clear_overlay_references_for(subtree);
+        self.clear_overlay_references_for(subtree, &dropped_focus);
         self.pending_render_removals.sort_unstable();
         self.pending_render_removals.dedup();
         self.pending_accessibility_removals.sort_unstable();

@@ -34,18 +34,14 @@ impl AppContext {
         if !self.read(entity, NumberInput::accepts_input)? {
             return Ok(false);
         }
-        // The user's step, not an application write: journaled, not a reason
-        // to clear the field's undo.
-        self.commit_control_write(entity, TextEditOrigin::Structural, |cx| {
-            cx.update_component(entity, |input, cx| {
-                if !input.step_value(steps) {
-                    return false;
-                }
-                cx.emit(NumberChanged {
-                    value: input.value(),
-                });
-                true
-            })
+        self.update_component(entity, |input, cx| {
+            if !input.step_value(steps) {
+                return false;
+            }
+            cx.emit(NumberChanged {
+                value: input.value(),
+            });
+            true
         })
     }
 
@@ -56,20 +52,19 @@ impl AppContext {
         entity: Entity<NumberInput>,
     ) -> Result<bool, FrameworkError> {
         let before = self.read(entity, NumberInput::value)?;
-        self.commit_control_write(entity, TextEditOrigin::Structural, |cx| {
-            cx.update_component(entity, |input, cx| {
-                if !input.commit_draft() {
-                    return false;
-                }
-                if input.value() == before {
-                    return true;
-                }
-                cx.emit(NumberChanged {
-                    value: input.value(),
-                });
-                true
-            })
-        })
+        let touched = self.update_component(entity, |input, cx| {
+            if !input.commit_draft() {
+                return false;
+            }
+            if input.value() == before {
+                return true;
+            }
+            cx.emit(NumberChanged {
+                value: input.value(),
+            });
+            true
+        })?;
+        Ok(touched)
     }
 
     /// Step the focused numeric field, if any. Returns whether it moved.
@@ -104,15 +99,13 @@ impl AppContext {
         let Some(entity) = self.focused_number_input(document) else {
             return Ok(false);
         };
-        self.commit_control_write(entity, TextEditOrigin::Structural, |cx| {
-            cx.update_component(entity, |input, _| {
-                let committed = input.formatted_value();
-                if input.state.value == committed {
-                    return false;
-                }
-                input.state.replace_value(committed);
-                true
-            })
+        self.update_component(entity, |input, _| {
+            let committed = input.formatted_value();
+            if input.state.value == committed {
+                return false;
+            }
+            input.state.replace_value(committed);
+            true
         })
     }
 
