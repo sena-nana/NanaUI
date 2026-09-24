@@ -6,7 +6,7 @@
 //! receive the host shaper so layout stays backend-owned.
 
 use super::{AppContext, DocumentId, EditableText, Entity, FrameworkError, StableNodeId};
-use super::{TextArea, TextInput, TextInputState, TextSelection};
+use super::{NumberInput, TextArea, TextInput, TextInputState, TextSelection};
 use crate::components::TextSnippetSession;
 use crate::text_editing::{
     CursorEdit, TextCaretIntent, TextLineDirection, TextReplacement, TextSearchOptions,
@@ -85,10 +85,22 @@ pub struct FocusedTextEditor {
     pub(crate) kind: TextEditorKind,
 }
 
+impl FocusedTextEditor {
+    /// A [`crate::NumberInput`]: plain ArrowUp/ArrowDown step its value and
+    /// Enter commits its draft, so a host routes those keys to the numeric
+    /// field instead of the editor's caret and submit handling.
+    pub fn is_numeric(&self) -> bool {
+        self.kind == TextEditorKind::Number
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TextEditorKind {
     Area,
     Field,
+    /// A [`crate::NumberInput`]'s draft. Edits change the draft only; the
+    /// committed number is parsed from it on Enter or blur.
+    Number,
 }
 
 /// 拖拽移动选中文本的状态机（见
@@ -467,10 +479,6 @@ impl From<(String, TextSelection)> for EditorEdit {
 }
 
 impl AppContext {
-    /// Identify the focused plain text editor (`TextArea` or `TextInput`).
-    ///
-    /// Composite search surfaces (palettes, menus, dropdowns) own their
-    /// navigation and are deliberately not plain editors.
     /// An arrow key as the focused editor's line space names it (#59).
     ///
     /// Caret intents are in line space, where Left/Right step along a line and
@@ -507,6 +515,11 @@ impl AppContext {
         }
     }
 
+    /// Identify the focused plain text editor (`TextArea`, `TextInput`, or a
+    /// `NumberInput`'s draft).
+    ///
+    /// Composite search surfaces (palettes, menus, dropdowns) own their
+    /// navigation and are deliberately not plain editors.
     pub fn focused_text_editor(&self, document: DocumentId) -> Option<FocusedTextEditor> {
         if self.has_focused_ime_composition(document) {
             return None;
@@ -516,6 +529,9 @@ impl AppContext {
         }
         if let Some(entity) = self.focused_editor::<TextInput>(document) {
             return self.editor_info(entity, TextEditorKind::Field);
+        }
+        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
+            return self.editor_info(entity, TextEditorKind::Number);
         }
         None
     }
@@ -1838,6 +1854,12 @@ impl AppContext {
             self.text_edit.text_pointer_drag = None;
             return Ok(false);
         }
+        // A press on a numeric field's spinner steps the value
+        // ([`Self::press_number_stepper`]); it places no caret.
+        if focused.is_numeric() && self.number_stepper_at(node, x, y).is_some() {
+            self.text_edit.text_pointer_drag = None;
+            return Ok(false);
+        }
         let state = self.editor_state(node, focused.kind)?;
         const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
         const DOUBLE_CLICK_SLOP: f32 = 4.0;
@@ -2457,7 +2479,7 @@ impl AppContext {
                         .ok()
                 })
                 .unwrap_or_default(),
-            TextEditorKind::Field => Vec::new(),
+            TextEditorKind::Field | TextEditorKind::Number => Vec::new(),
         }
     }
 
@@ -2497,6 +2519,13 @@ impl AppContext {
                         .ok()
                 })
                 .ok_or(FrameworkError::MissingView(node)),
+            TextEditorKind::Number => self
+                .view_entity::<NumberInput>(node)
+                .and_then(|entity| {
+                    self.read(entity, |field: &NumberInput| field.state.clone())
+                        .ok()
+                })
+                .ok_or(FrameworkError::MissingView(node)),
         }
     }
 
@@ -2526,6 +2555,17 @@ impl AppContext {
             TextEditorKind::Field => {
                 let entity = Entity::<TextInput>::from_stable_id(node);
                 self.update_component(entity, |field: &mut TextInput, _| {
+                    if field.state.selection == selection {
+                        return false;
+                    }
+                    field.state.selection = selection;
+                    field.state.normalize_selections();
+                    true
+                })
+            }
+            TextEditorKind::Number => {
+                let entity = Entity::<NumberInput>::from_stable_id(node);
+                self.update_component(entity, |field: &mut NumberInput, _| {
                     if field.state.selection == selection {
                         return false;
                     }
@@ -2580,6 +2620,25 @@ impl AppContext {
             TextEditorKind::Field => {
                 let entity = Entity::<TextInput>::from_stable_id(node);
                 self.update_component(entity, |field: &mut TextInput, _| {
+                    if field.state.selection == selection
+                        && field.state.additional_selections == additional
+                    {
+                        return false;
+                    }
+                    let previous = (
+                        field.state.selection,
+                        field.state.additional_selections.clone(),
+                    );
+                    field.state.selection = selection;
+                    field.state.additional_selections = additional;
+                    field.state.normalize_selections();
+                    previous.0 != field.state.selection
+                        || previous.1 != field.state.additional_selections
+                })
+            }
+            TextEditorKind::Number => {
+                let entity = Entity::<NumberInput>::from_stable_id(node);
+                self.update_component(entity, |field: &mut NumberInput, _| {
                     if field.state.selection == selection
                         && field.state.additional_selections == additional
                     {
@@ -2757,6 +2816,19 @@ impl AppContext {
                 Entity::<TextInput>::from_stable_id(node),
                 origin,
                 move |field: &mut TextInput, _| {
+                    if !field.accepts_input() {
+                        return false;
+                    }
+                    write(&mut field.state);
+                    true
+                },
+            ),
+            // The draft is free text: the number is parsed from it on commit,
+            // not filtered keystroke by keystroke.
+            TextEditorKind::Number => self.commit_editor_edit(
+                Entity::<NumberInput>::from_stable_id(node),
+                origin,
+                move |field: &mut NumberInput, _| {
                     if !field.accepts_input() {
                         return false;
                     }

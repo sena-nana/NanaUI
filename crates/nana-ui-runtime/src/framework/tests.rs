@@ -1721,6 +1721,99 @@ fn range_accessibility_set_value_uses_quantized_typed_action() {
 }
 
 #[test]
+fn accessibility_actions_edit_a_number_input_through_its_numeric_policy() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(1.0)
+                .range(0.0, 10.0)
+                .step(0.5)
+                .precision(1),
+        )
+        .unwrap();
+    let node = input.stable_id();
+    let values = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&values);
+    context
+        .on(input, move |_input, event: &crate::NumberChanged, _cx| {
+            observed.lock().unwrap().push(event.value);
+        })
+        .unwrap();
+    let act = |context: &mut AppContext, action| {
+        context
+            .apply_accessibility_action(
+                document,
+                AccessibilityActionRequest {
+                    target: node,
+                    action,
+                },
+            )
+            .unwrap()
+    };
+    let draft = |context: &AppContext| {
+        context
+            .read(input, |input| input.state.value.to_string())
+            .unwrap()
+    };
+
+    // Click focuses the field so an IME / TalkBack session can attach.
+    assert!(act(&mut context, AccessibilityAction::Click));
+    assert_eq!(context.world().focused(document), Some(node));
+
+    // SetValue commits a number: snapped to the step grid, then clamped.
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetValue("7.3".into())
+    ));
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 7.5);
+    assert_eq!(draft(&context), "7.5");
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetValue("12".into())
+    ));
+    assert_eq!(
+        context.read(input, crate::NumberInput::value).unwrap(),
+        10.0
+    );
+    assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
+
+    // Text that is not a number changes nothing, draft included.
+    assert!(!act(
+        &mut context,
+        AccessibilityAction::SetValue("abc".into())
+    ));
+    assert_eq!(draft(&context), "10.0");
+    assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
+
+    // SetSelection selects inside the draft; out-of-range selections refuse.
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetSelection(TextSelection::new(0, 2))
+    ));
+    let selection = context.world().text_input(node).unwrap().selection;
+    assert_eq!((selection.anchor, selection.focus), (0, 2));
+    assert!(!act(
+        &mut context,
+        AccessibilityAction::SetSelection(TextSelection::new(0, 99))
+    ));
+
+    // A read-only field refuses SetValue.
+    context
+        .update_component(input, |input, _| input.read_only = true)
+        .unwrap();
+    assert!(!act(
+        &mut context,
+        AccessibilityAction::SetValue("3".into())
+    ));
+    assert_eq!(
+        context.read(input, crate::NumberInput::value).unwrap(),
+        10.0
+    );
+}
+
+#[test]
 fn failed_component_projection_keeps_typed_state_and_world_unchanged() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

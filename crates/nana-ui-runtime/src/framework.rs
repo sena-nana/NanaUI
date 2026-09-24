@@ -2267,6 +2267,7 @@ impl AppContext {
                 // the IME / TalkBack editing session can attach.
                 if self.view_entity::<TextInput>(request.target).is_some()
                     || self.view_entity::<TextArea>(request.target).is_some()
+                    || self.view_entity::<NumberInput>(request.target).is_some()
                 {
                     return self.focus_node(document, request.target);
                 }
@@ -2279,6 +2280,9 @@ impl AppContext {
                 }
                 if let Some(entity) = self.view_entity::<TextArea>(request.target) {
                     return self.set_editable_value(entity, value);
+                }
+                if let Some(entity) = self.view_entity::<NumberInput>(request.target) {
+                    return self.set_number_text(entity, &value);
                 }
                 if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {
                     return self.set_editable_value(entity, value);
@@ -2310,6 +2314,9 @@ impl AppContext {
                     return self.set_editable_selection(entity, selection);
                 }
                 if let Some(entity) = self.view_entity::<TextArea>(request.target) {
+                    return self.set_editable_selection(entity, selection);
+                }
+                if let Some(entity) = self.view_entity::<NumberInput>(request.target) {
                     return self.set_editable_selection(entity, selection);
                 }
                 if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {

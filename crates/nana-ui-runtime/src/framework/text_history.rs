@@ -342,6 +342,16 @@ impl crate::AppContext {
                     true
                 },
             ),
+            // Restores the draft; the committed number follows on Enter or
+            // blur, as it does after typing.
+            super::text_edit::TextEditorKind::Number => self.commit_editor_edit(
+                crate::Entity::<crate::NumberInput>::from_stable_id(node),
+                TextEditOrigin::History,
+                move |field: &mut crate::NumberInput, _| {
+                    restore(&mut field.state);
+                    true
+                },
+            ),
         }
     }
 
@@ -448,6 +458,46 @@ mod editor_tests {
             .unwrap();
         assert_eq!(component, "25", "the commit reached the component");
         assert_eq!(cx.world().text_input(node).unwrap().value, "25");
+    }
+
+    #[test]
+    fn a_number_inputs_typed_and_ime_drafts_undo_and_redo() {
+        for ime in [false, true] {
+            let mut cx = AppContext::new();
+            let input = cx
+                .create_component(document(), crate::NumberInput::new(1.0))
+                .unwrap();
+            cx.focus_node(document(), input.stable_id()).unwrap();
+            cx.select_all_focused_text(document()).unwrap();
+            if ime {
+                cx.set_ime_preedit(document(), "４２".into(), None).unwrap();
+                assert!(cx.commit_ime(document(), "42").unwrap());
+            } else {
+                cx.replace_focused_text(document(), "4").unwrap();
+                cx.replace_focused_text(document(), "2").unwrap();
+            }
+            let draft = |cx: &AppContext| {
+                cx.read(input, |input| input.state.value.to_string())
+                    .unwrap()
+            };
+            assert_eq!(draft(&cx), "42");
+
+            assert!(cx.undo_focused_text(document()).unwrap(), "ime: {ime}");
+            assert_eq!(draft(&cx), "1", "one run of edits, one step");
+            let selection = cx.read(input, |input| input.state.selection).unwrap();
+            assert_eq!(
+                (selection.anchor, selection.focus),
+                (0, 1),
+                "undo restores the selection the edit replaced"
+            );
+            assert!(cx.redo_focused_text(document()).unwrap());
+            assert_eq!(draft(&cx), "42");
+
+            // Undo walks the draft; the number is still parsed on commit.
+            assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 1.0);
+            assert!(cx.commit_focused_number_input(document()).unwrap());
+            assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 42.0);
+        }
     }
 
     #[test]

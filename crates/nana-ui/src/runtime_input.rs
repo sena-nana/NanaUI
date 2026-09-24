@@ -1400,6 +1400,16 @@ impl RuntimeInputAdapter {
         let Some(focused) = context.focused_text_editor(document) else {
             return Ok(false);
         };
+        // A numeric field steps on ArrowUp/ArrowDown and commits its draft on
+        // Enter; those keys fall through to its own routing.
+        if focused.is_numeric()
+            && !modifiers.control
+            && !modifiers.meta
+            && !modifiers.alt
+            && matches!(key, "ArrowUp" | "ArrowDown" | "Enter")
+        {
+            return Ok(false);
+        }
         // Arrow keys in the editor's line space (#59): a vertical editor's
         // Up/Down walk its column and Left/Right cross columns, with every
         // modifier below carried along by translating the key itself.
@@ -4466,6 +4476,80 @@ mod tests {
             state.selection.anchor,
             state.selection.focus,
         )
+    }
+
+    #[test]
+    fn a_focused_number_input_edits_its_draft_and_keeps_its_stepper_keys() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(
+                document,
+                nana_ui_runtime::NumberInput::new(1.0).range(0.0, 100.0),
+            )
+            .unwrap();
+        let node = input.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let mut adapter = RuntimeInputAdapter::default();
+        let value = |context: &AppContext| {
+            context
+                .read(input, nana_ui_runtime::NumberInput::value)
+                .unwrap()
+        };
+        let control = |key: &str, shift: bool| {
+            edit_key(
+                key,
+                None,
+                InputModifiers {
+                    control: true,
+                    shift,
+                    ..InputModifiers::default()
+                },
+            )
+        };
+
+        // ArrowUp steps the value; it is not a caret move.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("ArrowUp"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(value(&context), 2.0);
+        assert_eq!(textarea_selection(&context, node), ("2".into(), 1, 1));
+
+        // Left moves the caret inside the draft and typing lands there.
+        adapter
+            .dispatch(&mut context, document, &plain_key("ArrowLeft"))
+            .unwrap();
+        assert_eq!(textarea_selection(&context, node), ("2".into(), 0, 0));
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &edit_key("1", Some("1"), InputModifiers::default()),
+            )
+            .unwrap();
+        assert_eq!(textarea_selection(&context, node), ("12".into(), 1, 1));
+
+        // Ctrl+Z / Ctrl+Shift+Z walk the draft's history.
+        adapter
+            .dispatch(&mut context, document, &control("z", false))
+            .unwrap();
+        assert_eq!(textarea_selection(&context, node).0, "2");
+        adapter
+            .dispatch(&mut context, document, &control("z", true))
+            .unwrap();
+        assert_eq!(textarea_selection(&context, node).0, "12");
+
+        // Enter commits the draft instead of submitting a text field.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &plain_key("Enter"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(value(&context), 12.0);
     }
 
     #[test]

@@ -24,6 +24,36 @@ impl AppContext {
         })
     }
 
+    /// Commit a complete value given as text, as assistive technology sets
+    /// one: parsed, clamped and snapped by the field's own policy, and
+    /// written as the committed value rather than as a draft. Unparseable
+    /// text changes nothing. Like any program write of an editor's value, it
+    /// starts the field's undo history afresh.
+    pub(super) fn set_number_text(
+        &mut self,
+        entity: Entity<NumberInput>,
+        text: &str,
+    ) -> Result<bool, FrameworkError> {
+        if !self.read(entity, NumberInput::accepts_input)? {
+            return Ok(false);
+        }
+        let Some(parsed) = self.read(entity, |input| input.parse_text(text))? else {
+            return Ok(false);
+        };
+        let before = self.read(entity, NumberInput::value)?;
+        self.commit_editor_edit(entity, TextEditOrigin::Program, |input, cx| {
+            if !input.assign(parsed) {
+                return false;
+            }
+            if input.value() != before {
+                cx.emit(NumberChanged {
+                    value: input.value(),
+                });
+            }
+            true
+        })
+    }
+
     /// Move a numeric field by step increments. Disabled and read-only fields
     /// refuse, so a stepper press cannot bypass either flag.
     pub fn step_number_input(

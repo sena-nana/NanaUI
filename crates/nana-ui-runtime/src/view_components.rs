@@ -1884,19 +1884,22 @@ impl NumberInput {
         self.assign(next)
     }
 
-    /// Parse the draft. An unparseable draft restores the committed value.
-    pub(crate) fn commit_draft(&mut self) -> bool {
-        let parsed = if self.continuous {
-            self.state
-                .value
-                .trim()
+    /// Parse `text` under this field's discrete or continuous policy, before
+    /// clamping or snapping.
+    pub(crate) fn parse_text(&self, text: &str) -> Option<f64> {
+        if self.continuous {
+            text.trim()
                 .parse::<f64>()
                 .ok()
                 .filter(|value| value.is_finite())
         } else {
-            self.spec.parse(&self.state.value)
-        };
-        match parsed {
+            self.spec.parse(text)
+        }
+    }
+
+    /// Parse the draft. An unparseable draft restores the committed value.
+    pub(crate) fn commit_draft(&mut self) -> bool {
+        match self.parse_text(&self.state.value) {
             Some(parsed) => self.assign(parsed),
             None => {
                 let restored = self.formatted_value();
