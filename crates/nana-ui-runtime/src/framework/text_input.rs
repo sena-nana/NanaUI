@@ -644,6 +644,71 @@ impl AppContext {
         }
         Ok(changed)
     }
+
+    /// Replaces `range` with `text` for the user, as an undo step of its own
+    /// (see [`AppContext::edit_text_area`]). The write the user's own edits
+    /// take, on this range alone: an atom it reaches into goes whole, the
+    /// snippet's linked placeholders follow, a field's length limit holds,
+    /// and the other cursors move through the edit.
+    pub(super) fn replace_editable_range<C: EditableText>(
+        &mut self,
+        entity: Entity<C>,
+        range: std::ops::Range<usize>,
+        text: &str,
+    ) -> Result<bool, FrameworkError> {
+        let in_text = self.read(entity, |editable| {
+            let value = &editable.state().value;
+            range.start <= range.end
+                && range.end <= value.len()
+                && value.is_char_boundary(range.start)
+                && value.is_char_boundary(range.end)
+        })?;
+        if !in_text {
+            return Err(FrameworkError::InvalidInput);
+        }
+        let node = entity.stable_id();
+        if self.is_composing(node) || !self.read(entity, EditableText::accepts_input)? {
+            return Ok(false);
+        }
+        let text = crate::text_editing::normalize_newlines(text);
+        let snippet = self.world.text_snippet_session(node);
+        let old = self.read(entity, |editable| editable.state().value.clone())?;
+        let mut linked = None;
+        // Structural: a step of its own, which neither extends the typing
+        // before it nor is extended by the typing after it.
+        let changed =
+            self.commit_editor_edit(entity, TextEditOrigin::Structural, |editable, _| {
+                let atoms = crate::text_editing::atoms_in(&old, editable.text_atoms());
+                let range = crate::text_editing::expand_range_over_atoms(range, &atoms);
+                let original = editable.state().clone();
+                editable.state_mut().selection = TextSelection::new(range.start, range.end);
+                if !editable.commit_ime_text(&text) || editable.state().value == original.value {
+                    // Declined: the component stays exactly as it was, selection
+                    // included, so nothing is committed.
+                    *editable.state_mut() = original;
+                    return false;
+                }
+                if let Some(session) = &snippet
+                    && let Some((value, selection, session)) = session.linked_edit(
+                        &old,
+                        &editable.state().value,
+                        editable.state().selection,
+                    )
+                {
+                    editable.state_mut().value = value.into();
+                    editable.state_mut().selection = selection;
+                    linked = Some(session);
+                }
+                editable.state_mut().normalize_selections();
+                true
+            })?;
+        if changed && let Some(session) = linked {
+            let mut mutations = MutationQueue::new();
+            mutations.set_text_input_snippet(node, Some(session));
+            self.world.commit(mutations)?;
+        }
+        Ok(changed)
+    }
 }
 
 /// Every selection, the primary and each further cursor, widened over each
@@ -673,20 +738,21 @@ fn atom_expanded_selections<C: EditableText>(
         }
     };
     // Cloned only when a selection grows: most edits in an editor with
-    // atoms touch none.
+    // atoms touch none. Each selection is widened once.
     let primary = widen(state.selection);
-    let grows = primary != state.selection
-        || state
-            .additional_selections
-            .iter()
-            .any(|selection| widen(*selection) != *selection);
-    if !grows {
+    let first_grown = state
+        .additional_selections
+        .iter()
+        .position(|selection| widen(*selection) != *selection);
+    if primary == state.selection && first_grown.is_none() {
         return None;
     }
     let mut next = state.clone();
     next.selection = primary;
-    for selection in &mut next.additional_selections {
-        *selection = widen(*selection);
+    if let Some(first) = first_grown {
+        for selection in &mut next.additional_selections[first..] {
+            *selection = widen(*selection);
+        }
     }
     next.normalize_selections();
     Some(next)

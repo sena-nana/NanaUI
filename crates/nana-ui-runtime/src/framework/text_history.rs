@@ -26,8 +26,8 @@
 //! An application edit meant to be undone like the user's own — a format
 //! shortcut, a completion — goes through
 //! [`crate::AppContext::edit_text_area`] or
-//! [`crate::AppContext::edit_text_input`] with the origin it should record
-//! as; it is always a step of its own. Rebinding an editor to another object
+//! [`crate::AppContext::edit_text_input`], which replace a range the way the
+//! user's own edit would, as a step of its own. Rebinding an editor to another object
 //! whose text happens to be identical changes no byte; call
 //! [`crate::AppContext::clear_text_history`] for that.
 //!
@@ -235,36 +235,6 @@ impl TextHistory {
     }
 }
 
-/// Whether turning `before` into `after` cuts into an atom: an atom is
-/// replaced whole or not at all, so an edit that starts or ends strictly
-/// inside one (or inserts into it) would leave half a chip.
-///
-/// A change that could sit in more than one place (inserting a "[" before
-/// "[bob]") is judged where it sits clear of the atoms, as the edit session
-/// places it.
-fn splits_an_atom(before: &str, after: &str, atoms: &[crate::TextAtomSpan]) -> bool {
-    use nana_text::editable::diff;
-
-    let atoms = crate::text_editing::atoms_in(before, atoms);
-    let splits = |(start, old_end, _): (usize, usize, usize)| {
-        let changed = start..old_end;
-        atoms
-            .iter()
-            .any(|atom| atom.start < changed.start && changed.start < atom.end)
-            || crate::text_editing::expand_range_over_atoms(changed.clone(), &atoms) != changed
-    };
-    let Some(greedy) = diff::changed_range(before, after) else {
-        return false;
-    };
-    if atoms.is_empty() || !splits(greedy) {
-        return false;
-    }
-    !atoms.iter().any(|atom| {
-        diff::changed_range_clear_of(before, after, atom.start..atom.end)
-            .is_some_and(|placed| !splits(placed))
-    })
-}
-
 /// What [`crate::AppContext::text_histories_written_by`] found in a batch.
 #[derive(Debug, Default)]
 pub(super) struct WrittenEditors {
@@ -282,10 +252,6 @@ pub(super) struct TextHistories {
     /// other text write to it during the edit (a follow-up committing to it)
     /// is foreign, and the write drops the journal rather than adopt it.
     writing: Vec<(StableNodeId, bool)>,
-    /// The view whose own update the next `commit_mutations` commits:
-    /// set just before [`crate::AppContext::update_component`] commits,
-    /// taken as that commit starts.
-    committing: Option<StableNodeId>,
 }
 
 impl TextHistories {
@@ -363,18 +329,6 @@ impl TextHistories {
             .is_some_and(|index| self.writing.remove(index).1)
     }
 
-    /// Notes that the next commit is `view`'s own update.
-    pub(super) fn commit_of(&mut self, view: StableNodeId) {
-        self.committing = Some(view);
-    }
-
-    /// Whether a commit writing `node`'s text should check its journal: one
-    /// exists, and no journaled write of `node` will witness the result.
-    /// Takes the view [`Self::commit_of`] named, for the commit starting.
-    pub(super) fn take_committing(&mut self) -> Option<StableNodeId> {
-        self.committing.take()
-    }
-
     /// Releases the journal of a node that no longer exists.
     pub(super) fn forget(&mut self, node: StableNodeId) {
         self.entries.remove(&node);
@@ -395,97 +349,37 @@ impl crate::AppContext {
         Ok(())
     }
 
-    /// Edits a [`crate::TextArea`]'s text on the user's behalf -- a format
-    /// shortcut, an auto-completion, an application command -- as one undo
-    /// step of `origin`, where writing the component would clear the journal.
-    /// The step stands alone: it neither extends the typing before it nor is
-    /// extended by the typing after it, whatever `origin` it records as.
+    /// Replaces `range` of a [`crate::TextArea`]'s text with `text` on the
+    /// user's behalf -- a format shortcut, an auto-completion, an application
+    /// command -- as an undo step of its own, where writing the component
+    /// would clear the journal. The step neither extends the typing before it
+    /// nor is extended by the typing after it.
     ///
-    /// Refused, like the user's own edits, while the editor is read-only or
-    /// disabled. `apply` returns whether it changed anything; an edit that
-    /// leaves the state as it was is no edit. Emits the editor's change
-    /// event like any other edit. Declined while the user is composing with
-    /// an IME, as a paste is. [`TextEditOrigin::History`] and
-    /// [`TextEditOrigin::Program`] are errors: neither records a step (undo
-    /// and redo restore without recording, a program write clears the
-    /// journal).
+    /// The edit the user's own would be: refused while the editor is
+    /// read-only or disabled or the user is composing with an IME; an atom
+    /// the range reaches into is replaced whole; an active snippet's linked
+    /// placeholders follow; the other cursors move through it. Emits the
+    /// editor's change event. Returns whether the text changed; a range
+    /// outside the text or off a character boundary is an error.
     pub fn edit_text_area(
         &mut self,
         entity: crate::Entity<crate::TextArea>,
-        origin: TextEditOrigin,
-        apply: impl FnOnce(&mut TextInputState) -> bool,
+        range: std::ops::Range<usize>,
+        text: &str,
     ) -> Result<bool, crate::FrameworkError> {
-        self.edit_editable_on_behalf(
-            entity,
-            super::text_edit::TextEditorKind::Area,
-            origin,
-            apply,
-        )
+        self.replace_editable_range(entity, range, text)
     }
 
-    /// [`Self::edit_text_area`] for a [`crate::TextInput`]. A value past the
-    /// field's length limit is refused, as it is from the keyboard.
+    /// [`Self::edit_text_area`] for a [`crate::TextInput`]. An edit that would
+    /// take the field past its length limit is refused, as it is from the
+    /// keyboard.
     pub fn edit_text_input(
         &mut self,
         entity: crate::Entity<crate::TextInput>,
-        origin: TextEditOrigin,
-        apply: impl FnOnce(&mut TextInputState) -> bool,
+        range: std::ops::Range<usize>,
+        text: &str,
     ) -> Result<bool, crate::FrameworkError> {
-        self.edit_editable_on_behalf(
-            entity,
-            super::text_edit::TextEditorKind::Field,
-            origin,
-            apply,
-        )
-    }
-
-    /// Judges the edit here, then writes it through the path the user's own
-    /// structural edits take ([`Self::commit_editor_value`]): the snippet's
-    /// linked placeholders, the field's length limit and selection
-    /// normalization, in that order, and the editor refusing input.
-    fn edit_editable_on_behalf<C: super::EditableText>(
-        &mut self,
-        entity: crate::Entity<C>,
-        kind: super::text_edit::TextEditorKind,
-        origin: TextEditOrigin,
-        apply: impl FnOnce(&mut TextInputState) -> bool,
-    ) -> Result<bool, crate::FrameworkError> {
-        if matches!(origin, TextEditOrigin::History | TextEditOrigin::Program) {
-            return Err(crate::FrameworkError::InvalidInput);
-        }
-        let node = entity.stable_id();
-        if self.is_composing(node) || !self.read(entity, super::EditableText::accepts_input)? {
-            return Ok(false);
-        }
-        // Decided before anything is sealed: an edit that does not happen
-        // leaves the user's typing run as it was.
-        let Some(next) = self.read(entity, |editable: &C| {
-            let current = editable.state();
-            let mut next = current.clone();
-            if !apply(&mut next) {
-                return None;
-            }
-            // Normalized to judge it as it would land; the write normalizes
-            // again once the snippet's placeholders have followed.
-            next.normalize_selections();
-            (next != *current
-                && !splits_an_atom(&current.value, &next.value, editable.text_atoms()))
-            .then_some(next)
-        })?
-        else {
-            return Ok(false);
-        };
-        self.seal_editor_history(node);
-        let changed = self.commit_editor_value(
-            node,
-            kind,
-            next.value,
-            next.selection,
-            next.additional_selections,
-            origin,
-        )?;
-        self.seal_editor_history(node);
-        Ok(changed)
+        self.replace_editable_range(entity, range, text)
     }
 
     /// The stamp of the text the world holds for an editor.
@@ -507,9 +401,11 @@ impl crate::AppContext {
     ) -> WrittenEditors {
         let mut written = WrittenEditors::default();
         // Nothing to look at unless the batch writes editor text and some
-        // editor keeps a journal: layout, style and animation batches pass
-        // in O(1).
-        if !mutations.writes_text() || self.text_histories.entries.is_empty() {
+        // editor keeps a journal or is being edited (its first edit has no
+        // journal yet): layout, style and animation batches pass in O(1).
+        if !mutations.writes_text()
+            || (self.text_histories.entries.is_empty() && self.text_histories.writing.is_empty())
+        {
             return written;
         }
         for mutation in mutations.as_slice() {
@@ -568,6 +464,10 @@ impl crate::AppContext {
     /// one undo step.
     ///
     /// Returns whether the state actually changed.
+    ///
+    /// Not unwind-safe, like [`Self::update_component`] it runs on (which
+    /// takes the view out of the context around user code): a handler that
+    /// panics leaves the context inconsistent, journal bookkeeping included.
     pub(super) fn commit_editor_edit<C: super::EditableText>(
         &mut self,
         entity: crate::Entity<C>,
@@ -1231,121 +1131,6 @@ mod editor_tests {
     }
 
     #[test]
-    fn an_edit_made_on_the_users_behalf_is_an_undo_step() {
-        let mut cx = AppContext::new();
-        let area = focused_area(&mut cx, "");
-        cx.replace_focused_text(document(), "bold").unwrap();
-        cx.select_all_focused_text(document()).unwrap();
-        // A format shortcut the application implements.
-        assert!(
-            cx.edit_text_area(area, crate::TextEditOrigin::Structural, |state| {
-                let wrapped = format!("**{}**", state.value);
-                state.value = wrapped.into();
-                state.selection = crate::TextSelection::new(2, 6);
-                true
-            })
-            .unwrap()
-        );
-        assert_eq!(value_of(&cx, area), "**bold**");
-        assert!(cx.undo_focused_text(document()).unwrap());
-        assert_eq!(value_of(&cx, area), "bold", "the format came off alone");
-        assert!(cx.undo_focused_text(document()).unwrap());
-        assert_eq!(value_of(&cx, area), "", "and the typing before it stayed");
-        assert!(matches!(
-            cx.edit_text_area(area, crate::TextEditOrigin::History, |_| true),
-            Err(crate::FrameworkError::InvalidInput)
-        ));
-    }
-
-    #[test]
-    fn an_edit_on_the_users_behalf_is_its_own_step_whatever_its_origin() {
-        let mut cx = AppContext::new();
-        let area = focused_area(&mut cx, "");
-        cx.replace_focused_text(document(), "fo").unwrap();
-        // A completion recorded as typing: not merged into the prefix the user
-        // typed, and the typing after it is not merged into it.
-        assert!(
-            cx.edit_text_area(area, crate::TextEditOrigin::Typing, |state| {
-                state.value = "foo()".into();
-                state.selection = crate::TextSelection::caret(5);
-                true
-            })
-            .unwrap()
-        );
-        cx.replace_focused_text(document(), ";").unwrap();
-        assert!(cx.undo_focused_text(document()).unwrap());
-        assert_eq!(value_of(&cx, area), "foo()");
-        assert!(cx.undo_focused_text(document()).unwrap());
-        assert_eq!(value_of(&cx, area), "fo", "the completion came off alone");
-        assert!(cx.undo_focused_text(document()).unwrap());
-        assert_eq!(value_of(&cx, area), "");
-    }
-
-    #[test]
-    fn an_edit_on_the_users_behalf_that_does_nothing_leaves_the_typing_run_whole() {
-        let mut cx = AppContext::new();
-        let area = focused_area(&mut cx, "");
-        cx.replace_focused_text(document(), "ab").unwrap();
-        // A completion with nothing to offer.
-        assert!(
-            !cx.edit_text_area(area, crate::TextEditOrigin::Typing, |_| false)
-                .unwrap()
-        );
-        cx.replace_focused_text(document(), "c").unwrap();
-        assert!(cx.undo_focused_text(document()).unwrap());
-        assert_eq!(value_of(&cx, area), "", "one run, one step");
-    }
-
-    #[test]
-    fn an_edit_on_the_users_behalf_is_refused_where_the_users_would_be() {
-        let changes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut cx = AppContext::new();
-        let area = focused_area(&mut cx, "text");
-        let counted = std::sync::Arc::clone(&changes);
-        cx.on(area, move |_area, _: &crate::TextChanged, _cx| {
-            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        })
-        .unwrap();
-        // An apply that reports a change but makes none is no edit.
-        assert!(
-            !cx.edit_text_area(area, crate::TextEditOrigin::Structural, |_| true)
-                .unwrap()
-        );
-        assert_eq!(changes.load(std::sync::atomic::Ordering::Relaxed), 0);
-        // Read-only: refused, and nothing recorded.
-        cx.update_component(area, |area, _| area.read_only = true)
-            .unwrap();
-        let replace = |state: &mut crate::TextInputState| {
-            state.replace_value("other");
-            true
-        };
-        assert!(
-            !cx.edit_text_area(area, crate::TextEditOrigin::Structural, replace)
-                .unwrap()
-        );
-        assert_eq!(value_of(&cx, area), "text");
-        assert!(!cx.can_undo_text(area.stable_id()));
-        assert_eq!(changes.load(std::sync::atomic::Ordering::Relaxed), 0);
-
-        // A field's length limit holds as it does for typing.
-        let field = cx
-            .create_component(document(), TextInput::new("abc").max_length(3))
-            .unwrap();
-        assert!(
-            !cx.edit_text_input(field, crate::TextEditOrigin::Structural, |state| {
-                state.replace_value("abcd");
-                true
-            })
-            .unwrap()
-        );
-        assert_eq!(
-            cx.read(field, |field| field.state.value.to_string())
-                .unwrap(),
-            "abc"
-        );
-    }
-
-    #[test]
     fn a_journal_an_application_write_replaced_is_freed_at_once() {
         let mut cx = AppContext::new();
         let area = focused_area(&mut cx, "");
@@ -1372,31 +1157,6 @@ mod editor_tests {
         assert!(!cx.can_undo_text(node));
         assert!(!cx.undo_focused_text(document()).unwrap());
         assert!(!cx.text_histories.entries.contains_key(&node));
-    }
-
-    #[test]
-    fn an_edit_on_the_users_behalf_waits_out_a_composition_and_is_never_a_program_write() {
-        let mut cx = AppContext::new();
-        let area = focused_area(&mut cx, "a");
-        let append = |state: &mut crate::TextInputState| {
-            state.replace_value("ab");
-            true
-        };
-        assert!(matches!(
-            cx.edit_text_area(area, crate::TextEditOrigin::Program, append),
-            Err(crate::FrameworkError::InvalidInput)
-        ));
-        cx.set_ime_preedit(document(), "ni".to_owned(), None)
-            .unwrap();
-        assert!(
-            !cx.edit_text_area(area, crate::TextEditOrigin::Structural, append)
-                .unwrap()
-        );
-        assert_eq!(value_of(&cx, area), "a");
-        assert!(
-            cx.world().ime(area.stable_id()).is_some(),
-            "composition intact"
-        );
     }
 
     #[test]
@@ -1448,62 +1208,6 @@ mod editor_tests {
     }
 
     #[test]
-    fn an_edit_on_the_users_behalf_does_not_split_an_atom() {
-        let mut cx = AppContext::new();
-        let area = focused_area(&mut cx, "Hi [bob]!");
-        cx.update_component(area, |area, _| {
-            area.atom_spans = std::sync::Arc::from([crate::TextAtomSpan::new(3, 8)]);
-        })
-        .unwrap();
-        // Replacing 5..9 would leave "Hi [b" of the chip behind.
-        let half = |state: &mut crate::TextInputState| {
-            state.replace_value("Hi [bx");
-            true
-        };
-        assert!(
-            !cx.edit_text_area(area, crate::TextEditOrigin::Structural, half)
-                .unwrap()
-        );
-        assert_eq!(value_of(&cx, area), "Hi [bob]!");
-        // The whole chip goes, or text lands beside it.
-        let whole = |state: &mut crate::TextInputState| {
-            state.replace_value("Hi x!");
-            true
-        };
-        assert!(
-            cx.edit_text_area(area, crate::TextEditOrigin::Structural, whole)
-                .unwrap()
-        );
-        assert_eq!(value_of(&cx, area), "Hi x!");
-    }
-
-    #[test]
-    fn an_edit_beside_an_atom_that_repeats_its_text_is_not_taken_for_a_split() {
-        // Inserting "[" before "[bob]", or deleting an "@" before "@bob":
-        // the change could be read as inside the atom, but it sits clear of it.
-        for (value, atom, edited) in [
-            ("x[bob]", crate::TextAtomSpan::new(1, 6), "x[[bob]"),
-            ("@@bob", crate::TextAtomSpan::new(1, 5), "@bob"),
-        ] {
-            let mut cx = AppContext::new();
-            let area = focused_area(&mut cx, value);
-            cx.update_component(area, |area, _| {
-                area.atom_spans = std::sync::Arc::from([atom.clone()]);
-            })
-            .unwrap();
-            assert!(
-                cx.edit_text_area(area, crate::TextEditOrigin::Structural, |state| {
-                    state.replace_value(edited);
-                    true
-                })
-                .unwrap(),
-                "{value:?} -> {edited:?}"
-            );
-            assert_eq!(value_of(&cx, area), edited);
-        }
-    }
-
-    #[test]
     fn an_edit_whose_commit_fails_leaves_the_journal_as_it_was() {
         let mut cx = AppContext::new();
         let area = focused_area(&mut cx, "");
@@ -1527,32 +1231,130 @@ mod editor_tests {
 
     #[test]
     fn another_batch_changing_an_editors_text_mid_edit_drops_its_journal() {
-        let mut cx = AppContext::new();
-        let area = focused_area(&mut cx, "");
-        let node = area.stable_id();
-        cx.replace_focused_text(document(), "draft").unwrap();
-        let write = |cx: &mut AppContext, own: bool, text: &str| {
+        let write = |cx: &mut AppContext, node, own: bool, text: &str| {
             cx.text_histories.writing.push((node, false));
-            if own {
-                cx.text_histories.commit_of(node);
-            }
             let mut queue = crate::MutationQueue::new();
             queue.set_text_input(node, Some(crate::TextInputState::new(text)));
-            cx.commit_mutations(queue).unwrap();
+            cx.commit_mutations_of(queue, own.then_some(node)).unwrap();
             cx.text_histories.finish_writing(node)
         };
+        let mut cx = AppContext::new();
+        let node = focused_area(&mut cx, "").stable_id();
+        cx.replace_focused_text(document(), "draft").unwrap();
         assert!(
-            !write(&mut cx, true, "own"),
+            !write(&mut cx, node, true, "own"),
             "the edit's own commit is not foreign"
         );
         assert!(
-            !write(&mut cx, false, "own"),
+            !write(&mut cx, node, false, "own"),
             "a write that changes nothing is not"
         );
         assert!(
-            write(&mut cx, false, "someone else's"),
+            write(&mut cx, node, false, "someone else's"),
             "another batch's write is"
         );
+
+        // An editor's first edit, before any editor keeps a journal.
+        let mut cx = AppContext::new();
+        let node = focused_area(&mut cx, "").stable_id();
+        assert!(cx.text_histories.entries.is_empty());
+        assert!(
+            write(&mut cx, node, false, "someone else's"),
+            "noticed without a journal"
+        );
+    }
+
+    #[test]
+    fn an_edit_made_on_the_users_behalf_is_an_undo_step_of_its_own() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "fo").unwrap();
+        // A completion: not merged into the prefix the user typed, and the
+        // typing after it is not merged into it.
+        assert!(cx.edit_text_area(area, 0..2, "foo()").unwrap());
+        cx.replace_focused_text(document(), ";").unwrap();
+        assert_eq!(value_of(&cx, area), "foo();");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "foo()");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "fo", "the completion came off alone");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "");
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_is_refused_where_the_users_would_be() {
+        let changes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "ab").unwrap();
+        let counted = std::sync::Arc::clone(&changes);
+        cx.on(area, move |_area, _: &crate::TextChanged, _cx| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+        .unwrap();
+        let count = || changes.load(std::sync::atomic::Ordering::Relaxed);
+        // A range outside the text is the caller's error.
+        assert!(matches!(
+            cx.edit_text_area(area, 1..9, "x"),
+            Err(crate::FrameworkError::InvalidInput)
+        ));
+        // Replacing text with itself is no edit, and leaves the typing run
+        // whole: "c" still joins "ab".
+        assert!(!cx.edit_text_area(area, 0..1, "a").unwrap());
+        assert_eq!(count(), 0);
+        cx.replace_focused_text(document(), "c").unwrap();
+        // While the user composes, the editor is theirs.
+        cx.set_ime_preedit(document(), "ni".to_owned(), None)
+            .unwrap();
+        assert!(!cx.edit_text_area(area, 0..0, "x").unwrap());
+        assert!(
+            cx.world().ime(area.stable_id()).is_some(),
+            "composition intact"
+        );
+        cx.commit_ime(document(), "").unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "", "one run, one step");
+        // Read-only: refused, and nothing recorded.
+        cx.update_component(area, |area, _| area.read_only = true)
+            .unwrap();
+        let before = count();
+        assert!(!cx.edit_text_area(area, 0..0, "x").unwrap());
+        assert_eq!(value_of(&cx, area), "");
+        assert_eq!(count(), before);
+        // A field's length limit holds as it does for typing.
+        let field = cx
+            .create_component(document(), TextInput::new("abc").max_length(3))
+            .unwrap();
+        assert!(!cx.edit_text_input(field, 3..3, "d").unwrap());
+        assert_eq!(
+            cx.read(field, |field| field.state.value.to_string())
+                .unwrap(),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_takes_an_atom_whole() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "Hi [bob]!");
+        cx.update_component(area, |area, _| {
+            area.atom_spans = std::sync::Arc::from([crate::TextAtomSpan::new(3, 8)]);
+        })
+        .unwrap();
+        // 5..9 reaches into the chip: it goes whole.
+        assert!(cx.edit_text_area(area, 5..9, "x").unwrap());
+        assert_eq!(value_of(&cx, area), "Hi x");
+
+        // At a chip's edge is beside it, not in it, even where the text
+        // inserted repeats the chip's own ("[" before "[bob]").
+        let area = focused_area(&mut cx, "x[bob]");
+        cx.update_component(area, |area, _| {
+            area.atom_spans = std::sync::Arc::from([crate::TextAtomSpan::new(1, 6)]);
+        })
+        .unwrap();
+        assert!(cx.edit_text_area(area, 1..1, "[").unwrap());
+        assert_eq!(value_of(&cx, area), "x[[bob]");
     }
 
     #[test]

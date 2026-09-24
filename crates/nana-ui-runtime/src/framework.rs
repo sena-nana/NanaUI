@@ -1314,11 +1314,18 @@ impl AppContext {
     /// for layout writeback and platform state projection.
     pub fn commit_mutations(
         &mut self,
-        mut mutations: MutationQueue,
+        mutations: MutationQueue,
     ) -> Result<crate::CommitReport, FrameworkError> {
-        // First, before any early return: whose own update this batch is
-        // must not carry over to the next commit.
-        let own_update = self.text_histories.take_committing();
+        self.commit_mutations_of(mutations, None)
+    }
+
+    /// [`Self::commit_mutations`] for the batch of `own_update`'s own update,
+    /// which an undo journal tells apart from other writes to that editor.
+    fn commit_mutations_of(
+        &mut self,
+        mut mutations: MutationQueue,
+        own_update: Option<StableNodeId>,
+    ) -> Result<crate::CommitReport, FrameworkError> {
         // Re-appending or re-parking what is already in place: the world
         // skips it, and there is no focus, surface or lifecycle to follow.
         // A structural no-op only matches nodes that exist in a consistent
@@ -2645,8 +2652,8 @@ impl AppContext {
             staged.project(entity.id, &self.world, &mut mutations);
         }
         let commit = delivered.and_then(|observers| {
-            self.text_histories.commit_of(entity.id);
-            self.commit_mutations(mutations).map(|_| observers)
+            self.commit_mutations_of(mutations, Some(entity.id))
+                .map(|_| observers)
         });
         if commit.is_ok() {
             self.views.insert(entity.id, Box::new(staged));
