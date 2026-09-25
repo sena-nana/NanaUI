@@ -1,4 +1,4 @@
-//! File-backed [`PersistentStore`] and process data-directory lookup.
+//! File-backed [`KvBackend`] and process data-directory lookup.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -6,12 +6,12 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use nana_ui_core::{PersistentStore, StoreError, window_storage_key};
+use nana_ui_core::{KvBackend, StoreError, ViewStateStore};
 use serde::{Deserialize, Serialize};
 
 const STORAGE_FILE: &str = "local-storage.bin";
 const STORAGE_MAGIC: &[u8; 4] = b"NANA";
-const STORAGE_VERSION: u8 = 1;
+const STORAGE_VERSION: u8 = 2;
 
 /// One binary map file (`local-storage.bin`) inside a host-chosen directory.
 #[derive(Debug)]
@@ -33,11 +33,13 @@ impl FileStore {
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let dir = dir.into();
         fs::create_dir_all(&dir).map_err(|error| StoreError::new(error.to_string()))?;
-        Ok(Self {
+        let store = Self {
             dir,
             cache: Mutex::new(StoreCache::default()),
             flush: Mutex::new(()),
-        })
+        };
+        store.load(&mut *store.cache.lock().map_err(|_| StoreError::poisoned())?)?;
+        Ok(store)
     }
 
     pub fn dir(&self) -> &Path {
@@ -57,7 +59,7 @@ impl FileStore {
             Ok(raw) => match decode_map(&raw) {
                 Some(entries) => StoreCache {
                     entries,
-                    dirty: false,
+                    dirty: raw.get(4) == Some(&1),
                     loaded: true,
                 },
                 None => {
@@ -104,13 +106,7 @@ impl FileStore {
     }
 }
 
-impl Drop for FileStore {
-    fn drop(&mut self) {
-        let _ = PersistentStore::flush(self);
-    }
-}
-
-impl PersistentStore for FileStore {
+impl KvBackend for FileStore {
     fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
         let mut cache = self.cache.lock().map_err(|_| StoreError::poisoned())?;
         self.load(&mut cache)?;
@@ -266,7 +262,7 @@ fn decode_map(bytes: &[u8]) -> Option<BTreeMap<String, String>> {
     }
     let version = *bytes.get(i)?;
     i = i.checked_add(1)?;
-    if version != STORAGE_VERSION {
+    if version != 1 && version != STORAGE_VERSION {
         return None;
     }
     let count = u32_le(bytes, &mut i)?;
@@ -274,7 +270,14 @@ fn decode_map(bytes: &[u8]) -> Option<BTreeMap<String, String>> {
     for _ in 0..count {
         let key = utf8_len_prefixed(bytes, &mut i)?;
         let value = utf8_len_prefixed(bytes, &mut i)?;
-        entries.insert(key, value);
+        let key = if version == 1 && !nana_ui_core::is_framework_storage_key(&key) {
+            format!("{}{key}", nana_ui_core::APP_STORAGE_PREFIX)
+        } else {
+            key
+        };
+        if entries.insert(key, value).is_some() {
+            return None;
+        }
     }
     if i != bytes.len() {
         return None;
@@ -398,7 +401,7 @@ fn android_dir_inner(method: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path.to_str().ok()?))
 }
 
-/// Logical window frame recorded under [`window_storage_key`].
+/// Logical window frame recorded under the canonical view-state namespace.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PersistedWindowGeometry {
     pub version: u8,
@@ -450,25 +453,29 @@ impl PersistedWindowGeometry {
         settings.maximized = self.maximized;
     }
 
-    pub fn load(store: &dyn PersistentStore, key: &str) -> Result<Option<Self>, StoreError> {
-        let Some(json) = store.get(&window_storage_key(key))? else {
-            return Ok(None);
-        };
-        Ok(serde_json::from_str(&json).ok())
+    pub fn load(store: &ViewStateStore, key: &str) -> Result<Option<Self>, StoreError> {
+        store.restore("window", key, 1, |raw| {
+            let v: Self = serde_json::from_str(raw).ok()?;
+            (v.version == 1
+                && v.width.is_finite()
+                && v.height.is_finite()
+                && v.width > 0.0
+                && v.height > 0.0
+                && v.x.is_finite()
+                && v.y.is_finite())
+            .then_some(v)
+        })
     }
 
-    pub fn save(&self, store: &dyn PersistentStore, key: &str) -> Result<(), StoreError> {
+    pub fn save(&self, store: &ViewStateStore, key: &str) -> Result<(), StoreError> {
         let json =
             serde_json::to_string(self).map_err(|error| StoreError::new(error.to_string()))?;
-        store.set(&window_storage_key(key), json)
+        store.save("window", key, 1, json)
     }
 }
 
 /// Overlay stored geometry onto a descriptor when `persist_key` is set.
-pub fn restore_window_geometry(
-    settings: &mut crate::WindowDescriptor,
-    store: &dyn PersistentStore,
-) {
+pub fn restore_window_geometry(settings: &mut crate::WindowDescriptor, store: &ViewStateStore) {
     let Some(key) = settings.persist_key.as_deref() else {
         return;
     };
@@ -493,7 +500,7 @@ fn looks_iconic(geometry: &crate::WindowGeometry) -> bool {
 /// Record live geometry. Fullscreen and minimized frames are skipped so a
 /// later restore does not reopen covering a display or at a minimized origin.
 pub fn persist_live_window_geometry(
-    store: &dyn PersistentStore,
+    store: &ViewStateStore,
     settings: &crate::WindowDescriptor,
     geometry: &crate::WindowGeometry,
     fullscreen: bool,
@@ -522,7 +529,7 @@ pub fn persist_live_window_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_ui_core::PersistentStore;
+    use nana_ui_core::KvBackend;
     use std::collections::BTreeMap;
     use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -593,7 +600,8 @@ mod tests {
 
     #[test]
     fn persisted_window_geometry_roundtrip() {
-        let store = nana_ui_core::MemoryStore::new();
+        let backend = nana_ui_core::memory_store();
+        let store = ViewStateStore::new(backend.clone(), nana_ui_core::RestorationPath::root());
         let mut settings = crate::WindowDescriptor::new("nana");
         settings.persist_key = Some("main".into());
         settings.initial_size = (800.0, 600.0);
@@ -645,9 +653,13 @@ mod tests {
 
     #[test]
     fn invalid_window_json_does_not_block_later_saves() {
-        let store = nana_ui_core::MemoryStore::new();
-        store
-            .set(&window_storage_key("main"), "not-geometry".into())
+        let backend = nana_ui_core::memory_store();
+        let store = ViewStateStore::new(backend.clone(), nana_ui_core::RestorationPath::root());
+        backend
+            .set(
+                &nana_ui_core::window_storage_key("main"),
+                "not-geometry".into(),
+            )
             .unwrap();
         let mut settings = crate::WindowDescriptor::new("nana");
         settings.persist_key = Some("main".into());
@@ -673,7 +685,8 @@ mod tests {
 
     #[test]
     fn fullscreen_does_not_replace_saved_geometry() {
-        let store = nana_ui_core::MemoryStore::new();
+        let backend = nana_ui_core::memory_store();
+        let store = ViewStateStore::new(backend.clone(), nana_ui_core::RestorationPath::root());
         let mut settings = crate::WindowDescriptor::new("nana");
         settings.persist_key = Some("main".into());
         persist_live_window_geometry(
@@ -701,7 +714,8 @@ mod tests {
 
     #[test]
     fn maximized_keeps_last_normal_size() {
-        let store = nana_ui_core::MemoryStore::new();
+        let backend = nana_ui_core::memory_store();
+        let store = ViewStateStore::new(backend.clone(), nana_ui_core::RestorationPath::root());
         let mut settings = crate::WindowDescriptor::new("nana");
         settings.persist_key = Some("main".into());
         persist_live_window_geometry(
@@ -730,7 +744,8 @@ mod tests {
 
     #[test]
     fn minimized_does_not_replace_saved_geometry() {
-        let store = nana_ui_core::MemoryStore::new();
+        let backend = nana_ui_core::memory_store();
+        let store = ViewStateStore::new(backend.clone(), nana_ui_core::RestorationPath::root());
         let mut settings = crate::WindowDescriptor::new("nana");
         settings.persist_key = Some("main".into());
         persist_live_window_geometry(
@@ -758,7 +773,8 @@ mod tests {
 
     #[test]
     fn iconic_origin_is_skipped_without_minimized_flag() {
-        let store = nana_ui_core::MemoryStore::new();
+        let backend = nana_ui_core::memory_store();
+        let store = ViewStateStore::new(backend.clone(), nana_ui_core::RestorationPath::root());
         let mut settings = crate::WindowDescriptor::new("nana");
         settings.persist_key = Some("main".into());
         persist_live_window_geometry(

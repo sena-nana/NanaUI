@@ -312,6 +312,8 @@ impl<Program: RuntimeProgram> Drop for WindowManager<Program> {
         // App destructors may join workers waiting for window requests. Resolve
         // those requests before Rust drops `program` (the first field).
         self.window_requests.take();
+        // Shutdown is the bounded final-flush lane. Normal UI updates only
+        // advance the coordinator generation and never synchronously flush.
         let _ = self.store.flush();
     }
 }
@@ -981,6 +983,12 @@ fn create_primary_window(
             )
             .map_err(|error| format!("failed to create scene window: {error}"))?,
     );
+    // The early splash can make this window visible before the first resolved
+    // presentation is available. Arm the frameless style now so winit's first
+    // show cannot expose the native frame around the splash.
+    if !settings.system_caption {
+        arm_frameless_guard(window.as_ref(), true);
+    }
     // Holds the only other reference for the length of the attempt. An early
     // return drops this guard and the local `window` together, so the last
     // reference goes with them and the HWND created for a target that did not
@@ -1008,7 +1016,10 @@ fn create_primary_window(
 /// checked; returns the host's store.
 fn prepare_primary_descriptor(settings: &mut WindowDescriptor) -> Result<SharedStore, String> {
     let store = crate::runtime_host::take_pending_store();
-    restore_window_geometry(settings, store.as_ref());
+    restore_window_geometry(
+        settings,
+        &nana_ui_core::ViewStateStore::new(store.clone(), settings.restoration_scope.clone()),
+    );
     crate::window_service::validate_descriptor(settings).map_err(|error| error.to_string())?;
     if settings.parent.is_some() {
         return Err("initial window cannot have a parent".into());
@@ -1035,7 +1046,7 @@ fn initialize<Program: RuntimeProgram>(
         shared_gpu,
         Program::gpu_backend_policy(),
         crate::ThemeMode::default(),
-        nana_window::MaterialEffect::Solid,
+        Program::startup_window_material_mode(),
     )?;
     let startup =
         startup::HostStartup::settled(crate::SplashOutcome::Skipped(crate::SplashSkip::Embedded));
@@ -1469,7 +1480,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             self.request_redraw(id);
         }
-        let _ = self.store.flush();
     }
 
     fn known_window_ids(&self) -> Vec<WindowId> {

@@ -20,5 +20,6 @@ bundled-font-regular = []
 bundled-fonts = ["bundled-font-regular"]
 
 [dependencies]
+nana-diagnostics = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true

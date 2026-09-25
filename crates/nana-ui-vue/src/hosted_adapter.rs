@@ -1158,7 +1158,7 @@ impl<E: JsEngine + 'static> VueRuntimeProgram<E> {
     }
 
     /// Same as [`Self::run`], with a host-injected persistent store for
-    /// `localStorage`, `Nana.storage`, and window geometry.
+    /// application `localStorage`/`Nana.storage`; framework window geometry uses ViewStateStore.
     pub fn run_with_store(
         settings: WindowDescriptor,
         engine: E,

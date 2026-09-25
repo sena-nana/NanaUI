@@ -9,8 +9,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use nana_ui_core::{
-    AlignSpec, ControlSize, FlexDirection, JustifySpec, LengthSpec, OverflowSpec, PersistentStore,
-    PositionSpec, SemanticColorRole, StoreError, dock_storage_key,
+    AlignSpec, ControlSize, FlexDirection, JustifySpec, LengthSpec, OverflowSpec, PositionSpec,
+    SemanticColorRole, StoreError, ViewStateStore,
 };
 
 use crate::tabs::{TabOption, Tabs};
@@ -491,25 +491,31 @@ impl DockWorkspace {
         Ok(())
     }
 
-    /// Write this workspace into [`dock_storage_key`].
-    pub fn save_to_store(&self, store: &dyn PersistentStore, key: &str) -> Result<(), StoreError> {
+    /// Write this workspace into the canonical view-state namespace.
+    pub fn save_to_store(&self, store: &ViewStateStore, key: &str) -> Result<(), StoreError> {
         let json = self
             .layout_json()
             .map_err(|error| StoreError::new(error.to_string()))?;
-        store.set(&dock_storage_key(key), json)
+        store.save("dock", key, 1, json)
     }
 
-    /// Restore from [`dock_storage_key`]. Returns `false` when absent.
+    /// Restore from the canonical view-state namespace. Returns `false` when absent.
     pub fn restore_from_store(
         &mut self,
-        store: &dyn PersistentStore,
+        store: &ViewStateStore,
         key: &str,
     ) -> Result<bool, StoreError> {
-        let Some(json) = store.get(&dock_storage_key(key))? else {
+        let Some(restored) =
+            store.restore("dock", key, 1, |raw| Self::from_layout_json(raw).ok())?
+        else {
             return Ok(false);
         };
-        self.restore_layout_json(&json)
-            .map_err(|error| StoreError::new(error.to_string()))?;
+        self.restore_layout_json(
+            &restored
+                .layout_json()
+                .map_err(|e| StoreError::new(e.to_string()))?,
+        )
+        .map_err(|e| StoreError::new(e.to_string()))?;
         Ok(true)
     }
 }
@@ -3631,7 +3637,10 @@ mod tests {
 
     #[test]
     fn dock_workspace_roundtrip_through_store() {
-        let store = nana_ui_core::MemoryStore::new();
+        let store = ViewStateStore::new(
+            nana_ui_core::memory_store(),
+            nana_ui_core::RestorationPath::root(),
+        );
         let mut workspace = DockWorkspace::new(DockNode::split(
             DockAxis::Horizontal,
             0.25,

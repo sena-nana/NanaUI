@@ -469,7 +469,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         crate::window_service::validate_descriptor(&settings).map_err(|error| error.to_string())?;
         let mut settings = settings;
-        restore_window_geometry(&mut settings, self.store.as_ref());
+        let restoration = nana_ui_core::ViewStateStore::new(
+            self.store.clone(),
+            settings.restoration_scope.clone(),
+        );
+        restore_window_geometry(&mut settings, &restoration);
         if let Some(parent) = settings.parent
             && (self.window(parent).is_none() || self.closing_windows.contains(&parent))
         {
@@ -941,7 +945,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .is_some_and(|mode| mode.fullscreen.is_some());
         let minimized = host.surface.window().is_minimized() == Some(true);
         let _ = persist_live_window_geometry(
-            self.store.as_ref(),
+            &nana_ui_core::ViewStateStore::new(
+                self.store.clone(),
+                host.settings.restoration_scope.clone(),
+            ),
             &host.settings,
             &host.geometry,
             fullscreen,

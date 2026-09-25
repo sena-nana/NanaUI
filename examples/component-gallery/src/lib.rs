@@ -375,18 +375,24 @@ impl GalleryState {
     fn persist_appearance(&self) {
         let _ = self
             .appearance
-            .save_to_store(self.store.as_ref(), "gallery");
+            .save_to_store(&nana_ui::AppSettings::new(self.store.clone()), "gallery");
     }
 
     fn persist_dock(&self) {
-        let _ = self.dock.save_to_store(self.store.as_ref(), "gallery");
+        let _ = self.dock.save_to_store(
+            &nana_ui::ViewStateStore::new(self.store.clone(), nana_ui::RestorationPath::root()),
+            "gallery",
+        );
     }
 
     fn restore_from_store(&mut self) {
         let _ = self
             .appearance
-            .restore_from_store(self.store.as_ref(), "gallery");
-        let _ = self.dock.restore_from_store(self.store.as_ref(), "gallery");
+            .restore_from_store(&nana_ui::AppSettings::new(self.store.clone()), "gallery");
+        let _ = self.dock.restore_from_store(
+            &nana_ui::ViewStateStore::new(self.store.clone(), nana_ui::RestorationPath::root()),
+            "gallery",
+        );
         self.dock_locked = self.dock.locked;
     }
 
@@ -1693,6 +1699,7 @@ fn runtime_dock_window_commands(
                     constrain_to_work_area: false,
                     skip_taskbar: false,
                     persist_key: None,
+                    restoration_scope: nana_ui::RestorationPath::root(),
                     tag: None,
                     resizable: true,
                     role: WindowRole::Tool,

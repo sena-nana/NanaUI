@@ -389,15 +389,16 @@ pub use workspace::{WorkspaceAction, WorkspaceController};
 pub use nana_ui_scene::DocumentAccessError;
 
 pub use nana_ui_core::{
-    FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
-    KEY_APPEARANCE_PREFIX, KEY_DOCK_PREFIX, KEY_WINDOW_PREFIX, MemoryStore, PersistentStore,
-    SharedStore, StoreError, appearance_storage_key, dock_storage_key, is_framework_storage_key,
-    memory_store, shared_store, window_storage_key,
+    AppSettings, FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
+    KEY_APPEARANCE_PREFIX, KEY_DOCK_PREFIX, KEY_WINDOW_PREFIX, KvBackend, LocalStorageAdapter,
+    MemoryStore, RestorationKey, RestorationPath, RestorationScopeId, SharedStore, StoreError,
+    ViewStateSchemaVersion, ViewStateStore, appearance_storage_key, dock_storage_key,
+    is_framework_storage_key, memory_store, shared_store, window_storage_key,
 };
 pub use nana_ui_platform::{
     ApplicationIdentity, ApplicationLocation, ApplicationPaths, FileStore, PathsError,
-    PersistedWindowGeometry, RuntimeLayout, app_data_dir, persist_live_window_geometry,
-    restore_window_geometry,
+    PersistedWindowGeometry, PersistenceCoordinator, PersistenceWork, RuntimeLayout, app_data_dir,
+    persist_live_window_geometry, restore_window_geometry,
 };
 
 #[cfg(feature = "hosted")]

@@ -291,6 +291,33 @@ pub mod host {
     );
 }
 
+pub mod persistence {
+    use super::*;
+    const D: Domain = Domain::HOST;
+    pub static PENDING_GENERATION: Metric =
+        Metric::gauge(D, 20, "persistence.pending_generation", "generation");
+    pub static WRITES_STARTED: Metric =
+        Metric::counter(D, 21, "persistence.writes_started", "count");
+    pub static WRITES_COMPLETED: Metric =
+        Metric::counter(D, 22, "persistence.writes_completed", "count");
+    pub static WRITES_COALESCED: Metric =
+        Metric::counter(D, 23, "persistence.writes_coalesced", "count");
+    pub static BYTES_WRITTEN: Metric = Metric::counter(D, 24, "persistence.bytes_written", "bytes");
+    pub static FLUSH_NS: Metric = Metric::histogram(D, 25, "persistence.flush", "ns", {
+        static CELLS: HistogramCells = HistogramCells::new();
+        &CELLS
+    });
+    pub static FAILURE: EventDescriptor =
+        EventDescriptor::new(D, 20, "persistence.failure", Severity::Warn, &[]);
+    pub static RESTORE_HITS: Metric = Metric::counter(D, 26, "persistence.restore_hits", "count");
+    pub static RESTORE_MISSES: Metric =
+        Metric::counter(D, 27, "persistence.restore_misses", "count");
+    pub static MIGRATIONS: Metric = Metric::counter(D, 28, "persistence.migrations", "count");
+    pub static SCHEMA_MISMATCHES: Metric =
+        Metric::counter(D, 29, "persistence.schema_mismatches", "count");
+    pub static CORRUPTIONS: Metric = Metric::counter(D, 30, "persistence.corruptions", "count");
+}
+
 pub mod diagnostics {
     use super::*;
     const D: Domain = Domain::DIAGNOSTICS;

@@ -439,6 +439,7 @@ pub enum FullscreenMode {
 
 - `RuntimeWindowSettings` / `WindowSettings` 统一改为 `WindowDescriptor`，显式结构体初始化需添加 `visible` 或使用默认值。
 - `WindowDescriptor` 新增 `tag`；显式结构体初始化补 `tag: None` 或使用 `..Default::default()`。
+- `WindowDescriptor` 新增 `restoration_scope`；显式结构体初始化补 `RestorationPath::root()`，多 profile / workspace / window 应传入各自稳定的 scope path，或使用 `..Default::default()`。
 - 普通应用用 `WindowService` / `WindowHandle` 替代自行分配窗口 ID 和提交 `WindowCommand`。
 - `WindowCommand` 从平台 crate 根导出移入 `nana_ui_platform::host`，仅供 Vue、Dock、chrome 等框架适配器使用；适配器提交的批次仍在宿主 commit 时进入同一个 WindowManager。
 - 主窗口不再具有隐式退出特权；需要“关主窗退出”的产品应显式返回退出更新。
@@ -446,7 +447,7 @@ pub enum FullscreenMode {
 - `WindowLevel` 从 `nana_ui::window_service` 下沉到 `nana_ui_platform`，`nana_ui` 再导出。全屏和置顶的有效值走 `WindowEvent::ModeChanged`，不要自己记一份请求镜像。
 - LiliaBilibili `app/presentation.rs` 仍按 `SetFullscreen { fullscreen: bool }` 编译；下次升级 pin 时改为 `fullscreen: on.then(FullscreenRequest::default)`，并在 `WindowEvent` match 中处理 `ModeChanged`。
 
-窗口几何可以交给框架：`WindowDescriptor::persist_key("main")` 会在创建前从 `localStorage` 键 `nana.window.main` 恢复位置 / 尺寸 / 最大化，并在移动、缩放后写回。全屏、最小化，以及 Win32 最小化常见的 `-32000` 原点都不写。目录由宿主选择：`app_data_dir("YourApp")` 得到平台数据目录，再 `FileStore::open` 注入 `run_runtime_with_store`（落成 `local-storage.bin`）。不注入则全程内存，进程退出即丢。Dock 布局与 `AppearanceSettings` 走同一张表（`nana.dock.*` / `nana.appearance.*`）。`Nana.storage` 的 `get` / `set` / `clear` / `remove` / `keys` 不会动这些 key。
+窗口几何可以交给框架：`WindowDescriptor::persist_key("main")` 会在创建前从版本化 `ViewStateStore` 恢复位置 / 尺寸 / 最大化，并在移动、缩放后异步合并写回。全屏、最小化，以及 Win32 最小化常见的 `-32000` 原点都不写。目录由宿主选择：`app_data_dir("YourApp")` 得到平台数据目录，再 `FileStore::open` 注入 `run_runtime_with_store`（落成 `local-storage.bin`）。不注入则全程内存，进程退出即丢。Dock 布局进入 `ViewStateStore`，Appearance 进入独立 Settings namespace；旧 `nana.dock.*`、`nana.appearance.*` 只做一次迁移。JS `localStorage` 与 `Nana.storage` 无法访问这些 framework namespace。
 
 ### 独立透明工具窗
 

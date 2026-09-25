@@ -8,6 +8,8 @@ mod ime;
 mod input;
 mod paths;
 mod persist;
+mod persistence_worker;
+pub use persistence_worker::{PersistenceCoordinator, PersistenceWork};
 mod window;
 #[cfg(feature = "ws")]
 mod ws;

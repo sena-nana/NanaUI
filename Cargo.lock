@@ -2640,6 +2640,7 @@ dependencies = [
 name = "nana-ui-core"
 version = "0.1.0"
 dependencies = [
+ "nana-diagnostics",
  "serde",
  "serde_json",
 ]
@@ -2686,6 +2687,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "jni 0.21.1",
+ "nana-diagnostics",
  "nana-ui-core",
  "ndk-context",
  "serde",

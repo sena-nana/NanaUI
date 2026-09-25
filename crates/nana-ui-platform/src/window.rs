@@ -464,6 +464,8 @@ pub struct WindowDescriptor {
     /// Host-chosen identity for restoring this window's last frame. Window
     /// ids are not stable across process restarts; this key is.
     pub persist_key: Option<String>,
+    /// Stable application/profile/workspace scope, independent of transient window IDs.
+    pub restoration_scope: nana_ui_core::RestorationPath,
     /// Application-chosen window kind, opaque to the host. Read it back from
     /// `RuntimeProgramContext::window_tag` while building the document and in
     /// every later callback for this window, so service-allocated ids never
@@ -546,6 +548,7 @@ impl WindowDescriptor {
             constrain_to_work_area: false,
             skip_taskbar: false,
             persist_key: None,
+            restoration_scope: nana_ui_core::RestorationPath::root(),
             tag: None,
             resizable: true,
             role: WindowRole::Main,

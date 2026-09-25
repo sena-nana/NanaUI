@@ -1598,6 +1598,7 @@ impl VueRuntime {
                         constrain_to_work_area: false,
                         skip_taskbar: false,
                         persist_key: options.persist_key,
+                        restoration_scope: nana_ui_core::RestorationPath::root(),
                         tag: options.tag.map(Into::into),
                         resizable: options.resizable,
                         role: match options.role {

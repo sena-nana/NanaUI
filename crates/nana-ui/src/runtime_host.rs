@@ -493,6 +493,13 @@ pub trait RuntimeProgram: Sized + 'static {
         crate::GpuBackendPolicy::Plain
     }
 
+    /// Material used while the primary window is created and an Early Splash
+    /// may already be visible. Client-transparent applications should return
+    /// `Transparent` so the first native frame matches their real surface.
+    fn startup_window_material_mode() -> crate::MaterialEffect {
+        crate::MaterialEffect::Solid
+    }
+
     /// Mirrors this frame's native-content regions into the window's
     /// DirectComposition tree.
     ///
@@ -1022,6 +1029,10 @@ pub fn run_runtime_with_store<Program: RuntimeProgram>(
     settings: WindowDescriptor,
     store: SharedStore,
 ) -> Result<(), crate::HostedRunError> {
+    let store = nana_ui_core::shared_store(
+        nana_ui_platform::PersistenceCoordinator::new(store)
+            .map_err(|e| crate::HostedRunError::Startup(e.to_string()))?,
+    );
     PENDING_HOST_STORE.with(|slot| {
         *slot.borrow_mut() = Some(store);
     });

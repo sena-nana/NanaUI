@@ -214,6 +214,7 @@ pub(super) struct PendingStartup<Message> {
     store: SharedStore,
     options: StartupOptions,
     policy: crate::GpuBackendPolicy,
+    startup_material_mode: crate::MaterialEffect,
     target: ResolvedSurfaceTarget,
     /// Why the composed target was given up, for a plain attempt that fails too.
     composed_error: Option<String>,
@@ -246,8 +247,8 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         let store = prepare_primary_descriptor(&mut settings)?;
         let policy = Program::gpu_backend_policy();
         let mut bootstrap = gpu_bootstrap(policy, None);
-        let target =
-            primary_surface_target(&settings, policy, &bootstrap, crate::MaterialEffect::Solid)?;
+        let startup_material_mode = Program::startup_window_material_mode();
+        let target = primary_surface_target(&settings, policy, &bootstrap, startup_material_mode)?;
         let icons = spawn_icon_render(&settings, &proxy);
         let mut pending = Self {
             channels: StartupChannels {
@@ -260,6 +261,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             store,
             options,
             policy,
+            startup_material_mode,
             target,
             composed_error: None,
             handle: StartupHandle::new(entry, SplashOutcome::Skipped(SplashSkip::NotConfigured)),
@@ -359,7 +361,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             &self.settings,
             target,
             crate::ThemeMode::default(),
-            crate::MaterialEffect::Solid,
+            self.startup_material_mode,
         )?;
         // The device request goes first: the splash then overlaps it instead
         // of delaying it. The splash sits above the surface whichever order
