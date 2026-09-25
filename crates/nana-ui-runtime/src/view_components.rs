@@ -159,7 +159,8 @@ struct TextFieldProjection<'a> {
     multiline: bool,
     style: &'a NodeStyle,
     highlight: Option<&'a HighlightRequest>,
-    /// Committed numeric value and its rules, for a spinner field.
+    /// The number a spinner field steps from (its parsed draft, else its
+    /// committed value; see `NumberInput::step_base`) and its rules.
     numeric: Option<(f64, nana_ui_core::NumberFieldSpec)>,
 }
 
@@ -1723,8 +1724,9 @@ impl ComponentView for TextInput {
 /// `value` is the committed authority; `state` carries the in-progress draft
 /// while the user types. Typing never rewrites `value` — the draft is parsed on
 /// commit (Enter or blur), and an unparseable draft restores the last committed
-/// value instead of inventing one. Stepping and arrow keys work on `value`
-/// directly, so a half-typed draft cannot leak into a stepped result.
+/// value instead of inventing one. Stepping and arrow keys start from the
+/// draft when it parses, so a typed number is stepped rather than discarded;
+/// a half-typed draft that does not parse steps from `value` instead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NumberInput {
     pub state: TextInputState,
@@ -1737,6 +1739,12 @@ pub struct NumberInput {
     pub invalid: bool,
     pub style: NodeStyle,
     pub(crate) value: f64,
+    /// The number the application asked for, before the field's rules
+    /// applied. Each builder call normalizes it again against the rules so
+    /// far, so the finished rules decide: `new(0.0).range(0.1, 5.0)` then
+    /// `.precision(1)` starts at 0.1, not at the 1 a whole-number grid made of
+    /// it halfway through the chain.
+    pub(crate) requested: f64,
     pub(crate) continuous: bool,
     pub(crate) style_override: bool,
 }
@@ -1744,6 +1752,7 @@ pub struct NumberInput {
 impl NumberInput {
     pub fn new(value: f64) -> Self {
         let spec = nana_ui_core::NumberFieldSpec::default();
+        let requested = value;
         let value = spec.snap(value);
         Self {
             state: TextInputState::new(spec.format(value)),
@@ -1756,6 +1765,7 @@ impl NumberInput {
             invalid: false,
             style: text_field_style(false),
             value,
+            requested,
             continuous: false,
             style_override: false,
         }
@@ -1856,11 +1866,8 @@ impl NumberInput {
     /// Publish a value from the application. Values are clamped to bounds;
     /// discrete fields also snap them to their precision and step grid.
     pub fn assign(&mut self, value: f64) -> bool {
-        let next = if self.continuous {
-            self.spec.clamp(value)
-        } else {
-            self.spec.snap(value)
-        };
+        self.requested = value;
+        let next = self.normalize(value);
         let text = if self.continuous {
             next.to_string()
         } else {
@@ -1874,43 +1881,128 @@ impl NumberInput {
         true
     }
 
-    /// Move by grid positions from the committed value.
+    /// Move by grid positions from the typed draft when it parses, from the
+    /// committed value otherwise.
+    ///
+    /// A step that cannot move away from its base (a bound) changes nothing,
+    /// matching the spinner half drawn inert there.
     pub(crate) fn step_value(&mut self, steps: i32) -> bool {
+        let base = self.step_base();
         let next = if self.continuous {
-            self.value + f64::from(steps) * self.spec.effective_step()
+            self.spec
+                .clamp(base + f64::from(steps) * self.spec.effective_step())
         } else {
-            self.spec.step_by(self.value, steps)
+            self.spec.step_by(base, steps)
         };
+        // Compare where the field would put it: a bound off the grid (10.3
+        // on a whole-number grid) snaps a step back onto its base.
+        if self.normalize(next) == base {
+            return false;
+        }
         self.assign(next)
+    }
+
+    /// The number a step starts from: the typed draft when it parses, the
+    /// committed value otherwise. It is also the number the field publishes,
+    /// so the spinner's enabled halves agree with what a step would do.
+    ///
+    /// Normalized as a commit would normalize it: a continuous draft such as
+    /// `500` over a maximum of 100 is 100 here, not 500.
+    pub(crate) fn step_base(&self) -> f64 {
+        nana_ui_core::NumberFieldSpec::parse_unsnapped(&self.state.value)
+            .map_or(self.value, |parsed| self.normalize(parsed))
+    }
+
+    /// Whether `value` lies within the field's bounds, so the field can take
+    /// it without clamping (snapping to the grid aside), allowing each bound
+    /// its float noise.
+    pub(crate) fn within_bounds(&self, value: f64) -> bool {
+        self.spec.within_bounds(value)
+    }
+
+    /// Put back a committed number the undo journal recorded, leaving the
+    /// draft as the journal restored it. The number is normalized against
+    /// the field's current bounds and grid, which may have changed since it
+    /// was recorded. Returns whether the number moved.
+    pub(crate) fn restore_value(&mut self, value: f64) -> bool {
+        let value = self.normalize(value);
+        self.requested = value;
+        if value == self.value {
+            return false;
+        }
+        self.value = value;
+        true
+    }
+
+    /// Publish a number from the application: a number the field already
+    /// holds changes nothing, so a draft the user is typing survives a
+    /// controlled field echoing its own value back. Otherwise as
+    /// [`Self::assign`].
+    pub(crate) fn publish(&mut self, value: f64) -> bool {
+        if self.normalize(value) == self.value {
+            return false;
+        }
+        self.assign(value)
+    }
+
+    /// The field's rules with its bounds brought onto its grid: the numbers
+    /// it can actually reach. A maximum of 10 on a grid of 3 is 9. Published
+    /// for assistive technology and the spinner, so a half is drawn inert
+    /// exactly where a step can no longer move. A discrete field publishes
+    /// the step it moves by, never finer than its precision displays.
+    fn reachable_spec(&self) -> nana_ui_core::NumberFieldSpec {
+        nana_ui_core::NumberFieldSpec {
+            step: if self.continuous {
+                self.spec.step
+            } else {
+                self.spec.display_step()
+            },
+            // A non-finite bound is no bound, as the spec itself reads it.
+            minimum: self
+                .spec
+                .minimum
+                .filter(|minimum| minimum.is_finite())
+                .map(|minimum| self.normalize(minimum)),
+            maximum: self
+                .spec
+                .maximum
+                .filter(|maximum| maximum.is_finite())
+                .map(|maximum| self.normalize(maximum)),
+            ..self.spec
+        }
+    }
+
+    /// Where the field puts `value`: clamped to its bounds, and on a
+    /// discrete field also snapped to its precision and step grid.
+    fn normalize(&self, value: f64) -> f64 {
+        if self.continuous {
+            self.spec.clamp(value)
+        } else {
+            self.spec.snap(value)
+        }
     }
 
     /// Parse the draft. An unparseable draft restores the committed value.
     pub(crate) fn commit_draft(&mut self) -> bool {
-        let parsed = if self.continuous {
-            self.state
-                .value
-                .trim()
-                .parse::<f64>()
-                .ok()
-                .filter(|value| value.is_finite())
-        } else {
-            self.spec.parse(&self.state.value)
-        };
-        match parsed {
+        match nana_ui_core::NumberFieldSpec::parse_unsnapped(&self.state.value) {
             Some(parsed) => self.assign(parsed),
-            None => {
-                let restored = self.formatted_value();
-                if self.state.value == restored {
-                    return false;
-                }
-                self.state.replace_value(restored);
-                true
-            }
+            None => self.revert_draft(),
         }
     }
 
+    /// Show the committed value again, discarding the draft. Returns whether
+    /// the draft differed.
+    pub(crate) fn revert_draft(&mut self) -> bool {
+        let restored = self.formatted_value();
+        if self.state.value == restored {
+            return false;
+        }
+        self.state.replace_value(restored);
+        true
+    }
+
     fn resync(&mut self) {
-        self.assign(self.value);
+        self.assign(self.requested);
     }
 
     pub(crate) fn formatted_value(&self) -> String {
@@ -1971,7 +2063,7 @@ impl ComponentView for NumberInput {
                 multiline: false,
                 style: &effective_style,
                 highlight: None,
-                numeric: Some((self.value, self.spec)),
+                numeric: Some((self.step_base(), self.reachable_spec())),
             },
         );
     }
@@ -2721,6 +2813,20 @@ mod hosted_textarea_tests {
             NumberInput::new(0.5).value(),
             1.0,
             "discrete defaults remain compatible"
+        );
+    }
+
+    #[test]
+    fn a_number_input_builder_normalizes_against_its_finished_rules() {
+        let tenth = NumberInput::new(0.0).range(0.1, 5.0).step(0.1).precision(1);
+        assert_eq!((tenth.value(), tenth.state.value.as_ref()), (0.1, "0.1"));
+        let quarter = NumberInput::new(0.0)
+            .range(0.25, 1.0)
+            .step(0.25)
+            .precision(2);
+        assert_eq!(
+            (quarter.value(), quarter.state.value.as_ref()),
+            (0.25, "0.25")
         );
     }
 

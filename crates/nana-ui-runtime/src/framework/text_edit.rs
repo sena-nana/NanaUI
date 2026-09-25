@@ -6,7 +6,7 @@
 //! receive the host shaper so layout stays backend-owned.
 
 use super::{AppContext, DocumentId, EditableText, Entity, FrameworkError, StableNodeId};
-use super::{TextArea, TextInput, TextInputState, TextSelection};
+use super::{NumberInput, TextArea, TextInput, TextInputState, TextSelection};
 use crate::components::TextSnippetSession;
 use crate::text_editing::{
     CursorEdit, TextCaretIntent, TextLineDirection, TextReplacement, TextSearchOptions,
@@ -85,10 +85,22 @@ pub struct FocusedTextEditor {
     pub(crate) kind: TextEditorKind,
 }
 
+impl FocusedTextEditor {
+    /// A [`crate::NumberInput`]: plain ArrowUp/ArrowDown step its value and
+    /// Enter commits its draft, so a host routes those keys to the numeric
+    /// field instead of the editor's caret and submit handling.
+    pub fn is_numeric(&self) -> bool {
+        self.kind == TextEditorKind::Number
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TextEditorKind {
     Area,
     Field,
+    /// A [`crate::NumberInput`]'s draft. Edits change the draft only; the
+    /// committed number is parsed from it on Enter or blur.
+    Number,
 }
 
 /// 拖拽移动选中文本的状态机（见
@@ -467,10 +479,6 @@ impl From<(String, TextSelection)> for EditorEdit {
 }
 
 impl AppContext {
-    /// Identify the focused plain text editor (`TextArea` or `TextInput`).
-    ///
-    /// Composite search surfaces (palettes, menus, dropdowns) own their
-    /// navigation and are deliberately not plain editors.
     /// An arrow key as the focused editor's line space names it (#59).
     ///
     /// Caret intents are in line space, where Left/Right step along a line and
@@ -507,17 +515,56 @@ impl AppContext {
         }
     }
 
+    /// Identify the focused plain text editor (`TextArea`, `TextInput`, or a
+    /// `NumberInput`'s draft).
+    ///
+    /// Composite search surfaces (palettes, menus, dropdowns) own their
+    /// navigation and are deliberately not plain editors.
     pub fn focused_text_editor(&self, document: DocumentId) -> Option<FocusedTextEditor> {
         if self.has_focused_ime_composition(document) {
             return None;
         }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.editor_info(entity, TextEditorKind::Area);
+        self.focused_plain_editor(document)
+    }
+
+    /// Whether a plain text editor is focused with an IME composition in
+    /// progress, which hides it from [`Self::focused_text_editor`]. Its
+    /// navigation keys then belong to the composition: a host keeps them
+    /// from reaching enclosing navigation (tables, trees). Composite search
+    /// surfaces are not plain editors and keep their own list navigation.
+    pub fn focused_text_editor_composing(&self, document: DocumentId) -> bool {
+        self.has_focused_ime_composition(document)
+            && self.focused_plain_editor_node(document).is_some()
+    }
+
+    /// The focused plain editor's node, composition or not.
+    pub(super) fn focused_plain_editor_node(&self, document: DocumentId) -> Option<StableNodeId> {
+        self.focused_plain_editor_kind(document)
+            .map(|(node, _)| node)
+    }
+
+    fn focused_plain_editor(&self, document: DocumentId) -> Option<FocusedTextEditor> {
+        let (node, kind) = self.focused_plain_editor_kind(document)?;
+        with_editor_type!(kind, C => self.editor_info(Entity::<C>::from_stable_id(node), kind))
+    }
+
+    /// The one probe for which plain editor is focused, composition or not.
+    /// Reads no component state.
+    pub(super) fn focused_plain_editor_kind(
+        &self,
+        document: DocumentId,
+    ) -> Option<(StableNodeId, TextEditorKind)> {
+        let (target, _) = self.world.focused_text_input(document)?;
+        let view = self.views.get(&target)?;
+        if view.is::<TextArea>() {
+            Some((target, TextEditorKind::Area))
+        } else if view.is::<TextInput>() {
+            Some((target, TextEditorKind::Field))
+        } else if view.is::<NumberInput>() {
+            Some((target, TextEditorKind::Number))
+        } else {
+            None
         }
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.editor_info(entity, TextEditorKind::Field);
-        }
-        None
     }
 
     fn editor_info<C: EditableText>(
@@ -691,16 +738,12 @@ impl AppContext {
             match &fold_view {
                 Some(view) => {
                     let crossed = view.crossed_cover(moved.focus, stepping);
-                    // A word move that stops in a label, from the anchor or
-                    // before it, counted the label's words as the text's.
                     let word_into_label = matches!(intent, TextCaretIntent::WordRight)
                         && crossed.is_some_and(|span| span.fold().is_none());
                     let focus = match crossed {
                         Some(span)
                             if view.value_of(moved.focus) == previous_focus || word_into_label =>
                         {
-                            // The step the intent takes over the bare text,
-                            // from where the caret was.
                             view.value_of_forward(span, || {
                                 crate::text_editing::caret_focus(
                                     &state.value,
@@ -1853,6 +1896,16 @@ impl AppContext {
             self.text_edit.text_pointer_drag = None;
             return Ok(false);
         }
+        // A press on a numeric field's spinner steps the value
+        // ([`Self::press_number_stepper`]). The editor still owns the press,
+        // so nothing else starts a selection there, but it places no caret.
+        if focused.is_numeric() && self.on_number_stepper(node, x, y) {
+            self.text_edit.text_pointer_drag = None;
+            // A spinner press between two text presses breaks their click
+            // run: they are two single clicks, not a double click.
+            self.text_edit.text_pointer_click = None;
+            return Ok(true);
+        }
         let state = self.editor_state(node, focused.kind)?;
         const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
         const DOUBLE_CLICK_SLOP: f32 = 4.0;
@@ -2472,7 +2525,7 @@ impl AppContext {
                         .ok()
                 })
                 .unwrap_or_default(),
-            TextEditorKind::Field => Vec::new(),
+            TextEditorKind::Field | TextEditorKind::Number => Vec::new(),
         }
     }
 
@@ -2500,19 +2553,103 @@ impl AppContext {
         node: StableNodeId,
         kind: TextEditorKind,
     ) -> Result<TextInputState, FrameworkError> {
-        match kind {
-            TextEditorKind::Area => self
-                .view_entity::<TextArea>(node)
-                .and_then(|entity| self.read(entity, |area: &TextArea| area.state.clone()).ok())
-                .ok_or(FrameworkError::MissingView(node)),
-            TextEditorKind::Field => self
-                .view_entity::<TextInput>(node)
-                .and_then(|entity| {
-                    self.read(entity, |field: &TextInput| field.state.clone())
-                        .ok()
-                })
-                .ok_or(FrameworkError::MissingView(node)),
-        }
+        with_editor_type!(kind, C => self.editor_state_of::<C>(node))
+    }
+
+    fn editor_state_of<C: EditableText>(
+        &self,
+        node: StableNodeId,
+    ) -> Result<TextInputState, FrameworkError> {
+        self.view_entity::<C>(node)
+            .and_then(|entity| {
+                self.read(entity, |editable: &C| editable.state().clone())
+                    .ok()
+            })
+            .ok_or(FrameworkError::MissingView(node))
+    }
+
+    /// Change an editor's state in place without an edit: selection moves.
+    /// `update` reports whether anything changed.
+    fn update_editor_state(
+        &mut self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+        update: impl FnOnce(&mut TextInputState) -> bool,
+    ) -> Result<bool, FrameworkError> {
+        with_editor_type!(kind, C => self.update_editor_state_of::<C>(node, update))
+    }
+
+    fn update_editor_state_of<C: EditableText>(
+        &mut self,
+        node: StableNodeId,
+        update: impl FnOnce(&mut TextInputState) -> bool,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(Entity::<C>::from_stable_id(node), |editable: &mut C, _| {
+            update(editable.state_mut())
+        })
+    }
+
+    /// Replace an editor's whole state as one journaled edit. Editors that
+    /// refuse input, or the value (a length limit), decline it.
+    pub(super) fn replace_editor_state(
+        &mut self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+        origin: crate::TextEditOrigin,
+        next: TextInputState,
+    ) -> Result<bool, FrameworkError> {
+        with_editor_type!(kind, C => self.replace_editor_state_of::<C>(node, origin, next))
+    }
+
+    fn replace_editor_state_of<C: EditableText>(
+        &mut self,
+        node: StableNodeId,
+        origin: crate::TextEditOrigin,
+        next: TextInputState,
+    ) -> Result<bool, FrameworkError> {
+        self.commit_editor_edit(
+            Entity::<C>::from_stable_id(node),
+            origin,
+            move |editable: &mut C, _| {
+                if !editable.accepts_input() || !editable.accepts_edit_value(&next.value) {
+                    return false;
+                }
+                *editable.state_mut() = next;
+                true
+            },
+        )
+    }
+
+    /// Put an editor back to a journaled snapshot (undo/redo): its text
+    /// state and, for a `NumberInput`, the committed number with it. No
+    /// value check: the journal only holds states the editor already took.
+    pub(super) fn restore_editor_snapshot(
+        &mut self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+        snapshot: super::text_history::EditorSnapshot,
+    ) -> Result<bool, FrameworkError> {
+        with_editor_type!(kind, C => self.restore_editor_snapshot_of::<C>(node, snapshot))
+    }
+
+    fn restore_editor_snapshot_of<C: EditableText>(
+        &mut self,
+        node: StableNodeId,
+        snapshot: super::text_history::EditorSnapshot,
+    ) -> Result<bool, FrameworkError> {
+        let super::text_history::EditorSnapshot { state, number } = snapshot;
+        // `History` keeps the restore from becoming a step of its own.
+        self.commit_editor_edit(
+            Entity::<C>::from_stable_id(node),
+            crate::TextEditOrigin::History,
+            move |editable: &mut C, cx| {
+                *editable.state_mut() = state;
+                if let Some(number) = number {
+                    editable.restore_committed_number(number, cx);
+                }
+                true
+            },
+        )
     }
 
     fn write_editor_selection(
@@ -2524,32 +2661,16 @@ impl AppContext {
         // 光标落在折叠隐藏区间内 → 该折叠自动展开（reveal 语义；查找导航
         // 跳转也经由此路径展开）。
         self.unfold_text_folds_containing(node, &[selection.focus])?;
-        let changed = match kind {
-            TextEditorKind::Area => {
-                let entity = Entity::<TextArea>::from_stable_id(node);
-                self.update_component(entity, |area: &mut TextArea, _| {
-                    if area.state.selection == selection {
-                        return false;
-                    }
-                    area.state.selection = selection;
-                    // The session fuses a primary that lands on another
-                    // cursor; so does the component, or the two disagree.
-                    area.state.normalize_selections();
-                    true
-                })
+        let changed = self.update_editor_state(node, kind, |state| {
+            if state.selection == selection {
+                return false;
             }
-            TextEditorKind::Field => {
-                let entity = Entity::<TextInput>::from_stable_id(node);
-                self.update_component(entity, |field: &mut TextInput, _| {
-                    if field.state.selection == selection {
-                        return false;
-                    }
-                    field.state.selection = selection;
-                    field.state.normalize_selections();
-                    true
-                })
-            }
-        }?;
+            state.selection = selection;
+            // The session fuses a primary that lands on another cursor; so
+            // does the component, or the two disagree.
+            state.normalize_selections();
+            true
+        })?;
         if changed {
             self.seal_editor_history(node);
         }
@@ -2572,46 +2693,16 @@ impl AppContext {
             .chain(additional.iter().map(|selection| selection.focus))
             .collect();
         self.unfold_text_folds_containing(node, &focuses)?;
-        let changed = match kind {
-            TextEditorKind::Area => {
-                let entity = Entity::<TextArea>::from_stable_id(node);
-                self.update_component(entity, |area: &mut TextArea, _| {
-                    if area.state.selection == selection
-                        && area.state.additional_selections == additional
-                    {
-                        return false;
-                    }
-                    let previous = (
-                        area.state.selection,
-                        area.state.additional_selections.clone(),
-                    );
-                    area.state.selection = selection;
-                    area.state.additional_selections = additional;
-                    area.state.normalize_selections();
-                    previous.0 != area.state.selection
-                        || previous.1 != area.state.additional_selections
-                })
+        let changed = self.update_editor_state(node, kind, |state| {
+            if state.selection == selection && state.additional_selections == additional {
+                return false;
             }
-            TextEditorKind::Field => {
-                let entity = Entity::<TextInput>::from_stable_id(node);
-                self.update_component(entity, |field: &mut TextInput, _| {
-                    if field.state.selection == selection
-                        && field.state.additional_selections == additional
-                    {
-                        return false;
-                    }
-                    let previous = (
-                        field.state.selection,
-                        field.state.additional_selections.clone(),
-                    );
-                    field.state.selection = selection;
-                    field.state.additional_selections = additional;
-                    field.state.normalize_selections();
-                    previous.0 != field.state.selection
-                        || previous.1 != field.state.additional_selections
-                })
-            }
-        }?;
+            let previous = (state.selection, state.additional_selections.clone());
+            state.selection = selection;
+            state.additional_selections = additional;
+            state.normalize_selections();
+            previous.0 != state.selection || previous.1 != state.additional_selections
+        })?;
         if changed {
             self.seal_editor_history(node);
         }
@@ -2736,52 +2827,13 @@ impl AppContext {
         } else {
             (value, selection, None)
         };
-        // The editor's own rule for what it takes: a field's length limit
-        // (a text area takes any text, so there is nothing to ask it).
-        if matches!(kind, TextEditorKind::Field)
-            && !self.read(Entity::<TextInput>::from_stable_id(node), |field| {
-                EditableText::admits_value(field, &value)
-            })?
-        {
-            return Ok(false);
-        }
         let mut next = TextInputState {
             value,
             selection,
             additional_selections: additional,
         };
         next.normalize_selections();
-        let (value, selection, additional) =
-            (next.value, next.selection, next.additional_selections);
-        let write = move |state: &mut crate::TextInputState| {
-            state.value = value;
-            state.selection = selection;
-            state.additional_selections = additional;
-        };
-        let changed = match kind {
-            TextEditorKind::Area => self.commit_editor_edit(
-                Entity::<TextArea>::from_stable_id(node),
-                origin,
-                move |area: &mut TextArea, _| {
-                    if !area.accepts_input() {
-                        return false;
-                    }
-                    write(&mut area.state);
-                    true
-                },
-            ),
-            TextEditorKind::Field => self.commit_editor_edit(
-                Entity::<TextInput>::from_stable_id(node),
-                origin,
-                move |field: &mut TextInput, _| {
-                    if !field.accepts_input() {
-                        return false;
-                    }
-                    write(&mut field.state);
-                    true
-                },
-            ),
-        }?;
+        let changed = self.replace_editor_state(node, kind, origin, next)?;
         if changed && let Some(session) = linked_session {
             let mut mutations = MutationQueue::new();
             mutations.set_text_input_snippet(node, Some(session));
@@ -5185,66 +5237,6 @@ mod atom_tests {
             Some("Hi [bob]"),
             "the whole chip, as deleted"
         );
-    }
-
-    #[test]
-    fn a_cut_leaves_an_atom_its_bare_primary_caret_sits_in() {
-        let value = "Hi [bob]! x";
-        let (mut context, document, area, node) = focused_editor(value);
-        context
-            .update_component(area, |area, _| {
-                area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
-                area.state.selection = TextSelection::caret(5);
-                area.state.additional_selections = vec![TextSelection::new(10, 11)];
-            })
-            .unwrap();
-        let cut = context.cut_focused_text(document).unwrap();
-        assert_eq!(cut.as_deref(), Some("x"));
-        assert_eq!(
-            context.world().text_input(node).unwrap().value,
-            "Hi [bob]! ",
-            "the chip the copy did not take stays"
-        );
-    }
-
-    #[test]
-    fn a_further_cursor_cutting_into_an_atom_takes_it_whole() {
-        for cut in [false, true] {
-            let (mut context, document, area, node) = focused_editor("Hi [bob]! xy");
-            context
-                .update_component(area, |area, _| {
-                    area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
-                    area.state.selection = TextSelection::new(10, 11);
-                    area.state.additional_selections = vec![TextSelection::new(5, 9)];
-                })
-                .unwrap();
-            if cut {
-                assert_eq!(
-                    context.cut_focused_text(document).unwrap().as_deref(),
-                    Some("[bob]!\nx"),
-                    "the whole chip, as deleted"
-                );
-                assert_eq!(context.world().text_input(node).unwrap().value, "Hi  y");
-            } else {
-                assert!(context.replace_focused_text(document, "Z").unwrap());
-                assert_eq!(context.world().text_input(node).unwrap().value, "Hi Z Zy");
-            }
-        }
-    }
-
-    #[test]
-    fn deleting_at_a_bare_caret_inside_an_atom_still_takes_the_atom() {
-        // Only a cut keeps the atom: a caret copies nothing. An application
-        // replacing the selection with nothing removes the chip, as before.
-        let (mut context, _document, area, node) = focused_editor("Hi [bob]!");
-        context
-            .update_component(area, |area, _| {
-                area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
-                area.state.selection = TextSelection::caret(5);
-            })
-            .unwrap();
-        assert!(context.replace_text_area_selection(area, "").unwrap());
-        assert_eq!(context.world().text_input(node).unwrap().value, "Hi !");
     }
 
     #[test]

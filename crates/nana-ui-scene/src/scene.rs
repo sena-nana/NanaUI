@@ -804,6 +804,7 @@ impl UiScene {
         let mut changed = Vec::new();
         let mut hierarchy_changed = false;
         let mut inherited_roots = HashSet::new();
+        let mut custom_paint_changed = false;
         for id in removals {
             if let Some(old) = self.nodes.remove(&id) {
                 self.dest_group_candidates -= usize::from(may_be_dest_group(&old));
@@ -838,6 +839,12 @@ impl UiScene {
         let mut inherited_geometry_changed = !inherited_roots.is_empty();
         for node in extracted {
             let previous = self.nodes.get(&node.id);
+            custom_paint_changed |= previous.is_some_and(|old| {
+                match (old.custom_paint.as_ref(), node.custom_paint.as_ref()) {
+                    (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                    _ => false,
+                }
+            });
             let inherited_changed = previous.map_or(!node.children.is_empty(), |old| {
                 old.parent != node.parent
                     || old.layout != node.layout
@@ -980,6 +987,15 @@ impl UiScene {
             }
             if order_rebuilt || stacking_changed || removed_nodes != 0 || self.structure_changed {
                 self.frame_plan.take();
+                self.visibility.take();
+            }
+            // A recording can change the geometry of a painted primitive
+            // without changing its slot count or frame-plan operation. Its
+            // old visibility bounds are therefore not safe to refresh from
+            // the retained index's node slots; rebuild the index from the
+            // current plan instead. Ordinary painter updates that reuse the
+            // same recording keep the incremental path.
+            if custom_paint_changed {
                 self.visibility.take();
             }
             if let Some(mut visibility) = self.visibility.take() {

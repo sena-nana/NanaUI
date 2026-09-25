@@ -8,12 +8,12 @@ impl AppContext {
     pub(super) fn has_focused_ime_composition(&self, document: DocumentId) -> bool {
         self.world
             .focused_text_input(document)
-            .is_some_and(|(target, _)| self.is_composing(target))
+            .is_some_and(|(target, _)| self.node_composing(target))
     }
 
-    /// Whether the user is composing in `node`: an IME attached with no
-    /// preedit (an empty one between keystrokes) is not a composition.
-    pub(super) fn is_composing(&self, node: StableNodeId) -> bool {
+    /// Whether an editor has a composition in progress. An empty preedit
+    /// between keystrokes is not one.
+    pub(super) fn node_composing(&self, node: StableNodeId) -> bool {
         self.world
             .ime(node)
             .is_some_and(|composition| !composition.text.is_empty())
@@ -79,17 +79,11 @@ impl AppContext {
     }
 
     pub fn commit_ime(&mut self, document: DocumentId, text: &str) -> Result<bool, FrameworkError> {
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.commit_editable_ime(entity, text);
-        }
         // Every component editor commits through its component: the world
         // path alone would leave the component's value behind, and its next
         // projection would write the commit away.
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.commit_editable_ime(entity, text);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.commit_editable_ime(entity, text);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.commit_editable_ime(Entity::<C>::from_stable_id(node), text));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.commit_editable_ime(entity, text);
@@ -113,14 +107,8 @@ impl AppContext {
         before_bytes: usize,
         after_bytes: usize,
     ) -> Result<bool, FrameworkError> {
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.delete_editable_surrounding(Entity::<C>::from_stable_id(node), before_bytes, after_bytes));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
@@ -176,7 +164,7 @@ impl AppContext {
         {
             return Ok(false);
         }
-        let composing = self.is_composing(target);
+        let composing = self.node_composing(target);
         let mut next = state.to_state();
         if !next.delete_ime_surrounding(before_bytes, after_bytes, composing) {
             return Ok(false);
@@ -196,7 +184,7 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        let composing = self.is_composing(entity.stable_id());
+        let composing = self.node_composing(entity.stable_id());
         let snippet = self.world.text_snippet_session(entity.stable_id());
         // Only a snippet session diffs the pre-edit value (to follow its
         // linked placeholders). Cloning the whole value for every keystroke of
@@ -259,14 +247,19 @@ impl AppContext {
         if self.has_focused_ime_composition(document) {
             return Ok(false);
         }
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.replace_editable_selection(entity, text, origin);
+        // Hosts report the control characters command keys carry ("\r" for
+        // Enter, "\u{1b}" for Escape, "\u{8}" for Backspace). Typed, they are
+        // commands, never text; Tab and newline are text an editor holds.
+        // Pasted and cut text is the pasteboard's, and is kept as it is.
+        if origin == TextEditOrigin::Typing
+            && text
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\t' | '\n'))
+        {
+            return Ok(false);
         }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.replace_editable_selection(entity, text, origin);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.replace_editable_selection(entity, text, origin);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.replace_editable_selection(Entity::<C>::from_stable_id(node), text, origin));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.replace_editable_selection(entity, text, origin);
@@ -287,14 +280,8 @@ impl AppContext {
         if self.has_focused_ime_composition(document) {
             return Ok(false);
         }
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.delete_editable_backward(entity);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.delete_editable_backward(entity);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.delete_editable_backward(entity);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.delete_editable_backward(Entity::<C>::from_stable_id(node)));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.delete_editable_backward(entity);
@@ -315,14 +302,8 @@ impl AppContext {
     /// the pasteboard with an empty string. The Runtime does not touch the OS
     /// pasteboard; the host writes what this returns.
     pub fn focused_selected_text(&self, document: DocumentId) -> Option<String> {
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.editable_selected_text(entity);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.editable_selected_text(entity);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.editable_selected_text(entity);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.editable_selected_text(Entity::<C>::from_stable_id(node)));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.editable_selected_text(entity);
@@ -380,14 +361,8 @@ impl AppContext {
         &mut self,
         document: DocumentId,
     ) -> Result<bool, FrameworkError> {
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.select_all_editable(entity);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.select_all_editable(entity);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.select_all_editable(entity);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.select_all_editable(Entity::<C>::from_stable_id(node)));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.select_all_editable(entity);
@@ -406,11 +381,18 @@ impl AppContext {
         entity: Entity<C>,
     ) -> Option<String> {
         self.read(entity, |editable| {
-            // What an edit of the selections would remove: any selection
-            // cutting into an atom takes the atom whole, so a cut puts on the
+            // What an edit of the selection would remove: a primary cutting
+            // into an atom takes the atom whole, so a cut puts on the
             // pasteboard exactly what it deletes. A bare caret selects
             // nothing to copy, wherever it sits.
-            let expanded = atom_expanded_selections(editable, true);
+            let expanded = (!editable.state().selection.is_collapsed())
+                .then(|| atom_expanded_primary(editable))
+                .flatten()
+                .map(|primary| {
+                    let mut state = editable.state().clone();
+                    state.selection = primary;
+                    state
+                });
             let state = expanded.as_ref().unwrap_or_else(|| editable.state());
             // Zed copy semantics: every selection's text, in document order,
             // joined with newlines. An empty set (bare carets only) reports
@@ -617,16 +599,10 @@ impl AppContext {
         let old = self.read(entity, |editable| editable.state().value.clone())?;
         let mut linked = None;
         let changed = self.commit_editor_edit(entity, origin, |editable, _| {
-            // A cut deletes what its copy took, and a bare caret took nothing,
-            // even inside an atom. Other edits at such a caret replace the atom.
-            let widened = atom_expanded_selections(editable, origin == TextEditOrigin::Cut);
-            let original = widened.map(|widened| std::mem::replace(editable.state_mut(), widened));
+            if let Some(expanded) = atom_expanded_primary(editable) {
+                editable.state_mut().selection = expanded;
+            }
             if !editable.replace_selection(text) {
-                // Refused (a length limit, read-only): the carets stay carets.
-                // A staged change is committed even when the edit declines.
-                if let Some(original) = original {
-                    *editable.state_mut() = original;
-                }
                 return false;
             }
             if let Some(session) = &snippet
@@ -646,123 +622,18 @@ impl AppContext {
         }
         Ok(changed)
     }
-
-    /// Replaces `range` with `text` for the user, as an undo step of its own
-    /// (see [`AppContext::edit_text_area`]): an atom it reaches into goes
-    /// whole, a field's length limit holds, and every cursor moves through
-    /// the edit.
-    ///
-    /// Not typing into a snippet: linked placeholders do not mirror it. The
-    /// world remaps an active snippet session through the new text as it
-    /// does for any value change, and ends it if a tab stop no longer holds.
-    pub(super) fn replace_editable_range<C: EditableText>(
-        &mut self,
-        entity: Entity<C>,
-        range: std::ops::Range<usize>,
-        text: &str,
-    ) -> Result<bool, FrameworkError> {
-        // A range is valid where a selection over it would be: inside the
-        // text, on grapheme boundaries.
-        let in_text = self.read(entity, |editable| {
-            range.start <= range.end
-                && TextSelection::new(range.start, range.end).is_valid_for(&editable.state().value)
-        })?;
-        if !in_text {
-            return Err(FrameworkError::InvalidInput);
-        }
-        let node = entity.stable_id();
-        if self.is_composing(node) || !self.read(entity, EditableText::accepts_input)? {
-            return Ok(false);
-        }
-        let text: std::borrow::Cow<'_, str> = if text.contains('\r') {
-            crate::text_editing::normalize_newlines(text).into()
-        } else {
-            text.into()
-        };
-        // Structural: a step of its own, which neither extends the typing
-        // before it nor is extended by the typing after it.
-        self.commit_editor_edit(entity, TextEditOrigin::Structural, |editable, _| {
-            let value = &editable.state().value;
-            let atoms = crate::text_editing::atoms_in(value, editable.text_atoms());
-            let range = crate::text_editing::expand_range_over_atoms(range, &atoms);
-            if value[range.clone()] == *text {
-                return false;
-            }
-            let mut next = value.clone();
-            next.replace_range(range.clone(), &text);
-            // Refused whole, not cut to fit: half a completion is not the
-            // edit that was asked for.
-            if !editable.admits_value(&next) {
-                return false;
-            }
-            // Every selection, the user's own caret included, moves through
-            // the edit rather than to it (the rule the edit session applies).
-            // One exception: a caret right where text is inserted goes past
-            // it, as typing leaves it (a completion at the caret).
-            let (start, removed, inserted) = (range.start, range.len(), text.len());
-            let remap_selection = |selection: TextSelection| {
-                if removed == 0 && selection.is_collapsed() && selection.focus == start {
-                    TextSelection::caret(start + inserted)
-                } else {
-                    nana_text::editable::remap_selection(selection, start, removed, inserted)
-                }
-            };
-            let state = editable.state_mut();
-            state.value = next;
-            state.selection = remap_selection(state.selection);
-            for selection in &mut state.additional_selections {
-                *selection = remap_selection(*selection);
-            }
-            state.normalize_selections();
-            true
-        })
-    }
 }
 
-/// Every selection, the primary and each further cursor, widened over each
-/// atom it cuts into, when one does: an edit replaces atoms whole
-/// ([`crate::TextAtomSpan`]). With `keep_carets`, a bare caret stays as it is
-/// (it copies, and so cuts, nothing). Widened selections that now overlap
-/// fuse.
-fn atom_expanded_selections<C: EditableText>(
-    editable: &C,
-    keep_carets: bool,
-) -> Option<crate::TextInputState> {
-    let state = editable.state();
-    let atoms = crate::text_editing::atoms_in(&state.value, editable.text_atoms());
+/// The primary selection widened over every atom it cuts into, when it cuts
+/// into one: an edit replaces atoms whole ([`crate::TextAtomSpan`]).
+fn atom_expanded_primary<C: EditableText>(editable: &C) -> Option<crate::TextSelection> {
+    let atoms = crate::text_editing::atoms_in(&editable.state().value, editable.text_atoms());
     if atoms.is_empty() {
         return None;
     }
-    let widen = |selection: crate::TextSelection| {
-        if keep_carets && selection.is_collapsed() {
-            return selection;
-        }
-        let range = selection.ordered();
-        let expanded = crate::text_editing::expand_range_over_atoms(range.clone(), &atoms);
-        if expanded == range {
-            selection
-        } else {
-            crate::TextSelection::new(expanded.start, expanded.end)
-        }
-    };
-    let primary = widen(state.selection);
-    // Cloned, and the further cursors collected, only when a selection
-    // grows: most edits in an editor with atoms touch none.
-    let grows = primary != state.selection
-        || state
-            .additional_selections
-            .iter()
-            .any(|selection| widen(*selection) != *selection);
-    if !grows {
-        return None;
-    }
-    let mut next = state.clone();
-    next.selection = primary;
-    for selection in &mut next.additional_selections {
-        *selection = widen(*selection);
-    }
-    next.normalize_selections();
-    Some(next)
+    let range = editable.state().selection.ordered();
+    let expanded = crate::text_editing::expand_range_over_atoms(range.clone(), &atoms);
+    (expanded != range).then(|| crate::TextSelection::new(expanded.start, expanded.end))
 }
 
 #[cfg(test)]

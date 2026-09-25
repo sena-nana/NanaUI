@@ -1,3 +1,24 @@
+/// Evaluate `$body` with `$C` naming the component type behind a plain
+/// editor kind, so each generic editor operation dispatches in one place.
+macro_rules! with_editor_type {
+    ($kind:expr, $C:ident => $body:expr) => {
+        match $kind {
+            $crate::framework::text_edit::TextEditorKind::Area => {
+                type $C = $crate::TextArea;
+                $body
+            }
+            $crate::framework::text_edit::TextEditorKind::Field => {
+                type $C = $crate::TextInput;
+                $body
+            }
+            $crate::framework::text_edit::TextEditorKind::Number => {
+                type $C = $crate::NumberInput;
+                $body
+            }
+        }
+    };
+}
+
 #[cfg(feature = "charts")]
 mod charts;
 mod choice;
@@ -89,12 +110,6 @@ impl<T: Send + 'static> View for T {}
 
 trait EditableText: ComponentView {
     type Change: Send + 'static;
-    /// Whether the editor keeps an undo journal. Only editors whose whole
-    /// state is their text can be restored from a snapshot of it: undoing a
-    /// number field's text would leave its committed value behind, and a
-    /// picker's query would drift from its filtered list. The rest record no
-    /// step they could never take back.
-    const JOURNALED: bool = false;
     fn accepts_input(&self) -> bool;
     fn accepts_selection(&self) -> bool {
         self.accepts_input()
@@ -102,14 +117,25 @@ trait EditableText: ComponentView {
     /// Replace the text of every active selection (single cursor replaces its
     /// own selection; multiple cursors each receive an insertion).
     fn replace_selection(&mut self, text: &str) -> bool;
-    /// Whether the editor takes `value` in place of its text as an edit: a
-    /// field with a length limit refuses to grow past it.
-    fn admits_value(&self, value: &str) -> bool {
-        let _ = value;
-        true
-    }
     fn text_atoms(&self) -> &[crate::TextAtomSpan] {
         &[]
+    }
+    /// Whether a whole-value edit may land. `TextInput` enforces its length
+    /// limit here; editors without a limit accept every value.
+    fn accepts_edit_value(&self, _value: &str) -> bool {
+        true
+    }
+    /// The committed number behind the text, for an editor that keeps one
+    /// (`NumberInput`). The undo journal records it with the text.
+    fn committed_number(&self) -> Option<f64> {
+        None
+    }
+    /// Put back a committed number the undo journal recorded, announcing the
+    /// move in the editor's own terms.
+    fn restore_committed_number(&mut self, _number: f64, _cx: &mut ViewContext<'_, Self>)
+    where
+        Self: Sized,
+    {
     }
     /// IME commit path: replace only the primary selection's text. This is
     /// the documented multi-cursor IME restriction — composition commits to
@@ -165,7 +191,6 @@ fn scroll_offset_on(axis: nana_ui_core::ScrollbarAxis, offset: f32, hold: f32) -
 
 impl EditableText for TextInput {
     type Change = TextChanged;
-    const JOURNALED: bool = true;
 
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.loading && !self.read_only
@@ -178,12 +203,12 @@ impl EditableText for TextInput {
         self.replace_selection(text)
     }
 
-    fn admits_value(&self, value: &str) -> bool {
-        self.accepts_edit_value(value)
-    }
-
     fn commit_ime_text(&mut self, text: &str) -> bool {
         self.commit_limited_ime(text)
+    }
+
+    fn accepts_edit_value(&self, value: &str) -> bool {
+        TextInput::accepts_edit_value(self, value)
     }
 
     fn state(&self) -> &TextInputState {
@@ -205,9 +230,35 @@ impl EditableText for NumberInput {
     fn accepts_input(&self) -> bool {
         self.accepts_input()
     }
+    /// A read-only field's draft still selects, so its text can be copied.
+    fn accepts_selection(&self) -> bool {
+        !self.disabled
+    }
+
+    fn committed_number(&self) -> Option<f64> {
+        Some(self.value())
+    }
+
+    fn restore_committed_number(&mut self, number: f64, cx: &mut ViewContext<'_, Self>) {
+        if self.restore_value(number) {
+            cx.emit(NumberChanged {
+                value: self.value(),
+            });
+        }
+    }
 
     fn replace_selection(&mut self, text: &str) -> bool {
-        self.state.replace_selection(text)
+        number_text(text).is_some_and(|text| self.state.replace_selection(&text))
+    }
+
+    fn commit_ime_text(&mut self, text: &str) -> bool {
+        number_text(text).is_some_and(|text| self.state.replace_primary_selection(&text))
+    }
+
+    /// Whole-value edits (find and replace, transforms) are refused when
+    /// they would put a control character in the draft.
+    fn accepts_edit_value(&self, value: &str) -> bool {
+        !value.chars().any(char::is_control)
     }
 
     fn state(&self) -> &TextInputState {
@@ -223,9 +274,23 @@ impl EditableText for NumberInput {
     }
 }
 
+/// What of `text` a number draft takes. A number never holds control
+/// characters: the newline or tab a host reports with Enter or Tab, an IME
+/// commit ending in one, or a pasted cell's line break is dropped and the
+/// rest kept. `None` when nothing but control characters was offered.
+fn number_text(text: &str) -> Option<std::borrow::Cow<'_, str>> {
+    if !text.chars().any(char::is_control) {
+        return Some(std::borrow::Cow::Borrowed(text));
+    }
+    let kept: String = text
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    (!kept.is_empty()).then_some(std::borrow::Cow::Owned(kept))
+}
+
 impl EditableText for TextArea {
     type Change = TextChanged;
-    const JOURNALED: bool = true;
 
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.read_only
@@ -2196,7 +2261,7 @@ impl AppContext {
         // A numeric draft settles before focus leaves it, so a half-typed value
         // never survives as the visible text of an unfocused field.
         if self.world.focused(document) != Some(target) {
-            self.commit_focused_number_input(document)?;
+            self.settle_focused_number_input(document)?;
         }
         if self.is_segmented_option_node(target) {
             let Some(parent) = self.world.node(target).and_then(|node| node.parent) else {
@@ -2261,7 +2326,7 @@ impl AppContext {
         if previous_focus.is_none() {
             return Ok(false);
         }
-        self.commit_focused_number_input(document)?;
+        self.settle_focused_number_input(document)?;
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, None);
         self.commit_mutations(mutations)?;
@@ -2287,6 +2352,7 @@ impl AppContext {
                 // the IME / TalkBack editing session can attach.
                 if self.view_entity::<TextInput>(request.target).is_some()
                     || self.view_entity::<TextArea>(request.target).is_some()
+                    || self.view_entity::<NumberInput>(request.target).is_some()
                 {
                     return self.focus_node(document, request.target);
                 }
@@ -2299,6 +2365,9 @@ impl AppContext {
                 }
                 if let Some(entity) = self.view_entity::<TextArea>(request.target) {
                     return self.set_editable_value(entity, value);
+                }
+                if let Some(entity) = self.view_entity::<NumberInput>(request.target) {
+                    return self.set_number_text(entity, &value);
                 }
                 if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {
                     return self.set_editable_value(entity, value);
@@ -2330,6 +2399,9 @@ impl AppContext {
                     return self.set_editable_selection(entity, selection);
                 }
                 if let Some(entity) = self.view_entity::<TextArea>(request.target) {
+                    return self.set_editable_selection(entity, selection);
+                }
+                if let Some(entity) = self.view_entity::<NumberInput>(request.target) {
                     return self.set_editable_selection(entity, selection);
                 }
                 if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {

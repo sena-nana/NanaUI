@@ -1790,8 +1790,17 @@ impl UiWorld {
                     || previous.checked != accessibility.checked
                     || previous.selected != accessibility.selected
                     || previous.mixed != accessibility.mixed;
+                // A numeric field's spinner is drawn from these: which halves
+                // are live follows `editable` and the value against the range.
+                let spinner_changed = previous.editable != accessibility.editable
+                    || previous.numeric_value != accessibility.numeric_value
+                    || previous.numeric_minimum != accessibility.numeric_minimum
+                    || previous.numeric_maximum != accessibility.numeric_maximum;
                 self.record_mut(*id).accessibility = accessibility.clone();
                 self.mark(*id, DirtyMask::ACCESSIBILITY);
+                if spinner_changed {
+                    self.mark(*id, DirtyMask::RENDER);
+                }
                 if interaction_style_changed && !self.record(*id).style.interaction.is_empty() {
                     self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
                 }

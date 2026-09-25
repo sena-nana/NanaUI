@@ -1637,6 +1637,75 @@ fn pressing_the_spinner_steps_and_pressing_the_text_does_not() {
         None
     );
 
+    // Focused, a press on the spinner places no caret; one on the text does.
+    assert!(context.focus_node(document, input.stable_id()).unwrap());
+    let caret = |context: &AppContext| {
+        context
+            .world()
+            .text_input(input.stable_id())
+            .unwrap()
+            .selection
+    };
+    let before = caret(&context);
+    for (x, y) in [(up_x, up_y), (down_x, down_y)] {
+        // The editor owns the press (no document selection starts there),
+        // but places no caret.
+        assert!(
+            context
+                .text_editor_pointer_press(
+                    document,
+                    input.stable_id(),
+                    1,
+                    x,
+                    y,
+                    false,
+                    false,
+                    std::time::Duration::ZERO,
+                    &mut crate::MeasureTextShaper,
+                )
+                .unwrap()
+        );
+        assert_eq!(caret(&context), before);
+    }
+    context.text_editor_pointer_release(1);
+    assert!(
+        context
+            .text_editor_pointer_press(
+                document,
+                input.stable_id(),
+                1,
+                0.0,
+                16.0,
+                false,
+                false,
+                std::time::Duration::from_secs(1),
+                &mut crate::MeasureTextShaper,
+            )
+            .unwrap()
+    );
+    assert_eq!(caret(&context), TextSelection::caret(0));
+    context.text_editor_pointer_release(1);
+
+    // Text, spinner, text again inside the double-click window: two single
+    // clicks, so the second places a caret rather than selecting a word.
+    for (x, y, at) in [(0.0, 16.0, 2000), (up_x, up_y, 2100), (0.0, 16.0, 2200)] {
+        context
+            .text_editor_pointer_press(
+                document,
+                input.stable_id(),
+                1,
+                x,
+                y,
+                false,
+                false,
+                std::time::Duration::from_millis(at),
+                &mut crate::MeasureTextShaper,
+            )
+            .unwrap();
+        context.text_editor_pointer_release(1);
+    }
+    assert!(caret(&context).is_collapsed());
+
     assert!(
         context
             .press_number_stepper(input.stable_id(), up_x, up_y)
@@ -1654,6 +1723,298 @@ fn pressing_the_spinner_steps_and_pressing_the_text_does_not() {
             .press_number_stepper(input.stable_id(), 8.0, 16.0)
             .unwrap()
     );
+}
+
+#[test]
+fn the_spinner_follows_the_draft_and_owns_presses_on_its_inert_half() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(document, crate::NumberInput::new(100.0).range(0.0, 100.0))
+        .unwrap();
+    let node = input.stable_id();
+    let mut mutations = MutationQueue::new();
+    mutations.write_layout(
+        node,
+        crate::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 160.0,
+            height: 32.0,
+        },
+    );
+    context.commit_mutations(mutations).unwrap();
+    assert!(context.focus_node(document, node).unwrap());
+    let settle = |context: &mut AppContext| {
+        let work = context.world_mut().take_system_work();
+        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .world_mut()
+            .shape_text(&work.text, &mut crate::MeasureTextShaper)
+            .unwrap();
+        match context.world().component_geometry(node) {
+            Some(crate::ComponentGeometry::TextInput {
+                steppers: Some(steppers),
+                ..
+            }) => steppers,
+            other => panic!("expected spinner geometry, got {other:?}"),
+        }
+    };
+    let steppers = settle(&mut context);
+    let (up_x, up_y) = (
+        steppers.increment.x + steppers.increment.width / 2.0,
+        steppers.increment.y + steppers.increment.height / 2.0,
+    );
+    assert!(!steppers.increment_enabled, "at the maximum");
+    assert_eq!(context.number_stepper_at(node, up_x, up_y), None);
+
+    // A press on the inert half is still the spinner's: no caret, no drag.
+    let caret = |context: &AppContext| context.world().text_input(node).unwrap().selection;
+    context.select_focused_text_range(document, 0, 0).unwrap();
+    assert!(
+        context
+            .text_editor_pointer_press(
+                document,
+                node,
+                1,
+                up_x,
+                up_y,
+                false,
+                false,
+                std::time::Duration::ZERO,
+                &mut crate::MeasureTextShaper,
+            )
+            .unwrap()
+    );
+    assert_eq!(caret(&context), TextSelection::caret(0));
+    context.text_editor_pointer_release(1);
+
+    // A typed draft moves the spinner with it: the pointer, the keyboard and
+    // the drawn state all step from 50, not from the committed 100.
+    context.select_all_focused_text(document).unwrap();
+    context.replace_focused_text(document, "50").unwrap();
+    let steppers = settle(&mut context);
+    assert!(steppers.increment_enabled);
+    assert_eq!(context.number_stepper_at(node, up_x, up_y), Some(1));
+    assert_eq!(
+        context.world().accessibility(node).unwrap().numeric_value,
+        Some(50.0)
+    );
+    assert!(context.press_number_stepper(node, up_x, up_y).unwrap());
+    assert_eq!(
+        context.read(input, crate::NumberInput::value).unwrap(),
+        51.0
+    );
+}
+
+#[test]
+fn a_continuous_draft_publishes_its_clamped_step_base() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::continuous(3.0).range(0.0, 100.0),
+        )
+        .unwrap();
+    context.focus_node(document, input.stable_id()).unwrap();
+    context.select_all_focused_text(document).unwrap();
+    context.replace_focused_text(document, "500").unwrap();
+    // The spinner and the accessible value read what a step would start
+    // from: the draft clamped as a commit would clamp it.
+    assert_eq!(
+        context
+            .world()
+            .accessibility(input.stable_id())
+            .unwrap()
+            .numeric_value,
+        Some(100.0)
+    );
+    assert!(!context.step_number_input(input, 1).unwrap());
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 3.0);
+    assert!(context.step_number_input(input, -1).unwrap());
+    assert_eq!(
+        context.read(input, crate::NumberInput::value).unwrap(),
+        99.0
+    );
+}
+
+#[test]
+fn a_step_that_snaps_back_onto_its_base_is_no_step_and_the_spinner_agrees() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(3.0).range(0.0, 10.0).step(3.0),
+        )
+        .unwrap();
+    context.focus_node(document, input.stable_id()).unwrap();
+    context.select_all_focused_text(document).unwrap();
+    context.replace_focused_text(document, "9").unwrap();
+    // 9 + 3 clamps to 10, which snaps back to 9: nothing moves or commits.
+    assert!(!context.step_number_input(input, 1).unwrap());
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 3.0);
+    // The published maximum is the reachable one, so the up half is inert.
+    let state = context.world().accessibility(input.stable_id()).unwrap();
+    assert_eq!(state.numeric_maximum, Some(9.0));
+    assert_eq!(state.numeric_value, Some(9.0));
+}
+
+#[test]
+fn an_infinite_bound_publishes_no_bound() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(5.0).range(f64::NEG_INFINITY, f64::INFINITY),
+        )
+        .unwrap();
+    let state = context.world().accessibility(input.stable_id()).unwrap();
+    assert_eq!((state.numeric_minimum, state.numeric_maximum), (None, None));
+    assert!(context.step_number_input(input, 1).unwrap());
+    assert!(context.step_number_input(input, -3).unwrap());
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 3.0);
+}
+
+#[test]
+fn find_and_replace_cannot_put_a_control_character_in_a_number_draft() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(document, crate::NumberInput::new(15.0))
+        .unwrap();
+    context.focus_node(document, input.stable_id()).unwrap();
+    context.select_all_focused_text(document).unwrap();
+    assert!(
+        !context
+            .replace_focused_text_match(
+                document,
+                "15",
+                crate::TextSearchOptions::default(),
+                "15\n",
+                false,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        context
+            .read(input, |input| input.state.value.to_string())
+            .unwrap(),
+        "15"
+    );
+}
+
+#[test]
+fn a_read_only_number_input_draws_an_inert_spinner() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(5.0)
+                .range(0.0, 10.0)
+                .read_only(true),
+        )
+        .unwrap();
+    let mut mutations = MutationQueue::new();
+    mutations.write_layout(
+        input.stable_id(),
+        crate::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 160.0,
+            height: 32.0,
+        },
+    );
+    context.commit_mutations(mutations).unwrap();
+    let work = context.world_mut().take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
+    context
+        .world_mut()
+        .shape_text(&work.text, &mut crate::MeasureTextShaper)
+        .unwrap();
+    let Some(crate::ComponentGeometry::TextInput {
+        steppers: Some(steppers),
+        ..
+    }) = context.world().component_geometry(input.stable_id())
+    else {
+        panic!("expected spinner geometry");
+    };
+    assert!(!steppers.increment_enabled && !steppers.decrement_enabled);
+    let (x, y) = (
+        steppers.increment.x + steppers.increment.width / 2.0,
+        steppers.increment.y + steppers.increment.height / 2.0,
+    );
+    assert_eq!(context.number_stepper_at(input.stable_id(), x, y), None);
+
+    // Flipping read-only alone changes no text, yet the spinner repaints.
+    context
+        .update_component(input, |input, _| input.read_only = false)
+        .unwrap();
+    let work = context.world_mut().take_system_work();
+    assert!(work.render_extraction.contains(&input.stable_id()));
+    context.world_mut().resolve_styles(&work.style).unwrap();
+    context
+        .world_mut()
+        .shape_text(&work.text, &mut crate::MeasureTextShaper)
+        .unwrap();
+    assert_eq!(context.number_stepper_at(input.stable_id(), x, y), Some(1));
+}
+
+#[test]
+fn accessibility_set_value_reaches_the_maximum_through_float_noise() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(0.2)
+                .range(0.0, 0.3)
+                .step(0.1)
+                .precision(1),
+        )
+        .unwrap();
+    // What a client computes as value + step, and an f32 bridge's 0.3.
+    for request in [format!("{}", 0.2 + 0.1), format!("{}", f64::from(0.3_f32))] {
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document,
+                    AccessibilityActionRequest {
+                        target: input.stable_id(),
+                        action: AccessibilityAction::SetValue(request.clone()),
+                    },
+                )
+                .unwrap(),
+            "{request}"
+        );
+        assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 0.3);
+    }
+}
+
+#[test]
+fn a_hover_card_keeps_a_focused_number_input_editing() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let card = context
+        .create_component(
+            document,
+            crate::HoverCard::new()
+                .trigger("account")
+                .preserve_editor_focus(true),
+        )
+        .unwrap();
+    let action = context
+        .create_component(document, crate::Button::new("refresh"))
+        .unwrap();
+    context.append_child(card, action).unwrap();
+    let input = context
+        .create_component(document, crate::NumberInput::new(1.0))
+        .unwrap();
+    context.focus_node(document, input.stable_id()).unwrap();
+    assert!(context.preserves_hover_card_editor_focus(action.stable_id()));
 }
 
 #[test]
@@ -1718,6 +2079,119 @@ fn range_accessibility_set_value_uses_quantized_typed_action() {
     assert_eq!(node.numeric_maximum, Some(1.0));
     assert_eq!(node.numeric_step, Some(0.25));
     assert_eq!(node.numeric_value, Some(0.5));
+}
+
+#[test]
+fn accessibility_actions_edit_a_number_input_through_its_numeric_policy() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(1.0)
+                .range(0.0, 10.0)
+                .step(0.5)
+                .precision(1),
+        )
+        .unwrap();
+    let node = input.stable_id();
+    let values = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&values);
+    context
+        .on(input, move |_input, event: &crate::NumberChanged, _cx| {
+            observed.lock().unwrap().push(event.value);
+        })
+        .unwrap();
+    let act = |context: &mut AppContext, action| {
+        context
+            .apply_accessibility_action(
+                document,
+                AccessibilityActionRequest {
+                    target: node,
+                    action,
+                },
+            )
+            .unwrap()
+    };
+    let draft = |context: &AppContext| {
+        context
+            .read(input, |input| input.state.value.to_string())
+            .unwrap()
+    };
+
+    // Click focuses the field so an IME / TalkBack session can attach.
+    assert!(act(&mut context, AccessibilityAction::Click));
+    assert_eq!(context.world().focused(document), Some(node));
+
+    // SetValue commits a number within bounds, snapped to the step grid.
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetValue("7.3".into())
+    ));
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 7.5);
+    assert_eq!(draft(&context), "7.5");
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetValue("10".into())
+    ));
+    assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
+
+    // A number the field already holds is taken: success, nothing emitted.
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetValue("10".into())
+    ));
+    assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
+
+    // Out of bounds is refused and changes nothing, a pending draft included.
+    context
+        .update_component(input, |input, _| input.state.replace_value("7"))
+        .unwrap();
+    for request in ["150", "-1", "abc"] {
+        assert!(
+            !act(&mut context, AccessibilityAction::SetValue(request.into())),
+            "{request}"
+        );
+        assert_eq!(draft(&context), "7", "{request}");
+    }
+    assert_eq!(
+        context.read(input, crate::NumberInput::value).unwrap(),
+        10.0
+    );
+    assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
+    context
+        .update_component(input, |input, _| input.state.replace_value("10.0"))
+        .unwrap();
+
+    // SetSelection selects inside the draft; out-of-range selections refuse.
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetSelection(TextSelection::new(0, 2))
+    ));
+    let selection = context.world().text_input(node).unwrap().selection;
+    assert_eq!((selection.anchor, selection.focus), (0, 2));
+    assert!(!act(
+        &mut context,
+        AccessibilityAction::SetSelection(TextSelection::new(0, 99))
+    ));
+
+    // A read-only field refuses SetValue but still selects, so its text can
+    // be copied.
+    context
+        .update_component(input, |input, _| input.read_only = true)
+        .unwrap();
+    assert!(!act(
+        &mut context,
+        AccessibilityAction::SetValue("3".into())
+    ));
+    assert_eq!(
+        context.read(input, crate::NumberInput::value).unwrap(),
+        10.0
+    );
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetSelection(TextSelection::new(0, 4))
+    ));
 }
 
 #[test]

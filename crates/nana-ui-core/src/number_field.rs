@@ -59,40 +59,146 @@ impl NumberFieldSpec {
         value
     }
 
-    /// Snap onto the step grid, then clamp.
+    /// The step the field moves by: its step, but never finer than one
+    /// unit of its precision, which could not display the difference (a step
+    /// of 0.05 at one decimal place moves by 0.1).
+    pub fn display_step(self) -> f64 {
+        let unit = 10f64.powi(-i32::from(self.precision));
+        self.effective_step().max(unit)
+    }
+
+    /// Snap onto the field's grid, within its bounds.
+    ///
+    /// The grid starts at the minimum as the field displays it and moves by
+    /// [`Self::display_step`], so every grid point is a number the field
+    /// displays exactly and no two points display alike. The top is the last
+    /// point inside the maximum as displayed (a maximum of 10.3 on a
+    /// whole-number grid holds at 10). A bound within its float noise of a
+    /// displayable number is that number (an f32 0.7 is 0.69999998, and
+    /// still 0.7 here). Snapping is idempotent, and what `format` shows
+    /// `parse` reads back.
     pub fn snap(self, value: f64) -> f64 {
-        let step = self.effective_step();
-        let origin = self.minimum.filter(|minimum| minimum.is_finite());
-        let base = origin.unwrap_or(0.0);
-        let value = if value.is_finite() { value } else { base };
-        let snapped = base + ((value - base) / step).round() * step;
-        self.clamp(round_to(snapped, self.precision))
+        let origin = self.grid_origin();
+        let value = if value.is_finite() { value } else { origin };
+        let mut snapped = self.grid_point(((value - origin) / self.display_step()).round());
+        if let Some(maximum) = self.grid_maximum().filter(|maximum| snapped > *maximum) {
+            snapped = maximum;
+        }
+        if self.minimum.is_some_and(f64::is_finite) && snapped < origin {
+            snapped = origin;
+        }
+        // Past 2^53 the grid's points collapse onto f64's own spacing; the
+        // bounds (with their noise) still hold there.
+        if let Some(maximum) = self
+            .maximum
+            .filter(|maximum| maximum.is_finite() && snapped > maximum + self.bound_noise(*maximum))
+        {
+            snapped = maximum;
+        }
+        if let Some(minimum) = self
+            .minimum
+            .filter(|minimum| minimum.is_finite() && snapped < minimum - self.bound_noise(*minimum))
+        {
+            snapped = minimum;
+        }
+        // `+ 0.0` turns the -0.0 a point just below zero rounds to into 0.0,
+        // which `format` would otherwise show as "-0.0".
+        snapped + 0.0
+    }
+
+    /// Whether `value` lies within the bounds, allowing each bound its float
+    /// noise: an assistive client asking for 0.2 + 0.1, or for the 9.99 an
+    /// f32 maximum of 9.98999977 displays as, means that bound.
+    pub fn within_bounds(self, value: f64) -> bool {
+        let finite = |bound: &f64| bound.is_finite();
+        self.minimum
+            .filter(finite)
+            .is_none_or(|minimum| value >= minimum - self.bound_noise(minimum))
+            && self
+                .maximum
+                .filter(finite)
+                .is_none_or(|maximum| value <= maximum + self.bound_noise(maximum))
+    }
+
+    /// Where the grid starts: the minimum as the field displays it, rounded
+    /// up when the precision cannot show it, so the first point lies inside.
+    fn grid_origin(self) -> f64 {
+        self.minimum
+            .filter(|minimum| minimum.is_finite())
+            .map_or(0.0, |minimum| self.displayed_bound(minimum, true))
+    }
+
+    /// Float noise a bound may carry and still mean the number it displays
+    /// as. Bounds often arrive through f32 (2499.95 is 2499.94995), whose
+    /// noise grows with magnitude, far past any fixed epsilon yet far under
+    /// a display unit; a tenth of a unit caps it, so it never merges two
+    /// displayed values.
+    fn bound_noise(self, bound: f64) -> f64 {
+        let unit = 10f64.powi(-i32::from(self.precision));
+        (bound.abs() * 1e-6).min(unit * 0.1)
+    }
+
+    /// A bound as the field's display reads it: the displayed number itself
+    /// when the bound is (within its float noise) one the precision shows,
+    /// else the nearest displayable number inside it: up from a minimum,
+    /// down from a maximum.
+    fn displayed_bound(self, bound: f64, up: bool) -> f64 {
+        let scale = 10f64.powi(i32::from(self.precision));
+        let scaled = bound * scale;
+        if !scaled.is_finite() {
+            return bound;
+        }
+        let nearest = scaled.round() / scale;
+        if (nearest - bound).abs() <= self.bound_noise(bound) {
+            nearest
+        } else if up {
+            scaled.ceil() / scale
+        } else {
+            scaled.floor() / scale
+        }
+    }
+
+    /// Grid point `k`, rounded to the precision to shed float noise.
+    fn grid_point(self, k: f64) -> f64 {
+        round_to(self.grid_origin() + k * self.display_step(), self.precision)
+    }
+
+    /// The last grid point inside the displayed maximum, or `None` when
+    /// unbounded above. The index is rounded, not floored, so float noise in
+    /// the step (an f32 0.05 is 0.0500000007) cannot drop the last point;
+    /// rounding overshoots by at most one point, which is checked.
+    fn grid_maximum(self) -> Option<f64> {
+        let maximum = self.maximum.filter(|maximum| maximum.is_finite())?;
+        let top = self.displayed_bound(maximum, false);
+        let last = ((top - self.grid_origin()) / self.display_step()).round();
+        let point = self.grid_point(last);
+        let fuzz = 10f64.powi(-i32::from(self.precision)) * 1e-6;
+        Some(if point > top + fuzz {
+            self.grid_point(last - 1.0)
+        } else {
+            point
+        })
     }
 
     /// Move `value` by `steps` grid positions. Zero steps still snaps, so an
     /// out-of-grid value settles the first time the control is nudged.
     pub fn step_by(self, value: f64, steps: i32) -> f64 {
-        let step = self.effective_step();
         let base = if value.is_finite() {
             value
         } else {
             self.minimum.unwrap_or(0.0)
         };
-        self.snap(base + f64::from(steps) * step)
+        self.snap(base + f64::from(steps) * self.display_step())
     }
 
     /// Whether stepping up can still change the value.
     pub fn can_increment(self, value: f64) -> bool {
-        self.maximum
-            .filter(|maximum| maximum.is_finite())
-            .is_none_or(|maximum| self.clamp(value) < maximum)
+        self.step_by(value, 1) > self.snap(value)
     }
 
     /// Whether stepping down can still change the value.
     pub fn can_decrement(self, value: f64) -> bool {
-        self.minimum
-            .filter(|minimum| minimum.is_finite())
-            .is_none_or(|minimum| self.clamp(value) > minimum)
+        self.step_by(value, -1) < self.snap(value)
     }
 
     /// Render a value at this field's precision.
@@ -107,21 +213,28 @@ impl NumberFieldSpec {
     /// Read a draft string. Returns `None` when the text is not a number, so
     /// the caller can keep the last committed value instead of guessing.
     pub fn parse(self, text: &str) -> Option<f64> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        trimmed
+        Self::parse_unsnapped(text).map(|value| self.snap(value))
+    }
+
+    /// The number a draft spells, before bounds, precision or the step grid
+    /// apply. Blank or non-finite text is `None`.
+    pub fn parse_unsnapped(text: &str) -> Option<f64> {
+        text.trim()
             .parse::<f64>()
             .ok()
             .filter(|value| value.is_finite())
-            .map(|value| self.snap(value))
     }
 }
 
+/// Round to `precision` decimals. A value too large to scale is already
+/// coarser than any decimal place and is returned as it is.
 fn round_to(value: f64, precision: u8) -> f64 {
     let scale = 10f64.powi(i32::from(precision));
-    (value * scale).round() / scale
+    let scaled = value * scale;
+    if !scaled.is_finite() {
+        return value;
+    }
+    scaled.round() / scale
 }
 
 #[cfg(test)]
@@ -167,6 +280,201 @@ mod tests {
         assert_eq!(spec().step_by(0.0, -1), 0.0);
         assert_eq!(spec().step_by(0.5, -1), 0.0);
         assert_eq!(spec().step_by(4.0, 4), 6.0);
+    }
+
+    #[test]
+    fn an_off_grid_maximum_holds_at_the_last_grid_point() {
+        let off_grid = NumberFieldSpec {
+            minimum: Some(0.0),
+            maximum: Some(10.3),
+            step: 1.0,
+            precision: 0,
+        };
+        assert_eq!(off_grid.snap(11.0), 10.0);
+        assert_eq!(off_grid.snap(10.3), 10.0);
+        for value in [-3.0, 0.4, 9.6, 10.2, 10.3, 11.0, 400.0] {
+            let once = off_grid.snap(value);
+            assert_eq!(off_grid.snap(once), once, "{value}");
+        }
+        assert_eq!(off_grid.step_by(10.0, 1), 10.0);
+        assert!(!off_grid.can_increment(10.0));
+        assert!(off_grid.can_increment(9.0));
+        // A maximum on the grid keeps its last point despite float division.
+        let tenths = NumberFieldSpec {
+            minimum: Some(0.0),
+            maximum: Some(0.3),
+            step: 0.1,
+            precision: 1,
+        };
+        assert_eq!(tenths.snap(0.3), 0.3);
+        assert_eq!(tenths.snap(0.9), 0.3);
+    }
+
+    #[test]
+    fn a_minimum_the_precision_cannot_display_still_snaps_idempotently() {
+        for minimum in [0.05, -0.25] {
+            let spec = NumberFieldSpec {
+                minimum: Some(minimum),
+                maximum: Some(2.0),
+                step: 0.1,
+                precision: 1,
+            };
+            for tenth in -60..30 {
+                let once = spec.snap(f64::from(tenth) / 10.0);
+                assert_eq!(spec.snap(once), once, "{minimum}: {tenth}");
+                // What the field shows reads back as what it holds.
+                assert_eq!(spec.parse(&spec.format(once)), Some(once), "{minimum}");
+            }
+        }
+    }
+
+    #[test]
+    fn snapping_is_idempotent_bounded_and_displayable_across_grids() {
+        for minimum in [None, Some(0.0), Some(0.05), Some(-0.25), Some(1.0)] {
+            for maximum in [None, Some(10.0), Some(10.3), Some(3.3)] {
+                for step in [0.1, 0.25, 0.5, 1.0, 3.0] {
+                    for precision in [0, 1, 2] {
+                        let spec = NumberFieldSpec {
+                            minimum,
+                            maximum,
+                            step,
+                            precision,
+                        };
+                        for index in -60..60 {
+                            let value = f64::from(index) * 0.37;
+                            let once = spec.snap(value);
+                            let case = format!("{spec:?} {value}");
+                            assert_eq!(spec.snap(once), once, "{case}");
+                            assert_eq!(spec.clamp(once), once, "{case}");
+                            assert_eq!(spec.parse(&spec.format(once)), Some(once), "{case}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn extreme_bounds_snap_promptly_and_stay_finite() {
+        for (minimum, maximum, step, precision) in [
+            (0.0, f64::MAX, 0.1, 1),
+            (f64::MIN, f64::MAX, 1.0, 2),
+            (-1e20, 1e20, 0.3, 2),
+            (0.0, 1e17, 0.3, 0),
+        ] {
+            let spec = NumberFieldSpec {
+                minimum: Some(minimum),
+                maximum: Some(maximum),
+                step,
+                precision,
+            };
+            for value in [0.0, 5.0, -5.0, 1e30, -1e30] {
+                let snapped = spec.snap(value);
+                assert!(snapped.is_finite(), "{spec:?} {value}");
+                assert_eq!(spec.clamp(snapped), snapped, "{spec:?} {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn snapping_never_yields_negative_zero() {
+        for minimum in [-0.25, -0.35] {
+            let spec = NumberFieldSpec {
+                minimum: Some(minimum),
+                maximum: Some(2.0),
+                step: 0.1,
+                precision: 1,
+            };
+            for tenth in -5..20 {
+                let snapped = spec.snap(f64::from(tenth) / 10.0);
+                assert!(
+                    snapped != 0.0 || snapped.is_sign_positive(),
+                    "{minimum}: {tenth}"
+                );
+                assert!(!spec.format(snapped).starts_with("-0.0"), "{minimum}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_value_the_display_can_show_inside_the_bounds_is_reachable() {
+        let spec = |minimum, maximum, step, precision| NumberFieldSpec {
+            minimum: Some(minimum),
+            maximum: Some(maximum),
+            step,
+            precision,
+        };
+        // A minimum off the precision: the first displayable point stays.
+        let half = spec(0.5, 10.0, 1.0, 0);
+        assert_eq!((half.snap(1.0), half.snap(0.5)), (1.0, 1.0));
+        assert!(half.can_decrement(2.0));
+        assert_eq!(half.step_by(2.0, -1), 1.0);
+        assert_eq!(spec(-0.25, 10.0, 1.0, 0).snap(0.0), 0.0);
+        assert_eq!(spec(0.05, 2.0, 0.1, 1).snap(0.1), 0.1);
+        // The top of the range stays reachable.
+        assert_eq!(spec(0.33, 5.4, 0.1, 1).snap(5.4), 5.4);
+        assert_eq!(spec(0.05, 5.12, 1.0, 0).snap(5.0), 5.0);
+    }
+
+    #[test]
+    fn a_step_finer_than_the_precision_still_walks_the_whole_range() {
+        let spec = NumberFieldSpec {
+            minimum: Some(0.0),
+            maximum: Some(1.0),
+            step: 0.05,
+            precision: 1,
+        };
+        let mut value = 0.0;
+        for _ in 0..10 {
+            let next = spec.step_by(value, 1);
+            assert!(next > value, "stuck at {value}");
+            value = next;
+        }
+        assert_eq!(value, 1.0);
+        assert!(!spec.can_increment(1.0));
+    }
+
+    #[test]
+    fn bounds_carrying_float_noise_keep_their_displayed_ends() {
+        // Bounds and steps that arrived through f32, as a Vue binding's do.
+        let f32_spec = |minimum: f32, maximum: f32, step: f32, precision| NumberFieldSpec {
+            minimum: Some(f64::from(minimum)),
+            maximum: Some(f64::from(maximum)),
+            step: f64::from(step),
+            precision,
+        };
+        for (spec, low, high) in [
+            (f32_spec(0.0, 0.7, 0.1, 1), "0.0", "0.7"),
+            (f32_spec(0.1, 1.0, 0.1, 1), "0.1", "1.0"),
+            (f32_spec(0.0, 2.3, 0.1, 1), "0.0", "2.3"),
+            (f32_spec(0.0, 9.99, 0.01, 2), "0.00", "9.99"),
+            (f32_spec(0.0, 2000.0, 0.05, 2), "0.00", "2000.00"),
+            (f32_spec(0.0, 10000.0, 0.1, 1), "0.0", "10000.0"),
+            (f32_spec(-2000.0, 0.0, 0.05, 2), "-2000.00", "0.00"),
+            (f32_spec(0.0, 2499.95, 0.01, 2), "0.00", "2499.95"),
+            (f32_spec(0.0, 12345.6, 0.1, 1), "0.0", "12345.6"),
+            (f32_spec(100000.1, 100010.0, 0.1, 1), "100000.1", "100010.0"),
+        ] {
+            assert_eq!(spec.format(spec.snap(-1e9)), low, "{spec:?}");
+            assert_eq!(spec.format(spec.snap(1e9)), high, "{spec:?}");
+            let top = spec.snap(1e9);
+            assert_eq!(spec.snap(top), top, "{spec:?}");
+            assert_eq!(spec.parse(&spec.format(top)), Some(top), "{spec:?}");
+            // What it displays at either end is within its bounds.
+            assert!(spec.within_bounds(spec.parse(high).unwrap()), "{spec:?}");
+            assert!(spec.within_bounds(spec.parse(low).unwrap()), "{spec:?}");
+        }
+        // Large exact bounds at cent precision.
+        let cents = |minimum, maximum| NumberFieldSpec {
+            minimum: Some(minimum),
+            maximum: Some(maximum),
+            step: 0.01,
+            precision: 2,
+        };
+        assert_eq!(cents(0.0, 1_266_142.42).snap(2e6), 1_266_142.42);
+        assert_eq!(cents(0.0, 223_696.36).snap(2e6), 223_696.36);
+        assert_eq!(cents(262_144.03, 3e5).snap(0.0), 262_144.03);
+        assert_eq!(cents(9_099_250.47, 1e7).snap(0.0), 9_099_250.47);
     }
 
     #[test]

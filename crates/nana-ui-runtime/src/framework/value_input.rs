@@ -5,6 +5,12 @@ use super::*;
 impl AppContext {
     /// Publish a numeric value using the field's bounds and discrete or
     /// continuous policy; hosts do not reimplement numeric normalization.
+    ///
+    /// A number the field already holds changes nothing, so a controlled
+    /// field echoing `NumberChanged` back keeps the user's draft and undo
+    /// history. A new number is an application write, not the user's edit:
+    /// the draft shows it and the undo history starts afresh, so undo cannot
+    /// bring back a draft over it.
     pub fn set_number_value(
         &mut self,
         entity: Entity<NumberInput>,
@@ -13,58 +19,100 @@ impl AppContext {
         if !value.is_finite() {
             return Err(FrameworkError::InvalidComponentValue(entity.id));
         }
-        self.update_component(entity, |input, cx| {
-            if !input.assign(value) {
-                return false;
-            }
-            cx.emit(NumberChanged {
-                value: input.value(),
-            });
-            true
+        self.write_number(entity, TextEditOrigin::Program, |input| {
+            input.publish(value)
         })
     }
 
-    /// Move a numeric field by step increments. Disabled and read-only fields
-    /// refuse, so a stepper press cannot bypass either flag.
+    /// Commit a complete value given as text, as assistive technology sets
+    /// one: committed as the field's value and shown in place of any draft,
+    /// with the field's grid applied. Returns whether the field took it.
+    ///
+    /// Unparseable text, a number outside the field's bounds, and a field
+    /// that refuses input are refused outright: nothing changes, the pending
+    /// draft and its undo history included. A number within bounds is taken,
+    /// snapped to the grid, even when the field already holds it.
+    pub(super) fn set_number_text(
+        &mut self,
+        entity: Entity<NumberInput>,
+        text: &str,
+    ) -> Result<bool, FrameworkError> {
+        let Some(requested) = nana_ui_core::NumberFieldSpec::parse_unsnapped(text) else {
+            return Ok(false);
+        };
+        // A composition owns the draft until it commits or cancels.
+        if self.node_composing(entity.stable_id())
+            || !self.read(entity, |input| {
+                input.accepts_input() && input.within_bounds(requested)
+            })?
+        {
+            return Ok(false);
+        }
+        // Unlike `set_number_value`, the field shows what was set even when it
+        // already held the number: the user asked for this value.
+        self.write_number(entity, TextEditOrigin::Program, |input| {
+            input.assign(requested)
+        })?;
+        Ok(true)
+    }
+
+    /// Move a numeric field by step increments, from the typed draft when it
+    /// parses and from the committed value otherwise. Disabled and read-only
+    /// fields refuse, so a stepper press cannot bypass either flag. A run of
+    /// steps is one undo step of its own: typing after it does not merge into
+    /// the typing before it, and a held arrow key does not flood the history.
     pub fn step_number_input(
         &mut self,
         entity: Entity<NumberInput>,
         steps: i32,
     ) -> Result<bool, FrameworkError> {
-        if !self.read(entity, NumberInput::accepts_input)? {
+        // A composition owns the draft until it commits or cancels.
+        if !self.read(entity, NumberInput::accepts_input)?
+            || self.node_composing(entity.stable_id())
+        {
             return Ok(false);
         }
-        self.update_component(entity, |input, cx| {
-            if !input.step_value(steps) {
-                return false;
-            }
-            cx.emit(NumberChanged {
-                value: input.value(),
-            });
-            true
+        self.write_number(entity, TextEditOrigin::Step, |input| {
+            input.step_value(steps)
         })
     }
 
     /// Parse the in-progress draft into the committed value. An unparseable
-    /// draft restores the last committed value and reports no change.
+    /// draft restores the last committed value and reports no change. The
+    /// normalized draft is its own undo step.
     pub fn commit_number_input(
         &mut self,
         entity: Entity<NumberInput>,
     ) -> Result<bool, FrameworkError> {
-        let before = self.read(entity, NumberInput::value)?;
-        let touched = self.update_component(entity, |input, cx| {
-            if !input.commit_draft() {
-                return false;
-            }
-            if input.value() == before {
-                return true;
-            }
-            cx.emit(NumberChanged {
-                value: input.value(),
-            });
-            true
+        // A composition owns the draft until it commits or cancels.
+        if self.node_composing(entity.stable_id()) {
+            return Ok(false);
+        }
+        self.write_number(
+            entity,
+            TextEditOrigin::Structural,
+            NumberInput::commit_draft,
+        )
+    }
+
+    /// Rewrite a numeric field's draft through the undo journal, emitting
+    /// [`NumberChanged`] when the committed number moved. Returns whether the
+    /// field changed at all (a reformatted draft counts).
+    fn write_number(
+        &mut self,
+        entity: Entity<NumberInput>,
+        origin: TextEditOrigin,
+        write: impl FnOnce(&mut NumberInput) -> bool,
+    ) -> Result<bool, FrameworkError> {
+        let changed = self.journal_editor_edit(entity, origin, |input, cx| {
+            write_number_field(input, cx, write)
         })?;
-        Ok(touched)
+        // A commit or a revert ends a run of steps even when it rewrote
+        // nothing: steps before and after it are two undo steps.
+        if origin == TextEditOrigin::Structural {
+            self.seal_editor_history(entity.stable_id());
+        }
+        Ok(changed)
     }
 
     /// Step the focused numeric field, if any. Returns whether it moved.
@@ -99,19 +147,56 @@ impl AppContext {
         let Some(entity) = self.focused_number_input(document) else {
             return Ok(false);
         };
-        self.update_component(entity, |input, _| {
-            let committed = input.formatted_value();
-            if input.state.value == committed {
-                return false;
-            }
-            input.state.replace_value(committed);
-            true
-        })
+        // Escape during a composition belongs to the IME, not the draft.
+        if self.node_composing(entity.stable_id()) {
+            return Ok(false);
+        }
+        self.write_number(
+            entity,
+            TextEditOrigin::Structural,
+            NumberInput::revert_draft,
+        )
+    }
+
+    /// Settle the focused numeric draft before focus leaves the field.
+    /// Leaving focus cancels an unfinished composition (the world drops it on
+    /// blur), so it is cancelled first and the draft beneath it committed,
+    /// rather than committed under a live preedit.
+    pub(super) fn settle_focused_number_input(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(entity) = self.focused_number_input(document) else {
+            return Ok(false);
+        };
+        if self.node_composing(entity.stable_id()) {
+            let mut mutations = MutationQueue::new();
+            mutations.set_ime(entity.stable_id(), None);
+            self.world.commit(mutations)?;
+        }
+        self.commit_number_input(entity)
     }
 
     pub(super) fn focused_number_input(&self, document: DocumentId) -> Option<Entity<NumberInput>> {
         let target = self.world.focused(document)?;
         self.view_entity(target)
+    }
+
+    /// Whether a point is on a numeric field's spinner, whichever halves are
+    /// enabled. Coordinates are viewport-local, matching hit testing.
+    pub(super) fn on_number_stepper(&self, id: StableNodeId, x: f32, y: f32) -> bool {
+        self.number_steppers(id)
+            .is_some_and(|steppers| steppers.contains(x, y))
+    }
+
+    fn number_steppers(&self, id: StableNodeId) -> Option<crate::NumberSteppers> {
+        match self.world.component_geometry(id) {
+            Some(crate::ComponentGeometry::TextInput {
+                steppers: Some(steppers),
+                ..
+            }) => Some(steppers),
+            _ => None,
+        }
     }
 
     /// Resolve a stepper press inside a numeric field to a signed step count.
@@ -120,14 +205,7 @@ impl AppContext {
     /// when the point is on the editable text instead of the spinner, so the
     /// caller can fall through to caret placement.
     pub fn number_stepper_at(&self, id: StableNodeId, x: f32, y: f32) -> Option<i32> {
-        let Some(crate::ComponentGeometry::TextInput {
-            steppers: Some(steppers),
-            ..
-        }) = self.world.component_geometry(id)
-        else {
-            return None;
-        };
-        steppers.step_at(x, y)
+        self.number_steppers(id)?.step_at(x, y)
     }
 
     /// Route a pointer press on a numeric field's spinner. Returns whether the
@@ -410,4 +488,24 @@ impl AppContext {
         })?;
         Ok(initial.is_some())
     }
+}
+
+/// Apply a write to a numeric field and emit [`NumberChanged`] when the
+/// committed number moved. Returns whether the field changed at all (a
+/// reformatted draft counts).
+fn write_number_field(
+    input: &mut NumberInput,
+    cx: &mut ViewContext<'_, NumberInput>,
+    write: impl FnOnce(&mut NumberInput) -> bool,
+) -> bool {
+    let before = input.value();
+    if !write(input) {
+        return false;
+    }
+    if input.value() != before {
+        cx.emit(NumberChanged {
+            value: input.value(),
+        });
+    }
+    true
 }
