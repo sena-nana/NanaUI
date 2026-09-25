@@ -422,9 +422,6 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         if !self.settings.visible {
             return (None, SplashOutcome::Skipped(SplashSkip::HiddenStart));
         }
-        if target.composed() {
-            return (None, SplashOutcome::Skipped(SplashSkip::CompositionTarget));
-        }
         // Before the logo is resolved: a platform without a splash reads
         // nothing for one.
         if !NativeSplash::platform_supported() {
@@ -449,6 +446,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             &png,
             FallbackColor::rgba(red, green, blue, alpha),
             nana_window::system_reduced_motion().unwrap_or(false),
+            target.composed(),
         )
     }
 

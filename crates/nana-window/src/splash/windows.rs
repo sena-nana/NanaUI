@@ -33,16 +33,23 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::core::Interface;
-use windows_sys::Win32::Foundation::{LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT as SysPoint, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmFlush;
+use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-use windows_sys::Win32::UI::WindowsAndMessaging::{GetClientRect, WM_DPICHANGED, WM_SIZE};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, GetClientRect, HWND_TOPMOST, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOSENDCHANGING, SetWindowPos, ShowWindow, WM_DPICHANGED, WM_MOVE, WM_SIZE,
+    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+};
 
 use super::{LogoInfo, SplashAnimation, SplashFailure, SplashWork, fit_logo};
 use crate::material::FallbackColor;
 
 const SUBCLASS_ID: usize = 0x4E_41_53_50;
+const OWNER_SUBCLASS_ID: usize = SUBCLASS_ID + 1;
 
 pub(super) struct Request<'a> {
     pub(super) png: &'a [u8],
@@ -56,6 +63,7 @@ pub(super) struct Request<'a> {
 /// stable pointer; freed only after the subclass is removed.
 struct Tree {
     hwnd: HWND,
+    owner: Option<HWND>,
     device: IDCompositionDevice,
     target: IDCompositionTarget,
     background: Option<(IDCompositionVisual, IDCompositionScaleTransform)>,
@@ -121,6 +129,7 @@ impl Splash {
         window: &W,
         request: &Request<'_>,
         work: &mut SplashWork,
+        separate_window: bool,
     ) -> Result<(Self, bool), SplashFailure> {
         let native = |error: windows::core::Error| SplashFailure::Native(error.to_string());
         let handle = window
@@ -129,19 +138,39 @@ impl Splash {
         let RawWindowHandle::Win32(handle) = handle.as_raw() else {
             return Err(SplashFailure::Native("not a Win32 window".into()));
         };
-        let hwnd = HWND(handle.hwnd.get() as *mut c_void);
-
+        let owner = HWND(handle.hwnd.get() as *mut c_void);
         work.logo_decodes += 1;
         let pixels = super::decode_premultiplied_bgra(request.png, request.info)
             .map_err(SplashFailure::Logo)?;
 
         let d3d = d3d_device().map_err(native)?;
-        let (tree, animated) = build_tree(hwnd, &d3d, request, &pixels, work).map_err(native)?;
+        let hwnd = if separate_window {
+            create_overlay_window(owner)?
+        } else {
+            owner
+        };
+        let (tree, animated) = build_tree(
+            hwnd,
+            separate_window.then_some(owner),
+            &d3d,
+            request,
+            &pixels,
+            work,
+        )
+        .map_err(|error| {
+            if separate_window {
+                unsafe { DestroyWindow(hwnd.0) };
+            }
+            native(error)
+        })?;
         let tree = Box::into_raw(Box::new(tree));
         // SAFETY: `tree` is live and owned by the returned `Splash` until the
         // subclass has been removed.
         if let Err(error) = unsafe { (*tree).layout() } {
             unsafe { drop(Box::from_raw(tree)) };
+            if separate_window {
+                unsafe { DestroyWindow(hwnd.0) };
+            }
             return Err(native(error));
         }
         // SAFETY: hwnd is the live winit window; `tree` outlives the subclass.
@@ -149,7 +178,22 @@ impl Splash {
             unsafe { SetWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID, tree as usize) };
         if installed == 0 {
             unsafe { drop(Box::from_raw(tree)) };
+            if separate_window {
+                unsafe { DestroyWindow(hwnd.0) };
+            }
             return Err(SplashFailure::Native("SetWindowSubclass failed".into()));
+        }
+        if separate_window {
+            let owner_installed = unsafe {
+                SetWindowSubclass(owner.0, Some(splash_proc), OWNER_SUBCLASS_ID, tree as usize)
+            };
+            if owner_installed == 0 {
+                unsafe { RemoveWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID) };
+                unsafe { drop(Box::from_raw(tree)) };
+                unsafe { DestroyWindow(hwnd.0) };
+                return Err(SplashFailure::Native("failed to track owner window".into()));
+            }
+            unsafe { ShowWindow(hwnd.0, SW_SHOWNOACTIVATE) };
         }
         work.commits += unsafe { (*tree).commits };
         unsafe { (*tree).commits = 0 };
@@ -171,8 +215,12 @@ impl Splash {
     pub(super) fn remove(self, work: &mut SplashWork, handoff: bool) {
         // SAFETY: the tree lives until the end of this function.
         let hwnd = unsafe { (*self.tree).hwnd };
+        let owner = unsafe { (*self.tree).owner };
         // SAFETY: the subclass was installed with this id and pointer.
         let removed = unsafe { RemoveWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID) };
+        if let Some(owner) = owner {
+            unsafe { RemoveWindowSubclass(owner.0, Some(splash_proc), OWNER_SUBCLASS_ID) };
+        }
         if handoff {
             // SAFETY: blocks until the next composition pass; no arguments.
             unsafe { DwmFlush() };
@@ -186,6 +234,9 @@ impl Splash {
         }
         if removed != 0 {
             unsafe { drop(Box::from_raw(self.tree)) };
+        }
+        if owner.is_some() {
+            unsafe { DestroyWindow(hwnd.0) };
         }
         // A subclass that could not be removed keeps its pointer valid; the
         // tree is then leaked rather than freed under it.
@@ -258,6 +309,7 @@ fn upload(
 
 fn build_tree(
     hwnd: HWND,
+    owner: Option<HWND>,
     d3d: &ID3D11Device,
     request: &Request<'_>,
     pixels: &[u8],
@@ -328,6 +380,7 @@ fn build_tree(
         Ok((
             Tree {
                 hwnd,
+                owner,
                 device,
                 target,
                 background,
@@ -398,10 +451,80 @@ unsafe extern "system" fn splash_proc(
     // SAFETY: forwards to winit's procedure first, so the window has its new
     // size before the splash follows it.
     let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
-    if matches!(message, WM_SIZE | WM_DPICHANGED) {
+    let tree = unsafe { &*(ref_data as *mut Tree) };
+    let is_splash = tree.hwnd.0 == hwnd;
+    let is_owner = tree.owner.is_some_and(|owner| owner.0 == hwnd);
+    if is_owner && matches!(message, WM_MOVE | WM_SIZE | WM_DPICHANGED) {
+        // SetWindowPos may synchronously notify the splash window. Do not
+        // hold a mutable Tree borrow across that call.
+        sync_overlay_geometry(tree);
+    } else if is_splash && matches!(message, WM_SIZE | WM_DPICHANGED) {
         // SAFETY: ref_data is the live Tree installed with this subclass.
         let tree = unsafe { &mut *(ref_data as *mut Tree) };
         let _ = tree.layout();
     }
     result
+}
+
+fn sync_overlay_geometry(tree: &Tree) {
+    let Some(owner) = tree.owner else { return };
+    let (position, width, height) = owner_client_geometry(owner);
+    unsafe {
+        SetWindowPos(
+            tree.hwnd.0,
+            HWND_TOPMOST,
+            position.x,
+            position.y,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_NOSENDCHANGING,
+        );
+    }
+}
+
+fn owner_client_geometry(owner: HWND) -> (SysPoint, i32, i32) {
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 1,
+        bottom: 1,
+    };
+    unsafe { GetClientRect(owner.0, &mut rect) };
+    let mut position = SysPoint { x: 0, y: 0 };
+    unsafe { ClientToScreen(owner.0, &mut position) };
+    (
+        position,
+        (rect.right - rect.left).max(1),
+        (rect.bottom - rect.top).max(1),
+    )
+}
+
+fn create_overlay_window(owner: HWND) -> Result<HWND, SplashFailure> {
+    let (position, width, height) = owner_client_geometry(owner);
+    let class: [u16; 7] = [83, 84, 65, 84, 73, 67, 0];
+    let module = unsafe { GetModuleHandleW(std::ptr::null()) };
+    if module.is_null() {
+        return Err(SplashFailure::Native("GetModuleHandleW failed".into()));
+    }
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT,
+            class.as_ptr(),
+            std::ptr::null(),
+            WS_POPUP,
+            position.x,
+            position.y,
+            width,
+            height,
+            owner.0,
+            std::ptr::null_mut(),
+            module,
+            std::ptr::null_mut(),
+        )
+    };
+    if hwnd.is_null() {
+        Err(SplashFailure::Native("CreateWindowExW failed".into()))
+    } else {
+        Ok(HWND(hwnd))
+    }
 }

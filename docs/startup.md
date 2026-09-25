@@ -92,7 +92,7 @@ include = ["splash/**"]
 - 读取走 `nana://res/` 挂载的同一个缓存 reader 和诊断，之后再从这个 pack 读资源不会重开。
 - 先查 TOC 里的条目长度，超过 1 MiB 就报 `Logo(TooLarge)`，条目数据一个字节都不读。数据读出来后逐块校验 hash，全部通过才交给 PNG 头检查。
 
-读取发生在事件线程上，位置在建窗和发起设备请求之后、窗口显示之前，每次启动最多一次：只有普通呈现目标会显示 splash。跳过 splash 的情况（隐藏启动、合成路径、Linux）一个字节都不读。开发布局（从 `target/` 运行、没有 manifest）改读 `loose_root` 下的同一个逻辑路径，只读这一个文件；那里没有 pack 类别可查，路径是否真在 `early-splash` pack 里，要到打包后才能确认（见下面的自检）。
+读取发生在事件线程上，位置在建窗和发起设备请求之后、窗口显示之前，每次启动最多一次。隐藏启动和不支持原生 splash 的平台会跳过读取。Windows 合成主窗口使用一个无激活的独立原生窗口承载 splash；它跟随主窗口移动、尺寸和 DPI，不会覆盖主窗口的 Composition root。开发布局（从 `target/` 运行、没有 manifest）改读 `loose_root` 下的同一个逻辑路径，只读这一个文件；那里没有 pack 类别可查，路径是否真在 `early-splash` pack 里，要到打包后才能确认（见下面的自检）。
 
 读不到时，结果是 `Failed(Package(SplashPackageError))`：
 
@@ -212,11 +212,11 @@ Nana.startup.onChange(status => {});   // 宿主的 "startup" 事件
 ## 已知边界
 
 - Windows 路径只经过交叉编译检查（`x86_64-pc-windows-gnu`），没有真机首帧交接和动画证据；Linux 没有 splash。
-- Windows 合成路径的窗口不显示 splash；`CompositionCapable` 策略下的合成能力探测在建窗之前，发生在 Logo 出现之前。
+- Windows 合成路径使用独立的无激活 Splash 窗口；它与主窗口共用启动线程，但使用自己的 DirectComposition target。
 - macOS 只读取启动时的减少动态效果设置，不跟随运行中的切换。窗口移到缩放不同的显示器时，macOS 重新渲染 Logo 图层，Windows 由子类跟随 `WM_DPICHANGED`。
 - 从 `early-splash` pack 读 Logo 在事件线程上同步进行，位置在窗口显示之前，所以这次读取的耗时会直接推迟首次可见。本机 debug 构建下，71 KB 的 Logo 约 0.25 ms，720 KB 的约 1.4 ms（见“测量”）。它没有提前到后台线程预取。
 - 包里的 Logo 读不到时，不会退回内嵌 Logo，结果就是 `Failed(Package(..))`。需要兜底的应用只能自己选来源。
 - 打包器不检查 `early-splash` pack 里的 PNG 是否满足 Logo 上限（它只限制整个 pack ≤ 1 MiB），也不知道应用会请求哪个路径。这两件事由应用的打包自检（`startup.early-splash-logo`）在 `validate --run` 时检查，前提是应用在 builder 上声明了 packaged Logo。
 - 开发布局从 `loose_root` 读，不检查类别；类别规则只在打包后的包里生效。
 - 从 pack 读 Logo 只在 macOS 真窗口上验证过；Windows 只经过交叉编译检查。
-- 同窗口实现：splash 就是应用自己的主窗口，DPI、显示器、尺寸和焦点都是这扇窗口自己的，不存在临时窗口的几何交接。
+- 普通窗口路径仍使用主窗口承载 splash。Windows 合成路径使用 owner 为主窗口的临时窗口；它不进入任务栏、不抢焦点，并在 handoff 或失败路径中销毁。

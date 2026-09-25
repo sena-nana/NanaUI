@@ -45,6 +45,7 @@ impl Splash {
         window: &W,
         request: &Request<'_>,
         work: &mut SplashWork,
+        _separate_window: bool,
     ) -> Result<(Self, bool), SplashFailure> {
         let native = |reason: &str| SplashFailure::Native(reason.to_owned());
         let mtm = MainThreadMarker::new().ok_or_else(|| native("not on the main thread"))?;

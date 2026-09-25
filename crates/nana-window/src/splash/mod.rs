@@ -499,6 +499,7 @@ impl NativeSplash {
         png: &[u8],
         system_background: FallbackColor,
         reduced_motion: bool,
+        separate_window: bool,
     ) -> (Option<Self>, SplashOutcome) {
         let info = match validate_png(png) {
             Ok(info) => info,
@@ -524,7 +525,7 @@ impl NativeSplash {
                 animation,
             };
             let mut work = SplashWork::default();
-            match platform::Splash::show(window, &request, &mut work) {
+            match platform::Splash::show(window, &request, &mut work, separate_window) {
                 Ok((splash, animated)) => {
                     let outcome = animation_outcome(spec.animation, reduced_motion, animated);
                     work.live_resources = splash.live_resources();
