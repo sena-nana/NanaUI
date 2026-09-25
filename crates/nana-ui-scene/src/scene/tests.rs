@@ -1848,6 +1848,17 @@ fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
     let [root, scroller, inner, leaf] = tree(0.3);
     let mut animated = UiScene::new();
     animated.apply_delta([root, scroller, inner, leaf], []);
+    // Materialize the retained visibility index before changing only the
+    // ancestor. The retained and fresh reprojection paths then differ by a
+    // few harmless float ULPs, which must not trip the debug audit.
+    let _ = animated
+        .visible_operations(SceneRect {
+            x: -1_000.0,
+            y: -1_000.0,
+            width: 2_000.0,
+            height: 2_000.0,
+        })
+        .expect("initial visibility index");
     let [turned_root, _, _, _] = tree(0.9);
     animated.apply_delta([turned_root], []);
 

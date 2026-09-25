@@ -265,6 +265,49 @@ fn batch_bounds(rectangles: &[SceneRect]) -> Option<SceneRect> {
     Some(result)
 }
 
+const MAX_PROJECTION_ULPS: u64 = 8;
+
+/// Compare one projection result without turning harmless reprojection
+/// rounding into a retained-scene audit failure.
+///
+/// Retained descendants are reprojected through a base-transform inverse,
+/// while a fresh scene composes the current transform directly. Those paths
+/// are mathematically equivalent but can differ by a handful of `f32` ULPs.
+/// Non-finite values are deliberately never accepted as approximately equal.
+fn projection_component_matches(retained: f32, fresh: f32) -> bool {
+    if !retained.is_finite() || !fresh.is_finite() {
+        return false;
+    }
+    if retained.to_bits() == fresh.to_bits() {
+        return true;
+    }
+    let ordered = |value: f32| -> u64 {
+        let bits = value.to_bits();
+        if bits & 0x8000_0000 != 0 {
+            (!bits) as u64
+        } else {
+            (bits | 0x8000_0000) as u64
+        }
+    };
+    ordered(retained).abs_diff(ordered(fresh)) <= MAX_PROJECTION_ULPS
+}
+
+#[cfg(debug_assertions)]
+fn projection_bounds_match(retained: Option<SceneRect>, fresh: Option<SceneRect>) -> bool {
+    match (retained, fresh) {
+        (None, None) => true,
+        (Some(retained), Some(fresh)) => [
+            (retained.x, fresh.x),
+            (retained.y, fresh.y),
+            (retained.width, fresh.width),
+            (retained.height, fresh.height),
+        ]
+        .into_iter()
+        .all(|(retained, fresh)| projection_component_matches(retained, fresh)),
+        _ => false,
+    }
+}
+
 impl VisibilityIndex {
     pub(super) fn new(scene: &UiScene, plan: Arc<FramePlan>) -> Self {
         let leaf = plan.operations.len().max(1).next_power_of_two();
@@ -533,7 +576,7 @@ impl VisibilityIndex {
         // `leaf`, `plan` and both vector lengths agree by construction.
         for (at, (retained, fresh)) in self.bounds.iter().zip(&other.bounds).enumerate() {
             let (retained_bits, fresh_bits) = (rect_bits(retained), rect_bits(fresh));
-            if retained_bits != fresh_bits {
+            if !projection_bounds_match(*retained, *fresh) {
                 let origin = self.slot_origin(at);
                 return Some(format!(
                     "bounds[{at}] {origin}: retained {retained:?} {retained_bits:?} vs fresh {fresh:?} {fresh_bits:?}"
@@ -623,5 +666,47 @@ impl UiScene {
             .visibility
             .get_or_init(|| VisibilityIndex::new(self, plan))
             .visible(viewport))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{projection_bounds_match, projection_component_matches};
+    use crate::SceneRect;
+
+    #[test]
+    fn projection_comparison_accepts_only_a_small_finite_ulp_drift() {
+        let base = 12.0_f32;
+        let within = f32::from_bits(base.to_bits() + 8);
+        let outside = f32::from_bits(base.to_bits() + 9);
+        assert!(projection_component_matches(base, within));
+        assert!(!projection_component_matches(base, outside));
+        assert!(!projection_component_matches(f32::NAN, f32::NAN));
+        assert!(!projection_component_matches(f32::INFINITY, f32::INFINITY));
+    }
+
+    #[test]
+    fn projection_bounds_comparison_keeps_presence_and_shape_strict() {
+        let retained = Some(SceneRect {
+            x: 16.0,
+            y: 12.0,
+            width: 99.67,
+            height: 36.0,
+        });
+        let fresh = Some(SceneRect {
+            x: 16.0,
+            y: f32::from_bits(12.0_f32.to_bits() + 6),
+            width: 99.67,
+            height: 36.0,
+        });
+        assert!(projection_bounds_match(retained, fresh));
+        assert!(!projection_bounds_match(retained, None));
+        assert!(!projection_bounds_match(
+            retained,
+            Some(SceneRect {
+                y: f32::from_bits(12.0_f32.to_bits() + 9),
+                ..fresh.unwrap()
+            })
+        ));
     }
 }
