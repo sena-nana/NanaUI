@@ -516,7 +516,7 @@ fn create_overlay_window(owner: HWND) -> Result<HWND, SplashFailure> {
             position.y,
             width,
             height,
-            owner.0,
+            std::ptr::null_mut(),
             std::ptr::null_mut(),
             module,
             std::ptr::null_mut(),
