@@ -6,6 +6,32 @@ use bytemuck::{Pod, Zeroable};
 use nana_ui_core::BackdropFilter;
 
 use super::clip::FragmentClip;
+use crate::gpu_work::ManagedBuffer;
+
+fn cached_fullscreen_pipeline(
+    policy: &nana_gpu::GpuDeviceState,
+    format: wgpu::TextureFormat,
+    material: u64,
+    create: impl FnOnce() -> wgpu::RenderPipeline,
+) -> wgpu::RenderPipeline {
+    nana_gpu::__framework::render_pipeline_state(
+        policy,
+        nana_gpu::PipelineKey {
+            generation: policy.generation(),
+            target_format: nana_gpu::__framework::format_from_wgpu(format),
+            sample_count: 1,
+            shader: 0x6261_636b_6472_6f70,
+            layout: 8,
+            material,
+            primitive: 0,
+            blend: 1,
+            depth: 0,
+            vertex_layout: 0,
+        },
+        create,
+    )
+    .expect("backdrop pipeline uses this context generation")
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -115,13 +141,17 @@ pub(super) struct BackdropPipeline {
     blur_bind_layout: wgpu::BindGroupLayout,
     composite_pipeline: wgpu::RenderPipeline,
     composite_bind_layout: wgpu::BindGroupLayout,
-    uniform_slab: wgpu::Buffer,
+    uniform_slab: ManagedBuffer,
     uniform_slab_passes: u64,
     pending: Vec<BackdropRequest>,
 }
 
 impl BackdropPipeline {
-    pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        policy: &nana_gpu::GpuDeviceState,
+    ) -> Self {
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui.scene.backdrop.sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -201,50 +231,59 @@ impl BackdropPipeline {
                 include_str!("shader/backdrop_composite.wgsl"),
             ))),
         });
-        let copy_pipeline = Self::fullscreen_pipeline(
-            device,
-            &copy_shader,
-            &copy_bind_layout,
-            format,
-            "nana-ui.scene.backdrop.copy",
-        );
-        let blur_pipeline = Self::fullscreen_pipeline(
-            device,
-            &blur_shader,
-            &blur_bind_layout,
-            format,
-            "nana-ui.scene.backdrop.blur",
-        );
+        let copy_pipeline = cached_fullscreen_pipeline(policy, format, 1, || {
+            Self::fullscreen_pipeline(
+                device,
+                &copy_shader,
+                &copy_bind_layout,
+                format,
+                "nana-ui.scene.backdrop.copy",
+            )
+        });
+        let blur_pipeline = cached_fullscreen_pipeline(policy, format, 2, || {
+            Self::fullscreen_pipeline(
+                device,
+                &blur_shader,
+                &blur_bind_layout,
+                format,
+                "nana-ui.scene.backdrop.blur",
+            )
+        });
         let composite_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("nana-ui.scene.backdrop.composite.pipeline"),
                 bind_group_layouts: &[Some(&composite_bind_layout)],
                 immediate_size: 0,
             });
-        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.scene.backdrop.composite.pipeline"),
-            layout: Some(&composite_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &composite_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &composite_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+        let composite_pipeline = cached_fullscreen_pipeline(policy, format, 3, || {
+            wgpu::Device::create_render_pipeline(
+                device,
+                &wgpu::RenderPipelineDescriptor {
+                    label: Some("nana-ui.scene.backdrop.composite.pipeline"),
+                    layout: Some(&composite_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &composite_shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &composite_shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                },
+            )
         });
         let uniform_usage = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
         let initial_passes = INITIAL_FROST_SLOTS * PASSES_PER_FROST;
@@ -261,12 +300,12 @@ impl BackdropPipeline {
             blur_bind_layout,
             composite_pipeline,
             composite_bind_layout,
-            uniform_slab: device.create_buffer(&wgpu::BufferDescriptor {
+            uniform_slab: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.backdrop.uniforms"),
                 size: initial_passes * UNIFORM_STRIDE,
                 usage: uniform_usage,
                 mapped_at_creation: false,
-            }),
+            })),
             uniform_slab_passes: initial_passes,
             pending: Vec::new(),
         }
@@ -289,18 +328,35 @@ impl BackdropPipeline {
         }
     }
 
-    fn ensure_uniform_slab(&mut self, device: &wgpu::Device, frost_count: u64) {
+    fn ensure_uniform_slab(
+        &mut self,
+        device: &wgpu::Device,
+        frost_count: u64,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
         let needed_passes = frost_count * PASSES_PER_FROST;
         if needed_passes <= self.uniform_slab_passes {
             return;
         }
         let new_passes = needed_passes.max(self.uniform_slab_passes * 2);
-        self.uniform_slab = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui.scene.backdrop.uniforms"),
-            size: new_passes * UNIFORM_STRIDE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let size = new_passes * UNIFORM_STRIDE;
+        let usage = wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST;
+        if let Some(work) = gpu_work {
+            work.replace_buffer(
+                device,
+                &mut self.uniform_slab,
+                size,
+                usage,
+                "nana-ui.scene.backdrop.uniforms",
+            );
+        } else {
+            self.uniform_slab = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.backdrop.uniforms"),
+                size,
+                usage,
+                mapped_at_creation: false,
+            }));
+        }
         self.uniform_slab_passes = new_passes;
     }
 
@@ -496,7 +552,7 @@ impl BackdropPipeline {
         if count == 0 {
             return;
         }
-        self.ensure_uniform_slab(device, count as u64);
+        self.ensure_uniform_slab(device, count as u64, gpu_work);
         let texel = [
             1.0 / dest_physical[0].max(1) as f32,
             1.0 / dest_physical[1].max(1) as f32,
@@ -511,13 +567,11 @@ impl BackdropPipeline {
                 _pad: [0.0, 0.0],
             };
             let copy_offset = Self::uniform_offset(slot, PASS_COPY);
-            queue.write_buffer(
-                &self.uniform_slab,
-                copy_offset,
-                bytemuck::bytes_of(&copy_uniforms),
-            );
+            let copy_bytes = bytemuck::bytes_of(&copy_uniforms);
             if let Some(work) = gpu_work {
-                work.record_upload(std::mem::size_of::<CopyUniforms>());
+                work.write_buffer(queue, &self.uniform_slab, copy_offset, copy_bytes);
+            } else {
+                queue.write_buffer(&self.uniform_slab, copy_offset, copy_bytes);
             }
 
             let region_origin = request.padded_origin;
@@ -533,13 +587,11 @@ impl BackdropPipeline {
                     dest_size,
                 };
                 let blur_offset = Self::uniform_offset(slot, pass);
-                queue.write_buffer(
-                    &self.uniform_slab,
-                    blur_offset,
-                    bytemuck::bytes_of(&blur_uniforms),
-                );
+                let blur_bytes = bytemuck::bytes_of(&blur_uniforms);
                 if let Some(work) = gpu_work {
-                    work.record_upload(BLUR_UNIFORM_SLOT_SIZE as usize);
+                    work.write_buffer(queue, &self.uniform_slab, blur_offset, blur_bytes);
+                } else {
+                    queue.write_buffer(&self.uniform_slab, blur_offset, blur_bytes);
                 }
             }
 
@@ -570,13 +622,11 @@ impl BackdropPipeline {
                 _pad_end: 0,
             };
             let composite_offset = Self::uniform_offset(slot, PASS_COMPOSITE);
-            queue.write_buffer(
-                &self.uniform_slab,
-                composite_offset,
-                bytemuck::bytes_of(&composite_uniforms),
-            );
+            let composite_bytes = bytemuck::bytes_of(&composite_uniforms);
             if let Some(work) = gpu_work {
-                work.record_upload(COMPOSITE_UNIFORM_SIZE);
+                work.write_buffer(queue, &self.uniform_slab, composite_offset, composite_bytes);
+            } else {
+                queue.write_buffer(&self.uniform_slab, composite_offset, composite_bytes);
             }
         }
     }
@@ -787,7 +837,7 @@ pub(super) struct BackdropPipelineTarget {
     pong: Option<PingPong>,
     width: u32,
     height: u32,
-    uniform_slab: wgpu::Buffer,
+    uniform_slab: ManagedBuffer,
     uniform_slab_passes: u64,
     pending: Vec<BackdropRequest>,
 }
@@ -803,12 +853,12 @@ impl BackdropPipeline {
             pong: None,
             width: 0,
             height: 0,
-            uniform_slab: device.create_buffer(&wgpu::BufferDescriptor {
+            uniform_slab: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana.target.backdrop.uniforms"),
                 size: INITIAL_FROST_SLOTS * PASSES_PER_FROST * UNIFORM_STRIDE,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }),
+            })),
             uniform_slab_passes: INITIAL_FROST_SLOTS * PASSES_PER_FROST,
             pending: Vec::new(),
         });

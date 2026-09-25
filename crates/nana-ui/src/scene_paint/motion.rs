@@ -11,13 +11,14 @@ use nana_ui_core::motion::{
 };
 use nana_ui_scene::UiScene;
 
-use super::buffer_upload::upload_changed;
+use super::buffer_upload::upload_changed_with_work;
+use crate::gpu_work::ManagedBuffer;
 
 /// The eval pipeline and readback serve only the CPU/GPU parity tests, so
 /// they are dead outside test builds.
 pub(super) struct MotionGpuResources {
-    descriptors: wgpu::Buffer,
-    keyframes: wgpu::Buffer,
+    descriptors: ManagedBuffer,
+    keyframes: ManagedBuffer,
     time: wgpu::Buffer,
     /// What `time` holds, so a frame whose clock did not move writes nothing.
     uploaded_time: Option<MotionGpuTime>,
@@ -40,7 +41,16 @@ pub(super) struct MotionGpuResources {
 }
 
 impl MotionGpuResources {
+    #[cfg(test)]
     pub(crate) fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Self {
+        Self::new_with_policy(device, layout, None)
+    }
+
+    pub(crate) fn new_with_policy(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+    ) -> Self {
         let bind_layout = layout.clone();
         let dummy_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nana-ui.scene.motion.dummy.layout"),
@@ -71,16 +81,16 @@ impl MotionGpuResources {
         });
         let descriptor_capacity = 1;
         let keyframe_capacity = 1;
-        let descriptors = storage_buffer(
+        let descriptors = ManagedBuffer::new(storage_buffer(
             device,
             "nana-ui.scene.motion.descriptors",
             descriptor_capacity * MOTION_GPU_DESCRIPTOR_SIZE,
-        );
-        let keyframes = storage_buffer(
+        ));
+        let keyframes = ManagedBuffer::new(storage_buffer(
             device,
             "nana-ui.scene.motion.keyframes",
             keyframe_capacity * MOTION_GPU_KEYFRAME_SIZE,
-        );
+        ));
         let time = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.motion.time"),
             size: MOTION_GPU_TIME_SIZE as u64,
@@ -88,7 +98,29 @@ impl MotionGpuResources {
             mapped_at_creation: false,
         });
         let bind_group = motion_bind_group(device, &bind_layout, &descriptors, &keyframes, &time);
-        let eval_pipeline = create_eval_pipeline(device, &dummy_layout, layout);
+        let eval_pipeline = if let Some(policy) = policy {
+            nana_gpu::__framework::render_pipeline_state(
+                policy,
+                nana_gpu::PipelineKey {
+                    generation: policy.generation(),
+                    target_format: nana_gpu::__framework::format_from_wgpu(
+                        wgpu::TextureFormat::Rgba32Float,
+                    ),
+                    sample_count: 1,
+                    shader: 0x6d6f_7469_6f6e_6576,
+                    layout: 5,
+                    material: 0,
+                    primitive: 0,
+                    blend: 0,
+                    depth: 0,
+                    vertex_layout: 0,
+                },
+                || create_eval_pipeline(device, &dummy_layout, layout).expect("motion pipeline"),
+            )
+            .ok()
+        } else {
+            create_eval_pipeline(device, &dummy_layout, layout)
+        };
         Self {
             descriptors,
             keyframes,
@@ -123,6 +155,16 @@ impl MotionGpuResources {
     }
 
     pub(crate) fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &UiScene) {
+        self.sync_with_work(device, queue, scene, None);
+    }
+
+    pub(crate) fn sync_with_work(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &UiScene,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
         self.last_work = MotionWorkCounters::default();
         let surface = scene.surface_generation();
         let epoch = scene.motion_gpu_structure_epoch();
@@ -142,7 +184,7 @@ impl MotionGpuResources {
             || descriptors.len() > self.descriptor_capacity
             || keyframes.len() > self.keyframe_capacity;
         if need_descriptors {
-            self.ensure_capacity(device, descriptors.len(), keyframes.len());
+            self.ensure_capacity(device, descriptors.len(), keyframes.len(), gpu_work);
             let desc_bytes = pad_copy(
                 motion_gpu_as_bytes(descriptors),
                 self.descriptor_capacity * MOTION_GPU_DESCRIPTOR_SIZE,
@@ -152,20 +194,35 @@ impl MotionGpuResources {
                 self.keyframe_capacity * MOTION_GPU_KEYFRAME_SIZE,
             );
             let uploaded = if self.uploaded_descriptors.len() == desc_bytes.len() {
-                upload_changed(
+                upload_changed_with_work(
                     queue,
                     &self.descriptors,
                     &self.uploaded_descriptors,
                     &desc_bytes,
+                    gpu_work,
                 )
             } else {
-                queue.write_buffer(&self.descriptors, 0, &desc_bytes);
+                if let Some(work) = gpu_work {
+                    work.write_buffer(queue, &self.descriptors, 0, &desc_bytes);
+                } else {
+                    queue.write_buffer(&self.descriptors, 0, &desc_bytes);
+                }
                 desc_bytes.len()
             };
             if self.uploaded_keyframes.len() == kf_bytes.len() {
-                let _ = upload_changed(queue, &self.keyframes, &self.uploaded_keyframes, &kf_bytes);
+                let _ = upload_changed_with_work(
+                    queue,
+                    &self.keyframes,
+                    &self.uploaded_keyframes,
+                    &kf_bytes,
+                    gpu_work,
+                );
             } else {
-                queue.write_buffer(&self.keyframes, 0, &kf_bytes);
+                if let Some(work) = gpu_work {
+                    work.write_buffer(queue, &self.keyframes, 0, &kf_bytes);
+                } else {
+                    queue.write_buffer(&self.keyframes, 0, &kf_bytes);
+                }
             }
             self.uploaded_descriptors = desc_bytes;
             self.uploaded_keyframes = kf_bytes;
@@ -183,11 +240,12 @@ impl MotionGpuResources {
         if self.uploaded_time == Some(time) {
             return;
         }
-        queue.write_buffer(
-            &self.time,
-            0,
-            motion_gpu_as_bytes(std::slice::from_ref(&time)),
-        );
+        let time_bytes = motion_gpu_as_bytes(std::slice::from_ref(&time));
+        if let Some(work) = gpu_work {
+            work.write_buffer(queue, &self.time, 0, time_bytes);
+        } else {
+            queue.write_buffer(&self.time, 0, time_bytes);
+        }
         self.uploaded_time = Some(time);
     }
 
@@ -254,25 +312,55 @@ impl MotionGpuResources {
         Some(MotionGpuReadback { pixels })
     }
 
-    fn ensure_capacity(&mut self, device: &wgpu::Device, descriptors: usize, keyframes: usize) {
+    fn ensure_capacity(
+        &mut self,
+        device: &wgpu::Device,
+        descriptors: usize,
+        keyframes: usize,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
         let mut grew = false;
         if descriptors > self.descriptor_capacity {
             self.descriptor_capacity = descriptors.next_power_of_two().max(1);
-            self.descriptors = storage_buffer(
-                device,
-                "nana-ui.scene.motion.descriptors",
-                self.descriptor_capacity * MOTION_GPU_DESCRIPTOR_SIZE,
-            );
+            let size = (self.descriptor_capacity * MOTION_GPU_DESCRIPTOR_SIZE) as u64;
+            let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.descriptors,
+                    size,
+                    usage,
+                    "nana-ui.scene.motion.descriptors",
+                );
+            } else {
+                self.descriptors = ManagedBuffer::new(storage_buffer(
+                    device,
+                    "nana-ui.scene.motion.descriptors",
+                    size as usize,
+                ));
+            }
             self.uploaded_descriptors.clear();
             grew = true;
         }
         if keyframes > self.keyframe_capacity {
             self.keyframe_capacity = keyframes.next_power_of_two().max(1);
-            self.keyframes = storage_buffer(
-                device,
-                "nana-ui.scene.motion.keyframes",
-                self.keyframe_capacity * MOTION_GPU_KEYFRAME_SIZE,
-            );
+            let size = (self.keyframe_capacity * MOTION_GPU_KEYFRAME_SIZE) as u64;
+            let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.keyframes,
+                    size,
+                    usage,
+                    "nana-ui.scene.motion.keyframes",
+                );
+            } else {
+                self.keyframes = ManagedBuffer::new(storage_buffer(
+                    device,
+                    "nana-ui.scene.motion.keyframes",
+                    size as usize,
+                ));
+            }
             self.uploaded_keyframes.clear();
             grew = true;
         }

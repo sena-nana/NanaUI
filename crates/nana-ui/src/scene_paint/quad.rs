@@ -13,7 +13,7 @@ use super::{
     color::{orthographic, pack_linear, with_opacity},
     url_texture_cache::UrlTextureCache,
 };
-use crate::PhysicalRect;
+use crate::{PhysicalRect, gpu_work::ManagedBuffer};
 
 const INITIAL_INSTANCES: usize = 256;
 const PAINT_GRADIENT: u32 = 1;
@@ -125,13 +125,13 @@ pub(super) struct QuadPipeline {
     uniforms: wgpu::Buffer,
     /// What `uniforms` holds, so a frame of the same size writes nothing.
     uploaded_uniforms: Option<Uniforms>,
-    paint_buffer: wgpu::Buffer,
+    paint_buffer: ManagedBuffer,
     paint_capacity: usize,
     url_view: wgpu::TextureView,
     url_sampler: wgpu::Sampler,
     url_cache: UrlTextureCache,
     url_bind_groups: HashMap<Option<String>, wgpu::BindGroup>,
-    instances: wgpu::Buffer,
+    instances: ManagedBuffer,
     instance_capacity: usize,
     pending: Vec<SolidInstance>,
     uploaded: Vec<SolidInstance>,
@@ -152,7 +152,20 @@ pub(super) struct QuadPipeline {
 }
 
 impl QuadPipeline {
+    #[cfg(test)]
+    pub(super) fn cached_pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+    #[cfg(test)]
     pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::new_with_policy(device, format, None)
+    }
+
+    pub(super) fn new_with_policy(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui.scene.quad.solid.shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(concat!(
@@ -315,8 +328,8 @@ impl QuadPipeline {
             bind_group_layouts: &[Some(&bind_layout), Some(&motion_layout)],
             immediate_size: 0,
         });
-        let pipeline = solid_pipeline(device, &shader, &layout, format, 1);
-        let pipeline_msaa = solid_pipeline(device, &shader, &layout, format, 4);
+        let pipeline = cached_solid_pipeline(policy, device, &shader, &layout, format, 1, 1);
+        let pipeline_msaa = cached_solid_pipeline(policy, device, &shader, &layout, format, 4, 2);
         let instance_capacity = INITIAL_INSTANCES;
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.quad.instances"),
@@ -330,13 +343,13 @@ impl QuadPipeline {
             bind_layout,
             uniforms,
             uploaded_uniforms: None,
-            paint_buffer,
+            paint_buffer: ManagedBuffer::new(paint_buffer),
             paint_capacity,
             url_view,
             url_sampler,
             url_cache: UrlTextureCache::default(),
             url_bind_groups,
-            instances,
+            instances: ManagedBuffer::new(instances),
             instance_capacity,
             pending: Vec::new(),
             uploaded: Vec::new(),
@@ -424,6 +437,7 @@ impl QuadPipeline {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn push(
         &mut self,
         device: &wgpu::Device,
@@ -440,6 +454,44 @@ impl QuadPipeline {
         shadow: Option<ComponentElevation>,
         opacity: f32,
         surface: &QuadSurfacePaint,
+    ) -> Option<u32> {
+        self.push_with_work(
+            device,
+            queue,
+            bounds,
+            clip,
+            fragment_clip,
+            affine,
+            persp,
+            background,
+            border_color,
+            border_width,
+            corner_radius,
+            shadow,
+            opacity,
+            surface,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn push_with_work(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bounds: LogicalRect,
+        clip: LogicalRect,
+        fragment_clip: super::clip::FragmentClip,
+        affine: [f32; 6],
+        persp: [f32; 2],
+        background: Option<[f32; 4]>,
+        border_color: Option<[f32; 4]>,
+        border_width: f32,
+        corner_radius: [f32; 4],
+        shadow: Option<ComponentElevation>,
+        opacity: f32,
+        surface: &QuadSurfacePaint,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> Option<u32> {
         if self.motion_ids.0 == 0 {
             let world = super::clip::transformed_aabb_projective(bounds, affine, persp);
@@ -502,6 +554,7 @@ impl QuadPipeline {
             surface.border_image.as_ref(),
             bounds.width,
             bounds.height,
+            work,
         );
         if border_tiles.is_some() {
             edge_widths = zero_widths;
@@ -539,6 +592,7 @@ impl QuadPipeline {
                 bounds.width,
                 bounds.height,
                 None,
+                work,
             );
             let mask_url = packed_mask_url(&paint, surface);
             push_solid_instance(
@@ -571,6 +625,7 @@ impl QuadPipeline {
                     layer,
                     bounds.width,
                     bounds.height,
+                    work,
                 );
                 let first = layer_index == 0;
                 push_solid_instance(
@@ -633,6 +688,7 @@ impl QuadPipeline {
                 layer,
                 bounds.width,
                 bounds.height,
+                work,
             );
             push_solid_instance(
                 &mut self.pending,
@@ -698,11 +754,12 @@ impl QuadPipeline {
         // A write has a fixed cost far above these bytes; the size rarely changes.
         if self.uploaded_uniforms != Some(uniforms) {
             let uniform_bytes = bytemuck::bytes_of(&uniforms);
-            queue.write_buffer(&self.uniforms, 0, uniform_bytes);
-            self.uploaded_uniforms = Some(uniforms);
             if let Some(work) = gpu_work {
-                work.record_upload(uniform_bytes.len());
+                work.write_buffer(queue, &self.uniforms, 0, uniform_bytes);
+            } else {
+                queue.write_buffer(&self.uniforms, 0, uniform_bytes);
             }
+            self.uploaded_uniforms = Some(uniforms);
         }
         if self.pending.is_empty() {
             return;
@@ -710,12 +767,24 @@ impl QuadPipeline {
         if self.pending.len() > self.instance_capacity {
             self.uploaded.clear();
             self.instance_capacity = self.pending.len().next_power_of_two();
-            self.instances = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.quad.instances"),
-                size: (self.instance_capacity * std::mem::size_of::<SolidInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            let size = (self.instance_capacity * std::mem::size_of::<SolidInstance>()) as u64;
+            let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.instances,
+                    size,
+                    usage,
+                    "nana-ui.scene.quad.instances",
+                );
+            } else {
+                self.instances = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("nana-ui.scene.quad.instances"),
+                    size,
+                    usage,
+                    mapped_at_creation: false,
+                }))
+            };
             if let Some(work) = gpu_work {
                 work.record_realloc();
             }
@@ -725,30 +794,45 @@ impl QuadPipeline {
             self.uploaded_paint.clear();
             self.url_bind_groups.clear();
             self.paint_capacity = self.pending_paint.len().next_power_of_two();
-            self.paint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.quad.paint"),
-                size: (self.paint_capacity * std::mem::size_of::<QuadPaintData>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            let size = (self.paint_capacity * std::mem::size_of::<QuadPaintData>()) as u64;
+            let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.paint_buffer,
+                    size,
+                    usage,
+                    "nana-ui.scene.quad.paint",
+                );
+            } else {
+                self.paint_buffer =
+                    ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("nana-ui.scene.quad.paint"),
+                        size,
+                        usage,
+                        mapped_at_creation: false,
+                    }))
+            };
             if let Some(work) = gpu_work {
                 work.record_realloc();
             }
         }
         let upload_bytes = {
             let instance_bytes = bytemuck::cast_slice(&self.pending);
-            let instances = super::buffer_upload::upload_changed(
+            let instances = super::buffer_upload::upload_changed_with_work(
                 queue,
                 &self.instances,
                 bytemuck::cast_slice(&self.uploaded),
                 instance_bytes,
+                gpu_work,
             );
             let paint_bytes = bytemuck::cast_slice(&self.pending_paint);
-            let paint = super::buffer_upload::upload_changed(
+            let paint = super::buffer_upload::upload_changed_with_work(
                 queue,
                 &self.paint_buffer,
                 bytemuck::cast_slice(&self.uploaded_paint),
                 paint_bytes,
+                gpu_work,
             );
             self.uploaded.clone_from(&self.pending);
             self.uploaded_paint.clone_from(&self.pending_paint);
@@ -1019,9 +1103,11 @@ fn pack_paint(
         width,
         height,
         layers.first().copied(),
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pack_layer(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1030,8 +1116,18 @@ fn pack_layer(
     layer: &BackgroundImage,
     width: f32,
     height: f32,
+    work: Option<&crate::gpu_work::GpuWorkSink>,
 ) -> (QuadPaintData, Option<String>) {
-    let paint = pack_shared(device, queue, cache, surface, width, height, Some(layer));
+    let paint = pack_shared(
+        device,
+        queue,
+        cache,
+        surface,
+        width,
+        height,
+        Some(layer),
+        work,
+    );
     let paint_url = if paint.flags & PAINT_URL != 0 {
         layer.url_str().map(str::to_string)
     } else {
@@ -1051,6 +1147,7 @@ fn packed_mask_url(paint: &QuadPaintData, surface: &QuadSurfacePaint) -> Option<
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pack_shared(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1059,6 +1156,7 @@ fn pack_shared(
     width: f32,
     height: f32,
     layer: Option<&BackgroundImage>,
+    work: Option<&crate::gpu_work::GpuWorkSink>,
 ) -> QuadPaintData {
     let mut paint = QuadPaintData::default();
     if let Some(BackgroundImage::Gradient(grad)) = layer {
@@ -1136,7 +1234,7 @@ fn pack_shared(
         position,
         repeat,
     }) = layer
-        && let Some((tex_w, tex_h)) = cache.load(device, queue, url)
+        && let Some((tex_w, tex_h)) = cache.load_with_work(device, queue, url, work)
         && let Some(bits) = repeat_bits(*repeat)
     {
         paint.flags |= PAINT_URL;
@@ -1163,7 +1261,7 @@ fn pack_shared(
     }
     if paint.flags & PAINT_URL == 0
         && let Some(MaskImage::Url(url)) = surface.mask.as_ref()
-        && cache.load(device, queue, url).is_some()
+        && cache.load_with_work(device, queue, url, work).is_some()
     {
         paint.flags |= PAINT_MASK | PAINT_MASK_URL;
     }
@@ -1220,6 +1318,7 @@ fn prepare_border_image_tiles(
     spec: Option<&BorderImageSpec>,
     box_w: f32,
     box_h: f32,
+    work: Option<&crate::gpu_work::GpuWorkSink>,
 ) -> Option<(String, Vec<BorderImageTile>)> {
     let spec = spec.filter(|spec| spec.paints_linear_or_url())?;
     let (key, image_w, image_h) = match &spec.source {
@@ -1227,7 +1326,7 @@ fn prepare_border_image_tiles(
             if url.is_empty() {
                 return None;
             }
-            let (tex_w, tex_h) = cache.load(device, queue, url)?;
+            let (tex_w, tex_h) = cache.load_with_work(device, queue, url, work)?;
             (url.clone(), tex_w as f32, tex_h as f32)
         }
         BackgroundImage::Gradient(CssGradient::Linear(linear)) => {
@@ -1242,6 +1341,7 @@ fn prepare_border_image_tiles(
                     BORDER_IMAGE_LINEAR_SIZE,
                     BORDER_IMAGE_LINEAR_SIZE,
                     &rgba,
+                    work,
                 );
             } else if cache.get(&key).is_some_and(Option::is_none) {
                 return None;
@@ -1258,6 +1358,7 @@ fn prepare_border_image_tiles(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_rgba_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1266,8 +1367,10 @@ fn insert_rgba_texture(
     width: u32,
     height: u32,
     rgba: &[u8],
+    work: Option<&crate::gpu_work::GpuWorkSink>,
 ) {
-    let texture = super::url_texture_cache::upload(device, queue, (width, height, rgba));
+    let texture =
+        super::url_texture_cache::upload_with_work(device, queue, (width, height, rgba), work);
     cache.insert(key.to_string(), texture);
 }
 
@@ -1455,6 +1558,37 @@ fn position_origin(spec: LengthSpec, box_len: f32, image_len: f32) -> f32 {
         LengthSpec::Px(value) => value,
         other => other.resolve_px(Some(box_len)).unwrap_or(0.0),
     }
+}
+
+fn cached_solid_pipeline(
+    policy: Option<&nana_gpu::GpuDeviceState>,
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    material: u64,
+) -> wgpu::RenderPipeline {
+    if let Some(policy) = policy {
+        return nana_gpu::__framework::render_pipeline_state(
+            policy,
+            nana_gpu::PipelineKey {
+                generation: policy.generation(),
+                target_format: nana_gpu::__framework::format_from_wgpu(format),
+                sample_count,
+                shader: 0x7175_6164_736f_6c69,
+                layout: 1,
+                material,
+                primitive: 0,
+                blend: 1,
+                depth: 0,
+                vertex_layout: std::mem::size_of::<SolidInstance>() as u64,
+            },
+            || solid_pipeline(device, shader, layout, format, sample_count),
+        )
+        .expect("quad pipeline uses this context generation");
+    }
+    solid_pipeline(device, shader, layout, format, sample_count)
 }
 
 fn solid_pipeline(
@@ -1796,10 +1930,10 @@ fn alpha_split_png_data_url() -> String {
 pub(super) struct QuadPipelineTarget {
     uniforms: wgpu::Buffer,
     uploaded_uniforms: Option<Uniforms>,
-    paint_buffer: wgpu::Buffer,
+    paint_buffer: ManagedBuffer,
     paint_capacity: usize,
     url_bind_groups: HashMap<Option<String>, wgpu::BindGroup>,
-    instances: wgpu::Buffer,
+    instances: ManagedBuffer,
     instance_capacity: usize,
     pending: Vec<SolidInstance>,
     uploaded: Vec<SolidInstance>,
@@ -1822,19 +1956,19 @@ impl QuadPipeline {
                 mapped_at_creation: false,
             }),
             uploaded_uniforms: None,
-            paint_buffer: device.create_buffer(&wgpu::BufferDescriptor {
+            paint_buffer: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana.target.quad.paint"),
                 size: (INITIAL_INSTANCES * std::mem::size_of::<QuadPaintData>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }),
+            })),
             paint_capacity: INITIAL_INSTANCES,
-            instances: device.create_buffer(&wgpu::BufferDescriptor {
+            instances: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana.target.quad.instances"),
                 size: (INITIAL_INSTANCES * std::mem::size_of::<SolidInstance>()) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }),
+            })),
             instance_capacity: INITIAL_INSTANCES,
             url_bind_groups: HashMap::new(),
             pending: Vec::new(),

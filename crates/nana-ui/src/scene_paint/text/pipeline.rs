@@ -29,6 +29,7 @@
 
 use std::ops::Range;
 
+use crate::gpu_work::{GpuWorkSink, ManagedBuffer};
 use bytemuck::{Pod, Zeroable};
 
 use super::atlas::GlyphAtlasManager;
@@ -342,22 +343,22 @@ pub(super) struct DrawSegment {
 pub(super) struct TextTargetGpu {
     /// Storage, read through `indices`; its order is the arena's, not the
     /// draw's.
-    instances: wgpu::Buffer,
+    instances: ManagedBuffer,
     instance_capacity: usize,
     /// The draw-order index table, bound as the per-instance vertex buffer.
-    indices: wgpu::Buffer,
+    indices: ManagedBuffer,
     index_capacity: usize,
     /// Where a frame's blocks and ranges wait to be copied into place: a ring,
     /// so a target painted twice before one submit gives each paint its own
     /// stretch of it. Only the glyphs: the run and presentation tables are
     /// still written in place, so such a pair of paints shares the second
     /// one's positions and colours.
-    staging: wgpu::Buffer,
+    staging: ManagedBuffer,
     staging_capacity: u64,
     staging_cursor: u64,
-    runs: wgpu::Buffer,
+    runs: ManagedBuffer,
     run_capacity: usize,
-    presentations: wgpu::Buffer,
+    presentations: ManagedBuffer,
     presentation_capacity: usize,
     globals: wgpu::Buffer,
     globals_bind_group: Option<wgpu::BindGroup>,
@@ -375,6 +376,7 @@ pub(super) struct TextGpu {
     globals_layout: wgpu::BindGroupLayout,
     /// The platform's text parameters, read once when the painter is made.
     contrast: TextContrast,
+    policy: Option<nana_gpu::GpuDeviceState>,
     /// The most glyph slots one target's instance buffer may hold on this
     /// device. It is bound whole as a storage buffer, so the binding limit
     /// applies as well as the buffer one — 128 MiB, about 5.6 million slots,
@@ -383,10 +385,20 @@ pub(super) struct TextGpu {
 }
 
 impl TextGpu {
-    pub(super) fn new(
+    pub(super) fn new_with_policy(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         atlas: &GlyphAtlasManager,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+    ) -> Self {
+        Self::new_inner(device, format, atlas, policy)
+    }
+
+    fn new_inner(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        atlas: &GlyphAtlasManager,
+        policy: Option<&nana_gpu::GpuDeviceState>,
     ) -> Self {
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nana-ui.scene.text.globals"),
@@ -423,13 +435,36 @@ impl TextGpu {
             bind_group_layouts: &[Some(&globals_layout), Some(atlas.layout())],
             immediate_size: 0,
         });
-        let pipeline = build_pipeline(
-            device,
-            &layout,
-            format,
-            TEXT_SHADER,
-            wgpu::BlendState::ALPHA_BLENDING,
-        );
+        let create = || {
+            build_pipeline(
+                device,
+                &layout,
+                format,
+                TEXT_SHADER,
+                wgpu::BlendState::ALPHA_BLENDING,
+            )
+        };
+        let pipeline = if let Some(policy) = policy {
+            nana_gpu::__framework::render_pipeline_state(
+                policy,
+                nana_gpu::PipelineKey {
+                    generation: policy.generation(),
+                    target_format: nana_gpu::__framework::format_from_wgpu(format),
+                    sample_count: 1,
+                    shader: 0x7465_7874_6d61_696e,
+                    layout: 6,
+                    material: 0,
+                    primitive: 1,
+                    blend: 1,
+                    depth: 0,
+                    vertex_layout: INDEX_BYTES,
+                },
+                create,
+            )
+            .expect("text pipeline uses this context generation")
+        } else {
+            create()
+        };
         let limits = device.limits();
         let instance_bytes = limits
             .max_storage_buffer_binding_size
@@ -441,6 +476,7 @@ impl TextGpu {
             format,
             globals_layout,
             contrast: TextContrast::system(),
+            policy: policy.cloned(),
             instance_slots: u32::try_from(instance_bytes / INSTANCE_BYTES).unwrap_or(u32::MAX),
         }
     }
@@ -474,16 +510,39 @@ impl TextGpu {
             operation: wgpu::BlendOperation::Add,
         };
         self.dual_source = enabled.then(|| {
-            build_pipeline(
-                device,
-                &self.layout,
-                self.format,
-                TEXT_SHADER_DUAL_SOURCE,
-                wgpu::BlendState {
-                    color: per_channel,
-                    alpha: per_channel,
-                },
-            )
+            let create = || {
+                build_pipeline(
+                    device,
+                    &self.layout,
+                    self.format,
+                    TEXT_SHADER_DUAL_SOURCE,
+                    wgpu::BlendState {
+                        color: per_channel,
+                        alpha: per_channel,
+                    },
+                )
+            };
+            if let Some(policy) = &self.policy {
+                nana_gpu::__framework::render_pipeline_state(
+                    policy,
+                    nana_gpu::PipelineKey {
+                        generation: policy.generation(),
+                        target_format: nana_gpu::__framework::format_from_wgpu(self.format),
+                        sample_count: 1,
+                        shader: 0x7465_7874_6475_616c,
+                        layout: 6,
+                        material: 1,
+                        primitive: 1,
+                        blend: 3,
+                        depth: 0,
+                        vertex_layout: INDEX_BYTES,
+                    },
+                    create,
+                )
+                .expect("dual-source text pipeline uses this context generation")
+            } else {
+                create()
+            }
         });
     }
 
@@ -511,18 +570,17 @@ impl TextGpu {
         let mut rebind = false;
         let physical_size = frame.physical_size;
         if target.uploaded_size != Some(physical_size) {
-            queue.write_buffer(
-                &target.globals,
-                0,
-                bytemuck::bytes_of(&Globals {
-                    transform: orthographic(physical_size[0], physical_size[1]),
-                    contrast: self.contrast.to_gpu(),
-                }),
-            );
-            target.uploaded_size = Some(physical_size);
+            let globals = Globals {
+                transform: orthographic(physical_size[0], physical_size[1]),
+                contrast: self.contrast.to_gpu(),
+            };
+            let global_bytes = bytemuck::bytes_of(&globals);
             if let Some(work) = work {
-                work.record_upload(std::mem::size_of::<Globals>());
+                work.write_buffer(queue, &target.globals, 0, global_bytes);
+            } else {
+                queue.write_buffer(&target.globals, 0, global_bytes);
             }
+            target.uploaded_size = Some(physical_size);
         }
         let mut bytes = TextUploadBytes::default();
         // Both ways: the arena and the order only change capacity inside a
@@ -532,14 +590,37 @@ impl TextGpu {
         // from holding that much GPU memory for the rest of the session.
         if frame.arena_capacity != 0 && frame.arena_capacity != target.instance_capacity as u32 {
             target.instance_capacity = frame.arena_capacity as usize;
-            target.instances =
-                instance_buffer(device, target.instance_capacity as u64 * INSTANCE_BYTES);
+            let size = target.instance_capacity as u64 * INSTANCE_BYTES;
+            let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | READ_BACK;
+            if let Some(work) = work {
+                work.replace_buffer(
+                    device,
+                    &mut target.instances,
+                    size,
+                    usage,
+                    "nana-ui.scene.text.instances",
+                );
+            } else {
+                target.instances = ManagedBuffer::new(instance_buffer(device, size));
+            }
             target.allocations += 1;
             rebind = true;
         }
         if frame.order_capacity != 0 && frame.order_capacity != target.index_capacity as u32 {
             target.index_capacity = frame.order_capacity as usize;
-            target.indices = index_buffer(device, target.index_capacity as u64 * INDEX_BYTES);
+            let size = target.index_capacity as u64 * INDEX_BYTES;
+            let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | READ_BACK;
+            if let Some(work) = work {
+                work.replace_buffer(
+                    device,
+                    &mut target.indices,
+                    size,
+                    usage,
+                    "nana-ui.scene.text.indices",
+                );
+            } else {
+                target.indices = ManagedBuffer::new(index_buffer(device, size));
+            }
             target.allocations += 1;
         }
         // Every block and range this frame moved, in one write to a staging
@@ -557,10 +638,13 @@ impl TextGpu {
         let index_bytes: &[u8] = bytemuck::cast_slice(frame.index_staging);
         let staged = (instance_bytes.len() + index_bytes.len()) as u64;
         if staged != 0 {
+            // Keep surface reconfiguration out of the mapped queue write and
+            // the encoder copies that consume it.
+            let _submission = work.and_then(GpuWorkSink::lock_submission);
             // `None` from wgpu is a staging allocation it could not make — a
             // lost device, or out of memory — already reported through the
             // device's error sink. The frame then tries buffers of its own.
-            let ring = target.stage(device, staged).and_then(|at| {
+            let ring = target.stage(device, work, staged).and_then(|at| {
                 let view = queue.write_buffer_with(
                     &target.staging,
                     at,
@@ -618,12 +702,25 @@ impl TextGpu {
             let mut dirty = frame.run_dirty.clone();
             if frame.runs.len() > target.run_capacity {
                 target.run_capacity = frame.runs.len().next_power_of_two();
-                target.runs = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("nana-ui.scene.text.runs"),
-                    size: (target.run_capacity * std::mem::size_of::<TextRunGpu>()) as u64,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
+                let size = (target.run_capacity * std::mem::size_of::<TextRunGpu>()) as u64;
+                let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+                if let Some(work) = work {
+                    work.replace_buffer(
+                        device,
+                        &mut target.runs,
+                        size,
+                        usage,
+                        "nana-ui.scene.text.runs",
+                    );
+                } else {
+                    target.runs =
+                        ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("nana-ui.scene.text.runs"),
+                            size,
+                            usage,
+                            mapped_at_creation: false,
+                        }));
+                }
                 target.allocations += 1;
                 // The new buffer holds nothing, so every row is owed.
                 dirty = Some(0..frame.runs.len() as u32);
@@ -634,11 +731,12 @@ impl TextGpu {
                 let start = (dirty.start as usize).min(end);
                 let data: &[u8] = bytemuck::cast_slice(&frame.runs[start..end]);
                 if !data.is_empty() {
-                    queue.write_buffer(
-                        &target.runs,
-                        (start * std::mem::size_of::<TextRunGpu>()) as u64,
-                        data,
-                    );
+                    let offset = (start * std::mem::size_of::<TextRunGpu>()) as u64;
+                    if let Some(work) = work {
+                        work.write_buffer(queue, &target.runs, offset, data);
+                    } else {
+                        queue.write_buffer(&target.runs, offset, data);
+                    }
                     bytes.presentation += data.len();
                 }
             }
@@ -647,23 +745,36 @@ impl TextGpu {
             let mut previous: &[TextPresentationGpu] = frame.uploaded_presentations;
             if frame.presentations.len() > target.presentation_capacity {
                 target.presentation_capacity = frame.presentations.len().next_power_of_two();
-                target.presentations = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("nana-ui.scene.text.presentations"),
-                    size: (target.presentation_capacity
-                        * std::mem::size_of::<TextPresentationGpu>())
-                        as u64,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
+                let size = (target.presentation_capacity
+                    * std::mem::size_of::<TextPresentationGpu>()) as u64;
+                let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+                if let Some(work) = work {
+                    work.replace_buffer(
+                        device,
+                        &mut target.presentations,
+                        size,
+                        usage,
+                        "nana-ui.scene.text.presentations",
+                    );
+                } else {
+                    target.presentations =
+                        ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some("nana-ui.scene.text.presentations"),
+                            size,
+                            usage,
+                            mapped_at_creation: false,
+                        }));
+                }
                 target.allocations += 1;
                 previous = &[];
                 rebind = true;
             }
-            bytes.presentation += crate::scene_paint::buffer_upload::upload_changed(
+            bytes.presentation += crate::scene_paint::buffer_upload::upload_changed_with_work(
                 queue,
                 &target.presentations,
                 bytemuck::cast_slice(previous),
                 bytemuck::cast_slice(frame.presentations),
+                work,
             );
         }
         if rebind {
@@ -896,14 +1007,29 @@ impl TextTargetGpu {
     /// second paint before the same submit takes does not wrap onto the
     /// first one's. `None` when that would take more than [`MAX_STAGING`]:
     /// the ring stays sized for the frames a steady shell makes.
-    fn stage(&mut self, device: &wgpu::Device, len: u64) -> Option<u64> {
+    fn stage(
+        &mut self,
+        device: &wgpu::Device,
+        work: Option<&GpuWorkSink>,
+        len: u64,
+    ) -> Option<u64> {
         let wanted = len.saturating_mul(4);
         if wanted > MAX_STAGING {
             return None;
         }
         if wanted > self.staging_capacity {
             self.staging_capacity = wanted.next_power_of_two().max(MIN_STAGING);
-            self.staging = staging_buffer(device, self.staging_capacity);
+            if let Some(work) = work {
+                work.replace_buffer(
+                    device,
+                    &mut self.staging,
+                    self.staging_capacity,
+                    wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                    "nana-ui.scene.text.staging",
+                );
+            } else {
+                self.staging = ManagedBuffer::new(staging_buffer(device, self.staging_capacity));
+            }
             self.staging_cursor = 0;
             self.allocations += 1;
         }
@@ -965,26 +1091,32 @@ impl TextTargetGpu {
             mapped_at_creation: false,
         });
         let mut target = Self {
-            instances: instance_buffer(device, INITIAL_INSTANCES as u64 * INSTANCE_BYTES),
+            instances: ManagedBuffer::new(instance_buffer(
+                device,
+                INITIAL_INSTANCES as u64 * INSTANCE_BYTES,
+            )),
             instance_capacity: INITIAL_INSTANCES,
-            indices: index_buffer(device, INITIAL_INSTANCES as u64 * INDEX_BYTES),
+            indices: ManagedBuffer::new(index_buffer(
+                device,
+                INITIAL_INSTANCES as u64 * INDEX_BYTES,
+            )),
             index_capacity: INITIAL_INSTANCES,
-            staging: staging_buffer(device, MIN_STAGING),
+            staging: ManagedBuffer::new(staging_buffer(device, MIN_STAGING)),
             staging_capacity: MIN_STAGING,
             staging_cursor: 0,
-            runs: device.create_buffer(&wgpu::BufferDescriptor {
+            runs: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.text.runs"),
                 size: (INITIAL_RUNS * std::mem::size_of::<TextRunGpu>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }),
+            })),
             run_capacity: INITIAL_RUNS,
-            presentations: device.create_buffer(&wgpu::BufferDescriptor {
+            presentations: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.text.presentations"),
                 size: (INITIAL_PRESENTATIONS * std::mem::size_of::<TextPresentationGpu>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }),
+            })),
             presentation_capacity: INITIAL_PRESENTATIONS,
             // Replaced below, once the buffers the real layout needs exist.
             globals_bind_group: None,

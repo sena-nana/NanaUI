@@ -176,18 +176,29 @@ impl UrlTextureCache {
             .is_some_and(|bucket| bucket.entries.contains_key(key))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn load(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         url: &str,
     ) -> Option<(u32, u32)> {
+        self.load_with_work(device, queue, url, None)
+    }
+
+    pub(crate) fn load_with_work(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        url: &str,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) -> Option<(u32, u32)> {
         let egress = self.egress(url);
         let frame = self.frame;
         if let Some(bucket) = self.buckets.get_mut(&egress) {
             if let Some(entry) = bucket.entries.get_mut(url) {
                 if let Some((width, height, rgba)) = entry.decoded.take() {
-                    entry.texture = upload(device, queue, (width, height, &rgba));
+                    entry.texture = upload_with_work(device, queue, (width, height, &rgba), work);
                 }
                 entry.used.set(frame);
                 return entry
@@ -244,8 +255,9 @@ impl UrlTextureCache {
             }
             return None;
         }
-        let texture = decode_url_rgba(url)
-            .and_then(|(width, height, rgba)| upload(device, queue, (width, height, &rgba)));
+        let texture = decode_url_rgba(url).and_then(|(width, height, rgba)| {
+            upload_with_work(device, queue, (width, height, &rgba), work)
+        });
         let size = texture
             .as_ref()
             .map(|texture| (texture.width, texture.height));
@@ -375,10 +387,11 @@ impl Drop for UrlTextureCache {
     }
 }
 
-pub(crate) fn upload(
+pub(crate) fn upload_with_work(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     (width, height, rgba): (u32, u32, &[u8]),
+    work: Option<&crate::gpu_work::GpuWorkSink>,
 ) -> Option<CachedUrlTexture> {
     let limit = device.limits().max_texture_dimension_2d;
     if width == 0 || height == 0 || width > limit || height > limit {
@@ -398,25 +411,37 @@ pub(crate) fn upload(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        rgba,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * width),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
+    if let Some(work) = work {
+        work.write_texture(
+            queue,
+            &texture,
+            [0, 0, 0],
+            rgba,
+            4 * width,
             height,
-            depth_or_array_layers: 1,
-        },
-    );
+            [width, height, 1],
+        );
+    } else {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
     Some(CachedUrlTexture {
         view: texture.create_view(&Default::default()),
         width,

@@ -45,9 +45,7 @@ pub(crate) fn frame_presented(
     metric!(gpu::FRAMES_PRESENTED);
     metric!(gpu::SUBMIT_NS, submit);
     if let Some(work) = work {
-        metric!(gpu::UPLOAD_BYTES, work.gpu_upload_bytes);
         metric!(gpu::DRAW_CALLS, work.draw_calls);
-        metric!(gpu::BUFFER_REALLOCATIONS, work.gpu_buffer_reallocations);
     }
 }
 

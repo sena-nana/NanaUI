@@ -8,7 +8,7 @@ use super::{
     clip::{FragmentClip, LogicalRect},
     color::{orthographic_scaled, pack_linear, with_opacity},
 };
-use crate::PhysicalRect;
+use crate::{PhysicalRect, gpu_work::ManagedBuffer};
 
 const INITIAL_INSTANCES: usize = 256;
 /// Unique `FragmentClip` slots interned per frame. The storage buffer grows
@@ -253,16 +253,16 @@ pub(super) struct PathRange {
 /// Vertex and index storage for custom-paint path triangles. Separate from
 /// the stroke instances, but drawn with the same globals and clip palette.
 pub(super) struct PathBuffers {
-    gradients: wgpu::Buffer,
+    gradients: ManagedBuffer,
     gradient_capacity: usize,
     pending_gradients: Vec<GpuGradient>,
     uploaded_gradients: Vec<GpuGradient>,
     /// Gradients already queued this frame, by the resolved gradient they
     /// came from: a mesh repainted every frame shares one.
     gradient_intern: HashMap<usize, u32>,
-    vertices: wgpu::Buffer,
+    vertices: ManagedBuffer,
     vertex_capacity: usize,
-    indices: wgpu::Buffer,
+    indices: ManagedBuffer,
     index_capacity: usize,
     pending_vertices: Vec<GpuPathVertex>,
     pending_indices: Vec<u32>,
@@ -273,14 +273,14 @@ pub(super) struct PathBuffers {
 impl PathBuffers {
     fn new(device: &wgpu::Device) -> Self {
         Self {
-            gradients: gradient_buffer(device, INITIAL_GRADIENTS),
+            gradients: ManagedBuffer::new(gradient_buffer(device, INITIAL_GRADIENTS)),
             gradient_capacity: INITIAL_GRADIENTS,
             pending_gradients: Vec::new(),
             uploaded_gradients: Vec::new(),
             gradient_intern: HashMap::new(),
-            vertices: path_vertex_buffer(device, INITIAL_PATH_VERTICES),
+            vertices: ManagedBuffer::new(path_vertex_buffer(device, INITIAL_PATH_VERTICES)),
             vertex_capacity: INITIAL_PATH_VERTICES,
-            indices: path_index_buffer(device, INITIAL_PATH_INDICES),
+            indices: ManagedBuffer::new(path_index_buffer(device, INITIAL_PATH_INDICES)),
             index_capacity: INITIAL_PATH_INDICES,
             pending_vertices: Vec::new(),
             pending_indices: Vec::new(),
@@ -301,18 +301,30 @@ impl PathBuffers {
         if self.pending_gradients.len() > self.gradient_capacity {
             self.uploaded_gradients.clear();
             self.gradient_capacity = self.pending_gradients.len().next_power_of_two();
-            self.gradients = gradient_buffer(device, self.gradient_capacity);
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.gradients,
+                    (self.gradient_capacity * std::mem::size_of::<GpuGradient>()) as u64,
+                    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    "nana-ui.scene.mesh.gradients",
+                );
+            } else {
+                self.gradients =
+                    ManagedBuffer::new(gradient_buffer(device, self.gradient_capacity));
+            }
             rebind = true;
             if let Some(work) = gpu_work {
                 work.record_realloc();
             }
         }
         if self.pending_gradients != self.uploaded_gradients {
-            let bytes = super::buffer_upload::upload_changed(
+            let bytes = super::buffer_upload::upload_changed_with_work(
                 queue,
                 &self.gradients,
                 bytemuck::cast_slice(&self.uploaded_gradients),
                 bytemuck::cast_slice(&self.pending_gradients),
+                gpu_work,
             );
             self.uploaded_gradients.clone_from(&self.pending_gradients);
             if let Some(work) = gpu_work {
@@ -332,7 +344,18 @@ impl PathBuffers {
         if self.pending_vertices.len() > self.vertex_capacity {
             self.uploaded_vertices.clear();
             self.vertex_capacity = self.pending_vertices.len().next_power_of_two();
-            self.vertices = path_vertex_buffer(device, self.vertex_capacity);
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.vertices,
+                    (self.vertex_capacity * std::mem::size_of::<GpuPathVertex>()) as u64,
+                    wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    "nana-ui.scene.mesh.vertices",
+                );
+            } else {
+                self.vertices =
+                    ManagedBuffer::new(path_vertex_buffer(device, self.vertex_capacity));
+            }
             if let Some(work) = gpu_work {
                 work.record_realloc();
             }
@@ -340,22 +363,34 @@ impl PathBuffers {
         if self.pending_indices.len() > self.index_capacity {
             self.uploaded_indices.clear();
             self.index_capacity = self.pending_indices.len().next_power_of_two();
-            self.indices = path_index_buffer(device, self.index_capacity);
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.indices,
+                    (self.index_capacity * std::mem::size_of::<u32>()) as u64,
+                    wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    "nana-ui.scene.mesh.indices",
+                );
+            } else {
+                self.indices = ManagedBuffer::new(path_index_buffer(device, self.index_capacity));
+            }
             if let Some(work) = gpu_work {
                 work.record_realloc();
             }
         }
-        let vertices = super::buffer_upload::upload_changed(
+        let vertices = super::buffer_upload::upload_changed_with_work(
             queue,
             &self.vertices,
             bytemuck::cast_slice(&self.uploaded_vertices),
             bytemuck::cast_slice(&self.pending_vertices),
+            gpu_work,
         );
-        let indices = super::buffer_upload::upload_changed(
+        let indices = super::buffer_upload::upload_changed_with_work(
             queue,
             &self.indices,
             bytemuck::cast_slice(&self.uploaded_indices),
             bytemuck::cast_slice(&self.pending_indices),
+            gpu_work,
         );
         self.uploaded_vertices.clone_from(&self.pending_vertices);
         self.uploaded_indices.clone_from(&self.pending_indices);
@@ -471,9 +506,9 @@ pub(super) struct MeshPipeline {
     uniforms: wgpu::Buffer,
     /// What `uniforms` holds, so a frame of the same size writes nothing.
     uploaded_uniforms: Option<Uniforms>,
-    clips: wgpu::Buffer,
+    clips: ManagedBuffer,
     clip_capacity: usize,
-    instances: wgpu::Buffer,
+    instances: ManagedBuffer,
     instance_capacity: usize,
     pending_instances: Vec<MeshInstance>,
     uploaded_instances: Vec<MeshInstance>,
@@ -483,7 +518,15 @@ pub(super) struct MeshPipeline {
 }
 
 impl MeshPipeline {
-    pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    #[cfg(test)]
+    pub(super) fn cached_pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+    pub(super) fn new_with_policy(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui.scene.triangle.solid.shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(concat!(
@@ -539,12 +582,12 @@ impl MeshPipeline {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let clips = device.create_buffer(&wgpu::BufferDescriptor {
+        let clips = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.triangle.clips"),
             size: (INITIAL_CLIPS * std::mem::size_of::<GpuClip>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        });
+        }));
         let paths = PathBuffers::new(device);
         let bind_group = mesh_bind_group(device, &bind_layout, &uniforms, &clips, &paths.gradients);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -552,24 +595,11 @@ impl MeshPipeline {
             bind_group_layouts: &[Some(&bind_layout)],
             immediate_size: 0,
         });
-        let pipeline = mesh_pipeline(device, &shader, &layout, format, 1);
-        let pipeline_msaa = mesh_pipeline(device, &shader, &layout, format, 4);
-        let path_pipeline = create_path_pipeline(
-            device,
-            &shader,
-            &layout,
-            format,
-            1,
-            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        );
-        let path_pipeline_msaa = create_path_pipeline(
-            device,
-            &shader,
-            &layout,
-            format,
-            4,
-            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-        );
+        let pipeline = cached_mesh_pipeline(policy, device, &shader, &layout, format, 1, 1);
+        let pipeline_msaa = cached_mesh_pipeline(policy, device, &shader, &layout, format, 4, 2);
+        let path_pipeline = cached_path_pipeline(policy, device, &shader, &layout, format, 1, 3);
+        let path_pipeline_msaa =
+            cached_path_pipeline(policy, device, &shader, &layout, format, 4, 4);
         // dst · (1 − coverage)
         let erase = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::Zero,
@@ -618,12 +648,12 @@ impl MeshPipeline {
             uploaded_uniforms: None,
             clips,
             clip_capacity: INITIAL_CLIPS,
-            instances: device.create_buffer(&wgpu::BufferDescriptor {
+            instances: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.triangle.instances"),
                 size: (INITIAL_INSTANCES * std::mem::size_of::<MeshInstance>()) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }),
+            })),
             instance_capacity: INITIAL_INSTANCES,
             pending_instances: Vec::new(),
             uploaded_instances: Vec::new(),
@@ -911,11 +941,12 @@ impl MeshPipeline {
         // A write has a fixed cost far above these bytes; the size rarely changes.
         if self.uploaded_uniforms != Some(uniforms) {
             let uniform_bytes = bytemuck::bytes_of(&uniforms);
-            queue.write_buffer(&self.uniforms, 0, uniform_bytes);
-            self.uploaded_uniforms = Some(uniforms);
             if let Some(work) = gpu_work {
-                work.record_upload(uniform_bytes.len());
+                work.write_buffer(queue, &self.uniforms, 0, uniform_bytes);
+            } else {
+                queue.write_buffer(&self.uniforms, 0, uniform_bytes);
             }
+            self.uploaded_uniforms = Some(uniforms);
         }
         if self.paths.upload(device, queue, gpu_work) {
             self.bind_group = mesh_bind_group(
@@ -939,12 +970,25 @@ impl MeshPipeline {
         if self.pending_instances.len() > self.instance_capacity {
             self.uploaded_instances.clear();
             self.instance_capacity = self.pending_instances.len().next_power_of_two();
-            self.instances = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.triangle.instances"),
-                size: (self.instance_capacity * std::mem::size_of::<MeshInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            let size = (self.instance_capacity * std::mem::size_of::<MeshInstance>()) as u64;
+            let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.instances,
+                    size,
+                    usage,
+                    "nana-ui.scene.triangle.instances",
+                );
+            } else {
+                self.instances =
+                    ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("nana-ui.scene.triangle.instances"),
+                        size,
+                        usage,
+                        mapped_at_creation: false,
+                    }));
+            }
             if let Some(work) = gpu_work {
                 work.record_realloc();
             }
@@ -952,12 +996,24 @@ impl MeshPipeline {
         if self.pending_clips.len() > self.clip_capacity {
             self.uploaded_clips.clear();
             self.clip_capacity = self.pending_clips.len().next_power_of_two();
-            self.clips = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.triangle.clips"),
-                size: (self.clip_capacity * std::mem::size_of::<GpuClip>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            let size = (self.clip_capacity * std::mem::size_of::<GpuClip>()) as u64;
+            let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+            if let Some(work) = gpu_work {
+                work.replace_buffer(
+                    device,
+                    &mut self.clips,
+                    size,
+                    usage,
+                    "nana-ui.scene.triangle.clips",
+                );
+            } else {
+                self.clips = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("nana-ui.scene.triangle.clips"),
+                    size,
+                    usage,
+                    mapped_at_creation: false,
+                }));
+            }
             self.bind_group = mesh_bind_group(
                 device,
                 &self.bind_layout,
@@ -970,18 +1026,20 @@ impl MeshPipeline {
             }
         }
         let instance_bytes = bytemuck::cast_slice(&self.pending_instances);
-        let instances = super::buffer_upload::upload_changed(
+        let instances = super::buffer_upload::upload_changed_with_work(
             queue,
             &self.instances,
             bytemuck::cast_slice(&self.uploaded_instances),
             instance_bytes,
+            gpu_work,
         );
         let clip_bytes = bytemuck::cast_slice(&self.pending_clips);
-        let clips = super::buffer_upload::upload_changed(
+        let clips = super::buffer_upload::upload_changed_with_work(
             queue,
             &self.clips,
             bytemuck::cast_slice(&self.uploaded_clips),
             clip_bytes,
+            gpu_work,
         );
         self.uploaded_instances.clone_from(&self.pending_instances);
         self.uploaded_clips.clone_from(&self.pending_clips);
@@ -1046,6 +1104,81 @@ fn mesh_bind_group(
             },
         ],
     })
+}
+
+fn cached_mesh_pipeline(
+    policy: Option<&nana_gpu::GpuDeviceState>,
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    material: u64,
+) -> wgpu::RenderPipeline {
+    let create = || mesh_pipeline(device, shader, layout, format, sample_count);
+    if let Some(policy) = policy {
+        nana_gpu::__framework::render_pipeline_state(
+            policy,
+            nana_gpu::PipelineKey {
+                generation: policy.generation(),
+                target_format: nana_gpu::__framework::format_from_wgpu(format),
+                sample_count,
+                shader: 0x6d65_7368_736f_6c69,
+                layout: 3,
+                material,
+                primitive: 0,
+                blend: 1,
+                depth: 0,
+                vertex_layout: std::mem::size_of::<MeshInstance>() as u64,
+            },
+            create,
+        )
+        .expect("mesh pipeline uses this context generation")
+    } else {
+        create()
+    }
+}
+
+fn cached_path_pipeline(
+    policy: Option<&nana_gpu::GpuDeviceState>,
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    material: u64,
+) -> wgpu::RenderPipeline {
+    let create = || {
+        create_path_pipeline(
+            device,
+            shader,
+            layout,
+            format,
+            sample_count,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        )
+    };
+    if let Some(policy) = policy {
+        nana_gpu::__framework::render_pipeline_state(
+            policy,
+            nana_gpu::PipelineKey {
+                generation: policy.generation(),
+                target_format: nana_gpu::__framework::format_from_wgpu(format),
+                sample_count,
+                shader: 0x6d65_7368_7061_7468,
+                layout: 4,
+                material,
+                primitive: 0,
+                blend: 2,
+                depth: 0,
+                vertex_layout: std::mem::size_of::<GpuPathVertex>() as u64,
+            },
+            create,
+        )
+        .expect("path pipeline uses this context generation")
+    } else {
+        create()
+    }
 }
 
 fn create_path_pipeline(
@@ -3235,9 +3368,9 @@ pub(super) struct MeshPipelineTarget {
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     uploaded_uniforms: Option<Uniforms>,
-    clips: wgpu::Buffer,
+    clips: ManagedBuffer,
     clip_capacity: usize,
-    instances: wgpu::Buffer,
+    instances: ManagedBuffer,
     instance_capacity: usize,
     pending_instances: Vec<MeshInstance>,
     uploaded_instances: Vec<MeshInstance>,
@@ -3259,12 +3392,12 @@ impl MeshPipeline {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let clips = device.create_buffer(&wgpu::BufferDescriptor {
+            let clips = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana.target.mesh.clips"),
                 size: (INITIAL_CLIPS * std::mem::size_of::<GpuClip>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            });
+            }));
             let paths = PathBuffers::new(device);
             MeshPipelineTarget {
                 bind_group: mesh_bind_group(
@@ -3279,12 +3412,12 @@ impl MeshPipeline {
                 uploaded_uniforms: None,
                 clips,
                 clip_capacity: INITIAL_CLIPS,
-                instances: device.create_buffer(&wgpu::BufferDescriptor {
+                instances: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("nana.target.mesh.instances"),
                     size: (INITIAL_INSTANCES * std::mem::size_of::<MeshInstance>()) as u64,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
-                }),
+                })),
                 instance_capacity: INITIAL_INSTANCES,
                 pending_instances: Vec::new(),
                 uploaded_instances: Vec::new(),

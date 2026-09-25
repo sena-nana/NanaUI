@@ -66,6 +66,12 @@ pub fn encoder(frame: &mut FrameContext) -> &mut wgpu::CommandEncoder {
     frame.encoder_mut()
 }
 
+pub fn transient_registry(
+    frame: &FrameContext,
+) -> std::sync::Arc<std::sync::Mutex<Vec<(crate::TransientResourceKey, wgpu::Buffer)>>> {
+    frame.transient_registry()
+}
+
 pub fn submission_index(submission: &GpuSubmission) -> &wgpu::SubmissionIndex {
     &submission.index
 }
@@ -105,4 +111,50 @@ pub const fn format_to_wgpu(format: GpuTextureFormat) -> wgpu::TextureFormat {
 
 pub fn usages_to_wgpu(usage: GpuTextureUsages) -> wgpu::TextureUsages {
     usage.to_wgpu()
+}
+
+/// Share a real render pipeline across renderers on this context. Keys must
+/// identify the complete immutable recipe (format, sample count, shader,
+/// layout, material, primitive, blend/depth state and vertex layout).
+/// The factory runs only on a miss and must not reenter the policy registry.
+pub fn render_pipeline(
+    gpu: &GpuContext,
+    key: crate::PipelineKey,
+    create: impl FnOnce() -> wgpu::RenderPipeline,
+) -> Result<wgpu::RenderPipeline, crate::GpuError> {
+    gpu.policy().pipeline(key, create)
+}
+
+pub fn render_pipeline_state(
+    policy: &crate::GpuDeviceState,
+    key: crate::PipelineKey,
+    create: impl FnOnce() -> wgpu::RenderPipeline,
+) -> Result<wgpu::RenderPipeline, crate::GpuError> {
+    policy.pipeline(key, create)
+}
+
+/// Whether the production policy has materialized its upload arena backing.
+pub fn upload_backing_size(gpu: &GpuContext) -> Option<u64> {
+    gpu.policy().upload_backing_size()
+}
+
+pub fn stage_upload(gpu: &GpuContext, queue: &wgpu::Queue, bytes: &[u8], alignment: u64) -> bool {
+    gpu.policy().stage_upload(queue, bytes, alignment).is_some()
+}
+
+pub fn acquire_transient_buffer(
+    policy: &crate::GpuDeviceState,
+    key: &crate::TransientResourceKey,
+    device: &wgpu::Device,
+    label: &'static str,
+    usage: wgpu::BufferUsages,
+) -> Result<wgpu::Buffer, crate::GpuError> {
+    policy.acquire_transient_buffer(*key, || {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: key.byte_size,
+            usage,
+            mapped_at_creation: false,
+        })
+    })
 }

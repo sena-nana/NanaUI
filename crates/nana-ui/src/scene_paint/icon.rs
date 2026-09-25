@@ -6,7 +6,7 @@ use super::{
     clip::{self, FragmentClip, LogicalRect},
     color::{orthographic, pack_linear, with_opacity},
 };
-use crate::{PhysicalRect, icons::Icon};
+use crate::{PhysicalRect, gpu_work::ManagedBuffer, icons::Icon};
 
 /// Per-glyph raster edge cap. A glyph is rasterized at twice its dest size,
 /// so this also caps the biggest cell the shared atlas has to place.
@@ -189,7 +189,7 @@ pub(super) struct IconPipeline {
     sampler: wgpu::Sampler,
     uniform_bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
-    vertices: wgpu::Buffer,
+    vertices: ManagedBuffer,
     vertex_capacity: usize,
     pending_vertices: Vec<IconVertex>,
     uploaded_vertices: Vec<IconVertex>,
@@ -206,7 +206,20 @@ pub(super) struct IconPipeline {
 }
 
 impl IconPipeline {
+    #[cfg(test)]
+    pub(super) fn cached_pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+    #[cfg(test)]
     pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::new_with_policy(device, format, None)
+    }
+
+    pub(super) fn new_with_policy(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui.scene.icon.shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(ICON_SHADER)),
@@ -271,45 +284,68 @@ impl IconPipeline {
             bind_group_layouts: &[Some(&uniform_layout), Some(&atlas_layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.scene.icon.pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<IconVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array!(
-                        0 => Float32x2,
-                        1 => Float32x2,
-                        2 => Float32x4,
-                        3 => Float32x4,
-                        4 => Float32x4,
-                        5 => Float32x3,
-                    ),
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let create_pipeline = || {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("nana-ui.scene.icon.pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<IconVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array!(
+                            0 => Float32x2,
+                            1 => Float32x2,
+                            2 => Float32x4,
+                            3 => Float32x4,
+                            4 => Float32x4,
+                            5 => Float32x3,
+                        ),
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = if let Some(policy) = policy {
+            nana_gpu::__framework::render_pipeline_state(
+                policy,
+                nana_gpu::PipelineKey {
+                    generation: policy.generation(),
+                    target_format: nana_gpu::__framework::format_from_wgpu(format),
+                    sample_count: 1,
+                    shader: 0x6963_6f6e_7069_7065,
+                    layout: 2,
+                    material: 0,
+                    primitive: 0,
+                    blend: 1,
+                    depth: 0,
+                    vertex_layout: std::mem::size_of::<IconVertex>() as u64,
+                },
+                create_pipeline,
+            )
+            .expect("icon pipeline uses this context generation")
+        } else {
+            create_pipeline()
+        };
         let atlas = new_atlas(device, &atlas_layout, &sampler, ATLAS_START_PX);
         Self {
             pipeline,
@@ -317,12 +353,12 @@ impl IconPipeline {
             sampler,
             uniform_bind_group,
             uniforms,
-            vertices: device.create_buffer(&wgpu::BufferDescriptor {
+            vertices: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.icon.vertices"),
                 size: (INITIAL_VERTICES * std::mem::size_of::<IconVertex>()) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }),
+            })),
             vertex_capacity: INITIAL_VERTICES,
             pending_vertices: Vec::new(),
             uploaded_vertices: Vec::new(),
@@ -347,6 +383,7 @@ impl IconPipeline {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -360,6 +397,36 @@ impl IconPipeline {
         opacity: f32,
         fragment_clip: FragmentClip,
     ) -> Option<PreparedIcon> {
+        self.prepare_with_work(
+            device,
+            queue,
+            bounds,
+            affine,
+            persp,
+            scale,
+            icon,
+            color,
+            opacity,
+            fragment_clip,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn prepare_with_work(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bounds: LogicalRect,
+        affine: [f32; 6],
+        persp: [f32; 2],
+        scale: f32,
+        icon: Icon,
+        color: [f32; 4],
+        opacity: f32,
+        fragment_clip: FragmentClip,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) -> Option<PreparedIcon> {
         let extent = bounds.width.min(bounds.height);
         if extent <= 0.0 || scale <= 0.0 {
             return None;
@@ -372,7 +439,7 @@ impl IconPipeline {
         };
         if !self.entries.contains_key(&key) {
             let rgba = rasterize_icon(icon.svg(), px)?;
-            if !self.insert(device, queue, key, px, icon.svg(), &rgba) {
+            if !self.insert_with_work(device, queue, key, px, icon.svg(), &rgba, work) {
                 return None;
             }
         }
@@ -419,11 +486,13 @@ impl IconPipeline {
             let uniforms = Uniforms {
                 transform: orthographic(self.physical_size[0], self.physical_size[1]),
             };
-            queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniforms));
-            self.uploaded_size = Some(self.physical_size);
+            let uniform_bytes = bytemuck::bytes_of(&uniforms);
             if let Some(work) = work {
-                work.record_upload(std::mem::size_of::<Uniforms>());
+                work.write_buffer(queue, &self.uniforms, 0, uniform_bytes);
+            } else {
+                queue.write_buffer(&self.uniforms, 0, uniform_bytes);
             }
+            self.uploaded_size = Some(self.physical_size);
         }
         if self.pending_vertices.len() > self.vertex_capacity {
             self.uploaded_vertices.clear();
@@ -431,18 +500,31 @@ impl IconPipeline {
                 work.record_realloc();
             }
             self.vertex_capacity = self.pending_vertices.len().next_power_of_two();
-            self.vertices = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.icon.vertices"),
-                size: (self.vertex_capacity * std::mem::size_of::<IconVertex>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            let size = (self.vertex_capacity * std::mem::size_of::<IconVertex>()) as u64;
+            let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+            if let Some(work) = work {
+                work.replace_buffer(
+                    device,
+                    &mut self.vertices,
+                    size,
+                    usage,
+                    "nana-ui.scene.icon.vertices",
+                );
+            } else {
+                self.vertices = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("nana-ui.scene.icon.vertices"),
+                    size,
+                    usage,
+                    mapped_at_creation: false,
+                }))
+            };
         }
-        let bytes = super::buffer_upload::upload_changed(
+        let bytes = super::buffer_upload::upload_changed_with_work(
             queue,
             &self.vertices,
             bytemuck::cast_slice(&self.uploaded_vertices),
             bytemuck::cast_slice(&self.pending_vertices),
+            work,
         );
         self.uploaded_vertices.clone_from(&self.pending_vertices);
         if let Some(work) = work {
@@ -499,6 +581,7 @@ impl IconPipeline {
     /// Place one glyph in the shared atlas. Returns `false` only when even a
     /// maximal atlas cannot hold this frame's glyphs, which is also the one
     /// case where the icon does not paint.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn insert(
         &mut self,
         device: &wgpu::Device,
@@ -508,11 +591,25 @@ impl IconPipeline {
         svg: &'static str,
         rgba: &[u8],
     ) -> bool {
+        self.insert_with_work(device, queue, key, px, svg, rgba, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_with_work(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: AtlasKey,
+        px: u32,
+        svg: &'static str,
+        rgba: &[u8],
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) -> bool {
         if self.exhausted {
             return false;
         }
         if let Some(cell) = self.allocate(px + CELL_GUTTER * 2) {
-            self.write_cell(queue, cell, px, rgba);
+            self.write_cell(queue, cell, px, rgba, work);
             self.entries.insert(
                 key,
                 AtlasEntry {
@@ -526,7 +623,7 @@ impl IconPipeline {
         // Full for this cell size. Rebuilding the atlas around exactly this
         // frame's glyphs both reclaims every idle entry and compacts the
         // shelves, so it is the eviction policy as well as the growth path.
-        self.repack(device, queue, (key, svg, rgba))
+        self.repack(device, queue, (key, svg, rgba), work)
     }
 
     /// Reserve a `cell`-sized square. Shelves are homogeneous, so a glyph
@@ -571,6 +668,7 @@ impl IconPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         extra: (AtlasKey, &'static str, &[u8]),
+        work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> bool {
         let (extra_key, extra_svg, extra_rgba) = extra;
         // `frame_keys` gains the caller's key only after `prepare` has placed
@@ -637,13 +735,13 @@ impl IconPipeline {
             };
             let cell = [entry.origin[0] - CELL_GUTTER, entry.origin[1] - CELL_GUTTER];
             if *key == extra_key {
-                self.write_cell(queue, cell, key.px, extra_rgba);
+                self.write_cell(queue, cell, key.px, extra_rgba, work);
                 continue;
             }
             let Some(rgba) = rasterize_icon(svg, key.px) else {
                 continue;
             };
-            self.write_cell(queue, cell, key.px, &rgba);
+            self.write_cell(queue, cell, key.px, &rgba, work);
         }
         self.patch_frame_uvs();
         true
@@ -676,30 +774,49 @@ impl IconPipeline {
     /// Upload one glyph into its cell. The gutter is left at the texture's
     /// initial zero, which is all it has to be: no other glyph writes there,
     /// so a tap that leaves a cell reads transparent instead of a neighbour.
-    fn write_cell(&mut self, queue: &wgpu::Queue, cell: [u32; 2], px: u32, rgba: &[u8]) {
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.atlas.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: cell[0] + CELL_GUTTER,
-                    y: cell[1] + CELL_GUTTER,
-                    z: 0,
+    fn write_cell(
+        &mut self,
+        queue: &wgpu::Queue,
+        cell: [u32; 2],
+        px: u32,
+        rgba: &[u8],
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        if let Some(work) = work {
+            work.write_texture(
+                queue,
+                &self.atlas.texture,
+                [cell[0] + CELL_GUTTER, cell[1] + CELL_GUTTER, 0],
+                rgba,
+                px * 4,
+                px,
+                [px, px, 1],
+            );
+        } else {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: cell[0] + CELL_GUTTER,
+                        y: cell[1] + CELL_GUTTER,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
                 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(px * 4),
-                rows_per_image: Some(px),
-            },
-            wgpu::Extent3d {
-                width: px,
-                height: px,
-                depth_or_array_layers: 1,
-            },
-        );
+                rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(px * 4),
+                    rows_per_image: Some(px),
+                },
+                wgpu::Extent3d {
+                    width: px,
+                    height: px,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         self.pending_texture_bytes += rgba.len();
     }
 }
@@ -969,7 +1086,7 @@ mod tests {
 pub(super) struct IconPipelineTarget {
     uniform_bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
-    vertices: wgpu::Buffer,
+    vertices: ManagedBuffer,
     vertex_capacity: usize,
     pending_vertices: Vec<IconVertex>,
     uploaded_vertices: Vec<IconVertex>,
@@ -1006,12 +1123,12 @@ impl IconPipeline {
                     }],
                 }),
                 uniforms,
-                vertices: device.create_buffer(&wgpu::BufferDescriptor {
+                vertices: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("nana.target.icon.vertices"),
                     size: (INITIAL_VERTICES * std::mem::size_of::<IconVertex>()) as u64,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
-                }),
+                })),
                 vertex_capacity: INITIAL_VERTICES,
                 pending_vertices: Vec::new(),
                 uploaded_vertices: Vec::new(),

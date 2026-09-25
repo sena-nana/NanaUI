@@ -58,6 +58,11 @@ impl GpuTextureUsages {
         Self(0)
     }
 
+    /// Stable Nana-level bit identity for resource-pool keys.
+    pub const fn bits(self) -> u32 {
+        self.0 as u32
+    }
+
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }

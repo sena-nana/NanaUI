@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::frame::FrameContext;
+use crate::policy::GpuDeviceState;
 use crate::texture::{
     GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion, GpuTextureUsages,
 };
@@ -18,7 +19,7 @@ static NEXT_DEVICE_GENERATION: AtomicU64 = AtomicU64::new(1);
 pub struct DeviceGeneration(NonZeroU64);
 
 impl DeviceGeneration {
-    fn next() -> Self {
+    pub(crate) fn next() -> Self {
         let value = NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed);
         Self(NonZeroU64::new(value).expect("device generation counter overflowed"))
     }
@@ -222,6 +223,9 @@ pub(crate) struct GpuInner {
     submission: RwLock<()>,
     loss: Arc<LossState>,
     next_frame: AtomicU64,
+    pub(crate) next_submission: AtomicU64,
+    pub(crate) submission_order: Mutex<()>,
+    policy: GpuDeviceState,
 }
 
 /// The one device a process renders with. Cloning is cheap and keeps the
@@ -272,9 +276,11 @@ impl GpuContext {
                 .get_downlevel_capabilities()
                 .flags
                 .contains(wgpu::DownlevelFlags::WEBGPU_TEXTURE_FORMAT_SUPPORT);
+        let generation = DeviceGeneration::next();
+        let policy = GpuDeviceState::new_with_device(generation, &device);
         Self {
             inner: Arc::new(GpuInner {
-                generation: DeviceGeneration::next(),
+                generation,
                 adapter,
                 device,
                 queue,
@@ -284,6 +290,9 @@ impl GpuContext {
                 submission: RwLock::new(()),
                 loss,
                 next_frame: AtomicU64::new(1),
+                next_submission: AtomicU64::new(1),
+                submission_order: Mutex::new(()),
+                policy,
             }),
         }
     }
@@ -294,6 +303,12 @@ impl GpuContext {
 
     pub fn capabilities(&self) -> &GpuCapabilities {
         &self.inner.capabilities
+    }
+
+    /// Shared per-device policy for uploads, transient resources, pipeline
+    /// identities, realization hooks and retirement bookkeeping.
+    pub fn policy(&self) -> &GpuDeviceState {
+        &self.inner.policy
     }
 
     /// Whether the device was lost. Sticky: a lost device never recovers, the
@@ -417,8 +432,69 @@ impl GpuContext {
                 provided: bytes.len(),
             });
         }
-        let _submission = self.lock_submission();
-        self.inner.queue.write_texture(
+        let aligned_row = bytes_per_row
+            .checked_add(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1)
+            .map(|value| {
+                value / wgpu::COPY_BYTES_PER_ROW_ALIGNMENT * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
+            })
+            .ok_or(GpuError::RegionOutOfBounds)?;
+        let staging_len = (aligned_row as usize)
+            .checked_mul(region.height as usize)
+            .ok_or(GpuError::RegionOutOfBounds)?;
+        let mut staging = vec![0u8; staging_len];
+        for row_index in 0..region.height as usize {
+            let source_start = row_index * bytes_per_row as usize;
+            let destination_start = row_index * aligned_row as usize;
+            staging[destination_start..destination_start + row as usize]
+                .copy_from_slice(&bytes[source_start..source_start + row as usize]);
+        }
+        // Acquire the frame slot before reserving arena bytes. Otherwise a
+        // first frame could reset the arena between staging and the copy.
+        let mut frame = self.begin_frame("NanaUI texture upload");
+        let staged = {
+            let _submission = self.lock_submission();
+            self.inner
+                .policy
+                .stage_upload(&self.inner.queue, &staging, 256)
+        };
+        let Some((reservation, backing)) = staged else {
+            frame.discard();
+            let _submission = self.lock_submission();
+            self.inner.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: texture.raw(),
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: region.x,
+                        y: region.y,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &bytes[..needed],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(region.height),
+                },
+                wgpu::Extent3d {
+                    width: region.width,
+                    height: region.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            self.inner.policy.record_upload(needed as u64);
+            return Ok(());
+        };
+        crate::frame::FrameContext::encoder_mut(&mut frame).copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: &backing,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: reservation.offset,
+                    bytes_per_row: Some(aligned_row),
+                    rows_per_image: Some(region.height),
+                },
+            },
             wgpu::TexelCopyTextureInfo {
                 texture: texture.raw(),
                 mip_level: 0,
@@ -429,31 +505,57 @@ impl GpuContext {
                 },
                 aspect: wgpu::TextureAspect::All,
             },
-            &bytes[..needed],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(region.height),
-            },
             wgpu::Extent3d {
                 width: region.width,
                 height: region.height,
                 depth_or_array_layers: 1,
             },
         );
+        let _submission = frame.submit();
         Ok(())
     }
 
     /// Start recording one frame. The returned [`FrameContext`] owns the
     /// encoder until it is submitted or dropped.
     pub fn begin_frame(&self, label: &'static str) -> FrameContext {
+        self.inner.policy.begin_frame();
         let id = self.inner.next_frame.fetch_add(1, Ordering::Relaxed);
         let id = FrameId::new(id);
+        let frame_slot = loop {
+            if let Some(slot) = self.inner.policy.acquire_frame_slot(id.get()) {
+                break Some(slot);
+            }
+            // A full policy slot means the oldest submitted frame has not
+            // reached its completion callback yet. Polling makes progress
+            // without creating an untracked frame that could overlap upload
+            // or retirement state.
+            let _ = self.inner.device.poll(wgpu::PollType::Poll);
+            std::thread::yield_now();
+        };
+        self.make_frame(label, id, frame_slot)
+    }
+
+    /// Try to start a frame without waiting for an in-flight slot. Hosts that
+    /// have their own scheduling loop can use this to turn a policy stall into
+    /// a redraw request instead of blocking the caller.
+    pub fn try_begin_frame(&self, label: &'static str) -> Option<FrameContext> {
+        self.inner.policy.begin_frame();
+        let id = FrameId::new(self.inner.next_frame.fetch_add(1, Ordering::Relaxed));
+        let slot = self.inner.policy.acquire_frame_slot(id.get())?;
+        Some(self.make_frame(label, id, Some(slot)))
+    }
+
+    fn make_frame(
+        &self,
+        label: &'static str,
+        id: FrameId,
+        frame_slot: Option<crate::FrameSlotId>,
+    ) -> FrameContext {
         let encoder = self
             .inner
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
-        FrameContext::new(self.clone(), id, encoder)
+        FrameContext::new(self.clone(), id, encoder, frame_slot)
     }
 
     /// What WGPU will allow for `format`, chosen the way WGPU validates it:

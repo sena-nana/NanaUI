@@ -51,9 +51,10 @@ impl HostTexturePipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
+        policy: &nana_gpu::GpuDeviceState,
     ) -> Self {
         Self {
-            pipeline: GpuTexturePipeline::new(device, queue, format),
+            pipeline: GpuTexturePipeline::new_with_policy(device, queue, format, Some(policy)),
         }
     }
 

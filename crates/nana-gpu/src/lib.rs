@@ -12,6 +12,9 @@
 //! - [`GpuTexture`] / [`GpuRenderTarget`] carry the device generation they
 //!   were created on, so a resource from a replaced device is refused instead
 //!   of reaching the backend.
+//! - [`GpuDeviceState`] is the shared per-device policy authority for bounded
+//!   uploads, frame slots, transient keys, pipeline/realization identities and
+//!   submission retirement. It contains no public WGPU types.
 //!
 //! WGPU is the only backend. Its objects stay behind the contract; the
 //! `wgpu-interop` feature is the explicit escape hatch for hosts that bring
@@ -20,6 +23,7 @@
 mod context;
 mod error;
 mod frame;
+mod policy;
 mod texture;
 
 #[doc(hidden)]
@@ -34,6 +38,10 @@ pub use context::{
 };
 pub use error::GpuError;
 pub use frame::{FrameContext, FrameId, GpuSubmission, RetainedWrites};
+pub use policy::{
+    FrameSlotId, GpuDeviceState, GpuPolicyStats, PipelineKey, TransientResourceKey,
+    UploadReservation,
+};
 pub use texture::{
     GpuRenderTarget, GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion,
     GpuTextureUsages,

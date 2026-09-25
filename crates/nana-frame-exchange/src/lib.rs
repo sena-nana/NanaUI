@@ -17,7 +17,7 @@ use std::{
     },
 };
 
-use nana_gpu::{__framework, GpuTextureDescriptor, GpuTextureUsages};
+use nana_gpu::{__framework, GpuTextureDescriptor, GpuTextureUsages, TransientResourceKey};
 /// The contract types an exchange is built from, so a producer crate needs no
 /// other GPU dependency.
 pub use nana_gpu::{DeviceGeneration, GpuContext, GpuTexture, GpuTextureFormat};
@@ -376,37 +376,59 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
         };
         self.sequence = sequence;
         let slot = &mut self.slots[index];
-        // Only a free slot is resized, so a leased frame keeps its dimensions
-        // and the pool never grows past its capacity.
-        if slot.texture.as_ref().is_none_or(|texture| {
-            texture.size() != (size.width, size.height) || texture.format() != format
-        }) {
-            match self.gpu.create_texture(&GpuTextureDescriptor {
+        let Some(mut frame) = self.gpu.try_begin_frame("NanaUI frame exchange copy") else {
+            slot.ownership.release(sequence);
+            self.stats.pool_full += 1;
+            return CopyOutcome::PoolFull;
+        };
+        // A reserved slot was free before this copy, so its previous texture
+        // is no longer sampled by a consumer. Return it to the shared policy
+        // and reacquire by the complete resource key. This makes resize and
+        // steady-size exchange copies use the same bounded pool as renderers.
+        let usage = GpuTextureUsages::SAMPLED | GpuTextureUsages::COPY_DST;
+        if let Some(old) = slot.texture.take() {
+            let old_key = TransientResourceKey::new(
+                self.gpu.generation(),
+                old.format(),
+                old.usage().bits(),
+                old.size().0,
+                old.size().1,
+                1,
+            );
+            self.gpu.policy().release_transient_texture(old_key, old);
+        }
+        let key = TransientResourceKey::new(
+            self.gpu.generation(),
+            format,
+            usage.bits(),
+            size.width,
+            size.height,
+            1,
+        );
+        let gpu = self.gpu.clone();
+        match self.gpu.policy().acquire_transient_texture(key, || {
+            gpu.create_texture(&GpuTextureDescriptor {
                 label: Some("NanaUI frame exchange slot"),
                 width: size.width,
                 height: size.height,
                 format,
-                usage: GpuTextureUsages::SAMPLED | GpuTextureUsages::COPY_DST,
-            }) {
-                Ok(texture) => slot.texture = Some(texture),
-                Err(_) => {
-                    slot.ownership.release(sequence);
-                    return CopyOutcome::IncompatibleSource;
-                }
+                usage,
+            })
+        }) {
+            Ok(texture) => slot.texture = Some(texture),
+            Err(_) => {
+                slot.ownership.release(sequence);
+                return CopyOutcome::IncompatibleSource;
             }
         }
         let texture = __framework::texture(slot.texture.as_ref().expect("frame exchange slot"));
-        let device = __framework::device(&self.gpu);
         let queue = __framework::queue(&self.gpu);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("NanaUI frame exchange copy"),
-        });
-        encoder.copy_texture_to_texture(source.as_image_copy(), texture.as_image_copy(), size);
-        let commands = encoder.finish();
-        {
-            let _submission = __framework::lock_submission(&self.gpu);
-            queue.submit([commands]);
-        }
+        __framework::encoder(&mut frame).copy_texture_to_texture(
+            source.as_image_copy(),
+            texture.as_image_copy(),
+            size,
+        );
+        let _submission = frame.submit();
         let completed = Arc::new(AtomicBool::new(false));
         let completion = Arc::clone(&completed);
         queue.on_submitted_work_done(move || completion.store(true, Ordering::Release));
@@ -553,6 +575,38 @@ mod tests {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("frame exchange test requires a WGPU device");
         __framework::adopt(adapter, device, queue)
+    }
+
+    #[test]
+    fn shared_frame_slot_pressure_drops_copy_without_leaking_exchange_slot() {
+        let gpu = test_gpu();
+        gpu.policy().set_frame_slot_count(1);
+        let recording = gpu.try_begin_frame("unsubmitted consumer").unwrap();
+        let mut exchange = FrameExchange::new(&gpu, DEFAULT_CAPACITY, 0u64, Arc::new(|| {}));
+        let texture = source(&gpu, 4, 1, wgpu::TextureUsages::COPY_SRC);
+        assert_eq!(exchange.copy_from(&texture, 0), CopyOutcome::PoolFull);
+        assert_eq!(exchange.stats().occupied, 0);
+        drop(recording);
+        assert_eq!(exchange.copy_from(&texture, 0), CopyOutcome::Submitted);
+        wait(&gpu);
+        assert!(exchange.poll());
+    }
+
+    #[test]
+    fn steady_exchange_reuses_real_transient_texture() {
+        let gpu = test_gpu();
+        let mut exchange =
+            FrameExchange::new(&gpu, NonZeroU8::new(1).unwrap(), 0u64, Arc::new(|| {}));
+        let texture = source(&gpu, 4, 1, wgpu::TextureUsages::COPY_SRC);
+        assert_eq!(exchange.copy_from(&texture, 0), CopyOutcome::Submitted);
+        wait(&gpu);
+        assert!(exchange.poll());
+        exchange.set_epoch(1);
+        wait(&gpu);
+        let _ = exchange.poll();
+        assert_eq!(exchange.copy_from(&texture, 1), CopyOutcome::Submitted);
+        let stats = gpu.policy().stats();
+        assert!(stats.transient_pool_hits >= 1);
     }
 
     fn source(gpu: &GpuContext, size: u32, layers: u32, usage: wgpu::TextureUsages) -> GpuTexture {

@@ -38,7 +38,7 @@ use url_texture_cache::egress_of;
 
 use crate::{
     HostTextureRegistry, PhysicalRect,
-    gpu_work::{GpuStageTimings, GpuWorkSink},
+    gpu_work::{GpuStageTimings, GpuWorkSink, TransientBufferRegistry},
     scene_gpu::{
         SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode, SceneGpuPassContext,
         SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry,
@@ -248,8 +248,9 @@ impl SceneWgpuPainter {
         let device = __framework::device(gpu);
         let queue = __framework::queue(gpu);
         let format = __framework::format_to_wgpu(format);
-        let quads = QuadPipeline::new(device, format);
-        let motion = MotionGpuResources::new(device, quads.motion_layout());
+        let quads = QuadPipeline::new_with_policy(device, format, Some(gpu.policy()));
+        let motion =
+            MotionGpuResources::new_with_policy(device, quads.motion_layout(), Some(gpu.policy()));
         Self {
             targets: std::collections::HashMap::new(),
             prepared_batch: None,
@@ -261,11 +262,11 @@ impl SceneWgpuPainter {
             format,
             quads,
             motion,
-            meshes: MeshPipeline::new(device, format),
-            icons: IconPipeline::new(device, format),
-            text: TextPipeline::new(device, queue, format),
-            host_textures: HostTexturePipeline::new(device, queue, format),
-            backdrop: BackdropPipeline::new(device, format),
+            meshes: MeshPipeline::new_with_policy(device, format, Some(gpu.policy())),
+            icons: IconPipeline::new_with_policy(device, format, Some(gpu.policy())),
+            text: TextPipeline::new_with_policy(device, queue, format, gpu.policy()),
+            host_textures: HostTexturePipeline::new(device, queue, format, gpu.policy()),
+            backdrop: BackdropPipeline::new(device, format, gpu.policy()),
             dest: None,
             // Pipeline-cache reuse requires a host-enabled device feature;
             // the painter must not demand it, so degrade to per-recreate
@@ -464,6 +465,7 @@ impl SceneWgpuPainter {
             HostTexturePipeline::invalidate_target_image_bindings(&mut state.host_textures);
         }
         self.swap_target_state(&mut state);
+        let transient_registry = __framework::transient_registry(frame);
         let result = self.paint_recorded(
             scene,
             __framework::encoder(frame),
@@ -471,6 +473,7 @@ impl SceneWgpuPainter {
             viewport,
             host_textures,
             gpu_renderers,
+            Some(transient_registry),
         );
         self.swap_target_state(&mut state);
         state.image_revision = self.image_revision;
@@ -574,6 +577,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.begin_frame(None, frame, target)?;
+        let transient_registry = __framework::transient_registry(frame);
         let result = self.paint_recorded(
             scene,
             __framework::encoder(frame),
@@ -581,6 +585,7 @@ impl SceneWgpuPainter {
             viewport,
             host_textures,
             gpu_renderers,
+            Some(transient_registry),
         );
         if result.is_ok() {
             frame.record_retained_writes(&self.retained_default, DEFAULT_TARGET);
@@ -588,6 +593,7 @@ impl SceneWgpuPainter {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn paint_recorded(
         &mut self,
         scene: &UiScene,
@@ -596,6 +602,7 @@ impl SceneWgpuPainter {
         viewport: ScenePaintViewport,
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
+        transient_registry: Option<TransientBufferRegistry>,
     ) -> Result<(), ScenePaintError> {
         // A rejected frame must not report a previous target's successful work.
         self.last_gpu_work = None;
@@ -648,7 +655,7 @@ impl SceneWgpuPainter {
         ];
         let origin = PaintOrigin::new(paint_origin([0.0, 0.0], viewport.scene_origin), scale);
         let viewport_clip = LogicalRect::viewport([0.0, 0.0], viewport.logical_size);
-        let gpu_work = GpuWorkSink::new();
+        let gpu_work = GpuWorkSink::with_gpu_registry(&self.gpu, transient_registry);
         let clear = wgpu::Color {
             r: viewport.clear_color[0] as f64,
             g: viewport.clear_color[1] as f64,
@@ -940,7 +947,7 @@ impl SceneWgpuPainter {
                             scissor,
                             dest_physical,
                         );
-                        if let Some(index) = self.quads.push(
+                        if let Some(index) = self.quads.push_with_work(
                             &self.device,
                             &self.queue,
                             bounds,
@@ -955,6 +962,7 @@ impl SceneWgpuPainter {
                             *shadow,
                             opacity,
                             surface,
+                            Some(&gpu_work),
                         ) {
                             // A fully transparent surface shows nothing,
                             // backdrop blur included.
@@ -1017,7 +1025,7 @@ impl SceneWgpuPainter {
                                 scissor,
                                 dest_physical,
                             );
-                            if let Some(index) = self.quads.push(
+                            if let Some(index) = self.quads.push_with_work(
                                 &self.device,
                                 &self.queue,
                                 item_bounds,
@@ -1032,6 +1040,7 @@ impl SceneWgpuPainter {
                                 *shadow,
                                 opacity,
                                 surface,
+                                Some(&gpu_work),
                             ) {
                                 if let Some(filter) = surface
                                     .backdrop_filter
@@ -1209,7 +1218,7 @@ impl SceneWgpuPainter {
                                 scissor,
                                 dest_physical,
                             );
-                            if let Some(index) = self.quads.push(
+                            if let Some(index) = self.quads.push_with_work(
                                 &self.device,
                                 &self.queue,
                                 item_bounds,
@@ -1224,6 +1233,7 @@ impl SceneWgpuPainter {
                                 no_shadow,
                                 opacity,
                                 &default_surface,
+                                Some(&gpu_work),
                             ) {
                                 for quad_index in index..self.quads.pending_len() {
                                     push_quad(
@@ -1238,7 +1248,7 @@ impl SceneWgpuPainter {
                         }
                     }
                     ScenePrimitiveKind::Icon { icon, color } => {
-                        if let Some(prepared) = self.icons.prepare(
+                        if let Some(prepared) = self.icons.prepare_with_work(
                             &self.device,
                             &self.queue,
                             bounds,
@@ -1249,6 +1259,7 @@ impl SceneWgpuPainter {
                             color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                             opacity,
                             frag_clip,
+                            Some(&gpu_work),
                         ) {
                             push_icon(
                                 &mut commands,
@@ -1267,7 +1278,7 @@ impl SceneWgpuPainter {
                     } => {
                         for item in batch {
                             let item_bounds = local_rect(*item);
-                            if let Some(prepared) = self.icons.prepare(
+                            if let Some(prepared) = self.icons.prepare_with_work(
                                 &self.device,
                                 &self.queue,
                                 item_bounds,
@@ -1278,6 +1289,7 @@ impl SceneWgpuPainter {
                                 color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                                 opacity,
                                 frag_clip,
+                                Some(&gpu_work),
                             ) {
                                 push_icon(
                                     &mut commands,
@@ -1599,6 +1611,7 @@ impl SceneWgpuPainter {
             dest_physical[0],
             dest_physical[1],
             !gpu_interleaved,
+            self.gpu.policy(),
         );
         if max_group_depth > 0 {
             self.dest.as_mut().expect("dest target").prepare_groups(
@@ -1620,7 +1633,8 @@ impl SceneWgpuPainter {
             msaa_allocated: dest.msaa_allocated,
             ..DestPassCounts::default()
         };
-        self.motion.sync(&self.device, &self.queue, scene);
+        self.motion
+            .sync_with_work(&self.device, &self.queue, scene, Some(&gpu_work));
         let motion_bytes = self.motion.last_work().motion_descriptor_bytes_uploaded;
         if motion_bytes > 0 {
             gpu_work.record_upload(motion_bytes);
@@ -2853,6 +2867,7 @@ impl SceneWgpuPainter {
             viewport,
             host_textures,
             gpu_renderers,
+            None,
         )
     }
 
@@ -2881,6 +2896,7 @@ impl SceneWgpuPainter {
             viewport,
             host_textures,
             gpu_renderers,
+            None,
         );
         self.swap_target_state(&mut state);
         state.image_revision = self.image_revision;

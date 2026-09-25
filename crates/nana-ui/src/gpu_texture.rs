@@ -292,6 +292,8 @@ struct HostTextureSnapshot {
     id: u64,
     generation: u64,
     instance_identity: u64,
+    version: u64,
+    texture: GpuTexture,
     view: wgpu::TextureView,
 }
 
@@ -412,6 +414,8 @@ impl HostTexture {
             id: self.id(),
             generation,
             instance_identity: self.state.instance_identity,
+            version: self.version(),
+            texture: texture.clone(),
             view: __framework::texture_view(&texture).clone(),
         }
     }
@@ -860,7 +864,18 @@ impl GpuTexturePrimitive {
         dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        let texture = self.layer.texture.snapshot();
+        let mut texture = self.layer.texture.snapshot();
+        if let Some(policy) = &pipeline.policy {
+            let (realized, _) = policy
+                .realize_texture(
+                    texture.instance_identity,
+                    texture.version,
+                    texture.texture.clone(),
+                )
+                .expect("host texture realization uses this context generation");
+            texture.view = __framework::texture_view(&realized).clone();
+            texture.texture = realized;
+        }
         let key = TextureKey::new(self.presentation, texture.id);
         let (slot, viewport_rect) = slot_for_bounds(texture.id, bounds, scale_factor);
         // `layer.clip` is pre-affine (same space as dest / the sibling Quad).
@@ -872,7 +887,10 @@ impl GpuTexturePrimitive {
             .map(|clip| clip_pixels(texture.id, clip, affine, persp, scale_factor));
         let mask_url = match self.layer.mask.as_ref() {
             Some(nana_ui_core::MaskImage::Url(url))
-                if pipeline.url_cache.load(device, queue, url).is_some() =>
+                if pipeline
+                    .url_cache
+                    .load_with_work(device, queue, url, gpu_work)
+                    .is_some() =>
             {
                 Some(url.clone())
             }
@@ -907,10 +925,11 @@ impl GpuTexturePrimitive {
                 mask_url.is_some(),
             );
             let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
-            queue.write_buffer(&layer_uniform, 0, uniform_bytes);
             if let Some(work) = gpu_work {
-                work.record_upload(uniform_bytes.len());
+                work.write_buffer(queue, &layer_uniform, 0, uniform_bytes);
                 work.record_realloc();
+            } else {
+                queue.write_buffer(&layer_uniform, 0, uniform_bytes);
             }
             let mask_view = mask_url
                 .as_deref()
@@ -965,9 +984,10 @@ impl GpuTexturePrimitive {
                 mask_url.is_some(),
             );
             let uniform_bytes = bytemuck::bytes_of(&layer_uniform_value);
-            queue.write_buffer(&prepared.layer_uniform, 0, uniform_bytes);
             if let Some(work) = gpu_work {
-                work.record_upload(uniform_bytes.len());
+                work.write_buffer(queue, &prepared.layer_uniform, 0, uniform_bytes);
+            } else {
+                queue.write_buffer(&prepared.layer_uniform, 0, uniform_bytes);
             }
             prepared.slot = slot;
             prepared.viewport = viewport_rect;
@@ -1042,6 +1062,7 @@ pub struct GpuTexturePipeline {
     mask_fallback: wgpu::TextureView,
     url_cache: UrlTextureCache,
     textures: HashMap<TextureKey, PreparedTexture>,
+    policy: Option<nana_gpu::GpuDeviceState>,
 }
 
 impl GpuTexturePipeline {
@@ -1079,10 +1100,20 @@ impl GpuTexturePipeline {
     pub(crate) fn invalidate_target_image_bindings(target: &mut GpuTextureTarget) {
         target.textures.clear();
     }
+    #[cfg(test)]
     pub(crate) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
+    ) -> Self {
+        Self::new_with_policy(device, queue, format, None)
+    }
+
+    pub(crate) fn new_with_policy(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        policy: Option<&nana_gpu::GpuDeviceState>,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui host texture shader"),
@@ -1134,31 +1165,54 @@ impl GpuTexturePipeline {
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui host texture pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let create_pipeline = || {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("nana-ui host texture pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vertex_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fragment_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = if let Some(policy) = policy {
+            nana_gpu::__framework::render_pipeline_state(
+                policy,
+                nana_gpu::PipelineKey {
+                    generation: policy.generation(),
+                    target_format: nana_gpu::__framework::format_from_wgpu(format),
+                    sample_count: 1,
+                    shader: 0x686f_7374_7465_7874,
+                    layout: 7,
+                    material: 0,
+                    primitive: 0,
+                    blend: 2,
+                    depth: 0,
+                    vertex_layout: 0,
+                },
+                create_pipeline,
+            )
+            .expect("host texture pipeline uses this context generation")
+        } else {
+            create_pipeline()
+        };
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui host texture sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -1177,6 +1231,7 @@ impl GpuTexturePipeline {
             mask_fallback,
             url_cache: UrlTextureCache::default(),
             textures: HashMap::new(),
+            policy: policy.cloned(),
         }
     }
 

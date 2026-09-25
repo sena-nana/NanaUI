@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::{DeviceGeneration, GpuContext};
+use crate::policy::TransientResourceKey;
+use crate::{DeviceGeneration, FrameSlotId, GpuContext};
 
 /// Identity of one [`FrameContext`], increasing per [`GpuContext`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -39,6 +40,8 @@ pub struct FrameContext {
     id: FrameId,
     encoder: Option<wgpu::CommandEncoder>,
     retained: Vec<(RetainedWrites, u64)>,
+    frame_slot: Option<FrameSlotId>,
+    transient_registry: Arc<Mutex<Vec<(TransientResourceKey, wgpu::Buffer)>>>,
 }
 
 impl fmt::Debug for FrameContext {
@@ -53,12 +56,19 @@ impl fmt::Debug for FrameContext {
 }
 
 impl FrameContext {
-    pub(crate) fn new(gpu: GpuContext, id: FrameId, encoder: wgpu::CommandEncoder) -> Self {
+    pub(crate) fn new(
+        gpu: GpuContext,
+        id: FrameId,
+        encoder: wgpu::CommandEncoder,
+        frame_slot: Option<FrameSlotId>,
+    ) -> Self {
         Self {
             gpu,
             id,
             encoder: Some(encoder),
             retained: Vec::new(),
+            frame_slot,
+            transient_registry: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -72,6 +82,12 @@ impl FrameContext {
 
     pub fn generation(&self) -> DeviceGeneration {
         self.gpu.generation()
+    }
+
+    pub(crate) fn transient_registry(
+        &self,
+    ) -> Arc<Mutex<Vec<(TransientResourceKey, wgpu::Buffer)>>> {
+        self.transient_registry.clone()
     }
 
     /// Record that `owner` wrote state for `key` into this frame and treats it
@@ -97,17 +113,72 @@ impl FrameContext {
         let commands = encoder.finish();
         let index = {
             let _submission = self.gpu.lock_submission();
-            self.gpu.inner.queue.submit([commands])
+            // The reconfiguration guard is shared between submitters. A
+            // separate mutex makes token order match actual queue order.
+            let _order = self
+                .gpu
+                .inner
+                .submission_order
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let index = self.gpu.inner.queue.submit([commands]);
+            let submission = self
+                .gpu
+                .inner
+                .next_submission
+                .fetch_add(1, Ordering::Relaxed);
+            self.gpu.policy().bind_pipeline_retirement(submission);
+            (index, submission)
         };
         let cpu_duration = started.elapsed();
         for (owner, key) in self.retained.drain(..) {
             owner.settle(key, self.id);
         }
+        let completed = index.1;
+        if let Some(slot) = self.frame_slot.take() {
+            let policy = self.gpu.policy().clone();
+            let frame_token = self.id.get();
+            let queue = self.gpu.inner.queue.clone();
+            let transient_buffers = self
+                .transient_registry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .drain(..)
+                .collect::<Vec<_>>();
+            queue.on_submitted_work_done(move || {
+                policy.release_frame_slot_exact(slot, frame_token);
+                for (key, buffer) in transient_buffers {
+                    policy.release_transient_buffer(key, buffer);
+                }
+                policy.collect_retired(completed);
+            });
+        } else {
+            // A frame without a slot is still a valid submission in a host
+            // that uses the compatibility path. Keep the same completion
+            // guarantee for pooled buffers.
+            let policy = self.gpu.policy().clone();
+            let transient_buffers = self
+                .transient_registry
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .drain(..)
+                .collect::<Vec<_>>();
+            if !transient_buffers.is_empty() {
+                let queue = self.gpu.inner.queue.clone();
+                queue.on_submitted_work_done(move || {
+                    for (key, buffer) in transient_buffers {
+                        policy.release_transient_buffer(key, buffer);
+                    }
+                    policy.collect_retired(completed);
+                });
+            }
+        }
         GpuSubmission {
             frame: self.id,
             generation: self.gpu.generation(),
             cpu_duration,
-            index,
+            index: index.0,
+            submission: index.1,
         }
     }
 
@@ -131,6 +202,19 @@ impl Drop for FrameContext {
             drop(encoder);
             nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_DISCARDED);
         }
+        if let Some(slot) = self.frame_slot.take() {
+            self.gpu
+                .policy()
+                .release_frame_slot_exact(slot, self.id.get());
+        }
+        for (key, buffer) in self
+            .transient_registry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+        {
+            self.gpu.policy().release_transient_buffer(key, buffer);
+        }
         for (owner, key) in self.retained.drain(..) {
             owner.roll_back(key, self.id);
         }
@@ -143,6 +227,7 @@ pub struct GpuSubmission {
     generation: DeviceGeneration,
     cpu_duration: Duration,
     pub(crate) index: wgpu::SubmissionIndex,
+    submission: u64,
 }
 
 impl fmt::Debug for GpuSubmission {
@@ -152,6 +237,7 @@ impl fmt::Debug for GpuSubmission {
             .field("frame", &self.frame)
             .field("generation", &self.generation)
             .field("cpu_duration", &self.cpu_duration)
+            .field("submission", &self.submission)
             .finish()
     }
 }
@@ -168,6 +254,12 @@ impl GpuSubmission {
     /// CPU time spent finishing and submitting the encoder.
     pub fn cpu_duration(&self) -> Duration {
         self.cpu_duration
+    }
+
+    /// Monotonic token assigned under the queue submission lock. It is valid
+    /// for retirement bookkeeping and is independent of frame creation order.
+    pub fn submission(&self) -> u64 {
+        self.submission
     }
 }
 

@@ -134,6 +134,19 @@ pub mod gpu {
     );
     /// A `FrameContext` dropped without being submitted.
     pub static FRAMES_DISCARDED: Metric = Metric::counter(D, 11, "gpu.frames_discarded", "count");
+    pub static TRANSIENT_POOL_HITS: Metric =
+        Metric::counter(D, 12, "gpu.transient_pool_hits", "count");
+    pub static TRANSIENT_POOL_MISSES: Metric =
+        Metric::counter(D, 13, "gpu.transient_pool_misses", "count");
+    pub static PIPELINE_REGISTRY_HITS: Metric =
+        Metric::counter(D, 14, "gpu.pipeline_registry_hits", "count");
+    pub static PIPELINE_REGISTRY_MISSES: Metric =
+        Metric::counter(D, 15, "gpu.pipeline_registry_misses", "count");
+    pub static FRAME_SLOT_STALLS: Metric = Metric::counter(D, 16, "gpu.frame_slot_stalls", "count");
+    pub static RETIRED_RESOURCES: Metric = Metric::counter(D, 17, "gpu.retired_resources", "count");
+    pub static REALIZATION_HITS: Metric = Metric::counter(D, 18, "gpu.realization_hits", "count");
+    pub static REALIZATION_MISSES: Metric =
+        Metric::counter(D, 19, "gpu.realization_misses", "count");
 
     pub static SURFACE_LOST_EVENT: EventDescriptor =
         EventDescriptor::new(D, 1, "gpu.surface_lost", Severity::Warn, &[]);

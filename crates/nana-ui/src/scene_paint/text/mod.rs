@@ -840,22 +840,42 @@ pub(super) struct TextPipeline {
 }
 
 impl TextPipeline {
+    #[cfg(test)]
     pub(super) fn new(
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
     ) -> Self {
-        Self::with_atlas_limits(device, format, GlyphAtlasLimits::default())
+        Self::with_atlas_limits_policy(device, format, GlyphAtlasLimits::default(), None)
     }
 
+    pub(super) fn new_with_policy(
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        policy: &nana_gpu::GpuDeviceState,
+    ) -> Self {
+        Self::with_atlas_limits_policy(device, format, GlyphAtlasLimits::default(), Some(policy))
+    }
+
+    #[cfg(test)]
     fn with_atlas_limits(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         limits: GlyphAtlasLimits,
     ) -> Self {
+        Self::with_atlas_limits_policy(device, format, limits, None)
+    }
+
+    fn with_atlas_limits_policy(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        limits: GlyphAtlasLimits,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+    ) -> Self {
         let raster = GlyphRasterCache::default();
         let atlas = GlyphAtlasManager::new(device, raster.generation(), limits);
-        let gpu = TextGpu::new(device, format, &atlas);
+        let gpu = TextGpu::new_with_policy(device, format, &atlas, policy);
         let target = TextPipelineTarget::new(gpu.new_target(device));
         Self {
             engine: crate::text_engine::nana_text_engine(),

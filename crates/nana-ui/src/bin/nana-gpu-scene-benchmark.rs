@@ -61,6 +61,8 @@ struct Report {
     frames: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gpu_work: Option<GpuWorkSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gpu_policy: Option<GpuPolicySnapshot>,
     /// Per sampled frame, so a gate reads "what one frame redid" rather than
     /// a running total. Only emitted when the scenario keeps the batch moving.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,6 +112,37 @@ struct GpuWorkSnapshot {
     draw_calls: usize,
     gpu_upload_bytes: usize,
     gpu_buffer_reallocations: usize,
+}
+
+#[derive(Serialize, Clone, Copy)]
+struct GpuPolicySnapshot {
+    upload_bytes: u64,
+    buffer_reallocations: u64,
+    transient_pool_hits: u64,
+    transient_pool_misses: u64,
+    pipeline_registry_hits: u64,
+    pipeline_registry_misses: u64,
+    frame_slot_stalls: u64,
+    retired_resources: u64,
+    realization_hits: u64,
+    realization_misses: u64,
+}
+
+impl From<nana_gpu::GpuPolicyStats> for GpuPolicySnapshot {
+    fn from(stats: nana_gpu::GpuPolicyStats) -> Self {
+        Self {
+            upload_bytes: stats.upload_bytes,
+            buffer_reallocations: stats.buffer_reallocations,
+            transient_pool_hits: stats.transient_pool_hits,
+            transient_pool_misses: stats.transient_pool_misses,
+            pipeline_registry_hits: stats.pipeline_registry_hits,
+            pipeline_registry_misses: stats.pipeline_registry_misses,
+            frame_slot_stalls: stats.frame_slot_stalls,
+            retired_resources: stats.retired_resources,
+            realization_hits: stats.realization_hits,
+            realization_misses: stats.realization_misses,
+        }
+    }
 }
 
 impl From<GpuWorkObservation> for GpuWorkSnapshot {
@@ -504,6 +537,7 @@ fn unsupported(scenario_id: Option<String>, composition: &str, reason: String) -
         adapter: None,
         frames: None,
         gpu_work: None,
+        gpu_policy: None,
         text_counters: None,
         frame_stages: None,
         stages: None,
@@ -790,6 +824,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         adapter: Some(adapter),
         frames: Some(batch.len()),
         gpu_work: Some(GpuWorkSnapshot::from(work)),
+        gpu_policy: Some(GpuPolicySnapshot::from(gpu.policy().stats())),
         text_counters: text,
         frame_stages: Some(last_stages),
         sampling: Some(SamplingReport {

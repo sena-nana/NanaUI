@@ -1,5 +1,36 @@
 # 实时画面
 
+## 统一 GPU policy（Issue #184）
+
+`GpuContext::policy()` 按 `DeviceGeneration` 保存共享 pipeline registry 与工作计数。
+Scene painter 的静态 pipeline 通过它复用真实 WGPU 对象，`GpuWorkSink` 将上传和
+buffer reallocation 记入设备统计；公开边界仍使用 Nana 类型。
+
+`FrameContext` 在录制时占用 slot，discard 立即归还，submit 后由 completion callback
+归还。submission token 与 FrameId 分离，前者按队列提交顺序分配。
+`try_begin_frame()` 在槽满时立即返回 `None`；FrameExchange 使用该路径返回 `PoolFull`。
+目前兼容接口 `begin_frame()` 仍等待空闲 slot，不应在同一线程持有全部未提交录制时调用。
+
+普通 resize 保留 `GpuContext` 和静态 pipeline；device replacement 使用新 context，
+旧设备资源不能进入新设备。continuous HostTexture/video 保持 producer 路径，
+不进入静态 realization cache。
+
+Issue #184 的 policy 实现已完成：FrameExchange 的 transient texture，以及 policy 的 transient buffer
+pool，已按完整 key 实际持有、复用并在预算淘汰时释放；mesh 动态 buffer 扩容已经通过 frame
+completion lease 接入同一 pool；mesh、quad、icon、backdrop uniform slab、text tables 和
+default GPU-view instances 的动态 buffer 扩容均已接入；CPU identity realization 现在按 identity/version/generation
+缓存真实 `GpuTexture`，continuous video 仍绕过该静态缓存；upload arena 现在拥有真实、受设备
+`max_buffer_size` 限制且可扩容的 per-device backing buffer；`GpuContext::write_texture`
+已经先写入 arena；renderer 的动态 buffer diff 和文本 atlas 上传已经接入带 submission
+guard 的 policy helper，URL 图片与 icon atlas 的生产上传也已接入；文本专用 ring 的容量
+扩展同样通过 policy lease 管理，queue write 仍作为批量拷贝边界保留。无 policy 的测试/离屏
+兼容分支和超出 ring 上限的一次性 staging 仍需保留边界说明。
+`GpuWorkObservation` 继续记录 renderer workload 的逻辑 payload 与 draw 统计；Issue #184
+policy 直接记录并上报 framework GPU counters，上传字节是实际 staging 写入字节，因此可能
+包含 WGPU 对齐补齐。两套观测不在宿主层重复累加。
+剩余迁移、退休与验证缺口见
+[交付记录](consumer-upgrade-2026-09-24-issue184.md)。
+
 着色器、预览视口、离屏纹理和按钮一样，是树上的一块内容：有位置、会被裁切、点得到。不是盖在界面上的一层，也不是抠出来的洞。
 
 先把一扇普通窗口跑通，见 [开始](start.md)，再把画面挂上去。心智模型见 [框架如何运行](how-it-works.md)。

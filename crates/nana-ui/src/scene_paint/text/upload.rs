@@ -101,29 +101,41 @@ impl GlyphUploadQueue {
                 self.scratch[dest..dest + glyph_row]
                     .copy_from_slice(&upload.image.data[src..src + glyph_row]);
             }
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
+            if let Some(work) = work {
+                work.write_texture(
+                    queue,
                     texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: upload.origin[0],
-                        y: upload.origin[1],
-                        z: 0,
+                    [upload.origin[0], upload.origin[1], 0],
+                    &self.scratch,
+                    row as u32,
+                    upload.cell[1],
+                    [upload.cell[0], upload.cell[1], 1],
+                );
+            } else {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: upload.origin[0],
+                            y: upload.origin[1],
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
                     },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &self.scratch,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row as u32),
-                    rows_per_image: Some(upload.cell[1]),
-                },
-                wgpu::Extent3d {
-                    width: upload.cell[0],
-                    height: upload.cell[1],
-                    depth_or_array_layers: 1,
-                },
-            );
+                    &self.scratch,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(row as u32),
+                        rows_per_image: Some(upload.cell[1]),
+                    },
+                    wgpu::Extent3d {
+                        width: upload.cell[0],
+                        height: upload.cell[1],
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
             self.counters.regions += 1;
             self.counters.bytes += total as u64;
             bytes += total;

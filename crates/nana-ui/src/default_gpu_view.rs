@@ -10,13 +10,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 use bytemuck::{Pod, Zeroable};
-use nana_gpu::{__framework, DeviceGeneration, GpuTextureFormat};
+use nana_gpu::{__framework, DeviceGeneration, GpuTextureFormat, PipelineKey};
 use nana_ui_runtime::{CustomRenderNode, GPU_VIEW_RENDERER, GpuViewPalette, gpu_view_params};
 use nana_ui_scene::PrimitiveId;
 
 use crate::gpu_raw::GpuRaw;
 use crate::gpu_view::GPU_VIEW_SHADER;
-use crate::gpu_work::GpuWorkSink;
+use crate::gpu_work::{GpuWorkSink, ManagedBuffer};
 use crate::scene_gpu::{
     SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode, SceneGpuPassContext,
     SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry,
@@ -166,7 +166,11 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         let prepared = state
             .entry((generation, context.target_format))
             .or_insert_with(|| {
-                PreparedGpuView::new(device, __framework::format_to_wgpu(context.target_format))
+                PreparedGpuView::new(
+                    device,
+                    __framework::format_to_wgpu(context.target_format),
+                    context.gpu,
+                )
             });
         prepared.begin_prepare_pass();
         let scale = if context.scale_factor.is_finite() && context.scale_factor > 0.0 {
@@ -188,7 +192,7 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
             parameters: [self.node_seed(&node.custom), 0.0, 0.0, 0.0],
         };
         prepared.dest_size = context.dest_size;
-        prepared.write_slot(device, queue, node.id, instance);
+        prepared.write_slot(device, queue, node.id, instance, context.gpu_work);
         if let Some(work) = context.gpu_work {
             work.record_upload(std::mem::size_of::<GpuViewInstance>());
         }
@@ -235,7 +239,7 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         let Some(first) = prepared.slots.get(&node.id).map(|slot| slot.index) else {
             return false;
         };
-        prepared.restage_all(context.gpu.raw_queue());
+        prepared.restage_all(context.gpu.raw_queue(), context.gpu_work);
         prepared.draw(pass.raw(), context.clip, first, 1, context.gpu_work);
         true
     }
@@ -280,7 +284,7 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         if count < 2 {
             return 0;
         }
-        prepared.restage_all(context.gpu.raw_queue());
+        prepared.restage_all(context.gpu.raw_queue(), context.gpu_work);
         prepared.draw(pass.raw(), clip, first, count, context.gpu_work);
         count as usize
     }
@@ -318,7 +322,7 @@ struct PreparedGpuView {
     /// Dest size the staged instances carry. Stamped during preparation, which
     /// a resize always re-runs because it invalidates the prepared batch.
     dest_size: [u32; 2],
-    instances: wgpu::Buffer,
+    instances: ManagedBuffer,
     instance_capacity: u32,
     /// The instance buffer was replaced; every live slot needs rewriting.
     restaged: bool,
@@ -332,59 +336,78 @@ struct PreparedGpuView {
 }
 
 impl PreparedGpuView {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("nana-ui default gpu-view shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(GPU_VIEW_SHADER)),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("nana-ui default gpu-view pipeline layout"),
-            bind_group_layouts: &[],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui default gpu-view pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<GpuViewInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x4,
-                        1 => Float32x4,
-                        2 => Float32x4,
-                        3 => Float32x4,
-                    ],
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, gpu: &nana_gpu::GpuContext) -> Self {
+        let pipeline = __framework::render_pipeline(
+            gpu,
+            PipelineKey {
+                generation: gpu.generation(),
+                target_format: __framework::format_from_wgpu(format),
+                sample_count: 1,
+                shader: 0x6e61_6e61_6770_7576,
+                layout: 0,
+                material: 0,
+                primitive: 0,
+                blend: 1,
+                depth: 0,
+                vertex_layout: std::mem::size_of::<GpuViewInstance>() as u64,
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+            || {
+                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("nana-ui default gpu-view shader"),
+                    source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(GPU_VIEW_SHADER)),
+                });
+                let pipeline_layout =
+                    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some("nana-ui default gpu-view pipeline layout"),
+                        bind_group_layouts: &[],
+                        immediate_size: 0,
+                    });
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("nana-ui default gpu-view pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vertex_main"),
+                        buffers: &[Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<GpuViewInstance>() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &wgpu::vertex_attr_array![
+                                0 => Float32x4,
+                                1 => Float32x4,
+                                2 => Float32x4,
+                                3 => Float32x4,
+                            ],
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fragment_main"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(wgpu::BlendState::REPLACE),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            },
+        )
+        .expect("pipeline uses this context generation");
         Self {
             pipeline,
             dest_size: [0, 0],
-            instances: device.create_buffer(&wgpu::BufferDescriptor {
+            instances: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui default gpu-view instances"),
                 size: (INITIAL_INSTANCES as usize * std::mem::size_of::<GpuViewInstance>()) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }),
+            })),
             instance_capacity: INITIAL_INSTANCES,
             restaged: false,
             slots: HashMap::new(),
@@ -427,6 +450,7 @@ impl PreparedGpuView {
         queue: &wgpu::Queue,
         id: PrimitiveId,
         instance: GpuViewInstance,
+        gpu_work: Option<&GpuWorkSink>,
     ) {
         let prepare_pass = self.prepare_pass;
         let index = match self.slots.get(&id) {
@@ -440,7 +464,7 @@ impl PreparedGpuView {
                         index
                     }
                 };
-                self.grow_instances(device, index + 1);
+                self.grow_instances(device, index + 1, gpu_work);
                 index
             }
         };
@@ -455,40 +479,66 @@ impl PreparedGpuView {
                 last_seen: prepare_pass,
             },
         );
-        queue.write_buffer(
-            &self.instances,
-            index as u64 * std::mem::size_of::<GpuViewInstance>() as u64,
-            bytemuck::bytes_of(&instance),
-        );
+        let offset = index as u64 * std::mem::size_of::<GpuViewInstance>() as u64;
+        let bytes = bytemuck::bytes_of(&instance);
+        if let Some(work) = gpu_work {
+            work.write_buffer(queue, &self.instances, offset, bytes);
+        } else {
+            queue.write_buffer(&self.instances, offset, bytes);
+        }
     }
 
-    fn grow_instances(&mut self, device: &wgpu::Device, needed: u32) {
+    fn grow_instances(
+        &mut self,
+        device: &wgpu::Device,
+        needed: u32,
+        gpu_work: Option<&GpuWorkSink>,
+    ) {
         if needed <= self.instance_capacity {
             return;
         }
         self.instance_capacity = needed.next_power_of_two();
-        self.instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui default gpu-view instances"),
-            size: (self.instance_capacity as usize * std::mem::size_of::<GpuViewInstance>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let size =
+            (self.instance_capacity as usize * std::mem::size_of::<GpuViewInstance>()) as u64;
+        let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        if let Some(work) = gpu_work {
+            work.replace_buffer(
+                device,
+                &mut self.instances,
+                size,
+                usage,
+                "nana-ui default gpu-view instances",
+            );
+        } else {
+            self.instances = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui default gpu-view instances"),
+                size,
+                usage,
+                mapped_at_creation: false,
+            }));
+        }
         self.restaged = true;
     }
 
     /// Rewrite every live instance after the buffer was replaced. Slots not
     /// re-prepared this pass would otherwise point at uninitialized memory.
-    fn restage_all(&mut self, queue: &wgpu::Queue) {
+    fn restage_all(
+        &mut self,
+        queue: &wgpu::Queue,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
         if !self.restaged {
             return;
         }
         self.restaged = false;
         for slot in self.slots.values() {
-            queue.write_buffer(
-                &self.instances,
-                slot.index as u64 * std::mem::size_of::<GpuViewInstance>() as u64,
-                bytemuck::bytes_of(&slot.instance),
-            );
+            let offset = slot.index as u64 * std::mem::size_of::<GpuViewInstance>() as u64;
+            let bytes = bytemuck::bytes_of(&slot.instance);
+            if let Some(work) = gpu_work {
+                work.write_buffer(queue, &self.instances, offset, bytes);
+            } else {
+                queue.write_buffer(&self.instances, offset, bytes);
+            }
         }
     }
 
@@ -594,6 +644,29 @@ mod tests {
             [(replacement.generation(), GpuTextureFormat::RGBA8_UNORM)],
             "nothing built on the replaced device survives"
         );
+        assert!(first.policy().stats().pipeline_registry_misses >= 2);
+        assert!(replacement.policy().stats().pipeline_registry_misses >= 1);
+    }
+
+    #[test]
+    fn independent_renderers_share_real_pipelines_but_not_mutable_buffers() {
+        let host = crate::test_gpu::context();
+        let gpu = __framework::adopt(
+            __framework::adapter(&host).clone(),
+            __framework::device(&host).clone(),
+            __framework::queue(&host).clone(),
+        );
+        let a = DefaultGpuViewRenderer::new();
+        let b = DefaultGpuViewRenderer::new();
+        prepare_on(&a, &gpu, GpuTextureFormat::RGBA8_UNORM);
+        prepare_on(&b, &gpu, GpuTextureFormat::RGBA8_UNORM);
+        let a = a.state.lock().unwrap();
+        let b = b.state.lock().unwrap();
+        let key = (gpu.generation(), GpuTextureFormat::RGBA8_UNORM);
+        assert_eq!(a[&key].pipeline, b[&key].pipeline);
+        assert!(!std::ptr::eq(&*a[&key].instances, &*b[&key].instances,));
+        assert_eq!(gpu.policy().stats().pipeline_registry_misses, 1);
+        assert_eq!(gpu.policy().stats().pipeline_registry_hits, 1);
     }
 
     #[test]

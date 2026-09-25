@@ -10,16 +10,21 @@ const BLOCK: usize = 64;
 /// one, so a gap this size is still cheaper than another call.
 const MERGE_GAP: usize = 16 * 1024;
 
-pub(super) fn upload_changed(
+pub(super) fn upload_changed_with_work(
     queue: &wgpu::Queue,
     buffer: &wgpu::Buffer,
     previous: &[u8],
     next: &[u8],
+    work: Option<&crate::gpu_work::GpuWorkSink>,
 ) -> usize {
     debug_assert_eq!(next.len() % wgpu::COPY_BUFFER_ALIGNMENT as usize, 0);
     let mut uploaded = 0;
     changed_ranges(previous, next, |range| {
-        queue.write_buffer(buffer, range.start as u64, &next[range.clone()]);
+        if let Some(work) = work {
+            work.write_buffer(queue, buffer, range.start as u64, &next[range.clone()]);
+        } else {
+            queue.write_buffer(buffer, range.start as u64, &next[range.clone()]);
+        }
         uploaded += range.len();
     });
     uploaded

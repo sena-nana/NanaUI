@@ -16,6 +16,34 @@ use nana_ui_scene::{
 use super::*;
 use crate::HostTextureRegistry;
 
+#[test]
+fn scene_renderers_share_static_pipelines_across_painters() {
+    let host = crate::test_gpu::context();
+    let gpu = __framework::adopt(
+        __framework::adapter(&host).clone(),
+        __framework::device(&host).clone(),
+        __framework::queue(&host).clone(),
+    );
+    let before = gpu.policy().stats();
+    let first = SceneWgpuPainter::new(&gpu, nana_gpu::GpuTextureFormat::RGBA8_UNORM);
+    let second = SceneWgpuPainter::new(&gpu, nana_gpu::GpuTextureFormat::RGBA8_UNORM);
+    assert_eq!(
+        first.quads.cached_pipeline(),
+        second.quads.cached_pipeline()
+    );
+    assert_eq!(
+        first.icons.cached_pipeline(),
+        second.icons.cached_pipeline()
+    );
+    assert_eq!(
+        first.meshes.cached_pipeline(),
+        second.meshes.cached_pipeline()
+    );
+    let after = gpu.policy().stats();
+    assert!(after.pipeline_registry_hits > before.pipeline_registry_hits);
+    assert!(after.pipeline_registry_misses > before.pipeline_registry_misses);
+}
+
 #[derive(Debug)]
 struct FillClipRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -199,6 +227,7 @@ fn paint_records_gpu_work_only_after_encode_and_submit() {
     assert!(painter.last_gpu_timings().is_none());
 
     let (scene, registry) = hosted_preview_scene(&device);
+    let policy_uploads_before = crate::test_gpu::context().policy().stats().upload_bytes;
     let viewport = ScenePaintViewport {
         logical_size: [128.0, 96.0],
         physical_size: [128, 96],
@@ -230,6 +259,10 @@ fn paint_records_gpu_work_only_after_encode_and_submit() {
     );
     assert!(observed.draw_calls > 0);
     assert!(observed.draw_batches > 0);
+    assert!(
+        crate::test_gpu::context().policy().stats().upload_bytes > policy_uploads_before,
+        "scene uploads must be visible through the shared GPU policy"
+    );
     let timings = painter
         .last_gpu_timings()
         .expect("encoded frame times GPU stages");
