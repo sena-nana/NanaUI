@@ -14,6 +14,8 @@ const HEIGHT: u32 = 640;
 const WARMUP_ITERATIONS: usize = 20;
 const ITERATIONS: usize = 120;
 const PASS_COUNTS: [usize; 2] = [1, 32];
+const GATE_EVIDENCE: bool = false;
+const EVIDENCE_SCOPE: &str = "smoke-only: offscreen clear pass; not NanaUI RenderPlan A/B";
 
 #[derive(Debug, Clone, Copy)]
 struct Sample {
@@ -37,6 +39,9 @@ trait ProbeBackend {
 struct Report {
     schema_version: u32,
     profile: &'static str,
+    gate_evidence: bool,
+    evidence_scope: &'static str,
+    limitations: [&'static str; 4],
     workload: Workload,
     cases: Vec<CaseReport>,
 }
@@ -89,13 +94,26 @@ fn run() {
         cases.push(report_case(&metal, pass_count, &metal_samples));
     }
 
-    let report = Report {
-        schema_version: 1,
+    write_report(&smoke_report(cases));
+}
+
+// Shared with serialization tests on platforms that cannot run the Metal lane.
+fn smoke_report(cases: Vec<CaseReport>) -> Report {
+    Report {
+        schema_version: 2,
         profile: if cfg!(debug_assertions) {
             "debug"
         } else {
             "release"
         },
+        gate_evidence: GATE_EVIDENCE,
+        evidence_scope: EVIDENCE_SCOPE,
+        limitations: [
+            "does not use Nana Logical GPU ABI or a shared NanaUI RenderPlan",
+            "does not include a second real GPU-heavy consumer",
+            "does not measure presentation, surface latency, or device-loss recovery",
+            "direct native lane is currently available only on macOS",
+        ],
         workload: Workload {
             description: "offscreen BGRA8 render-pass clear and blocking completion; no draw, text, resource upload, surface, or presentation",
             viewport: [WIDTH, HEIGHT],
@@ -104,8 +122,7 @@ fn run() {
             pass_counts: PASS_COUNTS,
         },
         cases,
-    };
-    write_report(&report);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -203,7 +220,28 @@ fn write_report(report: &Report) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Sample, summarize};
+    use super::{Sample, smoke_report, summarize};
+
+    #[test]
+    fn probe_is_explicitly_not_issue_186_gate_evidence() {
+        let json = serde_json::to_value(smoke_report(Vec::new())).unwrap();
+        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["gate_evidence"], false);
+        assert!(
+            json["evidence_scope"]
+                .as_str()
+                .unwrap()
+                .contains("not NanaUI RenderPlan A/B")
+        );
+        assert_eq!(json["limitations"].as_array().unwrap().len(), 4);
+        assert!(
+            json["workload"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("no draw")
+        );
+        assert!(json.get("decision").is_none());
+    }
 
     #[test]
     fn distribution_keeps_tail_samples() {

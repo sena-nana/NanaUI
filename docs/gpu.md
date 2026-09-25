@@ -1,5 +1,13 @@
 # 实时画面
 
+## Native RHI 决策门（Issue #186）
+
+Issue #186 当前结论为 **NO-GO**：WGPU 仍是 NanaUI 的唯一正式 backend，正式路径保持
+`Logical GPU ABI -> WgpuBackend -> wgpu`。现有 native probe 只覆盖离屏 clear-pass smoke
+workload，没有 NanaUI RenderPlan、第二个真实 GPU-heavy consumer、presentation 或
+device-loss A/B 证据；因此不能据此创建 `nana-hal` 或 native renderer。完整条件审计和
+重新开启条件见 [Issue #186 交付记录](consumer-upgrade-2026-09-25-issue186.md)。
+
 ## 统一 GPU policy（Issue #184）
 
 `GpuContext::policy()` 按 `DeviceGeneration` 保存共享 pipeline registry 与工作计数。
