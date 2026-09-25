@@ -7291,6 +7291,86 @@ fn caret_right_steps_across_fold_summaries() {
     assert_eq!(moved, 29, "摘要之后继续逐字符前进");
 }
 
+/// WordRight past an inlay before the whitespace that ends a fold's first
+/// line: the word after it is hidden, so the caret crosses the fold as
+/// stepping onto its summary does, instead of landing in its hidden lines.
+#[test]
+fn word_right_past_an_inlay_crosses_a_fold_rather_than_entering_it() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let value = "ab \n    xy();\n}\nz";
+    let fold = TextCodeFold::new(0, 15);
+    let area = context
+        .create_component(
+            document,
+            TextArea::new(value)
+                .code_folds(Arc::from([fold]))
+                .inlays(Arc::from([TextInlay::new(2, "k ")])),
+        )
+        .unwrap();
+    let node = area.stable_id();
+    let mut queue = MutationQueue::new();
+    queue.set_text_input_fold_collapsed(node, Arc::from([fold]));
+    context.commit_mutations(queue).unwrap();
+    assert!(context.focus_node(document, node).unwrap());
+    let moved = move_caret_from(&mut context, document, node, 2, TextCaretIntent::WordRight);
+    assert_eq!(
+        moved, 15,
+        "to the end of the fold, not into its hidden lines"
+    );
+}
+
+/// WordRight from before an inlay's anchor, stopping inside the label: the
+/// label's words are not the text's, so it goes where the bare text would.
+#[test]
+fn word_right_into_an_inlay_from_before_its_anchor_moves_over_the_bare_text() {
+    for (value, inlay, start) in [
+        ("ab cd", TextInlay::new(3, "i32 "), 2),
+        ("ab x", TextInlay::new(2, "cd "), 0),
+    ] {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new(value).inlays(Arc::from([inlay])))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let expected = crate::text_editing::caret_focus(
+            value,
+            TextSelection::caret(start),
+            TextCaretIntent::WordRight,
+        )
+        .unwrap();
+        let moved = move_caret_from(
+            &mut context,
+            document,
+            node,
+            start,
+            TextCaretIntent::WordRight,
+        );
+        assert_eq!(moved, expected, "{value:?} from {start}");
+    }
+}
+
+/// WordRight that stops on a label's word boundary goes on to the end of the
+/// word after the anchor, as over the bare text, not one grapheme.
+#[test]
+fn word_right_past_an_inlay_reaches_the_end_of_the_anchored_word() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let value = "value = 1";
+    let area = context
+        .create_component(
+            document,
+            TextArea::new(value).inlays(Arc::from([TextInlay::new(0, ": i32 ")])),
+        )
+        .unwrap();
+    let node = area.stable_id();
+    assert!(context.focus_node(document, node).unwrap());
+    let moved = move_caret_from(&mut context, document, node, 0, TextCaretIntent::WordRight);
+    assert_eq!(moved, 5);
+}
+
 #[test]
 fn framework_dismissed_context_menu_clears_open_state_and_emits_dismiss() {
     let mut context = AppContext::new();

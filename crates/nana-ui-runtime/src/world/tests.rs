@@ -714,11 +714,182 @@ fn overlay_validation_walks_hosts_not_every_entity() {
 }
 
 #[test]
-fn restoring_focus_from_a_removed_overlay_ends_the_composition_it_leaves() {
+fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
+    // Focus on the menu, on an item inside it, on an editor elsewhere, or
+    // cleared (0); the menu despawned (root first) or parked (focus dropped
+    // first).
+    for (focus, park) in [3, 5, 4, 0]
+        .into_iter()
+        .flat_map(|focus| [(focus, false), (focus, true)])
+    {
+        // No focus at all also gets the opener back: the world cannot tell
+        // focus the user cleared from focus the framework dropped.
+        let focus_in_menu = focus != 4;
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        for (id, parent, tag) in [
+            (2, 1, "div"),
+            (3, 2, "button"),
+            (4, 1, "textarea"),
+            (5, 3, "button"),
+        ] {
+            create.create(node(id), document(1), NodeKind::Element { tag: tag.into() });
+            create.insert(node(parent), node(id), None);
+            create.set_interaction(
+                node(id),
+                InteractionState {
+                    pointer_events: true,
+                    focusable: true,
+                },
+            );
+        }
+        create.set_text_input(node(4), Some(TextInputState::new("value")));
+        // Node 2 hosts a (non-modal) menu, node 3, opened from node 2.
+        create.set_accessibility(
+            node(3),
+            AccessibilityState {
+                role: AccessibilityRole::Menu,
+                ..AccessibilityState::default()
+            },
+        );
+        create.set_overlay_host(
+            node(2),
+            OverlayHostState {
+                active: Some(node(3)),
+                restore_focus: Some(node(2)),
+            },
+        );
+        create.request_focus(document(1), (focus != 0).then(|| node(focus)));
+        if focus == 4 {
+            // The user went on typing elsewhere, mid-composition.
+            create.set_ime(
+                node(4),
+                Some(ImeComposition {
+                    text: "ni".into(),
+                    selection: None,
+                }),
+            );
+        }
+        world.commit(create).unwrap();
+
+        let mut close = MutationQueue::new();
+        if park {
+            close.park_subtree(node(3));
+        } else {
+            close.despawn_subtree(node(3));
+        }
+        world.commit(close).unwrap();
+        if focus_in_menu {
+            assert_eq!(
+                world.focused(document(1)),
+                Some(node(2)),
+                "focus leaving with the menu (from {focus}, parked: {park}) returns to where it came from"
+            );
+        } else {
+            assert_eq!(
+                world.focused(document(1)),
+                Some(node(4)),
+                "the menu's host does not take focus back from the editor"
+            );
+            assert!(world.ime(node(4)).is_some(), "nor end its composition");
+        }
+        assert_eq!(world.text_input(node(4)).unwrap().value, "value");
+    }
+}
+
+#[test]
+fn focus_in_an_overlay_opened_from_a_closing_one_goes_back_to_the_opener() {
     let mut world = UiWorld::new();
     let mut create = MutationQueue::new();
     create.create(node(1), document(1), NodeKind::Document);
-    for (id, parent, tag) in [(2, 1, "div"), (3, 2, "button"), (4, 1, "textarea")] {
+    // Host 2 opens popover 3; its item 5 opened listbox 7, hosted by 6
+    // outside the popover; the listbox's item 10 opened submenu 9, hosted
+    // by 8 outside both.
+    for (id, parent) in [
+        (2, 1),
+        (3, 2),
+        (5, 3),
+        (6, 1),
+        (7, 6),
+        (10, 7),
+        (8, 1),
+        (9, 8),
+    ] {
+        create.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        create.insert(node(parent), node(id), None);
+        create.set_interaction(
+            node(id),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+    }
+    for id in [3, 7, 9] {
+        create.set_accessibility(
+            node(id),
+            AccessibilityState {
+                role: AccessibilityRole::Menu,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+    world.commit(create).unwrap();
+    let mut open = MutationQueue::new();
+    open.set_overlay_host(
+        node(2),
+        OverlayHostState {
+            active: Some(node(3)),
+            restore_focus: Some(node(2)),
+        },
+    );
+    open.set_overlay_host(
+        node(6),
+        OverlayHostState {
+            active: Some(node(7)),
+            restore_focus: Some(node(5)),
+        },
+    );
+    open.set_overlay_host(
+        node(8),
+        OverlayHostState {
+            active: Some(node(9)),
+            restore_focus: Some(node(10)),
+        },
+    );
+    open.request_focus(document(1), Some(node(9)));
+    world.commit(open).unwrap();
+
+    let mut close = MutationQueue::new();
+    close.despawn_subtree(node(3));
+    world.commit(close).unwrap();
+    assert_eq!(
+        world.focused(document(1)),
+        Some(node(2)),
+        "focus two surfaces down left with the popover they were opened from"
+    );
+}
+
+#[test]
+fn focus_returning_from_a_nested_overlay_ends_the_composition_it_leaves() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    // Host 2 opens popover 3; its item 5 opened listbox 7 (hosted by 6),
+    // whose filter field 11 the user is composing in.
+    for (id, parent, tag) in [
+        (2, 1, "div"),
+        (3, 2, "div"),
+        (5, 3, "div"),
+        (6, 1, "div"),
+        (7, 6, "div"),
+        (11, 7, "textarea"),
+    ] {
         create.create(node(id), document(1), NodeKind::Element { tag: tag.into() });
         create.insert(node(parent), node(id), None);
         create.set_interaction(
@@ -729,40 +900,53 @@ fn restoring_focus_from_a_removed_overlay_ends_the_composition_it_leaves() {
             },
         );
     }
-    create.set_text_input(node(4), Some(TextInputState::new("value")));
-    // Node 2 hosts a (non-modal) menu, node 3, opened from node 2.
-    create.set_accessibility(
-        node(3),
-        AccessibilityState {
-            role: AccessibilityRole::Menu,
-            ..AccessibilityState::default()
-        },
-    );
-    create.set_overlay_host(
+    for id in [3, 7] {
+        create.set_accessibility(
+            node(id),
+            AccessibilityState {
+                role: AccessibilityRole::Menu,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+    create.set_text_input(node(11), Some(TextInputState::new("fi")));
+    world.commit(create).unwrap();
+    let mut open = MutationQueue::new();
+    open.set_overlay_host(
         node(2),
         OverlayHostState {
             active: Some(node(3)),
             restore_focus: Some(node(2)),
         },
     );
-    // The user went on typing elsewhere, mid-composition.
-    create.request_focus(document(1), Some(node(4)));
-    create.set_ime(
-        node(4),
+    open.set_overlay_host(
+        node(6),
+        OverlayHostState {
+            active: Some(node(7)),
+            restore_focus: Some(node(5)),
+        },
+    );
+    open.request_focus(document(1), Some(node(11)));
+    open.set_ime(
+        node(11),
         Some(ImeComposition {
-            text: "ni".into(),
+            text: "lt".into(),
             selection: None,
         }),
     );
-    world.commit(create).unwrap();
-    assert!(world.ime(node(4)).is_some());
+    world.commit(open).unwrap();
+    assert!(world.ime(node(11)).is_some());
 
     let mut close = MutationQueue::new();
     close.despawn_subtree(node(3));
     world.commit(close).unwrap();
     assert_eq!(world.focused(document(1)), Some(node(2)));
-    assert_eq!(world.ime(node(4)), None, "no composition left behind");
-    assert_eq!(world.text_input(node(4)).unwrap().value, "value");
+    assert!(world.contains(node(11)), "the listbox is still there");
+    assert_eq!(
+        world.ime(node(11)),
+        None,
+        "focus left it, so its composition ended"
+    );
 }
 
 #[test]

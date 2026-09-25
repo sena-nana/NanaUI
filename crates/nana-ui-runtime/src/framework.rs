@@ -89,6 +89,12 @@ impl<T: Send + 'static> View for T {}
 
 trait EditableText: ComponentView {
     type Change: Send + 'static;
+    /// Whether the editor keeps an undo journal. Only editors whose whole
+    /// state is their text can be restored from a snapshot of it: undoing a
+    /// number field's text would leave its committed value behind, and a
+    /// picker's query would drift from its filtered list. The rest record no
+    /// step they could never take back.
+    const JOURNALED: bool = false;
     fn accepts_input(&self) -> bool;
     fn accepts_selection(&self) -> bool {
         self.accepts_input()
@@ -96,6 +102,12 @@ trait EditableText: ComponentView {
     /// Replace the text of every active selection (single cursor replaces its
     /// own selection; multiple cursors each receive an insertion).
     fn replace_selection(&mut self, text: &str) -> bool;
+    /// Whether the editor takes `value` in place of its text as an edit: a
+    /// field with a length limit refuses to grow past it.
+    fn admits_value(&self, value: &str) -> bool {
+        let _ = value;
+        true
+    }
     fn text_atoms(&self) -> &[crate::TextAtomSpan] {
         &[]
     }
@@ -153,6 +165,7 @@ fn scroll_offset_on(axis: nana_ui_core::ScrollbarAxis, offset: f32, hold: f32) -
 
 impl EditableText for TextInput {
     type Change = TextChanged;
+    const JOURNALED: bool = true;
 
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.loading && !self.read_only
@@ -163,6 +176,10 @@ impl EditableText for TextInput {
 
     fn replace_selection(&mut self, text: &str) -> bool {
         self.replace_selection(text)
+    }
+
+    fn admits_value(&self, value: &str) -> bool {
+        self.accepts_edit_value(value)
     }
 
     fn commit_ime_text(&mut self, text: &str) -> bool {
@@ -208,6 +225,7 @@ impl EditableText for NumberInput {
 
 impl EditableText for TextArea {
     type Change = TextChanged;
+    const JOURNALED: bool = true;
 
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.read_only
@@ -1363,10 +1381,12 @@ impl AppContext {
             .flat_map(|root| self.retained_subtree(root))
             .filter_map(|id| self.world.document_of(id).map(|document| (document, id)))
             .collect::<HashSet<_>>();
+        let written_editors = self.text_histories_written_by(&mutations);
         let (report, parked, inserted) = self
             .world
             .commit_with_mount_lifecycle(mutations)
             .map_err(FrameworkError::from)?;
+        self.verify_text_histories(written_editors);
         for (document, root, previous, restore) in hover_restore {
             // Other focus owners (including overlay and scope restoration) win.
             if self

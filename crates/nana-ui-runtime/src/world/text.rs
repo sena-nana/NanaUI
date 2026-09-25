@@ -816,47 +816,40 @@ impl TextDisplayView {
         offset > span.value_start && offset < span.value_end
     }
 
-    /// 右移落在这里时是否跨进了覆盖区间：严格落在折叠摘要 / inlay 插入
-    /// 文本内部（区间内部没有 caret 边界，按 [`Self::value_of`] 会被钳回
-    /// 区间起点的值偏移），或 `stepping` 时恰在 inlay 插入文本末端——
-    /// 单字素的标签一步就走到末端，同样映射回锚点，和起点相同。只有逐步
-    /// 向右的意图（Right / WordRight）算这一种：End 停在行尾 inlay 之后
-    /// 映射回锚点，本来就该停在那里。
-    pub fn crosses_cover(&self, display: usize, stepping: bool) -> bool {
-        self.spans.iter().any(|span| {
+    /// 右移落在这里时跨进的覆盖区间：严格落在折叠摘要 / inlay 插入文本
+    /// 内部（区间内部没有 caret 边界，按 [`Self::value_of`] 会被钳回区间
+    /// 起点的值偏移），或 `stepping` 时恰在 inlay 插入文本末端——单字素
+    /// 的标签一步就走到末端，同样映射回锚点，和起点相同。只有逐步向右的
+    /// 意图（Right / WordRight）算这一种：End 停在行尾 inlay 之后映射回
+    /// 锚点，本来就该停在那里。一次查找供调用方的全部判断使用。
+    pub fn crossed_cover(&self, display: usize, stepping: bool) -> Option<&TextDisplaySpan> {
+        self.spans.iter().find(|span| {
             span.crossed_at(display)
                 && (stepping || display < span.display_start + span.display_len)
         })
     }
 
-    /// 右向移动语义的显示→值映射：目标落在覆盖区间内部时不钳回区间
-    /// 起点（那样逐字符右移会被钳成空操作），而是前进到区间末端的值
-    /// 偏移——一次按键跨过整个覆盖区间，值偏移步进为一：折叠摘要 →
-    /// 折叠后首字符；inlay → 锚点字符之后的下一个值边界（紧邻的同锚点
-    /// 插入一并跨过）。非内部目标与 [`Self::value_of`] 一致。点击命中
-    /// 与垂直移动保持钳制语义，不走本映射。
-    pub fn value_of_forward(&self, display: usize) -> usize {
-        let Some(span) = self.spans.iter().find(|span| span.crossed_at(display)) else {
-            return self.value_of(display);
-        };
-        let mut end = span.display_start + span.display_len;
+    /// 右向移动语义的显示→值映射：`span` 是目标跨进的覆盖区间（见
+    /// [`Self::crossed_cover`]）。不钳回区间起点（那样逐字符右移会被钳成
+    /// 空操作），而是跨过整个覆盖区间：折叠摘要 → 折叠后首字符；inlay →
+    /// `bare`（调用方的移动意图在值文本上从原光标走出的一步：Right 一个
+    /// 字素簇、WordRight 到词尾），与裸文本移动一致（按显示文本步进会把
+    /// 标签文字算进词里）；这一步跨行落进折叠隐藏区间时（行尾锚点上的
+    /// WordRight）再跨到折叠末端。点击命中与垂直移动保持钳制语义，不走
+    /// 本映射。
+    pub fn value_of_forward(&self, span: &TextDisplaySpan, bare: impl FnOnce() -> usize) -> usize {
         match &span.kind {
             // 折叠：区间末端即折叠后首字符的显示位。
-            TextDisplaySpanKind::Fold { .. } => self.value_of(end),
+            TextDisplaySpanKind::Fold { .. } => {
+                self.value_of(span.display_start + span.display_len)
+            }
+            // 同锚点的插入（多条标签背靠背）映射到同一锚点，一步一并跨过。
             TextDisplaySpanKind::Inlay => {
-                // 紧邻的同锚点插入（多条标签背靠背）一并跨过。
-                for next in self.spans.iter() {
-                    if matches!(next.kind, TextDisplaySpanKind::Inlay) && next.display_start == end
-                    {
-                        end = next.display_start + next.display_len;
-                    }
-                }
-                // end 处是锚点字符（值偏移 = 锚点）：右移一步 = 锚点 +
-                // 该字素簇长度（CRLF、带肤色的 emoji 不止一个 char）；
-                // 锚点在文档末尾时无后续字符，回到锚点。
-                let step = crate::text_editing::next_grapheme(&self.value, end)
-                    .map_or(0, |next| next - end);
-                self.value_of(end) + step
+                let next = bare();
+                self.spans
+                    .iter()
+                    .find(|fold| fold.fold().is_some() && self.span_hides(fold, next))
+                    .map_or(next, |fold| fold.value_end)
             }
         }
     }

@@ -690,12 +690,27 @@ impl AppContext {
         let to_value_moved = |previous_focus: usize, moved: TextSelection| -> TextSelection {
             match &fold_view {
                 Some(view) => {
-                    let focus = if view.crosses_cover(moved.focus, stepping)
-                        && view.value_of(moved.focus) == previous_focus
-                    {
-                        view.value_of_forward(moved.focus)
-                    } else {
-                        view.value_of(moved.focus)
+                    let crossed = view.crossed_cover(moved.focus, stepping);
+                    // A word move that stops in a label, from the anchor or
+                    // before it, counted the label's words as the text's.
+                    let word_into_label = matches!(intent, TextCaretIntent::WordRight)
+                        && crossed.is_some_and(|span| span.fold().is_none());
+                    let focus = match crossed {
+                        Some(span)
+                            if view.value_of(moved.focus) == previous_focus || word_into_label =>
+                        {
+                            // The step the intent takes over the bare text,
+                            // from where the caret was.
+                            view.value_of_forward(span, || {
+                                crate::text_editing::caret_focus(
+                                    &state.value,
+                                    TextSelection::caret(previous_focus),
+                                    intent,
+                                )
+                                .unwrap_or(previous_focus)
+                            })
+                        }
+                        _ => view.value_of(moved.focus),
                     };
                     // A caret stays a caret: its anchor goes where its focus
                     // went, not back across the fold it just crossed (that
@@ -2721,9 +2736,11 @@ impl AppContext {
         } else {
             (value, selection, None)
         };
+        // The editor's own rule for what it takes: a field's length limit
+        // (a text area takes any text, so there is nothing to ask it).
         if matches!(kind, TextEditorKind::Field)
             && !self.read(Entity::<TextInput>::from_stable_id(node), |field| {
-                field.accepts_edit_value(&value)
+                EditableText::admits_value(field, &value)
             })?
         {
             return Ok(false);
@@ -5168,6 +5185,66 @@ mod atom_tests {
             Some("Hi [bob]"),
             "the whole chip, as deleted"
         );
+    }
+
+    #[test]
+    fn a_cut_leaves_an_atom_its_bare_primary_caret_sits_in() {
+        let value = "Hi [bob]! x";
+        let (mut context, document, area, node) = focused_editor(value);
+        context
+            .update_component(area, |area, _| {
+                area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
+                area.state.selection = TextSelection::caret(5);
+                area.state.additional_selections = vec![TextSelection::new(10, 11)];
+            })
+            .unwrap();
+        let cut = context.cut_focused_text(document).unwrap();
+        assert_eq!(cut.as_deref(), Some("x"));
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "Hi [bob]! ",
+            "the chip the copy did not take stays"
+        );
+    }
+
+    #[test]
+    fn a_further_cursor_cutting_into_an_atom_takes_it_whole() {
+        for cut in [false, true] {
+            let (mut context, document, area, node) = focused_editor("Hi [bob]! xy");
+            context
+                .update_component(area, |area, _| {
+                    area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
+                    area.state.selection = TextSelection::new(10, 11);
+                    area.state.additional_selections = vec![TextSelection::new(5, 9)];
+                })
+                .unwrap();
+            if cut {
+                assert_eq!(
+                    context.cut_focused_text(document).unwrap().as_deref(),
+                    Some("[bob]!\nx"),
+                    "the whole chip, as deleted"
+                );
+                assert_eq!(context.world().text_input(node).unwrap().value, "Hi  y");
+            } else {
+                assert!(context.replace_focused_text(document, "Z").unwrap());
+                assert_eq!(context.world().text_input(node).unwrap().value, "Hi Z Zy");
+            }
+        }
+    }
+
+    #[test]
+    fn deleting_at_a_bare_caret_inside_an_atom_still_takes_the_atom() {
+        // Only a cut keeps the atom: a caret copies nothing. An application
+        // replacing the selection with nothing removes the chip, as before.
+        let (mut context, _document, area, node) = focused_editor("Hi [bob]!");
+        context
+            .update_component(area, |area, _| {
+                area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
+                area.state.selection = TextSelection::caret(5);
+            })
+            .unwrap();
+        assert!(context.replace_text_area_selection(area, "").unwrap());
+        assert_eq!(context.world().text_input(node).unwrap().value, "Hi !");
     }
 
     #[test]

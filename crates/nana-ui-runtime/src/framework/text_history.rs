@@ -1,17 +1,56 @@
 //! The one place a text editor's value changes, and the undo journal built on
 //! it.
 //!
-//! Every path that writes editor text — typing, deletion, paste, an IME
-//! commit, a line transform, a snippet, the application setting a value —
-//! goes through [`AppContext::commit_editor_edit`]. Concerns that apply to
+//! Every framework path that writes editor text — typing, deletion, paste,
+//! an IME commit, a line transform, a snippet, assistive technology setting a
+//! value, an application edit made on the user's behalf — goes through
+//! [`AppContext::commit_editor_edit`]. Concerns that apply to
 //! *all* edits live there once instead of in each caller: emitting the change
-//! event, refusing a read-only editor, and recording undo.
+//! event and recording undo. Whether the editor accepts input at all is the
+//! caller's check, made before it builds the edit.
+//!
+//! Any other write that changes an editor's text replaces its value, and
+//! clears its journal as a [`TextEditOrigin::Program`] edit does: the
+//! application writing the component (`update_component`, `set_component`, a
+//! keyed `mount`) or committing `SetTextInput` to the world directly. Undo
+//! after loading another document therefore does not walk back into the
+//! previous one. The journal notices by the text's [`TextStamp`], which
+//! changes only with the bytes: each journal keeps the stamp of the text the
+//! last write it saw left. A commit through [`AppContext::commit_mutations`]
+//! checks the editors it wrote as soon as it lands, so a replaced document's
+//! snapshots are freed at once; a write straight to the world is caught on
+//! the journal's next use. A write that leaves the bytes as they were — the
+//! value the editor reported, or the same text rebuilt — keeps the stamp and
+//! the journal.
+//!
+//! A composite component that writes a child editor's text (a color field's
+//! hex input, a path field's text) replaces that child's value the same way,
+//! and undo could not bring back text the composite's own state no longer
+//! matches. Such a component writes the child only when the value really
+//! changes: [`crate::ColorField`] leaves text that already names its color
+//! as the user typed it.
+//!
+//! An application edit meant to be undone like the user's own — a format
+//! shortcut, a completion — goes through
+//! [`crate::AppContext::edit_text_area`] or
+//! [`crate::AppContext::edit_text_input`], which replace a range the way the
+//! user's own edit would, as a step of its own. Rebinding an editor to another object
+//! whose text happens to be identical changes no byte; call
+//! [`crate::AppContext::clear_text_history`] for that.
+//!
+//! Only a [`crate::TextArea`] or [`crate::TextInput`] keeps a journal: their
+//! whole state is their text, so a snapshot of it restores them. A number
+//! field's committed value, or a picker's query and filtered list, would not
+//! follow a restored text, so those editors record nothing (and
+//! `can_undo_text` never offers them an undo).
 //!
 //! Composition is deliberately invisible here. IME preedit lives in the
 //! world's `ime` slot, not in the editor's value, so the journal never sees
 //! the half-typed states of a composition — only the commit, as one step.
 
 use std::collections::HashMap;
+
+use nana_text::TextStamp;
 
 use crate::{StableNodeId, TextInputState};
 
@@ -78,6 +117,11 @@ pub(super) struct TextHistory {
     steps: Vec<TextEditStep>,
     /// Steps before this index are undoable; steps from it on are redoable.
     cursor: usize,
+    /// The stamp of the editor's text after the last write the journal saw
+    /// (see [`TextHistories::witness`]). Reads never move it. A stamp changes
+    /// only with the bytes, so a different one means something outside the
+    /// journal wrote the text since.
+    held: Option<TextStamp>,
 }
 
 impl TextHistory {
@@ -111,6 +155,16 @@ impl TextHistory {
             && origin.merges_with(last.origin)
         {
             last.after = after;
+            // A run that ends where it began changes nothing, and is no step
+            // to undo (typing a character a change handler then removed).
+            if last.after.value == last.before.value {
+                self.steps.pop();
+                // The step before it does not reach across the run it lost.
+                if let Some(previous) = self.steps.last_mut() {
+                    previous.seal();
+                }
+            }
+            self.cursor = self.steps.len();
             return;
         }
         self.steps.push(TextEditStep {
@@ -151,21 +205,34 @@ impl TextHistory {
         }
     }
 
+    /// Moves the cursor one step back (`undo`) or forward, once the state
+    /// [`Self::peek`] showed has been restored.
+    ///
     /// Undo and redo end a merge run too: typing after an undo is a new
     /// step, not more of the one the undo stepped back onto.
-    fn undo(&mut self) -> Option<TextInputState> {
-        let index = self.cursor.checked_sub(1)?;
-        self.cursor = index;
+    fn step(&mut self, undo: bool) {
+        if undo {
+            if self.cursor == 0 {
+                return;
+            }
+            self.cursor -= 1;
+        } else {
+            if self.cursor == self.steps.len() {
+                return;
+            }
+            self.cursor += 1;
+        }
         self.seal_before_cursor();
-        Some(self.steps[index].before.clone())
     }
 
-    fn redo(&mut self) -> Option<TextInputState> {
-        let step = self.steps.get(self.cursor)?;
-        let after = step.after.clone();
-        self.cursor += 1;
-        self.seal_before_cursor();
-        Some(after)
+    /// The state an undo (`undo`) or a redo would restore, without moving
+    /// the cursor or sealing anything.
+    fn peek(&self, undo: bool) -> Option<&TextInputState> {
+        if undo {
+            Some(&self.steps.get(self.cursor.checked_sub(1)?)?.before)
+        } else {
+            Some(&self.steps.get(self.cursor)?.after)
+        }
     }
 
     /// Seals the step the next edit would merge into.
@@ -192,6 +259,16 @@ impl TextHistory {
 #[derive(Debug, Default)]
 pub(super) struct TextHistories {
     entries: HashMap<StableNodeId, TextHistory>,
+    /// Editors a journaled write is in flight for. The edit's own commit
+    /// lands before the write can witness it, so a commit leaves these to
+    /// the write, which settles them when it finishes (see
+    /// [`crate::AppContext::commit_editor_edit`]).
+    ///
+    /// A journaled edit of an editor made from within its own edit is not
+    /// supported, and nothing makes one: only the framework's composites
+    /// run follow-ups with the context during an edit, and none edits the
+    /// editor being edited.
+    writing: Vec<StableNodeId>,
 }
 
 impl TextHistories {
@@ -214,20 +291,54 @@ impl TextHistories {
         }
     }
 
-    pub(super) fn undo(&mut self, node: StableNodeId) -> Option<TextInputState> {
-        self.entries.get_mut(&node)?.undo()
+    pub(super) fn peek(&self, node: StableNodeId, undo: bool) -> Option<TextInputState> {
+        self.entries.get(&node)?.peek(undo).cloned()
     }
 
-    pub(super) fn redo(&mut self, node: StableNodeId) -> Option<TextInputState> {
-        self.entries.get_mut(&node)?.redo()
+    pub(super) fn step(&mut self, node: StableNodeId, undo: bool) {
+        if let Some(history) = self.entries.get_mut(&node) {
+            history.step(undo);
+        }
     }
 
-    pub(super) fn can_undo(&self, node: StableNodeId) -> bool {
-        self.entries.get(&node).is_some_and(TextHistory::can_undo)
+    /// `node`'s journal, if the editor still holds the text it left there.
+    fn current(&self, node: StableNodeId, held: Option<TextStamp>) -> Option<&TextHistory> {
+        self.entries
+            .get(&node)
+            .filter(|history| history.held == held)
     }
 
-    pub(super) fn can_redo(&self, node: StableNodeId) -> bool {
-        self.entries.get(&node).is_some_and(TextHistory::can_redo)
+    pub(super) fn can_undo(&self, node: StableNodeId, held: Option<TextStamp>) -> bool {
+        self.current(node, held).is_some_and(TextHistory::can_undo)
+    }
+
+    pub(super) fn can_redo(&self, node: StableNodeId, held: Option<TextStamp>) -> bool {
+        self.current(node, held).is_some_and(TextHistory::can_redo)
+    }
+
+    /// Drops `node`'s journal when its text changed outside the journal: a
+    /// value the application wrote is not a step the user took, and what it
+    /// replaced is not something to undo back into.
+    pub(super) fn follow(&mut self, node: StableNodeId, held: Option<TextStamp>) {
+        if self.current(node, held).is_none() {
+            self.entries.remove(&node);
+        }
+    }
+
+    /// Notes the text an edit the journal saw left the editor holding.
+    pub(super) fn witness(&mut self, node: StableNodeId, held: Option<TextStamp>) {
+        if let Some(history) = self.entries.get_mut(&node) {
+            history.held = held;
+        }
+    }
+
+    /// Ends the journaled write of `node` [`crate::AppContext::commit_editor_edit`]
+    /// began. By position rather than by popping the top, so a write that
+    /// never finished (a caught unwind) cannot leave another node marked.
+    fn finish_writing(&mut self, node: StableNodeId) {
+        if let Some(index) = self.writing.iter().rposition(|writing| *writing == node) {
+            self.writing.remove(index);
+        }
     }
 
     /// Releases the journal of a node that no longer exists.
@@ -250,6 +361,92 @@ impl crate::AppContext {
         Ok(())
     }
 
+    /// Replaces `range` of a [`crate::TextArea`]'s text with `text` on the
+    /// user's behalf -- a format shortcut, an auto-completion, an application
+    /// command -- as an undo step of its own, where writing the component
+    /// would clear the journal. The step neither extends the typing before it
+    /// nor is extended by the typing after it.
+    ///
+    /// Refused, like the user's own edits, while the editor is read-only or
+    /// disabled or the user is composing with an IME. An atom the range
+    /// reaches into is replaced whole; every cursor, the user's own included,
+    /// moves through the edit rather than to it, except that a caret right
+    /// where text is inserted goes past it, as typing leaves it (a completion
+    /// at the caret). It is not typing into a
+    /// snippet: linked placeholders do not mirror it, and an active snippet
+    /// session is remapped through it (or ends) as for any value change.
+    /// Emits the
+    /// editor's change event. Returns whether the text changed; a range
+    /// outside the text or off a grapheme boundary is an error.
+    pub fn edit_text_area(
+        &mut self,
+        entity: crate::Entity<crate::TextArea>,
+        range: std::ops::Range<usize>,
+        text: &str,
+    ) -> Result<bool, crate::FrameworkError> {
+        self.replace_editable_range(entity, range, text)
+    }
+
+    /// [`Self::edit_text_area`] for a [`crate::TextInput`]. An edit that would
+    /// take the field past its length limit is refused, as it is from the
+    /// keyboard.
+    pub fn edit_text_input(
+        &mut self,
+        entity: crate::Entity<crate::TextInput>,
+        range: std::ops::Range<usize>,
+        text: &str,
+    ) -> Result<bool, crate::FrameworkError> {
+        self.replace_editable_range(entity, range, text)
+    }
+
+    /// The stamp of the text the world holds for an editor.
+    fn editor_text_stamp(&self, node: StableNodeId) -> Option<TextStamp> {
+        self.world
+            .text_input(node)
+            .map(|input| input.session().text().stamp())
+    }
+
+    /// Editors a batch writes the text of, whose journals the commit checks
+    /// once it lands ([`Self::verify_text_histories`]). An editor with an edit
+    /// in flight is left to that edit.
+    pub(super) fn text_histories_written_by(
+        &self,
+        mutations: &crate::MutationQueue,
+    ) -> Vec<StableNodeId> {
+        // Nothing to look at unless the batch writes editor text and some
+        // editor keeps a journal: layout, style, animation and selection
+        // batches pass in O(1).
+        if !mutations.writes_text() || self.text_histories.entries.is_empty() {
+            return Vec::new();
+        }
+        mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                // Removing an editor's text (`state: None`) frees its journal
+                // too: nothing would use it again to notice.
+                crate::UiMutation::SetTextInput { id, .. }
+                | crate::UiMutation::ReplaceTextSelection { id, .. }
+                    if self.text_histories.entries.contains_key(id)
+                        && !self.text_histories.writing.contains(id) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Drops, as soon as the write lands, the journals an outside write left
+    /// stale, rather than holding their snapshots until the editor is next
+    /// edited -- which a document loaded for reading never is.
+    pub(super) fn verify_text_histories(&mut self, written: Vec<StableNodeId>) {
+        for node in written {
+            self.text_histories
+                .follow(node, self.editor_text_stamp(node));
+        }
+    }
+
     /// The single place an editor's text state changes.
     ///
     /// `apply` mutates the component; everything that must happen for *every*
@@ -258,29 +455,97 @@ impl crate::AppContext {
     /// one undo step.
     ///
     /// Returns whether the state actually changed.
+    ///
+    /// Not unwind-safe, like [`Self::update_component`] it runs on (which
+    /// takes the view out of the context around user code): a handler that
+    /// panics leaves the context inconsistent, journal bookkeeping included.
     pub(super) fn commit_editor_edit<C: super::EditableText>(
         &mut self,
         entity: crate::Entity<C>,
         origin: TextEditOrigin,
         apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
+        let update = |cx: &mut Self| {
+            cx.update_component(entity, |editable: &mut C, view| {
+                if !apply(editable, view) {
+                    return false;
+                }
+                view.emit(editable.change());
+                true
+            })
+        };
+        if !C::JOURNALED {
+            return update(self);
+        }
+        let node = entity.stable_id();
+        // Undo and redo followed already, before looking at the journal.
+        if origin != TextEditOrigin::History {
+            self.follow_text_history(node);
+        }
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
-        let changed = self.update_component(entity, |editable: &mut C, cx| {
-            if !apply(editable, cx) {
-                return false;
+        self.text_histories.writing.push(node);
+        let written = update(self);
+        self.text_histories.finish_writing(node);
+        if matches!(written, Ok(false)) {
+            return written;
+        }
+        // What the editor holds after the edit, a change handler's rewrite
+        // included: a field that uppercases or filters what is typed is part
+        // of how that editor takes input, so the step records its result.
+        // A view a failed follow-up took away reports that failure, not the
+        // missing view.
+        let after = match self.read(entity, |editable: &C| editable.state().clone()) {
+            Ok(after) => after,
+            Err(missing) => return written.and(Err(missing)),
+        };
+        // Someone else wrote the text during the edit, or the world holds no
+        // text for the editor: the journal cannot vouch for what is shown,
+        // so it goes rather than adopt it. The world takes the component's
+        // own buffer as the edit lands (or shares it, for bytes it already
+        // held), so text it still holds from this edit matches by identity,
+        // in O(1); bytes are compared only when the buffers differ, which
+        // only another batch's write causes, and one that wrote the same
+        // bytes leaves the journal true.
+        // Whether or not the write reported an error: a follow-up that
+        // failed after writing the editor still left text the journal did
+        // not produce.
+        let held = self
+            .world
+            .text_input(node)
+            .filter(|input| {
+                // Borrowed, not cloned: the buffer's address first, the bytes
+                // only if it differs.
+                let (shown, edited) = (input.session().text().as_str(), after.value.as_str());
+                (shown.as_ptr() == edited.as_ptr() && shown.len() == edited.len())
+                    || shown == edited
+            })
+            .map(|input| input.session().text().stamp());
+        let Some(held) = held else {
+            self.text_histories.forget(node);
+            return written;
+        };
+        // A failed write still counts if the component took the new text:
+        // the world may hold it already, and a journal that never saw it
+        // would take it for an outside write and drop every step. A write
+        // the component rolled back is left unwitnessed, so a world that
+        // moved anyway reads as the outside write it now is.
+        if written.is_ok() || after.value != before.value {
+            if after.value != before.value {
+                self.text_histories.record(node, before, after, origin);
+            } else {
+                // An edit that landed and changed nothing (a change handler
+                // took back what was typed) still ends the run before it.
+                self.text_histories.seal(node);
             }
-            cx.emit(editable.change());
-            true
-        })?;
-        if !changed {
-            return Ok(false);
+            self.text_histories.witness(node, Some(held));
         }
-        let after = self.read(entity, |editable: &C| editable.state().clone())?;
-        if after.value != before.value {
-            self.text_histories
-                .record(entity.stable_id(), before, after, origin);
-        }
-        Ok(true)
+        written
+    }
+
+    /// Drops `node`'s journal if its text changed since the journal saw it.
+    fn follow_text_history(&mut self, node: StableNodeId) {
+        self.text_histories
+            .follow(node, self.editor_text_stamp(node));
     }
 
     /// Undoes the focused editor's last edit. Returns whether anything moved.
@@ -309,40 +574,65 @@ impl crate::AppContext {
         document: crate::DocumentId,
         undo: bool,
     ) -> Result<bool, crate::FrameworkError> {
+        // `None` during a composition too: undo during preedit would fight
+        // the IME. The two kinds it knows are the journaled editors.
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
         if !focused.accepts_input {
             return Ok(false);
         }
-        let node = focused.node;
-        let Some(target) = (if undo {
-            self.text_histories.undo(node)
-        } else {
-            self.text_histories.redo(node)
-        }) else {
-            return Ok(false);
-        };
-        // `History` keeps the restore from becoming a step of its own.
-        let restore = move |state: &mut crate::TextInputState| *state = target;
         match focused.kind {
-            super::text_edit::TextEditorKind::Area => self.commit_editor_edit(
-                crate::Entity::<crate::TextArea>::from_stable_id(node),
-                TextEditOrigin::History,
-                move |area: &mut crate::TextArea, _| {
-                    restore(&mut area.state);
-                    true
-                },
+            super::text_edit::TextEditorKind::Area => self.step_text_history(
+                crate::Entity::<crate::TextArea>::from_stable_id(focused.node),
+                undo,
             ),
-            super::text_edit::TextEditorKind::Field => self.commit_editor_edit(
-                crate::Entity::<crate::TextInput>::from_stable_id(node),
-                TextEditOrigin::History,
-                move |field: &mut crate::TextInput, _| {
-                    restore(&mut field.state);
-                    true
-                },
+            super::text_edit::TextEditorKind::Field => self.step_text_history(
+                crate::Entity::<crate::TextInput>::from_stable_id(focused.node),
+                undo,
             ),
         }
+    }
+
+    fn step_text_history<C: super::EditableText>(
+        &mut self,
+        entity: crate::Entity<C>,
+        undo: bool,
+    ) -> Result<bool, crate::FrameworkError> {
+        let node = entity.stable_id();
+        // Before reading the journal: one an outside write left stale has
+        // nothing to undo.
+        self.follow_text_history(node);
+        // Looked at, not taken: the cursor moves only once the restore has
+        // landed, so an undo that fails leaves the journal as it was.
+        let Some(target) = self.text_histories.peek(node, undo) else {
+            return Ok(false);
+        };
+        let target_value = target.value.clone();
+        // `History` keeps the restore from becoming a step of its own.
+        let restored =
+            self.commit_editor_edit(entity, TextEditOrigin::History, move |editable, _| {
+                *editable.state_mut() = target;
+                true
+            });
+        // A restore that failed may still have landed (the component took
+        // the text before a follow-up failed): then the cursor moves too.
+        let holds_target = self
+            .read(entity, |editable: &C| {
+                editable.state().value == target_value
+            })
+            .unwrap_or(false);
+        if holds_target {
+            // Restored as the journal kept it, even by a restore that then
+            // failed in a follow-up: the cursor moves with it.
+            self.text_histories.step(node, undo);
+        } else if matches!(restored, Ok(true)) {
+            // Restored, then rewritten by the editor's change handler: the
+            // editor holds a state the journal never had, and no cursor
+            // position matches it.
+            self.text_histories.forget(node);
+        }
+        restored
     }
 
     /// Ends the current typing or deletion run for an editor, so the next edit
@@ -365,12 +655,14 @@ impl crate::AppContext {
 
     /// Whether the editor has an edit to undo.
     pub fn can_undo_text(&self, node: StableNodeId) -> bool {
-        self.text_histories.can_undo(node)
+        self.text_histories
+            .can_undo(node, self.editor_text_stamp(node))
     }
 
     /// Whether the editor has an undone edit to redo.
     pub fn can_redo_text(&self, node: StableNodeId) -> bool {
-        self.text_histories.can_redo(node)
+        self.text_histories
+            .can_redo(node, self.editor_text_stamp(node))
     }
 }
 
@@ -793,6 +1085,514 @@ mod editor_tests {
     }
 
     #[test]
+    fn an_application_writing_a_new_value_into_the_component_clears_the_journal() {
+        for write in ["set_component", "update_component", "mount"] {
+            let mut cx = AppContext::new();
+            let card = cx.create_component(document(), crate::Card::new()).unwrap();
+            let mount = |cx: &mut AppContext, value: &str| {
+                let mut area = None;
+                cx.mount(card, |ui| {
+                    area = Some(ui.child("editor", TextArea::new(value))?);
+                    Ok(())
+                })
+                .unwrap();
+                area.unwrap()
+            };
+            let area = mount(&mut cx, "");
+            cx.focus_node(document(), area.stable_id()).unwrap();
+            cx.replace_focused_text(document(), "draft").unwrap();
+            cx.move_focused_text_caret(document(), crate::TextCaretIntent::Left, false, None)
+                .unwrap();
+            cx.replace_focused_text(document(), "!").unwrap();
+            assert!(cx.undo_focused_text(document()).unwrap());
+            assert!(cx.can_undo_text(area.stable_id()));
+            assert!(cx.can_redo_text(area.stable_id()));
+
+            // Loading another document by rebuilding the component.
+            match write {
+                "set_component" => cx
+                    .set_component(area, TextArea::new("loaded from disk"))
+                    .unwrap(),
+                "update_component" => cx
+                    .update_component(area, |area, _| {
+                        area.state = crate::TextInputState::new("loaded from disk");
+                    })
+                    .unwrap(),
+                _ => assert_eq!(mount(&mut cx, "loaded from disk"), area),
+            }
+            assert!(!cx.can_undo_text(area.stable_id()), "{write}");
+            assert!(!cx.can_redo_text(area.stable_id()), "{write}");
+            assert!(!cx.undo_focused_text(document()).unwrap(), "{write}");
+            assert!(!cx.redo_focused_text(document()).unwrap(), "{write}");
+            assert_eq!(value_of(&cx, area), "loaded from disk", "{write}");
+
+            // The new document's own edits undo as usual.
+            cx.replace_focused_text(document(), "x").unwrap();
+            assert!(cx.undo_focused_text(document()).unwrap(), "{write}");
+            assert_eq!(value_of(&cx, area), "loaded from disk", "{write}");
+            assert!(!cx.can_undo_text(area.stable_id()), "{write}");
+        }
+    }
+
+    #[test]
+    fn a_composition_after_typing_is_not_mistaken_for_a_replacement() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "a").unwrap();
+        cx.set_ime_preedit(document(), "ni".to_owned(), None)
+            .unwrap();
+        assert!(cx.can_undo_text(area.stable_id()), "preedit is not a write");
+        cx.commit_ime(document(), "你").unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "a");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "");
+    }
+
+    #[test]
+    fn a_journal_an_application_write_replaced_is_freed_at_once() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "draft").unwrap();
+        assert!(cx.text_histories.entries.contains_key(&area.stable_id()));
+        cx.set_component(area, TextArea::new("loaded")).unwrap();
+        assert!(
+            !cx.text_histories.entries.contains_key(&area.stable_id()),
+            "the old document's snapshots are not kept until the next edit"
+        );
+    }
+
+    #[test]
+    fn a_number_field_offers_no_undo_it_could_not_take() {
+        let mut cx = AppContext::new();
+        let input = cx
+            .create_component(document(), crate::NumberInput::new(1.0))
+            .unwrap();
+        let node = input.stable_id();
+        cx.focus_node(document(), node).unwrap();
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "12").unwrap();
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        assert!(!cx.can_undo_text(node));
+        assert!(!cx.undo_focused_text(document()).unwrap());
+        assert!(!cx.text_histories.entries.contains_key(&node));
+    }
+
+    #[test]
+    fn a_selection_replaced_through_the_world_frees_the_journal_at_commit() {
+        let mut cx = AppContext::new();
+        let field = cx.create_component(document(), TextInput::new("")).unwrap();
+        let node = field.stable_id();
+        cx.focus_node(document(), node).unwrap();
+        cx.replace_focused_text(document(), "draft").unwrap();
+        assert!(cx.text_histories.entries.contains_key(&node));
+        let mut queue = crate::MutationQueue::new();
+        queue.replace_text_selection(node, "X");
+        cx.commit_mutations(queue).unwrap();
+        assert!(!cx.text_histories.entries.contains_key(&node));
+    }
+
+    #[test]
+    fn a_draft_cleared_on_send_stays_undoable_until_the_app_clears_the_history() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        // Clear after send: the handler is given the editor itself.
+        cx.on(area, |area, event: &crate::TextChanged, _| {
+            if event.value.ends_with('\n') {
+                area.state = crate::TextInputState::new("");
+            }
+        })
+        .unwrap();
+        // A one-run draft cleared back to where the run began: a run that
+        // changes nothing is no step.
+        cx.replace_focused_text(document(), "hi").unwrap();
+        cx.insert_focused_text_newline(document()).unwrap();
+        assert_eq!(value_of(&cx, area), "");
+        assert!(!cx.can_undo_text(area.stable_id()));
+
+        // A draft of several steps: undoing into it is the application's
+        // call, made by clearing the history when it sends.
+        cx.replace_focused_text(document(), "hello").unwrap();
+        cx.paste_focused_text(document(), " world").unwrap();
+        cx.insert_focused_text_newline(document()).unwrap();
+        assert_eq!(value_of(&cx, area), "");
+        assert!(cx.can_undo_text(area.stable_id()));
+        cx.clear_text_history(area.stable_id()).unwrap();
+        assert!(!cx.undo_focused_text(document()).unwrap());
+    }
+
+    #[test]
+    fn a_run_that_changed_nothing_does_not_let_the_step_before_it_reach_across() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        // The field refuses "x": its handler takes it straight back out.
+        cx.on(area, |area, _: &crate::TextChanged, _| {
+            if area.state.value.contains('x') {
+                let caret = area.state.value.replace('x', "").len();
+                area.state = crate::TextInputState::new(area.state.value.replace('x', ""));
+                area.state.selection = crate::TextSelection::caret(caret);
+            }
+        })
+        .unwrap();
+        cx.replace_focused_text(document(), "abc").unwrap();
+        cx.delete_focused_text(document(), TextDeleteKind::Backward)
+            .unwrap();
+        // A typing run that ends where it began: dropped, not a step.
+        cx.replace_focused_text(document(), "x").unwrap();
+        assert_eq!(value_of(&cx, area), "ab");
+        cx.delete_focused_text(document(), TextDeleteKind::Backward)
+            .unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(
+            value_of(&cx, area),
+            "ab",
+            "the second deletion is its own step, not more of the first"
+        );
+
+        // A recorded run the handler then brings back to where it began.
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.on(area, |area, _: &crate::TextChanged, _| {
+            if area.state.value.contains('x') {
+                let kept = area.state.value.replace(['q', 'x'], "");
+                let caret = kept.len();
+                area.state = crate::TextInputState::new(kept);
+                area.state.selection = crate::TextSelection::caret(caret);
+            }
+        })
+        .unwrap();
+        cx.replace_focused_text(document(), "abc").unwrap();
+        cx.delete_focused_text(document(), TextDeleteKind::Backward)
+            .unwrap();
+        cx.replace_focused_text(document(), "q").unwrap();
+        cx.replace_focused_text(document(), "x").unwrap();
+        assert_eq!(value_of(&cx, area), "ab");
+        cx.delete_focused_text(document(), TextDeleteKind::Backward)
+            .unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(
+            value_of(&cx, area),
+            "ab",
+            "after a run that was dropped too"
+        );
+    }
+
+    #[test]
+    fn an_undo_a_change_handler_rewrites_drops_the_journal() {
+        let rewrite = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        let armed = std::sync::Arc::clone(&rewrite);
+        cx.on(area, move |area, _: &crate::TextChanged, _| {
+            if armed.load(std::sync::atomic::Ordering::Relaxed) && area.state.value.is_empty() {
+                area.state = crate::TextInputState::new("-");
+            }
+        })
+        .unwrap();
+        cx.replace_focused_text(document(), "ab").unwrap();
+        rewrite.store(true, std::sync::atomic::Ordering::Relaxed);
+        // The undo lands "", which the handler turns into "-": a state the
+        // journal never had, so no position in it matches what is shown.
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "-");
+        assert!(!cx.can_undo_text(area.stable_id()));
+        assert!(!cx.can_redo_text(area.stable_id()));
+    }
+
+    #[test]
+    fn a_change_handler_normalizing_what_is_typed_keeps_it_undoable() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.on(area, |area, _: &crate::TextChanged, _| {
+            let upper = area.state.value.to_uppercase();
+            if area.state.value != upper.as_str() {
+                let caret = area.state.selection;
+                area.state.value = upper.into();
+                area.state.selection = caret;
+            }
+        })
+        .unwrap();
+        for character in ["a", "b"] {
+            cx.replace_focused_text(document(), character).unwrap();
+        }
+        assert_eq!(value_of(&cx, area), "AB");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(
+            value_of(&cx, area),
+            "",
+            "one typing run, as the field took it"
+        );
+        assert!(cx.redo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "AB");
+    }
+
+    #[test]
+    fn removing_an_editors_text_frees_its_journal_at_commit() {
+        let mut cx = AppContext::new();
+        let field = cx.create_component(document(), TextInput::new("")).unwrap();
+        let node = field.stable_id();
+        cx.focus_node(document(), node).unwrap();
+        cx.replace_focused_text(document(), "draft").unwrap();
+        let mut queue = crate::MutationQueue::new();
+        queue.set_text_input(node, None);
+        cx.commit_mutations(queue).unwrap();
+        assert!(!cx.text_histories.entries.contains_key(&node));
+    }
+
+    #[test]
+    fn an_edit_whose_commit_fails_leaves_the_journal_as_it_was() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "draft").unwrap();
+        // The world refuses a selection past the text: the commit fails and
+        // the component is rolled back, text as it was.
+        let failed = cx.commit_editor_edit(area, crate::TextEditOrigin::Structural, |area, _| {
+            area.state.value = "other".into();
+            area.state.selection = crate::TextSelection::caret(999);
+            true
+        });
+        assert!(failed.is_err());
+        assert_eq!(value_of(&cx, area), "draft");
+        assert!(
+            cx.can_undo_text(area.stable_id()),
+            "the typing is still undoable"
+        );
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "");
+    }
+
+    #[test]
+    fn the_world_holds_the_editors_own_buffer_once_an_edit_lands() {
+        // What tells an edit's own text from another batch's write during it:
+        // the world adopts the component's buffer, so the two compare by
+        // pointer, and another write would not.
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        for text in ["a", "b"] {
+            cx.replace_focused_text(document(), text).unwrap();
+            let component = cx.read(area, |area| area.state.value.clone()).unwrap();
+            let world = cx
+                .world()
+                .text_input(area.stable_id())
+                .unwrap()
+                .value_shared();
+            assert!(world.same_identity(&component), "after typing {text:?}");
+        }
+        assert!(cx.undo_focused_text(document()).unwrap());
+        let component = cx.read(area, |area| area.state.value.clone()).unwrap();
+        let world = cx
+            .world()
+            .text_input(area.stable_id())
+            .unwrap()
+            .value_shared();
+        assert!(world.same_identity(&component), "after undo");
+    }
+
+    #[test]
+    fn an_edit_made_on_the_users_behalf_is_an_undo_step_of_its_own() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "fo").unwrap();
+        // A completion: not merged into the prefix the user typed, and the
+        // typing after it is not merged into it.
+        assert!(cx.edit_text_area(area, 0..2, "foo()").unwrap());
+        cx.replace_focused_text(document(), ";").unwrap();
+        assert_eq!(value_of(&cx, area), "foo();");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "foo()");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "fo", "the completion came off alone");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "");
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_is_refused_where_the_users_would_be() {
+        let changes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "ab").unwrap();
+        let counted = std::sync::Arc::clone(&changes);
+        cx.on(area, move |_area, _: &crate::TextChanged, _cx| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+        .unwrap();
+        let count = || changes.load(std::sync::atomic::Ordering::Relaxed);
+        // A range outside the text is the caller's error.
+        assert!(matches!(
+            cx.edit_text_area(area, 1..9, "x"),
+            Err(crate::FrameworkError::InvalidInput)
+        ));
+        // Replacing text with itself is no edit, and leaves the typing run
+        // whole: "c" still joins "ab".
+        assert!(!cx.edit_text_area(area, 0..1, "a").unwrap());
+        assert_eq!(count(), 0);
+        cx.replace_focused_text(document(), "c").unwrap();
+        // While the user composes, the editor is theirs.
+        cx.set_ime_preedit(document(), "ni".to_owned(), None)
+            .unwrap();
+        assert!(!cx.edit_text_area(area, 0..0, "x").unwrap());
+        assert!(
+            cx.world().ime(area.stable_id()).is_some(),
+            "composition intact"
+        );
+        cx.commit_ime(document(), "").unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "", "one run, one step");
+        // Read-only: refused, and nothing recorded.
+        cx.update_component(area, |area, _| area.read_only = true)
+            .unwrap();
+        let before = count();
+        assert!(!cx.edit_text_area(area, 0..0, "x").unwrap());
+        assert_eq!(value_of(&cx, area), "");
+        assert_eq!(count(), before);
+        // A field's length limit holds as it does for typing.
+        let field = cx
+            .create_component(document(), TextInput::new("abc").max_length(3))
+            .unwrap();
+        assert!(!cx.edit_text_input(field, 3..3, "d").unwrap());
+        assert_eq!(
+            cx.read(field, |field| field.state.value.to_string())
+                .unwrap(),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_leaves_the_users_caret_where_they_work() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "hello world");
+        cx.select_focused_text_range(document(), 6, 11).unwrap();
+        // A format command at the top of the document.
+        assert!(cx.edit_text_area(area, 0..5, "HELLO!").unwrap());
+        assert_eq!(value_of(&cx, area), "HELLO! world");
+        assert_eq!(
+            cx.read(area, |area| area.state.selection).unwrap(),
+            crate::TextSelection::new(7, 12),
+            "the user's selection moved with the text, not to the edit"
+        );
+    }
+
+    #[test]
+    fn an_edit_on_a_limited_field_is_refused_whole_and_touches_only_its_range() {
+        let text = |cx: &AppContext, field: crate::Entity<TextInput>| {
+            cx.read(field, |field| field.state.value.to_string())
+                .unwrap()
+        };
+        let mut cx = AppContext::new();
+        let field = cx
+            .create_component(document(), TextInput::new("ab").max_length(4))
+            .unwrap();
+        // Half a completion is not the edit asked for.
+        assert!(!cx.edit_text_input(field, 2..2, "foo()").unwrap());
+        assert_eq!(text(&cx, field), "ab");
+
+        let field = cx
+            .create_component(document(), TextInput::new("abcdefgh").max_length(10))
+            .unwrap();
+        cx.update_component(field, |field, _| {
+            field.state.selection = crate::TextSelection::caret(8);
+            field.state.additional_selections = vec![crate::TextSelection::new(3, 6)];
+        })
+        .unwrap();
+        // A further cursor overlapping the range is not fused into it: only
+        // 0..4 is replaced.
+        assert!(cx.edit_text_input(field, 0..4, "X").unwrap());
+        assert_eq!(text(&cx, field), "Xefgh");
+    }
+
+    #[test]
+    fn a_completion_inserted_at_the_caret_leaves_the_caret_after_it() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "foo").unwrap();
+        assert!(cx.edit_text_area(area, 3..3, "()").unwrap());
+        cx.replace_focused_text(document(), ";").unwrap();
+        assert_eq!(value_of(&cx, area), "foo();", "typing goes on after it");
+
+        // Replaced text with the caret at its start: the caret stays in front.
+        cx.select_focused_text_range(document(), 0, 0).unwrap();
+        assert!(cx.edit_text_area(area, 0..3, "bar").unwrap());
+        assert_eq!(
+            cx.read(area, |area| area.state.selection).unwrap(),
+            crate::TextSelection::caret(0)
+        );
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_leaves_the_editor_and_world_on_one_caret() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "e");
+        cx.select_focused_text_range(document(), 1, 1).unwrap();
+        // A combining mark after the caret's base: the caret, now inside the
+        // cluster, snaps the same way in the component and in the world.
+        assert!(cx.edit_text_area(area, 1..1, "\u{301}").unwrap());
+        let component = cx.read(area, |area| area.state.selection).unwrap();
+        let world = cx.world().text_input(area.stable_id()).unwrap().selection;
+        assert_eq!(component, world);
+        assert!(
+            cx.world()
+                .text_input(area.stable_id())
+                .unwrap()
+                .value
+                .is_char_boundary(component.focus)
+        );
+    }
+
+    #[test]
+    fn a_detached_editor_keeps_its_journal() {
+        let mut cx = AppContext::new();
+        let area = cx
+            .create_detached_component(document(), TextArea::new(""))
+            .unwrap();
+        assert!(cx.world().text_input(area.stable_id()).is_some());
+        assert!(cx.edit_text_area(area, 0..0, "a").unwrap());
+        assert!(cx.edit_text_area(area, 1..1, "b").unwrap());
+        assert!(cx.can_undo_text(area.stable_id()));
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_takes_an_atom_whole() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "Hi [bob]!");
+        cx.update_component(area, |area, _| {
+            area.atom_spans = std::sync::Arc::from([crate::TextAtomSpan::new(3, 8)]);
+        })
+        .unwrap();
+        // 5..9 reaches into the chip: it goes whole.
+        assert!(cx.edit_text_area(area, 5..9, "x").unwrap());
+        assert_eq!(value_of(&cx, area), "Hi x");
+
+        // At a chip's edge is beside it, not in it, even where the text
+        // inserted repeats the chip's own ("[" before "[bob]").
+        let area = focused_area(&mut cx, "x[bob]");
+        cx.update_component(area, |area, _| {
+            area.atom_spans = std::sync::Arc::from([crate::TextAtomSpan::new(1, 6)]);
+        })
+        .unwrap();
+        assert!(cx.edit_text_area(area, 1..1, "[").unwrap());
+        assert_eq!(value_of(&cx, area), "x[[bob]");
+    }
+
+    #[test]
+    fn an_application_writing_back_the_editors_own_value_keeps_the_journal() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "draft").unwrap();
+        // The component rebuilt from what the editor reported: its own buffer,
+        // then the same text in a fresh one.
+        let reported = cx.read(area, |area| area.state.value.clone()).unwrap();
+        cx.update_component(area, |area, _| {
+            area.state.value = reported;
+            area.placeholder = "Notes".into();
+        })
+        .unwrap();
+        cx.set_component(area, TextArea::new("draft")).unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "");
+    }
+
+    #[test]
     fn a_read_only_editor_has_nothing_to_undo() {
         let mut cx = AppContext::new();
         let field = cx
@@ -835,6 +1635,20 @@ mod tests {
         history.record(state(from), state(to), origin);
     }
 
+    /// What the editor's undo does: look at the step, then move once the
+    /// restore landed (here it always does).
+    fn undo(history: &mut TextHistory) -> Option<TextInputState> {
+        let state = history.peek(true).cloned()?;
+        history.step(true);
+        Some(state)
+    }
+
+    fn redo(history: &mut TextHistory) -> Option<TextInputState> {
+        let state = history.peek(false).cloned()?;
+        history.step(false);
+        Some(state)
+    }
+
     /// The step count alone bounds the journal only for small documents: a
     /// step holds the value before AND after, so a deep journal of a large
     /// document would be hundreds of megabytes. Past the byte budget the
@@ -861,7 +1675,7 @@ mod tests {
         assert!(history.steps.len() < 40, "old steps went");
         assert!(history.can_undo(), "the newest edit is still undoable");
         assert_eq!(
-            history.undo().map(|state| state.value.len()),
+            undo(&mut history).map(|state| state.value.len()),
             Some(big.len() + 2),
             "and it undoes to the value that edit started from"
         );
@@ -888,12 +1702,12 @@ mod tests {
         record(&mut history, "ab", "abc", TextEditOrigin::Typing);
 
         assert_eq!(
-            history.undo().map(|state| state.value.to_string()),
+            undo(&mut history).map(|state| state.value.to_string()),
             Some(String::new())
         );
         assert!(!history.can_undo(), "the run collapsed into one step");
         assert_eq!(
-            history.redo().map(|state| state.value.to_string()),
+            redo(&mut history).map(|state| state.value.to_string()),
             Some("abc".to_owned())
         );
     }
@@ -906,15 +1720,15 @@ mod tests {
         record(&mut history, "ab", "ab!", TextEditOrigin::Paste);
 
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("ab".to_owned())
         );
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("abc".to_owned())
         );
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some(String::new())
         );
         assert!(!history.can_undo());
@@ -928,11 +1742,11 @@ mod tests {
         record(&mut history, "ab", "abcd", TextEditOrigin::Typing);
 
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("ab".to_owned())
         );
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some(String::new())
         );
     }
@@ -942,10 +1756,10 @@ mod tests {
         let mut history = TextHistory::default();
         record(&mut history, "", "abc", TextEditOrigin::Typing);
         record(&mut history, "abc", "ab", TextEditOrigin::Delete);
-        history.undo();
+        undo(&mut history);
         record(&mut history, "abc", "abcd", TextEditOrigin::Typing);
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("abc".to_owned()),
             "not back through the typing before the undo"
         );
@@ -953,11 +1767,11 @@ mod tests {
         // After a redo, likewise.
         let mut history = TextHistory::default();
         record(&mut history, "", "ab", TextEditOrigin::Typing);
-        history.undo();
-        history.redo();
+        undo(&mut history);
+        redo(&mut history);
         record(&mut history, "ab", "abc", TextEditOrigin::Typing);
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("ab".to_owned())
         );
     }
@@ -967,13 +1781,13 @@ mod tests {
         let mut history = TextHistory::default();
         record(&mut history, "", "one", TextEditOrigin::Paste);
         record(&mut history, "one", "two", TextEditOrigin::Paste);
-        history.undo();
+        undo(&mut history);
         assert!(history.can_redo());
 
         record(&mut history, "one", "three", TextEditOrigin::Paste);
         assert!(!history.can_redo(), "the abandoned branch is gone");
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("one".to_owned())
         );
     }

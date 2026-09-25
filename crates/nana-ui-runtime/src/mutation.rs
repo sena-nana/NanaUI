@@ -233,6 +233,9 @@ pub enum UiMutation {
 #[derive(Debug, Default)]
 pub struct MutationQueue {
     mutations: Vec<UiMutation>,
+    /// Whether any mutation writes an editor's text, so a commit that must
+    /// react to those (the undo journal) skips every other batch in O(1).
+    writes_text: bool,
 }
 
 impl MutationQueue {
@@ -337,6 +340,7 @@ impl MutationQueue {
     }
 
     pub fn append(&mut self, mut other: Self) {
+        self.writes_text |= other.writes_text;
         self.mutations.append(&mut other.mutations);
     }
 
@@ -463,6 +467,7 @@ impl MutationQueue {
     }
 
     pub fn set_text_input(&mut self, id: StableNodeId, state: Option<TextInputState>) {
+        self.writes_text = true;
         self.mutations.push(UiMutation::SetTextInput { id, state });
     }
 
@@ -472,6 +477,7 @@ impl MutationQueue {
     }
 
     pub fn replace_text_selection(&mut self, id: StableNodeId, text: impl Into<String>) {
+        self.writes_text = true;
         self.mutations.push(UiMutation::ReplaceTextSelection {
             id,
             text: text.into(),
@@ -567,6 +573,16 @@ impl MutationQueue {
     /// Append one pre-built mutation. Used by adapters that replay a queue
     /// one mutation at a time after a batch was rejected.
     pub fn push(&mut self, mutation: UiMutation) {
+        self.writes_text |= matches!(
+            mutation,
+            UiMutation::SetTextInput { .. } | UiMutation::ReplaceTextSelection { .. }
+        );
         self.mutations.push(mutation);
+    }
+
+    /// Whether any mutation in the queue writes an editor's text
+    /// (`SetTextInput` or `ReplaceTextSelection`).
+    pub fn writes_text(&self) -> bool {
+        self.writes_text
     }
 }

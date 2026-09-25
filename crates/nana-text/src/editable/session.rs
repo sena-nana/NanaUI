@@ -920,12 +920,12 @@ impl EditSession {
             self.state.composition = None;
             self.bump_composition();
         }
-        let composing = self.is_composing();
-        let before = composing.then(|| self.state.clone());
+        // `Some` exactly while composing.
+        let before = self.composed_primary();
         match self.text.splice(edits) {
             Ok(Some(edit)) => {
                 self.record_splice(&changing);
-                if composing {
+                if before.is_some() {
                     self.shift_composition(&changing);
                 }
                 self.state.goal_x_px = None;
@@ -938,7 +938,7 @@ impl EditSession {
                 EditChange::Text(edit)
             }
             _ if cancelled => EditChange::Composition,
-            Ok(None) if composing => EditChange::None,
+            Ok(None) if before.is_some() => EditChange::None,
             Ok(None) => {
                 let (primary, additional) = self.normalized(primary, additional);
                 self.set_selections_state(primary, additional)
@@ -1011,7 +1011,7 @@ impl EditSession {
             self.state.composition = None;
             self.bump_composition();
         }
-        let before = self.is_composing().then(|| self.state.clone());
+        let before = self.composed_primary();
         let edit = self.text.adopt(text, start, old_end, new_end);
         self.record_edit(&edit);
         self.shift_composition(&edits);
@@ -1057,12 +1057,16 @@ impl EditSession {
     /// stands in for. An edit that moved the composition moves the primary
     /// with it rather than by its own offset rule: an insertion at the
     /// preedit's start lands before the preedit, so before its selection too.
-    fn primary_on_composition(&self, before: &EditState, primary: EditSelection) -> EditSelection {
-        let (Some(was), Some(now)) = (&before.composition, &self.state.composition) else {
+    fn primary_on_composition(
+        &self,
+        before: &(EditSelection, Range<usize>),
+        primary: EditSelection,
+    ) -> EditSelection {
+        let (previous, was) = before;
+        let Some(now) = &self.state.composition else {
             return primary;
         };
-        let previous = before.selection;
-        if previous.range() != was.replaced {
+        if previous.range() != *was {
             return primary;
         }
         let range = now.replaced.clone();
@@ -1072,6 +1076,15 @@ impl EditSession {
             EditSelection::new(range.start, range.end)
         };
         selection.with_affinity(previous.affinity)
+    }
+
+    /// What [`Self::primary_on_composition`] reads of the state before an
+    /// edit: the primary selection and the range the preedit stands in for,
+    /// while composing. Not the whole state: the preedit and every other
+    /// cursor would be copied for nothing.
+    fn composed_primary(&self) -> Option<(EditSelection, Range<usize>)> {
+        let composition = self.state.composition.as_ref()?;
+        Some((self.state.selection, composition.replaced.clone()))
     }
 
     /// Starts or updates a composition. It stands in for the selection it
