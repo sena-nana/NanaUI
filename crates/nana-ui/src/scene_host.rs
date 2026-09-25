@@ -72,6 +72,7 @@ use winit::window::{
 
 #[cfg(not(target_os = "android"))]
 use crate::accessibility::HostedAccessibility;
+use crate::gpu_raw::GpuRaw;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
     HostDocumentAccess, HostFailure, ImeSurroundingSnapshot, ReportHostFailure, RuntimeProgram,
@@ -80,9 +81,9 @@ use crate::runtime_host::{
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
-    HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, HostedSurfaceFrame,
-    RuntimeAnimationClock, RuntimeInputAdapter, TitleBarDragTracker, WindowChromeAction,
-    WindowChromeEvent, WindowChromeState, apply_title_bar_pointer,
+    HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, RuntimeAnimationClock,
+    RuntimeInputAdapter, TitleBarDragTracker, WindowChromeAction, WindowChromeEvent,
+    WindowChromeState, apply_title_bar_pointer,
     title_bar_hits_window_control as pointer_hits_window_control,
     window_commands_for_chrome_action,
 };
@@ -246,9 +247,9 @@ struct WindowManager<Program: RuntimeProgram> {
     /// This says the path *exists*, not that any window is on it: each window
     /// asks for its own target from its descriptor.
     composition: crate::presentation::CompositionAvailability,
-    painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
+    painters: HashMap<nana_gpu::GpuTextureFormat, SceneWgpuPainter>,
     native_renderers:
-        HashMap<wgpu::TextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
+        HashMap<nana_gpu::GpuTextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
     text: NanaTextShaper,
     proxy: EventLoopProxy,
     message_tx: Sender<Program::Message>,
@@ -856,7 +857,7 @@ fn gpu_bootstrap(
     if !policy.wants_composition() {
         return GpuBootstrap::plain();
     }
-    GpuBootstrap::probe(shared_gpu.map(|gpu| gpu.adapter().get_info().backend))
+    GpuBootstrap::probe(shared_gpu.map(|gpu| gpu.adapter_info().backend))
 }
 
 fn composition_availability(
@@ -1145,7 +1146,7 @@ fn complete_startup<Program: RuntimeProgram>(
         &settings,
         requested_material,
         applied_material,
-        surface.alpha_mode(),
+        surface.wgpu_alpha_mode(),
         graphics.adapter_info().backend,
         target,
         non_client,
@@ -1208,7 +1209,7 @@ fn complete_startup<Program: RuntimeProgram>(
         &settings,
         requested_material,
         applied,
-        surface.alpha_mode(),
+        surface.wgpu_alpha_mode(),
         graphics.adapter_info().backend,
         target,
         non_client,
@@ -1562,7 +1563,7 @@ fn program_context<Message: Send + 'static>(
     RuntimeProgramContext::new(
         id,
         geometry,
-        graphics.resources(),
+        graphics.gpu().clone(),
         presentation,
         composition_work,
         Arc::new(move |message| {
@@ -2710,6 +2711,15 @@ fn platform_input_key(key: &winit::keyboard::Key) -> Option<String> {
     })
 }
 
+fn system_input_modifiers(keys: nana_window::KeyboardModifiers) -> InputModifiers {
+    InputModifiers {
+        alt: keys.alt,
+        control: keys.control,
+        meta: keys.meta,
+        shift: keys.shift,
+    }
+}
+
 fn platform_input_modifiers(value: ModifiersState) -> InputModifiers {
     InputModifiers {
         alt: value.alt_key(),
@@ -2969,6 +2979,8 @@ struct InputTracker {
     pending_dnd: Option<DataTransferId>,
     pending_dnd_serial: Option<AsyncRequestSerial>,
     drop_waiting_for_data: bool,
+    /// Keys held at the release while its paths are still being fetched.
+    drop_modifiers: Option<InputModifiers>,
 }
 
 impl InputTracker {
@@ -3057,10 +3069,20 @@ impl InputTracker {
         }
     }
 
+    /// Keys held during an OS drag. The target window gets no modifier
+    /// events while the source owns the keyboard, so prefer the system state
+    /// and fall back to the last tracked one where it cannot be sampled.
+    fn drag_modifiers(&self) -> InputModifiers {
+        nana_window::keyboard_modifiers()
+            .map(system_input_modifiers)
+            .unwrap_or_else(|| platform_input_modifiers(self.modifiers))
+    }
+
     fn begin_file_drag(&mut self, transfer: DataTransferId, serial: Option<AsyncRequestSerial>) {
         self.pending_file_paths.clear();
         self.file_drop_emitted = false;
         self.drop_waiting_for_data = false;
+        self.drop_modifiers = None;
         self.pending_dnd = Some(transfer);
         self.pending_dnd_serial = serial;
     }
@@ -3069,6 +3091,22 @@ impl InputTracker {
         self.pending_dnd = Some(transfer);
         self.pending_dnd_serial = Some(serial);
         self.drop_waiting_for_data = true;
+        // The keys may be let go before the paths arrive; the drop is now.
+        self.drop_modifiers = Some(self.drag_modifiers());
+    }
+
+    /// The paths of a release could not be read: end the drag as cancelled.
+    fn abandon_drop(&mut self, transfer: DataTransferId, id: WindowId) -> Option<WindowEvent> {
+        if self.pending_dnd != Some(transfer) || !self.drop_waiting_for_data {
+            return None;
+        }
+        self.pending_file_paths.clear();
+        self.file_drop_emitted = true;
+        self.drop_waiting_for_data = false;
+        self.drop_modifiers = None;
+        self.pending_dnd = None;
+        self.pending_dnd_serial = None;
+        Some(WindowEvent::FileHoverCancelled { id })
     }
 
     fn accepts_dnd_serial(&self, transfer: DataTransferId, serial: AsyncRequestSerial) -> bool {
@@ -3096,16 +3134,22 @@ impl InputTracker {
             self.drop_waiting_for_data = false;
             self.pending_dnd = None;
             self.pending_dnd_serial = None;
+            let modifiers = self
+                .drop_modifiers
+                .take()
+                .unwrap_or_else(|| self.drag_modifiers());
             return Some(WindowEvent::FileDropped {
                 id,
                 paths: std::mem::take(&mut self.pending_file_paths),
                 position: Some(self.cursor),
+                modifiers,
             });
         }
         Some(WindowEvent::FileHovered {
             id,
             paths: self.pending_file_paths.clone(),
             position: Some(self.cursor),
+            modifiers: self.drag_modifiers(),
         })
     }
 
@@ -3260,6 +3304,7 @@ impl InputTracker {
                     id,
                     paths: self.pending_file_paths.clone(),
                     position: Some(self.cursor),
+                    modifiers: self.drag_modifiers(),
                 })
             }
             WinitWindowEvent::DragPosition { id: transfer, .. } => {
@@ -3270,12 +3315,14 @@ impl InputTracker {
                     id,
                     paths: self.pending_file_paths.clone(),
                     position: Some(self.cursor),
+                    modifiers: self.drag_modifiers(),
                 })
             }
             WinitWindowEvent::DragLeft { .. } => {
                 self.pending_file_paths.clear();
                 self.file_drop_emitted = false;
                 self.drop_waiting_for_data = false;
+                self.drop_modifiers = None;
                 self.pending_dnd = None;
                 self.pending_dnd_serial = None;
                 Some(WindowEvent::FileHoverCancelled { id })
@@ -3292,6 +3339,7 @@ impl InputTracker {
                     id,
                     paths: std::mem::take(&mut self.pending_file_paths),
                     position: Some(self.cursor),
+                    modifiers: self.drag_modifiers(),
                 })
             }
             _ => None,
@@ -3372,7 +3420,19 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
     /// or install/replace the host's device callback.
     pub fn notify_device_lost(&mut self) {
         // Embedded devices never raise the hosted device-lost flag; the
-        // embedder tells us here instead.
+        // embedder tells us here instead. Recording it on the context lets
+        // everything holding it (producer threads, the JS runtime) see the
+        // loss; taking the report right away keeps the fault below the only
+        // one.
+        let graphics = &self.manager.graphics;
+        nana_gpu::__framework::mark_lost(
+            graphics.gpu(),
+            nana_gpu::GpuDeviceLost {
+                reason: nana_gpu::GpuLossReason::Unknown,
+                message: "reported by the embedding host".into(),
+            },
+        );
+        let _ = graphics.take_device_lost_report();
         if !self.manager.render_suspended {
             nana_diagnostics::fault!(
                 nana_diagnostics::framework::gpu::DEVICE_LOST,
@@ -3467,9 +3527,9 @@ mod tests {
         platform_input_modifiers, platform_window_event, remove_image_target_index,
         replace_image_target_index, resolved_scene_ime_request, route_window_command,
         scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, surface_image_keys, tablet_pointer_id, window_cursor_override,
-        window_level, window_surface_effect, window_wants_transparent_surface,
-        windows_scene_chrome, windows_to_redraw, winit_icon,
+        should_deliver_program_ime, surface_image_keys, system_input_modifiers, tablet_pointer_id,
+        window_cursor_override, window_level, window_surface_effect,
+        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
     };
     use crate::presentation::{
         ResolvedSurfaceTarget, ResolvedWindowPresentation, WindowSurfaceTarget,
@@ -3480,9 +3540,9 @@ mod tests {
     };
     use nana_ui_platform::host::WindowCommand;
     use nana_ui_platform::{
-        ImeEvent, InputDisposition, InputEvent, MousePassthroughMode, PointerPhase, PointerType,
-        TextInputPurpose, TextInputRequest, WindowDescriptor, WindowEvent, WindowGeometry,
-        WindowIcon, WindowId, WindowResizeEdge,
+        ImeEvent, InputDisposition, InputEvent, InputModifiers, MousePassthroughMode, PointerPhase,
+        PointerType, TextInputPurpose, TextInputRequest, WindowDescriptor, WindowEvent,
+        WindowGeometry, WindowIcon, WindowId, WindowResizeEdge,
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
@@ -4833,6 +4893,58 @@ mod tests {
     }
 
     #[test]
+    fn an_unreadable_release_ends_the_drag() {
+        let transfer = winit::data_transfer::DataTransferId::from_raw(5);
+        let mut tracker = InputTracker::default();
+        tracker.begin_file_drag(transfer, None);
+        // Hovering, not releasing: nothing to abandon.
+        assert!(tracker.abandon_drop(transfer, WindowId::PRIMARY).is_none());
+        tracker.wait_for_drop_data(transfer, winit::event_loop::AsyncRequestSerial::get());
+        assert_eq!(
+            tracker.abandon_drop(transfer, WindowId::PRIMARY),
+            Some(WindowEvent::FileHoverCancelled {
+                id: WindowId::PRIMARY
+            })
+        );
+        assert!(tracker.abandon_drop(transfer, WindowId::PRIMARY).is_none());
+    }
+
+    #[test]
+    fn file_drag_events_carry_the_held_modifiers() {
+        // Without a system sample (Linux) the tracked state is reported.
+        let transfer = winit::data_transfer::DataTransferId::from_raw(3);
+        let mut tracker = InputTracker {
+            modifiers: ModifiersState::CONTROL,
+            ..InputTracker::default()
+        };
+        let expected = nana_window::keyboard_modifiers()
+            .map(|keys| keys.control)
+            .unwrap_or(true);
+        let hovered = tracker.map_file_window_event(
+            &WinitWindowEvent::DragEntered {
+                id: transfer,
+                position: None,
+            },
+            WindowId::PRIMARY,
+        );
+        assert!(matches!(
+            hovered,
+            Some(WindowEvent::FileHovered { modifiers, .. }) if modifiers.control == expected
+        ));
+        let dropped = tracker.map_file_window_event(
+            &WinitWindowEvent::DragDropped {
+                id: transfer,
+                proposed_action: None,
+            },
+            WindowId::PRIMARY,
+        );
+        assert!(matches!(
+            dropped,
+            Some(WindowEvent::FileDropped { modifiers, .. }) if modifiers.control == expected
+        ));
+    }
+
+    #[test]
     fn file_drag_ingests_fetched_paths_before_and_after_drop() {
         let transfer = winit::data_transfer::DataTransferId::from_raw(7);
         let paths = vec![std::path::PathBuf::from("/tmp/nana.txt")];
@@ -4847,6 +4959,7 @@ mod tests {
                 id: WindowId::PRIMARY,
                 paths: paths.clone(),
                 position: Some((8.0, 16.0)),
+                modifiers: InputModifiers::default(),
             })
         );
         assert_eq!(
@@ -4861,17 +4974,31 @@ mod tests {
                 id: WindowId::PRIMARY,
                 paths: paths.clone(),
                 position: Some((8.0, 16.0)),
+                modifiers: InputModifiers::default(),
             })
         );
 
-        let mut delayed = InputTracker::default();
+        let mut delayed = InputTracker {
+            modifiers: ModifiersState::CONTROL,
+            ..InputTracker::default()
+        };
         delayed.wait_for_drop_data(transfer, winit::event_loop::AsyncRequestSerial::get());
+        // Released before the paths arrive: the drop keeps the keys it had.
+        delayed.modifiers = ModifiersState::empty();
+        let held = nana_window::keyboard_modifiers().map_or(
+            InputModifiers {
+                control: true,
+                ..InputModifiers::default()
+            },
+            system_input_modifiers,
+        );
         assert_eq!(
             delayed.ingest_file_paths(transfer, paths.clone(), WindowId::PRIMARY),
             Some(WindowEvent::FileDropped {
                 id: WindowId::PRIMARY,
                 paths,
                 position: Some((0.0, 0.0)),
+                modifiers: held,
             })
         );
         assert!(
@@ -5459,11 +5586,10 @@ mod tests {
     }
 
     fn occupied_host_textures(slot: &str) -> HostTextureRegistry {
-        let (device, _) = test_device();
         let registry = HostTextureRegistry::new();
         registry.register(
             slot,
-            HostTexture::from_wgpu(1, 1, test_texture_view(&device)),
+            HostTexture::new(1, 1, &crate::test_gpu::texture(1, 1)),
             8,
             8,
             HostTextureAlphaMode::Premultiplied,
@@ -5471,28 +5597,6 @@ mod tests {
         registry
     }
 
-    fn test_texture_view(device: &wgpu::Device) -> wgpu::TextureView {
-        device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("NanaUI scene host recovery test texture"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default())
-    }
-
-    fn test_device() -> (wgpu::Device, wgpu::Queue) {
-        crate::test_gpu::device()
-    }
     #[test]
     fn acknowledged_commands_route_missing_windows_for_failure_reports() {
         for id in [WindowId::PRIMARY, WindowId(20)] {

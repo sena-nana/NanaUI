@@ -1,6 +1,6 @@
 //! Snapshot-only host texture and `"gpu-view"` Scene painter registration.
 //!
-//! Uses the snapshot Device/Queue. The `"gpu-view"` painter is the product
+//! Uses the snapshot device. The `"gpu-view"` painter is the product
 //! [`nana_ui::DefaultGpuViewRenderer`]; CPU readback stays in snapshot tooling.
 
 use std::sync::Arc;
@@ -8,7 +8,8 @@ use std::sync::Arc;
 use nana_ui::Color;
 use nana_ui::runtime::GPU_VIEW_RENDERER;
 use nana_ui::{
-    DefaultGpuViewRenderer, GpuViewPalette, HostTexture, HostTextureAlphaMode, HostTextureRegistry,
+    DefaultGpuViewRenderer, GpuContext, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion,
+    GpuTextureUsages, GpuViewPalette, HostTexture, HostTextureAlphaMode, HostTextureRegistry,
     SceneGpuRendererRegistry,
 };
 
@@ -16,62 +17,31 @@ pub const SNAPSHOT_GPU_SLOT: &str = "snapshot-gpu";
 const TEXTURE_SIZE: u32 = 32;
 
 pub struct SnapshotGpu {
-    _texture: wgpu::Texture,
     _host_texture: HostTexture,
     pub textures: HostTextureRegistry,
     pub renderers: SceneGpuRendererRegistry,
 }
 
-pub fn create_snapshot_gpu(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    background: Color,
-    accent: Color,
-) -> SnapshotGpu {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("nana-ui snapshot host texture"),
-        size: wgpu::Extent3d {
+pub fn create_snapshot_gpu(gpu: &GpuContext, background: Color, accent: Color) -> SnapshotGpu {
+    let texture = gpu
+        .create_texture(&GpuTextureDescriptor {
+            label: Some("nana-ui snapshot host texture"),
             width: TEXTURE_SIZE,
             height: TEXTURE_SIZE,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let bytes_per_row = TEXTURE_SIZE * 4;
-    let aligned_row = bytes_per_row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+            format: GpuTextureFormat::RGBA8_UNORM_SRGB,
+            usage: GpuTextureUsages::COPY_DST | GpuTextureUsages::SAMPLED,
+        })
+        .expect("snapshot host texture");
     let pixel = color_rgba8(accent);
-    let mut pixels = vec![0_u8; aligned_row as usize * TEXTURE_SIZE as usize];
-    for y in 0..TEXTURE_SIZE {
-        for x in 0..TEXTURE_SIZE {
-            let offset = (y * aligned_row + x * 4) as usize;
-            pixels[offset..offset + 4].copy_from_slice(&pixel);
-        }
-    }
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
+    let pixels = pixel.repeat((TEXTURE_SIZE * TEXTURE_SIZE) as usize);
+    gpu.write_texture(
+        &texture,
+        GpuTextureRegion::full(TEXTURE_SIZE, TEXTURE_SIZE),
         &pixels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(aligned_row),
-            rows_per_image: Some(TEXTURE_SIZE),
-        },
-        wgpu::Extent3d {
-            width: TEXTURE_SIZE,
-            height: TEXTURE_SIZE,
-            depth_or_array_layers: 1,
-        },
-    );
-    let host_texture = HostTexture::from_wgpu(1, 0, texture.create_view(&Default::default()));
+        TEXTURE_SIZE * 4,
+    )
+    .expect("snapshot host texture upload");
+    let host_texture = HostTexture::new(1, 0, &texture);
     let textures = HostTextureRegistry::new();
     textures.register(
         SNAPSHOT_GPU_SLOT,
@@ -89,7 +59,6 @@ pub fn create_snapshot_gpu(
         })),
     );
     SnapshotGpu {
-        _texture: texture,
         _host_texture: host_texture,
         textures,
         renderers,

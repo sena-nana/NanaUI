@@ -2369,6 +2369,46 @@ impl UiWorld {
             .flatten()
             .copied()
             .collect::<HashSet<_>>();
+        // The overlays closing here: usually the removed root alone.
+        let closing = hosts
+            .iter()
+            .filter(|host| !removed.contains(host))
+            .filter_map(|host| self.nodes.overlay_host(*host)?.active)
+            .filter(|active| removed.contains(active))
+            .collect::<Vec<_>>();
+        // Overlays opened from inside it, hosted elsewhere (a dropdown's
+        // listbox hosted outside the popover it opened from), and those
+        // opened from inside them in turn: focus in any of them belongs to
+        // the closing overlay too. The openers are still in the tree here: a
+        // despawn takes the root first, and parking keeps the nodes.
+        let mut opened_from_closing = Vec::new();
+        if !closing.is_empty() {
+            let open = self
+                .overlay_host_nodes
+                .iter()
+                .filter(|host| !removed.contains(host))
+                .filter_map(|host| self.nodes.overlay_host(*host))
+                .filter_map(|state| {
+                    let active = state.active.filter(|active| !removed.contains(active))?;
+                    Some((active, state.restore_focus?))
+                })
+                .collect::<Vec<_>>();
+            let mut frontier = closing;
+            while let Some(parent) = frontier.pop() {
+                for &(active, opener) in &open {
+                    if opened_from_closing.contains(&active) {
+                        continue;
+                    }
+                    // Inside the overlay it was opened from; one elsewhere in
+                    // the removal (a parked subtree) is unrelated.
+                    if self.contains(opener) && self.is_descendant_or_self(opener, parent) {
+                        opened_from_closing.push(active);
+                        frontier.push(active);
+                    }
+                }
+            }
+        }
+        // A host inside `removed` goes with it and is skipped.
         let updates = hosts
             .into_iter()
             .filter_map(|host| {
@@ -2377,12 +2417,9 @@ impl UiWorld {
                     .flatten()
                     .and_then(|mut state| {
                         let previous = state;
-                        let restore_focus = state
-                            .active
-                            .is_some_and(|active| removed.contains(&active))
-                            .then_some(state.restore_focus)
-                            .flatten();
-                        if state.active.is_some_and(|active| removed.contains(&active)) {
+                        let closed = state.active.filter(|active| removed.contains(active));
+                        let restore_focus = closed.zip(state.restore_focus);
+                        if closed.is_some() {
                             state.active = None;
                             state.restore_focus = None;
                         }
@@ -2400,20 +2437,43 @@ impl UiWorld {
             self.write_overlay_host(host, Some(state));
             self.mark(host, DirtyMask::ACCESSIBILITY);
             let document = self.record(host).document;
-            if let Some(restore_focus) = restore_focus.filter(|id| {
-                self.contains(*id)
-                    && self.is_mounted(*id)
-                    && self.record(*id).document == document
-                    && self.record(*id).interaction.focusable
-                    && self.record(*id).resolved.0.visible
-                    && self.active_modal_allows_focus_now(document, *id)
-            }) {
-                let old = self.input.focused.insert(document, restore_focus);
-                // Focus leaving a node this removal did not take with it
-                // leaves it as a RequestFocus would: no composition behind.
-                if let Some(old) = old.filter(|old| *old != restore_focus && self.contains(*old)) {
+            let Some((overlay, restore_focus)) = restore_focus else {
+                continue;
+            };
+            // Focus goes back unless the user moved it to another node, which
+            // keeps it, with whatever composition it has going. It is still
+            // on the overlay or inside it when a despawn removes the root
+            // first, or in an overlay opened from it. An active modal above
+            // still keeps it where it is (checked below). A document with no focus gets the opener back too: the
+            // removal may have dropped it, or the framework may have (a
+            // disabled or hidden editor), and a keyboard or screen-reader user
+            // left with nothing focused is worse off than one whose cleared
+            // focus comes back to the control that opened the overlay.
+            let focused = self.input.focused.get(&document).copied();
+            let focus_left = focused.is_none_or(|focused| {
+                removed.contains(&focused)
+                    || !self.contains(focused)
+                    || self.is_descendant_or_self(focused, overlay)
+                    || opened_from_closing
+                        .iter()
+                        .any(|nested| self.is_descendant_or_self(focused, *nested))
+            });
+            if focus_left
+                && self.contains(restore_focus)
+                && self.is_mounted(restore_focus)
+                && self.record(restore_focus).document == document
+                && self.record(restore_focus).interaction.focusable
+                && self.record(restore_focus).resolved.0.visible
+                && self.active_modal_allows_focus_now(document, restore_focus)
+            {
+                // The node focus leaves, if it is still here, loses it as a
+                // RequestFocus would take it: composition ended, style redrawn.
+                if let Some(old) =
+                    focused.filter(|old| *old != restore_focus && self.contains(*old))
+                {
                     self.release_focus(old);
                 }
+                self.input.focused.insert(document, restore_focus);
                 self.mark_focus_changed(restore_focus);
             }
         }

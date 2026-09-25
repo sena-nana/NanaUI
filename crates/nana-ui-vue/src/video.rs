@@ -161,17 +161,14 @@ impl std::fmt::Debug for VideoGpuBridge {
 impl VideoGpuBridge {
     const VIDEO_TEXTURE_ID_BIT: u64 = 1 << 62;
 
-    pub(crate) fn new(
-        resources: nana_ui::HostedGpuResources,
-        textures: nana_ui::HostTextureRegistry,
-    ) -> Self {
+    pub(crate) fn new(gpu: nana_ui::GpuContext, textures: nana_ui::HostTextureRegistry) -> Self {
         Self {
-            store: crate::canvas_gpu::HostTextureSlotStore::new(resources, textures),
+            store: crate::canvas_gpu::HostTextureSlotStore::new(gpu, textures),
         }
     }
 
-    pub(crate) fn replace_device(&self, resources: nana_ui::HostedGpuResources) {
-        self.store.replace_device(resources);
+    pub(crate) fn replace_device(&self, gpu: nana_ui::GpuContext) {
+        self.store.replace_device(gpu);
     }
 
     /// Uploads the newest frame for `id`.

@@ -252,8 +252,8 @@ scanout 反馈；物理显示器枚举为 60Hz。没有启用撕裂、降低阈�
 [原始结果](performance-data/high-refresh-2026-09-05/high-refresh-surface-present.json)。
 
 ```powershell
-cargo run --release -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts --locked -- --probe-device-loss --performance-output target/performance/high-refresh-device-recovery.json
-cargo run --release -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts --locked -- --measure-present-seconds 60 --performance-output target/performance/high-refresh-surface-present.json
+cargo run --release -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop --locked -- --probe-device-loss --performance-output target/performance/high-refresh-device-recovery.json
+cargo run --release -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop --locked -- --measure-present-seconds 60 --performance-output target/performance/high-refresh-surface-present.json
 ```
 
 图标缓存压力验证通过：最老活跃条目不会阻止其余闲置条目淘汰，连续 32 轮换入内容仍保持
@@ -1290,7 +1290,7 @@ cargo test -p nana-ui --lib --features hosted,bundled-fonts --locked --target-di
 cargo rustc -p nana-ui --example accessibility-hidden-probe --features hosted,bundled-fonts --locked --target-dir E:/codex-build/nanaui-high-refresh -- -C debuginfo=0
 powershell.exe -NoProfile -Mta -ExecutionPolicy Bypass -File scripts/validate-hidden-accessibility.ps1 -ExePath E:/codex-build/nanaui-high-refresh/debug/examples/accessibility-hidden-probe.exe -Mode Semantics -Retry
 # Repeat in a fresh shell with WGPU_BACKEND=dx12; each report includes the actual adapter backend.
-cargo clippy -p nana-ui --lib --example accessibility-hidden-probe --example hosted-gpu-demo --features hosted,bundled-fonts --locked --target-dir E:/codex-build/nanaui-high-refresh --no-deps -- -D warnings
+cargo clippy -p nana-ui --lib --example accessibility-hidden-probe --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop --locked --target-dir E:/codex-build/nanaui-high-refresh --no-deps -- -D warnings
 ```
 
 证据归档于 `performance-data/high-refresh-2026-09-06/high-refresh-a11y-retry-*`。

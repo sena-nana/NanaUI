@@ -702,10 +702,7 @@ impl VueRuntime {
     }
 
     #[cfg(feature = "hosted")]
-    pub fn bind_host_gpu(
-        &self,
-        resources: nana_ui::HostedGpuResources,
-    ) -> Result<u64, JsEngineError> {
+    pub fn bind_host_gpu(&self, resources: nana_ui::GpuContext) -> Result<u64, JsEngineError> {
         let hosts = self
             .state
             .lock()
@@ -779,7 +776,7 @@ impl VueRuntime {
     pub fn replace_host_gpu<E: JsEngine + ?Sized>(
         &self,
         engine: &mut E,
-        resources: nana_ui::HostedGpuResources,
+        resources: nana_ui::GpuContext,
         message: &str,
     ) -> Result<u64, JsEngineError> {
         let hosts = self

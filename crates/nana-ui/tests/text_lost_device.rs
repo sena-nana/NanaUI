@@ -5,13 +5,16 @@
 //! One test in its own binary: it owns and destroys its device, which must
 //! not happen while other test threads come and go (see `test_gpu.rs`).
 
-use nana_ui::{NanaTextShaper, ScenePaintViewport, SceneWgpuPainter, runtime::*, wgpu};
+use nana_ui::{
+    GpuContext, GpuRenderTarget, GpuTextureFormat, NanaTextShaper, ScenePaintViewport,
+    SceneWgpuPainter, runtime::*, wgpu,
+};
 use nana_ui_scene::UiScene;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const SIZE: [u32; 2] = [320, 160];
 
-fn device() -> (wgpu::Device, wgpu::Queue) {
+fn device() -> GpuContext {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -20,11 +23,12 @@ fn device() -> (wgpu::Device, wgpu::Queue) {
         &instance, None,
     ))
     .expect("GPU tests require a WGPU adapter");
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("text lost device"),
         ..Default::default()
     }))
-    .expect("GPU tests require a WGPU device")
+    .expect("GPU tests require a WGPU device");
+    GpuContext::from_wgpu(adapter, device, queue)
 }
 
 /// A settled document of `labels`, and the scene it extracts to.
@@ -47,30 +51,27 @@ fn scene(labels: &[String]) -> UiScene {
     scene
 }
 
-fn paint(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    painter: &mut SceneWgpuPainter,
-    scene: &UiScene,
-) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("text lost device target"),
-        size: wgpu::Extent3d {
-            width: SIZE[0],
-            height: SIZE[1],
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
+fn paint(gpu: &GpuContext, painter: &mut SceneWgpuPainter, scene: &UiScene) {
+    let texture = gpu
+        .wgpu()
+        .device()
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("text lost device target"),
+            size: wgpu::Extent3d {
+                width: SIZE[0],
+                height: SIZE[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("text lost device frame"),
-    });
+    let target = GpuRenderTarget::from_wgpu(gpu, view, FORMAT, SIZE);
+    let mut frame = gpu.begin_frame("text lost device frame");
     let viewport = ScenePaintViewport {
         logical_size: [SIZE[0] as f32, SIZE[1] as f32],
         physical_size: SIZE,
@@ -82,20 +83,20 @@ fn paint(
     };
     // Whether the lost device refuses the frame or encodes it into nothing is
     // up to wgpu; what matters is that it returns.
-    let _ = painter.paint(scene, &mut encoder, &view, viewport, None, None);
-    queue.submit([encoder.finish()]);
+    let _ = painter.paint(scene, &mut frame, &target, viewport, None, None);
+    frame.submit();
 }
 
 #[test]
 fn a_frame_painted_on_a_lost_device_returns() {
-    let (device, queue) = device();
-    let mut painter = SceneWgpuPainter::new(&device, &queue, FORMAT);
+    let gpu = device();
+    let mut painter = SceneWgpuPainter::new(&gpu, GpuTextureFormat::from_wgpu(FORMAT));
     let labels = (0..40).map(|row| format!("Row {row}")).collect::<Vec<_>>();
-    paint(&device, &queue, &mut painter, &scene(&labels));
-    device.destroy();
+    paint(&gpu, &mut painter, &scene(&labels));
+    gpu.wgpu().device().destroy();
     // New text on the lost device: blocks and ranges to stage and copy.
     let labels = (0..40)
         .map(|row| format!("Changed row {row} after the loss"))
         .collect::<Vec<_>>();
-    paint(&device, &queue, &mut painter, &scene(&labels));
+    paint(&gpu, &mut painter, &scene(&labels));
 }

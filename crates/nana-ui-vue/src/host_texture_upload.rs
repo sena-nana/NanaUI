@@ -6,7 +6,8 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use nana_ui::{
-    HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureRegistry, HostedGpuResources,
+    GpuContext, GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion,
+    GpuTextureUsages, HostTexture, HostTextureAlphaMode, HostTextureBinding, HostTextureRegistry,
 };
 
 pub(crate) struct HostTextureUpload<'a> {
@@ -24,7 +25,7 @@ pub(crate) struct HostTextureUpload<'a> {
 }
 
 struct SlotEntry {
-    _texture: wgpu::Texture,
+    texture: GpuTexture,
     binding: HostTextureBinding,
     width: u32,
     height: u32,
@@ -32,8 +33,11 @@ struct SlotEntry {
 }
 
 struct SlotStoreState<K> {
-    resources: HostedGpuResources,
-    device_generation: u64,
+    gpu: GpuContext,
+    /// Floor for the HostTexture generation of slots created from now on;
+    /// bumped per device so a slot recreated on a new device never reuses a
+    /// generation the painter already bound.
+    texture_epoch: u64,
     entries: HashMap<K, SlotEntry>,
 }
 
@@ -44,18 +48,18 @@ pub(crate) struct HostTextureSlotStore<K> {
 }
 
 impl<K: Eq + Hash + Clone> HostTextureSlotStore<K> {
-    pub(crate) fn new(resources: HostedGpuResources, textures: HostTextureRegistry) -> Self {
+    pub(crate) fn new(gpu: GpuContext, textures: HostTextureRegistry) -> Self {
         Self {
             textures,
             state: Arc::new(Mutex::new(SlotStoreState {
-                resources,
-                device_generation: 1,
+                gpu,
+                texture_epoch: 1,
                 entries: HashMap::new(),
             })),
         }
     }
 
-    pub(crate) fn replace_device(&self, resources: HostedGpuResources) {
+    pub(crate) fn replace_device(&self, gpu: GpuContext) {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
@@ -63,8 +67,8 @@ impl<K: Eq + Hash + Clone> HostTextureSlotStore<K> {
             self.textures.remove(&entry.binding.slot);
         }
         state.entries.clear();
-        state.resources = resources;
-        state.device_generation = state.device_generation.saturating_add(1).max(1);
+        state.gpu = gpu;
+        state.texture_epoch = state.texture_epoch.saturating_add(1).max(1);
     }
 
     pub(crate) fn binding(&self, key: &K) -> Option<HostTextureBinding> {
@@ -114,34 +118,28 @@ impl<K: Eq + Hash + Clone> HostTextureSlotStore<K> {
         if recreate {
             let prior_generation = state
                 .entries
-                .remove(&key)
+                .get(&key)
                 .map(|entry| entry.binding.texture.generation())
-                .unwrap_or_else(|| state.device_generation.saturating_sub(1));
+                .unwrap_or_else(|| state.texture_epoch.saturating_sub(1));
+            // Created before the old entry goes: a size the device refuses
+            // keeps the slot the store already tracks (and so still removes
+            // on prune or device replacement) instead of orphaning it.
             let texture = state
-                .resources
-                .device()
-                .create_texture(&wgpu::TextureDescriptor {
+                .gpu
+                .create_texture(&GpuTextureDescriptor {
                     label: Some(upload.label),
-                    size: wgpu::Extent3d {
-                        width: upload.width.max(1),
-                        height: upload.height.max(1),
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let host = HostTexture::from_wgpu(
+                    width: upload.width.max(1),
+                    height: upload.height.max(1),
+                    format: GpuTextureFormat::RGBA8_UNORM_SRGB,
+                    usage: GpuTextureUsages::COPY_DST | GpuTextureUsages::SAMPLED,
+                })
+                .map_err(|error| format!("{}: {error}", upload.label))?;
+            let host = HostTexture::new(
                 upload.texture_id,
-                prior_generation
-                    .saturating_add(1)
-                    .max(state.device_generation),
-                view,
+                prior_generation.saturating_add(1).max(state.texture_epoch),
+                &texture,
             );
+            state.entries.remove(&key);
             let binding = self.textures.register(
                 upload.slot,
                 host,
@@ -152,7 +150,7 @@ impl<K: Eq + Hash + Clone> HostTextureSlotStore<K> {
             state.entries.insert(
                 key.clone(),
                 SlotEntry {
-                    _texture: texture,
+                    texture,
                     binding,
                     width: upload.width,
                     height: upload.height,
@@ -161,36 +159,27 @@ impl<K: Eq + Hash + Clone> HostTextureSlotStore<K> {
             );
         }
 
-        let queue = state.resources.queue().clone();
+        let state = &mut *state;
         let entry = state
             .entries
             .get_mut(&key)
             .expect("host texture slot created");
         if entry.version != upload.version {
             if upload.dirty_width > 0 && upload.dirty_height > 0 {
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &entry._texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d {
+                state
+                    .gpu
+                    .write_texture(
+                        &entry.texture,
+                        GpuTextureRegion {
                             x: upload.dirty_x,
                             y: upload.dirty_y,
-                            z: 0,
+                            width: upload.dirty_width,
+                            height: upload.dirty_height,
                         },
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    upload.bytes,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(upload.dirty_width * 4),
-                        rows_per_image: Some(upload.dirty_height),
-                    },
-                    wgpu::Extent3d {
-                        width: upload.dirty_width,
-                        height: upload.dirty_height,
-                        depth_or_array_layers: 1,
-                    },
-                );
+                        upload.bytes,
+                        upload.dirty_width * 4,
+                    )
+                    .map_err(|error| format!("{}: {error}", upload.label))?;
             }
             entry.version = upload.version;
             self.textures.invalidate(&entry.binding.slot);

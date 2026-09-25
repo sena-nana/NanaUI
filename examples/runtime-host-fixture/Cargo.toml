@@ -8,6 +8,6 @@ publish = false
 nana-app-icon = { workspace = true, features = ["embed"] }
 
 [dependencies]
-nana-ui = { workspace = true, features = ["hosted"] }
+nana-ui = { workspace = true, features = ["hosted", "wgpu-interop"] }
 nana-ui-platform.workspace = true
 wgpu.workspace = true

@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// Actions a file drop accepts. AppKit narrows a Control-drag from Finder to
+/// Link and refuses the drop when nothing matches, so macOS takes Link too;
+/// elsewhere Link would only turn Shift-drags into shortcuts.
+#[cfg(target_os = "macos")]
+const FILE_DROP_ACTIONS: &[DndAction] = &[DndAction::Copy, DndAction::Link];
+#[cfg(not(target_os = "macos"))]
+const FILE_DROP_ACTIONS: &[DndAction] = &[DndAction::Copy];
+
 impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn handle_window_event(
         &mut self,
@@ -244,7 +252,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 if !dnd_advertises_files(event_loop, *transfer) {
                     return None;
                 }
-                let _ = event_loop.set_valid_dnd_actions(*transfer, &[DndAction::Copy]);
+                let _ = event_loop.set_valid_dnd_actions(*transfer, FILE_DROP_ACTIONS);
                 let serial = event_loop
                     .fetch_data_transfer(*transfer, &TypeHint::UriList)
                     .ok();
@@ -288,7 +296,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     {
                         None
                     }
-                    Err(_) => None,
+                    // A release waiting on these paths would otherwise never end.
+                    Err(_) => self.input_mut(id).abandon_drop(*transfer, id),
                 }
             }
             _ => None,

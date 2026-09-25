@@ -1501,6 +1501,7 @@ impl GalleryApp {
                 id,
                 paths,
                 position,
+                ..
             } if id == WindowId::PRIMARY => self.apply_gallery_file_drag(
                 nana_ui::runtime::FileDragKind::Hover,
                 &paths,
@@ -1510,6 +1511,7 @@ impl GalleryApp {
                 id,
                 paths,
                 position,
+                ..
             } if id == WindowId::PRIMARY => {
                 self.apply_gallery_file_drag(nana_ui::runtime::FileDragKind::Drop, &paths, position)
             }

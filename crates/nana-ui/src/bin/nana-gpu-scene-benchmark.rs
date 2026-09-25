@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use nana_gpu::__framework;
 use nana_ui::runtime::{
     Button, DocumentId, Entity, FlexDirection, FlexWrap, FrameProfile, FrameProfiler,
     GpuTextureView, GpuView, GpuViewPalette, GpuWorkObservation, HOST_TEXTURE_RENDERER, IconGlyph,
@@ -18,9 +19,9 @@ use nana_ui::runtime::{
     StageStatus, Text,
 };
 use nana_ui::{
-    ButtonKind, GpuStageTimings, HostTexture, HostTextureAlphaMode, HostTextureRegistry, Icon,
-    NanaTextShaper, SceneGpuRendererRegistry, ScenePaintViewport, SceneWgpuPainter,
-    default_scene_gpu_renderers,
+    ButtonKind, GpuContext, GpuStageTimings, HostTexture, HostTextureAlphaMode,
+    HostTextureRegistry, Icon, NanaTextShaper, SceneGpuRendererRegistry, ScenePaintViewport,
+    SceneWgpuPainter, default_scene_gpu_renderers,
 };
 use nana_ui_core::{PaintTransform, TransformOrigin};
 use nana_ui_scene::ScenePrimitiveKind;
@@ -535,7 +536,7 @@ struct TextShapingWork {
 
 fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
     let params = &scenario.params;
-    let Some((device, queue, adapter)) = request_device(args.gpu_timestamps) else {
+    let Some((gpu, adapter)) = request_device(args.gpu_timestamps) else {
         return unsupported(
             Some(scenario.id),
             "UiOnly",
@@ -543,6 +544,8 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
                 .into(),
         );
     };
+    let device = __framework::device(&gpu).clone();
+    let queue = __framework::queue(&gpu).clone();
     let slot = params.host_texture.slot.as_str();
     // Every gpu-texture-view child claims its own slot when textures are
     // independent, so this must follow node_repeat, not the ui_nodes length.
@@ -555,8 +558,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
     let previews = (0..resource_count)
         .map(|index| {
             let preview = HostSlotContent::new(
-                &device,
-                &queue,
+                &gpu,
                 (params.host_texture.width, params.host_texture.height),
             );
             textures.register(
@@ -608,8 +610,13 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
     let renderers: Option<SceneGpuRendererRegistry> =
         (params.node_count("gpu-view") > 0).then(default_scene_gpu_renderers);
 
-    let mut painter = SceneWgpuPainter::new(&device, &queue, FORMAT);
-    let target = color_target(&device, params.viewport[0], params.viewport[1]);
+    let mut painter = SceneWgpuPainter::new(&gpu, __framework::format_from_wgpu(FORMAT));
+    let target = __framework::render_target(
+        &gpu,
+        color_target(&device, params.viewport[0], params.viewport[1]),
+        FORMAT,
+        params.viewport,
+    );
     let paint_viewport = ScenePaintViewport {
         logical_size: [params.viewport[0] as f32, params.viewport[1] as f32],
         physical_size: params.viewport,
@@ -675,24 +682,23 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         for (index, preview) in previews.iter().enumerate() {
             preview.write_uniform(&queue, frame.wrapping_add(index) as u32);
         }
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-gpu-scene-benchmark"),
-        });
+        let mut recording = gpu.begin_frame("nana-gpu-scene-benchmark");
+        let encoder = __framework::encoder(&mut recording);
         if let Some(probe) = &queries {
-            probe.stamp(&mut encoder, 0);
+            probe.stamp(encoder, 0);
         }
         for preview in &previews {
-            preview.encode(&mut encoder);
+            preview.encode(encoder);
         }
         if let Some(probe) = &queries {
-            probe.stamp(&mut encoder, 1);
+            probe.stamp(encoder, 1);
         }
         let prepare_started = Instant::now();
         let (_, paint_allocations) = allocations::measure(args.allocation_counts, || {
             painter
                 .paint(
                     document.scene(),
-                    &mut encoder,
+                    &mut recording,
                     &target,
                     paint_viewport,
                     Some(&textures),
@@ -702,13 +708,12 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         });
         let prepare_elapsed = prepare_started.elapsed() + runtime_elapsed;
         if let Some(probe) = &queries {
-            probe.stamp(&mut encoder, 2);
-            probe.resolve(&mut encoder);
+            let encoder = __framework::encoder(&mut recording);
+            probe.stamp(encoder, 2);
+            probe.resolve(encoder);
         }
-        let submit_started = Instant::now();
-        queue.submit([encoder.finish()]);
-        let submit_elapsed = submit_started.elapsed();
-        painter.record_submit(submit_elapsed);
+        let submission = recording.submit();
+        painter.record_submit(&submission);
         let timings = painter
             .last_gpu_timings()
             .expect("encoded GPU scene frame must time stages");
@@ -1163,7 +1168,7 @@ fn stage_status_name(status: StageStatus) -> &'static str {
     }
 }
 
-fn request_device(gpu_timestamps: bool) -> Option<(wgpu::Device, wgpu::Queue, String)> {
+fn request_device(gpu_timestamps: bool) -> Option<(GpuContext, String)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -1191,7 +1196,7 @@ fn request_device(gpu_timestamps: bool) -> Option<(wgpu::Device, wgpu::Queue, St
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
     }))
     .ok()?;
-    Some((device, queue, label))
+    Some((__framework::adopt(adapter, device, queue), label))
 }
 
 fn color_target(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
@@ -1223,7 +1228,8 @@ struct HostSlotContent {
 }
 
 impl HostSlotContent {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, size: (u32, u32)) -> Self {
+    fn new(gpu: &GpuContext, size: (u32, u32)) -> Self {
+        let device = __framework::device(gpu);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-gpu-scene-benchmark slot"),
             source: wgpu::ShaderSource::Wgsl(SLOT_SHADER.into()),
@@ -1300,7 +1306,7 @@ impl HostSlotContent {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let host = HostTexture::from_wgpu(1, 1, view.clone());
+        let host = HostTexture::new(1, 1, &__framework::texture_from_wgpu(gpu, texture.clone()));
         Self {
             pipeline,
             bind_group,

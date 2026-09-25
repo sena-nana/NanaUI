@@ -142,11 +142,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if surface_retry_due {
             // A device-loss callback may have been waiting on the last in-flight
             // submission when the window was suspended. Poll before local retry.
-            let _ = self
-                .graphics
-                .resources()
-                .device()
-                .poll(wgpu::PollType::Poll);
+            let _ = self.graphics.gpu().raw_device().poll(wgpu::PollType::Poll);
         }
         if self.graphics.take_device_lost()
             || self.next_gpu_retry.is_some_and(|deadline| now >= deadline)

@@ -23,6 +23,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use nana_gpu::{__framework, GpuContext, GpuRenderTarget};
 use nana_ui::runtime::{
     DocumentId, FlexDirection, FlexWrap, LayoutStyle, LayoutViewport, LengthSpec, MutationQueue,
     NodeKind, NodeStyle, RuntimeDocument, ScrollOffset, SemanticColorRole, StableNodeId,
@@ -320,7 +321,7 @@ fn main() {
             }
         }
     }
-    let Some((device, queue, adapter)) = gpu() else {
+    let Some((gpu, adapter)) = gpu() else {
         eprintln!("no wgpu adapter; nothing to measure");
         std::process::exit(2);
     };
@@ -345,7 +346,7 @@ fn main() {
             };
             for frames in rates {
                 let frames = frame_override.unwrap_or(*frames);
-                cells.push(run(&device, &queue, workload, labels, frames, depth, scale));
+                cells.push(run(&gpu, workload, labels, frames, depth, scale));
             }
         }
     }
@@ -368,7 +369,7 @@ fn main() {
     }
 }
 
-fn gpu() -> Option<(wgpu::Device, wgpu::Queue, String)> {
+fn gpu() -> Option<(GpuContext, String)> {
     let instance = wgpu::Instance::default();
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -384,7 +385,10 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue, String)> {
         ..Default::default()
     }))
     .ok()?;
-    Some((device, queue, format!("{} ({:?})", info.name, info.backend)))
+    Some((
+        __framework::adopt(adapter, device, queue),
+        format!("{} ({:?})", info.name, info.backend),
+    ))
 }
 
 /// A viewport that holds `count` boxes of `cell`, roughly square.
@@ -400,8 +404,7 @@ fn viewport_for(count: usize, cell: [f32; 2]) -> [u32; 2] {
 }
 
 fn run(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    context: &GpuContext,
     workload: Workload,
     labels: usize,
     frames: usize,
@@ -413,6 +416,7 @@ fn run(
     } else {
         (labels, LABEL)
     };
+    let device = __framework::device(context);
     let logical = viewport_for(count, cell);
     let physical = logical.map(|side| (side as f32 * scale).round() as u32);
     let largest = device.limits().max_texture_dimension_2d;
@@ -502,11 +506,11 @@ fn run(
 
     let viewport = LayoutViewport::new(logical[0] as f32, logical[1] as f32);
     let mut shaper = NanaTextShaper::default();
-    let mut painter = SceneWgpuPainter::new(device, queue, FORMAT);
-    let target = color_target(device, physical);
+    let mut painter = SceneWgpuPainter::new(context, __framework::format_from_wgpu(FORMAT));
+    let target = color_target(context, physical);
     // The second window of `MultiWindow`: its own surface, the same device,
     // the same painter — so the same atlas and the same shaped paragraphs.
-    let second = (workload == Workload::MultiWindow).then(|| color_target(device, physical));
+    let second = (workload == Workload::MultiWindow).then(|| color_target(context, physical));
     let paint_viewport = ScenePaintViewport {
         logical_size: [logical[0] as f32, logical[1] as f32],
         physical_size: physical,
@@ -542,9 +546,7 @@ fn run(
         let flush_started = std::time::Instant::now();
         document.flush(viewport, &mut shaper).expect("flush");
         let flush_elapsed = flush_started.elapsed();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-text-paint-benchmark"),
-        });
+        let mut recording = context.begin_frame("nana-text-paint-benchmark");
 
         let mut frame_batch = std::time::Duration::ZERO;
         let mut frame_upload = std::time::Duration::ZERO;
@@ -555,7 +557,7 @@ fn run(
             if second.is_none() {
                 painter.paint(
                     document.scene(),
-                    &mut encoder,
+                    &mut recording,
                     view,
                     paint_viewport,
                     None,
@@ -565,7 +567,7 @@ fn run(
                 painter.paint_target(
                     RenderTargetId(window as u64),
                     document.scene(),
-                    &mut encoder,
+                    &mut recording,
                     view,
                     paint_viewport,
                     None,
@@ -579,7 +581,7 @@ fn run(
             frame_encode += timings.encode;
         }
         let submitted = std::time::Instant::now();
-        queue.submit([encoder.finish()]);
+        recording.submit();
         // Waited on every frame so this is the GPU's own time for the frame,
         // not a queue that is running behind. What a vertex stage change costs
         // shows up here and nowhere else in this report.
@@ -1006,8 +1008,8 @@ fn column_style(opacity: Option<f32>, transform: Option<PaintTransform>) -> Node
     }
 }
 
-fn color_target(device: &wgpu::Device, physical: [u32; 2]) -> wgpu::TextureView {
-    device
+fn color_target(gpu: &GpuContext, physical: [u32; 2]) -> GpuRenderTarget {
+    let view = __framework::device(gpu)
         .create_texture(&wgpu::TextureDescriptor {
             label: Some("nana-text-paint-benchmark target"),
             size: wgpu::Extent3d {
@@ -1022,7 +1024,8 @@ fn color_target(device: &wgpu::Device, physical: [u32; 2]) -> wgpu::TextureView 
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         })
-        .create_view(&wgpu::TextureViewDescriptor::default())
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    __framework::render_target(gpu, view, FORMAT, physical)
 }
 
 fn print_table(cells: &[Cell]) {

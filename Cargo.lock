@@ -2499,6 +2499,16 @@ dependencies = [
 name = "nana-frame-exchange"
 version = "0.1.0"
 dependencies = [
+ "nana-gpu",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
+name = "nana-gpu"
+version = "0.1.0"
+dependencies = [
+ "nana-diagnostics",
  "pollster",
  "wgpu",
 ]
@@ -2605,6 +2615,7 @@ dependencies = [
  "nana-app-icon",
  "nana-diagnostics",
  "nana-frame-exchange",
+ "nana-gpu",
  "nana-icons-tabler",
  "nana-package",
  "nana-svg-raster",
@@ -2655,6 +2666,7 @@ name = "nana-ui-devtools"
 version = "0.1.0"
 dependencies = [
  "image",
+ "nana-gpu",
  "nana-js-engine",
  "nana-js-v8",
  "nana-ui",
@@ -2727,6 +2739,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "nana-app-icon",
+ "nana-gpu",
  "nana-js-engine",
  "nana-svg-raster",
  "nana-ui",

@@ -91,5 +91,74 @@ This round lands Issue #182: nana-text's `EditSession` is now the only storage f
   - The selection and composing region cross to GameTextInput in UTF-16 code units, the Java side's indices. Before, UTF-8 byte offsets were passed through as they were, which put the IME's composing region and cursor in the wrong place in any non-ASCII text.
 - **Folding:** pressing Right across a collapsed fold leaves a caret, not a selection covering the hidden lines.
 - **Undo after undo:** typing after an undo or redo starts a new step instead of merging into the step the undo stepped back onto.
+- **Application value writes clear undo:** writing an editor's text from outside the edit path (`update_component`, `set_component`, a keyed `mount`, or committing `SetTextInput`) now clears that editor's undo/redo when the bytes change. Before, the journal survived, and Ctrl+Z after loading another document restored the previous one; `clear_text_history` is no longer needed for that. Writing back the value the editor reported, or the same text, keeps the journal.
+  - A handler registered with `on` for the editor's own `TextChanged` that rewrites the editor during delivery (uppercasing, filtering) is part of how that editor takes input: the step records the text the handler left, and stays undoable. A step that ends up changing nothing is not kept. Whether a draft cleared on send stays undoable is the application's call: call `clear_text_history` when sending if it should not.
+  - This includes writes an application makes on the user's behalf, such as clearing a field after send or a formatter's write-back. To keep such an edit undoable, use the new `AppContext::edit_text_area(entity, range, text)` / `edit_text_input(…)`, which replaces `range` with `text` along the path the user's own edits take, as a step of its own that never merges with the typing around it. Like the user's own edits, it is refused on a read-only or disabled editor or while an IME composition is in progress, a `TextInput`'s length limit applies, an atom the range reaches into is replaced whole, and every cursor, the user's own included, moves through the edit rather than to it, except that a caret right where text is inserted goes past it, as typing leaves it (a completion at the caret). It is not typing into a snippet: linked placeholders do not mirror it, and an active snippet session is remapped through it (or ends) as for any value change. An edit past a `TextInput`'s length limit is refused whole, never cut to fit. Replacing text with the same text is no edit and emits nothing; a range outside the text or off a grapheme boundary is an error.
+  - Only `TextInput` and `TextArea` keep an undo journal. `NumberInput`, `SearchDropdown`, `CommandPalette` and `ContextMenu` inputs used to record steps that `undo_focused_text` could never take, so `can_undo_text` reported an undo that did nothing; they now record none. Their state is more than their text (a committed number, a filtered list), which a restored text would not bring back.
+  - A `ColorField`'s hex text is rewritten only when it names a different color (or none), so any spelling of the current color the user typed survives reopening the picker, and so does its undo.
 - **Cut and copy over an atom:** a selection that cuts into an atom copies the whole atom, which is what a cut deletes.
+  - A bare primary caret inside an atom is not widened by a cut: the cut deletes only what it copied, and the atom stays. Other edits at such a caret, including `replace_text_area_selection(area, "")`, still replace the atom.
+  - Every cursor is widened over the atoms it cuts into, not only the primary: a further selection that reaches into a chip replaces, cuts or copies it whole. Before, it left half of the chip behind.
+- **Removing an overlay:** focus goes back to the overlay's restore target only when it left with the overlay (it was on the overlay, anything inside it, or an overlay opened from inside it and hosted elsewhere). If the user had already moved focus to another node, such as an editor mid-composition, focus and composition stay where they are. Before, the host took focus back and the editor's preedit was cancelled. A document with no focus still gets the opener back.
+- **Inlays and word movement:** WordRight that stops inside an inlay label, from its anchor or from before it, lands where it would over the bare text instead of counting the label's words or stepping one grapheme past the anchor. A step that would land in a collapsed fold's hidden lines crosses the fold.
 - **Accessibility:** a secure (password) field without a label no longer falls back to its text for its accessible name.
+
+## Issue #183: GPU backend contract isolation
+
+WGPU stays the only backend, but it is no longer the extension contract. The new crate `nana-gpu` (re-exported by `nana-ui`) owns it: `GpuContext` is the device, `FrameContext` one frame's encoder, `GpuTexture` / `GpuRenderTarget` textures that know their device. Raw WGPU objects are behind the new `wgpu-interop` feature. See [GPU contract and the wgpu escape hatch](gpu.md#gpu-合同与-wgpu-逃生口).
+
+### API changes
+
+| Was | Now |
+| --- | --- |
+| `HostedGpuResources` (`RuntimeProgramContext::gpu()`) | `GpuContext`: `generation() -> DeviceGeneration`, `capabilities()`, `is_lost()` / `lost_report()`, `create_texture`, `write_texture`, `begin_frame`. Raw adapter/device/queue: `gpu.wgpu()` (wgpu-interop) |
+| `generation() -> u64` everywhere (context, `FrameToken`, `FrameInbox`) | `DeviceGeneration` (`.get()` for the number) |
+| `HostedGpuResources::submit_lock()` | Gone. `FrameContext::submit`, `write_texture` and `FrameExchange::copy_from` hold the guard themselves; raw submits hold `gpu.wgpu().lock_submission()` |
+| `HostedGpuResources::from_existing(adapter, Arc<Device>, Arc<Queue>)` | `GpuContext::from_wgpu(adapter, device, queue)` (wgpu-interop) |
+| `HostedGpuShared::from_device(instance, adapter, device, queue)` | `HostedGpuShared::from_device(instance, GpuContext)` (wgpu-interop); `resources()` → `gpu()`; `adapter()` / `adapter_info()` → `gpu().capabilities()` or `gpu().wgpu()` |
+| `HostedDeviceLost { reason: String, .. }` | `GpuDeviceLost { reason: GpuLossReason, message }` |
+| `HostTexture::from_wgpu(id, generation, TextureView)` / `replace_view(view)` | `HostTexture::new(id, generation, &GpuTexture)` / `replace_texture(&GpuTexture)`; new `device_generation()` |
+| `FrameExchange::new(generation, Arc<Device>, Arc<Queue>, capacity, epoch, notify)` | `FrameExchange::new(&GpuContext, capacity, epoch, notify)` |
+| `FrameExchange::copy_from(&wgpu::Texture, epoch)` | `copy_from(&GpuTexture, epoch)`, or `copy_from_wgpu(&wgpu::Texture, epoch)` (wgpu-interop). `CopyOutcome` gains `DeviceMismatch` |
+| `FrameLease::view()` / `format() -> wgpu::TextureFormat` | `texture() -> &GpuTexture` / `format() -> GpuTextureFormat` |
+| `FrameBinding::new(&Device, generation, slot, alpha)` | `FrameBinding::new(&GpuContext, slot, alpha)` |
+| `SceneWgpuPainter::new(&Device, &Queue, wgpu::TextureFormat)`, `format()` | `SceneWgpuPainter::new(&GpuContext, GpuTextureFormat)`, `format() -> GpuTextureFormat`, new `gpu()` |
+| `paint` / `paint_target(.., &mut CommandEncoder, &TextureView, ..)` | `paint` / `paint_target(.., &mut FrameContext, &GpuRenderTarget, ..)` |
+| `record_submit(Duration)` | `record_submit(&GpuSubmission)` |
+| `SceneGpuPrepareContext { device, queue, target_format: wgpu::TextureFormat, .. }` and the pass / batch contexts | `{ gpu: &GpuContext, target_format: GpuTextureFormat, .. }` |
+| `SceneGpuRenderContext { encoder, target, .. }` | `with_pass(label, \|pass\| ..)`; raw `wgpu_encoder()` / `wgpu_target()` (wgpu-interop) |
+| `draw_in_pass` / `draw_batch_in_pass(.., &mut wgpu::RenderPass, ..)` | `(.., &mut ScenePass, ..)`: `set_scissor`, `set_viewport`, `restore_viewport`, `dest_size`; raw `wgpu()` (wgpu-interop) |
+| `SceneResourceEncodeContext { device, queue, encoder }` | `{ gpu, .. }` with `frame()`; the encoder is `frame().wgpu_encoder()` (wgpu-interop) |
+| `SceneResourceProducer::submitted(node, &Device, SubmissionIndex)`, `PreparedSceneResources::submitted(&Device, SubmissionIndex)` | `submitted(node, &GpuSubmission)`, `submitted(&GpuSubmission)` |
+| `encode_scene(scene, &Device, &Queue, &mut CommandEncoder)` | `encode_scene(scene, &mut FrameContext)` |
+| `DefaultGpuViewRenderer::with_host` / `with_host_palette`, `default_scene_gpu_renderers_with_host` | Removed: renderers draw on the painter's device. Use `new` / `with_palette` / `default_scene_gpu_renderers` |
+| `RuntimeProgramContext::surface_alpha_mode()`, `ResolvedWindowPresentation::alpha_mode()`, `HostedGpuSurface` / `HostedGpuContext::alpha_mode()` → `wgpu::CompositeAlphaMode` | `SurfaceAlphaMode` (same variant names) |
+| `HostedGpuSurface` / `HostedGpuContext::format()` → `wgpu::TextureFormat` | `GpuTextureFormat` |
+| `HostedGpuError::SurfaceFormatChanged { expected: wgpu::TextureFormat }` | `expected: GpuTextureFormat` |
+| `HostedGpuContext::new` / `new_with_surface_mode` / `recreate` / `acquire_frame` / `discard_frame`, `HostedGpuShared::acquire_surface_frame` / `present` / `discard_surface_frame`, `HostedSurfaceFrame` | Unchanged, but public only with wgpu-interop |
+| `nana_ui::wgpu` | Only with wgpu-interop |
+| `OffscreenSnapshots { device, queue }` (devtools) | `OffscreenSnapshots { gpu: GpuContext }` |
+
+`ScenePaintError` gains `DeviceMismatch`, `StaleHostTexture` and `TargetInFlight`; exhaustive matches need the arms.
+
+### Who needs `wgpu-interop`
+
+Turn it on (`nana-ui/wgpu-interop`) only where you touch WGPU objects: a host that brings its own device (`GpuContext::from_wgpu`, `HostedGpuShared::from_device`), a renderer or producer that records its own pipelines, tooling that reads back. Uploading CPU pixels (`create_texture` + `write_texture`), handing `GpuTexture` frames to `FrameExchange`, and registering `HostTexture` slots do not need it. The framework's own crates (nana-ui, nana-frame-exchange, nana-ui-vue with its JS WebGPU facade, nana-ui-devtools with snapshot readback) do not turn it on, so a Vue app does not get it by accident. In this repository `hosted-gpu-demo`, `embedded-window-lifecycle`, `native-content-probe`, the `text_device_recreation` / `text_lost_device` tests, `examples/runtime-host-fixture`, `examples/vue-hosted-acceptance`, the `nana-js-v8` WebGPU test, the Gallery benchmark and the Android host enable it.
+
+The submission guard is not reentrant: while holding `lock_submission()`, do not call `FrameContext::submit`, `GpuContext::write_texture` or `FrameExchange::copy_from`, which take it themselves.
+
+### Behavior changes
+
+- **Dropping a painted frame is safe.** Before, a `paint` / `paint_target` that returned `Ok` required the encoder to be submitted, or the painter kept drawing from GPU state that never landed. Now dropping the `FrameContext` rolls the painted targets back and their next paint rebuilds them. Painting a target again while an earlier frame that painted it is neither submitted nor dropped returns `TargetInFlight`.
+- **Resources from a replaced device are refused.** A `HostTexture` still sampling a texture from a replaced device fails the frame with `StaleHostTexture` instead of reaching WGPU validation; frames and targets from another device fail with `DeviceMismatch`. Rebuild device resources in `rebuild_gpu`, as before.
+- **Off-thread copies no longer race surface reconfiguration.** `FrameExchange::copy_from` submitted without the guard documented for off-thread submits, and could hit `GpuWaitTimeout` while a window resized. It now holds it.
+- **Renderer caches follow the device.** `DefaultGpuViewRenderer` keyed its pipeline by format only: a registry kept across a device replacement drew with the old device's pipeline, and windows of different formats rebuilt it on every alternation. It now keys by device generation and format.
+- **Embedded loss is recorded on the context.** `EmbeddedRuntime::notify_device_lost` marks the `GpuContext` lost, so producer threads can query `is_lost()`.
+- **A device lost with no window open recovers with the next window.** Before, the loss was consumed with nothing to rebuild from and the next window kept presenting on the lost device.
+- **Diagnostics:** `framework::gpu` appends counter `FRAMES_DISCARDED` (`gpu.frames_discarded`, metric id 11) and warn event `RETAINED_FRAME_DISCARDED` (`gpu.retained_frame_discarded`, event id 6, field `target`, once per painter). The `gpu.submit` histogram now measures finish plus submit only, without producer `submitted` callbacks.
+
+### Checked by the boundary script
+
+`python3 scripts/check-engine-boundary.py` fails when a public signature, field, re-export, type alias, `use wgpu::..` alias used in a public item, type header (generic defaults, `where`), enum payload, trait method or associated type, or trait impl on a public type of nana-gpu, nana-frame-exchange, nana-ui, nana-ui-vue or nana-ui-devtools names `wgpu` outside `cfg(feature = "wgpu-interop")` (`not(..)` / `any(..)` do not count), and when anything but those crates' own sources uses `nana_gpu::__framework`.
+
+`nana_ui_devtools::offscreen::FORMAT` is now a `GpuTextureFormat`, and `offscreen::readback(&GpuContext, &GpuTexture, Size)` replaces `readback(&Device, &Queue, CommandEncoder, &Texture, Size)`. `nana_frame_exchange` re-exports `GpuContext`, `GpuTexture`, `GpuTextureFormat` and `DeviceGeneration`.

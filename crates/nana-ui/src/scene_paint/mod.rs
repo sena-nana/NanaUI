@@ -1,7 +1,7 @@
 //! Nana-owned WGPU painter for [`UiScene`].
 //!
 //! This is the product Scene backend. It paints [`UiScene`] through the host GPU.
-//! The host owns Device/Queue/encoder. HostTexture is sampled in document order
+//! The host owns the [`GpuContext`] and each frame's [`FrameContext`]. HostTexture is sampled in document order
 //! inside the current dest (or opacity-group) pass; groups do not open a pass
 //! per HostTexture slot.
 
@@ -27,6 +27,10 @@ pub(crate) use clip::{covered_span, is_translation_projective, on_grid};
 
 use std::{sync::Arc, time::Instant};
 
+use nana_gpu::{
+    __framework, FrameContext, GpuContext, GpuRenderTarget, GpuSubmission, GpuTextureFormat,
+    RetainedWrites,
+};
 use nana_ui_core::GpuWorkObservation;
 use nana_ui_platform::SharedFetchHost;
 use nana_ui_scene::{RenderOperation, ScenePrimitiveKind, UiScene};
@@ -38,6 +42,7 @@ use crate::{
     scene_gpu::{
         SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode, SceneGpuPassContext,
         SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry,
+        ScenePass,
     },
 };
 
@@ -84,6 +89,14 @@ pub struct ScenePaintViewport {
 pub struct SceneWgpuPainter {
     targets: std::collections::HashMap<RenderTargetId, TargetState>,
     prepared_batch: Option<PreparedBatch>,
+    gpu: GpuContext,
+    /// Targets whose retained GPU state was recorded into a frame that was
+    /// later dropped instead of submitted; rebuilt before their next paint.
+    /// Keyed by [`RenderTargetId`].
+    retained_targets: RetainedWrites,
+    /// The same for the state [`Self::paint`] keeps in the painter itself, in
+    /// a ledger of its own so no host id can alias it.
+    retained_default: RetainedWrites,
     device: wgpu::Device,
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,
@@ -137,6 +150,9 @@ struct PaintedDest {
 /// Host-owned identity for a window or offscreen presentation target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RenderTargetId(pub u64);
+
+/// The one key of the ledger behind [`SceneWgpuPainter::paint`].
+const DEFAULT_TARGET: u64 = 0;
 
 #[derive(Default)]
 struct TargetState {
@@ -226,12 +242,20 @@ enum DrawCommand {
 }
 
 impl SceneWgpuPainter {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+    /// A painter for targets of `format` on `gpu`. Every frame it paints must
+    /// come from the same device.
+    pub fn new(gpu: &GpuContext, format: GpuTextureFormat) -> Self {
+        let device = __framework::device(gpu);
+        let queue = __framework::queue(gpu);
+        let format = __framework::format_to_wgpu(format);
         let quads = QuadPipeline::new(device, format);
         let motion = MotionGpuResources::new(device, quads.motion_layout());
         Self {
             targets: std::collections::HashMap::new(),
             prepared_batch: None,
+            gpu: gpu.clone(),
+            retained_targets: RetainedWrites::new(),
+            retained_default: RetainedWrites::new(),
             device: device.clone(),
             queue: queue.clone(),
             format,
@@ -269,8 +293,13 @@ impl SceneWgpuPainter {
         }
     }
 
-    pub fn format(&self) -> wgpu::TextureFormat {
-        self.format
+    pub fn format(&self) -> GpuTextureFormat {
+        __framework::format_from_wgpu(self.format)
+    }
+
+    /// The device this painter records on.
+    pub fn gpu(&self) -> &GpuContext {
+        &self.gpu
     }
 
     /// Wake the owning event loop when an asynchronous URL image completes.
@@ -377,10 +406,10 @@ impl SceneWgpuPainter {
         )
     }
 
-    /// Record host `queue.submit` duration for the last encoded frame.
-    pub fn record_submit(&mut self, duration: std::time::Duration) {
+    /// Record the submit of the frame this painter last encoded into.
+    pub fn record_submit(&mut self, submission: &GpuSubmission) {
         if let Some(timings) = &mut self.last_gpu_timings {
-            timings.submit = timings.submit.saturating_add(duration);
+            timings.submit = timings.submit.saturating_add(submission.cpu_duration());
         }
     }
 
@@ -415,20 +444,19 @@ impl SceneWgpuPainter {
 
     /// Paint with isolated target state while sharing device pipelines/caches.
     ///
-    /// The same `encoder` contract as [`Self::paint`]. A host that has to
-    /// throw away an encoder this painted into calls [`Self::remove_target`]
-    /// for the target, which starts its retained state again.
+    /// The same `frame` contract as [`Self::paint`].
     #[allow(clippy::too_many_arguments)]
     pub fn paint_target(
         &mut self,
         id: RenderTargetId,
         scene: &UiScene,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
+        frame: &mut FrameContext,
+        target: &GpuRenderTarget,
         viewport: ScenePaintViewport,
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
+        self.begin_frame(Some(id), frame, target)?;
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;
@@ -436,10 +464,10 @@ impl SceneWgpuPainter {
             HostTexturePipeline::invalidate_target_image_bindings(&mut state.host_textures);
         }
         self.swap_target_state(&mut state);
-        let result = self.paint(
+        let result = self.paint_recorded(
             scene,
-            encoder,
-            target,
+            __framework::encoder(frame),
+            __framework::target_view(target),
             viewport,
             host_textures,
             gpu_renderers,
@@ -447,6 +475,9 @@ impl SceneWgpuPainter {
         self.swap_target_state(&mut state);
         state.image_revision = self.image_revision;
         self.targets.insert(id, state);
+        if result.is_ok() {
+            frame.record_retained_writes(&self.retained_targets, id.0);
+        }
         result
     }
     fn swap_target_state(&mut self, state: &mut TargetState) {
@@ -462,19 +493,102 @@ impl SceneWgpuPainter {
         self.host_textures.swap_target(&mut state.host_textures);
     }
 
-    /// Encode `scene` into `encoder`, drawing into `target`.
+    /// Refuse a frame or target from another device, refuse to record on top
+    /// of writes an unsubmitted frame still holds, and rebuild targets whose
+    /// retained writes were rolled back by a dropped frame. `None` is the
+    /// state behind [`Self::paint`].
+    fn begin_frame(
+        &mut self,
+        target_id: Option<RenderTargetId>,
+        frame: &FrameContext,
+        target: &GpuRenderTarget,
+    ) -> Result<(), ScenePaintError> {
+        // A rejected frame must not report a previous target's successful work.
+        self.last_gpu_work = None;
+        self.last_gpu_timings = None;
+        self.last_dest_pass_counts = None;
+        let expected = self.gpu.generation();
+        for found in [frame.generation(), target.generation()] {
+            if found != expected {
+                return Err(ScenePaintError::DeviceMismatch { expected, found });
+            }
+        }
+        // Before the drain: a frame dropped on another thread in between
+        // releases the key and records its rollback in one step, so checking
+        // in this order never paints over a rollback the drain missed.
+        let in_flight = match target_id {
+            Some(id) => self.retained_targets.in_flight(id.0, frame.id()),
+            None => self.retained_default.in_flight(DEFAULT_TARGET, frame.id()),
+        };
+        if in_flight {
+            return Err(ScenePaintError::TargetInFlight(target_id));
+        }
+        if self.retained_default.has_rolled_back() {
+            self.retained_default.drain_rolled_back(|_| {});
+            self.reset_default_target();
+        }
+        if self.retained_targets.has_rolled_back() {
+            let mut rolled_back = Vec::new();
+            self.retained_targets
+                .drain_rolled_back(|key| rolled_back.push(RenderTargetId(key)));
+            for id in rolled_back {
+                // Not `remove_target`: the window is still open, so its fetch
+                // host and image caches stay.
+                if let Some(mut state) = self.targets.remove(&id)
+                    && let Some(text) = state.text.take()
+                {
+                    self.text.close_target(text);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Start the state [`Self::paint`] keeps in the painter itself over, as a
+    /// rolled-back target's is.
+    fn reset_default_target(&mut self) {
+        let mut state = TargetState::default();
+        self.swap_target_state(&mut state);
+        if let Some(text) = state.text.take() {
+            self.text.close_target(text);
+        }
+    }
+
+    /// Encode `scene` into `frame`, drawing into `target`.
     ///
-    /// **`encoder` must be submitted** once this returns `Ok`. The painter
-    /// keeps geometry on the GPU between frames and records part of this
-    /// frame's writes to it as copies in `encoder` — text blocks and the text
-    /// draw order (#224) — then treats them as done. An encoder that is
-    /// dropped instead leaves the retained buffers behind what the painter
-    /// believes they hold, and later frames draw from them until the
-    /// paragraphs affected are placed again. On `Err` nothing was recorded
-    /// and the encoder may be dropped. A host that must drop an encoder it
-    /// was painted into drops this painter with it (or, for
-    /// [`Self::paint_target`], removes that target).
+    /// The painter keeps geometry on the GPU between frames and records part
+    /// of each frame's writes to it as copies in the frame's encoder — text
+    /// blocks and the text draw order (#224) — then treats them as done. A
+    /// frame dropped instead of submitted rolls that back: the next paint of
+    /// the target rebuilds it. Painting a target again while an earlier frame
+    /// that painted it is still unsubmitted is refused with
+    /// [`ScenePaintError::TargetInFlight`], since the two could be submitted
+    /// out of order. On `Err` nothing was recorded.
     pub fn paint(
+        &mut self,
+        scene: &UiScene,
+        frame: &mut FrameContext,
+        target: &GpuRenderTarget,
+        viewport: ScenePaintViewport,
+        host_textures: Option<&HostTextureRegistry>,
+        gpu_renderers: Option<&SceneGpuRendererRegistry>,
+    ) -> Result<(), ScenePaintError> {
+        self.begin_frame(None, frame, target)?;
+        let result = self.paint_recorded(
+            scene,
+            __framework::encoder(frame),
+            __framework::target_view(target),
+            viewport,
+            host_textures,
+            gpu_renderers,
+        );
+        if result.is_ok() {
+            frame.record_retained_writes(&self.retained_default, DEFAULT_TARGET);
+        }
+        result
+    }
+
+    fn paint_recorded(
         &mut self,
         scene: &UiScene,
         encoder: &mut wgpu::CommandEncoder,
@@ -510,7 +624,7 @@ impl SceneWgpuPainter {
         let instance = scene.instance_id();
         // Also resolves this frame's `PreparedBatch` key, so nothing below
         // walks `FramePlan::custom_nodes` again.
-        let resolved = validate_scene(scene, host_textures, gpu_renderers)?;
+        let resolved = validate_scene(scene, host_textures, gpu_renderers, self.gpu.generation())?;
         if viewport.physical_size[0] == 0 || viewport.physical_size[1] == 0 {
             self.last_gpu_work = None;
             self.last_gpu_timings = None;
@@ -1363,9 +1477,8 @@ impl SceneWgpuPainter {
                             renderer.prepare(
                                 &node,
                                 SceneGpuPrepareContext {
-                                    device: &self.device,
-                                    queue: &self.queue,
-                                    target_format: self.format,
+                                    gpu: &self.gpu,
+                                    target_format: __framework::format_from_wgpu(self.format),
                                     bounds: custom_bounds.to_core(),
                                     scale_factor: scale,
                                     dest_size: dest_physical,
@@ -1521,8 +1634,8 @@ impl SceneWgpuPainter {
                     text: &self.text,
                     host_textures: &self.host_textures,
                     backdrop: &mut self.backdrop,
-                    device: &self.device,
-                    queue: &self.queue,
+                    gpu: &self.gpu,
+                    format: __framework::format_from_wgpu(self.format),
                     gpu_work: &gpu_work,
                     motion: self.motion.bind_group(),
                     group_extents: &group_extents,
@@ -2182,8 +2295,8 @@ struct EncodeOrdered<'a> {
     text: &'a TextPipeline,
     host_textures: &'a HostTexturePipeline,
     backdrop: &'a mut BackdropPipeline,
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
+    gpu: &'a GpuContext,
+    format: GpuTextureFormat,
     gpu_work: &'a GpuWorkSink,
     motion: &'a wgpu::BindGroup,
     /// What each group can change, by slot ([`group_extents`]).
@@ -2398,7 +2511,7 @@ fn encode_ordered(
                         dest_passes,
                     );
                     pipelines.backdrop.encode(
-                        pipelines.device,
+                        __framework::device(pipelines.gpu),
                         encoder,
                         dest.color_view(),
                         dest_physical,
@@ -2510,10 +2623,9 @@ fn encode_ordered(
                                     commands,
                                     index,
                                     renderer,
-                                    &mut pass,
-                                    dest_physical,
-                                    pipelines.device,
-                                    pipelines.queue,
+                                    &mut ScenePass::new(&mut pass, dest_physical),
+                                    pipelines.gpu,
+                                    pipelines.format,
                                     pipelines.gpu_work,
                                 );
                                 if encoded > 0 {
@@ -2523,10 +2635,10 @@ fn encode_ordered(
                                 }
                                 if renderer.draw_in_pass(
                                     node,
-                                    &mut pass,
+                                    &mut ScenePass::new(&mut pass, dest_physical),
                                     SceneGpuPassContext {
-                                        device: pipelines.device,
-                                        queue: pipelines.queue,
+                                        gpu: pipelines.gpu,
+                                        target_format: pipelines.format,
                                         bounds: *bounds,
                                         clip: *clip,
                                         dest_size: dest_physical,
@@ -2559,16 +2671,16 @@ fn encode_ordered(
                         };
                         renderer.render(
                             node,
-                            SceneGpuRenderContext {
-                                device: pipelines.device,
-                                queue: pipelines.queue,
+                            SceneGpuRenderContext::new(
+                                pipelines.gpu,
+                                pipelines.format,
+                                *bounds,
+                                *clip,
+                                dest_physical,
+                                Some(pipelines.gpu_work),
                                 encoder,
                                 target,
-                                bounds: *bounds,
-                                clip: *clip,
-                                dest_size: dest_physical,
-                                gpu_work: Some(pipelines.gpu_work),
-                            },
+                            ),
                         );
                     }
                     index += 1;
@@ -2593,10 +2705,9 @@ fn draw_custom_run(
     commands: &[DrawCommand],
     start: usize,
     renderer: &Arc<dyn SceneGpuRenderer>,
-    pass: &mut wgpu::RenderPass<'_>,
-    dest_physical: [u32; 2],
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+    pass: &mut ScenePass<'_, '_>,
+    gpu: &GpuContext,
+    format: GpuTextureFormat,
     gpu_work: &GpuWorkSink,
 ) -> usize {
     let capacity = renderer.batch_capacity();
@@ -2635,9 +2746,9 @@ fn draw_custom_run(
         &run,
         pass,
         SceneGpuBatchPassContext {
-            device,
-            queue,
-            dest_size: dest_physical,
+            gpu,
+            target_format: format,
+            dest_size: pass.dest_size(),
             gpu_work: Some(gpu_work),
         },
     );
@@ -2713,4 +2824,67 @@ fn rect_meets_target(
         || max[1] < -1.0
         || min[0] > size[0] as f32 + 1.0
         || min[1] > size[1] as f32 + 1.0)
+}
+
+/// Painter tests record into encoders and targets of the shared test device
+/// directly; the frame contract has tests of its own.
+#[cfg(test)]
+impl SceneWgpuPainter {
+    pub(crate) fn for_test(format: wgpu::TextureFormat) -> Self {
+        Self::new(
+            &crate::test_gpu::context(),
+            __framework::format_from_wgpu(format),
+        )
+    }
+
+    pub(crate) fn paint_encoder(
+        &mut self,
+        scene: &UiScene,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        viewport: ScenePaintViewport,
+        host_textures: Option<&HostTextureRegistry>,
+        gpu_renderers: Option<&SceneGpuRendererRegistry>,
+    ) -> Result<(), ScenePaintError> {
+        self.paint_recorded(
+            scene,
+            encoder,
+            target,
+            viewport,
+            host_textures,
+            gpu_renderers,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_target_encoder(
+        &mut self,
+        id: RenderTargetId,
+        scene: &UiScene,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        viewport: ScenePaintViewport,
+        host_textures: Option<&HostTextureRegistry>,
+        gpu_renderers: Option<&SceneGpuRendererRegistry>,
+    ) -> Result<(), ScenePaintError> {
+        let mut state = self.targets.remove(&id).unwrap_or_default();
+        if state.image_revision != self.image_revision {
+            state.painted = None;
+            QuadPipeline::invalidate_target_image_bindings(&mut state.quads);
+            HostTexturePipeline::invalidate_target_image_bindings(&mut state.host_textures);
+        }
+        self.swap_target_state(&mut state);
+        let result = self.paint_recorded(
+            scene,
+            encoder,
+            target,
+            viewport,
+            host_textures,
+            gpu_renderers,
+        );
+        self.swap_target_state(&mut state);
+        state.image_revision = self.image_revision;
+        self.targets.insert(id, state);
+        result
+    }
 }

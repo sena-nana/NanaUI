@@ -81,6 +81,110 @@ class EngineBoundaryTests(unittest.TestCase):
             path.write_text(source, encoding="utf-8")
         self.addCleanup(shutil.rmtree, root, True)
         return root
+    def gpu_failures(self, files):
+        return boundary.check_gpu_contract_sources(self.text_crate_files(files))
+    def test_gpu_contract_rejects_wgpu_in_public_signatures(self):
+        failures = self.gpu_failures({
+            "lib.rs": (
+                "pub fn device(&self) -> &wgpu::Device { todo!() }\n"
+                "pub struct Context { pub queue: wgpu::Queue, raw: wgpu::Queue }\n"
+                "pub use wgpu;\n"
+                "pub type Format = wgpu::TextureFormat;\n"
+                "pub struct Wrap(pub wgpu::Texture);\n"
+            ),
+        })
+        self.assertEqual(len(failures), 5, failures)
+    def test_gpu_contract_sees_enum_payloads_and_trait_methods(self):
+        failures = self.gpu_failures({
+            "lib.rs": (
+                "pub enum Frame { Ready(wgpu::SurfaceTexture), Retry }\n"
+                "pub trait Renderer { fn draw(&self, pass: &mut wgpu::RenderPass<'_>); }\n"
+            ),
+        })
+        self.assertEqual(len(failures), 2, failures)
+    def test_gpu_contract_allows_crate_private_and_interop_gated_items(self):
+        failures = self.gpu_failures({
+            "lib.rs": (
+                "pub(crate) fn device() -> &'static wgpu::Device { todo!() }\n"
+                "pub struct Format(pub(crate) wgpu::TextureFormat);\n"
+                "pub const RGBA: Format = Format(wgpu::TextureFormat::Rgba8Unorm);\n"
+                "#[cfg(feature = \"wgpu-interop\")]\n"
+                "pub fn raw(&self) -> &wgpu::Device { todo!() }\n"
+                "#[cfg(feature = \"wgpu-interop\")]\n"
+                "impl Format { pub fn wgpu(self) -> wgpu::TextureFormat { self.0 } }\n"
+                "#[cfg(feature = \"wgpu-interop\")]\n"
+                "mod wgpu_interop;\n"
+                "#[cfg(test)]\n"
+                "mod tests { pub fn fixture() -> wgpu::Device { todo!() } }\n"
+                "// pub fn prose(device: &wgpu::Device) mentions the backend in a comment\n"
+            ),
+            "wgpu_interop.rs": "pub fn device() -> &'static wgpu::Device { todo!() }\n",
+            "bin/bench.rs": "pub fn device() -> wgpu::Device { todo!() }\n",
+        })
+        self.assertEqual(failures, [])
+    def test_gpu_contract_sees_aliases_headers_impls_and_associated_types(self):
+        failures = self.gpu_failures({
+            "lib.rs": (
+                "use wgpu::{Device as D, Texture};\n"
+                "pub fn device() -> &'static D { todo!() }\n"
+                "pub struct Holder<T = Texture> { value: T }\n"
+                "pub struct Ptr(u8);\n"
+                "impl From<wgpu::Texture> for Ptr { fn from(_: wgpu::Texture) -> Self { todo!() } }\n"
+                "impl std::ops::Deref for Ptr { type Target = wgpu::Device; fn deref(&self) -> &Self::Target { todo!() } }\n"
+                "pub trait Raw { type Backend: Into<wgpu::Texture>; }\n"
+                "struct Private(u8);\n"
+                "impl From<wgpu::Texture> for Private { fn from(_: wgpu::Texture) -> Self { todo!() } }\n"
+            ),
+        })
+        # The alias, the default, the `From` impl, `Deref::Target` and the
+        # associated type; nothing about the private type.
+        self.assertEqual(len(failures), 5, failures)
+    def test_only_a_positive_interop_cfg_counts_as_gated(self):
+        failures = self.gpu_failures({
+            "lib.rs": (
+                "#[cfg(not(feature = \"wgpu-interop\"))]\n"
+                "pub fn a() -> wgpu::Device { todo!() }\n"
+                "#[cfg(any(feature = \"wgpu-interop\", test))]\n"
+                "pub fn b() -> wgpu::Device { todo!() }\n"
+                "#[cfg(all(feature = \"hosted\", feature = \"wgpu-interop\"))]\n"
+                "pub fn c() -> wgpu::Device { todo!() }\n"
+            ),
+        })
+        self.assertEqual(len(failures), 2, failures)
+    def test_a_gated_field_hides_only_itself(self):
+        failures = self.gpu_failures({
+            "lib.rs": (
+                "pub struct S {\n"
+                "    #[cfg(feature = \"wgpu-interop\")]\n"
+                "    pub raw: wgpu::Texture,\n"
+                "    pub leak: wgpu::Texture,\n"
+                "}\n"
+                "#[cfg(feature = \"wgpu-interop\")]\n"
+                "pub fn gated() -> Result<wgpu::Device, wgpu::Queue> { todo!() }\n"
+                "pub fn open() -> wgpu::Queue { todo!() }\n"
+            ),
+        })
+        self.assertEqual(len(failures), 2, failures)
+        self.assertTrue(any("leak" in failure for failure in failures), failures)
+        self.assertTrue(any("open" in failure for failure in failures), failures)
+    def test_an_ungated_interop_module_is_rejected(self):
+        failures = self.gpu_failures({"lib.rs": "mod wgpu_interop;\n"})
+        self.assertTrue(any("declares mod wgpu_interop" in failure for failure in failures), failures)
+    def test_only_framework_sources_reach_the_backend_through_framework(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "src").mkdir()
+        (root / "examples").mkdir()
+        (root / "src" / "lib.rs").write_text("use nana_gpu::__framework;\n", encoding="utf-8")
+        (root / "examples" / "demo.rs").write_text("use nana_gpu::__framework;\n", encoding="utf-8")
+        manifest = str(root / "Cargo.toml")
+        framework = boundary.check_gpu_framework_users({"name": "nana-ui", "manifest_path": manifest})
+        self.assertEqual(len(framework), 1, framework)
+        self.assertIn("examples", framework[0])
+        consumer = boundary.check_gpu_framework_users({"name": "an-app", "manifest_path": manifest})
+        self.assertEqual(len(consumer), 2, consumer)
+        owner = boundary.check_gpu_framework_users({"name": "nana-gpu", "manifest_path": manifest})
+        self.assertEqual(owner, [])
     def test_font_backends_are_named_only_from_their_private_module(self):
         root = self.text_crate_files({
             "lib.rs": "pub mod font;\n",

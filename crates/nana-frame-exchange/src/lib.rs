@@ -1,7 +1,7 @@
 //! Bounded latest-frame exchange on a host's existing GPU.
 //!
 //! A producer thread copies finished frames into a small pool of textures on
-//! the shared Device, and a consumer — usually a UI window — samples the
+//! the shared [`GpuContext`], and a consumer — usually a UI window — samples the
 //! newest completed copy. Neither side waits for the other or for GPU
 //! completion: a full pool drops producer work, and a lease frees its slot
 //! only after the consumer submission that sampled it has completed.
@@ -17,6 +17,11 @@ use std::{
     },
 };
 
+use nana_gpu::{__framework, GpuTextureDescriptor, GpuTextureUsages};
+/// The contract types an exchange is built from, so a producer crate needs no
+/// other GPU dependency.
+pub use nana_gpu::{DeviceGeneration, GpuContext, GpuTexture, GpuTextureFormat};
+
 /// One in-flight copy, the frame a consumer samples, and the frame it retired
 /// but has not presented yet. Add two slots for every additional consumer.
 pub const DEFAULT_CAPACITY: NonZeroU8 = NonZeroU8::new(3).unwrap();
@@ -31,7 +36,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FrameToken<E = u64> {
     exchange: u64,
-    device_generation: u64,
+    device_generation: DeviceGeneration,
     epoch: E,
     slot: u8,
     sequence: u64,
@@ -48,7 +53,7 @@ impl<E: Copy> FrameToken<E> {
         self.sequence
     }
 
-    pub fn device_generation(&self) -> u64 {
+    pub fn device_generation(&self) -> DeviceGeneration {
         self.device_generation
     }
 }
@@ -63,8 +68,11 @@ pub enum CopyOutcome {
     EmptySource,
     /// The source cannot be copied into a sampled 2D texture: it lacks
     /// `COPY_SRC`, is multisampled, is not a single-layer 2D texture, or has a
-    /// depth/stencil format.
+    /// depth/stencil format, or its format cannot back a sampled copy on this
+    /// device.
     IncompatibleSource,
+    /// The source lives on another device than the exchange.
+    DeviceMismatch,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -118,18 +126,17 @@ impl SlotOwnership {
     }
 }
 
-/// Keeps the Device, Queue and pool textures alive while any lease remains.
-/// The last owner hands destruction to a background thread, because the final
-/// Queue drop may wait for the GPU to go idle.
+/// Keeps the device and pool textures alive while any lease remains. The last
+/// owner hands destruction to a background thread, because the final device
+/// drop may wait for the GPU to go idle.
 struct Retirement {
-    device: Option<Arc<wgpu::Device>>,
-    queue: Option<Arc<wgpu::Queue>>,
-    textures: Mutex<Vec<wgpu::Texture>>,
+    gpu: Option<GpuContext>,
+    textures: Mutex<Vec<GpuTexture>>,
 }
 
 impl Drop for Retirement {
     fn drop(&mut self) {
-        let (Some(device), Some(queue)) = (self.device.take(), self.queue.take()) else {
+        let Some(gpu) = self.gpu.take() else {
             return;
         };
         let textures = std::mem::take(
@@ -142,10 +149,9 @@ impl Drop for Retirement {
         let _ = std::thread::Builder::new()
             .name("nana-frame-exchange-retire".into())
             .spawn(move || {
-                let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                let _ = __framework::device(&gpu).poll(wgpu::PollType::wait_indefinitely());
                 drop(textures);
-                drop(queue);
-                drop(device);
+                drop(gpu);
             });
     }
 }
@@ -153,9 +159,7 @@ impl Drop for Retirement {
 /// A completed copy the consumer may sample until it drops the lease.
 pub struct FrameLease<E = u64> {
     token: FrameToken<E>,
-    view: wgpu::TextureView,
-    size: (u32, u32),
-    format: wgpu::TextureFormat,
+    texture: GpuTexture,
     ownership: Arc<SlotOwnership>,
     _retirement: Arc<Retirement>,
 }
@@ -165,16 +169,17 @@ impl<E: Copy> FrameLease<E> {
         self.token
     }
 
-    pub fn view(&self) -> &wgpu::TextureView {
-        &self.view
+    /// The copied frame. Sample it only while this lease is held.
+    pub fn texture(&self) -> &GpuTexture {
+        &self.texture
     }
 
     pub fn size(&self) -> (u32, u32) {
-        self.size
+        self.texture.size()
     }
 
-    pub fn format(&self) -> wgpu::TextureFormat {
-        self.format
+    pub fn format(&self) -> GpuTextureFormat {
+        self.texture.format()
     }
 }
 
@@ -190,7 +195,7 @@ impl<E> Drop for FrameLease<E> {
 
 struct Shared<E> {
     exchange: u64,
-    device_generation: u64,
+    device_generation: DeviceGeneration,
     latest: Mutex<Option<Arc<FrameLease<E>>>>,
     epoch: Mutex<E>,
     notified: AtomicBool,
@@ -211,7 +216,7 @@ impl<E> Clone for FrameInbox<E> {
 }
 
 impl<E: Copy + Eq> FrameInbox<E> {
-    pub fn device_generation(&self) -> u64 {
+    pub fn device_generation(&self) -> DeviceGeneration {
         self.shared.device_generation
     }
 
@@ -248,15 +253,14 @@ struct PendingCopy<E> {
 
 struct Slot<E> {
     ownership: Arc<SlotOwnership>,
-    texture: Option<wgpu::Texture>,
+    texture: Option<GpuTexture>,
     pending: Option<PendingCopy<E>>,
 }
 
 /// Producer side, owned by one thread.
 pub struct FrameExchange<E = u64> {
     shared: Arc<Shared<E>>,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    gpu: GpuContext,
     retirement: Arc<Retirement>,
     slots: Box<[Slot<E>]>,
     epoch: E,
@@ -270,9 +274,7 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
     /// `notify` runs on the producer thread once per acknowledged wake; it
     /// should only schedule the consumer, never wait for it.
     pub fn new(
-        device_generation: u64,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
+        gpu: &GpuContext,
         capacity: NonZeroU8,
         epoch: E,
         notify: Arc<dyn Fn() + Send + Sync>,
@@ -280,19 +282,17 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
         Self {
             shared: Arc::new(Shared {
                 exchange: NEXT_EXCHANGE.fetch_add(1, Ordering::Relaxed),
-                device_generation,
+                device_generation: gpu.generation(),
                 latest: Mutex::new(None),
                 epoch: Mutex::new(epoch),
                 notified: AtomicBool::new(false),
                 active: AtomicBool::new(true),
             }),
             retirement: Arc::new(Retirement {
-                device: Some(Arc::clone(&device)),
-                queue: Some(Arc::clone(&queue)),
+                gpu: Some(gpu.clone()),
                 textures: Mutex::new(Vec::with_capacity(usize::from(capacity.get()))),
             }),
-            device,
-            queue,
+            gpu: gpu.clone(),
             slots: (0..capacity.get())
                 .map(|slot| Slot {
                     ownership: Arc::new(SlotOwnership::new(slot)),
@@ -328,9 +328,27 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
         }
     }
 
-    /// Copy `source` into a free slot on the shared Device. Returns without
+    /// Copy `source` into a free slot on the shared device. Returns without
     /// waiting when the pool is full.
-    pub fn copy_from(&mut self, source: &wgpu::Texture, epoch: E) -> CopyOutcome {
+    ///
+    /// Safe from any thread: the copy is submitted under the device's
+    /// submission guard, so it never races a window's surface reconfiguration.
+    pub fn copy_from(&mut self, source: &GpuTexture, epoch: E) -> CopyOutcome {
+        if source.generation() != self.gpu.generation() {
+            self.set_epoch(epoch);
+            return CopyOutcome::DeviceMismatch;
+        }
+        self.copy_raw(__framework::texture(source), epoch)
+    }
+
+    /// [`Self::copy_from`] for a raw WGPU texture created on the exchange's
+    /// device.
+    #[cfg(feature = "wgpu-interop")]
+    pub fn copy_from_wgpu(&mut self, source: &wgpu::Texture, epoch: E) -> CopyOutcome {
+        self.copy_raw(source, epoch)
+    }
+
+    fn copy_raw(&mut self, source: &wgpu::Texture, epoch: E) -> CopyOutcome {
         self.set_epoch(epoch);
         let size = source.size();
         if size.width == 0 || size.height == 0 {
@@ -344,6 +362,7 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
         {
             return CopyOutcome::IncompatibleSource;
         }
+        let format = __framework::format_from_wgpu(source.format());
         let reserved = self.sequence.checked_add(1).and_then(|sequence| {
             let index = self
                 .slots
@@ -359,34 +378,38 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
         let slot = &mut self.slots[index];
         // Only a free slot is resized, so a leased frame keeps its dimensions
         // and the pool never grows past its capacity.
-        if slot
-            .texture
-            .as_ref()
-            .is_none_or(|texture| texture.size() != size || texture.format() != source.format())
-        {
-            slot.texture = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+        if slot.texture.as_ref().is_none_or(|texture| {
+            texture.size() != (size.width, size.height) || texture.format() != format
+        }) {
+            match self.gpu.create_texture(&GpuTextureDescriptor {
                 label: Some("NanaUI frame exchange slot"),
-                size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: source.format(),
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            }));
+                width: size.width,
+                height: size.height,
+                format,
+                usage: GpuTextureUsages::SAMPLED | GpuTextureUsages::COPY_DST,
+            }) {
+                Ok(texture) => slot.texture = Some(texture),
+                Err(_) => {
+                    slot.ownership.release(sequence);
+                    return CopyOutcome::IncompatibleSource;
+                }
+            }
         }
-        let texture = slot.texture.as_ref().expect("frame exchange slot texture");
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("NanaUI frame exchange copy"),
-            });
+        let texture = __framework::texture(slot.texture.as_ref().expect("frame exchange slot"));
+        let device = __framework::device(&self.gpu);
+        let queue = __framework::queue(&self.gpu);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("NanaUI frame exchange copy"),
+        });
         encoder.copy_texture_to_texture(source.as_image_copy(), texture.as_image_copy(), size);
-        self.queue.submit([encoder.finish()]);
+        let commands = encoder.finish();
+        {
+            let _submission = __framework::lock_submission(&self.gpu);
+            queue.submit([commands]);
+        }
         let completed = Arc::new(AtomicBool::new(false));
         let completion = Arc::clone(&completed);
-        self.queue
-            .on_submitted_work_done(move || completion.store(true, Ordering::Release));
+        queue.on_submitted_work_done(move || completion.store(true, Ordering::Release));
         slot.pending = Some(PendingCopy {
             token: FrameToken {
                 exchange: self.shared.exchange,
@@ -414,10 +437,10 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
             let ownership = Arc::clone(&slot.ownership);
             // The consumer may have sampled this texture in a submission that
             // is still queued; the slot is reusable once that work completes.
-            self.queue
+            __framework::queue(&self.gpu)
                 .on_submitted_work_done(move || ownership.release(sequence));
         }
-        let _ = self.device.poll(wgpu::PollType::Poll);
+        let _ = __framework::device(&self.gpu).poll(wgpu::PollType::Poll);
         let epoch = self.epoch;
         let completed = |pending: &PendingCopy<E>| pending.completed.load(Ordering::Acquire);
         let newest = self
@@ -448,9 +471,7 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
             let texture = slot.texture.as_ref().expect("copied slot texture");
             published = Some(FrameLease {
                 token: pending.token,
-                view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-                size: (texture.width(), texture.height()),
-                format: texture.format(),
+                texture: texture.clone(),
                 ownership: Arc::clone(&slot.ownership),
                 _retirement: Arc::clone(&self.retirement),
             });
@@ -519,7 +540,7 @@ mod tests {
         assert!(slot.is_free());
     }
 
-    fn test_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
+    fn test_gpu() -> GpuContext {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -531,16 +552,11 @@ mod tests {
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("frame exchange test requires a WGPU device");
-        (Arc::new(device), Arc::new(queue))
+        __framework::adopt(adapter, device, queue)
     }
 
-    fn source(
-        device: &wgpu::Device,
-        size: u32,
-        layers: u32,
-        usage: wgpu::TextureUsages,
-    ) -> wgpu::Texture {
-        device.create_texture(&wgpu::TextureDescriptor {
+    fn source(gpu: &GpuContext, size: u32, layers: u32, usage: wgpu::TextureUsages) -> GpuTexture {
+        let texture = __framework::device(gpu).create_texture(&wgpu::TextureDescriptor {
             label: Some("frame exchange test source"),
             size: wgpu::Extent3d {
                 width: size,
@@ -553,26 +569,28 @@ mod tests {
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage,
             view_formats: &[],
-        })
+        });
+        __framework::texture_from_wgpu(gpu, texture)
     }
 
-    fn wait(device: &wgpu::Device) {
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    fn wait(gpu: &GpuContext) {
+        __framework::device(gpu)
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
     }
 
     #[test]
     fn sources_that_cannot_be_copied_are_refused_without_taking_a_slot() {
-        let (device, queue) = test_device();
-        let mut exchange = FrameExchange::new(
-            1,
-            Arc::clone(&device),
-            queue,
-            DEFAULT_CAPACITY,
-            0,
-            Arc::new(|| {}),
+        let gpu = test_gpu();
+        let mut exchange = FrameExchange::new(&gpu, DEFAULT_CAPACITY, 0, Arc::new(|| {}));
+        let unreadable = source(&gpu, 4, 1, wgpu::TextureUsages::TEXTURE_BINDING);
+        let layered = source(&gpu, 4, 2, wgpu::TextureUsages::COPY_SRC);
+        let foreign = test_gpu();
+        let elsewhere = source(&foreign, 4, 1, wgpu::TextureUsages::COPY_SRC);
+        assert_eq!(
+            exchange.copy_from(&elsewhere, 0),
+            CopyOutcome::DeviceMismatch
         );
-        let unreadable = source(&device, 4, 1, wgpu::TextureUsages::TEXTURE_BINDING);
-        let layered = source(&device, 4, 2, wgpu::TextureUsages::COPY_SRC);
         assert_eq!(
             exchange.copy_from(&unreadable, 0),
             CopyOutcome::IncompatibleSource
@@ -586,13 +604,11 @@ mod tests {
 
     #[test]
     fn leases_bound_the_pool_survive_resize_and_outlive_the_exchange() {
-        let (device, queue) = test_device();
+        let gpu = test_gpu();
         let wakes = Arc::new(AtomicU64::new(0));
         let observed = Arc::clone(&wakes);
         let mut exchange = FrameExchange::new(
-            7,
-            Arc::clone(&device),
-            queue,
+            &gpu,
             DEFAULT_CAPACITY,
             (1u64, 1u64),
             Arc::new(move || {
@@ -600,7 +616,7 @@ mod tests {
             }),
         );
         let inbox = exchange.inbox();
-        let copyable = |size| source(&device, size, 1, wgpu::TextureUsages::COPY_SRC);
+        let copyable = |size| source(&gpu, size, 1, wgpu::TextureUsages::COPY_SRC);
         let original = copyable(4);
 
         // Without a consumer there is one outstanding wake and one latest frame,
@@ -610,7 +626,7 @@ mod tests {
                 exchange.copy_from(&original, (1, 1)),
                 CopyOutcome::Submitted
             );
-            wait(&device);
+            wait(&gpu);
             exchange.poll();
         }
         assert_eq!(inbox.latest().unwrap().token().sequence(), 32);
@@ -626,7 +642,7 @@ mod tests {
                 exchange.copy_from(&original, (1, 1)),
                 CopyOutcome::Submitted
             );
-            wait(&device);
+            wait(&gpu);
             assert!(exchange.poll());
             held.push(inbox.try_take_latest().expect("completed frame"));
         }
@@ -652,9 +668,9 @@ mod tests {
             "returning a lease is not completion"
         );
         exchange.poll();
-        wait(&device);
+        wait(&gpu);
         assert_eq!(exchange.copy_from(&resized, (2, 1)), CopyOutcome::Submitted);
-        wait(&device);
+        wait(&gpu);
         exchange.poll();
         let newest = inbox.latest().unwrap();
         assert_eq!(newest.size(), (8, 8));
@@ -662,7 +678,7 @@ mod tests {
         assert_eq!(held[0].size(), (4, 4), "a resize keeps leased dimensions");
         drop(held);
         exchange.poll();
-        wait(&device);
+        wait(&gpu);
 
         assert_eq!(
             exchange.copy_from(&original, (3, 1)),
@@ -671,7 +687,7 @@ mod tests {
         // Epochs with equal sums are still different incarnations.
         exchange.set_epoch((2, 2));
         assert!(!inbox.is_current(&newest.token()));
-        wait(&device);
+        wait(&gpu);
         let stale_before = exchange.stats().stale_epoch;
         assert!(!exchange.poll());
         assert_eq!(exchange.stats().stale_epoch, stale_before + 1);
@@ -686,7 +702,7 @@ mod tests {
                 exchange.copy_from(&changing, (generation, 2)),
                 CopyOutcome::Submitted
             );
-            wait(&device);
+            wait(&gpu);
             assert!(exchange.poll());
             assert_eq!(inbox.latest().unwrap().size(), (size, size));
             assert!(
@@ -702,7 +718,7 @@ mod tests {
 
         let producer = std::thread::current().id();
         let (completed, completion) = std::sync::mpsc::channel();
-        exchange.queue.on_submitted_work_done(move || {
+        __framework::queue(&exchange.gpu).on_submitted_work_done(move || {
             completed.send(std::thread::current().id()).unwrap();
         });
         drop(exchange);

@@ -72,7 +72,7 @@ jobs:
         timeout-minutes: 15
         shell: bash
         run: |
-          lifecycle() { cargo run -p nana-ui --example "$1" --features hosted,bundled-fonts --locked -- "${@:2}"; }
+          lifecycle() { cargo run -p nana-ui --example "$1" --features hosted,bundled-fonts,wgpu-interop --locked -- "${@:2}"; }
           lifecycle window-service-lifecycle
           lifecycle embedded-window-lifecycle
           lifecycle embedded-window-lifecycle --probe-device-loss

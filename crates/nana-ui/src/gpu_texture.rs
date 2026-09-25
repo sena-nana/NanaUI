@@ -6,6 +6,7 @@ use std::{
     },
 };
 
+use nana_gpu::{__framework, DeviceGeneration, GpuTexture};
 use wgpu;
 
 use crate::geometry::{LogicalRect, PhysicalRect};
@@ -266,11 +267,12 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
 static NEXT_HOST_TEXTURE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
-/// A stable handle to a host-owned, filterable 2D WGPU texture.
+/// A stable handle to a host-owned, filterable 2D [`GpuTexture`].
 ///
 /// The handle remains valid while the host updates the content in place or
-/// replaces the underlying view. `generation` changes only when the view is
-/// replaced, while `version` changes for every content invalidation.
+/// replaces the underlying texture. `generation` changes only when the
+/// texture is replaced, while `version` changes for every content
+/// invalidation.
 /// [`Self::id`] is a painter cache key, not the [`HostTextureRegistry`] slot.
 #[derive(Debug, Clone)]
 pub struct HostTexture {
@@ -282,7 +284,7 @@ struct HostTextureState {
     id: u64,
     instance_identity: u64,
     version: AtomicU64,
-    view: VersionedResource<wgpu::TextureView>,
+    texture: VersionedResource<GpuTexture>,
 }
 
 #[derive(Debug)]
@@ -342,13 +344,15 @@ impl<T: Clone> VersionedResource<T> {
 }
 
 impl HostTexture {
-    pub fn from_wgpu(id: u64, generation: u64, view: wgpu::TextureView) -> Self {
+    /// Sample `texture`. It must have been created with
+    /// [`GpuTextureUsages::SAMPLED`](nana_gpu::GpuTextureUsages::SAMPLED).
+    pub fn new(id: u64, generation: u64, texture: &GpuTexture) -> Self {
         Self {
             state: Arc::new(HostTextureState {
                 id,
                 instance_identity: next_host_texture_instance_id(),
                 version: AtomicU64::new(generation),
-                view: VersionedResource::new(generation, view),
+                texture: VersionedResource::new(generation, texture.clone()),
             }),
         }
     }
@@ -367,7 +371,19 @@ impl HostTexture {
     }
 
     pub fn generation(&self) -> u64 {
-        self.state.view.generation()
+        self.state.texture.generation()
+    }
+
+    /// The device the current texture lives on. A painter on another device
+    /// refuses the frame instead of sampling it.
+    pub fn device_generation(&self) -> DeviceGeneration {
+        self.state
+            .texture
+            .state
+            .read()
+            .expect("versioned resource lock")
+            .resource
+            .generation()
     }
 
     /// Returns the monotonically increasing content version.
@@ -380,22 +396,23 @@ impl HostTexture {
         self.state.version.fetch_add(1, Ordering::AcqRel) + 1
     }
 
-    /// Replaces the sampled view and invalidates the content in one operation.
+    /// Replaces the sampled texture and invalidates the content in one
+    /// operation.
     ///
     /// The stable handle is intentionally retained so the Scene painter
     /// observes the replacement without rebuilding layout.
-    pub fn replace_view(&self, view: wgpu::TextureView) -> u64 {
-        self.state.view.replace(view);
+    pub fn replace_texture(&self, texture: &GpuTexture) -> u64 {
+        self.state.texture.replace(texture.clone());
         self.invalidate()
     }
 
     fn snapshot(&self) -> HostTextureSnapshot {
-        let (generation, view) = self.state.view.snapshot();
+        let (generation, texture) = self.state.texture.snapshot();
         HostTextureSnapshot {
             id: self.id(),
             generation,
             instance_identity: self.state.instance_identity,
-            view,
+            view: __framework::texture_view(&texture).clone(),
         }
     }
 
@@ -1578,8 +1595,7 @@ mod tests {
 
     #[test]
     fn replacing_a_dropped_handle_with_the_same_public_identity_always_rebinds() {
-        let (device, _) = test_device();
-        let old = HostTexture::from_wgpu(7, 3, test_texture_view(&device));
+        let old = HostTexture::new(7, 3, &test_texture());
         let old_snapshot = old.snapshot();
         let old_fingerprint = TextureFingerprint {
             instance_identity: old_snapshot.instance_identity,
@@ -1587,7 +1603,7 @@ mod tests {
         };
         drop(old);
 
-        let replacement = HostTexture::from_wgpu(7, 3, test_texture_view(&device));
+        let replacement = HostTexture::new(7, 3, &test_texture());
         let replacement_snapshot = replacement.snapshot();
         assert_ne!(
             old_snapshot.instance_identity,
@@ -1626,10 +1642,9 @@ mod tests {
 
     #[test]
     fn replacing_a_host_view_advances_generation_and_version_together() {
-        let (device, _) = test_device();
-        let texture = HostTexture::from_wgpu(7, 3, test_texture_view(&device));
+        let texture = HostTexture::new(7, 3, &test_texture());
 
-        assert_eq!(texture.replace_view(test_texture_view(&device)), 4);
+        assert_eq!(texture.replace_texture(&test_texture()), 4);
         let snapshot = texture.snapshot();
         assert_eq!(snapshot.generation, 4);
         assert_eq!(texture.version(), 4);
@@ -1881,10 +1896,10 @@ mod tests {
 
     #[test]
     fn video_host_texture_slot_prunes_released_bindings() {
-        let (device, queue) = test_device();
+        let (_, queue) = test_device();
         let registry = HostTextureRegistry::new();
-        let first = HostTexture::from_wgpu(1, 1, test_texture_view(&device));
-        let second = HostTexture::from_wgpu(2, 1, test_texture_view(&device));
+        let first = HostTexture::new(1, 1, &test_texture());
+        let second = HostTexture::new(2, 1, &test_texture());
         registry.register(
             "video:1",
             first,
@@ -1913,9 +1928,9 @@ mod tests {
 
     #[test]
     fn video_host_texture_resize_advances_generation_on_same_device() {
-        let (device, queue) = test_device();
+        let (_, queue) = test_device();
         let registry = HostTextureRegistry::new();
-        let texture = HostTexture::from_wgpu(7, 3, test_texture_view(&device));
+        let texture = HostTexture::new(7, 3, &test_texture());
         let binding = registry.register(
             "video:7",
             texture.clone(),
@@ -1924,7 +1939,7 @@ mod tests {
             HostTextureAlphaMode::Premultiplied,
         );
         assert_eq!(binding.texture.generation(), 3);
-        let next_generation = texture.replace_view(test_texture_view(&device));
+        let next_generation = texture.replace_texture(&test_texture());
         assert_eq!(next_generation, 4);
         registry.register(
             "video:7",
@@ -1940,26 +1955,11 @@ mod tests {
     }
 
     fn test_host_texture(id: u64, generation: u64) -> HostTexture {
-        let (device, _) = test_device();
-        HostTexture::from_wgpu(id, generation, test_texture_view(&device))
+        HostTexture::new(id, generation, &test_texture())
     }
 
-    fn test_texture_view(device: &wgpu::Device) -> wgpu::TextureView {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("NanaUI GPU texture lifecycle test texture"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        texture.create_view(&wgpu::TextureViewDescriptor::default())
+    fn test_texture() -> nana_gpu::GpuTexture {
+        crate::test_gpu::texture(1, 1)
     }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {

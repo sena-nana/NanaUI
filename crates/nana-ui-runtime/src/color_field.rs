@@ -311,8 +311,13 @@ impl AppContext {
             button.disabled = snapshot.disabled;
         })?;
         self.update_component(hex, |input, _| {
+            // The text is the user's until the color changes: text that
+            // already names this color (in any spelling parse_hex takes)
+            // stays as typed, so reassembling for the picker does not replace
+            // the field's value and, with it, its undo. A different color, or
+            // text that names none, shows the canonical hex.
             let next = format_hex(snapshot.value);
-            if input.state.value != next {
+            if parse_hex(&input.state.value).map(format_hex).as_ref() != Some(&next) {
                 input.state.replace_value(next);
             }
             input.disabled = snapshot.disabled;
@@ -567,6 +572,47 @@ mod tests {
             !open(&context),
             "a picker change must not reopen a dismissed picker"
         );
+    }
+
+    #[test]
+    fn hex_text_the_user_typed_survives_a_reassembly_of_the_same_color() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        context.assemble_color_field(field).unwrap();
+        let snapshot = context.read(field, Clone::clone).unwrap();
+        let hex = snapshot.hex.unwrap();
+        let swatch = Entity::<Button>::from_stable_id(snapshot.swatch.unwrap());
+        context.focus_node(document, hex).unwrap();
+        context.select_all_focused_text(document).unwrap();
+        context.replace_focused_text(document, "#00FF88").unwrap();
+        // Opening the picker reassembles; the text already names the color.
+        assert!(context.activate_button(swatch).unwrap());
+        let text = |context: &AppContext| {
+            context
+                .read(Entity::<TextInput>::from_stable_id(hex), |input| {
+                    input.state.value.to_string()
+                })
+                .unwrap()
+        };
+        assert_eq!(text(&context), "#00FF88", "not rewritten to change case");
+        assert!(context.can_undo_text(hex), "so the typing stays undoable");
+        // Any spelling of the same color is the user's; a draft that names
+        // no color is not.
+        context.select_all_focused_text(document).unwrap();
+        context.replace_focused_text(document, " 00ff88 ").unwrap();
+        assert!(context.activate_button(swatch).unwrap());
+        assert_eq!(text(&context), " 00ff88 ");
+        context.select_all_focused_text(document).unwrap();
+        context.replace_focused_text(document, "#00ff8").unwrap();
+        assert!(context.activate_button(swatch).unwrap());
+        assert_eq!(text(&context), "#00ff88");
+        // A different color does rewrite it.
+        let hue = Entity::<RangeField>::from_stable_id(snapshot.hue_slider.unwrap());
+        context.set_range_value(hue, 200.0).unwrap();
+        assert_ne!(text(&context).to_ascii_lowercase(), "#00ff88");
     }
 
     #[test]

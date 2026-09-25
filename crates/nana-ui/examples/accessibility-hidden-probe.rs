@@ -76,7 +76,7 @@ impl SceneResourceProducer for RetryProducer {
         }
         Err("injected resource encoding failure".into())
     }
-    fn submitted(&self, _: &CustomRenderNode, _: &wgpu::Device, _: wgpu::SubmissionIndex) {
+    fn submitted(&self, _: &CustomRenderNode, _: &nana_ui::GpuSubmission) {
         println!(
             "{}",
             serde_json::json!({"event":"producer_submitted", "phase":self.phase.load(Ordering::SeqCst)})
@@ -112,7 +112,7 @@ impl ApplicationState for Probe {
         };
         println!(
             "{}",
-            serde_json::json!({"event":"adapter", "backend":format!("{:?}", context.gpu().adapter_info().backend)})
+            serde_json::json!({"event":"adapter", "backend":format!("{:?}", context.gpu().capabilities().backend())})
         );
         let retry = std::env::args().any(|arg| arg == "--retry").then(|| {
             Arc::new(RetryProducer {

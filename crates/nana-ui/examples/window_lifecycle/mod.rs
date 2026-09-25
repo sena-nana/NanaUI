@@ -449,7 +449,7 @@ impl ApplicationState for App {
     ) -> RuntimeProgramUpdate {
         let _ = self
             .presented
-            .send((context.window_id(), context.gpu().generation()));
+            .send((context.window_id(), context.gpu().generation().get()));
         RuntimeProgramUpdate::default()
     }
     fn window_closed(&mut self, id: WindowId) {

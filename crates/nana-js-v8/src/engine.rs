@@ -1995,9 +1995,7 @@ mod tests {
     #[test]
     fn webgpu_facade_reuses_host_device_and_renders_canvas_texture() {
         with_serial_v8_tests(|| {
-            use std::sync::Arc;
-
-            use nana_ui::HostedGpuResources;
+            use nana_ui::GpuContext;
             use pollster::block_on;
 
             let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -2020,8 +2018,7 @@ mod tests {
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
             }))
             .expect("headless WGPU device");
-            let resources =
-                HostedGpuResources::from_existing(adapter, Arc::new(device), Arc::new(queue));
+            let resources = GpuContext::from_wgpu(adapter, device, queue);
 
             let mut host = nana_ui_vue::VueHost::new();
             host.bind_host_gpu(resources);

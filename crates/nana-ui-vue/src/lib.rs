@@ -235,6 +235,8 @@ mod svg_inline;
 mod svg_raster;
 mod tree;
 pub use shared_document::SharedRuntimeDocument;
+#[cfg(feature = "hosted")]
+mod gpu_backend;
 mod video;
 #[cfg(feature = "hosted")]
 mod webgpu;

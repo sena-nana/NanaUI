@@ -132,6 +132,8 @@ pub mod gpu {
         /// timestamp queries, which Metal cannot write inside an encoder.
         pub COMPLETION_NS, D, 10, "gpu.completion", "ns"
     );
+    /// A `FrameContext` dropped without being submitted.
+    pub static FRAMES_DISCARDED: Metric = Metric::counter(D, 11, "gpu.frames_discarded", "count");
 
     pub static SURFACE_LOST_EVENT: EventDescriptor =
         EventDescriptor::new(D, 1, "gpu.surface_lost", Severity::Warn, &[]);
@@ -154,6 +156,16 @@ pub mod gpu {
         "gpu.surface_suspended",
         Severity::Warn,
         &[F::u64("window")],
+    );
+    /// A frame a painter had recorded retained writes into was discarded;
+    /// the painter rebuilds that target. Once per painter: `target` is the
+    /// first target it happened to.
+    pub static RETAINED_FRAME_DISCARDED: EventDescriptor = EventDescriptor::new(
+        D,
+        6,
+        "gpu.retained_frame_discarded",
+        Severity::Warn,
+        &[F::u64("target")],
     );
 }
 

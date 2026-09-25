@@ -7,6 +7,10 @@ use std::sync::{
 };
 
 use nana_frame_exchange::{FrameInbox, FrameLease, FrameToken};
+use nana_gpu::{
+    DeviceGeneration, GpuContext, GpuTexture, GpuTextureDescriptor, GpuTextureFormat,
+    GpuTextureUsages,
+};
 
 use crate::gpu_texture::{HostTexture, HostTextureAlphaMode, TextureSlot};
 
@@ -21,11 +25,11 @@ static NEXT_TEXTURE_ID: AtomicU64 = AtomicU64::new(1 << 63);
 /// always holds a binding: a 1×1 transparent placeholder is shown while no
 /// usable frame exists, so scene validation never loses the slot.
 pub struct FrameBinding<E = u64> {
-    device_generation: u64,
+    device_generation: DeviceGeneration,
     slot: TextureSlot,
     alpha: HostTextureAlphaMode,
     texture: HostTexture,
-    placeholder: wgpu::TextureView,
+    placeholder: GpuTexture,
     showing_placeholder: bool,
     /// The binding changed since the window last presented.
     awaiting_present: bool,
@@ -36,38 +40,27 @@ pub struct FrameBinding<E = u64> {
 }
 
 impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
-    /// `device` and `device_generation` identify the host Device the window
-    /// paints with. An inbox from another device generation is never bound.
-    pub fn new(
-        device: &wgpu::Device,
-        device_generation: u64,
-        slot: TextureSlot,
-        alpha: HostTextureAlphaMode,
-    ) -> Self {
-        let placeholder = device
-            .create_texture(&wgpu::TextureDescriptor {
+    /// `gpu` is the device the window paints with. An inbox from another
+    /// device is never bound.
+    pub fn new(gpu: &GpuContext, slot: TextureSlot, alpha: HostTextureAlphaMode) -> Self {
+        // WGPU zero-initializes it: transparent black.
+        let placeholder = gpu
+            .create_texture(&GpuTextureDescriptor {
                 label: Some("NanaUI frame binding placeholder"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
+                width: 1,
+                height: 1,
+                format: GpuTextureFormat::RGBA8_UNORM,
+                usage: GpuTextureUsages::SAMPLED,
             })
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let texture = HostTexture::from_wgpu(
+            .expect("a 1x1 sampled RGBA8 texture is valid on every device");
+        let texture = HostTexture::new(
             NEXT_TEXTURE_ID.fetch_add(1, Ordering::Relaxed),
             0,
-            placeholder.clone(),
+            &placeholder,
         );
         slot.replace(texture.clone(), 1, 1, alpha);
         Self {
-            device_generation,
+            device_generation: gpu.generation(),
             slot,
             alpha,
             texture,
@@ -125,7 +118,7 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
             && self.token() != Some(frame.token())
         {
             let (width, height) = frame.size();
-            self.texture.replace_view(frame.view().clone());
+            self.texture.replace_texture(frame.texture());
             self.slot
                 .replace(self.texture.clone(), width, height, self.alpha);
             self.showing_placeholder = false;
@@ -169,7 +162,7 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
         if self.showing_placeholder {
             return;
         }
-        self.texture.replace_view(self.placeholder.clone());
+        self.texture.replace_texture(&self.placeholder);
         self.slot.replace(self.texture.clone(), 1, 1, self.alpha);
         self.showing_placeholder = true;
     }
@@ -188,7 +181,7 @@ impl<E> Drop for FrameBinding<E> {
         // A returned slot texture is reused by the producer; the registration
         // that outlives this binding must not keep sampling it.
         if !self.showing_placeholder {
-            self.texture.replace_view(self.placeholder.clone());
+            self.texture.replace_texture(&self.placeholder);
             self.slot.replace(self.texture.clone(), 1, 1, self.alpha);
         }
     }
@@ -199,10 +192,17 @@ mod tests {
     use super::*;
     use crate::gpu_texture::HostTextureRegistry;
     use nana_frame_exchange::{CopyOutcome, DEFAULT_CAPACITY, FrameExchange};
+    use nana_gpu::__framework;
 
-    fn test_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
-        let (device, queue) = crate::test_gpu::device();
-        (Arc::new(device), Arc::new(queue))
+    fn source(gpu: &GpuContext, width: u32) -> GpuTexture {
+        gpu.create_texture(&GpuTextureDescriptor {
+            label: Some("frame binding test source"),
+            width,
+            height: 4,
+            format: GpuTextureFormat::RGBA8_UNORM,
+            usage: GpuTextureUsages::COPY_SRC,
+        })
+        .expect("copy source")
     }
 
     /// Copy `source` and wait until the exchange publishes it. Other tests
@@ -210,9 +210,9 @@ mod tests {
     /// whichever thread's poll collects them, so one poll here does not
     /// guarantee this exchange's copy and slot releases have been observed.
     fn publish_frame(
-        device: &wgpu::Device,
+        gpu: &GpuContext,
         exchange: &mut FrameExchange<u64>,
-        source: &wgpu::Texture,
+        source: &GpuTexture,
         epoch: u64,
     ) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -221,7 +221,9 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "frame exchange did not settle"
             );
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            __framework::device(gpu)
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
         };
         loop {
             match exchange.copy_from(source, epoch) {
@@ -243,34 +245,11 @@ mod tests {
     /// frame in between, which the window presents as a flash of nothing.
     #[test]
     fn a_new_epoch_swaps_straight_to_its_frame_without_a_placeholder() {
-        let (device, queue) = test_device();
-        let mut exchange = FrameExchange::new(
-            11,
-            Arc::clone(&device),
-            queue,
-            DEFAULT_CAPACITY,
-            0u64,
-            Arc::new(|| {}),
-        );
+        let gpu = crate::test_gpu::context();
+        let mut exchange = FrameExchange::new(&gpu, DEFAULT_CAPACITY, 0u64, Arc::new(|| {}));
         let inbox = exchange.inbox();
-        let source = |width: u32| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("epoch swap source"),
-                size: wgpu::Extent3d {
-                    width,
-                    height: 4,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            })
-        };
         let publish = |exchange: &mut FrameExchange<u64>, width: u32, epoch: u64| {
-            publish_frame(&device, exchange, &source(width), epoch);
+            publish_frame(&gpu, exchange, &source(&gpu, width), epoch);
         };
         let registry = HostTextureRegistry::new();
         let size = || {
@@ -278,8 +257,7 @@ mod tests {
             (binding.width, binding.height)
         };
         let mut binding = FrameBinding::new(
-            &device,
-            11,
+            &gpu,
             registry.slot("epoch"),
             HostTextureAlphaMode::Premultiplied,
         );
@@ -301,13 +279,11 @@ mod tests {
 
     #[test]
     fn frames_swap_only_after_present_and_unusable_frames_fall_back_to_the_placeholder() {
-        let (device, queue) = test_device();
+        let gpu = crate::test_gpu::context();
         let wakes = Arc::new(AtomicU64::new(0));
         let observed = Arc::clone(&wakes);
         let mut exchange = FrameExchange::new(
-            7,
-            Arc::clone(&device),
-            queue,
+            &gpu,
             DEFAULT_CAPACITY,
             0u64,
             Arc::new(move || {
@@ -315,22 +291,9 @@ mod tests {
             }),
         );
         let inbox = exchange.inbox();
-        let source = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("frame binding test source"),
-            size: wgpu::Extent3d {
-                width: 4,
-                height: 4,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let source = source(&gpu, 4);
         let publish = |exchange: &mut FrameExchange<u64>| {
-            publish_frame(&device, exchange, &source, 0);
+            publish_frame(&gpu, exchange, &source, 0);
         };
         let registry = HostTextureRegistry::new();
         let changes = Arc::new(AtomicU64::new(0));
@@ -343,8 +306,7 @@ mod tests {
             (binding.width, binding.height)
         };
         let mut binding = FrameBinding::new(
-            &device,
-            7,
+            &gpu,
             registry.slot("frame"),
             HostTextureAlphaMode::Premultiplied,
         );
@@ -393,12 +355,14 @@ mod tests {
             "a rejecting window leaves the wake unacknowledged"
         );
 
-        let mut other_device = FrameBinding::<u64>::new(
-            &device,
-            8,
-            registry.slot("other"),
-            HostTextureAlphaMode::Opaque,
+        // Same WGPU device, adopted again: a new generation all the same.
+        let other = __framework::adopt(
+            __framework::adapter(&gpu).clone(),
+            __framework::device(&gpu).clone(),
+            __framework::queue(&gpu).clone(),
         );
+        let mut other_device =
+            FrameBinding::<u64>::new(&other, registry.slot("other"), HostTextureAlphaMode::Opaque);
         assert!(
             !other_device.prepare(Some(&inbox), all),
             "an inbox from another device generation is never bound"

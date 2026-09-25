@@ -226,7 +226,7 @@ impl RuntimeProgram for Probe {
                 self.overlay_window = Some(context.window());
                 assert_ne!(
                     context.surface_alpha_mode(),
-                    wgpu::CompositeAlphaMode::Opaque
+                    nana_ui::SurfaceAlphaMode::Opaque
                 );
                 report(serde_json::json!({
                     "event": "ready",

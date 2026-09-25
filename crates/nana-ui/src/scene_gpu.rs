@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use nana_gpu::{FrameContext, GpuContext, GpuSubmission, GpuTextureFormat};
 use nana_ui_runtime::CustomRenderNode;
 use nana_ui_scene::{PrimitiveId, ScenePrimitiveKind, UiScene};
 
@@ -15,10 +16,11 @@ pub struct SceneGpuNode {
     pub opacity: f32,
 }
 
+/// Preparation of one node, before any pass is open.
 pub struct SceneGpuPrepareContext<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
-    pub target_format: wgpu::TextureFormat,
+    pub gpu: &'a GpuContext,
+    /// Format of the destination the node is drawn into.
+    pub target_format: GpuTextureFormat,
     pub bounds: LogicalRect,
     pub scale_factor: f32,
     /// Destination size in physical pixels. A change to it invalidates the
@@ -28,17 +30,157 @@ pub struct SceneGpuPrepareContext<'a> {
     pub gpu_work: Option<&'a GpuWorkSink>,
 }
 
+/// A node that wants a pass of its own ([`SceneGpuRenderer::render`]).
+///
+/// The destination is the painter's current dest or group target, not the
+/// window surface. [`Self::with_pass`] opens a pass on it that loads and
+/// keeps what is already drawn, with the viewport on the whole destination
+/// and the scissor on the node's clip.
 pub struct SceneGpuRenderContext<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
-    pub encoder: &'a mut wgpu::CommandEncoder,
-    pub target: &'a wgpu::TextureView,
+    pub gpu: &'a GpuContext,
+    pub target_format: GpuTextureFormat,
     pub bounds: PhysicalRect,
     pub clip: PhysicalRect,
-    /// Size of `target` in physical pixels. A dedicated pass covers the same
-    /// destination as the main pass, so viewport and scissor math match.
+    /// Size of the destination in physical pixels. A dedicated pass covers the
+    /// same destination as the main pass, so viewport and scissor math match.
     pub dest_size: [u32; 2],
     pub gpu_work: Option<&'a GpuWorkSink>,
+    encoder: &'a mut wgpu::CommandEncoder,
+    target: &'a wgpu::TextureView,
+}
+
+impl<'a> SceneGpuRenderContext<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        gpu: &'a GpuContext,
+        target_format: GpuTextureFormat,
+        bounds: PhysicalRect,
+        clip: PhysicalRect,
+        dest_size: [u32; 2],
+        gpu_work: Option<&'a GpuWorkSink>,
+        encoder: &'a mut wgpu::CommandEncoder,
+        target: &'a wgpu::TextureView,
+    ) -> Self {
+        Self {
+            gpu,
+            target_format,
+            bounds,
+            clip,
+            dest_size,
+            gpu_work,
+            encoder,
+            target,
+        }
+    }
+
+    /// Open a pass on the destination for `draw`, closed when it returns.
+    pub fn with_pass<R>(
+        &mut self,
+        label: &'static str,
+        draw: impl FnOnce(&mut ScenePass<'_, '_>) -> R,
+    ) -> R {
+        let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: self.target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let mut pass = ScenePass::new(&mut pass, self.dest_size);
+        pass.restore_viewport();
+        pass.set_scissor(self.clip);
+        draw(&mut pass)
+    }
+
+    /// The frame's encoder, for work [`Self::with_pass`] cannot express.
+    /// Record into it; never finish or submit it.
+    #[cfg(feature = "wgpu-interop")]
+    pub fn wgpu_encoder(&mut self) -> &mut wgpu::CommandEncoder {
+        self.encoder
+    }
+
+    /// The destination view [`Self::with_pass`] draws into.
+    #[cfg(feature = "wgpu-interop")]
+    pub fn wgpu_target(&self) -> &wgpu::TextureView {
+        self.target
+    }
+}
+
+/// The painter's open pass on the current destination.
+///
+/// Renderers that join it must leave the viewport as they found it; the
+/// scissor is theirs to set. Recording draws needs the backend pass
+/// ([`Self::wgpu`], feature `wgpu-interop`) until Nana has a shader ABI of its
+/// own.
+pub struct ScenePass<'p, 'e> {
+    raw: &'p mut wgpu::RenderPass<'e>,
+    dest_size: [u32; 2],
+}
+
+impl<'p, 'e> ScenePass<'p, 'e> {
+    pub(crate) fn new(raw: &'p mut wgpu::RenderPass<'e>, dest_size: [u32; 2]) -> Self {
+        Self { raw, dest_size }
+    }
+
+    /// Size of the destination in physical pixels.
+    pub fn dest_size(&self) -> [u32; 2] {
+        self.dest_size
+    }
+
+    /// Scissor to `clip`, clamped to the destination. An empty intersection
+    /// scissors everything away.
+    pub fn set_scissor(&mut self, clip: PhysicalRect) {
+        let [width, height] = self.dest_size;
+        let x = clip.x.min(width);
+        let y = clip.y.min(height);
+        let right = clip.x.saturating_add(clip.width).min(width);
+        let bottom = clip.y.saturating_add(clip.height).min(height);
+        self.raw
+            .set_scissor_rect(x, y, right.saturating_sub(x), bottom.saturating_sub(y));
+    }
+
+    /// Viewport on `rect` of the destination, full depth range.
+    pub fn set_viewport(&mut self, rect: PhysicalRect) {
+        self.raw.set_viewport(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+            0.0,
+            1.0,
+        );
+    }
+
+    /// Viewport back on the whole destination, as the painter expects it.
+    pub fn restore_viewport(&mut self) {
+        self.raw.set_viewport(
+            0.0,
+            0.0,
+            self.dest_size[0].max(1) as f32,
+            self.dest_size[1].max(1) as f32,
+            0.0,
+            1.0,
+        );
+    }
+
+    /// The backend pass.
+    #[cfg(feature = "wgpu-interop")]
+    pub fn wgpu(&mut self) -> &mut wgpu::RenderPass<'e> {
+        self.raw
+    }
+
+    pub(crate) fn raw(&mut self) -> &mut wgpu::RenderPass<'e> {
+        self.raw
+    }
 }
 
 /// In-pass encode for a [`SceneGpuRenderer`] that can share the Scene dest.
@@ -46,8 +188,8 @@ pub struct SceneGpuRenderContext<'a> {
 /// `dest_size` is the current dest viewport in physical pixels so implementations
 /// can restore it after changing scissor or viewport.
 pub struct SceneGpuPassContext<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
+    pub gpu: &'a GpuContext,
+    pub target_format: GpuTextureFormat,
     pub bounds: PhysicalRect,
     pub clip: PhysicalRect,
     pub dest_size: [u32; 2],
@@ -69,8 +211,8 @@ pub struct SceneGpuBatchNode<'a> {
 /// In-pass encode context for a run. `dest_size` is the current dest viewport in
 /// physical pixels so implementations can restore it.
 pub struct SceneGpuBatchPassContext<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
+    pub gpu: &'a GpuContext,
+    pub target_format: GpuTextureFormat,
     pub dest_size: [u32; 2],
     pub gpu_work: Option<&'a GpuWorkSink>,
 }
@@ -78,9 +220,10 @@ pub struct SceneGpuBatchPassContext<'a> {
 /// Advanced in-pass Scene encode. Prefer [`crate::HostTexture`] /
 /// [`crate::GpuTextureView`] for first-time hosts.
 ///
-/// Implementations receive NanaUI's existing Device/Queue during prepare and
-/// the current frame encoder/target during render. They must not create a
-/// second GPU context or submit the encoder themselves.
+/// Implementations receive NanaUI's [`GpuContext`] during prepare and the
+/// current frame's destination during render. Caches built on the device key
+/// on [`GpuContext::generation`]: a replaced device is a new generation. They
+/// must not create a second GPU context or submit the frame themselves.
 pub trait SceneGpuRenderer: fmt::Debug + Send + Sync + 'static {
     /// Opt into reusing prepared UI commands. Change this version whenever
     /// `prepare` must run again. The default is dynamic; rendering still runs
@@ -101,7 +244,7 @@ pub trait SceneGpuRenderer: fmt::Debug + Send + Sync + 'static {
     fn draw_in_pass(
         &self,
         _node: &SceneGpuNode,
-        _pass: &mut wgpu::RenderPass<'_>,
+        _pass: &mut ScenePass<'_, '_>,
         _context: SceneGpuPassContext<'_>,
     ) -> bool {
         false
@@ -132,17 +275,26 @@ pub trait SceneGpuRenderer: fmt::Debug + Send + Sync + 'static {
     fn draw_batch_in_pass(
         &self,
         _nodes: &[SceneGpuBatchNode<'_>],
-        _pass: &mut wgpu::RenderPass<'_>,
+        _pass: &mut ScenePass<'_, '_>,
         _context: SceneGpuBatchPassContext<'_>,
     ) -> usize {
         0
     }
 }
 
+/// One preparation pass of a [`SceneResourceProducer`], recorded into the
+/// host's frame.
 pub struct SceneResourceEncodeContext<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
-    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub gpu: &'a GpuContext,
+    frame: &'a mut FrameContext,
+}
+
+impl SceneResourceEncodeContext<'_> {
+    /// The host frame this pass records into. Never submit it: the host does,
+    /// together with the UI paint.
+    pub fn frame(&mut self) -> &mut FrameContext {
+        self.frame
+    }
 }
 
 /// Advanced graph-scheduled offscreen on the HostTexture path.
@@ -160,13 +312,7 @@ pub trait SceneResourceProducer: fmt::Debug + Send + Sync + 'static {
         context: SceneResourceEncodeContext<'_>,
     ) -> Result<(), String>;
 
-    fn submitted(
-        &self,
-        _node: &CustomRenderNode,
-        _device: &wgpu::Device,
-        _submission: wgpu::SubmissionIndex,
-    ) {
-    }
+    fn submitted(&self, _node: &CustomRenderNode, _submission: &GpuSubmission) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,14 +356,13 @@ impl SceneResourceProducerRegistry {
     }
 
     /// Encode preparation into the host frame. No submission happens here.
-    /// Discard the encoder if this returns an error.
+    /// Drop the frame if this returns an error.
     pub fn encode_scene(
         &self,
         scene: &UiScene,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
+        frame: &mut FrameContext,
     ) -> Result<PreparedSceneResources, SceneResourceProduceError> {
+        let gpu = frame.gpu().clone();
         let plan = scene
             .frame_plan()
             .map_err(|error| SceneResourceProduceError {
@@ -239,9 +384,8 @@ impl SceneResourceProducerRegistry {
                 .encode(
                     node,
                     SceneResourceEncodeContext {
-                        device,
-                        queue,
-                        encoder,
+                        gpu: &gpu,
+                        frame: &mut *frame,
                     },
                 )
                 .map_err(|message| SceneResourceProduceError {
@@ -312,9 +456,9 @@ pub struct PreparedSceneResources {
 
 impl PreparedSceneResources {
     /// The host queued this encode. Hidden ticks call this without presenting.
-    pub fn submitted(self, device: &wgpu::Device, submission: wgpu::SubmissionIndex) {
+    pub fn submitted(self, submission: &GpuSubmission) {
         for (node, producer) in self.nodes {
-            producer.submitted(&node, device, submission.clone());
+            producer.submitted(&node, submission);
         }
     }
 }

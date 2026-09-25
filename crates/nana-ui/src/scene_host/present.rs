@@ -3,6 +3,7 @@
 use super::*;
 #[cfg(target_os = "windows")]
 use crate::SceneGpuRendererRegistry;
+use crate::hosted_context::SurfaceFrame;
 
 impl<Program: RuntimeProgram> WindowManager<Program> {
     /// `true` when prepare ran (encode may have been skipped). `false` on abort.
@@ -34,20 +35,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         else {
             return false;
         };
-        let resources = self.graphics.resources();
-        let device = resources.device();
-        let queue = resources.queue();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("NanaUI hidden gpu tick"),
-        });
-        match producers.encode_scene(scene.as_ref(), device, queue, &mut encoder) {
+        let mut frame = self.graphics.gpu().begin_frame("NanaUI hidden gpu tick");
+        match producers.encode_scene(scene.as_ref(), &mut frame) {
             Ok(prepared) => {
-                let submission = queue.submit([encoder.finish()]);
-                prepared.submitted(device, submission);
+                prepared.submitted(&frame.submit());
                 true
             }
             Err(error) => {
-                drop(encoder);
+                drop(frame);
                 self.program
                     .report_host_failure(HostFailure::ResourceProduction {
                         window: id,
@@ -97,7 +92,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             // Deliver completion callbacks of earlier submissions for
             // `gpu.completion`. Before the device-lost check, so a loss this
             // poll reports is handled in this frame either way.
-            crate::host_diagnostics::poll_completions(self.graphics.resources().device());
+            crate::host_diagnostics::poll_completions(self.graphics.gpu().raw_device());
         }
         if self.graphics.take_device_lost() {
             self.recover_device(event_loop);
@@ -183,12 +178,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         let frame = match self.acquire_frame(id) {
-            Ok(HostedSurfaceFrame::Ready(frame)) => frame,
-            Ok(HostedSurfaceFrame::Retry) => {
+            Ok(SurfaceFrame::Ready(frame)) => frame,
+            Ok(SurfaceFrame::Retry) => {
                 self.request_redraw(id);
                 return;
             }
-            Ok(HostedSurfaceFrame::Skipped) => {
+            Ok(SurfaceFrame::Skipped) => {
                 nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_SKIPPED);
                 self.rearm_frame_demand(id);
                 return;
@@ -199,24 +194,25 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return;
             }
         };
-        let target = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.graphics.resources().device().create_command_encoder(
-            &wgpu::CommandEncoderDescriptor {
-                label: Some("NanaUI scene host frame"),
-            },
+        let target = nana_gpu::__framework::render_target(
+            self.graphics.gpu(),
+            frame
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default()),
+            frame.texture.format(),
+            [frame.texture.width(), frame.texture.height()],
         );
+        // Everything recorded for this window goes into one frame. On every
+        // failure path it is dropped before the surface texture it targets:
+        // nothing may still reference the texture the surface is asked to
+        // abandon (DX12), and dropping it rolls the painter's retained writes
+        // back.
+        let mut recording = self.graphics.gpu().begin_frame("NanaUI scene host frame");
         let prepared = if let Some(producers) = self.program.scene_resource_producers(id) {
-            match producers.encode_scene(
-                scene.as_ref(),
-                self.graphics.resources().device(),
-                self.graphics.resources().queue(),
-                &mut encoder,
-            ) {
+            match producers.encode_scene(scene.as_ref(), &mut recording) {
                 Ok(prepared) => Some(prepared),
                 Err(error) => {
-                    drop(encoder);
+                    drop(recording);
                     drop(target);
                     self.discard_frame(id, frame);
                     self.program
@@ -290,7 +286,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    drop(encoder);
+                    drop(recording);
                     drop(target);
                     self.discard_frame(id, frame);
                     self.program
@@ -309,7 +305,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let opaque = self
             .window_contexts
             .get(&id)
-            .is_some_and(|host| host.surface.alpha_mode() == wgpu::CompositeAlphaMode::Opaque);
+            .is_some_and(|host| host.surface.alpha_mode() == crate::SurfaceAlphaMode::Opaque);
         let painter = self.painter_mut(format);
         // Painters are shared per format, so every window supplies its own
         // egress, including none, and its own surface's text mode.
@@ -329,14 +325,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let paint = painter.paint_target(
             crate::RenderTargetId(id.0),
             scene.as_ref(),
-            &mut encoder,
+            &mut recording,
             &target,
             scene_paint_viewport(&geometry, material, theme, window_background),
             host_textures.as_ref(),
             gpu_renderers.as_ref(),
         );
         if let Err(error) = paint {
-            drop(encoder);
+            drop(recording);
             drop(target);
             self.discard_frame(id, frame);
             self.program
@@ -347,19 +343,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.rearm_frame_demand(id);
             return;
         }
-        let submit_started = std::time::Instant::now();
-        let submission = self.graphics.resources().queue().submit([encoder.finish()]);
+        let submission = recording.submit();
         if frame_started.is_some() {
-            crate::host_diagnostics::watch_submission(self.graphics.resources().queue());
+            crate::host_diagnostics::watch_submission(self.graphics.gpu().raw_queue());
         }
         if let Some(prepared) = prepared {
-            prepared.submitted(self.graphics.resources().device(), submission);
+            prepared.submitted(&submission);
         }
-        let submit = submit_started.elapsed();
+        let submit = submission.cpu_duration();
         let painter = self.painter_mut(format);
-        painter.record_submit(submit);
+        painter.record_submit(&submission);
         let gpu_work = painter.last_gpu_work();
-        self.graphics.present(frame);
+        self.graphics.present_frame(frame);
         crate::host_diagnostics::frame_presented(frame_started, submit, gpu_work);
         if let Some(host) = self.window_contexts.get_mut(&id) {
             self.graphics.apply_pending_reconfigure(&mut host.surface);
@@ -462,28 +457,24 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     fn discard_frame(&mut self, id: WindowId, frame: wgpu::SurfaceTexture) {
         if let Some(host) = self.window_contexts.get_mut(&id) {
-            self.graphics
-                .discard_surface_frame(&mut host.surface, frame);
+            self.graphics.abandon_frame(&mut host.surface, frame);
         }
     }
 
-    pub(super) fn acquire_frame(
-        &mut self,
-        id: WindowId,
-    ) -> Result<HostedSurfaceFrame, HostedGpuError> {
+    pub(super) fn acquire_frame(&mut self, id: WindowId) -> Result<SurfaceFrame, HostedGpuError> {
         let host = self
             .window_contexts
             .get_mut(&id)
             .ok_or(HostedGpuError::SurfaceValidation)?;
-        self.graphics.acquire_surface_frame(&mut host.surface)
+        self.graphics.acquire(&mut host.surface)
     }
     pub(super) fn recover_device(&mut self, _event_loop: &dyn ActiveEventLoop) {
         // Present only on the first attempt after a loss; retries find none.
         if let Some(lost) = self.graphics.take_device_lost_report() {
             nana_diagnostics::fault!(
                 nana_diagnostics::framework::gpu::DEVICE_LOST,
-                reason = u64::from(lost.reason == "Destroyed");
-                "{}: {}",
+                reason = u64::from(lost.reason == nana_gpu::GpuLossReason::Destroyed);
+                "{:?}: {}",
                 lost.reason,
                 lost.message
             );
@@ -496,6 +487,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         let mut recovery_windows = self.known_window_ids();
         if recovery_windows.is_empty() {
+            // Nothing can seed a replacement device yet. The next window's
+            // first frame finds the loss again and recovers with its surface.
+            self.graphics.rearm_device_loss();
             return;
         }
         recovery_windows.sort_unstable();
@@ -574,11 +568,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn suspend_surface(&mut self, id: WindowId, error: HostedGpuError) {
         // WGPU delivers a destroyed device's callback during polling, after its
         // submissions finish. Surface failure alone must not decide its scope.
-        let _ = self
-            .graphics
-            .resources()
-            .device()
-            .poll(wgpu::PollType::Poll);
+        let _ = self.graphics.gpu().raw_device().poll(wgpu::PollType::Poll);
         // A lost device fails every surface; leave it to process-wide recovery
         // instead of reporting per-window surface failures.
         if !self.embedded && self.graphics.is_device_lost() {
@@ -631,10 +621,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
     /// Painters are created lazily per surface format and own their image waker
     /// from creation, so the per-frame lookup does no allocation.
-    pub(super) fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
+    pub(super) fn painter_mut(
+        &mut self,
+        format: nana_gpu::GpuTextureFormat,
+    ) -> &mut SceneWgpuPainter {
+        // A device switch clears the map; a painter that still names another
+        // device would only refuse every frame.
+        let current = self.graphics.gpu().generation();
+        if self
+            .painters
+            .get(&format)
+            .is_some_and(|painter| painter.gpu().generation() != current)
+        {
+            self.painters.remove(&format);
+        }
         if !self.painters.contains_key(&format) {
-            let resources = self.graphics.resources();
-            let painter = SceneWgpuPainter::new(resources.device(), resources.queue(), format);
+            let painter = SceneWgpuPainter::new(self.graphics.gpu(), format);
             self.adopt_painter(format, painter);
         }
         self.painters
@@ -646,7 +648,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// one alongside the device) with this host's image waker.
     pub(super) fn adopt_painter(
         &mut self,
-        format: wgpu::TextureFormat,
+        format: nana_gpu::GpuTextureFormat,
         mut painter: SceneWgpuPainter,
     ) {
         let (targets, redraws, proxy) = (

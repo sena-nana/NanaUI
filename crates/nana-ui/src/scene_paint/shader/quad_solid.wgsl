@@ -95,7 +95,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     let local = pos + pos_snap - vec2<f32>(0.5, 0.5) + unit * (scale + scale_snap + 1.0);
     let logical = local / globals.scale;
     let transform_id = (input.snap >> 1u) & 0x7fffu;
-    let composed = motion_compose_affine(input.affine_abcd, input.affine_ef, input.motion_origin, motion_evaluate(transform_id));
+    let composed = motion_compose_projective(input.affine_abcd, input.affine_ef, input.motion_origin, motion_evaluate(transform_id));
     let world = apply_affine(composed.abcd, composed.ef, logical);
 
     out.position = globals.transform * vec4<f32>(world * globals.scale, 0.0, 1.0);

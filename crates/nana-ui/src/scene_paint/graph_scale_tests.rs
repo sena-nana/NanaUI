@@ -4,7 +4,7 @@ use super::*;
 fn graph_canvas_large_families_survive_gpu_updates_and_shrink() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let viewport = ScenePaintViewport {
         logical_size: [96.0, 1200.0],
@@ -67,7 +67,7 @@ fn graph_canvas_large_families_survive_gpu_updates_and_shrink() {
             label: Some("large graph families"),
         });
         painter
-            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         let pixels = readback_rgba(&device, &queue, encoder, &texture, 96, 1200);
         if let Some(directory) = std::env::var_os("NANA_GRAPH_SCALE_SNAPSHOTS") {

@@ -50,7 +50,7 @@ Layout-class（`width` / `height` / `padding` / `margin`）走 CPU：每帧采�
 
 画笔把图元和它每个裁剪的**最终纯平移**吸附到设备像素（`clip::paint_transform`）；旋转、缩放、透视不动。滚动偏移、CSS translate 和冻结行列的反向平移合成后才吸附，所以同一滚动下的 quad、图标、文字、路径网格、HostTexture、CustomRender 与裁剪边挪同样多的整像素（自带 GPU transform 动画的 quad 的叠加量除外）。`ScrollOffset`、hit test 与无障碍边界保留小数，与画面相差不到半个设备像素。触控板的小数横向滚动因此不再让文字重新解析（#223，见[文本引擎](text-engine.md)）。多行编辑器的滚动不是滚动容器的平移，沿 x 的那部分由 `ComponentGeometry::TextInput::scroll` 交给 scene，值、光标、选区与其上的标记画成平移，同样吸附。
 
-`SceneWgpuPainter` 注入宿主 Device / Queue，在当前 dest pass 按节点顺序编码。HostTexture 不攒到帧尾，不为每个 GPU 槽单独开 pass。含 HostTexture / 自定义 GPU 节点的帧使用 `sample_count = 1`；没有 GPU 节点的帧可以用 4x MSAA 画方块和网格，文字在 resolve 之后画。不要在自定义节点两侧反复 resolve。高级的 `SceneResourceProducer` 在采样前用同一 Queue 提交。冲突 revision 拒绝整帧。
+`SceneWgpuPainter` 建在宿主的 `GpuContext` 上，画进宿主的 `FrameContext`，在当前 dest pass 按节点顺序编码。HostTexture 不攒到帧尾，不为每个 GPU 槽单独开 pass。含 HostTexture / 自定义 GPU 节点的帧使用 `sample_count = 1`；没有 GPU 节点的帧可以用 4x MSAA 画方块和网格，文字在 resolve 之后画。不要在自定义节点两侧反复 resolve。高级的 `SceneResourceProducer` 在采样前录进同一帧、随 UI 一起提交。冲突 revision 拒绝整帧。
 
 无障碍增量带同一 generation 的更新节点与稳定 ID 删除。平台 adapter 不维护另一棵权威语义树。默认程序不声明无障碍动作；只有显式接通的 `RuntimeProgram::accessibility_action` 才暴露。
 

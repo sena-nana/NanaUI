@@ -8,10 +8,12 @@
 //! [`nana_ui_platform::ImeEvent`] via `dispatch_ime`. Accessibility
 //! publication lives in [`crate::slot_ax`].
 
-use nana_ui::{ScenePaintViewport, SceneWgpuPainter};
+use nana_ui::{
+    FrameContext, GpuContext, GpuRenderTarget, GpuTextureFormat, ScenePaintViewport,
+    SceneWgpuPainter,
+};
 use nana_ui_core::PhysicalRect;
 use nana_ui_platform::ImeEvent;
-use wgpu::{CommandEncoder, Device, Queue, TextureFormat, TextureView};
 
 use crate::slot_ime::{SlotEditorInfo, SlotImeBuffer};
 use crate::slot_input::{SlotKeyMods, SlotLogicalKey, SlotTouchKind};
@@ -25,16 +27,15 @@ pub struct SlotPainter {
 
 impl SlotPainter {
     pub fn new(
-        device: &Device,
-        queue: &Queue,
-        format: TextureFormat,
+        gpu: &GpuContext,
+        format: GpuTextureFormat,
         physical_size: (u32, u32),
         scale: f32,
     ) -> Result<Self, String> {
         Ok(Self {
             runtime: SlotRuntime::new(physical_size, scale)
                 .map_err(|error| format!("slot runtime: {error}"))?,
-            painter: SceneWgpuPainter::new(device, queue, format),
+            painter: SceneWgpuPainter::new(gpu, format),
         })
     }
 
@@ -139,8 +140,8 @@ impl SlotPainter {
     /// `target_size` is the surface; the Runtime viewport may stop above the IME.
     pub fn paint_slot(
         &mut self,
-        encoder: &mut CommandEncoder,
-        view: &TextureView,
+        frame: &mut FrameContext,
+        target: &GpuRenderTarget,
         target_size: (u32, u32),
     ) {
         if let Err(error) = self.runtime.flush() {
@@ -160,8 +161,8 @@ impl SlotPainter {
         };
         if let Err(error) = self.painter.paint(
             self.runtime.document().scene(),
-            encoder,
-            view,
+            frame,
+            target,
             viewport,
             None,
             None,

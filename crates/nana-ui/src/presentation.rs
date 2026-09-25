@@ -50,6 +50,34 @@ impl GpuBackendPolicy {
     }
 }
 
+/// How the compositor blends a window's surface, as the surface negotiated
+/// it. Variant names follow WGPU's.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceAlphaMode {
+    Auto,
+    /// The surface is shown opaque; its alpha is ignored.
+    Opaque,
+    /// Colour is premultiplied by alpha before the compositor sees it.
+    PreMultiplied,
+    /// The compositor multiplies colour by alpha itself.
+    PostMultiplied,
+    /// Whatever the platform's own surface setting is.
+    Inherit,
+}
+
+impl SurfaceAlphaMode {
+    pub(crate) const fn from_wgpu(mode: wgpu::CompositeAlphaMode) -> Self {
+        match mode {
+            wgpu::CompositeAlphaMode::Auto => Self::Auto,
+            wgpu::CompositeAlphaMode::Opaque => Self::Opaque,
+            wgpu::CompositeAlphaMode::PreMultiplied => Self::PreMultiplied,
+            wgpu::CompositeAlphaMode::PostMultiplied => Self::PostMultiplied,
+            wgpu::CompositeAlphaMode::Inherit => Self::Inherit,
+        }
+    }
+}
+
 /// Whether this process can present a window through a platform compositor.
 /// Settled once, before the first window exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,8 +297,8 @@ impl ResolvedWindowPresentation {
 
     /// What the surface negotiated. This is the answer `effective` was derived
     /// from, not an independent one.
-    pub const fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
-        self.alpha_mode
+    pub const fn alpha_mode(&self) -> SurfaceAlphaMode {
+        SurfaceAlphaMode::from_wgpu(self.alpha_mode)
     }
 
     /// The path this window's frames actually reach the screen through. See

@@ -6,7 +6,7 @@ use nana_ui_scene::RuntimeDocument;
 fn key_layer_badges_keep_text_above_their_backplates_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     for (theme_name, theme, clear) in [
         ("light", nana_ui_core::ThemeMode::Light, [1.0; 4]),
         (
@@ -48,7 +48,7 @@ fn key_layer_badges_keep_text_above_their_backplates_on_gpu() {
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                 painter
-                    .paint(
+                    .paint_encoder(
                         document.scene(),
                         &mut encoder,
                         &view,

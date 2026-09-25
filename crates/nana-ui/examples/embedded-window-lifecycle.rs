@@ -1,7 +1,6 @@
 //! Advanced host integration: this executable owns the sole event loop and GPU.
 mod window_lifecycle;
-use nana_ui::{HostedGpuShared, RuntimeApplication, platform_host::EmbeddedRuntime};
-use std::sync::Arc;
+use nana_ui::{GpuContext, HostedGpuShared, RuntimeApplication, platform_host::EmbeddedRuntime};
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -28,12 +27,12 @@ impl ApplicationHandler for Host {
         if std::env::args().any(|arg| arg == "--probe-device-loss") {
             // The host owns loss detection and reports it before forwarding events.
             // Exercise replacement with a live Surface before its first present.
-            let old_generation = graphics.resources().generation();
-            graphics.resources().device().destroy();
+            let old_generation = graphics.gpu().generation();
+            graphics.gpu().wgpu().device().destroy();
             runtime.notify_device_lost();
             assert!(runtime.needs_gpu_replacement());
             let replacement = create_host_gpu();
-            assert_ne!(replacement.resources().generation(), old_generation);
+            assert_ne!(replacement.gpu().generation(), old_generation);
             runtime.replace_gpu(replacement).unwrap();
             assert!(!runtime.needs_gpu_replacement());
         }
@@ -97,6 +96,6 @@ fn create_host_gpu() -> HostedGpuShared {
             .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .unwrap();
-        HostedGpuShared::from_device(instance, adapter, Arc::new(device), Arc::new(queue))
+        HostedGpuShared::from_device(instance, GpuContext::from_wgpu(adapter, device, queue))
     })
 }

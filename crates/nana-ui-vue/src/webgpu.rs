@@ -11,7 +11,9 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use nana_js_engine::{HostApiRegistry, HostCompletion, HostValue, JsException};
-use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry, HostedGpuResources};
+use nana_ui::{GpuContext, HostTexture, HostTextureAlphaMode, HostTextureRegistry};
+
+use crate::gpu_backend::GpuBackend;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GpuId(u64);
@@ -157,7 +159,7 @@ impl WebGpuState {
 #[derive(Clone)]
 pub struct JsWebGpuRuntime {
     runtime_id: u64,
-    resources: Arc<Mutex<HostedGpuResources>>,
+    resources: Arc<Mutex<GpuContext>>,
     textures: HostTextureRegistry,
     state: Arc<Mutex<WebGpuState>>,
     pending_queue_completions: Arc<Mutex<HashMap<u64, PendingQueueCompletion>>>,
@@ -176,7 +178,7 @@ impl std::fmt::Debug for JsWebGpuRuntime {
 }
 
 impl JsWebGpuRuntime {
-    pub fn new(resources: HostedGpuResources, textures: HostTextureRegistry) -> Self {
+    pub fn new(resources: GpuContext, textures: HostTextureRegistry) -> Self {
         Self {
             runtime_id: NEXT_WEBGPU_RUNTIME_ID.fetch_add(1, Ordering::Relaxed),
             resources: Arc::new(Mutex::new(resources)),
@@ -195,7 +197,7 @@ impl JsWebGpuRuntime {
         self.state.lock().map(|state| state.generation).unwrap_or(0)
     }
 
-    pub fn replace_device(&self, resources: HostedGpuResources) -> u64 {
+    pub fn replace_device(&self, resources: GpuContext) -> u64 {
         if let Ok(mut current) = self.resources.lock() {
             *current = resources;
         }
@@ -223,7 +225,7 @@ impl JsWebGpuRuntime {
         let Ok(resources) = self.resources.lock() else {
             return 0;
         };
-        let _ = resources.device().poll(wgpu::PollType::Poll);
+        let _ = resources.backend().device().poll(wgpu::PollType::Poll);
         drop(resources);
         let queued_after = self
             .pending_queue_completions
@@ -351,7 +353,7 @@ impl JsWebGpuRuntime {
         let runtime = self.clone();
         api.register("webgpuAdapterInfo", move |_| {
             let resources = runtime.resources.lock().map_err(poisoned)?;
-            let info = resources.adapter_info();
+            let info = resources.backend().adapter_info();
             Ok(HostValue::Object(
                 [
                     ("vendor".into(), HostValue::String(info.vendor.to_string())),
@@ -439,7 +441,8 @@ impl JsWebGpuRuntime {
         });
         let runtime = self.clone();
         api.register_async("webgpuQueueSubmittedWorkDone", move |_args, context| {
-            let queue = runtime.queue()?;
+            let gpu = runtime.gpu()?;
+            let queue = gpu.backend().queue();
             let (completion, pending) = context.pending();
             let id = runtime.next_completion_id.fetch_add(1, Ordering::Relaxed);
             let slot = Arc::new(Mutex::new(Some(completion)));
@@ -597,8 +600,9 @@ impl JsWebGpuRuntime {
             if end > buffer_size {
                 return Err(webgpu_validation("writeBuffer range exceeds buffer size"));
             }
-            let queue = runtime.queue()?;
-            queue.write_buffer(&buffer, offset, bytes);
+            let gpu = runtime.gpu()?;
+            let _submission = gpu.backend().lock_submission();
+            gpu.backend().queue().write_buffer(&buffer, offset, bytes);
             Ok(HostValue::Null)
         });
         let runtime = self.clone();
@@ -930,6 +934,7 @@ impl JsWebGpuRuntime {
             let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));
             (texture, view)
         })?;
+        let gpu = self.gpu()?;
         let mut state = self.state.lock().map_err(poisoned)?;
         let id = state.alloc();
         let canvas_slot = canvas.as_ref().map(|(_, slot, _, _)| slot.clone());
@@ -966,7 +971,11 @@ impl JsWebGpuRuntime {
             };
             self.textures.register(
                 slot,
-                HostTexture::from_wgpu(id.0, state.generation, (*view).clone()),
+                HostTexture::new(
+                    id.0,
+                    state.generation,
+                    &crate::gpu_backend::texture(&gpu, (*state.textures[&id].texture).clone()),
+                ),
                 width,
                 height,
                 alpha_mode,
@@ -1704,12 +1713,11 @@ impl JsWebGpuRuntime {
         let resources = self.resources.lock().map_err(poisoned)?;
         let mut submitted = Vec::new();
         for commands in command_lists {
-            let mut encoder =
-                resources
-                    .device()
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("Nana JS WebGPU encoder"),
-                    });
+            let mut encoder = resources.backend().device().create_command_encoder(
+                &wgpu::CommandEncoderDescriptor {
+                    label: Some("Nana JS WebGPU encoder"),
+                },
+            );
             for command in commands {
                 match command {
                     EncoderCommand::CopyBuffer {
@@ -1834,10 +1842,13 @@ impl JsWebGpuRuntime {
             }
             submitted.push(encoder.finish());
         }
-        resources.queue().submit(submitted);
+        {
+            let _submission = resources.backend().lock_submission();
+            resources.backend().queue().submit(submitted);
+        }
         // Submission completion is advanced by the hosted event-loop pump.
         // Never serialize every UI frame on a blocking device poll here.
-        let _ = resources.device().poll(wgpu::PollType::Poll);
+        let _ = resources.backend().device().poll(wgpu::PollType::Poll);
         for texture in state.textures.values() {
             if let Some(slot) = &texture.canvas_slot {
                 self.textures.invalidate(slot);
@@ -1884,8 +1895,9 @@ impl JsWebGpuRuntime {
             rows_per_image,
             bytes.len(),
         )?;
-        let queue = self.queue()?;
-        queue.write_texture(
+        let gpu = self.gpu()?;
+        let _submission = gpu.backend().lock_submission();
+        gpu.backend().queue().write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture.texture,
                 mip_level,
@@ -1978,17 +1990,11 @@ impl JsWebGpuRuntime {
         ))
     }
 
-    fn device(&self) -> Result<Arc<wgpu::Device>, JsException> {
-        self.resources
-            .lock()
-            .map_err(poisoned)
-            .map(|r| Arc::clone(r.device()))
+    fn gpu(&self) -> Result<GpuContext, JsException> {
+        self.resources.lock().map_err(poisoned).map(|r| r.clone())
     }
-    fn queue(&self) -> Result<Arc<wgpu::Queue>, JsException> {
-        self.resources
-            .lock()
-            .map_err(poisoned)
-            .map(|r| Arc::clone(r.queue()))
+    fn device(&self) -> Result<wgpu::Device, JsException> {
+        self.gpu().map(|gpu| gpu.backend().device().clone())
     }
 }
 

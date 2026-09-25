@@ -20,9 +20,10 @@ Supporting boundaries:
 - \`nana-text\` is the product text measurement, shaping, and retained text-layout authority.
 - \`nana-ui-platform\` owns platform-neutral window/input contracts; \`nana-window\` owns native handles, materials, title-bar chrome, scaling, and fullscreen behavior.
 - \`nana-ui-vue\` and the JS host are input adapters into the same \`UiWorld\`; they do not create another tree or painter.
+- \`nana-gpu\` is the GPU backend contract: \`GpuContext\` (device, generation, capabilities, loss, textures, submission guard), \`FrameContext\` (one frame's encoder, submit/discard), and \`GpuTexture\`. WGPU is the only backend; \`wgpu-interop\` is the explicit escape hatch.
 - \`nana-frame-exchange\` carries producer frames. It does not own the UI device or submission.
 
-The host owns Window, Surface, Device, Queue, encoder, and frame scheduling. \`SceneWgpuPainter\` is injected into that context. GPU content is represented by \`CustomRenderNode\` or ordinary \`HostTexture\` nodes and remains in layout, clipping, hit testing, and document order.
+The host owns Window, Surface, the \`GpuContext\`, each \`FrameContext\`, and frame scheduling. \`SceneWgpuPainter\` is built on that context and paints into the host's frames. GPU content is represented by \`CustomRenderNode\` or ordinary \`HostTexture\` nodes and remains in layout, clipping, hit testing, and document order.
 
 ## Skill groups
 
@@ -43,6 +44,7 @@ Read the focused contract document named by the selected skill before editing. R
 - Keep logical state separate from presentation overlays. Compositor animation must not write transient samples back into base style state.
 - Keep raw window handles out of ordinary controls. Native material failure returns the actual applied outcome or an explicit fallback.
 - Keep one WGPU major version across manifests, lockfile, and the resolved dependency graph. Never add a second Device/Queue or a product CPU readback path.
+- Public GPU extension contracts use \`nana-gpu\` types. \`wgpu::*\` may appear in a public signature of nana-gpu, nana-frame-exchange, nana-ui, nana-ui-vue or nana-ui-devtools only behind \`wgpu-interop\`; \`nana_gpu::__framework\` is for those crates' own sources, which therefore never turn \`wgpu-interop\` on for consumers. \`scripts/check-engine-boundary.py\` enforces both.
 - Do not add a WebView product shell, a second text engine, a second UI tree, or product-specific Live2D/Cubism types.
 - Framework diagnostics go through `nana-diagnostics` (`event!` / `metric!` / `fault!` with static descriptors in `nana_diagnostics::framework`, IDs append-only). No logging crate, `eprintln!`, formatting, or I/O on frame paths; high-frequency data is a metric, never a per-frame event. See `docs/diagnostics.md`.
 - Visible actions must be wired to real state. Do not add placeholder routes, agent/tool instructions, technical copy, or unconnected controls to product UI.

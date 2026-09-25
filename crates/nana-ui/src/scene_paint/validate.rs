@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use nana_gpu::DeviceGeneration;
 use nana_ui_runtime::StableNodeId;
 use nana_ui_scene::{PrimitiveId, RenderOperation, ScenePrimitiveKind, UiScene};
 
@@ -21,6 +22,16 @@ pub enum ScenePaintError {
     UnsupportedCustomRenderer(PrimitiveId),
     MissingCustomResource(PrimitiveId),
     MissingNode(StableNodeId),
+    /// The frame or target belongs to another device than the painter.
+    DeviceMismatch {
+        expected: DeviceGeneration,
+        found: DeviceGeneration,
+    },
+    /// A host texture still samples a texture from a replaced device.
+    StaleHostTexture(PrimitiveId),
+    /// An earlier frame painted this target and is neither submitted nor
+    /// dropped yet. `None` is the state behind `SceneWgpuPainter::paint`.
+    TargetInFlight(Option<super::RenderTargetId>),
 }
 
 impl fmt::Display for ScenePaintError {
@@ -47,6 +58,24 @@ impl fmt::Display for ScenePaintError {
                 id.slot
             ),
             Self::MissingNode(id) => write!(formatter, "scene node {} is unavailable", id.get()),
+            Self::DeviceMismatch { expected, found } => write!(
+                formatter,
+                "frame from GPU device {found} painted with a painter on device {expected}"
+            ),
+            Self::StaleHostTexture(id) => write!(
+                formatter,
+                "scene primitive {}:{} samples a host texture from a replaced GPU device",
+                id.node.get(),
+                id.slot
+            ),
+            Self::TargetInFlight(Some(id)) => write!(
+                formatter,
+                "render target {} is still held by an unsubmitted frame",
+                id.0
+            ),
+            Self::TargetInFlight(None) => {
+                formatter.write_str("the painter's target is still held by an unsubmitted frame")
+            }
         }
     }
 }
@@ -125,6 +154,7 @@ pub(super) fn validate_scene(
     scene: &UiScene,
     host_textures: Option<&HostTextureRegistry>,
     gpu_renderers: Option<&SceneGpuRendererRegistry>,
+    device: DeviceGeneration,
 ) -> Result<ResolvedCustomNodes, ScenePaintError> {
     let plan = scene
         .frame_plan()
@@ -159,6 +189,11 @@ pub(super) fn validate_scene(
         let binding = host_textures
             .get(custom.resource.as_ref())
             .ok_or(ScenePaintError::MissingCustomResource(primitive.id))?;
+        // A registry the host forgot to rebuild after a device replacement
+        // fails the frame here instead of reaching the backend.
+        if binding.texture.device_generation() != device {
+            return Err(ScenePaintError::StaleHostTexture(primitive.id));
+        }
         // Contents can change without replacing a sampled view, so only
         // binding identity and geometry invalidate prepared UI data;
         // re-encoding still samples the latest host pixels every frame.
@@ -186,6 +221,10 @@ mod tests {
         SceneGpuNode, SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer,
     };
     use crate::{HostTextureRegistry, SceneGpuRendererRegistry, default_scene_gpu_renderers};
+
+    fn device() -> DeviceGeneration {
+        crate::test_gpu::context().generation()
+    }
 
     #[derive(Debug)]
     struct NoopSceneRenderer;
@@ -296,7 +335,7 @@ mod tests {
             context.world().extract_nodes(&work.render_extraction),
             work.render_removals,
         );
-        validate_scene(&scene, None, None).expect("a plain button validates");
+        validate_scene(&scene, None, None, device()).expect("a plain button validates");
         assert!(!plan_operations(&scene).is_empty());
         assert_eq!(scene.primitives().count(), 2);
 
@@ -312,11 +351,11 @@ mod tests {
             work.render_removals,
         );
         assert!(matches!(
-            validate_scene(&scene, None, None),
+            validate_scene(&scene, None, None, device()),
             Err(ScenePaintError::CustomPrimitive(_))
         ));
         assert!(matches!(
-            validate_scene(&scene, Some(&HostTextureRegistry::new()), None),
+            validate_scene(&scene, Some(&HostTextureRegistry::new()), None, device()),
             Err(ScenePaintError::MissingCustomResource(_))
         ));
     }
@@ -352,7 +391,8 @@ mod tests {
         );
         let mut renderers = SceneGpuRendererRegistry::new();
         renderers.insert("live2d.direct", Arc::new(NoopSceneRenderer));
-        validate_scene(&scene, None, Some(&renderers)).expect("registered renderer validates");
+        validate_scene(&scene, None, Some(&renderers), device())
+            .expect("registered renderer validates");
         assert!(plan_operations(&scene).iter().any(|operation| matches!(
             operation,
             RenderOperation::InvokeCustom(id) if *id == PrimitiveId {
@@ -451,7 +491,8 @@ mod tests {
         let renderers = default_scene_gpu_renderers();
         assert!(renderers.get(GPU_VIEW_RENDERER).is_some());
         assert!(renderers.get("gpu-view").is_some());
-        validate_scene(&scene, None, Some(&renderers)).expect("default renderers validate");
+        validate_scene(&scene, None, Some(&renderers), device())
+            .expect("default renderers validate");
         assert_gpu_view_operation(&plan_operations(&scene), &scene, id);
     }
 
@@ -459,7 +500,7 @@ mod tests {
     fn validate_scene_rejects_gpu_view_without_renderers() {
         let (scene, _) = gpu_view_scene();
         assert!(matches!(
-            validate_scene(&scene, None, None),
+            validate_scene(&scene, None, None, device()),
             Err(ScenePaintError::UnsupportedCustomRenderer(_))
         ));
     }
@@ -467,8 +508,13 @@ mod tests {
     #[test]
     fn validate_scene_rejects_gpu_view_with_empty_registry() {
         let (scene, _) = gpu_view_scene();
-        let err = validate_scene(&scene, None, Some(&SceneGpuRendererRegistry::new()))
-            .expect_err("empty registry must not paint gpu-view");
+        let err = validate_scene(
+            &scene,
+            None,
+            Some(&SceneGpuRendererRegistry::new()),
+            device(),
+        )
+        .expect_err("empty registry must not paint gpu-view");
         assert!(matches!(err, ScenePaintError::UnsupportedCustomRenderer(_)));
     }
 
@@ -481,7 +527,7 @@ mod tests {
     #[test]
     fn empty_button_scene_validates_without_gpu_registry() {
         let (scene, _) = button_scene();
-        validate_scene(&scene, None, None).expect("a button scene validates");
+        validate_scene(&scene, None, None, device()).expect("a button scene validates");
         assert!(!plan_operations(&scene).is_empty());
     }
 
@@ -523,7 +569,7 @@ mod tests {
             work.render_removals,
         );
 
-        validate_scene(&scene, None, None).expect("rotation and tracking validate");
+        validate_scene(&scene, None, None, device()).expect("rotation and tracking validate");
         assert!(!plan_operations(&scene).is_empty());
         let mut saw_rotation = false;
         let mut saw_tracking = false;

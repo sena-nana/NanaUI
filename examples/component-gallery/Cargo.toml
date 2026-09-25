@@ -18,6 +18,8 @@ default = ["bundled-fonts"]
 bundled-fonts = ["nana-ui/bundled-fonts"]
 benchmark = [
     "bundled-fonts",
+    # The benchmark creates its own headless device.
+    "nana-ui/wgpu-interop",
     "dep:pollster",
     "dep:serde",
     "dep:serde_json",

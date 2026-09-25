@@ -167,7 +167,7 @@ impl VueHost {
     /// WebGPU facade. Call again after device recovery, then re-register the
     /// host API on the engine so existing JS wrappers observe the generation.
     #[cfg(feature = "hosted")]
-    pub fn bind_host_gpu(&mut self, resources: nana_ui::HostedGpuResources) -> u64 {
+    pub fn bind_host_gpu(&mut self, resources: nana_ui::GpuContext) -> u64 {
         match &self.canvas_gpu {
             Some(canvas_gpu) => canvas_gpu.replace_device(resources.clone()),
             None => {
@@ -386,7 +386,7 @@ impl VueHost {
     pub fn replace_host_gpu<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
-        resources: nana_ui::HostedGpuResources,
+        resources: nana_ui::GpuContext,
         message: &str,
     ) -> Result<u64, JsEngineError> {
         self.report_diagnostic(

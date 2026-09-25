@@ -29,7 +29,7 @@ impl Probe {
             primary: context.window(),
             auxiliary: None,
             focusing: None,
-            generation: context.gpu().generation(),
+            generation: context.gpu().generation().get(),
             presented: BTreeSet::new(),
             primary_closed: false,
             presented_after_close: false,
@@ -43,7 +43,7 @@ impl Probe {
     }
     pub fn presented(&mut self, id: WindowId, context: &RuntimeProgramContext<VueMessage>) {
         assert_eq!(
-            context.gpu().generation(),
+            context.gpu().generation().get(),
             self.generation,
             "Vue windows changed shared GPU"
         );

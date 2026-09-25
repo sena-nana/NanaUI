@@ -8,6 +8,7 @@ use nana_ui::runtime::{
     SearchDropdownOption, Text, Workspace, WorkspaceRegionSlot,
 };
 use nana_ui::{
+    GpuContext, GpuRenderTarget, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages,
     NanaTextShaper, RegionId, RegionRole, RegionState, RuntimeInputAdapter, ScenePaintViewport,
     SceneWgpuPainter, SettingsTabId, ThemeMode, WorkspaceAction, WorkspaceLayout, WorkspaceModel,
     WorkspaceMutation,
@@ -43,26 +44,22 @@ pub fn run() -> BenchmarkReport {
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
     }))
     .expect("benchmark must create a WGPU device");
-    let format = wgpu::TextureFormat::Bgra8UnormSrgb;
-    let painter = SceneWgpuPainter::new(&device, &queue, format);
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("nana-ui benchmark target"),
-        size: wgpu::Extent3d {
+    // The benchmark brings its own device: that is the WGPU escape hatch.
+    let gpu = GpuContext::from_wgpu(adapter, device, queue);
+    let format = GpuTextureFormat::BGRA8_UNORM_SRGB;
+    let painter = SceneWgpuPainter::new(&gpu, format);
+    let target = gpu
+        .create_texture(&GpuTextureDescriptor {
+            label: Some("nana-ui benchmark target"),
             width: VIEWPORT_WIDTH,
             height: VIEWPORT_HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            format,
+            usage: GpuTextureUsages::RENDER_TARGET,
+        })
+        .and_then(|texture| texture.render_target())
+        .expect("benchmark target");
     let mut render = RenderContext {
-        device: &device,
-        queue: &queue,
+        gpu: &gpu,
         painter,
         target: &target,
     };
@@ -119,10 +116,9 @@ pub fn run() -> BenchmarkReport {
 }
 
 struct RenderContext<'a> {
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
+    gpu: &'a GpuContext,
     painter: SceneWgpuPainter,
-    target: &'a wgpu::TextureView,
+    target: &'a GpuRenderTarget,
 }
 
 fn benchmark_list_case(item_count: usize, render: &mut RenderContext<'_>) -> CaseReport {
@@ -321,11 +317,7 @@ fn paint_scene(
     event_update_ms: f64,
 ) -> Sample {
     let background = ThemeMode::Dark.palette().background;
-    let mut encoder = render
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-ui benchmark paint"),
-        });
+    let mut frame = render.gpu.begin_frame("nana-ui benchmark paint");
     let viewport = ScenePaintViewport {
         logical_size: [VIEWPORT_WIDTH as f32, VIEWPORT_HEIGHT as f32],
         physical_size: [VIEWPORT_WIDTH, VIEWPORT_HEIGHT],
@@ -338,16 +330,18 @@ fn paint_scene(
     let started = Instant::now();
     render
         .painter
-        .paint(scene, &mut encoder, render.target, viewport, None, None)
+        .paint(scene, &mut frame, render.target, viewport, None, None)
         .expect("benchmark SceneWgpuPainter must paint");
     let draw_cpu_ms = elapsed_ms(started);
 
     let started = Instant::now();
-    let submission = render.queue.submit([encoder.finish()]);
+    let submission = frame.submit();
     render
-        .device
+        .gpu
+        .wgpu()
+        .device()
         .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
+            submission_index: Some(submission.wgpu_index().clone()),
             timeout: None,
         })
         .expect("benchmark GPU work must complete");

@@ -291,12 +291,7 @@ pub(super) fn generate_registered(
     validate_fixture_registry().map_err(std::io::Error::other)?;
 
     let colors = theme.palette();
-    let gpu = gpu::create_snapshot_gpu(
-        &snapshots.device,
-        &snapshots.queue,
-        colors.background,
-        colors.accent_strong,
-    );
+    let gpu = gpu::create_snapshot_gpu(&snapshots.gpu, colors.background, colors.accent_strong);
     for fixture in FIXTURE_REGISTRY {
         render_fixture(snapshots, recorder, theme, *fixture, &gpu)?;
     }

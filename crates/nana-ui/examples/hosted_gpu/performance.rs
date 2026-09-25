@@ -74,10 +74,10 @@ impl StartupProbe {
         self.presented += 1;
         let now = Instant::now();
         let first = *self.first_present.get_or_insert(now);
-        let generation = context.gpu().generation();
+        let generation = context.gpu().generation().get();
         if self.destroy_device && self.destroyed_generation.is_none() && self.presented >= 3 {
             self.destroyed_generation = Some(generation);
-            context.gpu().device().destroy();
+            context.gpu().wgpu().device().destroy();
             return false;
         }
         if self
@@ -138,8 +138,8 @@ impl StartupProbe {
             && p50_v < budget * 1.5;
         let report = serde_json::json!({
             "kind": "hosted-gpu-demo-present-probe", "requested_hz": 120,
-            "adapter": context.gpu().adapter_info().name,
-            "backend": format!("{:?}", context.gpu().adapter_info().backend),
+            "adapter": context.gpu().capabilities().adapter_name(),
+            "backend": format!("{:?}", context.gpu().capabilities().backend()),
             "physical_size": [context.geometry().physical_size.0, context.geometry().physical_size.1],
             "surface_alpha": format!("{:?}", context.surface_alpha_mode()),
             "sample_seconds": sample_seconds,

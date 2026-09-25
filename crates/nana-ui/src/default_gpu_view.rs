@@ -1,7 +1,7 @@
 //! Host-owned default painter for Runtime [`GPU_VIEW_RENDERER`].
 //!
-//! Uses the caller's Device/Queue and the current frame encoder/target. It does
-//! not request a GPU context or perform CPU readback.
+//! Uses the painter's [`GpuContext`] and the current frame's destination. It
+//! does not request a GPU context or perform CPU readback.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -10,20 +10,23 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 use bytemuck::{Pod, Zeroable};
+use nana_gpu::{__framework, DeviceGeneration, GpuTextureFormat};
 use nana_ui_runtime::{CustomRenderNode, GPU_VIEW_RENDERER, GpuViewPalette, gpu_view_params};
 use nana_ui_scene::PrimitiveId;
 
+use crate::gpu_raw::GpuRaw;
 use crate::gpu_view::GPU_VIEW_SHADER;
 use crate::gpu_work::GpuWorkSink;
 use crate::scene_gpu::{
     SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode, SceneGpuPassContext,
     SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry,
+    ScenePass,
 };
 
 /// Scene painter for [`GPU_VIEW_RENDERER`] (`"gpu-view"`).
 ///
 /// The hosted runtime installs this when a program leaves scene GPU renderers
-/// unset and host Device/Queue handles are available. [`Self::draw_in_pass`]
+/// unset. [`Self::draw_in_pass`]
 /// encodes into the current Scene dest pass (Inline). [`Self::render`] opens a
 /// dedicated pass on the same encoder/target when the node asks for one or the
 /// painter cannot join.
@@ -37,10 +40,14 @@ const SLOT_RETAIN_PASSES: u64 = 4;
 
 pub struct DefaultGpuViewRenderer {
     palette: GpuViewPalette,
-    device: Option<Arc<wgpu::Device>>,
-    queue: Option<Arc<wgpu::Queue>>,
-    state: Mutex<Option<PreparedGpuView>>,
+    /// Pipelines and instances per device and target format. A registry the
+    /// host keeps across a device replacement, or shares between windows of
+    /// different formats, never draws with another device's pipeline or
+    /// rebuilds on every alternation.
+    state: Mutex<HashMap<StateKey, PreparedGpuView>>,
 }
+
+type StateKey = (DeviceGeneration, GpuTextureFormat);
 
 impl Default for DefaultGpuViewRenderer {
     fn default() -> Self {
@@ -56,28 +63,7 @@ impl DefaultGpuViewRenderer {
     pub fn with_palette(palette: GpuViewPalette) -> Self {
         Self {
             palette,
-            device: None,
-            queue: None,
-            state: Mutex::new(None),
-        }
-    }
-
-    /// Retain the already-created host Device/Queue. Pipelines are still built
-    /// during prepare from this pair, not from a second GPU context.
-    pub fn with_host(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
-        Self::with_host_palette(device, queue, GpuViewPalette::default())
-    }
-
-    pub fn with_host_palette(
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-        palette: GpuViewPalette,
-    ) -> Self {
-        Self {
-            palette,
-            device: Some(device),
-            queue: Some(queue),
-            state: Mutex::new(None),
+            state: Mutex::new(HashMap::new()),
         }
     }
 
@@ -87,16 +73,20 @@ impl DefaultGpuViewRenderer {
         self.state
             .lock()
             .expect("default gpu-view pipeline")
-            .as_ref()
-            .map_or(0, |prepared| prepared.slots.len())
+            .values()
+            .map(|prepared| prepared.slots.len())
+            .sum()
     }
 
-    fn prepare_device<'a>(&'a self, context: &'a SceneGpuPrepareContext<'_>) -> &'a wgpu::Device {
-        self.device.as_deref().unwrap_or(context.device)
-    }
-
-    fn prepare_queue<'a>(&'a self, context: &'a SceneGpuPrepareContext<'_>) -> &'a wgpu::Queue {
-        self.queue.as_deref().unwrap_or(context.queue)
+    /// Prepared states per device and format. Test probe for the cache key.
+    #[cfg(test)]
+    pub(crate) fn prepared_keys(&self) -> Vec<StateKey> {
+        self.state
+            .lock()
+            .expect("default gpu-view pipeline")
+            .keys()
+            .copied()
+            .collect()
     }
 
     /// Per-node palette, falling back to the constructor palette when the node
@@ -137,7 +127,6 @@ impl fmt::Debug for DefaultGpuViewRenderer {
         formatter
             .debug_struct("DefaultGpuViewRenderer")
             .field("palette", &self.palette)
-            .field("has_host_gpu", &self.device.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -168,14 +157,17 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
     }
 
     fn prepare(&self, node: &SceneGpuNode, context: SceneGpuPrepareContext<'_>) {
-        let device = self.prepare_device(&context);
-        let queue = self.prepare_queue(&context);
+        let device = context.gpu.raw_device();
+        let queue = context.gpu.raw_queue();
+        let generation = context.gpu.generation();
         let mut state = self.state.lock().expect("default gpu-view pipeline");
-        let prepared =
-            state.get_or_insert_with(|| PreparedGpuView::new(device, context.target_format));
-        if prepared.format != context.target_format {
-            *prepared = PreparedGpuView::new(device, context.target_format);
-        }
+        // Everything built on a replaced device goes with it.
+        state.retain(|(device, _), _| *device == generation);
+        let prepared = state
+            .entry((generation, context.target_format))
+            .or_insert_with(|| {
+                PreparedGpuView::new(device, __framework::format_to_wgpu(context.target_format))
+            });
         prepared.begin_prepare_pass();
         let scale = if context.scale_factor.is_finite() && context.scale_factor > 0.0 {
             context.scale_factor
@@ -202,41 +194,21 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         }
     }
 
-    fn render(&self, node: &SceneGpuNode, context: SceneGpuRenderContext<'_>) {
+    fn render(&self, node: &SceneGpuNode, mut context: SceneGpuRenderContext<'_>) {
         if context.bounds.width == 0 || context.bounds.height == 0 {
             return;
         }
-        let mut render_pass = context
-            .encoder
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("nana-ui default gpu-view"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: context.target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        self.draw_in_pass(
-            node,
-            &mut render_pass,
-            SceneGpuPassContext {
-                device: context.device,
-                queue: context.queue,
-                bounds: context.bounds,
-                clip: context.clip,
-                dest_size: context.dest_size,
-                gpu_work: context.gpu_work,
-            },
-        );
-        drop(render_pass);
+        let pass_context = SceneGpuPassContext {
+            gpu: context.gpu,
+            target_format: context.target_format,
+            bounds: context.bounds,
+            clip: context.clip,
+            dest_size: context.dest_size,
+            gpu_work: context.gpu_work,
+        };
+        context.with_pass("nana-ui default gpu-view", |pass| {
+            self.draw_in_pass(node, pass, pass_context);
+        });
     }
 
     fn batch_capacity(&self) -> usize {
@@ -248,22 +220,23 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
     fn draw_in_pass(
         &self,
         node: &SceneGpuNode,
-        pass: &mut wgpu::RenderPass<'_>,
+        pass: &mut ScenePass<'_, '_>,
         context: SceneGpuPassContext<'_>,
     ) -> bool {
         if context.bounds.width == 0 || context.bounds.height == 0 {
             return false;
         }
         let mut state = self.state.lock().expect("default gpu-view pipeline");
-        let Some(prepared) = state.as_mut() else {
+        let Some(prepared) = state.get_mut(&(context.gpu.generation(), context.target_format))
+        else {
             return false;
         };
         prepared.drawn = true;
         let Some(first) = prepared.slots.get(&node.id).map(|slot| slot.index) else {
             return false;
         };
-        prepared.restage_all(context.queue);
-        prepared.draw(pass, context.clip, first, 1, context.gpu_work);
+        prepared.restage_all(context.gpu.raw_queue());
+        prepared.draw(pass.raw(), context.clip, first, 1, context.gpu_work);
         true
     }
 
@@ -274,11 +247,12 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
     fn draw_batch_in_pass(
         &self,
         nodes: &[SceneGpuBatchNode<'_>],
-        pass: &mut wgpu::RenderPass<'_>,
+        pass: &mut ScenePass<'_, '_>,
         context: SceneGpuBatchPassContext<'_>,
     ) -> usize {
         let mut state = self.state.lock().expect("default gpu-view pipeline");
-        let Some(prepared) = state.as_mut() else {
+        let Some(prepared) = state.get_mut(&(context.gpu.generation(), context.target_format))
+        else {
             return 0;
         };
         prepared.drawn = true;
@@ -306,8 +280,8 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         if count < 2 {
             return 0;
         }
-        prepared.restage_all(context.queue);
-        prepared.draw(pass, clip, first, count, context.gpu_work);
+        prepared.restage_all(context.gpu.raw_queue());
+        prepared.draw(pass.raw(), clip, first, count, context.gpu_work);
         count as usize
     }
 }
@@ -315,14 +289,6 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
 /// Registry that contains the host default `"gpu-view"` painter.
 pub fn default_scene_gpu_renderers() -> SceneGpuRendererRegistry {
     scene_gpu_renderers_with_gpu_view(DefaultGpuViewRenderer::new())
-}
-
-/// Same as [`default_scene_gpu_renderers`], retaining host Device/Queue clones.
-pub fn default_scene_gpu_renderers_with_host(
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-) -> SceneGpuRendererRegistry {
-    scene_gpu_renderers_with_gpu_view(DefaultGpuViewRenderer::with_host(device, queue))
 }
 
 fn scene_gpu_renderers_with_gpu_view(renderer: DefaultGpuViewRenderer) -> SceneGpuRendererRegistry {
@@ -356,12 +322,12 @@ struct PreparedGpuView {
     instance_capacity: u32,
     /// The instance buffer was replaced; every live slot needs rewriting.
     restaged: bool,
-    format: wgpu::TextureFormat,
     slots: HashMap<PrimitiveId, PreparedSlot>,
     /// Lowest-free-first, so preparation order keeps a run adjacent.
     free_indices: BinaryHeap<Reverse<u32>>,
     next_index: u32,
-    generation: u64,
+    /// Prepare passes run so far; slots remember the last one that saw them.
+    prepare_pass: u64,
     drawn: bool,
 }
 
@@ -421,11 +387,10 @@ impl PreparedGpuView {
             }),
             instance_capacity: INITIAL_INSTANCES,
             restaged: false,
-            format,
             slots: HashMap::new(),
             free_indices: BinaryHeap::new(),
             next_index: 0,
-            generation: 0,
+            prepare_pass: 0,
             drawn: false,
         }
     }
@@ -441,8 +406,8 @@ impl PreparedGpuView {
             return;
         }
         self.drawn = false;
-        self.generation = self.generation.saturating_add(1);
-        let oldest = self.generation.saturating_sub(SLOT_RETAIN_PASSES);
+        self.prepare_pass = self.prepare_pass.saturating_add(1);
+        let oldest = self.prepare_pass.saturating_sub(SLOT_RETAIN_PASSES);
         let mut freed = Vec::new();
         self.slots.retain(|_, slot| {
             let live = slot.last_seen >= oldest;
@@ -463,7 +428,7 @@ impl PreparedGpuView {
         id: PrimitiveId,
         instance: GpuViewInstance,
     ) {
-        let generation = self.generation;
+        let prepare_pass = self.prepare_pass;
         let index = match self.slots.get(&id) {
             Some(slot) => slot.index,
             None => {
@@ -487,7 +452,7 @@ impl PreparedGpuView {
             PreparedSlot {
                 index,
                 instance,
-                last_seen: generation,
+                last_seen: prepare_pass,
             },
         );
         queue.write_buffer(
@@ -567,6 +532,69 @@ struct GpuViewInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepare_on(
+        renderer: &DefaultGpuViewRenderer,
+        gpu: &nana_gpu::GpuContext,
+        format: GpuTextureFormat,
+    ) {
+        let node = SceneGpuNode {
+            id: PrimitiveId {
+                node: nana_ui_runtime::StableNodeId::new(1).unwrap(),
+                slot: 0,
+            },
+            custom: CustomRenderNode::new(GPU_VIEW_RENDERER, "1", 1),
+            opacity: 1.0,
+        };
+        renderer.prepare(
+            &node,
+            SceneGpuPrepareContext {
+                gpu,
+                target_format: format,
+                bounds: crate::LogicalRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 8.0,
+                    height: 8.0,
+                },
+                scale_factor: 1.0,
+                dest_size: [8, 8],
+                gpu_work: None,
+            },
+        );
+    }
+
+    /// A registry the host keeps across a device replacement must not draw
+    /// with the old device's pipeline, and windows of different formats keep
+    /// their own pipelines instead of rebuilding on every alternation.
+    #[test]
+    fn prepared_state_is_per_device_and_format() {
+        let renderer = DefaultGpuViewRenderer::new();
+        let first = crate::test_gpu::context();
+        prepare_on(&renderer, &first, GpuTextureFormat::RGBA8_UNORM);
+        prepare_on(&renderer, &first, GpuTextureFormat::BGRA8_UNORM_SRGB);
+        let mut keys = renderer.prepared_keys();
+        keys.sort_by_key(|(_, format)| format!("{format:?}"));
+        assert_eq!(
+            keys,
+            [
+                (first.generation(), GpuTextureFormat::BGRA8_UNORM_SRGB),
+                (first.generation(), GpuTextureFormat::RGBA8_UNORM),
+            ]
+        );
+
+        let replacement = __framework::adopt(
+            __framework::adapter(&first).clone(),
+            __framework::device(&first).clone(),
+            __framework::queue(&first).clone(),
+        );
+        prepare_on(&renderer, &replacement, GpuTextureFormat::RGBA8_UNORM);
+        assert_eq!(
+            renderer.prepared_keys(),
+            [(replacement.generation(), GpuTextureFormat::RGBA8_UNORM)],
+            "nothing built on the replaced device survives"
+        );
+    }
 
     #[test]
     fn default_scene_gpu_renderers_include_gpu_view() {

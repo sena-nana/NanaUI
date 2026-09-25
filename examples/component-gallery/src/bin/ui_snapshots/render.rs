@@ -1279,12 +1279,7 @@ fn paint_gallery(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let clear = clear_color(state.theme_mode());
     let colors = state.theme_mode().palette();
-    let gpu = gpu::create_snapshot_gpu(
-        &snapshots.device,
-        &snapshots.queue,
-        colors.background,
-        colors.accent_strong,
-    );
+    let gpu = gpu::create_snapshot_gpu(&snapshots.gpu, colors.background, colors.accent_strong);
     // The Gallery's ready thumbnail is a demo HostTexture slot. Snapshot hosts
     // must populate it just like the standalone GPU fixtures.
     let binding = gpu

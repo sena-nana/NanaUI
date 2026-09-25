@@ -25,7 +25,7 @@ const PREVIEW_PANE: &str = "preview";
 const PREVIEW_EXTENT: u32 = 96;
 
 struct PreviewGpu {
-    texture: wgpu::Texture,
+    texture: nana_ui::GpuTexture,
     host: HostTexture,
 }
 
@@ -260,8 +260,8 @@ impl Fixture {
         ))
     }
 
-    fn bind_preview_gpu(&mut self, gpu: &nana_ui::HostedGpuResources) {
-        let preview = create_preview_gpu(gpu.device());
+    fn bind_preview_gpu(&mut self, gpu: &nana_ui::GpuContext) {
+        let preview = create_preview_gpu(gpu);
         self.textures.register(
             PREVIEW_SLOT,
             preview.host.clone(),
@@ -281,42 +281,38 @@ impl Fixture {
         self.preview_gpu = Some(preview);
     }
 
-    fn paint_preview(&mut self, gpu: &nana_ui::HostedGpuResources) {
+    fn paint_preview(&mut self, gpu: &nana_ui::GpuContext) {
         let Some(preview) = self.preview_gpu.as_ref() else {
             return;
         };
-        let view = preview
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = gpu
-            .device()
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("fixture preview"),
-            });
+        // The fixture records its own pass: that is the WGPU escape hatch.
+        let mut frame = gpu.begin_frame("fixture preview");
         {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("fixture preview clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.18,
-                            g: 0.42,
-                            b: 0.62,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+            let _pass = frame
+                .wgpu_encoder()
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("fixture preview clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: preview.texture.wgpu_view(),
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.18,
+                                g: 0.42,
+                                b: 0.62,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
         }
-        gpu.queue().submit([encoder.finish()]);
+        frame.submit();
         preview.host.invalidate();
     }
 }
@@ -464,25 +460,19 @@ fn floating_preview_document(document_id: DocumentId) -> Result<RuntimeDocument,
     Ok(document)
 }
 
-fn create_preview_gpu(device: &wgpu::Device) -> PreviewGpu {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("fixture preview"),
-        size: wgpu::Extent3d {
+fn create_preview_gpu(gpu: &nana_ui::GpuContext) -> PreviewGpu {
+    let texture = gpu
+        .create_texture(&nana_ui::GpuTextureDescriptor {
+            label: Some("fixture preview"),
             width: PREVIEW_EXTENT,
             height: PREVIEW_EXTENT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Bgra8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            format: nana_ui::GpuTextureFormat::BGRA8_UNORM_SRGB,
+            usage: nana_ui::GpuTextureUsages::RENDER_TARGET | nana_ui::GpuTextureUsages::SAMPLED,
+        })
+        .expect("fixture preview texture");
     PreviewGpu {
+        host: HostTexture::new(1, 1, &texture),
         texture,
-        host: HostTexture::from_wgpu(1, 1, view),
     }
 }
 

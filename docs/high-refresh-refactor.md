@@ -14,8 +14,8 @@
 - `SceneWgpuPainter::paint_target` 按 `RenderTargetId` 隔离合成纹理；关闭目标调用 `remove_target`。
 - HostTexture 内容更新复用已准备绘制数据；替换 view 或尺寸使绑定失效。
 - Quad/Mesh 保留上传镜像，以对齐区间更新 GPU buffer；局部颜色变化不全量上传这些 buffer。
-- `SceneResourceProducerRegistry::encode_scene` 接收宿主 encoder，返回 `PreparedSceneResources`。
-  宿主成功提交后调用 `submitted`，失败则丢弃 encoder 和准备结果。
+- `SceneResourceProducerRegistry::encode_scene` 录进宿主的 `FrameContext`，返回 `PreparedSceneResources`。
+  宿主成功提交后以 `GpuSubmission` 调用 `submitted`，失败则丢弃帧和准备结果（#183）。
 - `FrameDemand` 分离按需、截止时间和持续刷新；显示器实际刷新率仍限制呈现。
 - `TextureSlot` 通过稳定名称更新注册纹理；注册表订阅只通知引用资源的窗口。
 - `RuntimeApplication<State>` 默认处理文档路由与窗口生命周期；自定义宿主继续使用 `RuntimeProgram`。
@@ -118,7 +118,7 @@ Rust 提供相同几何规则：`VirtualFrozenWindow`、`VirtualTableFrozenWindo
 16 目标交替绘制涵盖不同 DPI、文字、图标、笔画、HostTexture 与背景模糊，复用帧与首帧像素一致，
 命令重新组装耗时和 GPU 上传字节数均为零。图标几何仅上传变化字节，投影 uniform 仅在首次使用或尺寸变化时上传。
 
-`HostedGpuResources::generation()` 标识宿主设备上下文代次，克隆保持同值，重建设备产生新值。
+`GpuContext::generation()`（#183 之前是 `HostedGpuResources::generation()`）标识宿主设备代次，克隆保持同值，重建设备产生新值。
 宿主恢复路径重建 painter，清除旧纹理绑定并调用消费者 `rebuild_gpu`；真实窗口主动销毁 Device 后代次 1 → 2 并再次呈现已验证；其他驱动异常与多窗口恢复仍待压力验收。
 
 ## 宽命中树的有序范围索引（续建）
@@ -142,7 +142,7 @@ Rust 提供相同几何规则：`VirtualFrozenWindow`、`VirtualTableFrozenWindo
 
 ```powershell
 cargo run -p nana-ui --example application-counter --features hosted,bundled-fonts --locked
-cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts --locked -- --measure-first-frame
+cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop --locked -- --measure-first-frame
 ```
 
 低层宿主在目标关闭时调用 `SceneWgpuPainter::remove_target`。

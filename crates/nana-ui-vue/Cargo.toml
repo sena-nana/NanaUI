@@ -31,7 +31,10 @@ dev-reload = []
 # Scene/Runtime adapter. Product paint: UiScene → SceneWgpuPainter.
 scene-view = ["nana-ui/gpu"]
 # Direct adapter into nana-ui's Scene-hosted runtime.
-hosted = ["scene-view", "nana-ui/hosted", "dep:wgpu"]
+# The JS WebGPU facade (`getContext("webgpu")`) records WGPU commands on the
+# host device through `nana_gpu::__framework`, like the framework's own
+# renderers; Vue applications do not get the `wgpu-interop` escape hatch.
+hosted = ["scene-view", "nana-ui/hosted", "dep:nana-gpu", "dep:wgpu"]
 
 [dependencies]
 # `svg_raster` needs a default face and has no system-font fallback.
@@ -50,6 +53,7 @@ serde_json = { workspace = true, optional = true }
 # Without `scene-view` this is nana-ui's no-GPU half, which adds nothing the
 # crates above do not already pull.
 nana-ui = { path = "../nana-ui", default-features = false }
+nana-gpu = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 nana-svg-raster.workspace = true
 # Intentionally NOT depending on nana-js-v8. Apps link the concrete engine.
