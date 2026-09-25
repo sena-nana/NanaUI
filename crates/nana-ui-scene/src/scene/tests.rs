@@ -9616,6 +9616,42 @@ mod custom_paint {
     }
 
     #[test]
+    fn changing_paint_geometry_rebuilds_retained_visibility_bounds() {
+        let recording = |radius| {
+            let mut path = PaintPath::new();
+            path.rounded_rect(
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 120.0,
+                    height: 20.0,
+                },
+                [radius; 4],
+            );
+            PaintRecording {
+                behind_children: vec![fill(path, BADGE)],
+                over_children: Vec::new(),
+            }
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted(1, None, &[], recording(4.0))], []);
+        let viewport = SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 100.0,
+        };
+        let _ = scene.visible_operations(viewport).unwrap();
+
+        scene.apply_delta([painted(1, None, &[], recording(18.0))], []);
+        assert_eq!(
+            scene.visible_operations(viewport).unwrap().len(),
+            1,
+            "the updated painted primitive remains visible after its bounds change"
+        );
+    }
+
+    #[test]
     fn hiding_and_showing_a_painted_node_reuses_its_geometry() {
         let recording = PaintRecording {
             behind_children: vec![fill(rect(0.0, 0.0, 10.0, 10.0), BADGE)],

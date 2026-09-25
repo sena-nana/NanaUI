@@ -837,6 +837,15 @@ impl UiScene {
         let mut inherited_geometry_changed = !inherited_roots.is_empty();
         for node in extracted {
             let previous = self.nodes.get(&node.id);
+            // A new recording may change bounds without changing slots.
+            if previous.is_some_and(|old| {
+                match (old.custom_paint.as_ref(), node.custom_paint.as_ref()) {
+                    (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                    _ => false,
+                }
+            }) {
+                self.visibility.take();
+            }
             let inherited_changed = previous.map_or(!node.children.is_empty(), |old| {
                 old.parent != node.parent
                     || old.layout != node.layout
