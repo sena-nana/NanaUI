@@ -337,14 +337,20 @@ struct PreparedGpuView {
 
 impl PreparedGpuView {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat, gpu: &nana_gpu::GpuContext) -> Self {
+        let shader_interface = nana_gpu::ShaderInterface::new(
+            nana_gpu::ResourceTable::empty().for_generation(gpu.generation()),
+            GPU_VIEW_SHADER,
+        );
+        gpu.validate_shader_interface(&shader_interface)
+            .expect("default gpu-view shader interface fits the device");
         let pipeline = __framework::render_pipeline(
             gpu,
             PipelineKey {
                 generation: gpu.generation(),
                 target_format: __framework::format_from_wgpu(format),
                 sample_count: 1,
-                shader: 0x6e61_6e61_6770_7576,
-                layout: 0,
+                shader: shader_interface.pipeline_identity(),
+                layout: shader_interface.bindings().layout_key(),
                 material: 0,
                 primitive: 0,
                 blend: 1,

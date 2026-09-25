@@ -6,7 +6,10 @@ use std::{
     },
 };
 
-use nana_gpu::{__framework, DeviceGeneration, GpuTexture};
+use nana_gpu::{
+    __framework, DeviceGeneration, GpuContext, GpuTexture, LogicalBinding, LogicalBindingType,
+    ResourceTable, ShaderStage,
+};
 use wgpu;
 
 use crate::geometry::{LogicalRect, PhysicalRect};
@@ -264,6 +267,9 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return color * clamp(0.5 - dist, 0.0, 1.0);
 }
 "#;
+
+const HOST_TEXTURE_FRAGMENT: &[ShaderStage] = &[ShaderStage::Fragment];
+const HOST_TEXTURE_VERTEX_FRAGMENT: &[ShaderStage] = &[ShaderStage::Vertex, ShaderStage::Fragment];
 
 static NEXT_HOST_TEXTURE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -1106,7 +1112,7 @@ impl GpuTexturePipeline {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
     ) -> Self {
-        Self::new_with_policy(device, queue, format, None)
+        Self::new_with_policy(device, queue, format, None, None)
     }
 
     pub(crate) fn new_with_policy(
@@ -1114,52 +1120,85 @@ impl GpuTexturePipeline {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         policy: Option<&nana_gpu::GpuDeviceState>,
+        gpu: Option<&GpuContext>,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui host texture shader"),
             source: wgpu::ShaderSource::Wgsl(SOURCE.into()),
         });
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui host texture bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-            ],
+        let logical_layout = gpu.map(|gpu| {
+            let table = ResourceTable::new(
+                [
+                    LogicalBinding::new(
+                        0,
+                        LogicalBindingType::SampledTexture,
+                        HOST_TEXTURE_FRAGMENT,
+                    ),
+                    LogicalBinding::new(1, LogicalBindingType::Sampler, HOST_TEXTURE_FRAGMENT),
+                    LogicalBinding::new(
+                        2,
+                        LogicalBindingType::UniformBuffer,
+                        HOST_TEXTURE_VERTEX_FRAGMENT,
+                    )
+                    .min_size(std::mem::size_of::<LayerUniform>() as u64),
+                    LogicalBinding::new(
+                        3,
+                        LogicalBindingType::SampledTexture,
+                        HOST_TEXTURE_FRAGMENT,
+                    ),
+                ]
+                .to_vec(),
+            )
+            .expect("host texture binding layout is valid");
+            gpu.create_resource_layout(&table)
+                .expect("host texture logical layout matches this device")
         });
+        let bind_group_layout = logical_layout
+            .as_ref()
+            .map(|layout| __framework::resource_layout(layout).clone())
+            .unwrap_or_else(|| {
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("nana-ui host texture bind group layout"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                    ],
+                })
+            });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui host texture pipeline layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
@@ -1200,7 +1239,10 @@ impl GpuTexturePipeline {
                     target_format: nana_gpu::__framework::format_from_wgpu(format),
                     sample_count: 1,
                     shader: 0x686f_7374_7465_7874,
-                    layout: 7,
+                    layout: logical_layout
+                        .as_ref()
+                        .map(|layout| layout.key())
+                        .unwrap_or(7),
                     material: 0,
                     primitive: 0,
                     blend: 2,

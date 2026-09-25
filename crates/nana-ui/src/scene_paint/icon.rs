@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bytemuck::{Pod, Zeroable};
+use nana_gpu::{__framework, LogicalBinding, LogicalBindingType, ResourceTable, ShaderStage};
 
 use super::{
     clip::{self, FragmentClip, LogicalRect},
@@ -23,6 +24,23 @@ const ATLAS_START_PX: u32 = 256;
 /// Largest atlas edge we will grow to, independent of what the device allows.
 /// 2048² RGBA is 16 MiB, which is already far past any real icon working set.
 const MAX_ATLAS_EDGE: u32 = 2048;
+fn icon_layout_key() -> u64 {
+    let vertex = &[ShaderStage::Vertex];
+    let fragment = &[ShaderStage::Fragment];
+    let uniforms = ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::UniformBuffer, vertex)
+            .min_size(std::mem::size_of::<Uniforms>() as u64),
+    ])
+    .expect("icon uniform table")
+    .layout_key();
+    let atlas = ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::SampledTexture, fragment),
+        LogicalBinding::new(1, LogicalBindingType::Sampler, fragment),
+    ])
+    .expect("icon atlas table")
+    .layout_key();
+    uniforms ^ atlas.rotate_left(17)
+}
 /// Transparent border around every cell. The sampler clamps at the texture
 /// border, not at the cell, and a quad can sample up to half a texel outside
 /// its own cell — a rotated icon, or one drawn wider than `MAX_ATLAS_PX`. One
@@ -224,40 +242,70 @@ impl IconPipeline {
             label: Some("nana-ui.scene.icon.shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(ICON_SHADER)),
         });
-        let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.scene.icon.uniforms"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Uniforms>() as u64),
-                },
-                count: None,
-            }],
-        });
-        let atlas_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.scene.icon.atlas"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
+        let uniform_layout = if let Some(policy) = policy {
+            let table = ResourceTable::new(vec![
+                LogicalBinding::new(0, LogicalBindingType::UniformBuffer, &[ShaderStage::Vertex])
+                    .min_size(std::mem::size_of::<Uniforms>() as u64),
+            ])
+            .expect("icon uniform table is valid")
+            .for_generation(policy.generation());
+            let logical = __framework::logical_layout(device, policy.generation(), &table)
+                .expect("icon uniform layout matches the device");
+            __framework::resource_layout(&logical).clone()
+        } else {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("nana-ui.scene.icon.uniforms"),
+                entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<Uniforms>() as u64
+                        ),
                     },
                     count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                }],
+            })
+        };
+        let atlas_layout = if let Some(policy) = policy {
+            let table = ResourceTable::new(vec![
+                LogicalBinding::new(
+                    0,
+                    LogicalBindingType::SampledTexture,
+                    &[ShaderStage::Fragment],
+                ),
+                LogicalBinding::new(1, LogicalBindingType::Sampler, &[ShaderStage::Fragment]),
+            ])
+            .expect("icon atlas table is valid")
+            .for_generation(policy.generation());
+            let logical = __framework::logical_layout(device, policy.generation(), &table)
+                .expect("icon atlas layout matches the device");
+            __framework::resource_layout(&logical).clone()
+        } else {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("nana-ui.scene.icon.atlas"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            })
+        };
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.icon.uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -333,7 +381,7 @@ impl IconPipeline {
                     target_format: nana_gpu::__framework::format_from_wgpu(format),
                     sample_count: 1,
                     shader: 0x6963_6f6e_7069_7065,
-                    layout: 2,
+                    layout: icon_layout_key(),
                     material: 0,
                     primitive: 0,
                     blend: 1,

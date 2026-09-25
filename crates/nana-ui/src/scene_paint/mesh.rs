@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
+use nana_gpu::{__framework, LogicalBinding, LogicalBindingType, ResourceTable, ShaderStage};
 use nana_ui_scene::StrokeCap;
 
 use super::{
@@ -17,6 +18,26 @@ const INITIAL_CLIPS: usize = 16;
 const ROUND_CAP: f32 = 0.0;
 const BUTT_CAP: f32 = 1.0;
 const MIN_SEGMENT_LEN_SQ: f32 = f32::EPSILON * f32::EPSILON;
+const MESH_VERTEX: &[ShaderStage] = &[ShaderStage::Vertex];
+const MESH_FRAGMENT: &[ShaderStage] = &[ShaderStage::Fragment];
+fn mesh_layout_key() -> u64 {
+    ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::UniformBuffer, MESH_VERTEX)
+            .min_size(std::mem::size_of::<Uniforms>() as u64),
+        LogicalBinding::new(
+            1,
+            LogicalBindingType::StorageBuffer { read_only: true },
+            MESH_FRAGMENT,
+        ),
+        LogicalBinding::new(
+            2,
+            LogicalBindingType::StorageBuffer { read_only: true },
+            MESH_FRAGMENT,
+        ),
+    ])
+    .expect("mesh table")
+    .layout_key()
+}
 
 pub(super) struct StrokeStyle<'a> {
     pub width: f32,
@@ -539,43 +560,65 @@ impl MeshPipeline {
                 include_str!("shader/color.wgsl"),
             ))),
         });
-        let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.scene.triangle.uniforms"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<Uniforms>() as u64
-                        ),
+        let bind_layout = if let Some(policy) = policy {
+            let table = ResourceTable::new(vec![
+                LogicalBinding::new(0, LogicalBindingType::UniformBuffer, MESH_VERTEX)
+                    .min_size(std::mem::size_of::<Uniforms>() as u64),
+                LogicalBinding::new(
+                    1,
+                    LogicalBindingType::StorageBuffer { read_only: true },
+                    MESH_FRAGMENT,
+                ),
+                LogicalBinding::new(
+                    2,
+                    LogicalBindingType::StorageBuffer { read_only: true },
+                    MESH_FRAGMENT,
+                ),
+            ])
+            .expect("mesh logical table is valid")
+            .for_generation(policy.generation());
+            let logical = __framework::logical_layout(device, policy.generation(), &table)
+                .expect("mesh logical layout matches the device");
+            __framework::resource_layout(&logical).clone()
+        } else {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("nana-ui.scene.triangle.uniforms"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Uniforms>() as u64,
+                            ),
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                ],
+            })
+        };
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.triangle.uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -1124,7 +1167,7 @@ fn cached_mesh_pipeline(
                 target_format: nana_gpu::__framework::format_from_wgpu(format),
                 sample_count,
                 shader: 0x6d65_7368_736f_6c69,
-                layout: 3,
+                layout: mesh_layout_key(),
                 material,
                 primitive: 0,
                 blend: 1,
@@ -1166,7 +1209,7 @@ fn cached_path_pipeline(
                 target_format: nana_gpu::__framework::format_from_wgpu(format),
                 sample_count,
                 shader: 0x6d65_7368_7061_7468,
-                layout: 4,
+                layout: mesh_layout_key(),
                 material,
                 primitive: 0,
                 blend: 2,

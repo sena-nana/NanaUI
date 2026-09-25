@@ -71,6 +71,11 @@ pub struct GpuFeatureSet {
     dual_source_blending: bool,
     pipeline_cache: bool,
     timestamp_query: bool,
+    resource_arrays: bool,
+    indirect: bool,
+    multi_draw: bool,
+    external_texture: bool,
+    transient_hint: bool,
 }
 
 impl GpuFeatureSet {
@@ -86,6 +91,82 @@ impl GpuFeatureSet {
     pub const fn timestamp_query(self) -> bool {
         self.timestamp_query
     }
+    pub const fn resource_arrays(self) -> bool {
+        self.resource_arrays
+    }
+    pub const fn indirect(self) -> bool {
+        self.indirect
+    }
+    pub const fn multi_draw(self) -> bool {
+        self.multi_draw
+    }
+    pub const fn external_texture(self) -> bool {
+        self.external_texture
+    }
+    pub const fn transient_hint(self) -> bool {
+        self.transient_hint
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuLimits {
+    pub max_bind_groups: u32,
+    pub max_bindings_per_group: u32,
+    pub max_uniform_buffer_binding_size: u64,
+    pub max_storage_buffer_binding_size: u64,
+    pub min_uniform_buffer_offset_alignment: u32,
+    pub min_storage_buffer_offset_alignment: u32,
+    pub max_buffer_size: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GpuCapability {
+    ResourceArrays,
+    Indirect,
+    MultiDraw,
+    Timestamps,
+    ExternalTexture,
+    TransientHint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuCapabilityOutcome {
+    pub capability: GpuCapability,
+    pub supported: bool,
+    pub fallback_reason: Option<&'static str>,
+}
+
+impl GpuCapabilities {
+    pub const fn supports(&self, capability: GpuCapability) -> bool {
+        let features = self.features;
+        match capability {
+            GpuCapability::ResourceArrays => features.resource_arrays(),
+            GpuCapability::Indirect => features.indirect(),
+            GpuCapability::MultiDraw => features.multi_draw(),
+            GpuCapability::Timestamps => features.timestamp_query(),
+            GpuCapability::ExternalTexture => features.external_texture(),
+            GpuCapability::TransientHint => features.transient_hint(),
+        }
+    }
+    pub const fn capability(&self, capability: GpuCapability) -> GpuCapabilityOutcome {
+        let supported = self.supports(capability);
+        GpuCapabilityOutcome {
+            capability,
+            supported,
+            fallback_reason: if supported {
+                None
+            } else {
+                Some(match capability {
+                    GpuCapability::ResourceArrays => "resource arrays are unavailable",
+                    GpuCapability::Indirect => "indirect first-instance is unavailable",
+                    GpuCapability::MultiDraw => "multi-draw indirect count is unavailable",
+                    GpuCapability::Timestamps => "timestamp queries are unavailable",
+                    GpuCapability::ExternalTexture => "external resource interop is unavailable",
+                    GpuCapability::TransientHint => "transient resource hints are unavailable",
+                })
+            },
+        }
+    }
 }
 
 /// What the adopted device is and can do.
@@ -100,6 +181,7 @@ pub struct GpuCapabilities {
     device_id: u32,
     max_texture_dimension_2d: u32,
     features: GpuFeatureSet,
+    limits: GpuLimits,
 }
 
 impl GpuCapabilities {
@@ -132,6 +214,31 @@ impl GpuCapabilities {
                 dual_source_blending: features.contains(wgpu::Features::DUAL_SOURCE_BLENDING),
                 pipeline_cache: features.contains(wgpu::Features::PIPELINE_CACHE),
                 timestamp_query: features.contains(wgpu::Features::TIMESTAMP_QUERY),
+                // The current logical ResourceArray maps to sampled texture
+                // arrays. Storage resource arrays are a separate ABI shape
+                // and must not advertise support for this declaration.
+                resource_arrays: features.contains(wgpu::Features::TEXTURE_BINDING_ARRAY),
+                indirect: features.contains(wgpu::Features::INDIRECT_FIRST_INSTANCE),
+                multi_draw: features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT),
+                external_texture: false,
+                transient_hint: false,
+            },
+            limits: GpuLimits {
+                max_bind_groups: device.limits().max_bind_groups,
+                max_bindings_per_group: device.limits().max_bindings_per_bind_group,
+                max_uniform_buffer_binding_size: u64::from(
+                    device.limits().max_uniform_buffer_binding_size,
+                ),
+                max_storage_buffer_binding_size: u64::from(
+                    device.limits().max_storage_buffer_binding_size,
+                ),
+                min_uniform_buffer_offset_alignment: device
+                    .limits()
+                    .min_uniform_buffer_offset_alignment,
+                min_storage_buffer_offset_alignment: device
+                    .limits()
+                    .min_storage_buffer_offset_alignment,
+                max_buffer_size: device.limits().max_buffer_size,
             },
         }
     }
@@ -303,6 +410,9 @@ impl GpuContext {
 
     pub fn capabilities(&self) -> &GpuCapabilities {
         &self.inner.capabilities
+    }
+    pub fn limits(&self) -> GpuLimits {
+        self.inner.capabilities.limits
     }
 
     /// Shared per-device policy for uploads, transient resources, pipeline

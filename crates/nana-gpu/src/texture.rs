@@ -53,6 +53,7 @@ impl GpuTextureUsages {
     pub const COPY_SRC: Self = Self(1 << 1);
     pub const COPY_DST: Self = Self(1 << 2);
     pub const RENDER_TARGET: Self = Self(1 << 3);
+    pub const STORAGE: Self = Self(1 << 4);
 
     pub const fn empty() -> Self {
         Self(0)
@@ -81,6 +82,9 @@ impl GpuTextureUsages {
         if self.contains(Self::RENDER_TARGET) {
             usage |= wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
+        if self.contains(Self::STORAGE) {
+            usage |= wgpu::TextureUsages::STORAGE_BINDING;
+        }
         usage
     }
 
@@ -99,6 +103,9 @@ impl GpuTextureUsages {
         }
         if usage.contains(wgpu::TextureUsages::RENDER_ATTACHMENT) {
             out = out | Self::RENDER_TARGET;
+        }
+        if usage.contains(wgpu::TextureUsages::STORAGE_BINDING) {
+            out = out | Self::STORAGE;
         }
         out
     }
@@ -119,6 +126,7 @@ impl fmt::Debug for GpuTextureUsages {
             (Self::COPY_SRC, "COPY_SRC"),
             (Self::COPY_DST, "COPY_DST"),
             (Self::RENDER_TARGET, "RENDER_TARGET"),
+            (Self::STORAGE, "STORAGE"),
         ];
         let mut list = formatter.debug_set();
         for (flag, name) in names {

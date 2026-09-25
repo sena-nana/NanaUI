@@ -239,10 +239,12 @@ pub use nana_frame_exchange::{
 /// producer and host works with. See the `nana-gpu` crate.
 #[cfg(feature = "gpu")]
 pub use nana_gpu::{
-    DeviceGeneration, FrameContext, FrameId, GpuBackend, GpuCapabilities, GpuContext,
-    GpuDeviceLost, GpuDeviceType, GpuError, GpuFeatureSet, GpuLossReason, GpuRenderTarget,
-    GpuSubmission, GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion,
-    GpuTextureUsages, RetainedWrites,
+    DeviceGeneration, FrameContext, FrameId, GpuBackend, GpuCapabilities, GpuCapability,
+    GpuCapabilityOutcome, GpuContext, GpuDeviceLost, GpuDeviceType, GpuError, GpuFeatureSet,
+    GpuLimits, GpuLossReason, GpuRenderTarget, GpuResourceGroup, GpuResourceLayout, GpuSubmission,
+    GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion, GpuTextureUsages,
+    LogicalBinding, LogicalBindingType, LogicalResource, ResourceBinding, ResourceClass,
+    ResourceSet, ResourceTable, RetainedWrites, ShaderInterface, ShaderStage, VertexAttribute,
 };
 /// The explicit WGPU escape hatch (feature `wgpu-interop`): the exact `wgpu`
 /// the framework links, and the raw objects behind [`GpuContext`]. Hosts that

@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use nana_gpu::__framework;
 use nana_gpu::{
-    GpuContext, GpuError, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion,
-    GpuTextureUsages, RetainedWrites,
+    GpuBufferDescriptor, GpuBufferUsages, GpuContext, GpuError, GpuTextureDescriptor,
+    GpuTextureFormat, GpuTextureRegion, GpuTextureUsages, LogicalBinding, LogicalBindingType,
+    LogicalResource, ResourceBinding, ResourceSet, ResourceTable, RetainedWrites, ShaderStage,
 };
 
 fn context() -> GpuContext {
@@ -275,6 +276,167 @@ fn a_loss_marked_by_the_host_is_sticky_and_reported() {
     );
     assert!(gpu.clone().is_lost());
     assert_eq!(gpu.lost_report().unwrap().message, "host");
+}
+
+#[test]
+fn logical_resource_layout_is_realized_and_generation_checked() {
+    let gpu = context();
+    let stages: &'static [ShaderStage] = &[ShaderStage::Vertex, ShaderStage::Fragment];
+    let table = ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::UniformBuffer, stages),
+        LogicalBinding::new(1, LogicalBindingType::Sampler, stages),
+    ])
+    .unwrap()
+    .for_generation(gpu.generation());
+    let layout = gpu
+        .create_resource_layout(&table)
+        .expect("logical table maps to a WGPU bind-group layout");
+    assert_eq!(layout.generation(), gpu.generation());
+    assert_eq!(layout.key(), table.layout_key());
+    let other = context();
+    assert!(matches!(
+        other.create_resource_layout(&table),
+        Err(GpuError::DeviceMismatch { .. })
+    ));
+}
+
+#[test]
+fn logical_resource_group_binds_real_buffer_texture_and_sampler() {
+    let gpu = context();
+    let stages: &'static [ShaderStage] = &[ShaderStage::Vertex, ShaderStage::Fragment];
+    let table = ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::UniformBuffer, stages),
+        LogicalBinding::new(1, LogicalBindingType::SampledTexture, stages),
+        LogicalBinding::new(2, LogicalBindingType::Sampler, stages),
+    ])
+    .unwrap()
+    .for_generation(gpu.generation());
+    let layout = gpu.create_resource_layout(&table).unwrap();
+    let buffer = gpu
+        .create_buffer(&GpuBufferDescriptor {
+            label: Some("abi"),
+            size: 256,
+            usage: GpuBufferUsages::UNIFORM | GpuBufferUsages::COPY_DST,
+        })
+        .unwrap();
+    let texture = texture(&gpu, GpuTextureUsages::SAMPLED);
+    let sampler = gpu.create_sampler();
+    let set = ResourceSet::new(vec![
+        ResourceBinding {
+            binding: 0,
+            resource: Some(LogicalResource::Buffer {
+                buffer,
+                offset: 0,
+                size: 256,
+            }),
+        },
+        ResourceBinding {
+            binding: 1,
+            resource: Some(LogicalResource::Texture(texture)),
+        },
+        ResourceBinding {
+            binding: 2,
+            resource: Some(LogicalResource::Sampler(sampler)),
+        },
+    ])
+    .unwrap();
+    let group = gpu.create_resource_group(&layout, &table, &set).unwrap();
+    assert_eq!(group.generation(), gpu.generation());
+    assert_eq!(group.layout_key(), table.layout_key());
+}
+
+#[test]
+fn logical_buffer_upload_checks_usage_and_bounds() {
+    let gpu = context();
+    let buffer = gpu
+        .create_buffer(&GpuBufferDescriptor {
+            label: Some("upload"),
+            size: 16,
+            usage: GpuBufferUsages::UNIFORM | GpuBufferUsages::COPY_DST,
+        })
+        .unwrap();
+    gpu.write_buffer(&buffer, 4, &[1, 2, 3, 4]).unwrap();
+    assert_eq!(
+        gpu.write_buffer(&buffer, 15, &[1, 2]),
+        Err(GpuError::InvalidBindingRange)
+    );
+    let no_copy = gpu
+        .create_buffer(&GpuBufferDescriptor {
+            label: None,
+            size: 16,
+            usage: GpuBufferUsages::UNIFORM,
+        })
+        .unwrap();
+    assert_eq!(
+        gpu.write_buffer(&no_copy, 0, &[1]),
+        Err(GpuError::InvalidBindingRange)
+    );
+}
+
+#[test]
+fn logical_optional_and_capability_fallbacks_are_structured() {
+    let gpu = context();
+    let stages: &'static [ShaderStage] = &[ShaderStage::Fragment];
+    let optional = ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::Sampler, stages).optional(true),
+    ])
+    .unwrap()
+    .for_generation(gpu.generation());
+    let layout = gpu.create_resource_layout(&optional).unwrap();
+    let empty = ResourceSet::default();
+    assert!(matches!(
+        gpu.create_resource_group(&layout, &optional, &empty),
+        Err(GpuError::UnsupportedCapability(
+            "optional_resource_fallback"
+        ))
+    ));
+
+    let array = ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::ResourceArray, stages)
+            .array(std::num::NonZeroU32::new(2).unwrap()),
+    ])
+    .unwrap()
+    .for_generation(gpu.generation());
+    if !gpu
+        .capabilities()
+        .supports(nana_gpu::GpuCapability::ResourceArrays)
+    {
+        assert!(matches!(
+            gpu.create_resource_layout(&array),
+            Err(GpuError::UnsupportedCapability("resource_arrays"))
+        ));
+    }
+}
+
+#[test]
+fn dynamic_buffer_slice_realization_returns_backend_offsets() {
+    let gpu = context();
+    let stages: &'static [ShaderStage] = &[ShaderStage::Vertex];
+    let table = ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::DynamicBufferSlice, stages).min_size(16),
+    ])
+    .unwrap()
+    .for_generation(gpu.generation());
+    let layout = gpu.create_resource_layout(&table).unwrap();
+    let buffer = gpu
+        .create_buffer(&GpuBufferDescriptor {
+            label: Some("dynamic"),
+            size: 512,
+            usage: GpuBufferUsages::UNIFORM,
+        })
+        .unwrap();
+    let alignment = gpu.limits().min_uniform_buffer_offset_alignment as u64;
+    let set = ResourceSet::new(vec![ResourceBinding {
+        binding: 0,
+        resource: Some(LogicalResource::Buffer {
+            buffer,
+            offset: alignment,
+            size: 16,
+        }),
+    }])
+    .unwrap();
+    let group = gpu.create_resource_group(&layout, &table, &set).unwrap();
+    assert_eq!(group.dynamic_offsets(), &[alignment as u32]);
 }
 
 #[test]

@@ -218,6 +218,9 @@ struct PolicyState {
     pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
     pipeline_order: VecDeque<PipelineKey>,
     retired_pipelines: Vec<(u64, wgpu::RenderPipeline)>,
+    layouts: HashMap<u64, Arc<wgpu::BindGroupLayout>>,
+    layout_order: VecDeque<u64>,
+    retired_layouts: Vec<(u64, Arc<wgpu::BindGroupLayout>)>,
     retired_realizations: Vec<(u64, GpuTexture)>,
     retired_uploads: Vec<(u64, wgpu::Buffer)>,
     realizations: HashMap<RealizationKey, GpuTexture>,
@@ -267,6 +270,9 @@ impl GpuDeviceState {
                 pipelines: HashMap::new(),
                 pipeline_order: VecDeque::new(),
                 retired_pipelines: Vec::new(),
+                layouts: HashMap::new(),
+                layout_order: VecDeque::new(),
+                retired_layouts: Vec::new(),
                 retired_realizations: Vec::new(),
                 retired_uploads: Vec::new(),
                 realizations: HashMap::new(),
@@ -634,6 +640,30 @@ impl GpuDeviceState {
         Ok(pipeline)
     }
 
+    pub(crate) fn resource_layout(
+        &self,
+        key: u64,
+        create: impl FnOnce() -> Arc<wgpu::BindGroupLayout>,
+    ) -> Arc<wgpu::BindGroupLayout> {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(layout) = state.layouts.get(&key).cloned() {
+            state.layout_order.retain(|entry| *entry != key);
+            state.layout_order.push_back(key);
+            return layout;
+        }
+        let layout = create();
+        const MAX_LAYOUTS: usize = 256;
+        if state.layouts.len() == MAX_LAYOUTS
+            && let Some(oldest) = state.layout_order.pop_front()
+            && let Some(layout) = state.layouts.remove(&oldest)
+        {
+            state.retired_layouts.push((0, layout));
+        }
+        state.layouts.insert(key, layout.clone());
+        state.layout_order.push_back(key);
+        layout
+    }
+
     pub fn realize_texture(
         &self,
         resource: u64,
@@ -685,6 +715,11 @@ impl GpuDeviceState {
                 *retired_at = submission;
             }
         }
+        for (retired_at, _) in &mut state.retired_layouts {
+            if *retired_at == 0 {
+                *retired_at = submission;
+            }
+        }
         for (retired_at, _) in &mut state.retired_realizations {
             if *retired_at == 0 {
                 *retired_at = submission;
@@ -722,6 +757,9 @@ impl GpuDeviceState {
         state.retired = pending;
         state
             .retired_pipelines
+            .retain(|(submission, _)| *submission == 0 || *submission > completed_submission);
+        state
+            .retired_layouts
             .retain(|(submission, _)| *submission == 0 || *submission > completed_submission);
         state
             .retired_realizations

@@ -164,10 +164,45 @@ impl BackdropPipeline {
             device,
             "copy",
             NonZeroU64::new(std::mem::size_of::<CopyUniforms>() as u64),
+            Some(policy),
         );
-        let blur_bind_layout =
-            Self::texture_uniform_layout(device, "blur", NonZeroU64::new(BLUR_UNIFORM_SLOT_SIZE));
-        let composite_bind_layout =
+        let blur_bind_layout = Self::texture_uniform_layout(
+            device,
+            "blur",
+            NonZeroU64::new(BLUR_UNIFORM_SLOT_SIZE),
+            Some(policy),
+        );
+        let composite_bind_layout = if policy.generation().get() != 0 {
+            let fragment = &[nana_gpu::ShaderStage::Fragment];
+            let vertex_fragment = &[
+                nana_gpu::ShaderStage::Vertex,
+                nana_gpu::ShaderStage::Fragment,
+            ];
+            let table = nana_gpu::ResourceTable::new(vec![
+                nana_gpu::LogicalBinding::new(
+                    0,
+                    nana_gpu::LogicalBindingType::SampledTexture,
+                    fragment,
+                ),
+                nana_gpu::LogicalBinding::new(1, nana_gpu::LogicalBindingType::Sampler, fragment),
+                nana_gpu::LogicalBinding::new(
+                    2,
+                    nana_gpu::LogicalBindingType::UniformBuffer,
+                    vertex_fragment,
+                ),
+                nana_gpu::LogicalBinding::new(
+                    3,
+                    nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+                    fragment,
+                ),
+            ])
+            .expect("backdrop composite logical table is valid")
+            .for_generation(policy.generation());
+            let logical =
+                nana_gpu::__framework::logical_layout(device, policy.generation(), &table)
+                    .expect("backdrop composite logical layout matches the device");
+            nana_gpu::__framework::resource_layout(&logical).clone()
+        } else {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("nana-ui.scene.backdrop.composite.layout"),
                 entries: &[
@@ -208,7 +243,8 @@ impl BackdropPipeline {
                         count: None,
                     },
                 ],
-            });
+            })
+        };
         let copy_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui.scene.backdrop.copy.shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
@@ -364,7 +400,34 @@ impl BackdropPipeline {
         device: &wgpu::Device,
         label: &str,
         min_binding_size: Option<NonZeroU64>,
+        policy: Option<&nana_gpu::GpuDeviceState>,
     ) -> wgpu::BindGroupLayout {
+        if let Some(policy) = policy {
+            let stages = &[
+                nana_gpu::ShaderStage::Vertex,
+                nana_gpu::ShaderStage::Fragment,
+            ];
+            let table = nana_gpu::ResourceTable::new(vec![
+                nana_gpu::LogicalBinding::new(
+                    0,
+                    nana_gpu::LogicalBindingType::SampledTexture,
+                    stages,
+                ),
+                nana_gpu::LogicalBinding::new(1, nana_gpu::LogicalBindingType::Sampler, stages),
+                nana_gpu::LogicalBinding::new(
+                    2,
+                    nana_gpu::LogicalBindingType::UniformBuffer,
+                    stages,
+                )
+                .min_size(min_binding_size.map_or(0, NonZeroU64::get)),
+            ])
+            .expect("backdrop logical table is valid")
+            .for_generation(policy.generation());
+            let logical =
+                nana_gpu::__framework::logical_layout(device, policy.generation(), &table)
+                    .expect("backdrop logical layout matches the device");
+            return nana_gpu::__framework::resource_layout(&logical).clone();
+        }
         device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some(&format!("nana-ui.scene.backdrop.{label}.layout")),
             entries: &[

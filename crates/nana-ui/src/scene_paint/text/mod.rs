@@ -874,7 +874,7 @@ impl TextPipeline {
         policy: Option<&nana_gpu::GpuDeviceState>,
     ) -> Self {
         let raster = GlyphRasterCache::default();
-        let atlas = GlyphAtlasManager::new(device, raster.generation(), limits);
+        let atlas = GlyphAtlasManager::new(device, raster.generation(), limits, policy);
         let gpu = TextGpu::new_with_policy(device, format, &atlas, policy);
         let target = TextPipelineTarget::new(gpu.new_target(device));
         Self {

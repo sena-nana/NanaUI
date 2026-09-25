@@ -110,6 +110,30 @@ Quad 与 HostTexture 蒙版共用缓存实现；每个缓存最多同时获取 4
 
 ### GPU 合同与 wgpu 逃生口
 
+#### Logical GPU ABI（Issue #185）
+
+普通 renderer 可用 `nana_gpu::ResourceTable` 声明 uniform/storage buffer、
+sampled/storage texture、sampler、动态 slice 和可选资源数组，再用
+`ShaderInterface` 绑定 portable WGSL 与 vertex/instance layout。声明按
+binding 排序并拒绝重复槽位；可选数组和 indirect/multi-draw 等路径先查
+`GpuCapabilities::capability`，不支持时返回结构化 fallback reason。
+
+`GpuContext::create_resource_layout` 把声明映射为当前 WGPU 的 opaque
+`GpuResourceLayout`。它检查 `DeviceGeneration`、资源数组能力和 binding
+上限，公共 API 不泄漏 `wgpu::BindGroupLayout`。pipeline/cache 的身份应把
+`ShaderInterface::key()` 与 `ResourceTable::layout_key()` 纳入 Issue #184
+的 per-device registry。内置 quad、icon、mesh、motion、text atlas、HostTexture、
+backdrop copy/blur、destination blit 和 DefaultGpuView 已使用同一逻辑 layout
+路径；destination group layer 也使用该逻辑 layout。backdrop 的特殊 pass 操作与
+reading-blend 的临时拷贝仍保留在 framework-only WGPU bridge 中，因为它们需要
+显式的 pass 操作。不能合理抽象的
+WGPU 操作仍须显式使用 `wgpu-interop`，并自行遵守 submission/lifetime contract。
+
+资源值通过 `GpuBuffer`、`GpuSampler`、`LogicalResource` 和 `ResourceSet`
+提供；`GpuContext::create_resource_group` 在创建 opaque bind group 前检查
+代次、usage、范围和必需 binding。资源数组与缺失 optional resource 需要
+能力或 fallback outcome，不能静默把旧设备资源交给当前 pass。
+
 WGPU 是唯一的后端，但不是扩展合同。普通路径只用 `nana-gpu` 的类型：
 
 | 类型 | 是什么 |

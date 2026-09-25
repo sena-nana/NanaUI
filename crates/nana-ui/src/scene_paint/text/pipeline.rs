@@ -324,6 +324,59 @@ pub(super) struct TextPresentationGpu {
     translate: [f32; 2],
 }
 
+fn text_layout_key() -> u64 {
+    let vertex_fragment = &[
+        nana_gpu::ShaderStage::Vertex,
+        nana_gpu::ShaderStage::Fragment,
+    ];
+    let vertex = &[nana_gpu::ShaderStage::Vertex];
+    let globals = nana_gpu::ResourceTable::new(vec![
+        nana_gpu::LogicalBinding::new(
+            0,
+            nana_gpu::LogicalBindingType::UniformBuffer,
+            vertex_fragment,
+        )
+        .min_size(std::mem::size_of::<Globals>() as u64),
+        nana_gpu::LogicalBinding::new(
+            1,
+            nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+            vertex_fragment,
+        )
+        .min_size(std::mem::size_of::<TextRunGpu>() as u64),
+        nana_gpu::LogicalBinding::new(
+            2,
+            nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+            vertex_fragment,
+        )
+        .min_size(std::mem::size_of::<TextPresentationGpu>() as u64),
+        nana_gpu::LogicalBinding::new(
+            3,
+            nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+            vertex,
+        )
+        .min_size(INSTANCE_BYTES),
+    ])
+    .expect("text globals table")
+    .layout_key();
+    let atlas = nana_gpu::ResourceTable::new(vec![
+        nana_gpu::LogicalBinding::new(
+            0,
+            nana_gpu::LogicalBindingType::SampledTexture,
+            vertex_fragment,
+        ),
+        nana_gpu::LogicalBinding::new(
+            1,
+            nana_gpu::LogicalBindingType::SampledTexture,
+            vertex_fragment,
+        ),
+        nana_gpu::LogicalBinding::new(2, nana_gpu::LogicalBindingType::Sampler, vertex_fragment),
+        nana_gpu::LogicalBinding::new(3, nana_gpu::LogicalBindingType::Sampler, vertex_fragment),
+    ])
+    .expect("text atlas table")
+    .layout_key();
+    globals ^ atlas.rotate_left(17)
+}
+
 /// One draw: a contiguous span of the index table whose instances sample one
 /// pair of pages.
 ///
@@ -400,36 +453,76 @@ impl TextGpu {
         atlas: &GlyphAtlasManager,
         policy: Option<&nana_gpu::GpuDeviceState>,
     ) -> Self {
-        let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.scene.text.globals"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<Globals>() as u64
-                        ),
-                    },
-                    count: None,
-                },
-                storage_entry(
+        let globals_layout = if let Some(policy) = policy {
+            let vertex_fragment = &[
+                nana_gpu::ShaderStage::Vertex,
+                nana_gpu::ShaderStage::Fragment,
+            ];
+            let vertex = &[nana_gpu::ShaderStage::Vertex];
+            let table = nana_gpu::ResourceTable::new(vec![
+                nana_gpu::LogicalBinding::new(
+                    0,
+                    nana_gpu::LogicalBindingType::UniformBuffer,
+                    vertex_fragment,
+                )
+                .min_size(std::mem::size_of::<Globals>() as u64),
+                nana_gpu::LogicalBinding::new(
                     1,
-                    wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    std::mem::size_of::<TextRunGpu>() as u64,
-                ),
-                storage_entry(
+                    nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+                    vertex_fragment,
+                )
+                .min_size(std::mem::size_of::<TextRunGpu>() as u64),
+                nana_gpu::LogicalBinding::new(
                     2,
-                    wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    std::mem::size_of::<TextPresentationGpu>() as u64,
-                ),
-                // Only the vertex stage reads a glyph: every fragment of it
-                // gets what it needs through the varyings.
-                storage_entry(3, wgpu::ShaderStages::VERTEX, INSTANCE_BYTES),
-            ],
-        });
+                    nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+                    vertex_fragment,
+                )
+                .min_size(std::mem::size_of::<TextPresentationGpu>() as u64),
+                nana_gpu::LogicalBinding::new(
+                    3,
+                    nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+                    vertex,
+                )
+                .min_size(INSTANCE_BYTES),
+            ])
+            .expect("text globals logical table is valid")
+            .for_generation(policy.generation());
+            let logical =
+                nana_gpu::__framework::logical_layout(device, policy.generation(), &table)
+                    .expect("text globals logical layout matches the device");
+            nana_gpu::__framework::resource_layout(&logical).clone()
+        } else {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("nana-ui.scene.text.globals"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Globals>() as u64
+                            ),
+                        },
+                        count: None,
+                    },
+                    storage_entry(
+                        1,
+                        wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        std::mem::size_of::<TextRunGpu>() as u64,
+                    ),
+                    storage_entry(
+                        2,
+                        wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        std::mem::size_of::<TextPresentationGpu>() as u64,
+                    ),
+                    // Only the vertex stage reads a glyph: every fragment of it
+                    // gets what it needs through the varyings.
+                    storage_entry(3, wgpu::ShaderStages::VERTEX, INSTANCE_BYTES),
+                ],
+            })
+        };
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui.scene.text.pipeline"),
             bind_group_layouts: &[Some(&globals_layout), Some(atlas.layout())],
@@ -452,7 +545,7 @@ impl TextGpu {
                     target_format: nana_gpu::__framework::format_from_wgpu(format),
                     sample_count: 1,
                     shader: 0x7465_7874_6d61_696e,
-                    layout: 6,
+                    layout: text_layout_key(),
                     material: 0,
                     primitive: 1,
                     blend: 1,
@@ -530,7 +623,7 @@ impl TextGpu {
                         target_format: nana_gpu::__framework::format_from_wgpu(self.format),
                         sample_count: 1,
                         shader: 0x7465_7874_6475_616c,
-                        layout: 6,
+                        layout: text_layout_key(),
                         material: 1,
                         primitive: 1,
                         blend: 3,

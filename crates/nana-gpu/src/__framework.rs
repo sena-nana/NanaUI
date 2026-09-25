@@ -13,6 +13,16 @@ use crate::{
     GpuTextureFormat, GpuTextureUsages,
 };
 
+/// Framework-only realization helper for renderers that already own the raw
+/// device. Public consumers must use `GpuContext::create_resource_layout`.
+pub fn logical_layout(
+    device: &wgpu::Device,
+    generation: crate::DeviceGeneration,
+    table: &crate::ResourceTable,
+) -> Result<crate::GpuResourceLayout, crate::GpuError> {
+    crate::realization::create_resource_layout_raw(device, generation, table)
+}
+
 /// Adopt a device the framework requested. Installs the device-lost callback
 /// that feeds [`GpuContext::is_lost`].
 pub fn adopt_tracking_loss(
@@ -82,6 +92,31 @@ pub fn texture(texture: &GpuTexture) -> &wgpu::Texture {
 
 pub fn texture_view(texture: &GpuTexture) -> &wgpu::TextureView {
     texture.raw_view()
+}
+
+pub fn resource_layout(layout: &crate::GpuResourceLayout) -> &wgpu::BindGroupLayout {
+    layout.raw()
+}
+
+pub fn resource_group(group: &crate::GpuResourceGroup) -> &wgpu::BindGroup {
+    &group.bind_group
+}
+
+pub fn resource_group_dynamic_offsets(group: &crate::GpuResourceGroup) -> &[u32] {
+    group.dynamic_offsets()
+}
+
+pub fn wrap_buffer(
+    gpu: &GpuContext,
+    buffer: wgpu::Buffer,
+    size: u64,
+    usage: crate::GpuBufferUsages,
+) -> crate::GpuBuffer {
+    crate::GpuBuffer::wrap_raw(gpu, buffer, size, usage)
+}
+
+pub fn wrap_sampler(gpu: &GpuContext, sampler: wgpu::Sampler) -> crate::GpuSampler {
+    crate::GpuSampler::wrap_raw(gpu, sampler)
 }
 
 pub fn texture_from_wgpu(gpu: &GpuContext, texture: wgpu::Texture) -> GpuTexture {

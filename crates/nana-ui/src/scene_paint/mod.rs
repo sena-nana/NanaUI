@@ -265,7 +265,7 @@ impl SceneWgpuPainter {
             meshes: MeshPipeline::new_with_policy(device, format, Some(gpu.policy())),
             icons: IconPipeline::new_with_policy(device, format, Some(gpu.policy())),
             text: TextPipeline::new_with_policy(device, queue, format, gpu.policy()),
-            host_textures: HostTexturePipeline::new(device, queue, format, gpu.policy()),
+            host_textures: HostTexturePipeline::new(device, queue, format, gpu.policy(), gpu),
             backdrop: BackdropPipeline::new(device, format, gpu.policy()),
             dest: None,
             // Pipeline-cache reuse requires a host-enabled device feature;

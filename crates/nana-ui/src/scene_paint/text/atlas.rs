@@ -233,16 +233,44 @@ impl GlyphAtlasManager {
         device: &wgpu::Device,
         raster_generation: u64,
         limits: GlyphAtlasLimits,
+        policy: Option<&nana_gpu::GpuDeviceState>,
     ) -> Self {
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.scene.text.atlas"),
-            entries: &[
-                texture_entry(0),
-                texture_entry(1),
-                sampler_entry(2),
-                sampler_entry(3),
-            ],
-        });
+        let layout = if let Some(policy) = policy {
+            let stages = &[
+                nana_gpu::ShaderStage::Vertex,
+                nana_gpu::ShaderStage::Fragment,
+            ];
+            let table = nana_gpu::ResourceTable::new(vec![
+                nana_gpu::LogicalBinding::new(
+                    0,
+                    nana_gpu::LogicalBindingType::SampledTexture,
+                    stages,
+                ),
+                nana_gpu::LogicalBinding::new(
+                    1,
+                    nana_gpu::LogicalBindingType::SampledTexture,
+                    stages,
+                ),
+                nana_gpu::LogicalBinding::new(2, nana_gpu::LogicalBindingType::Sampler, stages),
+                nana_gpu::LogicalBinding::new(3, nana_gpu::LogicalBindingType::Sampler, stages),
+            ])
+            .expect("text atlas logical table is valid")
+            .for_generation(policy.generation());
+            let logical =
+                nana_gpu::__framework::logical_layout(device, policy.generation(), &table)
+                    .expect("text atlas logical layout matches the device");
+            nana_gpu::__framework::resource_layout(&logical).clone()
+        } else {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("nana-ui.scene.text.atlas"),
+                entries: &[
+                    texture_entry(0),
+                    texture_entry(1),
+                    sampler_entry(2),
+                    sampler_entry(3),
+                ],
+            })
+        };
         let nearest = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui.scene.text.atlas.nearest"),
             mag_filter: wgpu::FilterMode::Nearest,
@@ -985,6 +1013,7 @@ mod tests {
                 page_edge: 64,
                 byte_budget: 64 * 64 + 8,
             },
+            None,
         );
         (atlas, raster, GlyphUploadQueue::default())
     }

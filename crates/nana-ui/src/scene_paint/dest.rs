@@ -2,6 +2,8 @@
 
 use std::num::NonZeroU64;
 
+use nana_gpu::{LogicalBinding, LogicalBindingType, ResourceTable, ShaderStage};
+
 use super::AlphaEncoding;
 use super::clip::FragmentClip;
 use crate::gpu_work::ManagedBuffer;
@@ -10,6 +12,7 @@ fn cached_dest_pipeline(
     policy: &nana_gpu::GpuDeviceState,
     format: wgpu::TextureFormat,
     material: u64,
+    layout_key: u64,
     create: impl FnOnce() -> wgpu::RenderPipeline,
 ) -> wgpu::RenderPipeline {
     nana_gpu::__framework::render_pipeline_state(
@@ -19,7 +22,7 @@ fn cached_dest_pipeline(
             target_format: nana_gpu::__framework::format_from_wgpu(format),
             sample_count: 1,
             shader: 0x6465_7374_7069_7065,
-            layout: 9,
+            layout: layout_key,
             material,
             primitive: 0,
             blend: 1,
@@ -29,6 +32,38 @@ fn cached_dest_pipeline(
         create,
     )
     .expect("dest pipeline uses this context generation")
+}
+
+fn dest_blit_layout_key() -> u64 {
+    ResourceTable::new(vec![
+        LogicalBinding::new(
+            0,
+            LogicalBindingType::SampledTexture,
+            &[ShaderStage::Fragment],
+        ),
+        LogicalBinding::new(1, LogicalBindingType::Sampler, &[ShaderStage::Fragment]),
+    ])
+    .expect("dest blit table")
+    .layout_key()
+}
+
+fn dest_group_layout_key() -> u64 {
+    ResourceTable::new(vec![
+        LogicalBinding::new(
+            0,
+            LogicalBindingType::SampledTexture,
+            &[ShaderStage::Fragment],
+        ),
+        LogicalBinding::new(1, LogicalBindingType::Sampler, &[ShaderStage::Fragment]),
+        LogicalBinding::new(
+            2,
+            LogicalBindingType::DynamicBufferSlice,
+            &[ShaderStage::Fragment],
+        )
+        .min_size(GROUP_UNIFORM_SIZE),
+    ])
+    .expect("dest group table")
+    .layout_key()
 }
 
 const GROUP_UNIFORM_STRIDE: u64 = 256;
@@ -309,37 +344,38 @@ fn reading_blend_pipeline(
             bind_group_layouts: &[Some(&group_blend_layout)],
             immediate_size: 0,
         });
-    let group_pipeline_blend = cached_dest_pipeline(policy, format, 6, || {
-        wgpu::Device::create_render_pipeline(
-            device,
-            &wgpu::RenderPipelineDescriptor {
-                label: Some("nana-ui.scene.group.pipeline.blend"),
-                layout: Some(&group_blend_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &group_blend_shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+    let group_pipeline_blend =
+        cached_dest_pipeline(policy, format, 6, dest_group_layout_key(), || {
+            wgpu::Device::create_render_pipeline(
+                device,
+                &wgpu::RenderPipelineDescriptor {
+                    label: Some("nana-ui.scene.group.pipeline.blend"),
+                    layout: Some(&group_blend_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &group_blend_shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &group_blend_shader,
+                        entry_point: Some("fs_blend"),
+                        // The shader already composited against the backdrop copy.
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
                 },
-                fragment: Some(wgpu::FragmentState {
-                    module: &group_blend_shader,
-                    entry_point: Some("fs_blend"),
-                    // The shader already composited against the backdrop copy.
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            },
-        )
-    });
+            )
+        });
     (group_blend_layout, group_pipeline_blend)
 }
 
@@ -516,27 +552,41 @@ impl DestTarget {
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
-        let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.scene.dest.blit.layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let bind_layout = if policy.generation().get() != 0 {
+            let stages = &[ShaderStage::Fragment];
+            let table = ResourceTable::new(vec![
+                LogicalBinding::new(0, LogicalBindingType::SampledTexture, stages),
+                LogicalBinding::new(1, LogicalBindingType::Sampler, stages),
+            ])
+            .expect("dest blit logical table is valid")
+            .for_generation(policy.generation());
+            let logical =
+                nana_gpu::__framework::logical_layout(device, policy.generation(), &table)
+                    .expect("dest blit logical layout matches the device");
+            nana_gpu::__framework::resource_layout(&logical).clone()
+        } else {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("nana-ui.scene.dest.blit.layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            })
+        };
         let blit_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nana-ui.scene.dest.blit.bind"),
             layout: &bind_layout,
@@ -589,11 +639,11 @@ impl DestTarget {
                 cache: pipeline_cache,
             })
         };
-        let blit_pipeline = cached_dest_pipeline(policy, format, 1, || {
+        let blit_pipeline = cached_dest_pipeline(policy, format, 1, dest_blit_layout_key(), || {
             make_blit("fs_main", "nana-ui.scene.dest.blit.pipeline")
         });
         let blit_gamma_pipeline = format.is_srgb().then(|| {
-            cached_dest_pipeline(policy, format, 2, || {
+            cached_dest_pipeline(policy, format, 2, dest_blit_layout_key(), || {
                 make_blit(
                     "fs_gamma_premultiplied",
                     "nana-ui.scene.dest.blit.gamma.pipeline",
@@ -606,37 +656,26 @@ impl DestTarget {
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
-        let group_bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.scene.group.layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: NonZeroU64::new(GROUP_UNIFORM_SIZE),
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let group_table = ResourceTable::new(vec![
+            LogicalBinding::new(
+                0,
+                LogicalBindingType::SampledTexture,
+                &[ShaderStage::Fragment],
+            ),
+            LogicalBinding::new(1, LogicalBindingType::Sampler, &[ShaderStage::Fragment]),
+            LogicalBinding::new(
+                2,
+                LogicalBindingType::DynamicBufferSlice,
+                &[ShaderStage::Fragment],
+            )
+            .min_size(GROUP_UNIFORM_SIZE),
+        ])
+        .expect("dest group logical table is valid")
+        .for_generation(policy.generation());
+        let group_logical =
+            nana_gpu::__framework::logical_layout(device, policy.generation(), &group_table)
+                .expect("dest group logical layout matches the device");
+        let group_bind_layout = nana_gpu::__framework::resource_layout(&group_logical).clone();
         let group_uniforms = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.group.uniforms"),
             size: GROUP_UNIFORM_STRIDE * GROUP_UNIFORM_SLOTS,
@@ -657,39 +696,42 @@ impl DestTarget {
                 bind_group_layouts: &[Some(&group_bind_layout)],
                 immediate_size: 0,
             });
-        let group_pipeline = cached_dest_pipeline(policy, format, 3, || {
-            make_group_pipeline(
-                device,
-                pipeline_cache,
-                &group_pipeline_layout,
-                &group_shader,
-                format,
-                wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
-                "nana-ui.scene.group.pipeline",
-            )
-        });
-        let group_pipeline_multiply = cached_dest_pipeline(policy, format, 4, || {
-            make_group_pipeline(
-                device,
-                pipeline_cache,
-                &group_pipeline_layout,
-                &group_shader,
-                format,
-                blend_multiply(),
-                "nana-ui.scene.group.pipeline.multiply",
-            )
-        });
-        let group_pipeline_screen = cached_dest_pipeline(policy, format, 5, || {
-            make_group_pipeline(
-                device,
-                pipeline_cache,
-                &group_pipeline_layout,
-                &group_shader,
-                format,
-                blend_screen(),
-                "nana-ui.scene.group.pipeline.screen",
-            )
-        });
+        let group_pipeline =
+            cached_dest_pipeline(policy, format, 3, dest_group_layout_key(), || {
+                make_group_pipeline(
+                    device,
+                    pipeline_cache,
+                    &group_pipeline_layout,
+                    &group_shader,
+                    format,
+                    wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+                    "nana-ui.scene.group.pipeline",
+                )
+            });
+        let group_pipeline_multiply =
+            cached_dest_pipeline(policy, format, 4, dest_group_layout_key(), || {
+                make_group_pipeline(
+                    device,
+                    pipeline_cache,
+                    &group_pipeline_layout,
+                    &group_shader,
+                    format,
+                    blend_multiply(),
+                    "nana-ui.scene.group.pipeline.multiply",
+                )
+            });
+        let group_pipeline_screen =
+            cached_dest_pipeline(policy, format, 5, dest_group_layout_key(), || {
+                make_group_pipeline(
+                    device,
+                    pipeline_cache,
+                    &group_pipeline_layout,
+                    &group_shader,
+                    format,
+                    blend_screen(),
+                    "nana-ui.scene.group.pipeline.screen",
+                )
+            });
         Self {
             width,
             height,

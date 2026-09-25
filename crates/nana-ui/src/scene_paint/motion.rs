@@ -404,7 +404,40 @@ fn storage_buffer(device: &wgpu::Device, label: &str, size: usize) -> wgpu::Buff
     })
 }
 
+#[cfg(test)]
 pub(super) fn motion_bind_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    motion_bind_layout_with_policy(device, None)
+}
+
+pub(super) fn motion_bind_layout_with_policy(
+    device: &wgpu::Device,
+    policy: Option<&nana_gpu::GpuDeviceState>,
+) -> wgpu::BindGroupLayout {
+    if let Some(policy) = policy {
+        let stages = &[
+            nana_gpu::ShaderStage::Vertex,
+            nana_gpu::ShaderStage::Fragment,
+        ];
+        let table = nana_gpu::ResourceTable::new(vec![
+            nana_gpu::LogicalBinding::new(
+                0,
+                nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+                stages,
+            ),
+            nana_gpu::LogicalBinding::new(
+                1,
+                nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+                stages,
+            ),
+            nana_gpu::LogicalBinding::new(2, nana_gpu::LogicalBindingType::UniformBuffer, stages)
+                .min_size(MOTION_GPU_TIME_SIZE as u64),
+        ])
+        .expect("motion logical table is valid")
+        .for_generation(policy.generation());
+        let logical = nana_gpu::__framework::logical_layout(device, policy.generation(), &table)
+            .expect("motion logical layout matches the device");
+        return nana_gpu::__framework::resource_layout(&logical).clone();
+    }
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("nana-ui.scene.motion.layout"),
         entries: &[

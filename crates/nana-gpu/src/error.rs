@@ -29,6 +29,20 @@ pub enum GpuError {
     RowTooShort { needed: u32, provided: u32 },
     /// The bytes end before the region does.
     DataTooShort { needed: usize, provided: usize },
+    /// Two logical bindings claimed the same slot.
+    DuplicateBinding,
+    /// A logical resource table cannot be used with the requested capability.
+    UnsupportedCapability(&'static str),
+    /// A shader interface and resource table do not describe the same layout.
+    ShaderInterfaceMismatch,
+    /// A dynamic binding violates the backend alignment or range contract.
+    InvalidBindingRange,
+    /// A logical buffer has zero size, no usage, or exceeds device limits.
+    InvalidBufferDescriptor,
+    /// A required logical binding has no resource value.
+    MissingBinding(u32),
+    /// A value has the wrong kind for the declared logical binding.
+    BindingTypeMismatch(u32),
 }
 
 impl fmt::Display for GpuError {
@@ -59,6 +73,30 @@ impl fmt::Display for GpuError {
                 formatter,
                 "texture upload needs {needed} bytes, got {provided}"
             ),
+            Self::DuplicateBinding => {
+                formatter.write_str("logical resource table has duplicate bindings")
+            }
+            Self::UnsupportedCapability(name) => {
+                write!(formatter, "GPU capability {name} is unavailable")
+            }
+            Self::ShaderInterfaceMismatch => {
+                formatter.write_str("shader interface and resource table do not match")
+            }
+            Self::InvalidBindingRange => {
+                formatter.write_str("dynamic GPU binding range is invalid")
+            }
+            Self::InvalidBufferDescriptor => {
+                formatter.write_str("GPU buffer descriptor is invalid")
+            }
+            Self::MissingBinding(binding) => {
+                write!(formatter, "logical binding {binding} has no resource")
+            }
+            Self::BindingTypeMismatch(binding) => {
+                write!(
+                    formatter,
+                    "logical binding {binding} has the wrong resource type"
+                )
+            }
         }
     }
 }

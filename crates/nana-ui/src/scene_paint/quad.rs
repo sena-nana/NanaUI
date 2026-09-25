@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use bytemuck::{Pod, Zeroable};
+use nana_gpu::{__framework, LogicalBinding, LogicalBindingType, ResourceTable, ShaderStage};
 use nana_ui_core::{
     BackgroundImage, BackgroundImageFit, BackgroundRepeat, BorderImageSpec, BorderImageTile,
     CssGradient, GradientStop, LengthSpec, LinearGradient, MAX_BACKGROUND_LAYERS, MaskImage,
@@ -25,6 +26,23 @@ const PAINT_RADIAL: u32 = 32;
 const PAINT_MASK_RADIAL: u32 = 64;
 const PAINT_SHADOW_INSET: u32 = 128;
 const PAINT_MASK_URL: u32 = 256;
+const QUAD_VERTEX_FRAGMENT: &[ShaderStage] = &[ShaderStage::Vertex, ShaderStage::Fragment];
+const QUAD_FRAGMENT: &[ShaderStage] = &[ShaderStage::Fragment];
+fn quad_layout_key() -> u64 {
+    ResourceTable::new(vec![
+        LogicalBinding::new(0, LogicalBindingType::UniformBuffer, QUAD_VERTEX_FRAGMENT)
+            .min_size(std::mem::size_of::<Uniforms>() as u64),
+        LogicalBinding::new(
+            1,
+            LogicalBindingType::StorageBuffer { read_only: true },
+            QUAD_FRAGMENT,
+        ),
+        LogicalBinding::new(2, LogicalBindingType::SampledTexture, QUAD_FRAGMENT),
+        LogicalBinding::new(3, LogicalBindingType::Sampler, QUAD_FRAGMENT),
+    ])
+    .expect("quad table")
+    .layout_key()
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -206,49 +224,68 @@ impl QuadPipeline {
                 view_formats: &[],
             })
             .create_view(&Default::default());
-        let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.scene.quad.layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<Uniforms>() as u64
-                        ),
+        let bind_layout = if let Some(policy) = policy {
+            let table = ResourceTable::new(vec![
+                LogicalBinding::new(0, LogicalBindingType::UniformBuffer, QUAD_VERTEX_FRAGMENT)
+                    .min_size(std::mem::size_of::<Uniforms>() as u64),
+                LogicalBinding::new(
+                    1,
+                    LogicalBindingType::StorageBuffer { read_only: true },
+                    QUAD_FRAGMENT,
+                ),
+                LogicalBinding::new(2, LogicalBindingType::SampledTexture, QUAD_FRAGMENT),
+                LogicalBinding::new(3, LogicalBindingType::Sampler, QUAD_FRAGMENT),
+            ])
+            .expect("quad logical resource table is valid")
+            .for_generation(policy.generation());
+            let logical = __framework::logical_layout(device, policy.generation(), &table)
+                .expect("quad logical layout matches the device");
+            __framework::resource_layout(&logical).clone()
+        } else {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("nana-ui.scene.quad.layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Uniforms>() as u64,
+                            ),
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            })
+        };
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.quad.uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -286,7 +323,7 @@ impl QuadPipeline {
         });
         let mut url_bind_groups = HashMap::new();
         url_bind_groups.insert(None, bind_group);
-        let motion_layout = super::motion::motion_bind_layout(device);
+        let motion_layout = super::motion::motion_bind_layout_with_policy(device, policy);
         let dummy_desc = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.quad.motion.descriptors"),
             size: 272,
@@ -1577,7 +1614,7 @@ fn cached_solid_pipeline(
                 target_format: nana_gpu::__framework::format_from_wgpu(format),
                 sample_count,
                 shader: 0x7175_6164_736f_6c69,
-                layout: 1,
+                layout: quad_layout_key(),
                 material,
                 primitive: 0,
                 blend: 1,

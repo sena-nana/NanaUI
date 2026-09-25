@@ -20,10 +20,12 @@
 //! `wgpu-interop` feature is the explicit escape hatch for hosts that bring
 //! their own device and renderers that record their own pipelines.
 
+mod abi;
 mod context;
 mod error;
 mod frame;
 mod policy;
+mod realization;
 mod texture;
 
 #[doc(hidden)]
@@ -32,9 +34,13 @@ pub mod __framework;
 #[cfg(feature = "wgpu-interop")]
 mod wgpu_interop;
 
+pub use abi::{
+    LogicalBinding, LogicalBindingType, LogicalResource, ResourceBinding, ResourceClass,
+    ResourceSet, ResourceTable, ShaderInterface, ShaderStage, VertexAttribute,
+};
 pub use context::{
-    DeviceGeneration, GpuBackend, GpuCapabilities, GpuContext, GpuDeviceLost, GpuDeviceType,
-    GpuFeatureSet, GpuLossReason,
+    DeviceGeneration, GpuBackend, GpuCapabilities, GpuCapability, GpuCapabilityOutcome, GpuContext,
+    GpuDeviceLost, GpuDeviceType, GpuFeatureSet, GpuLimits, GpuLossReason,
 };
 pub use error::GpuError;
 pub use frame::{FrameContext, FrameId, GpuSubmission, RetainedWrites};
@@ -42,6 +48,8 @@ pub use policy::{
     FrameSlotId, GpuDeviceState, GpuPolicyStats, PipelineKey, TransientResourceKey,
     UploadReservation,
 };
+pub use realization::{GpuBuffer, GpuBufferDescriptor, GpuBufferUsages, GpuSampler};
+pub use realization::{GpuResourceGroup, GpuResourceLayout};
 pub use texture::{
     GpuRenderTarget, GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion,
     GpuTextureUsages,
