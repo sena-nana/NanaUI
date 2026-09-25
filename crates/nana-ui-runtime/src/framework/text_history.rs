@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 
 use crate::{StableNodeId, TextInputState};
+use nana_text::TextStamp;
 
 /// Why an edit happened. Decides whether it extends the previous undo step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +95,7 @@ pub(super) struct TextHistory {
     steps: Vec<TextEditStep>,
     /// Steps before this index are undoable; steps from it on are redoable.
     cursor: usize,
+    held: Option<TextStamp>,
 }
 
 impl TextHistory {
@@ -240,6 +242,7 @@ impl TextHistory {
 #[derive(Debug, Default)]
 pub(super) struct TextHistories {
     entries: HashMap<StableNodeId, TextHistory>,
+    writing: Vec<StableNodeId>,
 }
 
 impl TextHistories {
@@ -288,6 +291,34 @@ impl TextHistories {
         self.entries.get(&node).is_some_and(TextHistory::can_redo)
     }
 
+    fn current(&self, node: StableNodeId, held: Option<TextStamp>) -> Option<&TextHistory> {
+        self.entries
+            .get(&node)
+            .filter(|history| history.held == held)
+    }
+
+    pub(super) fn follow(&mut self, node: StableNodeId, held: Option<TextStamp>) {
+        if self.current(node, held).is_none() {
+            self.entries.remove(&node);
+        }
+    }
+
+    pub(super) fn witness(&mut self, node: StableNodeId, held: Option<TextStamp>) {
+        if let Some(history) = self.entries.get_mut(&node) {
+            history.held = held;
+        }
+    }
+
+    pub(super) fn begin_writing(&mut self, node: StableNodeId) {
+        self.writing.push(node);
+    }
+
+    pub(super) fn finish_writing(&mut self, node: StableNodeId) {
+        if let Some(index) = self.writing.iter().rposition(|id| *id == node) {
+            self.writing.remove(index);
+        }
+    }
+
     /// Releases the journal of a node that no longer exists.
     pub(super) fn forget(&mut self, node: StableNodeId) {
         self.entries.remove(&node);
@@ -295,6 +326,42 @@ impl TextHistories {
 }
 
 impl crate::AppContext {
+    fn editor_text_stamp(&self, node: StableNodeId) -> Option<TextStamp> {
+        self.world
+            .text_input(node)
+            .map(|input| input.session().text().stamp())
+    }
+
+    pub(super) fn text_histories_written_by(
+        &self,
+        mutations: &crate::MutationQueue,
+    ) -> Vec<StableNodeId> {
+        if !mutations.writes_text() || self.text_histories.entries.is_empty() {
+            return Vec::new();
+        }
+        mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::SetTextInput { id, .. }
+                | crate::UiMutation::ReplaceTextSelection { id, .. }
+                    if self.text_histories.entries.contains_key(id)
+                        && !self.text_histories.writing.contains(id) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(super) fn verify_text_histories(&mut self, written: Vec<StableNodeId>) {
+        for node in written {
+            self.text_histories
+                .follow(node, self.editor_text_stamp(node));
+        }
+    }
+
     /// Start an independent undo session when an existing editor is rebound to
     /// another business object, even if the new text is identical.
     pub fn clear_text_history(&mut self, node: StableNodeId) -> Result<(), crate::FrameworkError> {
@@ -357,7 +424,10 @@ impl crate::AppContext {
             number: editable.committed_number(),
         };
         let before = self.read(entity, snapshot)?;
-        let changed = self.update_component(entity, apply)?;
+        self.text_histories.begin_writing(entity.stable_id());
+        let changed = self.update_component(entity, apply);
+        self.text_histories.finish_writing(entity.stable_id());
+        let changed = changed?;
         if !changed {
             return Ok(false);
         }
@@ -373,6 +443,10 @@ impl crate::AppContext {
             // Undo and redo restore a snapshot; they never rewrite one.
             self.text_histories.amend(entity.stable_id(), before, after);
         }
+        self.text_histories.witness(
+            entity.stable_id(),
+            self.editor_text_stamp(entity.stable_id()),
+        );
         Ok(true)
     }
 
