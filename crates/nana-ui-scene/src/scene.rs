@@ -844,12 +844,12 @@ impl UiScene {
             // presence/identity change as a visibility-index rebuild: the
             // incremental node-slot refresh cannot prove the old bounds are
             // still valid for None <-> Some transitions.
-            custom_paint_changed |= match (previous, node.custom_paint.as_ref()) {
-                (Some(old), Some(new)) => {
-                    old.custom_paint.as_ref().map(Arc::as_ptr) != Some(Arc::as_ptr(new))
-                }
-                (Some(old), None) => old.custom_paint.is_some(),
-                (None, Some(_)) => true,
+            custom_paint_changed |= match (
+                previous.and_then(|old| old.custom_paint.as_ref()),
+                node.custom_paint.as_ref(),
+            ) {
+                (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                (Some(_), None) | (None, Some(_)) => true,
                 (None, None) => false,
             };
             let inherited_changed = previous.map_or(!node.children.is_empty(), |old| {
