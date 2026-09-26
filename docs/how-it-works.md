@@ -111,7 +111,11 @@ Vue   button / input / ul / table / nana-*  ─┼─► UiWorld ─► UiScene 
 Vue   div + CSS 子集                         ─┘
 ```
 
-没有 WebView 壳。`createApp()` 把 Vue 3 的 Custom Renderer 接到宿主；JavaScript 跑在嵌入的 V8 里。Vue + JS 与 Rust L3 共用 Runtime 和组件合同。见 [Vue](vue.md)。应用内打开网页是另一件事，目前未实现，见 [应用内浏览器](gpu.md#应用内浏览器)。
+没有整窗 WebView 壳。`createApp()` 把 Vue 3 的 Custom Renderer 接到宿主；
+JavaScript 跑在嵌入的 V8 里。Vue + JS 与 Rust L3 共用 Runtime 和组件合同。
+见 [Vue](vue.md)。应用内网页内容只能通过明确的 `runtime::BrowserView`
+宿主例外接入：Runtime 节点负责布局/可访问性/生命周期，原生浏览器由宿主
+创建；当前只有 macOS 后端，且不进入离屏 Runtime/Scene 截图。
 
 ## 不要做的
 

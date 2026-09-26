@@ -211,7 +211,7 @@ impl std::ops::Deref for VueRuntime {
 
 impl std::ops::DerefMut for VueRuntime {
     fn deref_mut(&mut self) -> &mut UiWorld {
-        self.document.context_mut().world_mut()
+        self.document.context_mut().compat_world_mut()
     }
 }
 
@@ -3358,7 +3358,7 @@ impl NanaTreeDocument {
             .runtime
             .runtime_document_mut()
             .flush_with(|context, work| {
-                context.world_mut().reconcile_focus(&work.focus_ime);
+                context.compat_world_mut().reconcile_focus(&work.focus_ime);
                 Ok(())
             })
             .expect("vue extract frame");

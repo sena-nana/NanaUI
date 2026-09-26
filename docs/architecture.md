@@ -103,7 +103,7 @@ FLIP / list-move 是显式策略，不是把 width 动画偷成 scale。
 | 绘制图 | `UiScene`（`CompositorLayer` 持有 presentation 与 `CompositorMotionBinding`；`SceneWgpuPainter` 上传 MotionDescriptor storage + time uniform） |
 | 系统材质与标题栏 chrome | `nana-window` |
 | Workspace 尺寸 / 折叠 | `WorkspaceModel`（`WorkspaceController` 只做指针与时钟转换） |
-| Dock 树 | Runtime `DockWorkspace`（`nana_ui::dock::*` 是宿主适配器） |
+| Dock 树 | Runtime `DockWorkspace`（`nana_ui::dock::*` 仅是宿主适配器） |
 
 GPU 主版本锁定 workspace `wgpu = "30.0.0"`，依赖图里只有一个主版本。禁止第二套设备，禁止正式路径 CPU 回读。
 
@@ -115,7 +115,13 @@ Vue 的 DOM/CSS facade **不**复制树拓扑。host op 进待提交队列，`fl
 
 内建与插件控件走同一份 `ComponentRegistry` / `register_component`。`NativeComponentRegistry` 只服务 JS host 命令，不是这条 Runtime ABI。
 
-WebView 不是产品 UI。`nana-ui` 没有 `browser` feature。盒模型对照在 workspace 外的 `tools/css-parity-webview`，不得链进产品 crate。应用内打开网页若落地，仍是 Runtime 节点 + HostTexture，见 [应用内浏览器](gpu.md#应用内浏览器)（未实现）。
+WebView 不是产品 UI 壳。`BrowserView` 是一个明确的宿主原生内容例外：Runtime
+节点仍拥有布局、可访问性、可见性和生命周期锚点，宿主才创建并管理原生
+`WKWebView` 子视图。当前正式实现只有 macOS；Windows/Linux 返回明确的
+`Unsupported`，不会创建占位浏览器。它不等同于 `GpuTextureView`，不复制
+`UiWorld`，也不创建第二个 GPU 设备。原生内容不进入 Runtime/Scene 离屏截图，
+遇到非矩形裁剪、透明度/滤镜组或被后续 Runtime 内容覆盖时由宿主隐藏。
+盒模型对照仍在 workspace 外的 `tools/css-parity-webview`，不得链进产品 crate。
 
 ## 编译边界
 

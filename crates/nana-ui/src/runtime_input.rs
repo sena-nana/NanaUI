@@ -138,10 +138,10 @@ impl RuntimeInputAdapter {
         // cannot be inferred downstream.
         match event {
             InputEvent::Pointer { .. } => context
-                .world_mut()
+                .compat_world_mut()
                 .note_input_modality(document, nana_ui_runtime::InputModality::Pointer),
             InputEvent::Keyboard { .. } => context
-                .world_mut()
+                .compat_world_mut()
                 .note_input_modality(document, nana_ui_runtime::InputModality::Keyboard),
             // A wheel moves nothing into focus; leave the answer alone.
             InputEvent::Wheel { .. } => {}
@@ -2221,9 +2221,12 @@ mod tests {
         context.commit_mutations(layout).unwrap();
         assert!(context.focus_node(document, editor.stable_id()).unwrap());
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
         context
-            .world_mut()
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
+        context
+            .compat_world_mut()
             .shape_text(&work.text, &mut MeasureTextShaper)
             .unwrap();
         context.rebuild_hit_test(document);
@@ -6337,9 +6340,12 @@ mod tests {
         );
         context.commit_mutations(layout).unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
         context
-            .world_mut()
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
+        context
+            .compat_world_mut()
             .shape_text(&work.text, &mut MeasureTextShaper)
             .unwrap();
 
@@ -6378,9 +6384,12 @@ mod tests {
         );
         context.commit_mutations(layout).unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
         context
-            .world_mut()
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
+        context
+            .compat_world_mut()
             .shape_text(&work.text, &mut MeasureTextShaper)
             .unwrap();
         context.rebuild_hit_test(document);
@@ -6441,9 +6450,12 @@ mod tests {
         );
         context.commit_mutations(layout).unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
         context
-            .world_mut()
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
+        context
+            .compat_world_mut()
             .shape_text(&work.text, &mut MeasureTextShaper)
             .unwrap();
         context.rebuild_hit_test(document);
@@ -6457,9 +6469,12 @@ mod tests {
             })
             .unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
         context
-            .world_mut()
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
+        context
+            .compat_world_mut()
             .shape_text(&work.text, &mut MeasureTextShaper)
             .unwrap();
         context.rebuild_hit_test(document);
@@ -6535,9 +6550,12 @@ mod tests {
             .unwrap();
         assert_eq!(context.world().text_fold_collapsed(node), vec![fold]);
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
         context
-            .world_mut()
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
+        context
+            .compat_world_mut()
             .shape_text(&work.text, &mut MeasureTextShaper)
             .unwrap();
 
@@ -7315,9 +7333,9 @@ mod tests {
 
     /// 布局 + shape + 命中测试的完整几何环境（指针/滚轮路由需要）。
     fn shape_completion_editor(context: &mut AppContext, document: DocumentId, node: StableNodeId) {
-        context.world_mut().resolve_styles(&[node]).unwrap();
+        context.compat_world_mut().resolve_styles(&[node]).unwrap();
         context
-            .world_mut()
+            .compat_world_mut()
             .shape_text(&[node], &mut MeasureTextShaper)
             .unwrap();
         context.rebuild_hit_test(document);

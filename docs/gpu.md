@@ -253,7 +253,7 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 | `<video>` / `nana-video` + `data-nana-video="{id}"` | `"nana.host-texture"` + `video:{id}` | Runtime `Video`。宿主推帧。有槽时不画 `poster` |
 | `<video poster>`（无槽） | 无 CustomRenderNode；`poster` 走 `content_image` URL | 只显示 poster。不解码、不播 |
 | `<iframe>` | 无 | 显式 skip（`skipped_replaced = iframe`），不加载 `src`。不是应用内浏览器 |
-| `WebView`（未实现） | `"nana.host-texture"` + `webview:{id}` | 拟议控件 `nana.webview`。像素仍走 HostTexture；引擎、URL、权限在应用侧。见 [应用内浏览器](#应用内浏览器) |
+| `BrowserView`（宿主原生例外） | Runtime 锚点 + 宿主原生内容 | 当前仅 macOS `WKWebView`；Windows/Linux 明确 `Unsupported`。不是 `GpuTextureView`，不进入离屏 Scene。见 [应用内浏览器](#应用内浏览器) |
 
 ### 按实际绘制像素准备内容
 
@@ -269,9 +269,12 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 
 ## 应用内浏览器
 
-合同草案，不是现成控件。没有 `WebView` 类型、没有 `browser` feature，Gallery 不得摆假浏览。`tools/css-parity-webview`（workspace 外）只对照盒模型，不得链进 `nana-ui`。
+`BrowserView` 是现成的窗口宿主例外，不是整窗 WebView 产品壳，也没有独立
+`browser` feature。Runtime 仍是布局/可访问性权威；原生子视图不进入离屏 Scene，
+只支持宿主实现的平台和矩形合成条件。`tools/css-parity-webview`（workspace 外）
+只对照盒模型，不得链进 `nana-ui`。
 
-落地后仍是树上的一块内容，类比 `Video`：Runtime 管布局 / 裁剪 / 命中，宿主管引擎和帧。Vue tag 拟议 `webview`（`nana.webview`）。`<iframe>` 继续 skip，不要改成会加载。
+BrowserView 仍是树上的一块内容：Runtime 管布局 / 可访问性 / 生命周期，宿主管原生引擎和帧。它不是 Vue `webview` 或 `nana.webview` 的别名；`<iframe>` 继续 skip，不要改成会加载。
 
 | 名字 | 是什么 |
 | --- | --- |

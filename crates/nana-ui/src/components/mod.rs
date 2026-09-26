@@ -10,7 +10,6 @@ pub use nana_ui_core::{XYPadEvent, XYPadValue};
 pub use nana_ui_runtime::HostedTextarea;
 #[cfg(feature = "image-viewer")]
 pub use nana_ui_runtime::ImageViewer;
-pub use nana_ui_runtime::TextArea as Textarea;
 pub use nana_ui_runtime::{
     AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppearanceSection,
     Avatar, Button, Card, Checkbox, Chip, ChipDismissed, CommandPalette, ConfirmDialog,

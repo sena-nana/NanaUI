@@ -14,6 +14,10 @@
 //! primitives + base controls, then draw through Runtime / UiScene. This is
 //! not a second ECS tree.
 //!
+//! The `widgets`/`roots`/`parent`/`children` fields below are a CSS/cascade
+//! projection index only. `UiWorld` remains authoritative for drawing, hit
+//! testing, focus, accessibility, and the final observable hierarchy.
+//!
 //! Vue "custom components" are combinations and variants of those foundations —
 //! not a separate CPU paint channel. CustomContent has been removed.
 
@@ -1239,8 +1243,12 @@ impl MessageBridge {
                 parent: None,
             }),
         );
-        // With document scaffold, only html is a root — insert parents under body.
-        // Without scaffold (unit tests), keep legacy "register ⇒ root" behavior.
+        // With document scaffold, only html is a root — insert parents under
+        // body. Production host operations arriving before the scaffold are
+        // deliberately not promoted to roots; `ensure_document_roots` is the
+        // first authoritative root publication. Unit tests keep the old
+        // standalone bridge behavior without affecting the product path.
+        #[cfg(test)]
         if !self.scaffolded && (previous.is_none() || !self.roots.contains(&id)) {
             self.roots.push(id);
         }

@@ -422,7 +422,7 @@ fn hover_card_close_honors_focus_scope_restoration_in_same_update() {
     changes.insert(root, scope.stable_id(), None);
     changes.insert(scope.stable_id(), f.other.stable_id(), None);
     f.cx.commit_mutations(changes).unwrap();
-    f.cx.world_mut()
+    f.cx.compat_world_mut()
         .register_focus_scope(scope.stable_id())
         .unwrap();
     f.layout();

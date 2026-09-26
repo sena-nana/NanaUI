@@ -14,7 +14,19 @@
 
 不要直接依赖 `nana-ui-devtools`、`nana-css-parity` 来画产品界面。前者是无头调试，后者是 CSS 对照测试。
 
-新代码从 `nana_ui::runtime` 引入控件。crate 根再导出是兼容面。`runtime::internal` 给 Gallery 和宿主适配器，不是第二套产品 API。`runtime::host` 是 Scene / GPU slot 类型；`runtime::perf` 是帧计数，不是视图状态。
+新代码从 `nana_ui::runtime` 引入控件。crate 根控件兼容面已删除。`runtime::internal` 给 Gallery 和宿主适配器，不是第二套产品 API。`runtime::host` 是 Scene / GPU slot 类型；`runtime::perf` 是帧计数，不是视图状态。
+
+### 根级兼容入口迁移
+
+| 旧入口 | 新入口 | 状态 |
+| --- | --- | --- |
+| `nana_ui::Button`、`Text`、`Workspace` 等根级控件 | 已删除 | 使用 `nana_ui::runtime::{Button, Text, Workspace, ...}` |
+| `nana_ui::Textarea` | 已删除 | 使用 `nana_ui::runtime::TextArea` |
+| `AppContext::world_mut()` | 已删除 | 使用 `commit_mutations`；仅内部宿主/适配器使用 `compat_world_mut()` |
+| `nana_ui::dock::*` | `nana_ui::runtime::{Dock, DockWorkspace, ...}` + 宿主适配器 | Dock 树只属于 Runtime |
+
+`world_mut` 与 `Textarea` 兼容入口已删除。后续新增能力只能进入 `runtime`
+或明确的宿主兼容模块。
 
 `ActionDescriptor` 只有一个，定义在 Runtime（`nana_ui::runtime`，`nana_ui` 再导出同一个类型）：keymap 读 `id` / `enabled` / `when`，命令面板另外读 `label` / `category` / `keywords`。只绑快捷键的宿主用 `ActionDescriptor::new(id)`，要进面板的用 `ActionDescriptor::labeled(id, label)`。`ActionRegistry` 同样只有一个，按注册顺序保序，`search` / `available` 供面板检索。
 
@@ -392,7 +404,9 @@ fingerprint 和活动焦点/IME 状态都不变时不挂/卸单元格；冻结�
 - 控件拿窗口句柄，或在 UI 画完后把原生 WebView 盖在 Surface 上
 - 以 crate 根控件表或 Vue 的 DOM facade 定义新的框架合同
 
-应用内打开网页见 [应用内浏览器](gpu.md#应用内浏览器)（未实现）。`nana-ui` 没有 `browser` feature。
+应用内打开网页使用 `runtime::BrowserView` 的宿主原生内容例外；当前只有
+macOS `WKWebView`，Windows/Linux 明确不可用。`nana-ui` 没有独立的
+`browser` feature。
 
 
 ### 多文档布局缓存

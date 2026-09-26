@@ -882,7 +882,10 @@ mod tests {
         );
         context.commit_mutations(mutations).unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
     }
 
     #[test]
@@ -929,7 +932,10 @@ mod tests {
         theme.set_theme(crate::ThemeMode::Light);
         context.commit_mutations(theme).unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
         let crate::ComponentGeometry::StatusBadge { foreground, .. } =
             context.world().component_geometry(id).unwrap()
         else {
@@ -999,7 +1005,10 @@ mod tests {
             .set_empty_state_action(empty, Some(action.stable_id()))
             .unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context
@@ -1041,7 +1050,10 @@ mod tests {
         let metrics = (title.bounds.height, message.bounds.height, action_bounds.y);
         context.set_theme(crate::ThemeMode::Light).unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
         assert!(
             !context
                 .shape_text_for_layout(document(), &mut shaper)
@@ -1072,7 +1084,10 @@ mod tests {
             .create_component(document(), EmptyState::new("空").compact(true))
             .unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context
@@ -1119,7 +1134,10 @@ mod tests {
             )
             .unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context
@@ -1173,7 +1191,10 @@ mod tests {
             .set_empty_state_action(empty, Some(action.stable_id()))
             .unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context
@@ -1243,7 +1264,7 @@ mod tests {
             },
         );
         context.commit_mutations(layouts).unwrap();
-        context.world_mut().rebuild_hit_test(document());
+        context.compat_world_mut().rebuild_hit_test(document());
 
         assert_eq!(
             context.world().hit_test(document(), 95.0, 45.0),
@@ -1280,7 +1301,7 @@ mod tests {
             },
         );
         context.commit_mutations(outside).unwrap();
-        context.world_mut().rebuild_hit_test(document());
+        context.compat_world_mut().rebuild_hit_test(document());
         assert_ne!(
             context.world().hit_test(document(), 115.0, 45.0),
             Some(action.stable_id())
@@ -1317,7 +1338,10 @@ mod tests {
             .set_empty_state_action(empty, Some(action.stable_id()))
             .unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
         let mut shaper = WrappingShaper;
         context.shape_text(&work.text, &mut shaper).unwrap();
         context

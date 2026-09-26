@@ -523,7 +523,10 @@ mod tests {
         );
         context.commit_mutations(mutations).unwrap();
         let work = context.take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        context
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
         let crate::ComponentGeometry::FormField {
             support, indicator, ..
         } = context.world().component_geometry(id).unwrap()

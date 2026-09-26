@@ -6,8 +6,8 @@
 //! [`docs/how-it-works.md`](../../../docs/how-it-works.md),
 //! [`docs/start.md`](../../../docs/start.md),
 //! [`docs/application-api.md`](../../../docs/application-api.md).
-//! Crate-root widget re-exports are a compatibility surface, not the extension
-//! contract. Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.
+//! Runtime owns the widget surface; the crate root exposes host adapters only.
+//! Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.
 //!
 //! [`WorkspaceController`] is a host adapter (Instant→Duration, pointer →
 //! [`WorkspaceMutation`]). Product region state is [`WorkspaceModel`].
@@ -25,7 +25,7 @@ pub mod components;
 mod default_gpu_view;
 pub mod dialog;
 /// Host adapter (`nana_ui::dock::*`): pointer/dwell/frame → [`dock::DockMutation`].
-/// Product dock is Runtime [`DockWorkspace`], re-exported at crate root.
+/// Product dock is Runtime `nana_ui::runtime::DockWorkspace`.
 pub mod dock;
 #[cfg(feature = "gpu")]
 mod font_face_ingest;
@@ -133,6 +133,8 @@ mod test_gpu;
 
 pub mod runtime;
 
+#[cfg(feature = "accesskit-tree")]
+pub use accessibility_tree::AccessTreeProjector;
 pub use command::{
     ActionDescriptor, ActionId, ActionMatch, ActionPickerNavigation, ActionPickerSelection,
     ActionPickerState, ActionRegistry, ActionRegistryError, ContextPredicate, KeyBinding,
@@ -143,51 +145,6 @@ pub use component_support::{
     ComponentCapability, ComponentFamily, ComponentId, ComponentSupport, component_catalog,
     component_ids, component_support, component_uses_runtime,
 };
-pub use nana_ui_core::ContentFit;
-pub use nana_ui_core::ControlSize;
-pub use nana_ui_core::{AnchoredMenuPlacement, StatusTone, ToastTone, ValidationIntent};
-pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};
-#[cfg(feature = "calendar")]
-pub use nana_ui_runtime::{
-    CalendarHeatmap, CalendarHeatmapActiveCell, CalendarHeatmapCell, CalendarHeatmapCellPaint,
-    CalendarHeatmapDatum, CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapLabelPaint,
-    CalendarHeatmapModel, CalendarHeatmapMonthLabel, CalendarHeatmapOptions, CalendarLevelResolver,
-    CalendarLevelStrategy, CalendarMonthFormatter, CalendarTitleFormatter,
-    build_calendar_heatmap_model, calendar_cell_fill,
-};
-pub use nana_ui_runtime::{
-    CapturedStroke, KeyCaptureEvent, KeyCaptureLayer, KeyInput, KeymapLayer,
-};
-#[cfg(feature = "charts")]
-pub use nana_ui_runtime::{DonutChart, DonutSlice, TimeSeriesChart, TimeSeriesLayer};
-#[cfg(feature = "gpu")]
-pub use nana_ui_runtime::{GpuTextureView, GpuView, GpuViewMode, GpuViewPalette};
-#[cfg(feature = "graph-canvas")]
-pub use nana_ui_runtime::{
-    GraphCanvas, GraphCanvasAdjustment, GraphCanvasEvent, GraphCanvasHit, GraphInteraction,
-    GraphMinimap, GraphMinimapEvent, GraphNodeContent, GraphPointerButton, GraphScrollDelta,
-};
-#[cfg(feature = "syntax-highlighting")]
-pub use nana_ui_runtime::{HIGHLIGHT_PRESENTER, HighlightPresentation, SyntectHighlighter};
-#[cfg(feature = "image-viewer")]
-pub use nana_ui_runtime::{
-    ImageViewer, ImageViewerContent, ImageViewerEvent, ImageViewerGeometry, ImageViewerHit,
-    ImageViewerOffset,
-};
-#[cfg(feature = "rich-text")]
-pub use nana_ui_runtime::{
-    MarkdownBlock, MarkdownBlockKind, MarkdownImage, MarkdownSpan, MarkdownTable,
-    MarkdownTableAlignment, NativeMarkdown, RichSpan, RichTextEvent, SelectableRichText,
-    TextSelectionGroup, TextSelectionGroupId, TextSelectionSnapshot,
-};
-#[cfg(feature = "controls")]
-pub use nana_ui_runtime::{
-    ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,
-    TreeDropIntent, TreeDropPosition,
-};
-
-#[cfg(feature = "accesskit-tree")]
-pub use accessibility_tree::AccessTreeProjector;
 #[cfg(feature = "gpu")]
 pub use default_gpu_view::{
     DefaultGpuViewRenderer, default_scene_gpu_renderers, resolve_scene_gpu_renderers,
@@ -268,8 +225,12 @@ pub use nana_text::{
     register_host_font_bytes, register_host_font_face, register_host_font_face_styled,
     register_host_font_file, set_sans_serif_family, shaped_face_families,
 };
+pub use nana_ui_core::ContentFit;
+pub use nana_ui_core::ControlSize;
 #[cfg(feature = "gpu")]
 pub use nana_ui_core::GpuWorkObservation;
+pub use nana_ui_core::{AnchoredMenuPlacement, StatusTone, ToastTone, ValidationIntent};
+pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};
 pub use nana_ui_core::{DrawerSide, PopoverAlignment, PopoverPlacement};
 pub use nana_ui_core::{
     ExpansionState, SplitPaneModel, SplitPaneMutation, WORKSPACE_REGION_TRANSITION_DURATION,
@@ -290,35 +251,8 @@ pub use nana_ui_platform::{
     FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
     FetchResponse, NativeFetchHost, SharedFetchHost, shared_fetch_host,
 };
-/// Compatibility re-export of Runtime `TextArea`. Prefer [`runtime::TextArea`].
-pub use nana_ui_runtime::TextArea as Textarea;
-/// Compatibility widget surface. New applications should import from [`runtime`].
-pub use nana_ui_runtime::{
-    AboutMetadata, AboutSection, ActionMenu, ActionMenuItem, AnchoredActionMenu, AppShell,
-    AppTitleBar, AppTitleBarControls, AppearanceSection, Avatar, BrowseRequested, Button, Card,
-    Checkbox, Chip, ChipDismissed, ColorChanged, ColorField, ColorInput, CommandPalette,
-    ConfirmDialog, ContextMenu, ContextMenuEvent, ContextMenuItem, DesktopShell, Dialog, Drawer,
-    Dropdown, DropdownEvent, DropdownOption, DropdownSelection, EmptyState, FormField,
-    HostedTextarea, IconButton, IconGlyph, InteractiveCard, LabeledValue, LevelMeter, ListItem,
-    MediaTransportBar, MediaTransportDensity, MediaTransportEvent, MediaTransportIcons,
-    MediaTransportPlacement, MediaTransportSlots, OVERLAY_IDLE, OverlayHost, OverlayLocks,
-    OverlayVisibility, OverlayVisibilityConfig, PaneChrome, PaneChromeAction, PaneChromeActionKind,
-    PaneTree, PaneTreeNode, PathField, Popover, Progress, ProgressCancelled, QrCode, QrCodeError,
-    RangeField, SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl,
-    Select, SelectOption, SettingsCard, SettingsCollapsibleCard, SettingsRow, SidebarFooter,
-    SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection,
-    SidebarSectionSlots, SidebarSectionState, Skeleton, Spinner, SplitPane, StatusBadge, Switch,
-    TabDragGroup, TabDragLease, TabDragSurface, TabOption, Tabs, TabsEvent, Text, TextArea,
-    TextInput, Thumbnail, ThumbnailState, Toast, Tooltip, TreeNavigation, TreeNode, TreeView,
-    TreeViewEvent, ValidationMessage, Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle, XYPad,
-    media_clock, tree_navigation_event,
-};
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
-};
-/// Product dock from Runtime. `nana_ui::dock::*` is the host adapter, not a second dock.
-pub use nana_ui_runtime::{
-    Dock, DockFloatingSurface, DockPanel, DockSurfaceSpec, DockWorkspace, DockWorkspaceEvent,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;

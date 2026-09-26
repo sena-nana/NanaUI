@@ -2864,7 +2864,8 @@ fn beside_a_gpu_view(
     SceneWgpuPainter,
     impl FnMut(&mut SceneWgpuPainter) -> (bool, u64),
 ) {
-    use crate::{DefaultGpuViewRenderer, GpuView};
+    use crate::DefaultGpuViewRenderer;
+    use nana_ui_runtime::GpuView;
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -7347,7 +7348,8 @@ fn custom_preparation_reuse_requires_explicit_version_and_tracks_changes() {
 
 #[test]
 fn default_gpu_view_versions_preparation_and_tracks_param_changes() {
-    use crate::{DefaultGpuViewRenderer, GpuView, GpuViewPalette};
+    use crate::DefaultGpuViewRenderer;
+    use nana_ui_runtime::{GpuView, GpuViewPalette};
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -7427,7 +7429,8 @@ fn default_gpu_view_versions_preparation_and_tracks_param_changes() {
 
 #[test]
 fn default_gpu_view_evicts_slots_for_nodes_that_left_the_scene() {
-    use crate::{DefaultGpuViewRenderer, GpuView};
+    use crate::DefaultGpuViewRenderer;
+    use nana_ui_runtime::GpuView;
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -8143,7 +8146,8 @@ fn text_below_the_clip_band_costs_no_draw_and_no_pixels() {
 
 #[test]
 fn batched_gpu_view_run_paints_each_node_like_a_lone_node() {
-    use crate::{DefaultGpuViewRenderer, GpuView, GpuViewPalette};
+    use crate::DefaultGpuViewRenderer;
+    use nana_ui_runtime::{GpuView, GpuViewPalette};
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -8241,7 +8245,8 @@ fn batched_gpu_view_run_paints_each_node_like_a_lone_node() {
 
 #[test]
 fn ordinary_ui_and_dedicated_passes_split_a_gpu_view_run() {
-    use crate::{DefaultGpuViewRenderer, GpuView, GpuViewMode};
+    use crate::DefaultGpuViewRenderer;
+    use nana_ui_runtime::{GpuView, GpuViewMode};
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;

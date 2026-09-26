@@ -1378,9 +1378,13 @@ impl AppContext {
         self.view_entity(target)
     }
 
-    /// Mutable retained tree for compatibility hosts that already own node
-    /// identity (Vue) and for frame systems not yet expressed on `AppContext`.
-    pub fn world_mut(&mut self) -> &mut UiWorld {
+    /// Mutable Runtime access for compatibility hosts and frame systems that
+    /// have not yet been expressed by the higher-level `AppContext` API.
+    ///
+    /// This is intentionally named as a low-level compatibility boundary: it
+    /// must not be used by ordinary application code in place of
+    /// `commit_mutations` and the component/event APIs.
+    pub fn compat_world_mut(&mut self) -> &mut UiWorld {
         &mut self.world
     }
 

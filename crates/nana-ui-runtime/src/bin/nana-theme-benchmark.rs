@@ -178,12 +178,12 @@ fn control_scale_case(id: &'static str, controls: usize) -> Case {
             document,
             ..
         } = control_fixture(controls);
-        context.world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame_counters();
         let started = Instant::now();
         let scheduled = context.take_system_work();
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame_counters();
         if iteration >= warmup {
             samples.push(elapsed);
             work = context.world().last_theme_work_counters().into();
@@ -217,7 +217,7 @@ fn static_idle_case() -> Case {
     let mut work = ThemeWork::default();
     let mut frame_work = FrameWork::default();
     for iteration in 0..(WARMUP + ITERATIONS) {
-        context.world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame_counters();
         let started = Instant::now();
         let scheduled = context.take_system_work();
         assert!(
@@ -226,7 +226,7 @@ fn static_idle_case() -> Case {
         );
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame_counters();
         if iteration >= WARMUP {
             samples.push(elapsed);
             work = context.world().last_theme_work_counters().into();
@@ -234,7 +234,9 @@ fn static_idle_case() -> Case {
         }
     }
     assert_eq!(
-        context.world_mut().scheduled_ui_frames(IDLE_OBSERVE_TICKS),
+        context
+            .compat_world_mut()
+            .scheduled_ui_frames(IDLE_OBSERVE_TICKS),
         0,
         "a settled document must not keep asking for frames"
     );
@@ -270,7 +272,7 @@ fn hover_case() -> Case {
         // enter and not an already-hovered no-op.
         context.set_pointer_hover(document, 1, None).unwrap();
         let _ = context.take_system_work();
-        context.world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame_counters();
         let started = Instant::now();
         context
             .set_pointer_hover(document, 1, Some(target))
@@ -278,7 +280,7 @@ fn hover_case() -> Case {
         let scheduled = context.take_system_work();
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame_counters();
         if iteration >= WARMUP {
             samples.push(elapsed);
             work = context.world().last_theme_work_counters().into();
@@ -314,13 +316,13 @@ fn focus_case() -> Case {
     for iteration in 0..(WARMUP + ITERATIONS) {
         context.clear_focus(document).unwrap();
         let _ = context.take_system_work();
-        context.world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame_counters();
         let started = Instant::now();
         context.focus_node(document, target).unwrap();
         let scheduled = context.take_system_work();
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame_counters();
         if iteration >= WARMUP {
             samples.push(elapsed);
             work = context.world().last_theme_work_counters().into();
@@ -419,13 +421,13 @@ fn theme_install_case(
     let mut work = ThemeWork::default();
     let mut frame_work = FrameWork::default();
     for iteration in 0..(WARMUP + ITERATIONS) {
-        context.world_mut().begin_frame_counters();
+        context.compat_world_mut().begin_frame_counters();
         let started = Instant::now();
         install(&mut context, iteration);
         let scheduled = context.take_system_work();
         run_systems(&mut context, document, &scheduled);
         let elapsed = started.elapsed();
-        context.world_mut().end_frame_counters();
+        context.compat_world_mut().end_frame_counters();
         if iteration >= WARMUP {
             samples.push(elapsed);
             work = context.world().last_theme_work_counters().into();
@@ -577,21 +579,27 @@ fn head_style(alternate: bool) -> NodeStyle {
 }
 
 fn run_systems(context: &mut AppContext, document: DocumentId, work: &SystemWork) {
-    context.world_mut().resolve_styles(&work.style).unwrap();
-    context.world_mut().reconcile_focus(&work.focus_ime);
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+    context.compat_world_mut().reconcile_focus(&work.focus_ime);
     let _ = context
-        .world_mut()
+        .compat_world_mut()
         .project_accessibility_nodes(&work.accessibility);
-    let _ = context.world_mut().layout_inputs(&work.layout).unwrap();
+    let _ = context
+        .compat_world_mut()
+        .layout_inputs(&work.layout)
+        .unwrap();
     if !work.input_hit_test.is_empty()
         && !context
-            .world_mut()
+            .compat_world_mut()
             .rebuild_hit_test_scoped(document, &work.input_hit_test)
     {
-        context.world_mut().rebuild_hit_test(document);
+        context.compat_world_mut().rebuild_hit_test(document);
     }
     let _ = context
-        .world_mut()
+        .compat_world_mut()
         .extract_nodes(&work.render_extraction)
         .len();
 }

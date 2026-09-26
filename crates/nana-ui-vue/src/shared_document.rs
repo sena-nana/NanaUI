@@ -61,7 +61,10 @@ mod tests {
         other
             .with_document_mut(|document| {
                 assert_eq!(shared.with_document(|_| ()), Err(DocumentAccessError::Busy));
-                document.context_mut().world_mut().begin_frame_counters();
+                document
+                    .context_mut()
+                    .compat_world_mut()
+                    .begin_frame_counters();
             })
             .unwrap();
         assert!(shared.with_document(|_| ()).is_ok());

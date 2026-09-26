@@ -227,7 +227,7 @@ fn button_slot_changes_invalidate_layout_but_spinner_phase_only_repaints() {
     })
     .unwrap();
     assert!(
-        cx.world_mut()
+        cx.compat_world_mut()
             .take_system_work()
             .layout
             .contains(&button.stable_id())

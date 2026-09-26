@@ -118,7 +118,7 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
 
 `bundled-fonts` 开启时，宿主会注册 Noto Sans SC 并设为界面默认字体。关掉则回落到系统字体，不能当设计稿。
 
-新代码从 `nana_ui::runtime` 引入控件。crate 根上的同名再导出是兼容面，不要当第二套 API。
+控件只从 `nana_ui::runtime` 引入；crate 根不再提供同名控件再导出。
 
 ## 状态放哪
 

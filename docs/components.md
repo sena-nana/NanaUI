@@ -213,7 +213,10 @@ IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所�
 
 实时画面不要做成「自己往窗口上画的控件」，走 [实时画面](gpu.md)。不支持动态加载 dylib 插件。
 
-没有应用内浏览器控件。`GpuTextureView` / `<iframe>` 都不加载网页；拟议的 `WebView`（`nana.webview`）见 [应用内浏览器](gpu.md#应用内浏览器)，目前未实现，Gallery 不得摆假浏览。
+`GpuTextureView` / `<iframe>` 都不加载网页。需要应用内网页内容时使用
+`runtime::BrowserView` 的宿主原生内容例外；它不是 `GpuTextureView` 别名，
+当前只有 macOS `WKWebView` 实现，Windows/Linux 明确不可用，Gallery 不得
+把普通纹理或 iframe 当成浏览器。
 
 `Thumbnail` 默认维持控件高度 × aspect；显式 style 的宽高、约束与圆角（`style.radius` 档位或 `border_radius` 像素）优先，可用于响应式卡片封面；都没写时才取 `Xs`。`fit(ContentFit::Cover)` 保留封面裁切，默认仍是 Contain；空、加载、就绪与不可用共享布局尺寸。Loading 态的 spinner 居中绘制，边长 28（紧凑 `Spinner` 的两倍）；带标签的独立 `Spinner` 仍贴左，作为文字的前置槽。封面角标挂成 Thumbnail 的子节点：控件是 containing block（`position: relative`）并裁剪圆角；`Thumbnail::badge()` 给出右下角、不命中的实底徽章。Vue 的 `NanaThumbnail` 使用同一 `fit` 属性。
 

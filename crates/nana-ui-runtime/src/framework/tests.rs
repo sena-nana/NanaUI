@@ -672,7 +672,7 @@ fn typed_view_update_delivers_closure_events_and_commits_one_batch() {
     assert_eq!(context.world().generation(), 2);
     assert!(
         context
-            .world_mut()
+            .compat_world_mut()
             .take_system_work()
             .text
             .contains(&entity.stable_id())
@@ -957,11 +957,11 @@ fn text_input_placeholder_uses_layout_color_and_opacity() {
     );
     context.commit_mutations(mutations).unwrap();
     context
-        .world_mut()
+        .compat_world_mut()
         .resolve_styles(&[input.stable_id()])
         .unwrap();
     context
-        .world_mut()
+        .compat_world_mut()
         .shape_text(&[input.stable_id()], &mut crate::MeasureTextShaper)
         .unwrap();
 
@@ -1349,8 +1349,11 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
     assert_eq!(accessibility[2].role, crate::AccessibilityRole::Slider);
     assert_eq!(accessibility[2].value.as_deref(), Some("100"));
 
-    let work = context.world_mut().take_system_work();
-    context.world_mut().resolve_styles(&work.style).unwrap();
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
     let checkbox_paint = context
         .world()
         .extract_nodes(&[checkbox.stable_id()])
@@ -1365,12 +1368,15 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
         Some(nana_ui_core::SemanticPalette::dark().danger.as_rgba_array())
     );
     context
-        .world_mut()
+        .compat_world_mut()
         .set_pointer_hover(document, 1, Some(checkbox.stable_id()))
         .unwrap();
     context.advance_animations(nana_ui_core::motion::HOVER_COLOR);
-    let work = context.world_mut().take_system_work();
-    context.world_mut().resolve_styles(&work.style).unwrap();
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
     let hovered_checked = context
         .world()
         .extract_nodes(&[checkbox.stable_id()])
@@ -1420,8 +1426,11 @@ fn an_indeterminate_checkbox_reads_mixed_and_paints_as_engaged() {
 
     // Mixed shares the engaged surface with checked, so a parent checkbox
     // is not mistaken for an empty one.
-    let work = context.world_mut().take_system_work();
-    context.world_mut().resolve_styles(&work.style).unwrap();
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
     let paint = context
         .world()
         .extract_nodes(&[mixed.stable_id()])
@@ -1601,10 +1610,13 @@ fn pressing_the_spinner_steps_and_pressing_the_text_does_not() {
         },
     );
     context.commit_mutations(mutations).unwrap();
-    let work = context.world_mut().take_system_work();
-    context.world_mut().resolve_styles(&work.style).unwrap();
+    let work = context.compat_world_mut().take_system_work();
     context
-        .world_mut()
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+    context
+        .compat_world_mut()
         .shape_text(&work.text, &mut crate::MeasureTextShaper)
         .unwrap();
 
@@ -1746,10 +1758,13 @@ fn the_spinner_follows_the_draft_and_owns_presses_on_its_inert_half() {
     context.commit_mutations(mutations).unwrap();
     assert!(context.focus_node(document, node).unwrap());
     let settle = |context: &mut AppContext| {
-        let work = context.world_mut().take_system_work();
-        context.world_mut().resolve_styles(&work.style).unwrap();
+        let work = context.compat_world_mut().take_system_work();
         context
-            .world_mut()
+            .compat_world_mut()
+            .resolve_styles(&work.style)
+            .unwrap();
+        context
+            .compat_world_mut()
             .shape_text(&work.text, &mut crate::MeasureTextShaper)
             .unwrap();
         match context.world().component_geometry(node) {
@@ -1929,10 +1944,13 @@ fn a_read_only_number_input_draws_an_inert_spinner() {
         },
     );
     context.commit_mutations(mutations).unwrap();
-    let work = context.world_mut().take_system_work();
-    context.world_mut().resolve_styles(&work.style).unwrap();
+    let work = context.compat_world_mut().take_system_work();
     context
-        .world_mut()
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+    context
+        .compat_world_mut()
         .shape_text(&work.text, &mut crate::MeasureTextShaper)
         .unwrap();
     let Some(crate::ComponentGeometry::TextInput {
@@ -1953,11 +1971,14 @@ fn a_read_only_number_input_draws_an_inert_spinner() {
     context
         .update_component(input, |input, _| input.read_only = false)
         .unwrap();
-    let work = context.world_mut().take_system_work();
+    let work = context.compat_world_mut().take_system_work();
     assert!(work.render_extraction.contains(&input.stable_id()));
-    context.world_mut().resolve_styles(&work.style).unwrap();
     context
-        .world_mut()
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+    context
+        .compat_world_mut()
         .shape_text(&work.text, &mut crate::MeasureTextShaper)
         .unwrap();
     assert_eq!(context.number_stepper_at(input.stable_id(), x, y), Some(1));
@@ -2244,7 +2265,7 @@ fn overlay_host_switches_exclusive_visibility_and_restores_focus() {
     context.append_child(menu, menu_item).unwrap();
     let mut focus = MutationQueue::new();
     focus.request_focus(document, Some(base.stable_id()));
-    context.world_mut().commit(focus).unwrap();
+    context.compat_world_mut().commit(focus).unwrap();
     let changes = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::clone(&changes);
     context
@@ -2260,9 +2281,9 @@ fn overlay_host_switches_exclusive_visibility_and_restores_focus() {
         })
         .unwrap();
 
-    let initial_work = context.world_mut().take_system_work();
+    let initial_work = context.compat_world_mut().take_system_work();
     context
-        .world_mut()
+        .compat_world_mut()
         .resolve_styles(&initial_work.style)
         .unwrap();
     let initial = context.world().extract_document(document);
@@ -2270,9 +2291,9 @@ fn overlay_host_switches_exclusive_visibility_and_restores_focus() {
     assert!(!initial.iter().any(|node| node.id == menu.stable_id()));
 
     assert!(context.activate_overlay(host, dialog).unwrap());
-    let dialog_work = context.world_mut().take_system_work();
+    let dialog_work = context.compat_world_mut().take_system_work();
     context
-        .world_mut()
+        .compat_world_mut()
         .resolve_styles(&dialog_work.style)
         .unwrap();
     assert_eq!(context.world().focused(document), Some(dialog.stable_id()));
@@ -2298,7 +2319,7 @@ fn overlay_host_switches_exclusive_visibility_and_restores_focus() {
     let mut escape_modal = MutationQueue::new();
     escape_modal.request_focus(document, Some(base.stable_id()));
     assert_eq!(
-        context.world_mut().commit(escape_modal),
+        context.compat_world_mut().commit(escape_modal),
         Err(crate::UiWorldError::NotFocusable(base.stable_id()))
     );
     assert_eq!(context.world().focused(document), Some(dialog.stable_id()));
@@ -2309,12 +2330,12 @@ fn overlay_host_switches_exclusive_visibility_and_restores_focus() {
     );
     let mut capture = MutationQueue::new();
     capture.capture_pointer(7, dialog.stable_id());
-    context.world_mut().commit(capture).unwrap();
+    context.compat_world_mut().commit(capture).unwrap();
     assert!(context.activate_overlay(host, menu).unwrap());
-    let menu_work = context.world_mut().take_system_work();
+    let menu_work = context.compat_world_mut().take_system_work();
     assert!(menu_work.accessibility.contains(&host.stable_id()));
     context
-        .world_mut()
+        .compat_world_mut()
         .resolve_styles(&menu_work.style)
         .unwrap();
     let visible = context.world().extract_document(document);
@@ -2329,7 +2350,7 @@ fn overlay_host_switches_exclusive_visibility_and_restores_focus() {
     assert_eq!(context.world().pointer_capture(document, 7), None);
     assert!(
         context
-            .world_mut()
+            .compat_world_mut()
             .take_pointer_capture_changes()
             .iter()
             .any(|change| change.pointer_id == 7 && !change.captured)
@@ -2338,10 +2359,10 @@ fn overlay_host_switches_exclusive_visibility_and_restores_focus() {
     assert!(!context.dismiss_overlay(host).unwrap());
     assert!(context.active_runtime_overlay(document).is_none());
     context.advance_animations(nana_ui_core::motion::MENU_POP);
-    let dismissed_work = context.world_mut().take_system_work();
+    let dismissed_work = context.compat_world_mut().take_system_work();
     assert!(dismissed_work.accessibility.contains(&host.stable_id()));
     context
-        .world_mut()
+        .compat_world_mut()
         .resolve_styles(&dismissed_work.style)
         .unwrap();
     assert_eq!(context.world().focused(document), Some(base.stable_id()));
@@ -2375,7 +2396,7 @@ fn destroying_the_active_overlay_clears_authority_and_restores_focus() {
     context.append_child(host, dialog).unwrap();
     let mut focus = MutationQueue::new();
     focus.request_focus(document, Some(base.stable_id()));
-    context.world_mut().commit(focus).unwrap();
+    context.compat_world_mut().commit(focus).unwrap();
     context.activate_overlay(host, dialog).unwrap();
 
     context.remove_view(dialog).unwrap();
@@ -2983,7 +3004,7 @@ fn native_scroll_view_projects_axes_and_typed_runtime_offset() {
             observed.lock().unwrap().push(event.offset);
         })
         .unwrap();
-    context.world_mut().take_system_work();
+    context.compat_world_mut().take_system_work();
 
     assert!(
         context
@@ -3007,7 +3028,7 @@ fn native_scroll_view_projects_axes_and_typed_runtime_offset() {
             .overflow_y,
         nana_ui_core::OverflowSpec::Scroll
     );
-    let work = context.world_mut().take_system_work();
+    let work = context.compat_world_mut().take_system_work();
     assert_eq!(work.input_hit_test, vec![scroll.stable_id()]);
     assert_eq!(work.render_extraction, vec![scroll.stable_id()]);
     assert!(work.layout.is_empty());
@@ -5084,8 +5105,11 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
             Button::new("Build").kind(nana_ui_core::ButtonKind::Primary),
         )
         .unwrap();
-    let work = context.world_mut().take_system_work();
-    context.world_mut().resolve_styles(&work.style).unwrap();
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
     let dark = context
         .world()
         .extract_nodes(&[button.stable_id()])
@@ -5100,12 +5124,15 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
         )
     );
     context
-        .world_mut()
+        .compat_world_mut()
         .set_pointer_hover(document, 1, Some(button.stable_id()))
         .unwrap();
     context.advance_animations(nana_ui_core::motion::HOVER_COLOR);
-    let work = context.world_mut().take_system_work();
-    context.world_mut().resolve_styles(&work.style).unwrap();
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
     assert_eq!(
         context
             .world()
@@ -5121,11 +5148,14 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
         )
     );
     context
-        .world_mut()
+        .compat_world_mut()
         .press_pointer(document, 1, button.stable_id())
         .unwrap();
-    let work = context.world_mut().take_system_work();
-    context.world_mut().resolve_styles(&work.style).unwrap();
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
     assert_eq!(
         context
             .world()
@@ -5145,13 +5175,13 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
         Some(button.stable_id())
     );
     context
-        .world_mut()
+        .compat_world_mut()
         .set_pointer_hover(document, 1, None)
         .unwrap();
-    context.world_mut().take_system_work();
+    context.compat_world_mut().take_system_work();
 
     assert!(context.set_theme(ThemeMode::Light).unwrap());
-    let work = context.world_mut().take_system_work();
+    let work = context.compat_world_mut().take_system_work();
     assert!(work.style.is_empty());
     assert!(work.layout.is_empty());
     assert!(work.render_extraction.contains(&button.stable_id()));
@@ -5171,13 +5201,16 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
 
     let mut focus = MutationQueue::new();
     focus.request_focus(document, Some(button.stable_id()));
-    context.world_mut().commit(focus).unwrap();
-    let work = context.world_mut().take_system_work();
+    context.compat_world_mut().commit(focus).unwrap();
+    let work = context.compat_world_mut().take_system_work();
     assert_eq!(work.focus_ime, vec![button.stable_id()]);
     assert_eq!(work.accessibility, vec![button.stable_id()]);
-    assert!(context.world_mut().take_system_work().is_empty());
-    context.world_mut().resolve_styles(&work.style).unwrap();
-    assert!(context.world_mut().take_system_work().is_empty());
+    assert!(context.compat_world_mut().take_system_work().is_empty());
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+    assert!(context.compat_world_mut().take_system_work().is_empty());
     let focused = context
         .world()
         .extract_nodes(&[button.stable_id()])
@@ -5199,12 +5232,15 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
     context
         .update_component(button, |button, _cx| button.disabled = true)
         .unwrap();
-    let work = context.world_mut().take_system_work();
+    let work = context.compat_world_mut().take_system_work();
     assert_eq!(work.focus_ime, vec![button.stable_id()]);
     assert_eq!(work.accessibility, vec![button.stable_id()]);
-    assert!(context.world_mut().take_system_work().is_empty());
-    context.world_mut().resolve_styles(&work.style).unwrap();
-    let post_resolve = context.world_mut().take_system_work();
+    assert!(context.compat_world_mut().take_system_work().is_empty());
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
+    let post_resolve = context.compat_world_mut().take_system_work();
     assert_eq!(post_resolve.focus_ime, vec![button.stable_id()]);
     assert_eq!(post_resolve.accessibility, vec![button.stable_id()]);
     assert_eq!(post_resolve.render_extraction, vec![button.stable_id()]);
@@ -5226,7 +5262,7 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
     let generation = context.world().generation();
     assert!(!context.set_theme(ThemeMode::Light).unwrap());
     assert_eq!(context.world().generation(), generation);
-    let idle = context.world_mut().take_system_work();
+    let idle = context.compat_world_mut().take_system_work();
     assert!(
         idle.is_empty(),
         "unexpected work after theme no-op: {idle:?}"
@@ -5684,7 +5720,7 @@ fn loading_components_schedule_only_while_loading() {
         .update_component(card, |card, _| card.loading = false)
         .unwrap();
     assert_eq!(context.next_animation_deadline(), None);
-    let _ = context.world_mut().take_animation_events();
+    let _ = context.compat_world_mut().take_animation_events();
     assert!(
         !context
             .advance_animations(Duration::from_secs(1))
@@ -6073,8 +6109,11 @@ fn a_focused_range_keeps_its_rail_interaction_free() {
         .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
         .unwrap();
     context.focus_node(document, range.stable_id()).unwrap();
-    let work = context.world_mut().take_system_work();
-    context.world_mut().resolve_styles(&work.style).unwrap();
+    let work = context.compat_world_mut().take_system_work();
+    context
+        .compat_world_mut()
+        .resolve_styles(&work.style)
+        .unwrap();
     let focused = context
         .world()
         .extract_nodes(&[range.stable_id()])
@@ -8529,7 +8568,7 @@ fn rewriting_a_component_with_its_own_values_leaves_no_pending_work() {
     let text = context
         .create_component(document, Text::new("输出 · 已连接"))
         .unwrap();
-    let _ = context.world_mut().take_system_work();
+    let _ = context.compat_world_mut().take_system_work();
     assert!(
         !context.world().has_pending_work(),
         "a drained world owes no work"
@@ -8566,7 +8605,7 @@ fn parking_a_subtree_is_pending_work() {
         .create_detached_component(document, Text::new("一行"))
         .unwrap();
     context.append_child(root, row).unwrap();
-    let _ = context.world_mut().take_system_work();
+    let _ = context.compat_world_mut().take_system_work();
     assert!(!context.world().has_pending_work());
 
     let mut queue = crate::MutationQueue::new();
@@ -8653,7 +8692,7 @@ fn rewriting_a_list_with_its_own_values_does_no_work() {
         context.append_child(item, button).unwrap();
         rows.push((item, switch, button));
     }
-    let _ = context.world_mut().take_system_work();
+    let _ = context.compat_world_mut().take_system_work();
     let generation = context.world().generation();
 
     for (index, (item, switch, button)) in rows.iter().enumerate() {

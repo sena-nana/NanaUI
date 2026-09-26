@@ -194,8 +194,9 @@ impl GpuView {
 /// backend-neutral id/revision contract. Pointer events default to off;
 /// [`Self::with_pointer_events`] opts a specific instance into hit-testing.
 ///
-/// Not a page loader. In-app browsing is a proposed `WebView` (unimplemented);
-/// see `docs/gpu.md`.
+/// Not a page loader. Runtime [`crate::BrowserView`] is the separate native
+/// browser exception: it anchors host-owned content to the retained tree and
+/// is not a `GpuTextureView` alias. See `docs/window.md` and `docs/gpu.md`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuTextureView {
     pub resource: Arc<str>,

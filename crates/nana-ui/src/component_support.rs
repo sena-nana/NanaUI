@@ -306,11 +306,12 @@ mod tests {
             .expect("hosted textarea is cataloged");
 
         assert!(component_uses_runtime(component_ids::HOSTED_TEXTAREA));
-        let _: nana_ui_runtime::HostedTextarea = crate::HostedTextarea::new("fn main() {}", "rs");
+        let _: nana_ui_runtime::HostedTextarea =
+            crate::runtime::HostedTextarea::new("fn main() {}", "rs");
         let _: nana_ui_runtime::HostedTextarea =
             crate::components::HostedTextarea::new("fn main() {}", "rs");
-        let _: nana_ui_runtime::KeyCaptureLayer = crate::KeyCaptureLayer::new();
-        let _: nana_ui_runtime::KeymapLayer = crate::KeymapLayer::new(
+        let _: nana_ui_runtime::KeyCaptureLayer = crate::runtime::KeyCaptureLayer::new();
+        let _: nana_ui_runtime::KeymapLayer = crate::runtime::KeymapLayer::new(
             nana_ui_runtime::Keymap::new([]),
             nana_ui_core::KeyContext::default(),
             nana_ui_runtime::ActionRegistry::new(),
@@ -331,13 +332,13 @@ mod tests {
     #[cfg(feature = "rich-text")]
     #[cfg(feature = "image-viewer")]
     fn candidate_cutover_public_exports_include_new_runtime_leaves() {
-        let _: nana_ui_runtime::CalendarHeatmap = crate::CalendarHeatmap::new([]);
-        let _: nana_ui_runtime::TimeSeriesChart = crate::TimeSeriesChart::new([1.0]);
-        let _: nana_ui_runtime::ReorderList = crate::ReorderList::new([]);
-        let _: nana_ui_runtime::NativeMarkdown = crate::NativeMarkdown::new();
-        let _: nana_ui_runtime::SelectableRichText = crate::SelectableRichText::new([]);
+        let _: nana_ui_runtime::CalendarHeatmap = crate::runtime::CalendarHeatmap::new([]);
+        let _: nana_ui_runtime::TimeSeriesChart = crate::runtime::TimeSeriesChart::new([1.0]);
+        let _: nana_ui_runtime::ReorderList = crate::runtime::ReorderList::new([]);
+        let _: nana_ui_runtime::NativeMarkdown = crate::runtime::NativeMarkdown::new();
+        let _: nana_ui_runtime::SelectableRichText = crate::runtime::SelectableRichText::new([]);
         let _: nana_ui_runtime::ImageViewer =
-            crate::ImageViewer::new(nana_ui_runtime::ImageViewerContent::None);
+            crate::runtime::ImageViewer::new(nana_ui_runtime::ImageViewerContent::None);
         let _: nana_ui_runtime::CalendarHeatmap = crate::components::CalendarHeatmap::new([]);
         let _: nana_ui_runtime::NativeMarkdown = crate::components::NativeMarkdown::new();
     }
@@ -347,12 +348,12 @@ mod tests {
     #[cfg(feature = "graph-canvas")]
     fn graph_and_gpu_public_exports_are_runtime_components() {
         let _: nana_ui_runtime::GraphCanvas =
-            crate::GraphCanvas::new("main", nana_ui_core::GraphModel::empty());
+            crate::runtime::GraphCanvas::new("main", nana_ui_core::GraphModel::empty());
         let _: nana_ui_runtime::GraphMinimap =
-            crate::GraphMinimap::new(nana_ui_core::GraphModel::empty());
-        let _: nana_ui_runtime::GpuView = crate::GpuView::new(1);
-        let _: nana_ui_runtime::GpuTextureView = crate::GpuTextureView::new("slot");
-        let _: nana_ui_runtime::Thumbnail = crate::Thumbnail::empty();
+            crate::runtime::GraphMinimap::new(nana_ui_core::GraphModel::empty());
+        let _: nana_ui_runtime::GpuView = crate::runtime::GpuView::new(1);
+        let _: nana_ui_runtime::GpuTextureView = crate::runtime::GpuTextureView::new("slot");
+        let _: nana_ui_runtime::Thumbnail = crate::runtime::Thumbnail::empty();
         let _: nana_ui_runtime::Thumbnail = crate::components::Thumbnail::empty();
         let _: nana_ui_runtime::GraphCanvas =
             crate::components::GraphCanvas::new("main", nana_ui_core::GraphModel::empty());
@@ -360,10 +361,10 @@ mod tests {
 
     #[test]
     fn first_batch_public_exports_are_runtime_components() {
-        let _: nana_ui_runtime::Text = crate::Text::new("Status");
-        let _: nana_ui_runtime::Button = crate::Button::new("Run");
-        let _: nana_ui_runtime::TextInput = crate::TextInput::new("main");
-        let _: nana_ui_runtime::Checkbox = crate::Checkbox::new("Enabled", true);
+        let _: nana_ui_runtime::Text = crate::runtime::Text::new("Status");
+        let _: nana_ui_runtime::Button = crate::runtime::Button::new("Run");
+        let _: nana_ui_runtime::TextInput = crate::runtime::TextInput::new("main");
+        let _: nana_ui_runtime::Checkbox = crate::runtime::Checkbox::new("Enabled", true);
 
         let _: nana_ui_runtime::Text = crate::components::Text::new("Status");
         let _: nana_ui_runtime::Button = crate::components::Button::new("Run");
@@ -374,12 +375,14 @@ mod tests {
     #[test]
     fn third_batch_public_exports_are_runtime_components() {
         let _: nana_ui_runtime::StatusBadge =
-            crate::StatusBadge::new("Ready", nana_ui_runtime::StatusTone::Neutral);
-        let _: nana_ui_runtime::ValidationMessage =
-            crate::ValidationMessage::new("Required", nana_ui_runtime::ValidationIntent::Danger);
-        let _: nana_ui_runtime::EmptyState = crate::EmptyState::new("Nothing here");
-        let _: nana_ui_runtime::LabeledValue = crate::LabeledValue::new("Revision", "42");
-        let _: nana_ui_runtime::SegmentedControl = crate::SegmentedControl::new();
+            crate::runtime::StatusBadge::new("Ready", nana_ui_runtime::StatusTone::Neutral);
+        let _: nana_ui_runtime::ValidationMessage = crate::runtime::ValidationMessage::new(
+            "Required",
+            nana_ui_runtime::ValidationIntent::Danger,
+        );
+        let _: nana_ui_runtime::EmptyState = crate::runtime::EmptyState::new("Nothing here");
+        let _: nana_ui_runtime::LabeledValue = crate::runtime::LabeledValue::new("Revision", "42");
+        let _: nana_ui_runtime::SegmentedControl = crate::runtime::SegmentedControl::new();
 
         let _: nana_ui_runtime::StatusBadge =
             crate::components::StatusBadge::new("Ready", nana_ui_runtime::StatusTone::Neutral);
@@ -395,15 +398,15 @@ mod tests {
 
     #[test]
     fn fourth_batch_public_exports_are_runtime_components() {
-        let _: nana_ui_runtime::Progress = crate::Progress::new(1.0, 2.0);
-        let _: nana_ui_runtime::Spinner = crate::Spinner::new("Loading");
-        let _: nana_ui_runtime::Thumbnail = crate::Thumbnail::empty();
+        let _: nana_ui_runtime::Progress = crate::runtime::Progress::new(1.0, 2.0);
+        let _: nana_ui_runtime::Spinner = crate::runtime::Spinner::new("Loading");
+        let _: nana_ui_runtime::Thumbnail = crate::runtime::Thumbnail::empty();
         let _: nana_ui_runtime::Skeleton =
-            crate::Skeleton::new(nana_ui_core::LengthSpec::Fill, 16.0);
-        let _: nana_ui_runtime::LevelMeter = crate::LevelMeter::new(0.5);
-        let _: nana_ui_runtime::FormField = crate::FormField::new("Name");
-        let _: nana_ui_runtime::InteractiveCard = crate::InteractiveCard::new();
-        let _: nana_ui_runtime::Tabs = crate::Tabs::new("code");
+            crate::runtime::Skeleton::new(nana_ui_core::LengthSpec::Fill, 16.0);
+        let _: nana_ui_runtime::LevelMeter = crate::runtime::LevelMeter::new(0.5);
+        let _: nana_ui_runtime::FormField = crate::runtime::FormField::new("Name");
+        let _: nana_ui_runtime::InteractiveCard = crate::runtime::InteractiveCard::new();
+        let _: nana_ui_runtime::Tabs = crate::runtime::Tabs::new("code");
 
         let _: nana_ui_runtime::Progress = crate::components::Progress::new(1.0, 2.0);
         let _: nana_ui_runtime::Spinner = crate::components::Spinner::new("Loading");
@@ -418,30 +421,33 @@ mod tests {
 
     #[test]
     fn candidate_cutover_public_exports_are_runtime_components() {
-        let _: nana_ui_runtime::TextArea = crate::Textarea::new("notes");
-        let _: nana_ui_runtime::Tooltip = crate::Tooltip::new("Hint");
-        let _: nana_ui_runtime::Dialog = crate::Dialog::new("Rename");
+        let _: nana_ui_runtime::TextArea = crate::runtime::TextArea::new("notes");
+        let _: nana_ui_runtime::Tooltip = crate::runtime::Tooltip::new("Hint");
+        let _: nana_ui_runtime::Dialog = crate::runtime::Dialog::new("Rename");
         let _: nana_ui_runtime::ConfirmDialog =
-            crate::ConfirmDialog::new("Delete", "This cannot be undone.");
-        let _: nana_ui_runtime::Drawer = crate::Drawer::new("Inspector");
+            crate::runtime::ConfirmDialog::new("Delete", "This cannot be undone.");
+        let _: nana_ui_runtime::Drawer = crate::runtime::Drawer::new("Inspector");
         let _: nana_ui_runtime::Toast =
-            crate::Toast::new("Saved", nana_ui_runtime::ToastTone::Info);
-        let _: nana_ui_runtime::XYPad = crate::XYPad::new(nana_ui_core::XYPadValue::new(0.5, 0.5));
-        let _: nana_ui_runtime::QrCode =
-            crate::QrCode::from_modules(vec![false], 1, 64.0).expect("single module encodes");
-        let _: nana_ui_runtime::Select = crate::Select::new(Some("code"));
-        let _: nana_ui_runtime::Popover = crate::Popover::new();
-        let _: nana_ui_runtime::ActionMenu = crate::ActionMenu::new();
-        let _: nana_ui_runtime::ActionMenuItem = crate::ActionMenuItem::new("Rename");
-        let _: nana_ui_runtime::AnchoredActionMenu = crate::AnchoredActionMenu::new(24.0, 36.0);
-        let _: nana_ui_runtime::ContextMenu = crate::ContextMenu::new(24.0, 36.0);
-        let _: nana_ui_runtime::OverlayHost = crate::OverlayHost::new();
-        let _: nana_ui_runtime::Dropdown = crate::Dropdown::single(Some("code"));
-        let _: nana_ui_runtime::SearchDropdown = crate::SearchDropdown::new(None::<&str>);
-        let _: nana_ui_runtime::CommandPalette = crate::CommandPalette::new("命令面板", []);
-        let _: nana_ui_runtime::TreeView = crate::TreeView::new([]);
+            crate::runtime::Toast::new("Saved", nana_ui_runtime::ToastTone::Info);
+        let _: nana_ui_runtime::XYPad =
+            crate::runtime::XYPad::new(nana_ui_core::XYPadValue::new(0.5, 0.5));
+        let _: nana_ui_runtime::QrCode = crate::runtime::QrCode::from_modules(vec![false], 1, 64.0)
+            .expect("single module encodes");
+        let _: nana_ui_runtime::Select = crate::runtime::Select::new(Some("code"));
+        let _: nana_ui_runtime::Popover = crate::runtime::Popover::new();
+        let _: nana_ui_runtime::ActionMenu = crate::runtime::ActionMenu::new();
+        let _: nana_ui_runtime::ActionMenuItem = crate::runtime::ActionMenuItem::new("Rename");
+        let _: nana_ui_runtime::AnchoredActionMenu =
+            crate::runtime::AnchoredActionMenu::new(24.0, 36.0);
+        let _: nana_ui_runtime::ContextMenu = crate::runtime::ContextMenu::new(24.0, 36.0);
+        let _: nana_ui_runtime::OverlayHost = crate::runtime::OverlayHost::new();
+        let _: nana_ui_runtime::Dropdown = crate::runtime::Dropdown::single(Some("code"));
+        let _: nana_ui_runtime::SearchDropdown = crate::runtime::SearchDropdown::new(None::<&str>);
+        let _: nana_ui_runtime::CommandPalette =
+            crate::runtime::CommandPalette::new("命令面板", []);
+        let _: nana_ui_runtime::TreeView = crate::runtime::TreeView::new([]);
 
-        let _: nana_ui_runtime::TextArea = crate::components::Textarea::new("notes");
+        let _: nana_ui_runtime::TextArea = crate::components::TextArea::new("notes");
         let _: nana_ui_runtime::Tooltip = crate::components::Tooltip::new("Hint");
         let _: nana_ui_runtime::Dialog = crate::components::Dialog::new("Rename");
         let _: nana_ui_runtime::ConfirmDialog =
@@ -472,19 +478,20 @@ mod tests {
 
     #[test]
     fn sidebar_and_settings_leaf_exports_are_runtime_components() {
-        let _: nana_ui_runtime::SidebarRow = crate::SidebarRow::new("工作区");
-        let _: nana_ui_runtime::SettingsRow = crate::SettingsRow::new("主题");
-        let _: nana_ui_runtime::SettingsCard = crate::SettingsCard::new("外观");
-        let _: nana_ui_runtime::SidebarFrame = crate::SidebarFrame::new();
-        let _: nana_ui_runtime::SidebarSection = crate::SidebarSection::new("资源");
-        let _: nana_ui_runtime::SidebarFooter = crate::SidebarFooter::new();
-        let _: nana_ui_runtime::AppearanceSection = crate::AppearanceSection::new(
+        let _: nana_ui_runtime::SidebarRow = crate::runtime::SidebarRow::new("工作区");
+        let _: nana_ui_runtime::SettingsRow = crate::runtime::SettingsRow::new("主题");
+        let _: nana_ui_runtime::SettingsCard = crate::runtime::SettingsCard::new("外观");
+        let _: nana_ui_runtime::SidebarFrame = crate::runtime::SidebarFrame::new();
+        let _: nana_ui_runtime::SidebarSection = crate::runtime::SidebarSection::new("资源");
+        let _: nana_ui_runtime::SidebarFooter = crate::runtime::SidebarFooter::new();
+        let _: nana_ui_runtime::AppearanceSection = crate::runtime::AppearanceSection::new(
             nana_ui_core::ThemeMode::Dark,
             nana_ui_core::AppearanceSettings::default(),
         );
         let _: nana_ui_runtime::AboutSection =
-            crate::AboutSection::new(nana_ui_runtime::AboutMetadata::new("NanaUI", "0"));
-        let _: nana_ui_runtime::SettingsCollapsibleCard = crate::SettingsCollapsibleCard::new(true);
+            crate::runtime::AboutSection::new(nana_ui_runtime::AboutMetadata::new("NanaUI", "0"));
+        let _: nana_ui_runtime::SettingsCollapsibleCard =
+            crate::runtime::SettingsCollapsibleCard::new(true);
 
         let _: nana_ui_runtime::SidebarRow = crate::components::SidebarRow::new("工作区");
         let _: nana_ui_runtime::SettingsRow = crate::components::SettingsRow::new("主题");
@@ -505,20 +512,20 @@ mod tests {
 
     #[test]
     fn workspace_family_public_exports_are_runtime_components() {
-        let _: nana_ui_runtime::Workspace = crate::Workspace::new();
+        let _: nana_ui_runtime::Workspace = crate::runtime::Workspace::new();
         let _: nana_ui_runtime::Dock =
-            crate::Dock::new(nana_ui_runtime::DockNode::item("main", None));
-        let _: nana_ui_runtime::DockPanel = crate::DockPanel::new();
+            crate::runtime::Dock::new(nana_ui_runtime::DockNode::item("main", None));
+        let _: nana_ui_runtime::DockPanel = crate::runtime::DockPanel::new();
         let _: fn(
             &nana_ui_core::SplitPaneModel,
             nana_ui_runtime::StableNodeId,
             nana_ui_runtime::StableNodeId,
-        ) -> nana_ui_runtime::SplitPane = crate::SplitPane::from_model;
-        let _: nana_ui_runtime::PaneChrome = crate::PaneChrome::new();
+        ) -> nana_ui_runtime::SplitPane = crate::runtime::SplitPane::from_model;
+        let _: nana_ui_runtime::PaneChrome = crate::runtime::PaneChrome::new();
         let _: nana_ui_runtime::PaneTree =
-            crate::PaneTree::new(nana_ui_runtime::PaneTreeNode::leaf("editor"));
-        let _: nana_ui_runtime::AppShell = crate::AppShell::new();
-        let _: nana_ui_runtime::AppTitleBar = crate::AppTitleBar::new("NanaUI");
+            crate::runtime::PaneTree::new(nana_ui_runtime::PaneTreeNode::leaf("editor"));
+        let _: nana_ui_runtime::AppShell = crate::runtime::AppShell::new();
+        let _: nana_ui_runtime::AppTitleBar = crate::runtime::AppTitleBar::new("NanaUI");
     }
 
     #[test]
