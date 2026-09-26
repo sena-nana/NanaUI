@@ -216,7 +216,7 @@ Scene Host                       →  唯一负责 transaction Commit
 2. 标题栏空白处发出 `WindowChromeAction::Drag`：macOS 在按下时即交给 AppKit，且 `currentEvent` 必须仍是左键按下或拖动，否则不拖；其他平台按下后移动超过 4px 才发出。Scene host 调用 `nana_window::drag_custom_title_bar`，非 macOS 失败再 `winit::drag_window`。原生拖窗接管按键释放，拖动开始后 host 立即补发一次 `PointerPhase::Cancel`，结束按键掩码、Runtime 按压/捕获、标题栏手势与程序侧手势；`WindowService::begin_drag` 同样适用。
 3. 无系统 caption、可缩放、未最大化、非全屏时，客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`（macOS `setFrame`、Windows `SetWindowPos`），不进入系统嵌套 size-move 循环；系统 caption 窗口不叠第二套缩放命中。
 
-`WindowCommand::Drag` 是「用当前在飞的手势移动这扇窗」的唯一信号：标题栏拖动和消费应用自定的手势（例如整窗中键拖动）发的是同一个，host 按按下的键分派。主键走上面的原生拖窗。其他键走 `LiveFrameMove`（macOS `setFrameOrigin`、Windows `SetWindowPos`），因为平台拖窗只认主键——AppKit 直接拒绝，Win32 的 caption 移动循环只有主键释放才收尾，窗口会粘在光标上。host 自管的移动在该键释放、新的主键按下、Esc（还原原位）或失焦时结束，结束时补发一次 `PointerPhase::Cancel`；全屏窗口不移动，最大化窗口先还原再锚定。期间指针事件在到达文档前被吃掉，移动本身不改 drawable 因而不重绘。该路径只在 macOS 与 Windows 上存在，其他平台仍回落原生拖窗。
+`WindowCommand::Drag` 是「用当前在飞的手势移动这扇窗」的唯一信号：标题栏拖动和消费应用自定的手势（例如整窗中键拖动）发的是同一个，host 按按下的键分派。默认主键走上面的原生拖窗；设置 `WindowDescriptor::host_managed_drag = true` 的窗口也把主键交给 `LiveFrameMove`，因此不会进入 Windows 的嵌套移动循环，宿主事件循环可以继续驱动其他窗口。其他键仍走 `LiveFrameMove`（macOS `setFrameOrigin`、Windows `SetWindowPos`），因为平台拖窗只认主键——AppKit 直接拒绝，Win32 的 caption 移动循环只有主键释放才收尾，窗口会粘在光标上。host 自管的移动在该键释放、新的主键按下、Esc（还原原位）或失焦时结束，结束时补发一次 `PointerPhase::Cancel`；全屏窗口不移动，最大化窗口先还原再锚定。期间指针事件在到达文档前被吃掉，移动本身不改 drawable 因而不重绘。原生模式保留系统贴边等平台拖动能力；host-managed 模式只保留 NanaUI 的持续事件循环与指针跟随。该路径只在 macOS 与 Windows 上存在，其他平台仍回落原生拖窗。
 
 窗口光标还会消费 L1 CSS `cursor` 的常用关键字：`default`、`pointer`、`text`、`move`、`grab`、`grabbing`、`not-allowed`、`crosshair`、`help`、`wait`、`progress`、`zoom-in`、`zoom-out`、`none`。该属性按 CSS 继承；未知关键字和 `url()` 光标 fail-closed。`WindowCursor` 程序化入口与上述关键字对齐，并多一个 `Automatic` 以恢复 Runtime/CSS 选择。光标优先级低于窗口边框缩放和分割/停靠/工作区 resize 手柄，高于未声明 cursor 时 TextInput 的 I 型光标；`none` 只隐藏系统光标，不加载自定义图片。
 
@@ -469,6 +469,7 @@ pub enum FullscreenMode {
 
 ```powershell
 cargo build -p nana-ui --example desktop-overlay-probe --features hosted,bundled-fonts --locked
+python -m pip install -r scripts/requirements-desktop-overlay.txt
 python scripts/validate-desktop-overlay.py
 ```
 
