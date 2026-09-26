@@ -87,7 +87,9 @@ impl Splash {
         splash_window.setOpaque(false);
         splash_window.setHasShadow(false);
         splash_window.setBackgroundColor(Some(&NSColor::clearColor()));
-        splash_window.setIgnoresMouseEvents(false);
+        // The splash is decorative. Keep pointer input on the application
+        // window while the two windows overlap during handoff.
+        splash_window.setIgnoresMouseEvents(true);
         splash_window.setLevel(NSFloatingWindowLevel);
         splash_window.setCollectionBehavior(
             NSWindowCollectionBehavior::Transient

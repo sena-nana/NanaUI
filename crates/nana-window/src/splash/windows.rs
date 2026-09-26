@@ -42,9 +42,9 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetClientRect, HWND_TOPMOST, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
-    SWP_NOSENDCHANGING, SetWindowPos, ShowWindow, WM_DPICHANGED, WM_MOVE, WM_SIZE,
-    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, DestroyWindow, GetClientRect, HTTRANSPARENT, HWND_TOPMOST, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SetWindowPos, ShowWindow, WM_DPICHANGED, WM_MOVE,
+    WM_NCHITTEST, WM_SIZE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use super::{LogoInfo, SplashAnimation, SplashFailure, SplashWork, fit_logo};
@@ -433,12 +433,16 @@ unsafe extern "system" fn splash_proc(
     _subclass_id: usize,
     ref_data: usize,
 ) -> LRESULT {
-    // SAFETY: forwards to winit's procedure first, so the window has its new
-    // size before the splash follows it.
-    let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
     let tree = unsafe { &*(ref_data as *mut Tree) };
     let is_splash = tree.hwnd.0 == hwnd;
     let is_owner = tree.owner.is_some_and(|owner| owner.0 == hwnd);
+    // Pass through to underlying windows on this thread during handoff.
+    if is_splash && message == WM_NCHITTEST {
+        return HTTRANSPARENT as LRESULT;
+    }
+    // SAFETY: forwards to winit's procedure first, so the window has its new
+    // size before the splash follows it.
+    let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
     if is_owner && matches!(message, WM_MOVE | WM_SIZE | WM_DPICHANGED) {
         // SetWindowPos may synchronously notify the splash window. Do not
         // hold a mutable Tree borrow across that call.

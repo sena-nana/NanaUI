@@ -90,8 +90,7 @@ fn union(a: Option<Bounds>, b: Option<Bounds>) -> Option<Bounds> {
         bottom: a.bottom.max(b.bottom),
     })
 }
-fn intersects(a: SceneRect, b: SceneRect) -> bool {
-    let a = Bounds::from_rect(a);
+fn intersects_bounds(a: Bounds, b: SceneRect) -> bool {
     let b = Bounds::from_rect(b);
     a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top
 }
@@ -663,7 +662,7 @@ impl VisibilityIndex {
         out: &mut Vec<RenderOperation>,
     ) {
         if start >= self.plan.operations.len()
-            || self.bounds[at].is_some_and(|bounds| !intersects(bounds.to_rect(), viewport))
+            || self.bounds[at].is_some_and(|bounds| !intersects_bounds(bounds, viewport))
         {
             return;
         }
@@ -708,7 +707,8 @@ impl UiScene {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bounds, bounds_match, projection_component_matches};
+    use super::{Bounds, bounds_match, intersects_bounds, projection_component_matches};
+    use crate::SceneRect;
 
     #[test]
     fn projection_comparison_accepts_only_a_small_finite_ulp_drift() {
@@ -762,5 +762,35 @@ mod tests {
             bottom: 620.6664,
         });
         assert!(bounds_match(retained, fresh));
+    }
+
+    #[test]
+    fn visibility_intersects_against_normalized_edges_without_round_trip() {
+        let bounds = Bounds {
+            left: -16_777_216.0,
+            top: -16_777_216.0,
+            right: 1.0,
+            bottom: 1.0,
+        };
+        // Reconstructing the edges through width/height loses the last pixel.
+        assert_eq!(Bounds::from_rect(bounds.to_rect()).right, 0.0);
+        assert!(intersects_bounds(
+            bounds,
+            SceneRect {
+                x: 0.5,
+                y: 0.5,
+                width: 1.0,
+                height: 1.0,
+            }
+        ));
+        assert!(!intersects_bounds(
+            bounds,
+            SceneRect {
+                x: 2.0,
+                y: 2.0,
+                width: 1.0,
+                height: 1.0,
+            }
+        ));
     }
 }

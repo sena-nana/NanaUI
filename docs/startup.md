@@ -46,8 +46,8 @@ Logo 的上限：编码后 ≤ 1 MiB（与打包器 `early-splash` pack 的上�
 
 | 平台 | 实现 | 动画 | 交接 | 验证 |
 | --- | --- | --- | --- | --- |
-| macOS | 独立无标题栏、透明背景的 `NSWindow`，内容为 `CALayer` | `CABasicAnimation`，由 render server 推进 | 目标帧以 `presentsWithTransaction` present，同一轮里移除独立 Splash；drawable 与移除落在同一个 Core Animation 提交里 | 本机真窗口，60 fps 录屏逐帧检查 |
-| Windows，普通 HWND | topmost `CreateTargetForHwnd(hwnd, TRUE)` 上的 DirectComposition 视觉树；Logo 与背景由一个短生命周期 D3D11 设备上传一次；子类跟随 `WM_SIZE` / `WM_DPICHANGED` 重新居中 | `IDCompositionAnimation`（透明度、旋转），由 DWM 推进 | 目标帧 present → 等它的 GPU 工作完成（`on_submitted_work_done`）→ `DwmFlush()` 一次 → 移除视觉并提交 → 释放 D3D11 / DComp | **只交叉编译检查过，未经 Windows 真机验证** |
+| macOS | 独立无标题栏、透明背景的 `NSWindow`，内容为 `CALayer`；窗口忽略鼠标事件，交接期间输入仍归主窗口 | `CABasicAnimation`，由 render server 推进 | 目标帧以 `presentsWithTransaction` present，同一轮里移除独立 Splash；drawable 与移除落在同一个 Core Animation 提交里 | 本机真窗口，60 fps 录屏逐帧检查 |
+| Windows，普通 HWND | topmost `CreateTargetForHwnd(hwnd, TRUE)` 上的 DirectComposition 视觉树；Logo 与背景由一个短生命周期 D3D11 设备上传一次；独立 HWND 对 `WM_NCHITTEST` 返回 `HTTRANSPARENT`，交接期间输入仍归主窗口；子类跟随 `WM_SIZE` / `WM_DPICHANGED` 重新居中 | `IDCompositionAnimation`（透明度、旋转），由 DWM 推进 | 目标帧 present → 等它的 GPU 工作完成（`on_submitted_work_done`）→ `DwmFlush()` 一次 → 移除视觉并提交 → 释放 D3D11 / DComp | **只交叉编译检查过，未经 Windows 真机验证** |
 | Windows，合成路径（`WS_EX_NOREDIRECTIONBITMAP`） | 不显示，`Skipped(CompositionTarget)`：这扇窗口的 topmost 槽已经被 NanaUI 自己的合成树占用 | — | — | — |
 | Linux 及其他 | 不显示，`Skipped(PlatformUnsupported)` | — | — | — |
 
