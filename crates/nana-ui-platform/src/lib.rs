@@ -11,6 +11,8 @@ mod persist;
 mod persistence_worker;
 pub use persistence_worker::{PersistenceCoordinator, PersistenceWork};
 mod window;
+mod window_shadow;
+pub use window_shadow::*;
 #[cfg(feature = "ws")]
 mod ws;
 

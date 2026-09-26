@@ -234,6 +234,7 @@ pub struct ResolvedWindowPresentation {
     surface_target: WindowSurfaceTarget,
     target_fallback: Option<SurfaceTargetFallback>,
     chrome: Option<NativeChromePolicy>,
+    shadow: nana_ui_platform::WindowShadowOutcome,
 }
 
 impl ResolvedWindowPresentation {
@@ -256,6 +257,7 @@ impl ResolvedWindowPresentation {
     ) -> Self {
         let effective = demote_unpresentable(applied, alpha_mode, backend);
         Self {
+            shadow: resolve_window_shadow(settings),
             requested,
             effective,
             alpha_mode,
@@ -281,7 +283,13 @@ impl ResolvedWindowPresentation {
             surface_target: WindowSurfaceTarget::NativeWindow,
             target_fallback: None,
             chrome: None,
+            shadow: nana_ui_platform::WindowShadowOutcome::disabled(),
         }
+    }
+
+    /// Shadow application outcome. Pending means no platform application yet.
+    pub const fn shadow(&self) -> nana_ui_platform::WindowShadowOutcome {
+        self.shadow
     }
 
     /// What the application asked for. Never decides chrome.
@@ -346,6 +354,23 @@ impl ResolvedWindowPresentation {
     pub(crate) fn needs_material_reset(&self) -> bool {
         self.effective.effect != self.requested
     }
+}
+
+// Request validation only. Platform application is not implemented yet: do not
+// report Native or Disabled without observing the corresponding native operation.
+fn resolve_window_shadow(settings: &WindowDescriptor) -> nana_ui_platform::WindowShadowOutcome {
+    use nana_ui_platform::{WindowShadow, WindowShadowFallback, WindowShadowSource};
+    let reason = match settings.shadow {
+        // `None` is an explicit instruction to remove any previously applied
+        // native or companion shadow. It is not a pending capability result.
+        WindowShadow::None => return nana_ui_platform::WindowShadowOutcome::disabled(),
+        WindowShadow::Custom(style) if !style.is_valid() => WindowShadowFallback::InvalidStyle,
+        WindowShadow::Custom(style) if style.source == WindowShadowSource::ContentAlpha => {
+            WindowShadowFallback::ContentAlphaUnavailable
+        }
+        _ => WindowShadowFallback::Pending,
+    };
+    nana_ui_platform::WindowShadowOutcome::unavailable(reason)
 }
 
 /// Whether this platform has a composition surface target at all.
@@ -488,6 +513,20 @@ mod tests {
 
     fn settings() -> WindowDescriptor {
         WindowDescriptor::new("presentation")
+    }
+
+    #[test]
+    fn shadow_requests_are_fail_closed_until_native_application() {
+        use nana_ui_platform::{WindowShadow, WindowShadowBackend, WindowShadowFallback};
+        for request in [WindowShadow::Auto, WindowShadow::Custom(Default::default())] {
+            let outcome = resolve_window_shadow(&settings().shadow(request));
+            assert_eq!(outcome.backend, WindowShadowBackend::None);
+            assert_eq!(outcome.fallback, Some(WindowShadowFallback::Pending));
+        }
+        assert_eq!(
+            resolve_window_shadow(&settings().shadow(WindowShadow::None)),
+            nana_ui_platform::WindowShadowOutcome::disabled()
+        );
     }
 
     /// The P0 case: a transparent request on a DX12 HWND surface. The surface

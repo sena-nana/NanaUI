@@ -350,3 +350,8 @@ pub use window_service::{
 pub mod platform_host {
     pub use crate::scene_host::EmbeddedRuntime;
 }
+
+pub use nana_ui_platform::{
+    WindowShadow, WindowShadowBackend, WindowShadowCapabilities, WindowShadowFallback,
+    WindowShadowOutcome, WindowShadowSource, WindowShadowStyle,
+};

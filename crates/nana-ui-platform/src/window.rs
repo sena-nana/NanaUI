@@ -447,6 +447,8 @@ pub struct WindowDescriptor {
     pub initial_position: Option<(f64, f64)>,
     pub maximized: bool,
     pub transparent: bool,
+    /// Desktop shadow; does not add client padding or alter input regions.
+    pub shadow: crate::WindowShadow,
     /// Initial visibility, applied only after document initialization succeeds.
     pub visible: bool,
     pub always_on_top: bool,
@@ -546,6 +548,7 @@ impl WindowDescriptor {
             initial_position: None,
             maximized: false,
             transparent: false,
+            shadow: crate::WindowShadow::Auto,
             visible: true,
             always_on_top: false,
             fullscreen: None,
@@ -569,6 +572,11 @@ impl WindowDescriptor {
     /// Choose how this window's frames reach the screen.
     pub const fn surface(mut self, surface: WindowSurfacePreference) -> Self {
         self.surface = surface;
+        self
+    }
+
+    pub const fn shadow(mut self, shadow: crate::WindowShadow) -> Self {
+        self.shadow = shadow;
         self
     }
 

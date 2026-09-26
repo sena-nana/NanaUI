@@ -1735,10 +1735,14 @@ fn apply_scene_material(
     )
 }
 
-fn apply_window_transparency(window: &dyn winit::window::Window, requested: crate::MaterialEffect) {
+fn apply_window_transparency(
+    window: &dyn winit::window::Window,
+    requested: crate::MaterialEffect,
+    _shadow: nana_ui_platform::WindowShadow,
+) {
     window.set_transparent(requested.wants_transparent_surface());
     #[cfg(target_os = "macos")]
-    WindowExtMacOS::set_has_shadow(window, wants_system_shadow(requested));
+    WindowExtMacOS::set_has_shadow(window, wants_system_shadow(requested, _shadow));
 }
 
 /// Whether the platform should draw its own shadow around the window.
@@ -1750,7 +1754,19 @@ fn apply_window_transparency(window: &dyn winit::window::Window, requested: crat
 /// where such a window gets no system shadow either. A material backdrop
 /// (vibrancy) fills the whole window, so its shadow stays the window's own.
 #[cfg(any(target_os = "macos", test))]
-const fn wants_system_shadow(effect: crate::MaterialEffect) -> bool {
+const fn wants_system_shadow(
+    effect: crate::MaterialEffect,
+    shadow: nana_ui_platform::WindowShadow,
+) -> bool {
+    if matches!(shadow, nana_ui_platform::WindowShadow::None) {
+        return false;
+    }
+    // AppKit can only express its default window shadow. A custom request is
+    // therefore left for the platform resolver/companion instead of silently
+    // applying a style it cannot represent.
+    if matches!(shadow, nana_ui_platform::WindowShadow::Custom(_)) {
+        return false;
+    }
     !matches!(effect, crate::MaterialEffect::Transparent)
 }
 
@@ -1776,7 +1792,7 @@ fn apply_window_material(
         backdrop_opacity,
         window_background,
     );
-    apply_window_transparency(window, requested);
+    apply_window_transparency(window, requested, settings.shadow);
     (requested, material)
 }
 
@@ -1816,7 +1832,7 @@ fn apply_resolved_presentation(
             backdrop_opacity,
             window_background,
         );
-        apply_window_transparency(window, presentation.effective().effect);
+        apply_window_transparency(window, presentation.effective().effect, settings.shadow);
     }
     apply_native_chrome(window, settings, presentation, allow_caption_change);
 }
@@ -3580,9 +3596,26 @@ mod tests {
     /// outline traced around whatever its client paints.
     #[test]
     fn only_an_opaque_window_keeps_the_system_shadow() {
-        assert!(wants_system_shadow(crate::MaterialEffect::Solid));
-        assert!(wants_system_shadow(crate::MaterialEffect::Vibrancy));
-        assert!(!wants_system_shadow(crate::MaterialEffect::Transparent));
+        assert!(wants_system_shadow(
+            crate::MaterialEffect::Solid,
+            nana_ui_platform::WindowShadow::Auto
+        ));
+        assert!(wants_system_shadow(
+            crate::MaterialEffect::Vibrancy,
+            nana_ui_platform::WindowShadow::Auto
+        ));
+        assert!(!wants_system_shadow(
+            crate::MaterialEffect::Transparent,
+            nana_ui_platform::WindowShadow::Auto
+        ));
+        assert!(!wants_system_shadow(
+            crate::MaterialEffect::Solid,
+            nana_ui_platform::WindowShadow::None
+        ));
+        assert!(!wants_system_shadow(
+            crate::MaterialEffect::Solid,
+            nana_ui_platform::WindowShadow::Custom(Default::default())
+        ));
     }
 
     #[test]

@@ -1709,6 +1709,7 @@ fn runtime_dock_window_commands(
                     parent: None,
                     system_caption: true,
                     icon: None,
+                    shadow: nana_ui::WindowShadow::Auto,
                     surface: nana_ui::WindowSurfacePreference::Auto,
                 },
             },

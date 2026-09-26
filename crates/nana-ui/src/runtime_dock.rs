@@ -106,6 +106,7 @@ fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> Windo
         icon: None,
         // A floating dock panel is an ordinary opaque window; it has no reason
         // to take a compositor visual.
+        shadow: nana_ui_platform::WindowShadow::Auto,
         surface: nana_ui_platform::WindowSurfacePreference::NativeWindow,
     }
 }

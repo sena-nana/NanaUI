@@ -4,6 +4,16 @@ Windows 自绘窗口按钮采用 NanaUI 图标按钮外观：28×28、控件圆�
 
 NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都按桌面软件来，不按浏览器来。
 
+## WindowShadow（Issue #215）
+
+`WindowDescriptor::shadow` 是平台无关的桌面阴影语义，默认 `WindowShadow::Auto`。它只描述顶层窗口装饰，不会给客户区增加 padding，也不改变 `WindowId`、输入、IME、无障碍或 capture 的坐标。`None` 显式关闭；`Custom` 可选择 `WindowShape` 或显式高成本的 `ContentAlpha`。
+
+WindowShadow 与 UiScene 的 `DropShadow` 是两条 authority：前者由 Window/Platform 层决定，后者属于 framebuffer 内的视觉效果。输入、拖拽和缩放区域不会被当作阴影形状来源。
+
+目前仅有请求合同与能力实验，**尚未接入 Windows companion**。`ResolvedWindowPresentation::shadow()` 对 `None` 返回明确的 disabled outcome；Auto 和尚未支持的平台实现返回 `Pending`，不能据此认为原生阴影已开启。Custom 非法参数或 ContentAlpha 返回明确原因。Windows companion、visual shape 增量接入、真实 work counters 和 native acceptance 均未完成。`window-shadow-steady` 目前只验收规则本身，没有真实测量报告；不能据 self-test 宣称性能通过。
+
+能力实验：`cargo run -p nana-window --example window-shadow-probe` 创建 Windows 系统合成器的 rounded geometry、visual surface mask、DropShadow；不创建 GPU Device 或 swapchain。成功只证明 API 可创建，未创建 HWND、未验证可见阴影、穿透或 z-order。
+
 `run_runtime(WindowDescriptor::new("标题"))` 会创建主窗口、唯一 GPU 上下文，并开始事件循环。`WindowDescriptor` 就是 `nana_ui_platform::WindowDescriptor`。
 
 ## 标题栏

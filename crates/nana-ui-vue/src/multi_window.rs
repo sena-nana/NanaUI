@@ -1613,6 +1613,7 @@ impl VueRuntime {
                         // `Auto` lets the host pick, and it only reaches a
                         // platform compositor in a process that asked to be
                         // composition-capable — which a Vue host does not.
+                        shadow: nana_ui_platform::WindowShadow::Auto,
                         surface: nana_ui_platform::WindowSurfacePreference::Auto,
                     },
                 },
