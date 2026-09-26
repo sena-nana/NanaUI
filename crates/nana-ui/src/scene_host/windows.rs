@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn uses_host_managed_drag(settings: &WindowDescriptor, button: i16) -> bool {
+    settings.host_managed_drag || button != PRIMARY_MOUSE_BUTTON
+}
+
 impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn apply_window_command(
         &mut self,
@@ -1106,17 +1111,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         id: WindowId,
     ) -> Result<(), winit::error::RequestError> {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if let Some(button) = held_mouse_button(self.input_of(id).buttons)
-            && button != PRIMARY_MOUSE_BUTTON
-        {
-            // A gesture the host declines — a fullscreen window has nowhere to
-            // move to — reports that, rather than falling back to the platform,
-            // which would take a press it cannot end for a caption drag.
-            return if self.start_frame_move(id, button) {
-                Ok(())
-            } else {
-                Err(winit::error::RequestError::Ignored)
-            };
+        if let Some(button) = held_mouse_button(self.input_of(id).buttons) {
+            if uses_host_managed_drag(self.settings_of(id), button) {
+                // A gesture the host declines — a fullscreen window has nowhere to
+                // move to — reports that, rather than falling back to the platform,
+                // which would take a press it cannot end for a caption drag.
+                return if self.start_frame_move(id, button) {
+                    Ok(())
+                } else {
+                    Err(winit::error::RequestError::Ignored)
+                };
+            }
         }
         let Some(window) = self.window(id).cloned() else {
             return Ok(());
@@ -2089,6 +2094,21 @@ mod request_error_tests {
             )),
             crate::WindowError::Unsupported(_)
         ));
+    }
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+mod drag_policy_tests {
+    use super::*;
+
+    #[test]
+    fn host_managed_drag_overrides_the_primary_button_native_default() {
+        let native = WindowDescriptor::new("native");
+        assert!(!uses_host_managed_drag(&native, PRIMARY_MOUSE_BUTTON));
+        assert!(uses_host_managed_drag(&native, 1));
+
+        let managed = WindowDescriptor::new("managed").host_managed_drag(true);
+        assert!(uses_host_managed_drag(&managed, PRIMARY_MOUSE_BUTTON));
     }
 }
 

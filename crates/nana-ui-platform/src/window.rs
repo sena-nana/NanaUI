@@ -482,6 +482,11 @@ pub struct WindowDescriptor {
     /// without a custom title bar should set this so Windows still has a close
     /// button.
     pub system_caption: bool,
+    /// Move this window through NanaUI's pointer-driven frame move instead of
+    /// entering the platform's nested native move loop. This keeps the host
+    /// event loop running while the window follows the pointer, at the cost
+    /// of platform-specific native drag affordances such as Aero Snap.
+    pub host_managed_drag: bool,
     /// Per-window override of the process application icon.
     pub icon: Option<WindowIcon>,
     /// How this window's frames should reach the screen.
@@ -555,6 +560,7 @@ impl WindowDescriptor {
             modal: false,
             parent: None,
             system_caption: false,
+            host_managed_drag: false,
             icon: None,
             surface: WindowSurfacePreference::Auto,
         }
@@ -568,6 +574,13 @@ impl WindowDescriptor {
 
     pub fn system_caption(mut self, enabled: bool) -> Self {
         self.system_caption = enabled;
+        self
+    }
+
+    /// Keep window movement in NanaUI's event loop while the primary button
+    /// drags the custom title bar.
+    pub const fn host_managed_drag(mut self, enabled: bool) -> Self {
+        self.host_managed_drag = enabled;
         self
     }
 
@@ -781,6 +794,12 @@ mod tests {
     fn client_chrome_is_the_default_window_contract() {
         let settings = WindowDescriptor::new("Scene");
         assert!(!settings.system_caption);
+        assert!(!settings.host_managed_drag);
+        assert!(
+            WindowDescriptor::new("Tool")
+                .host_managed_drag(true)
+                .host_managed_drag
+        );
         assert!(!settings.skip_taskbar);
         assert!(settings.icon.is_none());
         assert!(matches!(
