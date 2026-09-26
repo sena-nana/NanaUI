@@ -2,7 +2,7 @@
 
 Issue #225。启动分两个呈现阶段，但只有一套 UI 引擎：
 
-1. **Early Splash**：GPU 设备和程序都还不存在时，宿主就在主窗口上显示 Logo（编进二进制，或从包的 `early-splash` pack 读一次），可选一种由系统合成器自己推进的动画。
+1. **Early Splash**：GPU 设备和程序都还不存在时，宿主显示一个独立的小型原生 Splash 窗口（编进二进制，或从包的 `early-splash` pack 读一次），可选一种由系统合成器自己推进的动画。
 2. **应用自己的界面**：宿主已经能挂载、布局、派发事件并绘制普通文档时（`UiReady`），调用 `RuntimeProgram::initialize`。应用在这里挂加载页，或直接挂主界面，然后说明“这份内容可以接管”。宿主确认这份内容的首帧已经交给合成器，才撤下 Logo。
 
 **能力交接点和画面交接点是分开的。** `UiReady` 只表示可以画普通界面，不表示业务初始化完成；Logo 在接管内容的首帧确认之后才撤。
@@ -34,7 +34,7 @@ NanaApplication::builder(identity)
 | 字段 | 含义 |
 | --- | --- |
 | `logo` | `SplashLogo::png(&'static [u8])`：编进二进制的 PNG。`SplashLogo::packaged("nana://res/…")`：包里 `early-splash` pack 的一个条目（见下文）。都不发网络请求，不扫描文件，不走资源管理器 |
-| `logo_size` | 逻辑点。Logo 按比例缩放后放进这个框，居中；窗口比框小时跟着缩小 |
+| `logo_size` | 逻辑客户区尺寸，同时也是独立 Splash 窗口和 Logo 内容框的尺寸；Logo 按比例缩放后居中 |
 | `background` | `System`（默认主题调色板在当前**系统**明暗下的背景色）、`Color(..)`、`Transparent`（只画 Logo，给透明窗口用）。splash 出现时程序还不存在，读不到它的主题：主题不跟随系统明暗的应用（例如 Vue 宿主默认 `Light`）应传 `Color(..)` 为自己的背景色，否则交接时底色会变 |
 | `animation` | `None`、`FadeIn`（默认，淡入一次后保持）、`Pulse`（呼吸）、`Rotate`（旋转） |
 
@@ -46,7 +46,7 @@ Logo 的上限：编码后 ≤ 1 MiB（与打包器 `early-splash` pack 的上�
 
 | 平台 | 实现 | 动画 | 交接 | 验证 |
 | --- | --- | --- | --- | --- |
-| macOS | 在内容视图根 `CALayer` 上挂一个容器层，`zPosition` 高于 wgpu 插入的 `CAMetalLayer` 子层 | `CABasicAnimation`，由 render server 推进 | 目标帧以 `presentsWithTransaction` present，同一轮里移除 splash 层；drawable 与移除落在同一个 Core Animation 提交里 | 本机真窗口，60 fps 录屏逐帧检查 |
+| macOS | 独立无标题栏、透明背景的 `NSWindow`，内容为 `CALayer` | `CABasicAnimation`，由 render server 推进 | 目标帧以 `presentsWithTransaction` present，同一轮里移除独立 Splash；drawable 与移除落在同一个 Core Animation 提交里 | 本机真窗口，60 fps 录屏逐帧检查 |
 | Windows，普通 HWND | topmost `CreateTargetForHwnd(hwnd, TRUE)` 上的 DirectComposition 视觉树；Logo 与背景由一个短生命周期 D3D11 设备上传一次；子类跟随 `WM_SIZE` / `WM_DPICHANGED` 重新居中 | `IDCompositionAnimation`（透明度、旋转），由 DWM 推进 | 目标帧 present → 等它的 GPU 工作完成（`on_submitted_work_done`）→ `DwmFlush()` 一次 → 移除视觉并提交 → 释放 D3D11 / DComp | **只交叉编译检查过，未经 Windows 真机验证** |
 | Windows，合成路径（`WS_EX_NOREDIRECTIONBITMAP`） | 不显示，`Skipped(CompositionTarget)`：这扇窗口的 topmost 槽已经被 NanaUI 自己的合成树占用 | — | — | — |
 | Linux 及其他 | 不显示，`Skipped(PlatformUnsupported)` | — | — | — |
@@ -92,7 +92,7 @@ include = ["splash/**"]
 - 读取走 `nana://res/` 挂载的同一个缓存 reader 和诊断，之后再从这个 pack 读资源不会重开。
 - 先查 TOC 里的条目长度，超过 1 MiB 就报 `Logo(TooLarge)`，条目数据一个字节都不读。数据读出来后逐块校验 hash，全部通过才交给 PNG 头检查。
 
-读取发生在事件线程上，位置在建窗和发起设备请求之后、窗口显示之前，每次启动最多一次。隐藏启动和不支持原生 splash 的平台会跳过读取。Windows 合成主窗口使用一个无激活的独立原生窗口承载 splash；它跟随主窗口移动、尺寸和 DPI，不会覆盖主窗口的 Composition root。开发布局（从 `target/` 运行、没有 manifest）改读 `loose_root` 下的同一个逻辑路径，只读这一个文件；那里没有 pack 类别可查，路径是否真在 `early-splash` pack 里，要到打包后才能确认（见下面的自检）。
+读取发生在事件线程上，位置在建窗和发起设备请求之后、窗口显示之前，每次启动最多一次。隐藏启动和不支持原生 splash 的平台会跳过读取。Windows 与 macOS 使用无激活的独立原生 Splash 窗口；它只跟随主窗口的中心点和 DPI，不读取或跟随主窗口大小。开发布局（从 `target/` 运行、没有 manifest）改读 `loose_root` 下的同一个逻辑路径，只读这一个文件；那里没有 pack 类别可查，路径是否真在 `early-splash` pack 里，要到打包后才能确认（见下面的自检）。
 
 读不到时，结果是 `Failed(Package(SplashPackageError))`：
 
@@ -138,7 +138,7 @@ startup.cancel_takeover(ticket)?;    // 撤回；这张 ticket 作废
 
 - **代次**：`cancel_takeover` 让当前 ticket 作废；接管帧已经 present 之后（Windows 上正在等合成器取走它）再撤回会被拒绝（`AlreadyHandedOff`）。取消之前发出的任务稍后带着旧 ticket 回来，会被拒绝（`StartupError::StaleTicket`），不会用没人要求的内容接管。新请求要用 `status()` 里的新 ticket。
 - **目标帧**：请求记录主窗口此刻的 flush 序号。只有在这之后 flush、并且 **present 成功** 的主窗口帧才算数。旧帧、跳过的帧（`Skipped` / `Retry`）和失败的帧都到不了这个判断；设备或 surface 重建期间窗口不 present，重建后的第一帧才算。
-- **接管之前**：主窗口已经在屏幕上（被 splash 盖着）。宿主照常为它布局、排版、settle 文档，但不 present，因为画了也看不见；有了请求，下一帧直接 present，不用再从头布局。窗口最小化或被遮挡时，交接等窗口恢复再完成；窗口本身已经可见，不会出现“等 present 才显示、不显示又拿不到 present”的循环。
+- **接管之前**：主窗口已创建并用于 Surface/GPU 初始化，但保持隐藏；宿主照常为它布局、排版、settle 文档，但不 present。独立小 Splash 保持可见，有了请求，下一帧直接 present；交接时先显示主窗口，再按平台合成器条件移除 Splash，不会闪出大尺寸空窗口。
 - **其他窗口**：不受影响，照常创建和绘制。
 
 阶段变化（请求、撤回、交接完成）通过 `RuntimeProgram::startup_changed(status, ctx)` 送达，也随时可以从 `RuntimeProgramContext::startup().status()` 读到。`WindowEvent::Ready` 仍是每扇窗口一次，与启动阶段无关。
@@ -212,11 +212,11 @@ Nana.startup.onChange(status => {});   // 宿主的 "startup" 事件
 ## 已知边界
 
 - Windows 路径只经过交叉编译检查（`x86_64-pc-windows-gnu`），没有真机首帧交接和动画证据；Linux 没有 splash。
-- Windows 合成路径使用独立的无激活 Splash 窗口；它与主窗口共用启动线程，但使用自己的 DirectComposition target。
+- Windows 使用独立的无激活 Splash 窗口；它与主窗口共用启动线程，但使用自己的 DirectComposition target。
 - macOS 只读取启动时的减少动态效果设置，不跟随运行中的切换。窗口移到缩放不同的显示器时，macOS 重新渲染 Logo 图层，Windows 由子类跟随 `WM_DPICHANGED`。
 - 从 `early-splash` pack 读 Logo 在事件线程上同步进行，位置在窗口显示之前，所以这次读取的耗时会直接推迟首次可见。本机 debug 构建下，71 KB 的 Logo 约 0.25 ms，720 KB 的约 1.4 ms（见“测量”）。它没有提前到后台线程预取。
 - 包里的 Logo 读不到时，不会退回内嵌 Logo，结果就是 `Failed(Package(..))`。需要兜底的应用只能自己选来源。
 - 打包器不检查 `early-splash` pack 里的 PNG 是否满足 Logo 上限（它只限制整个 pack ≤ 1 MiB），也不知道应用会请求哪个路径。这两件事由应用的打包自检（`startup.early-splash-logo`）在 `validate --run` 时检查，前提是应用在 builder 上声明了 packaged Logo。
 - 开发布局从 `loose_root` 读，不检查类别；类别规则只在打包后的包里生效。
 - 从 pack 读 Logo 只在 macOS 真窗口上验证过；Windows 只经过交叉编译检查。
-- 普通窗口路径仍使用主窗口承载 splash。Windows 合成路径使用 owner 为主窗口的临时窗口；它不进入任务栏、不抢焦点，并在 handoff 或失败路径中销毁。
+- Windows 与 macOS 都使用独立的无边框 Splash 原生窗口；客户区严格等于 `logo_size` 按当前 DPI 换算后的物理尺寸，不进入任务栏、不抢焦点，并在 handoff 或失败路径中销毁。主窗口只作为恢复后中心点和 DPI 的参考，主窗口大小不会改变 Splash 大小。

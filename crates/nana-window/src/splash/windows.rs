@@ -1,8 +1,8 @@
-//! Windows Early Splash: a topmost DirectComposition tree on a plain HWND.
+//! Windows Early Splash: a small topmost DirectComposition popup on its own
+//! plain HWND.
 //!
-//! The visuals sit above whatever the window presents — the redirection
-//! surface before the first frame and wgpu's flip-model swap chain after it —
-//! so the splash covers the window until it is removed. DirectComposition needs
+//! The popup is independent from the primary GPU host, so only its own client
+//! rectangle participates in hit testing. DirectComposition needs
 //! a rendering device for surfaces; the splash makes a short-lived D3D11 device
 //! of its own for the two tiny uploads and releases it with the tree. It does
 //! not touch wgpu's adapter or backend choice.
@@ -35,14 +35,16 @@ use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::core::Interface;
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT as SysPoint, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmFlush;
-use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+use windows_sys::Win32::Graphics::Gdi::{
+    ClientToScreen, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, GetClientRect, HWND_TOPMOST, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
     SWP_NOSENDCHANGING, SetWindowPos, ShowWindow, WM_DPICHANGED, WM_MOVE, WM_SIZE,
-    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use super::{LogoInfo, SplashAnimation, SplashFailure, SplashWork, fit_logo};
@@ -129,7 +131,6 @@ impl Splash {
         window: &W,
         request: &Request<'_>,
         work: &mut SplashWork,
-        separate_window: bool,
     ) -> Result<(Self, bool), SplashFailure> {
         let native = |error: windows::core::Error| SplashFailure::Native(error.to_string());
         let handle = window
@@ -144,33 +145,21 @@ impl Splash {
             .map_err(SplashFailure::Logo)?;
 
         let d3d = d3d_device().map_err(native)?;
-        let hwnd = if separate_window {
-            create_overlay_window(owner)?
-        } else {
-            owner
-        };
-        let (tree, animated) = build_tree(
-            hwnd,
-            separate_window.then_some(owner),
-            &d3d,
-            request,
-            &pixels,
-            work,
-        )
-        .map_err(|error| {
-            if separate_window {
+        // Keep the startup surface independent from the primary window even
+        // on the plain HWND path. The primary window is a GPU host and may be
+        // much larger than the logo; it must not become the splash hit area.
+        let hwnd = create_overlay_window(owner, request.logo_size)?;
+        let (tree, animated) = build_tree(hwnd, Some(owner), &d3d, request, &pixels, work)
+            .map_err(|error| {
                 unsafe { DestroyWindow(hwnd.0) };
-            }
-            native(error)
-        })?;
+                native(error)
+            })?;
         let tree = Box::into_raw(Box::new(tree));
         // SAFETY: `tree` is live and owned by the returned `Splash` until the
         // subclass has been removed.
         if let Err(error) = unsafe { (*tree).layout() } {
             unsafe { drop(Box::from_raw(tree)) };
-            if separate_window {
-                unsafe { DestroyWindow(hwnd.0) };
-            }
+            unsafe { DestroyWindow(hwnd.0) };
             return Err(native(error));
         }
         // SAFETY: hwnd is the live winit window; `tree` outlives the subclass.
@@ -178,23 +167,19 @@ impl Splash {
             unsafe { SetWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID, tree as usize) };
         if installed == 0 {
             unsafe { drop(Box::from_raw(tree)) };
-            if separate_window {
-                unsafe { DestroyWindow(hwnd.0) };
-            }
+            unsafe { DestroyWindow(hwnd.0) };
             return Err(SplashFailure::Native("SetWindowSubclass failed".into()));
         }
-        if separate_window {
-            let owner_installed = unsafe {
-                SetWindowSubclass(owner.0, Some(splash_proc), OWNER_SUBCLASS_ID, tree as usize)
-            };
-            if owner_installed == 0 {
-                unsafe { RemoveWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID) };
-                unsafe { drop(Box::from_raw(tree)) };
-                unsafe { DestroyWindow(hwnd.0) };
-                return Err(SplashFailure::Native("failed to track owner window".into()));
-            }
-            unsafe { ShowWindow(hwnd.0, SW_SHOWNOACTIVATE) };
+        let owner_installed = unsafe {
+            SetWindowSubclass(owner.0, Some(splash_proc), OWNER_SUBCLASS_ID, tree as usize)
+        };
+        if owner_installed == 0 {
+            unsafe { RemoveWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID) };
+            unsafe { drop(Box::from_raw(tree)) };
+            unsafe { DestroyWindow(hwnd.0) };
+            return Err(SplashFailure::Native("failed to track owner window".into()));
         }
+        unsafe { ShowWindow(hwnd.0, SW_SHOWNOACTIVATE) };
         work.commits += unsafe { (*tree).commits };
         unsafe { (*tree).commits = 0 };
         Ok((Self { tree }, animated))
@@ -468,7 +453,7 @@ unsafe extern "system" fn splash_proc(
 
 fn sync_overlay_geometry(tree: &Tree) {
     let Some(owner) = tree.owner else { return };
-    let (position, width, height) = owner_client_geometry(owner);
+    let (position, width, height) = splash_geometry(owner, tree.logo_box);
     unsafe {
         SetWindowPos(
             tree.hwnd.0,
@@ -499,8 +484,50 @@ fn owner_client_geometry(owner: HWND) -> (SysPoint, i32, i32) {
     )
 }
 
-fn create_overlay_window(owner: HWND) -> Result<HWND, SplashFailure> {
-    let (position, width, height) = owner_client_geometry(owner);
+fn splash_geometry(owner: HWND, logical_size: (f64, f64)) -> (SysPoint, i32, i32) {
+    let (owner_position, owner_width, owner_height) = owner_client_geometry(owner);
+    let dpi = unsafe { GetDpiForWindow(owner.0) }.max(1);
+    let scale = f64::from(dpi) / 96.0;
+    let (width, height) = splash_physical_size(logical_size, scale);
+    let center_x = owner_position.x + owner_width / 2;
+    let center_y = owner_position.y + owner_height / 2;
+    let mut x = center_x - width / 2;
+    let mut y = center_y - height / 2;
+    let monitor = unsafe { MonitorFromWindow(owner.0, MONITOR_DEFAULTTONEAREST) };
+    if !monitor.is_null() {
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            rcMonitor: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            rcWork: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
+            dwFlags: 0,
+        };
+        if unsafe { GetMonitorInfoW(monitor, &mut info) } != 0 {
+            x = x.clamp(info.rcWork.left, info.rcWork.right.saturating_sub(width));
+            y = y.clamp(info.rcWork.top, info.rcWork.bottom.saturating_sub(height));
+        }
+    }
+    (SysPoint { x, y }, width, height)
+}
+
+fn splash_physical_size(logical_size: (f64, f64), scale: f64) -> (i32, i32) {
+    (
+        (logical_size.0.max(1.0) * scale).round().max(1.0) as i32,
+        (logical_size.1.max(1.0) * scale).round().max(1.0) as i32,
+    )
+}
+
+fn create_overlay_window(owner: HWND, logical_size: (f64, f64)) -> Result<HWND, SplashFailure> {
+    let (position, width, height) = splash_geometry(owner, logical_size);
     let class: [u16; 7] = [83, 84, 65, 84, 73, 67, 0];
     let module = unsafe { GetModuleHandleW(std::ptr::null()) };
     if module.is_null() {
@@ -508,7 +535,7 @@ fn create_overlay_window(owner: HWND) -> Result<HWND, SplashFailure> {
     }
     let hwnd = unsafe {
         CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT,
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
             class.as_ptr(),
             std::ptr::null(),
             WS_POPUP,
@@ -526,5 +553,22 @@ fn create_overlay_window(owner: HWND) -> Result<HWND, SplashFailure> {
         Err(SplashFailure::Native("CreateWindowExW failed".into()))
     } else {
         Ok(HWND(hwnd))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::splash_physical_size;
+
+    #[test]
+    fn logo_size_is_the_native_client_size_at_each_dpi() {
+        assert_eq!(splash_physical_size((128.0, 96.0), 1.0), (128, 96));
+        assert_eq!(splash_physical_size((128.0, 96.0), 1.25), (160, 120));
+        assert_eq!(splash_physical_size((128.0, 96.0), 2.0), (256, 192));
+    }
+
+    #[test]
+    fn size_is_independent_of_primary_window_geometry() {
+        assert_eq!(splash_physical_size((240.0, 180.0), 1.5), (360, 270));
     }
 }

@@ -7,10 +7,13 @@
 
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker};
-use objc2_app_kit::{NSImage, NSView};
+use objc2_app_kit::{
+    NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSImage, NSView, NSWindow,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
+};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGColor;
-use objc2_foundation::{NSData, NSNumber, NSString};
+use objc2_foundation::{NSData, NSNumber, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::{
     CAAutoresizingMask, CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
     CATransaction, kCAGravityResizeAspect, kCAMediaTimingFunctionEaseInEaseOut,
@@ -34,6 +37,8 @@ pub(super) struct Request<'a> {
 }
 
 pub(super) struct Splash {
+    window: Retained<NSWindow>,
+    owner: Retained<NSWindow>,
     container: Retained<CALayer>,
     logo: Retained<CALayer>,
     /// Kept to re-render the layer contents when the backing scale changes.
@@ -45,7 +50,6 @@ impl Splash {
         window: &W,
         request: &Request<'_>,
         work: &mut SplashWork,
-        _separate_window: bool,
     ) -> Result<(Self, bool), SplashFailure> {
         let native = |reason: &str| SplashFailure::Native(reason.to_owned());
         let mtm = MainThreadMarker::new().ok_or_else(|| native("not on the main thread"))?;
@@ -58,12 +62,51 @@ impl Splash {
         // SAFETY: the AppKit handle's ns_view is a live NSView owned by this
         // window, and `mtm` witnesses the main thread.
         let view: &NSView = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
-        let _ = mtm;
-        view.setWantsLayer(true);
-        let root = view.layer().ok_or_else(|| native("view has no layer"))?;
-        let scale = view
+        let owner = view
             .window()
-            .map_or(1.0, |window| window.backingScaleFactor());
+            .ok_or_else(|| native("owner window unavailable"))?;
+        let scale = owner.backingScaleFactor();
+        let size = request.logo_size;
+        let owner_frame = owner.frame();
+        let frame = NSRect::new(
+            NSPoint::new(
+                owner_frame.origin.x + (owner_frame.size.width - size.0) / 2.0,
+                owner_frame.origin.y + (owner_frame.size.height - size.1) / 2.0,
+            ),
+            NSSize::new(size.0, size.1),
+        );
+        let splash_window = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(),
+                frame,
+                NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        splash_window.setOpaque(false);
+        splash_window.setHasShadow(false);
+        splash_window.setBackgroundColor(Some(&NSColor::clearColor()));
+        splash_window.setIgnoresMouseEvents(false);
+        splash_window.setLevel(NSFloatingWindowLevel);
+        splash_window.setCollectionBehavior(
+            NSWindowCollectionBehavior::Transient
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+        unsafe { splash_window.setReleasedWhenClosed(false) };
+        let content = unsafe {
+            NSView::initWithFrame(
+                NSView::alloc(),
+                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size.0, size.1)),
+            )
+        };
+        content.setWantsLayer(true);
+        splash_window.setContentView(Some(&content));
+        let root = content
+            .layer()
+            .ok_or_else(|| native("splash content has no layer"))?;
+        let _ = mtm;
 
         // One decode, by ImageIO; the header was checked against the limits
         // before this.
@@ -129,9 +172,12 @@ impl Splash {
         container.addSublayer(&logo);
         root.addSublayer(&container);
         CATransaction::commit();
+        splash_window.orderFrontRegardless();
         work.commits += 1;
         Ok((
             Self {
+                window: splash_window,
+                owner,
                 container,
                 logo,
                 image,
@@ -150,6 +196,18 @@ impl Splash {
         self.container.setContentsScale(scale);
         set_logo_contents(&self.logo, &self.image, scale);
         CATransaction::commit();
+        let owner_frame = self.owner.frame();
+        let size = self.window.frame().size;
+        self.window.setFrame_display(
+            NSRect::new(
+                NSPoint::new(
+                    owner_frame.origin.x + (owner_frame.size.width - size.width) / 2.0,
+                    owner_frame.origin.y + (owner_frame.size.height - size.height) / 2.0,
+                ),
+                size,
+            ),
+            false,
+        );
         work.logo_uploads += 1;
         work.commits += 1;
     }
@@ -163,6 +221,7 @@ impl Splash {
         self.logo.removeAllAnimations();
         self.container.removeFromSuperlayer();
         CATransaction::commit();
+        self.window.orderOut(None);
         work.commits += 1;
     }
 }

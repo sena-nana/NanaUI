@@ -383,11 +383,11 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             true,
             window.scale_factor() as f32,
         ));
-        let (splash, outcome) = self.show_splash(window.as_ref(), target);
+        let (splash, outcome) = self.show_splash(window.as_ref());
         let committed = splash.is_some().then(|| self.handle.elapsed());
-        if splash.is_some() {
-            windows::set_native_visible(window.as_ref(), true, self.settings.focus_on_show);
-        }
+        // The primary host remains hidden while the independent Splash window
+        // is visible. It is shown only immediately before the handoff frame
+        // releases the Splash, so the user never sees the large host window.
         nana_diagnostics::event!(host::SPLASH_OUTCOME, outcome = outcome.code());
         if let Some(at) = committed {
             startup_event(StartupMark::SplashCommitted, at);
@@ -416,7 +416,6 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     fn show_splash(
         &self,
         window: &dyn winit::window::Window,
-        target: WindowSurfaceTarget,
     ) -> (Option<NativeSplash>, SplashOutcome) {
         let Some(spec) = self.options.splash else {
             return (None, SplashOutcome::Skipped(SplashSkip::NotConfigured));
@@ -448,12 +447,11 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             &png,
             FallbackColor::rgba(red, green, blue, alpha),
             nana_window::system_reduced_motion().unwrap_or(false),
-            target.composed(),
         )
     }
 
     /// The logo's PNG. A packaged one is one read of the package's
-    /// `early-splash` pack, timed into the startup record; only a plain
+    /// `early-splash` pack, timed into the startup record; a supported native
     /// target shows a splash, so a startup reads it at most once.
     fn read_splash_logo(
         &self,
@@ -670,7 +668,7 @@ impl HostStartup {
         }
     }
 
-    /// The window was put on screen with its splash, before the program.
+    /// A native splash was committed before the primary window was shown.
     pub(super) fn shown_early(&self) -> bool {
         self.active
             .as_ref()
@@ -843,6 +841,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     fn startup_handed_off(&mut self, event_loop: &dyn ActiveEventLoop) {
         let at = self.startup.handle.elapsed();
+        let show_primary = self
+            .startup
+            .active
+            .as_ref()
+            .is_some_and(|active| active.splash.is_some());
+        if show_primary && let Some(window) = self.window(WindowId::PRIMARY) {
+            windows::set_native_visible(
+                window.as_ref(),
+                self.settings.visible,
+                self.settings.focus_on_show,
+            );
+        }
         self.startup.release_splash(true);
         self.startup.active = None;
         startup_event(StartupMark::HandedOff, at);

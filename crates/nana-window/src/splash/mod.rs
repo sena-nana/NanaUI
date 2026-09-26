@@ -9,8 +9,8 @@
 //!
 //! | Platform | Surface | Animation | Handoff |
 //! |---|---|---|---|
-//! | macOS | a `CALayer` above the view's Metal sublayer | `CABasicAnimation`, run by the render server | [`SplashHandoff::SameTransaction`] |
-//! | Windows, plain HWND | a topmost DirectComposition visual | `IDCompositionAnimation`, run by DWM | [`SplashHandoff::AfterCompositorFlush`] |
+//! | macOS | an independent borderless `NSWindow` containing a `CALayer` | `CABasicAnimation`, run by the render server | [`SplashHandoff::SameTransaction`] |
+//! | Windows | an independent topmost popup with a DirectComposition visual | `IDCompositionAnimation`, run by DWM | [`SplashHandoff::AfterCompositorFlush`] |
 //! | everything else | none | — | — |
 
 use raw_window_handle::HasWindowHandle;
@@ -238,8 +238,8 @@ impl SplashAnimation {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplashSpec {
     pub logo: SplashLogo,
-    /// Logo box in logical points, centred in the window. The logo keeps its
-    /// aspect ratio inside it.
+    /// Logical client size of the independent splash window and its logo box.
+    /// The logo keeps its aspect ratio inside this size.
     pub logo_size: (f32, f32),
     pub background: SplashBackground,
     pub animation: SplashAnimation,
@@ -270,7 +270,7 @@ impl SplashSpec {
         self
     }
 
-    /// Logo box clamped to something a window can show.
+    /// Splash client size clamped to something a native window can show.
     pub fn clamped_logo_size(&self) -> (f64, f64) {
         let clamp = |value: f32| {
             if value.is_finite() {
@@ -486,8 +486,9 @@ impl NativeSplash {
         cfg!(any(target_os = "macos", target_os = "windows"))
     }
 
-    /// Puts the splash over `window`'s client area. Call before the window is
-    /// first shown, on the thread that owns it.
+    /// Creates a small native splash centred on `window`. Call before the
+    /// primary window is first shown, on the thread that owns it. The splash
+    /// hit area is exactly its own scaled `spec.logo_size` rectangle.
     ///
     /// `png` is the logo `spec.logo` names, as the host resolved it; it is
     /// copied or decoded here and not kept. `system_background` is what
@@ -499,7 +500,6 @@ impl NativeSplash {
         png: &[u8],
         system_background: FallbackColor,
         reduced_motion: bool,
-        separate_window: bool,
     ) -> (Option<Self>, SplashOutcome) {
         let info = match validate_png(png) {
             Ok(info) => info,
@@ -525,7 +525,7 @@ impl NativeSplash {
                 animation,
             };
             let mut work = SplashWork::default();
-            match platform::Splash::show(window, &request, &mut work, separate_window) {
+            match platform::Splash::show(window, &request, &mut work) {
                 Ok((splash, animated)) => {
                     let outcome = animation_outcome(spec.animation, reduced_motion, animated);
                     work.live_resources = splash.live_resources();
