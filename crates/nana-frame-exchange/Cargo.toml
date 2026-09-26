@@ -6,6 +6,8 @@ rust-version = "1.92"
 description = "Bounded latest-frame exchange from a producer thread to a consumer on one shared NanaUI GPU device"
 license = "MIT OR Apache-2.0"
 
+[lints]
+
 [lib]
 name = "nana_frame_exchange"
 path = "src/lib.rs"

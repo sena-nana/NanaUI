@@ -6,6 +6,8 @@ rust-version = "1.92"
 description = "Android/desktop input, IME, clipboard, and fetch host boundary"
 license = "MIT OR Apache-2.0"
 
+[lints]
+
 [features]
 default = ["clipboard", "fetch"]
 clipboard = ["dep:arboard"]

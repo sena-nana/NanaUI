@@ -6,6 +6,8 @@ rust-version = "1.92"
 description = "Rust-native UI foundation for the Nana application family"
 license = "MIT OR Apache-2.0"
 
+[lints]
+
 [lib]
 name = "nana_ui"
 path = "src/lib.rs"

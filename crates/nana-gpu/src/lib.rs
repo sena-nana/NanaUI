@@ -20,6 +20,8 @@
 //! `wgpu-interop` feature is the explicit escape hatch for hosts that bring
 //! their own device and renderers that record their own pipelines.
 
+#![recursion_limit = "256"]
+
 mod abi;
 mod context;
 mod error;

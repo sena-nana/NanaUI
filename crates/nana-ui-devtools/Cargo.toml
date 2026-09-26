@@ -6,6 +6,8 @@ rust-version = "1.92"
 description = "NanaUI JS diagnostics plus optional headless Agent snapshot session"
 license = "MIT OR Apache-2.0"
 
+[lints]
+
 [lib]
 name = "nana_ui_devtools"
 path = "src/lib.rs"

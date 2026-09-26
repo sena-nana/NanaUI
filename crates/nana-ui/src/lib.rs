@@ -12,6 +12,8 @@
 //! [`WorkspaceController`] is a host adapter (Instant→Duration, pointer →
 //! [`WorkspaceMutation`]). Product region state is [`WorkspaceModel`].
 
+#![recursion_limit = "256"]
+
 #[cfg(any(feature = "hosted", feature = "accesskit-tree"))]
 mod accessibility;
 #[cfg(feature = "accesskit-tree")]

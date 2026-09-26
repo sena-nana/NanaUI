@@ -9,6 +9,8 @@
 //! The copy is a real GPU-side `copy_texture_to_texture`, not zero-copy. It
 //! never reads pixels back to the CPU.
 
+#![recursion_limit = "256"]
+
 use std::{
     num::NonZeroU8,
     sync::{

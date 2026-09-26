@@ -7,6 +7,8 @@ description = "Default application mark, PNG/ICO/ICNS encoding, and Windows PE i
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lints]
+
 [features]
 default = ["runtime"]
 runtime = ["dep:nana-ui-platform"]

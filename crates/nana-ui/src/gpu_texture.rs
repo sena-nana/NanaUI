@@ -1529,7 +1529,7 @@ fn next_host_texture_instance_id() -> u64 {
     // Zero is never issued, and exhaustion fails closed instead of reusing an
     // identity that may still exist in a renderer cache.
     NEXT_HOST_TEXTURE_INSTANCE_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("host texture instance identity space exhausted")
