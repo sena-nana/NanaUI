@@ -3,11 +3,14 @@ Build desktop-overlay-probe first. This tool briefly moves the pointer onto its 
 """
 import ctypes as c
 import json
+import platform
 from pathlib import Path
 import queue
 import subprocess
+import sys
 import threading
 import time
+from statistics import median
 
 u, g = c.windll.user32, c.windll.gdi32
 u.SetProcessDpiAwarenessContext.argtypes = [c.c_void_p]
@@ -27,6 +30,7 @@ class Rect(c.Structure):
 class Point(c.Structure):
     _fields_ = [(n, c.c_long) for n in ("x", "y")]
 original_pointer = Point(); u.GetCursorPos(c.byref(original_pointer))
+cursor_samples = []
 try:
     import comtypes.client
 except ImportError as error:
@@ -71,6 +75,7 @@ def settled_taskbar(expect, message, timeout=10, settle=1.5):
     raise AssertionError(f"{message}: {taskbar_buttons()}")
 taskbar_before_probe = taskbar_buttons()
 lines, inbox = [], queue.Queue()
+transition_samples = []
 process = subprocess.Popen(["target/debug/examples/desktop-overlay-probe.exe"], stdin=subprocess.PIPE,
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
 def read_output():
@@ -89,6 +94,34 @@ def wait_for(kind, timeout=35, **fields):
             if line.get("event") == kind and all(line.get(k) == v for k, v in fields.items()): return line
         except queue.Empty: pass
     raise AssertionError(f"Timed out awaiting {kind} {fields}: {lines}")
+def wait_style(layer, enabled, timeout=2):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if bool(u.GetWindowLongW(layer, -20) & 0x20) == enabled:
+            return
+        time.sleep(.01)
+    raise AssertionError(f"Timed out awaiting WS_EX_TRANSPARENT={enabled}")
+def wait_for_timed(kind, timeout=35, style=None, **fields):
+    started = time.perf_counter()
+    event = wait_for(kind, timeout, **fields)
+    if style is not None:
+        wait_style(layer, style)
+    transition_samples.append({"event": kind, "elapsed_ms": (time.perf_counter() - started) * 1000.0})
+    return event
+def percentile(values, fraction):
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int((len(ordered) - 1) * fraction + 0.999999)))
+    return ordered[index]
+def system_metadata():
+    try:
+        gpu_output = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
+            text=True, stderr=subprocess.DEVNULL, timeout=5,
+        )
+        gpu = [line.strip() for line in gpu_output.splitlines() if line.strip()]
+    except (OSError, subprocess.SubprocessError):
+        gpu = []
+    return {"os": platform.platform(), "python": sys.version.split()[0], "gpu": gpu}
 def command(value):
     process.stdin.write(value + "\n"); process.stdin.flush()
 def pixel(point):
@@ -96,10 +129,16 @@ def pixel(point):
     try: return g.GetPixel(dc, *point)
     finally: u.ReleaseDC(None, dc)
 def click(point):
-    assert u.SetCursorPos(*point)
-    time.sleep(.1)
-    actual = Point(); u.GetCursorPos(c.byref(actual))
-    assert (actual.x, actual.y) == point, ((actual.x, actual.y), point)
+    actual = Point()
+    for attempt in range(10):
+        assert u.SetCursorPos(*point)
+        time.sleep(.05)
+        u.GetCursorPos(c.byref(actual))
+        if abs(actual.x - point[0]) <= 1 and abs(actual.y - point[1]) <= 1:
+            break
+    delta = (actual.x - point[0], actual.y - point[1])
+    cursor_samples.append({"requested": list(point), "actual": [actual.x, actual.y], "delta": list(delta), "attempts": attempt + 1})
+    assert abs(delta[0]) <= 1 and abs(delta[1]) <= 1, ((actual.x, actual.y), point)
     u.mouse_event(2, 0, 0, 0, 0); u.mouse_event(4, 0, 0, 0, 0)
 try:
     overlay_ready = wait_for("ready", window=1)
@@ -134,17 +173,24 @@ try:
     time.sleep(.3)
     assert not u.GetWindowLongW(layer, -20) & 0x20, "Native passthrough was not cleared"
     click(point); wait_for("pointer_down", 5, window=1)
-    command("forward"); wait_for("passthrough", window=1, enabled=True, success=True)
-    time.sleep(.3)
-    assert u.GetWindowLongW(layer, -20) & 0x20, "Forward did not enable WS_EX_TRANSPARENT"
+    command("forward"); wait_for_timed("passthrough", window=1, enabled=True, success=True, style=True)
     click(clear_point); wait_for("pointer_down", 5, window=0)
     assert u.SetCursorPos(*opaque); time.sleep(.3)
-    wait_for("passthrough", window=1, enabled=False, success=True)
+    wait_for_timed("passthrough", window=1, enabled=False, success=True, style=False)
     assert not u.GetWindowLongW(layer, -20) & 0x20, "Forward did not recover hit-testing"
     click(opaque); wait_for("pointer_down", 5, window=1)
     assert u.SetCursorPos(*clear_point); time.sleep(.3)
-    wait_for("passthrough", window=1, enabled=True, success=True)
+    wait_for_timed("passthrough", window=1, enabled=True, success=True, style=True)
     click(clear_point); wait_for("pointer_down", 5, window=0)
+    for _ in range(4):
+        command("forward")
+        wait_for_timed("passthrough", window=1, enabled=True, success=True, style=True)
+        assert u.SetCursorPos(*opaque); time.sleep(.1)
+        wait_for_timed("passthrough", window=1, enabled=False, success=True, style=False)
+        assert u.SetCursorPos(*clear_point); time.sleep(.1)
+        wait_for_timed("passthrough", window=1, enabled=True, success=True, style=True)
+        command("forward-off")
+        wait_for("passthrough", window=1, enabled=False, success=True)
     command("forward-off"); wait_for("passthrough", window=1, enabled=False, success=True)
     time.sleep(.3)
     before_resize = Rect(); assert u.GetWindowRect(layer, c.byref(before_resize))
@@ -169,8 +215,13 @@ try:
     after = pixel(clear_point)
     assert before == locked == after, (before, locked, after)
     command("quit"); assert process.wait(timeout=15) == 0
+    timings = [sample["elapsed_ms"] for sample in transition_samples]
+    p95 = percentile(timings, .95)
+    assert p95 <= 100.0, f"Forward transition p95 exceeded 100 ms: {p95:.2f}"
     report = {"native_pointer_route": [1, 0, 1], "clear_pixels": [before, locked, after],
-        "did_not_steal_focus": initial_focus != layer, "pointer_resize_delta": [after_resize.right - before_resize.right, after_resize.bottom - before_resize.bottom], "lines": lines}
+        "did_not_steal_focus": initial_focus != layer, "pointer_resize_delta": [after_resize.right - before_resize.right, after_resize.bottom - before_resize.bottom],
+        "forward_transition_ms": {"samples": transition_samples, "p50": median(timings), "p95": p95},
+        "environment": {**system_metadata(), "dpi_scale": scale, "sample_count": len(timings)}, "cursor_samples": cursor_samples, "lines": lines}
     Path("target/desktop-overlay-native.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
 finally:
