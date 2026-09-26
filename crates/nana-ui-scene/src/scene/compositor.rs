@@ -478,6 +478,12 @@ impl UiScene {
             if layer.parent != parent {
                 layer.parent = parent;
                 changed = true;
+                // A layer's parent contributes to every descendant's
+                // presented transform. The layer's own transform may be
+                // unchanged, so `before != presented` above does not detect
+                // this topology-only movement. Rebuild all retained bounds
+                // before the next visibility query.
+                moved = true;
             }
         }
 
@@ -1259,6 +1265,75 @@ mod tests {
             (composed.0[5] - 5.0).abs() < 1e-3,
             "child translate Y, got {:?}",
             composed.0
+        );
+    }
+
+    #[test]
+    fn a_layer_parent_change_refreshes_retained_visibility_bounds() {
+        let mut scene = UiScene::new();
+        let mut parent = node(1, None, &[2]);
+        let mut child = node(2, Some(1), &[]);
+        parent.source_style.layout = Arc::new(LayoutStyle {
+            opacity: Some(1.0),
+            ..LayoutStyle::default()
+        });
+        child.source_style.layout = Arc::new(LayoutStyle {
+            opacity: Some(1.0),
+            ..LayoutStyle::default()
+        });
+        scene.apply_delta([parent, child], []);
+        let mut store = PresentationStore::new();
+        store.insert(
+            transform_track(
+                1,
+                2,
+                0,
+                200,
+                PaintTransform {
+                    e: 40.0,
+                    ..PaintTransform::default()
+                },
+                PaintTransform {
+                    e: 40.0,
+                    ..PaintTransform::default()
+                },
+            ),
+            MotionValue::Transform(PaintTransform::default()),
+        );
+        scene.apply_presentation(&store, LAYER_PROMOTE_HOLD, None);
+        let viewport = crate::SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 120.0,
+            height: 120.0,
+        };
+        let _ = scene.visible_operations(viewport);
+
+        store.insert(
+            transform_track(
+                2,
+                1,
+                0,
+                200,
+                PaintTransform {
+                    e: 30.0,
+                    ..PaintTransform::default()
+                },
+                PaintTransform {
+                    e: 30.0,
+                    ..PaintTransform::default()
+                },
+            ),
+            MotionValue::Transform(PaintTransform::default()),
+        );
+        scene.apply_presentation(&store, LAYER_PROMOTE_HOLD, None);
+        assert_eq!(
+            scene.compositor_layer(id(2)).unwrap().parent,
+            Some(CompositorLayerId::from_node(id(1)))
+        );
+        assert!(
+            scene.visible_operations(viewport).is_ok(),
+            "a layer parent change must leave a usable visibility index"
         );
     }
 

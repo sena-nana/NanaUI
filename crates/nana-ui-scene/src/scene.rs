@@ -839,12 +839,19 @@ impl UiScene {
         let mut inherited_geometry_changed = !inherited_roots.is_empty();
         for node in extracted {
             let previous = self.nodes.get(&node.id);
-            custom_paint_changed |= previous.is_some_and(|old| {
-                match (old.custom_paint.as_ref(), node.custom_paint.as_ref()) {
-                    (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
-                    _ => false,
+            // A painter transition can change the primitive set or the
+            // geometry behind an unchanged operation slot.  Treat every
+            // presence/identity change as a visibility-index rebuild: the
+            // incremental node-slot refresh cannot prove the old bounds are
+            // still valid for None <-> Some transitions.
+            custom_paint_changed |= match (previous, node.custom_paint.as_ref()) {
+                (Some(old), Some(new)) => {
+                    old.custom_paint.as_ref().map(Arc::as_ptr) != Some(Arc::as_ptr(new))
                 }
-            });
+                (Some(old), None) => old.custom_paint.is_some(),
+                (None, Some(_)) => true,
+                (None, None) => false,
+            };
             let inherited_changed = previous.map_or(!node.children.is_empty(), |old| {
                 old.parent != node.parent
                     || old.layout != node.layout

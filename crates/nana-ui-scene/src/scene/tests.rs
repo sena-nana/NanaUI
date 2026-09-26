@@ -9662,6 +9662,37 @@ mod custom_paint {
     }
 
     #[test]
+    fn changing_paint_presence_rebuilds_retained_visibility_bounds() {
+        let recording = PaintRecording {
+            behind_children: vec![fill(rect(0.0, 0.0, 120.0, 20.0), BADGE)],
+            over_children: Vec::new(),
+        };
+        let viewport = SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 100.0,
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted(1, None, &[], recording.clone())], []);
+        let _ = scene.visible_operations(viewport).unwrap();
+
+        scene.apply_delta([node(1, None, &[])], []);
+        assert!(
+            scene.visibility.get().is_none(),
+            "removing a painter must invalidate its retained visibility index"
+        );
+        assert!(scene.visible_operations(viewport).unwrap().is_empty());
+
+        scene.apply_delta([painted(1, None, &[], recording)], []);
+        assert!(
+            scene.visibility.get().is_none(),
+            "adding a painter must invalidate its retained visibility index"
+        );
+        assert_eq!(scene.visible_operations(viewport).unwrap().len(), 1);
+    }
+
+    #[test]
     fn hiding_and_showing_a_painted_node_reuses_its_geometry() {
         let recording = PaintRecording {
             behind_children: vec![fill(rect(0.0, 0.0, 10.0, 10.0), BADGE)],
