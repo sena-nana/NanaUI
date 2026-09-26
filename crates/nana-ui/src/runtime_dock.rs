@@ -102,6 +102,7 @@ fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> Windo
         modal: false,
         parent: None,
         system_caption: false,
+        host_managed_drag: false,
         icon: None,
         // A floating dock panel is an ordinary opaque window; it has no reason
         // to take a compositor visual.
