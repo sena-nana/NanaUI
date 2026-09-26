@@ -2,7 +2,7 @@
 name = "vue-v8"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 publish = false
 description = "V8 Vue runtime-core probe"
 

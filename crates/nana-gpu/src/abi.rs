@@ -78,7 +78,7 @@ impl LogicalBinding {
             return Err(GpuError::InvalidBindingRange);
         }
         let alignment = u64::from(alignment.max(1));
-        if offset % alignment != 0
+        if !offset.is_multiple_of(alignment)
             || size == 0
             || self.min_size.is_some_and(|minimum| size < minimum)
         {

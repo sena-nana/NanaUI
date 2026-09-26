@@ -2,7 +2,7 @@
 name = "vue-counter"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 publish = false
 description = "Vue Counter/Todo JS probe + optional Runtime/UiScene window"
 

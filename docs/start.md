@@ -11,7 +11,7 @@
 nana-ui = { path = "../NanaUI/crates/nana-ui", features = ["hosted", "bundled-fonts"] }
 ```
 
-`hosted` 会带上 `gpu`、winit 和 AccessKit。更多控件族见 [应用 API](application-api.md) 的 feature 表。Rust 1.92+。
+`hosted` 会带上 `gpu`、winit 和 AccessKit。更多控件族见 [应用 API](application-api.md) 的 feature 表。Rust 1.98+。
 
 仓库本身用 path / git 消费，尚未作为 crates.io 包发布。
 

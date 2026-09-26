@@ -2,7 +2,7 @@
 name = "nana-css-parity"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 description = "CSS layout parity fixtures: LayoutStyle measure vs fixture expected boxes"
 license = "MIT OR Apache-2.0"
 publish = false

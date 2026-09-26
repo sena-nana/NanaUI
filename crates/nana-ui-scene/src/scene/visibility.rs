@@ -5,7 +5,7 @@ use super::*;
 #[derive(Debug, Clone)]
 pub(super) struct VisibilityIndex {
     plan: Arc<FramePlan>,
-    bounds: Vec<Option<SceneRect>>,
+    bounds: Vec<Option<Bounds>>,
     leaf: usize,
     shifts: Vec<[f32; 2]>,
     descendants: NodeMap<Vec<std::ops::Range<usize>>>,
@@ -45,22 +45,57 @@ impl NodeSlots {
     }
 }
 
-fn union(a: Option<SceneRect>, b: Option<SceneRect>) -> Option<SceneRect> {
-    a.zip(b).map(|(a, b)| {
-        let x = a.x.min(b.x);
-        let y = a.y.min(b.y);
-        SceneRect {
-            x,
-            y,
-            width: (a.x + a.width).max(b.x + b.width) - x,
-            height: (a.y + a.height).max(b.y + b.height) - y,
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Bounds {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+impl Bounds {
+    fn from_rect(rect: SceneRect) -> Self {
+        Self {
+            left: rect.x,
+            top: rect.y,
+            right: rect.x + rect.width,
+            bottom: rect.y + rect.height,
         }
+    }
+
+    fn to_rect(self) -> SceneRect {
+        SceneRect {
+            x: self.left,
+            y: self.top,
+            width: self.right - self.left,
+            height: self.bottom - self.top,
+        }
+    }
+
+    fn translated(self, offset: [f32; 2]) -> Self {
+        Self {
+            left: self.left + offset[0],
+            top: self.top + offset[1],
+            right: self.right + offset[0],
+            bottom: self.bottom + offset[1],
+        }
+    }
+}
+
+fn union(a: Option<Bounds>, b: Option<Bounds>) -> Option<Bounds> {
+    a.zip(b).map(|(a, b)| Bounds {
+        left: a.left.min(b.left),
+        top: a.top.min(b.top),
+        right: a.right.max(b.right),
+        bottom: a.bottom.max(b.bottom),
     })
 }
 fn intersects(a: SceneRect, b: SceneRect) -> bool {
-    a.x <= b.x + b.width && a.x + a.width >= b.x && a.y <= b.y + b.height && a.y + a.height >= b.y
+    let a = Bounds::from_rect(a);
+    let b = Bounds::from_rect(b);
+    a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top
 }
-pub(super) fn transform(bounds: SceneRect, affine: AffineTransform) -> Option<SceneRect> {
+fn transform_bounds(bounds: Bounds, affine: AffineTransform) -> Option<Bounds> {
     if affine.is_projective() {
         return None;
     }
@@ -70,10 +105,10 @@ pub(super) fn transform(bounds: SceneRect, affine: AffineTransform) -> Option<Sc
     let mut right = f32::NEG_INFINITY;
     let mut bottom = f32::NEG_INFINITY;
     for (px, py) in [
-        (bounds.x, bounds.y),
-        (bounds.x + bounds.width, bounds.y),
-        (bounds.x, bounds.y + bounds.height),
-        (bounds.x + bounds.width, bounds.y + bounds.height),
+        (bounds.left, bounds.top),
+        (bounds.right, bounds.top),
+        (bounds.left, bounds.bottom),
+        (bounds.right, bounds.bottom),
     ] {
         let tx = a * px + c * py + e;
         let ty = b * px + d * py + f;
@@ -85,14 +120,17 @@ pub(super) fn transform(bounds: SceneRect, affine: AffineTransform) -> Option<Sc
     [x, y, right, bottom]
         .iter()
         .all(|v| v.is_finite())
-        .then_some(SceneRect {
-            x,
-            y,
-            width: right - x,
-            height: bottom - y,
+        .then_some(Bounds {
+            left: x,
+            top: y,
+            right,
+            bottom,
         })
 }
-fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<SceneRect> {
+pub(super) fn transform(bounds: SceneRect, affine: AffineTransform) -> Option<SceneRect> {
+    transform_bounds(Bounds::from_rect(bounds), affine).map(Bounds::to_rect)
+}
+fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<Bounds> {
     let primitive = scene.primitive(id)?;
     let draw_transform = scene.draw_transform(primitive)?;
     // Destination groups need their complete source, including pixels that a
@@ -100,7 +138,7 @@ fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<SceneRect> {
     if !scene.opacity_groups(id.node).is_empty() {
         return None;
     }
-    let mut bounds = primitive.bounds;
+    let mut bounds = Bounds::from_rect(primitive.bounds);
     if let ScenePrimitiveKind::QuadBatch {
         bounds: rectangles, ..
     }
@@ -133,10 +171,10 @@ fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<SceneRect> {
                         + shadow.spread_radius.max(0.0)
                 })
                 .fold(surface.outline_width.max(0.0) + 2.0, f32::max);
-            bounds.x -= outset;
-            bounds.y -= outset;
-            bounds.width += 2.0 * outset;
-            bounds.height += 2.0 * outset;
+            bounds.left -= outset;
+            bounds.top -= outset;
+            bounds.right += outset;
+            bounds.bottom += outset;
         }
         // A layer's two ends must both reach the painter or neither: never
         // cull them. The painter skips a clipped one that misses the target.
@@ -149,11 +187,11 @@ fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<SceneRect> {
             // the transform: one along an edge, up to the miter limit (4) at
             // a sharp corner. Outset after the transform, so a scaled-down
             // node keeps it.
-            let mut bounds = transform(bounds, draw_transform)?;
-            bounds.x -= 4.0;
-            bounds.y -= 4.0;
-            bounds.width += 8.0;
-            bounds.height += 8.0;
+            let mut bounds = transform_bounds(bounds, draw_transform)?;
+            bounds.left -= 4.0;
+            bounds.top -= 4.0;
+            bounds.right += 4.0;
+            bounds.bottom += 4.0;
             return Some(bounds);
         }
         ScenePrimitiveKind::Custom { .. }
@@ -174,16 +212,16 @@ fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<SceneRect> {
         // must not translate a stationary ancestor clip in this index.
         _ => return self_clip_bounds(scene, primitive, draw_transform),
     }
-    transform(bounds, draw_transform)
+    transform_bounds(bounds, draw_transform)
 }
 
-fn stroke_bounds(points: &[[f32; 2]], width: f32, widths: &[f32]) -> Option<SceneRect> {
+fn stroke_bounds(points: &[[f32; 2]], width: f32, widths: &[f32]) -> Option<Bounds> {
     let first = points.first()?;
-    let mut bounds = SceneRect {
-        x: first[0],
-        y: first[1],
-        width: 0.0,
-        height: 0.0,
+    let mut bounds = Bounds {
+        left: first[0],
+        top: first[1],
+        right: first[0],
+        bottom: first[1],
     };
     for &[x, y] in points {
         if !x.is_finite() || !y.is_finite() {
@@ -191,11 +229,11 @@ fn stroke_bounds(points: &[[f32; 2]], width: f32, widths: &[f32]) -> Option<Scen
         }
         bounds = union(
             Some(bounds),
-            Some(SceneRect {
-                x,
-                y,
-                width: 0.0,
-                height: 0.0,
+            Some(Bounds {
+                left: x,
+                top: y,
+                right: x,
+                bottom: y,
             }),
         )?;
     }
@@ -209,10 +247,10 @@ fn stroke_bounds(points: &[[f32; 2]], width: f32, widths: &[f32]) -> Option<Scen
         }
         outset = outset.max(width);
     }
-    bounds.x -= outset;
-    bounds.y -= outset;
-    bounds.width += outset * 2.0;
-    bounds.height += outset * 2.0;
+    bounds.left -= outset;
+    bounds.top -= outset;
+    bounds.right += outset;
+    bounds.bottom += outset;
     Some(bounds)
 }
 
@@ -220,7 +258,7 @@ fn self_clip_bounds(
     scene: &UiScene,
     primitive: &ScenePrimitive,
     draw_transform: AffineTransform,
-) -> Option<SceneRect> {
+) -> Option<Bounds> {
     let node = scene.nodes.get(&primitive.node)?;
     let layout = node.layout;
     let (x, y, width, height) = node.source_style.layout.overflow_clip_box(
@@ -246,11 +284,11 @@ fn self_clip_bounds(
     {
         return None;
     }
-    transform(bounds, draw_transform)
+    transform_bounds(Bounds::from_rect(bounds), draw_transform)
 }
 
-fn batch_bounds(rectangles: &[SceneRect]) -> Option<SceneRect> {
-    let mut result = *rectangles.first()?;
+fn batch_bounds(rectangles: &[SceneRect]) -> Option<Bounds> {
+    let mut result = Bounds::from_rect(*rectangles.first()?);
     for &rect in rectangles {
         if ![rect.x, rect.y, rect.width, rect.height]
             .iter()
@@ -260,7 +298,7 @@ fn batch_bounds(rectangles: &[SceneRect]) -> Option<SceneRect> {
         {
             return None;
         }
-        result = union(Some(result), Some(rect))?;
+        result = union(Some(result), Some(Bounds::from_rect(rect)))?;
     }
     Some(result)
 }
@@ -293,14 +331,14 @@ fn projection_component_matches(retained: f32, fresh: f32) -> bool {
 }
 
 #[cfg(debug_assertions)]
-fn projection_bounds_match(retained: Option<SceneRect>, fresh: Option<SceneRect>) -> bool {
+fn bounds_match(retained: Option<Bounds>, fresh: Option<Bounds>) -> bool {
     match (retained, fresh) {
         (None, None) => true,
         (Some(retained), Some(fresh)) => [
-            (retained.x, fresh.x),
-            (retained.y, fresh.y),
-            (retained.width, fresh.width),
-            (retained.height, fresh.height),
+            (retained.left, fresh.left),
+            (retained.top, fresh.top),
+            (retained.right, fresh.right),
+            (retained.bottom, fresh.bottom),
         ]
         .into_iter()
         .all(|(retained, fresh)| projection_component_matches(retained, fresh)),
@@ -388,8 +426,7 @@ impl VisibilityIndex {
 
     fn shift(&mut self, at: usize, offset: [f32; 2]) {
         if let Some(bounds) = self.bounds[at].as_mut() {
-            bounds.x += offset[0];
-            bounds.y += offset[1];
+            *bounds = bounds.translated(offset);
         }
         self.shifts[at][0] += offset[0];
         self.shifts[at][1] += offset[1];
@@ -548,13 +585,13 @@ impl VisibilityIndex {
     /// refresh.
     #[cfg(debug_assertions)]
     pub(super) fn mismatch(&self, other: &Self) -> Option<String> {
-        fn rect_bits(rect: &Option<SceneRect>) -> Option<[u32; 4]> {
+        fn rect_bits(rect: &Option<Bounds>) -> Option<[u32; 4]> {
             rect.map(|rect| {
                 [
-                    rect.x.to_bits(),
-                    rect.y.to_bits(),
-                    rect.width.to_bits(),
-                    rect.height.to_bits(),
+                    rect.left.to_bits(),
+                    rect.top.to_bits(),
+                    rect.right.to_bits(),
+                    rect.bottom.to_bits(),
                 ]
             })
         }
@@ -576,7 +613,7 @@ impl VisibilityIndex {
         // `leaf`, `plan` and both vector lengths agree by construction.
         for (at, (retained, fresh)) in self.bounds.iter().zip(&other.bounds).enumerate() {
             let (retained_bits, fresh_bits) = (rect_bits(retained), rect_bits(fresh));
-            if !projection_bounds_match(*retained, *fresh) {
+            if !bounds_match(*retained, *fresh) {
                 let origin = self.slot_origin(at);
                 return Some(format!(
                     "bounds[{at}] {origin}: retained {retained:?} {retained_bits:?} vs fresh {fresh:?} {fresh_bits:?}"
@@ -626,7 +663,7 @@ impl VisibilityIndex {
         out: &mut Vec<RenderOperation>,
     ) {
         if start >= self.plan.operations.len()
-            || self.bounds[at].is_some_and(|bounds| !intersects(bounds, viewport))
+            || self.bounds[at].is_some_and(|bounds| !intersects(bounds.to_rect(), viewport))
         {
             return;
         }
@@ -671,8 +708,7 @@ impl UiScene {
 
 #[cfg(test)]
 mod tests {
-    use super::{projection_bounds_match, projection_component_matches};
-    use crate::SceneRect;
+    use super::{Bounds, bounds_match, projection_component_matches};
 
     #[test]
     fn projection_comparison_accepts_only_a_small_finite_ulp_drift() {
@@ -686,27 +722,45 @@ mod tests {
     }
 
     #[test]
-    fn projection_bounds_comparison_keeps_presence_and_shape_strict() {
-        let retained = Some(SceneRect {
-            x: 16.0,
-            y: 12.0,
-            width: 99.67,
-            height: 36.0,
+    fn projection_bounds_comparison_keeps_presence_and_edges_strict() {
+        let retained = Some(Bounds {
+            left: 16.0,
+            top: 12.0,
+            right: 115.67,
+            bottom: 48.0,
         });
-        let fresh = Some(SceneRect {
-            x: 16.0,
-            y: f32::from_bits(12.0_f32.to_bits() + 6),
-            width: 99.67,
-            height: 36.0,
-        });
-        assert!(projection_bounds_match(retained, fresh));
-        assert!(!projection_bounds_match(retained, None));
-        assert!(!projection_bounds_match(
+        let fresh_bounds = Bounds {
+            left: 16.0,
+            top: f32::from_bits(12.0_f32.to_bits() + 6),
+            right: 115.67,
+            bottom: 48.0,
+        };
+        let fresh = Some(fresh_bounds);
+        assert!(bounds_match(retained, fresh));
+        assert!(!bounds_match(retained, None));
+        assert!(!bounds_match(
             retained,
-            Some(SceneRect {
-                y: f32::from_bits(12.0_f32.to_bits() + 9),
-                ..fresh.unwrap()
+            Some(Bounds {
+                top: f32::from_bits(12.0_f32.to_bits() + 9),
+                ..fresh_bounds
             })
         ));
+    }
+
+    #[test]
+    fn normalized_edges_avoid_width_height_rounding_amplification() {
+        let retained = Some(Bounds {
+            left: 692.3333,
+            top: 438.6667,
+            right: 1024.333,
+            bottom: 620.6667,
+        });
+        let fresh = Some(Bounds {
+            left: 692.33374,
+            top: 438.66693,
+            right: 1024.333,
+            bottom: 620.6664,
+        });
+        assert!(bounds_match(retained, fresh));
     }
 }

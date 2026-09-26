@@ -2,7 +2,7 @@
 name = "nana-frame-exchange"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 description = "Bounded latest-frame exchange from a producer thread to a consumer on one shared NanaUI GPU device"
 license = "MIT OR Apache-2.0"
 

@@ -2,7 +2,7 @@
 name = "nana-android-host"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 publish = false
 description = "Experimental Android ARM64 GameActivity host (phase 2 IME/clipboard/a11y; not a product paint kernel)"
 license = "MIT OR Apache-2.0"

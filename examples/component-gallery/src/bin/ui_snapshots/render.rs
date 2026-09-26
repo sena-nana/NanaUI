@@ -242,7 +242,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
     )?;
 
     surfaces.update(GalleryMessage::PaneChrome(
-        nana_ui::PaneChromeActionKind::SplitHorizontal,
+        nana_ui::runtime::PaneChromeActionKind::SplitHorizontal,
     ));
     gallery_snapshot(
         &mut snapshots,
@@ -252,7 +252,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
     )?;
 
     surfaces_light.update(GalleryMessage::PaneChrome(
-        nana_ui::PaneChromeActionKind::SplitHorizontal,
+        nana_ui::runtime::PaneChromeActionKind::SplitHorizontal,
     ));
     gallery_snapshot(
         &mut snapshots,

@@ -688,7 +688,7 @@ pub(crate) fn gallery_context_action_from_value(value: &str) -> Option<ContextAc
 
 #[cfg(test)]
 pub(crate) fn gallery_runtime_context_item_icons(
-    items: &[nana_ui::ContextMenuItem],
+    items: &[nana_ui::runtime::ContextMenuItem],
 ) -> Vec<(String, String, Option<Icon>)> {
     items
         .iter()
@@ -738,7 +738,9 @@ fn context_menu_anchor(state: &GalleryState) -> (f32, f32) {
     (width - 24.0, 112.0)
 }
 
-fn runtime_context_items(items: &[nana_ui::ContextMenuItem]) -> Vec<RuntimeContextMenuItem> {
+fn runtime_context_items(
+    items: &[nana_ui::runtime::ContextMenuItem],
+) -> Vec<RuntimeContextMenuItem> {
     items.to_vec()
 }
 

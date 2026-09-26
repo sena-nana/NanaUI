@@ -2,7 +2,7 @@
 name = "package-fixture"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 description = "Headless subject of the Issue #226 final-artifact validation: packaged, launched from a foreign directory, and tampered with"
 publish = false
 

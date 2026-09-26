@@ -3586,13 +3586,17 @@ fn map_dropdown_event(event: &DropdownEvent<Arc<str>>) -> GalleryMessage {
     let parse = |value: &str| value.parse::<u8>().unwrap_or(0);
     match event {
         DropdownEvent::Select(value) => {
-            GalleryMessage::SetDropdown(nana_ui::DropdownEvent::Select(parse(value)))
+            GalleryMessage::SetDropdown(nana_ui::runtime::DropdownEvent::Select(parse(value)))
         }
         DropdownEvent::Toggle(value) => {
-            GalleryMessage::SetDropdown(nana_ui::DropdownEvent::Toggle(parse(value)))
+            GalleryMessage::SetDropdown(nana_ui::runtime::DropdownEvent::Toggle(parse(value)))
         }
-        DropdownEvent::Opened => GalleryMessage::SetDropdown(nana_ui::DropdownEvent::Opened),
-        DropdownEvent::Closed => GalleryMessage::SetDropdown(nana_ui::DropdownEvent::Closed),
+        DropdownEvent::Opened => {
+            GalleryMessage::SetDropdown(nana_ui::runtime::DropdownEvent::Opened)
+        }
+        DropdownEvent::Closed => {
+            GalleryMessage::SetDropdown(nana_ui::runtime::DropdownEvent::Closed)
+        }
     }
 }
 

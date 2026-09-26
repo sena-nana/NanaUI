@@ -2,7 +2,7 @@
 name = "nana-window"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 description = "Native window material boundary for Nana applications"
 license = "MIT OR Apache-2.0"
 

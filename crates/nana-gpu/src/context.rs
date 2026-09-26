@@ -226,12 +226,8 @@ impl GpuCapabilities {
             limits: GpuLimits {
                 max_bind_groups: device.limits().max_bind_groups,
                 max_bindings_per_group: device.limits().max_bindings_per_bind_group,
-                max_uniform_buffer_binding_size: u64::from(
-                    device.limits().max_uniform_buffer_binding_size,
-                ),
-                max_storage_buffer_binding_size: u64::from(
-                    device.limits().max_storage_buffer_binding_size,
-                ),
+                max_uniform_buffer_binding_size: device.limits().max_uniform_buffer_binding_size,
+                max_storage_buffer_binding_size: device.limits().max_storage_buffer_binding_size,
                 min_uniform_buffer_offset_alignment: device
                     .limits()
                     .min_uniform_buffer_offset_alignment,

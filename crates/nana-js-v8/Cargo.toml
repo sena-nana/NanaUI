@@ -2,7 +2,7 @@
 name = "nana-js-v8"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 description = "V8 backend for NanaUI Vue via crates.io v8 152.2.0 (rusty_v8 successor)"
 license = "MIT OR Apache-2.0"
 

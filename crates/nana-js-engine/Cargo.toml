@@ -2,7 +2,7 @@
 name = "nana-js-engine"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 description = "Engine-agnostic JavaScript host interface for NanaUI Vue"
 license = "MIT OR Apache-2.0"
 

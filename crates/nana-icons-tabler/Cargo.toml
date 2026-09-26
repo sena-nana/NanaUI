@@ -2,7 +2,7 @@
 name = "nana-icons-tabler"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.98"
 description = "Full Tabler outline icon catalog as typed NanaUI `Icon` constants (generated)"
 license = "MIT"
 publish = false
