@@ -1,5 +1,5 @@
 //! Host-owned persistence lane. Only the worker calls the physical backend.
-use nana_ui_core::{KvBackend, SharedStore, StoreError};
+use nana_ui_core::{FlushStats, KvBackend, SharedStore, StoreError};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
@@ -295,7 +295,7 @@ fn run(owner: Arc<Owner>, backend: SharedStore) {
             (state.entries.clone(), state.work.generation, state.stop)
         };
         let started = Instant::now();
-        let bytes = snapshot
+        let snapshot_bytes = snapshot
             .iter()
             .map(|(key, value)| key.len() as u64 + value.len() as u64)
             .sum::<u64>();
@@ -315,12 +315,20 @@ fn run(owner: Arc<Owner>, backend: SharedStore) {
             Ok(()) => {
                 state.work.completed_generation = generation;
                 state.work.writes_completed += 1;
+                let stats = backend.last_flush_stats().unwrap_or(FlushStats {
+                    encoded_bytes: snapshot_bytes,
+                    written_bytes: snapshot_bytes,
+                });
                 nana_diagnostics::metric!(
                     nana_diagnostics::framework::persistence::WRITES_COMPLETED
                 );
                 nana_diagnostics::metric!(
                     nana_diagnostics::framework::persistence::BYTES_WRITTEN,
-                    bytes
+                    stats.written_bytes
+                );
+                nana_diagnostics::metric!(
+                    nana_diagnostics::framework::persistence::ENCODED_BYTES,
+                    stats.encoded_bytes
                 );
                 nana_diagnostics::metric!(
                     nana_diagnostics::framework::persistence::FLUSH_NS,
@@ -357,7 +365,8 @@ fn finish_owner(owner: &Arc<Owner>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_ui_core::{memory_store, shared_store};
+    use crate::{FileStore, WindowDescriptor, WindowGeometry, persist_live_window_geometry};
+    use nana_ui_core::{KvBackend, ViewStateStore, memory_store, shared_store};
     #[test]
     fn bursts_coalesce_and_idle_does_no_work() {
         for count in [100, 1000] {
@@ -379,6 +388,80 @@ mod tests {
             assert_eq!(lane.work().writes_started, settled.writes_started);
         }
     }
+
+    #[test]
+    fn geometry_persistence_storm_never_flushes_synchronously_and_coalesces_file_writes() {
+        let dir = std::env::temp_dir().join(format!(
+            "nana-persistence-storm-{}-{}",
+            std::process::id(),
+            unique_test_id()
+        ));
+        let file_store = shared_store(FileStore::open(&dir).unwrap());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend = shared_store(Blocked {
+            store: file_store,
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+            release_once: true,
+            released: AtomicBool::new(false),
+        });
+        let lane = Arc::new(PersistenceCoordinator::new(backend).unwrap());
+        let mut settings = WindowDescriptor::new("storm");
+        settings.persist_key = Some("main".into());
+        let store = ViewStateStore::new(lane.clone(), nana_ui_core::RestorationPath::root());
+
+        persist_live_window_geometry(&store, &settings, &storm_geometry(0), false, false).unwrap();
+        let flushing = Arc::clone(&lane);
+        let waiter = std::thread::spawn(move || flushing.flush_timeout(Duration::from_secs(2)));
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let started = Instant::now();
+        for step in 1..=64 {
+            persist_live_window_geometry(&store, &settings, &storm_geometry(step), false, false)
+                .unwrap();
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "geometry persistence synchronously waited for FileStore flush"
+        );
+
+        release_tx.send(()).unwrap();
+        waiter.join().unwrap().unwrap();
+        lane.flush_timeout(Duration::from_secs(2)).unwrap();
+        let work = lane.work();
+        assert!(work.writes_coalesced >= 64);
+        assert!(work.writes_started <= 2);
+        assert_eq!(work.writes_started, work.writes_completed);
+        let reopened = FileStore::open(&dir).unwrap();
+        let restored = ViewStateStore::new(
+            shared_store(reopened),
+            nana_ui_core::RestorationPath::root(),
+        );
+        let persisted = crate::PersistedWindowGeometry::load(&restored, "main")
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.x, 64.0);
+        assert_eq!(persisted.y, -64.0);
+        assert_eq!(persisted.width, 864.0);
+        assert_eq!(persisted.height, 664.0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn storm_geometry(step: u32) -> WindowGeometry {
+        WindowGeometry {
+            logical_position: Some((step as f32, -(step as f32))),
+            logical_size: (800.0 + step as f32, 600.0 + step as f32),
+            ..WindowGeometry::default()
+        }
+    }
+
+    fn unique_test_id() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
     #[test]
     fn dropping_flushes_latest_generation() {
         let backend = memory_store();
@@ -411,6 +494,8 @@ mod tests {
             store: backend,
             entered: entered_tx,
             release: Mutex::new(release_rx),
+            release_once: false,
+            released: AtomicBool::new(false),
         });
         let lane = PersistenceCoordinator::new(shared.clone()).unwrap();
         lane.set("key", "value".into()).unwrap();
@@ -480,6 +565,8 @@ mod tests {
         store: SharedStore,
         entered: std::sync::mpsc::Sender<()>,
         release: Mutex<std::sync::mpsc::Receiver<()>>,
+        release_once: bool,
+        released: AtomicBool,
     }
     impl KvBackend for Blocked {
         fn get(&self, k: &str) -> Result<Option<String>, StoreError> {
@@ -499,8 +586,10 @@ mod tests {
         }
         fn flush(&self) -> Result<(), StoreError> {
             self.entered.send(()).unwrap();
-            self.release.lock().unwrap().recv().unwrap();
-            Ok(())
+            if !self.release_once || !self.released.swap(true, Ordering::AcqRel) {
+                self.release.lock().unwrap().recv().unwrap();
+            }
+            self.store.flush()
         }
     }
     #[test]
@@ -512,6 +601,8 @@ mod tests {
             store: backend.clone(),
             entered: entered_tx,
             release: Mutex::new(release_rx),
+            release_once: false,
+            released: AtomicBool::new(false),
         }))
         .unwrap();
         lane.set("key", "old".into()).unwrap();

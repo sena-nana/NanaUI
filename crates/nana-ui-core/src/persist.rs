@@ -348,6 +348,18 @@ pub trait KvBackend: Send + Sync + fmt::Debug {
     fn clear(&self) -> Result<(), StoreError>;
     fn keys(&self) -> Result<Vec<String>, StoreError>;
     fn flush(&self) -> Result<(), StoreError>;
+
+    /// Statistics for the most recent successful flush, when the backend can
+    /// report its encoded and physical write sizes precisely.
+    fn last_flush_stats(&self) -> Option<FlushStats> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlushStats {
+    pub encoded_bytes: u64,
+    pub written_bytes: u64,
 }
 
 /// Shared store handle installed into host APIs and `RuntimeProgramContext`.

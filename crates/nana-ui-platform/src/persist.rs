@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use nana_ui_core::{KvBackend, StoreError, ViewStateStore};
+use nana_ui_core::{FlushStats, KvBackend, StoreError, ViewStateStore};
 use serde::{Deserialize, Serialize};
 
 const STORAGE_FILE: &str = "local-storage.bin";
@@ -19,6 +19,7 @@ pub struct FileStore {
     dir: PathBuf,
     cache: Mutex<StoreCache>,
     flush: Mutex<()>,
+    last_flush: Mutex<Option<FlushStats>>,
 }
 
 #[derive(Debug, Default)]
@@ -37,6 +38,7 @@ impl FileStore {
             dir,
             cache: Mutex::new(StoreCache::default()),
             flush: Mutex::new(()),
+            last_flush: Mutex::new(None),
         };
         store.load(&mut *store.cache.lock().map_err(|_| StoreError::poisoned())?)?;
         Ok(store)
@@ -83,8 +85,15 @@ impl FileStore {
         Ok(())
     }
 
-    fn write_map(path: &Path, entries: &BTreeMap<String, String>) -> Result<(), StoreError> {
+    fn write_map(
+        path: &Path,
+        entries: &BTreeMap<String, String>,
+    ) -> Result<FlushStats, StoreError> {
         let payload = encode_map(entries)?;
+        let stats = FlushStats {
+            encoded_bytes: payload.len() as u64,
+            written_bytes: payload.len() as u64,
+        };
         let tmp = tmp_path(path);
         if let Err(error) = (|| -> Result<(), StoreError> {
             let mut file = OpenOptions::new()
@@ -102,7 +111,8 @@ impl FileStore {
             let _ = fs::remove_file(&tmp);
             return Err(error);
         }
-        replace_file(&tmp, path)
+        replace_file(&tmp, path)?;
+        Ok(stats)
     }
 }
 
@@ -162,12 +172,17 @@ impl KvBackend for FileStore {
             }
             (self.path(), cache.entries.clone())
         };
-        Self::write_map(&path, &snapshot)?;
+        let stats = Self::write_map(&path, &snapshot)?;
         let mut cache = self.cache.lock().map_err(|_| StoreError::poisoned())?;
         if cache.entries == snapshot {
             cache.dirty = false;
         }
+        *self.last_flush.lock().map_err(|_| StoreError::poisoned())? = Some(stats);
         Ok(())
+    }
+
+    fn last_flush_stats(&self) -> Option<FlushStats> {
+        self.last_flush.lock().ok().and_then(|stats| *stats)
     }
 }
 

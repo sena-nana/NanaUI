@@ -1468,6 +1468,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         for command in update.window_commands {
+            // Move/SetBounds only request the native operation here. The OS
+            // Moved/Resized event later refreshes cached geometry and records
+            // it through `sync_geometry`; persistence never belongs on this
+            // synchronous update path.
             self.apply_window_command(event_loop, command);
             if event_loop.exiting() {
                 return;

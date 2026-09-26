@@ -307,6 +307,7 @@ pub mod persistence {
         static CELLS: HistogramCells = HistogramCells::new();
         &CELLS
     });
+    pub static ENCODED_BYTES: Metric = Metric::counter(D, 31, "persistence.encoded_bytes", "bytes");
     pub static FAILURE: EventDescriptor =
         EventDescriptor::new(D, 20, "persistence.failure", Severity::Warn, &[]);
     pub static RESTORE_HITS: Metric = Metric::counter(D, 26, "persistence.restore_hits", "count");
