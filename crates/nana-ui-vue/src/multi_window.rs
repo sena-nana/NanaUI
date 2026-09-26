@@ -2476,7 +2476,11 @@ mod tests {
     #[test]
     fn injected_store_is_used_by_shared_windows_not_isolated() {
         let store = nana_ui_core::memory_store();
-        store.set("who", "seed".into()).unwrap();
+        // Seed through the JS-facing adapter: the physical backend is shared,
+        // but localStorage keys remain in the app-owned namespace.
+        nana_ui_core::LocalStorageAdapter::new(Arc::clone(&store))
+            .set("who", "seed".into())
+            .unwrap();
         let runtime = VueRuntime::with_store(800, 600, 1.0, Arc::clone(&store));
         let main = runtime.host_api_registry();
         assert_eq!(
@@ -2509,7 +2513,6 @@ mod tests {
                 .as_str(),
             Some("seed")
         );
-        assert_eq!(store.get("who").unwrap().as_deref(), Some("seed"));
     }
 
     #[test]

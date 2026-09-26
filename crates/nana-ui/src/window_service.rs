@@ -437,6 +437,11 @@ impl WindowHandle {
 pub(crate) fn validate_descriptor(descriptor: &WindowDescriptor) -> Result<(), WindowError> {
     validate_size(descriptor.initial_size)?;
     validate_size(descriptor.minimum_size)?;
+    if let Some(key) = descriptor.persist_key.as_deref() {
+        nana_ui_core::RestorationKey::new(key).map_err(|error| {
+            WindowError::InvalidParameter(format!("persist_key is invalid: {error}"))
+        })?;
+    }
     if descriptor
         .initial_position
         .is_some_and(|(x, y)| !x.is_finite() || !y.is_finite())
@@ -525,6 +530,14 @@ mod tests {
             },
             WindowDescriptor {
                 initial_position: Some((f64::INFINITY, 0.0)),
+                ..Default::default()
+            },
+            WindowDescriptor {
+                persist_key: Some(String::new()),
+                ..Default::default()
+            },
+            WindowDescriptor {
+                persist_key: Some("main\0window".into()),
                 ..Default::default()
             },
         ] {

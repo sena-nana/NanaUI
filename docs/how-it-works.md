@@ -15,7 +15,8 @@
   业务状态、配置、鉴权
   每个 Region / Dock pane 里放什么
   这一帧着色器 / 视口画成哪张纹理
-  窗口恢复（位置、最大化、上次所在屏）
+  窗口恢复可由应用自管，或通过 `persist_key` 交给 NanaUI 的
+  `ViewStateStore`（物理 backend 由宿主注入）
 
 NanaUI
   控件语义与交互

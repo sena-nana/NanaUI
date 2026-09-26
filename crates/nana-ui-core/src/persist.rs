@@ -97,6 +97,13 @@ pub struct ViewStateEnvelope {
     pub payload: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ViewStateRead {
+    Missing,
+    Valid(String),
+    Invalid,
+}
+
 /// Frontend capability: no access to raw physical keys or backend flush.
 #[derive(Debug, Clone)]
 pub struct LocalStorageAdapter {
@@ -153,28 +160,42 @@ impl ViewStateStore {
     pub fn child(&self, part: RestorationScopeId) -> Self {
         Self::new(Arc::clone(&self.backend), self.scope.push(part))
     }
-    pub fn read(&self, path: &RestorationPath, version: u32) -> Result<Option<String>, StoreError> {
+    fn read_state(
+        &self,
+        path: &RestorationPath,
+        version: u32,
+    ) -> Result<ViewStateRead, StoreError> {
         let key = self.physical(path);
         let Some(raw) = self.backend.get(&key)? else {
-            nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_MISSES);
-            return Ok(None);
+            return Ok(ViewStateRead::Missing);
         };
         match serde_json::from_str::<ViewStateEnvelope>(&raw) {
-            Ok(v) if v.schema_version == version => {
-                nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_HITS);
-                Ok(Some(v.payload))
-            }
+            Ok(v) if v.schema_version == version => Ok(ViewStateRead::Valid(v.payload)),
             Ok(_) => {
                 nana_diagnostics::metric!(
                     nana_diagnostics::framework::persistence::SCHEMA_MISMATCHES
                 );
                 self.backend.remove(&key)?;
-                nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_MISSES);
-                Ok(None)
+                Ok(ViewStateRead::Invalid)
             }
             _ => {
                 nana_diagnostics::metric!(nana_diagnostics::framework::persistence::CORRUPTIONS);
                 self.backend.remove(&key)?;
+                Ok(ViewStateRead::Invalid)
+            }
+        }
+    }
+    pub fn read(&self, path: &RestorationPath, version: u32) -> Result<Option<String>, StoreError> {
+        match self.read_state(path, version)? {
+            ViewStateRead::Missing => {
+                nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_MISSES);
+                Ok(None)
+            }
+            ViewStateRead::Valid(payload) => {
+                nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_HITS);
+                Ok(Some(payload))
+            }
+            ViewStateRead::Invalid => {
                 nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_MISSES);
                 Ok(None)
             }
@@ -224,24 +245,44 @@ impl ViewStateStore {
         let path =
             RestorationPath::new([RestorationScopeId::new(kind)?, RestorationKey::new(key)?]);
         let legacy = format!("nana.{kind}.{key}");
-        if self.backend.get(&self.physical(&path))?.is_some() {
-            let result = self.read(&path, version)?.and_then(|raw| decode(&raw));
-            if result.is_none() {
-                self.remove(&path)?;
-                nana_diagnostics::metric!(nana_diagnostics::framework::persistence::CORRUPTIONS);
+        match self.read_state(&path, version)? {
+            ViewStateRead::Valid(raw) => {
+                let result = decode(&raw);
+                if result.is_some() {
+                    nana_diagnostics::metric!(
+                        nana_diagnostics::framework::persistence::RESTORE_HITS
+                    );
+                } else {
+                    self.remove(&path)?;
+                    nana_diagnostics::metric!(
+                        nana_diagnostics::framework::persistence::CORRUPTIONS
+                    );
+                    nana_diagnostics::metric!(
+                        nana_diagnostics::framework::persistence::RESTORE_MISSES
+                    );
+                }
+                self.backend.remove(&legacy)?;
+                return Ok(result);
             }
-            self.backend.remove(&legacy)?;
-            return Ok(result);
+            ViewStateRead::Invalid => {
+                nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_MISSES);
+                self.backend.remove(&legacy)?;
+                return Ok(None);
+            }
+            ViewStateRead::Missing => {}
         }
         let Some(raw) = self.backend.get(&legacy)? else {
+            nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_MISSES);
             return Ok(None);
         };
         let result = decode(&raw);
         if result.is_some() {
             self.write(&path, version, raw)?;
             nana_diagnostics::metric!(nana_diagnostics::framework::persistence::MIGRATIONS);
+            nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_HITS);
         } else {
             nana_diagnostics::metric!(nana_diagnostics::framework::persistence::CORRUPTIONS);
+            nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_MISSES);
         }
         self.backend.remove(&legacy)?;
         Ok(result)
@@ -294,6 +335,7 @@ impl AppSettings {
             return Ok(result);
         }
         let Some(raw) = self.backend.get(&legacy)? else {
+            nana_diagnostics::metric!(nana_diagnostics::framework::persistence::RESTORE_MISSES);
             return Ok(None);
         };
         let result = decode(&raw);

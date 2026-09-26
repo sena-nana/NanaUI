@@ -2468,7 +2468,13 @@ fn hosted_same_beat_flush_does_not_double_complete_on_next_pump() {
         bridge.resolve_document_layout(&mut doc);
         doc.set_pointer_hover(0, Some(btn));
         bridge.reapply_interactive_cascade(&mut doc);
-        let frame = doc.advance_css_animations(std::time::Duration::from_millis(220));
+        // Commit the queued Runtime animation before sampling its end beat.
+        // The host path normally flushes this at the frame boundary.
+        doc.flush_host_frame();
+        // Advance relative to the actual host clock after setup; compiling
+        // the stylesheet itself can consume a few milliseconds.
+        let end = doc.runtime_now() + std::time::Duration::from_millis(220);
+        let frame = doc.advance_css_animations(end);
         assert!(bridge.apply_css_animation_samples(&mut doc, frame));
     }
     host.flush_motion_complete(&mut engine).unwrap();
