@@ -156,9 +156,14 @@ fn valid_child(parent: CompositionNodeKind, child: CompositionNodeKind) -> bool 
                 | CompositionNodeKind::Slot
                 | CompositionNodeKind::Extension
         ),
-        CompositionNodeKind::Option
-        | CompositionNodeKind::Slot
-        | CompositionNodeKind::Extension => false,
+        CompositionNodeKind::Option | CompositionNodeKind::Extension => false,
+        CompositionNodeKind::Slot => matches!(
+            child,
+            CompositionNodeKind::Group
+                | CompositionNodeKind::Option
+                | CompositionNodeKind::Slot
+                | CompositionNodeKind::Extension
+        ),
     }
 }
 
@@ -199,6 +204,8 @@ pub enum CompositionError {
         parent: CompositionNodeKind,
         child: CompositionNodeKind,
     },
+    NotSlot(CompositionId),
+    MissingParent(StableNodeId),
 }
 
 /// A typed component factory. Component creation still goes through the
@@ -245,6 +252,7 @@ pub struct CompositionHost {
     index: Option<CompositionIndex>,
     entities: HashMap<CompositionId, StableNodeId>,
     visibility: HashMap<CompositionId, bool>,
+    slot_parents: HashMap<CompositionId, StableNodeId>,
     root: Option<StableNodeId>,
 }
 
@@ -312,8 +320,49 @@ impl CompositionHost {
         self.root = Some(root);
         self.entities = entities;
         self.visibility = self.entities.keys().cloned().map(|id| (id, true)).collect();
+        self.slot_parents.clear();
         self.index = Some(index);
         Ok(root)
+    }
+
+    /// Move a declared slot and its subtree to an application-owned runtime
+    /// parent. Only nodes declared as `Slot` may cross a layout boundary.
+    pub fn bind_slot(
+        &mut self,
+        cx: &mut AppContext,
+        id: &CompositionId,
+        parent: StableNodeId,
+    ) -> Result<StableNodeId, CompositionError> {
+        let index = self
+            .index
+            .as_ref()
+            .ok_or(CompositionError::AlreadyMounted)?;
+        let entry = index
+            .get(id)
+            .ok_or_else(|| CompositionError::MissingRenderer(id.clone()))?;
+        if entry.kind != CompositionNodeKind::Slot {
+            return Err(CompositionError::NotSlot(id.clone()));
+        }
+        if !cx.world().contains(parent) {
+            return Err(CompositionError::MissingParent(parent));
+        }
+        let slot = self
+            .entities
+            .get(id)
+            .copied()
+            .ok_or_else(|| CompositionError::MissingRenderer(id.clone()))?;
+        if self.slot_parents.get(id).copied() == Some(parent) {
+            return Ok(slot);
+        }
+        let mut queue = MutationQueue::new();
+        queue.insert(parent, slot, None);
+        cx.commit_mutations(queue).map_err(runtime_error)?;
+        self.slot_parents.insert(id.clone(), parent);
+        Ok(slot)
+    }
+
+    pub fn slot_parent(&self, id: &CompositionId) -> Option<StableNodeId> {
+        self.slot_parents.get(id).copied()
     }
 
     pub fn node(&self, id: &CompositionId) -> Option<StableNodeId> {
@@ -362,6 +411,7 @@ impl CompositionHost {
         self.index = None;
         self.entities.clear();
         self.visibility.clear();
+        self.slot_parents.clear();
         Ok(())
     }
 
@@ -511,6 +561,56 @@ mod tests {
         assert_eq!(host.is_visible(&camera), Some(false));
         host.unmount(&mut cx).unwrap();
         assert_eq!(host.is_visible(&camera), None);
+    }
+
+    #[test]
+    fn declared_slot_can_bind_only_to_a_live_parent() {
+        let spec = page(vec![CompositionNode::with_children(
+            "pane",
+            CompositionNodeKind::Pane,
+            [CompositionNode::with_children(
+                "content-slot",
+                CompositionNodeKind::Slot,
+                [CompositionNode::leaf("group", CompositionNodeKind::Group)],
+            )],
+        )]);
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = cx
+            .create_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        let body = cx
+            .create_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        let mut registry = CompositionRegistry::default();
+        for id in ["page", "pane", "content-slot", "group"] {
+            registry.register(id, crate::Stack::column(0.0)).unwrap();
+        }
+        let mut host = CompositionHost::default();
+        host.mount(&mut cx, document, root.stable_id(), &spec, &registry)
+            .unwrap();
+        let slot = CompositionId::from("content-slot");
+        let group = host.node(&CompositionId::from("group")).unwrap();
+        host.bind_slot(&mut cx, &slot, body.stable_id()).unwrap();
+        assert_eq!(host.slot_parent(&slot), Some(body.stable_id()));
+        assert_eq!(
+            cx.world().node(body.stable_id()).unwrap().children,
+            [host.node(&slot).unwrap()]
+        );
+        assert_eq!(
+            cx.world().node(host.node(&slot).unwrap()).unwrap().children,
+            [group]
+        );
+        assert!(matches!(
+            host.bind_slot(&mut cx, &CompositionId::from("group"), root.stable_id()),
+            Err(CompositionError::NotSlot(id)) if id.as_str() == "group"
+        ));
+        assert!(matches!(
+            host.bind_slot(&mut cx, &slot, StableNodeId::new(999_999).unwrap()),
+            Err(CompositionError::MissingParent(_))
+        ));
+        host.unmount(&mut cx).unwrap();
+        assert_eq!(host.slot_parent(&slot), None);
     }
 
     #[test]
