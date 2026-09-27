@@ -1640,11 +1640,6 @@ impl AppContext {
         self.world.focused_text_input(document)
     }
 
-    /// Whether the document still has a live retained root.
-    pub fn has_document(&self, document: DocumentId) -> bool {
-        self.world.has_document(document)
-    }
-
     /// Change the retained theme once and invalidate only computed paint.
     /// Re-applying the active mode defaults is a true no-op.
     ///
@@ -2193,16 +2188,6 @@ impl AppContext {
         }
     }
 
-    /// Return the last host-space position recorded for one pointer. Hosts use
-    /// this when cancelling a capture after disconnect/blur so the Runtime can
-    /// receive a real `PointerCancel` before its pointer state is released.
-    pub fn pointer_position(&self, document: DocumentId, pointer_id: u64) -> Option<(f32, f32)> {
-        self.component_lifecycle
-            .pointer_positions
-            .get(&(document, pointer_id))
-            .copied()
-    }
-
     pub fn set_pointer_hover_at(
         &mut self,
         document: DocumentId,
@@ -2292,17 +2277,6 @@ impl AppContext {
         pointer_id: u64,
     ) -> Option<StableNodeId> {
         self.world.release_pointer_press(document, pointer_id)
-    }
-
-    /// Immediately revoke host-owned pointer capture during lifecycle
-    /// cancellation. Ordinary component release still goes through
-    /// `UiMutation::ReleasePointer` so target ownership is validated there.
-    pub fn release_pointer_capture(
-        &mut self,
-        document: DocumentId,
-        pointer_id: u64,
-    ) -> Option<StableNodeId> {
-        self.world.release_pointer_capture(document, pointer_id)
     }
 
     pub fn focus_node(
