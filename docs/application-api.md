@@ -7,12 +7,68 @@
 | 消费方 | crate / 包 | 入口 |
 | --- | --- | --- |
 | 新的桌面界面 | `nana-ui`（feature `hosted`） | `nana_ui::runtime`、`ApplicationState`、`RuntimeApplication`、`NanaApplication::builder` / `run_runtime` |
-| 窗口设置 / 输入类型 | 通常经 `nana-ui` 再导出；需要时直接 `nana-ui-platform` | `WindowDescriptor`、`WindowHandle`、`InputEvent` |
+| 窗口设置 / 输入类型 | 通常经 `nana-ui` 再导出；需要时直接 `nana-ui-platform` | `WindowDescriptor`、`WindowHandle`、`InputEvent`、`CanonicalInputEvent`、`InputEndpoint` |
 | Vue 宿主 | `nana-ui-vue` + `nana-js-v8` | `nana_ui_vue::prelude`（`VueRuntimeProgram::run`） |
 | Vue 控件 | `@nanaui/nanavue-components` | `NanaButton` 等 |
 | Vue renderer | `@nanaui/nanavue-runtime` | `createApp()` |
 
 不要直接依赖 `nana-ui-devtools`、`nana-css-parity` 来画产品界面。前者是无头调试，后者是 CSS 对照测试。
+
+### 输入 lowering 与宿主能力
+
+长期 conformance 矩阵与可重复命令见 [Issue 243 输入 conformance](input-conformance.md)。
+
+窗口、Vue 和 headless 入口都先把旧的 `InputEvent` / IME 事件 lowering 成
+`nana_ui_platform::CanonicalInputEvent`，再交给同一个
+`nana_ui::InputRouter`；Vue 的 DOM 事件只作为 Runtime 路由后的观察层。文本提交和
+IME composition 是独立事件，不能从 `KeyInput` 的逻辑键名推导 Unicode。跨线程或远程
+入口使用有界的 `InputEndpoint`；队列满、stale generation、source-local 顺序错误和断连
+都会返回明确结果，不会静默丢弃按键、焦点或 IME transition。连续 pointer/wheel 样本可以
+合并，button transition、key、focus 和 composition 不合并。Window/Vue source 在关闭后重开
+会递增 endpoint generation，不能复用旧 generation 接收迟到事件。
+`InputRouter::attach` 也拒绝 generation 回退或同 generation 换 document；生命周期重绑必须先
+完成旧 document 的 detach/cancel。
+窗口关闭、source/device disconnect 和 focus revoke 会先向活动 capture 发送
+`PointerCancel`，再撤销 capture/hover；拖拽控件不会只看到静默的状态清理。
+focus revoke 的 capture/hover/press 回收按 source/device/pointer 隔离；同一 Document
+仍有其他 source 持有 focus 时，不会误清除它们的 Runtime pointer 状态。
+canonical contract version 当前为 `CANONICAL_INPUT_CONTRACT_VERSION = 1`；强类型 identity
+可作为透明 `u64` 传递，但 `CanonicalInputEvent` 的 Rust enum 布局不是 wire/FFI 格式，外部
+序列化器必须显式协商版本并编码 payload。
+native host 的 physical/logical DPI 转换也经过 `PresentationCoordinateBridge`；presentation
+transform、XR surface intersection 和 remote normalized mapping 仍要求对应 adapter 提供元数据。
+headless conformance 还覆盖静态文档 240 个高频空 hover sample，最终 flush 必须保持 idle，
+以验证 pointer 路由没有触发 layout 或 scene work。
+`InputRouter::last_route_snapshot` 提供低成本的最后路由诊断快照，包含 source/device/pointer、
+canonical kind、hover/focus/capture owner 和 route latency；它是 Copy 状态，不在每个事件上分配
+诊断对象。`InputRouter::route_with_outcome` 额外返回 consumed/`prevent_default`、本次 dispatch
+是否新增 Runtime pending work，以及本次排队的 HostService request 数；它读取单调 work revision，
+不会为了报告 invalidation 而消费 `SystemWork`。`handled` 与 `prevent_default` 是独立结果；
+overlay barrier 可以阻止宿主默认行为但不代表 Runtime 已消费事件。
+
+IME、clipboard、cursor、drag-and-drop、accessibility 和 native text input 的 capability
+合同位于 `nana_ui_platform::{HostServices, HostServiceRequest}`。请求必须携带 source、
+endpoint generation、document 和可选 node；宿主返回 `Success`、typed clipboard result、
+`Unsupported`、`Denied` 或 `StaleGeneration`。跨帧传递 request 使用有界的
+`HostServiceQueue`；队列满时返回 request 所有权和 capacity outcome，不静默丢失。现阶段
+`InputRouter::take_host_service_requests` 和 `service_host_requests` 已提供非阻塞的 IME intent
+排空/消费出口，并在调用宿主前检查 capability，unsupported request 不会进入 host 实现；IME
+surrounding data includes the focused caret `cursor_area` in application logical coordinates。
+Canonical
+Router 的 clipboard request 已由 native Scene host 在路由外执行并回写；pointer hover 的
+cursor intent 也由同一 Router 生产并去重，native Scene host 在路由外执行 cursor request。
+focus lifecycle 同时发出 `NativeTextInput` capability intent，但文本和 caret 仍复用既有 IME
+state machine。旧 IME/clipboard 执行路径仍保留兼容实现，drag-drop/accessibility 的统一生产和真实平台
+adapter 仍属于 Issue 243 后续阶段。宿主必须在自己的 event-loop/frame 边界排空 request，不能
+在输入路由中同步等待 capability 结果；endpoint detach 或 document 替换后，Runtime outlet
+会在 drain 前丢弃 stale request，request 数量和 variable-payload bytes 都有上限。
+
+Issue 243 的边界审计还保留以下 follow-up：remote source 的认证/授权/重放防护与限流，
+跨线程 endpoint 的同步、背压和进程级内存配额，多 Window/Document/presentation target
+的持久绑定规则，canonical payload 的正式 FFI/序列化版本，拖放文件权限和异步生命周期，
+以及真实 Windows IME、Android、WebView、XR/OpenXR、远程网络和 accessibility provider
+验收。这些没有用 headless 或 offscreen 结果替代；它们需要独立 adapter/安全边界或真实设备
+证据后再关闭 follow-up。
 
 新代码从 `nana_ui::runtime` 引入控件。crate 根控件兼容面已删除。`runtime::internal` 给 Gallery 和宿主适配器，不是第二套产品 API。`runtime::host` 是 Scene / GPU slot 类型；`runtime::perf` 是帧计数，不是视图状态。
 

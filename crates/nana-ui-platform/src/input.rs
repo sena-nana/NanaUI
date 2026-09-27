@@ -1,6 +1,8 @@
 //! Renderer-neutral host input delivered to Nana runtimes and adapters.
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputModifiers {
     pub alt: bool,
     pub control: bool,
@@ -8,7 +10,7 @@ pub struct InputModifiers {
     pub shift: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum InputEvent {
     Pointer {
         phase: PointerPhase,
@@ -50,7 +52,8 @@ pub enum InputEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerPhase {
     Down,
     Move,
@@ -58,7 +61,8 @@ pub enum PointerPhase {
     Cancel,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerType {
     #[default]
     Mouse,
@@ -78,6 +82,9 @@ impl PointerType {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputDisposition {
+    /// Whether Runtime/component handling consumed the event.
+    pub handled: bool,
+    /// Whether the host's default action must be suppressed.
     pub prevent_default: bool,
 }
 

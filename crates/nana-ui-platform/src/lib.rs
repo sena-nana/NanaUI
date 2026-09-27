@@ -4,6 +4,7 @@
 mod clipboard;
 #[cfg(feature = "fetch")]
 mod fetch;
+mod host_services;
 mod ime;
 mod input;
 mod paths;
@@ -30,6 +31,12 @@ pub use fetch::{
     DEFAULT_FETCH_TIMEOUT, FetchCancellation, FetchError, FetchErrorKind, FetchHead, FetchHost,
     FetchPolicy, FetchRequest, FetchResponse, FetchSink, NativeFetchHost, SharedFetchHost,
     shared_fetch_host,
+};
+pub use host_services::{
+    ClipboardHostServices, DragPayload, HostCapability, HostRequestContext, HostServiceBroker,
+    HostServiceOutcome, HostServiceQueue, HostServiceQueueCounters, HostServiceQueueFull,
+    HostServiceRequest, HostServiceResponse, HostServices, ImeSurroundingText,
+    UnsupportedHostServices,
 };
 pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
@@ -157,3 +164,18 @@ pub enum SurfacePhase {
 pub mod host {
     pub use crate::window::{MousePassthroughMode, WindowCommand};
 }
+mod canonical;
+mod coordinates;
+pub use canonical::{
+    CANONICAL_INPUT_CONTRACT_VERSION, CanonicalInputEvent, CanonicalInputWireEvent,
+    CompositionInput, DeviceId, EndpointGeneration, InputDeviceCounters, InputEndpoint,
+    InputEndpointCounters, InputEnqueueOutcome, InputMetadata, InputPayload, InputRejection,
+    InputSequence, InputSourceId, InputTimestamp, KeyInput, KeyState, LogicalKey, PhysicalKey,
+    PointerId, PointerInput, RejectedInput, WheelInput, WheelUnit, WireInputError, lower_ime_event,
+    lower_input_event,
+};
+pub use coordinates::{
+    ApplicationSpaceTransform, CoordinateBridgeCounters, CoordinateError, CoordinateExtent,
+    InputCoordinateSpace, PresentationCoordinateBridge, PresentationCoordinateMetadata,
+    PresentationTransform,
+};

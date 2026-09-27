@@ -8,6 +8,8 @@
 pub enum ImeEvent {
     Enabled,
     Disabled,
+    /// Composition was cancelled; discard preedit without committing it.
+    Cancelled,
     Preedit {
         text: String,
         selection: Option<(usize, usize)>,

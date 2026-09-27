@@ -150,6 +150,30 @@ impl UiWorld {
             .get(&(document, pointer_id))
             .copied()
     }
+
+    /// Release a capture during host lifecycle cancellation (disconnect,
+    /// document replacement, or blur). This is an immediate input-state
+    /// transition and records the same capture-change publication used by
+    /// mutation-driven release.
+    pub fn release_pointer_capture(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+    ) -> Option<StableNodeId> {
+        let target = self
+            .input
+            .pointer_captures
+            .remove(&(document, pointer_id))?;
+        self.input
+            .pending_pointer_capture_changes
+            .push(PointerCaptureChange {
+                pointer_id,
+                target,
+                captured: false,
+            });
+        self.generation = self.generation.wrapping_add(1);
+        Some(target)
+    }
 }
 
 impl UiWorld {

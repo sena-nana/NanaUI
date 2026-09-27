@@ -5,6 +5,135 @@ use super::*;
 mod bounds;
 use bounds::{Bounds, BoundsTree};
 
+#[derive(Debug, Clone)]
+pub(super) enum HitPathClip {
+    Rect(LayoutBox),
+    RoundedRect { rect: LayoutBox, radius: f32 },
+    Polygon(Vec<[f32; 2]>),
+    Ellipse { rect: LayoutBox },
+}
+
+impl HitPathClip {
+    fn contains(&self, transform: [f32; 6], persp: [f32; 2], x: f32, y: f32) -> bool {
+        let Some((x, y)) = transformed_point(transform, persp, x, y) else {
+            return false;
+        };
+        match self {
+            Self::Rect(bounds) => bounds.contains(x, y),
+            Self::RoundedRect { rect, radius } => rounded_rect_contains(*rect, *radius, x, y),
+            Self::Ellipse { rect } => {
+                let rx = rect.width * 0.5;
+                let ry = rect.height * 0.5;
+                if rx <= 0.0 || ry <= 0.0 {
+                    return false;
+                }
+                let dx = (x - (rect.x + rx)) / rx;
+                let dy = (y - (rect.y + ry)) / ry;
+                dx * dx + dy * dy <= 1.0
+            }
+            Self::Polygon(points) => point_in_polygon(points, x, y),
+        }
+    }
+}
+
+fn rounded_rect_contains(rect: LayoutBox, radius: f32, x: f32, y: f32) -> bool {
+    if !rect.contains(x, y) {
+        return false;
+    }
+    let radius = radius.min(rect.width * 0.5).min(rect.height * 0.5);
+    if radius <= 0.0 {
+        return true;
+    }
+    let nearest_x = if x < rect.x + radius {
+        rect.x + radius
+    } else if x > rect.x + rect.width - radius {
+        rect.x + rect.width - radius
+    } else {
+        x
+    };
+    let nearest_y = if y < rect.y + radius {
+        rect.y + radius
+    } else if y > rect.y + rect.height - radius {
+        rect.y + rect.height - radius
+    } else {
+        y
+    };
+    (x - nearest_x).powi(2) + (y - nearest_y).powi(2) <= radius * radius
+}
+
+fn path_clips_contain(
+    clips: &[HitPathClip],
+    transform: [f32; 6],
+    persp: [f32; 2],
+    x: f32,
+    y: f32,
+) -> bool {
+    for clip in clips {
+        if !clip.contains(transform, persp, x, y) {
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_CLIP_REJECTIONS);
+            return false;
+        }
+    }
+    true
+}
+
+fn point_in_polygon(points: &[[f32; 2]], x: f32, y: f32) -> bool {
+    if points.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = points[points.len() - 1];
+    for &current in points {
+        if (current[1] > y) != (previous[1] > y) {
+            let at_x = (previous[0] - current[0]) * (y - current[1]) / (previous[1] - current[1])
+                + current[0];
+            if x < at_x {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn path_clips_for(style: &nana_ui_core::LayoutStyle, layout: LayoutBox) -> Vec<HitPathClip> {
+    let Some(path) = style.paint.clip_path.as_ref() else {
+        return Vec::new();
+    };
+    match path {
+        nana_ui_core::ClipPath::Inset(inset) => {
+            let [top, right, bottom, left] = inset.resolve_offsets(layout.width, layout.height);
+            let rect = LayoutBox {
+                x: left,
+                y: top,
+                width: (layout.width - left - right).max(0.0),
+                height: (layout.height - top - bottom).max(0.0),
+            };
+            let radius = inset.resolve_round(layout.width, layout.height);
+            if radius > 0.0 {
+                vec![HitPathClip::RoundedRect { rect, radius }]
+            } else {
+                vec![HitPathClip::Rect(rect)]
+            }
+        }
+        nana_ui_core::ClipPath::Polygon(_) => path
+            .resolve_polygon_points(layout.width, layout.height)
+            .map_or_else(Vec::new, |points| vec![HitPathClip::Polygon(points)]),
+        nana_ui_core::ClipPath::Circle(_) | nana_ui_core::ClipPath::Ellipse(_) => path
+            .resolve_ellipse_rect(layout.width, layout.height)
+            .map_or_else(Vec::new, |[x, y, width, height]| {
+                vec![HitPathClip::Ellipse {
+                    rect: LayoutBox {
+                        x,
+                        y,
+                        width,
+                        height,
+                    },
+                }]
+            }),
+    }
+}
+
 pub(super) fn sort_hit_children(node: &mut HitEntry) {
     // Children were attached last-to-first; (z, order) restores document order
     // within a stacking level so a reverse walk is front-to-back.
@@ -492,6 +621,9 @@ impl HitIndex {
         {
             return false;
         }
+        if !path_clips_contain(&node.path_clips, node.transform, node.persp, x, y) {
+            return false;
+        }
         let menu_hit = node
             .menu
             .is_some_and(|menu| transformed_contains(menu, node.transform, node.persp, x, y));
@@ -637,7 +769,10 @@ fn transformed_point(
     y: f32,
 ) -> Option<(f32, f32)> {
     let det = a * (d - f * h) - c * (b - f * g) + e * (b * h - d * g);
-    if !det.is_finite() || det.abs() <= f32::EPSILON {
+    // A small but finite determinant is still a valid presentation transform.
+    // Reject only a true singularity; using an absolute epsilon here made
+    // visible nodes with large logical extents and tiny scales unhittable.
+    if !det.is_finite() || det == 0.0 {
         return None;
     }
     let inv = 1.0 / det;
@@ -650,7 +785,12 @@ fn transformed_point(
     let ig = (b * h - d * g) * inv;
     let ih = (c * g - a * h) * inv;
     let ii = (a * d - c * b) * inv;
-    if !ii.is_finite() || ii.abs() < 1e-8 {
+    // For an affine transform `ii` is exactly the 2x2 determinant.  A small
+    // non-zero determinant remains invertible; rejecting it with an absolute
+    // epsilon makes large logical surfaces with tiny presentation scales
+    // visibly hittable but logically unreachable.  Perspective transforms
+    // still reject a zero projective denominator below.
+    if !ii.is_finite() || ii == 0.0 {
         return None;
     }
     let w = ig * x + ih * y + ii;
@@ -766,8 +906,8 @@ impl UiWorld {
         if !self.is_mounted(target) {
             return None;
         }
-        if !self.has_compositor_transform_overlay()
-            && let Some(document) = self.document_of(target)
+        if let Some(document) = self.document_of(target)
+            && !self.has_compositor_transform_overlay_for(document)
             && let Some(index) = self.hit_test_index.get(&document)
             && let Some(indexed) = index.entries.get(&target)
         {
@@ -793,7 +933,8 @@ impl UiWorld {
         if !self.is_mounted(target) {
             return None;
         }
-        if self.has_compositor_transform_overlay() {
+        let document = self.document_of(target)?;
+        if self.has_compositor_transform_overlay_for(document) {
             let ([a, b, c, d, e, f], [g, h]) = self.layout_projection_transform(target)?;
             let w = g * x + h * y + 1.0;
             if !w.is_finite() || w.abs() < 1e-8 {
@@ -802,7 +943,6 @@ impl UiWorld {
             let result = ((a * x + c * y + e) / w, (b * x + d * y + f) / w);
             return (result.0.is_finite() && result.1.is_finite()).then_some(result);
         }
-        let document = self.document_of(target)?;
         let index = self.hit_test_index.get(&document)?;
         let entry = &index.entries.get(&target)?.entry;
         let [a, b, c, d, e, f] = entry.transform;
@@ -833,9 +973,12 @@ impl UiWorld {
         y: f32,
     ) -> Vec<(i32, Vec<usize>)> {
         let shift = index.inherited_shift(target);
+        let has_overlay = self
+            .document_of(target)
+            .is_some_and(|document| self.has_compositor_transform_overlay_for(document));
         let menu_hit = index.entries.get(&target).is_some_and(|node| {
             node.entry.menu.is_some_and(|menu| {
-                if self.has_compositor_transform_overlay() {
+                if has_overlay {
                     self.layout_projection_transform(target)
                         .is_some_and(|(transform, persp)| {
                             transformed_contains(menu, transform, persp, x, y)
@@ -966,6 +1109,9 @@ impl UiWorld {
         {
             return false;
         }
+        if !path_clips_contain(&node.path_clips, transform, persp, x, y) {
+            return false;
+        }
         let menu_hit = node
             .menu
             .is_some_and(|menu| transformed_contains(menu, transform, persp, x, y));
@@ -1036,7 +1182,7 @@ impl UiWorld {
             return Vec::new();
         };
         let mut candidates = Vec::new();
-        if self.has_compositor_transform_overlay() {
+        if self.has_compositor_transform_overlay_for(document) {
             self.visit_presentation_roots(forest, x, y, &mut |id| {
                 candidates.push(id);
                 false
@@ -1048,7 +1194,7 @@ impl UiWorld {
             });
         }
         candidates.retain(|id| !self.motion_blocks_input(*id));
-        if forest.viewport_hit_at(x, y) || self.has_compositor_transform_overlay() {
+        if forest.viewport_hit_at(x, y) || self.has_compositor_transform_overlay_for(document) {
             candidates
                 .sort_by_cached_key(|id| std::cmp::Reverse(self.hit_paint_key(forest, *id, x, y)));
         }
@@ -1073,7 +1219,7 @@ impl UiWorld {
         }
         let forest = self.hit_test_index.get(&document)?;
         let mut found = None;
-        if self.has_compositor_transform_overlay() {
+        if self.has_compositor_transform_overlay_for(document) {
             self.visit_presentation_roots(forest, x, y, &mut |id| {
                 found = Some(id);
                 true
@@ -1234,6 +1380,7 @@ impl UiWorld {
                 PointerEventsSpec::inherit_from(node_style.pointer_events, parent_used_pe);
             let mut self_clips = Vec::new();
             let mut child_clips = Vec::new();
+            let path_clips = path_clips_for(node_style, layout);
             if let Some((x, y, w, h)) =
                 node_style.overflow_clip_box(layout.x, layout.y, layout.width, layout.height)
             {
@@ -1313,6 +1460,7 @@ impl UiWorld {
                     persp,
                     self_clips,
                     child_clips,
+                    path_clips,
                     z_index: self.stacking_z_index_memo(id, &mut memo),
                     order: position,
                     hittable,
@@ -1629,7 +1777,7 @@ mod presentation_tests;
 
 #[cfg(test)]
 mod connector_tests {
-    use super::overlay_connector_box;
+    use super::{overlay_connector_box, transformed_point};
     use crate::LayoutBox;
 
     fn box_at(x: f32, y: f32, width: f32, height: f32) -> LayoutBox {
@@ -1670,5 +1818,19 @@ mod connector_tests {
             overlay_connector_box(box_at(0.0, 0.0, 10.0, 10.0), box_at(20.0, 20.0, 10.0, 10.0))
                 .unwrap();
         assert_eq!((tied.y, tied.height), (10.0, 10.0));
+    }
+
+    #[test]
+    fn tiny_affine_scale_remains_hittable() {
+        let Some((x, y)) = transformed_point(
+            [1.0e-4, 0.0, 0.0, 1.0e-4, 0.0, 0.0],
+            [0.0, 0.0],
+            1.0e-4,
+            1.0e-4,
+        ) else {
+            panic!("tiny affine transforms must remain invertible");
+        };
+        assert!((x - 1.0).abs() < 1.0e-5);
+        assert!((y - 1.0).abs() < 1.0e-5);
     }
 }

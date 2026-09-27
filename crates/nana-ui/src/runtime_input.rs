@@ -2,8 +2,9 @@
 
 use nana_ui_core::TableNavigation;
 use nana_ui_platform::{
-    ImeEvent, InputDisposition, InputEvent, PointerPhase, SharedClipboardHost,
-    default_shared_clipboard,
+    CanonicalInputEvent, CompositionInput, HostRequestContext, HostServiceOutcome,
+    HostServiceQueue, HostServiceRequest, HostServices, ImeEvent, InputDisposition, InputEvent,
+    InputPayload, PointerPhase, SharedClipboardHost, default_shared_clipboard,
 };
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameworkError, RangeAdjustment, RovingFocusIntent, ScrollOffset,
@@ -11,9 +12,10 @@ use nana_ui_runtime::{
 };
 #[cfg(feature = "graph-canvas")]
 use nana_ui_runtime::{GraphCanvasAdjustment, GraphPointerButton, GraphScrollDelta};
-use nana_ui_runtime::{OverlayKey, OverlayPointerPhase};
+use nana_ui_runtime::{OverlayKey, OverlayPointerDecision, OverlayPointerPhase};
+use std::collections::HashMap;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 macro_rules! optional_input {
     ($feature:literal, $call:expr, $absent:expr) => {{
@@ -48,6 +50,1257 @@ pub struct RuntimeInputAdapter {
     clipboard: Option<SharedClipboardHost>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputRouterError {
+    UnknownSource,
+    StaleGeneration,
+    Disconnected,
+    OutOfOrder,
+    TimestampRegression,
+    /// No input state was changed; drain host requests and retry this event.
+    HostServiceBackpressure,
+    Dispatch(String),
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct InputRouterCounters {
+    pub events_routed: u64,
+    pub hit_tests: u64,
+    /// Successful canonical dispatches. This is not a fabricated node-path
+    /// length; a future propagation API can add a real routed-node count.
+    pub routed_dispatches: u64,
+    pub focus_changes: u64,
+    pub pointer_capture_changes: u64,
+    pub hover_path_changes: u64,
+    pub routing_cache_hits: u64,
+    pub routing_cache_misses: u64,
+    pub events_rejected_unknown_source: u64,
+    pub events_rejected_stale_generation: u64,
+    pub events_rejected_disconnected: u64,
+    pub events_rejected_order: u64,
+    pub pointer_identity_cache_hits: u64,
+    pub pointer_identity_cache_misses: u64,
+    pub host_requests_stale_dropped: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanonicalInputKind {
+    Pointer,
+    Wheel,
+    Key,
+    Text,
+    Composition,
+    PointerEnter,
+    PointerLeave,
+    Focus,
+    DeviceConnected,
+    DeviceDisconnected,
+    SourceConnected,
+    SourceDisconnected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputRouteSnapshot {
+    pub source: nana_ui_platform::InputSourceId,
+    pub device: nana_ui_platform::DeviceId,
+    pub pointer: Option<nana_ui_platform::PointerId>,
+    pub kind: CanonicalInputKind,
+    pub document: DocumentId,
+    pub hover_owner: Option<StableNodeId>,
+    pub focus_owner: Option<StableNodeId>,
+    pub capture_owner: Option<StableNodeId>,
+    pub route_latency_ns: u64,
+}
+
+/// The non-blocking result of routing one canonical event.
+///
+/// `invalidated_work` is derived from UiWorld's monotonic pending-work
+/// revision, so it reports work scheduled by this dispatch without consuming
+/// `SystemWork`. Host requests remain queued for the host boundary and are
+/// counted here in enqueue order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputRouteOutcome {
+    pub handled: bool,
+    pub prevent_default: bool,
+    pub invalidated_work: bool,
+    pub host_requests_enqueued: usize,
+}
+
+fn canonical_input_kind(payload: &InputPayload) -> CanonicalInputKind {
+    match payload {
+        InputPayload::Pointer(_) => CanonicalInputKind::Pointer,
+        InputPayload::Wheel(_) => CanonicalInputKind::Wheel,
+        InputPayload::Key(_) => CanonicalInputKind::Key,
+        InputPayload::TextInput(_) => CanonicalInputKind::Text,
+        InputPayload::Composition(_) => CanonicalInputKind::Composition,
+        InputPayload::PointerEnter { .. } => CanonicalInputKind::PointerEnter,
+        InputPayload::PointerLeave { .. } => CanonicalInputKind::PointerLeave,
+        InputPayload::Focus { .. } => CanonicalInputKind::Focus,
+        InputPayload::DeviceConnected => CanonicalInputKind::DeviceConnected,
+        InputPayload::DeviceDisconnected => CanonicalInputKind::DeviceDisconnected,
+        InputPayload::SourceConnected => CanonicalInputKind::SourceConnected,
+        InputPayload::SourceDisconnected => CanonicalInputKind::SourceDisconnected,
+    }
+}
+
+fn canonical_pointer(payload: &InputPayload) -> Option<nana_ui_platform::PointerId> {
+    match payload {
+        InputPayload::Pointer(pointer) => Some(pointer.pointer_id),
+        InputPayload::Wheel(wheel) => Some(wheel.pointer_id),
+        InputPayload::PointerEnter { pointer_id, .. }
+        | InputPayload::PointerLeave { pointer_id } => Some(*pointer_id),
+        _ => None,
+    }
+}
+
+fn cursor_spec_name(cursor: nana_ui_core::CursorSpec) -> &'static str {
+    match cursor {
+        nana_ui_core::CursorSpec::Default => "default",
+        nana_ui_core::CursorSpec::Pointer => "pointer",
+        nana_ui_core::CursorSpec::Text => "text",
+        nana_ui_core::CursorSpec::Move => "move",
+        nana_ui_core::CursorSpec::Grab => "grab",
+        nana_ui_core::CursorSpec::Grabbing => "grabbing",
+        nana_ui_core::CursorSpec::NotAllowed => "not-allowed",
+        nana_ui_core::CursorSpec::Crosshair => "crosshair",
+        nana_ui_core::CursorSpec::Help => "help",
+        nana_ui_core::CursorSpec::Wait => "wait",
+        nana_ui_core::CursorSpec::Progress => "progress",
+        nana_ui_core::CursorSpec::ZoomIn => "zoom-in",
+        nana_ui_core::CursorSpec::ZoomOut => "zoom-out",
+        nana_ui_core::CursorSpec::None => "none",
+    }
+}
+
+impl std::fmt::Display for InputRouterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownSource => f.write_str("input source is not attached"),
+            Self::StaleGeneration => f.write_str("input endpoint generation is stale"),
+            Self::Disconnected => f.write_str("input source or device is disconnected"),
+            Self::OutOfOrder => f.write_str("input sequence is out of order"),
+            Self::TimestampRegression => f.write_str("input timestamp regressed"),
+            Self::HostServiceBackpressure => f.write_str("host service request queue is full"),
+            Self::Dispatch(error) => f.write_str(error),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InputBinding {
+    generation: nana_ui_platform::EndpointGeneration,
+    document: DocumentId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PointerIdentity {
+    local: u64,
+    pointer_type: nana_ui_platform::PointerType,
+    is_primary: bool,
+}
+
+/// Host-independent endpoint lifecycle and canonical event router.
+///
+/// The router owns source binding and canonical pointer identity. Hit testing,
+/// focus, capture, and component behavior remain in `AppContext`/`UiWorld`.
+pub struct InputRouter {
+    bindings: HashMap<nana_ui_platform::InputSourceId, InputBinding>,
+    pointers: HashMap<
+        (
+            nana_ui_platform::InputSourceId,
+            nana_ui_platform::DeviceId,
+            nana_ui_platform::PointerId,
+        ),
+        PointerIdentity,
+    >,
+    disconnected_sources: std::collections::HashSet<nana_ui_platform::InputSourceId>,
+    disconnected_devices:
+        std::collections::HashSet<(nana_ui_platform::InputSourceId, nana_ui_platform::DeviceId)>,
+    focused_sources: std::collections::HashMap<
+        DocumentId,
+        std::collections::HashSet<nana_ui_platform::InputSourceId>,
+    >,
+    last_order: HashMap<
+        nana_ui_platform::InputSourceId,
+        (
+            nana_ui_platform::InputSequence,
+            nana_ui_platform::InputTimestamp,
+        ),
+    >,
+    next_pointer: u64,
+    adapter: RuntimeInputAdapter,
+    host_requests: HostServiceQueue,
+    ime_focus: HashMap<DocumentId, StableNodeId>,
+    cursor_state: HashMap<
+        (
+            nana_ui_platform::InputSourceId,
+            nana_ui_platform::DeviceId,
+            DocumentId,
+        ),
+        String,
+    >,
+    counters: InputRouterCounters,
+    last_route: Option<InputRouteSnapshot>,
+}
+
+impl Default for InputRouter {
+    fn default() -> Self {
+        Self {
+            bindings: HashMap::new(),
+            pointers: HashMap::new(),
+            disconnected_sources: std::collections::HashSet::new(),
+            disconnected_devices: std::collections::HashSet::new(),
+            focused_sources: std::collections::HashMap::new(),
+            last_order: HashMap::new(),
+            next_pointer: 1,
+            adapter: RuntimeInputAdapter::default(),
+            host_requests: HostServiceQueue::new(128),
+            ime_focus: HashMap::new(),
+            cursor_state: HashMap::new(),
+            counters: InputRouterCounters::default(),
+            last_route: None,
+        }
+    }
+}
+
+impl InputRouter {
+    pub fn ensure_attached(
+        &mut self,
+        source: nana_ui_platform::InputSourceId,
+        generation: nana_ui_platform::EndpointGeneration,
+        document: DocumentId,
+    ) {
+        // This is an idempotent binding helper for hosts that have already
+        // completed endpoint teardown. Lifecycle callers must use
+        // `detach_with_context` before changing a generation so active
+        // capture receives PointerCancel while its document is alive.
+        if self.binding(source) != Some((generation, document)) {
+            self.attach(source, generation, document);
+        }
+    }
+
+    /// Attach an endpoint only at the same or a newer generation. Returns
+    /// `false` when a stale generation or same-generation document rebind is
+    /// attempted; callers must detach the old document before reusing it.
+    pub fn attach(
+        &mut self,
+        source: nana_ui_platform::InputSourceId,
+        generation: nana_ui_platform::EndpointGeneration,
+        document: DocumentId,
+    ) -> bool {
+        let previous_binding = self.bindings.get(&source).copied();
+        if let Some(previous) = previous_binding {
+            if generation < previous.generation
+                || (generation == previous.generation && document != previous.document)
+            {
+                return false;
+            }
+            if generation == previous.generation && document == previous.document {
+                return true;
+            }
+        }
+        if self
+            .last_route
+            .is_some_and(|snapshot| snapshot.source == source)
+        {
+            self.last_route = None;
+        }
+        self.bindings.insert(
+            source,
+            InputBinding {
+                generation,
+                document,
+            },
+        );
+        self.pointers.retain(|(bound, _, _), _| *bound != source);
+        self.disconnected_sources.remove(&source);
+        self.disconnected_devices
+            .retain(|(bound, _)| *bound != source);
+        self.cursor_state
+            .retain(|(bound, _, _), _| *bound != source);
+        self.focused_sources.values_mut().for_each(|owners| {
+            owners.remove(&source);
+        });
+        self.focused_sources.retain(|_, owners| !owners.is_empty());
+        self.last_order.remove(&source);
+        // A new endpoint generation cannot inherit the previous native IME
+        // enablement. Clear the document cache so the next focused editable
+        // event emits a fresh ImeEnable intent for the new endpoint.
+        if previous_binding.is_some_and(|previous| previous.generation != generation)
+            || previous_binding.is_some_and(|previous| previous.document != document)
+        {
+            self.ime_focus.remove(&document);
+        }
+        if let Some(previous) = previous_binding
+            && previous.document != document
+            && !self
+                .bindings
+                .values()
+                .any(|binding| binding.document == previous.document)
+        {
+            self.ime_focus.remove(&previous.document);
+        }
+        true
+    }
+
+    pub fn detach(&mut self, source: nana_ui_platform::InputSourceId) -> Option<DocumentId> {
+        if self
+            .last_route
+            .is_some_and(|snapshot| snapshot.source == source)
+        {
+            self.last_route = None;
+        }
+        self.pointers.retain(|(bound, _, _), _| *bound != source);
+        self.disconnected_sources.remove(&source);
+        self.disconnected_devices
+            .retain(|(bound, _)| *bound != source);
+        self.cursor_state
+            .retain(|(bound, _, _), _| *bound != source);
+        self.focused_sources.values_mut().for_each(|owners| {
+            owners.remove(&source);
+        });
+        self.focused_sources.retain(|_, owners| !owners.is_empty());
+        self.last_order.remove(&source);
+        let document = self
+            .bindings
+            .remove(&source)
+            .map(|binding| binding.document);
+        if let Some(document) = document
+            && !self
+                .bindings
+                .values()
+                .any(|binding| binding.document == document)
+        {
+            self.ime_focus.remove(&document);
+            self.cursor_state
+                .retain(|(_, _, bound_document), _| *bound_document != document);
+        }
+        document
+    }
+
+    /// Detach an endpoint while its document is still alive. Lifecycle
+    /// callers should use this variant so active captures receive cancel and
+    /// hover state receives leave before the binding is removed.
+    pub fn detach_with_context(
+        &mut self,
+        context: &mut AppContext,
+        source: nana_ui_platform::InputSourceId,
+        now: Duration,
+    ) -> Result<Option<DocumentId>, InputRouterError> {
+        let Some(binding) = self.bindings.get(&source).copied() else {
+            return Ok(None);
+        };
+        self.cancel_captured_pointers(context, binding.document, source, None, now)
+            .map_err(|error| InputRouterError::Dispatch(error.to_string()))?;
+        Ok(self.detach(source))
+    }
+
+    pub fn binding(
+        &self,
+        source: nana_ui_platform::InputSourceId,
+    ) -> Option<(nana_ui_platform::EndpointGeneration, DocumentId)> {
+        self.bindings
+            .get(&source)
+            .map(|binding| (binding.generation, binding.document))
+    }
+
+    pub fn counters(&self) -> InputRouterCounters {
+        self.counters
+    }
+
+    pub fn last_route_snapshot(&self) -> Option<InputRouteSnapshot> {
+        self.last_route
+    }
+
+    /// Take capability requests produced while routing canonical input. The
+    /// host drains these at its normal event-loop/frame boundary; routing
+    /// itself never waits for a host service response.
+    pub fn take_host_service_requests(
+        &mut self,
+        context: &AppContext,
+        limit: usize,
+    ) -> Vec<HostServiceRequest> {
+        let mut current = Vec::new();
+        for request in self.host_requests.drain(limit) {
+            let request_context = request.context();
+            let valid = self
+                .bindings
+                .get(&request_context.source)
+                .is_some_and(|binding| {
+                    binding.generation == request_context.generation
+                        && binding.document.get() == request_context.document
+                });
+            let valid = valid
+                && nana_ui_runtime::DocumentId::new(request_context.document)
+                    .is_some_and(|document| context.has_document(document));
+            let valid = valid
+                && match &request {
+                    HostServiceRequest::ImeEnable {
+                        context: request, ..
+                    }
+                    | HostServiceRequest::ImeUpdate {
+                        context: request, ..
+                    } => request.node.is_some_and(|node| {
+                        context
+                            .world()
+                            .focused(self.bindings[&request.source].document)
+                            .is_some_and(|focused| focused.get() == node)
+                    }),
+                    HostServiceRequest::Cursor {
+                        context: request, ..
+                    } => request.node.is_none_or(|node| {
+                        StableNodeId::new(node).is_some_and(|node| context.world().is_mounted(node))
+                    }),
+                    HostServiceRequest::NativeTextInput {
+                        context: request,
+                        enabled,
+                    } => {
+                        !*enabled
+                            || request.node.is_some_and(|node| {
+                                context
+                                    .world()
+                                    .focused(self.bindings[&request.source].document)
+                                    .is_some_and(|focused| focused.get() == node)
+                            })
+                    }
+                    HostServiceRequest::ImeDisable { .. } => true,
+                    _ => true,
+                };
+            if valid {
+                current.push(request);
+            } else {
+                self.counters.host_requests_stale_dropped += 1;
+                nana_diagnostics::metric!(
+                    nana_diagnostics::framework::runtime::HOST_REQUESTS_STALE
+                );
+            }
+        }
+        current
+    }
+
+    /// Fulfil queued capability requests at the host boundary. This is kept
+    /// separate from [`Self::route`] so a platform service can never block
+    /// pointer/key routing. Requests are generation/document checked before
+    /// they reach the capability implementation; the returned outcomes stay
+    /// ordered with the accepted requests.
+    pub fn service_host_requests(
+        &mut self,
+        context: &AppContext,
+        services: &mut dyn HostServices,
+        limit: usize,
+    ) -> Vec<HostServiceOutcome> {
+        self.service_host_requests_with_results(context, services, limit)
+            .into_iter()
+            .map(|response| response.outcome)
+            .collect()
+    }
+
+    /// Fulfil requests while retaining the originating request for async
+    /// result application. The legacy method above remains an outcome-only
+    /// convenience for hosts that do not need correlation.
+    pub fn service_host_requests_with_results(
+        &mut self,
+        context: &AppContext,
+        services: &mut dyn HostServices,
+        limit: usize,
+    ) -> Vec<nana_ui_platform::HostServiceResponse> {
+        self.take_host_service_requests(context, limit)
+            .into_iter()
+            .map(|request| {
+                let capability = request.capability();
+                let outcome = if services.supports(capability) {
+                    services.request(request.clone())
+                } else {
+                    HostServiceOutcome::Unsupported
+                };
+                nana_ui_platform::HostServiceResponse { request, outcome }
+            })
+            .collect()
+    }
+
+    /// Apply a host result after its asynchronous boundary. The request
+    /// context is checked again because the endpoint or focused document may
+    /// have been revoked while the host was working.
+    pub fn apply_host_service_response(
+        &mut self,
+        context: &mut AppContext,
+        response: nana_ui_platform::HostServiceResponse,
+    ) -> Result<bool, InputRouterError> {
+        let request_context = response.request.context();
+        let Some(binding) = self.bindings.get(&request_context.source).copied() else {
+            self.counters.host_requests_stale_dropped += 1;
+            return Ok(false);
+        };
+        let Some(document) = DocumentId::new(request_context.document) else {
+            self.counters.host_requests_stale_dropped += 1;
+            return Ok(false);
+        };
+        let node_valid = match &response.request {
+            HostServiceRequest::Cursor { .. } => request_context.node.is_none_or(|node| {
+                StableNodeId::new(node).is_some_and(|node| context.world().is_mounted(node))
+            }),
+            HostServiceRequest::ImeEnable { .. }
+            | HostServiceRequest::ImeUpdate { .. }
+            | HostServiceRequest::ClipboardRead { .. }
+            | HostServiceRequest::ClipboardWrite { cut: true, .. } => {
+                request_context.node.is_some_and(|node| {
+                    context
+                        .world()
+                        .focused(document)
+                        .is_some_and(|focused| focused.get() == node)
+                })
+            }
+            HostServiceRequest::ClipboardWrite { cut: false, .. } => {
+                request_context.node.is_none_or(|node| {
+                    StableNodeId::new(node).is_some_and(|node| context.world().is_mounted(node))
+                })
+            }
+            HostServiceRequest::NativeTextInput { enabled: true, .. } => {
+                request_context.node.is_some_and(|node| {
+                    context
+                        .world()
+                        .focused(document)
+                        .is_some_and(|focused| focused.get() == node)
+                })
+            }
+            HostServiceRequest::NativeTextInput { enabled: false, .. } => true,
+            _ => true,
+        };
+        if binding.generation != request_context.generation
+            || binding.document != document
+            || !context.has_document(document)
+            || !node_valid
+        {
+            self.counters.host_requests_stale_dropped += 1;
+            return Ok(false);
+        }
+        match (response.request, response.outcome) {
+            (
+                HostServiceRequest::ClipboardRead { .. },
+                HostServiceOutcome::ClipboardText(Some(text)),
+            ) => context
+                .paste_focused_text(document, &text)
+                .map_err(|error| InputRouterError::Dispatch(error.to_string())),
+            (HostServiceRequest::ClipboardWrite { cut: true, .. }, HostServiceOutcome::Success) => {
+                context
+                    .cut_focused_text(document)
+                    .map(|_| true)
+                    .map_err(|error| InputRouterError::Dispatch(error.to_string()))
+            }
+            _ => Ok(false),
+        }
+    }
+
+    pub fn route(
+        &mut self,
+        context: &mut AppContext,
+        event: &nana_ui_platform::CanonicalInputEvent,
+        now: Duration,
+        text_shaper: Option<&mut dyn TextShaper>,
+    ) -> Result<InputDisposition, InputRouterError> {
+        let route_started = Instant::now();
+        let kind = canonical_input_kind(&event.payload);
+        let pointer = canonical_pointer(&event.payload);
+        let Some(binding) = self.bindings.get(&event.metadata.source).copied() else {
+            self.counters.events_rejected_unknown_source += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_ROUTE_REJECTED);
+            return Err(InputRouterError::UnknownSource);
+        };
+        if binding.generation != event.metadata.generation {
+            self.counters.events_rejected_stale_generation += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_ROUTE_REJECTED);
+            return Err(InputRouterError::StaleGeneration);
+        }
+        let source_connected = matches!(
+            &event.payload,
+            nana_ui_platform::InputPayload::SourceConnected
+        );
+        let device_connected = matches!(
+            &event.payload,
+            nana_ui_platform::InputPayload::DeviceConnected
+        );
+        if (self.disconnected_sources.contains(&event.metadata.source) && !source_connected)
+            || (self
+                .disconnected_devices
+                .contains(&(event.metadata.source, event.metadata.device))
+                && !device_connected
+                && !source_connected
+                && !matches!(event.payload, InputPayload::SourceDisconnected))
+        {
+            self.counters.events_rejected_disconnected += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_ROUTE_REJECTED);
+            return Err(InputRouterError::Disconnected);
+        }
+        if let Some((sequence, timestamp)) = self.last_order.get(&event.metadata.source)
+            && (event.metadata.sequence <= *sequence || event.metadata.timestamp < *timestamp)
+        {
+            self.counters.events_rejected_order += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_ROUTE_REJECTED);
+            return Err(if event.metadata.sequence <= *sequence {
+                InputRouterError::OutOfOrder
+            } else {
+                InputRouterError::TimestampRegression
+            });
+        }
+        let composition_payload_bytes = matches!(
+            event.payload,
+            nana_ui_platform::InputPayload::Composition(_)
+        )
+        .then(|| {
+            context
+                .focused_text_input(binding.document)
+                .map_or(0, |(_, view)| view.value.len())
+        });
+        // A focus transition can be caused by a pointer/key dispatch and may
+        // enqueue ImeDisable + ImeEnable after the Runtime mutation. Reserve
+        // both slots before dispatch so a full host queue cannot report a
+        // failed route after the edit/focus state has already changed.
+        let lifecycle_slots = match &event.payload {
+            nana_ui_platform::InputPayload::Pointer(pointer)
+                if pointer.phase == PointerPhase::Down =>
+            {
+                4
+            }
+            nana_ui_platform::InputPayload::Pointer(_) => 4,
+            nana_ui_platform::InputPayload::Key(key)
+                if key.state == nana_ui_platform::KeyState::Pressed =>
+            {
+                4
+            }
+            nana_ui_platform::InputPayload::Focus { focused: true } => 3,
+            nana_ui_platform::InputPayload::Focus { focused: false } => 2,
+            nana_ui_platform::InputPayload::Composition(_) => 1,
+            _ => 0,
+        };
+        if (lifecycle_slots != 0 && !self.host_requests.has_capacity_for(lifecycle_slots))
+            || composition_payload_bytes
+                .is_some_and(|bytes| !self.host_requests.can_accept_payload(bytes))
+        {
+            return Err(InputRouterError::HostServiceBackpressure);
+        }
+        let pointer_before = pointer.map(|pointer| {
+            self.pointers
+                .get(&(event.metadata.source, event.metadata.device, pointer))
+                .map(|identity| identity.local)
+                .unwrap_or(pointer.0)
+        });
+        let focus_before = context.world().focused(binding.document);
+        let capture_before = pointer_before
+            .and_then(|pointer| context.world().pointer_capture(binding.document, pointer));
+        let hover_before = pointer_before
+            .and_then(|pointer| context.world().pointer_hover(binding.document, pointer));
+        if pointer.is_some() {
+            if capture_before.is_some() {
+                self.counters.routing_cache_hits += 1;
+                nana_diagnostics::metric!(
+                    nana_diagnostics::framework::runtime::INPUT_ROUTING_CACHE_HITS
+                );
+            } else {
+                self.counters.routing_cache_misses += 1;
+                self.counters.hit_tests += 1;
+                nana_diagnostics::metric!(
+                    nana_diagnostics::framework::runtime::INPUT_ROUTING_CACHE_MISSES
+                );
+                nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_HIT_TESTS);
+            }
+        }
+        self.counters.events_routed += 1;
+        let lifecycle = match &event.payload {
+            nana_ui_platform::InputPayload::DeviceDisconnected => Some(true),
+            nana_ui_platform::InputPayload::SourceDisconnected => Some(false),
+            _ => None,
+        };
+        if let Some(device_only) = lifecycle {
+            self.cancel_captured_pointers(
+                context,
+                binding.document,
+                event.metadata.source,
+                device_only.then_some(event.metadata.device),
+                now,
+            )
+            .map_err(|error| InputRouterError::Dispatch(error.to_string()))?;
+            if device_only {
+                self.disconnected_devices
+                    .insert((event.metadata.source, event.metadata.device));
+            } else {
+                self.disconnected_sources.insert(event.metadata.source);
+                let no_focus_owners = self
+                    .focused_sources
+                    .get_mut(&binding.document)
+                    .map(|owners| {
+                        owners.remove(&event.metadata.source);
+                        owners.is_empty()
+                    })
+                    .unwrap_or(false);
+                if no_focus_owners {
+                    self.focused_sources.remove(&binding.document);
+                    context
+                        .clear_focus(binding.document)
+                        .map_err(|error| InputRouterError::Dispatch(error.to_string()))?;
+                }
+            }
+        } else if device_connected {
+            self.disconnected_devices
+                .remove(&(event.metadata.source, event.metadata.device));
+        } else if source_connected {
+            self.disconnected_sources.remove(&event.metadata.source);
+        }
+        if let nana_ui_platform::InputPayload::Focus { focused } = &event.payload {
+            let no_focus_owners = {
+                let owners = self.focused_sources.entry(binding.document).or_default();
+                if *focused {
+                    owners.insert(event.metadata.source);
+                } else {
+                    owners.remove(&event.metadata.source);
+                }
+                owners.is_empty()
+            };
+            if !*focused {
+                if no_focus_owners {
+                    self.focused_sources.remove(&binding.document);
+                }
+                self.cancel_captured_pointers(
+                    context,
+                    binding.document,
+                    event.metadata.source,
+                    None,
+                    now,
+                )
+                .map_err(|error| InputRouterError::Dispatch(error.to_string()))?;
+                if no_focus_owners {
+                    context
+                        .clear_focus(binding.document)
+                        .map_err(|error| InputRouterError::Dispatch(error.to_string()))?;
+                }
+            }
+        }
+        let terminal_pointer = match &event.payload {
+            nana_ui_platform::InputPayload::Pointer(pointer)
+                if pointer.pointer_type == nana_ui_platform::PointerType::Touch
+                    && matches!(pointer.phase, PointerPhase::Up | PointerPhase::Cancel) =>
+            {
+                Some((
+                    event.metadata.source,
+                    event.metadata.device,
+                    pointer.pointer_id,
+                ))
+            }
+            _ => None,
+        };
+        let event = self.remap_pointer(event);
+        let result = match self.route_clipboard_shortcut(context, &event, binding.document)? {
+            Some(disposition) => Ok(disposition),
+            None => self
+                .adapter
+                .dispatch_canonical(context, binding.document, &event, now, text_shaper)
+                .map_err(|error| InputRouterError::Dispatch(error.to_string())),
+        };
+        if result.is_ok() {
+            self.last_order.insert(
+                event.metadata.source,
+                (event.metadata.sequence, event.metadata.timestamp),
+            );
+            self.counters.routed_dispatches += 1;
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::INPUT_ROUTED_DISPATCHES
+            );
+            self.sync_ime_focus_request(context, &event, binding.document)?;
+            self.enqueue_ime_request(context, &event, binding.document)?;
+        }
+        if focus_before != context.world().focused(binding.document) {
+            self.counters.focus_changes += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_FOCUS_CHANGES);
+        }
+        let capture_after = pointer_before
+            .and_then(|pointer| context.world().pointer_capture(binding.document, pointer));
+        if capture_before != capture_after {
+            self.counters.pointer_capture_changes += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_CAPTURE_CHANGES);
+        }
+        let hover_after = pointer_before
+            .and_then(|pointer| context.world().pointer_hover(binding.document, pointer));
+        if hover_before != hover_after {
+            self.counters.hover_path_changes += 1;
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_HOVER_CHANGES);
+        }
+        if result.is_ok() {
+            self.sync_cursor_request(
+                context,
+                event.metadata.source,
+                event.metadata.device,
+                event.metadata.generation,
+                binding.document,
+                hover_after,
+            )?;
+        }
+        let route_pointer = pointer.map(|pointer| {
+            self.pointers
+                .get(&(event.metadata.source, event.metadata.device, pointer))
+                .copied()
+                .map(|identity| nana_ui_platform::PointerId(identity.local))
+                .unwrap_or(pointer)
+        });
+        let route_latency_ns = route_started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        self.last_route = Some(InputRouteSnapshot {
+            source: event.metadata.source,
+            device: event.metadata.device,
+            pointer: route_pointer,
+            kind,
+            document: binding.document,
+            hover_owner: route_pointer
+                .and_then(|pointer| context.world().pointer_hover(binding.document, pointer.0)),
+            focus_owner: context.world().focused(binding.document),
+            capture_owner: route_pointer
+                .and_then(|pointer| context.world().pointer_capture(binding.document, pointer.0)),
+            route_latency_ns,
+        });
+        nana_diagnostics::metric!(
+            nana_diagnostics::framework::runtime::INPUT_ROUTE_NS,
+            route_started.elapsed()
+        );
+        if let Some(key) = terminal_pointer {
+            self.pointers.remove(&key);
+        }
+        result
+    }
+
+    /// Route one event and return the unified outcome required by host
+    /// adapters. The legacy [`Self::route`] API remains available for callers
+    /// that only need `InputDisposition`.
+    pub fn route_with_outcome(
+        &mut self,
+        context: &mut AppContext,
+        event: &nana_ui_platform::CanonicalInputEvent,
+        now: Duration,
+        text_shaper: Option<&mut dyn TextShaper>,
+    ) -> Result<InputRouteOutcome, InputRouterError> {
+        let work_before = context.world().pending_work_revision();
+        let requests_before = self.host_requests.len();
+        let disposition = self.route(context, event, now, text_shaper)?;
+        let requests_after = self.host_requests.len();
+        Ok(InputRouteOutcome {
+            handled: disposition.handled,
+            prevent_default: disposition.prevent_default,
+            invalidated_work: context.world().pending_work_revision() != work_before,
+            host_requests_enqueued: requests_after.saturating_sub(requests_before),
+        })
+    }
+
+    fn enqueue_ime_request(
+        &mut self,
+        context: &AppContext,
+        event: &nana_ui_platform::CanonicalInputEvent,
+        document: DocumentId,
+    ) -> Result<(), InputRouterError> {
+        let composition = match &event.payload {
+            nana_ui_platform::InputPayload::Composition(composition) => composition,
+            _ => return Ok(()),
+        };
+        if matches!(composition, CompositionInput::Enabled)
+            && self
+                .ime_focus
+                .get(&document)
+                .copied()
+                .is_some_and(|focused| {
+                    context
+                        .focused_text_input(document)
+                        .is_some_and(|(node, _)| node == focused)
+                })
+        {
+            // Focus synchronization already emitted the enable intent for this
+            // owner; do not duplicate it for the following composition packet.
+            return Ok(());
+        }
+        let host_context = HostRequestContext {
+            source: event.metadata.source,
+            generation: event.metadata.generation,
+            document: document.get(),
+            node: context.world().focused(document).map(StableNodeId::get),
+        };
+        let surrounding = self.focused_ime_surrounding(context, document);
+        let request = match composition {
+            CompositionInput::Enabled => HostServiceRequest::ImeEnable {
+                context: host_context,
+                surrounding,
+            },
+            CompositionInput::Disabled | CompositionInput::End => HostServiceRequest::ImeDisable {
+                context: host_context,
+            },
+            CompositionInput::Start
+            | CompositionInput::Update { .. }
+            | CompositionInput::Commit(_)
+            | CompositionInput::DeleteSurrounding { .. } => HostServiceRequest::ImeUpdate {
+                context: host_context,
+                surrounding,
+            },
+        };
+        self.host_requests
+            .push(request)
+            .map_err(|_| InputRouterError::Dispatch("host service request queue is full".into()))
+    }
+
+    fn focused_ime_surrounding(
+        &self,
+        context: &AppContext,
+        document: DocumentId,
+    ) -> Option<nana_ui_platform::ImeSurroundingText> {
+        let (node, view) = context.focused_text_input(document)?;
+        let cursor_area = match context.world().component_geometry(node) {
+            Some(nana_ui_runtime::ComponentGeometry::TextInput {
+                caret: Some(caret), ..
+            }) => Some(caret),
+            _ => context.world().layout_box(node),
+        }
+        .map(|bounds| {
+            nana_ui_core::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height)
+        });
+        Some(nana_ui_platform::ImeSurroundingText {
+            text: view.value.to_owned(),
+            selection: (
+                view.selection.anchor.min(view.selection.focus),
+                view.selection.anchor.max(view.selection.focus),
+            ),
+            cursor_area,
+        })
+    }
+
+    fn sync_ime_focus_request(
+        &mut self,
+        context: &AppContext,
+        event: &nana_ui_platform::CanonicalInputEvent,
+        document: DocumentId,
+    ) -> Result<(), InputRouterError> {
+        let current = context.focused_text_input(document).map(|(node, _)| node);
+        let previous = self.ime_focus.get(&document).copied();
+        if previous == current {
+            return Ok(());
+        }
+        let request_context = |node| HostRequestContext {
+            source: event.metadata.source,
+            generation: event.metadata.generation,
+            document: document.get(),
+            node,
+        };
+        if let Some(previous) = previous {
+            self.host_requests
+                .push(HostServiceRequest::ImeDisable {
+                    context: request_context(Some(previous.get())),
+                })
+                .map_err(|_| {
+                    InputRouterError::Dispatch("host service request queue is full".into())
+                })?;
+        }
+        if let Some(current) = current {
+            let surrounding = self.focused_ime_surrounding(context, document);
+            self.host_requests
+                .push(HostServiceRequest::ImeEnable {
+                    context: request_context(Some(current.get())),
+                    surrounding,
+                })
+                .map_err(|_| {
+                    InputRouterError::Dispatch("host service request queue is full".into())
+                })?;
+        }
+        // Native text input is a capability intent only. The actual text,
+        // selection, and caret data continue to come from the existing IME
+        // request path, so hosts do not need a second text state machine.
+        if !matches!(
+            event.payload,
+            nana_ui_platform::InputPayload::Composition(_)
+        ) {
+            self.host_requests
+                .push(HostServiceRequest::NativeTextInput {
+                    context: request_context(current.map(StableNodeId::get)),
+                    enabled: current.is_some(),
+                })
+                .map_err(|_| {
+                    InputRouterError::Dispatch("host service request queue is full".into())
+                })?;
+        }
+        if let Some(current) = current {
+            self.ime_focus.insert(document, current);
+        } else {
+            self.ime_focus.remove(&document);
+        }
+        Ok(())
+    }
+
+    fn sync_cursor_request(
+        &mut self,
+        context: &AppContext,
+        source: nana_ui_platform::InputSourceId,
+        device: nana_ui_platform::DeviceId,
+        generation: nana_ui_platform::EndpointGeneration,
+        document: DocumentId,
+        hover: Option<StableNodeId>,
+    ) -> Result<(), InputRouterError> {
+        let cursor = hover
+            .and_then(|node| {
+                context.world().computed_style(node).map(|style| {
+                    if style.cursor_specified {
+                        cursor_spec_name(style.cursor)
+                    } else if context.world().text_input(node).is_some() {
+                        "text"
+                    } else {
+                        "default"
+                    }
+                })
+            })
+            .unwrap_or("default")
+            .to_owned();
+        let key = (source, device, document);
+        if self.cursor_state.get(&key) == Some(&cursor) {
+            return Ok(());
+        }
+        // Default is the initial host state; do not enqueue a needless intent
+        // for the first uncaptured move over empty space.
+        if !self.cursor_state.contains_key(&key) && cursor == "default" {
+            self.cursor_state.insert(key, cursor);
+            return Ok(());
+        }
+        self.host_requests
+            .push(HostServiceRequest::Cursor {
+                context: HostRequestContext {
+                    source,
+                    generation,
+                    document: document.get(),
+                    node: hover.map(StableNodeId::get),
+                },
+                cursor: cursor.clone(),
+            })
+            .map_err(|_| InputRouterError::HostServiceBackpressure)?;
+        self.cursor_state.insert(key, cursor);
+        Ok(())
+    }
+
+    /// Convert canonical clipboard shortcuts into non-blocking host intents.
+    /// The legacy adapter keeps its direct API for compatibility, while the
+    /// canonical router never waits on an OS clipboard mutex or deletes text
+    /// before the host confirms a cut.
+    fn route_clipboard_shortcut(
+        &mut self,
+        context: &AppContext,
+        event: &nana_ui_platform::CanonicalInputEvent,
+        document: DocumentId,
+    ) -> Result<Option<InputDisposition>, InputRouterError> {
+        let nana_ui_platform::InputPayload::Key(key) = &event.payload else {
+            return Ok(None);
+        };
+        if key.state != nana_ui_platform::KeyState::Pressed
+            || key.modifiers.alt
+            || key.modifiers.shift
+            || !(key.modifiers.control || key.modifiers.meta)
+        {
+            return Ok(None);
+        }
+        let shortcut = key.logical.0.as_ref();
+        let cut = match shortcut {
+            "c" | "C" => false,
+            "x" | "X" => true,
+            "v" | "V" => {
+                if context.focused_text_input(document).is_none() {
+                    return Ok(None);
+                }
+                false
+            }
+            _ => return Ok(None),
+        };
+        let request_context = HostRequestContext {
+            source: event.metadata.source,
+            generation: event.metadata.generation,
+            document: document.get(),
+            node: context.world().focused(document).map(StableNodeId::get),
+        };
+        let request = if matches!(shortcut, "v" | "V") {
+            HostServiceRequest::ClipboardRead {
+                context: request_context,
+            }
+        } else {
+            let Some(text) = context
+                .focused_selected_text(document)
+                .or_else(|| context.document_selected_text(document))
+            else {
+                return Ok(None);
+            };
+            if text.is_empty() {
+                return Ok(None);
+            }
+            HostServiceRequest::ClipboardWrite {
+                context: request_context,
+                text,
+                cut,
+            }
+        };
+        self.host_requests
+            .push(request)
+            .map_err(|_| InputRouterError::HostServiceBackpressure)?;
+        Ok(Some(InputDisposition {
+            handled: true,
+            prevent_default: true,
+        }))
+    }
+
+    /// Drain an event-driven endpoint. No polling or background task is
+    /// created; the host calls this when its endpoint has accepted input.
+    pub fn route_endpoint(
+        &mut self,
+        context: &mut AppContext,
+        endpoint: &mut nana_ui_platform::InputEndpoint,
+        now: Duration,
+    ) -> Result<usize, InputRouterError> {
+        self.route_endpoint_with_shaper(context, endpoint, now, None)
+    }
+
+    pub fn route_endpoint_with_shaper(
+        &mut self,
+        context: &mut AppContext,
+        endpoint: &mut nana_ui_platform::InputEndpoint,
+        now: Duration,
+        mut text_shaper: Option<&mut dyn TextShaper>,
+    ) -> Result<usize, InputRouterError> {
+        let mut routed = 0;
+        while let Some(event) = endpoint.front() {
+            let result = self.route(context, event, now, reborrow_text_shaper(&mut text_shaper));
+            if matches!(result, Err(InputRouterError::HostServiceBackpressure)) {
+                return result.map(|_| routed);
+            }
+            // Other failures may follow dispatch or represent permanently stale
+            // input. Only pre-dispatch backpressure is safe to retry.
+            endpoint.pop();
+            result?;
+            routed += 1;
+        }
+        Ok(routed)
+    }
+
+    fn remap_pointer(
+        &mut self,
+        event: &nana_ui_platform::CanonicalInputEvent,
+    ) -> nana_ui_platform::CanonicalInputEvent {
+        let pointer = match &event.payload {
+            nana_ui_platform::InputPayload::Pointer(pointer) => Some(pointer.pointer_id),
+            nana_ui_platform::InputPayload::Wheel(wheel) => Some(wheel.pointer_id),
+            nana_ui_platform::InputPayload::PointerEnter { pointer_id, .. }
+            | nana_ui_platform::InputPayload::PointerLeave { pointer_id } => Some(*pointer_id),
+            _ => None,
+        };
+        let Some(pointer) = pointer else {
+            return event.clone();
+        };
+        let key = (event.metadata.source, event.metadata.device, pointer);
+        let pointer_type = match &event.payload {
+            nana_ui_platform::InputPayload::Pointer(pointer) => pointer.pointer_type,
+            _ => nana_ui_platform::PointerType::Mouse,
+        };
+        let is_primary = match &event.payload {
+            nana_ui_platform::InputPayload::Pointer(pointer) => pointer.is_primary,
+            _ => true,
+        };
+        let local = if let Some(identity) = self.pointers.get_mut(&key) {
+            self.counters.pointer_identity_cache_hits += 1;
+            // Enter/leave and wheel carry no tool metadata. A later pointer
+            // sample supplies it, and metadata-free events must not reset it.
+            if let InputPayload::Pointer(pointer) = &event.payload {
+                identity.pointer_type = pointer.pointer_type;
+                identity.is_primary = pointer.is_primary;
+            }
+            identity.local
+        } else {
+            self.counters.pointer_identity_cache_misses += 1;
+            let local = self.next_pointer;
+            self.next_pointer = self.next_pointer.wrapping_add(1).max(1);
+            self.pointers.insert(
+                key,
+                PointerIdentity {
+                    local,
+                    pointer_type,
+                    is_primary,
+                },
+            );
+            local
+        };
+        let mut mapped = event.clone();
+        match &mut mapped.payload {
+            nana_ui_platform::InputPayload::Pointer(pointer) => {
+                pointer.pointer_id = nana_ui_platform::PointerId(local)
+            }
+            nana_ui_platform::InputPayload::Wheel(wheel) => {
+                wheel.pointer_id = nana_ui_platform::PointerId(local)
+            }
+            nana_ui_platform::InputPayload::PointerEnter { pointer_id, .. }
+            | nana_ui_platform::InputPayload::PointerLeave { pointer_id } => {
+                *pointer_id = nana_ui_platform::PointerId(local)
+            }
+            _ => {}
+        }
+        mapped
+    }
+
+    fn cancel_captured_pointers(
+        &mut self,
+        context: &mut AppContext,
+        document: DocumentId,
+        source: nana_ui_platform::InputSourceId,
+        device: Option<nana_ui_platform::DeviceId>,
+        now: Duration,
+    ) -> Result<(), FrameworkError> {
+        let pointers = self
+            .pointers
+            .iter()
+            .filter_map(|(&(bound, candidate_device, _), &identity)| {
+                (bound == source && device.is_none_or(|wanted| wanted == candidate_device))
+                    .then_some(identity)
+            })
+            .collect::<Vec<_>>();
+        for identity in pointers {
+            let pointer = identity.local;
+            let (x, y) = context
+                .pointer_position(document, pointer)
+                .unwrap_or((0.0, 0.0));
+            let had_capture = context.world().pointer_capture(document, pointer).is_some();
+            let had_press = context.world().pointer_press(document, pointer).is_some();
+            if had_capture || had_press {
+                // A disconnect/blur is a lifecycle cancellation, not a silent
+                // state reset: components must receive the same cancel path as
+                // an explicit pointer cancel before capture is revoked.
+                self.adapter.dispatch_with_shaper(
+                    context,
+                    document,
+                    &InputEvent::Pointer {
+                        phase: PointerPhase::Cancel,
+                        pointer_id: pointer,
+                        pointer_type: identity.pointer_type,
+                        x,
+                        y,
+                        screen_x: x,
+                        screen_y: y,
+                        button: -1,
+                        buttons: 0,
+                        pressure: 0.0,
+                        tangential_pressure: 0.0,
+                        tilt_x: 0,
+                        tilt_y: 0,
+                        twist: 0,
+                        is_primary: identity.is_primary,
+                        activation_click: false,
+                        modifiers: Default::default(),
+                    },
+                    now,
+                    None,
+                )?;
+            }
+            context.release_pointer_capture(document, pointer);
+            context.release_pointer(document, pointer);
+            context.set_pointer_location(document, pointer, None);
+            context.set_pointer_hover_at(document, pointer, None, now)?;
+        }
+        self.pointers.retain(|(bound, candidate_device, _), _| {
+            bound != &source || device.is_some_and(|wanted| *candidate_device != wanted)
+        });
+        Ok(())
+    }
+}
+
 impl std::fmt::Debug for RuntimeInputAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeInputAdapter")
@@ -69,6 +1322,140 @@ impl Default for RuntimeInputAdapter {
 }
 
 impl RuntimeInputAdapter {
+    /// Route one canonical event through the existing Runtime interaction
+    /// authority. Hosts may inject this path without constructing a window
+    /// event; the legacy `InputEvent` conversion is kept local to this adapter
+    /// until all platform adapters have migrated.
+    pub fn dispatch_canonical(
+        &mut self,
+        context: &mut AppContext,
+        document: DocumentId,
+        event: &CanonicalInputEvent,
+        now: Duration,
+        text_shaper: Option<&mut dyn TextShaper>,
+    ) -> Result<InputDisposition, FrameworkError> {
+        let payload = &event.payload;
+        match payload {
+            InputPayload::Pointer(pointer) => self.dispatch_with_shaper(
+                context,
+                document,
+                &InputEvent::Pointer {
+                    phase: pointer.phase,
+                    pointer_id: pointer.pointer_id.0,
+                    pointer_type: pointer.pointer_type,
+                    x: pointer.x,
+                    y: pointer.y,
+                    screen_x: pointer.screen_x,
+                    screen_y: pointer.screen_y,
+                    button: pointer.button,
+                    buttons: pointer.buttons,
+                    pressure: pointer.pressure,
+                    tangential_pressure: pointer.tangential_pressure,
+                    tilt_x: pointer.tilt_x,
+                    tilt_y: pointer.tilt_y,
+                    twist: pointer.twist,
+                    is_primary: pointer.is_primary,
+                    activation_click: pointer.activation_click,
+                    modifiers: pointer.modifiers,
+                },
+                now,
+                text_shaper,
+            ),
+            InputPayload::Wheel(wheel) => self.dispatch_with_shaper(
+                context,
+                document,
+                &InputEvent::Wheel {
+                    x: wheel.x,
+                    y: wheel.y,
+                    delta_x: wheel.delta_x,
+                    delta_y: wheel.delta_y,
+                    line_delta: wheel.unit == nana_ui_platform::WheelUnit::Lines,
+                    modifiers: wheel.modifiers,
+                },
+                now,
+                text_shaper,
+            ),
+            InputPayload::Key(key) => self.dispatch_with_shaper(
+                context,
+                document,
+                &InputEvent::Keyboard {
+                    pressed: key.state == nana_ui_platform::KeyState::Pressed,
+                    key: key.logical.0.to_string(),
+                    text: None,
+                    code: key.physical.0.to_string(),
+                    repeat: key.repeat,
+                    modifiers: key.modifiers,
+                },
+                now,
+                text_shaper,
+            ),
+            InputPayload::TextInput(text) => {
+                if text.is_empty() {
+                    return Ok(InputDisposition::default());
+                }
+                // Keep committed text on the same path as a native keyboard
+                // event. This preserves overlay barriers, terminal key
+                // handling, editor pairing/completion and text shaping while
+                // retaining the canonical contract that text is not inferred
+                // from a key transition.
+                self.dispatch_with_shaper(
+                    context,
+                    document,
+                    &InputEvent::Keyboard {
+                        pressed: true,
+                        key: String::new(),
+                        text: Some(text.clone()),
+                        code: String::new(),
+                        repeat: false,
+                        modifiers: nana_ui_platform::InputModifiers::default(),
+                    },
+                    now,
+                    text_shaper,
+                )
+            }
+            InputPayload::Composition(composition) => {
+                let ime = match composition {
+                    CompositionInput::Enabled => ImeEvent::Enabled,
+                    CompositionInput::Disabled => ImeEvent::Disabled,
+                    CompositionInput::Start => ImeEvent::Preedit {
+                        text: String::new(),
+                        selection: None,
+                    },
+                    CompositionInput::Update { text, selection } => ImeEvent::Preedit {
+                        text: text.clone(),
+                        selection: *selection,
+                    },
+                    CompositionInput::Commit(text) => ImeEvent::Commit(text.clone()),
+                    CompositionInput::End => ImeEvent::Cancelled,
+                    CompositionInput::DeleteSurrounding {
+                        before_bytes,
+                        after_bytes,
+                    } => ImeEvent::DeleteSurrounding {
+                        before_bytes: *before_bytes,
+                        after_bytes: *after_bytes,
+                    },
+                };
+                self.dispatch_ime(context, document, &ime)
+            }
+            InputPayload::PointerEnter { pointer_id, x, y } => {
+                let target = context.world().hit_test(document, *x, *y);
+                context.set_pointer_location(document, pointer_id.0, Some((*x, *y)));
+                context.set_pointer_hover_at(document, pointer_id.0, target, now)?;
+                Ok(InputDisposition::default())
+            }
+            InputPayload::PointerLeave { pointer_id } => {
+                context.set_pointer_location(document, pointer_id.0, None);
+                context.set_pointer_hover_at(document, pointer_id.0, None, now)?;
+                Ok(InputDisposition::default())
+            }
+            InputPayload::Focus { .. }
+            | InputPayload::DeviceConnected
+            | InputPayload::DeviceDisconnected
+            | InputPayload::SourceConnected
+            | InputPayload::SourceDisconnected => Ok(InputDisposition::default()),
+        }
+    }
+
     /// Route clipboard shortcuts through `clipboard` instead of the process
     /// pasteboard. Hosts with their own backend, and tests, install one here.
     #[must_use]
@@ -86,7 +1473,9 @@ impl RuntimeInputAdapter {
 
     fn read_clipboard(&self) -> Option<String> {
         self.clipboard()
-            .lock()
+            // Clipboard is a host capability, not part of the input critical
+            // section. Never wait for an OS/JNI clipboard call here.
+            .try_lock()
             .ok()?
             .read_text()
             .filter(|text| !text.is_empty())
@@ -94,7 +1483,7 @@ impl RuntimeInputAdapter {
 
     fn write_clipboard(&self, text: &str) -> bool {
         self.clipboard()
-            .lock()
+            .try_lock()
             .is_ok_and(|mut clipboard| clipboard.write_text(text))
     }
 
@@ -171,6 +1560,7 @@ impl RuntimeInputAdapter {
                 && context.dismiss_focused_field_options(document)?
             {
                 return Ok(InputDisposition {
+                    handled: true,
                     prevent_default: true,
                 });
             }
@@ -178,6 +1568,7 @@ impl RuntimeInputAdapter {
                 && context.route_overlay_key(document, key)?
             {
                 return Ok(InputDisposition {
+                    handled: true,
                     prevent_default: true,
                 });
             }
@@ -185,6 +1576,7 @@ impl RuntimeInputAdapter {
                 && context.dismiss_popovers_on_escape()?
             {
                 return Ok(InputDisposition {
+                    handled: true,
                     prevent_default: true,
                 });
             }
@@ -202,6 +1594,7 @@ impl RuntimeInputAdapter {
                     || context.collapse_focused_text_selections(document)?)
             {
                 return Ok(InputDisposition {
+                    handled: true,
                     prevent_default: true,
                 });
             }
@@ -228,6 +1621,7 @@ impl RuntimeInputAdapter {
             )
         {
             return Ok(InputDisposition {
+                handled: true,
                 prevent_default: true,
             });
         }
@@ -267,6 +1661,7 @@ impl RuntimeInputAdapter {
                 )?;
             }
             return Ok(InputDisposition {
+                handled: true,
                 prevent_default: true,
             });
         }
@@ -290,6 +1685,7 @@ impl RuntimeInputAdapter {
             )?
         {
             return Ok(InputDisposition {
+                handled: true,
                 prevent_default: true,
             });
         }
@@ -308,6 +1704,7 @@ impl RuntimeInputAdapter {
                 && context.navigate_sequential_focus(document, modifiers.shift)?
             {
                 return Ok(InputDisposition {
+                    handled: true,
                     prevent_default: true,
                 });
             }
@@ -323,6 +1720,7 @@ impl RuntimeInputAdapter {
                     && context.navigate_focused_segmented(document, intent)?
                 {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -334,6 +1732,7 @@ impl RuntimeInputAdapter {
                         context.activate_node(target)?;
                     }
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -362,8 +1761,34 @@ impl RuntimeInputAdapter {
                     PointerPhase::Cancel => OverlayPointerPhase::Cancel,
                     PointerPhase::Down | PointerPhase::Up => OverlayPointerPhase::Move,
                 };
-                let overlay =
-                    context.route_overlay_pointer(document, *pointer_id, overlay_phase, *x, *y)?;
+                let overlay = if matches!(
+                    phase,
+                    PointerPhase::Move | PointerPhase::Up | PointerPhase::Cancel
+                ) {
+                    context
+                        .world()
+                        .pointer_capture(document, *pointer_id)
+                        .map_or_else(
+                            || {
+                                context.route_overlay_pointer(
+                                    document,
+                                    *pointer_id,
+                                    overlay_phase,
+                                    *x,
+                                    *y,
+                                )
+                            },
+                            |target| {
+                                Ok(OverlayPointerDecision {
+                                    target: Some(target),
+                                    prevent_default: false,
+                                    dismissed: false,
+                                })
+                            },
+                        )?
+                } else {
+                    context.route_overlay_pointer(document, *pointer_id, overlay_phase, *x, *y)?
+                };
                 let target = overlay.target;
                 context.set_pointer_location(document, *pointer_id, Some((*x, *y)));
                 context.set_pointer_hover_at(document, *pointer_id, target, now)?;
@@ -380,6 +1805,7 @@ impl RuntimeInputAdapter {
                     && context.terminal_pointer(document, target, *pointer_id, phase, *x, *y)?
                 {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -393,6 +1819,7 @@ impl RuntimeInputAdapter {
                     PointerPhase::Move => {
                         if context.update_text_area_resize(document, *pointer_id, *x, *y)? {
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -402,6 +1829,7 @@ impl RuntimeInputAdapter {
                             Ok::<bool, FrameworkError>(false)
                         )? {
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -415,6 +1843,7 @@ impl RuntimeInputAdapter {
                             && context.image_viewer_pointer_move(viewer, *pointer_id, *x, *y)?
                         {
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -527,6 +1956,7 @@ impl RuntimeInputAdapter {
                         // it and goes no further, matching the primary press.
                         if context.dismiss_popovers_outside(target)? {
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -540,6 +1970,7 @@ impl RuntimeInputAdapter {
                             // on release, so skipping it also stops this click
                             // from reaching the control underneath.
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -552,6 +1983,7 @@ impl RuntimeInputAdapter {
                             && context.begin_text_area_resize(*pointer_id, target, *x, *y)?
                         {
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -561,6 +1993,7 @@ impl RuntimeInputAdapter {
                             && context.begin_scrollbar_drag(*pointer_id, view, axis, *x, *y)?
                         {
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -626,6 +2059,7 @@ impl RuntimeInputAdapter {
                                 )?
                             {
                                 return Ok(InputDisposition {
+                                    handled: true,
                                     prevent_default: true,
                                 });
                             }
@@ -639,6 +2073,7 @@ impl RuntimeInputAdapter {
                                     .is_some()
                             {
                                 return Ok(InputDisposition {
+                                    handled: true,
                                     prevent_default: true,
                                 });
                             }
@@ -753,6 +2188,7 @@ impl RuntimeInputAdapter {
                     PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
                         if context.end_text_area_resize(document, *pointer_id, false)? {
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -762,6 +2198,7 @@ impl RuntimeInputAdapter {
                             Ok::<bool, FrameworkError>(false)
                         )? {
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -775,6 +2212,7 @@ impl RuntimeInputAdapter {
                             && context.image_viewer_pointer_up(viewer, *pointer_id)?
                         {
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -795,6 +2233,7 @@ impl RuntimeInputAdapter {
                         if drop_handled {
                             context.release_pointer(document, *pointer_id);
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -835,6 +2274,7 @@ impl RuntimeInputAdapter {
                         {
                             context.release_pointer(document, *pointer_id);
                             return Ok(InputDisposition {
+                                handled: true,
                                 prevent_default: true,
                             });
                         }
@@ -955,6 +2395,7 @@ impl RuntimeInputAdapter {
                     && context.image_viewer_wheel(viewer, *x, *y, dy)?
                 {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -971,6 +2412,7 @@ impl RuntimeInputAdapter {
                     && context.scroll_text_overlay_at(document, *x, *y, overlay_rows)?
                 {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -1038,6 +2480,7 @@ impl RuntimeInputAdapter {
                 let primary = modifiers.control || modifiers.meta;
                 if primary && self.dispatch_clipboard_shortcut(context, document, key)? {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -1056,6 +2499,7 @@ impl RuntimeInputAdapter {
                     && context.adjust_focused_range(document, adjustment)?
                 {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -1072,6 +2516,7 @@ impl RuntimeInputAdapter {
                     && context.adjust_focused_xy_pad(document, adjustment)?
                 {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -1098,6 +2543,7 @@ impl RuntimeInputAdapter {
                     )?
                 {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -1113,6 +2559,7 @@ impl RuntimeInputAdapter {
                         || context.adjust_focused_dock_split(document, direction)?)
                 {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -1124,6 +2571,7 @@ impl RuntimeInputAdapter {
                         && context.revert_focused_number_input(document)?
                     {
                         return Ok(InputDisposition {
+                            handled: true,
                             prevent_default: true,
                         });
                     }
@@ -1140,6 +2588,7 @@ impl RuntimeInputAdapter {
                         && context.navigate_focused_command_palette(document, navigation)?
                     {
                         return Ok(InputDisposition {
+                            handled: true,
                             prevent_default: true,
                         });
                     }
@@ -1154,6 +2603,7 @@ impl RuntimeInputAdapter {
                             || context.adjust_focused_search_dropdown(document, delta)?)
                     {
                         return Ok(InputDisposition {
+                            handled: true,
                             prevent_default: true,
                         });
                     }
@@ -1162,6 +2612,7 @@ impl RuntimeInputAdapter {
                             || context.commit_focused_dropdown(document)?)
                     {
                         return Ok(InputDisposition {
+                            handled: true,
                             prevent_default: true,
                         });
                     }
@@ -1169,6 +2620,7 @@ impl RuntimeInputAdapter {
                         && context.commit_focused_search_dropdown(document)?
                     {
                         return Ok(InputDisposition {
+                            handled: true,
                             prevent_default: true,
                         });
                     }
@@ -1187,6 +2639,7 @@ impl RuntimeInputAdapter {
                         && context.navigate_focused_tree(document, navigation)?
                     {
                         return Ok(InputDisposition {
+                            handled: true,
                             prevent_default: true,
                         });
                     }
@@ -1197,6 +2650,7 @@ impl RuntimeInputAdapter {
                     && context.activate_node(target)?
                 {
                     return Ok(InputDisposition {
+                        handled: true,
                         prevent_default: true,
                     });
                 }
@@ -1241,6 +2695,7 @@ impl RuntimeInputAdapter {
             _ => false,
         };
         Ok(InputDisposition {
+            handled,
             prevent_default: handled || keyboard_barrier,
         })
     }
@@ -1313,12 +2768,13 @@ impl RuntimeInputAdapter {
                     context.set_terminal_preedit(document, "")?;
                     context.terminal_input(document, text.as_bytes().to_vec())?;
                 }
-                ImeEvent::Disabled => {
+                ImeEvent::Disabled | ImeEvent::Cancelled => {
                     context.set_terminal_preedit(document, "")?;
                 }
                 ImeEvent::Enabled | ImeEvent::DeleteSurrounding { .. } => {}
             }
             return Ok(InputDisposition {
+                handled: true,
                 prevent_default: true,
             });
         }
@@ -1344,6 +2800,7 @@ impl RuntimeInputAdapter {
                     None => context.clear_ime(document)?,
                 }
             }
+            ImeEvent::Cancelled => context.clear_ime(document)?,
             ImeEvent::Preedit { text, selection } => {
                 context.set_ime_preedit(document, text.clone(), *selection)?
             }
@@ -1354,6 +2811,7 @@ impl RuntimeInputAdapter {
             } => context.delete_ime_surrounding(document, *before_bytes, *after_bytes)?,
         };
         Ok(InputDisposition {
+            handled,
             prevent_default: handled || owns_ime || overlay_blocks,
         })
     }
@@ -2615,6 +4073,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn clipboard_probe_does_not_wait_for_busy_host_mutex() {
+        let clipboard = shared_clipboard(MemoryClipboard::new());
+        let guard = clipboard.lock().unwrap();
+        let adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        assert!(adapter.read_clipboard().is_none());
+        drop(guard);
+        assert!(adapter.read_clipboard().is_none());
+    }
+
     fn document_text_pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
         InputEvent::Pointer {
             phase,
@@ -3124,6 +4592,34 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_ime_cancelled_discards_leftover_preedit_without_commit() {
+        let mut context = AppContext::new();
+        let (document, id) = focused_untyped_text_input(&mut context, "Nana");
+        let adapter = RuntimeInputAdapter::default();
+        adapter
+            .dispatch_ime(
+                &mut context,
+                document,
+                &ImeEvent::Preedit {
+                    text: "世".into(),
+                    selection: Some((0, "世".len())),
+                },
+            )
+            .unwrap();
+        assert!(
+            adapter
+                .dispatch_ime(&mut context, document, &ImeEvent::Cancelled)
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            context.world().text_input(id).map(|state| state.value),
+            Some("Nana")
+        );
+        assert!(context.world().ime(id).is_none());
+    }
+
+    #[test]
     fn dispatch_ime_deletes_surrounding_committed_text_and_skips_invalid_spans() {
         let mut context = AppContext::new();
         let (document, id) = focused_untyped_text_input(&mut context, "你好");
@@ -3320,7 +4816,8 @@ mod tests {
             },
         );
         context.commit_mutations(create).unwrap();
-        context.take_system_work();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
         context.rebuild_hit_test(document);
 
         let mut adapter = RuntimeInputAdapter::default();
@@ -7822,6 +9319,1510 @@ mod terminal_input_tests {
             .dispatch_ime(&mut context, document, &ImeEvent::Commit("字".into()))
             .unwrap();
         assert_eq!(events.lock().unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod canonical_router_tests {
+    use super::*;
+    use nana_ui_platform::{
+        CanonicalInputEvent, EndpointGeneration, HostRequestContext, HostServiceOutcome,
+        HostServiceRequest, HostServiceResponse, InputMetadata, InputPayload, InputSequence,
+        InputSourceId, InputTimestamp,
+    };
+    use nana_ui_runtime::{InteractionState, LayoutBox, MutationQueue, NodeKind, StableNodeId};
+    use std::sync::Arc;
+
+    fn event(
+        source: InputSourceId,
+        generation: EndpointGeneration,
+        payload: InputPayload,
+    ) -> CanonicalInputEvent {
+        CanonicalInputEvent {
+            metadata: InputMetadata {
+                source,
+                device: nana_ui_platform::DeviceId(1),
+                generation,
+                sequence: InputSequence(1),
+                timestamp: InputTimestamp(1),
+            },
+            payload,
+        }
+    }
+
+    fn pointer_event(
+        source: InputSourceId,
+        generation: EndpointGeneration,
+        device: nana_ui_platform::DeviceId,
+        sequence: u64,
+        phase: PointerPhase,
+    ) -> CanonicalInputEvent {
+        CanonicalInputEvent {
+            metadata: InputMetadata {
+                source,
+                device,
+                generation,
+                sequence: InputSequence(sequence),
+                timestamp: InputTimestamp(sequence),
+            },
+            payload: InputPayload::Pointer(nana_ui_platform::PointerInput {
+                phase,
+                pointer_id: nana_ui_platform::PointerId(42),
+                pointer_type: nana_ui_platform::PointerType::Mouse,
+                x: 10.0,
+                y: 12.0,
+                screen_x: 10.0,
+                screen_y: 12.0,
+                button: 0,
+                buttons: if phase == PointerPhase::Down { 1 } else { 0 },
+                pressure: 0.5,
+                tangential_pressure: 0.0,
+                tilt_x: 0,
+                tilt_y: 0,
+                twist: 0,
+                is_primary: true,
+                activation_click: false,
+                modifiers: Default::default(),
+            }),
+        }
+    }
+
+    #[test]
+    fn pointer_metadata_after_enter_survives_metadata_free_events() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(31);
+        let generation = EndpointGeneration(1);
+        let device = nana_ui_platform::DeviceId(1);
+        let pointer = nana_ui_platform::PointerId(42);
+        let enter = event(
+            source,
+            generation,
+            InputPayload::PointerEnter {
+                pointer_id: pointer,
+                x: 10.0,
+                y: 12.0,
+            },
+        );
+        router.remap_pointer(&enter);
+        let local = router.pointers[&(source, device, pointer)].local;
+        let mut sample = pointer_event(source, generation, device, 2, PointerPhase::Down);
+        let InputPayload::Pointer(data) = &mut sample.payload else {
+            unreachable!()
+        };
+        data.pointer_type = nana_ui_platform::PointerType::Pen;
+        data.is_primary = false;
+        router.remap_pointer(&sample);
+        router.remap_pointer(&enter);
+        router.remap_pointer(&event(
+            source,
+            generation,
+            InputPayload::PointerLeave {
+                pointer_id: pointer,
+            },
+        ));
+        let identity = router.pointers[&(source, device, pointer)];
+        assert_eq!(identity.local, local);
+        assert_eq!(identity.pointer_type, nana_ui_platform::PointerType::Pen);
+        assert!(!identity.is_primary);
+    }
+
+    #[test]
+    fn source_lifecycle_bypasses_device_tombstone_without_reviving_device() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(32);
+        let generation = EndpointGeneration(1);
+        router.attach(source, generation, DocumentId::new(1).unwrap());
+        let mut context = AppContext::new();
+        for (sequence, payload) in [
+            (1, InputPayload::DeviceDisconnected),
+            (2, InputPayload::SourceDisconnected),
+            (3, InputPayload::SourceConnected),
+        ] {
+            let mut sample = event(source, generation, payload);
+            sample.metadata.sequence = nana_ui_platform::InputSequence(sequence);
+            router
+                .route(&mut context, &sample, Duration::ZERO, None)
+                .unwrap();
+        }
+        let mut sample = event(source, generation, InputPayload::Focus { focused: true });
+        sample.metadata.sequence = nana_ui_platform::InputSequence(4);
+        assert!(matches!(
+            router.route(&mut context, &sample, Duration::ZERO, None),
+            Err(InputRouterError::Disconnected)
+        ));
+        sample.payload = InputPayload::DeviceConnected;
+        router
+            .route(&mut context, &sample, Duration::ZERO, None)
+            .unwrap();
+    }
+
+    #[test]
+    fn endpoint_generation_is_checked_before_runtime_dispatch() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(9);
+        let generation = EndpointGeneration(3);
+        let document = DocumentId::new(1).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        assert!(matches!(
+            router.route(
+                &mut context,
+                &event(
+                    source,
+                    EndpointGeneration(2),
+                    InputPayload::Focus { focused: true },
+                ),
+                Duration::ZERO,
+                None,
+            ),
+            Err(InputRouterError::StaleGeneration)
+        ));
+        assert!(
+            router
+                .route(
+                    &mut context,
+                    &event(source, generation, InputPayload::Focus { focused: true }),
+                    Duration::ZERO,
+                    None
+                )
+                .is_ok()
+        );
+        assert_eq!(router.detach(source), Some(document));
+        assert!(matches!(
+            router.route(
+                &mut context,
+                &event(source, generation, InputPayload::Focus { focused: true }),
+                Duration::ZERO,
+                None
+            ),
+            Err(InputRouterError::UnknownSource)
+        ));
+        let counters = router.counters();
+        assert_eq!(counters.events_routed, 1);
+        assert_eq!(counters.events_rejected_stale_generation, 1);
+        assert_eq!(counters.events_rejected_unknown_source, 1);
+    }
+
+    #[test]
+    fn route_outcome_reports_non_consuming_work_and_queue_delta() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(8);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(3).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        context.take_system_work();
+
+        let outcome = router
+            .route_with_outcome(
+                &mut context,
+                &event(source, generation, InputPayload::Focus { focused: false }),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert_eq!(outcome.prevent_default, outcome.handled);
+        assert_eq!(outcome.host_requests_enqueued, 0);
+        assert!(!outcome.invalidated_work);
+        // Reading the result did not consume the Runtime queue.
+        assert_eq!(context.world().pending_work_revision(), 0);
+    }
+
+    #[test]
+    fn empty_endpoint_is_idle_without_router_work() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(22);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(15).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let mut endpoint = nana_ui_platform::InputEndpoint::new(source, generation, 8, 1024);
+        assert_eq!(
+            router.route_endpoint(&mut context, &mut endpoint, Duration::ZERO),
+            Ok(0)
+        );
+        let counters = router.counters();
+        assert_eq!(counters.events_routed, 0);
+        assert_eq!(counters.hit_tests, 0);
+        assert_eq!(counters.routing_cache_hits, 0);
+        assert_eq!(context.world().pending_work_revision(), 0);
+    }
+
+    #[test]
+    fn router_counters_expose_hit_and_route_work_without_extra_tree_state() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(20);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(14).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        router
+            .route(
+                &mut context,
+                &pointer_event(
+                    source,
+                    generation,
+                    nana_ui_platform::DeviceId(1),
+                    1,
+                    PointerPhase::Move,
+                ),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        let counters = router.counters();
+        assert_eq!(counters.hit_tests, 1);
+        assert_eq!(counters.routing_cache_misses, 1);
+        assert_eq!(counters.routing_cache_hits, 0);
+        assert_eq!(counters.routed_dispatches, 1);
+    }
+
+    #[test]
+    fn pointer_route_emits_cursor_intent_only_when_hover_cursor_changes() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(21);
+        let generation = EndpointGeneration(1);
+        let device = nana_ui_platform::DeviceId(1);
+        let document = DocumentId::new(17).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let node = StableNodeId::new(1).unwrap();
+        let mut create = MutationQueue::new();
+        create.create(
+            node,
+            document,
+            NodeKind::Element {
+                tag: "button".into(),
+            },
+        );
+        create.set_interaction(
+            node,
+            InteractionState {
+                pointer_events: true,
+                ..InteractionState::default()
+            },
+        );
+        create.set_style(
+            node,
+            nana_ui_runtime::NodeStyle {
+                layout: Arc::new(nana_ui_runtime::LayoutStyle {
+                    cursor: Some(nana_ui_core::CursorSpec::Pointer),
+                    ..nana_ui_runtime::LayoutStyle::default()
+                }),
+                ..nana_ui_runtime::NodeStyle::default()
+            },
+        );
+        create.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+                ..LayoutBox::default()
+            },
+        );
+        context.commit_mutations(create).unwrap();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        router
+            .sync_cursor_request(&context, source, device, generation, document, Some(node))
+            .unwrap();
+        let requests = router.take_host_service_requests(&context, 8);
+        assert!(requests.iter().any(|request| {
+            matches!(request, HostServiceRequest::Cursor { cursor, context } if cursor == "pointer" && context.node == Some(node.get()))
+        }));
+        assert!(
+            !router
+                .apply_host_service_response(
+                    &mut context,
+                    HostServiceResponse {
+                        request: HostServiceRequest::Cursor {
+                            context: HostRequestContext {
+                                source,
+                                generation,
+                                document: document.get(),
+                                node: Some(node.get()),
+                            },
+                            cursor: "pointer".into(),
+                        },
+                        outcome: HostServiceOutcome::Success,
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(router.counters().host_requests_stale_dropped, 0);
+
+        router
+            .sync_cursor_request(&context, source, device, generation, document, Some(node))
+            .unwrap();
+        assert!(
+            router
+                .take_host_service_requests(&context, 8)
+                .iter()
+                .all(|request| !matches!(request, HostServiceRequest::Cursor { .. }))
+        );
+
+        let text_input = context
+            .create_component(document, nana_ui_runtime::TextInput::new("text"))
+            .unwrap()
+            .stable_id();
+        let work = context.take_system_work();
+        context.resolve_styles(&work.style).unwrap();
+        router.attach(InputSourceId(22), generation, document);
+        router
+            .sync_cursor_request(
+                &context,
+                InputSourceId(22),
+                nana_ui_platform::DeviceId(2),
+                generation,
+                document,
+                Some(text_input),
+            )
+            .unwrap();
+        let requests = router.take_host_service_requests(&context, 8);
+        assert!(requests.iter().any(
+            |request| matches!(request, HostServiceRequest::Cursor { cursor, .. } if cursor == "text")
+        ));
+    }
+
+    #[test]
+    fn attach_rejects_generation_regression_and_same_generation_rebind() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(19);
+        let first = DocumentId::new(12).unwrap();
+        let second = DocumentId::new(13).unwrap();
+        assert!(router.attach(source, EndpointGeneration(5), first));
+        assert!(!router.attach(source, EndpointGeneration(4), first));
+        assert!(!router.attach(source, EndpointGeneration(5), second));
+        assert_eq!(router.binding(source), Some((EndpointGeneration(5), first)));
+        router.pointers.insert(
+            (
+                source,
+                nana_ui_platform::DeviceId(0),
+                nana_ui_platform::PointerId(1),
+            ),
+            PointerIdentity {
+                local: 1,
+                pointer_type: nana_ui_platform::PointerType::Mouse,
+                is_primary: true,
+            },
+        );
+        assert!(router.attach(source, EndpointGeneration(5), first));
+        assert!(router.pointers.contains_key(&(
+            source,
+            nana_ui_platform::DeviceId(0),
+            nana_ui_platform::PointerId(1)
+        )));
+        assert!(router.attach(source, EndpointGeneration(6), second));
+        assert_eq!(
+            router.binding(source),
+            Some((EndpointGeneration(6), second))
+        );
+    }
+
+    #[test]
+    fn disconnect_rejects_later_device_input_until_reconnected() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(10);
+        let device = nana_ui_platform::DeviceId(7);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(2).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let disconnected = event(source, generation, InputPayload::DeviceDisconnected);
+        assert!(
+            router
+                .route(
+                    &mut context,
+                    &CanonicalInputEvent {
+                        metadata: InputMetadata {
+                            device,
+                            ..disconnected.metadata
+                        },
+                        ..disconnected
+                    },
+                    Duration::ZERO,
+                    None
+                )
+                .is_ok()
+        );
+        let stale = event(source, generation, InputPayload::Focus { focused: true });
+        let stale = CanonicalInputEvent {
+            metadata: InputMetadata {
+                device,
+                ..stale.metadata
+            },
+            ..stale
+        };
+        assert_eq!(
+            router.route(&mut context, &stale, Duration::ZERO, None),
+            Err(InputRouterError::Disconnected)
+        );
+        let connected = CanonicalInputEvent {
+            metadata: InputMetadata {
+                device,
+                sequence: InputSequence(2),
+                ..stale.metadata
+            },
+            payload: InputPayload::DeviceConnected,
+        };
+        assert!(
+            router
+                .route(&mut context, &connected, Duration::ZERO, None)
+                .is_ok()
+        );
+        assert!(
+            router
+                .route(
+                    &mut context,
+                    &CanonicalInputEvent {
+                        metadata: InputMetadata {
+                            sequence: InputSequence(3),
+                            ..connected.metadata
+                        },
+                        payload: InputPayload::Focus { focused: true },
+                    },
+                    Duration::ZERO,
+                    None,
+                )
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn source_disconnect_drops_focus_owner_state() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(12);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(4).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        router
+            .route(
+                &mut context,
+                &event(source, generation, InputPayload::Focus { focused: true }),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert!(router.focused_sources.contains_key(&document));
+        router
+            .route(
+                &mut context,
+                &CanonicalInputEvent {
+                    metadata: InputMetadata {
+                        source,
+                        device: nana_ui_platform::DeviceId(0),
+                        generation,
+                        sequence: InputSequence(2),
+                        timestamp: InputTimestamp(2),
+                    },
+                    payload: InputPayload::SourceDisconnected,
+                },
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert!(!router.focused_sources.contains_key(&document));
+    }
+
+    #[test]
+    fn disconnect_dispatches_cancel_and_revokes_runtime_capture() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(15);
+        let device = nana_ui_platform::DeviceId(3);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(7).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let node = StableNodeId::new(1).unwrap();
+        let mut create = MutationQueue::new();
+        create.create(node, document, NodeKind::Element { tag: "div".into() });
+        create.set_interaction(
+            node,
+            InteractionState {
+                pointer_events: true,
+                ..InteractionState::default()
+            },
+        );
+        context.commit_mutations(create).unwrap();
+        context.rebuild_hit_test(document);
+        let mut capture = MutationQueue::new();
+        capture.capture_pointer(1, node);
+        context.commit_mutations(capture).unwrap();
+        context.set_pointer_location(document, 1, Some((10.0, 12.0)));
+        router
+            .route(
+                &mut context,
+                &pointer_event(source, generation, device, 1, PointerPhase::Down),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert_eq!(context.world().pointer_capture(document, 1), Some(node));
+        let captured_work_revision = context.world().pending_work_revision();
+        let snapshot = router.last_route_snapshot().unwrap();
+        assert_eq!(snapshot.source, source);
+        assert_eq!(snapshot.device, device);
+        assert_eq!(snapshot.kind, CanonicalInputKind::Pointer);
+        assert_eq!(snapshot.capture_owner, Some(node));
+        for sequence in 2..=1001 {
+            router
+                .route(
+                    &mut context,
+                    &pointer_event(source, generation, device, sequence, PointerPhase::Move),
+                    Duration::ZERO,
+                    None,
+                )
+                .unwrap();
+        }
+        let counters = router.counters();
+        assert_eq!(counters.hit_tests, 1, "only the initial down may hit-test");
+        assert_eq!(counters.routing_cache_hits, 1000);
+        assert_eq!(
+            context.world().pending_work_revision(),
+            captured_work_revision,
+            "captured pointer moves must not schedule unrelated Runtime work"
+        );
+        router
+            .route(
+                &mut context,
+                &CanonicalInputEvent {
+                    metadata: InputMetadata {
+                        source,
+                        device,
+                        generation,
+                        sequence: InputSequence(1002),
+                        timestamp: InputTimestamp(1002),
+                    },
+                    payload: InputPayload::Focus { focused: true },
+                },
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        let disconnected = CanonicalInputEvent {
+            metadata: InputMetadata {
+                source,
+                device,
+                generation,
+                sequence: InputSequence(1003),
+                timestamp: InputTimestamp(1003),
+            },
+            payload: InputPayload::DeviceDisconnected,
+        };
+        router
+            .route(&mut context, &disconnected, Duration::ZERO, None)
+            .unwrap();
+        assert_eq!(context.world().pointer_capture(document, 1), None);
+        assert!(router.pointers.is_empty());
+    }
+
+    #[test]
+    fn pointer_leave_clears_hover_without_releasing_capture() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(17);
+        let device = nana_ui_platform::DeviceId(5);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(17).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let node = StableNodeId::new(4).unwrap();
+        let mut create = MutationQueue::new();
+        create.create(node, document, NodeKind::Element { tag: "div".into() });
+        create.set_interaction(
+            node,
+            InteractionState {
+                pointer_events: true,
+                ..InteractionState::default()
+            },
+        );
+        context.commit_mutations(create).unwrap();
+        context.rebuild_hit_test(document);
+        let mut capture = MutationQueue::new();
+        capture.capture_pointer(1, node);
+        context.commit_mutations(capture).unwrap();
+        context.set_pointer_location(document, 1, Some((10.0, 12.0)));
+        router
+            .route(
+                &mut context,
+                &pointer_event(source, generation, device, 1, PointerPhase::Down),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert_eq!(context.world().pointer_capture(document, 1), Some(node));
+
+        router
+            .route(
+                &mut context,
+                &CanonicalInputEvent {
+                    metadata: InputMetadata {
+                        source,
+                        device,
+                        generation,
+                        sequence: InputSequence(2),
+                        timestamp: InputTimestamp(2),
+                    },
+                    payload: InputPayload::PointerLeave {
+                        pointer_id: nana_ui_platform::PointerId(42),
+                    },
+                },
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert_eq!(context.world().pointer_hover(document, 1), None);
+        assert_eq!(context.world().pointer_capture(document, 1), Some(node));
+    }
+
+    #[test]
+    fn focus_revoke_dispatches_cancel_and_revokes_runtime_capture() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(16);
+        let device = nana_ui_platform::DeviceId(4);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(8).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let node = StableNodeId::new(2).unwrap();
+        let mut create = MutationQueue::new();
+        create.create(node, document, NodeKind::Element { tag: "div".into() });
+        create.set_interaction(
+            node,
+            InteractionState {
+                pointer_events: true,
+                ..InteractionState::default()
+            },
+        );
+        context.commit_mutations(create).unwrap();
+        context.rebuild_hit_test(document);
+        let mut capture = MutationQueue::new();
+        capture.capture_pointer(1, node);
+        context.commit_mutations(capture).unwrap();
+        context.set_pointer_location(document, 1, Some((10.0, 12.0)));
+        router
+            .route(
+                &mut context,
+                &pointer_event(source, generation, device, 1, PointerPhase::Down),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert_eq!(context.world().pointer_capture(document, 1), Some(node));
+        let focus_revoke = CanonicalInputEvent {
+            metadata: InputMetadata {
+                source,
+                device,
+                generation,
+                sequence: InputSequence(2),
+                timestamp: InputTimestamp(2),
+            },
+            payload: InputPayload::Focus { focused: false },
+        };
+        router
+            .route(&mut context, &focus_revoke, Duration::ZERO, None)
+            .unwrap();
+        assert_eq!(context.world().pointer_capture(document, 1), None);
+        assert!(router.pointers.is_empty());
+    }
+
+    #[test]
+    fn focus_revoke_preserves_other_sources_pointer_state() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(20);
+        let other = InputSourceId(21);
+        let generation = EndpointGeneration(1);
+        let device = nana_ui_platform::DeviceId(1);
+        let document = DocumentId::new(9).unwrap();
+        router.attach(source, generation, document);
+        router.attach(other, generation, document);
+        let mut context = AppContext::new();
+        let node = StableNodeId::new(3).unwrap();
+        let mut create = MutationQueue::new();
+        create.create(node, document, NodeKind::Element { tag: "div".into() });
+        context.commit_mutations(create).unwrap();
+        for owner in [source, other] {
+            router
+                .route(
+                    &mut context,
+                    &pointer_event(owner, generation, device, 1, PointerPhase::Move),
+                    Duration::ZERO,
+                    None,
+                )
+                .unwrap();
+        }
+        let other_pointer =
+            router.pointers[&(other, device, nana_ui_platform::PointerId(42))].local;
+        context
+            .press_pointer(document, other_pointer, node)
+            .unwrap();
+        context
+            .set_pointer_hover(document, other_pointer, Some(node))
+            .unwrap();
+        let mut capture = MutationQueue::new();
+        capture.capture_pointer(other_pointer, node);
+        context.commit_mutations(capture).unwrap();
+        router
+            .route(
+                &mut context,
+                &CanonicalInputEvent {
+                    metadata: InputMetadata {
+                        source,
+                        device,
+                        generation,
+                        sequence: InputSequence(2),
+                        timestamp: InputTimestamp(2),
+                    },
+                    payload: InputPayload::Focus { focused: false },
+                },
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            context.world().pointer_press(document, other_pointer),
+            Some(node)
+        );
+        assert_eq!(
+            context.world().pointer_hover(document, other_pointer),
+            Some(node)
+        );
+        assert_eq!(
+            context.world().pointer_capture(document, other_pointer),
+            Some(node)
+        );
+        assert_eq!(router.pointers.len(), 1);
+    }
+
+    #[test]
+    fn mouse_pointer_identity_survives_button_release_for_hover_continuity() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(11);
+        let generation = EndpointGeneration(1);
+        let device = nana_ui_platform::DeviceId(2);
+        let document = DocumentId::new(3).unwrap();
+        router.attach(source, generation, document);
+        let pointer = nana_ui_platform::PointerInput {
+            phase: PointerPhase::Down,
+            pointer_id: nana_ui_platform::PointerId(42),
+            pointer_type: nana_ui_platform::PointerType::Mouse,
+            x: 0.0,
+            y: 0.0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            button: 0,
+            buttons: 1,
+            pressure: 0.5,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers: Default::default(),
+        };
+        let down = CanonicalInputEvent {
+            metadata: InputMetadata {
+                source,
+                device,
+                generation,
+                sequence: InputSequence(1),
+                timestamp: InputTimestamp(1),
+            },
+            payload: InputPayload::Pointer(pointer),
+        };
+        let up = CanonicalInputEvent {
+            metadata: InputMetadata {
+                sequence: InputSequence(2),
+                timestamp: InputTimestamp(2),
+                ..down.metadata
+            },
+            payload: InputPayload::Pointer(nana_ui_platform::PointerInput {
+                phase: PointerPhase::Up,
+                buttons: 0,
+                ..pointer
+            }),
+        };
+        let mut context = AppContext::new();
+        let _ = router.route(&mut context, &down, Duration::ZERO, None);
+        assert_eq!(router.pointers.len(), 1);
+        let _ = router.route(&mut context, &up, Duration::ZERO, None);
+        assert_eq!(router.pointers.len(), 1);
+
+        let touch_down = CanonicalInputEvent {
+            metadata: InputMetadata {
+                sequence: InputSequence(3),
+                timestamp: InputTimestamp(3),
+                ..down.metadata
+            },
+            payload: InputPayload::Pointer(nana_ui_platform::PointerInput {
+                pointer_type: nana_ui_platform::PointerType::Touch,
+                pointer_id: nana_ui_platform::PointerId(43),
+                ..pointer
+            }),
+        };
+        let touch_up = CanonicalInputEvent {
+            metadata: InputMetadata {
+                sequence: InputSequence(4),
+                timestamp: InputTimestamp(4),
+                ..down.metadata
+            },
+            payload: InputPayload::Pointer(nana_ui_platform::PointerInput {
+                phase: PointerPhase::Up,
+                pointer_type: nana_ui_platform::PointerType::Touch,
+                pointer_id: nana_ui_platform::PointerId(43),
+                buttons: 0,
+                ..pointer
+            }),
+        };
+        let _ = router.route(&mut context, &touch_down, Duration::ZERO, None);
+        let _ = router.route(&mut context, &touch_up, Duration::ZERO, None);
+        assert_eq!(router.pointers.len(), 1);
+    }
+
+    #[test]
+    fn ime_lifecycle_emits_bounded_host_service_intents() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(12);
+        let generation = EndpointGeneration(4);
+        let document = DocumentId::new(4).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let input = context
+            .create_component(document, nana_ui_runtime::TextInput::new(""))
+            .unwrap();
+        context.focus_node(document, input.stable_id()).unwrap();
+        for (sequence, composition) in [
+            (1, CompositionInput::Enabled),
+            (
+                2,
+                CompositionInput::Update {
+                    text: "候选".into(),
+                    selection: Some((0, 3)),
+                },
+            ),
+            (3, CompositionInput::Disabled),
+        ] {
+            let event = CanonicalInputEvent {
+                metadata: InputMetadata {
+                    source,
+                    device: nana_ui_platform::DeviceId(1),
+                    generation,
+                    sequence: InputSequence(sequence),
+                    timestamp: InputTimestamp(sequence),
+                },
+                payload: InputPayload::Composition(composition),
+            };
+            router
+                .route(&mut context, &event, Duration::ZERO, None)
+                .expect("IME event routes");
+        }
+        let requests = router.take_host_service_requests(&context, 8);
+        assert!(matches!(requests[0], HostServiceRequest::ImeEnable { .. }));
+        assert!(matches!(
+            requests[1],
+            HostServiceRequest::ImeUpdate {
+                surrounding: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(requests[2], HostServiceRequest::ImeDisable { .. }));
+        assert!(router.take_host_service_requests(&context, 8).is_empty());
+    }
+
+    #[test]
+    fn endpoint_generation_rebind_rearms_ime_enable_for_same_document() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(26);
+        let document = DocumentId::new(20).unwrap();
+        let mut context = AppContext::new();
+        let input = context
+            .create_component(document, nana_ui_runtime::TextInput::new("text"))
+            .unwrap();
+        context.focus_node(document, input.stable_id()).unwrap();
+
+        router.attach(source, EndpointGeneration(1), document);
+        router
+            .route(
+                &mut context,
+                &CanonicalInputEvent {
+                    metadata: InputMetadata {
+                        source,
+                        device: nana_ui_platform::DeviceId(1),
+                        generation: EndpointGeneration(1),
+                        sequence: InputSequence(1),
+                        timestamp: InputTimestamp(1),
+                    },
+                    payload: InputPayload::Composition(CompositionInput::Enabled),
+                },
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        let first = router.take_host_service_requests(&context, 8);
+        assert!(
+            first
+                .iter()
+                .any(|request| matches!(request, HostServiceRequest::ImeEnable { .. }))
+        );
+
+        assert!(router.attach(source, EndpointGeneration(2), document));
+        router
+            .route(
+                &mut context,
+                &CanonicalInputEvent {
+                    metadata: InputMetadata {
+                        source,
+                        device: nana_ui_platform::DeviceId(1),
+                        generation: EndpointGeneration(2),
+                        sequence: InputSequence(1),
+                        timestamp: InputTimestamp(1),
+                    },
+                    payload: InputPayload::Composition(CompositionInput::Enabled),
+                },
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        let rebound = router.take_host_service_requests(&context, 8);
+        assert!(
+            rebound
+                .iter()
+                .any(|request| matches!(request, HostServiceRequest::ImeEnable { .. }))
+        );
+    }
+
+    #[test]
+    fn ime_update_without_focus_owner_is_dropped_at_host_boundary() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(24);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(18).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        context
+            .create_component(document, nana_ui_runtime::TextInput::new("text"))
+            .unwrap();
+        router
+            .route(
+                &mut context,
+                &event(
+                    source,
+                    generation,
+                    InputPayload::Composition(CompositionInput::Update {
+                        text: "stale".into(),
+                        selection: None,
+                    }),
+                ),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert!(router.take_host_service_requests(&context, 8).is_empty());
+        assert_eq!(router.counters().host_requests_stale_dropped, 1);
+    }
+
+    #[test]
+    fn focus_lifecycle_emits_native_text_input_capability_intents() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(25);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(19).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let input = context
+            .create_component(document, nana_ui_runtime::TextInput::new("text"))
+            .unwrap();
+        context.focus_node(document, input.stable_id()).unwrap();
+        router
+            .route(
+                &mut context,
+                &event(source, generation, InputPayload::Focus { focused: true }),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        let enabled = router.take_host_service_requests(&context, 8);
+        assert!(enabled.iter().any(|request| {
+            matches!(
+                request,
+                HostServiceRequest::NativeTextInput {
+                    enabled: true,
+                    context,
+                } if context.node == Some(input.stable_id().get())
+            )
+        }));
+
+        context.clear_focus(document).unwrap();
+        router
+            .route(
+                &mut context,
+                &CanonicalInputEvent {
+                    metadata: InputMetadata {
+                        sequence: InputSequence(2),
+                        timestamp: InputTimestamp(2),
+                        ..event(source, generation, InputPayload::Focus { focused: false }).metadata
+                    },
+                    payload: InputPayload::Focus { focused: false },
+                },
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        let disabled = router.take_host_service_requests(&context, 8);
+        assert!(disabled.iter().any(|request| {
+            matches!(
+                request,
+                HostServiceRequest::NativeTextInput {
+                    enabled: false,
+                    context,
+                } if context.node.is_none()
+            )
+        }));
+    }
+
+    #[test]
+    fn ime_enable_carries_focused_caret_anchor_in_logical_coordinates() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(23);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(16).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let input = context
+            .create_component(document, nana_ui_runtime::TextInput::new("text"))
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            input.stable_id(),
+            LayoutBox {
+                x: 12.0,
+                y: 24.0,
+                width: 180.0,
+                height: 28.0,
+                ..LayoutBox::default()
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        assert!(context.focus_node(document, input.stable_id()).unwrap());
+        router
+            .route(
+                &mut context,
+                &event(source, generation, InputPayload::Focus { focused: true }),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        let requests = router.take_host_service_requests(&context, 8);
+        let HostServiceRequest::ImeEnable {
+            surrounding: Some(surrounding),
+            ..
+        } = &requests[0]
+        else {
+            panic!("focused IME must carry surrounding text and caret anchor");
+        };
+        let anchor = surrounding.cursor_area.expect("caret anchor");
+        assert_eq!(
+            (anchor.x, anchor.y, anchor.width, anchor.height),
+            (12.0, 24.0, 180.0, 28.0)
+        );
+    }
+
+    #[test]
+    fn endpoint_retains_event_when_host_service_backpressure_blocks_route() {
+        let mut router = InputRouter {
+            host_requests: HostServiceQueue::new(1),
+            ..InputRouter::default()
+        };
+        let source = InputSourceId(14);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(6).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let input = context
+            .create_component(document, nana_ui_runtime::TextInput::new(""))
+            .unwrap();
+        context.focus_node(document, input.stable_id()).unwrap();
+        let mut endpoint = nana_ui_platform::InputEndpoint::new(source, generation, 4, 4096);
+        for (sequence, composition) in [
+            (1, CompositionInput::Enabled),
+            (
+                2,
+                CompositionInput::Update {
+                    text: "候选".into(),
+                    selection: Some((0, 3)),
+                },
+            ),
+        ] {
+            endpoint
+                .push(CanonicalInputEvent {
+                    metadata: InputMetadata {
+                        source,
+                        device: nana_ui_platform::DeviceId(1),
+                        generation,
+                        sequence: InputSequence(sequence),
+                        timestamp: InputTimestamp(sequence),
+                    },
+                    payload: InputPayload::Composition(composition),
+                })
+                .unwrap();
+        }
+
+        assert_eq!(
+            router.route_endpoint(&mut context, &mut endpoint, Duration::ZERO),
+            Err(InputRouterError::HostServiceBackpressure)
+        );
+        assert_eq!(endpoint.len(), 1);
+        router.take_host_service_requests(&context, 1);
+        assert_eq!(
+            router.route_endpoint(&mut context, &mut endpoint, Duration::ZERO),
+            Ok(1)
+        );
+        assert!(endpoint.is_empty());
+    }
+
+    #[test]
+    fn detached_endpoint_drops_queued_host_intents_before_host_drain() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(13);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(5).unwrap();
+        router.attach(source, generation, document);
+        let event = event(
+            source,
+            generation,
+            InputPayload::Composition(CompositionInput::Enabled),
+        );
+        let mut context = AppContext::new();
+        context
+            .create_component(document, nana_ui_runtime::TextInput::new(""))
+            .unwrap();
+        router
+            .route(&mut context, &event, Duration::ZERO, None)
+            .expect("IME event routes");
+        router.detach(source);
+        assert!(router.take_host_service_requests(&context, 8).is_empty());
+        assert_eq!(router.counters().host_requests_stale_dropped, 1);
+    }
+
+    #[test]
+    fn host_request_for_unmounted_document_is_dropped() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(15);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(7).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        router
+            .route(
+                &mut context,
+                &event(
+                    source,
+                    generation,
+                    InputPayload::Composition(CompositionInput::Enabled),
+                ),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        let mut services = nana_ui_platform::UnsupportedHostServices;
+        assert!(
+            router
+                .service_host_requests(&context, &mut services, 8)
+                .is_empty()
+        );
+        assert_eq!(router.counters().host_requests_stale_dropped, 1);
+    }
+
+    #[test]
+    fn detach_invalidates_last_route_snapshot() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(18);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(11).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        router
+            .route(
+                &mut context,
+                &event(source, generation, InputPayload::Focus { focused: true }),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        assert!(router.last_route_snapshot().is_some());
+        assert_eq!(router.detach(source), Some(document));
+        assert!(router.last_route_snapshot().is_none());
+    }
+
+    #[test]
+    fn host_service_boundary_returns_capability_outcomes_without_routing_work() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(14);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(6).unwrap();
+        router.attach(source, generation, document);
+        let event = event(
+            source,
+            generation,
+            InputPayload::Composition(CompositionInput::Enabled),
+        );
+        let mut context = AppContext::new();
+        let input = context
+            .create_component(document, nana_ui_runtime::TextInput::new(""))
+            .unwrap();
+        context.focus_node(document, input.stable_id()).unwrap();
+        router
+            .route(&mut context, &event, Duration::ZERO, None)
+            .expect("IME event routes");
+        let mut services = nana_ui_platform::UnsupportedHostServices;
+        let responses = router.service_host_requests_with_results(&context, &mut services, 8);
+        assert_eq!(responses.len(), 1);
+        assert_eq!(
+            responses[0].outcome,
+            nana_ui_platform::HostServiceOutcome::Unsupported
+        );
+        assert_eq!(responses[0].request.context().document, document.get());
+        assert!(router.take_host_service_requests(&context, 8).is_empty());
+    }
+
+    #[test]
+    fn clipboard_response_applies_only_to_a_live_bound_document() {
+        let mut router = InputRouter::default();
+        let source = InputSourceId(19);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(12).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let input = context
+            .create_component(document, nana_ui_runtime::TextInput::new("before"))
+            .unwrap();
+        assert!(context.focus_node(document, input.stable_id()).unwrap());
+
+        let response = HostServiceResponse {
+            request: HostServiceRequest::ClipboardRead {
+                context: HostRequestContext {
+                    source,
+                    generation,
+                    document: document.get(),
+                    node: Some(input.stable_id().get()),
+                },
+            },
+            outcome: HostServiceOutcome::ClipboardText(Some("after".into())),
+        };
+        assert!(
+            router
+                .apply_host_service_response(&mut context, response)
+                .unwrap()
+        );
+        assert_eq!(context.world().text(input.stable_id()), Some("beforeafter"));
+
+        router.detach(source);
+        let stale = HostServiceResponse {
+            request: HostServiceRequest::ClipboardRead {
+                context: HostRequestContext {
+                    source,
+                    generation,
+                    document: document.get(),
+                    node: Some(input.stable_id().get()),
+                },
+            },
+            outcome: HostServiceOutcome::ClipboardText(Some("stale".into())),
+        };
+        assert!(
+            !router
+                .apply_host_service_response(&mut context, stale)
+                .unwrap()
+        );
+        assert_eq!(context.world().text(input.stable_id()), Some("beforeafter"));
+    }
+
+    #[test]
+    fn canonical_clipboard_shortcuts_are_host_requests_and_cut_is_atomic() {
+        use std::borrow::Cow;
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(13).unwrap();
+        let input = context
+            .create_component(document, nana_ui_runtime::TextInput::new("copied"))
+            .unwrap()
+            .stable_id();
+        context.focus_node(document, input).unwrap();
+        context.select_all_focused_text(document).unwrap();
+        let source = InputSourceId(20);
+        let generation = EndpointGeneration(1);
+        let mut router = InputRouter::default();
+        router.attach(source, generation, document);
+        let key = |sequence, logical| CanonicalInputEvent {
+            metadata: InputMetadata {
+                source,
+                device: nana_ui_platform::DeviceId(1),
+                generation,
+                sequence: InputSequence(sequence),
+                timestamp: InputTimestamp(sequence),
+            },
+            payload: InputPayload::Key(nana_ui_platform::KeyInput {
+                physical: nana_ui_platform::PhysicalKey(Cow::Borrowed("KeyC")),
+                logical: nana_ui_platform::LogicalKey(Cow::Borrowed(logical)),
+                state: nana_ui_platform::KeyState::Pressed,
+                repeat: false,
+                modifiers: nana_ui_platform::InputModifiers {
+                    control: true,
+                    ..Default::default()
+                },
+            }),
+        };
+
+        assert!(
+            router
+                .route(&mut context, &key(1, "c"), Duration::ZERO, None)
+                .unwrap()
+                .handled
+        );
+        let mut host = nana_ui_platform::ClipboardHostServices::new(
+            nana_ui_platform::shared_clipboard(nana_ui_platform::MemoryClipboard::new()),
+        );
+        let responses = router.service_host_requests_with_results(&context, &mut host, 8);
+        assert!(matches!(
+            responses[0].request,
+            HostServiceRequest::ClipboardWrite { cut: false, .. }
+        ));
+        assert!(
+            !router
+                .apply_host_service_response(&mut context, responses.into_iter().next().unwrap())
+                .unwrap()
+        );
+        assert_eq!(context.world().text(input), Some("copied"));
+
+        assert!(
+            router
+                .route(&mut context, &key(2, "x"), Duration::ZERO, None)
+                .unwrap()
+                .handled
+        );
+        let responses = router.service_host_requests_with_results(&context, &mut host, 8);
+        assert!(
+            router
+                .apply_host_service_response(&mut context, responses.into_iter().next().unwrap())
+                .unwrap()
+        );
+        assert_eq!(context.world().text(input), Some(""));
+    }
+
+    #[test]
+    fn document_selection_copy_does_not_require_editor_focus() {
+        use std::borrow::Cow;
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(21).unwrap();
+        let node = context
+            .create_component(document, nana_ui_runtime::TextInput::new("selected"))
+            .unwrap()
+            .stable_id();
+        context.compat_world_mut().set_document_text_selection(
+            document,
+            Some(nana_ui_runtime::DocumentTextSelection {
+                node,
+                start: 0,
+                end: 8,
+                lines: Vec::new(),
+            }),
+        );
+        let source = InputSourceId(27);
+        let generation = EndpointGeneration(1);
+        let mut router = InputRouter::default();
+        router.attach(source, generation, document);
+        let event = CanonicalInputEvent {
+            metadata: InputMetadata {
+                source,
+                device: nana_ui_platform::DeviceId(1),
+                generation,
+                sequence: InputSequence(1),
+                timestamp: InputTimestamp(1),
+            },
+            payload: InputPayload::Key(nana_ui_platform::KeyInput {
+                physical: nana_ui_platform::PhysicalKey(Cow::Borrowed("KeyC")),
+                logical: nana_ui_platform::LogicalKey(Cow::Borrowed("c")),
+                state: nana_ui_platform::KeyState::Pressed,
+                repeat: false,
+                modifiers: nana_ui_platform::InputModifiers {
+                    control: true,
+                    ..Default::default()
+                },
+            }),
+        };
+        router
+            .route(&mut context, &event, Duration::ZERO, None)
+            .unwrap();
+        context.clear_focus(document).unwrap();
+        let request = router
+            .take_host_service_requests(&context, 1)
+            .into_iter()
+            .next()
+            .expect("document copy request");
+        assert!(matches!(
+            request,
+            HostServiceRequest::ClipboardWrite { cut: false, .. }
+        ));
+        assert!(
+            !router
+                .apply_host_service_response(
+                    &mut context,
+                    HostServiceResponse {
+                        request,
+                        outcome: HostServiceOutcome::Success,
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(router.counters().host_requests_stale_dropped, 0);
+    }
+
+    #[test]
+    fn unsupported_capability_is_not_invoked_at_host_boundary() {
+        struct NoImeHost {
+            calls: usize,
+        }
+        impl HostServices for NoImeHost {
+            fn supports(&self, capability: nana_ui_platform::HostCapability) -> bool {
+                capability != nana_ui_platform::HostCapability::Ime
+            }
+            fn request(&mut self, _request: HostServiceRequest) -> HostServiceOutcome {
+                self.calls += 1;
+                HostServiceOutcome::Failed("unsupported request reached host".into())
+            }
+        }
+
+        let mut router = InputRouter::default();
+        let source = InputSourceId(17);
+        let generation = EndpointGeneration(1);
+        let document = DocumentId::new(10).unwrap();
+        router.attach(source, generation, document);
+        let mut context = AppContext::new();
+        let input = context
+            .create_component(document, nana_ui_runtime::TextInput::new(""))
+            .unwrap();
+        context.focus_node(document, input.stable_id()).unwrap();
+        router
+            .route(
+                &mut context,
+                &event(
+                    source,
+                    generation,
+                    InputPayload::Composition(CompositionInput::Enabled),
+                ),
+                Duration::ZERO,
+                None,
+            )
+            .unwrap();
+        let mut host = NoImeHost { calls: 0 };
+        assert_eq!(
+            router.service_host_requests(&context, &mut host, 8),
+            vec![HostServiceOutcome::Unsupported]
+        );
+        assert_eq!(host.calls, 0);
     }
 }
 

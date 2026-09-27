@@ -15,7 +15,7 @@ mod windows;
 
 use accessibility::PendingAccessibility;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
@@ -28,11 +28,14 @@ use nana_ui_core::{
 };
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
-    DisplayBounds, FullscreenRequest, ImeEvent, InputEvent, InputModifiers, MousePassthroughMode,
-    PointerPhase, PointerType, SystemAppearance, TextInputPurpose, TextInputRequest, WindowEvent,
+    ClipboardHostServices, CoordinateExtent, DisplayBounds, FullscreenRequest, HostCapability,
+    HostServiceRequest, HostServiceResponse, ImeEvent, InputCoordinateSpace, InputEvent,
+    InputModifiers, MousePassthroughMode, PointerPhase, PointerType, PresentationCoordinateBridge,
+    PresentationTransform, SystemAppearance, TextInputPurpose, TextInputRequest, WindowEvent,
     WindowGeometry, WindowIcon, WindowId, WindowLevel, WindowModeState, WindowResizeEdge,
-    clamp_position_to_displays, clear_registered_application_icon, persist_live_window_geometry,
-    register_application_icon, restore_window_geometry, window_resize_edge,
+    clamp_position_to_displays, clear_registered_application_icon, default_shared_clipboard,
+    persist_live_window_geometry, register_application_icon, restore_window_geometry,
+    window_resize_edge,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, StableNodeId, Task,
@@ -81,8 +84,8 @@ use crate::runtime_host::{
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
-    HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, RuntimeAnimationClock,
-    RuntimeInputAdapter, TitleBarDragTracker, WindowChromeAction, WindowChromeEvent,
+    HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, InputRouter,
+    RuntimeAnimationClock, TitleBarDragTracker, WindowChromeAction, WindowChromeEvent,
     WindowChromeState, apply_title_bar_pointer,
     title_bar_hits_window_control as pointer_hits_window_control,
     window_commands_for_chrome_action,
@@ -92,6 +95,7 @@ const GPU_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_PROGRAM_DISPATCHES: usize = 32;
 const TASK_QUEUE_CAPACITY: usize = 256;
 const TASK_WORKERS: usize = 4;
+const NATIVE_PENDING_INPUT_CAPACITY: usize = 1024;
 
 /// Run a [`RuntimeProgram`] on the Nana Scene host.
 ///
@@ -301,6 +305,19 @@ struct WindowManager<Program: RuntimeProgram> {
     /// This host's startup: the coordinator, the splash it owns until
     /// handoff, and the record programs read.
     startup: startup::HostStartup,
+    /// Canonical input endpoint bindings. Window/winit is only a lowering
+    /// provider; Runtime owns hit testing, focus, and pointer capture.
+    input_router: InputRouter,
+    /// Monotonic generation per source identity. Window ids may be reused by
+    /// an embedding host, so a reopened window must not accept old events.
+    input_generations: HashMap<WindowId, u64>,
+    /// Canonical event inbox per native input source. Native winit input is
+    /// only a lowering provider; enqueueing here keeps coalescing, capacity,
+    /// ordering and endpoint counters identical to headless adapters.
+    input_endpoints: HashMap<WindowId, nana_ui_platform::InputEndpoint>,
+    /// Events returned by an endpoint while it is full or host-service
+    /// backpressured. They retain ownership until a later event-loop turn.
+    input_pending: HashMap<WindowId, VecDeque<nana_ui_platform::CanonicalInputEvent>>,
     /// The primary window's icons, while the startup thread still renders them.
     pending_icons: Option<Receiver<SceneIcons>>,
     /// Messages `initialize` returned, not yet applied (only with a splash).
@@ -1331,6 +1348,18 @@ fn complete_startup<Program: RuntimeProgram>(
         #[cfg(target_os = "macos")]
         present_transaction_pinned: HashSet::new(),
         startup: host_startup,
+        input_router: InputRouter::default(),
+        input_generations: HashMap::from([(WindowId::PRIMARY, 1)]),
+        input_endpoints: HashMap::from([(
+            WindowId::PRIMARY,
+            nana_ui_platform::InputEndpoint::new(
+                nana_ui_platform::InputSourceId(WindowId::PRIMARY.0),
+                nana_ui_platform::EndpointGeneration(1),
+                1024,
+                1024 * 1024,
+            ),
+        )]),
+        input_pending: HashMap::new(),
         pending_icons,
         startup_messages: std::collections::VecDeque::new(),
     };
@@ -2893,6 +2922,14 @@ fn tablet_pointer_id(device_id: Option<DeviceId>, kind: TabletToolKind) -> u64 {
     1000 + device.saturating_mul(2) + kind_index
 }
 
+fn canonical_device_id(device_id: Option<DeviceId>) -> nana_ui_platform::DeviceId {
+    nana_ui_platform::DeviceId(
+        device_id
+            .map(|id| id.into_raw().unsigned_abs())
+            .unwrap_or(0),
+    )
+}
+
 fn mapped_pointer(
     pointer_id: u64,
     pointer_type: PointerType,
@@ -2999,6 +3036,9 @@ fn map_button_source(
 #[derive(Debug, Default)]
 struct InputTracker {
     cursor: (f32, f32),
+    canonical_sequence: u64,
+    canonical_device: nana_ui_platform::DeviceId,
+    coordinate_bridge: Option<PresentationCoordinateBridge>,
     cursor_sync_last: Option<std::time::Instant>,
     buttons: u16,
     modifiers: ModifiersState,
@@ -3014,10 +3054,44 @@ struct InputTracker {
 }
 
 impl InputTracker {
+    fn next_canonical_sequence(&mut self) -> nana_ui_platform::InputSequence {
+        self.canonical_sequence = self.canonical_sequence.saturating_add(1).max(1);
+        nana_ui_platform::InputSequence(self.canonical_sequence)
+    }
+
+    fn advance_canonical_sequence(&mut self, count: usize) {
+        self.canonical_sequence = self.canonical_sequence.saturating_add(count as u64).max(1);
+    }
+
     fn clear_pointers(&mut self) {
         self.buttons = 0;
         self.active_touches.clear();
         self.primary_touch = None;
+    }
+
+    fn set_coordinate_extents(&mut self, logical: (f32, f32), physical: (u32, u32)) {
+        let logical_extent = CoordinateExtent::new(logical.0, logical.1);
+        let physical_extent = CoordinateExtent::new(physical.0 as f32, physical.1 as f32);
+        let Some(bridge) = self.coordinate_bridge.as_mut() else {
+            self.coordinate_bridge = PresentationCoordinateBridge::new(
+                logical_extent,
+                logical_extent,
+                logical_extent,
+                physical_extent,
+                PresentationTransform {
+                    affine: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                    revision: 1,
+                },
+            )
+            .ok();
+            return;
+        };
+        let _ = bridge.set_extents(
+            logical_extent,
+            logical_extent,
+            logical_extent,
+            physical_extent,
+        );
     }
 
     /// Ends the mouse gesture whose release the platform will not deliver.
@@ -3036,8 +3110,23 @@ impl InputTracker {
     }
 
     fn set_cursor_physical(&mut self, position: PhysicalPosition<f64>, scale: f32) {
-        let point = position.to_logical::<f32>(f64::from(scale));
-        self.cursor = (point.x, point.y);
+        let point = self
+            .coordinate_bridge
+            .as_mut()
+            .and_then(|bridge| {
+                bridge
+                    .map_unclipped(
+                        InputCoordinateSpace::Physical,
+                        [position.x as f32, position.y as f32],
+                    )
+                    .ok()
+            })
+            .map(|point| (point[0], point[1]))
+            .unwrap_or_else(|| {
+                let point = position.to_logical::<f32>(f64::from(scale));
+                (point.x, point.y)
+            });
+        self.cursor = point;
     }
 
     /// Whether a cursor-icon sync may run now; records the sync when true.
@@ -3197,6 +3286,7 @@ impl InputTracker {
                 primary,
                 source,
             } => {
+                self.canonical_device = canonical_device_id(*device_id);
                 self.set_cursor_physical(*position, scale);
                 Some(self.pointer_event(
                     map_pointer_source(source, *primary, *device_id),
@@ -3215,6 +3305,7 @@ impl InputTracker {
                 primary,
                 kind,
             } => {
+                self.canonical_device = canonical_device_id(*device_id);
                 self.set_cursor_physical(*position, scale);
                 Some(self.pointer_event(
                     map_pointer_kind(kind, *primary, *device_id),
@@ -3235,6 +3326,7 @@ impl InputTracker {
                 button,
                 is_macos_activation_click,
             } => {
+                self.canonical_device = canonical_device_id(*device_id);
                 self.set_cursor_physical(*position, scale);
                 let mouse = button.clone().mouse_button().unwrap_or(MouseButton::Left);
                 let button_code = mouse_button_code(mouse);
@@ -3266,6 +3358,7 @@ impl InputTracker {
                 primary,
                 kind,
             } => {
+                self.canonical_device = canonical_device_id(*device_id);
                 if let Some(position) = position {
                     self.set_cursor_physical(*position, scale);
                 }
@@ -3281,7 +3374,10 @@ impl InputTracker {
                     Some(0.0),
                 ))
             }
-            WinitWindowEvent::MouseWheel { delta, .. } => {
+            WinitWindowEvent::MouseWheel {
+                device_id, delta, ..
+            } => {
+                self.canonical_device = canonical_device_id(*device_id);
                 let (delta_x, delta_y, line_delta) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (*x, *y, true),
                     MouseScrollDelta::PixelDelta(delta) => (
@@ -3308,14 +3404,19 @@ impl InputTracker {
                 is_synthetic: true,
                 ..
             } if event.state == ElementState::Pressed => None,
-            WinitWindowEvent::KeyboardInput { event, .. } => Some(InputEvent::Keyboard {
-                pressed: event.state == ElementState::Pressed,
-                key: platform_input_key(&event.logical_key).unwrap_or_default(),
-                text: event.text.as_ref().map(ToString::to_string),
-                code: format!("{:?}", event.physical_key),
-                repeat: event.repeat,
-                modifiers,
-            }),
+            WinitWindowEvent::KeyboardInput {
+                device_id, event, ..
+            } => {
+                self.canonical_device = canonical_device_id(*device_id);
+                Some(InputEvent::Keyboard {
+                    pressed: event.state == ElementState::Pressed,
+                    key: platform_input_key(&event.logical_key).unwrap_or_default(),
+                    text: event.text.as_ref().map(ToString::to_string),
+                    code: format!("{:?}", event.physical_key),
+                    repeat: event.repeat,
+                    modifiers,
+                })
+            }
             _ => None,
         }
     }
@@ -4360,6 +4461,16 @@ mod tests {
         assert!(!tracker.begin_cursor_sync(std::time::Instant::now()));
         std::thread::sleep(std::time::Duration::from_millis(9));
         assert!(tracker.begin_cursor_sync(std::time::Instant::now()));
+    }
+
+    #[test]
+    fn physical_cursor_mapping_uses_the_canonical_coordinate_bridge() {
+        let mut tracker = InputTracker::default();
+        tracker.set_coordinate_extents((100.0, 50.0), (200, 100));
+        tracker.set_cursor_physical(PhysicalPosition::new(100.0, 50.0), 99.0);
+        assert_eq!(tracker.cursor, (50.0, 25.0));
+        tracker.set_cursor_physical(PhysicalPosition::new(220.0, 110.0), 99.0);
+        assert_eq!(tracker.cursor, (110.0, 55.0));
     }
 
     #[test]
@@ -5558,6 +5669,7 @@ mod tests {
     fn runtime_prevent_default_still_invokes_the_program_input_hook() {
         let update = scene_runtime_input_update(
             InputDisposition {
+                handled: true,
                 prevent_default: true,
             },
             WindowId::PRIMARY,
@@ -5568,6 +5680,7 @@ mod tests {
 
         let update = scene_runtime_input_update(
             InputDisposition {
+                handled: false,
                 prevent_default: false,
             },
             WindowId::PRIMARY,
@@ -5580,6 +5693,7 @@ mod tests {
     fn failed_program_input_degrades_without_panicking() {
         let update = scene_runtime_input_update(
             InputDisposition {
+                handled: true,
                 prevent_default: true,
             },
             WindowId::PRIMARY,

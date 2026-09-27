@@ -1,35 +1,11 @@
 //! Reproducible one-tree image, Markdown and resize acceptance.
-use nana_ui::{
-    HostTexture, HostTextureAlphaMode, HostTextureRegistry, RuntimeInputAdapter, runtime::*,
-};
+use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry, runtime::*};
 use nana_ui_devtools::{
     agent::RuntimeAgentSession,
     offscreen::{self, OffscreenSnapshots, Size},
 };
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui_platform::PointerPhase;
 use std::path::Path;
-
-fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
-    InputEvent::Pointer {
-        phase,
-        pointer_id: 1,
-        pointer_type: PointerType::Mouse,
-        x,
-        y,
-        screen_x: x,
-        screen_y: y,
-        button: 0,
-        buttons: u16::from(phase != PointerPhase::Up),
-        pressure: 1.0,
-        tangential_pressure: 0.0,
-        tilt_x: 0,
-        tilt_y: 0,
-        twist: 0,
-        is_primary: true,
-        activation_click: false,
-        modifiers: InputModifiers::default(),
-    }
-}
 
 fn capture(
     gpu: &mut OffscreenSnapshots,
@@ -151,17 +127,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (x, y) = world
                 .layout_pointer_position(area.stable_id(), grip.x + 7.0, grip.y + 7.0)
                 .unwrap();
-            let mut adapter = RuntimeInputAdapter::default();
             for (phase, offset) in [
                 (PointerPhase::Down, 0.0),
                 (PointerPhase::Move, 55.0),
                 (PointerPhase::Up, 55.0),
             ] {
-                adapter.dispatch(
-                    session.document_mut().context_mut(),
-                    id,
-                    &pointer(phase, x, y + offset),
-                )?;
+                let buttons = u16::from(phase != PointerPhase::Up);
+                session.pointer_event(phase, x, y + offset, 0, buttons)?;
             }
             session.flush()?;
             assert!(

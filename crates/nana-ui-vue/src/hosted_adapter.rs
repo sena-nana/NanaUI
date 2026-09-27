@@ -3,18 +3,22 @@
 
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
-    GpuContext, HostTextureRegistry, RoutedInput, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, ThemeMode, WindowDescriptor, install_theme_tokens,
-    window_material_effect,
+    GpuContext, HostTextureRegistry, InputRouter, RoutedInput, RuntimeProgram,
+    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, ThemeMode, WindowDescriptor,
+    install_theme_tokens, window_material_effect,
 };
-use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowGeometry, WindowId};
+use nana_ui_platform::{
+    CanonicalInputEvent, CompositionInput, DeviceId, EndpointGeneration, HostServiceOutcome,
+    ImeEvent, InputEndpoint, InputEvent, InputMetadata, InputPayload, InputSequence, InputSourceId,
+    InputTimestamp, PointerPhase, WindowEvent, WindowGeometry, WindowId, lower_input_event,
+};
 use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 
@@ -50,6 +54,12 @@ pub struct VueHostedRuntime<E: JsEngine> {
     engine: E,
     vue: VueRuntime,
     application_api: HostApiRegistry,
+    canonical_sequences: HashMap<VueWindowId, u64>,
+    canonical_generations: HashMap<VueWindowId, u64>,
+    canonical_endpoints: HashMap<VueWindowId, InputEndpoint>,
+    canonical_pending: HashMap<VueWindowId, VecDeque<CanonicalInputEvent>>,
+    input_router: InputRouter,
+    host_service_outcomes: VecDeque<HostServiceOutcome>,
 }
 
 #[derive(PartialEq)]
@@ -113,6 +123,12 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             engine,
             vue,
             application_api,
+            canonical_sequences: HashMap::new(),
+            canonical_generations: HashMap::new(),
+            canonical_endpoints: HashMap::new(),
+            canonical_pending: HashMap::new(),
+            input_router: InputRouter::default(),
+            host_service_outcomes: VecDeque::with_capacity(128),
         };
         runtime
             .vue
@@ -134,6 +150,13 @@ impl<E: JsEngine> VueHostedRuntime<E> {
 
     pub fn components(&self) -> crate::NativeComponentRegistry {
         self.vue.components()
+    }
+
+    /// Outcomes from capability requests emitted while routing canonical Vue
+    /// input. The queue is bounded so unsupported headless capabilities cannot
+    /// accumulate unbounded state.
+    pub fn take_host_service_outcomes(&mut self, limit: usize) -> Vec<HostServiceOutcome> {
+        self.host_service_outcomes.drain(..limit).collect()
     }
 
     pub fn inject_theme(&mut self, theme: ThemeMode) -> Result<(), JsEngineError> {
@@ -327,11 +350,314 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         id: WindowId,
         event: &InputEvent,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.deliver_runtime_input(id, event, false)
+    }
+
+    /// Observe input that the native scene host has already routed to UiWorld.
+    fn observe_routed_input(
+        &mut self,
+        id: WindowId,
+        event: &InputEvent,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
+        self.deliver_runtime_input(id, event, true)
+    }
+
+    fn deliver_runtime_input(
+        &mut self,
+        id: WindowId,
+        event: &InputEvent,
+        already_routed: bool,
+    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         let before = self.window_visual_revisions();
-        // A callback may update another document or mutate state before throwing.
-        // Preserve those changes even when event delivery reports an error.
-        let _ = self.emit_runtime_input(VueWindowId(id.0), event);
+        let window = VueWindowId(id.0);
+        let metadata = self.next_canonical_metadata(window);
+        let canonical = lower_input_event(event, metadata);
+        let count = canonical.len();
+        if count > 1 {
+            self.advance_canonical_sequence(window, count - 1);
+        }
+        for event in canonical {
+            // A callback may update another document or mutate state before
+            // throwing. Preserve those changes even when delivery reports an
+            // error. The canonical event is the only lowering boundary here;
+            // JS still receives its established browser-style events below.
+            let _ = if already_routed {
+                self.observe_runtime_canonical(window, &event)
+            } else {
+                self.emit_runtime_canonical(window, &event)
+            };
+        }
         Ok(self.update_for_changed_windows(before))
+    }
+
+    fn next_canonical_metadata(&mut self, window: VueWindowId) -> InputMetadata {
+        let sequence = self.canonical_sequences.entry(window).or_default();
+        *sequence = sequence.saturating_add(1).max(1);
+        let generation = *self.canonical_generations.entry(window).or_insert(1);
+        InputMetadata {
+            source: InputSourceId(window.0),
+            device: DeviceId(0),
+            generation: EndpointGeneration(generation),
+            sequence: InputSequence(*sequence),
+            timestamp: InputTimestamp(*sequence),
+        }
+    }
+
+    fn advance_canonical_sequence(&mut self, window: VueWindowId, count: usize) {
+        let sequence = self.canonical_sequences.entry(window).or_default();
+        *sequence = sequence.saturating_add(count as u64).max(1);
+    }
+
+    fn ensure_canonical_endpoint(&mut self, window: VueWindowId) {
+        let generation = *self.canonical_generations.entry(window).or_insert(1);
+        self.canonical_endpoints.entry(window).or_insert_with(|| {
+            InputEndpoint::new(
+                InputSourceId(window.0),
+                EndpointGeneration(generation),
+                1024,
+                1024 * 1024,
+            )
+        });
+    }
+
+    fn advance_canonical_generation(&mut self, window: VueWindowId) {
+        let generation = self.canonical_generations.entry(window).or_insert(1);
+        *generation = generation.saturating_add(1).max(1);
+    }
+
+    fn emit_runtime_canonical(
+        &mut self,
+        window: VueWindowId,
+        event: &CanonicalInputEvent,
+    ) -> Result<HostedInputResult, JsEngineError> {
+        // Vue and native window input share the same Runtime route. The
+        // browser-shaped event below is an observation layer only; it must not
+        // become a second hit-test/capture/focus authority.
+        let host = self.require_host(window)?;
+        let document = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .document();
+        let mut document = document
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue document poisoned"))?;
+        let runtime = document.runtime_document_mut();
+        let runtime_document = runtime.document();
+        self.ensure_canonical_endpoint(window);
+        let mut endpoint = self
+            .canonical_endpoints
+            .remove(&window)
+            .expect("canonical endpoint installed above");
+        let mut pending = self.canonical_pending.remove(&window).unwrap_or_default();
+        let mut observations = Vec::new();
+        let mut route_error = None;
+        if !self.input_router.attach(
+            event.metadata.source,
+            event.metadata.generation,
+            runtime_document,
+        ) {
+            route_error = Some(JsEngineError::new(
+                "Vue input endpoint generation rebind rejected",
+            ));
+        } else if pending.len() < 1024 {
+            pending.push_back(event.clone());
+        } else {
+            route_error = Some(JsEngineError::new("Vue input pending queue is full"));
+        }
+        while route_error.is_none() {
+            let Some(canonical) = pending.pop_front() else {
+                break;
+            };
+            match endpoint.push(canonical) {
+                Ok(_) => {}
+                Err(rejected)
+                    if matches!(rejected.reason, nana_ui_platform::InputRejection::Capacity) =>
+                {
+                    pending.push_front(rejected.event);
+                    break;
+                }
+                Err(rejected) => {
+                    route_error = Some(JsEngineError::new(format!(
+                        "Vue input endpoint rejected canonical event: {:?}",
+                        rejected.reason
+                    )));
+                }
+            }
+        }
+        while route_error.is_none() {
+            let Some(canonical) = endpoint.front().cloned() else {
+                break;
+            };
+            match self.input_router.route_with_outcome(
+                runtime.context_mut(),
+                &canonical,
+                Duration::ZERO,
+                None,
+            ) {
+                Ok(_) => {
+                    endpoint.pop();
+                    observations.push(canonical);
+                }
+                Err(error) => {
+                    if !matches!(error, nana_ui::InputRouterError::HostServiceBackpressure) {
+                        endpoint.pop();
+                    }
+                    route_error = Some(JsEngineError::new(error.to_string()));
+                }
+            }
+        }
+        // This standalone adapter has no native HostServices executor. Report
+        // explicit unsupported outcomes instead of treating JS observation as
+        // successful OS service execution.
+        let outcomes = self.input_router.service_host_requests(
+            runtime.context(),
+            &mut nana_ui_platform::UnsupportedHostServices,
+            usize::MAX,
+        );
+        for outcome in outcomes {
+            if self.host_service_outcomes.len() == 128 {
+                self.host_service_outcomes.pop_front();
+            }
+            self.host_service_outcomes.push_back(outcome);
+        }
+        drop(document);
+        self.canonical_endpoints.insert(window, endpoint);
+        self.canonical_pending.insert(window, pending);
+        let mut result = HostedInputResult::default();
+        for canonical in observations {
+            result = self.observe_runtime_canonical(window, &canonical)?;
+        }
+        if let Some(error) = route_error {
+            return Err(error);
+        }
+        Ok(result)
+    }
+
+    fn observe_runtime_canonical(
+        &mut self,
+        window: VueWindowId,
+        event: &CanonicalInputEvent,
+    ) -> Result<HostedInputResult, JsEngineError> {
+        match &event.payload {
+            InputPayload::Pointer(pointer) => self.emit_runtime_input(
+                window,
+                &InputEvent::Pointer {
+                    phase: pointer.phase,
+                    pointer_id: pointer.pointer_id.0,
+                    pointer_type: pointer.pointer_type,
+                    x: pointer.x,
+                    y: pointer.y,
+                    screen_x: pointer.screen_x,
+                    screen_y: pointer.screen_y,
+                    button: pointer.button,
+                    buttons: pointer.buttons,
+                    pressure: pointer.pressure,
+                    tangential_pressure: pointer.tangential_pressure,
+                    tilt_x: pointer.tilt_x,
+                    tilt_y: pointer.tilt_y,
+                    twist: pointer.twist,
+                    is_primary: pointer.is_primary,
+                    activation_click: pointer.activation_click,
+                    modifiers: pointer.modifiers,
+                },
+            ),
+            InputPayload::Wheel(wheel) => self.emit_runtime_input(
+                window,
+                &InputEvent::Wheel {
+                    x: wheel.x,
+                    y: wheel.y,
+                    delta_x: wheel.delta_x,
+                    delta_y: wheel.delta_y,
+                    line_delta: wheel.unit == nana_ui_platform::WheelUnit::Lines,
+                    modifiers: wheel.modifiers,
+                },
+            ),
+            InputPayload::Key(key) => self.emit_runtime_input(
+                window,
+                &InputEvent::Keyboard {
+                    pressed: key.state == nana_ui_platform::KeyState::Pressed,
+                    key: key.logical.0.to_string(),
+                    text: None,
+                    code: key.physical.0.to_string(),
+                    repeat: key.repeat,
+                    modifiers: key.modifiers,
+                },
+            ),
+            InputPayload::TextInput(text) => self.emit_runtime_text(window, text),
+            InputPayload::Composition(composition) => self.emit_runtime_ime(window, composition),
+            InputPayload::PointerEnter { .. }
+            | InputPayload::PointerLeave { .. }
+            | InputPayload::Focus { .. }
+            | InputPayload::DeviceConnected
+            | InputPayload::DeviceDisconnected
+            | InputPayload::SourceConnected
+            | InputPayload::SourceDisconnected => Ok(HostedInputResult::default()),
+        }
+    }
+
+    fn emit_runtime_text(
+        &mut self,
+        id: VueWindowId,
+        text: &str,
+    ) -> Result<HostedInputResult, JsEngineError> {
+        let host = self.require_host(id)?;
+        let mut host = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+        let Some(target) = host.focused() else {
+            return Ok(HostedInputResult::default());
+        };
+        let is_text = host
+            .document()
+            .lock()
+            .ok()
+            .is_some_and(|document| document.has_text_input_state(target));
+        if !is_text || text.is_empty() {
+            return Ok(HostedInputResult::default());
+        }
+        let allowed =
+            host.emit_text_events_from_runtime(&mut self.engine, target, text, "insertText")?;
+        Ok(HostedInputResult {
+            targeted: true,
+            default_prevented: !allowed,
+            consumed: !allowed,
+        })
+    }
+
+    fn emit_runtime_ime(
+        &mut self,
+        id: VueWindowId,
+        composition: &CompositionInput,
+    ) -> Result<HostedInputResult, JsEngineError> {
+        let event = match composition {
+            CompositionInput::Enabled => ImeEvent::Enabled,
+            CompositionInput::Disabled => ImeEvent::Disabled,
+            CompositionInput::Start => ImeEvent::Preedit {
+                text: String::new(),
+                selection: None,
+            },
+            CompositionInput::Update { text, selection } => ImeEvent::Preedit {
+                text: text.clone(),
+                selection: *selection,
+            },
+            CompositionInput::Commit(text) => ImeEvent::Commit(text.clone()),
+            CompositionInput::End => ImeEvent::Cancelled,
+            CompositionInput::DeleteSurrounding {
+                before_bytes,
+                after_bytes,
+            } => ImeEvent::DeleteSurrounding {
+                before_bytes: *before_bytes,
+                after_bytes: *after_bytes,
+            },
+        };
+        let host = self.require_host(id)?;
+        host.lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .emit_native_ime_from_runtime(&mut self.engine, &event)?;
+        Ok(HostedInputResult {
+            targeted: true,
+            ..HostedInputResult::default()
+        })
     }
 
     /// Redraw only the windows whose visual revision moved since `before`.
@@ -547,6 +873,14 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     /// The host already redraws a window it resizes or publishes; moves, focus
     /// and occlusion repaint only windows whose Vue state actually changed.
     pub fn runtime_window_event(&mut self, event: WindowEvent) -> RuntimeProgramUpdate {
+        self.runtime_window_event_delivery(event, false)
+    }
+
+    fn runtime_window_event_delivery(
+        &mut self,
+        event: WindowEvent,
+        already_routed: bool,
+    ) -> RuntimeProgramUpdate {
         // These run no script, so no Vue window can change visually.
         let scripted = !matches!(
             event,
@@ -558,7 +892,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 | WindowEvent::FileDialogCompleted { .. }
         );
         let before = scripted.then(|| self.window_visual_revisions());
-        if let Err(_error) = self.handle_platform_window_event(event) {
+        if let Err(_error) = self.apply_window_event(event, already_routed) {
             return RuntimeProgramUpdate::default();
         }
         match before {
@@ -588,6 +922,14 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     }
 
     fn handle_platform_window_event(&mut self, event: WindowEvent) -> Result<(), JsEngineError> {
+        self.apply_window_event(event, false)
+    }
+
+    fn apply_window_event(
+        &mut self,
+        event: WindowEvent,
+        already_routed: bool,
+    ) -> Result<(), JsEngineError> {
         match event {
             WindowEvent::Ready { id, geometry } => {
                 let id = VueWindowId(id.0);
@@ -599,6 +941,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 )?;
                 self.vue.record_platform_geometry(id, &geometry)?;
                 self.vue.bind_window(&mut self.engine, id)?;
+                self.ensure_canonical_endpoint(id);
                 self.vue.notify_window_ready(id)?;
                 self.vue.pump_lifecycle(
                     &mut self.engine,
@@ -637,9 +980,20 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 )?;
             }
             WindowEvent::FocusChanged { id, focused } => {
+                let window = VueWindowId(id.0);
+                let metadata = self.next_canonical_metadata(window);
+                if !already_routed {
+                    let _ = self.emit_runtime_canonical(
+                        window,
+                        &CanonicalInputEvent {
+                            metadata,
+                            payload: InputPayload::Focus { focused },
+                        },
+                    )?;
+                }
                 self.vue.pump_lifecycle(
                     &mut self.engine,
-                    VueWindowId(id.0),
+                    window,
                     if focused {
                         WindowLifecycleEvent::Focus
                     } else {
@@ -648,13 +1002,24 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 )?;
             }
             WindowEvent::Ime { id, event } => {
-                let host = self.require_host(VueWindowId(id.0))?;
-                host.lock()
-                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                    .emit_native_ime_from_runtime(&mut self.engine, &event)?;
+                let window = VueWindowId(id.0);
+                let metadata = self.next_canonical_metadata(window);
+                if let Some(canonical) = nana_ui_platform::lower_ime_event(&event, metadata) {
+                    let _ = if already_routed {
+                        self.observe_runtime_canonical(window, &canonical)
+                    } else {
+                        self.emit_runtime_canonical(window, &canonical)
+                    }?;
+                }
             }
             WindowEvent::OpenFailed { id, .. } => {
-                let closed = self.vue.notify_window_closed(VueWindowId(id.0));
+                let window = VueWindowId(id.0);
+                self.detach_input_source(window)?;
+                self.canonical_endpoints.remove(&window);
+                self.canonical_pending.remove(&window);
+                self.advance_canonical_generation(window);
+                self.canonical_sequences.remove(&window);
+                let closed = self.vue.notify_window_closed(window);
                 self.vue.dispose_released_realms(&mut self.engine)?;
                 closed?;
             }
@@ -678,7 +1043,13 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             // read it from `RuntimeProgram::window_event`.
             WindowEvent::AppearanceChanged { .. } => {}
             WindowEvent::Closed { id } => {
-                self.vue.notify_window_closed(VueWindowId(id.0))?;
+                let window = VueWindowId(id.0);
+                self.detach_input_source(window)?;
+                self.canonical_endpoints.remove(&window);
+                self.canonical_pending.remove(&window);
+                self.advance_canonical_generation(window);
+                self.canonical_sequences.remove(&window);
+                self.vue.notify_window_closed(window)?;
                 // The last closed document cannot supply another frame pump.
                 // Deliver its reliable lifecycle event while the engine is alive.
                 let delivered = self.engine.run_microtasks();
@@ -844,6 +1215,28 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         self.vue
             .host(id)
             .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))
+    }
+
+    fn detach_input_source(&mut self, window: VueWindowId) -> Result<(), JsEngineError> {
+        let Some(host) = self.vue.host(window) else {
+            return Ok(());
+        };
+        let document = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .document();
+        let mut document = document
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue document poisoned"))?;
+        let runtime = document.runtime_document_mut();
+        self.input_router
+            .detach_with_context(
+                runtime.context_mut(),
+                InputSourceId(window.0),
+                Duration::ZERO,
+            )
+            .map_err(|error| JsEngineError::new(error.to_string()))?;
+        Ok(())
     }
 
     fn register_complete_host_api(&mut self) -> Result<(), JsEngineError> {
@@ -1355,7 +1748,7 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         let event = input.event;
         self.sync_documents();
-        let update = self.runtime.runtime_input(id, event)?;
+        let update = self.runtime.observe_routed_input(id, event)?;
         self.sync_documents();
         Ok(update)
     }
@@ -1414,7 +1807,7 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
         self.sync_documents();
-        let update = self.runtime.runtime_window_event(event);
+        let update = self.runtime.runtime_window_event_delivery(event, true);
         self.sync_documents();
         update
     }
@@ -1489,6 +1882,113 @@ mod tests {
         });
     }
 
+    #[test]
+    fn canonical_generation_advances_after_source_reopen() {
+        let mut runtime = VueHostedRuntime {
+            engine: InputEngine::default(),
+            vue: VueRuntime::new(400, 300, 1.0),
+            application_api: HostApiRegistry::new(),
+            canonical_sequences: HashMap::new(),
+            canonical_generations: HashMap::new(),
+            canonical_endpoints: HashMap::new(),
+            canonical_pending: HashMap::new(),
+            input_router: InputRouter::default(),
+            host_service_outcomes: VecDeque::with_capacity(128),
+        };
+        let first = runtime.next_canonical_metadata(VueWindowId::PRIMARY);
+        runtime.advance_canonical_generation(VueWindowId::PRIMARY);
+        runtime.canonical_sequences.remove(&VueWindowId::PRIMARY);
+        let second = runtime.next_canonical_metadata(VueWindowId::PRIMARY);
+        assert_eq!(first.generation, EndpointGeneration(1));
+        assert_eq!(second.generation, EndpointGeneration(2));
+        assert_eq!(second.sequence, InputSequence(1));
+    }
+
+    #[test]
+    fn native_observation_does_not_apply_text_or_ime_twice() {
+        let mut runtime = VueHostedRuntime {
+            engine: InputEngine::default(),
+            vue: VueRuntime::new(400, 300, 1.0),
+            application_api: HostApiRegistry::new(),
+            canonical_sequences: HashMap::new(),
+            canonical_generations: HashMap::new(),
+            canonical_endpoints: HashMap::new(),
+            canonical_pending: HashMap::new(),
+            input_router: InputRouter::default(),
+            host_service_outcomes: VecDeque::with_capacity(128),
+        };
+        let host = runtime.vue.host(VueWindowId::PRIMARY).unwrap();
+        host.lock()
+            .unwrap()
+            .bind_event_bridge(&mut runtime.engine)
+            .unwrap();
+        let document = host.lock().unwrap().document();
+        let node = {
+            let mut document = document.lock().unwrap();
+            let retained = document.runtime_document_mut();
+            let id = retained.document();
+            let node = retained
+                .context_mut()
+                .create_component(id, nana_ui_runtime::TextInput::new(""))
+                .unwrap()
+                .stable_id();
+            retained.context_mut().focus_node(id, node).unwrap();
+            node
+        };
+        let key = InputEvent::Keyboard {
+            pressed: true,
+            key: "a".into(),
+            code: "KeyA".into(),
+            text: Some("a".into()),
+            repeat: false,
+            modifiers: Default::default(),
+        };
+        runtime.runtime_input(WindowId::PRIMARY, &key).unwrap();
+        let routed = runtime.input_router.counters().events_routed;
+        runtime
+            .observe_routed_input(WindowId::PRIMARY, &key)
+            .unwrap();
+        assert_eq!(runtime.input_router.counters().events_routed, routed);
+        assert_eq!(
+            document
+                .lock()
+                .unwrap()
+                .runtime_document_mut()
+                .context()
+                .world()
+                .text(node),
+            Some("a")
+        );
+
+        runtime
+            .handle_platform_window_event(WindowEvent::Ime {
+                id: WindowId::PRIMARY,
+                event: ImeEvent::Commit("文".into()),
+            })
+            .unwrap();
+        let routed = runtime.input_router.counters().events_routed;
+        runtime
+            .apply_window_event(
+                WindowEvent::Ime {
+                    id: WindowId::PRIMARY,
+                    event: ImeEvent::Commit("文".into()),
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(runtime.input_router.counters().events_routed, routed);
+        assert_eq!(
+            document
+                .lock()
+                .unwrap()
+                .runtime_document_mut()
+                .context()
+                .world()
+                .text(node),
+            Some("a文")
+        );
+    }
+
     #[derive(Default)]
     struct InputEngine {
         on_event: Option<Box<dyn FnOnce()>>,
@@ -1550,6 +2050,12 @@ mod tests {
             engine: InputEngine::default(),
             vue,
             application_api: HostApiRegistry::new(),
+            canonical_sequences: HashMap::new(),
+            canonical_generations: HashMap::new(),
+            canonical_endpoints: HashMap::new(),
+            canonical_pending: HashMap::new(),
+            input_router: InputRouter::default(),
+            host_service_outcomes: VecDeque::with_capacity(128),
         };
         let artifact = RuntimeArtifact::from_source("reload.js", "");
         let replace_engine = || -> InputEngine { panic!("reload tore down the surviving runtime") };
@@ -1681,6 +2187,12 @@ mod tests {
             engine,
             vue,
             application_api: HostApiRegistry::new(),
+            canonical_sequences: HashMap::new(),
+            canonical_generations: HashMap::new(),
+            canonical_endpoints: HashMap::new(),
+            canonical_pending: HashMap::new(),
+            input_router: InputRouter::default(),
+            host_service_outcomes: VecDeque::with_capacity(128),
         };
         runtime
             .prepare_window_creation(WindowId(1), window_geometry())
@@ -1734,6 +2246,12 @@ mod tests {
             engine,
             vue,
             application_api: HostApiRegistry::new(),
+            canonical_sequences: HashMap::new(),
+            canonical_generations: HashMap::new(),
+            canonical_endpoints: HashMap::new(),
+            canonical_pending: HashMap::new(),
+            input_router: InputRouter::default(),
+            host_service_outcomes: VecDeque::with_capacity(128),
         };
 
         assert!(
@@ -1764,6 +2282,12 @@ mod tests {
             engine: InputEngine::default(),
             vue,
             application_api: HostApiRegistry::new(),
+            canonical_sequences: HashMap::new(),
+            canonical_generations: HashMap::new(),
+            canonical_endpoints: HashMap::new(),
+            canonical_pending: HashMap::new(),
+            input_router: InputRouter::default(),
+            host_service_outcomes: VecDeque::with_capacity(128),
         };
         for id in &ids {
             runtime
@@ -1841,6 +2365,12 @@ mod tests {
             engine: InputEngine::default(),
             vue: VueRuntime::new(400, 300, 1.0),
             application_api: HostApiRegistry::new(),
+            canonical_sequences: HashMap::new(),
+            canonical_generations: HashMap::new(),
+            canonical_endpoints: HashMap::new(),
+            canonical_pending: HashMap::new(),
+            input_router: InputRouter::default(),
+            host_service_outcomes: VecDeque::with_capacity(128),
         };
         runtime
             .vue

@@ -244,9 +244,28 @@ impl UiWorld {
         }
     }
 
-    pub(super) fn has_compositor_transform_overlay(&self) -> bool {
-        self.presentation
-            .has_any_property(AnimatableProperty::Transform)
+    pub(super) fn has_compositor_transform_overlay_for(&self, document: DocumentId) -> bool {
+        let revision = (self.presentation.revision(), self.generation);
+        if let Some((presentation_revision, world_revision, documents)) = self
+            .presentation_transform_documents_cache
+            .borrow()
+            .as_ref()
+            && (*presentation_revision, *world_revision) == revision
+        {
+            return documents.contains(&document);
+        }
+        let documents: std::collections::HashSet<DocumentId> = self
+            .presentation
+            .overlays()
+            .filter(|overlay| overlay.track.property == AnimatableProperty::Transform)
+            .filter_map(|overlay| {
+                StableNodeId::new(overlay.track.target.get()).and_then(|id| self.document_of(id))
+            })
+            .collect();
+        let contains = documents.contains(&document);
+        *self.presentation_transform_documents_cache.borrow_mut() =
+            Some((revision.0, revision.1, documents));
+        contains
     }
 
     pub(super) fn sampled_compositor_transform(&self, id: StableNodeId) -> Option<PaintTransform> {

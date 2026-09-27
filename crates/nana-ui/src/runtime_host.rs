@@ -1215,6 +1215,7 @@ mod tests {
         let mut called = false;
         let _ = gated_runtime_input_update(
             InputDisposition {
+                handled: true,
                 prevent_default: true,
             },
             WindowId::PRIMARY,
@@ -1227,6 +1228,7 @@ mod tests {
 
         let _ = gated_runtime_input_update(
             InputDisposition {
+                handled: false,
                 prevent_default: false,
             },
             WindowId::PRIMARY,

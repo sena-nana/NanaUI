@@ -1179,6 +1179,7 @@ impl UiWorld {
                     NodeRecord::new(*document, kind, initial_interaction(kind)),
                 );
                 self.dirty_entities.insert(*id);
+                self.pending_work_revision = self.pending_work_revision.saturating_add(1);
                 self.spawned_since_drain += 1;
                 report.created += 1;
                 self.refresh_root_membership(*id);

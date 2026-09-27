@@ -1608,6 +1608,7 @@ impl VueRuntime {
                         modal: options.modal,
                         parent: options.parent.map(|parent| WindowId(parent.0)),
                         system_caption: !options.frameless,
+                        host_managed_drag: false,
                         icon: options.icon,
                         // JS asks for a window, not for a presentation path.
                         // `Auto` lets the host pick, and it only reaches a

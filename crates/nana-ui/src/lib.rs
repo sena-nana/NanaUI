@@ -275,7 +275,10 @@ pub use runtime_host::{
     RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, run_runtime,
     run_runtime_with_store, with_startup,
 };
-pub use runtime_input::RuntimeInputAdapter;
+pub use runtime_input::{
+    CanonicalInputKind, InputRouteOutcome, InputRouteSnapshot, InputRouter, InputRouterCounters,
+    InputRouterError, RuntimeInputAdapter,
+};
 #[cfg(feature = "gpu")]
 pub use scene_gpu::{
     PreparedSceneResources, SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode,

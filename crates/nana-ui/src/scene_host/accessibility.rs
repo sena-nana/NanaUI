@@ -236,27 +236,37 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             id,
             event: event.clone(),
         };
-        let ime_changed = self
+        let now = self.animation_clock.runtime_time(std::time::Instant::now());
+        let source = nana_ui_platform::InputSourceId(id.0);
+        let generation =
+            nana_ui_platform::EndpointGeneration(*self.input_generations.entry(id).or_insert(1));
+        let sequence = self.input_mut(id).next_canonical_sequence();
+        let document = self
             .program
-            .write_document(id, |document| {
-                let document_id = document.document();
-                RuntimeInputAdapter::default()
-                    .dispatch_ime(document.context_mut(), document_id, &event)
-                    .map(|disposition| {
-                        disposition.prevent_default && !matches!(event, ImeEvent::Enabled)
-                    })
-            })
-            .transpose()
-            .unwrap_or_else(|error| {
-                // Drop this IME event instead of panicking; the program sees
-                // the failure through host_failure.
-                self.program.report_host_failure(HostFailure::ImeDispatch {
-                    window: id,
-                    error: error.to_string(),
-                });
-                Some(false)
-            })
-            .unwrap_or(false);
+            .read_document(id, |document| document.document());
+        let mut ime_changed = false;
+        if let Some(document) = document {
+            self.input_router
+                .ensure_attached(source, generation, document);
+            let metadata = nana_ui_platform::InputMetadata {
+                source,
+                device: nana_ui_platform::DeviceId(0),
+                generation,
+                sequence,
+                timestamp: nana_ui_platform::InputTimestamp(
+                    now.as_nanos().min(u128::from(u64::MAX)) as u64,
+                ),
+            };
+            if let Some(canonical) = nana_ui_platform::lower_ime_event(&event, metadata) {
+                if let Some(disposition) = self.route_native_lifecycle_event(id, canonical, now) {
+                    ime_changed = disposition.prevent_default && !matches!(event, ImeEvent::Enabled)
+                }
+                // Native IME is still applied through the existing winit
+                // request path below; clipboard and cursor requests are
+                // fulfilled and correlated instead of being silently dropped.
+                let _ = self.drain_host_service_requests(id);
+            }
+        }
         let modal_blocks_ime = self
             .program
             .read_document(id, |document| {
@@ -279,6 +289,62 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.apply_update(event_loop, update, None);
         self.apply_ime_request(id);
     }
+
+    /// Fulfil native-window HostService requests outside the input route.
+    /// IME remains applied by the established native IME state machine, while
+    /// Cursor requests perform the direct native icon side effect here.
+    /// Unsupported capabilities are drained explicitly so they cannot fill the
+    /// bounded queue forever. Clipboard responses are applied only after the
+    /// Router's generation/document/focus checks pass.
+    pub(super) fn drain_host_service_requests(&mut self, id: WindowId) -> bool {
+        let requests = self
+            .program
+            .write_document(id, |document| {
+                self.input_router
+                    .take_host_service_requests(document.context(), usize::MAX)
+            })
+            .unwrap_or_default();
+        let mut applied = false;
+        let mut failure = None;
+        let mut clipboard = None;
+        for request in requests {
+            let outcome = if request.capability() == HostCapability::Clipboard {
+                let host = clipboard
+                    .get_or_insert_with(|| ClipboardHostServices::new(default_shared_clipboard()));
+                nana_ui_platform::HostServices::request(host, request.clone())
+            } else if let HostServiceRequest::Cursor { cursor, .. } = &request {
+                if self.apply_host_cursor(id, cursor) {
+                    nana_ui_platform::HostServiceOutcome::Success
+                } else {
+                    nana_ui_platform::HostServiceOutcome::Unsupported
+                }
+            } else if matches!(&request, HostServiceRequest::NativeTextInput { .. }) {
+                // Text content and caret geometry remain owned by the
+                // established IME request state machine. This capability
+                // intent only wakes that native application path.
+                self.apply_ime_request(id);
+                nana_ui_platform::HostServiceOutcome::Success
+            } else {
+                nana_ui_platform::HostServiceOutcome::Unsupported
+            };
+            let response = HostServiceResponse { request, outcome };
+            let result = self.program.write_document(id, |document| {
+                self.input_router
+                    .apply_host_service_response(document.context_mut(), response)
+            });
+            match result {
+                Some(Ok(changed)) => applied |= changed,
+                Some(Err(error)) => failure = Some(error.to_string()),
+                None => {}
+            }
+        }
+        if let Some(error) = failure {
+            self.program
+                .report_host_failure(HostFailure::InputDispatch { window: id, error });
+        }
+        applied
+    }
+
     pub(super) fn apply_ime_request(&mut self, id: WindowId) {
         let request = self
             .program

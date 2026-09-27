@@ -2194,6 +2194,20 @@ impl AppContext {
         }
     }
 
+    /// Whether the document still has live retained roots. Host capability
+    /// requests use the same UiWorld lifetime authority as Runtime routing.
+    pub fn has_document(&self, document: DocumentId) -> bool {
+        self.world.has_document(document)
+    }
+
+    /// Return the latest host-space pointer sample recorded for a document.
+    pub fn pointer_position(&self, document: DocumentId, pointer_id: u64) -> Option<(f32, f32)> {
+        self.component_lifecycle
+            .pointer_positions
+            .get(&(document, pointer_id))
+            .copied()
+    }
+
     pub fn set_pointer_hover_at(
         &mut self,
         document: DocumentId,
@@ -2283,6 +2297,17 @@ impl AppContext {
         pointer_id: u64,
     ) -> Option<StableNodeId> {
         self.world.release_pointer_press(document, pointer_id)
+    }
+
+    /// Revoke capture immediately during host lifecycle cancellation. This
+    /// keeps cancellation separate from the component mutation queue while
+    /// reusing UiWorld's capture-change publication.
+    pub fn release_pointer_capture(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+    ) -> Option<StableNodeId> {
+        self.world.release_pointer_capture(document, pointer_id)
     }
 
     pub fn focus_node(

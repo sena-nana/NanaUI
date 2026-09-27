@@ -167,6 +167,120 @@ fn hit_test_follows_presentation_scale_not_logical_target() {
 }
 
 #[test]
+fn hit_test_respects_ellipse_clip_path() {
+    let mut world = UiWorld::new();
+    let style = NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            paint: nana_ui_core::PaintStyle {
+                clip_path: Some(nana_ui_core::ClipPath::Circle(nana_ui_core::ClipCircle {
+                    radius: nana_ui_core::ClipShapeRadius::ClosestSide,
+                    cx: nana_ui_core::LengthSpec::Percent(50.0),
+                    cy: nana_ui_core::LengthSpec::Percent(50.0),
+                })),
+                ..nana_ui_core::PaintStyle::default()
+            },
+            ..LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    };
+    commit_button(
+        &mut world,
+        box_at(0.0, 0.0, 100.0, 100.0),
+        style,
+        transform_overlay(
+            1,
+            node(1),
+            PaintTransform::default(),
+            PaintTransform::default(),
+        ),
+    );
+    assert_eq!(world.hit_test(document(1), 50.0, 50.0), Some(node(1)));
+    assert_eq!(world.hit_test(document(1), 2.0, 2.0), None);
+}
+
+#[test]
+fn hit_test_respects_polygon_clip_path() {
+    let mut world = UiWorld::new();
+    let point = |x, y| nana_ui_core::ClipPoint {
+        x: nana_ui_core::LengthSpec::Percent(x),
+        y: nana_ui_core::LengthSpec::Percent(y),
+    };
+    let style = NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            paint: nana_ui_core::PaintStyle {
+                clip_path: Some(nana_ui_core::ClipPath::Polygon(vec![
+                    point(50.0, 0.0),
+                    point(100.0, 100.0),
+                    point(0.0, 100.0),
+                ])),
+                ..nana_ui_core::PaintStyle::default()
+            },
+            ..LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    };
+    commit_button(
+        &mut world,
+        box_at(0.0, 0.0, 100.0, 100.0),
+        style,
+        transform_overlay(
+            1,
+            node(1),
+            PaintTransform::default(),
+            PaintTransform::default(),
+        ),
+    );
+    assert_eq!(world.hit_test(document(1), 50.0, 20.0), Some(node(1)));
+    assert_eq!(world.hit_test(document(1), 5.0, 5.0), None);
+}
+
+#[test]
+fn hit_test_respects_rounded_inset_clip_path() {
+    let mut world = UiWorld::new();
+    let style = NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            paint: nana_ui_core::PaintStyle {
+                clip_path: Some(nana_ui_core::ClipPath::Inset(nana_ui_core::ClipInset {
+                    top: nana_ui_core::LengthSpec::Px(0.0),
+                    right: nana_ui_core::LengthSpec::Px(0.0),
+                    bottom: nana_ui_core::LengthSpec::Px(0.0),
+                    left: nana_ui_core::LengthSpec::Px(0.0),
+                    round: Some(nana_ui_core::LengthSpec::Px(20.0)),
+                })),
+                ..nana_ui_core::PaintStyle::default()
+            },
+            ..LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    };
+    commit_button(
+        &mut world,
+        box_at(0.0, 0.0, 100.0, 100.0),
+        style,
+        transform_overlay(
+            1,
+            node(1),
+            PaintTransform::default(),
+            PaintTransform::default(),
+        ),
+    );
+    assert_eq!(world.hit_test(document(1), 50.0, 50.0), Some(node(1)));
+    assert_eq!(world.hit_test(document(1), 2.0, 2.0), None);
+}
+
+#[test]
+fn tiny_finite_presentation_scale_remains_hittable() {
+    let transform = [0.0001, 0.0, 0.0, 0.0001, 0.0, 0.0];
+    assert!(transformed_contains(
+        box_at(0.0, 0.0, 1_000_000.0, 1_000_000.0),
+        transform,
+        [0.0, 0.0],
+        50.0,
+        50.0,
+    ));
+}
+
+#[test]
 fn layout_width_animation_keeps_logical_hit_box() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();

@@ -686,6 +686,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 pointer_presence: presence::PointerPresence::default(),
             },
         );
+        let generation = *self.input_generations.entry(id).or_insert(1);
+        self.input_endpoints.insert(
+            id,
+            nana_ui_platform::InputEndpoint::new(
+                nana_ui_platform::InputSourceId(id.0),
+                nana_ui_platform::EndpointGeneration(generation),
+                1024,
+                1024 * 1024,
+            ),
+        );
+        self.input_pending.remove(&id);
         #[cfg(target_os = "windows")]
         if let Some(parent) = modal_parent.and_then(|parent| self.window(parent)) {
             parent.set_enable(false);
@@ -704,7 +715,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if !self.window_contexts.contains_key(&id) || !self.closing_windows.insert(id) {
             return;
         }
+        let generation = self.input_generations.entry(id).or_insert(1);
+        *generation = generation.saturating_add(1).max(1);
+        let source = nana_ui_platform::InputSourceId(id.0);
+        let now = self.animation_clock.runtime_time(Instant::now());
+        let detached = self.program.write_document(id, |document| {
+            self.input_router
+                .detach_with_context(document.context_mut(), source, now)
+        });
+        if !matches!(detached, Some(Ok(_))) {
+            // The document may already have been released; still remove the
+            // host binding so a reused WindowId cannot route old input.
+            self.input_router.detach(source);
+        }
         self.windows.unregister(id);
+        self.input_endpoints.remove(&id);
+        self.input_pending.remove(&id);
         if id == WindowId::PRIMARY {
             self.release_startup_splash();
         }
@@ -1062,6 +1088,30 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
     }
 
+    /// Apply a cursor intent produced by the canonical Runtime router. The
+    /// request has already been hit-tested and lifecycle-validated, so this
+    /// path only performs the native side effect and never walks the UI tree.
+    pub(super) fn apply_host_cursor(&mut self, id: WindowId, cursor: &str) -> bool {
+        let Some(spec) = host_cursor_spec(cursor) else {
+            return false;
+        };
+        let Some(host) = self.window_contexts.get(&id) else {
+            return false;
+        };
+        if host.cursor_override.is_some() || host.cursor_visible_override.is_some() {
+            return true;
+        }
+        let (icon, visible) = scene_cursor_icon(None, None, Some(spec), false);
+        let Some(window) = self.window(id) else {
+            return false;
+        };
+        window.set_cursor_visible(visible);
+        if visible {
+            window.set_cursor(icon.into());
+        }
+        true
+    }
+
     fn sync_window_cursor_now(&mut self, id: WindowId) {
         let cursor = self.input_of(id).cursor;
         let frame_edge = self.frame_resize_edge_at(id, cursor.0, cursor.1);
@@ -1111,17 +1161,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         id: WindowId,
     ) -> Result<(), winit::error::RequestError> {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if let Some(button) = held_mouse_button(self.input_of(id).buttons) {
-            if uses_host_managed_drag(self.settings_of(id), button) {
-                // A gesture the host declines — a fullscreen window has nowhere to
-                // move to — reports that, rather than falling back to the platform,
-                // which would take a press it cannot end for a caption drag.
-                return if self.start_frame_move(id, button) {
-                    Ok(())
-                } else {
-                    Err(winit::error::RequestError::Ignored)
-                };
-            }
+        if let Some(button) = held_mouse_button(self.input_of(id).buttons)
+            && uses_host_managed_drag(self.settings_of(id), button)
+        {
+            // A gesture the host declines — a fullscreen window has nowhere to
+            // move to — reports that, rather than falling back to the platform,
+            // which would take a press it cannot end for a caption drag.
+            return if self.start_frame_move(id, button) {
+                Ok(())
+            } else {
+                Err(winit::error::RequestError::Ignored)
+            };
         }
         let Some(window) = self.window(id).cloned() else {
             return Ok(());
@@ -1649,6 +1699,26 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
 }
 
+fn host_cursor_spec(cursor: &str) -> Option<CursorSpec> {
+    Some(match cursor {
+        "default" => CursorSpec::Default,
+        "pointer" => CursorSpec::Pointer,
+        "text" => CursorSpec::Text,
+        "move" => CursorSpec::Move,
+        "grab" => CursorSpec::Grab,
+        "grabbing" => CursorSpec::Grabbing,
+        "not-allowed" => CursorSpec::NotAllowed,
+        "crosshair" => CursorSpec::Crosshair,
+        "help" => CursorSpec::Help,
+        "wait" => CursorSpec::Wait,
+        "progress" => CursorSpec::Progress,
+        "zoom-in" => CursorSpec::ZoomIn,
+        "zoom-out" => CursorSpec::ZoomOut,
+        "none" => CursorSpec::None,
+        _ => return None,
+    })
+}
+
 impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn drain_window_requests(&mut self, event_loop: &dyn ActiveEventLoop) {
         use crate::window_service::Request;
@@ -1963,6 +2033,15 @@ fn apply_changed_appearance<T>(
 #[cfg(test)]
 mod appearance_tests {
     use super::*;
+
+    #[test]
+    fn canonical_cursor_names_share_the_window_cursor_contract() {
+        assert_eq!(host_cursor_spec("pointer"), Some(CursorSpec::Pointer));
+        assert_eq!(host_cursor_spec("zoom-out"), Some(CursorSpec::ZoomOut));
+        assert_eq!(host_cursor_spec("none"), Some(CursorSpec::None));
+        assert_eq!(host_cursor_spec("unknown"), None);
+    }
+
     #[test]
     fn unchanged_windows_do_not_reapply_native_material() {
         let original = WindowAppearance {

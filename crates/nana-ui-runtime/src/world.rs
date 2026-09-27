@@ -247,6 +247,9 @@ struct HitEntry {
     self_clips: Vec<(LayoutBox, [f32; 6])>,
     /// Extra clips applied to descendants only (overflow / visual frames).
     child_clips: Vec<(LayoutBox, [f32; 6])>,
+    /// Shape clips from `paint.clip_path`, kept in node-local coordinates so
+    /// presentation transforms can be sampled at hit-test time.
+    path_clips: Vec<crate::world::hit_test::HitPathClip>,
     z_index: i32,
     order: usize,
     hittable: bool,
@@ -532,6 +535,10 @@ pub struct UiWorld {
     nodes: NodeStore,
     retired: RetiredIds,
     dirty_entities: HashSet<StableNodeId>,
+    /// Monotonic, non-consuming invalidation epoch. Input routing uses this
+    /// to report whether dispatch scheduled work without scanning or draining
+    /// the retained work queues.
+    pending_work_revision: u64,
     hit_test_index: HashMap<DocumentId, HitIndex>,
     /// Scroll deltas awaiting the in-place hit-index patch (see
     /// `UiMutation::SetScrollOffset`). Drained by the frame driver.
@@ -720,6 +727,7 @@ pub struct UiWorld {
     /// （纯光标/选区同步）时复用上一次 O(n) 单趟栈扫描结果。存于
     /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
     bracket_color_spans_cache: RefCell<Option<(crate::TextValue, Arc<[(usize, usize, usize)]>)>>,
+    presentation_transform_documents_cache: RefCell<Option<(u64, u64, HashSet<DocumentId>)>>,
 }
 
 impl Default for UiWorld {
@@ -739,6 +747,7 @@ impl UiWorld {
             nodes: NodeStore::new(),
             retired: RetiredIds::default(),
             dirty_entities: HashSet::new(),
+            pending_work_revision: 0,
             hit_test_index: HashMap::new(),
             scroll_hit_updates: Vec::new(),
             non_scroll_hit_dirty: HashSet::new(),
@@ -815,6 +824,7 @@ impl UiWorld {
             structural_change_parents: Vec::new(),
             minimap_line_lengths_cache: RefCell::new(None),
             bracket_color_spans_cache: RefCell::new(None),
+            presentation_transform_documents_cache: RefCell::new(None),
         }
     }
 
@@ -881,6 +891,12 @@ impl UiWorld {
         !self.dirty_entities.is_empty()
             || !self.pending_accessibility_removals.is_empty()
             || !self.pending_render_removals.is_empty()
+    }
+
+    /// Monotonic revision of work scheduled since world creation. Reading it
+    /// is O(1) and has no effect on the frame's pending queues.
+    pub fn pending_work_revision(&self) -> u64 {
+        self.pending_work_revision
     }
 
     /// Algorithm-level counters from the last non-empty drain, or the current
@@ -1237,12 +1253,16 @@ impl UiWorld {
                 if !self.nodes.contains(id) {
                     continue;
                 };
-                self.nodes
+                let changed = self
+                    .nodes
                     .get_mut(id)
                     .map(|n| &mut n.dirty)
                     .expect("retained node must have dirty state")
                     .insert(bit);
-                self.dirty_entities.insert(id);
+                if changed {
+                    self.dirty_entities.insert(id);
+                    self.pending_work_revision = self.pending_work_revision.saturating_add(1);
+                }
             }
         }
         self.pending_accessibility_removals
@@ -2550,10 +2570,16 @@ impl UiWorld {
         menu_surface_open(self.nodes.visual(parent)) != Some(false)
     }
 
-    pub(crate) fn has_document_roots(&self, document: DocumentId) -> bool {
+    /// Whether a live retained root currently belongs to this document.
+    /// Host service requests use this as the document lifetime authority.
+    pub fn has_document(&self, document: DocumentId) -> bool {
         self.live_document_roots
             .get(&document)
             .is_some_and(|roots| !roots.is_empty())
+    }
+
+    pub(crate) fn has_document_roots(&self, document: DocumentId) -> bool {
+        self.has_document(document)
     }
 
     pub(crate) fn document_roots(&self, document: DocumentId) -> Vec<StableNodeId> {
@@ -2625,6 +2651,7 @@ impl UiWorld {
         let changed = self.record_mut(id).dirty.insert(bits);
         if changed {
             self.dirty_entities.insert(id);
+            self.pending_work_revision = self.pending_work_revision.saturating_add(1);
         }
         changed
     }

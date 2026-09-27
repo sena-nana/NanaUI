@@ -56,6 +56,7 @@ pub struct PresentationStore {
     /// Properties with overlays, by target: what [`Self::properties_of`] and
     /// [`Self::remove_target`] read instead of scanning every track.
     by_target: HashMap<MotionTargetId, Vec<AnimatableProperty>>,
+    revision: u64,
 }
 
 impl PresentationStore {
@@ -69,6 +70,10 @@ impl PresentationStore {
 
     pub fn len(&self) -> usize {
         self.tracks.len()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn get(&self, id: MotionTrackId) -> Option<&PresentationOverlay> {
@@ -89,6 +94,7 @@ impl PresentationStore {
         logical: MotionValue,
         layer: MotionLayer,
     ) {
+        self.revision = self.revision.wrapping_add(1);
         let id = track.id;
         let key = (track.target, track.property);
         if let Some(previous) = self.tracks.insert(
@@ -111,6 +117,7 @@ impl PresentationStore {
 
     pub fn remove(&mut self, id: MotionTrackId) -> Option<PresentationOverlay> {
         let overlay = self.tracks.remove(&id)?;
+        self.revision = self.revision.wrapping_add(1);
         self.unindex((overlay.track.target, overlay.track.property), id);
         Some(overlay)
     }

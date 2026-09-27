@@ -608,7 +608,7 @@ impl VirtualListLayout {
 }
 
 fn low_bit(value: usize) -> usize {
-    value & value.wrapping_neg()
+    value.isolate_lowest_one()
 }
 
 fn sanitize_extent(extent: f32) -> f32 {

@@ -8,9 +8,12 @@ use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, LayoutViewport, RuntimeDocument,
     RuntimeFrameUpdate, StableNodeId,
 };
-use nana_ui::{HostTextureRegistry, NanaTextShaper, RuntimeInputAdapter, ThemeMode};
+use nana_ui::{HostTextureRegistry, InputRouter, InputRouterCounters, NanaTextShaper, ThemeMode};
 use nana_ui_core::SemanticColorRole;
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui_platform::{
+    CanonicalInputEvent, EndpointGeneration, InputEvent, InputMetadata, InputModifiers,
+    InputSequence, InputSourceId, InputTimestamp, PointerPhase, PointerType, lower_input_event,
+};
 
 use super::protocol::{
     HitDump, KeyStroke, PixelStats, PointerGesture, SceneProbeDump, SessionInfo, ThemeName,
@@ -31,13 +34,18 @@ pub struct RuntimeAgentSession {
     /// every dark-theme screenshot lie about its background.
     clear: Option<[f32; 4]>,
     host_textures: HostTextureRegistry,
+    /// Headless input uses the same canonical lowering and Runtime router as
+    /// native windows. The source is stable for this session and its sequence
+    /// is advanced for every canonical event (including key + committed text).
+    input_router: InputRouter,
+    input_sequence: u64,
     /// Monotonic input clock, advanced one frame per dispatched event.
     ///
-    /// `RuntimeInputAdapter::dispatch` passes `Duration::ZERO`, which silently
-    /// disables every time-gated path in the Runtime: tooltip delay, the split
-    /// handle hover probe, anything else that throttles on elapsed time fires
-    /// once and then never again. A headless session that exists to reproduce
-    /// what a window does must not be permanently frozen at t=0.
+    /// A zero timestamp silently disables every time-gated path in the
+    /// Runtime: tooltip delay, the split handle hover probe, anything else
+    /// that throttles on elapsed time fires once and then never again. A
+    /// headless session that exists to reproduce what a window does must not
+    /// be permanently frozen at t=0.
     ///
     /// Advanced by a fixed step rather than read from the wall clock, so a
     /// scripted session stays reproducible.
@@ -73,6 +81,8 @@ impl RuntimeAgentSession {
             height,
             clear: None,
             host_textures: HostTextureRegistry::new(),
+            input_router: InputRouter::default(),
+            input_sequence: 0,
             clock: Duration::ZERO,
         };
         session.flush()?;
@@ -107,10 +117,106 @@ impl RuntimeAgentSession {
         &mut self.document
     }
 
+    /// Canonical input counters for adapter conformance and performance
+    /// fixtures. Reading counters does not schedule a frame or traverse the
+    /// document.
+    pub fn input_router_counters(&self) -> InputRouterCounters {
+        self.input_router.counters()
+    }
+
     /// Move the input clock on one frame and return the new instant.
     fn advance_clock(&mut self) -> Duration {
         self.clock = self.clock.saturating_add(INPUT_FRAME);
         self.clock
+    }
+
+    fn dispatch_input(&mut self, input: &InputEvent, now: Duration) -> Result<(), AgentError> {
+        const SOURCE: InputSourceId = InputSourceId(1);
+        const GENERATION: EndpointGeneration = EndpointGeneration(1);
+        let document = self.document.document();
+        self.input_router
+            .ensure_attached(SOURCE, GENERATION, document);
+        self.input_sequence = self.input_sequence.saturating_add(1).max(1);
+        let metadata = InputMetadata {
+            source: SOURCE,
+            device: nana_ui_platform::DeviceId(0),
+            generation: GENERATION,
+            sequence: InputSequence(self.input_sequence),
+            timestamp: InputTimestamp(now.as_nanos().min(u128::from(u64::MAX)) as u64),
+        };
+        let lowered = lower_input_event(input, metadata);
+        let count = lowered.len();
+        if count > 1 {
+            self.input_sequence = self.input_sequence.saturating_add((count - 1) as u64);
+        }
+        for event in lowered {
+            self.route_canonical(event, now)?;
+        }
+        Ok(())
+    }
+
+    fn route_canonical(
+        &mut self,
+        event: CanonicalInputEvent,
+        now: Duration,
+    ) -> Result<(), AgentError> {
+        self.input_router
+            .route(
+                self.document.context_mut(),
+                &event,
+                now,
+                Some(&mut self.shaper),
+            )
+            .map(|_| ())
+            .map_err(|error| AgentError(error.to_string()))
+    }
+
+    fn dispatch_pointer(
+        &mut self,
+        phase: PointerPhase,
+        x: f32,
+        y: f32,
+        button: i16,
+        buttons: u16,
+        now: Duration,
+    ) -> Result<(), AgentError> {
+        self.dispatch_input(
+            &InputEvent::Pointer {
+                phase,
+                pointer_id: 1,
+                pointer_type: PointerType::Mouse,
+                x,
+                y,
+                screen_x: x,
+                screen_y: y,
+                button,
+                buttons,
+                pressure: 0.5,
+                tangential_pressure: 0.0,
+                tilt_x: 0,
+                tilt_y: 0,
+                twist: 0,
+                is_primary: true,
+                activation_click: false,
+                modifiers: InputModifiers::default(),
+            },
+            now,
+        )
+    }
+
+    /// Deliver one headless pointer sample through the canonical input
+    /// lowering and router. This is the reference adapter entry point for
+    /// fixtures that need a precise drag rather than a click helper.
+    pub fn pointer_event(
+        &mut self,
+        phase: PointerPhase,
+        x: f32,
+        y: f32,
+        button: i16,
+        buttons: u16,
+    ) -> Result<(), AgentError> {
+        let now = self.advance_clock();
+        self.dispatch_pointer(phase, x, y, button, buttons, now)
     }
 
     /// Drains one frame. Work counters survive idle frames; per-frame
@@ -141,9 +247,9 @@ impl RuntimeAgentSession {
 
     pub fn click_xy(&mut self, x: f32, y: f32) -> Result<bool, AgentError> {
         let down = self.advance_clock();
-        dispatch_runtime_pointer(&mut self.document, PointerPhase::Down, x, y, down)?;
+        self.dispatch_pointer(PointerPhase::Down, x, y, 0, button_mask(0), down)?;
         let up = self.advance_clock();
-        dispatch_runtime_pointer(&mut self.document, PointerPhase::Up, x, y, up)?;
+        self.dispatch_pointer(PointerPhase::Up, x, y, 0, 0, up)?;
         self.flush()?;
         Ok(true)
     }
@@ -155,17 +261,9 @@ impl RuntimeAgentSession {
     /// every consumer that wants to verify a context menu headlessly.
     pub fn secondary_click_xy(&mut self, x: f32, y: f32) -> Result<bool, AgentError> {
         let down = self.advance_clock();
-        dispatch_runtime_button(
-            &mut self.document,
-            PointerPhase::Down,
-            x,
-            y,
-            2,
-            button_mask(2),
-            down,
-        )?;
+        self.dispatch_pointer(PointerPhase::Down, x, y, 2, button_mask(2), down)?;
         let up = self.advance_clock();
-        dispatch_runtime_button(&mut self.document, PointerPhase::Up, x, y, 2, 0, up)?;
+        self.dispatch_pointer(PointerPhase::Up, x, y, 2, 0, up)?;
         self.flush()?;
         Ok(true)
     }
@@ -190,25 +288,20 @@ impl RuntimeAgentSession {
     }
 
     pub fn type_text(&mut self, text: &str) -> Result<(), AgentError> {
-        let document_id = self.document.document();
         for character in text.chars() {
             let key = character.to_string();
             let now = self.advance_clock();
-            RuntimeInputAdapter::default()
-                .dispatch_at(
-                    self.document.context_mut(),
-                    document_id,
-                    &InputEvent::Keyboard {
-                        pressed: true,
-                        key: key.clone(),
-                        text: Some(key.clone()),
-                        code: "Unidentified".into(),
-                        repeat: false,
-                        modifiers: InputModifiers::default(),
-                    },
-                    now,
-                )
-                .map_err(|error| AgentError(error.to_string()))?;
+            self.dispatch_input(
+                &InputEvent::Keyboard {
+                    pressed: true,
+                    key: key.clone(),
+                    text: Some(key),
+                    code: "Unidentified".into(),
+                    repeat: false,
+                    modifiers: InputModifiers::default(),
+                },
+                now,
+            )?;
         }
         self.flush()?;
         Ok(())
@@ -226,23 +319,18 @@ impl RuntimeAgentSession {
         delta_x: f32,
         delta_y: f32,
     ) -> Result<(), AgentError> {
-        let document_id = self.document.document();
         let now = self.advance_clock();
-        RuntimeInputAdapter::default()
-            .dispatch_at(
-                self.document.context_mut(),
-                document_id,
-                &InputEvent::Wheel {
-                    x,
-                    y,
-                    delta_x,
-                    delta_y,
-                    line_delta: false,
-                    modifiers: InputModifiers::default(),
-                },
-                now,
-            )
-            .map_err(|error| AgentError(error.to_string()))?;
+        self.dispatch_input(
+            &InputEvent::Wheel {
+                x,
+                y,
+                delta_x,
+                delta_y,
+                line_delta: false,
+                modifiers: InputModifiers::default(),
+            },
+            now,
+        )?;
         self.flush()?;
         Ok(())
     }
@@ -251,7 +339,7 @@ impl RuntimeAgentSession {
     /// hover cards, row affordances) can be captured.
     pub fn hover_xy(&mut self, x: f32, y: f32) -> Result<(), AgentError> {
         let now = self.advance_clock();
-        dispatch_runtime_pointer(&mut self.document, PointerPhase::Move, x, y, now)?;
+        self.dispatch_pointer(PointerPhase::Move, x, y, 0, 0, now)?;
         self.flush()?;
         Ok(())
     }
@@ -265,24 +353,19 @@ impl RuntimeAgentSession {
         code: &str,
         modifiers: InputModifiers,
     ) -> Result<(), AgentError> {
-        let document_id = self.document.document();
         for pressed in [true, false] {
             let now = self.advance_clock();
-            RuntimeInputAdapter::default()
-                .dispatch_at(
-                    self.document.context_mut(),
-                    document_id,
-                    &InputEvent::Keyboard {
-                        pressed,
-                        key: key.to_owned(),
-                        text: None,
-                        code: code.to_owned(),
-                        repeat: false,
-                        modifiers,
-                    },
-                    now,
-                )
-                .map_err(|error| AgentError(error.to_string()))?;
+            self.dispatch_input(
+                &InputEvent::Keyboard {
+                    pressed,
+                    key: key.to_owned(),
+                    text: None,
+                    code: code.to_owned(),
+                    repeat: false,
+                    modifiers,
+                },
+                now,
+            )?;
         }
         self.flush()?;
         Ok(())
@@ -477,55 +560,6 @@ const fn button_mask(button: i16) -> u16 {
     }
 }
 
-fn dispatch_runtime_pointer(
-    document: &mut RuntimeDocument,
-    phase: PointerPhase,
-    x: f32,
-    y: f32,
-    now: Duration,
-) -> Result<(), AgentError> {
-    dispatch_runtime_button(document, phase, x, y, 0, 0, now)
-}
-
-fn dispatch_runtime_button(
-    document: &mut RuntimeDocument,
-    phase: PointerPhase,
-    x: f32,
-    y: f32,
-    button: i16,
-    buttons: u16,
-    now: Duration,
-) -> Result<(), AgentError> {
-    let document_id = document.document();
-    RuntimeInputAdapter::default()
-        .dispatch_at(
-            document.context_mut(),
-            document_id,
-            &InputEvent::Pointer {
-                phase,
-                pointer_id: 1,
-                pointer_type: PointerType::Mouse,
-                x,
-                y,
-                screen_x: x,
-                screen_y: y,
-                button,
-                buttons,
-                pressure: 0.5,
-                tangential_pressure: 0.0,
-                tilt_x: 0,
-                tilt_y: 0,
-                twist: 0,
-                is_primary: true,
-                activation_click: false,
-                modifiers: InputModifiers::default(),
-            },
-            now,
-        )
-        .map_err(|error| AgentError(error.to_string()))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,6 +592,51 @@ mod tests {
             assert_eq!(pixels.len(), (size.width * size.height * 4) as usize);
             assert!(pixels.iter().any(|channel| *channel != 0));
         }
+    }
+
+    #[test]
+    fn headless_pointer_fixture_routes_canonically_and_idle_stays_idle() {
+        let document_id = DocumentId::new(1).expect("document");
+        let document = RuntimeDocument::new(document_id);
+        let mut session = RuntimeAgentSession::new(document, 240, 160).expect("session");
+        assert!(session.flush().expect("idle flush").is_idle());
+        assert_eq!(session.input_router_counters().events_routed, 0);
+
+        for index in 0..1_000 {
+            session
+                .pointer_event(
+                    PointerPhase::Move,
+                    index as f32 % 240.0,
+                    (index / 240) as f32,
+                    0,
+                    0,
+                )
+                .expect("canonical pointer route");
+        }
+        assert_eq!(session.input_router_counters().events_routed, 1_000);
+        assert!(session.flush().expect("pointer fixture flush").is_idle());
+    }
+
+    #[test]
+    fn static_document_keeps_high_frequency_empty_hover_idle() {
+        let document_id = DocumentId::new(2).expect("document");
+        let mut document = RuntimeDocument::new(document_id);
+        document
+            .context_mut()
+            .build(document_id, |ui| ui.child("label", Text::new("static")))
+            .expect("root");
+        let mut session = RuntimeAgentSession::new(document, 240, 160).expect("session");
+        let _ = session.flush().expect("initial mount");
+        for index in 0..240 {
+            session
+                .pointer_event(PointerPhase::Move, 239.0, 159.0 - (index % 2) as f32, 0, 0)
+                .expect("canonical pointer route");
+        }
+        let update = session.flush().expect("steady pointer frame");
+        assert!(
+            update.is_idle(),
+            "static empty hover must not schedule layout or scene work"
+        );
     }
 
     /// A subtree taken out of paint and input settles in one frame.

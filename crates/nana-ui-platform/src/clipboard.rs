@@ -8,6 +8,12 @@ use std::sync::{Arc, Mutex};
 
 /// Minimal clipboard contract for Nana hosts — never System WebView.
 pub trait ClipboardHost: Send {
+    /// Whether this host currently has a usable clipboard capability.
+    /// Implementations may keep the default when failures are reported by
+    /// their read/write methods instead.
+    fn is_available(&self) -> bool {
+        true
+    }
     fn read_text(&mut self) -> Option<String>;
     fn write_text(&mut self, text: &str) -> bool;
 }
@@ -37,6 +43,10 @@ pub fn default_shared_clipboard() -> SharedClipboardHost {
 pub struct UnsupportedClipboard;
 
 impl ClipboardHost for UnsupportedClipboard {
+    fn is_available(&self) -> bool {
+        false
+    }
+
     fn read_text(&mut self) -> Option<String> {
         None
     }
@@ -241,6 +251,10 @@ fn android_clipboard_text_inner(write: Option<&str>) -> Option<String> {
 
 #[cfg(not(target_os = "android"))]
 impl ClipboardHost for OsClipboard {
+    fn is_available(&self) -> bool {
+        self.inner.is_some()
+    }
+
     fn read_text(&mut self) -> Option<String> {
         self.inner.as_mut()?.get_text().ok()
     }

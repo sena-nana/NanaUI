@@ -1822,7 +1822,7 @@ impl VueHost {
                 *after_bytes,
                 commit_runtime,
             ),
-            ImeEvent::Disabled => {
+            ImeEvent::Disabled | ImeEvent::Cancelled => {
                 if commit_runtime {
                     let leftover = self.take_ime_leftover();
                     let Some((target, data)) = leftover else {
