@@ -355,9 +355,6 @@ impl CompositionHost {
             .get(id)
             .copied()
             .ok_or_else(|| CompositionError::MissingRenderer(id.clone()))?;
-        if self.slot_parents.get(id).copied() == Some(parent) {
-            return Ok(slot);
-        }
         let slot_document = cx
             .world()
             .node(slot)
@@ -381,6 +378,11 @@ impl CompositionHost {
                 });
             }
             ancestor = cx.world().node(candidate).and_then(|node| node.parent);
+        }
+        if self.slot_parents.get(id).copied() == Some(parent)
+            && cx.world().node(slot).and_then(|node| node.parent) == Some(parent)
+        {
+            return Ok(slot);
         }
         let mut queue = MutationQueue::new();
         queue.insert(parent, slot, None);
@@ -640,6 +642,18 @@ mod tests {
         assert!(matches!(
             host.bind_slot(&mut cx, &slot, host.node(&slot).unwrap()),
             Err(CompositionError::InvalidSlotParent { .. })
+        ));
+        let body_two = cx
+            .create_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        host.bind_slot(&mut cx, &slot, body_two.stable_id())
+            .unwrap();
+        let mut destroy = MutationQueue::new();
+        destroy.despawn_subtree(body_two.stable_id());
+        cx.commit_mutations(destroy).unwrap();
+        assert!(matches!(
+            host.bind_slot(&mut cx, &slot, body_two.stable_id()),
+            Err(CompositionError::MissingParent(_)) | Err(CompositionError::MissingRenderer(_))
         ));
         host.unmount(&mut cx).unwrap();
         assert_eq!(host.slot_parent(&slot), None);
