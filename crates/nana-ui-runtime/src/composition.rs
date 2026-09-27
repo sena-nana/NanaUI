@@ -206,6 +206,10 @@ pub enum CompositionError {
     },
     NotSlot(CompositionId),
     MissingParent(StableNodeId),
+    InvalidSlotParent {
+        slot: CompositionId,
+        parent: StableNodeId,
+    },
 }
 
 /// A typed component factory. Component creation still goes through the
@@ -353,6 +357,30 @@ impl CompositionHost {
             .ok_or_else(|| CompositionError::MissingRenderer(id.clone()))?;
         if self.slot_parents.get(id).copied() == Some(parent) {
             return Ok(slot);
+        }
+        let slot_document = cx
+            .world()
+            .node(slot)
+            .ok_or_else(|| CompositionError::MissingRenderer(id.clone()))?;
+        let parent_document = cx
+            .world()
+            .node(parent)
+            .ok_or(CompositionError::MissingParent(parent))?;
+        if slot_document.document != parent_document.document {
+            return Err(CompositionError::InvalidSlotParent {
+                slot: id.clone(),
+                parent,
+            });
+        }
+        let mut ancestor = Some(parent);
+        while let Some(candidate) = ancestor {
+            if candidate == slot {
+                return Err(CompositionError::InvalidSlotParent {
+                    slot: id.clone(),
+                    parent,
+                });
+            }
+            ancestor = cx.world().node(candidate).and_then(|node| node.parent);
         }
         let mut queue = MutationQueue::new();
         queue.insert(parent, slot, None);
@@ -608,6 +636,10 @@ mod tests {
         assert!(matches!(
             host.bind_slot(&mut cx, &slot, StableNodeId::new(999_999).unwrap()),
             Err(CompositionError::MissingParent(_))
+        ));
+        assert!(matches!(
+            host.bind_slot(&mut cx, &slot, host.node(&slot).unwrap()),
+            Err(CompositionError::InvalidSlotParent { .. })
         ));
         host.unmount(&mut cx).unwrap();
         assert_eq!(host.slot_parent(&slot), None);
