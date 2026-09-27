@@ -24,6 +24,7 @@ mod command_palette;
 pub mod component_descriptors;
 mod component_registry;
 mod components;
+mod composition;
 mod custom_paint;
 mod paint_script;
 pub use paint_script::PaintScript;
@@ -177,6 +178,10 @@ pub use components::{
     TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
     TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry, TextValue,
     TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
+};
+pub use composition::{
+    CompositionEntry, CompositionError, CompositionHost, CompositionId, CompositionIndex,
+    CompositionNode, CompositionNodeKind, CompositionRegistry, CompositionSpec,
 };
 pub use custom_paint::{
     AFFINE_IDENTITY, Affine, BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient,
