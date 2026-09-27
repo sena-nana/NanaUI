@@ -1318,8 +1318,14 @@ impl AppContext {
         &self.world
     }
 
-    pub(crate) fn composition_owner(&self, id: StableNodeId) -> Option<StableNodeId> {
-        self.composition_owners.get(&id).copied()
+    pub(crate) fn composition_owner(&mut self, id: StableNodeId) -> Option<StableNodeId> {
+        let owner = self.composition_owners.get(&id).copied()?;
+        if self.world.contains(owner) {
+            Some(owner)
+        } else {
+            self.composition_owners.remove(&id);
+            None
+        }
     }
 
     pub(crate) fn register_composition_nodes(
