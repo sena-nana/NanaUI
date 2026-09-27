@@ -961,6 +961,9 @@ impl From<UiWorldError> for FrameworkError {
 /// Owns typed view state while [`UiWorld`] remains the retained UI authority.
 pub struct AppContext {
     world: UiWorld,
+    /// Composition-owned runtime nodes. The value is the owning host root;
+    /// this lets hosts reject parents borrowed from another composition tree.
+    composition_owners: HashMap<StableNodeId, StableNodeId>,
     views: HashMap<StableNodeId, Box<dyn Any + Send>>,
     /// Opt-in reproject entry points keyed by node, registered from
     /// [`ComponentView::wants_child_reproject`] when a component view is
@@ -1263,6 +1266,7 @@ impl AppContext {
     pub fn from_world(world: UiWorld) -> Self {
         let mut context = Self {
             world,
+            composition_owners: HashMap::new(),
             views: HashMap::new(),
             child_reproject_views: HashMap::new(),
             metrics_reproject_views: HashMap::new(),
@@ -1312,6 +1316,32 @@ impl AppContext {
 
     pub fn world(&self) -> &UiWorld {
         &self.world
+    }
+
+    pub(crate) fn composition_owner(&self, id: StableNodeId) -> Option<StableNodeId> {
+        self.composition_owners.get(&id).copied()
+    }
+
+    pub(crate) fn register_composition_nodes(
+        &mut self,
+        owner: StableNodeId,
+        nodes: impl IntoIterator<Item = StableNodeId>,
+    ) {
+        for node in nodes {
+            self.composition_owners.insert(node, owner);
+        }
+    }
+
+    pub(crate) fn unregister_composition_nodes(
+        &mut self,
+        owner: StableNodeId,
+        nodes: impl IntoIterator<Item = StableNodeId>,
+    ) {
+        for node in nodes {
+            if self.composition_owners.get(&node).copied() == Some(owner) {
+                self.composition_owners.remove(&node);
+            }
+        }
     }
 
     /// The key `child` was created under by [`Self::build`] or [`Self::mount`].
@@ -1608,6 +1638,11 @@ impl AppContext {
         document: DocumentId,
     ) -> Option<(StableNodeId, crate::TextInputView<'_>)> {
         self.world.focused_text_input(document)
+    }
+
+    /// Whether the document still has a live retained root.
+    pub fn has_document(&self, document: DocumentId) -> bool {
+        self.world.has_document(document)
     }
 
     /// Change the retained theme once and invalidate only computed paint.
@@ -2158,6 +2193,16 @@ impl AppContext {
         }
     }
 
+    /// Return the last host-space position recorded for one pointer. Hosts use
+    /// this when cancelling a capture after disconnect/blur so the Runtime can
+    /// receive a real `PointerCancel` before its pointer state is released.
+    pub fn pointer_position(&self, document: DocumentId, pointer_id: u64) -> Option<(f32, f32)> {
+        self.component_lifecycle
+            .pointer_positions
+            .get(&(document, pointer_id))
+            .copied()
+    }
+
     pub fn set_pointer_hover_at(
         &mut self,
         document: DocumentId,
@@ -2247,6 +2292,17 @@ impl AppContext {
         pointer_id: u64,
     ) -> Option<StableNodeId> {
         self.world.release_pointer_press(document, pointer_id)
+    }
+
+    /// Immediately revoke host-owned pointer capture during lifecycle
+    /// cancellation. Ordinary component release still goes through
+    /// `UiMutation::ReleasePointer` so target ownership is validated there.
+    pub fn release_pointer_capture(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+    ) -> Option<StableNodeId> {
+        self.world.release_pointer_capture(document, pointer_id)
     }
 
     pub fn focus_node(

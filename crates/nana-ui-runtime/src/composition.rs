@@ -210,6 +210,10 @@ pub enum CompositionError {
         slot: CompositionId,
         parent: StableNodeId,
     },
+    CrossHostParent {
+        parent: StableNodeId,
+        owner: StableNodeId,
+    },
 }
 
 /// A typed component factory. Component creation still goes through the
@@ -276,6 +280,9 @@ impl CompositionHost {
         if self.root.is_some() {
             return Err(CompositionError::AlreadyMounted);
         }
+        if let Some(owner) = cx.composition_owner(parent) {
+            return Err(CompositionError::CrossHostParent { parent, owner });
+        }
         let index = spec.validate()?;
         // Validate the complete registry before creating any Runtime node.
         for id in index.nodes.keys() {
@@ -323,6 +330,7 @@ impl CompositionHost {
         }
         self.root = Some(root);
         self.entities = entities;
+        cx.register_composition_nodes(root, self.entities.values().copied());
         self.visibility = self.entities.keys().cloned().map(|id| (id, true)).collect();
         self.slot_parents.clear();
         self.index = Some(index);
@@ -349,6 +357,11 @@ impl CompositionHost {
         }
         if !cx.world().contains(parent) {
             return Err(CompositionError::MissingParent(parent));
+        }
+        if let Some(owner) = cx.composition_owner(parent) {
+            if self.root != Some(owner) {
+                return Err(CompositionError::CrossHostParent { parent, owner });
+            }
         }
         let slot = self
             .entities
@@ -433,6 +446,7 @@ impl CompositionHost {
 
     pub fn unmount(&mut self, cx: &mut AppContext) -> Result<(), CompositionError> {
         if let Some(root) = self.root {
+            cx.unregister_composition_nodes(root, self.entities.values().copied());
             let mut queue = MutationQueue::new();
             queue.despawn_subtree(root);
             cx.commit_mutations(queue).map_err(runtime_error)?;
@@ -643,6 +657,19 @@ mod tests {
             host.bind_slot(&mut cx, &slot, host.node(&slot).unwrap()),
             Err(CompositionError::InvalidSlotParent { .. })
         ));
+        let root_two = cx
+            .create_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        let mut host_two = CompositionHost::default();
+        host_two
+            .mount(&mut cx, document, root_two.stable_id(), &spec, &registry)
+            .unwrap();
+        let foreign_parent = host_two.node(&CompositionId::from("page")).unwrap();
+        assert!(matches!(
+            host.bind_slot(&mut cx, &slot, foreign_parent),
+            Err(CompositionError::CrossHostParent { .. })
+        ));
+        host_two.unmount(&mut cx).unwrap();
         let body_two = cx
             .create_component(document, crate::Stack::column(0.0))
             .unwrap();
