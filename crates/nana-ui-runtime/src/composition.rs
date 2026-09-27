@@ -260,7 +260,6 @@ pub struct CompositionHost {
     index: Option<CompositionIndex>,
     entities: HashMap<CompositionId, StableNodeId>,
     visibility: HashMap<CompositionId, bool>,
-    slot_parents: HashMap<CompositionId, StableNodeId>,
     root: Option<StableNodeId>,
 }
 
@@ -332,7 +331,6 @@ impl CompositionHost {
         self.entities = entities;
         cx.register_composition_nodes(root, self.entities.values().copied());
         self.visibility = self.entities.keys().cloned().map(|id| (id, true)).collect();
-        self.slot_parents.clear();
         self.index = Some(index);
         Ok(root)
     }
@@ -358,10 +356,10 @@ impl CompositionHost {
         if !cx.world().contains(parent) {
             return Err(CompositionError::MissingParent(parent));
         }
-        if let Some(owner) = cx.composition_owner(parent) {
-            if self.root != Some(owner) {
-                return Err(CompositionError::CrossHostParent { parent, owner });
-            }
+        if let Some(owner) = cx.composition_owner(parent)
+            && self.root != Some(owner)
+        {
+            return Err(CompositionError::CrossHostParent { parent, owner });
         }
         let slot = self
             .entities
@@ -392,20 +390,13 @@ impl CompositionHost {
             }
             ancestor = cx.world().node(candidate).and_then(|node| node.parent);
         }
-        if self.slot_parents.get(id).copied() == Some(parent)
-            && cx.world().node(slot).and_then(|node| node.parent) == Some(parent)
-        {
+        if cx.world().node(slot).and_then(|node| node.parent) == Some(parent) {
             return Ok(slot);
         }
         let mut queue = MutationQueue::new();
         queue.insert(parent, slot, None);
         cx.commit_mutations(queue).map_err(runtime_error)?;
-        self.slot_parents.insert(id.clone(), parent);
         Ok(slot)
-    }
-
-    pub fn slot_parent(&self, id: &CompositionId) -> Option<StableNodeId> {
-        self.slot_parents.get(id).copied()
     }
 
     pub fn node(&self, id: &CompositionId) -> Option<StableNodeId> {
@@ -455,7 +446,6 @@ impl CompositionHost {
         self.index = None;
         self.entities.clear();
         self.visibility.clear();
-        self.slot_parents.clear();
         Ok(())
     }
 
@@ -636,7 +626,10 @@ mod tests {
         let slot = CompositionId::from("content-slot");
         let group = host.node(&CompositionId::from("group")).unwrap();
         host.bind_slot(&mut cx, &slot, body.stable_id()).unwrap();
-        assert_eq!(host.slot_parent(&slot), Some(body.stable_id()));
+        assert_eq!(
+            cx.world().node(host.node(&slot).unwrap()).unwrap().parent,
+            Some(body.stable_id())
+        );
         assert_eq!(
             cx.world().node(body.stable_id()).unwrap().children,
             [host.node(&slot).unwrap()]
@@ -683,7 +676,7 @@ mod tests {
             Err(CompositionError::MissingParent(_)) | Err(CompositionError::MissingRenderer(_))
         ));
         host.unmount(&mut cx).unwrap();
-        assert_eq!(host.slot_parent(&slot), None);
+        assert!(host.node(&slot).is_none());
     }
 
     #[test]
