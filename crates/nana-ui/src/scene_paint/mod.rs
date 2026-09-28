@@ -34,7 +34,7 @@ use nana_gpu::{
 use nana_ui_core::GpuWorkObservation;
 use nana_ui_platform::SharedFetchHost;
 use nana_ui_scene::{RenderOperation, ScenePrimitiveKind, UiScene};
-use url_texture_cache::egress_of;
+use url_texture_cache::{UrlTextureCache, egress_of};
 
 use crate::{
     HostTextureRegistry, PhysicalRect,
@@ -106,6 +106,10 @@ pub struct SceneWgpuPainter {
     icons: IconPipeline,
     text: TextPipeline,
     host_textures: HostTexturePipeline,
+    /// `url(...)` images for quads and HostTexture masks alike: a URL both
+    /// use is fetched, decoded, uploaded and retained once per painter.
+    /// Shared by every target; target-local bindings follow `image_revision`.
+    url_cache: UrlTextureCache,
     backdrop: BackdropPipeline,
     dest: Option<DestTarget>,
     /// Shared across resize-driven `DestTarget` recreations so the blit
@@ -266,6 +270,7 @@ impl SceneWgpuPainter {
             icons: IconPipeline::new_with_policy(device, format, Some(gpu.policy())),
             text: TextPipeline::new_with_policy(device, queue, format, gpu.policy()),
             host_textures: HostTexturePipeline::new(device, queue, format, gpu.policy(), gpu),
+            url_cache: UrlTextureCache::default(),
             backdrop: BackdropPipeline::new(device, format, gpu.policy()),
             dest: None,
             // Pipeline-cache reuse requires a host-enabled device feature;
@@ -312,8 +317,7 @@ impl SceneWgpuPainter {
     /// Wake the owning host with the URL/resource key that completed.
     /// Hosts can use this to redraw only targets that reference the resource.
     pub fn set_image_update_waker(&mut self, wake: Arc<dyn Fn(&str) + Send + Sync>) {
-        self.quads.set_image_waker(wake.clone());
-        self.host_textures.set_image_waker(wake);
+        self.url_cache.set_wake(wake);
     }
 
     /// Policy-gated egress for the `http(s)` `url(...)` images of the scenes
@@ -325,18 +329,17 @@ impl SceneWgpuPainter {
     /// document's policy admitted. Identity is the `Arc`: pass clones of one
     /// host, or images are refetched on every change.
     pub fn set_resource_fetch_host(&mut self, host: Option<SharedFetchHost>) {
-        self.quads.set_fetch_host(host.clone());
-        self.host_textures.set_fetch_host(host.clone());
+        self.url_cache.set_fetch_host(host.clone());
         self.fetch_host = host;
     }
 
     pub fn has_image_updates(&self) -> bool {
-        self.quads.has_image_updates() || self.host_textures.has_image_updates()
+        self.url_cache.has_updates()
     }
 
     /// Offscreen hosts can await completion and paint again without polling pixels.
     pub fn has_pending_images(&self) -> bool {
-        self.quads.has_pending_images() || self.host_textures.has_pending_images()
+        self.url_cache.has_pending()
     }
 
     /// Completion generation, used by layered snapshot hosts to repaint earlier layers.
@@ -439,8 +442,7 @@ impl SceneWgpuPainter {
         if egress_of(self.fetch_host.as_ref()) == closed {
             self.set_resource_fetch_host(None);
         }
-        self.quads.release_fetch_host(&host);
-        self.host_textures.release_fetch_host(&host);
+        self.url_cache.release_fetch_host(&host);
     }
 
     /// Paint with isolated target state while sharing device pipelines/caches.
@@ -608,9 +610,7 @@ impl SceneWgpuPainter {
         self.last_gpu_work = None;
         self.last_gpu_timings = None;
         self.last_dest_pass_counts = None;
-        let quad_images = self.quads.poll_images();
-        let mask_images = self.host_textures.poll_images();
-        if quad_images || mask_images {
+        if self.url_cache.poll() {
             self.painted = None;
             self.image_revision = self.image_revision.wrapping_add(1);
             // The active target is held in the painter fields while `paint`
@@ -741,8 +741,8 @@ impl SceneWgpuPainter {
             )
         } else {
             let batch_started = Instant::now();
+            self.url_cache.begin_frame();
             self.quads.begin_frame(scale);
-            self.host_textures.begin_frame();
             self.meshes.begin_frame();
             self.icons.begin_frame(dest_physical);
             self.text.begin_frame(dest_physical);
@@ -950,6 +950,7 @@ impl SceneWgpuPainter {
                         if let Some(index) = self.quads.push_with_work(
                             &self.device,
                             &self.queue,
+                            &mut self.url_cache,
                             bounds,
                             clip,
                             frag_clip,
@@ -1028,6 +1029,7 @@ impl SceneWgpuPainter {
                             if let Some(index) = self.quads.push_with_work(
                                 &self.device,
                                 &self.queue,
+                                &mut self.url_cache,
                                 item_bounds,
                                 clip,
                                 frag_clip,
@@ -1221,6 +1223,7 @@ impl SceneWgpuPainter {
                             if let Some(index) = self.quads.push_with_work(
                                 &self.device,
                                 &self.queue,
+                                &mut self.url_cache,
                                 item_bounds,
                                 clip,
                                 frag_clip,
@@ -1452,6 +1455,7 @@ impl SceneWgpuPainter {
                             let prepared = self.host_textures.prepare(
                                 &self.device,
                                 &self.queue,
+                                &mut self.url_cache,
                                 binding,
                                 primitive.id.node.get(),
                                 primitive.id.slot,
@@ -1552,6 +1556,7 @@ impl SceneWgpuPainter {
             self.quads.upload(
                 &self.device,
                 &self.queue,
+                &self.url_cache,
                 dest_physical,
                 scale,
                 Some(&gpu_work),
@@ -1736,7 +1741,8 @@ impl SceneWgpuPainter {
         );
         let encode = encode_started.elapsed();
         if !reused {
-            self.quads.finish_frame();
+            self.url_cache.trim();
+            self.quads.finish_frame(&self.url_cache);
             self.host_textures.trim();
         }
         for _ in 0..self.text.take_frame_gpu_allocations() {

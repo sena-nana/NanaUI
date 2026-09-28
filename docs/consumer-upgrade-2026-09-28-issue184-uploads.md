@@ -15,6 +15,7 @@ b187fb48b 的 upload arena 让每次上传发生两遍（先写进一个没人�
 - `GpuContext::write_texture` 与 `GpuContext::write_buffer` 不再立即提交：写入在本设备的下一次提交（任何线程上的 `FrameContext::submit`，或 `GpuContext::flush_uploads()`）之前落地，与 queue 写入的“在下一次 submit 之前”语义一致。经 `wgpu-interop` 自己提交原始 command buffer、并读取这些上传结果的调用方，先调用 `flush_uploads()`。
 - 被丢弃的 `FrameContext` 里的写入在下一次提交时落地，而不是丢失。
 - `begin_frame()` 槽满时阻塞等待最早已提交的帧，不再忙等；全部槽都被未提交录制占用时不占槽直接开始，并报告 `gpu.frame_slots_exhausted`（之前是死锁）。`frame_slot_stalls` 现在只计这种情况。
+- 同一 URL 图片被 quad 背景与 HostTexture mask 同时使用时只抓取、解码、上传一次：`SceneWgpuPainter` 持有唯一的 `UrlTextureCache`，两条管线共用（此前各有一个，各做一遍）。
 - 新计数：`GpuPolicyStats::{upload_writes, upload_copies, upload_flushes, upload_ring_allocations, upload_ring_waits, frame_slot_waits}`，对应 `gpu.upload_*`、`gpu.frame_slot_waits` 指标（id 20–25）。
 
 ## 测量
@@ -23,5 +24,4 @@ b187fb48b 的 upload arena 让每次上传发生两遍（先写进一个没人�
 
 ## 剩余
 
-- 同一 URL 图片被 quad 背景与 HostTexture mask 同时使用时，两条管线各自抓取、解码、上传一次（两个 `UrlTextureCache`）。
 - 文本 glyph 块与绘制顺序保留文本自己的 ring（encoder 内按位置的 copy 是 #224 的合同）。

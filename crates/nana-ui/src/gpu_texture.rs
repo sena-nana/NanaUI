@@ -857,6 +857,7 @@ impl GpuTexturePrimitive {
     pub(crate) fn prepare(
         &self,
         pipeline: &mut GpuTexturePipeline,
+        url_cache: &mut UrlTextureCache,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bounds: LogicalRect,
@@ -880,8 +881,7 @@ impl GpuTexturePrimitive {
             .map(|clip| clip_pixels(texture.id, clip, affine, persp, scale_factor));
         let mask_url = match self.layer.mask.as_ref() {
             Some(nana_ui_core::MaskImage::Url(url))
-                if pipeline
-                    .url_cache
+                if url_cache
                     .load_with_work(device, queue, url, gpu_work)
                     .is_some() =>
             {
@@ -926,7 +926,7 @@ impl GpuTexturePrimitive {
             }
             let mask_view = mask_url
                 .as_deref()
-                .and_then(|url| pipeline.url_cache.get(url))
+                .and_then(|url| url_cache.get(url))
                 .and_then(Option::as_ref)
                 .map(|cached| &cached.view)
                 .unwrap_or(&pipeline.mask_fallback);
@@ -1053,36 +1053,10 @@ pub struct GpuTexturePipeline {
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     mask_fallback: wgpu::TextureView,
-    url_cache: UrlTextureCache,
     textures: HashMap<TextureKey, PreparedTexture>,
 }
 
 impl GpuTexturePipeline {
-    pub(crate) fn set_image_waker(
-        &mut self,
-        wake: crate::scene_paint::url_texture_cache::ImageWake,
-    ) {
-        self.url_cache.set_wake(wake);
-    }
-    pub(crate) fn set_fetch_host(&mut self, host: Option<nana_ui_platform::SharedFetchHost>) {
-        self.url_cache.set_fetch_host(host);
-    }
-    pub(crate) fn release_fetch_host(&mut self, host: &nana_ui_platform::SharedFetchHost) {
-        self.url_cache.release_fetch_host(host);
-    }
-    pub(crate) fn has_image_updates(&self) -> bool {
-        self.url_cache.has_updates()
-    }
-    pub(crate) fn has_pending_images(&self) -> bool {
-        self.url_cache.has_pending()
-    }
-    pub(crate) fn begin_frame(&mut self) {
-        self.url_cache.begin_frame();
-    }
-    pub(crate) fn poll_images(&mut self) -> bool {
-        self.url_cache.poll()
-    }
-
     pub(crate) fn invalidate_image_bindings(&mut self) {
         self.textures.clear();
     }
@@ -1257,14 +1231,12 @@ impl GpuTexturePipeline {
             bind_group_layout,
             sampler,
             mask_fallback,
-            url_cache: UrlTextureCache::default(),
             textures: HashMap::new(),
         }
     }
 
     pub(crate) fn trim(&mut self) {
         trim_unused(&mut self.textures, |texture| &mut texture.used);
-        self.url_cache.trim();
     }
 }
 

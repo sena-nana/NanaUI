@@ -147,7 +147,6 @@ pub(super) struct QuadPipeline {
     paint_capacity: usize,
     url_view: wgpu::TextureView,
     url_sampler: wgpu::Sampler,
-    url_cache: UrlTextureCache,
     url_bind_groups: HashMap<Option<String>, wgpu::BindGroup>,
     instances: ManagedBuffer,
     instance_capacity: usize,
@@ -384,7 +383,6 @@ impl QuadPipeline {
             paint_capacity,
             url_view,
             url_sampler,
-            url_cache: UrlTextureCache::default(),
             url_bind_groups,
             instances: ManagedBuffer::new(instances),
             instance_capacity,
@@ -408,7 +406,6 @@ impl QuadPipeline {
         self.pending_urls.clear();
         self.motion_ids = (0, 0);
         self.motion_origin = [0.0, 0.0];
-        self.url_cache.begin_frame();
     }
 
     pub(super) fn motion_layout(&self) -> &wgpu::BindGroupLayout {
@@ -420,29 +417,6 @@ impl QuadPipeline {
     pub(super) fn set_motion(&mut self, ids: (u32, u32), origin: [f32; 2]) {
         self.motion_ids = ids;
         self.motion_origin = origin;
-    }
-
-    pub(super) fn set_image_waker(&mut self, wake: super::url_texture_cache::ImageWake) {
-        self.url_cache.set_wake(wake);
-    }
-    pub(super) fn set_fetch_host(&mut self, host: Option<nana_ui_platform::SharedFetchHost>) {
-        self.url_cache.set_fetch_host(host);
-    }
-    pub(super) fn release_fetch_host(&mut self, host: &nana_ui_platform::SharedFetchHost) {
-        self.url_cache.release_fetch_host(host);
-    }
-    pub(super) fn has_image_updates(&self) -> bool {
-        self.url_cache.has_updates()
-    }
-    pub(super) fn has_pending_images(&self) -> bool {
-        self.url_cache.has_pending()
-    }
-    pub(super) fn poll_images(&mut self) -> bool {
-        let changed = self.url_cache.poll();
-        if changed {
-            self.url_bind_groups.clear();
-        }
-        changed
     }
 
     pub(super) fn invalidate_image_bindings(&mut self) {
@@ -457,11 +431,12 @@ impl QuadPipeline {
             target.url_bind_groups.clear();
         }
     }
-    pub(super) fn finish_frame(&mut self) {
-        self.url_cache.trim();
+    /// Drop bindings to URL textures `url_cache` no longer retains; run after
+    /// the painter trims it.
+    pub(super) fn finish_frame(&mut self, url_cache: &UrlTextureCache) {
         self.url_bind_groups.retain(|key, _| {
             key.as_deref()
-                .is_none_or(|key| self.url_cache.contains_retained(key))
+                .is_none_or(|key| url_cache.contains_retained(key))
         });
     }
 
@@ -479,6 +454,7 @@ impl QuadPipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        url_cache: &mut UrlTextureCache,
         bounds: LogicalRect,
         clip: LogicalRect,
         fragment_clip: super::clip::FragmentClip,
@@ -495,6 +471,7 @@ impl QuadPipeline {
         self.push_with_work(
             device,
             queue,
+            url_cache,
             bounds,
             clip,
             fragment_clip,
@@ -516,6 +493,7 @@ impl QuadPipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        url_cache: &mut UrlTextureCache,
         bounds: LogicalRect,
         clip: LogicalRect,
         fragment_clip: super::clip::FragmentClip,
@@ -587,7 +565,7 @@ impl QuadPipeline {
         let border_tiles = prepare_border_image_tiles(
             device,
             queue,
-            &mut self.url_cache,
+            url_cache,
             surface.border_image.as_ref(),
             bounds.width,
             bounds.height,
@@ -624,7 +602,7 @@ impl QuadPipeline {
             let paint = pack_shared(
                 device,
                 queue,
-                &mut self.url_cache,
+                url_cache,
                 surface,
                 bounds.width,
                 bounds.height,
@@ -657,7 +635,7 @@ impl QuadPipeline {
                 let (paint, paint_url) = pack_layer(
                     device,
                     queue,
-                    &mut self.url_cache,
+                    url_cache,
                     surface,
                     layer,
                     bounds.width,
@@ -720,7 +698,7 @@ impl QuadPipeline {
             let (paint, paint_url) = pack_layer(
                 device,
                 queue,
-                &mut self.url_cache,
+                url_cache,
                 surface,
                 layer,
                 bounds.width,
@@ -779,6 +757,7 @@ impl QuadPipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        url_cache: &UrlTextureCache,
         physical_size: [u32; 2],
         scale_factor: f32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
@@ -870,27 +849,32 @@ impl QuadPipeline {
         );
         self.uploaded.clone_from(&self.pending);
         self.uploaded_paint.clone_from(&self.pending_paint);
-        self.rebuild_url_bind_groups(device);
+        self.rebuild_url_bind_groups(device, url_cache);
         if let Some(work) = gpu_work {
             work.record_batch_rebuild();
         }
     }
 
-    fn rebuild_url_bind_groups(&mut self, device: &wgpu::Device) {
+    fn rebuild_url_bind_groups(&mut self, device: &wgpu::Device, url_cache: &UrlTextureCache) {
         let mut unique: HashSet<_> = self.pending_urls.iter().cloned().collect();
         unique.insert(None);
         for url in unique {
             if self.url_bind_groups.contains_key(&url) {
                 continue;
             }
-            let bind_group = self.create_url_bind_group(device, url.as_deref());
+            let bind_group = self.create_url_bind_group(device, url_cache, url.as_deref());
             self.url_bind_groups.insert(url, bind_group);
         }
     }
 
-    fn create_url_bind_group(&self, device: &wgpu::Device, url: Option<&str>) -> wgpu::BindGroup {
+    fn create_url_bind_group(
+        &self,
+        device: &wgpu::Device,
+        url_cache: &UrlTextureCache,
+        url: Option<&str>,
+    ) -> wgpu::BindGroup {
         let url_view = url
-            .and_then(|key| self.url_cache.get(key))
+            .and_then(|key| url_cache.get(key))
             .and_then(|cached| cached.as_ref())
             .map(|cached| &cached.view)
             .unwrap_or(&self.url_view);
@@ -1695,13 +1679,14 @@ fn quad_paint_test_device() -> (wgpu::Device, wgpu::Queue) {
 fn stable_frames_reuse_bind_groups_and_storage_growth_rebinds() {
     let (device, queue) = quad_paint_test_device();
     let mut pipeline = QuadPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let url_cache = UrlTextureCache::default();
     let initial = pipeline.url_bind_groups.get(&None).unwrap().clone();
     for _ in 0..3 {
         pipeline.begin_frame(1.0);
         pipeline.pending.push(SolidInstance::zeroed());
         pipeline.pending_paint.push(QuadPaintData::zeroed());
         pipeline.pending_urls.push(None);
-        pipeline.upload(&device, &queue, [64, 64], 1.0, None);
+        pipeline.upload(&device, &queue, &url_cache, [64, 64], 1.0, None);
         assert_eq!(pipeline.url_bind_groups.get(&None), Some(&initial));
     }
     pipeline.begin_frame(1.0);
@@ -1711,7 +1696,7 @@ fn stable_frames_reuse_bind_groups_and_storage_growth_rebinds() {
         .pending_paint
         .resize(count, QuadPaintData::zeroed());
     pipeline.pending_urls.resize(count, None);
-    pipeline.upload(&device, &queue, [64, 64], 1.0, None);
+    pipeline.upload(&device, &queue, &url_cache, [64, 64], 1.0, None);
     assert_ne!(pipeline.url_bind_groups.get(&None), Some(&initial));
 }
 

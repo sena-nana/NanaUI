@@ -84,7 +84,11 @@ struct Bucket {
 }
 
 /// Retains the current working set plus a bounded LRU of inactive textures.
-/// HTTP work is limited to four concurrent requests per painter pipeline.
+/// HTTP work is limited to four concurrent requests per painter.
+///
+/// A painter owns one, shared by every pipeline that samples `url(...)`
+/// images, so one URL is fetched, decoded and uploaded once however many
+/// primitive kinds use it.
 ///
 /// Remote results are partitioned by the fetch host they went through, so a
 /// painter shared by documents with different policies never serves one
@@ -387,6 +391,12 @@ impl Drop for UrlTextureCache {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// URL textures uploaded on this thread, whichever cache asked.
+    pub(crate) static UPLOADS: Cell<usize> = const { Cell::new(0) };
+}
+
 pub(crate) fn upload_with_work(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -397,6 +407,8 @@ pub(crate) fn upload_with_work(
     if width == 0 || height == 0 || width > limit || height > limit {
         return None;
     }
+    #[cfg(test)]
+    UPLOADS.with(|uploads| uploads.set(uploads.get() + 1));
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("nana-ui.scene.url"),
         size: wgpu::Extent3d {

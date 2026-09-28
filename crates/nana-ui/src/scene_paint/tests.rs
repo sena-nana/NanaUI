@@ -5274,6 +5274,7 @@ fn check_host_texture_url_mask(remote: bool) {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     painter.set_resource_fetch_host(Some(super::image_url::loopback_fetch_host()));
+    let uploads = super::url_texture_cache::UPLOADS.with(std::cell::Cell::get);
     let mask = alpha_split_mask_png_data_url();
     let server = remote.then(|| {
         use base64::Engine;
@@ -5338,8 +5339,8 @@ fn check_host_texture_url_mask(remote: bool) {
             pixel(&first, 64, 56, 32)[0] > 200,
             "pending mask has not been applied yet"
         );
-        // The quad and host-texture URL caches each fetch the mask and share
-        // one waker, so the first wake may leave the other still pending.
+        // The quad and the HostTexture share one URL cache, so a single
+        // fetch serves both; keep painting until nothing is pending.
         loop {
             awoken
                 .recv_timeout(std::time::Duration::from_secs(5))
@@ -5370,6 +5371,11 @@ fn check_host_texture_url_mask(remote: bool) {
     assert!(
         right[2] > 180 && right[0] < 80,
         "HostTexture url-mask uses image alpha; right must reveal clear blue {right:?}"
+    );
+    assert_eq!(
+        super::url_texture_cache::UPLOADS.with(std::cell::Cell::get) - uploads,
+        1,
+        "the quad and the HostTexture mask share one fetch, decode and upload"
     );
     drop(view);
     drop(texture);
@@ -7245,15 +7251,17 @@ fn quad_color_batch_uploads_only_changed_instances() {
 
     let (device, queue) = test_device();
     let mut pipeline = super::quad::QuadPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let mut url_cache = super::url_texture_cache::UrlTextureCache::default();
     let clip = super::clip::FragmentClip::PASS;
     let bounds =
         |index: usize| super::clip::LogicalRect::from_xywh(index as f32 * 8.0, 0.0, 6.0, 6.0);
-    let push_batch = |pipeline: &mut super::quad::QuadPipeline, colors: &[[f32; 4]]| {
+    let mut push_batch = |pipeline: &mut super::quad::QuadPipeline, colors: &[[f32; 4]]| {
         pipeline.begin_frame(1.0);
         for (index, color) in colors.iter().enumerate() {
             pipeline.push(
                 &device,
                 &queue,
+                &mut url_cache,
                 bounds(index),
                 super::clip::LogicalRect::from_xywh(0.0, 0.0, 128.0, 64.0),
                 clip,
@@ -7269,7 +7277,7 @@ fn quad_color_batch_uploads_only_changed_instances() {
             );
         }
         let sink = GpuWorkSink::new();
-        pipeline.upload(&device, &queue, [128, 64], 1.0, Some(&sink));
+        pipeline.upload(&device, &queue, &url_cache, [128, 64], 1.0, Some(&sink));
         sink.snapshot()
     };
 

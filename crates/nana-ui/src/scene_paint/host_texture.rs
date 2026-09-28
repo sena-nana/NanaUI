@@ -16,28 +16,6 @@ pub(super) struct PreparedHostTexture {
 }
 
 impl HostTexturePipeline {
-    pub(super) fn set_image_waker(&mut self, wake: super::url_texture_cache::ImageWake) {
-        self.pipeline.set_image_waker(wake);
-    }
-    pub(super) fn set_fetch_host(&mut self, host: Option<nana_ui_platform::SharedFetchHost>) {
-        self.pipeline.set_fetch_host(host);
-    }
-    pub(super) fn release_fetch_host(&mut self, host: &nana_ui_platform::SharedFetchHost) {
-        self.pipeline.release_fetch_host(host);
-    }
-    pub(super) fn has_image_updates(&self) -> bool {
-        self.pipeline.has_image_updates()
-    }
-    pub(super) fn has_pending_images(&self) -> bool {
-        self.pipeline.has_pending_images()
-    }
-    pub(super) fn begin_frame(&mut self) {
-        self.pipeline.begin_frame();
-    }
-    pub(super) fn poll_images(&mut self) -> bool {
-        self.pipeline.poll_images()
-    }
-
     pub(super) fn invalidate_image_bindings(&mut self) {
         self.pipeline.invalidate_image_bindings();
     }
@@ -70,6 +48,7 @@ impl HostTexturePipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        url_cache: &mut super::url_texture_cache::UrlTextureCache,
         binding: HostTextureBinding,
         node: u64,
         slot: u64,
@@ -112,6 +91,7 @@ impl HostTexturePipeline {
         );
         primitive.prepare(
             &mut self.pipeline,
+            url_cache,
             device,
             queue,
             crate::geometry::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),

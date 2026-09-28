@@ -54,8 +54,10 @@ transient buffer / texture 池按完整描述 key 持有、复用，超出预算
 普通 resize 保留 `GpuContext` 和静态 pipeline；device replacement 使用新 context，
 旧设备资源不能进入新设备。HostTexture 本身就是本设备上的纹理（generation 已校验），
 没有需要"realize"的东西；此前按 identity/version 缓存 HostTexture 的 realization cache
-已删除（它把连续内容的每个版本都塞进静态缓存）。同一 URL 图片被 quad 与 HostTexture mask
-同时使用时仍各自上传一次，见交付记录的剩余项。
+已删除（它把连续内容的每个版本都塞进静态缓存）。`url(...)` 图片由 `SceneWgpuPainter`
+持有的唯一一个 `UrlTextureCache` 负责：quad 背景、border-image 与 HostTexture mask 共用它，
+同一 URL 每个 painter 只抓取、解码、上传、保留一次（仍按 fetch host 分桶），图片就绪后两条
+管线各自丢弃按 target 保存的 URL 绑定。
 
 `GpuWorkObservation` 记录 renderer workload 的逻辑 payload 与 draw 统计；`GpuPolicyStats`
 记录设备级计数：`upload_bytes`、`upload_writes`、`upload_copies`、`upload_flushes`、
