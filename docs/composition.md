@@ -13,3 +13,12 @@ Mounting validates registry coverage before creating Runtime entities, so a
 missing renderer leaves the parent subtree untouched. Refresh code should keep
 the `CompositionId` and ignore declaration-array positions; reordering a
 declaration therefore preserves the same node identity and binding target.
+
+Visibility is not composition state. `CompositionHost` binds identities to
+Runtime nodes but does not own their style, and a component's style is written
+by its own projection. To hide a declared node, update its component through
+the typed binding and set `layout.hidden` (for example
+`cx.update_component(host.entity::<Stack>(&cx, &id)?, |stack, _| ...)`). A
+hidden node takes no space in its parent and is not painted or hit-tested; see
+[layout](layout.md). A parallel host-side visibility flag would have no effect
+on layout or paint, so the host deliberately has none.

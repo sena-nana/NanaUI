@@ -259,7 +259,6 @@ impl CompositionRegistry {
 pub struct CompositionHost {
     index: Option<CompositionIndex>,
     entities: HashMap<CompositionId, StableNodeId>,
-    visibility: HashMap<CompositionId, bool>,
     root: Option<StableNodeId>,
 }
 
@@ -330,7 +329,6 @@ impl CompositionHost {
         self.root = Some(root);
         self.entities = entities;
         cx.register_composition_nodes(root, self.entities.values().copied());
-        self.visibility = self.entities.keys().cloned().map(|id| (id, true)).collect();
         self.index = Some(index);
         Ok(root)
     }
@@ -417,24 +415,6 @@ impl CompositionHost {
         Ok(entity)
     }
 
-    /// Set retained visibility for a stable node. Renderers and input hosts
-    /// can use this semantic state while keeping the identity mapping intact.
-    pub fn set_visible(
-        &mut self,
-        id: &CompositionId,
-        visible: bool,
-    ) -> Result<(), CompositionError> {
-        if !self.entities.contains_key(id) {
-            return Err(CompositionError::MissingRenderer(id.clone()));
-        }
-        self.visibility.insert(id.clone(), visible);
-        Ok(())
-    }
-
-    pub fn is_visible(&self, id: &CompositionId) -> Option<bool> {
-        self.visibility.get(id).copied()
-    }
-
     pub fn unmount(&mut self, cx: &mut AppContext) -> Result<(), CompositionError> {
         if let Some(root) = self.root {
             cx.unregister_composition_nodes(root, self.entities.values().copied());
@@ -445,7 +425,6 @@ impl CompositionHost {
         self.root = None;
         self.index = None;
         self.entities.clear();
-        self.visibility.clear();
         Ok(())
     }
 
@@ -571,11 +550,14 @@ mod tests {
     }
 
     #[test]
-    fn visibility_is_keyed_by_stable_id_and_cleared_on_unmount() {
+    fn hiding_a_group_through_its_own_style_removes_it_from_layout() {
         let spec = page(vec![CompositionNode::with_children(
-            "group",
-            CompositionNodeKind::Group,
-            [CompositionNode::leaf("camera", CompositionNodeKind::Option)],
+            "pane",
+            CompositionNodeKind::Pane,
+            [
+                CompositionNode::leaf("first", CompositionNodeKind::Group),
+                CompositionNode::leaf("second", CompositionNodeKind::Group),
+            ],
         )]);
         let mut cx = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -583,18 +565,47 @@ mod tests {
             .create_component(document, crate::Stack::column(0.0))
             .unwrap();
         let mut registry = CompositionRegistry::default();
-        for id in ["page", "group", "camera"] {
+        for id in ["page", "pane"] {
             registry.register(id, crate::Stack::column(0.0)).unwrap();
+        }
+        for id in ["first", "second"] {
+            registry
+                .register(
+                    id,
+                    crate::Stack::column(0.0)
+                        .with_layout(|layout| layout.height = Some(crate::LengthSpec::Px(40.0))),
+                )
+                .unwrap();
         }
         let mut host = CompositionHost::default();
         host.mount(&mut cx, document, parent.stable_id(), &spec, &registry)
             .unwrap();
-        let camera = CompositionId::from("camera");
-        assert_eq!(host.is_visible(&camera), Some(true));
-        host.set_visible(&camera, false).unwrap();
-        assert_eq!(host.is_visible(&camera), Some(false));
+        let viewport = crate::LayoutViewport::new(320.0, 240.0);
+        let first_id = CompositionId::from("first");
+        let second = host.node(&CompositionId::from("second")).unwrap();
+        cx.layout_document(document, viewport).unwrap();
+        let first_top = cx
+            .world()
+            .layout_box(host.node(&first_id).unwrap())
+            .unwrap()
+            .y;
+        assert_eq!(cx.world().layout_box(second).unwrap().y, first_top + 40.0);
+
+        let first = host.entity::<crate::Stack>(&cx, &first_id).unwrap();
+        cx.update_component(first, |stack, _| {
+            *stack = stack.clone().with_layout(|layout| layout.hidden = true);
+        })
+        .unwrap();
+        cx.layout_document(document, viewport).unwrap();
+        assert!(
+            cx.world()
+                .node_style(first.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        );
+        assert_eq!(cx.world().layout_box(second).unwrap().y, first_top);
         host.unmount(&mut cx).unwrap();
-        assert_eq!(host.is_visible(&camera), None);
     }
 
     #[test]
