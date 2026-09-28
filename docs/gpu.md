@@ -189,7 +189,7 @@ fn window_frame_presented(..) -> RuntimeProgramUpdate {
 - **提交守卫。** 窗口缩放时 `Surface::configure` 会等 GPU 空闲，同时从别的线程提交会让它 `GpuWaitTimeout`。`copy_from`、`FrameContext::submit`、`GpuContext::write_texture` 自己持提交守卫；生产端自己的 `queue.submit` / `write_buffer` / `write_texture`（wgpu-interop）要持 `gpu.wgpu().lock_submission()`，并在 `poll(Wait)`、sleep 或 surface 操作前放下。
 - **容量。** 一个窗口需要 3 个 slot：在途复制、正在显示、已替换但未 present。每多一个绑定同一交换的窗口加 2 个。
 - **Lease 顺序。** `prepare` 换帧后，旧帧留到 `presented` 才释放；两次 present 之间最多换一次。lease 归还后，生产端要等 UI 那次提交完成才复用该 slot。隐藏 tick 只 prepare 不 present，所以最多换一次就停住，生产端随后看到 `PoolFull`。
-- **Epoch 与接受策略。** `E` 是应用自己的代次（视口、场景……）。`set_epoch` 立刻隐藏旧帧，旧 epoch 的在途复制不会发布。`accept` 是窗口的策略（可见、未过期）；被拒绝的帧不确认唤醒，所以隐藏窗口不会每帧被叫醒，策略变化时由应用请求重绘。
+- **Epoch 与接受策略。** `E` 是应用自己的代次（视口、场景……）。`set_epoch` 立刻隐藏旧帧，旧 epoch 的在途复制不会发布。`accept` 是窗口的策略（可见、未过期）；`prepare` 在没有待取帧或待取帧被接受时确认唤醒，所以 `set_epoch` 的唤醒先到、替换帧后发布，也会再叫醒窗口；被拒绝的帧不确认唤醒，所以隐藏窗口不会每帧被叫醒，策略变化时由应用请求重绘。
 - **唤醒。** `notify` 在生产线程调用，只负责调度窗口：`drop(window.request_redraw())` 或 `context.dispatch(..)`，不要在里面等。
 - **设备重建。** `rebuild_gpu` 后用新 `GpuContext` 重建 exchange 和 binding。`DeviceGeneration` 不同的 inbox 不会被绑定；binding 只收一个 `GpuContext`，设备和代次不可能对不上。已发出的 lease 继续有效；最后一个持有者释放后，旧设备在后台线程销毁。
 - **诊断。** `FrameExchange::stats()` 给出 submitted / published / superseded / pool_full / stale_epoch 与占用高水位，读取不在帧路径上分配。

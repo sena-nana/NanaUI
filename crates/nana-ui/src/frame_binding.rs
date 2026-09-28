@@ -90,9 +90,12 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
     /// changed.
     ///
     /// While a replaced frame awaits presentation nothing changes, which also
-    /// bounds a window that ticks without presenting to one swap. A frame
-    /// `accept` rejects is not acknowledged, so a rejecting window is not woken
-    /// for every new frame; redraw it when its policy changes.
+    /// bounds a window that ticks without presenting to one swap. Otherwise the
+    /// wake is acknowledged whenever no frame is waiting or the waiting one is
+    /// accepted, so the next publication wakes the window again; that covers a
+    /// new epoch, whose wake arrives before its replacement frame exists. A
+    /// frame `accept` rejects is not acknowledged, so a rejecting window is not
+    /// woken for every new frame; redraw it when its policy changes.
     pub fn prepare(
         &mut self,
         inbox: Option<&FrameInbox<E>>,
@@ -110,8 +113,10 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
             .current
             .as_deref()
             .is_some_and(|frame| !usable(inbox, &accept, frame));
+        // Acknowledging loads again, so a frame published since `latest` is
+        // bound here instead of raising a wake of its own.
         if let Some(inbox) = inbox
-            && inbox.latest().is_some_and(|frame| accept(&frame.token()))
+            && inbox.latest().is_none_or(|frame| accept(&frame.token()))
             && let Some(frame) = inbox
                 .try_take_latest()
                 .filter(|frame| accept(&frame.token()))
@@ -274,6 +279,52 @@ mod tests {
             size(),
             (8, 4),
             "the new epoch's frame must land without a placeholder in between"
+        );
+    }
+
+    /// The window reacts to the epoch's wake before the replacement frame
+    /// exists. That replacement must still wake it, or the stage stays on the
+    /// placeholder until something unrelated redraws the window.
+    #[test]
+    fn a_frame_published_after_an_empty_epoch_wake_still_wakes_the_window() {
+        let gpu = crate::test_gpu::context();
+        let wakes = Arc::new(AtomicU64::new(0));
+        let observed = Arc::clone(&wakes);
+        let mut exchange = FrameExchange::new(
+            &gpu,
+            DEFAULT_CAPACITY,
+            0u64,
+            Arc::new(move || {
+                observed.fetch_add(1, Ordering::AcqRel);
+            }),
+        );
+        let inbox = exchange.inbox();
+        let registry = HostTextureRegistry::new();
+        let mut binding = FrameBinding::new(
+            &gpu,
+            registry.slot("stall"),
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let all = |_: &FrameToken<u64>| true;
+
+        publish_frame(&gpu, &mut exchange, &source(&gpu, 4), 0);
+        assert!(binding.prepare(Some(&inbox), all));
+        binding.presented(Some(&inbox), all);
+        assert_eq!(wakes.load(Ordering::Acquire), 1);
+
+        exchange.set_epoch(1);
+        assert_eq!(wakes.load(Ordering::Acquire), 2, "dropping the frame wakes");
+        assert!(
+            binding.prepare(Some(&inbox), all),
+            "the stale frame unbinds"
+        );
+        binding.presented(Some(&inbox), all);
+
+        publish_frame(&gpu, &mut exchange, &source(&gpu, 8), 1);
+        assert_eq!(
+            wakes.load(Ordering::Acquire),
+            3,
+            "the replacement frame must wake the window"
         );
     }
 
