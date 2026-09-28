@@ -291,8 +291,12 @@ pub(super) fn intrinsic_size_scoped(
         return Ok(plan.size);
     }
 
-    let (flow_children, descendant_dependent_flow) =
+    let (mut flow_children, descendant_dependent_flow) =
         collect_flow_children_reporting(&child_ids, nodes, style.display)?;
+    // Measure in the order placement lays the children out: a wrapping line
+    // break depends on which item comes next, so measuring in document order
+    // while placing by `order` sizes the container for lines it never has.
+    sort_by_order(&mut flow_children, nodes);
     let grid_measure = uses_2d_grid(style, &flow_children, nodes);
     let ifc = !grid_measure
         && !style

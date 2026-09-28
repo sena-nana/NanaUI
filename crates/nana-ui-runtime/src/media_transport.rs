@@ -1577,6 +1577,26 @@ mod tests {
     }
 
     #[test]
+    fn a_stacked_inline_bar_is_as_tall_as_its_two_lines() {
+        // 进度行靠 `order` 排到按钮前面;量高时也得按这个顺序折行,否则按文档
+        // 顺序会折成三行,条下面空出一整行。
+        let stage = Stage::new(
+            document(),
+            MediaTransportBar::new()
+                .density(MediaTransportDensity::Stacked)
+                .placement(MediaTransportPlacement::Inline),
+        );
+        let slots = stage.slots();
+        let bar = stage.frame(stage.bar.stable_id());
+        let play = stage.frame(slots.play.unwrap());
+        assert_close(
+            bar.y + bar.height,
+            play.y + play.height + space::SM,
+            "the bar ends one padding below the button line",
+        );
+    }
+
+    #[test]
     fn an_unseekable_program_keeps_its_range_in_place_but_disabled() {
         let mut stage = Stage::new(document(), MediaTransportBar::new());
         let slots = stage.slots();

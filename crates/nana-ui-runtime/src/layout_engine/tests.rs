@@ -1352,6 +1352,57 @@ fn row_wrap_breaks_to_the_next_line() {
 }
 
 #[test]
+fn a_wrapping_row_is_measured_in_the_order_it_is_placed() {
+    // B 按 `order` 排在最前、独占一行,A 与 C 并排在第二行:两行高。按文档顺序
+    // 量会折成 A / B / C 三行,容器高出一整行。
+    let document = DocumentId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(id(1), document, NodeKind::Document);
+    for (value, full) in [(2, false), (3, true), (4, false)] {
+        queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+        queue.insert(id(1), id(value), None);
+        queue.set_style(
+            id(value),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(80.0)),
+                    height: Some(LengthSpec::Px(40.0)),
+                    order: if full { -1 } else { 0 },
+                    flex_basis: full.then_some(LengthSpec::Percent(100.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+    }
+    queue.set_style(
+        id(1),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(200.0)),
+                direction: Some(FlexDirection::Row),
+                flex_wrap: FlexWrap::Wrap,
+                gap: Some(LengthSpec::Px(8.0)),
+                align_items: nana_ui_core::AlignSpec::Start,
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    let layouts = RuntimeLayoutEngine
+        .layout_document(&world, document, LayoutViewport::new(200.0, 400.0))
+        .unwrap()
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    assert_eq!(layouts[&id(3)].y, 0.0);
+    assert_eq!(layouts[&id(2)].y, 48.0);
+    assert_eq!(layouts[&id(4)].y, 48.0);
+    assert_eq!(layouts[&id(1)].height, 88.0);
+}
+
+#[test]
 fn grid_template_columns_split_free_space() {
     let document = DocumentId::new(1).unwrap();
     let mut world = UiWorld::new();
