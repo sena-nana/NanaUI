@@ -544,6 +544,13 @@ impl VueHost {
             .lock()
             .expect("vue doc")
             .take_pointer_capture_changes();
+        self.fire_pointer_capture_changes(engine, changes)
+    }
+    pub(crate) fn fire_pointer_capture_changes<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+        changes: Vec<nana_ui_runtime::PointerCaptureChange>,
+    ) -> Result<(), JsEngineError> {
         for change in changes {
             let mut detail = BTreeMap::new();
             detail.insert(

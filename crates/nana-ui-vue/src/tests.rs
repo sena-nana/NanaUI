@@ -871,6 +871,84 @@ fn pointer_capture_keeps_target_and_blur_releases_it() {
     }));
 }
 
+/// A window's blur routes first: the Runtime cancels the pointer and
+/// releases its capture, then the page's blur runs. The page still hears
+/// the capture it was told about end.
+#[test]
+fn a_routed_blur_tells_the_page_its_capture_ended() {
+    let mut host = VueHost::new();
+    host.callbacks.fire_event = Some(JsFunctionId(1));
+    let (first, _) = install_input_nodes(&mut host);
+    let mut engine = RecordingEngine::default();
+    host.dispatch_pointer(
+        &mut engine,
+        PointerInput::mouse(PointerEventKind::Down, 10.0, 10.0),
+    )
+    .expect("press");
+    assert!(
+        host.document()
+            .lock()
+            .expect("document")
+            .capture_pointer(1, first)
+    );
+    host.flush_pointer_capture_events(&mut engine)
+        .expect("publish capture");
+    assert!(
+        fired_events(&engine)
+            .iter()
+            .any(|(target, name, _)| *target == first.0 && name == "gotpointercapture")
+    );
+
+    host.route_input(nana_ui_platform::InputPayload::Focus { focused: false })
+        .expect("route blur");
+    host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
+        .expect("page blur");
+
+    assert!(
+        host.document()
+            .lock()
+            .expect("document")
+            .pointer_capture(1)
+            .is_none()
+    );
+    assert!(
+        fired_events(&engine)
+            .iter()
+            .any(|(target, name, _)| *target == first.0 && name == "lostpointercapture"),
+        "the page never heard its capture end"
+    );
+}
+
+/// A capture taken and not yet announced when the window blurs was never
+/// observable: the page hears neither its start nor its end.
+#[test]
+fn a_blur_drops_a_capture_the_page_never_heard_of() {
+    let mut host = VueHost::new();
+    host.callbacks.fire_event = Some(JsFunctionId(1));
+    let (first, _) = install_input_nodes(&mut host);
+    let mut engine = RecordingEngine::default();
+    assert!(
+        host.document()
+            .lock()
+            .expect("document")
+            .capture_pointer(1, first)
+    );
+
+    host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
+        .expect("page blur");
+
+    assert!(
+        host.document()
+            .lock()
+            .expect("document")
+            .pointer_capture(1)
+            .is_none()
+    );
+    assert!(!fired_events(&engine).iter().any(|(_, name, _)| {
+        matches!(name.as_str(), "gotpointercapture" | "lostpointercapture")
+    }));
+}
+
 #[test]
 fn file_drag_tracks_hit_target_and_exposes_file_descriptors() {
     let mut host = VueHost::new();

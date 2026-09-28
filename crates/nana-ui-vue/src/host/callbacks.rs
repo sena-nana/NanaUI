@@ -369,16 +369,15 @@ impl VueHost {
             if self.input_projection.file_drag_target.is_some() {
                 self.emit_file_drag_from_runtime(engine, FileDragKind::Cancel, &[], None)?;
             }
-            {
+            let changes = {
                 let mut document = self.document.lock().expect("vue doc");
                 document.clear_pointer_interactions();
-                // A pending acquisition was never observable before blur. Match
-                // the previous DOM-compatible behavior by publishing only the
-                // release of captures that actually remained authoritative.
-                let _ = document.take_pointer_capture_changes();
+                let mut changes = document.take_pointer_capture_changes();
                 document.clear_pointer_captures();
-            }
-            self.flush_pointer_capture_events(engine)?;
+                changes.extend(document.take_pointer_capture_changes());
+                changes
+            };
+            self.fire_pointer_capture_changes(engine, published_releases(changes))?;
         }
         let Some(pump) = self.callbacks.lifecycle_pump else {
             return Ok(event == WindowLifecycleEvent::Blur);
@@ -391,4 +390,27 @@ impl VueHost {
         engine.run_microtasks()?;
         Ok(true)
     }
+}
+
+/// What the page hears of the capture changes a blur leaves pending: the
+/// release of every capture it heard acquired. A capture acquired and
+/// released within them was never observable, so neither half is sent. The
+/// route may have released captures already (a window's blur cancels its
+/// pointers first); those releases are kept.
+fn published_releases(
+    changes: Vec<nana_ui_runtime::PointerCaptureChange>,
+) -> Vec<nana_ui_runtime::PointerCaptureChange> {
+    let mut unpublished = Vec::new();
+    let mut releases = Vec::new();
+    for change in changes {
+        let capture = (change.pointer_id, change.target);
+        if change.captured {
+            unpublished.push(capture);
+        } else if let Some(index) = unpublished.iter().position(|pending| *pending == capture) {
+            unpublished.swap_remove(index);
+        } else {
+            releases.push(change);
+        }
+    }
+    releases
 }
