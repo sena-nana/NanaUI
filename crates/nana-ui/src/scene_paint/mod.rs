@@ -38,7 +38,7 @@ use url_texture_cache::egress_of;
 
 use crate::{
     HostTextureRegistry, PhysicalRect,
-    gpu_work::{GpuStageTimings, GpuWorkSink, TransientBufferRegistry},
+    gpu_work::{GpuStageTimings, GpuWorkSink},
     scene_gpu::{
         SceneGpuBatchNode, SceneGpuBatchPassContext, SceneGpuNode, SceneGpuPassContext,
         SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry,
@@ -465,7 +465,7 @@ impl SceneWgpuPainter {
             HostTexturePipeline::invalidate_target_image_bindings(&mut state.host_textures);
         }
         self.swap_target_state(&mut state);
-        let transient_registry = __framework::transient_registry(frame);
+        let link = crate::gpu_work::FrameLink::of(frame);
         let result = self.paint_recorded(
             scene,
             __framework::encoder(frame),
@@ -473,7 +473,7 @@ impl SceneWgpuPainter {
             viewport,
             host_textures,
             gpu_renderers,
-            Some(transient_registry),
+            Some(link),
         );
         self.swap_target_state(&mut state);
         state.image_revision = self.image_revision;
@@ -577,7 +577,7 @@ impl SceneWgpuPainter {
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
         self.begin_frame(None, frame, target)?;
-        let transient_registry = __framework::transient_registry(frame);
+        let link = crate::gpu_work::FrameLink::of(frame);
         let result = self.paint_recorded(
             scene,
             __framework::encoder(frame),
@@ -585,7 +585,7 @@ impl SceneWgpuPainter {
             viewport,
             host_textures,
             gpu_renderers,
-            Some(transient_registry),
+            Some(link),
         );
         if result.is_ok() {
             frame.record_retained_writes(&self.retained_default, DEFAULT_TARGET);
@@ -602,7 +602,7 @@ impl SceneWgpuPainter {
         viewport: ScenePaintViewport,
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
-        transient_registry: Option<TransientBufferRegistry>,
+        frame: Option<crate::gpu_work::FrameLink>,
     ) -> Result<(), ScenePaintError> {
         // A rejected frame must not report a previous target's successful work.
         self.last_gpu_work = None;
@@ -655,7 +655,7 @@ impl SceneWgpuPainter {
         ];
         let origin = PaintOrigin::new(paint_origin([0.0, 0.0], viewport.scene_origin), scale);
         let viewport_clip = LogicalRect::viewport([0.0, 0.0], viewport.logical_size);
-        let gpu_work = GpuWorkSink::with_gpu_registry(&self.gpu, transient_registry);
+        let gpu_work = GpuWorkSink::with_frame(&self.gpu, frame);
         let clear = wgpu::Color {
             r: viewport.clear_color[0] as f64,
             g: viewport.clear_color[1] as f64,

@@ -29,6 +29,7 @@ mod frame;
 mod policy;
 mod realization;
 mod texture;
+mod upload;
 
 #[doc(hidden)]
 pub mod __framework;
@@ -46,10 +47,7 @@ pub use context::{
 };
 pub use error::GpuError;
 pub use frame::{FrameContext, FrameId, GpuSubmission, RetainedWrites};
-pub use policy::{
-    FrameSlotId, GpuDeviceState, GpuPolicyStats, PipelineKey, TransientResourceKey,
-    UploadReservation,
-};
+pub use policy::{FrameSlotId, GpuDeviceState, GpuPolicyStats, PipelineKey, TransientResourceKey};
 pub use realization::{GpuBuffer, GpuBufferDescriptor, GpuBufferUsages, GpuSampler};
 pub use realization::{GpuResourceGroup, GpuResourceLayout};
 pub use texture::{

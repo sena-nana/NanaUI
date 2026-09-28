@@ -329,6 +329,13 @@ pub(crate) struct GpuInner {
     pub(crate) next_submission: AtomicU64,
     pub(crate) submission_order: Mutex<()>,
     policy: GpuDeviceState,
+    /// Staging chunks for frame uploads.
+    pub(crate) upload_ring: Arc<crate::upload::UploadRing>,
+    /// Writes made outside a frame (and those of discarded frames), landed
+    /// by the next submission on this device.
+    pub(crate) pending_uploads: Mutex<crate::upload::UploadBatch>,
+    /// The newest submission, for bounded waits on in-flight work.
+    pub(crate) latest_submission: Mutex<Option<wgpu::SubmissionIndex>>,
 }
 
 /// The one device a process renders with. Cloning is cheap and keeps the
@@ -380,7 +387,7 @@ impl GpuContext {
                 .flags
                 .contains(wgpu::DownlevelFlags::WEBGPU_TEXTURE_FORMAT_SUPPORT);
         let generation = DeviceGeneration::next();
-        let policy = GpuDeviceState::new_with_device(generation, &device);
+        let policy = GpuDeviceState::new(generation);
         Self {
             inner: Arc::new(GpuInner {
                 generation,
@@ -396,6 +403,9 @@ impl GpuContext {
                 next_submission: AtomicU64::new(1),
                 submission_order: Mutex::new(()),
                 policy,
+                upload_ring: crate::upload::UploadRing::new(),
+                pending_uploads: Mutex::new(crate::upload::UploadBatch::default()),
+                latest_submission: Mutex::new(None),
             }),
         }
     }
@@ -538,116 +548,115 @@ impl GpuContext {
                 provided: bytes.len(),
             });
         }
-        let aligned_row = bytes_per_row
-            .checked_add(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1)
-            .map(|value| {
-                value / wgpu::COPY_BYTES_PER_ROW_ALIGNMENT * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
-            })
-            .ok_or(GpuError::RegionOutOfBounds)?;
-        let staging_len = (aligned_row as usize)
-            .checked_mul(region.height as usize)
-            .ok_or(GpuError::RegionOutOfBounds)?;
-        let mut staging = vec![0u8; staging_len];
-        for row_index in 0..region.height as usize {
-            let source_start = row_index * bytes_per_row as usize;
-            let destination_start = row_index * aligned_row as usize;
-            staging[destination_start..destination_start + row as usize]
-                .copy_from_slice(&bytes[source_start..source_start + row as usize]);
-        }
-        // Acquire the frame slot before reserving arena bytes. Otherwise a
-        // first frame could reset the arena between staging and the copy.
-        let mut frame = self.begin_frame("NanaUI texture upload");
-        let staged = {
-            let _submission = self.lock_submission();
-            self.inner
-                .policy
-                .stage_upload(&self.inner.queue, &staging, 256)
-        };
-        let Some((reservation, backing)) = staged else {
-            frame.discard();
-            let _submission = self.lock_submission();
-            self.inner.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: texture.raw(),
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: region.x,
-                        y: region.y,
-                        z: 0,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &bytes[..needed],
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(region.height),
+        // Lands with the next submission on this device, ahead of its
+        // commands, as a queue write would.
+        self.inner
+            .pending_uploads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write_texture(
+                texture.raw(),
+                0,
+                wgpu::Origin3d {
+                    x: region.x,
+                    y: region.y,
+                    z: 0,
                 },
                 wgpu::Extent3d {
                     width: region.width,
                     height: region.height,
                     depth_or_array_layers: 1,
                 },
+                bytes,
+                bytes_per_row,
+                region.height,
+                row,
             );
-            self.inner.policy.record_upload(needed as u64);
-            return Ok(());
-        };
-        crate::frame::FrameContext::encoder_mut(&mut frame).copy_buffer_to_texture(
-            wgpu::TexelCopyBufferInfo {
-                buffer: &backing,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: reservation.offset,
-                    bytes_per_row: Some(aligned_row),
-                    rows_per_image: Some(region.height),
-                },
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: texture.raw(),
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: region.x,
-                    y: region.y,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::Extent3d {
-                width: region.width,
-                height: region.height,
-                depth_or_array_layers: 1,
-            },
-        );
-        let _submission = frame.submit();
+        self.inner.policy.record_upload(needed as u64);
         Ok(())
+    }
+
+    /// Submit writes made outside a frame now. Frames submit them on their
+    /// own; this is for callers that submit raw command buffers through
+    /// `wgpu-interop` and read what they uploaded.
+    pub fn flush_uploads(&self) {
+        let batch = std::mem::take(
+            &mut *self
+                .inner
+                .pending_uploads
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        let latest = self.latest_submission();
+        let Some(commands) = crate::upload::record(
+            &self.inner.upload_ring,
+            &self.inner.device,
+            &self.inner.queue,
+            &self.inner.policy,
+            latest,
+            batch,
+        ) else {
+            return;
+        };
+        let _submission = self.lock_submission();
+        let index = self.inner.queue.submit([commands]);
+        self.note_submission(index);
+    }
+
+    pub(crate) fn latest_submission(&self) -> Option<wgpu::SubmissionIndex> {
+        self.inner
+            .latest_submission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn note_submission(&self, index: wgpu::SubmissionIndex) {
+        *self
+            .inner
+            .latest_submission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(index);
     }
 
     /// Start recording one frame. The returned [`FrameContext`] owns the
     /// encoder until it is submitted or dropped.
+    ///
+    /// With every frame slot in flight this blocks until the oldest submitted
+    /// frame completes. If every slot is held by a recording that was never
+    /// submitted, waiting could not end: the frame runs without a slot and
+    /// the fault is reported.
     pub fn begin_frame(&self, label: &'static str) -> FrameContext {
-        self.inner.policy.begin_frame();
-        let id = self.inner.next_frame.fetch_add(1, Ordering::Relaxed);
-        let id = FrameId::new(id);
-        let frame_slot = loop {
-            if let Some(slot) = self.inner.policy.acquire_frame_slot(id.get()) {
-                break Some(slot);
+        let id = FrameId::new(self.inner.next_frame.fetch_add(1, Ordering::Relaxed));
+        let mut waited = false;
+        let slot = loop {
+            match self.inner.policy.take_frame_slot(id.get()) {
+                Ok(slot) => break Some(slot),
+                Err(crate::policy::SlotWait::Submitted(index)) if !waited => {
+                    waited = true;
+                    self.inner.policy.record_slot_wait();
+                    // The slot is released by the submission's completion
+                    // callback, which this poll runs.
+                    let _ = self.inner.device.poll(wgpu::PollType::Wait {
+                        submission_index: Some(index),
+                        timeout: Some(std::time::Duration::from_secs(1)),
+                    });
+                }
+                Err(_) => {
+                    self.inner.policy.record_slot_stall();
+                    break None;
+                }
             }
-            // A full policy slot means the oldest submitted frame has not
-            // reached its completion callback yet. Polling makes progress
-            // without creating an untracked frame that could overlap upload
-            // or retirement state.
-            let _ = self.inner.device.poll(wgpu::PollType::Poll);
-            std::thread::yield_now();
         };
-        self.make_frame(label, id, frame_slot)
+        self.make_frame(label, id, slot)
     }
 
-    /// Try to start a frame without waiting for an in-flight slot. Hosts that
-    /// have their own scheduling loop can use this to turn a policy stall into
-    /// a redraw request instead of blocking the caller.
+    /// Start a frame without waiting for an in-flight slot. Hosts that have
+    /// their own scheduling loop can use this to turn a full pipeline into a
+    /// redraw request instead of blocking the caller.
     pub fn try_begin_frame(&self, label: &'static str) -> Option<FrameContext> {
-        self.inner.policy.begin_frame();
         let id = FrameId::new(self.inner.next_frame.fetch_add(1, Ordering::Relaxed));
-        let slot = self.inner.policy.acquire_frame_slot(id.get())?;
+        let slot = self.inner.policy.take_frame_slot(id.get()).ok()?;
         Some(self.make_frame(label, id, Some(slot)))
     }
 

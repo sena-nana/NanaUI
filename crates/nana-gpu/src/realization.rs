@@ -272,8 +272,14 @@ impl GpuContext {
         {
             return Err(GpuError::InvalidBindingRange);
         }
-        let _submission = self.lock_submission();
-        self.inner.queue.write_buffer(&buffer.buffer, offset, bytes);
+        // Lands with the next submission on this device, ahead of its
+        // commands, as a queue write would.
+        self.inner
+            .pending_uploads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write_buffer(&buffer.buffer, offset, bytes);
+        self.policy().record_upload(bytes.len() as u64);
         Ok(())
     }
 

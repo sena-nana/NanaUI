@@ -14,6 +14,21 @@ use nana_ui_runtime::FrameProfiler;
 
 pub(crate) type TransientBufferRegistry = Arc<Mutex<Vec<(TransientResourceKey, wgpu::Buffer)>>>;
 
+/// What a sink needs from the frame it records into.
+pub(crate) struct FrameLink {
+    pub(crate) transient_registry: TransientBufferRegistry,
+    pub(crate) uploads: nana_gpu::__framework::FrameUploadHandle,
+}
+
+impl FrameLink {
+    pub(crate) fn of(frame: &nana_gpu::FrameContext) -> Self {
+        Self {
+            transient_registry: nana_gpu::__framework::transient_registry(frame),
+            uploads: nana_gpu::__framework::frame_uploads(frame),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ManagedBuffer(Option<wgpu::Buffer>);
 
@@ -53,6 +68,9 @@ pub struct GpuWorkSink {
     policy: Option<GpuDeviceState>,
     gpu: Option<GpuContext>,
     transient_registry: Option<TransientBufferRegistry>,
+    /// The frame's upload recorder. Without one (tests, offscreen encoders)
+    /// writes go straight to the queue.
+    uploads: Option<nana_gpu::__framework::FrameUploadHandle>,
 }
 
 impl GpuWorkSink {
@@ -66,6 +84,7 @@ impl GpuWorkSink {
             policy: Some(policy.clone()),
             gpu: None,
             transient_registry: None,
+            uploads: None,
         }
     }
 
@@ -75,18 +94,22 @@ impl GpuWorkSink {
             policy: Some(gpu.policy().clone()),
             gpu: Some(gpu.clone()),
             transient_registry: None,
+            uploads: None,
         }
     }
 
-    pub(crate) fn with_gpu_registry(
-        gpu: &GpuContext,
-        transient_registry: Option<TransientBufferRegistry>,
-    ) -> Self {
+    /// A sink bound to one frame: pooled buffers are held until its
+    /// submission completes and writes go through its upload recorder.
+    pub(crate) fn with_frame(gpu: &GpuContext, frame: Option<FrameLink>) -> Self {
+        let (transient_registry, uploads) = frame.map_or((None, None), |frame| {
+            (Some(frame.transient_registry), Some(frame.uploads))
+        });
         Self {
             work: RefCell::new(GpuWorkObservation::default()),
             policy: Some(gpu.policy().clone()),
             gpu: Some(gpu.clone()),
             transient_registry,
+            uploads,
         }
     }
 
@@ -164,9 +187,9 @@ impl GpuWorkSink {
         slot.put(next);
     }
 
-    /// Write a dynamic buffer through the per-device staging policy while
-    /// preserving the renderer's target buffer contract. The target write is
-    /// still a compatibility copy until every renderer consumes arena offsets.
+    /// Write `bytes` into `target` at `offset`, as `queue.write_buffer`
+    /// would: in a frame, through its upload recorder, which stages every
+    /// write of the frame in one chunk and copies them ahead of it.
     pub(crate) fn write_buffer(
         &self,
         queue: &wgpu::Queue,
@@ -174,36 +197,22 @@ impl GpuWorkSink {
         offset: u64,
         bytes: &[u8],
     ) {
-        let padded_len = (bytes.len() + 3) & !3;
-        let mut padded = Vec::new();
-        let write_bytes = if padded_len == bytes.len() {
-            bytes
+        if let Some(uploads) = &self.uploads {
+            uploads.write_buffer(target, offset, bytes);
+        } else if bytes
+            .len()
+            .is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize)
+        {
+            queue.write_buffer(target, offset, bytes);
         } else {
-            padded.resize(padded_len, 0);
-            padded[..bytes.len()].copy_from_slice(bytes);
-            &padded
-        };
-        if let Some(gpu) = &self.gpu {
-            let _submission = nana_gpu::__framework::lock_submission(gpu);
-            if !nana_gpu::__framework::stage_upload(
-                gpu,
-                queue,
-                write_bytes,
-                wgpu::COPY_BUFFER_ALIGNMENT,
-            ) {
-                gpu.policy().record_upload(write_bytes.len() as u64);
-            }
-            queue.write_buffer(target, offset, write_bytes);
-            self.work.borrow_mut().record_upload(bytes.len());
-        } else {
-            queue.write_buffer(target, offset, write_bytes);
-            self.work.borrow_mut().record_upload(bytes.len());
+            let mut padded = bytes.to_vec();
+            padded.resize(bytes.len().next_multiple_of(4), 0);
+            queue.write_buffer(target, offset, &padded);
         }
+        self.count_upload(bytes.len());
     }
 
-    /// Upload texture bytes while sharing the policy submission guard and
-    /// staging accounting. The texture copy remains an explicit WGPU copy
-    /// because texture layouts are renderer-specific.
+    /// Write a region of mip 0 of `texture`, as `queue.write_texture` would.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn write_texture(
         &self,
@@ -215,59 +224,34 @@ impl GpuWorkSink {
         rows_per_image: u32,
         extent: [u32; 3],
     ) {
-        let padded_len = (bytes.len() + 3) & !3;
-        let mut padded = Vec::new();
-        let stage_bytes = if padded_len == bytes.len() {
-            bytes
-        } else {
-            padded.resize(padded_len, 0);
-            padded[..bytes.len()].copy_from_slice(bytes);
-            &padded
+        let origin = wgpu::Origin3d {
+            x: origin[0],
+            y: origin[1],
+            z: origin[2],
         };
-        if let Some(gpu) = &self.gpu {
-            let _submission = nana_gpu::__framework::lock_submission(gpu);
-            if !nana_gpu::__framework::stage_upload(
-                gpu,
-                queue,
-                stage_bytes,
-                wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64,
-            ) {
-                gpu.policy().record_upload(stage_bytes.len() as u64);
-            }
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: origin[0],
-                        y: origin[1],
-                        z: origin[2],
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
+        let extent = wgpu::Extent3d {
+            width: extent[0],
+            height: extent[1],
+            depth_or_array_layers: extent[2],
+        };
+        if let Some(uploads) = &self.uploads {
+            let texel = texture.format().block_copy_size(None).unwrap_or(4);
+            uploads.write_texture(
+                texture,
+                0,
+                origin,
+                extent,
                 bytes,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(rows_per_image),
-                },
-                wgpu::Extent3d {
-                    width: extent[0],
-                    height: extent[1],
-                    depth_or_array_layers: extent[2],
-                },
+                bytes_per_row,
+                rows_per_image,
+                extent.width * texel,
             );
-            self.work.borrow_mut().record_upload(bytes.len());
         } else {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: origin[0],
-                        y: origin[1],
-                        z: origin[2],
-                    },
+                    origin,
                     aspect: wgpu::TextureAspect::All,
                 },
                 bytes,
@@ -276,23 +260,22 @@ impl GpuWorkSink {
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(rows_per_image),
                 },
-                wgpu::Extent3d {
-                    width: extent[0],
-                    height: extent[1],
-                    depth_or_array_layers: extent[2],
-                },
+                extent,
             );
-            self.work.borrow_mut().record_upload(bytes.len());
+        }
+        self.count_upload(bytes.len());
+    }
+
+    fn count_upload(&self, bytes: usize) {
+        self.work.borrow_mut().record_upload(bytes);
+        if let Some(policy) = &self.policy {
+            policy.record_upload(bytes as u64);
         }
     }
 
+    /// Count bytes a renderer uploaded without going through this sink.
     pub fn record_upload(&self, bytes: usize) {
-        self.work.borrow_mut().record_upload(bytes);
-        if let Some(policy) = &self.policy
-            && policy.reserve_upload(bytes as u64, 256).is_none()
-        {
-            policy.record_upload(bytes as u64);
-        }
+        self.count_upload(bytes);
     }
 
     pub fn record_realloc(&self) {

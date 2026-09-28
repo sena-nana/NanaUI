@@ -77,8 +77,20 @@ pub struct GpuPolicyStats {
     pub transient_pool_misses: u64,
     pub pipeline_registry_hits: u64,
     pub pipeline_registry_misses: u64,
+    /// `begin_frame` found every slot held by an unsubmitted recording and
+    /// went ahead without one.
     pub frame_slot_stalls: u64,
+    /// `begin_frame` blocked on the oldest in-flight frame.
+    pub frame_slot_waits: u64,
     pub retired_resources: u64,
+    /// Writes queued through frame uploads.
+    pub upload_writes: u64,
+    /// Copies those writes became after merging.
+    pub upload_copies: u64,
+    /// Upload command buffers submitted.
+    pub upload_flushes: u64,
+    pub upload_ring_allocations: u64,
+    pub upload_ring_waits: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -170,87 +182,23 @@ pub struct PipelineKey {
     pub vertex_layout: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UploadReservation {
-    pub offset: u64,
-    pub size: u64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FrameSlotId(pub u32);
 
+/// Which frame holds a slot and, once it is submitted, the submission to
+/// wait on for the slot.
 #[derive(Debug)]
-struct UploadArena {
-    capacity: u64,
-    cursor: u64,
-    backing: Option<wgpu::Buffer>,
+struct FrameSlot {
+    token: u64,
+    submission: Option<wgpu::SubmissionIndex>,
 }
 
-impl UploadArena {
-    fn new(capacity: u64) -> Self {
-        Self {
-            capacity: capacity.max(1),
-            cursor: 0,
-            backing: None,
-        }
-    }
-
-    fn reserve(&mut self, size: u64, alignment: u64) -> Option<UploadReservation> {
-        let alignment = alignment.max(1);
-        let aligned =
-            (self.cursor.checked_add(alignment - 1)? / alignment).checked_mul(alignment)?;
-        let end = aligned.checked_add(size)?;
-        if end > self.capacity {
-            return None;
-        }
-        self.cursor = end;
-        Some(UploadReservation {
-            offset: aligned,
-            size,
-        })
-    }
-
-    fn required_end(&self, size: u64, alignment: u64) -> Option<u64> {
-        let alignment = alignment.max(1);
-        let aligned = self
-            .cursor
-            .checked_add(alignment - 1)?
-            .checked_div(alignment)?
-            .checked_mul(alignment)?;
-        aligned.checked_add(size)
-    }
-
-    fn reset(&mut self) {
-        self.cursor = 0;
-    }
-
-    fn ensure_backing(&mut self, device: Option<&wgpu::Device>) -> Option<wgpu::Buffer> {
-        let device = device?;
-        if self.backing.is_none() {
-            self.backing = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-gpu upload arena"),
-                size: self.capacity,
-                usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-        }
-        self.backing.clone()
-    }
-
-    fn grow_backing(&mut self, device: Option<&wgpu::Device>, needed: u64) -> Option<wgpu::Buffer> {
-        let device = device?;
-        let old = self.backing.take();
-        while self.capacity < needed {
-            self.capacity = self.capacity.saturating_mul(2).max(needed);
-        }
-        self.backing = Some(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-gpu upload arena"),
-            size: self.capacity,
-            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        old
-    }
+/// Why no slot was free.
+pub(crate) enum SlotWait {
+    /// Wait for this submission; its completion frees a slot.
+    Submitted(wgpu::SubmissionIndex),
+    /// Every slot is held by a recording that has not been submitted.
+    Unsubmitted,
 }
 
 #[derive(Debug)]
@@ -261,9 +209,6 @@ struct RetiredResource {
 
 #[derive(Debug)]
 struct PolicyState {
-    upload: UploadArena,
-    upload_limit: u64,
-    device: Option<wgpu::Device>,
     transient_budget: u64,
     transient_bytes: u64,
     transient: HashMap<TransientResourceKey, VecDeque<u64>>,
@@ -273,9 +218,8 @@ struct PolicyState {
     retired_pipelines: Vec<(u64, wgpu::RenderPipeline)>,
     layouts: StampedCache<u64, Arc<wgpu::BindGroupLayout>>,
     retired_layouts: Vec<(u64, Arc<wgpu::BindGroupLayout>)>,
-    retired_uploads: Vec<(u64, wgpu::Buffer)>,
     retired: Vec<RetiredResource>,
-    frame_slots: Vec<Option<u64>>,
+    frame_slots: Vec<Option<FrameSlot>>,
     stats: GpuPolicyStats,
 }
 
@@ -287,30 +231,10 @@ pub struct GpuDeviceState {
 }
 
 impl GpuDeviceState {
-    #[cfg(test)]
     pub(crate) fn new(generation: DeviceGeneration) -> Self {
-        Self::new_inner_with_limit(generation, None, u64::MAX)
-    }
-
-    pub(crate) fn new_with_device(generation: DeviceGeneration, device: &wgpu::Device) -> Self {
-        Self::new_inner_with_limit(
-            generation,
-            Some(device.clone()),
-            device.limits().max_buffer_size,
-        )
-    }
-
-    fn new_inner_with_limit(
-        generation: DeviceGeneration,
-        device: Option<wgpu::Device>,
-        upload_limit: u64,
-    ) -> Self {
         Self {
             generation,
             inner: Arc::new(Mutex::new(PolicyState {
-                upload: UploadArena::new((4 * 1024 * 1024).min(upload_limit).max(1)),
-                upload_limit,
-                device,
                 transient_budget: 64 * 1024 * 1024,
                 transient_bytes: 0,
                 transient: HashMap::new(),
@@ -320,7 +244,6 @@ impl GpuDeviceState {
                 retired_pipelines: Vec::new(),
                 layouts: StampedCache::new(MAX_LAYOUTS),
                 retired_layouts: Vec::new(),
-                retired_uploads: Vec::new(),
                 retired: Vec::new(),
                 frame_slots: vec![None, None, None],
                 stats: GpuPolicyStats::default(),
@@ -332,29 +255,10 @@ impl GpuDeviceState {
         self.generation
     }
 
-    pub fn set_upload_capacity(&self, capacity: u64) {
-        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(old) = state.upload.backing.take() {
-            state.retired_uploads.push((0, old));
-        }
-        state.upload.capacity = capacity.max(1);
-        state.upload.reset();
-    }
-
     pub fn set_transient_budget(&self, bytes: u64) {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         state.transient_budget = bytes;
         evict_transient(&mut state);
-    }
-
-    /// Reset the upload arena when no frame slot is in flight. Normal
-    /// [`crate::FrameContext`] recording acquires a slot automatically; this
-    /// method is for explicit upload-arena users between completed frames.
-    pub fn begin_frame(&self) {
-        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if state.frame_slots.iter().all(Option::is_none) {
-            state.upload.reset();
-        }
     }
 
     /// Configure the number of in-flight slots. Existing reservations are
@@ -374,10 +278,16 @@ impl GpuDeviceState {
             .map_or(0, |index| index + 1);
         state
             .frame_slots
-            .resize(count.max(1).max(occupied).max(last_occupied), None);
+            .resize_with(count.max(1).max(occupied).max(last_occupied), || None);
     }
 
-    pub fn acquire_frame_slot(&self, submission: u64) -> Option<FrameSlotId> {
+    /// Take a free slot for the frame `token`, or `None` when all are held.
+    pub fn acquire_frame_slot(&self, token: u64) -> Option<FrameSlotId> {
+        self.take_frame_slot(token).ok()
+    }
+
+    /// Take a free slot, or say what to wait for.
+    pub(crate) fn take_frame_slot(&self, token: u64) -> Result<FrameSlotId, SlotWait> {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((index, slot)) = state
             .frame_slots
@@ -385,20 +295,66 @@ impl GpuDeviceState {
             .enumerate()
             .find(|(_, slot)| slot.is_none())
         {
-            *slot = Some(submission);
-            return Some(FrameSlotId(index as u32));
+            *slot = Some(FrameSlot {
+                token,
+                submission: None,
+            });
+            return Ok(FrameSlotId(index as u32));
         }
-        state.stats.frame_slot_stalls += 1;
-        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAME_SLOT_STALLS);
-        None
+        // Tokens increase with each frame, so the smallest submitted one is
+        // the oldest submission holding a slot.
+        Err(state
+            .frame_slots
+            .iter()
+            .flatten()
+            .filter_map(|slot| slot.submission.clone().map(|index| (slot.token, index)))
+            .min_by_key(|(token, _)| *token)
+            .map_or(SlotWait::Unsubmitted, |(_, index)| {
+                SlotWait::Submitted(index)
+            }))
     }
 
-    pub fn release_frame_slot(&self, slot: FrameSlotId, completed_submission: u64) -> bool {
+    /// The frame holding `slot` was submitted as `submission`.
+    pub(crate) fn mark_frame_slot_submitted(
+        &self,
+        slot: FrameSlotId,
+        token: u64,
+        submission: wgpu::SubmissionIndex,
+    ) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(Some(held)) = state.frame_slots.get_mut(slot.0 as usize)
+            && held.token == token
+        {
+            held.submission = Some(submission);
+        }
+    }
+
+    pub(crate) fn record_slot_wait(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stats
+            .frame_slot_waits += 1;
+        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAME_SLOT_WAITS);
+    }
+
+    pub(crate) fn record_slot_stall(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stats
+            .frame_slot_stalls += 1;
+        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAME_SLOT_STALLS);
+        nana_diagnostics::event!(nana_diagnostics::framework::gpu::FRAME_SLOTS_EXHAUSTED);
+    }
+
+    /// Free `slot` if the frame holding it has token `completed` or older.
+    pub fn release_frame_slot(&self, slot: FrameSlotId, completed: u64) -> bool {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let Some(owner) = state.frame_slots.get_mut(slot.0 as usize) else {
             return false;
         };
-        if owner.is_some_and(|submission| submission <= completed_submission) {
+        if owner.as_ref().is_some_and(|held| held.token <= completed) {
             *owner = None;
             true
         } else {
@@ -414,41 +370,12 @@ impl GpuDeviceState {
         let Some(owner) = state.frame_slots.get_mut(slot.0 as usize) else {
             return false;
         };
-        if *owner == Some(token) {
+        if owner.as_ref().is_some_and(|held| held.token == token) {
             *owner = None;
             true
         } else {
             false
         }
-    }
-
-    pub fn reserve_upload(&self, size: u64, alignment: u64) -> Option<UploadReservation> {
-        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let device = state.device.clone();
-        let _ = state.upload.ensure_backing(device.as_ref());
-        let mut reservation = state.upload.reserve(size, alignment);
-        if reservation.is_none()
-            && let Some(needed) = state.upload.required_end(size, alignment)
-            && state.device.is_some()
-            && needed <= state.upload_limit
-        {
-            let old = state.upload.grow_backing(device.as_ref(), needed);
-            if let Some(old) = old {
-                state.retired_uploads.push((0, old));
-            }
-            state.upload.reset();
-            reservation = state.upload.reserve(size, alignment);
-            state.stats.buffer_reallocations = state.stats.buffer_reallocations.saturating_add(1);
-            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::BUFFER_REALLOCATIONS);
-        }
-        if reservation.is_some() {
-            state.stats.upload_bytes = state.stats.upload_bytes.saturating_add(size);
-            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::UPLOAD_BYTES, size);
-        } else {
-            state.stats.buffer_reallocations = state.stats.buffer_reallocations.saturating_add(1);
-            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::BUFFER_REALLOCATIONS);
-        }
-        reservation
     }
 
     pub fn record_upload(&self, bytes: u64) {
@@ -457,40 +384,41 @@ impl GpuDeviceState {
         nana_diagnostics::metric!(nana_diagnostics::framework::gpu::UPLOAD_BYTES, bytes);
     }
 
-    /// Stage bytes into the policy-owned upload backing. Callers consume the
-    /// returned reservation and buffer from their frame encoder.
-    pub(crate) fn stage_upload(
-        &self,
-        queue: &wgpu::Queue,
-        bytes: &[u8],
-        alignment: u64,
-    ) -> Option<(UploadReservation, wgpu::Buffer)> {
-        let reservation = self.reserve_upload(bytes.len() as u64, alignment)?;
-        let backing = self
-            .inner
+    pub(crate) fn record_ring_allocation(&self) {
+        self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .upload
-            .backing
-            .clone()?;
-        queue.write_buffer(&backing, reservation.offset, bytes);
-        Some((reservation, backing))
+            .stats
+            .upload_ring_allocations += 1;
+        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::UPLOAD_RING_ALLOCATIONS);
+    }
+
+    pub(crate) fn record_ring_wait(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stats
+            .upload_ring_waits += 1;
+        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::UPLOAD_RING_WAITS);
+    }
+
+    /// One upload command buffer: `writes` queued writes became `copies`
+    /// copies.
+    pub(crate) fn record_flush(&self, writes: u64, copies: u64) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.stats.upload_writes += writes;
+        state.stats.upload_copies += copies;
+        state.stats.upload_flushes += 1;
+        drop(state);
+        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::UPLOAD_WRITES, writes);
+        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::UPLOAD_COPIES, copies);
+        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::UPLOAD_FLUSHES);
     }
 
     pub fn record_reallocation(&self) {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         state.stats.buffer_reallocations = state.stats.buffer_reallocations.saturating_add(1);
         nana_diagnostics::metric!(nana_diagnostics::framework::gpu::BUFFER_REALLOCATIONS);
-    }
-
-    pub(crate) fn upload_backing_size(&self) -> Option<u64> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .upload
-            .backing
-            .as_ref()
-            .map(wgpu::Buffer::size)
     }
 
     pub fn acquire_transient(&self, key: TransientResourceKey) -> Option<u64> {
@@ -707,11 +635,6 @@ impl GpuDeviceState {
                 *retired_at = submission;
             }
         }
-        for (retired_at, _) in &mut state.retired_uploads {
-            if *retired_at == 0 {
-                *retired_at = submission;
-            }
-        }
     }
 
     pub fn retire(&self, submission: u64, bytes: u64) {
@@ -742,9 +665,6 @@ impl GpuDeviceState {
             .retain(|(submission, _)| *submission == 0 || *submission > completed_submission);
         state
             .retired_layouts
-            .retain(|(submission, _)| *submission == 0 || *submission > completed_submission);
-        state
-            .retired_uploads
             .retain(|(submission, _)| *submission == 0 || *submission > completed_submission);
         bytes
     }
@@ -853,19 +773,6 @@ mod tests {
     }
 
     #[test]
-    fn upload_arena_reuses_after_frame_reset() {
-        let state = state();
-        state.set_upload_capacity(64);
-        assert_eq!(
-            state.reserve_upload(8, 16),
-            Some(UploadReservation { offset: 0, size: 8 })
-        );
-        assert!(state.reserve_upload(60, 1).is_none());
-        state.begin_frame();
-        assert_eq!(state.reserve_upload(8, 16).unwrap().offset, 0);
-    }
-
-    #[test]
     fn pools_and_registries_are_generation_scoped_and_counted() {
         let state = state();
         let key = TransientResourceKey::new(
@@ -930,7 +837,6 @@ mod tests {
         assert!(!state.release_frame_slot(slot, 3));
         assert!(state.release_frame_slot(slot, 4));
         assert!(state.acquire_frame_slot(5).is_some());
-        assert_eq!(state.stats().frame_slot_stalls, 1);
     }
 
     #[test]
@@ -958,7 +864,7 @@ mod tests {
         let (device, _queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("GPU policy tests require a WGPU device");
-        let state = GpuDeviceState::new_with_device(DeviceGeneration::next(), &device);
+        let state = GpuDeviceState::new(DeviceGeneration::next());
         let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
         let key = TransientResourceKey::buffer(state.generation(), usage.bits(), 256);
         let buffer = state

@@ -286,6 +286,63 @@ fn paint_records_gpu_work_only_after_encode_and_submit() {
 }
 
 #[test]
+fn frame_uploads_paint_the_same_pixels_as_direct_queue_writes() {
+    let (device, queue) = test_device();
+    let gpu = crate::test_gpu::context();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let scene = labeled_selected_button_scene();
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let read = |texture: &wgpu::Texture| {
+        readback_rgba(
+            &device,
+            &queue,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame upload readback"),
+            }),
+            texture,
+            64,
+            64,
+        )
+    };
+
+    let (direct_texture, direct_view) = test_copy_target(&device, format, 64, 64);
+    let mut direct = SceneWgpuPainter::for_test(format);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("direct writes"),
+    });
+    direct
+        .paint_encoder(&scene, &mut encoder, &direct_view, viewport, None, None)
+        .unwrap();
+    queue.submit([encoder.finish()]);
+    let expected = read(&direct_texture);
+
+    let (framed_texture, framed_view) = test_copy_target(&device, format, 64, 64);
+    let target = __framework::render_target(&gpu, framed_view, format, [64, 64]);
+    let mut framed = SceneWgpuPainter::for_test(format);
+    // Twice: the second frame writes only what changed, through the same
+    // recorder, and must still match.
+    for _ in 0..2 {
+        let before = gpu.policy().stats();
+        let mut frame = gpu.begin_frame("framed paint");
+        framed
+            .paint(&scene.clone(), &mut frame, &target, viewport, None, None)
+            .unwrap();
+        frame.submit();
+        let after = gpu.policy().stats();
+        assert!(after.upload_flushes - before.upload_flushes <= 1);
+        assert_eq!(read(&framed_texture), expected);
+    }
+}
+
+#[test]
 fn text_shape_cache_hits_on_repaint_with_identical_pixels() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;

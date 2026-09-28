@@ -42,6 +42,8 @@ pub struct FrameContext {
     retained: Vec<(RetainedWrites, u64)>,
     frame_slot: Option<FrameSlotId>,
     transient_registry: Arc<Mutex<Vec<(TransientResourceKey, wgpu::Buffer)>>>,
+    /// Writes renderers queued for this frame; submitted ahead of it.
+    uploads: crate::upload::FrameUploads,
 }
 
 impl fmt::Debug for FrameContext {
@@ -62,6 +64,7 @@ impl FrameContext {
         encoder: wgpu::CommandEncoder,
         frame_slot: Option<FrameSlotId>,
     ) -> Self {
+        let uploads = Arc::new(Mutex::new(gpu.inner.upload_ring.batch()));
         Self {
             gpu,
             id,
@@ -69,7 +72,29 @@ impl FrameContext {
             retained: Vec::new(),
             frame_slot,
             transient_registry: Arc::new(Mutex::new(Vec::new())),
+            uploads,
         }
+    }
+
+    pub(crate) fn uploads(&self) -> crate::upload::FrameUploads {
+        Arc::clone(&self.uploads)
+    }
+
+    /// This frame's writes, behind whatever was queued outside a frame.
+    fn take_uploads(&self) -> crate::upload::UploadBatch {
+        let mut batch = std::mem::take(
+            &mut *self
+                .gpu
+                .inner
+                .pending_uploads
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        crate::upload::merge(
+            &mut batch,
+            &mut self.uploads.lock().unwrap_or_else(|e| e.into_inner()),
+        );
+        batch
     }
 
     pub fn id(&self) -> FrameId {
@@ -111,6 +136,16 @@ impl FrameContext {
         let encoder = self.encoder.take().expect("frame encoder");
         let started = Instant::now();
         let commands = encoder.finish();
+        // Outside the submission guard: taking a staging chunk may wait for
+        // one in flight.
+        let uploads = crate::upload::record(
+            &self.gpu.inner.upload_ring,
+            &self.gpu.inner.device,
+            &self.gpu.inner.queue,
+            self.gpu.policy(),
+            self.gpu.latest_submission(),
+            self.take_uploads(),
+        );
         let index = {
             let _submission = self.gpu.lock_submission();
             // The reconfiguration guard is shared between submitters. A
@@ -121,7 +156,12 @@ impl FrameContext {
                 .submission_order
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let index = self.gpu.inner.queue.submit([commands]);
+            let index = self
+                .gpu
+                .inner
+                .queue
+                .submit(uploads.into_iter().chain([commands]));
+            self.gpu.note_submission(index.clone());
             let submission = self
                 .gpu
                 .inner
@@ -135,6 +175,11 @@ impl FrameContext {
             owner.settle(key, self.id);
         }
         let completed = index.1;
+        if let Some(slot) = self.frame_slot {
+            self.gpu
+                .policy()
+                .mark_frame_slot_submitted(slot, self.id.get(), index.0.clone());
+        }
         if let Some(slot) = self.frame_slot.take() {
             let policy = self.gpu.policy().clone();
             let frame_token = self.id.get();
@@ -201,6 +246,18 @@ impl Drop for FrameContext {
         if let Some(encoder) = self.encoder.take() {
             drop(encoder);
             nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_DISCARDED);
+            // Queue writes cannot be taken back, and renderers keep CPU
+            // mirrors that assume they landed: the next submission lands them.
+            let mut pending = self
+                .gpu
+                .inner
+                .pending_uploads
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            crate::upload::merge(
+                &mut pending,
+                &mut self.uploads.lock().unwrap_or_else(|e| e.into_inner()),
+            );
         }
         if let Some(slot) = self.frame_slot.take() {
             self.gpu

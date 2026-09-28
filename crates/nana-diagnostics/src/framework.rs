@@ -188,6 +188,19 @@ pub mod gpu {
     pub static REALIZATION_HITS: Metric = Metric::counter(D, 18, "gpu.realization_hits", "count");
     pub static REALIZATION_MISSES: Metric =
         Metric::counter(D, 19, "gpu.realization_misses", "count");
+    /// Writes renderers queued through frame uploads.
+    pub static UPLOAD_WRITES: Metric = Metric::counter(D, 20, "gpu.upload_writes", "count");
+    /// Copy commands those writes became after merging adjacent ranges.
+    pub static UPLOAD_COPIES: Metric = Metric::counter(D, 21, "gpu.upload_copies", "count");
+    /// Upload command buffers submitted: at most one per frame submission.
+    pub static UPLOAD_FLUSHES: Metric = Metric::counter(D, 22, "gpu.upload_flushes", "count");
+    /// Staging chunks the upload ring had to create.
+    pub static UPLOAD_RING_ALLOCATIONS: Metric =
+        Metric::counter(D, 23, "gpu.upload_ring_allocations", "count");
+    /// Flushes that waited for an in-flight chunk because the ring was full.
+    pub static UPLOAD_RING_WAITS: Metric = Metric::counter(D, 24, "gpu.upload_ring_waits", "count");
+    /// `begin_frame` calls that blocked on the oldest in-flight frame.
+    pub static FRAME_SLOT_WAITS: Metric = Metric::counter(D, 25, "gpu.frame_slot_waits", "count");
 
     pub static SURFACE_LOST_EVENT: EventDescriptor =
         EventDescriptor::new(D, 1, "gpu.surface_lost", Severity::Warn, &[]);
@@ -221,6 +234,11 @@ pub mod gpu {
         Severity::Warn,
         &[F::u64("target")],
     );
+    /// Fault: every frame slot is held by a recording that was never
+    /// submitted, so waiting could never end. The new frame runs without a
+    /// slot.
+    pub static FRAME_SLOTS_EXHAUSTED: EventDescriptor =
+        EventDescriptor::new(D, 7, "gpu.frame_slots_exhausted", Severity::Error, &[]);
 }
 
 pub mod window {

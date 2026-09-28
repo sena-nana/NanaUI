@@ -531,12 +531,203 @@ fn concurrent_transient_cold_requests_create_distinct_real_textures() {
     assert_eq!(policy.stats().transient_pool_hits, 0);
 }
 
+fn raw_buffer(gpu: &GpuContext, size: u64) -> wgpu::Buffer {
+    __framework::device(gpu).create_buffer(&wgpu::BufferDescriptor {
+        label: Some("contract upload target"),
+        size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    })
+}
+
+/// Copy `source` back to the CPU with its own submission.
+fn read_buffer(gpu: &GpuContext, source: &wgpu::Buffer) -> Vec<u8> {
+    let device = __framework::device(gpu);
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("contract readback"),
+        size: source.size(),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut frame = gpu.begin_frame("contract readback");
+    __framework::encoder(&mut frame).copy_buffer_to_buffer(source, 0, &readback, 0, source.size());
+    frame.submit();
+    readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let bytes = readback.slice(..).get_mapped_range().unwrap().to_vec();
+    readback.unmap();
+    bytes
+}
+
 #[test]
-fn production_upload_arena_has_real_backing_and_grows_before_fallback() {
+fn frame_uploads_land_with_their_frame_as_one_flush_of_merged_copies() {
     let gpu = context();
-    gpu.policy().set_upload_capacity(16);
-    assert!(gpu.policy().reserve_upload(8, 4).is_some());
-    assert_eq!(__framework::upload_backing_size(&gpu), Some(16));
-    assert!(gpu.policy().reserve_upload(32, 4).is_some());
-    assert!(__framework::upload_backing_size(&gpu).unwrap() >= 32);
+    let first = raw_buffer(&gpu, 4000);
+    let second = raw_buffer(&gpu, 4000);
+    let frame = gpu.begin_frame("uploads");
+    let uploads = __framework::frame_uploads(&frame);
+    for index in 0..500u32 {
+        uploads.write_buffer(&first, u64::from(index) * 4, &index.to_le_bytes());
+        uploads.write_buffer(&second, u64::from(index) * 4, &(index * 2).to_le_bytes());
+    }
+    // Interleaved targets cannot merge; each run of one target can.
+    let before = gpu.policy().stats();
+    frame.submit();
+    let after = gpu.policy().stats();
+    assert_eq!(after.upload_flushes - before.upload_flushes, 1);
+    assert_eq!(after.upload_writes - before.upload_writes, 1000);
+    let bytes = read_buffer(&gpu, &first);
+    let words: Vec<u32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
+        .collect();
+    assert_eq!(words[..500], (0..500).collect::<Vec<_>>()[..]);
+    let doubled = read_buffer(&gpu, &second);
+    assert_eq!(
+        u32::from_le_bytes(doubled[4 * 499..4 * 500].try_into().unwrap()),
+        998
+    );
+
+    // Consecutive writes to one buffer become one copy.
+    let frame = gpu.begin_frame("merged");
+    let uploads = __framework::frame_uploads(&frame);
+    for index in 0..500u32 {
+        uploads.write_buffer(&first, u64::from(index) * 4, &[7; 4]);
+    }
+    let before = gpu.policy().stats();
+    frame.submit();
+    assert_eq!(gpu.policy().stats().upload_copies - before.upload_copies, 1);
+    assert_eq!(read_buffer(&gpu, &first)[..8], [7; 8]);
+}
+
+#[test]
+fn writes_outside_a_frame_and_from_a_discarded_frame_land_at_the_next_submit() {
+    let gpu = context();
+    let target = texture(
+        &gpu,
+        GpuTextureUsages::COPY_DST | GpuTextureUsages::COPY_SRC,
+    );
+    let pixels: Vec<u8> = (0..32).collect();
+    gpu.write_texture(
+        &target,
+        GpuTextureRegion {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 2,
+        },
+        &pixels,
+        16,
+    )
+    .unwrap();
+    let buffer = raw_buffer(&gpu, 16);
+    let frame = gpu.begin_frame("discarded");
+    __framework::frame_uploads(&frame).write_buffer(&buffer, 0, &[9; 16]);
+    drop(frame);
+    // One submission lands both.
+    let device = __framework::device(&gpu);
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("texture readback"),
+        size: 256 * 2,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut frame = gpu.begin_frame("reader");
+    __framework::encoder(&mut frame).copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: __framework::texture(&target),
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(2),
+            },
+        },
+        wgpu::Extent3d {
+            width: 4,
+            height: 2,
+            depth_or_array_layers: 1,
+        },
+    );
+    frame.submit();
+    readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    {
+        let rows = readback.slice(..).get_mapped_range().unwrap();
+        assert_eq!(&rows[..16], &pixels[..16]);
+        assert_eq!(&rows[256..272], &pixels[16..32]);
+    }
+    readback.unmap();
+    assert_eq!(read_buffer(&gpu, &buffer), vec![9; 16]);
+}
+
+#[test]
+fn steady_frames_reuse_their_staging_chunks() {
+    let gpu = context();
+    let target = raw_buffer(&gpu, 4096);
+    let device = __framework::device(&gpu);
+    for frame_index in 0..20u8 {
+        let frame = gpu.begin_frame("steady");
+        __framework::frame_uploads(&frame).write_buffer(&target, 0, &[frame_index; 4096]);
+        frame.submit();
+        // A host polls between frames; the chunk comes back then.
+        let _ = device.poll(wgpu::PollType::Poll);
+    }
+    assert!(
+        gpu.policy().stats().upload_ring_allocations <= 4,
+        "{:?}",
+        gpu.policy().stats()
+    );
+    assert_eq!(read_buffer(&gpu, &target)[..4], [19; 4]);
+}
+
+#[test]
+fn a_full_pipeline_blocks_on_the_oldest_frame_and_unsubmitted_slots_never_deadlock() {
+    let gpu = context();
+    for _ in 0..3 {
+        gpu.begin_frame("in flight").submit();
+    }
+    // Three submitted frames hold every slot until they complete; the next
+    // frame waits for the oldest instead of spinning.
+    let before = gpu.policy().stats();
+    gpu.begin_frame("after").submit();
+    let after = gpu.policy().stats();
+    assert!(after.frame_slot_waits - before.frame_slot_waits <= 1);
+    assert_eq!(after.frame_slot_stalls, before.frame_slot_stalls);
+
+    // Let the submitted frames complete and hand their slots back.
+    __framework::device(&gpu)
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    // Three recordings nobody submits hold every slot for good. A fourth
+    // frame must still start.
+    let held: Vec<_> = (0..3).map(|_| gpu.try_begin_frame("held")).collect();
+    assert!(held.iter().all(Option::is_some));
+    let (done_tx, done_rx) = mpsc::channel();
+    let starter = gpu.clone();
+    thread::spawn(move || {
+        let frame = starter.begin_frame("unslotted");
+        done_tx.send(frame.id()).unwrap();
+    });
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("begin_frame must not wait on frames that were never submitted");
+    assert_eq!(
+        gpu.policy().stats().frame_slot_stalls,
+        before.frame_slot_stalls + 1
+    );
+}
+
+#[test]
+fn a_frame_can_move_to_another_thread() {
+    fn send<T: Send>() {}
+    send::<nana_gpu::FrameContext>();
+    send::<__framework::FrameUploadHandle>();
 }

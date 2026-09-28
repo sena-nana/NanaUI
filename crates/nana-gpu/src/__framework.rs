@@ -168,13 +168,77 @@ pub fn render_pipeline_state(
     policy.pipeline(key, create)
 }
 
-/// Whether the production policy has materialized its upload arena backing.
-pub fn upload_backing_size(gpu: &GpuContext) -> Option<u64> {
-    gpu.policy().upload_backing_size()
+/// The writes a frame submits ahead of its own commands. Renderers record
+/// into it instead of calling `queue.write_*`: the frame stages them all
+/// through one mapped chunk and copies them in one upload command buffer.
+#[derive(Clone)]
+pub struct FrameUploadHandle(crate::upload::FrameUploads);
+
+impl std::fmt::Debug for FrameUploadHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FrameUploadHandle")
+            .finish_non_exhaustive()
+    }
 }
 
-pub fn stage_upload(gpu: &GpuContext, queue: &wgpu::Queue, bytes: &[u8], alignment: u64) -> bool {
-    gpu.policy().stage_upload(queue, bytes, alignment).is_some()
+impl FrameUploadHandle {
+    /// Like `queue.write_buffer`: `offset` 4-aligned, a length that is not
+    /// is padded with zeros.
+    pub fn write_buffer(&self, target: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write_buffer(target, offset, bytes);
+    }
+
+    /// Like `queue.write_texture` for mip `mip_level` of a 2D texture:
+    /// `rows_per_image` rows of `row_bytes` each, `bytes_per_row` apart.
+    #[allow(clippy::too_many_arguments)]
+    pub fn write_texture(
+        &self,
+        target: &wgpu::Texture,
+        mip_level: u32,
+        origin: wgpu::Origin3d,
+        extent: wgpu::Extent3d,
+        bytes: &[u8],
+        bytes_per_row: u32,
+        rows_per_image: u32,
+        row_bytes: u32,
+    ) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write_texture(
+                target,
+                mip_level,
+                origin,
+                extent,
+                bytes,
+                bytes_per_row,
+                rows_per_image,
+                row_bytes,
+            );
+    }
+
+    /// A region whose `row_bytes`-long rows `fill(row, dst)` writes in place.
+    pub fn write_texture_rows(
+        &self,
+        target: &wgpu::Texture,
+        origin: wgpu::Origin3d,
+        extent: wgpu::Extent3d,
+        row_bytes: u32,
+        fill: impl FnMut(usize, &mut [u8]),
+    ) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .write_texture_rows(target, 0, origin, extent, row_bytes, fill);
+    }
+}
+
+pub fn frame_uploads(frame: &FrameContext) -> FrameUploadHandle {
+    FrameUploadHandle(frame.uploads())
 }
 
 pub fn acquire_transient_buffer(
