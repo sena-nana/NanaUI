@@ -404,6 +404,98 @@ fn create_component_append_commits_once_per_call() {
 }
 
 #[test]
+fn a_placed_keyed_child_keeps_its_identity_across_reassembly() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let elsewhere = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let assemble = |context: &mut AppContext, keys: &[&str]| {
+        context
+            .mount(parent, |scope| {
+                for key in keys {
+                    scope.child(*key, Stack::column(0.0))?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    };
+    assemble(&mut context, &["a", "b"]);
+    let a = context.assembled_child(parent.stable_id(), "a").unwrap();
+    let b = context.assembled_child(parent.stable_id(), "b").unwrap();
+    context.place_assembled(a, elsewhere.stable_id()).unwrap();
+    assert_eq!(context.assembly_key(parent.stable_id(), a), Some("a"));
+    // Reassembling the declared parent reuses the identity and leaves the
+    // placement alone.
+    assemble(&mut context, &["a", "b"]);
+    assert_eq!(context.assembled_child(parent.stable_id(), "a"), Some(a));
+    assert_eq!(
+        context.world().node(a).unwrap().parent,
+        Some(elsewhere.stable_id())
+    );
+    assert_eq!(
+        context.world().node(parent.stable_id()).unwrap().children,
+        vec![b]
+    );
+    // Dropping the key despawns the node wherever it is placed.
+    assemble(&mut context, &["b"]);
+    assert!(!context.world().contains(a));
+    assert!(
+        context
+            .world()
+            .node(elsewhere.stable_id())
+            .unwrap()
+            .children
+            .is_empty()
+    );
+    assert!(context.assembly_path(a).is_none());
+}
+
+#[test]
+fn place_assembled_rejects_unkeyed_nodes_and_cycles() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let loose = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    context
+        .mount(parent, |scope| {
+            scope.with_child("outer", Stack::column(0.0), |scope| {
+                scope.child("inner", Stack::column(0.0)).map(|_| ())
+            })?;
+            Ok(())
+        })
+        .unwrap();
+    let outer = context
+        .assembled_child(parent.stable_id(), "outer")
+        .unwrap();
+    let inner = context.assembled_child(outer, "inner").unwrap();
+    assert_eq!(
+        context.place_assembled(loose.stable_id(), parent.stable_id()),
+        Err(FrameworkError::InvalidInput)
+    );
+    assert!(matches!(
+        context.place_assembled(outer, inner),
+        Err(FrameworkError::InvalidComponentHierarchy { .. })
+    ));
+    assert_eq!(context.assembly_path(inner).as_deref(), Some("outer/inner"));
+    assert_eq!(
+        context.resolve_assembly_path(parent.stable_id(), "outer/inner"),
+        Some(inner)
+    );
+    assert_eq!(
+        context.resolve_assembly_path(parent.stable_id(), "outer/none"),
+        None
+    );
+}
+
+#[test]
 fn build_rejects_duplicate_keys_without_committing() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

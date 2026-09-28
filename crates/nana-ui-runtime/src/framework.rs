@@ -961,9 +961,9 @@ impl From<UiWorldError> for FrameworkError {
 /// Owns typed view state while [`UiWorld`] remains the retained UI authority.
 pub struct AppContext {
     world: UiWorld,
-    /// Composition-owned runtime nodes. The value is the owning host root;
-    /// this lets hosts reject parents borrowed from another composition tree.
-    composition_owners: HashMap<StableNodeId, StableNodeId>,
+    /// Roots mounted by a [`crate::CompositionHost`]. A node belongs to the
+    /// first root on its declared chain ([`Self::assembly_owner`]).
+    composition_roots: HashSet<StableNodeId>,
     views: HashMap<StableNodeId, Box<dyn Any + Send>>,
     /// Opt-in reproject entry points keyed by node, registered from
     /// [`ComponentView::wants_child_reproject`] when a component view is
@@ -995,6 +995,14 @@ pub struct AppContext {
     /// [`reproject_erased`] per component type created through this context.
     reprojectors: HashMap<TypeId, ReprojectFn>,
     assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
+    /// Reverse of `assembled`: a keyed child's declared parent and key. The
+    /// declared parent is identity; the world parent is placement, and the
+    /// two differ only for nodes in `placed_assembled`.
+    assembled_parent: HashMap<StableNodeId, (StableNodeId, String)>,
+    /// Keyed children [`Self::place_assembled`] moved out from under their
+    /// declared parent. Reassembling that parent leaves them where they are;
+    /// despawning it despawns them.
+    placed_assembled: HashSet<StableNodeId>,
     /// Components whose assembler is running, so the `update_component` calls
     /// an assembler makes do not re-enter it.
     assembling: HashSet<StableNodeId>,
@@ -1266,7 +1274,7 @@ impl AppContext {
     pub fn from_world(world: UiWorld) -> Self {
         let mut context = Self {
             world,
-            composition_owners: HashMap::new(),
+            composition_roots: HashSet::new(),
             views: HashMap::new(),
             child_reproject_views: HashMap::new(),
             metrics_reproject_views: HashMap::new(),
@@ -1285,6 +1293,8 @@ impl AppContext {
             file_drops: HashMap::new(),
             reprojectors: HashMap::new(),
             assembled: HashMap::new(),
+            assembled_parent: HashMap::new(),
+            placed_assembled: HashSet::new(),
             assembling: HashSet::new(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
@@ -1318,69 +1328,43 @@ impl AppContext {
         &self.world
     }
 
-    pub(crate) fn composition_owner(&mut self, id: StableNodeId) -> Option<StableNodeId> {
-        let owner = self.composition_owners.get(&id).copied()?;
-        if self.world.contains(owner) {
-            Some(owner)
-        } else {
-            self.composition_owners.remove(&id);
-            None
-        }
-    }
-
-    pub(crate) fn register_composition_nodes(
-        &mut self,
-        owner: StableNodeId,
-        nodes: impl IntoIterator<Item = StableNodeId>,
-    ) {
-        for node in nodes {
-            self.composition_owners.insert(node, owner);
-        }
-    }
-
-    pub(crate) fn unregister_composition_nodes(
-        &mut self,
-        owner: StableNodeId,
-        nodes: impl IntoIterator<Item = StableNodeId>,
-    ) {
-        for node in nodes {
-            if self.composition_owners.get(&node).copied() == Some(owner) {
-                self.composition_owners.remove(&node);
-            }
-        }
-    }
-
-    /// The key `child` was created under by [`Self::build`] or [`Self::mount`].
+    /// The key `child` was created under by [`Self::build`] or [`Self::mount`],
+    /// when `parent` is the parent it was declared under.
     ///
-    /// The assembly key is already this framework's author-facing stable-identity
+    /// The assembly key is this framework's author-facing stable-identity
     /// contract — [`FrameworkError::DuplicateAssemblyKey`] names it — so reading
-    /// it back gives tooling a handle that survives relayout and reconciliation.
-    /// Nodes created directly with `create_component` were never keyed and have
-    /// none; callers must have a second way to address those.
+    /// it back gives tooling a handle that survives relayout, reconciliation
+    /// and [`Self::place_assembled`]. Nodes created directly with
+    /// `create_component` were never keyed and have none; callers must have a
+    /// second way to address those.
     pub fn assembly_key(&self, parent: StableNodeId, child: StableNodeId) -> Option<&str> {
-        self.assembled
-            .get(&parent)?
-            .iter()
-            .find(|(_, slot)| slot.id == child)
-            .map(|(key, _)| key.as_str())
+        self.assembled_parent
+            .get(&child)
+            .filter(|(declared, _)| *declared == parent)
+            .map(|(_, key)| key.as_str())
     }
 
     /// `/`-joined assembly keys from the outermost keyed ancestor down to `id`.
     ///
-    /// `None` when no ancestor keyed this node.
+    /// Keyed nodes contribute their key and continue at the parent they were
+    /// declared under, wherever they are placed; unkeyed nodes continue at
+    /// their world parent. `None` when no ancestor keyed this node.
     pub fn assembly_path(&self, id: StableNodeId) -> Option<String> {
         let mut segments = Vec::new();
         let mut cursor = Some(id);
+        let mut steps = 0usize;
         while let Some(node) = cursor {
-            let parent = self.world.node(node).and_then(|snapshot| snapshot.parent);
-            if let Some(parent) = parent
-                && let Some(key) = self.assembly_key(parent, node)
-            {
-                segments.push(key);
-            }
-            cursor = parent;
-            // The retained tree is acyclic, but a malformed one must not hang.
-            if segments.len() > self.assembled.len() + 1 {
+            cursor = match self.assembled_parent.get(&node) {
+                Some((parent, key)) => {
+                    segments.push(key.as_str());
+                    Some(*parent)
+                }
+                None => self.world.node(node).and_then(|snapshot| snapshot.parent),
+            };
+            // Declared and world parents are each acyclic; a malformed mix
+            // must still not hang.
+            steps += 1;
+            if steps > self.world.len() + 1 {
                 break;
             }
         }
@@ -1389,6 +1373,138 @@ impl AppContext {
         }
         segments.reverse();
         Some(segments.join("/"))
+    }
+
+    /// The node `path` names below `root`: each `/`-separated segment is the
+    /// assembly key of a child declared under the previous node. An empty
+    /// path is `root` itself.
+    pub fn resolve_assembly_path(&self, root: StableNodeId, path: &str) -> Option<StableNodeId> {
+        if !self.world.contains(root) {
+            return None;
+        }
+        if path.is_empty() {
+            return Some(root);
+        }
+        path.split('/').try_fold(root, |parent, key| {
+            self.assembled.get(&parent)?.get(key).map(|child| child.id)
+        })
+    }
+
+    /// Move a keyed node to `parent` without changing its identity.
+    ///
+    /// The node keeps its key under the parent it was declared under, so
+    /// [`Self::assembly_path`] and [`Self::assembled_child`] still find it, and
+    /// reassembling that parent neither pulls it back nor duplicates it.
+    /// Despawning the declared parent despawns the node wherever it is.
+    /// Placing it back under its declared parent ends the arrangement.
+    ///
+    /// Unkeyed nodes, dead nodes or parents, cycles and cross-document moves
+    /// fail before anything changes.
+    pub fn place_assembled(
+        &mut self,
+        node: StableNodeId,
+        parent: StableNodeId,
+    ) -> Result<(), FrameworkError> {
+        let declared = self
+            .assembled_parent
+            .get(&node)
+            .map(|(declared, _)| *declared)
+            .ok_or(FrameworkError::InvalidInput)?;
+        let snapshot = self
+            .world
+            .node(node)
+            .ok_or(FrameworkError::MissingView(node))?;
+        let target = self
+            .world
+            .node(parent)
+            .ok_or(FrameworkError::MissingView(parent))?;
+        let cycle = std::iter::successors(Some(parent), |id| {
+            self.world.node(*id).and_then(|snapshot| snapshot.parent)
+        })
+        .any(|ancestor| ancestor == node);
+        if cycle || target.document != snapshot.document {
+            return Err(FrameworkError::InvalidComponentHierarchy {
+                parent,
+                child: node,
+            });
+        }
+        if snapshot.parent != Some(parent) {
+            let mut mutations = MutationQueue::new();
+            mutations.insert(parent, node, None);
+            self.commit_mutations(mutations)?;
+        }
+        if parent == declared {
+            self.placed_assembled.remove(&node);
+        } else {
+            self.placed_assembled.insert(node);
+        }
+        Ok(())
+    }
+
+    /// The composition root `id` belongs to: the first mounted root found
+    /// walking from `id` along declared parents (world parents for unkeyed
+    /// nodes). A node placed elsewhere still belongs to its declaring host.
+    pub(crate) fn assembly_owner(&self, id: StableNodeId) -> Option<StableNodeId> {
+        if self.composition_roots.is_empty() {
+            return None;
+        }
+        let mut cursor = Some(id);
+        let mut steps = 0usize;
+        while let Some(node) = cursor {
+            if self.composition_roots.contains(&node) {
+                return Some(node);
+            }
+            cursor = self
+                .assembled_parent
+                .get(&node)
+                .map(|(parent, _)| *parent)
+                .or_else(|| self.world.node(node).and_then(|snapshot| snapshot.parent));
+            steps += 1;
+            if steps > self.world.len() + 1 {
+                return None;
+            }
+        }
+        None
+    }
+
+    pub(crate) fn register_composition_root(&mut self, root: StableNodeId) {
+        self.composition_roots.insert(root);
+    }
+
+    pub(crate) fn unregister_composition_root(&mut self, root: StableNodeId) {
+        self.composition_roots.remove(&root);
+    }
+
+    /// Replace `parent`'s keyed children and keep the reverse index in step.
+    pub(super) fn store_assembled(
+        &mut self,
+        parent: StableNodeId,
+        slots: HashMap<String, assemble::AssembledChild>,
+    ) {
+        if let Some(previous) = self.assembled.remove(&parent) {
+            for child in previous.values() {
+                if self
+                    .assembled_parent
+                    .get(&child.id)
+                    .is_some_and(|(declared, _)| *declared == parent)
+                {
+                    self.assembled_parent.remove(&child.id);
+                }
+            }
+        }
+        if slots.is_empty() {
+            return;
+        }
+        for (key, child) in &slots {
+            self.assembled_parent
+                .insert(child.id, (parent, key.clone()));
+        }
+        self.assembled.insert(parent, slots);
+    }
+
+    /// Whether `id` is a keyed child placed away from its declared parent.
+    pub(super) fn is_placed_elsewhere(&self, id: StableNodeId) -> bool {
+        self.placed_assembled.contains(&id)
     }
 
     /// Messages queued by [`ViewContext::dispatch_program`] since the last take.
@@ -1444,6 +1560,7 @@ impl AppContext {
             ));
         }
         self.prepare_surface_closing(&mut mutations);
+        self.despawn_placed_with_declared_parents(&mut mutations);
         let previous_focus = mutations
             .as_slice()
             .iter()
@@ -1476,7 +1593,7 @@ impl AppContext {
                 _ => None,
             })
             .collect::<HashSet<_>>();
-        let deleted_layout_nodes = mutations
+        let despawned = mutations
             .as_slice()
             .iter()
             .filter_map(|mutation| match mutation {
@@ -1484,7 +1601,10 @@ impl AppContext {
                 _ => None,
             })
             .flat_map(|root| self.retained_subtree(root))
-            .filter_map(|id| self.world.document_of(id).map(|document| (document, id)))
+            .collect::<HashSet<_>>();
+        let deleted_layout_nodes = despawned
+            .iter()
+            .filter_map(|&id| self.world.document_of(id).map(|document| (document, id)))
             .collect::<HashSet<_>>();
         let written_editors = self.text_histories_written_by(&mutations);
         let (report, parked, inserted) = self
@@ -1524,6 +1644,11 @@ impl AppContext {
         }
         for (document, id) in deleted_layout_nodes {
             self.layout_cache.remove_node(document, id);
+        }
+        // Views, handlers and assembly records of despawned nodes go with
+        // them whichever path queued the despawn.
+        if !despawned.is_empty() {
+            self.forget_subtree(&despawned);
         }
         for document in retired_documents {
             self.release_empty_document_layout(document);
@@ -3025,6 +3150,52 @@ impl AppContext {
         }
     }
 
+    /// A keyed child placed away from its declared parent is still that
+    /// parent's: when the batch despawns the parent, it despawns the child
+    /// too, and anything that child declared elsewhere in turn.
+    fn despawn_placed_with_declared_parents(&self, mutations: &mut MutationQueue) {
+        if self.placed_assembled.is_empty() {
+            return;
+        }
+        let mut roots: HashSet<StableNodeId> = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::DespawnSubtree { root } => Some(*root),
+                _ => None,
+            })
+            .collect();
+        if roots.is_empty() {
+            return;
+        }
+        let under = |roots: &HashSet<StableNodeId>, id: StableNodeId| {
+            std::iter::successors(Some(id), |id| {
+                self.world.node(*id).and_then(|snapshot| snapshot.parent)
+            })
+            .any(|ancestor| roots.contains(&ancestor))
+        };
+        loop {
+            let found: Vec<_> = self
+                .placed_assembled
+                .iter()
+                .copied()
+                .filter(|&node| !under(&roots, node))
+                .filter(|node| {
+                    self.assembled_parent
+                        .get(node)
+                        .is_some_and(|(declared, _)| under(&roots, *declared))
+                })
+                .collect();
+            if found.is_empty() {
+                return;
+            }
+            for node in found {
+                roots.insert(node);
+                mutations.despawn_subtree(node);
+            }
+        }
+    }
+
     fn forget_subtree(&mut self, removed: &HashSet<StableNodeId>) {
         self.remove_event_handlers_for(removed);
         self.component_lifecycle
@@ -3063,6 +3234,10 @@ impl AppContext {
             slots.retain(|_, child| !removed.contains(&child.id));
             true
         });
+        self.assembled_parent
+            .retain(|child, (parent, _)| !removed.contains(child) && !removed.contains(parent));
+        self.placed_assembled.retain(|id| !removed.contains(id));
+        self.composition_roots.retain(|id| !removed.contains(id));
     }
 }
 

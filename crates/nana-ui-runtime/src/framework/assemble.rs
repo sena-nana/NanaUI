@@ -150,17 +150,20 @@ impl AssemblyScope<'_> {
             .context
             .create_detached_component(self.document, component)?;
         self.context.attach_child(self.parent, entity.id)?;
-        self.context
+        let mut slots = self
+            .context
             .assembled
-            .entry(self.parent)
-            .or_default()
-            .insert(
-                key,
-                AssembledChild {
-                    id: entity.id,
-                    type_id,
-                },
-            );
+            .get(&self.parent)
+            .cloned()
+            .unwrap_or_default();
+        slots.insert(
+            key,
+            AssembledChild {
+                id: entity.id,
+                type_id,
+            },
+        );
+        self.context.store_assembled(self.parent, slots);
         Ok(entity)
     }
 
@@ -177,9 +180,12 @@ impl AssemblyScope<'_> {
         for id in unused {
             self.context.despawn_node(id)?;
         }
-        if let Some(slots) = self.context.assembled.get_mut(&self.parent) {
+        if let Some(mut slots) = self.context.assembled.get(&self.parent).cloned() {
             slots.retain(|key, _| self.seen.iter().any(|seen| seen == key));
+            self.context.store_assembled(self.parent, slots);
         }
+        // A child placed under another parent keeps its identity here but is
+        // not pulled back.
         let desired: Vec<_> = self
             .seen
             .iter()
@@ -190,6 +196,7 @@ impl AssemblyScope<'_> {
                     .get(key)
                     .map(|child| child.id)
             })
+            .filter(|&id| !self.context.is_placed_elsewhere(id))
             .collect();
         let current = self
             .context

@@ -408,9 +408,15 @@ impl<'a> UiBuilder<'a> {
             .retain(|key, child| {
                 seen.iter().any(|seen| seen == key) && !forgotten.contains(&child.id)
             });
+        // A child placed under another parent keeps its identity here but is
+        // not pulled back.
+        let slots = self.slots(parent);
         let desired: Vec<_> = seen
             .iter()
-            .filter_map(|key| self.slots(parent).get(key).map(|child| child.id))
+            .filter_map(|key| slots.get(key).map(|child| child.id))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter(|&id| !self.context.is_placed_elsewhere(id))
             .collect();
         let current = self
             .context
@@ -460,12 +466,12 @@ impl<'a> UiBuilder<'a> {
         if !pending_forget.is_empty() {
             self.context.forget_subtree(&pending_forget);
         }
-        for (parent, slots) in working {
-            if slots.is_empty() {
-                self.context.assembled.remove(&parent);
-            } else {
-                self.context.assembled.insert(parent, slots);
+        for (parent, mut slots) in working {
+            if !self.context.world.contains(parent) {
+                continue;
             }
+            slots.retain(|_, child| self.context.world.contains(child.id));
+            self.context.store_assembled(parent, slots);
         }
         self.context.views.extend(pending_views);
         for id in lifecycle {

@@ -180,8 +180,8 @@ pub use components::{
     TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
 };
 pub use composition::{
-    CompositionEntry, CompositionError, CompositionHost, CompositionId, CompositionIndex,
-    CompositionNode, CompositionNodeKind, CompositionRegistry, CompositionSpec,
+    COMPOSITION_PATH_SEPARATOR, CompositionError, CompositionHost, CompositionNode,
+    CompositionRegistry, CompositionSpec,
 };
 pub use custom_paint::{
     AFFINE_IDENTITY, Affine, BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient,
