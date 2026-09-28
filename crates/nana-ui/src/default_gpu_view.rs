@@ -193,9 +193,6 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         };
         prepared.dest_size = context.dest_size;
         prepared.write_slot(device, queue, node.id, instance, context.gpu_work);
-        if let Some(work) = context.gpu_work {
-            work.record_upload(std::mem::size_of::<GpuViewInstance>());
-        }
     }
 
     fn render(&self, node: &SceneGpuNode, mut context: SceneGpuRenderContext<'_>) {

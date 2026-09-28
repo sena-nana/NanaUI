@@ -10,10 +10,71 @@ contract.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+# Names that left the `nana_ui` root when the compatibility surface was
+# removed; they live under `nana_ui::runtime`.  Consumers outside the
+# default workspace build (Android, docs, rustdoc links) are not compiled by
+# every CI job, so a stale root path must be caught textually.
+REMOVED_ROOT_NAMES = frozenset(
+    """
+    AboutMetadata AboutSection ActionMenu ActionMenuItem AnchoredActionMenu AppShell AppTitleBar AppTitleBarControls
+    AppearanceSection Avatar BrowseRequested Button CalendarHeatmap CalendarHeatmapActiveCell CalendarHeatmapCell CalendarHeatmapCellPaint
+    CalendarHeatmapDatum CalendarHeatmapDayLabel CalendarHeatmapEvent CalendarHeatmapLabelPaint CalendarHeatmapModel CalendarHeatmapMonthLabel CalendarHeatmapOptions CalendarLevelResolver
+    CalendarLevelStrategy CalendarMonthFormatter CalendarTitleFormatter CapturedStroke Card Checkbox Chip ChipDismissed
+    ColorChanged ColorField ColorInput CommandPalette ConfirmDialog ContextMenu ContextMenuEvent ContextMenuItem
+    DesktopShell Dialog Dock DockFloatingSurface DockPanel DockSurfaceSpec DockWorkspaceEvent DonutChart
+    DonutSlice Drawer Dropdown DropdownEvent DropdownOption DropdownSelection EmptyState FormField
+    GpuTextureView GpuView GpuViewMode GpuViewPalette GraphCanvas GraphCanvasAdjustment GraphCanvasEvent GraphCanvasHit
+    GraphInteraction GraphMinimap GraphMinimapEvent GraphNodeContent GraphPointerButton GraphScrollDelta HIGHLIGHT_PRESENTER HighlightPresentation
+    HostedTextarea IconButton IconGlyph ImageViewer ImageViewerContent ImageViewerEvent ImageViewerGeometry ImageViewerHit
+    ImageViewerOffset InteractiveCard KeyCaptureEvent KeyCaptureLayer KeyInput KeymapLayer LabeledValue LevelMeter
+    ListItem MarkdownBlock MarkdownBlockKind MarkdownImage MarkdownSpan MarkdownTable MarkdownTableAlignment MediaTransportBar
+    MediaTransportDensity MediaTransportEvent MediaTransportIcons MediaTransportPlacement MediaTransportSlots NativeMarkdown OVERLAY_IDLE OverlayHost
+    OverlayLocks OverlayVisibility OverlayVisibilityConfig PaneChrome PaneChromeAction PaneChromeActionKind PaneTree PaneTreeNode
+    PathField Popover Progress ProgressCancelled QrCode QrCodeError RangeField ReorderItem
+    ReorderList ReorderListEvent ReorderListPointer ReorderRowPaint RichSpan RichTextEvent SearchDropdown SearchDropdownEvent
+    SearchDropdownOption SegmentedControl Select SelectOption SelectableRichText SettingsCard SettingsCollapsibleCard SettingsRow
+    SidebarFooter SidebarFooterButton SidebarFrame SidebarRow SidebarRowState SidebarRowTone SidebarSection SidebarSectionSlots
+    SidebarSectionState Skeleton Spinner SplitPane StatusBadge Switch SyntectHighlighter TabDragGroup
+    TabDragLease TabDragSurface TabOption Tabs TabsEvent Text TextArea TextInput
+    TextSelectionGroup TextSelectionGroupId TextSelectionSnapshot Textarea Thumbnail ThumbnailState TimeSeriesChart TimeSeriesLayer
+    Toast Tooltip TreeDropIntent TreeDropPosition TreeNavigation TreeNode TreeView TreeViewEvent
+    ValidationMessage Workspace WorkspaceRegionSlot WorkspaceResizeHandle XYPad
+    """.split()
+)
+SCANNED_ROOTS = ("crates", "examples", "platform", "packages", "tools", "docs")
+SCANNED_SUFFIXES = {".rs", ".md", ".vue", ".ts", ".js"}
+SKIPPED_PARTS = {"target", "node_modules", "dist", ".git"}
+
+
+def stale_root_paths() -> list[str]:
+    pattern = re.compile(r"(?<![:\w])nana_ui::(\w+)\b")
+    hits = []
+    for top in SCANNED_ROOTS:
+        for path in (ROOT / top).rglob("*"):
+            if path.suffix not in SCANNED_SUFFIXES or not path.is_file():
+                continue
+            if SKIPPED_PARTS.intersection(path.parts):
+                continue
+            # Upgrade notes describe the removal itself.
+            if path.name.startswith("consumer-upgrade-"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for number, line in enumerate(text.splitlines(), 1):
+                # Migration tables name the old path next to its removal.
+                if "已删除" in line or "removed" in line.lower():
+                    continue
+                for match in pattern.finditer(line):
+                    if match.group(1) in REMOVED_ROOT_NAMES:
+                        rel = path.relative_to(ROOT)
+                        hits.append(f"{rel}:{number}: nana_ui::{match.group(1)}")
+    return hits
 
 
 def fail(message: str) -> None:
@@ -56,6 +117,13 @@ def main() -> int:
             fail(f"{name} still describes the obsolete Vue webview proposal")
     if "proposed `WebView` (unimplemented)" in gpu_slots:
         fail("gpu_slots.rs still carries the obsolete WebView contract")
+
+    stale = stale_root_paths()
+    if stale:
+        fail(
+            "removed root names must be referenced via nana_ui::runtime:\n  "
+            + "\n  ".join(stale)
+        )
 
     print("API convergence: OK")
     return 0

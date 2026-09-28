@@ -6,10 +6,10 @@
 use std::sync::Arc;
 
 use nana_ui::Color;
-use nana_ui::runtime::GPU_VIEW_RENDERER;
+use nana_ui::runtime::{GPU_VIEW_RENDERER, GpuViewPalette};
 use nana_ui::{
     DefaultGpuViewRenderer, GpuContext, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion,
-    GpuTextureUsages, GpuViewPalette, HostTexture, HostTextureAlphaMode, HostTextureRegistry,
+    GpuTextureUsages, HostTexture, HostTextureAlphaMode, HostTextureRegistry,
     SceneGpuRendererRegistry,
 };
 

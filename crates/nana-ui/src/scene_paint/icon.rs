@@ -220,7 +220,6 @@ pub(super) struct IconPipeline {
     /// Set when even a maximal atlas could not hold this frame's glyphs, so
     /// the remaining misses fail straight away instead of repacking per icon.
     exhausted: bool,
-    pending_texture_bytes: usize,
 }
 
 impl IconPipeline {
@@ -417,7 +416,6 @@ impl IconPipeline {
             entries: HashMap::new(),
             frame_keys: HashSet::new(),
             exhausted: false,
-            pending_texture_bytes: 0,
         }
     }
 
@@ -426,7 +424,6 @@ impl IconPipeline {
         self.frame_slots.clear();
         self.frame_keys.clear();
         self.exhausted = false;
-        self.pending_texture_bytes = 0;
         self.physical_size = physical_size;
     }
 
@@ -523,10 +520,6 @@ impl IconPipeline {
         queue: &wgpu::Queue,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        if let Some(work) = work {
-            work.record_upload(self.pending_texture_bytes);
-        }
-        self.pending_texture_bytes = 0;
         if self.pending_vertices.is_empty() {
             return;
         }
@@ -567,7 +560,7 @@ impl IconPipeline {
                 }))
             };
         }
-        let bytes = super::buffer_upload::upload_changed_with_work(
+        super::buffer_upload::upload_changed_with_work(
             queue,
             &self.vertices,
             bytemuck::cast_slice(&self.uploaded_vertices),
@@ -575,9 +568,6 @@ impl IconPipeline {
             work,
         );
         self.uploaded_vertices.clone_from(&self.pending_vertices);
-        if let Some(work) = work {
-            work.record_upload(bytes);
-        }
     }
 
     /// Whether `next` can extend a run that starts at `first` and holds
@@ -865,7 +855,6 @@ impl IconPipeline {
                 },
             );
         }
-        self.pending_texture_bytes += rgba.len();
     }
 }
 
@@ -1145,7 +1134,6 @@ pub(super) struct IconPipelineTarget {
     entries: HashMap<AtlasKey, AtlasEntry>,
     frame_keys: HashSet<AtlasKey>,
     exhausted: bool,
-    pending_texture_bytes: usize,
 }
 
 impl IconPipeline {
@@ -1187,7 +1175,6 @@ impl IconPipeline {
                 entries: HashMap::new(),
                 frame_keys: HashSet::new(),
                 exhausted: false,
-                pending_texture_bytes: 0,
             }
         });
         std::mem::swap(&mut self.uniform_bind_group, &mut target.uniform_bind_group);
@@ -1203,9 +1190,5 @@ impl IconPipeline {
         std::mem::swap(&mut self.entries, &mut target.entries);
         std::mem::swap(&mut self.frame_keys, &mut target.frame_keys);
         std::mem::swap(&mut self.exhausted, &mut target.exhausted);
-        std::mem::swap(
-            &mut self.pending_texture_bytes,
-            &mut target.pending_texture_bytes,
-        );
     }
 }

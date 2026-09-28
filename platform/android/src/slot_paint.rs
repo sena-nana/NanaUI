@@ -1,7 +1,7 @@
 //! Draw the NanaUI control strip through [`SceneWgpuPainter`].
 //!
 //! Uses the host-owned wgpu Device/Queue. Layout is a bottom-aligned Runtime
-//! strip on the **full window viewport** — **not** [`nana_ui::DesktopShell`].
+//! strip on the **full window viewport** — **not** [`nana_ui::runtime::DesktopShell`].
 //! Hit-testing must use [`crate::control_slot::control_slot_paint_bounds`].
 //! Pointer + KeyEvent + GameTextInput events are applied through
 //! [`crate::slot_runtime::SlotRuntime`]. Composition maps to

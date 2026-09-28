@@ -1582,7 +1582,6 @@ impl VueRuntime {
                 VueWindowCommand::Open { id, options } => WindowCommand::Open {
                     id: WindowId(id.0),
                     settings: WindowDescriptor {
-                        visible: true,
                         title: options.title,
                         initial_size: (options.width, options.height),
                         minimum_size: (options.minimum_width, options.minimum_height),
@@ -1590,15 +1589,9 @@ impl VueRuntime {
                             (Some(x), Some(y)) => Some((x, y)),
                             _ => None,
                         },
-                        maximized: false,
                         transparent: options.transparent,
                         always_on_top: options.always_on_top,
-                        fullscreen: None,
-                        focus_on_show: true,
-                        constrain_to_work_area: false,
-                        skip_taskbar: false,
                         persist_key: options.persist_key,
-                        restoration_scope: nana_ui_core::RestorationPath::root(),
                         tag: options.tag.map(Into::into),
                         resizable: options.resizable,
                         role: match options.role {
@@ -1608,14 +1601,12 @@ impl VueRuntime {
                         modal: options.modal,
                         parent: options.parent.map(|parent| WindowId(parent.0)),
                         system_caption: !options.frameless,
-                        host_managed_drag: false,
                         icon: options.icon,
                         // JS asks for a window, not for a presentation path.
                         // `Auto` lets the host pick, and it only reaches a
                         // platform compositor in a process that asked to be
                         // composition-capable — which a Vue host does not.
-                        shadow: nana_ui_platform::WindowShadow::Auto,
-                        surface: nana_ui_platform::WindowSurfacePreference::Auto,
+                        ..WindowDescriptor::default()
                     },
                 },
                 VueWindowCommand::Close(id) => WindowCommand::Close(WindowId(id.0)),

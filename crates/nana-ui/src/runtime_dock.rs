@@ -82,32 +82,15 @@ fn redraw_for_runtime_dock_effects(effects: &[DockWorkspaceEvent]) -> RuntimeRed
 
 fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> WindowDescriptor {
     WindowDescriptor {
-        visible: true,
         title: title.to_string(),
         initial_size: (f64::from(surface.width), f64::from(surface.height)),
         minimum_size: (FLOATING_MIN_WIDTH, FLOATING_MIN_HEIGHT),
         initial_position: Some((f64::from(surface.x), f64::from(surface.y))),
-        maximized: false,
-        transparent: false,
-        always_on_top: false,
-        fullscreen: None,
-        focus_on_show: true,
-        constrain_to_work_area: false,
-        skip_taskbar: false,
-        persist_key: None,
-        restoration_scope: nana_ui_core::RestorationPath::root(),
-        tag: None,
-        resizable: true,
         role: WindowRole::Tool,
-        modal: false,
-        parent: None,
-        system_caption: false,
-        host_managed_drag: false,
-        icon: None,
         // A floating dock panel is an ordinary opaque window; it has no reason
         // to take a compositor visual.
-        shadow: nana_ui_platform::WindowShadow::Auto,
         surface: nana_ui_platform::WindowSurfacePreference::NativeWindow,
+        ..WindowDescriptor::default()
     }
 }
 

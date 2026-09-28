@@ -650,6 +650,9 @@ impl MousePassthroughMode {
     }
 }
 
+// Commands are issued a handful of times per window lifetime, never per frame;
+// boxing `Open`'s descriptor would only move the size into every caller.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowCommand {
     /// Disable native pointer hit testing. Always emits MousePassthroughChanged.

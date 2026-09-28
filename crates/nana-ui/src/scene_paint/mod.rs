@@ -1635,10 +1635,6 @@ impl SceneWgpuPainter {
         };
         self.motion
             .sync_with_work(&self.device, &self.queue, scene, Some(&gpu_work));
-        let motion_bytes = self.motion.last_work().motion_descriptor_bytes_uploaded;
-        if motion_bytes > 0 {
-            gpu_work.record_upload(motion_bytes);
-        }
         if gpu_interleaved {
             encode_ordered(
                 &mut EncodeOrdered {

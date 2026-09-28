@@ -166,6 +166,23 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: bash scripts/check-android-arm64.sh
 
+  msrv:
+    # Every manifest declares rust-version = "1.98"; the other jobs use the
+    # stable toolchain, so without this job the declared minimum is untested.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98
+      - name: Install Linux window dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev \
+            libasound2-dev
+      - name: Check the workspace on the declared minimum toolchain
+        run: cargo check --workspace --all-targets --locked
+
   runtime-work-invariants:
     # Issue #8 PR gate: named cargo tests plus --evaluate-invariants on Nana
     # fixture envelopes. Live release benches stay in runtime-performance.yml.

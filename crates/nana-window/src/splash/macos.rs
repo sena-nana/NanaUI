@@ -211,9 +211,10 @@ impl Splash {
         work.commits += 1;
     }
 
-    /// Detaches both layers. Inside an event-loop turn this nests into the
-    /// turn's implicit transaction, which is the one a transaction-mode
-    /// drawable presented earlier in the same turn is published with.
+    /// Detaches both layers and orders the splash window out. The layer
+    /// removal nests into the turn's implicit transaction; ordering a window
+    /// out is a window-server operation, so the splash leaving and the
+    /// primary's first visible frame are not guaranteed to be one commit.
     pub(super) fn remove(self, work: &mut SplashWork, _handoff: bool) {
         CATransaction::begin();
         CATransaction::setDisableActions(true);

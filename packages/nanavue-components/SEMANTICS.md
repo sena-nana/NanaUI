@@ -37,19 +37,19 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 
 | 来源 | Nana `WidgetKind` | Runtime 类型 |
 |------|-------------------|--------------|
-| `<button>` / role=button | Button | `nana_ui::Button` |
+| `<button>` / role=button | Button | `nana_ui::runtime::Button` |
 | `nana-chip` / class `nana-chip` | Chip | Runtime `Chip`（`nana.chip`） |
-| `nana-switch` / role=switch | Switch | `nana_ui::Switch` |
-| `input[type=checkbox]` | Checkbox | `nana_ui::Checkbox` |
-| `<input>` | Input | `nana_ui::TextInput` |
-| `nana-tabs` / role=tablist / class `nana-tabs` | Tabs | `nana_ui::Tabs` |
-| `nana-segmented` / class `nana-segmented` | Segmented | `nana_ui::SegmentedControl` |
-| `input[type=range]` / role=slider | Range | `nana_ui::RangeField` |
-| `nana-sidebar-row` / class sidebar-row | SidebarRow | `nana_ui::SidebarRow` |
+| `nana-switch` / role=switch | Switch | `nana_ui::runtime::Switch` |
+| `input[type=checkbox]` | Checkbox | `nana_ui::runtime::Checkbox` |
+| `<input>` | Input | `nana_ui::runtime::TextInput` |
+| `nana-tabs` / role=tablist / class `nana-tabs` | Tabs | `nana_ui::runtime::Tabs` |
+| `nana-segmented` / class `nana-segmented` | Segmented | `nana_ui::runtime::SegmentedControl` |
+| `input[type=range]` / role=slider | Range | `nana_ui::runtime::RangeField` |
+| `nana-sidebar-row` / class sidebar-row | SidebarRow | `nana_ui::runtime::SidebarRow` |
 | `div` / `section` / `main` / `nana-stack` / `nana-column` / `nana-row` / `nana-box` | 初始 tag（Column / Row / Box） | L3 `Stack`（`nana.stack`；column/row/box 为标签别名）。方向与网格写在 `LayoutStyle`，不按 CSS 改 `WidgetKind` |
-| `#text` / `span` / `p` / `h*` | Text | `nana_ui::Text` |
-| `li` | ListItem | `nana_ui::ListItem` |
-| class `card` / `nana-card` | Card | `nana_ui::Card` |
+| `#text` / `span` / `p` / `h*` | Text | `nana_ui::runtime::Text` |
+| `li` | ListItem | `nana_ui::runtime::ListItem` |
+| class `card` / `nana-card` | Card | `nana_ui::runtime::Card` |
 | `<select>` / `<option>` | Select | Runtime `Select`（`options` 或子级 `<option>`） |
 | `input[type=radio]` / `role=radiogroup` | Radio / Segmented | Runtime radio chrome |
 | `<a>` | Button（Text） | Runtime `Button` Text 变体 |
@@ -107,7 +107,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 
 ## NanaButton ↔ `Button`
 
-| Prop / 行为 | Vue `NanaButton` | Rust `nana_ui::Button` |
+| Prop / 行为 | Vue `NanaButton` | Rust `nana_ui::runtime::Button` |
 |-------------|------------------|------------------------|
 | 外观 | `kind` string | `ButtonKind` enum |
 | 尺寸 | `size` small/medium/large | `ControlSize` |
@@ -135,7 +135,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 
 ## NanaChip ↔ `Chip`
 
-| Prop / 行为 | Vue `NanaChip` | Rust `nana_ui::Chip` |
+| Prop / 行为 | Vue `NanaChip` | Rust `nana_ui::runtime::Chip` |
 |-------------|----------------|----------------------|
 | 选中 | `selected` | `Chip::selected` |
 | 禁用 | `disabled` | `Chip::disabled` |

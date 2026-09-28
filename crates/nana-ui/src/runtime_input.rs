@@ -9619,7 +9619,6 @@ mod canonical_router_tests {
                 y: 0.0,
                 width: 100.0,
                 height: 40.0,
-                ..LayoutBox::default()
             },
         );
         context.commit_mutations(create).unwrap();
@@ -10402,7 +10401,6 @@ mod canonical_router_tests {
                 y: 24.0,
                 width: 180.0,
                 height: 28.0,
-                ..LayoutBox::default()
             },
         );
         context.commit_mutations(layout).unwrap();

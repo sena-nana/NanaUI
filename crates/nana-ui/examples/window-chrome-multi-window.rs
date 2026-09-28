@@ -30,33 +30,18 @@ impl Smoke {
     fn open_settings(number: usize) -> WindowDescriptor {
         let offset = 64.0 * number.saturating_sub(1) as f64;
         WindowDescriptor {
-            visible: true,
             title: format!("NanaUI Window {number}"),
             initial_size: (640.0, 420.0),
             minimum_size: (480.0, 320.0),
             initial_position: Some((120.0 + offset, 120.0 + offset)),
-            maximized: false,
-            transparent: false,
-            always_on_top: false,
-            fullscreen: None,
-            resizable: true,
             role: if number == 1 {
                 WindowRole::Main
             } else {
                 WindowRole::Tool
             },
-            modal: false,
             parent: (number > 1).then_some(WindowId::PRIMARY),
             system_caption: true,
-            icon: None,
-            shadow: nana_ui::WindowShadow::Auto,
-            surface: nana_ui::WindowSurfacePreference::Auto,
-            focus_on_show: true,
-            constrain_to_work_area: false,
-            skip_taskbar: false,
-            persist_key: None,
-            restoration_scope: nana_ui::RestorationPath::root(),
-            tag: None,
+            ..WindowDescriptor::default()
         }
     }
 

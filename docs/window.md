@@ -343,6 +343,8 @@ window.set_size((640.0, 480.0)).wait()?;
 window.close().wait()?;
 ```
 
+`WindowDescriptor` 的字段全部公开，并且会随平台能力继续增加（`shadow`、`host_managed_drag` 都是这样加进来的）。构造时总是以 `..Default::default()` 或 `WindowDescriptor::new(...)` 的 builder 收尾，逐字段写满的结构体字面量在下一次加字段时就会编译失败。
+
 创建结果仅在隐藏原生窗口、Surface、输入状态和应用文档初始化成功后完成；失败会回滚，不发送 `Ready`。主窗口配置了 Early Splash 时是例外：窗口带着 Logo 先显示，设备和程序在其后就绪，失败时撤下 Logo 并关窗，见 [两阶段启动](startup.md)。`ApplicationState::build` 为每个窗口构建独立文档。自定义 `RuntimeProgram` 在 `initialize_window` 中完成构建，在 `discard_window` 中撤销失败的应用状态。成功后才注册并按 `WindowDescriptor::visible` 显示窗口。
 
 窗口 id 由服务分配，应用用 `WindowDescriptor::tag` 声明这扇窗口是哪种文档，不要靠创建请求的顺序去对应 id。标识对宿主不透明，从 `RuntimeProgramContext::window_tag()` 读回：`initialize_window` / `ApplicationState::build` 构建文档时，以及之后该窗口的每个回调（包括 `Ready`）都能读到；窗口关闭后为 `None`，按 id 持有的状态在 `window_closed` / `discard_window` 里清理。

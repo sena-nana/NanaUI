@@ -340,7 +340,7 @@ impl PathBuffers {
             }
         }
         if self.pending_gradients != self.uploaded_gradients {
-            let bytes = super::buffer_upload::upload_changed_with_work(
+            super::buffer_upload::upload_changed_with_work(
                 queue,
                 &self.gradients,
                 bytemuck::cast_slice(&self.uploaded_gradients),
@@ -348,9 +348,6 @@ impl PathBuffers {
                 gpu_work,
             );
             self.uploaded_gradients.clone_from(&self.pending_gradients);
-            if let Some(work) = gpu_work {
-                work.record_upload(bytes);
-            }
         }
         if self.pending_indices.is_empty() {
             self.uploaded_vertices.clear();
@@ -399,14 +396,14 @@ impl PathBuffers {
                 work.record_realloc();
             }
         }
-        let vertices = super::buffer_upload::upload_changed_with_work(
+        super::buffer_upload::upload_changed_with_work(
             queue,
             &self.vertices,
             bytemuck::cast_slice(&self.uploaded_vertices),
             bytemuck::cast_slice(&self.pending_vertices),
             gpu_work,
         );
-        let indices = super::buffer_upload::upload_changed_with_work(
+        super::buffer_upload::upload_changed_with_work(
             queue,
             &self.indices,
             bytemuck::cast_slice(&self.uploaded_indices),
@@ -416,7 +413,6 @@ impl PathBuffers {
         self.uploaded_vertices.clone_from(&self.pending_vertices);
         self.uploaded_indices.clone_from(&self.pending_indices);
         if let Some(work) = gpu_work {
-            work.record_upload(vertices + indices);
             work.record_batch_rebuild();
         }
         rebind
@@ -1069,7 +1065,7 @@ impl MeshPipeline {
             }
         }
         let instance_bytes = bytemuck::cast_slice(&self.pending_instances);
-        let instances = super::buffer_upload::upload_changed_with_work(
+        super::buffer_upload::upload_changed_with_work(
             queue,
             &self.instances,
             bytemuck::cast_slice(&self.uploaded_instances),
@@ -1077,7 +1073,7 @@ impl MeshPipeline {
             gpu_work,
         );
         let clip_bytes = bytemuck::cast_slice(&self.pending_clips);
-        let clips = super::buffer_upload::upload_changed_with_work(
+        super::buffer_upload::upload_changed_with_work(
             queue,
             &self.clips,
             bytemuck::cast_slice(&self.uploaded_clips),
@@ -1087,7 +1083,6 @@ impl MeshPipeline {
         self.uploaded_instances.clone_from(&self.pending_instances);
         self.uploaded_clips.clone_from(&self.pending_clips);
         if let Some(work) = gpu_work {
-            work.record_upload(instances + clips);
             work.record_batch_rebuild();
         }
     }

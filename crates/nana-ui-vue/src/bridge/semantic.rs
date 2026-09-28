@@ -65,11 +65,11 @@ pub enum WidgetKind {
     SettingsRow,
     SettingsCard,
     Icon,
-    /// Modal dialog → `nana_ui::Dialog` (open via `active` / `open` / `toggled`).
+    /// Modal dialog → `nana_ui::runtime::Dialog` (open via `active` / `open` / `toggled`).
     Dialog,
-    /// Side drawer → `nana_ui::Drawer` (`side=left|right`, open via `active` / `open`).
+    /// Side drawer → `nana_ui::runtime::Drawer` (`side=left|right`, open via `active` / `open`).
     Drawer,
-    /// Anchored popover → `nana_ui::Popover`.
+    /// Anchored popover → `nana_ui::runtime::Popover`.
     Popover,
     /// Context menu → Runtime `ContextMenu` (`anchor-x` / `anchor-y`, search
     /// when ≥6 options or `search` class; nested via `parent/child` values).

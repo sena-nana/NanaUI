@@ -77,7 +77,6 @@ impl GlyphUploadQueue {
         if self.pending.is_empty() {
             return;
         }
-        let mut bytes = 0usize;
         for upload in self.pending.drain(..) {
             let Some(texture) = atlas.page_texture(upload.page) else {
                 continue;
@@ -138,10 +137,6 @@ impl GlyphUploadQueue {
             }
             self.counters.regions += 1;
             self.counters.bytes += total as u64;
-            bytes += total;
-        }
-        if let Some(work) = work {
-            work.record_upload(bytes);
         }
     }
 }

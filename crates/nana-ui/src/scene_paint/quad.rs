@@ -854,30 +854,24 @@ impl QuadPipeline {
                 work.record_realloc();
             }
         }
-        let upload_bytes = {
-            let instance_bytes = bytemuck::cast_slice(&self.pending);
-            let instances = super::buffer_upload::upload_changed_with_work(
-                queue,
-                &self.instances,
-                bytemuck::cast_slice(&self.uploaded),
-                instance_bytes,
-                gpu_work,
-            );
-            let paint_bytes = bytemuck::cast_slice(&self.pending_paint);
-            let paint = super::buffer_upload::upload_changed_with_work(
-                queue,
-                &self.paint_buffer,
-                bytemuck::cast_slice(&self.uploaded_paint),
-                paint_bytes,
-                gpu_work,
-            );
-            self.uploaded.clone_from(&self.pending);
-            self.uploaded_paint.clone_from(&self.pending_paint);
-            instances + paint
-        };
+        super::buffer_upload::upload_changed_with_work(
+            queue,
+            &self.instances,
+            bytemuck::cast_slice(&self.uploaded),
+            bytemuck::cast_slice(&self.pending),
+            gpu_work,
+        );
+        super::buffer_upload::upload_changed_with_work(
+            queue,
+            &self.paint_buffer,
+            bytemuck::cast_slice(&self.uploaded_paint),
+            bytemuck::cast_slice(&self.pending_paint),
+            gpu_work,
+        );
+        self.uploaded.clone_from(&self.pending);
+        self.uploaded_paint.clone_from(&self.pending_paint);
         self.rebuild_url_bind_groups(device);
         if let Some(work) = gpu_work {
-            work.record_upload(upload_bytes);
             work.record_batch_rebuild();
         }
     }

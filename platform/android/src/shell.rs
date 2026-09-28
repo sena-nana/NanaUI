@@ -2,7 +2,7 @@
 //!
 //! NanaUI owns shell layout and an experimental Runtime control slot. Vue apps keep CSS,
 //! custom components, and renderer freedom via [`nana_ui_vue::VueHost`] — this stub does
-//! not restrict Vue widget types. Desktop [`nana_ui::DesktopShell`] composes the same
+//! not restrict Vue widget types. Desktop [`nana_ui::runtime::DesktopShell`] composes the same
 //! regions; this stub keeps [`WorkspaceLayout`] / [`WorkspaceGeometry`] from
 //! `nana-ui-core` so Primary viewport sizing matches desktop. Hosts can present
 //! [`ShellChromeBand`] fills via scissor + solid-color pipeline (title / resources /
@@ -110,7 +110,7 @@ impl AndroidShellStub {
         TITLE_BAR_HEIGHT
     }
 
-    /// Whether Nana [`nana_ui::DesktopShell`] rendering is wired on this target.
+    /// Whether Nana [`nana_ui::runtime::DesktopShell`] rendering is wired on this target.
     pub const fn desktop_shell_available() -> bool {
         false
     }

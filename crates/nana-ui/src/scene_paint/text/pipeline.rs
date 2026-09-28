@@ -874,7 +874,9 @@ impl TextGpu {
             target.globals_bind_group = Some(target.bind(device, &self.globals_layout));
         }
         if let Some(work) = work {
-            work.record_upload(bytes.instances + bytes.indices + bytes.presentation);
+            // Runs and presentations went through the sink, which counted
+            // them; the ring's copies did not.
+            work.record_upload(bytes.instances + bytes.indices);
         }
         bytes
     }
