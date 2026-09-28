@@ -893,7 +893,7 @@ fn sync_virtual_list_windows_a_list_below_other_scroll_content() {
     cx.append_child(scroll, list).unwrap();
     let layout = VirtualListLayout::new(std::iter::repeat_n(20.0, 100));
     let mut items = VirtualListItems::<usize, TextInput>::default();
-    let mut sync = |cx: &mut AppContext, items: &mut VirtualListItems<usize, TextInput>| {
+    let sync = |cx: &mut AppContext, items: &mut VirtualListItems<usize, TextInput>| {
         cx.sync_virtual_list_retained_in(
             scroll,
             list,
