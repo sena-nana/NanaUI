@@ -16,6 +16,9 @@
 | `PresentationCoordinateBridge` 与 `coordinates.rs` | 无；原生宿主的物理→逻辑换算不变 |
 | `input_router_counters()` | `AppContext::input_counters() -> InputCounters` |
 | `nana_ui_vue::ImeEvent` | `nana_ui_vue::NativeComposition`（即 `CompositionInput`） |
+| `WindowEvent::{FileHovered, FileDropped, FileHoverCancelled}` | `InputPayload::FileDrag(FileDragInput { kind: FileDragKind::{Hover, Drop, Cancel}, paths, position, modifiers })`，经 `RoutedInput` 送达 |
+| `AppContext::dispatch_file_drag`（公开） | 无；路由调用它，程序不再调用 |
+| `nana_ui_vue::FileDragEventKind`、`VueHost::dispatch_file_drag` | `nana_ui_vue::FileDragKind`、`VueHost::emit_file_drag_from_runtime`（只发页面事件，不再改 Runtime） |
 
 ## 事件形状
 
@@ -37,6 +40,7 @@
 - **指针移动与滚轮**在一次事件循环内合并，程序每轮最多看到一次 move（按下、抬起、按键不合并，立即路由）。依赖每个原始 move 的代码要改读最后位置。
 - **窗口失焦**只取消该窗口的指针按压与捕获，document 焦点保留；重新获得焦点时宿主重发文本输入状态。只有输入源断开且没有其他已聚焦的输入源时才清焦点。
 - **触控抬起**后不再保留悬停。
+- **文件拖放**由路由交给放置目标，程序不再自己转交；自己实现 `RuntimeProgram` 却没转交的程序，此前放置目标收不到文件，现在收得到。窗口失焦或关闭会结束拖放悬停（放置目标收到 `FileDropEvent::Left`）。
 - **剪贴板快捷键**回到按键链原位置：overlay、应用 `on_key`、终端先于剪贴板处理，终端里的 Ctrl+C 不再被剪贴板吞掉。
 - 没有产生字节的终端按键不再报告为已处理，它的文本会正常插入。
 
@@ -80,6 +84,7 @@ input.advance(Duration::from_millis(16)); // 事件时间戳驱动双击、长�
 
 - `crates/nanalive-control/src/native_ui/hotkeys.rs`：`InputEvent::Keyboard` → `InputPayload::Key`；测试里的 `"Code(..)"` 输入改成 W3C 名，保留读取旧存档的前缀剥离。
 - `crates/nanalive-control/src/native_ui/mod.rs`：约 12 处 `InputEvent::{Pointer, Wheel, Keyboard}` 匹配改为 `InputPayload`；键盘分支若读 `text`，改读随后的 `InputPayload::Text`。
+- `crates/nanalive-control/src/native_ui/mod.rs:4553`、`:4669`：`WindowEvent::FileDropped { paths, .. }` 移到 `input_event`，匹配 `InputPayload::FileDrag(FileDragInput { kind: FileDragKind::Drop, paths, .. })`。
 - `crates/nanalive-control/src/native_ui/offscreen.rs`：`route_input` 改用 `HeadlessInput`，pointer hit 从 `InputRouteOutcome::pointer_hit` 读。
 - `crates/nanalive-control/src/native_ui/presence_acceptance.rs`：键盘注入改用 `HeadlessInput::press`。
 - `crates/nanalive-control/src/settings.rs`、`global_hotkeys.rs`：已兼容无前缀键名，只需更新注释与测试。

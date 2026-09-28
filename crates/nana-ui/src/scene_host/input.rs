@@ -238,11 +238,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             | WinitWindowEvent::DragDropped { .. }
             | WinitWindowEvent::DragLeft { .. }
             | WinitWindowEvent::DataTransferReceived { .. } => {
-                if let Some(window_event) = self.handle_file_dnd(event_loop, id, &event) {
-                    let update = self
-                        .program
-                        .window_event(window_event, &self.context_for(id));
-                    self.apply_update(event_loop, update, None);
+                // A file drag is input: it reaches drop targets through the
+                // router and the program through `input_event`.
+                if let Some(drag) = self.handle_file_dnd(event_loop, id, &event) {
+                    let now = self.animation_clock.runtime_time(Instant::now());
+                    let device = self.input_of(id).last_device;
+                    self.deliver_input(
+                        event_loop,
+                        id,
+                        LoweredInput::event(device, InputPayload::FileDrag(drag), now),
+                    );
                 }
             }
             _ => {}
@@ -266,7 +271,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         event_loop: &dyn ActiveEventLoop,
         id: WindowId,
         event: &WinitWindowEvent,
-    ) -> Option<WindowEvent> {
+    ) -> Option<FileDragInput> {
         let scale = self.scale_factor(id);
         match event {
             WinitWindowEvent::DragEntered {
@@ -284,27 +289,25 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     .fetch_data_transfer(*transfer, &TypeHint::UriList)
                     .ok();
                 self.input_mut(id).begin_file_drag(*transfer, serial);
-                self.input_mut(id).map_file_window_event(event, id)
+                self.input_mut(id).map_file_window_event(event)
             }
             WinitWindowEvent::DragPosition { position, .. } => {
                 self.input_mut(id).set_cursor_physical(*position, scale);
-                self.input_mut(id).map_file_window_event(event, id)
+                self.input_mut(id).map_file_window_event(event)
             }
             WinitWindowEvent::DragDropped { id: transfer, .. } => {
                 if !self.input_mut(id).pending_file_paths.is_empty() {
-                    return self.input_mut(id).map_file_window_event(event, id);
+                    return self.input_mut(id).map_file_window_event(event);
                 }
                 match event_loop.fetch_data_transfer(*transfer, &TypeHint::UriList) {
                     Ok(serial) => {
                         self.input_mut(id).wait_for_drop_data(*transfer, serial);
                         None
                     }
-                    Err(_) => self.input_mut(id).map_file_window_event(event, id),
+                    Err(_) => self.input_mut(id).map_file_window_event(event),
                 }
             }
-            WinitWindowEvent::DragLeft { .. } => {
-                self.input_mut(id).map_file_window_event(event, id)
-            }
+            WinitWindowEvent::DragLeft { .. } => self.input_mut(id).map_file_window_event(event),
             WinitWindowEvent::DataTransferReceived {
                 id: transfer,
                 serial,
@@ -314,7 +317,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     return None;
                 }
                 match value.try_as_file_paths() {
-                    Ok(paths) => self.input_mut(id).ingest_file_paths(*transfer, paths, id),
+                    Ok(paths) => self.input_mut(id).ingest_file_paths(*transfer, paths),
                     Err(error)
                         if matches!(
                             error.kind(),
@@ -324,7 +327,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                         None
                     }
                     // A release waiting on these paths would otherwise never end.
-                    Err(_) => self.input_mut(id).abandon_drop(*transfer, id),
+                    Err(_) => self.input_mut(id).abandon_drop(*transfer),
                 }
             }
             _ => None,

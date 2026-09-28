@@ -33,7 +33,10 @@
   `code`，如 `KeyA`；逻辑键为布局解析后的名称）、`Text(CommittedText)`、`Composition`、
   `Focus` 以及设备与 source 的连接/断开。一次按键和它输入的文本是两个事件，文本带着按键的
   sequence：按键被控件处理（快捷键、焦点切换、提交表单、终端已发出字节）时，路由丢弃这段
-  文本，不会再插入。IME 组字只经 `Composition`，从不由按键名推导。
+  文本，不会再插入。IME 组字只经 `Composition`，从不由按键名推导。`FileDrag(FileDragInput)`
+  是从窗口外拖入的文件（悬停、放下、取消），由路由交给登记的放置目标，
+  `RoutedInput::pointer_hit` 是它所在或落下的目标；程序想在整个窗口接收文件，就在
+  `input_event` 里读 `FileDragKind::Drop` 的路径。
 - **绑定**：`AppContext::bind_input_source(source, generation, document)` 返回
   `Result`；generation 回退或同一 generation 换 document 都会被拒绝（`InputBindError`）。
   `unbind_input_source` 先让仍被按住或捕获的指针走一次与显式 `PointerCancel` 相同的取消，
@@ -41,7 +44,7 @@
 - **路由状态属于 context**：每个 source 的指针身份、顺序、断连标记、光标与文本输入槽位都
   存在它所绑定的 `AppContext` 里，两个窗口不会共享指针、IME 所有者或光标。事件的时间取自
   它自己的时间戳（Runtime 动画时钟域），tooltip 延迟、悬停探测和多击判定都用这个时间。
-- **焦点**：窗口失焦只取消该 source 按住与捕获的指针，document 的焦点控件保持不变；重新
+- **焦点**：窗口失焦只取消该 source 按住与捕获的指针和它正在悬停的文件拖放，document 的焦点控件保持不变；重新
   获得焦点时把文本输入状态再交给宿主一次。只有 source 断开且再没有其他获得焦点的 source
   驱动同一 document 时，才清除 document 焦点。
 - **命中**：未捕获的指针事件只做一次命中查询（`UiWorld::hit_test_queries` 计数），overlay

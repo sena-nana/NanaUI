@@ -8,10 +8,10 @@
 | --- | --- | --- |
 | canonical endpoint | source/device/pointer identity、generation、source-local sequence、断连、stale、pointer/wheel 合并、容量拒绝归还所有权；`InputSequencer` 按 generation 重新计数 | `cargo test -p nana-ui-input --lib --locked` |
 | host services | 光标与文本输入是最新值槽位；headless 服务记下宿主会显示的状态；共享剪贴板忙时回答 `Busy` 而不等待 | `cargo test -p nana-ui-input --lib --locked`、`cargo test -p nana-ui-platform --lib --locked` |
-| runtime router | 绑定与校验（stale、乱序、时间回退、断连、同 generation 换 document）；多 source/device 指针身份；窗口失焦只取消指针、保留 document 焦点、重新获得焦点时重发文本输入；source 断开时才清焦点；触控抬起不留悬停；首个事件不读其他 source 的捕获；被处理按键的文本被丢弃；剪贴板在按键链原位置；两个 source 各自的文本输入与光标 | `cargo test -p nana-ui-runtime --all-features --lib framework::input --locked` |
+| runtime router | 绑定与校验（stale、乱序、时间回退、断连、同 generation 换 document）；多 source/device 指针身份；窗口失焦只取消指针、保留 document 焦点、重新获得焦点时重发文本输入；source 断开时才清焦点；触控抬起不留悬停；首个事件不读其他 source 的捕获；被处理按键的文本被丢弃；剪贴板在按键链原位置；两个 source 各自的文本输入与光标；文件拖放交给放置目标、目标即 `pointer_hit`、失焦与断开结束悬停 | `cargo test -p nana-ui-runtime --all-features --lib framework::input --locked` |
 | 组件行为（原 adapter 测试） | 指针、滚轮、键盘、文本、组字进入各类组件的原有行为，经新路由逐条保留（83 条） | 同上，`framework::input::tests::dispatch` |
 | 分配与命中门禁 | 未捕获移动每次恰好 1 次命中查询、捕获移动 0 次；同一行、跨行（每次都切换悬停）、滚动视口内、捕获中的稳态移动都零分配 | `cargo test -p nana-ui-runtime --all-features --test input_alloc --locked`（计数分配器只统计测试自己的线程） |
-| native scene host | winit 事件直接降级为 canonical（W3C 物理键名、滚轮与鼠标同一指针、指针离开带自己的设备）；IME 请求在 host services 中合成；光标由 Runtime 意图、窗口边框缩放与程序覆盖合成 | `cargo test -p nana-ui --features hosted --lib scene_host --locked`（仅仓内证据） |
+| native scene host | winit 事件直接降级为 canonical（W3C 物理键名、滚轮与鼠标同一指针、指针离开带自己的设备；拖放降级为 `FileDrag`，含延迟到达的路径与取路径失败时的取消）；IME 请求在 host services 中合成；光标由 Runtime 意图、窗口边框缩放与程序覆盖合成 | `cargo test -p nana-ui --features hosted --lib scene_host --locked`（仅仓内证据） |
 | Vue observation | scene host 已路由的事件只进入 Vue 观察层，不再路由；独立模式下每个窗口一个输入源，时间戳取自动画时钟；被处理或被页面阻止的按键不再发出 `insertText` | `cargo test -p nana-ui-vue --all-features --lib --locked` |
 | devtools headless | `RuntimeAgentSession` 经 `HeadlessInput` 走同一条路由；1000 次指针事件后路由计数与空闲 flush 正确 | `cargo test -p nana-ui-devtools --features runtime-agent --all-targets --locked` |
 

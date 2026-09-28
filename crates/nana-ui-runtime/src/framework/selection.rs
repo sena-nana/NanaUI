@@ -148,60 +148,52 @@ impl AppContext {
     }
 
     /// Resolve a platform file drag onto the registered drop target under the
-    /// point, update hover chrome, and emit [`crate::FileDropEvent`].
-    pub fn dispatch_file_drag(
+    /// point, update hover chrome, and emit [`crate::FileDropEvent`]: the
+    /// router's step for [`nana_ui_input::InputPayload::FileDrag`]. Returns whether
+    /// anything changed, and the target the drag is over or landed on.
+    pub(super) fn file_drag(
         &mut self,
         document: DocumentId,
         kind: nana_ui_core::FileDragKind,
         paths: &[std::path::PathBuf],
         position: Option<(f32, f32)>,
-    ) -> Result<bool, FrameworkError> {
-        match kind {
-            nana_ui_core::FileDragKind::Cancel => self.clear_file_drag(document),
-            nana_ui_core::FileDragKind::Hover | nana_ui_core::FileDragKind::Drop => {
-                let Some((x, y)) = position else {
-                    return self.clear_file_drag(document);
-                };
-                if !x.is_finite() || !y.is_finite() {
-                    return Err(FrameworkError::InvalidInput);
-                }
-                let target = self.drop_target_at(document, x, y, &nana_ui_core::DropKind::Files);
-                match kind {
-                    nana_ui_core::FileDragKind::Hover => {
-                        self.set_file_drag_hover(document, target, paths)
-                    }
-                    nana_ui_core::FileDragKind::Drop => {
-                        // A node that was told `Hovered` is owed a terminal
-                        // event. Releasing over some *other* target — or over
-                        // nothing — used to clear the hover silently, leaving
-                        // whatever state it set on hover latched until an
-                        // unrelated drag happened to enter it again. `Cancel`
-                        // already emits `Left`; the two terminal paths agree
-                        // now.
-                        let previous = self.world.drop_hover();
-                        if let Some((id, _)) =
-                            previous.filter(|(id, _)| target.map(|(target, _)| target) != Some(*id))
-                        {
-                            self.emit_file_drop(id, crate::FileDropEvent::Left)?;
-                        }
-                        let cleared = self.world.set_drop_hover(None);
-                        if let Some((id, effect)) = target {
-                            self.emit_file_drop(
-                                id,
-                                crate::FileDropEvent::Dropped {
-                                    paths: paths.iter().cloned().collect(),
-                                    effect,
-                                },
-                            )?;
-                            Ok(true)
-                        } else {
-                            Ok(cleared)
-                        }
-                    }
-                    nana_ui_core::FileDragKind::Cancel => unreachable!(),
-                }
-            }
+    ) -> Result<(bool, Option<StableNodeId>), FrameworkError> {
+        let position = match kind {
+            nana_ui_core::FileDragKind::Cancel => None,
+            nana_ui_core::FileDragKind::Hover | nana_ui_core::FileDragKind::Drop => position,
+        };
+        let Some((x, y)) = position else {
+            return Ok((self.clear_file_drag(document)?, None));
+        };
+        if !x.is_finite() || !y.is_finite() {
+            return Err(FrameworkError::InvalidInput);
         }
+        let target = self.drop_target_at(document, x, y, &nana_ui_core::DropKind::Files);
+        let landed = target.map(|(id, _)| id);
+        if kind == nana_ui_core::FileDragKind::Hover {
+            return Ok((self.set_file_drag_hover(document, target, paths)?, landed));
+        }
+        // A node that was told `Hovered` is owed a terminal event. Releasing
+        // over some *other* target — or over nothing — used to clear the
+        // hover silently, leaving whatever state it set on hover latched
+        // until an unrelated drag happened to enter it again. `Cancel`
+        // already emits `Left`; the two terminal paths agree now.
+        let previous = self.world.drop_hover();
+        if let Some((id, _)) = previous.filter(|(id, _)| landed != Some(*id)) {
+            self.emit_file_drop(id, crate::FileDropEvent::Left)?;
+        }
+        let cleared = self.world.set_drop_hover(None);
+        let Some((id, effect)) = target else {
+            return Ok((cleared, None));
+        };
+        self.emit_file_drop(
+            id,
+            crate::FileDropEvent::Dropped {
+                paths: paths.iter().cloned().collect(),
+                effect,
+            },
+        )?;
+        Ok((true, landed))
     }
 
     fn set_file_drag_hover(

@@ -937,6 +937,7 @@ pub struct RoutedInput<'a> {
     pub event: &'a CanonicalInputEvent,
     /// For pointer and wheel events: the node holding the pointer's capture,
     /// else the topmost node under the pointer that the event could reach.
+    /// For a file drag: the drop target it is over or landed on.
     pub pointer_hit: Option<StableNodeId>,
     /// Whether a control consumed the event's default action. The hook still
     /// runs for consumed events so applications can drain pending input; gate

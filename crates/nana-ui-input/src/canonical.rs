@@ -9,10 +9,12 @@
 
 use crate::{InputModifiers, PointerPhase, PointerType};
 use nana_diagnostics::metric;
+use nana_ui_core::FileDragKind;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet, VecDeque},
+    path::PathBuf,
     time::Duration,
 };
 
@@ -202,6 +204,8 @@ pub enum InputPayload {
     /// The platform's committed text. Never inferred from `KeyInput`.
     Text(CommittedText),
     Composition(CompositionInput),
+    /// Files dragged over the window from outside it.
+    FileDrag(FileDragInput),
     Focus {
         focused: bool,
     },
@@ -209,6 +213,34 @@ pub enum InputPayload {
     DeviceDisconnected,
     SourceConnected,
     SourceDisconnected,
+}
+
+/// A platform file drag over the window: files hovering at a point, dropped
+/// there, or the drag leaving without a drop.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileDragInput {
+    pub kind: FileDragKind,
+    /// The dragged files. Empty for `Cancel`, and while a platform that
+    /// delivers paths late has not sent them yet.
+    pub paths: Vec<PathBuf>,
+    /// Window position in logical pixels; `None` when the platform reported
+    /// none, which ends any hover as a cancel would.
+    pub position: Option<(f32, f32)>,
+    /// Modifier keys held at this moment. The drag source keeps keyboard
+    /// focus, so the host samples the system state where it can.
+    pub modifiers: InputModifiers,
+}
+
+impl FileDragInput {
+    /// The drag left the window, or the platform abandoned it.
+    pub fn cancel() -> Self {
+        Self {
+            kind: FileDragKind::Cancel,
+            paths: Vec::new(),
+            position: None,
+            modifiers: InputModifiers::default(),
+        }
+    }
 }
 
 /// Text the platform committed, and the key press that produced it when it
@@ -267,6 +299,10 @@ impl InputPayload {
                 }
                 capacity(&key.physical.0).saturating_add(capacity(&key.logical.0))
             }
+            Self::FileDrag(drag) => drag.paths.iter().fold(
+                drag.paths.capacity() * std::mem::size_of::<PathBuf>(),
+                |bytes, path| bytes.saturating_add(path.capacity()),
+            ),
             _ => 0,
         }
     }

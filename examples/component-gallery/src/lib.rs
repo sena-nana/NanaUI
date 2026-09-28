@@ -1221,28 +1221,6 @@ impl GalleryApp {
         messages
     }
 
-    fn apply_gallery_file_drag(
-        &mut self,
-        kind: nana_ui::runtime::FileDragKind,
-        paths: &[PathBuf],
-        position: Option<(f32, f32)>,
-    ) -> RuntimeProgramUpdate {
-        if self.state.settings_open {
-            return RuntimeProgramUpdate::default();
-        }
-        let (changed, messages) = {
-            let Some(runtime) = self.state.gallery_runtime.as_mut() else {
-                return RuntimeProgramUpdate::default();
-            };
-            runtime.dispatch_file_drag(kind, paths, position)
-        };
-        let mut update = self.apply_all(messages);
-        if changed {
-            update.redraw = RuntimeRedraw::All;
-        }
-        update
-    }
-
     fn apply_all(
         &mut self,
         messages: impl IntoIterator<Item = GalleryMessage>,
@@ -1504,27 +1482,6 @@ impl GalleryApp {
             WindowEvent::Closed { id } => {
                 self.dock_windows.remove(&id);
                 RuntimeProgramUpdate::default()
-            }
-            WindowEvent::FileHovered {
-                id,
-                paths,
-                position,
-                ..
-            } if id == WindowId::PRIMARY => self.apply_gallery_file_drag(
-                nana_ui::runtime::FileDragKind::Hover,
-                &paths,
-                position,
-            ),
-            WindowEvent::FileDropped {
-                id,
-                paths,
-                position,
-                ..
-            } if id == WindowId::PRIMARY => {
-                self.apply_gallery_file_drag(nana_ui::runtime::FileDragKind::Drop, &paths, position)
-            }
-            WindowEvent::FileHoverCancelled { id } if id == WindowId::PRIMARY => {
-                self.apply_gallery_file_drag(nana_ui::runtime::FileDragKind::Cancel, &[], None)
             }
             WindowEvent::FocusChanged { id, focused: true } if id != WindowId::PRIMARY => {
                 if let Some(item) = floating_surface_for_window(&self.state.dock, id)

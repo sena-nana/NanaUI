@@ -867,32 +867,36 @@ fn file_drag_tracks_hit_target_and_exposes_file_descriptors() {
             .expect("layout");
     }
     let mut engine = RecordingEngine::default();
+    let mut input = None;
     let paths = vec![
         PathBuf::from("C:/drop/avatar.png"),
         PathBuf::from("C:/drop/background.jpg"),
     ];
 
-    host.dispatch_file_drag(
+    route_file_drag(
+        &mut host,
+        &mut input,
         &mut engine,
-        FileDragEventKind::Hover,
+        FileDragKind::Hover,
         &paths,
         Some((10.0, 12.0)),
-    )
-    .expect("hover first target");
-    host.dispatch_file_drag(
+    );
+    route_file_drag(
+        &mut host,
+        &mut input,
         &mut engine,
-        FileDragEventKind::Hover,
+        FileDragKind::Hover,
         &paths,
         Some((120.0, 12.0)),
-    )
-    .expect("hover second target");
-    host.dispatch_file_drag(
+    );
+    route_file_drag(
+        &mut host,
+        &mut input,
         &mut engine,
-        FileDragEventKind::Drop,
+        FileDragKind::Drop,
         &paths,
         Some((120.0, 12.0)),
-    )
-    .expect("drop second target");
+    );
 
     let events = fired_events(&engine);
     assert_eq!(
@@ -937,6 +941,44 @@ fn file_drag_tracks_hit_target_and_exposes_file_descriptors() {
     );
 }
 
+/// Route `payload` through the window document's Runtime, as the hosted
+/// adapter's own input source does.
+fn route_runtime(
+    host: &mut VueHost,
+    input: &mut Option<nana_ui_runtime::HeadlessInput>,
+    payload: nana_ui_platform::InputPayload,
+) {
+    let document = host.document();
+    let mut doc = document.lock().expect("document");
+    let id = doc.runtime_document().document();
+    let context = doc.context_mut();
+    let input = input.get_or_insert_with(|| nana_ui_runtime::HeadlessInput::bind(context, id));
+    input.route(context, payload).expect("route");
+}
+
+/// Route a file-drag phase, then let the page observe it.
+fn route_file_drag(
+    host: &mut VueHost,
+    input: &mut Option<nana_ui_runtime::HeadlessInput>,
+    engine: &mut RecordingEngine,
+    kind: FileDragKind,
+    paths: &[PathBuf],
+    position: Option<(f32, f32)>,
+) {
+    route_runtime(
+        host,
+        input,
+        nana_ui_platform::InputPayload::FileDrag(nana_ui_platform::FileDragInput {
+            kind,
+            paths: paths.to_vec(),
+            position,
+            modifiers: Default::default(),
+        }),
+    );
+    host.emit_file_drag_from_runtime(engine, kind, paths, position)
+        .expect("emit file drag");
+}
+
 #[test]
 fn window_blur_cancels_file_drag() {
     let mut host = VueHost::new();
@@ -961,14 +1003,22 @@ fn window_blur_cancels_file_drag() {
             .expect("layout");
     }
     let mut engine = RecordingEngine::default();
+    let mut input = None;
     let paths = vec![PathBuf::from("/tmp/note.md")];
-    host.dispatch_file_drag(
+    route_file_drag(
+        &mut host,
+        &mut input,
         &mut engine,
-        FileDragEventKind::Hover,
+        FileDragKind::Hover,
         &paths,
         Some((10.0, 12.0)),
-    )
-    .expect("hover");
+    );
+    // The window's source routes the blur first, as the hosted adapter does.
+    route_runtime(
+        &mut host,
+        &mut input,
+        nana_ui_platform::InputPayload::Focus { focused: false },
+    );
     host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
         .expect("blur");
     let names: Vec<_> = fired_events(&engine)

@@ -255,6 +255,8 @@ use nana_js_engine::{
 use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
 /// Native composition (IME) as the platform delivers it.
 pub use nana_ui_platform::CompositionInput as NativeComposition;
+/// The phase of a native file drag the Runtime routed.
+pub use nana_ui_platform::FileDragKind;
 use nana_ui_runtime::TextInputState;
 use nana_ui_web_api::{
     SharedCanvasRuntime, SharedMediaRuntime, SharedWebApiState, compose_runtime_artifact,
@@ -477,14 +479,6 @@ pub enum WindowLifecycleEvent {
     VisibilityChange {
         hidden: bool,
     },
-}
-
-/// Native file drag lifecycle translated to Vue DOM-style drag events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileDragEventKind {
-    Hover,
-    Drop,
-    Cancel,
 }
 
 impl WindowLifecycleEvent {

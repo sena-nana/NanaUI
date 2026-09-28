@@ -1,5 +1,3 @@
-use crate::InputModifiers;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Stable application-owned window identity. Platform backends keep their
@@ -173,24 +171,6 @@ pub enum WindowEvent {
         id: WindowId,
     },
     Closed {
-        id: WindowId,
-    },
-    FileHovered {
-        id: WindowId,
-        paths: Vec<PathBuf>,
-        position: Option<(f32, f32)>,
-        /// Modifier keys held at this moment. The drag source keeps keyboard
-        /// focus, so the host samples the system state where it can.
-        modifiers: InputModifiers,
-    },
-    FileDropped {
-        id: WindowId,
-        paths: Vec<PathBuf>,
-        position: Option<(f32, f32)>,
-        /// Modifier keys held when the files were released.
-        modifiers: InputModifiers,
-    },
-    FileHoverCancelled {
         id: WindowId,
     },
     /// The operating system switched between light and dark appearance.

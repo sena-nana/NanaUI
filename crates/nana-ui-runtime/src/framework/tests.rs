@@ -3466,6 +3466,29 @@ fn a_drop_target_covers_its_subtree_and_only_the_kinds_it_accepts() {
     );
 }
 
+/// Route one file-drag phase the way a host delivers it; whether it changed
+/// anything.
+fn route_file_drag(
+    input: &mut crate::HeadlessInput,
+    context: &mut AppContext,
+    kind: nana_ui_core::FileDragKind,
+    paths: &[std::path::PathBuf],
+    position: Option<(f32, f32)>,
+) -> bool {
+    input
+        .route(
+            context,
+            nana_ui_input::InputPayload::FileDrag(nana_ui_input::FileDragInput {
+                kind,
+                paths: paths.to_vec(),
+                position,
+                modifiers: Default::default(),
+            }),
+        )
+        .unwrap()
+        .handled
+}
+
 #[test]
 fn file_drag_resolves_hover_and_drop_onto_the_registered_target() {
     use std::{
@@ -3503,27 +3526,34 @@ fn file_drag_resolves_hover_and_drop_onto_the_registered_target() {
         })
         .unwrap();
 
+    let mut input = crate::HeadlessInput::bind(&mut context, document);
     let paths = [PathBuf::from("/tmp/note.md")];
-    assert!(
-        context
-            .dispatch_file_drag(document, FileDragKind::Hover, &paths, Some((20.0, 20.0)),)
-            .unwrap()
-    );
+    assert!(route_file_drag(
+        &mut input,
+        &mut context,
+        FileDragKind::Hover,
+        &paths,
+        Some((20.0, 20.0))
+    ));
     assert_eq!(
         context.drop_hover(),
         Some((panel.stable_id(), DropEffect::Copy))
     );
-    assert!(
-        context
-            .dispatch_file_drag(document, FileDragKind::Drop, &paths, Some((20.0, 20.0)),)
-            .unwrap()
-    );
+    assert!(route_file_drag(
+        &mut input,
+        &mut context,
+        FileDragKind::Drop,
+        &paths,
+        Some((20.0, 20.0))
+    ));
     assert!(context.drop_hover().is_none());
-    assert!(
-        !context
-            .dispatch_file_drag(document, FileDragKind::Hover, &paths, Some((380.0, 280.0)),)
-            .unwrap()
-    );
+    assert!(!route_file_drag(
+        &mut input,
+        &mut context,
+        FileDragKind::Hover,
+        &paths,
+        Some((380.0, 280.0))
+    ));
 
     let log = events.lock().unwrap();
     assert_eq!(log.len(), 2);
@@ -3571,15 +3601,24 @@ fn a_drop_elsewhere_tells_the_hovered_target_it_was_left() {
         })
         .unwrap();
 
+    let mut input = crate::HeadlessInput::bind(&mut context, document);
     let paths = [PathBuf::from("/tmp/note.md")];
-    context
-        .dispatch_file_drag(document, FileDragKind::Hover, &paths, Some((20.0, 20.0)))
-        .unwrap();
+    route_file_drag(
+        &mut input,
+        &mut context,
+        FileDragKind::Hover,
+        &paths,
+        Some((20.0, 20.0)),
+    );
     // Released outside every target: the panel still has to hear that the
     // drag it was told about is over, the way a cancel tells it.
-    context
-        .dispatch_file_drag(document, FileDragKind::Drop, &paths, Some((380.0, 280.0)))
-        .unwrap();
+    route_file_drag(
+        &mut input,
+        &mut context,
+        FileDragKind::Drop,
+        &paths,
+        Some((380.0, 280.0)),
+    );
 
     let log = events.lock().unwrap();
     assert!(
@@ -3616,20 +3655,27 @@ fn file_drag_drop_miss_redraws_so_hover_chrome_clears() {
         .set_drop_target(panel, DropAccepts::files().effect(DropEffect::Copy))
         .unwrap();
 
+    let mut input = crate::HeadlessInput::bind(&mut context, document);
     let paths = [PathBuf::from("/tmp/note.md")];
-    assert!(
-        context
-            .dispatch_file_drag(document, FileDragKind::Hover, &paths, Some((20.0, 20.0)))
-            .unwrap()
-    );
+    assert!(route_file_drag(
+        &mut input,
+        &mut context,
+        FileDragKind::Hover,
+        &paths,
+        Some((20.0, 20.0))
+    ));
     assert_eq!(
         context.drop_hover(),
         Some((panel.stable_id(), DropEffect::Copy))
     );
     assert!(
-        context
-            .dispatch_file_drag(document, FileDragKind::Drop, &paths, Some((380.0, 280.0)))
-            .unwrap(),
+        route_file_drag(
+            &mut input,
+            &mut context,
+            FileDragKind::Drop,
+            &paths,
+            Some((380.0, 280.0))
+        ),
         "a drop miss must still request a redraw so hover chrome clears"
     );
     assert!(context.drop_hover().is_none());

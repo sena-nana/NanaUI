@@ -28,11 +28,12 @@ use crate::presentation::{ResolvedWindowPresentation, WindowSurfaceTarget};
 use nana_ui_core::{AppearanceSettings, RESIZE_HANDLE_SIZE, SharedStore, TITLE_BAR_HEIGHT};
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
-    CompositionInput, DisplayBounds, FullscreenRequest, InputModifiers, InputPayload,
-    MousePassthroughMode, PointerInput, PointerPhase, PointerType, SystemAppearance, WindowEvent,
-    WindowGeometry, WindowIcon, WindowId, WindowLevel, WindowModeState, WindowResizeEdge,
-    clamp_position_to_displays, clear_registered_application_icon, persist_live_window_geometry,
-    register_application_icon, restore_window_geometry, window_resize_edge,
+    CompositionInput, DisplayBounds, FileDragInput, FileDragKind, FullscreenRequest,
+    InputModifiers, InputPayload, MousePassthroughMode, PointerInput, PointerPhase, PointerType,
+    SystemAppearance, WindowEvent, WindowGeometry, WindowIcon, WindowId, WindowLevel,
+    WindowModeState, WindowResizeEdge, clamp_position_to_displays,
+    clear_registered_application_icon, persist_live_window_geometry, register_application_icon,
+    restore_window_geometry, window_resize_edge,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, StableNodeId, Task,
@@ -2970,7 +2971,7 @@ impl InputTracker {
     }
 
     /// The paths of a release could not be read: end the drag as cancelled.
-    fn abandon_drop(&mut self, transfer: DataTransferId, id: WindowId) -> Option<WindowEvent> {
+    fn abandon_drop(&mut self, transfer: DataTransferId) -> Option<FileDragInput> {
         if self.pending_dnd != Some(transfer) || !self.drop_waiting_for_data {
             return None;
         }
@@ -2980,7 +2981,7 @@ impl InputTracker {
         self.drop_modifiers = None;
         self.pending_dnd = None;
         self.pending_dnd_serial = None;
-        Some(WindowEvent::FileHoverCancelled { id })
+        Some(FileDragInput::cancel())
     }
 
     fn accepts_dnd_serial(&self, transfer: DataTransferId, serial: AsyncRequestSerial) -> bool {
@@ -2994,8 +2995,7 @@ impl InputTracker {
         &mut self,
         transfer: DataTransferId,
         paths: Vec<PathBuf>,
-        id: WindowId,
-    ) -> Option<WindowEvent> {
+    ) -> Option<FileDragInput> {
         if self.pending_dnd != Some(transfer) {
             return None;
         }
@@ -3012,15 +3012,15 @@ impl InputTracker {
                 .drop_modifiers
                 .take()
                 .unwrap_or_else(|| self.drag_modifiers());
-            return Some(WindowEvent::FileDropped {
-                id,
+            return Some(FileDragInput {
+                kind: FileDragKind::Drop,
                 paths: std::mem::take(&mut self.pending_file_paths),
                 position: Some(self.cursor),
                 modifiers,
             });
         }
-        Some(WindowEvent::FileHovered {
-            id,
+        Some(FileDragInput {
+            kind: FileDragKind::Hover,
             paths: self.pending_file_paths.clone(),
             position: Some(self.cursor),
             modifiers: self.drag_modifiers(),
@@ -3221,18 +3221,14 @@ impl InputTracker {
         })
     }
 
-    fn map_file_window_event(
-        &mut self,
-        event: &WinitWindowEvent,
-        id: WindowId,
-    ) -> Option<WindowEvent> {
+    fn map_file_window_event(&mut self, event: &WinitWindowEvent) -> Option<FileDragInput> {
         match event {
             WinitWindowEvent::DragEntered { id: transfer, .. } => {
                 if self.pending_dnd != Some(*transfer) {
                     self.begin_file_drag(*transfer, None);
                 }
-                Some(WindowEvent::FileHovered {
-                    id,
+                Some(FileDragInput {
+                    kind: FileDragKind::Hover,
                     paths: self.pending_file_paths.clone(),
                     position: Some(self.cursor),
                     modifiers: self.drag_modifiers(),
@@ -3242,8 +3238,8 @@ impl InputTracker {
                 if self.pending_dnd != Some(*transfer) || self.file_drop_emitted {
                     return None;
                 }
-                Some(WindowEvent::FileHovered {
-                    id,
+                Some(FileDragInput {
+                    kind: FileDragKind::Hover,
                     paths: self.pending_file_paths.clone(),
                     position: Some(self.cursor),
                     modifiers: self.drag_modifiers(),
@@ -3256,7 +3252,7 @@ impl InputTracker {
                 self.drop_modifiers = None;
                 self.pending_dnd = None;
                 self.pending_dnd_serial = None;
-                Some(WindowEvent::FileHoverCancelled { id })
+                Some(FileDragInput::cancel())
             }
             WinitWindowEvent::DragDropped { .. } => {
                 if self.file_drop_emitted {
@@ -3266,8 +3262,8 @@ impl InputTracker {
                 self.drop_waiting_for_data = false;
                 self.pending_dnd = None;
                 self.pending_dnd_serial = None;
-                Some(WindowEvent::FileDropped {
-                    id,
+                Some(FileDragInput {
+                    kind: FileDragKind::Drop,
                     paths: std::mem::take(&mut self.pending_file_paths),
                     position: Some(self.cursor),
                     modifiers: self.drag_modifiers(),
@@ -3446,16 +3442,16 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        Desktop, DisplayBounds, ForwardPointerAction, FrameMoveStep, InputTracker,
-        PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position, frame_edge_cursor,
-        frame_move_step, held_mouse_button, invalidate_program_host_textures, mouse_button_code,
-        mouse_button_mask, platform_composition, platform_input_key, platform_input_modifiers,
-        platform_physical_key, platform_window_event, remove_image_target_index,
-        replace_image_target_index, route_window_command, scene_clear_color,
-        scene_runtime_input_update, scene_window_attributes, screen_position, surface_image_keys,
-        system_input_modifiers, tablet_pointer_id, window_cursor_override, window_level,
-        window_surface_effect, window_wants_transparent_surface, windows_scene_chrome,
-        windows_to_redraw, winit_icon,
+        Desktop, DisplayBounds, FileDragInput, FileDragKind, ForwardPointerAction, FrameMoveStep,
+        InputTracker, PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position,
+        frame_edge_cursor, frame_move_step, held_mouse_button, invalidate_program_host_textures,
+        mouse_button_code, mouse_button_mask, platform_composition, platform_input_key,
+        platform_input_modifiers, platform_physical_key, platform_window_event,
+        remove_image_target_index, replace_image_target_index, route_window_command,
+        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
+        surface_image_keys, system_input_modifiers, tablet_pointer_id, window_cursor_override,
+        window_level, window_surface_effect, window_wants_transparent_surface,
+        windows_scene_chrome, windows_to_redraw, winit_icon,
     };
     use crate::presentation::{
         ResolvedSurfaceTarget, ResolvedWindowPresentation, WindowSurfaceTarget,
@@ -4728,51 +4724,45 @@ mod tests {
         };
         let transfer = winit::data_transfer::DataTransferId::from_raw(1);
         assert!(matches!(
-            tracker.map_file_window_event(
-                &WinitWindowEvent::DragEntered {
-                    id: transfer,
-                    position: None,
-                },
-                WindowId::PRIMARY,
-            ),
-            Some(WindowEvent::FileHovered { .. })
+            tracker.map_file_window_event(&WinitWindowEvent::DragEntered {
+                id: transfer,
+                position: None,
+            },),
+            Some(FileDragInput {
+                kind: FileDragKind::Hover,
+                ..
+            })
         ));
         assert!(matches!(
-            tracker.map_file_window_event(
-                &WinitWindowEvent::DragDropped {
-                    id: transfer,
-                    proposed_action: None,
-                },
-                WindowId::PRIMARY,
-            ),
-            Some(WindowEvent::FileDropped { .. })
+            tracker.map_file_window_event(&WinitWindowEvent::DragDropped {
+                id: transfer,
+                proposed_action: None,
+            },),
+            Some(FileDragInput {
+                kind: FileDragKind::Drop,
+                ..
+            })
         ));
         assert!(
             tracker
-                .map_file_window_event(
-                    &WinitWindowEvent::DragDropped {
-                        id: transfer,
-                        proposed_action: None,
-                    },
-                    WindowId::PRIMARY,
-                )
+                .map_file_window_event(&WinitWindowEvent::DragDropped {
+                    id: transfer,
+                    proposed_action: None,
+                },)
                 .is_none()
         );
 
         let mut cancelled = InputTracker::default();
-        cancelled.map_file_window_event(
-            &WinitWindowEvent::DragEntered {
-                id: transfer,
-                position: None,
-            },
-            WindowId::PRIMARY,
-        );
+        cancelled.map_file_window_event(&WinitWindowEvent::DragEntered {
+            id: transfer,
+            position: None,
+        });
         assert!(matches!(
-            cancelled.map_file_window_event(
-                &WinitWindowEvent::DragLeft { id: transfer },
-                WindowId::PRIMARY,
-            ),
-            Some(WindowEvent::FileHoverCancelled { .. })
+            cancelled.map_file_window_event(&WinitWindowEvent::DragLeft { id: transfer },),
+            Some(FileDragInput {
+                kind: FileDragKind::Cancel,
+                ..
+            })
         ));
     }
 
@@ -4782,15 +4772,13 @@ mod tests {
         let mut tracker = InputTracker::default();
         tracker.begin_file_drag(transfer, None);
         // Hovering, not releasing: nothing to abandon.
-        assert!(tracker.abandon_drop(transfer, WindowId::PRIMARY).is_none());
+        assert!(tracker.abandon_drop(transfer).is_none());
         tracker.wait_for_drop_data(transfer, winit::event_loop::AsyncRequestSerial::get());
         assert_eq!(
-            tracker.abandon_drop(transfer, WindowId::PRIMARY),
-            Some(WindowEvent::FileHoverCancelled {
-                id: WindowId::PRIMARY
-            })
+            tracker.abandon_drop(transfer),
+            Some(FileDragInput::cancel())
         );
-        assert!(tracker.abandon_drop(transfer, WindowId::PRIMARY).is_none());
+        assert!(tracker.abandon_drop(transfer).is_none());
     }
 
     #[test]
@@ -4804,27 +4792,21 @@ mod tests {
         let expected = nana_window::keyboard_modifiers()
             .map(|keys| keys.control)
             .unwrap_or(true);
-        let hovered = tracker.map_file_window_event(
-            &WinitWindowEvent::DragEntered {
-                id: transfer,
-                position: None,
-            },
-            WindowId::PRIMARY,
-        );
+        let hovered = tracker.map_file_window_event(&WinitWindowEvent::DragEntered {
+            id: transfer,
+            position: None,
+        });
         assert!(matches!(
             hovered,
-            Some(WindowEvent::FileHovered { modifiers, .. }) if modifiers.control == expected
+            Some(FileDragInput { kind: FileDragKind::Hover, modifiers, .. }) if modifiers.control == expected
         ));
-        let dropped = tracker.map_file_window_event(
-            &WinitWindowEvent::DragDropped {
-                id: transfer,
-                proposed_action: None,
-            },
-            WindowId::PRIMARY,
-        );
+        let dropped = tracker.map_file_window_event(&WinitWindowEvent::DragDropped {
+            id: transfer,
+            proposed_action: None,
+        });
         assert!(matches!(
             dropped,
-            Some(WindowEvent::FileDropped { modifiers, .. }) if modifiers.control == expected
+            Some(FileDragInput { kind: FileDragKind::Drop, modifiers, .. }) if modifiers.control == expected
         ));
     }
 
@@ -4838,24 +4820,21 @@ mod tests {
         };
         hover.begin_file_drag(transfer, None);
         assert_eq!(
-            hover.ingest_file_paths(transfer, paths.clone(), WindowId::PRIMARY),
-            Some(WindowEvent::FileHovered {
-                id: WindowId::PRIMARY,
+            hover.ingest_file_paths(transfer, paths.clone()),
+            Some(FileDragInput {
+                kind: FileDragKind::Hover,
                 paths: paths.clone(),
                 position: Some((8.0, 16.0)),
                 modifiers: InputModifiers::default(),
             })
         );
         assert_eq!(
-            hover.map_file_window_event(
-                &WinitWindowEvent::DragDropped {
-                    id: transfer,
-                    proposed_action: None,
-                },
-                WindowId::PRIMARY,
-            ),
-            Some(WindowEvent::FileDropped {
-                id: WindowId::PRIMARY,
+            hover.map_file_window_event(&WinitWindowEvent::DragDropped {
+                id: transfer,
+                proposed_action: None,
+            },),
+            Some(FileDragInput {
+                kind: FileDragKind::Drop,
                 paths: paths.clone(),
                 position: Some((8.0, 16.0)),
                 modifiers: InputModifiers::default(),
@@ -4877,9 +4856,9 @@ mod tests {
             system_input_modifiers,
         );
         assert_eq!(
-            delayed.ingest_file_paths(transfer, paths.clone(), WindowId::PRIMARY),
-            Some(WindowEvent::FileDropped {
-                id: WindowId::PRIMARY,
+            delayed.ingest_file_paths(transfer, paths.clone()),
+            Some(FileDragInput {
+                kind: FileDragKind::Drop,
                 paths,
                 position: Some((0.0, 0.0)),
                 modifiers: held,
@@ -4887,13 +4866,10 @@ mod tests {
         );
         assert!(
             delayed
-                .map_file_window_event(
-                    &WinitWindowEvent::DragDropped {
-                        id: transfer,
-                        proposed_action: None,
-                    },
-                    WindowId::PRIMARY,
-                )
+                .map_file_window_event(&WinitWindowEvent::DragDropped {
+                    id: transfer,
+                    proposed_action: None,
+                },)
                 .is_none()
         );
     }

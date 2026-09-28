@@ -4,7 +4,6 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,9 +22,9 @@ use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 
 use crate::{
-    BridgeEvent, FileDragEventKind, HostedInputResult, InputModifiers, KeyboardEventKind,
-    KeyboardInput, PointerEventKind, PointerInput, PointerType, SharedRuntimeDocument, VueRuntime,
-    VueWindowId, WheelInput, WindowLifecycleEvent, theme_tokens_from_appearance,
+    BridgeEvent, HostedInputResult, InputModifiers, KeyboardEventKind, KeyboardInput,
+    PointerEventKind, PointerInput, PointerType, SharedRuntimeDocument, VueRuntime, VueWindowId,
+    WheelInput, WindowLifecycleEvent, theme_tokens_from_appearance,
 };
 
 thread_local! {
@@ -459,6 +458,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 self.emit_runtime_text(window, &committed.text)
             }
             InputPayload::Composition(composition) => self.emit_runtime_ime(window, composition),
+            InputPayload::FileDrag(drag) => self.emit_runtime_file_drag(window, drag),
             InputPayload::PointerEnter { .. }
             | InputPayload::PointerLeave { .. }
             | InputPayload::Focus { .. }
@@ -627,6 +627,27 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 modifiers: vue_modifiers(pointer.modifiers),
             },
         )
+    }
+
+    fn emit_runtime_file_drag(
+        &mut self,
+        id: VueWindowId,
+        drag: &nana_ui_platform::FileDragInput,
+    ) -> Result<HostedInputResult, JsEngineError> {
+        let host = self.require_host(id)?;
+        let mut host = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+        let allowed = host.emit_file_drag_from_runtime(
+            &mut self.engine,
+            drag.kind,
+            &drag.paths,
+            drag.position,
+        )?;
+        Ok(HostedInputResult {
+            default_prevented: !allowed,
+            ..HostedInputResult::default()
+        })
     }
 
     fn emit_runtime_wheel(
@@ -854,36 +875,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             WindowEvent::CloseRequested { id } => {
                 self.vue.request_close(VueWindowId(id.0))?;
             }
-            WindowEvent::FileHovered {
-                id,
-                paths,
-                position,
-                ..
-            } => self.emit_file_drag(id, FileDragEventKind::Hover, &paths, position)?,
-            WindowEvent::FileDropped {
-                id,
-                paths,
-                position,
-                ..
-            } => self.emit_file_drag(id, FileDragEventKind::Drop, &paths, position)?,
-            WindowEvent::FileHoverCancelled { id } => {
-                self.emit_file_drag(id, FileDragEventKind::Cancel, &[], None)?
-            }
         }
-        Ok(())
-    }
-
-    fn emit_file_drag(
-        &mut self,
-        id: WindowId,
-        kind: FileDragEventKind,
-        paths: &[PathBuf],
-        position: Option<(f32, f32)>,
-    ) -> Result<(), JsEngineError> {
-        self.require_host(VueWindowId(id.0))?
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .dispatch_file_drag(&mut self.engine, kind, paths, position)?;
         Ok(())
     }
 

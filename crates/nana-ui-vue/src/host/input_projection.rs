@@ -111,42 +111,35 @@ impl VueHost {
         }
         doc.hit_test(x, y)
     }
-    /// Dispatch a native file hover/drop lifecycle through the same Vue event
-    /// tree as pointer input. Only nodes registered with `drop-accepts` receive
-    /// events; hit-testing uses Runtime layout boxes, not pointer-event hits.
-    /// Dropped files are descriptors with an absolute path; reading their
-    /// contents remains an application Host API decision.
-    pub fn dispatch_file_drag<E: JsEngine + ?Sized>(
+    /// Fire the DOM-style drag events for a file drag the Runtime already
+    /// routed, through the same Vue event tree as pointer input. Only nodes
+    /// registered with `drop-accepts` receive events; hit-testing uses Runtime
+    /// layout boxes, not pointer-event hits. Dropped files are descriptors
+    /// with an absolute path; reading their contents remains an application
+    /// Host API decision.
+    pub fn emit_file_drag_from_runtime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
-        kind: FileDragEventKind,
+        kind: FileDragKind,
         paths: &[PathBuf],
         position: Option<(f32, f32)>,
     ) -> Result<bool, JsEngineError> {
-        let runtime_kind = match kind {
-            FileDragEventKind::Hover => nana_ui_core::FileDragKind::Hover,
-            FileDragEventKind::Drop => nana_ui_core::FileDragKind::Drop,
-            FileDragEventKind::Cancel => nana_ui_core::FileDragKind::Cancel,
-        };
-        let drop_at = {
-            let mut doc = self.document.lock().expect("vue doc");
-            let document = doc.runtime_document().document();
-            let target = position.and_then(|(x, y)| {
+        let drop_at = match kind {
+            FileDragKind::Cancel => None,
+            FileDragKind::Hover | FileDragKind::Drop => position.and_then(|(x, y)| {
+                let doc = self.document.lock().expect("vue doc");
+                let document = doc.runtime_document().document();
                 doc.context()
                     .drop_target_at(document, x, y, &nana_ui_core::DropKind::Files)
                     .map(|(id, _)| NodeHandle::from(id))
-            });
-            doc.context_mut()
-                .dispatch_file_drag(document, runtime_kind, paths, position)
-                .map_err(|error| JsEngineError::new(error.to_string()))?;
-            target
+            }),
         };
         let detail = file_drag_detail(paths, position);
         let mut allowed = true;
         let previous = self.input_projection.file_drag_target;
 
         match kind {
-            FileDragEventKind::Hover => {
+            FileDragKind::Hover => {
                 if previous != drop_at {
                     if let Some(previous) = previous {
                         allowed &= self.fire_file_drag_event(
@@ -170,7 +163,7 @@ impl VueHost {
                     allowed &= self.fire_dom_event(engine, target, "dragover", detail)?;
                 }
             }
-            FileDragEventKind::Drop => {
+            FileDragKind::Drop => {
                 if let Some(target) = drop_at {
                     allowed &= self.fire_file_drag_event(
                         engine,
@@ -190,7 +183,7 @@ impl VueHost {
                     )?;
                 }
             }
-            FileDragEventKind::Cancel => {
+            FileDragKind::Cancel => {
                 if let Some(previous) = self.input_projection.file_drag_target.take() {
                     allowed &= self.fire_file_drag_event(
                         engine,

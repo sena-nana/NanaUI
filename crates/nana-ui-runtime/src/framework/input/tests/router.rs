@@ -1222,3 +1222,103 @@ fn a_busy_clipboard_is_not_waited_on() {
     assert!(!outcome.handled);
     assert_eq!(context.world().text(editor.stable_id()), Some("x"));
 }
+
+fn file_drag(kind: nana_ui_core::FileDragKind, position: Option<(f32, f32)>) -> InputPayload {
+    InputPayload::FileDrag(nana_ui_input::FileDragInput {
+        kind,
+        paths: vec![std::path::PathBuf::from("/tmp/note.md")],
+        position,
+        modifiers: InputModifiers::default(),
+    })
+}
+
+/// A file drag reaches the drop target under it through the router, which
+/// names that target as the event's hit; a blur or a disconnect ends the
+/// hover as the drag leaving would.
+#[test]
+fn file_drags_route_to_the_drop_target_and_end_with_their_source() {
+    use nana_ui_core::{DropAccepts, FileDragKind};
+
+    let mut context = AppContext::new();
+    let doc = document(5);
+    let target = hittable_node(&mut context, doc, 1);
+    context
+        .set_drop_target_node(target, DropAccepts::files())
+        .unwrap();
+    let generation = EndpointGeneration(1);
+    let (source, other) = (InputSourceId(20), InputSourceId(21));
+    context.bind_input_source(source, generation, doc).unwrap();
+    context.bind_input_source(other, generation, doc).unwrap();
+    // A drawn frame: the hover change below is new work.
+    context.take_system_work();
+    let mut services = UnsupportedHostServices;
+    let mut route = |context: &mut AppContext, owner, sequence, payload| {
+        context
+            .route_input(
+                &event(owner, generation, sequence, payload),
+                &mut services,
+                None,
+            )
+            .unwrap()
+    };
+
+    let hovered = route(
+        &mut context,
+        source,
+        1,
+        file_drag(FileDragKind::Hover, Some((10.0, 10.0))),
+    );
+    assert!(hovered.handled);
+    assert!(
+        hovered.invalidated_work,
+        "the host redraws the hover chrome"
+    );
+    assert_eq!(hovered.pointer_hit, Some(target));
+    assert_eq!(context.drop_hover().map(|(id, _)| id), Some(target));
+
+    // Another window losing focus has no drag to end.
+    route(
+        &mut context,
+        other,
+        1,
+        InputPayload::Focus { focused: false },
+    );
+    assert_eq!(context.drop_hover().map(|(id, _)| id), Some(target));
+    route(
+        &mut context,
+        source,
+        2,
+        InputPayload::Focus { focused: false },
+    );
+    assert_eq!(context.drop_hover(), None);
+
+    route(
+        &mut context,
+        source,
+        3,
+        file_drag(FileDragKind::Hover, Some((10.0, 10.0))),
+    );
+    route(&mut context, source, 4, InputPayload::SourceDisconnected);
+    assert_eq!(context.drop_hover(), None);
+
+    let dropped = route(
+        &mut context,
+        other,
+        2,
+        file_drag(FileDragKind::Drop, Some((10.0, 10.0))),
+    );
+    assert!(dropped.handled);
+    assert_eq!(dropped.pointer_hit, Some(target));
+}
+
+#[test]
+fn file_drag_paths_count_against_the_endpoint_budget() {
+    let payload = file_drag(nana_ui_core::FileDragKind::Drop, Some((0.0, 0.0)));
+    let InputPayload::FileDrag(drag) = &payload else {
+        unreachable!()
+    };
+    assert!(
+        payload.allocation_bytes()
+            >= drag.paths[0].capacity() + std::mem::size_of::<std::path::PathBuf>()
+    );
+}

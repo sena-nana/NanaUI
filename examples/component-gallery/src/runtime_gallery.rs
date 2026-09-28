@@ -1,16 +1,15 @@
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use nana_ui::runtime::{
     Activate, AppShell, AppTitleBar, Avatar, Button, CalendarHeatmap, CalendarHeatmapDatum,
     CalendarHeatmapEvent, Card, Checkbox, Chip, DesktopShell, DiffHunk, DiffLine, DiffView,
     DockFloatingSurface, DocumentId, DropAccepts, Dropdown, DropdownEvent, DropdownOption,
-    EmptyState, Entity, FileDragKind, FileDropEvent, FrameworkError, GraphCanvas, GraphCanvasEvent,
-    GraphMinimap, GraphMinimapEvent, GraphSize, IconButton, InteractiveCard, LabeledValue,
-    LayoutViewport, LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown, NodeStyle,
-    OverlayHost, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
-    Popover, PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeInput, RichTextEvent,
+    EmptyState, Entity, FileDropEvent, FrameworkError, GraphCanvas, GraphCanvasEvent, GraphMinimap,
+    GraphMinimapEvent, GraphSize, IconButton, InteractiveCard, LabeledValue, LayoutViewport,
+    LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown, NodeStyle, OverlayHost,
+    PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, Popover,
+    PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeInput, RichTextEvent,
     RuntimeDocument, SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl,
     SegmentedOption, SegmentedSelectionRequested, SemanticColorRole, SidebarFooter,
     SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState, SidebarSection,
@@ -598,25 +597,27 @@ impl GalleryRuntime {
         Arc::clone(&self.pending)
     }
 
-    pub(super) fn dispatch_file_drag(
+    /// Route a file-drag phase the way the window's input source does.
+    #[cfg(test)]
+    pub(super) fn route_file_drag(
         &mut self,
-        kind: FileDragKind,
-        paths: &[PathBuf],
+        kind: nana_ui::FileDragKind,
+        paths: &[std::path::PathBuf],
         position: Option<(f32, f32)>,
     ) -> (bool, Vec<GalleryMessage>) {
-        let document = self.document.document();
-        let changed = match self
-            .document
-            .context_mut()
-            .dispatch_file_drag(document, kind, paths, position)
-        {
-            Ok(changed) => changed,
-            Err(error) => {
-                report_failure("file-drag dispatch", &error);
-                false
-            }
-        };
-        (changed, take_pending(&self.pending))
+        let outcome = self.scripted.route(
+            &mut self.document,
+            InputPayload::FileDrag(nana_ui::FileDragInput {
+                kind,
+                paths: paths.to_vec(),
+                position,
+                modifiers: Default::default(),
+            }),
+        );
+        (
+            outcome.is_some_and(|outcome| outcome.handled),
+            take_pending(&self.pending),
+        )
     }
 
     pub(super) fn flush_viewport(&mut self, size: (f32, f32)) {
@@ -1017,15 +1018,15 @@ impl GalleryState {
     #[cfg(test)]
     pub(crate) fn gallery_dispatch_file_drag(
         &mut self,
-        kind: FileDragKind,
-        paths: &[PathBuf],
+        kind: nana_ui::FileDragKind,
+        paths: &[std::path::PathBuf],
         position: Option<(f32, f32)>,
     ) -> bool {
         let (changed, messages) = {
             let Some(runtime) = self.gallery_runtime.as_mut() else {
                 return false;
             };
-            runtime.dispatch_file_drag(kind, paths, position)
+            runtime.route_file_drag(kind, paths, position)
         };
         for message in messages {
             self.update(message);

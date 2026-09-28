@@ -6,7 +6,8 @@ use nana_ui::runtime::{
     RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, ViewContext, Workspace,
 };
 use nana_ui::{
-    ButtonKind, ControlSize, HeadlessInput, Icon, LogicalPoint, ThemeMode, TitleBarDragTracker,
+    ButtonKind, ControlSize, HeadlessInput, Icon, InputRouteOutcome, LogicalPoint, ThemeMode,
+    TitleBarDragTracker,
 };
 use nana_ui_platform::{
     EndpointGeneration, InputModifiers, InputPayload, InputSourceId, KeyInput, KeyState,
@@ -228,8 +229,12 @@ pub(super) struct ScriptedInput {
 }
 
 impl ScriptedInput {
-    pub(super) fn route(&mut self, document: &mut RuntimeDocument, payload: InputPayload) {
-        self.route_typed(document, payload, None);
+    pub(super) fn route(
+        &mut self,
+        document: &mut RuntimeDocument,
+        payload: InputPayload,
+    ) -> Option<InputRouteOutcome> {
+        self.route_typed(document, payload, None)
     }
 
     /// Route `payload`; for a key press, then the `text` it types.
@@ -238,7 +243,7 @@ impl ScriptedInput {
         document: &mut RuntimeDocument,
         payload: InputPayload,
         text: Option<&str>,
-    ) {
+    ) -> Option<InputRouteOutcome> {
         let id = document.document();
         let context = document.context_mut();
         let binding = context.input_binding(SCRIPTED_SOURCE);
@@ -257,13 +262,12 @@ impl ScriptedInput {
                 HeadlessInput::bind_source(context, SCRIPTED_SOURCE, EndpointGeneration(next), id)
                     .ok();
         }
-        let Some(input) = self.input.as_mut() else {
-            return;
-        };
-        let _ = match (payload, text) {
+        let input = self.input.as_mut()?;
+        match (payload, text) {
             (InputPayload::Key(key), Some(text)) => input.press(context, key, Some(text), None),
             (payload, _) => input.route(context, payload),
-        };
+        }
+        .ok()
     }
 }
 

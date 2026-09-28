@@ -367,7 +367,7 @@ impl VueHost {
     ) -> Result<bool, JsEngineError> {
         if event == WindowLifecycleEvent::Blur {
             if self.input_projection.file_drag_target.is_some() {
-                self.dispatch_file_drag(engine, FileDragEventKind::Cancel, &[], None)?;
+                self.emit_file_drag_from_runtime(engine, FileDragKind::Cancel, &[], None)?;
             }
             self.input.lock().expect("input state").clear();
             {

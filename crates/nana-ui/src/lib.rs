@@ -241,10 +241,10 @@ pub use nana_ui_core::{XYPadEvent, XYPadValue};
 /// Canonical input: what hosts deliver and programs observe in
 /// [`RoutedInput`], routed through the context each source is bound to.
 pub use nana_ui_platform::{
-    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, HeadlessHostServices,
-    HostServiceError, HostServices, InputDisposition, InputModifiers, InputPayload, KeyInput,
-    KeyState, PointerInput, PointerPhase, PointerType, TextInputContext, TextInputPurpose,
-    WheelInput, WheelUnit,
+    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, FileDragInput, FileDragKind,
+    HeadlessHostServices, HostServiceError, HostServices, InputDisposition, InputModifiers,
+    InputPayload, KeyInput, KeyState, PointerInput, PointerPhase, PointerType, TextInputContext,
+    TextInputPurpose, WheelInput, WheelUnit,
 };
 #[cfg(feature = "hosted")]
 pub use nana_ui_platform::{

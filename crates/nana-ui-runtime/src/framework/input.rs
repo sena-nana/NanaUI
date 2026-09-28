@@ -36,7 +36,8 @@ pub struct InputRouteOutcome {
     /// The host must not apply its own default for the event.
     pub prevent_default: bool,
     /// For pointer and wheel events: the node holding the pointer's capture,
-    /// else the topmost node under it that the event could reach.
+    /// else the topmost node under it that the event could reach. For a
+    /// file drag: the drop target it is over or landed on.
     pub pointer_hit: Option<StableNodeId>,
     /// The event scheduled Runtime work: something must be drawn again.
     pub invalidated_work: bool,
@@ -165,6 +166,8 @@ struct SourceState {
     effects: effects::SourceEffects,
     /// The last key press a control handled; text naming it is dropped.
     handled_key: Option<InputSequence>,
+    /// A file drag from this source is hovering the document.
+    file_drag: bool,
 }
 
 impl SourceState {
@@ -180,6 +183,7 @@ impl SourceState {
             pointer: None,
             effects: effects::SourceEffects::default(),
             handled_key: None,
+            file_drag: false,
         }
     }
 }
@@ -513,6 +517,19 @@ impl AppContext {
             InputPayload::Composition(composition) => {
                 self.dispatch_composition(document, composition)?
             }
+            InputPayload::FileDrag(drag) => {
+                let (changed, target) =
+                    self.file_drag(document, drag.kind, &drag.paths, drag.position)?;
+                landed = target;
+                if let Some(state) = self.input.source(source) {
+                    state.file_drag =
+                        drag.kind == nana_ui_core::FileDragKind::Hover && drag.position.is_some();
+                }
+                InputDisposition {
+                    handled: changed,
+                    prevent_default: false,
+                }
+            }
             InputPayload::Focus { focused } => {
                 self.route_focus(source, document, *focused, now, services)?;
                 InputDisposition::default()
@@ -572,7 +589,7 @@ impl AppContext {
             }
         }
         let pointer_hit = match &event.payload {
-            InputPayload::Pointer(_) | InputPayload::Wheel(_) => landed,
+            InputPayload::Pointer(_) | InputPayload::Wheel(_) | InputPayload::FileDrag(_) => landed,
             _ => None,
         };
         Ok(InputRouteOutcome {
@@ -647,6 +664,22 @@ impl AppContext {
             self.sync_text_input(source, document, true, services);
         } else {
             self.cancel_source_pointers(source, document, None, now)?;
+            self.cancel_source_file_drag(source, document)?;
+        }
+        Ok(())
+    }
+
+    /// End the file drag `source` has hovering, as its leaving would.
+    fn cancel_source_file_drag(
+        &mut self,
+        source: InputSourceId,
+        document: DocumentId,
+    ) -> Result<(), FrameworkError> {
+        let Some(state) = self.input.source(source) else {
+            return Ok(());
+        };
+        if std::mem::replace(&mut state.file_drag, false) {
+            self.file_drag(document, nana_ui_core::FileDragKind::Cancel, &[], None)?;
         }
         Ok(())
     }
@@ -661,6 +694,7 @@ impl AppContext {
         now: Duration,
     ) -> Result<(), FrameworkError> {
         self.cancel_source_pointers(source, document, None, now)?;
+        self.cancel_source_file_drag(source, document)?;
         let Some(state) = self.input.source(source) else {
             return Ok(());
         };

@@ -12,13 +12,15 @@ mod input;
 
 pub use canonical::{
     CanonicalInputEvent, CommittedText, CompositionInput, DeviceId, EndpointGeneration,
-    InputDeviceCounters, InputEndpoint, InputEndpointCounters, InputEnqueueOutcome, InputMetadata,
-    InputPayload, InputRejection, InputSequence, InputSequencer, InputSourceId, InputTimestamp,
-    KeyInput, KeyState, LogicalKey, PhysicalKey, PointerId, PointerInput, RejectedInput,
-    WheelInput, WheelUnit,
+    FileDragInput, InputDeviceCounters, InputEndpoint, InputEndpointCounters, InputEnqueueOutcome,
+    InputMetadata, InputPayload, InputRejection, InputSequence, InputSequencer, InputSourceId,
+    InputTimestamp, KeyInput, KeyState, LogicalKey, PhysicalKey, PointerId, PointerInput,
+    RejectedInput, WheelInput, WheelUnit,
 };
 pub use host_services::{
     CursorIcon, HeadlessHostServices, HostServiceCounters, HostServiceError, HostServices,
     SurroundingText, TextInputContext, TextInputPurpose, UnsupportedHostServices,
 };
 pub use input::{InputDisposition, InputModifiers, PointerPhase, PointerType};
+/// The phase a [`FileDragInput`] reports.
+pub use nana_ui_core::FileDragKind;
