@@ -61,7 +61,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # purpose: it is the token authority, so a number there is the token.
 COMPONENT_ROOT = "crates/nana-ui-runtime/src"
 
-SKIP_PARTS = ("bin", "benches", "fixtures", "corpus")
+# A `tests/` directory holds test modules split out of their parent, the
+# same code a `*tests.rs` file or a `#[cfg(test)]` block holds.
+SKIP_PARTS = ("bin", "benches", "fixtures", "corpus", "tests")
 SKIP_SUFFIXES = ("_tests.rs", "tests.rs")
 
 NUMBER = r"-?\d+(?:\.\d+)?"

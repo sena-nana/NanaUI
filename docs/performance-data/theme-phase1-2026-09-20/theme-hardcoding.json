@@ -14,13 +14,13 @@
     "color_role": 298,
     "color_literal": 0,
     "design_number": 78,
-    "motion": 16,
+    "motion": 17,
     "elevation": 0
   },
-  "token_reads": 711,
+  "token_reads": 712,
   "local_values": 23,
-  "shared_local_values": 94,
-  "module_constants": 83,
+  "shared_local_values": 95,
+  "module_constants": 84,
   "components": [
     {
       "component": "AboutSection",
@@ -2534,6 +2534,19 @@
       "roles": []
     },
     {
+      "file": "crates/nana-ui-runtime/src/framework/input/effects.rs",
+      "counts": {
+        "color_role": 0,
+        "color_literal": 0,
+        "design_number": 0,
+        "motion": 1,
+        "elevation": 0
+      },
+      "local_values": 1,
+      "token_reads": 0,
+      "roles": []
+    },
+    {
       "file": "crates/nana-ui-runtime/src/layout_engine/measure.rs",
       "counts": {
         "color_role": 0,
@@ -2845,7 +2858,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 21,
+      "token_reads": 22,
       "roles": [
         "Muted",
         "Surface"
@@ -3428,6 +3441,17 @@
           "name": "FILE_TAB_MAX_WIDTH",
           "type": "f32",
           "value": 180.0
+        }
+      ],
+      "count": 1
+    },
+    {
+      "file": "crates/nana-ui-runtime/src/framework/input/dispatch.rs",
+      "constants": [
+        {
+          "name": "LINE_SCROLL_EXTENT",
+          "type": "f32",
+          "value": 60.0
         }
       ],
       "count": 1
