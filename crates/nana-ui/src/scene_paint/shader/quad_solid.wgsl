@@ -93,7 +93,8 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     var out: SolidVertexOutput;
 
     // Outline/inset expansion is packed into instance shadow radii on the CPU so
-    // this stage never reads storage (VERTEX_STORAGE is not guaranteed).
+    // this stage never reads storage (VERTEX_STORAGE is not guaranteed). An
+    // inset spread packs negated, so it grows nothing.
     let shadow_blur_radius = input.shadow_radii.x;
     let shadow_spread_radius = input.shadow_radii.y;
     let shadow_outset = shadow_blur_radius + max(shadow_spread_radius, 0.0);
@@ -276,6 +277,7 @@ fn solid_fs_main(
     let fade = motion_opacity * clip_cover;
 
     if input.shadow_color.a > 0.0 {
+        // Negated for an inset shadow, whose spread shrinks the shape.
         let css_spread = input.shadow_spread_radius - outline_px;
         let shadow_size = max(input.scale + vec2(css_spread * 2.0), vec2(0.0));
         let shadow_radius = max(input.border_radius + vec4(css_spread), vec4(0.0));

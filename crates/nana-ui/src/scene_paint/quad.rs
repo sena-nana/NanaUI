@@ -56,6 +56,7 @@ struct SolidInstance {
     shadow_color: [f32; 4],
     shadow_offset: [f32; 2],
     shadow_blur_radius: f32,
+    /// Outline width plus the spread, negated for an inset shadow.
     shadow_spread_radius: f32,
     /// Scene-space pivot of the GPU transform overlay.
     motion_origin: [f32; 2],
@@ -1043,8 +1044,11 @@ fn push_solid_instance(
             shadow.map(|shadow| shadow.offset_y).unwrap_or(0.0),
         ],
         shadow_blur_radius: shadow.map(|shadow| shadow.blur_radius).unwrap_or(0.0),
-        shadow_spread_radius: shadow.map(|shadow| shadow.spread_radius).unwrap_or(0.0)
-            + paint.outline_width.max(0.0),
+        // An inset spread shrinks the shape instead of growing it.
+        shadow_spread_radius: shadow.map_or(0.0, |shadow| match paint.flags & PAINT_SHADOW_INSET {
+            0 => shadow.spread_radius,
+            _ => -shadow.spread_radius,
+        }) + paint.outline_width.max(0.0),
         motion_origin,
         snap,
         affine_abcd: [

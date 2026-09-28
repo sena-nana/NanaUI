@@ -3375,10 +3375,22 @@ const SCALED_CIRCLES: [ScaledCircle; 3] = [
     ("scale(2)", [24.0, 24.0, 16.0, 16.0], 2.0, 1.0),
 ];
 
+/// Which side of a [`ScaledCircle`]'s rim is painted green.
+#[derive(Clone, Copy)]
+enum Painted {
+    Inside,
+    Outside,
+}
+
 /// Every pixel near the circle's rim against a one device pixel ramp,
-/// `0.5 - (distance - radius)`; a ramp of `1 / scale` px misses it by a
-/// quarter of the range a third of a pixel from the rim.
-fn assert_one_pixel_rim(pixels: &[u8], (label, [x, y, w, h], scale, factor): ScaledCircle) {
+/// `0.5 - (distance - radius)`, mirrored when the outside is painted; a ramp
+/// of `1 / scale` px misses it by a quarter of the range a third of a pixel
+/// from the rim.
+fn assert_one_pixel_rim(
+    pixels: &[u8],
+    (label, [x, y, w, h], scale, factor): ScaledCircle,
+    painted: Painted,
+) {
     let center = [(x + w * 0.5) * factor, (y + h * 0.5) * factor];
     let radius = w.min(h) * 0.5 * scale * factor;
     let side = (64.0 * factor) as u32;
@@ -3389,6 +3401,10 @@ fn assert_one_pixel_rim(pixels: &[u8], (label, [x, y, w, h], scale, factor): Sca
             if from_rim.abs() > 1.5 {
                 continue;
             }
+            let from_rim = match painted {
+                Painted::Inside => from_rim,
+                Painted::Outside => -from_rim,
+            };
             let expected = (0.5 - from_rim).clamp(0.0, 1.0) * 255.0;
             let green = f32::from(pixel(pixels, side, px, py)[1]);
             assert!(
@@ -3432,7 +3448,7 @@ fn rounded_quad_edge_stays_one_device_pixel_under_transform_scale() {
             [side, side],
             factor,
         );
-        assert_one_pixel_rim(&pixels, circle);
+        assert_one_pixel_rim(&pixels, circle, Painted::Inside);
     }
 }
 
@@ -3484,7 +3500,7 @@ fn rounded_host_texture_edge_stays_one_device_pixel_under_scale_and_fractional_d
             )
             .unwrap();
         let pixels = readback_rgba(&device, &queue, encoder, &target, side, side);
-        assert_one_pixel_rim(&pixels, circle);
+        assert_one_pixel_rim(&pixels, circle, Painted::Inside);
     }
     drop(view);
 }
@@ -3529,7 +3545,52 @@ fn unblurred_shadow_edge_stays_one_device_pixel_under_transform_scale() {
             [side, side],
             factor,
         );
-        assert_one_pixel_rim(&pixels, circle);
+        assert_one_pixel_rim(&pixels, circle, Painted::Inside);
+    }
+}
+
+#[test]
+fn inset_shadow_spread_shrinks_its_shape_inside_the_box() {
+    // CSS `inset 0 0 0 <spread>`: a band that wide inside each round black
+    // box, so the circle is the box's shrunk by the spread, painted outside.
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    let black = [0.0, 0.0, 0.0, 1.0];
+    for (label, [x, y, w, h], scale, factor) in SCALED_CIRCLES {
+        let spread = w / 8.0;
+        let shadow = nana_ui_core::BoxShadowSpec {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_radius: 0.0,
+            spread_radius: spread,
+            color: [0.0, 1.0, 0.0, 1.0],
+            inset: true,
+        };
+        let layout = nana_ui_core::LayoutStyle {
+            background: Some(black),
+            border_radius: Some(w.min(h) * 0.5),
+            transform: scale_transform(scale),
+            paint: nana_ui_core::PaintStyle {
+                box_shadows: vec![shadow],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let node = extracted_div(1, &[], x, y, w, h, layout, Some(black));
+        let mut scene = UiScene::new();
+        scene.apply_delta([node], []);
+        let side = (64.0 * factor) as u32;
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [side, side],
+            factor,
+        );
+        let hole = [x + spread, y + spread, w - spread * 2.0, h - spread * 2.0];
+        assert_one_pixel_rim(&pixels, (label, hole, scale, factor), Painted::Outside);
     }
 }
 
