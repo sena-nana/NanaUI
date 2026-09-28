@@ -284,12 +284,17 @@ fn host_stripes(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView
 #[test]
 fn a_single_level_host_texture_shown_smaller_filters_over_the_device_pixel() {
     // 64 texels into 28 px, by its box or by `scale(28 / 64)` about the box's
-    // centre: one bilinear tap per pixel lands anywhere between a black and a
-    // white column; the pixel's whole footprint is mid grey.
+    // centre, and into 9 px: one bilinear tap per pixel lands anywhere between
+    // a black and a white column; the pixel's whole footprint is mid grey.
     let (device, queue) = test_device();
     let view = host_stripes(&device, &queue);
     let registry = register_host_texture("layer", &view, 64, 64);
-    for (side, scale, inner) in [(28.0, 1.0, 3..25), (64.0, 28.0 / 64.0, 21..43)] {
+    let cases = [
+        (28.0, 1.0, 3..25),
+        (64.0, 28.0 / 64.0, 21..43),
+        (9.0, 1.0, 2..7),
+    ];
+    for (side, scale, inner) in cases {
         let mut context = AppContext::new();
         let mut style = NodeStyle::default();
         Arc::make_mut(&mut style.layout).transform = scale_transform(scale);

@@ -289,14 +289,15 @@ fn mask_alpha(local: vec2<f32>) -> f32 {
 // One device pixel's worth of `source` at `uv`, whose screen derivatives are
 // `dx`/`dy`. Shown smaller than it is, one bilinear tap per pixel skips texels
 // and aliases, so a single-level texture averages a grid of taps over the
-// pixel's footprint; a mip chain is the sampler's to filter.
+// pixel's footprint, up to 8x8 for 8x minification (the taps a frame takes
+// are bounded by the texture's own texels); a mip chain is the sampler's.
 fn sample_source(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     if textureNumLevels(source) > 1u {
         return textureSampleGrad(source, source_sampler, uv, dx, dy);
     }
     let texels = vec2<f32>(textureDimensions(source));
     let footprint = vec2(length(dx * texels), length(dy * texels));
-    let taps = clamp(ceil(footprint - 1.0 / 16.0), vec2(1.0), vec2(4.0));
+    let taps = clamp(ceil(footprint - 1.0 / 16.0), vec2(1.0), vec2(8.0));
     var sum = vec4(0.0);
     for (var i = 0.0; i < taps.x; i += 1.0) {
         for (var j = 0.0; j < taps.y; j += 1.0) {
