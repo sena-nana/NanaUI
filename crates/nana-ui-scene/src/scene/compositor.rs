@@ -1269,61 +1269,46 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_parent_change_refreshes_retained_visibility_bounds() {
-        let mut scene = UiScene::new();
-        let mut parent = node(1, None, &[2]);
-        let mut child = node(2, Some(1), &[]);
-        parent.source_style.layout = Arc::new(LayoutStyle {
-            opacity: Some(1.0),
-            ..LayoutStyle::default()
-        });
-        child.source_style.layout = Arc::new(LayoutStyle {
-            opacity: Some(1.0),
-            ..LayoutStyle::default()
-        });
-        scene.apply_delta([parent, child], []);
-        let mut store = PresentationStore::new();
-        store.insert(
-            transform_track(
-                1,
-                2,
-                0,
-                200,
-                PaintTransform {
-                    e: 40.0,
-                    ..PaintTransform::default()
-                },
-                PaintTransform {
-                    e: 40.0,
-                    ..PaintTransform::default()
-                },
-            ),
-            MotionValue::Transform(PaintTransform::default()),
-        );
-        scene.apply_presentation(&store, LAYER_PROMOTE_HOLD, None);
+    fn promoting_an_ancestor_layer_culls_its_descendants_like_a_cold_rebuild() {
         let viewport = crate::SceneRect {
             x: 0.0,
             y: 0.0,
             width: 120.0,
             height: 120.0,
         };
-        let _ = scene.visible_operations(viewport);
-
-        store.insert(
+        let translate = |track, target, e| {
             transform_track(
-                2,
-                1,
+                track,
+                target,
                 0,
                 200,
                 PaintTransform {
-                    e: 30.0,
+                    e,
                     ..PaintTransform::default()
                 },
                 PaintTransform {
-                    e: 30.0,
+                    e,
                     ..PaintTransform::default()
                 },
-            ),
+            )
+        };
+        let tree = || [node(1, None, &[2]), node(2, Some(1), &[])];
+        // The child is a layer first; the retained index is built with the
+        // parent still static, so both backgrounds are on screen.
+        let mut scene = UiScene::new();
+        scene.apply_delta(tree(), []);
+        let mut store = PresentationStore::new();
+        store.insert(
+            translate(2, 2, 0.0),
+            MotionValue::Transform(PaintTransform::default()),
+        );
+        scene.apply_presentation(&store, LAYER_PROMOTE_HOLD, None);
+        let before = scene.visible_operations(viewport).unwrap();
+        assert!(!before.is_empty());
+        // Promoting the parent moves both far outside the viewport: the
+        // child's own transform is unchanged, only its layer parent is new.
+        store.insert(
+            translate(1, 1, 500.0),
             MotionValue::Transform(PaintTransform::default()),
         );
         scene.apply_presentation(&store, LAYER_PROMOTE_HOLD, None);
@@ -1331,9 +1316,15 @@ mod tests {
             scene.compositor_layer(id(2)).unwrap().parent,
             Some(CompositorLayerId::from_node(id(1)))
         );
+        let retained = scene.visible_operations(viewport).unwrap();
+
+        let mut cold = UiScene::new();
+        cold.apply_delta(tree(), []);
+        cold.apply_presentation(&store, LAYER_PROMOTE_HOLD, None);
+        assert_eq!(retained, cold.visible_operations(viewport).unwrap());
         assert!(
-            scene.visible_operations(viewport).is_ok(),
-            "a layer parent change must leave a usable visibility index"
+            retained.len() < before.len(),
+            "the moved backgrounds must be culled, got {retained:?}"
         );
     }
 

@@ -839,19 +839,14 @@ impl UiScene {
         let mut inherited_geometry_changed = !inherited_roots.is_empty();
         for node in extracted {
             let previous = self.nodes.get(&node.id);
-            // A painter transition can change the primitive set or the
-            // geometry behind an unchanged operation slot.  Treat every
-            // presence/identity change as a visibility-index rebuild: the
-            // incremental node-slot refresh cannot prove the old bounds are
-            // still valid for None <-> Some transitions.
-            custom_paint_changed |= match (
-                previous.and_then(|old| old.custom_paint.as_ref()),
-                node.custom_paint.as_ref(),
-            ) {
-                (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
-                (Some(_), None) | (None, Some(_)) => true,
-                (None, None) => false,
-            };
+            // Gaining or losing a painter changes which primitives a node
+            // owns without necessarily touching the frame plan, so the
+            // retained index's slots for it cannot be trusted. A new
+            // recording on the same painter is ordinary: the node is rebuilt
+            // below and `VisibilityIndex::update` re-derives its slots from
+            // the new primitives, keeping the index for everything else.
+            custom_paint_changed |= previous
+                .is_some_and(|old| old.custom_paint.is_some() != node.custom_paint.is_some());
             let inherited_changed = previous.map_or(!node.children.is_empty(), |old| {
                 old.parent != node.parent
                     || old.layout != node.layout
@@ -996,12 +991,6 @@ impl UiScene {
                 self.frame_plan.take();
                 self.visibility.take();
             }
-            // A recording can change the geometry of a painted primitive
-            // without changing its slot count or frame-plan operation. Its
-            // old visibility bounds are therefore not safe to refresh from
-            // the retained index's node slots; rebuild the index from the
-            // current plan instead. Ordinary painter updates that reuse the
-            // same recording keep the incremental path.
             if custom_paint_changed {
                 self.visibility.take();
             }

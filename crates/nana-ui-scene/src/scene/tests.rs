@@ -9662,6 +9662,43 @@ mod custom_paint {
     }
 
     #[test]
+    fn re_recording_a_painter_keeps_the_index_and_culls_like_a_cold_rebuild() {
+        // An animated painter records new geometry every frame with the same
+        // operations. Its slots are refreshed in place; the index for the
+        // rest of the scene is kept.
+        let recording = |y| PaintRecording {
+            behind_children: vec![fill(rect(0.0, y, 120.0, 20.0), BADGE)],
+            over_children: Vec::new(),
+        };
+        let viewport = SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 100.0,
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted(1, None, &[], recording(0.0))], []);
+        assert_eq!(scene.visible_operations(viewport).unwrap().len(), 1);
+
+        scene.apply_delta([painted(1, None, &[], recording(400.0))], []);
+        assert!(
+            scene.visibility.get().is_some(),
+            "a new recording with the same operations must not drop the index"
+        );
+        let retained = scene.visible_operations(viewport).unwrap();
+        let mut cold = UiScene::new();
+        cold.apply_delta([painted(1, None, &[], recording(400.0))], []);
+        assert_eq!(retained, cold.visible_operations(viewport).unwrap());
+        assert!(
+            retained.is_empty(),
+            "the moved fill is outside the viewport"
+        );
+
+        scene.apply_delta([painted(1, None, &[], recording(10.0))], []);
+        assert_eq!(scene.visible_operations(viewport).unwrap().len(), 1);
+    }
+
+    #[test]
     fn changing_paint_presence_rebuilds_retained_visibility_bounds() {
         let recording = PaintRecording {
             behind_children: vec![fill(rect(0.0, 0.0, 120.0, 20.0), BADGE)],
