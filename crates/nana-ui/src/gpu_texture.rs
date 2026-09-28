@@ -170,24 +170,22 @@ fn overflow_clip_local(world: vec2<f32>) -> vec2<f32> {
 // An ancestor overflow clip's coverage, ramped as `fragment_clip_coverage`.
 fn overflow_clip_coverage(world: vec2<f32>) -> f32 {
     let local = overflow_clip_local(world);
-    if (any(local < layer.clip_rect.xy)) || (any(local > layer.clip_rect.xy + layer.clip_rect.zw)) {
-        return 0.0;
-    }
     let radius = layer.clip_inv_ef.z;
     if (radius <= 0.0) {
-        return 1.0;
+        let inside = all(local >= layer.clip_rect.xy) && all(local <= layer.clip_rect.xy + layer.clip_rect.zw);
+        return select(0.0, 1.0, inside);
     }
-    let rel = local - layer.clip_rect.xy;
+    // A rounded edge ramps out past the clip's rectangle, so no binary test
+    // of the rectangle cuts it (as `color.wgsl`).
     let half = layer.clip_rect.zw * 0.5;
-    let center = rel - half;
     let corner = min(radius, min(half.x, half.y));
-    let q = abs(center) - half + corner;
-    let d = min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - corner;
-    // `world` is logical px; a clip-local length is `1 / sqrt|det|` of them.
-    let inv = layer.clip_inv_abcd;
-    let det = inv.x * inv.w - inv.y * inv.z;
-    let pixels = max(layer.source.y, 0.0001) * inverseSqrt(max(abs(det), 1.0e-12));
-    return clamp(0.5 - d * pixels, 0.0, 1.0);
+    // `world` is logical px: it moves `1 / scale` per device pixel, and the
+    // inverse's columns take that to clip-local space (as `color.wgsl`).
+    let scale = max(layer.source.y, 0.0001);
+    let dx = layer.clip_inv_abcd.xy / scale;
+    let dy = layer.clip_inv_abcd.zw / scale;
+    let center = local - layer.clip_rect.xy - half;
+    return clamp(0.5 - rounded_box_distance(center, half, vec4(corner), dx, dy), 0.0, 1.0);
 }
 
 fn gradient_axis(angle_deg: f32) -> vec2<f32> {

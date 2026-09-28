@@ -20,11 +20,6 @@ fn inside_transformed_rect(
     return all(local >= rect.xy) && all(local <= rect.xy + rect.zw);
 }
 
-fn clip_rounded_box_sdf(p: vec2<f32>, size: vec2<f32>, corner: f32) -> f32 {
-    let q = abs(p) - size + corner;
-    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - corner;
-}
-
 fn clip_polygon_point(index: u32, poly0: vec4<f32>, poly1: vec4<f32>, poly2: vec4<f32>, poly3: vec4<f32>) -> vec2<f32> {
     switch index {
         case 0u: { return poly0.xy; }
@@ -64,13 +59,6 @@ fn point_in_clip_polygon(local: vec2<f32>, count: u32, poly0: vec4<f32>, poly1: 
     return winding != 0;
 }
 
-// Device pixels per clip-local unit: a local length is `1 / sqrt|det|` world
-// units of the inverse (exact for rotation and uniform scale).
-fn clip_local_pixels(inv_abcd: vec4<f32>, pixels_per_world: f32) -> f32 {
-    let det = inv_abcd.x * inv_abcd.w - inv_abcd.y * inv_abcd.z;
-    return pixels_per_world * inverseSqrt(max(abs(det), 1.0e-12));
-}
-
 // How much of this fragment the clip keeps, 0 (discard) to 1. Rounded and
 // elliptical edges ramp over one device pixel like the quad's own edge;
 // rectangle and polygon edges stay binary. `pixels_per_world` is the scale
@@ -88,31 +76,40 @@ fn fragment_clip_coverage(
     poly3: vec4<f32>,
     pixels_per_world: f32,
 ) -> f32 {
-    if !inside_transformed_rect(world, rect, inv_abcd, inv_ef) {
-        return 0.0;
-    }
     let local = clip_apply_affine(inv_abcd, inv_ef, world);
     let rel = local - rect.xy;
+    // Clip-local px per device pixel along each screen axis: world moves
+    // `1 / pixels_per_world` per pixel and the inverse's columns take it to
+    // clip-local space. Exact for any affine clip, and no `dpdx`, which some
+    // callers could not take here.
+    let dx = inv_abcd.xy / pixels_per_world;
+    let dy = inv_abcd.zw / pixels_per_world;
+    // A rounded or elliptical edge lies inside the clip's rectangle and ramps
+    // out past it, so the rectangle's binary test would cut the ramp's outer
+    // half where the curve meets a side.
     if (polygon_count == 1u) {
-        // First-order distance: the implicit function over its gradient.
+        // First order: the ellipse's implicit function over its screen gradient.
         let half = max(rect.zw * 0.5, vec2(0.0001));
         let n = (rel - half) / half;
         let len_n = length(n);
-        let gradient = length(n / half) / max(len_n, 1.0e-6);
-        let d = (len_n - 1.0) / max(gradient, 1.0e-6);
-        return clamp(0.5 - d * clip_local_pixels(inv_abcd, pixels_per_world), 0.0, 1.0);
-    }
-    if (polygon_count >= 3u) && !point_in_clip_polygon(rel, polygon_count, poly0, poly1, poly2, poly3) {
-        return 0.0;
-    }
-    if (corner_radius <= 0.0) {
-        return 1.0;
+        let gradient = n / half / max(len_n, 1.0e-6);
+        let d = (len_n - 1.0) / max(length(vec2(dot(gradient, dx), dot(gradient, dy))), 1.0e-6);
+        return clamp(0.5 - d, 0.0, 1.0);
     }
     let half = rect.zw * 0.5;
-    let center = rel - half;
     let radius = min(corner_radius, min(half.x, half.y));
-    let d = clip_rounded_box_sdf(center, half, radius);
-    return clamp(0.5 - d * clip_local_pixels(inv_abcd, pixels_per_world), 0.0, 1.0);
+    if (radius <= 0.0) || (polygon_count >= 3u) {
+        if !inside_transformed_rect(world, rect, inv_abcd, inv_ef) {
+            return 0.0;
+        }
+        if (polygon_count >= 3u) && !point_in_clip_polygon(rel, polygon_count, poly0, poly1, poly2, poly3) {
+            return 0.0;
+        }
+        if (radius <= 0.0) {
+            return 1.0;
+        }
+    }
+    return clamp(0.5 - rounded_box_distance(rel - half, half, vec4(radius), dx, dy), 0.0, 1.0);
 }
 
 fn unpack_color(data: vec2<u32>) -> vec4<f32> {

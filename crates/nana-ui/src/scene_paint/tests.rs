@@ -3222,6 +3222,103 @@ fn child_quad_is_antialiased_by_its_parents_rounded_clip() {
 }
 
 #[test]
+fn a_rounded_clip_edge_stays_one_device_pixel_under_an_anisotropic_transform() {
+    // A round `overflow: hidden` parent under `rotate(30deg) scale(1.6, 0.6)`
+    // clipping a larger green child, a quad or a texture: the clip's edge is
+    // the only one in sight. Its ramp must be one device pixel across the
+    // ellipse's own normal, which an isotropic `1 / sqrt|det|` gets wrong by
+    // up to the square root of the anisotropy.
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let registry = register_host_texture("fill", &view, 64, 64);
+    let (sin, cos) = 30f32.to_radians().sin_cos();
+    let [a, b, c, d] = [cos * 1.6, sin * 1.6, -sin * 0.6, cos * 0.6];
+    let parent = |child: u64| {
+        let mut parent = extracted_div(
+            1,
+            &[child],
+            16.0,
+            16.0,
+            32.0,
+            32.0,
+            nana_ui_core::LayoutStyle {
+                overflow_x: OverflowSpec::Hidden,
+                overflow_y: OverflowSpec::Hidden,
+                border_radius: Some(16.0),
+                ..nana_ui_core::LayoutStyle::default()
+            },
+            None,
+        );
+        Arc::make_mut(&mut parent.source_style.layout).transform = Some(PaintTransform {
+            a,
+            b,
+            c,
+            d,
+            ..PaintTransform::default()
+        });
+        parent
+    };
+    let children = [
+        colored_quad_child(2, 1, 8.0, 8.0, 48.0, 48.0, [0.0, 1.0, 0.0, 1.0]),
+        host_texture_child(2, 1, 8.0, 8.0, 48.0, 48.0, "fill"),
+    ];
+    for (kind, child) in ["quad", "texture"].into_iter().zip(children) {
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent(2), child], []);
+        let (target, target_view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        SceneWgpuPainter::for_test(format)
+            .paint_encoder(
+                &scene,
+                &mut encoder,
+                &target_view,
+                ScenePaintViewport {
+                    logical_size: [64.0, 64.0],
+                    physical_size: [64, 64],
+                    scale_factor: 1.0,
+                    scene_origin: [0.0, 0.0],
+                    target_origin: [0.0, 0.0],
+                    clear_color: [0.0, 0.0, 0.0, 1.0],
+                    clear: true,
+                },
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
+        let det = a * d - b * c;
+        let inverse = [d / det, -b / det, -c / det, a / det];
+        for py in 0..64 {
+            for px in 0..64 {
+                let [sx, sy] = [px as f32 + 0.5 - 32.0, py as f32 + 0.5 - 32.0];
+                let [lx, ly] = [
+                    inverse[0] * sx + inverse[2] * sy,
+                    inverse[1] * sx + inverse[3] * sy,
+                ];
+                let length = lx.hypot(ly).max(1e-6);
+                let [nx, ny] = [lx / length, ly / length];
+                // First order: the local distance over its screen gradient, M⁻ᵀ n.
+                let gradient =
+                    (inverse[0] * nx + inverse[1] * ny).hypot(inverse[2] * nx + inverse[3] * ny);
+                let outside = (length - 16.0) / gradient;
+                if outside.abs() > 1.2 {
+                    continue;
+                }
+                let expected = (0.5 - outside).clamp(0.0, 1.0) * 255.0;
+                let green = f32::from(pixel(&pixels, 64, px, py)[1]);
+                assert!(
+                    (green - expected).abs() <= 8.0,
+                    "{kind} clipped: ({px},{py}) is {outside:+.3} px from the clip's rim, \
+                     expected green {expected:.0}, got {green}"
+                );
+            }
+        }
+    }
+    drop(view);
+}
+
+#[test]
 fn child_host_texture_is_antialiased_by_its_parents_rounded_clip() {
     // A host texture takes the frame off MSAA: the clip's own ramp is the
     // only thing that can smooth this edge.
