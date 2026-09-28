@@ -865,3 +865,65 @@ fn measured_virtual_list_reads_row_heights_back_and_keeps_the_top_row_in_place()
         "row 2 is placed after the measured rows"
     );
 }
+
+#[test]
+fn sync_virtual_list_windows_a_list_below_other_scroll_content() {
+    // 列表不必是整个滚动内容:页头在上面占 300,视口要先扣掉它才落到列表上。
+    let mut cx = AppContext::new();
+    let scroll = scroll_port(&mut cx, 320.0, 100.0);
+    cx.update_component(scroll, |scroll, _| {
+        Arc::make_mut(&mut scroll.style.layout).height = Some(LengthSpec::Px(100.0));
+    })
+    .unwrap();
+    let header = cx
+        .create_component(
+            document(),
+            crate::Stack::column(0.0).style(crate::NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    height: Some(LengthSpec::Px(300.0)),
+                    flex_shrink: Some(0.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let list = cx.create_component(document(), List::new()).unwrap();
+    cx.append_child(scroll, header).unwrap();
+    cx.append_child(scroll, list).unwrap();
+    let layout = VirtualListLayout::new(std::iter::repeat_n(20.0, 100));
+    let mut items = VirtualListItems::<usize, TextInput>::default();
+    let mut sync = |cx: &mut AppContext, items: &mut VirtualListItems<usize, TextInput>| {
+        cx.sync_virtual_list_retained_in(
+            scroll,
+            list,
+            items,
+            &layout,
+            0.0,
+            0,
+            &[],
+            |index| index,
+            |key| Some(*key),
+            |index, _| TextInput::new(format!("row {index}")),
+        )
+        .unwrap()
+    };
+    sync(&mut cx, &mut items);
+    project_layout(&mut cx);
+    let start =
+        cx.world().layout_box(list.id).unwrap().y - cx.world().layout_box(scroll.id).unwrap().y;
+    assert_eq!(start, 300.0);
+
+    // 视口整个落在页头上:只留窗口保底的第一行,不按滚动偏移去挂列表中段。
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 150.0 })
+        .unwrap();
+    assert_eq!(sync(&mut cx, &mut items).range, 0..1);
+    // 视口下半截压到列表开头:只挂那一截里的行。
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 250.0 })
+        .unwrap();
+    assert_eq!(sync(&mut cx, &mut items).range, 0..3);
+    // 滚进列表 50:从第 2 行开始。
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 350.0 })
+        .unwrap();
+    assert_eq!(sync(&mut cx, &mut items).range, 2..8);
+}

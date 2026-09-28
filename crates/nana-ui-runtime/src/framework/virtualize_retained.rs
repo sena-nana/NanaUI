@@ -322,7 +322,7 @@ impl AppContext {
         K: Clone + Eq + Hash,
         C: ComponentView,
     {
-        let viewport = self.virtual_viewport_from_scroll(scroll, [0.0, overscan])?;
+        let viewport = self.virtual_list_viewport(scroll, list, overscan)?;
         let window = layout.window_for(viewport);
         let activity = self.virtual_list_activity(list, items)?;
         if items.list_range_unchanged(layout, &window, &activity, fingerprint) {
@@ -376,7 +376,7 @@ impl AppContext {
         if !items.measured {
             return Err(FrameworkError::InvalidVirtualization);
         }
-        let mut viewport = self.virtual_viewport_from_scroll(scroll, [0.0, overscan])?;
+        let mut viewport = self.virtual_list_viewport(scroll, list, overscan)?;
         let before = viewport.offset[1];
         let mut measured = false;
         let mut unmeasured = false;
@@ -730,6 +730,34 @@ impl AppContext {
             focused,
             ime,
         ))
+    }
+
+    /// The part of `scroll`'s viewport that falls on `list`, in the list's
+    /// own coordinates. A list need not be the whole scroll content: one below
+    /// a page header starts that far down, and only the rows under the
+    /// visible part of the viewport are its window. Before the first layout
+    /// pass the list is taken to start at the content's top.
+    fn virtual_list_viewport(
+        &self,
+        scroll: Entity<ScrollView>,
+        list: Entity<List>,
+        overscan: f32,
+    ) -> Result<VirtualViewport, FrameworkError> {
+        let mut viewport = self.virtual_viewport_from_scroll(scroll, [0.0, overscan])?;
+        let start = match (
+            self.world.layout_box(list.id),
+            self.world.layout_box(scroll.id),
+        ) {
+            // Layout boxes are unscrolled, so this is where the list sits in
+            // the scroll content, padding and preceding siblings included.
+            (Some(list), Some(scroll)) => list.y - scroll.y,
+            _ => 0.0,
+        };
+        let top = viewport.offset[1] - start;
+        // A list starting below the viewport's top sees only the rest of it.
+        viewport.offset[1] = top.max(0.0);
+        viewport.extent[1] = (viewport.extent[1] + top.min(0.0)).max(0.0);
+        Ok(viewport)
     }
 
     fn virtual_viewport_from_scroll(
