@@ -17,8 +17,6 @@ mod size_move;
 mod splash;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-pub use chrome::LiveFrameMove;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::LiveFrameResize;
 pub use chrome::arm_frameless_guard;
 pub use chrome::drag_custom_title_bar;
@@ -31,6 +29,8 @@ pub use chrome::set_frameless_styles;
 pub use chrome::set_native_window_controls_visible;
 pub use chrome::set_non_client_rendering;
 pub use chrome::set_present_transaction;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub use chrome::{FrameGrab, LiveFrameMove};
 pub use chrome::{FrameResizeEdge, NonClientRenderingStrategy};
 pub use file_dialog::{
     FileDialogError, FileDialogHandle, FileDialogKind, FileDialogRequest, FileDialogResult,

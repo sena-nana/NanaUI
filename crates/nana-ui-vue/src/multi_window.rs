@@ -74,6 +74,9 @@ pub struct VueWindowOptions {
     pub transparent: bool,
     /// Default true → `system_caption: false`. Pass `false` for OS caption.
     pub frameless: bool,
+    /// `WindowDescriptor::host_managed_drag`: title-bar drags stay in the
+    /// host's event loop instead of the platform's modal move loop.
+    pub host_managed_drag: bool,
     pub always_on_top: bool,
     pub resizable: bool,
     pub modal: bool,
@@ -126,6 +129,7 @@ impl Default for VueWindowOptions {
             y: None,
             transparent: false,
             frameless: true,
+            host_managed_drag: false,
             always_on_top: false,
             resizable: true,
             modal: false,
@@ -156,6 +160,8 @@ impl VueWindowOptions {
         options.y = finite_number(map.get("y"));
         options.transparent = bool_value(map.get("transparent"), options.transparent);
         options.frameless = bool_value(map.get("frameless"), options.frameless);
+        options.host_managed_drag =
+            bool_value(map.get("hostManagedDrag"), options.host_managed_drag);
         options.always_on_top = bool_value(map.get("alwaysOnTop"), options.always_on_top);
         options.resizable = bool_value(map.get("resizable"), options.resizable);
         options.modal = bool_value(map.get("modal"), options.modal);
@@ -1601,6 +1607,7 @@ impl VueRuntime {
                         modal: options.modal,
                         parent: options.parent.map(|parent| WindowId(parent.0)),
                         system_caption: !options.frameless,
+                        host_managed_drag: options.host_managed_drag,
                         icon: options.icon,
                         // JS asks for a window, not for a presentation path.
                         // `Auto` lets the host pick, and it only reaches a

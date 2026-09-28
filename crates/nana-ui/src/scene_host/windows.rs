@@ -1149,12 +1149,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// Starts a window move for `WindowCommand::Drag`, the one signal any
     /// trigger uses to say "move this window with the gesture in flight".
     ///
-    /// A gesture held with the primary button keeps the platform's own move:
-    /// that is the only path with edge snapping, and on macOS with Spaces.
-    /// Any other button is followed by the host instead, because the platform
-    /// drag assumes a primary press — AppKit ignores a drag whose current
-    /// event is not one, and Win32 opens a caption move loop that only a
-    /// primary release closes, leaving the window stuck to the cursor.
+    /// A gesture held with the primary button keeps the platform's own move
+    /// unless the window asks for `host_managed_drag`: the platform path is
+    /// the only one with edge snapping, and on macOS with Spaces. Any other
+    /// button is followed by the host, because the platform drag assumes a
+    /// primary press — AppKit ignores a drag whose current event is not one,
+    /// and Win32 opens a caption move loop that only a primary release
+    /// closes, leaving the window stuck to the cursor.
     pub(super) fn begin_window_move(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -1190,15 +1191,23 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return false;
         };
         // A fullscreen window has nowhere to move to. A maximized one leaves
-        // that state first, exactly as the system move loop does, and anchors
-        // on the restored frame.
+        // that state first, as the system move loop does, and the restored
+        // frame comes back under the cursor at the same point across its
+        // width, rather than at its old restored position.
         if window.fullscreen().is_some() {
             return false;
         }
-        if window.is_maximized() {
+        let live = if window.is_maximized() {
+            let grab = nana_window::LiveFrameMove::grab(window.as_ref());
             window.set_maximized(false);
-        }
-        let Some(live) = nana_window::LiveFrameMove::begin(window.as_ref()) else {
+            match grab {
+                Some(grab) => nana_window::LiveFrameMove::begin_at(window.as_ref(), grab),
+                None => nana_window::LiveFrameMove::begin(window.as_ref()),
+            }
+        } else {
+            nana_window::LiveFrameMove::begin(window.as_ref())
+        };
+        let Some(live) = live else {
             return false;
         };
         self.live_frame_move = Some((id, button, live));

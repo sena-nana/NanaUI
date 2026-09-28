@@ -461,8 +461,76 @@ pub struct LiveFrameMove {
     mouse_y: f64,
 }
 
+/// Where the cursor holds a window: the fraction of the frame's width to its
+/// left, and its distance below the frame's top edge (in the platform's
+/// screen units). Taken before a maximized window is restored, so the
+/// restored frame can be put back under the cursor the way the system move
+/// loop does.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameGrab {
+    across: f64,
+    down: f64,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl FrameGrab {
+    /// The grab for a frame `(left, top, width)` held at `(x, y)`, in a
+    /// top-down coordinate space.
+    fn at(left: f64, top: f64, width: f64, x: f64, y: f64) -> Self {
+        Self {
+            across: if width > 0.0 {
+                ((x - left) / width).clamp(0.0, 1.0)
+            } else {
+                0.5
+            },
+            down: (y - top).max(0.0),
+        }
+    }
+
+    /// The top-left, top-down origin that puts a `width` x `height` frame
+    /// under `(x, y)` at this grab. The vertical offset keeps the cursor
+    /// inside the frame when the restored frame is shorter.
+    fn origin(self, width: f64, height: f64, x: f64, y: f64) -> (f64, f64) {
+        let down = self.down.min((height - 1.0).max(0.0));
+        (x - self.across * width, y - down)
+    }
+}
+
 #[cfg(target_os = "macos")]
 impl LiveFrameMove {
+    /// Where the cursor holds `window` now. AppKit screen space is bottom-up,
+    /// so it is flipped here and the grab is top-down like on Windows.
+    pub fn grab<W: HasWindowHandle + ?Sized>(window: &W) -> Option<FrameGrab> {
+        let frame = appkit_window(window)?.frame();
+        let mouse = objc2_app_kit::NSEvent::mouseLocation();
+        let top = frame.origin.y + frame.size.height;
+        Some(FrameGrab::at(
+            frame.origin.x,
+            -top,
+            frame.size.width,
+            mouse.x,
+            -mouse.y,
+        ))
+    }
+
+    /// Starts a move with the (just restored) frame placed under the cursor
+    /// at `grab`.
+    pub fn begin_at<W: HasWindowHandle + ?Sized>(window: &W, grab: FrameGrab) -> Option<Self> {
+        let appkit = appkit_window(window)?;
+        let size = appkit.frame().size;
+        let mouse = objc2_app_kit::NSEvent::mouseLocation();
+        let (left, top) = grab.origin(size.width, size.height, mouse.x, -mouse.y);
+        let origin_y = -top - size.height;
+        appkit.setFrameOrigin(objc2_foundation::NSPoint::new(left, origin_y));
+        Some(Self {
+            origin_x: left,
+            origin_y,
+            mouse_x: mouse.x,
+            mouse_y: mouse.y,
+        })
+    }
+
     pub fn begin<W: HasWindowHandle + ?Sized>(window: &W) -> Option<Self> {
         let window = appkit_window(window)?;
         let origin = window.frame().origin;
@@ -502,6 +570,56 @@ impl LiveFrameMove {
 
 #[cfg(target_os = "windows")]
 impl LiveFrameMove {
+    fn window_rect_and_cursor(
+        hwnd: windows_sys::Win32::Foundation::HWND,
+    ) -> Option<(
+        windows_sys::Win32::Foundation::RECT,
+        windows_sys::Win32::Foundation::POINT,
+    )> {
+        let mut rect = windows_sys::Win32::Foundation::RECT::default();
+        let mut mouse = windows_sys::Win32::Foundation::POINT::default();
+        unsafe {
+            if windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) == 0
+                || windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) == 0
+            {
+                return None;
+            }
+        }
+        Some((rect, mouse))
+    }
+
+    /// Where the cursor holds `window` now, in screen pixels.
+    pub fn grab<W: HasWindowHandle + ?Sized>(window: &W) -> Option<FrameGrab> {
+        let (rect, mouse) = Self::window_rect_and_cursor(win32_hwnd(window)?)?;
+        Some(FrameGrab::at(
+            f64::from(rect.left),
+            f64::from(rect.top),
+            f64::from(rect.right - rect.left),
+            f64::from(mouse.x),
+            f64::from(mouse.y),
+        ))
+    }
+
+    /// Starts a move with the (just restored) frame placed under the cursor
+    /// at `grab`.
+    pub fn begin_at<W: HasWindowHandle + ?Sized>(window: &W, grab: FrameGrab) -> Option<Self> {
+        let (rect, mouse) = Self::window_rect_and_cursor(win32_hwnd(window)?)?;
+        let (left, top) = grab.origin(
+            f64::from(rect.right - rect.left),
+            f64::from(rect.bottom - rect.top),
+            f64::from(mouse.x),
+            f64::from(mouse.y),
+        );
+        let live = Self {
+            origin_x: left.round(),
+            origin_y: top.round(),
+            mouse_x: f64::from(mouse.x),
+            mouse_y: f64::from(mouse.y),
+        };
+        live.set_origin(window, live.origin_x, live.origin_y);
+        Some(live)
+    }
+
     pub fn begin<W: HasWindowHandle + ?Sized>(window: &W) -> Option<Self> {
         let hwnd = win32_hwnd(window)?;
         let mut rect = windows_sys::Win32::Foundation::RECT::default();
@@ -1283,6 +1401,21 @@ mod tests {
     const WS_CLIPSIBLINGS: isize = 0x0400_0000;
     const WS_MINIMIZEBOX: isize = 0x0002_0000;
     const WS_VISIBLE: isize = 0x1000_0000;
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn a_restored_frame_comes_back_under_the_cursor_at_the_same_share_of_its_width() {
+        // Maximized 1920 wide, held three quarters across and 12 below the top.
+        let grab = super::FrameGrab::at(0.0, 0.0, 1920.0, 1440.0, 12.0);
+        // Restored to 800 x 600: the cursor stays three quarters across.
+        assert_eq!(grab.origin(800.0, 600.0, 1440.0, 12.0), (840.0, 0.0));
+        // A grab lower than the restored frame is tall keeps the cursor inside.
+        let deep = super::FrameGrab::at(0.0, 0.0, 1920.0, 100.0, 900.0);
+        assert_eq!(deep.origin(800.0, 600.0, 100.0, 900.0).1, 301.0);
+        // A degenerate width holds the middle.
+        let empty = super::FrameGrab::at(0.0, 0.0, 0.0, 5.0, 5.0);
+        assert_eq!(empty.origin(200.0, 100.0, 5.0, 5.0).0, -95.0);
+    }
 
     #[test]
     fn overlay_shape_requests_square_corners() {
