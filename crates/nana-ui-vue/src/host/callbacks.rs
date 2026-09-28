@@ -392,25 +392,23 @@ impl VueHost {
     }
 }
 
-/// What the page hears of the capture changes a blur leaves pending: the
-/// release of every capture it heard acquired. A capture acquired and
-/// released within them was never observable, so neither half is sent. The
-/// route may have released captures already (a window's blur cancels its
-/// pointers first); those releases are kept.
+/// The capture changes a blur leaves pending, as the page hears them: the
+/// release of each capture it was told of, whether the route or the blur
+/// released it. A capture taken and released unannounced is dropped whole.
 fn published_releases(
-    changes: Vec<nana_ui_runtime::PointerCaptureChange>,
+    mut changes: Vec<nana_ui_runtime::PointerCaptureChange>,
 ) -> Vec<nana_ui_runtime::PointerCaptureChange> {
-    let mut unpublished = Vec::new();
-    let mut releases = Vec::new();
-    for change in changes {
+    let mut unannounced = Vec::new();
+    changes.retain(|change| {
         let capture = (change.pointer_id, change.target);
         if change.captured {
-            unpublished.push(capture);
-        } else if let Some(index) = unpublished.iter().position(|pending| *pending == capture) {
-            unpublished.swap_remove(index);
+            unannounced.push(capture);
+        } else if let Some(index) = unannounced.iter().position(|taken| *taken == capture) {
+            unannounced.swap_remove(index);
         } else {
-            releases.push(change);
+            return true;
         }
-    }
-    releases
+        false
+    });
+    changes
 }
