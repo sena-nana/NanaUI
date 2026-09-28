@@ -3627,6 +3627,121 @@ fn quadrilateral_distance(p: [f32; 2], corners: &[[f32; 2]; 4]) -> f32 {
     if inside { -nearest_side } else { outside }
 }
 
+/// The local point `mat` projects onto `screen`, and there the Jacobian of
+/// the projection (columns: screen per local x, per local y), by Newton.
+fn unproject(mat: nana_ui_core::PaintMat4, screen: [f32; 2]) -> ([f32; 2], [[f32; 2]; 2]) {
+    let jacobian = |[x, y]: [f32; 2]| {
+        let step = 1e-2;
+        let at = mat.project_xy(x, y).unwrap();
+        let along_x = mat.project_xy(x + step, y).unwrap();
+        let along_y = mat.project_xy(x, y + step).unwrap();
+        (
+            at,
+            [
+                [(along_x[0] - at[0]) / step, (along_x[1] - at[1]) / step],
+                [(along_y[0] - at[0]) / step, (along_y[1] - at[1]) / step],
+            ],
+        )
+    };
+    let mut local = screen;
+    for _ in 0..30 {
+        let (at, [jx, jy]) = jacobian(local);
+        let [rx, ry] = [screen[0] - at[0], screen[1] - at[1]];
+        let det = jx[0] * jy[1] - jy[0] * jx[1];
+        local[0] += (jy[1] * rx - jy[0] * ry) / det;
+        local[1] += (jx[0] * ry - jx[1] * rx) / det;
+    }
+    (local, jacobian(local).1)
+}
+
+#[test]
+fn rounded_edges_stay_one_device_pixel_under_perspective() {
+    // A round quad and a round texture under `perspective(120px) rotateY`:
+    // interpolated affinely per triangle, the shape bends along the quad's
+    // diagonal. Each pixel near the rim is compared with a one device pixel
+    // ramp over the local distance through the projection's Jacobian there.
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let registry = register_host_texture("layer", &view, 64, 64);
+    let green = [0.0, 1.0, 0.0, 1.0];
+    for degrees in [30f32, 55.0] {
+        let mat = nana_ui_core::PaintMat4::perspective(120.0)
+            .expect("finite distance")
+            .then(nana_ui_core::PaintMat4::rotate_y(degrees.to_radians()));
+        let mut quad = colored_quad_node(1, 16.0, 16.0, 32.0, 32.0, green);
+        let layout = Arc::make_mut(&mut quad.source_style.layout);
+        layout.border_radius = Some(16.0);
+        layout.transform_3d = Some(mat);
+        let mut quad_scene = UiScene::new();
+        quad_scene.apply_delta([quad], []);
+        let mut context = AppContext::new();
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).transform_3d = Some(mat);
+        let preview = context
+            .create_component(
+                DocumentId::new(1).unwrap(),
+                GpuTextureView::new("layer")
+                    .style(style)
+                    .with_corner_radius(16.0),
+            )
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, preview.stable_id(), 16.0, 16.0, 32.0, 32.0);
+        context.commit_mutations(layout).unwrap();
+        let texture_scene = commit_scene(&mut context);
+        let projection = mat.around_origin(16.0, 16.0, 16.0, 16.0);
+        for (kind, scene) in [("quad", &quad_scene), ("texture", &texture_scene)] {
+            let (target, target_view) = test_copy_target(&device, format, 64, 64);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            SceneWgpuPainter::for_test(format)
+                .paint_encoder(
+                    scene,
+                    &mut encoder,
+                    &target_view,
+                    ScenePaintViewport {
+                        logical_size: [64.0, 64.0],
+                        physical_size: [64, 64],
+                        scale_factor: 1.0,
+                        scene_origin: [0.0, 0.0],
+                        target_origin: [0.0, 0.0],
+                        clear_color: [0.0, 0.0, 0.0, 1.0],
+                        clear: true,
+                    },
+                    Some(&registry),
+                    None,
+                )
+                .unwrap();
+            let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
+            for py in 0..64 {
+                for px in 0..64 {
+                    let ([lx, ly], [jx, jy]) =
+                        unproject(projection, [px as f32 + 0.5, py as f32 + 0.5]);
+                    let [vx, vy] = [lx - 32.0, ly - 32.0];
+                    let length = vx.hypot(vy).max(1e-6);
+                    let [nx, ny] = [vx / length, vy / length];
+                    // The rim distance's screen gradient: J⁻ᵀ n.
+                    let det = jx[0] * jy[1] - jy[0] * jx[1];
+                    let gradient =
+                        ((jy[1] * nx - jx[1] * ny) / det).hypot((jx[0] * ny - jy[0] * nx) / det);
+                    let outside = (length - 16.0) / gradient;
+                    if outside.abs() > 1.2 {
+                        continue;
+                    }
+                    let expected = (0.5 - outside).clamp(0.0, 1.0) * 255.0;
+                    let green = f32::from(pixel(&pixels, 64, px, py)[1]);
+                    assert!(
+                        (green - expected).abs() <= 8.0,
+                        "{kind} under rotateY({degrees}deg): ({px},{py}) is {outside:+.3} px \
+                         from the rim, expected green {expected:.0}, got {green}"
+                    );
+                }
+            }
+        }
+    }
+    drop(view);
+}
+
 #[test]
 fn square_edges_stay_one_device_pixel_under_any_affine_transform() {
     // A square green quad and a square green texture filling the same box,

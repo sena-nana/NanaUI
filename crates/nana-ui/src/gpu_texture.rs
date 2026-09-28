@@ -70,7 +70,8 @@ struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) local: vec2<f32>,
-    @location(2) world: vec2<f32>,
+    // Screen-linear: the fragment's own paint position.
+    @location(2) @interpolate(linear) world: vec2<f32>,
 }
 
 // The scene quads' `rounded_box_distance` (`color.wgsl`), so a HostTexture and
@@ -148,12 +149,16 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     let physical = world * layer.source.y;
     let dest = vec2<f32>(max(layer.source.z, 1.0), max(layer.source.w, 1.0));
     var output: VertexOutput;
+    // The homography's `w` as the clip-space w, so `uv` and `local` are
+    // interpolated perspective-correctly rather than affinely per triangle.
+    let w = layer.persp.x * local.x + layer.persp.y * local.y + 1.0;
+    let clip_w = select(1.0, w, w > 1.0e-6);
     output.position = vec4<f32>(
         2.0 * physical.x / dest.x - 1.0,
         1.0 - 2.0 * physical.y / dest.y,
         0.0,
         1.0,
-    );
+    ) * clip_w;
     output.uv = uv;
     output.local = local;
     output.world = world;

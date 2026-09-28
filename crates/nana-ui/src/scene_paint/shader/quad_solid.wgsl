@@ -35,7 +35,8 @@ struct SolidVertexOutput {
     @location(8) shadow_blur_radius: f32,
     @location(9) shadow_spread_radius: f32,
     @location(10) local_pos: vec2<f32>,
-    @location(11) world_pos: vec2<f32>,
+    // Screen-linear: the fragment's own paint position.
+    @location(11) @interpolate(linear) world_pos: vec2<f32>,
     @location(12) clip_rect: vec4<f32>,
     @location(13) clip_inv_abcd: vec4<f32>,
     @location(14) clip_inv_ef: vec3<f32>,
@@ -127,7 +128,13 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     let logical = local / globals.scale;
     let world = apply_affine(composed.abcd, composed.ef, logical);
 
-    out.position = globals.transform * vec4<f32>(world * globals.scale, 0.0, 1.0);
+    // The homography's `w` as the clip-space w: the rasterizer then
+    // interpolates the local position perspective-correctly, which a
+    // divided corner and w = 1 would interpolate as an affine map, bending
+    // the rounded shape along the quad's diagonal.
+    let w = composed.ef.z * logical.x + composed.ef.w * logical.y + 1.0;
+    let clip_w = select(1.0, w, w > 1.0e-6);
+    out.position = globals.transform * vec4<f32>(world * globals.scale * clip_w, 0.0, clip_w);
     out.color = premultiply(input.color);
     out.border_color = premultiply(input.border_color);
     out.pos = pos + pos_snap;
