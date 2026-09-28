@@ -206,6 +206,8 @@ impl RuntimeProgram for Probe {
                     .minimum_size(280.0, 240.0);
                 settings.initial_position = Some((200.0, 200.0));
                 settings.transparent = true;
+                // A click-through overlay layer, not a card: no desktop shadow.
+                settings.shadow = nana_ui::WindowShadow::None;
                 settings.always_on_top = true;
                 settings.focus_on_show = false;
                 settings.constrain_to_work_area = true;

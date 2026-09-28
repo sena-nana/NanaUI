@@ -77,6 +77,8 @@ pub struct VueWindowOptions {
     /// `WindowDescriptor::host_managed_drag`: title-bar drags stay in the
     /// host's event loop instead of the platform's modal move loop.
     pub host_managed_drag: bool,
+    /// Desktop shadow of the window. The applied outcome is the host's.
+    pub shadow: nana_ui_platform::WindowShadow,
     pub always_on_top: bool,
     pub resizable: bool,
     pub modal: bool,
@@ -130,6 +132,7 @@ impl Default for VueWindowOptions {
             transparent: false,
             frameless: true,
             host_managed_drag: false,
+            shadow: nana_ui_platform::WindowShadow::Auto,
             always_on_top: false,
             resizable: true,
             modal: false,
@@ -1085,6 +1088,7 @@ impl VueRuntime {
                 let mut options = VueWindowOptions::from_host_value(args.first());
                 options.isolation =
                     window_isolation_arg(request.and_then(|map| map.get("isolation")))?;
+                options.shadow = window_shadow_arg(request.and_then(|map| map.get("shadow")))?;
                 if let Some(icon) = optional_icon(request.and_then(|map| map.get("icon")))? {
                     options.icon = Some(icon);
                 }
@@ -1608,6 +1612,7 @@ impl VueRuntime {
                         parent: options.parent.map(|parent| WindowId(parent.0)),
                         system_caption: !options.frameless,
                         host_managed_drag: options.host_managed_drag,
+                        shadow: options.shadow,
                         icon: options.icon,
                         // JS asks for a window, not for a presentation path.
                         // `Auto` lets the host pick, and it only reaches a
@@ -2056,6 +2061,60 @@ fn window_isolation_arg(value: Option<&HostValue>) -> Result<VueWindowIsolation,
     }
 }
 
+/// `"auto"` (the default), `"none"`, or a style object
+/// `{ color: [r, g, b, a], offset: [x, y], blur, spread, source }` whose
+/// omitted fields keep their defaults. Anything else is an error, not a
+/// silent `"auto"`.
+fn window_shadow_arg(
+    value: Option<&HostValue>,
+) -> Result<nana_ui_platform::WindowShadow, JsException> {
+    use nana_ui_platform::{WindowShadow, WindowShadowSource, WindowShadowStyle};
+    let invalid = || {
+        JsException::new(
+            "window shadow must be \"auto\", \"none\" or { color, offset, blur, spread, source }",
+        )
+    };
+    let numbers = |value: &HostValue, out: &mut [f32]| -> Result<(), JsException> {
+        let items = value.as_array().ok_or_else(invalid)?;
+        if items.len() != out.len() {
+            return Err(invalid());
+        }
+        for (slot, item) in out.iter_mut().zip(items) {
+            *slot = item.as_f64().ok_or_else(invalid)? as f32;
+        }
+        Ok(())
+    };
+    match value {
+        None | Some(HostValue::Null) | Some(HostValue::Undefined) => Ok(WindowShadow::Auto),
+        Some(value) if value.as_str() == Some("auto") => Ok(WindowShadow::Auto),
+        Some(value) if value.as_str() == Some("none") => Ok(WindowShadow::None),
+        Some(value) => {
+            let map = value.as_object().ok_or_else(invalid)?;
+            let mut style = WindowShadowStyle::default();
+            for (key, field) in map {
+                match key.as_str() {
+                    "color" => numbers(field, &mut style.color)?,
+                    "offset" => numbers(field, &mut style.offset)?,
+                    "blur" => style.blur = field.as_f64().ok_or_else(invalid)? as f32,
+                    "spread" => style.spread = field.as_f64().ok_or_else(invalid)? as f32,
+                    "source" => {
+                        style.source = match field.as_str() {
+                            Some("windowShape") => WindowShadowSource::WindowShape,
+                            Some("contentAlpha") => WindowShadowSource::ContentAlpha,
+                            _ => return Err(invalid()),
+                        }
+                    }
+                    _ => return Err(invalid()),
+                }
+            }
+            if !style.is_valid() {
+                return Err(invalid());
+            }
+            Ok(WindowShadow::Custom(style))
+        }
+    }
+}
+
 fn window_id_arg(value: Option<&HostValue>) -> Result<VueWindowId, JsException> {
     value
         .and_then(HostValue::as_f64)
@@ -2192,6 +2251,51 @@ fn state_poisoned<T>(_error: std::sync::PoisonError<T>) -> JsException {
 mod tests {
     use super::*;
     use crate::NODE_HANDLE_DOCUMENT_STRIDE;
+
+    #[test]
+    fn window_shadow_option_parses_keywords_and_styles_and_rejects_the_rest() {
+        use nana_ui_platform::{WindowShadow, WindowShadowStyle};
+        assert_eq!(window_shadow_arg(None).unwrap(), WindowShadow::Auto);
+        assert_eq!(
+            window_shadow_arg(Some(&HostValue::string("none"))).unwrap(),
+            WindowShadow::None
+        );
+        let style = HostValue::Object(
+            [
+                ("blur".to_owned(), HostValue::Number(24.0)),
+                (
+                    "offset".to_owned(),
+                    HostValue::Array(vec![HostValue::Number(0.0), HostValue::Number(8.0)]),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            window_shadow_arg(Some(&style)).unwrap(),
+            WindowShadow::Custom(WindowShadowStyle {
+                blur: 24.0,
+                offset: [0.0, 8.0],
+                ..Default::default()
+            })
+        );
+        for bad in [
+            HostValue::string("shadowed"),
+            HostValue::Number(1.0),
+            HostValue::Object(
+                [("blurr".to_owned(), HostValue::Number(1.0))]
+                    .into_iter()
+                    .collect(),
+            ),
+            HostValue::Object(
+                [("blur".to_owned(), HostValue::Number(-1.0))]
+                    .into_iter()
+                    .collect(),
+            ),
+        ] {
+            assert!(window_shadow_arg(Some(&bad)).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn registry_creates_independent_routable_window_documents() {

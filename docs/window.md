@@ -10,9 +10,25 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 
 WindowShadow 与 UiScene 的 `DropShadow` 是两条 authority：前者由 Window/Platform 层决定，后者属于 framebuffer 内的视觉效果。输入、拖拽和缩放区域不会被当作阴影形状来源。
 
-目前仅有请求合同与能力实验，**尚未接入 Windows companion**。`ResolvedWindowPresentation::shadow()` 对 `None` 返回明确的 disabled outcome；Auto 和尚未支持的平台实现返回 `Pending`，不能据此认为原生阴影已开启。Custom 非法参数或 ContentAlpha 返回明确原因。Windows companion、visual shape 增量接入、真实 work counters 和 native acceptance 均未完成。`window-shadow-steady` 目前只验收规则本身，没有真实测量报告；不能据 self-test 宣称性能通过。
+谁来画阴影由一处决定（`nana_ui::window_shadow` 的 intent → `nana_window::shadow::WindowShadowState` 应用 → 结果写回 `ResolvedWindowPresentation::shadow()`）：
 
-能力实验：`cargo run -p nana-window --example window-shadow-probe` 创建 Windows 系统合成器的 rounded geometry、visual surface mask、DropShadow；不创建 GPU Device 或 swapchain。成功只证明 API 可创建，未创建 HWND、未验证可见阴影、穿透或 z-order。
+| 请求 | 不透明 / 材质窗口 | 透明窗口 |
+| --- | --- | --- |
+| `Auto` | 平台自己的窗口阴影（`Native`） | companion，跟随窗口的可见主体 |
+| `Custom(WindowShape)` | companion（平台阴影不接受自定义样式） | companion |
+| `Custom(ContentAlpha)` | `ContentAlphaUnavailable` | 同左 |
+| `None` | 关闭 | 关闭 |
+
+- **可见主体**：窗口画出的第一个大面积（≥ 视口 1/4）填充背景 quad——透明窗口的根卡片——及其圆角；找不到时是整个客户区。只在 scene 的 projection revision、窗口尺寸或可见性变化后重新计算，静止窗口每帧零工作。输入、拖拽、缩放区域从不参与。
+- **companion** 是平台私有、不可命中、不激活、不进任务栏的辅助窗口，始终在主窗口正下方；主窗口的 frame、客户区、`WindowId`、原生句柄都不变，companion 不是 NanaUI 窗口，不收事件。移动只移动它（macOS 由 window server 带着子窗口移动，零工作），缩放只更新几何，样式或缩放比变化才重新栅格化（`WindowShadowWork` 分别计数）。
+  - macOS：无边框子窗口 `orderedBelow` 主窗口，一个 `CALayer` 的 `shadowPath` 为主体圆角矩形，用偶奇规则的 `CAShapeLayer` 遮掉主体内部，半透明卡片不会透出自己的阴影。阴影由 render server 绘制。
+  - Windows：`WS_POPUP` + `WS_EX_TOOLWINDOW | NOACTIVATE | NOREDIRECTIONBITMAP | LAYERED | TRANSPARENT`，`WM_NCHITTEST` 返回 `HTTRANSPARENT`；DirectComposition 九宫格（CPU 只栅格化一块圆角阴影 tile，边缘由缩放变换拉伸）；主窗口子类在 `WM_WINDOWPOSCHANGED` 里把它放到主窗口正下方，最小化 / 最大化 / 隐藏时隐藏，随主窗口销毁。
+  - 有 DWM 边框的 Windows 窗口用 DWM 阴影（观察到 `DWMWA_NCRENDERING_ENABLED` 才报 `Native`）；对这种窗口请求 `None` 报 `Native` + `DisableUnsupported`，不偷改边框策略。无边框的 `Auto` 窗口没有 DWM 阴影，由默认 companion 代替。
+  - Linux 等：`Unsupported` / `CompositorManaged`，明确告诉应用这里没有可观察的阴影。
+- `WindowCommand::SetShadow { id, shadow }` 在窗口打开后更换阴影；应用读 `presentation().shadow()` 得到实际结果，窗口显示前是 `Pending`。
+- 透明窗口默认得到阴影：卡片自己画了 UiScene `DropShadow` 的应用应设 `WindowShadow::None`，否则会有两层阴影；点击穿透的覆盖层也应设 `None`。
+
+**验证状态**：macOS 已在真窗口上确认 companion 的几何与层级（主体 + 21pt 边距、`orderedBelow`、静止帧不再更新），可见渲染待显示器唤醒时目视确认；Windows 只做了 `x86_64-pc-windows-gnu` 交叉编译与 clippy，DComp 九宫格、`LAYERED` + `NOREDIRECTIONBITMAP` 的组合与跨进程点击穿透**未经 Windows 真机验证**。
 
 `run_runtime(WindowDescriptor::new("标题"))` 会创建主窗口、唯一 GPU 上下文，并开始事件循环。`WindowDescriptor` 就是 `nana_ui_platform::WindowDescriptor`。
 

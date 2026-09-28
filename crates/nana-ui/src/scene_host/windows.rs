@@ -181,7 +181,90 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             RoutedWindowCommand::Drag(id) => {
                 let _ = self.begin_window_move(event_loop, id);
             }
+            RoutedWindowCommand::SetShadow(id) => {
+                let WindowCommand::SetShadow { shadow, .. } = command else {
+                    return;
+                };
+                if let Some(host) = self.window_contexts.get_mut(&id) {
+                    host.settings.shadow = shadow;
+                }
+                self.apply_window_shadow(id);
+            }
         }
+    }
+
+    /// Apply the window's shadow and record what the platform applied on
+    /// its presentation. Run once the window is shown, and again when its
+    /// request, material or presentation changes.
+    pub(super) fn apply_window_shadow(&mut self, id: WindowId) {
+        let held = self.startup_presentation_held(id);
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        let window = Arc::clone(host.surface.window());
+        let transparent =
+            host.presentation.effective().effect == crate::MaterialEffect::Transparent;
+        let mut intent = crate::window_shadow::intent(&host.settings, transparent);
+        let body = host.shadow_body.map_or_else(
+            || {
+                nana_ui_platform::WindowVisualShape::client(
+                    host.geometry.logical_size.0.max(1.0),
+                    host.geometry.logical_size.1.max(1.0),
+                )
+            },
+            |body| body.shape,
+        );
+        let plan = crate::window_shadow::plan(intent, body)
+            .unwrap_or(nana_window::shadow::ShadowPlan::Disable);
+        let mut applied = host.shadow.apply(window.as_ref(), plan);
+        // A window without a platform frame (frameless on Windows) has no
+        // shadow of its own; the default companion stands in for it.
+        if applied == nana_window::shadow::ShadowApplied::Unsupported
+            && intent == crate::window_shadow::ShadowIntent::Native
+        {
+            intent = crate::window_shadow::ShadowIntent::Companion(Default::default());
+            if let Some(plan) = crate::window_shadow::plan(intent, body) {
+                applied = host.shadow.apply(window.as_ref(), plan);
+            }
+        }
+        if host.shadow.has_companion() {
+            let visible = !held && window.fullscreen().is_none();
+            host.shadow
+                .set_shape(window.as_ref(), crate::window_shadow::shape(body), visible);
+        }
+        host.presentation
+            .record_shadow(crate::window_shadow::outcome(intent, applied));
+    }
+
+    /// After a present: follow the window's visible body with its shadow
+    /// companion. Derives the body only when the scene's projection, the
+    /// window's size or its visibility changed; a static window does nothing.
+    pub(super) fn sync_shadow_body(&mut self, id: WindowId, scene: &nana_ui_scene::UiScene) {
+        let held = self.startup_presentation_held(id);
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        if !host.shadow.has_companion() {
+            return;
+        }
+        let window = Arc::clone(host.surface.window());
+        let revision = scene.projection_revision();
+        let size = host.geometry.logical_size;
+        let visible = !held && window.fullscreen().is_none();
+        if host.shadow_body.is_some_and(|body| {
+            body.revision == revision && body.size == size && body.visible == visible
+        }) {
+            return;
+        }
+        let shape = crate::window_shadow::derive_visual_shape(scene, [size.0, size.1]);
+        host.shadow_body = Some(super::ShadowBody {
+            revision,
+            size,
+            visible,
+            shape,
+        });
+        host.shadow
+            .set_shape(window.as_ref(), crate::window_shadow::shape(shape), visible);
     }
     fn set_mouse_passthrough_mode(
         &mut self,
@@ -249,6 +332,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.emit_skip_taskbar_changed(event_loop, id, &result);
         }
         self.sync_window_mode(event_loop, id);
+        self.apply_window_shadow(id);
     }
 
     /// Always emits `SkipTaskbarChanged`, including for a missing window.
@@ -684,6 +768,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
                 skip_taskbar_report,
                 pointer_presence: presence::PointerPresence::default(),
+                shadow: nana_window::shadow::WindowShadowState::default(),
+                shadow_body: None,
             },
         );
         let generation = *self.input_generations.entry(id).or_insert(1);
@@ -928,6 +1014,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         })?;
         if let Some(presentation) = resolved {
             host.presentation = presentation;
+            // A new presentation starts with nothing recorded, and the
+            // effective material decides between native and companion.
+            self.apply_window_shadow(id);
             self.request_redraw(id);
         }
         Ok(())

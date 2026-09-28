@@ -748,6 +748,12 @@ pub enum WindowCommand {
     Focus(WindowId),
     /// Start a native window move from the current pointer gesture.
     Drag(WindowId),
+    /// Change the desktop shadow of an open window. The applied outcome is
+    /// reported through the window's presentation, not assumed.
+    SetShadow {
+        id: WindowId,
+        shadow: crate::WindowShadow,
+    },
 }
 
 /// Client-area edge used to start a window resize.

@@ -234,6 +234,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                             scale = *scale_factor
                         );
                         self.rescale_startup_splash(id, *scale_factor);
+                        // Shadow content is built at device resolution; the
+                        // next present re-derives the body and rebuilds it.
+                        if let Some(host) = self.window_contexts.get_mut(&id) {
+                            let window = Arc::clone(host.surface.window());
+                            host.shadow.rescale(window.as_ref());
+                            host.shadow_body = None;
+                        }
                     }
                     _ => nana_diagnostics::metric!(nana_diagnostics::framework::window::RESIZES),
                 }

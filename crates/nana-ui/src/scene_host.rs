@@ -216,10 +216,25 @@ struct WindowContext {
     /// Descriptor outcome, applied before the first show and delivered after `Ready`.
     skip_taskbar_report: Option<Result<(), crate::WindowError>>,
     pointer_presence: presence::PointerPresence,
+    /// The desktop shadow applied to this window (#215).
+    shadow: nana_window::shadow::WindowShadowState,
+    /// The visible body the shadow follows, with the scene projection and
+    /// size it was derived for; derived again only when either changes.
+    shadow_body: Option<ShadowBody>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ShadowBody {
+    revision: (u64, u64),
+    size: (f32, f32),
+    visible: bool,
+    shape: nana_ui_platform::WindowVisualShape,
 }
 
 impl Drop for WindowContext {
     fn drop(&mut self) {
+        // The companion goes before the window it follows.
+        self.shadow.release();
         clear_system_material(self.surface.window().as_ref());
     }
 }
@@ -1296,6 +1311,8 @@ fn complete_startup<Program: RuntimeProgram>(
         skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
         skip_taskbar_report,
         pointer_presence: presence::PointerPresence::default(),
+        shadow: nana_window::shadow::WindowShadowState::default(),
+        shadow_body: None,
     };
     pending_native.keep();
     let mut ready = WindowManager {
@@ -1768,39 +1785,10 @@ fn apply_scene_material(
     )
 }
 
-fn apply_window_transparency(
-    window: &dyn winit::window::Window,
-    requested: crate::MaterialEffect,
-    _shadow: nana_ui_platform::WindowShadow,
-) {
+fn apply_window_transparency(window: &dyn winit::window::Window, requested: crate::MaterialEffect) {
+    // The window's shadow is applied once it is shown, by its
+    // `WindowShadowState` (`WindowManager::apply_window_shadow`).
     window.set_transparent(requested.wants_transparent_surface());
-    #[cfg(target_os = "macos")]
-    WindowExtMacOS::set_has_shadow(window, wants_system_shadow(requested, _shadow));
-}
-
-/// Whether the platform should draw its own shadow around the window.
-///
-/// AppKit derives a window's shadow from its alpha, so on a transparent window
-/// it outlines whatever the client paints — a character's silhouette, a
-/// feathered glow — and doubles the shadow an app draws around its own cards.
-/// A transparent window draws its own edge instead, as it must on Windows,
-/// where such a window gets no system shadow either. A material backdrop
-/// (vibrancy) fills the whole window, so its shadow stays the window's own.
-#[cfg(any(target_os = "macos", test))]
-const fn wants_system_shadow(
-    effect: crate::MaterialEffect,
-    shadow: nana_ui_platform::WindowShadow,
-) -> bool {
-    if matches!(shadow, nana_ui_platform::WindowShadow::None) {
-        return false;
-    }
-    // AppKit can only express its default window shadow. A custom request is
-    // therefore left for the platform resolver/companion instead of silently
-    // applying a style it cannot represent.
-    if matches!(shadow, nana_ui_platform::WindowShadow::Custom(_)) {
-        return false;
-    }
-    !matches!(effect, crate::MaterialEffect::Transparent)
 }
 
 /// Asks the platform for the window's requested material.
@@ -1825,7 +1813,7 @@ fn apply_window_material(
         backdrop_opacity,
         window_background,
     );
-    apply_window_transparency(window, requested, settings.shadow);
+    apply_window_transparency(window, requested);
     (requested, material)
 }
 
@@ -1865,7 +1853,7 @@ fn apply_resolved_presentation(
             backdrop_opacity,
             window_background,
         );
-        apply_window_transparency(window, presentation.effective().effect, settings.shadow);
+        apply_window_transparency(window, presentation.effective().effect);
     }
     apply_native_chrome(window, settings, presentation, allow_caption_change);
 }
@@ -2572,6 +2560,7 @@ enum RoutedWindowCommand {
     OpenFileDialog(WindowId),
     SetApplicationIcon,
     Drag(WindowId),
+    SetShadow(WindowId),
     Ignore,
 }
 
@@ -2618,6 +2607,7 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         WindowCommand::OpenFileDialog { id, .. } => RoutedWindowCommand::OpenFileDialog(*id),
         WindowCommand::SetApplicationIcon { .. } => RoutedWindowCommand::SetApplicationIcon,
         WindowCommand::Drag(id) if known(*id) => RoutedWindowCommand::Drag(*id),
+        WindowCommand::SetShadow { id, .. } if known(*id) => RoutedWindowCommand::SetShadow(*id),
         _ => RoutedWindowCommand::Ignore,
     }
 }
@@ -3653,7 +3643,6 @@ mod tests {
     use super::desktop_scale;
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
-    use super::wants_system_shadow;
     use super::{
         Desktop, DisplayBounds, ForwardPointerAction, FrameMoveStep, ImeApply, InputTracker,
         PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position, frame_move_step,
@@ -3695,32 +3684,6 @@ mod tests {
             scale_factor: 2.0,
             ..WindowGeometry::default()
         }
-    }
-
-    /// Only a clear window loses the platform's shadow; it would get an
-    /// outline traced around whatever its client paints.
-    #[test]
-    fn only_an_opaque_window_keeps_the_system_shadow() {
-        assert!(wants_system_shadow(
-            crate::MaterialEffect::Solid,
-            nana_ui_platform::WindowShadow::Auto
-        ));
-        assert!(wants_system_shadow(
-            crate::MaterialEffect::Vibrancy,
-            nana_ui_platform::WindowShadow::Auto
-        ));
-        assert!(!wants_system_shadow(
-            crate::MaterialEffect::Transparent,
-            nana_ui_platform::WindowShadow::Auto
-        ));
-        assert!(!wants_system_shadow(
-            crate::MaterialEffect::Solid,
-            nana_ui_platform::WindowShadow::None
-        ));
-        assert!(!wants_system_shadow(
-            crate::MaterialEffect::Solid,
-            nana_ui_platform::WindowShadow::Custom(Default::default())
-        ));
     }
 
     #[test]

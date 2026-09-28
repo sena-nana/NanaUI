@@ -162,6 +162,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         };
         self.sync_native_browsers(id, scene.as_ref());
+        self.sync_shadow_body(id, scene.as_ref());
         self.update_image_targets(id, scene.as_ref());
         let Some(host) = self.window_contexts.get(&id) else {
             return;

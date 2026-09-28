@@ -863,6 +863,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.release_primary_hold();
         self.startup.release_splash(true);
         self.startup.active = None;
+        // The primary is visible now: its shadow companion can show.
+        self.apply_window_shadow(WindowId::PRIMARY);
         startup_event(StartupMark::HandedOff, at);
         self.startup
             .publish(|status| status.timeline.handoff_completed = Some(at));

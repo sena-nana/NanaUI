@@ -7,12 +7,15 @@ pub use browser::{
     BrowserCommand, BrowserCompletion, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState,
     NativeBrowser,
 };
+#[cfg(target_os = "windows")]
+mod dcomp;
 mod file_dialog;
 mod keyboard;
 mod material;
 mod menu;
 mod motion_preference;
 mod platform;
+pub mod shadow;
 mod size_move;
 mod splash;
 

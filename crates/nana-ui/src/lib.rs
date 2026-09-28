@@ -345,6 +345,8 @@ pub use nana_ui_platform::{
 #[cfg(feature = "hosted")]
 mod window_service;
 #[cfg(feature = "hosted")]
+mod window_shadow;
+#[cfg(feature = "hosted")]
 pub use window_service::{
     WindowCapture, WindowCursor, WindowDescriptor, WindowEffects, WindowError, WindowHandle,
     WindowLevel, WindowRequest, WindowService, WindowSurfacePreference,
@@ -357,6 +359,6 @@ pub mod platform_host {
 }
 
 pub use nana_ui_platform::{
-    WindowShadow, WindowShadowBackend, WindowShadowCapabilities, WindowShadowFallback,
-    WindowShadowOutcome, WindowShadowSource, WindowShadowStyle,
+    WindowShadow, WindowShadowBackend, WindowShadowFallback, WindowShadowOutcome,
+    WindowShadowSource, WindowShadowStyle, WindowShadowWork, WindowVisualShape,
 };

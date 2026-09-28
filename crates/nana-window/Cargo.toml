@@ -27,8 +27,8 @@ objc2-foundation = { workspace = true, default-features = false, features = [
     "objc2-core-foundation",
 ] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["CFCGTypes"] }
-objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGColor"] }
-objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CAAnimation", "CALayer", "CAMediaTiming", "CAMediaTimingFunction", "CAMetalLayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGColor", "CGPath"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CAAnimation", "CALayer", "CAShapeLayer", "CAMediaTiming", "CAMediaTimingFunction", "CAMetalLayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
@@ -45,6 +45,7 @@ windows-sys = { workspace = true, features = [
 ] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Direct2D_Common",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_DirectComposition",

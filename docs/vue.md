@@ -47,6 +47,8 @@ const tracking = await Nana.windows.create({ tag: "tracking", role: "tool" });
 tracking.mount(tracking.tag === "tracking" ? TrackingPanel : Main);
 ```
 
+`shadow` 选桌面阴影：`"auto"`（默认；透明窗口得到跟随根卡片的阴影）、`"none"`，或样式对象 `{ color: [r, g, b, a], offset: [x, y], blur, spread, source: "windowShape" }`，缺省字段取默认值。拼错的关键字、未知字段或非法数值直接报错。实际结果以宿主为准，见 [窗口](window.md) 的 WindowShadow 一节。
+
 打开方拿到的句柄可以控制窗口（`focus` / `close` / `setBounds` / `ready` / `closed` 等），但不能 `mount`——窗口内容由它自己的上下文挂载，句柄上的 `window` / `document` / `root` 为 `null`。在隔离窗口里再打开的共享窗口属于这个隔离上下文。`Nana.windows.list()` 只列出当前上下文里的窗口。一个隔离上下文在它最后一扇窗口关闭、`window-closed` 送达并完成卸载后销毁。
 
 **两种模式都跨窗的**：GPU Device / Queue 以及 WebGPU、Canvas、SVG、媒体、视频运行时，原生组件与宿主纹理注册表，应用样式表，动画时钟，诊断输出，你注册的宿主命令（它们的 Rust 状态），以及按窗口 id 生效的窗口控制。所有上下文还共用同一个 V8 堆、同一个线程和同一个微任务队列：隔离的是状态，**不是**性能或故障——一个窗口里的死循环仍会卡住所有窗口。窗口控制也不是安全边界，同一份脚本、同一个进程。
