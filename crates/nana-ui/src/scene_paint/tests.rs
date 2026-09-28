@@ -3691,6 +3691,29 @@ fn a_shadow_thinner_than_its_blur_peaks_below_full_strength() {
     );
 }
 
+#[test]
+fn a_blurred_shadow_snaps_as_its_box_does() {
+    // A 1.5 px blur grows the quad to a half-pixel edge; snapping that edge
+    // slid the 10..30 box half a pixel, with the shadow cut to it.
+    let (device, queue) = test_device();
+    // Where the green must not reach, and the two columns either side of the
+    // box that it must reach equally.
+    for (inset, clear, [left, right]) in [
+        (false, (10..30).collect::<Vec<_>>(), [9, 30]),
+        (true, (4..10).chain(30..36).collect(), [10, 29]),
+    ] {
+        let pixels = paint_box_shadow(&device, &queue, [10.0, 10.0, 20.0, 20.0], 1.5, 0.0, inset);
+        let green = |x| pixel(&pixels, 64, x, 20)[1];
+        let row = (4..36).map(green).collect::<Vec<_>>();
+        assert!(
+            clear.into_iter().all(|x| green(x) == 0)
+                && green(left) > 0
+                && green(left) == green(right),
+            "inset {inset}: x 4..36 green {row:?}"
+        );
+    }
+}
+
 fn hosted_preview_scene(device: &wgpu::Device) -> (UiScene, HostTextureRegistry) {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

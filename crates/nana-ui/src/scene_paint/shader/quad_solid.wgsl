@@ -1,4 +1,7 @@
 // Adapted from historical Iced (MIT).
+// Instance `snap` bit: an inset shadow, whose quad stays on its box.
+const SNAP_SHADOW_INSET: u32 = 0x10000u;
+
 struct SolidVertexInput {
     @builtin(vertex_index) vertex_index: u32,
     @builtin(instance_index) instance_index: u32,
@@ -94,13 +97,17 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
 
     // Outline/inset expansion is packed into instance shadow radii on the CPU so
     // this stage never reads storage (VERTEX_STORAGE is not guaranteed). An
-    // inset spread packs negated, so it grows nothing.
+    // inset shadow paints only inside its box, so its quad stays on the box.
     let shadow_blur_radius = input.shadow_radii.x;
     let shadow_spread_radius = input.shadow_radii.y;
-    let shadow_outset = shadow_blur_radius + max(shadow_spread_radius, 0.0);
-    var pos: vec2<f32> = (input.pos + min(input.shadow_offset, vec2<f32>(0.0, 0.0)) - shadow_outset) * globals.scale;
-    var scale: vec2<f32> = (input.scale + vec2<f32>(abs(input.shadow_offset.x), abs(input.shadow_offset.y)) + shadow_outset * 2.0) * globals.scale;
+    let inset = (input.snap & SNAP_SHADOW_INSET) != 0u;
+    let shadow_offset = select(input.shadow_offset, vec2(0.0), inset);
+    let shadow_outset = select(shadow_blur_radius + max(shadow_spread_radius, 0.0), 0.0, inset);
+    let pos = input.pos * globals.scale;
+    let scale = input.scale * globals.scale;
 
+    // Snap the box, not the quad grown around it: a fractional blur, spread or
+    // offset would otherwise slide the box half a pixel.
     var pos_snap = vec2<f32>(0.0, 0.0);
     var scale_snap = vec2<f32>(0.0, 0.0);
 
@@ -108,12 +115,14 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
         pos_snap = round(pos + vec2(0.001, 0.001)) - pos;
         scale_snap = round(pos + scale + vec2(0.001, 0.001)) - pos - pos_snap - scale;
     }
+    let quad_pos = pos + pos_snap + (min(shadow_offset, vec2(0.0)) - shadow_outset) * globals.scale;
+    let quad_size = scale + scale_snap + (abs(shadow_offset) + shadow_outset * 2.0) * globals.scale;
 
     let border_radius = min(input.border_radius, vec4(min(input.scale.x, input.scale.y) / 2.0));
     let unit = vertex_position(input.vertex_index);
     let transform_id = (input.snap >> 1u) & 0x7fffu;
     let composed = motion_compose_projective(input.affine_abcd, input.affine_ef, input.motion_origin, motion_evaluate(transform_id));
-    let corner = pos + pos_snap + unit * (scale + scale_snap);
+    let corner = quad_pos + unit * quad_size;
     let grow = edge_grow(composed.abcd, composed.ef, corner / globals.scale);
     let local = corner + (unit * 2.0 - 1.0) * grow;
     let logical = local / globals.scale;
@@ -122,8 +131,8 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     out.position = globals.transform * vec4<f32>(world * globals.scale, 0.0, 1.0);
     out.color = premultiply(input.color);
     out.border_color = premultiply(input.border_color);
-    out.pos = input.pos * globals.scale + pos_snap;
-    out.scale = input.scale * globals.scale + scale_snap;
+    out.pos = pos + pos_snap;
+    out.scale = scale + scale_snap;
     out.border_radius = border_radius * globals.scale;
     out.border_widths = input.border_widths * globals.scale;
     out.shadow_color = premultiply(input.shadow_color);
