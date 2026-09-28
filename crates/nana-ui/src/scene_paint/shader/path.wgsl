@@ -46,6 +46,8 @@ struct PathVertexOutput {
     @location(3) @interpolate(flat) clip_index: u32,
     @location(4) paint_pos: vec2<f32>,
     @location(5) @interpolate(flat) gradient: u32,
+    // `globals.viewport_scale`: the uniform is bound to the vertex stage only.
+    @location(6) @interpolate(flat) pixel_scale: f32,
 }
 
 @vertex
@@ -57,6 +59,7 @@ fn path_vs_main(input: PathVertexInput) -> PathVertexOutput {
     out.color = input.color;
     out.coverage = input.coverage;
     out.clip_index = input.clip_index;
+    out.pixel_scale = globals.viewport_scale;
     out.paint_pos = input.paint_pos;
     out.gradient = input.gradient;
     return out;
@@ -136,7 +139,7 @@ fn gradient_color(index: u32, p: vec2<f32>) -> vec4<f32> {
 @fragment
 fn path_fs_main(input: PathVertexOutput) -> @location(0) vec4<f32> {
     let clip = clip_palette.items[input.clip_index];
-    if !inside_fragment_clip(
+    let clip_cover = fragment_clip_coverage(
         input.world_pos,
         clip.rect,
         clip.inv_abcd,
@@ -147,12 +150,14 @@ fn path_fs_main(input: PathVertexOutput) -> @location(0) vec4<f32> {
         clip.poly1,
         clip.poly2,
         clip.poly3,
-    ) {
+        input.pixel_scale,
+    );
+    if clip_cover <= 0.0 {
         discard;
     }
     // A linear ramp shaped by smoothstep: a one-pixel AA fringe, or across a
     // shadow band of ±2σ, a close fit of the Gaussian edge.
-    let alpha = smoothstep(0.0, 1.0, clamp(input.coverage, 0.0, 1.0));
+    let alpha = smoothstep(0.0, 1.0, clamp(input.coverage, 0.0, 1.0)) * clip_cover;
     if alpha <= 0.0 {
         discard;
     }

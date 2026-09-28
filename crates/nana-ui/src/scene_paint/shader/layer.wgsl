@@ -74,7 +74,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 // shadow, opacity and colour filter.
 fn layer_source(input: VertexOutput) -> vec4<f32> {
     // Clip inverse is stored in dest pixels (`FragmentClip::for_physical_pixels`).
-    if !inside_fragment_clip(
+    let clip_cover = fragment_clip_coverage(
         input.position.xy,
         layer.clip_rect,
         layer.clip_inv_abcd,
@@ -85,7 +85,9 @@ fn layer_source(input: VertexOutput) -> vec4<f32> {
         layer.clip_poly1,
         layer.clip_poly2,
         layer.clip_poly3,
-    ) {
+        1.0,
+    );
+    if clip_cover <= 0.0 {
         discard;
     }
     var sampled = textureSample(source, source_sampler, input.uv);
@@ -121,5 +123,6 @@ fn layer_source(input: VertexOutput) -> vec4<f32> {
             1.0,
         );
     }
-    return sampled;
+    // After the filter, which must not see the faded edge.
+    return sampled * clip_cover;
 }

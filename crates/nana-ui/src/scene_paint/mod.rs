@@ -1836,8 +1836,12 @@ fn clip_dests_for(
         dest
     } else if matches!(
         kind,
-        ScenePrimitiveKind::Stroke { .. } | ScenePrimitiveKind::Spinner { .. }
+        ScenePrimitiveKind::Stroke { .. }
+            | ScenePrimitiveKind::Spinner { .. }
+            | ScenePrimitiveKind::Path { .. }
+            | ScenePrimitiveKind::Text { .. }
     ) {
+        // Their shaders test the innermost polygon or ellipse themselves.
         mesh_extra_fragment_clips(clips, origin)
     } else {
         extra_fragment_clips(clips, origin)

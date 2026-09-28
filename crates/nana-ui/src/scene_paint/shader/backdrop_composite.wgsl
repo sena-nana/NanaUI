@@ -97,7 +97,7 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    if !inside_fragment_clip(
+    let clip_cover = fragment_clip_coverage(
         input.world,
         composite.clip_rect,
         composite.clip_inv_abcd,
@@ -108,7 +108,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         composite.clip_poly1,
         composite.clip_poly2,
         composite.clip_poly3,
-    ) {
+        1.0,
+    );
+    if clip_cover <= 0.0 {
         discard;
     }
 
@@ -134,7 +136,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         half_size,
         composite.corner_radius
     );
-    var alpha = clamp(0.5 - dist, 0.0, 1.0);
+    var alpha = clamp(0.5 - dist, 0.0, 1.0) * clip_cover;
 
     if ((paint.flags & PAINT_MASK) != 0u && (paint.flags & PAINT_MASK_URL) == 0u) {
         alpha *= mask_alpha(local_uv, paint);

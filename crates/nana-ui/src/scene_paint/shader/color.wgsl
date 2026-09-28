@@ -64,7 +64,18 @@ fn point_in_clip_polygon(local: vec2<f32>, count: u32, poly0: vec4<f32>, poly1: 
     return winding != 0;
 }
 
-fn inside_fragment_clip(
+// Device pixels per clip-local unit: a local length is `1 / sqrt|det|` world
+// units of the inverse (exact for rotation and uniform scale).
+fn clip_local_pixels(inv_abcd: vec4<f32>, pixels_per_world: f32) -> f32 {
+    let det = inv_abcd.x * inv_abcd.w - inv_abcd.y * inv_abcd.z;
+    return pixels_per_world * inverseSqrt(max(abs(det), 1.0e-12));
+}
+
+// How much of this fragment the clip keeps, 0 (discard) to 1. Rounded and
+// elliptical edges ramp over one device pixel like the quad's own edge;
+// rectangle and polygon edges stay binary. `pixels_per_world` is the scale
+// factor for logical `world`, 1 for a clip `for_physical_pixels`.
+fn fragment_clip_coverage(
     world: vec2<f32>,
     rect: vec4<f32>,
     inv_abcd: vec4<f32>,
@@ -75,29 +86,33 @@ fn inside_fragment_clip(
     poly1: vec4<f32>,
     poly2: vec4<f32>,
     poly3: vec4<f32>,
-) -> bool {
+    pixels_per_world: f32,
+) -> f32 {
     if !inside_transformed_rect(world, rect, inv_abcd, inv_ef) {
-        return false;
+        return 0.0;
     }
     let local = clip_apply_affine(inv_abcd, inv_ef, world);
     let rel = local - rect.xy;
     if (polygon_count == 1u) {
-        let half = rect.zw * 0.5;
-        let center = rel - half;
-        let nx = center.x / max(half.x, 0.0001);
-        let ny = center.y / max(half.y, 0.0001);
-        return nx * nx + ny * ny <= 1.0;
+        // First-order distance: the implicit function over its gradient.
+        let half = max(rect.zw * 0.5, vec2(0.0001));
+        let n = (rel - half) / half;
+        let len_n = length(n);
+        let gradient = length(n / half) / max(len_n, 1.0e-6);
+        let d = (len_n - 1.0) / max(gradient, 1.0e-6);
+        return clamp(0.5 - d * clip_local_pixels(inv_abcd, pixels_per_world), 0.0, 1.0);
     }
     if (polygon_count >= 3u) && !point_in_clip_polygon(rel, polygon_count, poly0, poly1, poly2, poly3) {
-        return false;
+        return 0.0;
     }
     if (corner_radius <= 0.0) {
-        return true;
+        return 1.0;
     }
     let half = rect.zw * 0.5;
     let center = rel - half;
     let radius = min(corner_radius, min(half.x, half.y));
-    return clip_rounded_box_sdf(center, half, radius) <= 0.0;
+    let d = clip_rounded_box_sdf(center, half, radius);
+    return clamp(0.5 - d * clip_local_pixels(inv_abcd, pixels_per_world), 0.0, 1.0);
 }
 
 fn unpack_color(data: vec2<u32>) -> vec4<f32> {

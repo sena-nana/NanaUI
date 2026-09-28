@@ -118,7 +118,7 @@ fn vs_main(input: VsIn) -> VsOut {
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
-    if !inside_fragment_clip(
+    let clip_cover = fragment_clip_coverage(
         input.world_pos,
         input.clip_rect,
         input.clip_inv_abcd,
@@ -129,11 +129,13 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
         vec4<f32>(0.0),
         vec4<f32>(0.0),
         vec4<f32>(0.0),
-    ) {
+        1.0,
+    );
+    if clip_cover <= 0.0 {
         discard;
     }
     let sampled = textureSample(atlas, atlas_sampler, input.uv);
-    return vec4<f32>(sampled.rgb * input.color.rgb, sampled.a * input.color.a);
+    return vec4<f32>(sampled.rgb * input.color.rgb, sampled.a * input.color.a * clip_cover);
 }
 "#
 );

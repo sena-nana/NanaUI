@@ -559,14 +559,15 @@ fn push_unique_clip(extras: &mut Vec<FragmentClip>, clip: FragmentClip) {
     extras.push(clip);
 }
 
-/// Mesh GpuClip owns the innermost polygon; drop it from dest extras.
+/// Mesh GpuClip and text own the innermost polygon or ellipse; drop it from
+/// dest extras, or an ellipse's edge ramp would fade twice.
 pub(super) fn mesh_extra_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
     origin: PaintOrigin,
 ) -> Vec<FragmentClip> {
     let mut extras = extra_fragment_clips(clips, origin);
     let inner = fragment_clip(clips, origin);
-    if inner.polygon_count >= 3 {
+    if inner.polygon_count > 0 {
         extras.retain(|clip| clip.to_bits() != inner.to_bits());
     }
     extras
@@ -1420,6 +1421,24 @@ mod tests {
             mesh[0].corner_radius > 0.0 && mesh[0].polygon_count < 3,
             "mesh GpuClip owns the polygon; dest keeps ancestor inset(round), got {mesh:?}"
         );
+    }
+
+    #[test]
+    fn an_ellipse_is_tested_once_whichever_side_owns_it() {
+        let origin = PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0]));
+        let clips = [ClipRegion::ellipse(
+            SceneRect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 32.0,
+            },
+            AffineTransform::IDENTITY,
+        )];
+        let inner = fragment_clip(&clips, origin);
+        assert_eq!(inner.polygon_count, 1);
+        assert_eq!(extra_fragment_clips(&clips, origin), vec![inner]);
+        assert!(mesh_extra_fragment_clips(&clips, origin).is_empty());
     }
 
     #[test]

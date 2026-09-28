@@ -3092,6 +3092,121 @@ fn host_texture_clips_each_corner_with_its_own_radius() {
     drop(view);
 }
 
+/// A 64px circle (`overflow: hidden`, radius 32) at the origin around `child`,
+/// which covers it edge to edge.
+fn rounded_clip_around(child: ExtractedNode) -> [ExtractedNode; 2] {
+    let parent = extracted_div(
+        1,
+        &[child.id.get()],
+        0.0,
+        0.0,
+        64.0,
+        64.0,
+        nana_ui_core::LayoutStyle {
+            overflow_x: OverflowSpec::Hidden,
+            overflow_y: OverflowSpec::Hidden,
+            border_radius: Some(32.0),
+            ..nana_ui_core::LayoutStyle::default()
+        },
+        None,
+    );
+    [parent, child]
+}
+
+/// The green channel inside, on and outside the 64px circle's curve.
+fn rounded_clip_edge_samples(pixels: &[u8]) -> ([u8; 4], [u8; 4], [u8; 4]) {
+    // Pixel (6, 12) has its center 0.1px outside the circle: a binary test
+    // clears it, a one-pixel ramp keeps about 40%. (1, 1) is well outside,
+    // (32, 32) well inside.
+    (
+        pixel(pixels, 64, 32, 32),
+        pixel(pixels, 64, 6, 12),
+        pixel(pixels, 64, 1, 1),
+    )
+}
+
+#[test]
+fn child_quad_is_antialiased_by_its_parents_rounded_clip() {
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        rounded_clip_around(colored_quad_child(
+            2,
+            1,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [0.0, 1.0, 0.0, 1.0],
+        )),
+        [],
+    );
+    let pixels = paint_scene_rgba(
+        &device,
+        &queue,
+        &mut painter,
+        &scene,
+        [64.0, 64.0],
+        [64, 64],
+        1.0,
+    );
+    let (inside, edge, outside) = rounded_clip_edge_samples(&pixels);
+    assert_eq!(inside[1], 255, "inside the clip, got {inside:?}");
+    assert!(
+        (40..=200).contains(&edge[1]),
+        "a pixel on the clip's curve must be partially covered, got {edge:?}"
+    );
+    assert_eq!(outside[1], 0, "outside the clip, got {outside:?}");
+}
+
+#[test]
+fn child_host_texture_is_antialiased_by_its_parents_rounded_clip() {
+    // A host texture takes the frame off MSAA: the clip's own ramp is the
+    // only thing that can smooth this edge.
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        rounded_clip_around(host_texture_child(2, 1, 0.0, 0.0, 64.0, 64.0, "layer")),
+        [],
+    );
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let registry = register_host_texture("layer", &view, 64, 64);
+    let (target, target_view) = test_copy_target(&device, format, 64, 64);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui host texture under a rounded parent clip"),
+    });
+    painter
+        .paint_encoder(
+            &scene,
+            &mut encoder,
+            &target_view,
+            ScenePaintViewport {
+                logical_size: [64.0, 64.0],
+                physical_size: [64, 64],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                clear: true,
+            },
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
+    let (inside, edge, outside) = rounded_clip_edge_samples(&pixels);
+    assert!(is_green_slot(inside), "inside the clip, got {inside:?}");
+    assert!(
+        (40..=200).contains(&edge[1]),
+        "a pixel on the clip's curve must be partially covered, got {edge:?}"
+    );
+    assert_eq!(outside[1], 0, "outside the clip, got {outside:?}");
+    drop(view);
+}
+
 #[test]
 fn avatar_edge_keeps_its_antialiasing_under_its_own_overflow_clip() {
     let (device, queue) = test_device();

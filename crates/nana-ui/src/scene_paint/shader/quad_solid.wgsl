@@ -123,7 +123,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
 fn solid_fs_main(
     input: SolidVertexOutput
 ) -> @location(0) vec4<f32> {
-    if !inside_fragment_clip(
+    let clip_cover = fragment_clip_coverage(
         input.world_pos,
         input.clip_rect,
         input.clip_inv_abcd,
@@ -134,7 +134,9 @@ fn solid_fs_main(
         vec4<f32>(0.0),
         vec4<f32>(0.0),
         vec4<f32>(0.0),
-    ) {
+        globals.scale,
+    );
+    if clip_cover <= 0.0 {
         discard;
     }
 
@@ -238,6 +240,8 @@ fn solid_fs_main(
     // The sample is the curve's, overshoot included; what the quad can show
     // is an opacity, as the CPU compositor clamps it too.
     let motion_opacity = clamp(motion_sample_scalar(motion_evaluate(paint._pad_tail1), 1.0), 0.0, 1.0);
+    // The clip's edge coverage scales the premultiplied result the same way.
+    let fade = motion_opacity * clip_cover;
 
     if input.shadow_color.a > 0.0 {
         let css_spread = input.shadow_spread_radius - outline_px;
@@ -254,12 +258,12 @@ fn solid_fs_main(
                 input.shadow_blur_radius,
                 max(-shadow_dist, 0.0),
             );
-            return mix(quad_color, input.shadow_color, clamp(0.5 - dist, 0.0, 1.0) * shadow_alpha) * motion_opacity;
+            return mix(quad_color, input.shadow_color, clamp(0.5 - dist, 0.0, 1.0) * shadow_alpha) * fade;
         }
         let shadow_alpha = 1.0 - smoothstep(-input.shadow_blur_radius, input.shadow_blur_radius, max(shadow_dist, 0.0));
 
-        return mix(quad_color, input.shadow_color, (1.0 - quad_alpha) * shadow_alpha) * motion_opacity;
+        return mix(quad_color, input.shadow_color, (1.0 - quad_alpha) * shadow_alpha) * fade;
     } else {
-        return quad_color * motion_opacity;
+        return quad_color * fade;
     }
 }

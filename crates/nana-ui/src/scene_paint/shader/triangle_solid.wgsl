@@ -45,6 +45,8 @@ struct SolidVertexOutput {
     @location(5) @interpolate(flat) radii_caps: vec4<f32>,
     @location(6) @interpolate(flat) affine_abcd: vec4<f32>,
     @location(7) @interpolate(flat) affine_ef: vec2<f32>,
+    // `globals.viewport_scale`: the uniform is bound to the vertex stage only.
+    @location(8) @interpolate(flat) pixel_scale: f32,
 }
 
 fn unit_corner(vertex_index: u32) -> vec2<f32> {
@@ -184,6 +186,7 @@ fn solid_vs_main(
     out.position = globals.transform * vec4<f32>(world, 0.0, 1.0);
     out.world_pos = world;
     out.clip_index = input.clip_index;
+    out.pixel_scale = globals.viewport_scale;
     out.p0 = input.p0;
     out.p1 = input.p1;
     out.radii_caps = vec4<f32>(input.radii, cap0, cap1);
@@ -247,9 +250,10 @@ fn stroke_signed_distance(
     return distance_to_path;
 }
 
-fn stroke_clip_and_distance(input: SolidVertexOutput) -> f32 {
+// The distance to the stroke, and how much of this fragment the clip keeps.
+fn stroke_clip_and_distance(input: SolidVertexOutput) -> vec2<f32> {
     let clip = clip_palette.items[input.clip_index];
-    if !inside_fragment_clip(
+    let cover = fragment_clip_coverage(
         input.world_pos,
         clip.rect,
         clip.inv_abcd,
@@ -260,11 +264,13 @@ fn stroke_clip_and_distance(input: SolidVertexOutput) -> f32 {
         clip.poly1,
         clip.poly2,
         clip.poly3,
-    ) {
+        input.pixel_scale,
+    );
+    if cover <= 0.0 {
         discard;
     }
     let local_p = world_to_local(input.affine_abcd, input.affine_ef, input.world_pos);
-    return stroke_signed_distance(
+    return vec2<f32>(stroke_signed_distance(
         local_p,
         input.p0,
         input.p1,
@@ -272,7 +278,7 @@ fn stroke_clip_and_distance(input: SolidVertexOutput) -> f32 {
         input.radii_caps.y,
         input.radii_caps.z,
         input.radii_caps.w,
-    );
+    ), cover);
 }
 
 // One fragment entry for every sample count: WebGPU evaluates the fragment
@@ -281,13 +287,14 @@ fn stroke_clip_and_distance(input: SolidVertexOutput) -> f32 {
 // analytic coverage below is the only AA this stroke gets.
 @fragment
 fn solid_fs_main(input: SolidVertexOutput) -> @location(0) vec4<f32> {
-    let distance_to_path = stroke_clip_and_distance(input);
+    let clipped = stroke_clip_and_distance(input);
+    let distance_to_path = clipped.x;
     // Gradient length, not isotropic `fwidth`, so anisotropic ellipses AA evenly.
     let pixel = max(
         length(vec2<f32>(dpdx(distance_to_path), dpdy(distance_to_path))),
         1e-5,
     );
-    let alpha = 1.0 - smoothstep(-pixel * 0.5, pixel * 0.5, distance_to_path);
+    let alpha = (1.0 - smoothstep(-pixel * 0.5, pixel * 0.5, distance_to_path)) * clipped.y;
     if alpha <= 0.0 {
         discard;
     }

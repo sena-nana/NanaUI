@@ -155,9 +155,10 @@ struct TextShade {
 
 fn shade(input: VsOut) -> TextShade {
     let flags = input.run_flags & 7u;
+    var clip_cover = 1.0;
     if (flags & RUN_CLIP) != 0u {
         let presentation = text_presentations[input.run_flags >> 3u];
-        if !inside_fragment_clip(
+        clip_cover = fragment_clip_coverage(
             input.world_pos,
             presentation.clip_rect,
             presentation.clip_inv_abcd,
@@ -168,7 +169,9 @@ fn shade(input: VsOut) -> TextShade {
             presentation.polygon[1],
             presentation.polygon[2],
             presentation.polygon[3],
-        ) {
+            1.0,
+        );
+        if clip_cover <= 0.0 {
             discard;
         }
     }
@@ -192,7 +195,7 @@ fn shade(input: VsOut) -> TextShade {
             globals.contrast.x,
         ).x;
         out.color = input.color.rgb;
-        out.alpha = vec4<f32>(input.color.a * corrected);
+        out.alpha = vec4<f32>(input.color.a * corrected * clip_cover);
         return out;
     }
     var sampled = vec4<f32>(0.0);
@@ -210,13 +213,13 @@ fn shade(input: VsOut) -> TextShade {
         let corrected = corrected_coverage(sampled.rgb, fg, fg, fg, globals.contrast.y);
         out.color = input.color.rgb;
         out.alpha = vec4<f32>(corrected, max(corrected.r, max(corrected.g, corrected.b)))
-            * input.color.a;
+            * (input.color.a * clip_cover);
         return out;
     }
     // A color bitmap carries its own color; only the run's alpha applies, so a
     // faded or shadowed emoji fades instead of painting at full strength.
     out.color = sampled.rgb;
-    out.alpha = vec4<f32>(sampled.a * input.color.a);
+    out.alpha = vec4<f32>(sampled.a * input.color.a * clip_cover);
     return out;
 }
 "#,

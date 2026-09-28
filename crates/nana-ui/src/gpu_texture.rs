@@ -122,21 +122,27 @@ fn overflow_clip_local(world: vec2<f32>) -> vec2<f32> {
     );
 }
 
-fn inside_overflow_clip(world: vec2<f32>) -> bool {
+// An ancestor overflow clip's coverage, ramped as `fragment_clip_coverage`.
+fn overflow_clip_coverage(world: vec2<f32>) -> f32 {
     let local = overflow_clip_local(world);
     if (any(local < layer.clip_rect.xy)) || (any(local > layer.clip_rect.xy + layer.clip_rect.zw)) {
-        return false;
+        return 0.0;
     }
     let radius = layer.clip_inv_ef.z;
     if (radius <= 0.0) {
-        return true;
+        return 1.0;
     }
     let rel = local - layer.clip_rect.xy;
     let half = layer.clip_rect.zw * 0.5;
     let center = rel - half;
     let corner = min(radius, min(half.x, half.y));
     let q = abs(center) - half + corner;
-    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - corner <= 0.0;
+    let d = min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - corner;
+    // `world` is logical px; a clip-local length is `1 / sqrt|det|` of them.
+    let inv = layer.clip_inv_abcd;
+    let det = inv.x * inv.w - inv.y * inv.z;
+    let pixels = max(layer.source.y, 0.0001) * inverseSqrt(max(abs(det), 1.0e-12));
+    return clamp(0.5 - d * pixels, 0.0, 1.0);
 }
 
 fn gradient_axis(angle_deg: f32) -> vec2<f32> {
@@ -234,7 +240,8 @@ fn mask_alpha(local: vec2<f32>) -> f32 {
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    if !inside_overflow_clip(input.world) {
+    let clip_cover = overflow_clip_coverage(input.world);
+    if clip_cover <= 0.0 {
         discard;
     }
     let zoom = max(layer.editor.y, 1.0);
@@ -253,6 +260,8 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let tone = select(0.45, 0.75, ((p.x + p.y) % 2.0) < 0.5);
         color = vec4(mix(vec3(tone), color.rgb, color.a), 1.0);
     }
+    // Premultiplied, so the clip's edge scales all four channels.
+    color = color * clip_cover;
     let radii = min(layer.corners, vec4(min(box_size.x, box_size.y) * 0.5));
     if max(max(radii.x, radii.y), max(radii.z, radii.w)) <= 0.0 {
         return color;
