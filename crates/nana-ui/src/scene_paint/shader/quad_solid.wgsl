@@ -52,6 +52,20 @@ fn apply_affine(abcd: vec4<f32>, ef: vec4<f32>, p: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(x, y) / w;
 }
 
+// Local px the quad reaches past each edge so the ramp's outer half device
+// pixel is rasterized under the transform at `p`: an edge moves
+// `det / |other column| / w` device px per local px (Jacobian columns × w).
+// At least the untransformed half pixel; capped for near-singular transforms.
+fn edge_grow(abcd: vec4<f32>, ef: vec4<f32>, p: vec2<f32>) -> vec2<f32> {
+    let world = apply_affine(abcd, ef, p);
+    let w = abs(ef.z * p.x + ef.w * p.y + 1.0);
+    let along_x = vec2(abcd.x - world.x * ef.z, abcd.y - world.y * ef.z);
+    let along_y = vec2(abcd.z - world.x * ef.w, abcd.w - world.y * ef.w);
+    let det = abs(along_x.x * along_y.y - along_x.y * along_y.x);
+    let grow = 0.5 * w * vec2(length(along_y), length(along_x)) / max(det, 1.0e-6);
+    return clamp(grow, vec2(0.5), vec2(256.0));
+}
+
 fn border_dash_mask(along: f32, across: f32, width: f32, style: u32) -> f32 {
     if (style == 0u) {
         return 1.0;
@@ -92,10 +106,12 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
 
     let border_radius = min(input.border_radius, vec4(min(input.scale.x, input.scale.y) / 2.0));
     let unit = vertex_position(input.vertex_index);
-    let local = pos + pos_snap - vec2<f32>(0.5, 0.5) + unit * (scale + scale_snap + 1.0);
-    let logical = local / globals.scale;
     let transform_id = (input.snap >> 1u) & 0x7fffu;
     let composed = motion_compose_projective(input.affine_abcd, input.affine_ef, input.motion_origin, motion_evaluate(transform_id));
+    let corner = pos + pos_snap + unit * (scale + scale_snap);
+    let grow = edge_grow(composed.abcd, composed.ef, corner / globals.scale);
+    let local = corner + (unit * 2.0 - 1.0) * grow;
+    let logical = local / globals.scale;
     let world = apply_affine(composed.abcd, composed.ef, logical);
 
     out.position = globals.transform * vec4<f32>(world * globals.scale, 0.0, 1.0);
@@ -123,6 +139,9 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
 fn solid_fs_main(
     input: SolidVertexOutput
 ) -> @location(0) vec4<f32> {
+    // Local px per device pixel, for every edge ramp below.
+    let local_dx = dpdx(input.local_pos);
+    let local_dy = dpdy(input.local_pos);
     let clip_cover = fragment_clip_coverage(
         input.world_pos,
         input.clip_rect,
@@ -149,11 +168,9 @@ fn solid_fs_main(
 
     var mixed_color: vec4<f32> = compose_quad_fill(input.color, local_uv, paint);
 
-    var dist = rounded_box_sdf(
-        -(input.local_pos - input.pos - input.scale * 0.5) * 2.0,
-        input.scale,
-        input.border_radius * 2.0
-    ) / 2.0;
+    let outer_p = -(input.local_pos - input.pos - input.scale * 0.5) * 2.0;
+    let dist = rounded_box_sdf(outer_p, input.scale, input.border_radius * 2.0) / 2.0;
+    let edge_px = rounded_box_pixel(outer_p, input.scale, input.border_radius * 2.0, local_dx, local_dy);
 
     if (max(max(input.border_widths.x, input.border_widths.y), max(input.border_widths.z, input.border_widths.w)) > 0.0) {
         let inner_shift = vec2(
@@ -177,11 +194,9 @@ fn solid_fs_main(
             vec4(0.0),
         );
         inner_radii = min(inner_radii, vec4(min(inner_size.x, inner_size.y) * 0.5));
-        let inner_dist = rounded_box_sdf(
-            -(input.local_pos - input.pos - input.scale * 0.5 - inner_shift) * 2.0,
-            inner_size,
-            inner_radii * 2.0
-        ) / 2.0;
+        let inner_p = -(input.local_pos - input.pos - input.scale * 0.5 - inner_shift) * 2.0;
+        let inner_dist = rounded_box_sdf(inner_p, inner_size, inner_radii * 2.0) / 2.0
+            / rounded_box_pixel(inner_p, inner_size, inner_radii * 2.0, local_dx, local_dy);
         let lp = input.local_pos - input.pos;
         let dt = select(1e8, lp.y / max(input.border_widths.x, 1e-4), input.border_widths.x > 0.0);
         let dr = select(1e8, (input.scale.x - lp.x) / max(input.border_widths.y, 1e-4), input.border_widths.y > 0.0);
@@ -223,13 +238,14 @@ fn solid_fs_main(
         mixed_color = mix(mixed_color, edge_color, cover);
     }
 
-    var quad_alpha: f32 = clamp(0.5-dist, 0.0, 1.0);
+    let fill_alpha = clamp(0.5 - dist / edge_px, 0.0, 1.0);
+    var quad_alpha: f32 = fill_alpha;
 
     // Storage keeps CSS px (same as instance spread before VS scale). `dist`
     // and interpolated `shadow_spread_radius` are already physical.
     let outline_px = paint.outline_width * globals.scale;
     if (outline_px > 0.0) {
-        let cover = clamp(0.5 - dist + outline_px, 0.0, 1.0);
+        let cover = clamp(0.5 - (dist - outline_px) / edge_px, 0.0, 1.0);
         let outline_premult = premultiply(paint.outline_color);
         mixed_color = mix(outline_premult, mixed_color, quad_alpha);
         quad_alpha = cover;
@@ -258,7 +274,7 @@ fn solid_fs_main(
                 input.shadow_blur_radius,
                 max(-shadow_dist, 0.0),
             );
-            return mix(quad_color, input.shadow_color, clamp(0.5 - dist, 0.0, 1.0) * shadow_alpha) * fade;
+            return mix(quad_color, input.shadow_color, fill_alpha * shadow_alpha) * fade;
         }
         let shadow_alpha = 1.0 - smoothstep(-input.shadow_blur_radius, input.shadow_blur_radius, max(shadow_dist, 0.0));
 

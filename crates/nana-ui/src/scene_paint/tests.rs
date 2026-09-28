@@ -3255,6 +3255,129 @@ fn avatar_edge_keeps_its_antialiasing_under_its_own_overflow_clip() {
     drop(view);
 }
 
+/// `(label, logical box, transform scale, scale factor)`: the box's inscribed
+/// circle, scaled about its centre, in a 64 logical px target.
+type ScaledCircle = (&'static str, [f32; 4], f32, f32);
+
+const SCALED_CIRCLES: [ScaledCircle; 3] = [
+    ("scale(0.5)", [0.0, 0.0, 64.0, 64.0], 0.5, 1.0),
+    ("scale(0.5) at 150%", [0.0, 0.0, 64.0, 64.0], 0.5, 1.5),
+    ("scale(2)", [24.0, 24.0, 16.0, 16.0], 2.0, 1.0),
+];
+
+/// Every pixel near the circle's rim against a one device pixel ramp,
+/// `0.5 - (distance - radius)`; a ramp of `1 / scale` px misses it by a
+/// quarter of the range a third of a pixel from the rim.
+fn assert_one_pixel_rim(pixels: &[u8], (label, [x, y, w, h], scale, factor): ScaledCircle) {
+    let center = [(x + w * 0.5) * factor, (y + h * 0.5) * factor];
+    let radius = w.min(h) * 0.5 * scale * factor;
+    let side = (64.0 * factor) as u32;
+    for py in 0..side {
+        for px in 0..side {
+            let from_rim =
+                (px as f32 + 0.5 - center[0]).hypot(py as f32 + 0.5 - center[1]) - radius;
+            if from_rim.abs() > 1.5 {
+                continue;
+            }
+            let expected = (0.5 - from_rim).clamp(0.0, 1.0) * 255.0;
+            let green = f32::from(pixel(pixels, side, px, py)[1]);
+            assert!(
+                (green - expected).abs() <= 16.0,
+                "{label}: ({px},{py}) is {from_rim:+.3} px from the rim,                  expected green {expected:.0}, got {green}"
+            );
+        }
+    }
+}
+
+fn scale_transform(scale: f32) -> Option<PaintTransform> {
+    Some(PaintTransform {
+        a: scale,
+        d: scale,
+        ..PaintTransform::default()
+    })
+}
+
+#[test]
+fn rounded_quad_edge_stays_one_device_pixel_under_transform_scale() {
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    let green = [0.0, 1.0, 0.0, 1.0];
+    for circle @ (_, [x, y, w, h], scale, factor) in SCALED_CIRCLES {
+        let mut scene = UiScene::new();
+        let style = nana_ui_core::LayoutStyle {
+            background: Some(green),
+            border_radius: Some(w.min(h) * 0.5),
+            transform: scale_transform(scale),
+            ..Default::default()
+        };
+        scene.apply_delta([extracted_div(1, &[], x, y, w, h, style, Some(green))], []);
+        let side = (64.0 * factor) as u32;
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [side, side],
+            factor,
+        );
+        assert_one_pixel_rim(&pixels, circle);
+    }
+}
+
+#[test]
+fn rounded_host_texture_edge_stays_one_device_pixel_under_scale_and_fractional_dpi() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let registry = register_host_texture("layer", &view, 64, 64);
+    // The box's left edge at device x = 3.75: the pixel centred a quarter
+    // pixel outside, past the fitted dest quad, keeps its quarter coverage.
+    let fractional = ("150%, fractional edge", [2.5, 2.5, 30.0, 30.0], 1.0, 1.5);
+    for circle @ (_, [x, y, w, h], scale, factor) in SCALED_CIRCLES.into_iter().chain([fractional])
+    {
+        let mut context = AppContext::new();
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).transform = scale_transform(scale);
+        let preview = context
+            .create_component(
+                DocumentId::new(1).unwrap(),
+                GpuTextureView::new("layer")
+                    .style(style)
+                    .with_corner_radius(w.min(h) * 0.5),
+            )
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, preview.stable_id(), x, y, w, h);
+        context.commit_mutations(layout).unwrap();
+        let scene = commit_scene(&mut context);
+        let side = (64.0 * factor) as u32;
+        let (target, target_view) = test_copy_target(&device, format, side, side);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        SceneWgpuPainter::for_test(format)
+            .paint_encoder(
+                &scene,
+                &mut encoder,
+                &target_view,
+                ScenePaintViewport {
+                    logical_size: [64.0, 64.0],
+                    physical_size: [side, side],
+                    scale_factor: factor,
+                    scene_origin: [0.0, 0.0],
+                    target_origin: [0.0, 0.0],
+                    clear_color: [0.0, 0.0, 0.0, 1.0],
+                    clear: true,
+                },
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &target, side, side);
+        assert_one_pixel_rim(&pixels, circle);
+    }
+    drop(view);
+}
+
 fn hosted_preview_scene(device: &wgpu::Device) -> (UiScene, HostTextureRegistry) {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
