@@ -337,6 +337,7 @@ impl UiScene {
                     kind: ScenePrimitiveKind::Custom {
                         node: custom,
                         mask: style.paint.mask.clone(),
+                        corner_radius: surface_corner_radii(style, bounds.width, bounds.height),
                     },
                 });
             }

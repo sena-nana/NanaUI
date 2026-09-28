@@ -7701,7 +7701,7 @@ fn host_texture_custom_carries_css_mask() {
         .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
         .expect("host texture custom primitive");
     match &primitive.kind {
-        ScenePrimitiveKind::Custom { mask, node } => {
+        ScenePrimitiveKind::Custom { mask, node, .. } => {
             assert_eq!(node.renderer.as_ref(), "nana.host-texture");
             assert!(mask.is_some(), "mask must travel on the Custom primitive");
         }

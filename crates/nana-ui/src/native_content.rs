@@ -57,7 +57,7 @@ pub fn native_content_regions(
         let Some(primitive) = scene.draw_primitive(*id) else {
             continue;
         };
-        let ScenePrimitiveKind::Custom { node, mask } = &primitive.kind else {
+        let ScenePrimitiveKind::Custom { node, mask, .. } = &primitive.kind else {
             continue;
         };
         if node.renderer.as_ref() != NATIVE_CONTENT_RENDERER {

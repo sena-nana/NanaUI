@@ -4,8 +4,8 @@ use std::sync::Arc;
 use nana_ui_core::{ButtonKind, LengthSpec, OverflowSpec, PaintTransform, SemanticColorRole};
 use nana_ui_runtime::{
     AppContext, Avatar, Button as RuntimeButton, ComponentGeometry, ComputedStyle,
-    CustomRenderNode, DocumentId, ExtractedNode, GpuTextureView, LayoutBox, MutationQueue,
-    NodeKind, NodeStyle, StableNodeId, StandardVisual, TextContent,
+    CustomRenderNode, DocumentId, ExtractedNode, GpuTextureView, HoverCard, LayoutBox,
+    MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, TextContent,
 };
 #[cfg(feature = "graph-canvas")]
 use nana_ui_scene::StrokePattern;
@@ -2058,6 +2058,7 @@ fn axis_aligned_clips_do_not_dest_wrap() {
     let custom = ScenePrimitiveKind::Custom {
         node: CustomRenderNode::new("test.fill", "slot", 1),
         mask: None,
+        corner_radius: [0.0; 4],
     };
     let quad = ScenePrimitiveKind::Quad {
         background: Some([1.0, 0.0, 0.0, 1.0]),
@@ -3414,25 +3415,23 @@ fn custom_node_is_cut_by_its_parents_rounded_clip() {
     drop(texture);
 }
 
-#[test]
-fn avatar_edge_keeps_its_antialiasing_under_its_own_overflow_clip() {
+/// 64×64 纯绿宿主纹理 `face`,按 `component` 画在黑底上,读回像素。
+fn paint_green_face<C: nana_ui_runtime::ComponentView>(component: C) -> Vec<u8> {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
-    let avatar = context
-        .create_component(document, Avatar::new("face").size(64.0))
-        .unwrap();
+    let entity = context.create_component(document, component).unwrap();
     let mut layout = MutationQueue::new();
-    write_box(&mut layout, avatar.stable_id(), 0.0, 0.0, 64.0, 64.0);
+    write_box(&mut layout, entity.stable_id(), 0.0, 0.0, 64.0, 64.0);
     context.commit_mutations(layout).unwrap();
     let scene = commit_scene(&mut context);
     let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
     let registry = register_host_texture("face", &view, 64, 64);
     let (target, target_view) = test_copy_target(&device, format, 64, 64);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("nana-ui avatar edge coverage"),
+        label: Some("nana-ui green face"),
     });
     painter
         .paint_encoder(
@@ -3452,14 +3451,31 @@ fn avatar_edge_keeps_its_antialiasing_under_its_own_overflow_clip() {
             None,
         )
         .unwrap();
-    let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
+    readback_rgba(&device, &queue, encoder, &target, 64, 64)
+}
+
+#[test]
+fn avatar_edge_keeps_its_antialiasing_under_its_own_overflow_clip() {
+    let pixels = paint_green_face(Avatar::new("face").size(64.0));
     // 像素中心在圆外 0.1px:自身 overflow 的硬裁剪会把它清成 0。
     let edge = pixel(&pixels, 64, 6, 12);
     assert!(
         (40..=200).contains(&edge[1]),
         "edge pixel just outside the circle must be partially covered, got {edge:?}"
     );
-    drop(view);
+}
+
+#[test]
+fn hover_card_image_trigger_is_round_without_a_surface_quad() {
+    // 菜单面的触发节点不出底色 Quad,圆角只能来自节点自身。
+    let pixels = paint_green_face(
+        HoverCard::new()
+            .trigger_image("face", "account")
+            .trigger_size(64.0),
+    );
+    assert!(is_green_slot(pixel(&pixels, 64, 32, 32)));
+    let corner = pixel(&pixels, 64, 2, 2);
+    assert!(corner[1] < 8, "corner outside the circle, got {corner:?}");
 }
 
 /// `(label, logical box, transform scale, scale factor)`: the box's inscribed

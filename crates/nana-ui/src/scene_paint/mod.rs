@@ -1429,7 +1429,11 @@ impl SceneWgpuPainter {
                             );
                         }
                     }
-                    ScenePrimitiveKind::Custom { node: custom, mask } => {
+                    ScenePrimitiveKind::Custom {
+                        node: custom,
+                        mask,
+                        corner_radius,
+                    } => {
                         if custom.renderer.as_ref() == "nana.host-texture" {
                             // The registry is a shared RwLock: an entry validated at
                             // frame start can be removed before prepare. Skip the
@@ -1450,18 +1454,6 @@ impl SceneWgpuPainter {
                                 binding.height as f32,
                                 custom.fit,
                             );
-                            let (rounded_clip, corner_radii) = scene
-                                .primitive(nana_ui_scene::PrimitiveId {
-                                    node: primitive.id.node,
-                                    slot: 0,
-                                })
-                                .and_then(|quad| match &quad.kind {
-                                    ScenePrimitiveKind::Quad { corner_radius, .. } => {
-                                        Some((local_rect(quad.bounds), *corner_radius))
-                                    }
-                                    _ => None,
-                                })
-                                .unwrap_or((bounds, [0.0; 4]));
                             batching.close_all();
                             let prepared = self.host_textures.prepare(
                                 &self.device,
@@ -1475,8 +1467,8 @@ impl SceneWgpuPainter {
                                 persp,
                                 scissor,
                                 opacity,
-                                corner_radii,
-                                rounded_clip,
+                                *corner_radius,
+                                bounds,
                                 frag_clip,
                                 dest_physical,
                                 scale,

@@ -287,6 +287,9 @@ pub enum ScenePrimitiveKind {
         /// `mask-image` / `-webkit-mask-image` alpha for HostTexture sampling.
         /// Same value as [`QuadSurfacePaint::mask`] (gradient or `url()`).
         mask: Option<nana_ui_core::MaskImage>,
+        /// The rounding of the primitive's own box, in [`Self::Quad`]'s
+        /// corner order. A HostTexture draws its content in this shape.
+        corner_radius: [f32; 4],
     },
     /// Triangles a node's `Painter` produced (Issue #217): path fills,
     /// strokes and shadows, already clipped and anti-aliased on the CPU.

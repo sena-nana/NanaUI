@@ -68,6 +68,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     kind: ScenePrimitiveKind::Custom {
                         node: custom,
                         mask: node.source_style.layout.paint.mask.clone(),
+                        corner_radius: [0.0; 4],
                     },
                 });
             }
