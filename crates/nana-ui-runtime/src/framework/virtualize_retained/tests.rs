@@ -798,3 +798,70 @@ fn sync_virtual_table_releases_an_off_window_cell_after_blur() {
     assert!(!cx.world().contains(cell.id));
     assert!(!items.mounted_rows().contains(&1));
 }
+
+#[test]
+fn measured_virtual_list_reads_row_heights_back_and_keeps_the_top_row_in_place() {
+    // 行高只有布局之后才知道(换行、截断、展开):按估算挂上去,下一次同步
+    // 从布局读回真实高度。视口顶上那一行不能因为上面的行变高而被推走。
+    let heights = [50.0f32, 50.0, 30.0, 30.0, 30.0, 30.0];
+    let mut cx = AppContext::new();
+    let scroll = scroll_port(&mut cx, 320.0, 40.0);
+    let list = cx.create_component(document(), List::new()).unwrap();
+    let mut layout = VirtualListLayout::new(std::iter::repeat_n(20.0, heights.len()));
+    let mut items = VirtualListItems::<usize, crate::Stack>::measured();
+    let row = |index: usize, _: &usize| {
+        crate::Stack::column(0.0).style(crate::NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                height: Some(LengthSpec::Px(heights[index])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    };
+    let sync = |cx: &mut AppContext,
+                items: &mut VirtualListItems<usize, crate::Stack>,
+                layout: &mut VirtualListLayout| {
+        cx.sync_virtual_list_measured_with(
+            scroll,
+            list,
+            items,
+            layout,
+            100.0,
+            0,
+            &[],
+            |index| index,
+            |key| Some(*key),
+            row,
+            |_, _, _, _| Ok(()),
+        )
+        .unwrap()
+    };
+
+    // 估算 20:第 2 行的顶在 40。
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 40.0 })
+        .unwrap();
+    sync(&mut cx, &mut items, &mut layout);
+    assert!(items.pending_measure(), "fresh rows wait for a layout pass");
+    project_layout(&mut cx);
+    sync(&mut cx, &mut items, &mut layout);
+
+    assert_eq!(layout.extent(0..1), 50.0);
+    assert_eq!(layout.extent(0..2), 100.0);
+    assert_eq!(
+        cx.world().scroll_offset(scroll.id).unwrap().y,
+        100.0,
+        "the row that was at the top stays at the top"
+    );
+    project_layout(&mut cx);
+    let placed = items
+        .containers
+        .get(&2)
+        .and_then(|container| cx.world().layout_box(container.id))
+        .zip(cx.world().layout_box(list.id))
+        .map(|(row, list)| row.y - list.y);
+    assert_eq!(
+        placed,
+        Some(100.0),
+        "row 2 is placed after the measured rows"
+    );
+}

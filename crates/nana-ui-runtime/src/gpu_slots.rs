@@ -292,6 +292,15 @@ impl GpuTextureView {
         self
     }
 
+    /// Per-corner rounded clip (TL, TR, BR, BL); overrides
+    /// [`Self::with_corner_radius`]. The texture is clipped by the same
+    /// shape as the node's own surface, e.g. rounded top corners only.
+    pub fn with_corner_radii(mut self, radii: [f32; 4]) -> Self {
+        Arc::make_mut(&mut self.style.layout).paint.border_radii =
+            Some(radii.map(|radius| nana_ui_core::LengthSpec::Px(finite_radius(radius))));
+        self
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self

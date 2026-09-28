@@ -432,6 +432,15 @@ range 跨过一行才挂新行、卸旧行；焦点或 IME 失效时会立即释
 它多收一个 `on_mount` 回调：**只**为本次新建的行调用一次（滚回已挂载的行不会重复调用），
 在提交之后执行，可以直接 `cx.on(entity, ...)`。滚走释放的行连同 handler 一起释放。
 
+行高由内容决定（换行、`line_clamp`、展开）时不要在应用里估算字宽：用
+`VirtualListItems::measured()` 建 items，改调 `sync_virtual_list_measured_with(scroll, list, items,
+&mut layout, …)`。行容器不再被钉成 `layout` 里的高度，而是按内容排版；每次同步先从上一次布局读回
+已挂载行的真实高度写进 `layout`（`measure_anchored`），视口顶上那一行保持不动——它上面的行量出来
+更高时，滚动偏移跟着加上差值，而不是把内容往下推。`layout` 里的值只是还没量过的行的估算。
+新挂上的行要等下一次布局后才量得到：`items.pending_measure()` 为真时再要一帧。
+「展开」这类入口只在文字真的被截断时出现：布局后 `cx.text_truncated(text)` 给出 `line_clamp`
+（或高度）是否丢掉了行，不要按字数阈值猜。
+
 项身份与内容按 key 保持；框架在组件外放置一个非命中容器以维护逻辑位置，
 并管理 List 的完整内容高度。数据重排必须提供最新逆索引；删除、折叠或 key
 不匹配会释放对应项。离屏导航先查询目标偏移并物化，布局发布后调用 `scroll_into_view(scroll, target, margin)`

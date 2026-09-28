@@ -179,13 +179,15 @@ impl AppContext {
         for (index, key) in indices.zip(&plan.order) {
             let top = layout.extent(0..index);
             let height = layout.extent(index..index + 1);
+            // A measured row sizes to its content; its extent is read back
+            // after layout instead of imposed on it.
             let container = Stack::column(0.0).style(crate::NodeStyle {
                 layout: Arc::new(nana_ui_core::LayoutStyle {
                     position: PositionSpec::Absolute,
                     offset_top: Some(LengthSpec::Px(top)),
                     offset_left: Some(LengthSpec::Px(0.0)),
                     width: Some(LengthSpec::Percent(100.0)),
-                    height: Some(LengthSpec::Px(height)),
+                    height: (!items.measured).then_some(LengthSpec::Px(height)),
                     flex_shrink: Some(0.0),
                     ..Default::default()
                 }),
@@ -195,8 +197,10 @@ impl AppContext {
                 if self.read(entity, |old| old != &container)? {
                     container.project(entity.id, &self.world, &mut mutations);
                     staged_containers.push((entity.id, container));
+                    items.pending_measure |= items.measured;
                 }
             } else {
+                items.pending_measure |= items.measured;
                 let component = build(index, key);
                 let container_id = self.allocate_id();
                 let item_id = self.allocate_id();
@@ -339,6 +343,88 @@ impl AppContext {
             items.publish_list(layout, &window, activity, fingerprint);
         }
         result
+    }
+
+    /// [`Self::sync_virtual_list_retained_with`] for rows that size to their
+    /// content ([`VirtualListItems::measured`]).
+    ///
+    /// Before placing the window it reads every mounted row's height from the
+    /// last layout pass into `layout`, keeping the row at the top of the
+    /// viewport where it is: a row above it that measured taller moves the
+    /// scroll offset by the difference instead of pushing the content down.
+    /// Rows mounted by this call are measured by the next one; while
+    /// [`VirtualListItems::pending_measure`] holds, request another frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_virtual_list_measured_with<K, C>(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        list: Entity<List>,
+        items: &mut VirtualListItems<K, C>,
+        layout: &mut VirtualListLayout,
+        overscan: f32,
+        fingerprint: u64,
+        retained_keys: &[K],
+        key_at: impl FnMut(usize) -> K,
+        mut index_of_key: impl FnMut(&K) -> Option<usize>,
+        build: impl FnMut(usize, &K) -> C,
+        on_mount: impl FnMut(&mut Self, Entity<C>, usize, &K) -> Result<(), FrameworkError>,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        if !items.measured {
+            return Err(FrameworkError::InvalidVirtualization);
+        }
+        let mut viewport = self.virtual_viewport_from_scroll(scroll, [0.0, overscan])?;
+        let before = viewport.offset[1];
+        let mut measured = false;
+        let mut unmeasured = false;
+        for key in items.materializer.mounted() {
+            let Some(index) = index_of_key(key) else {
+                continue;
+            };
+            match items
+                .containers
+                .get(key)
+                .and_then(|container| self.world.layout_box(container.id))
+            {
+                Some(bounds) if bounds.height > 0.0 => {
+                    measured |= layout.measure_anchored(index, bounds.height, &mut viewport);
+                }
+                _ => unmeasured = true,
+            }
+        }
+        if measured {
+            // Rows move with the new extents even when the window is the same.
+            items.published = None;
+        }
+        if viewport.offset[1] != before {
+            let current = self.world.scroll_offset(scroll.id).unwrap_or_default();
+            let mut mutations = MutationQueue::new();
+            mutations.set_scroll_offset(
+                scroll.id,
+                ScrollOffset {
+                    x: current.x,
+                    y: current.y + (viewport.offset[1] - before),
+                },
+            );
+            self.world.commit(mutations)?;
+        }
+        items.pending_measure = unmeasured;
+        self.sync_virtual_list_retained_with(
+            scroll,
+            list,
+            items,
+            layout,
+            overscan,
+            fingerprint,
+            retained_keys,
+            key_at,
+            index_of_key,
+            build,
+            on_mount,
+        )
     }
 
     /// Materialize both axes, frozen prefixes and active cells in one commit.

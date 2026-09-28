@@ -57,7 +57,7 @@ impl HostTexturePipeline {
         persp: [f32; 2],
         clip: PhysicalRect,
         opacity: f32,
-        corner_radius: f32,
+        corner_radii: [f32; 4],
         rounded_clip: LogicalRect,
         fragment_clip: super::clip::FragmentClip,
         physical_size: [u32; 2],
@@ -72,7 +72,7 @@ impl HostTexturePipeline {
             slot,
             HostTextureLayer::from_binding(binding)
                 .with_opacity(opacity)
-                .with_corner_radius(corner_radius)
+                .with_corner_radii(corner_radii)
                 .with_clip(crate::geometry::LogicalRect::new(
                     rounded_clip.x,
                     rounded_clip.y,

@@ -1077,6 +1077,10 @@ pub struct VirtualListItems<K, C: ComponentView> {
     containers: HashMap<K, Entity<crate::Stack>>,
     ime_owner: Option<StableNodeId>,
     published: Option<VirtualListPublished>,
+    /// Rows size to their content; see [`Self::measured`].
+    measured: bool,
+    /// Rows were mounted or moved since the last measurement.
+    pending_measure: bool,
 }
 
 /// Application-owned visible row/cell identities for a virtual Table. The
@@ -1204,6 +1208,8 @@ impl<K, C: ComponentView> Default for VirtualListItems<K, C> {
             containers: HashMap::new(),
             ime_owner: None,
             published: None,
+            measured: false,
+            pending_measure: false,
         }
     }
 }
@@ -1213,6 +1219,25 @@ where
     K: Clone + Eq + Hash,
     C: ComponentView,
 {
+    /// Items whose rows take their content's height instead of the layout
+    /// extent. The layout's extents are estimates until
+    /// [`AppContext::sync_virtual_list_measured_with`] reads each mounted row
+    /// back from the last layout pass; rows whose content wraps, clamps or
+    /// expands need no height model in the application.
+    pub fn measured() -> Self {
+        Self {
+            measured: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether rows were mounted or repositioned since they were last
+    /// measured. Request another frame while this holds so the measuring sync
+    /// sees their laid-out height.
+    pub fn pending_measure(&self) -> bool {
+        self.pending_measure
+    }
+
     pub fn mounted_keys(&self) -> &[K] {
         self.materializer.mounted()
     }
@@ -1326,6 +1351,18 @@ impl AppContext {
 
     pub fn world(&self) -> &UiWorld {
         &self.world
+    }
+
+    /// Whether the last layout pass dropped lines of this text to honour its
+    /// `line_clamp` or height: the content is longer than what is shown, so
+    /// an "expand" affordance has something to reveal. `None` until the text
+    /// has been laid out (or when it is empty or an editor's).
+    pub fn text_truncated<C: ComponentView>(&self, text: Entity<C>) -> Option<bool> {
+        self.world.text_layout(text.id).map(|(_, layout)| {
+            layout
+                .overflow
+                .contains(nana_text::OverflowFlags::TRUNCATED_LINES)
+        })
     }
 
     /// The key `child` was created under by [`Self::build`] or [`Self::mount`],

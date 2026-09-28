@@ -46,6 +46,8 @@ pub mod graph;
 mod host_diagnostics;
 #[cfg(feature = "hosted")]
 mod hosted_context;
+#[cfg(feature = "gpu")]
+mod painted_demand;
 #[cfg(all(feature = "hosted", target_os = "windows"))]
 mod windows_composition;
 #[cfg(all(feature = "hosted", target_os = "windows"))]

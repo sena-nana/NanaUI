@@ -121,6 +121,9 @@ pub struct SceneWgpuPainter {
     last_dest_pass_counts: Option<DestPassCounts>,
     /// Last fully scene-described dest; host textures / GPU slots skip reuse.
     painted: Option<PaintedDest>,
+    /// Which host-texture slots the last fresh prepare of the active target
+    /// drew, and how large; swapped per target like `painted`.
+    painted_demand: crate::painted_demand::PaintedChannel,
     image_revision: u64,
     /// Egress for `url(...)` loads of the scenes painted next.
     fetch_host: Option<SharedFetchHost>,
@@ -169,6 +172,7 @@ struct TargetState {
     host_textures: crate::gpu_texture::GpuTextureTarget,
     dest: Option<DestTarget>,
     painted: Option<PaintedDest>,
+    painted_demand: crate::painted_demand::PaintedChannel,
     image_revision: u64,
     bound_fetch_host: Option<SharedFetchHost>,
 }
@@ -292,6 +296,7 @@ impl SceneWgpuPainter {
             last_gpu_timings: None,
             last_dest_pass_counts: None,
             painted: None,
+            painted_demand: Default::default(),
             image_revision: 0,
             fetch_host: None,
             bound_fetch_host: None,
@@ -488,6 +493,7 @@ impl SceneWgpuPainter {
     fn swap_target_state(&mut self, state: &mut TargetState) {
         std::mem::swap(&mut self.dest, &mut state.dest);
         std::mem::swap(&mut self.painted, &mut state.painted);
+        std::mem::swap(&mut self.painted_demand, &mut state.painted_demand);
         std::mem::swap(&mut self.prepared_batch, &mut state.prepared_batch);
         std::mem::swap(&mut self.bound_fetch_host, &mut state.bound_fetch_host);
         self.quads.swap_target(&mut state.quads, &self.device);
@@ -637,6 +643,9 @@ impl SceneWgpuPainter {
             self.last_gpu_timings = None;
             self.last_dest_pass_counts = None;
             self.painted = None;
+            // Nothing of this target is visible: withdraw its demand.
+            self.painted_demand.begin();
+            self.painted_demand.commit(host_textures);
             return Ok(());
         }
 
@@ -743,6 +752,7 @@ impl SceneWgpuPainter {
             let batch_started = Instant::now();
             self.url_cache.begin_frame();
             self.quads.begin_frame(scale);
+            self.painted_demand.begin();
             self.meshes.begin_frame();
             self.icons.begin_frame(dest_physical);
             self.text.begin_frame(dest_physical);
@@ -1437,20 +1447,18 @@ impl SceneWgpuPainter {
                                 binding.height as f32,
                                 custom.fit,
                             );
-                            let (rounded_clip, corner_radius) = scene
+                            let (rounded_clip, corner_radii) = scene
                                 .primitive(nana_ui_scene::PrimitiveId {
                                     node: primitive.id.node,
                                     slot: 0,
                                 })
                                 .and_then(|quad| match &quad.kind {
                                     ScenePrimitiveKind::Quad { corner_radius, .. } => {
-                                        let radius =
-                                            corner_radius.iter().copied().fold(0.0f32, f32::max);
-                                        Some((local_rect(quad.bounds), radius))
+                                        Some((local_rect(quad.bounds), *corner_radius))
                                     }
                                     _ => None,
                                 })
-                                .unwrap_or((bounds, 0.0));
+                                .unwrap_or((bounds, [0.0; 4]));
                             batching.close_all();
                             let prepared = self.host_textures.prepare(
                                 &self.device,
@@ -1464,7 +1472,7 @@ impl SceneWgpuPainter {
                                 persp,
                                 scissor,
                                 opacity,
-                                corner_radius,
+                                corner_radii,
                                 rounded_clip,
                                 frag_clip,
                                 dest_physical,
@@ -1474,9 +1482,7 @@ impl SceneWgpuPainter {
                                 custom.checkerboard,
                                 custom.zoom,
                             );
-                            if let Some(registry) = host_textures {
-                                registry.note_painted(custom.resource.as_ref(), prepared.painted);
-                            }
+                            self.painted_demand.note(&custom.resource, prepared.painted);
                             commands.push(DrawCommand::HostTexture(prepared));
                         } else {
                             let Some(renderer) = gpu_renderers
@@ -1550,6 +1556,7 @@ impl SceneWgpuPainter {
             // Text prepare stays inside the batch window: it is the same
             // work the per-primitive prepare did, only once per run.
             self.text.flush_runs();
+            self.painted_demand.commit(host_textures);
             let batch = batch_started.elapsed();
 
             let upload_started = Instant::now();

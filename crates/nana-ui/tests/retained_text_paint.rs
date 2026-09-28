@@ -313,3 +313,35 @@ fn selecting_vertical_text_follows_the_column() {
     );
     assert!(highlight.y.abs() < 0.5 && (highlight.height - 32.0).abs() < 0.5);
 }
+
+/// A clamped paragraph reports that it dropped lines, so an "expand"
+/// affordance appears only when there is more to show.
+#[test]
+fn a_clamped_paragraph_reports_the_lines_it_dropped() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = cx.create_component(doc, Stack::column(8.0)).unwrap();
+    let clamped = |value: &str| {
+        let mut text = Text::new(value);
+        let style = std::sync::Arc::make_mut(&mut text.style.layout);
+        style.width = Some(nana_ui_core::LengthSpec::Px(80.0));
+        style.line_clamp = Some(2);
+        text
+    };
+    let long = cx
+        .create_component(
+            doc,
+            clamped("one two three four five six seven eight nine ten eleven twelve"),
+        )
+        .unwrap();
+    let short = cx.create_component(doc, clamped("one")).unwrap();
+    cx.append_child(root, long).unwrap();
+    cx.append_child(root, short).unwrap();
+    settle(
+        &mut cx,
+        doc,
+        &[root.stable_id(), long.stable_id(), short.stable_id()],
+    );
+    assert_eq!(cx.text_truncated(long), Some(true));
+    assert_eq!(cx.text_truncated(short), Some(false));
+}

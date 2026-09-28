@@ -2796,6 +2796,185 @@ fn painted_extent_reports_the_fitted_device_pixels_not_the_layout_box() {
 }
 
 #[test]
+fn painted_extent_is_the_largest_consumer_of_a_shared_slot_in_any_paint_order() {
+    // 同一个 slot 被两个不同尺寸的节点采样:纹理只有一份,它的需求要满足
+    // 大的那个,且与谁后画无关;大的那个缩小后,下一次全新绘制随之回落。
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let (_target, target_view) = test_copy_target(&device, format, 128, 128);
+    let viewport = ScenePaintViewport {
+        logical_size: [128.0, 128.0],
+        physical_size: [128, 128],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    for large_first in [true, false] {
+        let mut painter = SceneWgpuPainter::for_test(format);
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let first = context
+            .create_component(document, GpuTextureView::new("cover"))
+            .unwrap();
+        let second = context
+            .create_component(document, GpuTextureView::new("cover"))
+            .unwrap();
+        let (large, small) = if large_first {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, large.stable_id(), 0.0, 0.0, 96.0, 96.0);
+        write_box(&mut layout, small.stable_id(), 100.0, 100.0, 24.0, 24.0);
+        context.commit_mutations(layout).unwrap();
+        let registry = register_host_texture("cover", &view, 64, 64);
+        let paint = |painter: &mut SceneWgpuPainter, scene: &UiScene| {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("nana-ui shared slot painted extent"),
+            });
+            painter
+                .paint_encoder(
+                    scene,
+                    &mut encoder,
+                    &target_view,
+                    viewport,
+                    Some(&registry),
+                    None,
+                )
+                .unwrap();
+            queue.submit(std::iter::once(encoder.finish()));
+        };
+        let scene = commit_scene(&mut context);
+        paint(&mut painter, &scene);
+        assert_eq!(registry.painted_extent("cover"), Some([96, 96]));
+
+        let seen = registry.painted_revision();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, large.stable_id(), 0.0, 0.0, 48.0, 48.0);
+        context.commit_mutations(layout).unwrap();
+        let scene = commit_scene(&mut context);
+        paint(&mut painter, &scene);
+        assert_eq!(registry.painted_extent("cover"), Some([48, 48]));
+        let mut changed = Vec::new();
+        registry.painted_changes_since(seen, &mut changed);
+        assert_eq!(changed, vec![std::sync::Arc::<str>::from("cover")]);
+
+        drop(painter);
+        assert_eq!(
+            registry.painted_extent("cover"),
+            None,
+            "画家没了,它登记的需求随之撤回"
+        );
+    }
+}
+
+#[cfg(feature = "wgpu-interop")]
+#[test]
+fn host_texture_wrapped_with_an_srgb_view_is_decoded_when_sampled() {
+    // 计算着色器只能写 `Rgba8Unorm` 存储纹理,内容却是 sRGB 编码的;场景必须
+    // 按 `Rgba8UnormSrgb` 采样同一份字节才会解码。按默认视图包装会把编码值
+    // 当线性值,画面整体发白。
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("nana-ui srgb view probe"),
+        size: wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+    });
+    queue.write_texture(
+        texture.as_image_copy(),
+        &[128u8, 128, 128, 255].repeat(16),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(16),
+            rows_per_image: Some(4),
+        },
+        wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        },
+    );
+    let gpu = crate::test_gpu::context();
+    assert!(
+        nana_gpu::GpuTexture::from_wgpu_with_view_format(
+            &gpu,
+            texture.clone(),
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        )
+        .is_err(),
+        "只能换 sRGB/线性两种写法,不能换存储格式"
+    );
+    let wrapped = nana_gpu::GpuTexture::from_wgpu_with_view_format(
+        &gpu,
+        texture,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+    )
+    .unwrap();
+    let registry = HostTextureRegistry::new();
+    registry.register(
+        "layer",
+        crate::HostTexture::new(1, 1, &wrapped),
+        4,
+        4,
+        crate::HostTextureAlphaMode::Opaque,
+    );
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let preview = context
+        .create_component(document, GpuTextureView::new("layer"))
+        .unwrap();
+    let mut layout = MutationQueue::new();
+    write_box(&mut layout, preview.stable_id(), 0.0, 0.0, 16.0, 16.0);
+    context.commit_mutations(layout).unwrap();
+    let scene = commit_scene(&mut context);
+    let (target, target_view) = test_copy_target(&device, format, 16, 16);
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui srgb view paint"),
+    });
+    painter
+        .paint_encoder(
+            &scene,
+            &mut encoder,
+            &target_view,
+            ScenePaintViewport {
+                logical_size: [16.0, 16.0],
+                physical_size: [16, 16],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                clear: true,
+            },
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &target, 16, 16);
+    let center = ((8 * 16 + 8) * 4) as usize;
+    // sRGB 128 解码为线性约 0.216,写进线性目标约 55。
+    assert!(
+        (50..=60).contains(&pixels[center]),
+        "sampled {} instead of the decoded ~55",
+        pixels[center]
+    );
+}
+
+#[test]
 fn host_texture_rounded_clip_matches_sibling_quad_not_fitted_dest() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -2850,6 +3029,66 @@ fn host_texture_rounded_clip_matches_sibling_quad_not_fitted_dest() {
         dest_corner[1] < 40,
         "letterboxed dest corner is outside the 32px node circle and must not round the dest, got {dest_corner:?}"
     );
+    drop(view);
+}
+
+#[test]
+fn host_texture_clips_each_corner_with_its_own_radius() {
+    // 只圆顶部两角:底部两角必须保持直角,不能取四角最大值一起圆掉。
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let preview = context
+        .create_component(
+            document,
+            GpuTextureView::new("layer").with_corner_radii([24.0, 24.0, 0.0, 0.0]),
+        )
+        .unwrap();
+    let mut layout = MutationQueue::new();
+    write_box(&mut layout, preview.stable_id(), 0.0, 0.0, 64.0, 64.0);
+    context.commit_mutations(layout).unwrap();
+    let scene = commit_scene(&mut context);
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let registry = register_host_texture("layer", &view, 64, 64);
+    let (target, target_view) = test_copy_target(&device, format, 64, 64);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui host texture per-corner clip"),
+    });
+    painter
+        .paint_encoder(
+            &scene,
+            &mut encoder,
+            &target_view,
+            ScenePaintViewport {
+                logical_size: [64.0, 64.0],
+                physical_size: [64, 64],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                clear: true,
+            },
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
+    for (x, y) in [(1, 1), (62, 1)] {
+        let corner = pixel(&pixels, 64, x, y);
+        assert!(
+            corner[1] < 40,
+            "top corner ({x},{y}) must be clipped, got {corner:?}"
+        );
+    }
+    for (x, y) in [(1, 62), (62, 62)] {
+        let corner = pixel(&pixels, 64, x, y);
+        assert!(
+            is_green_slot(corner),
+            "bottom corner ({x},{y}) stays square, got {corner:?}"
+        );
+    }
     drop(view);
 }
 

@@ -198,11 +198,26 @@ impl fmt::Debug for GpuTexture {
 
 impl GpuTexture {
     pub(crate) fn wrap(gpu: &GpuContext, texture: wgpu::Texture) -> Self {
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let format = texture.format();
+        Self::wrap_as(gpu, texture, format)
+    }
+
+    /// Wrap with the full view reinterpreted as `format` — the sRGB and linear
+    /// spellings of one storage format. The texture must list `format` in its
+    /// `view_formats` unless it is the texture's own.
+    pub(crate) fn wrap_as(
+        gpu: &GpuContext,
+        texture: wgpu::Texture,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(format),
+            ..Default::default()
+        });
         Self {
             inner: Arc::new(TextureInner {
                 generation: gpu.generation(),
-                format: GpuTextureFormat(texture.format()),
+                format: GpuTextureFormat(format),
                 usage: GpuTextureUsages::from_wgpu(texture.usage()),
                 size: (texture.width(), texture.height()),
                 texture,

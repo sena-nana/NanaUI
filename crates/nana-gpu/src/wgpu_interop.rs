@@ -7,8 +7,8 @@
 use std::sync::RwLockReadGuard;
 
 use crate::{
-    FrameContext, GpuContext, GpuRenderTarget, GpuSubmission, GpuTexture, GpuTextureFormat,
-    GpuTextureUsages,
+    FrameContext, GpuContext, GpuError, GpuRenderTarget, GpuSubmission, GpuTexture,
+    GpuTextureFormat, GpuTextureUsages,
 };
 
 pub use wgpu;
@@ -64,6 +64,22 @@ impl GpuTexture {
     /// Wrap a texture created on `gpu`'s device.
     pub fn from_wgpu(gpu: &GpuContext, texture: wgpu::Texture) -> Self {
         Self::wrap(gpu, texture)
+    }
+
+    /// Wrap a texture whose sampled view uses another spelling of its format:
+    /// a compute pass can only write `Rgba8Unorm` storage, while the scene
+    /// must sample the same bytes as `Rgba8UnormSrgb` to decode them. `view_format`
+    /// must be the texture's format or its sRGB/linear twin, and must be listed
+    /// in the texture's `view_formats`; [`Self::format`] reports `view_format`.
+    pub fn from_wgpu_with_view_format(
+        gpu: &GpuContext,
+        texture: wgpu::Texture,
+        view_format: wgpu::TextureFormat,
+    ) -> Result<Self, GpuError> {
+        if view_format.remove_srgb_suffix() != texture.format().remove_srgb_suffix() {
+            return Err(GpuError::UnsupportedFormat(GpuTextureFormat(view_format)));
+        }
+        Ok(Self::wrap_as(gpu, texture, view_format))
     }
 
     pub fn wgpu(&self) -> &wgpu::Texture {

@@ -14,6 +14,7 @@ use wgpu;
 
 use crate::geometry::{LogicalRect, PhysicalRect};
 use crate::gpu_view::{RenderSlot, intersect_physical, slot_for_bounds};
+use crate::painted_demand::SharedPaintedDemand;
 use crate::scene_paint::url_texture_cache::UrlTextureCache;
 
 const SOURCE: &str = r#"
@@ -24,7 +25,7 @@ var source: texture_2d<f32>;
 var source_sampler: sampler;
 
 struct LayerUniform {
-    // opacity, corner radius (logical px), dest width, dest height
+    // opacity, reserved, dest width, dest height
     params: vec4<f32>,
     // opaque flag, scale factor, dest tex width, dest tex height
     source: vec4<f32>,
@@ -55,6 +56,8 @@ struct LayerUniform {
     mask_pos2: vec4<f32>,
     // editor: checkerboard flag, zoom, checker cell (logical px), reserved
     editor: vec4<f32>,
+    // rounded clip radii (logical px), in the sibling Quad's corner order
+    corners: vec4<f32>,
 }
 
 @group(0) @binding(2)
@@ -250,19 +253,18 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let tone = select(0.45, 0.75, ((p.x + p.y) % 2.0) < 0.5);
         color = vec4(mix(vec3(tone), color.rgb, color.a), 1.0);
     }
-    let radius = min(layer.params.y, min(box_size.x, box_size.y) * 0.5);
-    if radius <= 0.0 {
+    let radii = min(layer.corners, vec4(min(box_size.x, box_size.y) * 0.5));
+    if max(max(radii.x, radii.y), max(radii.z, radii.w)) <= 0.0 {
         return color;
     }
     let scale = max(layer.source.y, 0.0001);
     let pos = box_pos * scale;
     let size = box_size * scale;
     let local_pos = input.local * scale;
-    let scaled_radius = radius * scale;
     let dist = rounded_box_sdf(
         -(local_pos - pos - size * 0.5) * 2.0,
         size,
-        vec4<f32>(scaled_radius * 2.0)
+        radii * scale * 2.0
     ) / 2.0;
     return color * clamp(0.5 - dist, 0.0, 1.0);
 }
@@ -468,12 +470,13 @@ impl HostTextureBinding {
 #[derive(Debug, Clone, Default)]
 pub struct HostTextureRegistry {
     bindings: Arc<RwLock<HashMap<String, RegisteredHostTextureBinding>>>,
-    /// 每个 slot 最后一次实际画到的设备像素尺寸。与 `bindings` 分开放:
-    /// 画家每帧写这里,而 `bindings` 在同一段时间里正被读,合用一把锁
-    /// 会互相挡。
-    painted: Arc<RwLock<HashMap<String, [u32; 2]>>>,
+    /// 每个 slot 当前的绘制需求(见 [`crate::painted_demand`])。与
+    /// `bindings` 分开放:画家每次全新 prepare 写这里,而 `bindings` 在同一段
+    /// 时间里正被读,合用一把锁会互相挡。
+    painted: SharedPaintedDemand,
     revision: Arc<AtomicU64>,
     observers: Arc<TextureObservers>,
+    painted_observers: Arc<TextureObservers>,
 }
 
 #[derive(Debug, Clone)]
@@ -513,6 +516,22 @@ struct TextureObservers {
 impl std::fmt::Debug for TextureObservers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextureObservers").finish_non_exhaustive()
+    }
+}
+
+fn subscribe_to(
+    observers: &Arc<TextureObservers>,
+    callback: impl Fn(&str) + Send + Sync + 'static,
+) -> TextureSubscription {
+    let id = observers.next.fetch_add(1, Ordering::Relaxed);
+    observers
+        .callbacks
+        .write()
+        .expect("texture observers")
+        .insert(id, Arc::new(callback));
+    TextureSubscription {
+        observers: Arc::clone(observers),
+        id,
     }
 }
 
@@ -565,30 +584,86 @@ impl TextureSlot {
 }
 
 impl HostTextureRegistry {
-    /// 这个 slot **最后一次**被画到的设备像素尺寸,还没画过时为 `None`。
+    /// 这个 slot 当前的绘制需求:所有绘制目标最近一次全新绘制里,画到它的
+    /// 各个节点的设备像素尺寸逐边取最大。没有任何节点画到它时为 `None`。
     ///
     /// 它是**画完之后**的事实:`fitted` 之后的目标矩形、节点自己的变换、
-    /// 以及当时的缩放因子都已经算进去了。消费方要按播放区真实像素准备
-    /// 内容(放大、超分、重新解码)时读它,比自己从布局盒加 `ContentFit`
-    /// 反推准确——反推拿到的是**上一帧的布局**,窗口改尺寸时会差一帧,
-    /// 而且不包含节点的变换。
+    /// 以及当时的缩放因子都已经算进去了。消费方要按真实像素准备内容
+    /// (放大、超分、重新解码)时读它,比自己从布局盒加 `ContentFit` 反推
+    /// 准确——反推拿到的是**上一帧的布局**,窗口改尺寸时会差一帧,而且不
+    /// 包含节点的变换。
     ///
-    /// 尺寸为 0 的一边表示那一帧它没有可见面积。节点从树上摘掉而 slot
-    /// 没有 [`Self::remove`] 时,这里留着的是它最后一次可见时的尺寸——
-    /// 记录只在绘制和 `remove` 时变,没有「这一帧没画」这个事件。
+    /// 同一个 slot 被多个节点共享时,纹理只有一份,按最大的消费者准备,
+    /// 较小的消费者靠 mip 与过滤缩小;结果与绘制顺序无关。复用上一帧的
+    /// 绘制不改这里。尺寸为 0 的一边表示节点在树上但没有可见面积。
     pub fn painted_extent(&self, slot: &str) -> Option<[u32; 2]> {
-        self.painted.read().ok()?.get(slot).copied()
+        self.painted.read().ok()?.extent(slot)
     }
 
-    /// 画家每帧登记一次。同一个 slot 在一帧里被画多次时,最后一次为准。
-    pub(crate) fn note_painted(&self, slot: &str, extent: [u32; 2]) {
-        let Ok(mut painted) = self.painted.write() else {
-            return;
+    /// 绘制需求的修订号。任何 slot 的 [`Self::painted_extent`] 变化时递增。
+    pub fn painted_revision(&self) -> u64 {
+        self.painted
+            .read()
+            .map(|demand| demand.revision())
+            .unwrap_or(0)
+    }
+
+    /// 修订号 `revision` 之后绘制需求变过的 slot 追加进 `out`,返回当前修订号。
+    /// 消费方只需处理这些 slot,不必每帧扫全部。
+    pub fn painted_changes_since(&self, revision: u64, out: &mut Vec<Arc<str>>) -> u64 {
+        let Ok(demand) = self.painted.read() else {
+            return revision;
         };
-        match painted.get_mut(slot) {
-            Some(current) => *current = extent,
-            None => {
-                painted.insert(slot.to_string(), extent);
+        if demand.revision() > revision {
+            demand.changes_since(revision, out);
+        }
+        demand.revision()
+    }
+
+    /// 绘制需求变化时回调(每个变化的 slot 一次,在画家线程上)。需求变化
+    /// 本身不重绘窗口:按新尺寸准备好内容并重新登记纹理的,是消费方。
+    pub fn subscribe_painted(
+        &self,
+        callback: impl Fn(&str) + Send + Sync + 'static,
+    ) -> TextureSubscription {
+        subscribe_to(&self.painted_observers, callback)
+    }
+
+    pub(crate) fn commit_painted(&self, channel: u64, pass: &mut crate::painted_demand::Extents) {
+        let changed = match self.painted.write() {
+            Ok(mut demand) => demand.commit(channel, pass),
+            Err(_) => return,
+        };
+        self.notify_painted(&changed);
+    }
+
+    pub(crate) fn retire_painted_channel(&self, channel: u64) {
+        let changed = match self.painted.write() {
+            Ok(mut demand) => demand.retire(channel),
+            Err(_) => return,
+        };
+        self.notify_painted(&changed);
+    }
+
+    pub(crate) fn same_registry(&self, other: &HostTextureRegistry) -> bool {
+        Arc::ptr_eq(&self.painted, &other.painted)
+    }
+
+    fn notify_painted(&self, changed: &[Arc<str>]) {
+        if changed.is_empty() {
+            return;
+        }
+        let callbacks = self
+            .painted_observers
+            .callbacks
+            .read()
+            .expect("painted observers")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for slot in changed {
+            for callback in &callbacks {
+                callback(slot);
             }
         }
     }
@@ -604,16 +679,7 @@ impl HostTextureRegistry {
         &self,
         callback: impl Fn(&str) + Send + Sync + 'static,
     ) -> TextureSubscription {
-        let id = self.observers.next.fetch_add(1, Ordering::Relaxed);
-        self.observers
-            .callbacks
-            .write()
-            .expect("texture observers")
-            .insert(id, Arc::new(callback));
-        TextureSubscription {
-            observers: Arc::clone(&self.observers),
-            id,
-        }
+        subscribe_to(&self.observers, callback)
     }
 
     fn notify(&self, slot: &str) {
@@ -671,8 +737,8 @@ impl HostTextureRegistry {
     }
 
     pub fn remove(&self, slot: &str) -> Option<HostTextureBinding> {
-        // 连同上一帧的绘制尺寸一起丢掉:slot 被重新登记时,在它第一次被画
-        // 之前读到旧尺寸比读到 `None` 更难排查。
+        // 连同绘制需求一起丢掉:slot 被重新登记时,在它第一次被画之前读到
+        // 旧尺寸比读到 `None` 更难排查。
         if let Ok(mut painted) = self.painted.write() {
             painted.remove(slot);
         }
@@ -711,6 +777,9 @@ impl HostTextureRegistry {
         let count = bindings.len();
         bindings.clear();
         drop(bindings);
+        if let Ok(mut painted) = self.painted.write() {
+            painted.clear();
+        }
         if count > 0 {
             self.revision.fetch_add(1, Ordering::AcqRel);
             self.notify("");
@@ -742,7 +811,7 @@ impl HostTextureRegistry {
 pub(crate) struct HostTextureLayer {
     texture: HostTexture,
     opacity: f32,
-    corner_radius: f32,
+    corner_radii: [f32; 4],
     clip: Option<LogicalRect>,
     fragment_clip_rect: [f32; 4],
     fragment_clip_inv_abcd: [f32; 4],
@@ -763,7 +832,7 @@ impl HostTextureLayer {
         Self {
             texture: binding.texture,
             opacity: 1.0,
-            corner_radius: 0.0,
+            corner_radii: [0.0; 4],
             clip: None,
             fragment_clip_rect: Self::PASS_CLIP_RECT,
             fragment_clip_inv_abcd: Self::PASS_CLIP_INV_ABCD,
@@ -789,12 +858,20 @@ impl HostTextureLayer {
         self
     }
 
-    pub fn with_corner_radius(mut self, radius: f32) -> Self {
-        self.corner_radius = if radius.is_finite() {
-            radius.max(0.0)
-        } else {
-            0.0
-        };
+    #[cfg(test)]
+    pub fn with_corner_radius(self, radius: f32) -> Self {
+        self.with_corner_radii([radius; 4])
+    }
+
+    /// Per-corner rounded clip, in the sibling Quad's corner order.
+    pub fn with_corner_radii(mut self, radii: [f32; 4]) -> Self {
+        self.corner_radii = radii.map(|radius| {
+            if radius.is_finite() {
+                radius.max(0.0)
+            } else {
+                0.0
+            }
+        });
         self
     }
 
@@ -1312,9 +1389,10 @@ struct LayerUniform {
     mask_pos: [f32; 4],
     mask_pos2: [f32; 4],
     editor: [f32; 4],
+    corners: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<LayerUniform>() == 352);
+const _: () = assert!(std::mem::size_of::<LayerUniform>() == 368);
 
 fn make_layer_uniform(
     layer: &HostTextureLayer,
@@ -1335,7 +1413,7 @@ fn make_layer_uniform(
     LayerUniform {
         params: [
             layer.opacity,
-            layer.corner_radius,
+            0.0,
             bounds.width.max(0.0),
             bounds.height.max(0.0),
         ],
@@ -1379,6 +1457,7 @@ fn make_layer_uniform(
             8.0,
             0.0,
         ],
+        corners: layer.corner_radii,
     }
 }
 
@@ -1773,7 +1852,7 @@ mod tests {
             [320, 180],
             false,
         );
-        assert_eq!(rounded.params[1], 8.0);
+        assert_eq!(rounded.corners, [8.0; 4]);
         assert_eq!(rounded.clip, [0.0, 0.0, 320.0, 180.0]);
 
         let contain_dest = LogicalRect::new(0.0, 40.0, 320.0, 100.0);
@@ -1788,7 +1867,7 @@ mod tests {
             [320, 180],
             false,
         );
-        assert_eq!(rounded_clip.params[1], 32.0);
+        assert_eq!(rounded_clip.corners, [32.0; 4]);
         assert_eq!(rounded_clip.params[2], 320.0);
         assert_eq!(rounded_clip.params[3], 100.0);
         assert_eq!(rounded_clip.origin[2], 0.0);
