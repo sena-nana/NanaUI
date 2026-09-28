@@ -3393,7 +3393,8 @@ fn assert_one_pixel_rim(pixels: &[u8], (label, [x, y, w, h], scale, factor): Sca
             let green = f32::from(pixel(pixels, side, px, py)[1]);
             assert!(
                 (green - expected).abs() <= 16.0,
-                "{label}: ({px},{py}) is {from_rim:+.3} px from the rim,                  expected green {expected:.0}, got {green}"
+                "{label}: ({px},{py}) is {from_rim:+.3} px from the rim, \
+                 expected green {expected:.0}, got {green}"
             );
         }
     }
@@ -3486,6 +3487,50 @@ fn rounded_host_texture_edge_stays_one_device_pixel_under_scale_and_fractional_d
         assert_one_pixel_rim(&pixels, circle);
     }
     drop(view);
+}
+
+#[test]
+fn unblurred_shadow_edge_stays_one_device_pixel_under_transform_scale() {
+    // Each circle is a spread shadow's shape around a smaller black round box.
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    let black = [0.0, 0.0, 0.0, 1.0];
+    for circle @ (_, [x, y, w, h], scale, factor) in SCALED_CIRCLES {
+        let spread = w / 8.0;
+        let shadow = nana_ui_core::BoxShadowSpec {
+            offset_x: 0.0,
+            offset_y: 0.0,
+            blur_radius: 0.0,
+            spread_radius: spread,
+            color: [0.0, 1.0, 0.0, 1.0],
+            inset: false,
+        };
+        let layout = nana_ui_core::LayoutStyle {
+            background: Some(black),
+            border_radius: Some(w.min(h) * 0.5 - spread),
+            transform: scale_transform(scale),
+            paint: nana_ui_core::PaintStyle {
+                box_shadows: vec![shadow],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let [x, y, w, h] = [x + spread, y + spread, w - spread * 2.0, h - spread * 2.0];
+        let node = extracted_div(1, &[], x, y, w, h, layout, Some(black));
+        let mut scene = UiScene::new();
+        scene.apply_delta([node], []);
+        let side = (64.0 * factor) as u32;
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [side, side],
+            factor,
+        );
+        assert_one_pixel_rim(&pixels, circle);
+    }
 }
 
 fn hosted_preview_scene(device: &wgpu::Device) -> (UiScene, HostTextureRegistry) {

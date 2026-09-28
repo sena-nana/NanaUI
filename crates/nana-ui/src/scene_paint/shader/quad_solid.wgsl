@@ -279,22 +279,22 @@ fn solid_fs_main(
         let css_spread = input.shadow_spread_radius - outline_px;
         let shadow_size = max(input.scale + vec2(css_spread * 2.0), vec2(0.0));
         let shadow_radius = max(input.border_radius + vec4(css_spread), vec4(0.0));
-        var shadow_dist: f32 = rounded_box_sdf(
-            -(input.local_pos - input.pos - input.shadow_offset - input.scale/2.0) * 2.0,
-            shadow_size,
-            shadow_radius * 2.0
-        ) / 2.0;
-        if ((paint.flags & PAINT_SHADOW_INSET) != 0u) {
-            let shadow_alpha = 1.0 - smoothstep(
-                -input.shadow_blur_radius,
-                input.shadow_blur_radius,
-                max(-shadow_dist, 0.0),
-            );
-            return mix(quad_color, input.shadow_color, fill_alpha * shadow_alpha) * fade;
-        }
-        let shadow_alpha = 1.0 - smoothstep(-input.shadow_blur_radius, input.shadow_blur_radius, max(shadow_dist, 0.0));
-
-        return mix(quad_color, input.shadow_color, (1.0 - quad_alpha) * shadow_alpha) * fade;
+        let shadow_p = -(input.local_pos - input.pos - input.shadow_offset - input.scale/2.0) * 2.0;
+        let inset = (paint.flags & PAINT_SHADOW_INSET) != 0u;
+        // Distance past the shadow's edge, away from where it paints.
+        let shadow_dist = rounded_box_sdf(shadow_p, shadow_size, shadow_radius * 2.0) / 2.0
+            * select(1.0, -1.0, inset);
+        // A blur is a CSS length and scales with the transform; an unblurred
+        // edge ramps over one device pixel, as the box's own edge does.
+        let blur = input.shadow_blur_radius;
+        let shadow_px = rounded_box_pixel(shadow_p, shadow_size, shadow_radius * 2.0, local_dx, local_dy);
+        let shadow_alpha = select(
+            1.0 - smoothstep(-blur, blur, max(shadow_dist, 0.0)),
+            clamp(0.5 - shadow_dist / shadow_px, 0.0, 1.0),
+            blur <= 0.0,
+        );
+        let under = select(1.0 - quad_alpha, fill_alpha, inset);
+        return mix(quad_color, input.shadow_color, under * shadow_alpha) * fade;
     } else {
         return quad_color * fade;
     }
