@@ -57,6 +57,11 @@ fn sample_url(local: vec2<f32>, paint: QuadPaintData) -> vec4<f32> {
         return vec4(0.0);
     }
     var uv = (local - dest.xy) / dest.zw;
+    // Gradients of the unwrapped UV: `fract` jumps by a whole tile at each
+    // repeat seam, which would pick the smallest mip of a mipmapped image
+    // along that line.
+    let uv_dx = dpdx(uv);
+    let uv_dy = dpdy(uv);
     let repeat_x = (paint.url_tex_index & 1u) != 0u;
     let repeat_y = (paint.url_tex_index & 2u) != 0u;
     if (repeat_x) {
@@ -69,7 +74,7 @@ fn sample_url(local: vec2<f32>, paint: QuadPaintData) -> vec4<f32> {
     } else if (uv.y < 0.0 || uv.y > 1.0) {
         return vec4(0.0);
     }
-    return textureSample(url_tex, url_sampler, uv);
+    return textureSampleGrad(url_tex, url_sampler, uv, uv_dx, uv_dy);
 }
 
 fn compose_quad_fill(base: vec4<f32>, local: vec2<f32>, paint: QuadPaintData) -> vec4<f32> {

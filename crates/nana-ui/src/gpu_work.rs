@@ -224,6 +224,54 @@ impl GpuWorkSink {
         rows_per_image: u32,
         extent: [u32; 3],
     ) {
+        self.write_texture_region(
+            queue,
+            texture,
+            0,
+            origin,
+            bytes,
+            bytes_per_row,
+            rows_per_image,
+            extent,
+        );
+    }
+
+    /// Write the whole of mip `mip_level` of `texture`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_texture_level(
+        &self,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        mip_level: u32,
+        bytes: &[u8],
+        bytes_per_row: u32,
+        rows_per_image: u32,
+        extent: [u32; 3],
+    ) {
+        self.write_texture_region(
+            queue,
+            texture,
+            mip_level,
+            [0, 0, 0],
+            bytes,
+            bytes_per_row,
+            rows_per_image,
+            extent,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_texture_region(
+        &self,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        mip_level: u32,
+        origin: [u32; 3],
+        bytes: &[u8],
+        bytes_per_row: u32,
+        rows_per_image: u32,
+        extent: [u32; 3],
+    ) {
         let origin = wgpu::Origin3d {
             x: origin[0],
             y: origin[1],
@@ -238,7 +286,7 @@ impl GpuWorkSink {
             let texel = texture.format().block_copy_size(None).unwrap_or(4);
             uploads.write_texture(
                 texture,
-                0,
+                mip_level,
                 origin,
                 extent,
                 bytes,
@@ -250,7 +298,7 @@ impl GpuWorkSink {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture,
-                    mip_level: 0,
+                    mip_level,
                     origin,
                     aspect: wgpu::TextureAspect::All,
                 },

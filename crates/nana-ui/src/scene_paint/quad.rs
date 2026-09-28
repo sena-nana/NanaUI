@@ -12,7 +12,7 @@ use nana_ui_scene::QuadSurfacePaint;
 use super::{
     clip::LogicalRect,
     color::{orthographic, pack_linear, with_opacity},
-    url_texture_cache::UrlTextureCache,
+    url_texture_cache::{Demand, LayerDemand, UrlTextureCache, cache_key},
 };
 use crate::{PhysicalRect, gpu_work::ManagedBuffer};
 
@@ -201,10 +201,14 @@ impl QuadPipeline {
                 include_str!("shader/quad_solid.wgsl"),
             ))),
         });
+        // Trilinear. A default (`ImageSampling::Resample`) texture has one
+        // level at its painted size, so this is plain bilinear for it; only an
+        // `ImageSampling::Mipmap` texture has levels to blend.
         let url_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui.scene.quad.url.sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let url_view = device
@@ -556,6 +560,7 @@ impl QuadPipeline {
             resolved_instance_border(border_color, border_width, surface);
         let zero_widths = [0.0f32; 4];
         let zero_colors = [[0.0f32; 4]; 4];
+        let image_scale = image_device_scale(affine, self.grid_scale);
         let mut layers = surface_paint_layers(surface);
         let content_layer = if surface.content_image.is_some() {
             layers.pop()
@@ -606,6 +611,7 @@ impl QuadPipeline {
                 surface,
                 bounds.width,
                 bounds.height,
+                image_scale,
                 None,
                 work,
             );
@@ -640,6 +646,7 @@ impl QuadPipeline {
                     layer,
                     bounds.width,
                     bounds.height,
+                    image_scale,
                     work,
                 );
                 let first = layer_index == 0;
@@ -703,6 +710,7 @@ impl QuadPipeline {
                 layer,
                 bounds.width,
                 bounds.height,
+                image_scale,
                 work,
             );
             push_solid_instance(
@@ -947,6 +955,21 @@ impl QuadPipeline {
     }
 }
 
+/// Device px per logical px along an image's own x and y axes: the scale
+/// factor times the length of each transformed axis. A perspective term is
+/// left out; it only foreshortens part of the quad.
+fn image_device_scale(affine: [f32; 6], scale_factor: f32) -> [f32; 2] {
+    let axis = |x: f32, y: f32| {
+        let length = x.hypot(y) * scale_factor;
+        if length.is_finite() && length > 0.0 {
+            length
+        } else {
+            scale_factor
+        }
+    };
+    [axis(affine[0], affine[1]), axis(affine[2], affine[3])]
+}
+
 fn collect_shadows(
     primary: Option<ComponentElevation>,
     surface: &QuadSurfacePaint,
@@ -1117,6 +1140,7 @@ fn pack_paint(
         surface,
         width,
         height,
+        [1.0, 1.0],
         layers.first().copied(),
         None,
     )
@@ -1131,6 +1155,7 @@ fn pack_layer(
     layer: &BackgroundImage,
     width: f32,
     height: f32,
+    image_scale: [f32; 2],
     work: Option<&crate::gpu_work::GpuWorkSink>,
 ) -> (QuadPaintData, Option<String>) {
     let paint = pack_shared(
@@ -1140,11 +1165,17 @@ fn pack_layer(
         surface,
         width,
         height,
+        image_scale,
         Some(layer),
         work,
     );
     let paint_url = if paint.flags & PAINT_URL != 0 {
-        layer.url_str().map(str::to_string)
+        match layer {
+            BackgroundImage::Url { url, sampling, .. } => {
+                Some(cache_key(url, *sampling).into_owned())
+            }
+            BackgroundImage::Gradient(_) => None,
+        }
     } else {
         packed_mask_url(&paint, surface)
     };
@@ -1170,6 +1201,7 @@ fn pack_shared(
     surface: &QuadSurfacePaint,
     width: f32,
     height: f32,
+    image_scale: [f32; 2],
     layer: Option<&BackgroundImage>,
     work: Option<&crate::gpu_work::GpuWorkSink>,
 ) -> QuadPaintData {
@@ -1248,8 +1280,24 @@ fn pack_shared(
         size_height,
         position,
         repeat,
+        sampling,
     }) = layer
-        && let Some((tex_w, tex_h)) = cache.load_with_work(device, queue, url, work)
+        && let Some((tex_w, tex_h)) = cache.load_image(
+            device,
+            queue,
+            url,
+            *sampling,
+            Demand::Layer(LayerDemand {
+                fit: *fit,
+                size_width: *size_width,
+                size_height: *size_height,
+                position: *position,
+                repeat: *repeat,
+                box_size: [width, height],
+                scale: image_scale,
+            }),
+            work,
+        )
         && let Some(bits) = repeat_bits(*repeat)
     {
         paint.flags |= PAINT_URL;
@@ -1478,7 +1526,7 @@ fn repeat_bits(repeat: BackgroundRepeat) -> Option<u32> {
     clippy::too_many_arguments,
     reason = "Explicit fields of the host or GPU projection contract"
 )]
-fn url_dest_rect(
+pub(super) fn url_dest_rect(
     fit: BackgroundImageFit,
     size_width: Option<LengthSpec>,
     size_height: Option<LengthSpec>,

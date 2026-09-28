@@ -239,8 +239,29 @@ fn decode_http_rgba(
     host: Option<&SharedFetchHost>,
     cancellation: &FetchCancellation,
 ) -> Option<(u32, u32, Vec<u8>)> {
-    let bytes = fetch_resource_bytes(url, host, MAX_LOCAL_URL_BYTES as usize, cancellation)?;
-    decode_image_bytes_with_hint(&bytes, looks_like_svg_url(url))
+    let (bytes, svg) = fetch_remote_bytes(url, host, cancellation)?;
+    decode_image_bytes_with_hint(&bytes, svg)
+}
+
+/// The body of a remote image URL and whether to decode it as SVG, for a
+/// caller that keeps the encoded bytes. `None` for a URL that is not remote
+/// and for every refusal [`decode_url_rgba_with`] would make.
+pub(super) fn fetch_remote_bytes(
+    url: &str,
+    host: Option<&SharedFetchHost>,
+    cancellation: &FetchCancellation,
+) -> Option<(Vec<u8>, bool)> {
+    let resolved = resolve_background_image_url(url)?;
+    if !(resolved.starts_with("http://") || resolved.starts_with("https://")) {
+        return None;
+    }
+    let bytes = fetch_resource_bytes(&resolved, host, MAX_LOCAL_URL_BYTES as usize, cancellation)?;
+    Some((bytes, looks_like_svg_url(&resolved)))
+}
+
+/// Decode already-fetched image bytes into straight-alpha RGBA8.
+pub(super) fn decode_bytes_rgba(bytes: &[u8], svg: bool) -> Option<(u32, u32, Vec<u8>)> {
+    decode_image_bytes_with_hint(bytes, svg)
 }
 
 #[cfg(test)]

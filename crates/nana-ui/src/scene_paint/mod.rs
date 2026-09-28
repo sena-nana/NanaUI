@@ -12,6 +12,7 @@ mod color;
 mod dest;
 mod host_texture;
 mod icon;
+mod image_resample;
 pub(crate) mod image_url;
 mod mesh;
 mod motion;
@@ -431,6 +432,7 @@ impl SceneWgpuPainter {
         let Some(mut state) = self.targets.remove(&id) else {
             return;
         };
+        self.url_cache.retire_demand(state.painted_demand.id());
         if let Some(text) = state.text.take() {
             self.text.close_target(text);
         }
@@ -646,6 +648,7 @@ impl SceneWgpuPainter {
             // Nothing of this target is visible: withdraw its demand.
             self.painted_demand.begin();
             self.painted_demand.commit(host_textures);
+            self.url_cache.retire_demand(self.painted_demand.id());
             return Ok(());
         }
 
@@ -1481,6 +1484,7 @@ impl SceneWgpuPainter {
                                 Some(&gpu_work),
                                 custom.checkerboard,
                                 custom.zoom,
+                                custom.sampling,
                             );
                             self.painted_demand.note(&custom.resource, prepared.painted);
                             commands.push(DrawCommand::HostTexture(prepared));
@@ -1557,6 +1561,7 @@ impl SceneWgpuPainter {
             // work the per-primitive prepare did, only once per run.
             self.text.flush_runs();
             self.painted_demand.commit(host_textures);
+            self.url_cache.commit_demand(self.painted_demand.id());
             let batch = batch_started.elapsed();
 
             let upload_started = Instant::now();

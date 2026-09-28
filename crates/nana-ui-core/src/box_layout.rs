@@ -1885,6 +1885,9 @@ pub enum BackgroundImage {
         position: BackgroundPosition,
         #[serde(default)]
         repeat: BackgroundRepeat,
+        /// Resample to the painted size (default) or keep a mip chain.
+        #[serde(default)]
+        sampling: crate::ImageSampling,
     },
 }
 
@@ -1901,7 +1904,17 @@ impl BackgroundImage {
             size_height: None,
             position: BackgroundPosition::default(),
             repeat: BackgroundRepeat::Repeat,
+            sampling: crate::ImageSampling::Resample,
         }
+    }
+
+    /// Choose how a `url(...)` layer is prepared for sampling; gradients are
+    /// unchanged. See [`crate::ImageSampling`].
+    pub fn with_sampling(mut self, value: crate::ImageSampling) -> Self {
+        if let Self::Url { sampling, .. } = &mut self {
+            *sampling = value;
+        }
+        self
     }
 
     pub fn url_str(&self) -> Option<&str> {

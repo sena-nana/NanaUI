@@ -330,6 +330,7 @@ pub fn apply_img_replaced_content(style: &mut nana_ui_core::LayoutStyle, src: &s
         size_height: None,
         position,
         repeat: BackgroundRepeat::NoRepeat,
+        sampling: nana_ui_core::ImageSampling::Resample,
     });
 }
 

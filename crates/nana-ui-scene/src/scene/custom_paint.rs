@@ -111,6 +111,7 @@ enum BuiltOp {
         rect: SceneRect,
         source: Arc<str>,
         fit: ImageFit,
+        sampling: nana_ui_core::ImageSampling,
         radii: [f32; 4],
         opacity: f32,
         clips: Arc<[LocalClip]>,
@@ -352,6 +353,7 @@ impl UiScene {
                         rect,
                         source,
                         fit,
+                        sampling,
                         radii,
                         opacity: op_opacity,
                         clips: local,
@@ -360,7 +362,7 @@ impl UiScene {
                         primitive_opacity *= op_opacity;
                         (
                             offset_rect(*rect, origin),
-                            image_quad(source, *fit, *radii),
+                            image_quad(source, *fit, *sampling, *radii),
                             local_clips(local),
                             under(local_transform),
                         )
@@ -462,7 +464,12 @@ fn about_origin(local: Affine, origin: [f32; 2]) -> AffineTransform {
     ])
 }
 
-fn image_quad(source: &Arc<str>, fit: ImageFit, radii: [f32; 4]) -> ScenePrimitiveKind {
+fn image_quad(
+    source: &Arc<str>,
+    fit: ImageFit,
+    sampling: nana_ui_core::ImageSampling,
+    radii: [f32; 4],
+) -> ScenePrimitiveKind {
     let mut image = BackgroundImage::url_with_fit(
         source.as_ref(),
         match fit {
@@ -472,7 +479,8 @@ fn image_quad(source: &Arc<str>, fit: ImageFit, radii: [f32; 4]) -> ScenePrimiti
             ImageFit::None => nana_ui_core::BackgroundImageFit::Auto,
             ImageFit::ScaleDown => nana_ui_core::BackgroundImageFit::ScaleDown,
         },
-    );
+    )
+    .with_sampling(sampling);
     if let BackgroundImage::Url {
         repeat, position, ..
     } = &mut image
@@ -726,6 +734,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 rect,
                 source,
                 fit,
+                sampling,
                 radii,
             } => {
                 let rect = scene_rect(*rect);
@@ -733,6 +742,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                     rect,
                     source: Arc::clone(source),
                     fit: *fit,
+                    sampling: *sampling,
                     radii: *radii,
                     opacity: alpha,
                     clips,
@@ -744,6 +754,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 rect,
                 source,
                 fit,
+                sampling,
             } => {
                 let shapes = fill_shapes(path, t);
                 let shapes = match clip {
@@ -763,6 +774,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                     rect: scene_rect(*rect),
                     source: Arc::clone(source),
                     fit: *fit,
+                    sampling: *sampling,
                     radii: [0.0; 4],
                     opacity: alpha,
                     clips: Arc::clone(&no_clips),
@@ -2777,6 +2789,7 @@ mod tests {
             },
             source: Arc::from("data:image/png;base64,"),
             fit: ImageFit::Cover,
+            sampling: nana_ui_core::ImageSampling::Resample,
         }]);
         assert_eq!(kinds(&built), ["begin", "image", "end-erase"]);
     }

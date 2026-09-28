@@ -865,6 +865,7 @@ pub(crate) struct HostTextureLayer {
     mask: Option<nana_ui_core::MaskImage>,
     checkerboard: bool,
     zoom: f32,
+    sampling: nana_ui_core::ImageSampling,
 }
 
 impl HostTextureLayer {
@@ -886,6 +887,7 @@ impl HostTextureLayer {
             checkerboard: false,
             zoom: 1.0,
             mask: None,
+            sampling: nana_ui_core::ImageSampling::Resample,
         }
     }
 
@@ -954,6 +956,13 @@ impl HostTextureLayer {
         self
     }
 
+    /// [`nana_ui_core::ImageSampling::Mipmap`] samples the host's mip chain
+    /// trilinearly; the default samples level 0.
+    pub const fn with_sampling(mut self, sampling: nana_ui_core::ImageSampling) -> Self {
+        self.sampling = sampling;
+        self
+    }
+
     pub fn alpha_mode(&self) -> HostTextureAlphaMode {
         self.alpha_mode
             .unwrap_or(HostTextureAlphaMode::Premultiplied)
@@ -1010,10 +1019,9 @@ impl GpuTexturePrimitive {
             }
             _ => None,
         };
-        let mask_changed = pipeline
-            .textures
-            .get(&key)
-            .is_none_or(|prepared| prepared.mask_url != mask_url);
+        let mask_changed = pipeline.textures.get(&key).is_none_or(|prepared| {
+            prepared.mask_url != mask_url || prepared.sampling != self.layer.sampling
+        });
         let needs_rebind = texture_needs_rebind(
             pipeline
                 .textures
@@ -1061,7 +1069,9 @@ impl GpuTexturePrimitive {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&pipeline.sampler),
+                        resource: wgpu::BindingResource::Sampler(
+                            pipeline.sampler_for(self.layer.sampling),
+                        ),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -1084,6 +1094,7 @@ impl GpuTexturePrimitive {
                     clip,
                     layer_uniform,
                     mask_url,
+                    sampling: self.layer.sampling,
                     used: true,
                 },
             );
@@ -1173,6 +1184,8 @@ pub struct GpuTexturePipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Trilinear, for nodes that ask for `ImageSampling::Mipmap`.
+    mip_sampler: wgpu::Sampler,
     mask_fallback: wgpu::TextureView,
     textures: HashMap<TextureKey, PreparedTexture>,
 }
@@ -1344,6 +1357,15 @@ impl GpuTexturePipeline {
             min_filter: wgpu::FilterMode::Linear,
             ..wgpu::SamplerDescriptor::default()
         });
+        let mip_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("nana-ui host texture mip sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..wgpu::SamplerDescriptor::default()
+        });
 
         let mask_fallback = white_mask_fallback(device, queue);
 
@@ -1351,6 +1373,7 @@ impl GpuTexturePipeline {
             pipeline,
             bind_group_layout,
             sampler,
+            mip_sampler,
             mask_fallback,
             textures: HashMap::new(),
         }
@@ -1358,6 +1381,13 @@ impl GpuTexturePipeline {
 
     pub(crate) fn trim(&mut self) {
         trim_unused(&mut self.textures, |texture| &mut texture.used);
+    }
+
+    fn sampler_for(&self, sampling: nana_ui_core::ImageSampling) -> &wgpu::Sampler {
+        match sampling {
+            nana_ui_core::ImageSampling::Resample => &self.sampler,
+            nana_ui_core::ImageSampling::Mipmap => &self.mip_sampler,
+        }
     }
 }
 
@@ -1370,6 +1400,7 @@ struct PreparedTexture {
     clip: Option<crate::geometry::PhysicalRect>,
     layer_uniform: wgpu::Buffer,
     mask_url: Option<String>,
+    sampling: nana_ui_core::ImageSampling,
     used: bool,
 }
 

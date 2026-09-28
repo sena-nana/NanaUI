@@ -3469,6 +3469,10 @@ pub struct CustomRenderNode {
     pub checkerboard: bool,
     /// 纹理缩放系数，1.0 为适配原始大小（host texture 渲染器契约）。
     pub zoom: f32,
+    /// 采样方式（host texture 渲染器契约）：默认单层双线性，宿主按
+    /// `painted_extent` 准备尺寸；[`nana_ui_core::ImageSampling::Mipmap`]
+    /// 对宿主提供的 mip 链做三线性采样。
+    pub sampling: nana_ui_core::ImageSampling,
 }
 
 impl CustomRenderNode {
@@ -3486,11 +3490,18 @@ impl CustomRenderNode {
             dedicated_pass: false,
             checkerboard: false,
             zoom: 1.0,
+            sampling: nana_ui_core::ImageSampling::Resample,
         }
     }
 
     pub const fn with_fit(mut self, fit: nana_ui_core::ContentFit) -> Self {
         self.fit = fit;
+        self
+    }
+
+    /// 选择采样方式，见 [`nana_ui_core::ImageSampling`]。
+    pub const fn with_sampling(mut self, sampling: nana_ui_core::ImageSampling) -> Self {
+        self.sampling = sampling;
         self
     }
 

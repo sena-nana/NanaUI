@@ -220,6 +220,8 @@ IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所�
 当前只有 macOS `WKWebView` 实现，Windows/Linux 明确不可用，Gallery 不得
 把普通纹理或 iframe 当成浏览器。
 
+`GpuTextureView`、`Thumbnail` 与 `Avatar` 默认只采样宿主纹理的第 0 层，宿主应按 `HostTextureRegistry::painted_extent` 准备尺寸；纹理带 mip 链时用 `.sampling(ImageSampling::Mipmap)` 切到三线性采样。`url()` 图片的默认重采样与 mip 选项见 [应用 API · 图片采样](application-api.md#图片采样)。
+
 `Thumbnail` 默认维持控件高度 × aspect；显式 style 的宽高、约束与圆角（`style.radius` 档位或 `border_radius` 像素）优先，可用于响应式卡片封面；都没写时才取 `Xs`。`fit(ContentFit::Cover)` 保留封面裁切，默认仍是 Contain；空、加载、就绪与不可用共享布局尺寸。Loading 态的 spinner 居中绘制，边长 28（紧凑 `Spinner` 的两倍）；带标签的独立 `Spinner` 仍贴左，作为文字的前置槽。封面角标挂成 Thumbnail 的子节点：控件是 containing block（`position: relative`）并裁剪圆角；`Thumbnail::badge()` 给出右下角、不命中的实底徽章。Vue 的 `NanaThumbnail` 使用同一 `fit` 属性。
 
 ### 图表与带图标按钮

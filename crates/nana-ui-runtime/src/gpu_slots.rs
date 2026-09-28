@@ -211,6 +211,9 @@ pub struct GpuTextureView {
     pub checkerboard: bool,
     /// 纹理缩放系数（1.0 为适配大小，>1 放大居中）。
     pub zoom: f32,
+    /// 采样方式。默认单层双线性，宿主按 `painted_extent` 准备纹理尺寸；
+    /// [`nana_ui_core::ImageSampling::Mipmap`] 对宿主提供的 mip 链做三线性采样。
+    pub sampling: nana_ui_core::ImageSampling,
 }
 
 impl GpuTextureView {
@@ -263,12 +266,20 @@ impl GpuTextureView {
             pointer_events: false,
             checkerboard: false,
             zoom: 1.0,
+            sampling: nana_ui_core::ImageSampling::Resample,
         }
     }
 
     /// 在纹理下方绘制 alpha 棋盘底。
     pub const fn checkerboard(mut self, checkerboard: bool) -> Self {
         self.checkerboard = checkerboard;
+        self
+    }
+
+    /// 选择采样方式。纹理带 mip 链时用 [`nana_ui_core::ImageSampling::Mipmap`]
+    /// 做三线性采样；默认只采样第 0 层。
+    pub const fn sampling(mut self, sampling: nana_ui_core::ImageSampling) -> Self {
+        self.sampling = sampling;
         self
     }
 
@@ -354,7 +365,8 @@ impl GpuTextureView {
             )
             .with_fit(self.fit)
             .with_checkerboard(self.checkerboard)
-            .with_zoom(self.zoom),
+            .with_zoom(self.zoom)
+            .with_sampling(self.sampling),
         )
     }
 

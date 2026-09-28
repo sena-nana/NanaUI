@@ -76,8 +76,8 @@ pub use file_dialog::{
     FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
 };
 pub use geometry::{
-    ContentFit, LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE, RegionRect,
-    TITLE_BAR_HEIGHT, WINDOW_CONTROL_GAP, WINDOW_CONTROL_PADDING, WINDOW_CONTROL_WIDTH,
+    ContentFit, ImageSampling, LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE,
+    RegionRect, TITLE_BAR_HEIGHT, WINDOW_CONTROL_GAP, WINDOW_CONTROL_PADDING, WINDOW_CONTROL_WIDTH,
     WorkspaceGeometry, custom_window_controls_width,
 };
 pub use graph::{

@@ -162,6 +162,11 @@ impl Default for PaintedChannel {
 }
 
 impl PaintedChannel {
+    /// 这条通道(绘制目标)的标识。`url(...)` 图片的需求用同一个标识登记。
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
     /// 全新 prepare 开始:清空这一帧的记录。
     pub(crate) fn begin(&mut self) {
         self.pass.clear();

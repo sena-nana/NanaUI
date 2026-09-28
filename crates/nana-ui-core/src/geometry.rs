@@ -72,6 +72,28 @@ impl ContentFit {
     }
 }
 
+/// How an image is prepared for sampling when it is drawn at a size other
+/// than its own.
+///
+/// [`Self::Resample`] is the default: a `url(...)` image is resampled off the
+/// frame path to the device-pixel size it is painted at and sampled from that
+/// one level. [`Self::Mipmap`] keeps the decoded size, builds a mip chain and
+/// samples it trilinearly — for an image shown at several sizes at once, or
+/// whose size keeps changing (zoom, scale animation).
+///
+/// For a HostTexture the host owns the pixels: the default expects the host to
+/// size its texture from `HostTextureRegistry::painted_extent`, and
+/// [`Self::Mipmap`] switches the node to trilinear sampling of the mip chain
+/// the host supplies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ImageSampling {
+    /// One level at the painted device-pixel size, bilinear.
+    #[default]
+    Resample,
+    /// Decoded size plus a mip chain, trilinear.
+    Mipmap,
+}
+
 /// A logical-pixel rectangle that can be handed to a content view.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LogicalRect {

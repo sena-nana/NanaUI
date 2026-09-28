@@ -1037,6 +1037,8 @@ pub enum PaintOp {
         /// 与 CSS `url()` 相同的来源：`data:`、文件路径或经宿主 fetch 的 URL。
         source: Arc<str>,
         fit: ImageFit,
+        /// 录制时的 [`PaintContext::set_image_sampling`]。
+        sampling: nana_ui_core::ImageSampling,
         radii: [f32; 4],
     },
     /// 图片摆进 `rect`，只露出 `path` 以内的部分。
@@ -1045,6 +1047,7 @@ pub enum PaintOp {
         rect: LayoutBox,
         source: Arc<str>,
         fit: ImageFit,
+        sampling: nana_ui_core::ImageSampling,
     },
     Text {
         rect: LayoutBox,
@@ -1409,11 +1412,14 @@ pub struct PaintContext<'a> {
     transform: Affine,
     opacity: f32,
     blend: BlendMode,
+    image_sampling: nana_ui_core::ImageSampling,
     /// The transform and opacity the ops recorded so far are under.
     recorded_transform: Affine,
     recorded_opacity: f32,
-    saved: Vec<(Affine, f32, BlendMode, usize)>,
+    saved: Vec<SavedState>,
 }
+
+type SavedState = (Affine, f32, BlendMode, nana_ui_core::ImageSampling, usize);
 
 impl<'a> PaintContext<'a> {
     fn new(
@@ -1436,6 +1442,7 @@ impl<'a> PaintContext<'a> {
             transform: AFFINE_IDENTITY,
             opacity: 1.0,
             blend: BlendMode::Normal,
+            image_sampling: nana_ui_core::ImageSampling::Resample,
             recorded_transform: AFFINE_IDENTITY,
             recorded_opacity: 1.0,
             saved: Vec::new(),
@@ -1499,6 +1506,18 @@ impl<'a> PaintContext<'a> {
         self.blend = blend;
     }
 
+    /// 之后的 [`Self::image`] / [`Self::fill_image`] 怎样准备采样（类似 Canvas
+    /// `imageSmoothingQuality`）。默认按实际绘制的设备像素重采样一层；
+    /// 同一张图同时以多种尺寸出现、或尺寸持续变化（缩放动画）时用
+    /// [`nana_ui_core::ImageSampling::Mipmap`]。
+    pub fn set_image_sampling(&mut self, sampling: nana_ui_core::ImageSampling) {
+        self.image_sampling = sampling;
+    }
+
+    pub fn image_sampling(&self) -> nana_ui_core::ImageSampling {
+        self.image_sampling
+    }
+
     /// 开一个图层：之后的命令先画进图层，[`Self::pop_layer`] 时按 `opacity`
     /// 和 `blend` 整体合成，重叠部分不会叠加透明度。
     pub fn push_layer(&mut self, opacity: f32, blend: BlendMode) {
@@ -1556,20 +1575,26 @@ impl<'a> PaintContext<'a> {
         self.concat([cos, sin, -sin, cos, 0.0, 0.0]);
     }
 
-    /// 保存当前变换、不透明度、混合方式和裁剪层数，与 [`Self::restore`]
-    /// 配对。图层另由 `push_layer` / `pop_layer` 管。
+    /// 保存当前变换、不透明度、混合方式、图片采样方式和裁剪层数，与
+    /// [`Self::restore`] 配对。图层另由 `push_layer` / `pop_layer` 管。
     pub fn save(&mut self) {
-        self.saved
-            .push((self.transform, self.opacity, self.blend, self.clip_depth));
+        self.saved.push((
+            self.transform,
+            self.opacity,
+            self.blend,
+            self.image_sampling,
+            self.clip_depth,
+        ));
     }
 
     /// 恢复最近一次 [`Self::save`] 时的状态，并像 Canvas 的 `restore()` 一样
     /// 弹出其后压入的裁剪；没有可恢复的就什么都不做。
     pub fn restore(&mut self) {
-        if let Some((transform, opacity, blend, clip_depth)) = self.saved.pop() {
+        if let Some((transform, opacity, blend, image_sampling, clip_depth)) = self.saved.pop() {
             self.transform = transform;
             self.opacity = opacity;
             self.blend = blend;
+            self.image_sampling = image_sampling;
             while self.clip_depth > clip_depth {
                 self.pop_clip();
             }
@@ -1792,6 +1817,7 @@ impl<'a> PaintContext<'a> {
             rect,
             source,
             fit,
+            sampling: self.image_sampling,
         });
     }
 
@@ -1815,6 +1841,7 @@ impl<'a> PaintContext<'a> {
             rect,
             source,
             fit,
+            sampling: self.image_sampling,
             radii,
         });
     }

@@ -66,6 +66,7 @@ impl HostTexturePipeline {
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
         checkerboard: bool,
         zoom: f32,
+        sampling: nana_ui_core::ImageSampling,
     ) -> PreparedHostTexture {
         let primitive = GpuTexturePrimitive::from_scene(
             node,
@@ -87,7 +88,8 @@ impl HostTexturePipeline {
                 )
                 .with_mask(mask)
                 .with_checkerboard(checkerboard)
-                .with_zoom(zoom),
+                .with_zoom(zoom)
+                .with_sampling(sampling),
         );
         primitive.prepare(
             &mut self.pipeline,

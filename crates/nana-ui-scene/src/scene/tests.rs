@@ -9797,6 +9797,7 @@ mod custom_paint {
                             },
                             source: Arc::from("data:image/png;base64,"),
                             fit: nana_ui_runtime::ImageFit::Cover,
+                            sampling: nana_ui_core::ImageSampling::Resample,
                             radii: [2.0; 4],
                         },
                     ],

@@ -7136,6 +7136,7 @@ fn object_fit_contain_letterboxes_on_wide_box() {
             size_height: None,
             position: nana_ui_core::BackgroundPosition::center(),
             repeat: nana_ui_core::BackgroundRepeat::NoRepeat,
+            sampling: nana_ui_core::ImageSampling::Resample,
         }),
         ..Default::default()
     };
@@ -7170,6 +7171,7 @@ fn two_layer_background_paints_top_over_bottom() {
             size_height: None,
             position: nana_ui_core::BackgroundPosition::default(),
             repeat: nana_ui_core::BackgroundRepeat::NoRepeat,
+            sampling: nana_ui_core::ImageSampling::Resample,
         }),
         background_layers: vec![nana_ui_core::BackgroundImage::url_with_fit(
             blue_path
@@ -7225,6 +7227,7 @@ fn background_repeat_x_tiles_stripe() {
             size_height: None,
             position: nana_ui_core::BackgroundPosition::default(),
             repeat: nana_ui_core::BackgroundRepeat::RepeatX,
+            sampling: nana_ui_core::ImageSampling::Resample,
         }),
         ..Default::default()
     };
@@ -7264,6 +7267,7 @@ fn default_background_repeat_tiles_sized_url() {
             size_height: None,
             position: nana_ui_core::BackgroundPosition::default(),
             repeat: nana_ui_core::BackgroundRepeat::Repeat,
+            sampling: nana_ui_core::ImageSampling::Resample,
         }),
         ..Default::default()
     };
@@ -7310,6 +7314,7 @@ fn background_repeat_space_does_not_paint_as_repeat() {
             size_height: None,
             position: nana_ui_core::BackgroundPosition::default(),
             repeat: nana_ui_core::BackgroundRepeat::Unsupported,
+            sampling: nana_ui_core::ImageSampling::Resample,
         }),
         ..Default::default()
     };
@@ -9370,6 +9375,9 @@ mod graph_scale_tests;
 
 #[path = "key_badge_tests.rs"]
 mod key_badge_tests;
+
+#[path = "image_sampling_tests.rs"]
+mod image_sampling_tests;
 
 /// Issue #217: one `Painter` on one node draws a non-rectangular outline —
 /// a raised step on the left, a slope down to the lower edge with its

@@ -139,6 +139,8 @@ HTTP 获取与解码在后台进行，纹理上传仍使用宿主设备。
 Quad 与 HostTexture 蒙版共用缓存实现；每个缓存最多同时获取 4 个 HTTP 资源，
 闲置纹理最多保留 256 项／64 MiB，120 个绘制帧未使用后释放，当前帧工作集按需保留。
 栅格图片解码限制为 4096 像素边长和 64 MiB 分配预算，SVG 沿用 2048 像素边长上限。
+URL 图片默认按实际绘制的设备像素在后台重采样成单层纹理，`ImageSampling::Mipmap` 改为解码尺寸加
+mip 链、三线性采样；见 [应用 API · 图片采样](application-api.md#图片采样)。
 
 合成顺序就是文档顺序：`"nana.host-texture"` 在主 pass 里、在这个节点该出现的位置采样，不攒到帧尾。多层就是相邻的几张 `GpuTextureView`。不要绕过界面树去直写窗口 Surface。
 
@@ -291,7 +293,7 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 
 需求会变的消费方不必每帧扫全部 slot：`painted_revision()` 在任一 slot 的需求变化时递增，`painted_changes_since(rev, &mut out)` 给出其后变过的 slot；`subscribe_painted(callback)` 在变化时回调（在画家线程上），用来唤醒宿主去按新尺寸准备内容。
 
-它是只读的观测量，不是请求：登记多大的纹理仍由宿主决定，framework 不会因为这个数去改采样或重新分配。
+它是只读的观测量，不是请求：登记多大的纹理仍由宿主决定，framework 不会因为这个数去重新分配宿主纹理。节点默认只采样第 0 层；宿主提供 mip 链时，节点用 `ImageSampling::Mipmap` 请求三线性采样。`url()` 图片由 framework 自己按同一口径重采样。
 
 没有 `data-nana-canvas` / `data-nana-gpu` 的 `<canvas>` 是空盒子（`skipped_replaced = canvas`），不会把 `src` 或 pixmap 写进 `content_image` 假装成 2D 位图。无槽且无 poster 的 `<video>` 同样是空盒子（`skipped_replaced = video`）。
 

@@ -230,6 +230,7 @@ pub use nana_ui_core::ContentFit;
 pub use nana_ui_core::ControlSize;
 #[cfg(feature = "gpu")]
 pub use nana_ui_core::GpuWorkObservation;
+pub use nana_ui_core::ImageSampling;
 pub use nana_ui_core::{AnchoredMenuPlacement, StatusTone, ToastTone, ValidationIntent};
 pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};
 pub use nana_ui_core::{DrawerSide, PopoverAlignment, PopoverPlacement};

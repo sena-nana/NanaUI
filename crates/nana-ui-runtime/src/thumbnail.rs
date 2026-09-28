@@ -8,8 +8,9 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, ContentFit, ControlHeight, ControlSize, LengthSpec, OverflowSpec, PointerEventsSpec,
-    PositionSpec, RadiusTier, SemanticColorRole, SquareSize, ThemeMetrics, space,
+    AlignSpec, ContentFit, ControlHeight, ControlSize, ImageSampling, LengthSpec, OverflowSpec,
+    PointerEventsSpec, PositionSpec, RadiusTier, SemanticColorRole, SquareSize, ThemeMetrics,
+    space,
 };
 
 use crate::gpu_slots::pack_gpu_revision;
@@ -51,6 +52,9 @@ pub struct Thumbnail {
     pub size: ControlSize,
     pub aspect: f32,
     pub fit: ContentFit,
+    /// Level 0 by default (the host sizes the slot from `painted_extent`);
+    /// [`ImageSampling::Mipmap`] samples the host's mip chain trilinearly.
+    pub sampling: ImageSampling,
     pub label: Arc<str>,
     pub style: NodeStyle,
 }
@@ -72,6 +76,7 @@ impl Thumbnail {
             size: ControlSize::Small,
             aspect: DEFAULT_ASPECT,
             fit: ContentFit::Contain,
+            sampling: ImageSampling::Resample,
             label: Arc::from(""),
             style: NodeStyle::default(),
         }
@@ -101,6 +106,12 @@ impl Thumbnail {
 
     pub fn fit(mut self, fit: ContentFit) -> Self {
         self.fit = fit;
+        self
+    }
+
+    /// How the slot's texture is sampled; see [`ImageSampling`].
+    pub const fn sampling(mut self, sampling: ImageSampling) -> Self {
+        self.sampling = sampling;
         self
     }
 
@@ -180,7 +191,8 @@ impl Thumbnail {
                 Arc::clone(&self.resource),
                 self.revision(),
             )
-            .with_fit(self.fit),
+            .with_fit(self.fit)
+            .with_sampling(self.sampling),
         )
     }
 

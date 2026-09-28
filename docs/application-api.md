@@ -270,7 +270,8 @@ slots / overlay 组装接口；`mount` 仍用于按 key 构造并销毁缺席组
 - `cx.rounded_rect`（四角独立圆角，可带边框和阴影）、`cx.text`、`cx.icon`、
   `cx.image(rect, source, fit, radii)`（`source` 与 CSS `url()` 同源，`fit`
   同 `object-fit`，异步加载），`cx.fill_path_with_image(path, rect, source, fit)`
-  用图片填充任意路径。
+  用图片填充任意路径。之后的图片怎样采样由 `cx.set_image_sampling(..)` 决定
+  （随 `save` / `restore` 保存恢复），见下文 [图片采样](#图片采样)。
 - 命中：`Painter::hit_test(local, size)` 返回 `Some(false)` 的点点穿到下面；
   `hit_painted_outline()` 为真时命中区域等于录下的内容（填充、描边含虚线空段、
   圆角矩形、图片、文字框、`draw_default()` 的节点矩形，按变换和裁剪计算）。
@@ -398,6 +399,37 @@ let app = mount_vue_as_nana(MountOptions {
 ## 性能上你不用手写的
 
 `build` 把整棵子树收成一次 commit。mutation 提交后 Runtime 自己调度脏工作。无变更不刷帧。大列表走 `materialize_virtual_*`。GPU 换纹理升 generation，不重建布局。
+
+### 图片采样
+
+`url()` 图片（`<img src>`、`background-image`、`cx.image`）默认按**实际绘制的设备像素**准备：
+painter 在每次全新 prepare 里记下每张图画成多大（`ContentFit` / `background-size` 之后的
+尺寸 × 节点变换 × 缩放因子，与 HostTexture 的 `painted_extent` 同一口径），同一张图被多处、
+多个窗口使用时取最大的那个；后台线程用 CatmullRom 在线性光、预乘 alpha 下把原图缩到这个尺寸，
+只上传这一层，按双线性采样。大图显示成小图不再走样，显存按显示尺寸计。尺寸跟随有滞回：
+变大立即重采样，变小要等较小的尺寸稳定 2 秒，`max(6px, 6%)` 以内的变化和任一边小于 16px
+的需求（折叠、动画中）不触发。布局与 `fit` 仍按图片的原始尺寸计算，重采样不改变占位。
+
+同一张图同时以差别很大的尺寸出现、或尺寸持续变化（缩放动画、可缩放预览）时，改用 mip 链：
+
+```rust
+BackgroundImage::url_with_fit(url, BackgroundImageFit::Cover)
+    .with_sampling(ImageSampling::Mipmap);  // CSS 图层 / <img> 内容
+cx.set_image_sampling(ImageSampling::Mipmap); // Painter 里之后的 cx.image
+```
+
+`ImageSampling::Mipmap` 保留解码尺寸，在后台生成完整 mip 链，三线性采样
+（`MipmapFilterMode::Linear`）。同一 URL 的两种采样是两份独立的缓存项。
+
+本地图片（文件、`data:`、`nana://res/`）第一次出现时仍在帧上同步解码并先按解码尺寸显示，
+重采样或 mip 链在后台完成后替换；远程图片在后台线程里取回、解码并直接准备到目标尺寸，
+重采样时复用已取回的字节，不再请求网络。自接事件循环的宿主照旧用 `set_image_waker` /
+`has_pending_images()` 等待这些后台结果。
+
+HostTexture 的像素归宿主：默认仍只采样第 0 层，宿主按 `painted_extent` 准备尺寸（见
+[实时画面](gpu.md#按实际绘制像素准备内容)）；宿主自己上传了 mip 链时，在 `GpuTextureView` /
+`Thumbnail` / `Avatar` 上用 `.sampling(ImageSampling::Mipmap)`（`CustomRenderNode::with_sampling`）切到三线性采样。
+Vue 目前没有对应的 CSS 属性，`<img>` 只走默认重采样。
 
 消息有两个入口，按类型选：`dispatch_program` **按 Rust 类型只保留最后一条**，适合「后一条取代前一条」的状态消息（resize、主题变了、请求重绘）；`dispatch_program_all` 按派发顺序全部送达。业务消息通常是一个 `enum`，那就是**同一个类型**——用 `dispatch_program` 会让同一帧内的两次点击塌成一次、悄悄丢掉第一次，这种情况用 `dispatch_program_all`。两者都在下一帧进入 `update`。
 

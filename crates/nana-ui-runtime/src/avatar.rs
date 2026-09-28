@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use nana_ui_core::{ContentFit, LengthSpec, OverflowSpec, SemanticColorRole};
+use nana_ui_core::{ContentFit, ImageSampling, LengthSpec, OverflowSpec, SemanticColorRole};
 
 use crate::gpu_slots::{HOST_TEXTURE_RENDERER, pack_gpu_revision};
 use crate::view_components::project_common;
@@ -28,6 +28,9 @@ pub struct Avatar {
     pub size: f32,
     pub label: Arc<str>,
     pub pointer_events: bool,
+    /// Level 0 by default (the host sizes the slot from `painted_extent`);
+    /// [`ImageSampling::Mipmap`] samples the host's mip chain trilinearly.
+    pub sampling: ImageSampling,
     pub style: NodeStyle,
 }
 
@@ -40,6 +43,7 @@ impl Avatar {
             size: DEFAULT_SIZE,
             label: Arc::from(""),
             pointer_events: false,
+            sampling: ImageSampling::Resample,
             style: NodeStyle::default(),
         }
     }
@@ -60,6 +64,12 @@ impl Avatar {
 
     pub fn pointer_events(mut self, pointer_events: bool) -> Self {
         self.pointer_events = pointer_events;
+        self
+    }
+
+    /// How the slot's texture is sampled; see [`ImageSampling`].
+    pub const fn sampling(mut self, sampling: ImageSampling) -> Self {
+        self.sampling = sampling;
         self
     }
 
@@ -102,7 +112,8 @@ impl Avatar {
                 Arc::clone(&self.resource),
                 self.revision(),
             )
-            .with_fit(ContentFit::Cover),
+            .with_fit(ContentFit::Cover)
+            .with_sampling(self.sampling),
         )
     }
 
