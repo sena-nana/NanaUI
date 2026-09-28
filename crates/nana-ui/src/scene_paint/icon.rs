@@ -91,6 +91,7 @@ struct VsIn {
     @location(3) clip_rect: vec4<f32>,
     @location(4) clip_inv_abcd: vec4<f32>,
     @location(5) clip_inv_ef: vec3<f32>,
+    @location(6) cell: vec4<f32>,
 }
 
 struct VsOut {
@@ -101,6 +102,9 @@ struct VsOut {
     @location(3) clip_rect: vec4<f32>,
     @location(4) clip_inv_abcd: vec4<f32>,
     @location(5) clip_inv_ef: vec3<f32>,
+    // The glyph's cell in the atlas: the taps a shrunk glyph averages stay in
+    // it rather than read a neighbour.
+    @location(6) @interpolate(flat) cell: vec4<f32>,
 }
 
 @vertex
@@ -113,11 +117,39 @@ fn vs_main(input: VsIn) -> VsOut {
     out.clip_rect = input.clip_rect;
     out.clip_inv_abcd = input.clip_inv_abcd;
     out.clip_inv_ef = input.clip_inv_ef;
+    out.cell = input.cell;
     return out;
+}
+
+// One device pixel's worth of the atlas at `uv`, whose screen derivatives are
+// `dx`/`dy`. A glyph is rasterized at twice its size for its transform's
+// larger scale, which one bilinear tap per pixel filters exactly; shrunk
+// further along the other axis, that axis averages a grid of such taps across
+// the pixel's footprint. A tap past the glyph's `cell` reads its transparent
+// gutter, never a neighbour.
+fn icon_sample(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, cell: vec4<f32>) -> vec4<f32> {
+    let texels = vec2<f32>(textureDimensions(atlas));
+    let footprint = vec2(length(dx * texels), length(dy * texels));
+    let taps = clamp(ceil(footprint * 0.5 - 1.0 / 16.0), vec2(1.0), vec2(8.0));
+    if all(taps <= vec2(1.0)) {
+        return textureSampleLevel(atlas, atlas_sampler, uv, 0.0);
+    }
+    let half_texel = 0.5 / texels;
+    var sum = vec4(0.0);
+    for (var i = 0.0; i < taps.x; i += 1.0) {
+        for (var j = 0.0; j < taps.y; j += 1.0) {
+            let offset = ((i + 0.5) / taps.x - 0.5) * dx + ((j + 0.5) / taps.y - 0.5) * dy;
+            let at = clamp(uv + offset, cell.xy - half_texel, cell.zw + half_texel);
+            sum += textureSampleLevel(atlas, atlas_sampler, at, 0.0);
+        }
+    }
+    return sum / (taps.x * taps.y);
 }
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
+    let uv_dx = dpdx(input.uv);
+    let uv_dy = dpdy(input.uv);
     let clip_cover = fragment_clip_coverage(
         input.world_pos,
         input.clip_rect,
@@ -134,7 +166,7 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
     if clip_cover <= 0.0 {
         discard;
     }
-    let sampled = textureSample(atlas, atlas_sampler, input.uv);
+    let sampled = icon_sample(input.uv, uv_dx, uv_dy, input.cell);
     return vec4<f32>(sampled.rgb * input.color.rgb, sampled.a * input.color.a * clip_cover);
 }
 "#
@@ -155,6 +187,7 @@ struct IconVertex {
     clip_rect: [f32; 4],
     clip_inv_abcd: [f32; 4],
     clip_inv_ef: [f32; 3],
+    cell: [f32; 4],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -350,6 +383,7 @@ impl IconPipeline {
                             3 => Float32x4,
                             4 => Float32x4,
                             5 => Float32x3,
+                            6 => Float32x4,
                         ),
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -478,7 +512,7 @@ impl IconPipeline {
         if extent <= 0.0 || scale <= 0.0 {
             return None;
         }
-        let dest_px = (extent * scale).round().max(1.0) as u32;
+        let dest_px = (extent * scale * raster_factor(affine)).round().max(1.0) as u32;
         let px = dest_px.saturating_mul(2).clamp(2, MAX_ATLAS_PX);
         let key = AtlasKey {
             icon: icon.as_ptr() as usize,
@@ -501,6 +535,7 @@ impl IconPipeline {
             self.pending_vertices.push(IconVertex {
                 position,
                 uv: uv_rect.at(corner),
+                cell: uv_rect.bounds(),
                 color,
                 clip_rect: clip.rect,
                 clip_inv_abcd: clip.inv_abcd,
@@ -806,6 +841,7 @@ impl IconPipeline {
             for (offset, corner) in CORNER_UV.iter().enumerate() {
                 if let Some(vertex) = pending_vertices.get_mut(first + offset) {
                     vertex.uv = uv_rect.at(*corner);
+                    vertex.cell = uv_rect.bounds();
                 }
             }
         }
@@ -874,6 +910,11 @@ impl UvRect {
             origin: [entry.origin[0] as f32 / edge, entry.origin[1] as f32 / edge],
             size: [entry.px as f32 / edge, entry.px as f32 / edge],
         }
+    }
+
+    fn bounds(self) -> [f32; 4] {
+        let [x, y] = self.origin;
+        [x, y, x + self.size[0], y + self.size[1]]
     }
 
     fn at(self, corner: [f32; 2]) -> [f32; 2] {
@@ -950,6 +991,19 @@ fn icon_quad(bounds: LogicalRect, affine: [f32; 6], persp: [f32; 2], scale: f32)
             [tx * scale, ty * scale]
         })
     }
+}
+
+/// The scale `affine` shows an icon at, in half-octave steps from 1/4 to 4 as
+/// text's raster steps: rasterized at about the size it is seen, a glyph's
+/// edge stays about one device pixel, where a shrunk bitmap would alias and a
+/// magnified one blur. Stepped so a scale animation rasterizes each step once.
+fn raster_factor(affine: [f32; 6]) -> f32 {
+    let [a, b, c, d, _, _] = affine;
+    let scale = (a * a + b * b).max(c * c + d * d).sqrt();
+    if !scale.is_finite() || scale <= 0.0 {
+        return 1.0;
+    }
+    2f32.powf((2.0 * scale.log2()).round().clamp(-4.0, 4.0) * 0.5)
 }
 
 fn rasterize_icon(svg: &str, pixel_size: u32) -> Option<Vec<u8>> {

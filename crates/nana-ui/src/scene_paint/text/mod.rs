@@ -3372,12 +3372,16 @@ mod tests {
             }
             top.map(|top| bottom - top + 1)
         };
-        let near = (ink.0..=ink.2)
-            .find_map(column_height)
+        // The tallest column in each outer quarter of the ink: the outermost
+        // columns alone are the edge's one-pixel ramp.
+        let quarter = (ink.2 - ink.0) / 4;
+        let near = (ink.0..=ink.0 + quarter)
+            .filter_map(column_height)
+            .max()
             .expect("a near column");
-        let far = (ink.0..=ink.2)
-            .rev()
-            .find_map(column_height)
+        let far = (ink.2 - quarter..=ink.2)
+            .filter_map(column_height)
+            .max()
             .expect("a far column");
         assert_ne!(
             near, far,
@@ -4986,6 +4990,47 @@ mod tests {
                 size * factor
             );
         }
+    }
+
+    #[test]
+    fn text_squeezed_along_one_axis_keeps_its_ink_at_any_sub_pixel_phase() {
+        // `scale(1, 0.3)` rasterizes for the larger scale and shrinks the
+        // other axis 3.3 times: one bilinear tap per pixel skips rows, and
+        // which ones depends on the sub-pixel phase. Filtered over the
+        // pixel's footprint, the ink a paragraph lays down does not.
+        let (device, queue) = test_device();
+        let canvas = LogicalRect::from_xywh(0.0, 0.0, 256.0, 96.0);
+        let ink = |phase: f32| {
+            let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+            let pixels = paint_text_with(
+                &device,
+                &queue,
+                &mut pipeline,
+                ("Sharp lines", 24.0),
+                LogicalRect::from_xywh(0.0, 0.0, 200.0, 40.0),
+                canvas,
+                [1.0, 0.0, 0.0, 0.3, 8.0, 16.0 + phase],
+                [0.0; 2],
+                clip::FragmentClip::PASS,
+                [256, 96],
+            );
+            pixels
+                .chunks(4)
+                .map(|pixel| u64::from(pixel[1]))
+                .sum::<u64>() as f32
+        };
+        let inks = [0.0, 0.25, 0.5, 0.75].map(ink);
+        let mean = inks.iter().sum::<f32>() / 4.0;
+        let spread = inks
+            .iter()
+            .fold(0.0f32, |spread, ink| spread.max((ink - mean).abs()))
+            / mean;
+        // Not zero: the gamma correction a glyph's coverage takes is not linear.
+        assert!(
+            spread < 0.05,
+            "ink varies {:.1}% with the sub-pixel phase: {inks:?}",
+            spread * 100.0
+        );
     }
 
     #[test]

@@ -8562,6 +8562,102 @@ fn icon_batch_reuses_atlas_and_vertex_uploads() {
 }
 
 #[test]
+fn an_icon_a_transform_scales_is_rasterized_at_the_size_it_is_seen() {
+    // Scaled about its centre onto the 16 px (or 32 px) square an upright icon
+    // of that size covers: drawn from the bitmap of its own size, a shrunk
+    // glyph would alias and a magnified one blur.
+    let (device, queue) = test_device();
+    let paint = |size: f32, scale: f32| {
+        let at = 32.0 - size * 0.5;
+        let mut icon = colored_quad_node(1, at, at, size, size, [0.0; 4]);
+        icon.standard_visual = Some(StandardVisual::Icon {
+            icon: nana_ui_core::Icon::Search,
+            size,
+            tooltip: None,
+        });
+        icon.standard_visual_foreground = Some([1.0; 4]);
+        Arc::make_mut(&mut icon.source_style.layout).transform = scale_transform(scale);
+        let mut scene = UiScene::new();
+        scene.apply_delta([icon], []);
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+        paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0; 2],
+            [64, 64],
+            1.0,
+        )
+    };
+    for (size, scale) in [(32.0, 0.5), (16.0, 2.0)] {
+        let (scaled, upright) = (paint(size, scale), paint(size * scale, 1.0));
+        let (scaled, upright) = (scaled.as_chunks::<4>().0, upright.as_chunks::<4>().0);
+        let differing = scaled
+            .iter()
+            .zip(upright)
+            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 24))
+            .count();
+        let inked = upright.iter().filter(|pixel| pixel[0] > 24).count();
+        assert!(inked > 30, "the reference must paint something");
+        assert!(
+            differing * 20 < inked,
+            "a {size} px icon under scale({scale}) must be the {} px glyph: \
+             {differing} of {inked} inked pixels differ",
+            size * scale
+        );
+    }
+}
+
+#[test]
+fn an_icon_squeezed_along_one_axis_keeps_its_ink_at_any_sub_pixel_phase() {
+    // As text: rasterized for `scale(1, 0.3)`'s larger scale, the other axis
+    // is shrunk 3.3 times further; filtered over each pixel's footprint, the
+    // ink the glyph lays down does not depend on its sub-pixel phase.
+    let (device, queue) = test_device();
+    let ink = |phase: f32| {
+        let mut icon = colored_quad_node(1, 16.0, 16.0 + phase, 32.0, 32.0, [0.0; 4]);
+        icon.standard_visual = Some(StandardVisual::Icon {
+            icon: nana_ui_core::Icon::Search,
+            size: 32.0,
+            tooltip: None,
+        });
+        icon.standard_visual_foreground = Some([1.0; 4]);
+        Arc::make_mut(&mut icon.source_style.layout).transform = Some(PaintTransform {
+            d: 0.3,
+            ..PaintTransform::default()
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta([icon], []);
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0; 2],
+            [64, 64],
+            1.0,
+        );
+        pixels
+            .chunks(4)
+            .map(|pixel| u64::from(pixel[1]))
+            .sum::<u64>() as f32
+    };
+    let inks = [0.0, 0.25, 0.5, 0.75].map(ink);
+    let mean = inks.iter().sum::<f32>() / 4.0;
+    let spread = inks
+        .iter()
+        .fold(0.0f32, |spread, ink| spread.max((ink - mean).abs()))
+        / mean;
+    assert!(
+        spread < 0.01,
+        "ink varies {:.1}% with the sub-pixel phase: {inks:?}",
+        spread * 100.0
+    );
+}
+
+#[test]
 fn a_frosted_panel_edge_stays_one_device_pixel_under_transform_scale() {
     // A round frosted panel over green, desaturated to grey (luminance
     // 0.7152) with no fill of its own: its red channel is 0.7152 of its

@@ -180,3 +180,35 @@ fn text_world_position(run: TextRun, local: vec2<f32>) -> vec2<f32> {
     }
     return projected * scale;
 }
+
+// Raster px a projected glyph's quad reaches past each edge of its bitmap,
+// so the half device pixel its filtered edge spreads over is rasterized:
+// `edge_grow` in `quad_solid.wgsl`, taken to raster px at `local`. The taps
+// out there read the glyph's transparent gutter.
+fn text_edge_grow(run: TextRun, local: vec2<f32>) -> vec2<f32> {
+    let presentation = text_presentations[run.presentation];
+    let a = presentation.affine;
+    let e = presentation.project;
+    let p = (local + run.origin) / run.raster;
+    let w = e.z * p.x + e.w * p.y + 1.0;
+    let world = vec2(a.x * p.x + a.z * p.y + e.x, a.y * p.x + a.w * p.y + e.y)
+        / select(1.0, w, abs(w) >= 1e-8);
+    let along_x = vec2(a.x - world.x * e.z, a.y - world.y * e.z);
+    let along_y = vec2(a.z - world.x * e.w, a.w - world.y * e.w);
+    let det = abs(along_x.x * along_y.y - along_x.y * along_y.x);
+    let per_device_px = run.raster / max(presentation.clip_inv_ef.w, 1.0e-6);
+    let grow = 0.5 * abs(w) * vec2(length(along_y), length(along_x)) / max(det, 1.0e-6);
+    return min(grow * per_device_px, vec2(256.0));
+}
+
+// The homography's `w` at `local`, as a projected glyph's clip-space w: its
+// atlas coordinates then interpolate perspective-correctly.
+fn text_clip_w(run: TextRun, local: vec2<f32>) -> f32 {
+    if (run.flags & RUN_PROJECT) == 0u {
+        return 1.0;
+    }
+    let e = text_presentations[run.presentation].project;
+    let p = (local + run.origin) / run.raster;
+    let w = e.z * p.x + e.w * p.y + 1.0;
+    return select(1.0, w, w > 1.0e-6);
+}

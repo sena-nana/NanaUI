@@ -92,7 +92,8 @@ struct VsOut {
     @invariant @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
     @location(1) uv: vec2<f32>,
-    @location(2) world_pos: vec2<f32>,
+    // Screen-linear: the fragment's own paint position.
+    @location(2) @interpolate(linear) world_pos: vec2<f32>,
     @location(3) @interpolate(flat) content: u32,
     // `presentation << 3 | flags`. Carried rather than re-read: the vertex
     // stage already has the run, and these are the same for every fragment of
@@ -102,6 +103,9 @@ struct VsOut {
     // `color`, sRGB-encoded: what the coverage correction reads, the same
     // for every fragment of a glyph.
     @location(5) @interpolate(flat) encoded: vec3<f32>,
+    // The glyph's cell on its page, in normalized coordinates: the taps a
+    // shrunk glyph averages stay in it rather than read a neighbour.
+    @location(6) @interpolate(flat) cell: vec4<f32>,
 }
 
 @vertex
@@ -125,8 +129,16 @@ fn vs_main(vertex: VsIn) -> VsOut {
     let height = (input.dim & 0xffff0000u) >> 16u;
     let corner = vec2<u32>(vertex.vertex & 1u, (vertex.vertex >> 1u) & 1u);
     let offset = vec2<u32>(width, height) * corner;
-    let local = vec2<f32>(input.origin + vec2<i32>(offset));
-    let texel = vec2<u32>(input.uv & 0xffffu, (input.uv & 0xffff0000u) >> 16u) + offset;
+    var local = vec2<f32>(input.origin + vec2<i32>(offset));
+    let base = vec2<u32>(input.uv & 0xffffu, (input.uv & 0xffff0000u) >> 16u);
+    var texel = vec2<f32>(base + offset);
+    if (run.flags & RUN_PROJECT) != 0u {
+        // Bitmap texels are raster px, so the quad and its atlas coordinates
+        // grow alike.
+        let grown = (vec2<f32>(corner) * 2.0 - 1.0) * text_edge_grow(run, local);
+        local += grown;
+        texel += grown;
+    }
 
     var color = run.color;
     if (input.control & 2u) != 0u {
@@ -135,15 +147,40 @@ fn vs_main(vertex: VsIn) -> VsOut {
     color.a = color.a * run.opacity;
 
     let world = text_world_position(run, local);
+    let clip_w = text_clip_w(run, local);
     var out: VsOut;
-    out.position = globals.transform * vec4<f32>(world, 0.0, 1.0);
+    out.position = globals.transform * vec4<f32>(world * clip_w, 0.0, clip_w);
     out.color = color;
-    out.uv = atlas_uv(texel, page);
+    // `atlas_uv` of one texel is the page's texel size.
+    out.uv = texel * atlas_uv(vec2<u32>(1u), page);
     out.world_pos = world;
     out.content = content;
     out.run_flags = (run.presentation << 3u) | (run.flags & 7u);
     out.encoded = linear_to_srgb3(color.rgb);
+    out.cell = vec4<f32>(atlas_uv(base, page), atlas_uv(base + vec2<u32>(width, height), page));
     return out;
+}
+
+// One device pixel's worth of `page` at `uv`, whose screen derivatives are
+// `dx`/`dy`. A glyph is rasterized for its transform's larger scale, so an
+// anisotropic one is shrunk along the other axis, where one bilinear tap per
+// pixel would skip texels: that axis averages a grid of taps across the
+// pixel's footprint. A tap past the glyph's `cell` reads its transparent
+// gutter, never a neighbour.
+fn footprint_sample(page: texture_2d<f32>, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, cell: vec4<f32>) -> vec4<f32> {
+    let texels = vec2<f32>(textureDimensions(page));
+    let footprint = vec2(length(dx * texels), length(dy * texels));
+    let taps = clamp(ceil(footprint - 1.0 / 16.0), vec2(1.0), vec2(8.0));
+    let half_texel = 0.5 / texels;
+    var sum = vec4(0.0);
+    for (var i = 0.0; i < taps.x; i += 1.0) {
+        for (var j = 0.0; j < taps.y; j += 1.0) {
+            let offset = ((i + 0.5) / taps.x - 0.5) * dx + ((j + 0.5) / taps.y - 0.5) * dy;
+            let at = clamp(uv + offset, cell.xy - half_texel, cell.zw + half_texel);
+            sum += textureSampleLevel(page, atlas_linear, at, 0.0);
+        }
+    }
+    return sum / (taps.x * taps.y);
 }
 
 // What a fragment paints: the color, and the per-channel alpha it paints
@@ -154,6 +191,9 @@ struct TextShade {
 }
 
 fn shade(input: VsOut) -> TextShade {
+    // Before any branch: derivatives need every fragment of the quad.
+    let uv_dx = dpdx(input.uv);
+    let uv_dy = dpdy(input.uv);
     let flags = input.run_flags & 7u;
     var clip_cover = 1.0;
     if (flags & RUN_CLIP) != 0u {
@@ -180,7 +220,7 @@ fn shade(input: VsOut) -> TextShade {
     if input.content == CONTENT_MASK {
         var coverage = 0.0;
         if linear {
-            coverage = textureSampleLevel(mask_atlas, atlas_linear, input.uv, 0.0).x;
+            coverage = footprint_sample(mask_atlas, input.uv, uv_dx, uv_dy, input.cell).x;
         } else {
             coverage = textureSampleLevel(mask_atlas, atlas_nearest, input.uv, 0.0).x;
         }
@@ -200,7 +240,7 @@ fn shade(input: VsOut) -> TextShade {
     }
     var sampled = vec4<f32>(0.0);
     if linear {
-        sampled = textureSampleLevel(color_atlas, atlas_linear, input.uv, 0.0);
+        sampled = footprint_sample(color_atlas, input.uv, uv_dx, uv_dy, input.cell);
     } else {
         sampled = textureSampleLevel(color_atlas, atlas_nearest, input.uv, 0.0);
     }
