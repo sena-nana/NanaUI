@@ -85,32 +85,6 @@ impl VueHost {
             });
         }
     }
-    /// Resolve the topmost node under `(x, y)` for native input routing.
-    ///
-    /// Scene paint boxes in [`LayoutBoxStore`] win when present so early-frame
-    /// probes match painted geometry. Runtime hit-test is the fallback when no
-    /// paint box covers the point. File drag uses registered drop targets
-    /// instead of this pointer hit.
-    #[allow(dead_code)]
-    pub(crate) fn hit_test_client_point(&self, x: f32, y: f32) -> Option<NodeHandle> {
-        let doc = self.document.lock().expect("vue doc");
-        if !self.layout_boxes.snapshot().is_empty() {
-            let mut stack = vec![doc.mount_root()];
-            let mut preorder = Vec::new();
-            while let Some(node) = stack.pop() {
-                preorder.push(node);
-                for child in doc.children_of(node).into_iter().rev() {
-                    stack.push(child);
-                }
-            }
-            for handle in preorder.into_iter().rev() {
-                if self.layout_boxes.contains_point(handle, x, y) {
-                    return Some(handle);
-                }
-            }
-        }
-        doc.hit_test(x, y)
-    }
     /// Fire the DOM-style drag events for a file drag the Runtime already
     /// routed, through the same Vue event tree as pointer input. Only nodes
     /// registered with `drop-accepts` receive events; hit-testing uses Runtime
@@ -1542,16 +1516,6 @@ impl VueHost {
                 return Ok(false);
             }
             document.set_attribute(target, "value", &next.value);
-        }
-        #[cfg(feature = "scene-view")]
-        {
-            let is_menu = self
-                .bridge
-                .lock()
-                .expect("vue bridge")
-                .get(target.0)
-                .is_some_and(|widget| widget.kind == WidgetKind::ContextMenu);
-            if is_menu {}
         }
         self.fire_dom_event(engine, target, "input", detail)?;
         engine.run_microtasks()?;

@@ -1,8 +1,6 @@
 //! Input vocabulary shared by the canonical events and the hosts that make them.
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InputModifiers {
     pub alt: bool,
     pub control: bool,
@@ -10,8 +8,7 @@ pub struct InputModifiers {
     pub shift: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerPhase {
     Down,
     Move,
@@ -19,8 +16,7 @@ pub enum PointerPhase {
     Cancel,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PointerType {
     #[default]
     Mouse,

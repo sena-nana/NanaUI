@@ -10,19 +10,13 @@
 use crate::{InputModifiers, PointerPhase, PointerType};
 use nana_diagnostics::metric;
 use nana_ui_core::FileDragKind;
-use serde::{Deserialize, Serialize};
-use std::{
-    borrow::Cow,
-    collections::{HashMap, HashSet, VecDeque},
-    path::PathBuf,
-    time::Duration,
-};
+use std::{borrow::Cow, collections::VecDeque, path::PathBuf, time::Duration};
 
 macro_rules! identity {
     ($($name:ident),+ $(,)?) => {$ (
         #[repr(transparent)]
         #[derive(
-            Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+            Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
         )]
         pub struct $name(pub u64);
     )+};
@@ -36,7 +30,7 @@ identity!(
     InputTimestamp
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputMetadata {
     pub source: InputSourceId,
     pub device: DeviceId,
@@ -46,13 +40,13 @@ pub struct InputMetadata {
     pub timestamp: InputTimestamp,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CanonicalInputEvent {
     pub metadata: InputMetadata,
     pub payload: InputPayload,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointerInput {
     pub phase: PointerPhase,
     pub pointer_id: PointerId,
@@ -73,14 +67,13 @@ pub struct PointerInput {
     pub modifiers: InputModifiers,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WheelUnit {
     Pixels,
     Lines,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WheelInput {
     pub pointer_id: PointerId,
     pub x: f32,
@@ -91,21 +84,20 @@ pub struct WheelInput {
     pub modifiers: InputModifiers,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyState {
     Pressed,
     Released,
 }
 
 /// Hardware position, e.g. `KeyQ`; independent of the active keyboard layout.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalKey(pub Cow<'static, str>);
 /// Layout-resolved key, e.g. `q` or `Enter`. This is never committed text.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogicalKey(pub Cow<'static, str>);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyInput {
     pub physical: PhysicalKey,
     pub logical: LogicalKey,
@@ -169,7 +161,7 @@ impl KeyInput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompositionInput {
     Enabled,
     Disabled,
@@ -187,7 +179,7 @@ pub enum CompositionInput {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InputPayload {
     /// Touch and pen share the pointer contract, including pressure and tilt.
     Pointer(PointerInput),
@@ -217,7 +209,7 @@ pub enum InputPayload {
 
 /// A platform file drag over the window: files hovering at a point, dropped
 /// there, or the drag leaving without a drop.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FileDragInput {
     pub kind: FileDragKind,
     /// The dragged files. Empty for `Cancel`, and while a platform that
@@ -248,7 +240,7 @@ impl FileDragInput {
 /// traversal, a submitted field) inserts no text: the router drops the text
 /// that names it, the way a browser skips `input` after a prevented
 /// `keydown`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommittedText {
     pub text: String,
     /// Sequence of the [`InputPayload::Key`] press this text belongs to.
@@ -371,235 +363,59 @@ impl InputTimestamp {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct InputEndpointCounters {
-    pub input_events_received: u64,
-    pub input_events_coalesced: u64,
-    pub input_events_dropped_stale: u64,
-    pub input_events_rejected_capacity: u64,
-    /// Cumulative capacity of accepted owned payloads; not allocator telemetry.
-    pub input_payload_alloc_bytes: u64,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct InputDeviceCounters {
-    pub input_events_received: u64,
-    pub input_events_coalesced: u64,
-    pub input_events_dropped_stale: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputRejection {
-    WrongSource,
-    StaleGeneration,
-    OutOfOrder,
-    TimestampRegression,
-    Disconnected,
-    Capacity,
-}
-#[derive(Debug, Clone, PartialEq)]
-pub struct RejectedInput {
-    pub reason: InputRejection,
-    /// Return ownership so a host can retry a semantic transition after draining.
-    pub event: CanonicalInputEvent,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputEnqueueOutcome {
-    Queued,
-    Coalesced,
-}
-
-/// Bounded, event-driven single-source inbox. External hosts own any cross-thread
-/// synchronization/wakeup and authentication. Queue-full returns ownership rather
-/// than silently losing key/button/focus/IME transitions. No background polling.
-/// At most `max_events` distinct devices can be tracked per generation, including
-/// disconnected devices (their tombstones prevent replay). Reset the generation
-/// to reclaim device slots; invalid source/generation events never create slots.
+/// Bounded single-source inbox. It keeps stamped events in order, merges
+/// adjacent pointer moves and wheel deltas, and hands an event back when full
+/// rather than lose a key, button, focus or IME transition. It judges nothing
+/// about the events: generation, order and disconnects are the router's, at
+/// drain, the same on every path. Hosts own any cross-thread wakeup.
 #[derive(Debug)]
 pub struct InputEndpoint {
-    source: InputSourceId,
-    generation: EndpointGeneration,
     queue: VecDeque<CanonicalInputEvent>,
     max_events: usize,
     max_payload_bytes: usize,
     payload_bytes: usize,
-    last: Option<(InputSequence, InputTimestamp)>,
-    disconnected: bool,
-    counters: InputEndpointCounters,
-    disconnected_devices: HashSet<DeviceId>,
-    device_counters: HashMap<DeviceId, InputDeviceCounters>,
 }
 
 impl InputEndpoint {
-    pub fn new(
-        source: InputSourceId,
-        generation: EndpointGeneration,
-        max_events: usize,
-        max_payload_bytes: usize,
-    ) -> Self {
+    pub fn new(max_events: usize, max_payload_bytes: usize) -> Self {
         Self {
-            source,
-            generation,
             queue: VecDeque::with_capacity(max_events),
             max_events,
             max_payload_bytes,
             payload_bytes: 0,
-            last: None,
-            disconnected: false,
-            counters: InputEndpointCounters::default(),
-            disconnected_devices: HashSet::new(),
-            device_counters: HashMap::new(),
         }
     }
-    pub fn source(&self) -> InputSourceId {
-        self.source
-    }
-    pub fn generation(&self) -> EndpointGeneration {
-        self.generation
-    }
-    pub fn counters(&self) -> InputEndpointCounters {
-        self.counters
-    }
-    pub fn device_counters(&self, device: DeviceId) -> InputDeviceCounters {
-        self.device_counters
-            .get(&device)
-            .copied()
-            .unwrap_or_default()
-    }
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
+
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
-    pub fn queued_payload_bytes(&self) -> usize {
-        self.payload_bytes
-    }
 
-    /// Rebind after disconnect/document replacement. Old queued input is discarded;
-    /// the caller must cancel old routing state before using the new generation.
-    /// Generations never go backwards or repeat, including after u64 exhaustion.
-    pub fn reset(&mut self, generation: EndpointGeneration) -> bool {
-        if generation <= self.generation {
-            return false;
-        }
-        self.counters.input_events_dropped_stale += self.queue.len() as u64;
-        self.queue.clear();
-        self.payload_bytes = 0;
-        self.last = None;
-        self.disconnected = false;
-        self.disconnected_devices.clear();
-        self.device_counters.clear();
-        self.generation = generation;
-        true
-    }
-
+    /// Queue `event`, merged into the last one when both are coalescible. A
+    /// full queue returns the event: drain, then push it again.
     #[allow(clippy::result_large_err)]
-    pub fn push(
-        &mut self,
-        event: CanonicalInputEvent,
-    ) -> Result<InputEnqueueOutcome, RejectedInput> {
-        self.counters.input_events_received += 1;
+    pub fn push(&mut self, event: CanonicalInputEvent) -> Result<(), CanonicalInputEvent> {
         metric!(nana_diagnostics::framework::runtime::INPUT_EVENTS);
-        let meta = event.metadata;
-        if let Some(stats) = self.device_counters.get_mut(&meta.device) {
-            stats.input_events_received += 1;
-        }
-        let reason = if meta.source != self.source {
-            Some(InputRejection::WrongSource)
-        } else if meta.generation != self.generation {
-            Some(InputRejection::StaleGeneration)
-        } else if (self.disconnected && !matches!(event.payload, InputPayload::SourceConnected))
-            || (self.disconnected_devices.contains(&meta.device)
-                && !matches!(
-                    event.payload,
-                    InputPayload::DeviceConnected
-                        | InputPayload::SourceConnected
-                        | InputPayload::SourceDisconnected
-                ))
-        {
-            Some(InputRejection::Disconnected)
-        } else if self
-            .last
-            .is_some_and(|(sequence, _)| meta.sequence <= sequence)
-        {
-            Some(InputRejection::OutOfOrder)
-        } else if self
-            .last
-            .is_some_and(|(_, timestamp)| meta.timestamp < timestamp)
-        {
-            Some(InputRejection::TimestampRegression)
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            self.counters.input_events_dropped_stale += 1;
-            metric!(nana_diagnostics::framework::runtime::INPUT_STALE_DROPPED);
-            if let Some(stats) = self.device_counters.get_mut(&meta.device) {
-                stats.input_events_dropped_stale += 1;
-            }
-            return Err(RejectedInput { reason, event });
-        }
         if self
             .queue
             .back_mut()
             .is_some_and(|last| coalesce(last, &event))
         {
-            self.last = Some((meta.sequence, meta.timestamp));
-            self.counters.input_events_coalesced += 1;
             metric!(nana_diagnostics::framework::runtime::INPUT_COALESCED);
-            self.device_counters
-                .get_mut(&meta.device)
-                .expect("queued device is tracked")
-                .input_events_coalesced += 1;
-            return Ok(InputEnqueueOutcome::Coalesced);
+            return Ok(());
         }
         let bytes = event.payload.allocation_bytes();
+        if self.queue.len() >= self.max_events
+            || bytes > self.max_payload_bytes.saturating_sub(self.payload_bytes)
+        {
+            return Err(event);
+        }
         metric!(
             nana_diagnostics::framework::runtime::INPUT_PAYLOAD_BYTES,
             bytes as u64
         );
-        if (!self.device_counters.contains_key(&meta.device)
-            && self.device_counters.len() >= self.max_events)
-            || self.queue.len() >= self.max_events
-            || bytes > self.max_payload_bytes.saturating_sub(self.payload_bytes)
-        {
-            self.counters.input_events_rejected_capacity += 1;
-            return Err(RejectedInput {
-                reason: InputRejection::Capacity,
-                event,
-            });
-        }
-        self.device_counters
-            .entry(meta.device)
-            .or_insert(InputDeviceCounters {
-                input_events_received: 1,
-                ..InputDeviceCounters::default()
-            });
-        match event.payload {
-            InputPayload::SourceConnected => self.disconnected = false,
-            InputPayload::SourceDisconnected => self.disconnected = true,
-            InputPayload::DeviceDisconnected => {
-                self.disconnected_devices.insert(meta.device);
-            }
-            InputPayload::DeviceConnected => {
-                self.disconnected_devices.remove(&meta.device);
-            }
-            _ => {}
-        }
-        self.last = Some((meta.sequence, meta.timestamp));
         self.payload_bytes += bytes;
-        self.counters.input_payload_alloc_bytes = self
-            .counters
-            .input_payload_alloc_bytes
-            .saturating_add(bytes as u64);
         self.queue.push_back(event);
-        Ok(InputEnqueueOutcome::Queued)
-    }
-
-    /// Inspect the next event without consuming it or releasing its payload budget.
-    pub fn front(&self) -> Option<&CanonicalInputEvent> {
-        self.queue.front()
+        Ok(())
     }
 
     pub fn pop(&mut self) -> Option<CanonicalInputEvent> {
@@ -663,255 +479,67 @@ mod tests {
             timestamp: InputTimestamp(sequence * 10),
         }
     }
+
     fn pointer(sequence: u64, phase: PointerPhase) -> CanonicalInputEvent {
         CanonicalInputEvent {
             metadata: meta(sequence),
             payload: InputPayload::Pointer(PointerInput {
-                phase,
                 pointer_id: PointerId(3),
-                pointer_type: PointerType::Mouse,
-                x: sequence as f32,
-                y: 2.0,
-                screen_x: 0.0,
-                screen_y: 0.0,
-                button: 0,
-                buttons: 0,
-                pressure: 0.0,
-                tangential_pressure: 0.0,
-                tilt_x: 0,
-                tilt_y: 0,
-                twist: 0,
-                is_primary: true,
-                activation_click: false,
-                modifiers: InputModifiers::default(),
+                ..PointerInput::mouse(phase, sequence as f32, 2.0)
             }),
         }
     }
 
+    fn drain(endpoint: &mut InputEndpoint) -> Vec<CanonicalInputEvent> {
+        std::iter::from_fn(|| endpoint.pop()).collect()
+    }
+
     #[test]
     fn adjacent_moves_coalesce_but_transitions_are_preserved() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 8, 0);
-        assert_eq!(
-            endpoint.push(pointer(1, PointerPhase::Move)).unwrap(),
-            InputEnqueueOutcome::Queued
-        );
-        assert_eq!(
-            endpoint.push(pointer(2, PointerPhase::Move)).unwrap(),
-            InputEnqueueOutcome::Coalesced
-        );
-        assert_eq!(
-            endpoint.push(pointer(3, PointerPhase::Down)).unwrap(),
-            InputEnqueueOutcome::Queued
-        );
-        assert_eq!(endpoint.len(), 2);
-        let first = endpoint.pop().unwrap();
+        let mut endpoint = InputEndpoint::new(8, 0);
+        for (sequence, phase) in [
+            (1, PointerPhase::Move),
+            (2, PointerPhase::Move),
+            (3, PointerPhase::Down),
+        ] {
+            endpoint.push(pointer(sequence, phase)).unwrap();
+        }
+        let queued = drain(&mut endpoint);
+        assert_eq!(queued.len(), 2);
         assert!(matches!(
-            first.payload,
+            queued[0].payload,
             InputPayload::Pointer(PointerInput { x: 2.0, .. })
         ));
     }
 
     #[test]
-    fn high_frequency_moves_keep_one_queued_sample_and_no_heap_payload() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 8, 0);
+    fn high_frequency_moves_keep_one_queued_sample() {
+        let mut endpoint = InputEndpoint::new(8, 0);
         for sequence in 1..=1_000 {
-            assert!(matches!(
-                endpoint.push(pointer(sequence, PointerPhase::Move)),
-                Ok(InputEnqueueOutcome::Queued) | Ok(InputEnqueueOutcome::Coalesced)
-            ));
-        }
-        assert_eq!(endpoint.len(), 1);
-        assert_eq!(endpoint.queued_payload_bytes(), 0);
-        assert_eq!(endpoint.counters().input_events_coalesced, 999);
-    }
-
-    #[test]
-    fn stale_and_capacity_return_owned_events_and_count_rejections() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 1, 1);
-        let mut text = meta(1);
-        text.timestamp = InputTimestamp(1);
-        let event = CanonicalInputEvent {
-            metadata: text,
-            payload: InputPayload::Text(CommittedText::new("hello")),
-        };
-        let rejected = endpoint.push(event).unwrap_err();
-        assert_eq!(rejected.reason, InputRejection::Capacity);
-        assert_eq!(endpoint.counters().input_events_rejected_capacity, 1);
-        let stale = CanonicalInputEvent {
-            metadata: InputMetadata {
-                generation: EndpointGeneration(0),
-                sequence: InputSequence(2),
-                ..meta(2)
-            },
-            payload: InputPayload::Focus { focused: true },
-        };
-        assert_eq!(
-            endpoint.push(stale).unwrap_err().reason,
-            InputRejection::StaleGeneration
-        );
-        assert_eq!(endpoint.counters().input_events_dropped_stale, 1);
-    }
-
-    #[test]
-    fn key_text_and_composition_are_distinct_payloads() {
-        let key = InputPayload::Key(KeyInput {
-            physical: PhysicalKey(Cow::Borrowed("KeyA")),
-            logical: LogicalKey(Cow::Borrowed("a")),
-            state: KeyState::Pressed,
-            repeat: false,
-            modifiers: InputModifiers::default(),
-        });
-        assert_eq!(key.allocation_bytes(), 0);
-        assert!(!matches!(key, InputPayload::Text(_)));
-        assert!(matches!(
-            InputPayload::Composition(CompositionInput::Start),
-            InputPayload::Composition(_)
-        ));
-    }
-
-    #[test]
-    fn generation_reset_discards_old_queue_and_requires_monotonic_generation() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 2, 0);
-        endpoint.push(pointer(1, PointerPhase::Down)).unwrap();
-        assert!(endpoint.reset(EndpointGeneration(2)));
-        assert!(endpoint.is_empty());
-        assert!(!endpoint.reset(EndpointGeneration(1)));
-    }
-
-    #[test]
-    fn device_disconnect_rejects_later_events_until_reconnected() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 8, 0);
-        let disconnected = CanonicalInputEvent {
-            metadata: meta(1),
-            payload: InputPayload::DeviceDisconnected,
-        };
-        endpoint.push(disconnected).unwrap();
-        let rejected = endpoint.push(pointer(2, PointerPhase::Move)).unwrap_err();
-        assert_eq!(rejected.reason, InputRejection::Disconnected);
-        let connected = CanonicalInputEvent {
-            metadata: meta(3),
-            payload: InputPayload::DeviceConnected,
-        };
-        endpoint.push(connected).unwrap();
-        assert!(endpoint.push(pointer(4, PointerPhase::Move)).is_ok());
-        assert_eq!(
-            endpoint.device_counters(DeviceId(2)).input_events_received,
-            4
-        );
-        assert_eq!(
             endpoint
-                .device_counters(DeviceId(2))
-                .input_events_dropped_stale,
-            1
-        );
-    }
-
-    #[test]
-    fn source_disconnect_accepts_explicit_reconnect() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 4, 0);
-        let mut disconnected = meta(1);
-        disconnected.device = DeviceId(8);
-        endpoint
-            .push(CanonicalInputEvent {
-                metadata: disconnected,
-                payload: InputPayload::SourceDisconnected,
-            })
-            .unwrap();
-        let mut connected = meta(2);
-        connected.device = DeviceId(8);
-        endpoint
-            .push(CanonicalInputEvent {
-                metadata: connected,
-                payload: InputPayload::SourceConnected,
-            })
-            .unwrap();
-        assert!(!endpoint.is_empty());
-    }
-
-    #[test]
-    fn source_lifecycle_bypasses_device_tombstone_without_reviving_device() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 8, 0);
-        for (sequence, payload) in [
-            (1, InputPayload::DeviceDisconnected),
-            (2, InputPayload::SourceDisconnected),
-            (3, InputPayload::SourceConnected),
-        ] {
-            endpoint
-                .push(CanonicalInputEvent {
-                    metadata: meta(sequence),
-                    payload,
-                })
+                .push(pointer(sequence, PointerPhase::Move))
                 .unwrap();
         }
-        assert_eq!(
-            endpoint
-                .push(CanonicalInputEvent {
-                    metadata: meta(4),
-                    payload: InputPayload::Focus { focused: true },
-                })
-                .unwrap_err()
-                .reason,
-            InputRejection::Disconnected
-        );
-        endpoint
-            .push(CanonicalInputEvent {
-                metadata: meta(4),
-                payload: InputPayload::DeviceConnected,
-            })
-            .unwrap();
+        assert_eq!(drain(&mut endpoint).len(), 1);
     }
 
     #[test]
-    fn device_bookkeeping_is_bounded_even_when_drained_or_rejected() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 2, 0);
-        for device in 0..100 {
-            let mut event = pointer(device + 1, PointerPhase::Move);
-            event.metadata.source = InputSourceId(9);
-            event.metadata.device = DeviceId(device);
-            assert_eq!(
-                endpoint.push(event).unwrap_err().reason,
-                InputRejection::WrongSource
-            );
-        }
-        assert!(endpoint.device_counters.is_empty());
-        for device in 0..2 {
-            let mut event = pointer(device + 1, PointerPhase::Move);
-            event.metadata.device = DeviceId(device);
-            endpoint.push(event).unwrap();
-            endpoint.pop();
-        }
-        assert_eq!(
-            endpoint
-                .push(pointer(3, PointerPhase::Move))
-                .unwrap_err()
-                .reason,
-            InputRejection::Capacity
-        );
-        assert_eq!(endpoint.device_counters.len(), 2);
-        assert!(endpoint.reset(EndpointGeneration(2)));
-        assert!(endpoint.device_counters.is_empty());
-    }
-
-    #[test]
-    fn ordering_is_source_local_across_devices_and_capacity_retry_is_allowed() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 2, 0);
+    fn a_full_endpoint_returns_the_event_for_a_retry() {
+        let mut endpoint = InputEndpoint::new(1, 1);
+        let text = CanonicalInputEvent {
+            metadata: meta(1),
+            payload: InputPayload::Text(CommittedText::new("hello")),
+        };
+        assert_eq!(endpoint.push(text.clone()), Err(text));
         endpoint.push(pointer(2, PointerPhase::Down)).unwrap();
-        let mut other = pointer(1, PointerPhase::Down);
-        other.metadata.device = DeviceId(99);
-        assert_eq!(
-            endpoint.push(other).unwrap_err().reason,
-            InputRejection::OutOfOrder
-        );
-        endpoint.push(pointer(3, PointerPhase::Up)).unwrap();
-        let rejected = endpoint.push(pointer(4, PointerPhase::Down)).unwrap_err();
-        assert_eq!(rejected.reason, InputRejection::Capacity);
+        let up = endpoint.push(pointer(3, PointerPhase::Up)).unwrap_err();
         endpoint.pop();
-        endpoint.push(rejected.event).unwrap();
+        endpoint.push(up).unwrap();
     }
 
     #[test]
     fn wheel_coalescing_preserves_target_position() {
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 4, 0);
+        let mut endpoint = InputEndpoint::new(4, 0);
         let wheel = |sequence, x| CanonicalInputEvent {
             metadata: meta(sequence),
             payload: InputPayload::Wheel(WheelInput {
@@ -924,18 +552,13 @@ mod tests {
                 modifiers: InputModifiers::default(),
             }),
         };
-        endpoint.push(wheel(1, 1.0)).unwrap();
-        assert_eq!(
-            endpoint.push(wheel(2, 1.0)).unwrap(),
-            InputEnqueueOutcome::Coalesced
-        );
-        assert_eq!(
-            endpoint.push(wheel(3, 2.0)).unwrap(),
-            InputEnqueueOutcome::Queued
-        );
-        assert_eq!(endpoint.len(), 2);
+        for (sequence, x) in [(1, 1.0), (2, 1.0), (3, 2.0)] {
+            endpoint.push(wheel(sequence, x)).unwrap();
+        }
+        let queued = drain(&mut endpoint);
+        assert_eq!(queued.len(), 2);
         assert!(matches!(
-            endpoint.pop().unwrap().payload,
+            queued[0].payload,
             InputPayload::Wheel(WheelInput {
                 x: 1.0,
                 delta_y: 2.0,
@@ -952,23 +575,6 @@ mod tests {
         assert_eq!(first.sequence, InputSequence(1));
         assert_eq!(second.sequence, InputSequence(2));
         assert_eq!(first.timestamp.as_duration(), Duration::from_millis(16));
-        let mut endpoint = InputEndpoint::new(InputSourceId(4), EndpointGeneration(1), 4, 0);
-        endpoint
-            .push(CanonicalInputEvent {
-                metadata: second,
-                payload: InputPayload::Focus { focused: true },
-            })
-            .unwrap();
-        assert_eq!(
-            endpoint
-                .push(CanonicalInputEvent {
-                    metadata: first,
-                    payload: InputPayload::Focus { focused: false },
-                })
-                .unwrap_err()
-                .reason,
-            InputRejection::OutOfOrder
-        );
         assert_eq!(sequencer.advance(), EndpointGeneration(2));
         let restarted = sequencer.stamp(DeviceId(1), Duration::ZERO);
         assert_eq!(restarted.sequence, InputSequence(1));

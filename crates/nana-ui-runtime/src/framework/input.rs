@@ -129,10 +129,6 @@ pub struct RoutedEvent {
 pub struct InputCounters {
     pub events_routed: u64,
     pub events_rejected: u64,
-    /// Hit-test queries made while routing, from the world's own count.
-    pub hit_queries: u64,
-    pub focus_changes: u64,
-    pub capture_changes: u64,
     pub hover_changes: u64,
     pub cursor_updates: u64,
     pub text_input_updates: u64,
@@ -281,7 +277,8 @@ impl AppContext {
     }
 
     /// Unbind `source`: its presses and captures are cancelled through the
-    /// same path an explicit pointer cancel takes, then forgotten. Document
+    /// same path an explicit pointer cancel takes, then forgotten, and a file
+    /// drag it has hovering ends. Document
     /// focus is left alone. Returns the document it was bound to.
     pub fn unbind_input_source(
         &mut self,
@@ -292,6 +289,7 @@ impl AppContext {
             return Ok(None);
         };
         self.cancel_source_pointers(source, document, None, now)?;
+        self.cancel_source_file_drag(source, document)?;
         self.input.sources.remove(&source);
         Ok(Some(document))
     }
@@ -440,16 +438,12 @@ impl AppContext {
                 self.after_pointer(source, document, &pointer, landed, now, services)?;
                 disposition
             }
-            InputPayload::Wheel(wheel) => {
-                let disposition = self.dispatch_wheel(document, wheel, &mut landed)?;
-                // A wheel moves nothing under the cursor it did not already
-                // show; the next pointer sample re-derives it.
-                disposition
-            }
+            // A wheel moves nothing under the cursor it did not already show;
+            // the next pointer sample re-derives it.
+            InputPayload::Wheel(wheel) => self.dispatch_wheel(document, wheel, &mut landed)?,
             InputPayload::PointerEnter { x, y, .. } => {
                 let local = local.expect("pointer resolved above");
                 let target = self.world.hit_test(document, *x, *y);
-                landed = target;
                 self.set_pointer_location(document, local, Some((*x, *y)));
                 self.set_pointer_hover_at(document, local, target, now)?;
                 if let Some(state) = self.input.source(source) {
@@ -564,19 +558,15 @@ impl AppContext {
             // editor; a pointer sample already synced in `after_pointer`.
             self.sync_text_input(source, document, false, services);
         }
-        let counters = &mut self.input.counters;
         let hits = self.world.hit_test_queries() - hits_before;
-        counters.hit_queries += hits;
         if hits > 0 {
             nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_HIT_TESTS, hits);
         }
         if focus_before != self.world.focused(document) {
-            counters.focus_changes += 1;
             nana_diagnostics::metric!(nana_diagnostics::framework::runtime::INPUT_FOCUS_CHANGES);
         }
         if let Some(local) = local {
             if capture_before != self.world.pointer_capture(document, local) {
-                self.input.counters.capture_changes += 1;
                 nana_diagnostics::metric!(
                     nana_diagnostics::framework::runtime::INPUT_CAPTURE_CHANGES
                 );
@@ -588,14 +578,10 @@ impl AppContext {
                 );
             }
         }
-        let pointer_hit = match &event.payload {
-            InputPayload::Pointer(_) | InputPayload::Wheel(_) | InputPayload::FileDrag(_) => landed,
-            _ => None,
-        };
         Ok(InputRouteOutcome {
             handled: disposition.handled,
             prevent_default: disposition.prevent_default,
-            pointer_hit,
+            pointer_hit: landed,
             invalidated_work: self.world.pending_work_revision() != work_before,
         })
     }
@@ -739,12 +725,8 @@ impl AppContext {
                 // Components hear a lifecycle cancel exactly as they hear an
                 // explicit one, before their capture is revoked.
                 let cancel = PointerInput {
-                    phase: PointerPhase::Cancel,
                     pointer_id: PointerId(pointer),
                     pointer_type: identity.pointer_type,
-                    button: -1,
-                    buttons: 0,
-                    pressure: 0.0,
                     is_primary: identity.is_primary,
                     ..PointerInput::mouse(PointerPhase::Cancel, x, y)
                 };

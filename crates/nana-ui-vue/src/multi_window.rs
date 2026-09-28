@@ -16,8 +16,7 @@ use nana_js_engine::{
 use nana_ui_core::ThemeMode;
 
 use crate::{
-    CompositionInput, DocumentId, KeyboardInput, NodeHandle, PointerInput, SemanticSnapshot,
-    VueHost, WheelInput, WindowLifecycleEvent, compose_vue_artifact,
+    DocumentId, NodeHandle, SemanticSnapshot, VueHost, WindowLifecycleEvent, compose_vue_artifact,
 };
 use nana_ui_platform::WindowIcon;
 
@@ -1918,87 +1917,6 @@ impl VueRuntime {
             .lock()
             .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
             .pump_lifecycle(engine, event)?;
-        Ok(result)
-    }
-
-    pub fn dispatch_pointer<E: JsEngine + ?Sized>(
-        &self,
-        engine: &mut E,
-        id: VueWindowId,
-        input: PointerInput,
-    ) -> Result<bool, JsEngineError> {
-        let host = self
-            .host(id)
-            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
-        let result = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .dispatch_pointer(engine, input)?;
-        Ok(result)
-    }
-
-    pub fn dispatch_wheel<E: JsEngine + ?Sized>(
-        &self,
-        engine: &mut E,
-        id: VueWindowId,
-        input: WheelInput,
-    ) -> Result<bool, JsEngineError> {
-        let host = self
-            .host(id)
-            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
-        let result = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .dispatch_wheel(engine, input)?;
-        Ok(result)
-    }
-
-    pub fn dispatch_keyboard<E: JsEngine + ?Sized>(
-        &self,
-        engine: &mut E,
-        id: VueWindowId,
-        input: &KeyboardInput,
-        target: Option<NodeHandle>,
-    ) -> Result<bool, JsEngineError> {
-        let host = self
-            .host(id)
-            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
-        let result = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .dispatch_keyboard(engine, input, target)?;
-        Ok(result)
-    }
-
-    pub fn dispatch_composition<E: JsEngine + ?Sized>(
-        &self,
-        engine: &mut E,
-        id: VueWindowId,
-        input: &CompositionInput,
-    ) -> Result<bool, JsEngineError> {
-        let host = self
-            .host(id)
-            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
-        let result = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .dispatch_composition(engine, input)?;
-        Ok(result)
-    }
-
-    pub fn dispatch_native_ime<E: JsEngine + ?Sized>(
-        &self,
-        engine: &mut E,
-        id: VueWindowId,
-        event: &nana_ui_platform::CompositionInput,
-    ) -> Result<bool, JsEngineError> {
-        let host = self
-            .host(id)
-            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
-        let result = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .dispatch_native_ime(engine, event)?;
         Ok(result)
     }
 

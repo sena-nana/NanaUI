@@ -221,13 +221,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 // Window focus is canonical input as well as a host
                 // observation. Routing it first lets the Runtime cancel what
                 // the window held and hand the IME its state again.
-                let now = self.animation_clock.runtime_time(Instant::now());
-                let device = self.input_of(id).last_device;
-                self.deliver_input(
-                    event_loop,
-                    id,
-                    LoweredInput::event(device, InputPayload::Focus { focused: *focused }, now),
-                );
+                self.deliver_host_input(event_loop, id, InputPayload::Focus { focused: *focused });
                 if !self.window_contexts.contains_key(&id) {
                     return;
                 }
@@ -241,13 +235,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 // A file drag is input: it reaches drop targets through the
                 // router and the program through `input_event`.
                 if let Some(drag) = self.handle_file_dnd(event_loop, id, &event) {
-                    let now = self.animation_clock.runtime_time(Instant::now());
-                    let device = self.input_of(id).last_device;
-                    self.deliver_input(
-                        event_loop,
-                        id,
-                        LoweredInput::event(device, InputPayload::FileDrag(drag), now),
-                    );
+                    self.deliver_host_input(event_loop, id, InputPayload::FileDrag(drag));
                 }
             }
             _ => {}
@@ -336,6 +324,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// Stamp `lowered` into the window's endpoint. A transition drains at
     /// once, with everything queued before it; a move or wheel waits for the
     /// end of the event-loop turn, merging with the ones after it.
+    /// Deliver input the host makes itself (focus, a file drag, a pointer
+    /// it ends), on the device the window last heard from.
+    pub(super) fn deliver_host_input(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        payload: InputPayload,
+    ) -> nana_ui_platform::InputDisposition {
+        let now = self.animation_clock.runtime_time(Instant::now());
+        let device = self.input_of(id).last_device;
+        self.deliver_input(event_loop, id, LoweredInput::event(device, payload, now))
+    }
+
     pub(super) fn deliver_input(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -410,37 +411,21 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             payload,
         };
         let sequence = event.metadata.sequence;
-        let rejected = match host.input_source.endpoint.push(event) {
-            Ok(_) => return Some(sequence),
-            Err(rejected) => rejected,
+        let Err(event) = host.input_source.endpoint.push(event) else {
+            return Some(sequence);
         };
-        if rejected.reason != nana_ui_platform::InputRejection::Capacity {
+        // Full: route what is queued, then queue this one behind it.
+        self.drain_window_input(event_loop, id);
+        let host = self.window_contexts.get_mut(&id)?;
+        if host.input_source.endpoint.push(event).is_err() {
             self.program
                 .report_host_failure(HostFailure::InputDispatch {
                     window: id,
-                    error: format!(
-                        "window input endpoint rejected an event: {:?}",
-                        rejected.reason
-                    ),
+                    error: "window input endpoint stayed full after a drain".into(),
                 });
             return None;
         }
-        self.drain_window_input(event_loop, id);
-        let host = self.window_contexts.get_mut(&id)?;
-        match host.input_source.endpoint.push(rejected.event) {
-            Ok(_) => Some(sequence),
-            Err(rejected) => {
-                self.program
-                    .report_host_failure(HostFailure::InputDispatch {
-                        window: id,
-                        error: format!(
-                            "window input endpoint rejected an event: {:?}",
-                            rejected.reason
-                        ),
-                    });
-                None
-            }
-        }
+        Some(sequence)
     }
 
     /// Route everything the window's endpoint holds, then let the program see

@@ -2687,7 +2687,6 @@ version = "0.1.0"
 dependencies = [
  "nana-diagnostics",
  "nana-ui-core",
- "serde",
 ]
 
 [[package]]

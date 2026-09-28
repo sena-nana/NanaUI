@@ -6,7 +6,7 @@
 
 | 阶段 | 当前结论 | 已证明的合同 | 仍需补齐 |
 | --- | --- | --- | --- |
-| 249 Canonical InputEvent | `PASS`（仓内） | 强类型 source/device/pointer/generation/sequence/timestamp；按键、提交文本、组字是独立负载，文本带着产生它的按键 sequence；pointer/wheel 合并；断连、stale、source-local ordering；有界队列与 per-device 计数；`InputSequencer`；所有宿主直接降级，不再有中间形态 | 跨线程 endpoint、远程认证/重放/限流；正式 FFI/序列化版本需独立协议 |
+| 249 Canonical InputEvent | `PASS`（仓内） | 强类型 source/device/pointer/generation/sequence/timestamp；按键、提交文本、组字是独立负载，文本带着产生它的按键 sequence；pointer/wheel 合并；有界队列；`InputSequencer`；断连、stale、source-local ordering 由路由层统一校验；所有宿主直接降级，不再有中间形态 | 跨线程 endpoint、远程认证/重放/限流；正式 FFI/序列化版本需独立协议 |
 | 250 InputRouter | `PASS`（仓内） | 路由状态挂在每个 `AppContext` 上、按 source 分；绑定返回 `Result`；指针身份先解析再读捕获与悬停；窗口失焦只取消指针、不清 document 焦点；触控抬起清悬停；被处理按键的文本被丢弃；未捕获事件 1 次命中查询、捕获 0 次；稳态移动零分配；时间取自事件时间戳；唯一的 drain 先出队再路由 | 真实 native/WebView/remote adapter；宿主高频墙钟与帧计数 |
 | 251 Presentation Coordinate Bridge | `OPEN` | 原实现只在恒等变换下被使用，已删除；原生宿主的物理→逻辑换算是 `position.to_logical(scale)` | parent-local/viewport/content 的真实生产者（#247）、XR surface intersection、WebView DPR/resize、动态 presentation metadata |
 | 252 HostServices | `PARTIAL` | 光标与文本输入是最新值槽位（只在变化时、窗口重新获得焦点时下发）；IME 周围文本恒为 ≤4000 字节的窗口；剪贴板同步调用、在按键链原位置、忙时不等待；原生宿主 IME 执行器（winit）、光标合成（程序覆盖 > 窗口边框 > Runtime 意图）、进程唯一剪贴板；headless 与 Android 各有实现 | 真实 Windows/macOS 候选框与焦点撤销验收；剪贴板权限生命周期；Accessibility action 仍走既有通道（见下） |

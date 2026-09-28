@@ -20,6 +20,11 @@ use crate::{
 use crate::{GraphCanvasAdjustment, GraphPointerButton, GraphScrollDelta};
 
 macro_rules! optional_input {
+    // A fallible dispatch into an optional component: absent, it handled
+    // nothing.
+    ($feature:literal, $call:expr) => {
+        optional_input!($feature, $call, Ok::<bool, FrameworkError>(false))
+    };
     ($feature:literal, $call:expr, $absent:expr) => {{
         #[cfg(feature = $feature)]
         {
@@ -141,10 +146,7 @@ impl AppContext {
             && let Some(phase) = terminal_phase
             && self.terminal_pointer(document, target, *pointer_id, phase, *x, *y)?
         {
-            return Ok(InputDisposition {
-                handled: true,
-                prevent_default: true,
-            });
+            return Ok(CONSUMED);
         }
 
         #[cfg(feature = "graph-canvas")]
@@ -155,20 +157,13 @@ impl AppContext {
         let component_handled = match phase {
             PointerPhase::Move => {
                 if self.update_text_area_resize(document, *pointer_id, *x, *y)? {
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 if optional_input!(
                     "rich-text",
-                    self.update_rich_text_pointer(document, *pointer_id, *x, *y),
-                    Ok::<bool, FrameworkError>(false)
+                    self.update_rich_text_pointer(document, *pointer_id, *x, *y)
                 )? {
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 #[cfg(feature = "image-viewer")]
                 if let Some(viewer) = self
@@ -177,10 +172,7 @@ impl AppContext {
                     .and_then(|target| self.view_entity::<crate::ImageViewer>(target))
                     && self.image_viewer_pointer_move(viewer, *pointer_id, *x, *y)?
                 {
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 if let Some(shaper) = reborrow_text_shaper(&mut text_shaper)
                     && self.text_editor_pointer_drag(document, *pointer_id, *x, *y, shaper)?
@@ -202,18 +194,15 @@ impl AppContext {
                         )?
                         || optional_input!(
                             "graph-canvas",
-                            self.update_graph_canvas_pointer(document, *pointer_id, *x, *y,),
-                            Ok::<bool, FrameworkError>(false)
+                            self.update_graph_canvas_pointer(document, *pointer_id, *x, *y,)
                         )?
                         || optional_input!(
                             "graph-canvas",
-                            self.update_graph_minimap_pointer(document, *pointer_id, *x, *y,),
-                            Ok::<bool, FrameworkError>(false)
+                            self.update_graph_minimap_pointer(document, *pointer_id, *x, *y,)
                         )?
                         || optional_input!(
                             "controls",
-                            self.update_reorder_list_pointer(document, *pointer_id, *x, *y,),
-                            Ok::<bool, FrameworkError>(false)
+                            self.update_reorder_list_pointer(document, *pointer_id, *x, *y,)
                         )?
                         || self.update_split_resize(document, *pointer_id, *x, *y)?
                         || self.update_dock_split_resize(document, *pointer_id, *x, *y)?
@@ -223,8 +212,7 @@ impl AppContext {
                             .map(|_target| {
                                 optional_input!(
                                     "graph-canvas",
-                                    self.hover_graph_canvas(_target, *x, *y),
-                                    Ok::<bool, FrameworkError>(false)
+                                    self.hover_graph_canvas(_target, *x, *y)
                                 )
                             })
                             .transpose()?
@@ -233,17 +221,12 @@ impl AppContext {
                             .map(|_target| {
                                 optional_input!(
                                     "calendar",
-                                    self.hover_calendar_heatmap(_target, *x, *y),
-                                    Ok::<bool, FrameworkError>(false)
+                                    self.hover_calendar_heatmap(_target, *x, *y)
                                 )
                             })
                             .transpose()?
                             .unwrap_or(false)
-                        || optional_input!(
-                            "calendar",
-                            self.clear_calendar_heatmap_hover(document),
-                            Ok::<bool, FrameworkError>(false)
-                        )?
+                        || optional_input!("calendar", self.clear_calendar_heatmap_hover(document))?
                         || self.sync_split_handle_hover_near_hit(document, *x, *y, target, now)?
                         || target.is_some()
                 }
@@ -252,10 +235,7 @@ impl AppContext {
                 // A secondary press outside an open popover dismisses
                 // it and goes no further, matching the primary press.
                 if self.dismiss_popovers_outside(target)? {
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 self.dismiss_detached_menus(target)?;
                 self.secondary_press_at(document, *x, *y)?.is_some()
@@ -266,10 +246,7 @@ impl AppContext {
                     // Activation needs a press recorded here to match
                     // on release, so skipping it also stops this click
                     // from reaching the control underneath.
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 self.dismiss_detached_menus(target)?;
                 // Scrollbars overlay content, so they claim the press
@@ -279,19 +256,13 @@ impl AppContext {
                     && let Some(target) = target
                     && self.begin_text_area_resize(*pointer_id, target, *x, *y)?
                 {
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 if *button == 0
                     && let Some((view, axis)) = self.scrollbar_target_near_hit(*x, *y, target)
                     && self.begin_scrollbar_drag(*pointer_id, view, axis, *x, *y)?
                 {
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 // A press a blocking overlay swallowed reaches nothing
                 // underneath, not even a handle within slop of it.
@@ -351,14 +322,10 @@ impl AppContext {
                         && !activation_click
                         && optional_input!(
                             "rich-text",
-                            self.begin_rich_text_pointer(document, *pointer_id, target, *x, *y),
-                            Ok::<bool, FrameworkError>(false)
+                            self.begin_rich_text_pointer(document, *pointer_id, target, *x, *y)
                         )?
                     {
-                        return Ok(InputDisposition {
-                            handled: true,
-                            prevent_default: true,
-                        });
+                        return Ok(CONSUMED);
                     }
                     #[cfg(feature = "image-viewer")]
                     if *button == 0
@@ -368,10 +335,7 @@ impl AppContext {
                             .image_viewer_pointer_down(viewer, *pointer_id, *x, *y)?
                             .is_some()
                     {
-                        return Ok(InputDisposition {
-                            handled: true,
-                            prevent_default: true,
-                        });
+                        return Ok(CONSUMED);
                     }
                     if optional_input!("graph-canvas", self.is_graph_canvas(target), false) {
                         optional_input!(
@@ -383,21 +347,18 @@ impl AppContext {
                                 *x,
                                 *y,
                                 graph_button,
-                            ),
-                            Ok::<bool, FrameworkError>(false)
+                            )
                         )?;
                     } else if optional_input!("graph-canvas", self.is_graph_minimap(target), false)
                     {
                         optional_input!(
                             "graph-canvas",
-                            self.begin_graph_minimap_pointer(*pointer_id, target, *x, *y),
-                            Ok::<bool, FrameworkError>(false)
+                            self.begin_graph_minimap_pointer(*pointer_id, target, *x, *y)
                         )?;
                     } else if *button == 0
                         && optional_input!(
                             "controls",
-                            self.begin_reorder_list_pointer(document, *pointer_id, target, *x, *y,),
-                            Ok::<bool, FrameworkError>(false)
+                            self.begin_reorder_list_pointer(document, *pointer_id, target, *x, *y,)
                         )?
                     {
                     } else if self.is_dock_handle(target) && *button == 0 {
@@ -427,20 +388,13 @@ impl AppContext {
             }
             PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
                 if self.end_text_area_resize(document, *pointer_id, false)? {
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 if optional_input!(
                     "rich-text",
-                    self.end_rich_text_pointer(document, *pointer_id, *x, *y, false),
-                    Ok::<bool, FrameworkError>(false)
+                    self.end_rich_text_pointer(document, *pointer_id, *x, *y, false)
                 )? {
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 #[cfg(feature = "image-viewer")]
                 if let Some(viewer) = self
@@ -449,10 +403,7 @@ impl AppContext {
                     .and_then(|target| self.view_entity::<crate::ImageViewer>(target))
                     && self.image_viewer_pointer_up(viewer, *pointer_id)?
                 {
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 // 拖拽移动选中的落点执行先于通用释放清理：active 态
                 // 落文本、pending 态回落为点击。
@@ -465,28 +416,22 @@ impl AppContext {
                 self.document_text_pointer_release(*pointer_id);
                 if drop_handled {
                     self.release_pointer(document, *pointer_id);
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 if self.end_scrollbar_drag(document, *pointer_id, false)?
                     || self.end_range_drag(document, *pointer_id, false)?
                     || self.end_xy_pad_drag(document, *pointer_id, false)?
                     || optional_input!(
                         "graph-canvas",
-                        self.end_graph_canvas_pointer(document, *pointer_id, *x, *y, false,),
-                        Ok::<bool, FrameworkError>(false)
+                        self.end_graph_canvas_pointer(document, *pointer_id, *x, *y, false,)
                     )?
                     || optional_input!(
                         "graph-canvas",
-                        self.end_graph_minimap_pointer(document, *pointer_id, false),
-                        Ok::<bool, FrameworkError>(false)
+                        self.end_graph_minimap_pointer(document, *pointer_id, false)
                     )?
                     || optional_input!(
                         "controls",
-                        self.end_reorder_list_pointer(document, *pointer_id, *x, *y, false,),
-                        Ok::<bool, FrameworkError>(false)
+                        self.end_reorder_list_pointer(document, *pointer_id, *x, *y, false,)
                     )?
                     || self.end_split_resize(document, *pointer_id, false)?
                     || self.end_dock_split_resize(document, *pointer_id, false)?
@@ -494,10 +439,7 @@ impl AppContext {
                     || self.end_dock_item_drag(document, *pointer_id, *x, *y, false)?
                 {
                     self.release_pointer(document, *pointer_id);
-                    return Ok(InputDisposition {
-                        handled: true,
-                        prevent_default: true,
-                    });
+                    return Ok(CONSUMED);
                 }
                 let pressed = self.release_pointer(document, *pointer_id);
                 if let Some(pressed) = pressed {
@@ -513,8 +455,7 @@ impl AppContext {
                 self.end_text_area_resize(document, *pointer_id, true)?;
                 optional_input!(
                     "rich-text",
-                    self.end_rich_text_pointer(document, *pointer_id, *x, *y, true),
-                    Ok::<bool, FrameworkError>(false)
+                    self.end_rich_text_pointer(document, *pointer_id, *x, *y, true)
                 )?;
                 #[cfg(feature = "image-viewer")]
                 if let Some(viewer) = self
@@ -531,18 +472,15 @@ impl AppContext {
                 let xy_pad = self.end_xy_pad_drag(document, *pointer_id, true)?;
                 let graph = optional_input!(
                     "graph-canvas",
-                    self.end_graph_canvas_pointer(document, *pointer_id, *x, *y, true,),
-                    Ok::<bool, FrameworkError>(false)
+                    self.end_graph_canvas_pointer(document, *pointer_id, *x, *y, true,)
                 )?;
                 let minimap = optional_input!(
                     "graph-canvas",
-                    self.end_graph_minimap_pointer(document, *pointer_id, true),
-                    Ok::<bool, FrameworkError>(false)
+                    self.end_graph_minimap_pointer(document, *pointer_id, true)
                 )?;
                 let reorder = optional_input!(
                     "controls",
-                    self.end_reorder_list_pointer(document, *pointer_id, *x, *y, true,),
-                    Ok::<bool, FrameworkError>(false)
+                    self.end_reorder_list_pointer(document, *pointer_id, *x, *y, true,)
                 )?;
                 let split = self.end_split_resize(document, *pointer_id, true)?;
                 let dock_split = self.end_dock_split_resize(document, *pointer_id, true)?;
@@ -550,11 +488,8 @@ impl AppContext {
                 let dock_item = self.end_dock_item_drag(document, *pointer_id, *x, *y, true)?;
                 let pressed = self.release_pointer(document, *pointer_id).is_some();
                 self.set_pointer_hover_at(document, *pointer_id, None, now)?;
-                let calendar = optional_input!(
-                    "calendar",
-                    self.clear_calendar_heatmap_hover(document),
-                    Ok::<bool, FrameworkError>(false)
-                )?;
+                let calendar =
+                    optional_input!("calendar", self.clear_calendar_heatmap_hover(document))?;
                 let split_hover = self.sync_split_handle_hover(document, None)?;
                 scrollbar
                     || range
@@ -615,10 +550,7 @@ impl AppContext {
             .and_then(|target| self.view_entity::<crate::ImageViewer>(target))
             && self.image_viewer_wheel(viewer, *x, *y, dy)?
         {
-            return Ok(InputDisposition {
-                handled: true,
-                prevent_default: true,
-            });
+            return Ok(CONSUMED);
         }
         // 上时滚轮滚动浮层自身（按行，方向跟随滚轮），不再落到
         // 编辑器或文档滚动。
@@ -630,10 +562,7 @@ impl AppContext {
             0
         };
         if overlay_rows != 0 && self.scroll_text_overlay_at(document, *x, *y, overlay_rows)? {
-            return Ok(InputDisposition {
-                handled: true,
-                prevent_default: true,
-            });
+            return Ok(CONSUMED);
         }
         #[cfg(feature = "graph-canvas")]
         let graph_delta = if *line_delta {
@@ -660,8 +589,7 @@ impl AppContext {
                     *x,
                     *y,
                     graph_delta,
-                ),
-                Ok::<bool, FrameworkError>(false)
+                )
             )?
         } else {
             self.scroll_from_hit(overlay.target, delta)?.is_some()
@@ -752,58 +680,59 @@ impl AppContext {
         {
             return Ok(CONSUMED);
         }
-        if pressed && !keyboard_barrier && self.focused_terminal(document).is_some() {
+        // Past the application's policy, only presses act.
+        if !pressed {
+            return Ok(InputDisposition {
+                handled: false,
+                prevent_default: keyboard_barrier,
+            });
+        }
+        if !keyboard_barrier && self.focused_terminal(document).is_some() {
             return self.terminal_keystroke(document, stroke, services);
         }
         // Focused plain text editors own their editing keys (caret moves,
         // selection, deletion, indent, pairing) before any generic routing.
-        if pressed
-            && self.text_editor_key(
-                document,
-                key,
-                text,
-                modifiers,
-                reborrow_text_shaper(&mut text_shaper),
-            )?
+        if self.text_editor_key(
+            document,
+            key,
+            text,
+            modifiers,
+            reborrow_text_shaper(&mut text_shaper),
+        )? {
+            return Ok(CONSUMED);
+        }
+        if key == "Tab"
+            && !modifiers.alt
+            && !modifiers.control
+            && !modifiers.meta
+            && self.navigate_sequential_focus(document, modifiers.shift)?
         {
             return Ok(CONSUMED);
         }
-        if pressed {
-            if key == "Tab"
-                && !modifiers.alt
-                && !modifiers.control
-                && !modifiers.meta
-                && self.navigate_sequential_focus(document, modifiers.shift)?
+        if !modifiers.alt && !modifiers.control && !modifiers.meta && !modifiers.shift {
+            let segmented_navigation = match key {
+                "ArrowLeft" => Some(RovingFocusIntent::Previous),
+                "ArrowRight" => Some(RovingFocusIntent::Next),
+                "Home" => Some(RovingFocusIntent::First),
+                "End" => Some(RovingFocusIntent::Last),
+                _ => None,
+            };
+            if let Some(intent) = segmented_navigation
+                && self.navigate_focused_segmented(document, intent)?
             {
                 return Ok(CONSUMED);
             }
-            if !modifiers.alt && !modifiers.control && !modifiers.meta && !modifiers.shift {
-                let segmented_navigation = match key {
-                    "ArrowLeft" => Some(RovingFocusIntent::Previous),
-                    "ArrowRight" => Some(RovingFocusIntent::Next),
-                    "Home" => Some(RovingFocusIntent::First),
-                    "End" => Some(RovingFocusIntent::Last),
-                    _ => None,
-                };
-                if let Some(intent) = segmented_navigation
-                    && self.navigate_focused_segmented(document, intent)?
-                {
-                    return Ok(CONSUMED);
+            if matches!(key, " " | "Space" | "Enter")
+                && let Some(target) = self.world().focused(document)
+                && self.is_segmented_option_node(target)
+            {
+                if !repeat {
+                    self.activate_node(target)?;
                 }
-                if matches!(key, " " | "Space" | "Enter")
-                    && let Some(target) = self.world().focused(document)
-                    && self.is_segmented_option_node(target)
-                {
-                    if !repeat {
-                        self.activate_node(target)?;
-                    }
-                    return Ok(CONSUMED);
-                }
+                return Ok(CONSUMED);
             }
         }
-        let handled = if !pressed {
-            false
-        } else if !modifiers.alt
+        let handled = if !modifiers.alt
             && (modifiers.control || modifiers.meta)
             && key.eq_ignore_ascii_case("z")
         {
@@ -840,18 +769,13 @@ impl AppContext {
             } else if !primary {
                 match key {
                     "Backspace" => self.delete_focused_text_backward(document)?,
-                    _ => match typed_text(text) {
+                    _ => match text {
                         Some(text) => self.replace_focused_text(document, text)?,
                         None => false,
                     },
                 }
             } else {
                 false
-            }
-        } else if !modifiers.alt && !modifiers.control && !modifiers.meta {
-            match typed_text(text) {
-                Some(text) => self.replace_focused_text(document, text)?,
-                None => false,
             }
         } else {
             false
@@ -1117,13 +1041,7 @@ impl AppContext {
             }
             return Ok(CONSUMED);
         }
-        let owns_ime = self
-            .focused_text_input(document)
-            .is_some_and(|(target, _)| {
-                self.world()
-                    .accessibility(target)
-                    .is_some_and(|state| state.editable)
-            });
+        let owns_ime = self.editable_focused_text_input(document).is_some();
         let handled = match composition {
             CompositionInput::Enabled => false,
             CompositionInput::Start => self.set_ime_preedit(document, String::new(), None)?,
@@ -1153,12 +1071,6 @@ impl AppContext {
             prevent_default: handled || owns_ime || overlay_blocks,
         })
     }
-}
-
-enum CompletionKey {
-    Up,
-    Down,
-    Accept,
 }
 
 impl AppContext {
@@ -1218,31 +1130,20 @@ impl AppContext {
         // 移动候选选中项（编辑器选区不动），Enter/Tab 接受选中项。其余键
         // 穿透正常编辑（打字触发宿主重喂过滤列表）；任何修饰键组合
         // （Cmd+D、Alt+Up、Shift+Up 等）一律穿透。
-        if !modifiers.control && !modifiers.meta && !modifiers.alt {
-            let completion_key = match key {
-                "ArrowUp" if !modifiers.shift => Some(CompletionKey::Up),
-                "ArrowDown" if !modifiers.shift => Some(CompletionKey::Down),
-                "Enter" if !modifiers.shift => Some(CompletionKey::Accept),
-                "Tab" if !modifiers.shift => Some(CompletionKey::Accept),
-                _ => None,
-            };
-            if let Some(completion_key) = completion_key
-                && self.focused_text_completion_active(document)
-            {
-                match completion_key {
-                    CompletionKey::Up => {
-                        self.move_focused_text_completion(document, false)?;
-                    }
-                    CompletionKey::Down => {
-                        self.move_focused_text_completion(document, true)?;
-                    }
-                    CompletionKey::Accept => {
-                        self.accept_focused_text_completion(document, None)?;
-                    }
-                }
-                // 弹层激活期间整键消费（边界上导航无可做也不移动选区）。
-                return Ok(true);
+        if !modifiers.control
+            && !modifiers.meta
+            && !modifiers.alt
+            && !modifiers.shift
+            && matches!(key, "ArrowUp" | "ArrowDown" | "Enter" | "Tab")
+            && self.focused_text_completion_active(document)
+        {
+            if matches!(key, "ArrowUp" | "ArrowDown") {
+                self.move_focused_text_completion(document, key == "ArrowDown")?;
+            } else {
+                self.accept_focused_text_completion(document, None)?;
             }
+            // 弹层激活期间整键消费（边界上导航无可做也不移动选区）。
+            return Ok(true);
         }
         let control = modifiers.control;
         let meta = modifiers.meta;
@@ -1345,7 +1246,7 @@ impl AppContext {
             }
             return Ok(false);
         }
-        let Some(text) = typed_text(text).filter(|_| key != "Escape") else {
+        let Some(text) = text else {
             return Ok(false);
         };
         let mut typed = text.chars();
@@ -1404,10 +1305,6 @@ fn caret_intent(key: &str, modifiers: InputModifiers) -> Option<TextCaretIntent>
 /// The text a key carries, or `None` when it carries none. Which characters
 /// may type is the runtime's call: its typing path refuses the control
 /// characters command keys carry.
-fn typed_text(text: Option<&str>) -> Option<&str> {
-    text.filter(|text| !text.is_empty())
-}
-
 /// Reborrow the per-dispatch shaper so sequential uses never alias.
 pub(super) fn reborrow_text_shaper<'s>(
     shaper: &'s mut Option<&mut dyn TextShaper>,

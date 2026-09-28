@@ -22,9 +22,9 @@ use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 
 use crate::{
-    BridgeEvent, HostedInputResult, InputModifiers, KeyboardEventKind, KeyboardInput,
-    PointerEventKind, PointerInput, PointerType, SharedRuntimeDocument, VueRuntime, VueWindowId,
-    WheelInput, WindowLifecycleEvent, theme_tokens_from_appearance,
+    BridgeEvent, KeyboardEventKind, KeyboardInput, PointerEventKind, PointerInput,
+    SharedRuntimeDocument, VueRuntime, VueWindowId, WheelInput, WindowLifecycleEvent,
+    theme_tokens_from_appearance,
 };
 
 thread_local! {
@@ -78,12 +78,58 @@ impl StandaloneInput {
     }
 }
 
-fn vue_modifiers(modifiers: nana_ui_platform::InputModifiers) -> InputModifiers {
-    InputModifiers {
-        alt: modifiers.alt,
-        control: modifiers.control,
-        meta: modifiers.meta,
-        shift: modifiers.shift,
+fn vue_pointer(pointer: &nana_ui_platform::PointerInput) -> PointerInput {
+    PointerInput {
+        kind: match pointer.phase {
+            PointerPhase::Down => PointerEventKind::Down,
+            PointerPhase::Move => PointerEventKind::Move,
+            PointerPhase::Up => PointerEventKind::Up,
+            PointerPhase::Cancel => PointerEventKind::Cancel,
+        },
+        pointer_id: pointer.pointer_id.0,
+        pointer_type: pointer.pointer_type,
+        is_primary: pointer.is_primary,
+        client_x: pointer.x,
+        client_y: pointer.y,
+        screen_x: pointer.screen_x,
+        screen_y: pointer.screen_y,
+        button: pointer.button,
+        buttons: pointer.buttons,
+        pressure: pointer.pressure,
+        tangential_pressure: pointer.tangential_pressure,
+        tilt_x: pointer.tilt_x,
+        tilt_y: pointer.tilt_y,
+        twist: pointer.twist,
+        modifiers: pointer.modifiers,
+    }
+}
+
+fn vue_wheel(wheel: &nana_ui_platform::WheelInput) -> WheelInput {
+    WheelInput {
+        client_x: wheel.x,
+        client_y: wheel.y,
+        screen_x: wheel.x,
+        screen_y: wheel.y,
+        delta_x: wheel.delta_x,
+        delta_y: wheel.delta_y,
+        delta_mode: u8::from(wheel.unit == nana_ui_platform::WheelUnit::Lines),
+        modifiers: wheel.modifiers,
+    }
+}
+
+fn vue_key(key: &nana_ui_platform::KeyInput) -> KeyboardInput {
+    KeyboardInput {
+        kind: if key.is_pressed() {
+            KeyboardEventKind::Down
+        } else {
+            KeyboardEventKind::Up
+        },
+        key: key.logical.0.to_string(),
+        code: key.physical.0.to_string(),
+        location: 0,
+        repeat: key.repeat,
+        composing: false,
+        modifiers: key.modifiers,
     }
 }
 
@@ -373,7 +419,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         let window = VueWindowId(id.0);
         // A callback may update another document or mutate state before
         // throwing; those changes stand even when delivery reports an error.
-        if let Ok(Some((event, outcome))) = self.route_standalone(window, payload) {
+        if let Ok((event, outcome)) = self.route_standalone(window, payload) {
             let _ = self.observe_runtime_canonical(window, &event, outcome.disposition());
         }
         Ok(self.update_for_changed_windows(before))
@@ -397,7 +443,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         &mut self,
         window: VueWindowId,
         payload: InputPayload,
-    ) -> Result<Option<(CanonicalInputEvent, nana_ui::InputRouteOutcome)>, JsEngineError> {
+    ) -> Result<(CanonicalInputEvent, nana_ui::InputRouteOutcome), JsEngineError> {
         let host = self.require_host(window)?;
         let document = host
             .lock()
@@ -425,7 +471,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             .context_mut()
             .route_input(&event, &mut source.services, None)
             .map_err(|error| JsEngineError::new(error.to_string()))?;
-        Ok(Some((event, outcome)))
+        Ok((event, outcome))
     }
 
     /// Emit the browser-shaped events a page sees for one routed event. This
@@ -436,93 +482,69 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         window: VueWindowId,
         event: &CanonicalInputEvent,
         disposition: nana_ui::InputDisposition,
-    ) -> Result<HostedInputResult, JsEngineError> {
+    ) -> Result<(), JsEngineError> {
+        let host = self.require_host(window)?;
+        let mut host = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+        let engine = &mut self.engine;
         match &event.payload {
-            InputPayload::Pointer(pointer) => self.emit_runtime_pointer(window, pointer),
-            InputPayload::Wheel(wheel) => self.emit_runtime_wheel(window, wheel),
+            InputPayload::Pointer(pointer) => {
+                host.emit_pointer_from_runtime(engine, vue_pointer(pointer))?;
+            }
+            InputPayload::Wheel(wheel) => {
+                host.emit_wheel_from_runtime(engine, vue_wheel(wheel))?;
+            }
             InputPayload::Key(key) => {
-                let result = self.emit_runtime_key(window, key)?;
+                let allowed = host.emit_keyboard_from_runtime(engine, &vue_key(key), None)?;
                 // Text a handled or prevented key typed is not typed: the
                 // page sees no `input` for it, as a browser would not.
-                if key.is_pressed() && (disposition.handled || result.default_prevented) {
+                if key.is_pressed() && (disposition.handled || !allowed) {
                     self.handled_keys.insert(window, event.metadata.sequence);
                 }
-                Ok(result)
             }
             InputPayload::Text(committed) => {
-                if committed.key.is_some()
-                    && self.handled_keys.get(&window) == committed.key.as_ref()
-                {
-                    return Ok(HostedInputResult::default());
+                let suppressed = committed.key.is_some()
+                    && self.handled_keys.get(&window) == committed.key.as_ref();
+                let target = host.focused().filter(|&target| {
+                    host.document()
+                        .lock()
+                        .is_ok_and(|document| document.has_text_input_state(target))
+                });
+                if let Some(target) = target.filter(|_| !suppressed && !committed.text.is_empty()) {
+                    host.emit_text_events_from_runtime(
+                        engine,
+                        target,
+                        &committed.text,
+                        "insertText",
+                    )?;
                 }
-                self.emit_runtime_text(window, &committed.text)
             }
-            InputPayload::Composition(composition) => self.emit_runtime_ime(window, composition),
-            InputPayload::FileDrag(drag) => self.emit_runtime_file_drag(window, drag),
+            InputPayload::Composition(composition) => {
+                // A blocking Runtime overlay owns the composition; the page
+                // does not see it.
+                let blocked = host.document().lock().is_ok_and(|document| {
+                    let runtime = document.runtime_document();
+                    runtime
+                        .context()
+                        .has_blocking_runtime_overlay(runtime.document())
+                });
+                if !blocked {
+                    host.emit_native_ime_from_runtime(engine, composition)?;
+                }
+            }
+            InputPayload::FileDrag(drag) => {
+                host.emit_file_drag_from_runtime(engine, drag.kind, &drag.paths, drag.position)?;
+            }
             InputPayload::PointerEnter { .. }
             | InputPayload::PointerLeave { .. }
             | InputPayload::Focus { .. }
             | InputPayload::DeviceConnected
             | InputPayload::DeviceDisconnected
             | InputPayload::SourceConnected
-            | InputPayload::SourceDisconnected => Ok(HostedInputResult::default()),
+            | InputPayload::SourceDisconnected => {}
         }
-    }
-
-    fn emit_runtime_text(
-        &mut self,
-        id: VueWindowId,
-        text: &str,
-    ) -> Result<HostedInputResult, JsEngineError> {
-        let host = self.require_host(id)?;
-        let mut host = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
-        let Some(target) = host.focused() else {
-            return Ok(HostedInputResult::default());
-        };
-        let is_text = host
-            .document()
-            .lock()
-            .ok()
-            .is_some_and(|document| document.has_text_input_state(target));
-        if !is_text || text.is_empty() {
-            return Ok(HostedInputResult::default());
-        }
-        let allowed =
-            host.emit_text_events_from_runtime(&mut self.engine, target, text, "insertText")?;
-        Ok(HostedInputResult {
-            targeted: true,
-            default_prevented: !allowed,
-            consumed: !allowed,
-        })
-    }
-
-    fn emit_runtime_ime(
-        &mut self,
-        id: VueWindowId,
-        composition: &nana_ui_platform::CompositionInput,
-    ) -> Result<HostedInputResult, JsEngineError> {
-        let host = self.require_host(id)?;
-        let mut host = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
-        // A blocking Runtime overlay owns the composition; the page does not
-        // see it.
-        let blocked = host.document().lock().ok().is_some_and(|document| {
-            let runtime = document.runtime_document();
-            runtime
-                .context()
-                .has_blocking_runtime_overlay(runtime.document())
-        });
-        if blocked {
-            return Ok(HostedInputResult::default());
-        }
-        host.emit_native_ime_from_runtime(&mut self.engine, composition)?;
-        Ok(HostedInputResult {
-            targeted: true,
-            ..HostedInputResult::default()
-        })
+        Ok(())
     }
 
     /// Redraw only the windows whose visual revision moved since `before`.
@@ -585,126 +607,6 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 ))
             })
             .collect()
-    }
-
-    fn emit_runtime_pointer(
-        &mut self,
-        id: VueWindowId,
-        pointer: &nana_ui_platform::PointerInput,
-    ) -> Result<HostedInputResult, JsEngineError> {
-        let host = self.require_host(id)?;
-        let mut host = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
-        let kind = match pointer.phase {
-            PointerPhase::Down => PointerEventKind::Down,
-            PointerPhase::Move => PointerEventKind::Move,
-            PointerPhase::Up => PointerEventKind::Up,
-            PointerPhase::Cancel => PointerEventKind::Cancel,
-        };
-        host.emit_pointer_from_runtime(
-            &mut self.engine,
-            PointerInput {
-                kind,
-                pointer_id: pointer.pointer_id.0,
-                pointer_type: match pointer.pointer_type {
-                    nana_ui_platform::PointerType::Mouse => PointerType::Mouse,
-                    nana_ui_platform::PointerType::Touch => PointerType::Touch,
-                    nana_ui_platform::PointerType::Pen => PointerType::Pen,
-                },
-                is_primary: pointer.is_primary,
-                client_x: pointer.x,
-                client_y: pointer.y,
-                screen_x: pointer.screen_x,
-                screen_y: pointer.screen_y,
-                button: pointer.button,
-                buttons: pointer.buttons,
-                pressure: pointer.pressure,
-                tangential_pressure: pointer.tangential_pressure,
-                tilt_x: pointer.tilt_x,
-                tilt_y: pointer.tilt_y,
-                twist: pointer.twist,
-                modifiers: vue_modifiers(pointer.modifiers),
-            },
-        )
-    }
-
-    fn emit_runtime_file_drag(
-        &mut self,
-        id: VueWindowId,
-        drag: &nana_ui_platform::FileDragInput,
-    ) -> Result<HostedInputResult, JsEngineError> {
-        let host = self.require_host(id)?;
-        let mut host = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
-        let allowed = host.emit_file_drag_from_runtime(
-            &mut self.engine,
-            drag.kind,
-            &drag.paths,
-            drag.position,
-        )?;
-        Ok(HostedInputResult {
-            default_prevented: !allowed,
-            ..HostedInputResult::default()
-        })
-    }
-
-    fn emit_runtime_wheel(
-        &mut self,
-        id: VueWindowId,
-        wheel: &nana_ui_platform::WheelInput,
-    ) -> Result<HostedInputResult, JsEngineError> {
-        let host = self.require_host(id)?;
-        let mut host = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
-        host.emit_wheel_from_runtime(
-            &mut self.engine,
-            WheelInput {
-                client_x: wheel.x,
-                client_y: wheel.y,
-                screen_x: wheel.x,
-                screen_y: wheel.y,
-                delta_x: wheel.delta_x,
-                delta_y: wheel.delta_y,
-                delta_mode: u8::from(wheel.unit == nana_ui_platform::WheelUnit::Lines),
-                modifiers: vue_modifiers(wheel.modifiers),
-            },
-        )
-    }
-
-    fn emit_runtime_key(
-        &mut self,
-        id: VueWindowId,
-        key: &nana_ui_platform::KeyInput,
-    ) -> Result<HostedInputResult, JsEngineError> {
-        let host = self.require_host(id)?;
-        let mut host = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
-        let allowed = host.emit_keyboard_from_runtime(
-            &mut self.engine,
-            &KeyboardInput {
-                kind: if key.is_pressed() {
-                    KeyboardEventKind::Down
-                } else {
-                    KeyboardEventKind::Up
-                },
-                key: key.logical.0.to_string(),
-                code: key.physical.0.to_string(),
-                location: 0,
-                repeat: key.repeat,
-                composing: false,
-                modifiers: vue_modifiers(key.modifiers),
-            },
-            None,
-        )?;
-        Ok(HostedInputResult {
-            targeted: true,
-            default_prevented: !allowed,
-            consumed: !allowed,
-        })
     }
 
     /// The host already redraws a window it resizes or publishes; moves, focus

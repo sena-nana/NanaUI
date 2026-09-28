@@ -49,8 +49,6 @@ pub mod runtime {
     // high-frequency path does not allocate diagnostic events.
     pub static INPUT_EVENTS: Metric = Metric::counter(D, 20, "runtime.input.events", "count");
     pub static INPUT_COALESCED: Metric = Metric::counter(D, 21, "runtime.input.coalesced", "count");
-    pub static INPUT_STALE_DROPPED: Metric =
-        Metric::counter(D, 22, "runtime.input.stale_dropped", "count");
     pub static INPUT_PAYLOAD_BYTES: Metric =
         Metric::counter(D, 23, "runtime.input.payload_bytes", "bytes");
     pub static INPUT_ROUTE_REJECTED: Metric =
@@ -69,9 +67,10 @@ pub mod runtime {
         Metric::counter(D, 36, "runtime.input.capture_changes", "count");
     pub static INPUT_HOVER_CHANGES: Metric =
         Metric::counter(D, 37, "runtime.input.hover_changes", "count");
-    // Retired with the host-request queue, the coordinate bridge and a
-    // routing cache that never existed; the IDs stay taken:
-    // 25 runtime.input.inverse_recomputes, 27 runtime.host_requests.enqueued,
+    // Retired with the host-request queue, the coordinate bridge, a routing
+    // cache that never existed and the endpoint's own validation (the router
+    // counts rejections in 24); the IDs stay taken:
+    // 22 runtime.input.stale_dropped, 25 runtime.input.inverse_recomputes, 27 runtime.host_requests.enqueued,
     // 28 runtime.host_requests.rejected, 29 runtime.host_requests.drained,
     // 30 runtime.host_requests.stale, 32 runtime.input.mapping,
     // 38 runtime.input.routing_cache_hits, 39 runtime.input.routing_cache_misses.

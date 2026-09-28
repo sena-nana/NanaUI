@@ -185,10 +185,6 @@ impl TestInput {
         self.services.set_clipboard(Some(text.to_owned()));
     }
 
-    fn services(&self) -> &HeadlessHostServices {
-        &self.services
-    }
-
     fn source(&mut self, context: &mut AppContext, document: DocumentId) -> &mut HeadlessInput {
         if self
             .bound

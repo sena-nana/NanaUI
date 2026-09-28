@@ -19,7 +19,6 @@ use crate::{AppContext, DocumentId, TextShaper};
 pub struct HeadlessInput {
     sequencer: InputSequencer,
     services: HeadlessHostServices,
-    device: DeviceId,
     now: Duration,
 }
 
@@ -56,13 +55,8 @@ impl HeadlessInput {
         Self {
             sequencer: InputSequencer::new(source, generation),
             services: HeadlessHostServices::new(),
-            device: DeviceId(0),
             now: Duration::ZERO,
         }
-    }
-
-    pub fn source(&self) -> InputSourceId {
-        self.sequencer.source()
     }
 
     pub fn generation(&self) -> EndpointGeneration {
@@ -85,11 +79,6 @@ impl HeadlessInput {
         self.now = now;
     }
 
-    /// The device later events come from.
-    pub fn set_device(&mut self, device: DeviceId) {
-        self.device = device;
-    }
-
     pub fn services(&self) -> &HeadlessHostServices {
         &self.services
     }
@@ -101,7 +90,7 @@ impl HeadlessInput {
     /// Stamp `payload` as this source's next event without routing it.
     pub fn stamp(&mut self, payload: InputPayload) -> CanonicalInputEvent {
         CanonicalInputEvent {
-            metadata: self.sequencer.stamp(self.device, self.now),
+            metadata: self.sequencer.stamp(DeviceId(0), self.now),
             payload,
         }
     }

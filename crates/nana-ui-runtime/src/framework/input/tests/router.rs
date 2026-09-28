@@ -335,7 +335,7 @@ fn an_idle_drain_does_no_work() {
     context
         .bind_input_source(source, generation, document(15))
         .unwrap();
-    let mut endpoint = InputEndpoint::new(source, generation, 8, 1024);
+    let mut endpoint = InputEndpoint::new(8, 1024);
     let mut routed = Vec::new();
     let queries = context.world().hit_test_queries();
     assert_eq!(
@@ -363,7 +363,7 @@ fn a_failing_event_never_holds_the_endpoint() {
     context
         .bind_input_source(source, generation, document(16))
         .unwrap();
-    let mut endpoint = InputEndpoint::new(source, generation, 8, 1024);
+    let mut endpoint = InputEndpoint::new(8, 1024);
     endpoint
         .push(event(
             source,
@@ -540,7 +540,7 @@ fn window_blur_keeps_document_focus_and_refocus_rearms_text_input() {
     capture.capture_pointer(1, node);
     context.commit_mutations(capture).unwrap();
     context.focus_node(doc, editor.stable_id()).unwrap();
-    let armed = services.counters().text_input_updates;
+    let armed = context.input_counters().text_input_updates;
 
     context
         .route_input(
@@ -565,7 +565,7 @@ fn window_blur_keeps_document_focus_and_refocus_rearms_text_input() {
             None,
         )
         .unwrap();
-    assert!(services.counters().text_input_updates > armed);
+    assert!(context.input_counters().text_input_updates > armed);
     assert_eq!(
         services.text_input().map(|state| state.purpose),
         Some(TextInputPurpose::Normal)
@@ -799,7 +799,7 @@ fn the_cursor_is_sent_only_when_it_changes() {
             None,
         )
         .unwrap();
-    assert_eq!(services.counters().cursor_updates, 0);
+    assert_eq!(context.input_counters().cursor_updates, 0);
     for sequence in 2..=4 {
         context
             .route_input(
@@ -815,7 +815,7 @@ fn the_cursor_is_sent_only_when_it_changes() {
             .unwrap();
     }
     assert_eq!(services.cursor(), CursorIcon::Pointer);
-    assert_eq!(services.counters().cursor_updates, 1);
+    assert_eq!(context.input_counters().cursor_updates, 1);
 
     // Keys, text and wheel over it leave the cursor alone.
     context
@@ -850,7 +850,7 @@ fn the_cursor_is_sent_only_when_it_changes() {
             None,
         )
         .unwrap();
-    assert_eq!(services.counters().cursor_updates, 1);
+    assert_eq!(context.input_counters().cursor_updates, 1);
 
     let text = context
         .create_component(doc, TextInput::new("text"))
@@ -915,7 +915,7 @@ fn text_input_state_follows_the_focused_editor() {
             anchor: 4,
         })
     );
-    let sent = input.services().counters().text_input_updates;
+    let sent = context.input_counters().text_input_updates;
     input
         .route(&mut context, InputPayload::Focus { focused: false })
         .unwrap();
@@ -925,7 +925,7 @@ fn text_input_state_follows_the_focused_editor() {
             InputPayload::Key(key("Shift", InputModifiers::default())),
         )
         .unwrap();
-    assert_eq!(input.services().counters().text_input_updates, sent);
+    assert_eq!(context.input_counters().text_input_updates, sent);
 
     input
         .composition(&mut context, CompositionInput::Commit("!".into()))

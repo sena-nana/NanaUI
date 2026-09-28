@@ -44,12 +44,7 @@ pub(super) struct WindowInputSource {
 impl WindowInputSource {
     pub(super) fn new(source: InputSourceId, generation: EndpointGeneration) -> Self {
         Self {
-            endpoint: InputEndpoint::new(
-                source,
-                generation,
-                ENDPOINT_EVENTS,
-                ENDPOINT_PAYLOAD_BYTES,
-            ),
+            endpoint: InputEndpoint::new(ENDPOINT_EVENTS, ENDPOINT_PAYLOAD_BYTES),
             sequencer: InputSequencer::new(source, generation),
             runtime_cursor: nana_ui_platform::CursorIcon::Default,
             applied_cursor: None,

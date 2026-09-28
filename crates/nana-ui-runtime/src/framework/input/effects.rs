@@ -184,7 +184,7 @@ impl AppContext {
     /// The text-input state of `document`'s focused editor or terminal:
     /// purpose, where the IME anchors its candidates, and at most
     /// [`SurroundingText::MAX_BYTES`] of the text around the selection.
-    pub fn text_input_context(&self, document: DocumentId) -> Option<TextInputContext> {
+    pub(super) fn text_input_context(&self, document: DocumentId) -> Option<TextInputContext> {
         if self.terminal_accepts_input(document) {
             return Some(TextInputContext {
                 purpose: TextInputPurpose::Terminal,
@@ -205,7 +205,7 @@ impl AppContext {
     }
 
     /// The focused text input when it takes typing.
-    fn editable_focused_text_input(
+    pub(super) fn editable_focused_text_input(
         &self,
         document: DocumentId,
     ) -> Option<(StableNodeId, crate::TextInputView<'_>)> {

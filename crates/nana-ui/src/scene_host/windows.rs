@@ -474,13 +474,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             origin,
             None,
         );
-        let now = self.animation_clock.runtime_time(Instant::now());
-        let device = self.input_of(id).last_device;
-        let _ = self.deliver_input(
-            event_loop,
-            id,
-            LoweredInput::event(device, InputPayload::Pointer(pointer), now),
-        );
+        let _ = self.deliver_host_input(event_loop, id, InputPayload::Pointer(pointer));
     }
 
     fn dispatch_forward_leave(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
@@ -496,13 +490,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .window(id)
             .and_then(|window| window_screen_origin(window.as_ref()));
         let pointer = self.input_mut(id).cancel_mouse(origin);
-        let now = self.animation_clock.runtime_time(Instant::now());
-        let device = self.input_of(id).last_device;
-        let _ = self.deliver_input(
-            event_loop,
-            id,
-            LoweredInput::event(device, InputPayload::Pointer(pointer), now),
-        );
+        let _ = self.deliver_host_input(event_loop, id, InputPayload::Pointer(pointer));
     }
 
     pub(super) fn forward_os_passthrough_ignores_pointer(

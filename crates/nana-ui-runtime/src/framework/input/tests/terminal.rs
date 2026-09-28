@@ -128,7 +128,6 @@ fn terminal_paste_reads_the_host_clipboard() {
             .unwrap()
             .handled
     );
-    assert_eq!(adapter.services().counters().clipboard_reads, 1);
     assert!(
         events
             .lock()

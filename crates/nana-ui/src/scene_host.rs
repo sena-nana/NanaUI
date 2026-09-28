@@ -2865,8 +2865,6 @@ struct InputTracker {
     last_device: nana_ui_platform::DeviceId,
     buttons: u16,
     modifiers: ModifiersState,
-    active_touches: HashSet<u64>,
-    primary_touch: Option<u64>,
     pending_file_paths: Vec<PathBuf>,
     file_drop_emitted: bool,
     pending_dnd: Option<DataTransferId>,
@@ -2879,8 +2877,6 @@ struct InputTracker {
 impl InputTracker {
     fn clear_pointers(&mut self) {
         self.buttons = 0;
-        self.active_touches.clear();
-        self.primary_touch = None;
     }
 
     /// Ends the mouse gesture whose release the platform will not deliver.
@@ -2953,13 +2949,44 @@ impl InputTracker {
             .unwrap_or_else(|| platform_input_modifiers(self.modifiers))
     }
 
-    fn begin_file_drag(&mut self, transfer: DataTransferId, serial: Option<AsyncRequestSerial>) {
+    /// Forget the drag: its paths, its transfer and whether it was dropped.
+    fn reset_file_drag(&mut self) {
         self.pending_file_paths.clear();
         self.file_drop_emitted = false;
         self.drop_waiting_for_data = false;
         self.drop_modifiers = None;
+        self.pending_dnd = None;
+        self.pending_dnd_serial = None;
+    }
+
+    fn begin_file_drag(&mut self, transfer: DataTransferId, serial: Option<AsyncRequestSerial>) {
+        self.reset_file_drag();
         self.pending_dnd = Some(transfer);
         self.pending_dnd_serial = serial;
+    }
+
+    /// The drag's files hovering at the cursor.
+    fn hover_files(&self) -> FileDragInput {
+        FileDragInput {
+            kind: FileDragKind::Hover,
+            paths: self.pending_file_paths.clone(),
+            position: Some(self.cursor),
+            modifiers: self.drag_modifiers(),
+        }
+    }
+
+    /// The release: the drag's files at the cursor, sent once.
+    fn drop_files(&mut self, modifiers: InputModifiers) -> FileDragInput {
+        self.file_drop_emitted = true;
+        self.drop_waiting_for_data = false;
+        self.pending_dnd = None;
+        self.pending_dnd_serial = None;
+        FileDragInput {
+            kind: FileDragKind::Drop,
+            paths: std::mem::take(&mut self.pending_file_paths),
+            position: Some(self.cursor),
+            modifiers,
+        }
     }
 
     fn wait_for_drop_data(&mut self, transfer: DataTransferId, serial: AsyncRequestSerial) {
@@ -2975,12 +3002,8 @@ impl InputTracker {
         if self.pending_dnd != Some(transfer) || !self.drop_waiting_for_data {
             return None;
         }
-        self.pending_file_paths.clear();
+        self.reset_file_drag();
         self.file_drop_emitted = true;
-        self.drop_waiting_for_data = false;
-        self.drop_modifiers = None;
-        self.pending_dnd = None;
-        self.pending_dnd_serial = None;
         Some(FileDragInput::cancel())
     }
 
@@ -3004,27 +3027,13 @@ impl InputTracker {
             if self.file_drop_emitted {
                 return None;
             }
-            self.file_drop_emitted = true;
-            self.drop_waiting_for_data = false;
-            self.pending_dnd = None;
-            self.pending_dnd_serial = None;
             let modifiers = self
                 .drop_modifiers
                 .take()
                 .unwrap_or_else(|| self.drag_modifiers());
-            return Some(FileDragInput {
-                kind: FileDragKind::Drop,
-                paths: std::mem::take(&mut self.pending_file_paths),
-                position: Some(self.cursor),
-                modifiers,
-            });
+            return Some(self.drop_files(modifiers));
         }
-        Some(FileDragInput {
-            kind: FileDragKind::Hover,
-            paths: self.pending_file_paths.clone(),
-            position: Some(self.cursor),
-            modifiers: self.drag_modifiers(),
-        })
+        Some(self.hover_files())
     }
 
     /// Lower one native event to canonical input, or `None` for events that
@@ -3227,47 +3236,23 @@ impl InputTracker {
                 if self.pending_dnd != Some(*transfer) {
                     self.begin_file_drag(*transfer, None);
                 }
-                Some(FileDragInput {
-                    kind: FileDragKind::Hover,
-                    paths: self.pending_file_paths.clone(),
-                    position: Some(self.cursor),
-                    modifiers: self.drag_modifiers(),
-                })
+                Some(self.hover_files())
             }
             WinitWindowEvent::DragPosition { id: transfer, .. } => {
                 if self.pending_dnd != Some(*transfer) || self.file_drop_emitted {
                     return None;
                 }
-                Some(FileDragInput {
-                    kind: FileDragKind::Hover,
-                    paths: self.pending_file_paths.clone(),
-                    position: Some(self.cursor),
-                    modifiers: self.drag_modifiers(),
-                })
+                Some(self.hover_files())
             }
             WinitWindowEvent::DragLeft { .. } => {
-                self.pending_file_paths.clear();
-                self.file_drop_emitted = false;
-                self.drop_waiting_for_data = false;
-                self.drop_modifiers = None;
-                self.pending_dnd = None;
-                self.pending_dnd_serial = None;
+                self.reset_file_drag();
                 Some(FileDragInput::cancel())
             }
             WinitWindowEvent::DragDropped { .. } => {
                 if self.file_drop_emitted {
                     return None;
                 }
-                self.file_drop_emitted = true;
-                self.drop_waiting_for_data = false;
-                self.pending_dnd = None;
-                self.pending_dnd_serial = None;
-                Some(FileDragInput {
-                    kind: FileDragKind::Drop,
-                    paths: std::mem::take(&mut self.pending_file_paths),
-                    position: Some(self.cursor),
-                    modifiers: self.drag_modifiers(),
-                })
+                Some(self.drop_files(self.drag_modifiers()))
             }
             _ => None,
         }

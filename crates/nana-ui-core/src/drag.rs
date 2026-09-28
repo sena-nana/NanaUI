@@ -11,11 +11,10 @@
 //! reconcile them. This module is for payloads that come from outside those
 //! families, the platform's file drops above all.
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Platform file-drag phase. Hosts map window hover/drop/cancel onto this.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileDragKind {
     Hover,
     Drop,

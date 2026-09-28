@@ -187,11 +187,11 @@ pub fn touch_to_pointer_event(
     pointer_id: i32,
     modifiers: InputModifiers,
 ) -> PointerInput {
-    let (phase, button, buttons) = match kind {
-        SlotTouchKind::Down => (PointerPhase::Down, 0, 1),
-        SlotTouchKind::Move => (PointerPhase::Move, 0, 0),
-        SlotTouchKind::Up => (PointerPhase::Up, 0, 0),
-        SlotTouchKind::Cancel => (PointerPhase::Cancel, 0, 0),
+    let (phase, buttons) = match kind {
+        SlotTouchKind::Down => (PointerPhase::Down, 1),
+        SlotTouchKind::Move => (PointerPhase::Move, 0),
+        SlotTouchKind::Up => (PointerPhase::Up, 0),
+        SlotTouchKind::Cancel => (PointerPhase::Cancel, 0),
     };
     PointerInput {
         phase,
@@ -201,7 +201,7 @@ pub fn touch_to_pointer_event(
         y: logical[1],
         screen_x: logical[0],
         screen_y: logical[1],
-        button,
+        button: 0,
         buttons,
         pressure: 1.0,
         tangential_pressure: 0.0,

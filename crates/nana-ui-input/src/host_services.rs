@@ -123,15 +123,6 @@ impl HostServices for UnsupportedHostServices {
     }
 }
 
-/// How often a headless host was asked for each service.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct HostServiceCounters {
-    pub cursor_updates: u64,
-    pub text_input_updates: u64,
-    pub clipboard_reads: u64,
-    pub clipboard_writes: u64,
-}
-
 /// Services for a host without a window: devtools sessions, tests, offscreen
 /// harnesses. It keeps what it was told, so a fixture can read the cursor and
 /// IME state a window would have shown, and holds a private clipboard.
@@ -140,7 +131,6 @@ pub struct HeadlessHostServices {
     cursor: CursorIcon,
     text_input: Option<TextInputContext>,
     clipboard: Option<String>,
-    counters: HostServiceCounters,
 }
 
 impl HeadlessHostServices {
@@ -163,30 +153,22 @@ impl HeadlessHostServices {
     pub fn set_clipboard(&mut self, text: Option<String>) {
         self.clipboard = text;
     }
-
-    pub fn counters(&self) -> HostServiceCounters {
-        self.counters
-    }
 }
 
 impl HostServices for HeadlessHostServices {
     fn set_cursor(&mut self, cursor: CursorIcon) {
-        self.counters.cursor_updates += 1;
         self.cursor = cursor;
     }
 
     fn set_text_input(&mut self, state: Option<&TextInputContext>) {
-        self.counters.text_input_updates += 1;
         self.text_input = state.cloned();
     }
 
     fn read_clipboard(&mut self) -> Result<Option<String>, HostServiceError> {
-        self.counters.clipboard_reads += 1;
         Ok(self.clipboard.clone())
     }
 
     fn write_clipboard(&mut self, text: &str) -> Result<(), HostServiceError> {
-        self.counters.clipboard_writes += 1;
         self.clipboard = Some(text.to_owned());
         Ok(())
     }
@@ -216,15 +198,6 @@ mod tests {
         assert_eq!(services.read_clipboard(), Ok(Some("copied".into())));
         services.set_text_input(None);
         assert_eq!(services.text_input(), None);
-        assert_eq!(
-            services.counters(),
-            HostServiceCounters {
-                cursor_updates: 1,
-                text_input_updates: 2,
-                clipboard_reads: 1,
-                clipboard_writes: 1,
-            }
-        );
     }
 
     #[test]

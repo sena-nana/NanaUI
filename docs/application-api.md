@@ -55,8 +55,8 @@
   末尾或下一次重绘前 drain，因此程序每轮看到的是合并后的一个 move。
 - **结果**：`InputRouteOutcome` 给出 `handled`、`prevent_default`、`pointer_hit` 和
   `invalidated_work`。`handled` 与 `prevent_default` 相互独立：阻塞型 overlay 可以阻止宿主
-  默认行为而不表示控件处理了事件。`AppContext::input_counters()` 给出路由、拒绝、命中查询、
-  焦点/捕获/悬停变化、光标与文本输入更新次数，以及被丢弃的文本数。
+  默认行为而不表示控件处理了事件。`AppContext::input_counters()` 给出路由、拒绝、悬停变化、
+  光标与文本输入更新次数，以及被丢弃的文本数；命中查询、焦点与捕获变化只进诊断指标。
 
 宿主能力走 `HostServices`（同样在 `nana-ui-input`）：
 

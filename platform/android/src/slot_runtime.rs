@@ -93,7 +93,6 @@ pub struct SlotRuntime {
     ime_enabled: bool,
     #[cfg_attr(not(test), allow(dead_code))]
     button: Entity<Button>,
-    #[cfg_attr(not(test), allow(dead_code))]
     field: Entity<TextInput>,
 }
 
@@ -399,11 +398,10 @@ impl SlotRuntime {
     }
 
     fn commit_ime_on_blur(&mut self) -> Result<(), FrameworkError> {
-        if !self.ime_enabled || !self.text_input_focused() {
-            self.ime_enabled = false;
+        let enabled = std::mem::replace(&mut self.ime_enabled, false);
+        if !enabled || !self.text_input_focused() {
             return Ok(());
         }
-        self.ime_enabled = false;
         self.dispatch_ime_event(CompositionInput::Disabled)
     }
 

@@ -6,7 +6,7 @@
 
 | Fixture | 合同 | 证据 |
 | --- | --- | --- |
-| canonical endpoint | source/device/pointer identity、generation、source-local sequence、断连、stale、pointer/wheel 合并、容量拒绝归还所有权；`InputSequencer` 按 generation 重新计数 | `cargo test -p nana-ui-input --lib --locked` |
+| canonical endpoint | 有界队列：相邻 pointer move 与 wheel 合并，队列满时把事件交还调用方；`InputSequencer` 按 generation 重新计数。generation、顺序、断连的校验只在路由层做一次（见下一行） | `cargo test -p nana-ui-input --lib --locked` |
 | host services | 光标与文本输入是最新值槽位；headless 服务记下宿主会显示的状态；共享剪贴板忙时回答 `Busy` 而不等待 | `cargo test -p nana-ui-input --lib --locked`、`cargo test -p nana-ui-platform --lib --locked` |
 | runtime router | 绑定与校验（stale、乱序、时间回退、断连、同 generation 换 document）；多 source/device 指针身份；窗口失焦只取消指针、保留 document 焦点、重新获得焦点时重发文本输入；source 断开时才清焦点；触控抬起不留悬停；首个事件不读其他 source 的捕获；被处理按键的文本被丢弃；剪贴板在按键链原位置；两个 source 各自的文本输入与光标；文件拖放交给放置目标、目标即 `pointer_hit`、失焦与断开结束悬停 | `cargo test -p nana-ui-runtime --all-features --lib framework::input --locked` |
 | 组件行为（原 adapter 测试） | 指针、滚轮、键盘、文本、组字进入各类组件的原有行为，经新路由逐条保留（83 条） | 同上，`framework::input::tests::dispatch` |

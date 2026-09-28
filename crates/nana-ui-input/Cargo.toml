@@ -15,4 +15,3 @@ path = "src/lib.rs"
 [dependencies]
 nana-ui-core.workspace = true
 nana-diagnostics.workspace = true
-serde.workspace = true

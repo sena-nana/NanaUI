@@ -15,6 +15,9 @@
 | HostService 请求队列、reservation、`HostServiceBackpressure` | 光标与文本输入是最新值槽位；剪贴板是同步调用 `read_clipboard` / `write_clipboard`，忙时返回 `HostServiceError::Busy` |
 | `PresentationCoordinateBridge` 与 `coordinates.rs` | 无；原生宿主的物理→逻辑换算不变 |
 | `input_router_counters()` | `AppContext::input_counters() -> InputCounters` |
+| `InputEndpoint::new(source, generation, max_events, max_bytes)` 及其校验、计数器（`InputRejection`、`RejectedInput`、`InputEnqueueOutcome`、`InputEndpointCounters`、`InputDeviceCounters`）、`reset` / `len` / `front` | `InputEndpoint::new(max_events, max_bytes)` 只是有界队列：`push` 返回 `Result<(), CanonicalInputEvent>`，满了就把事件交还；generation、顺序、断连由路由校验 |
+| `HeadlessHostServices::counters()` | `AppContext::input_counters()` 的 `cursor_updates` / `text_input_updates` |
+| 输入类型的 serde 派生 | 无；canonical 负载不是 wire 格式 |
 | `nana_ui_vue::ImeEvent` | `nana_ui_vue::NativeComposition`（即 `CompositionInput`） |
 | `WindowEvent::{FileHovered, FileDropped, FileHoverCancelled}` | `InputPayload::FileDrag(FileDragInput { kind: FileDragKind::{Hover, Drop, Cancel}, paths, position, modifiers })`，经 `RoutedInput` 送达 |
 | `AppContext::dispatch_file_drag`（公开） | 无；路由调用它，程序不再调用 |
