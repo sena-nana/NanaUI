@@ -1825,15 +1825,14 @@ fn clip_dests_for(
     clips: &[nana_ui_scene::ClipRegion],
     origin: PaintOrigin,
 ) -> Vec<FragmentClip> {
-    // Custom has no vertex clip so wrap every rotated parallelogram; built-ins wrap extras only.
+    // Custom has no vertex clip so wrap every clip the scissor cannot express;
+    // built-ins wrap extras only.
     let keep_innermost = matches!(
         kind,
         ScenePrimitiveKind::Custom { node: custom, .. } if custom.renderer.as_ref() != "nana.host-texture"
     );
     if keep_innermost {
-        let mut dest = clip::rotated_fragment_clips(clips, origin);
-        dest.extend(clip::polygon_fragment_clips(clips, origin));
-        dest
+        clip::all_fragment_clips(clips, origin)
     } else if matches!(
         kind,
         ScenePrimitiveKind::Stroke { .. }

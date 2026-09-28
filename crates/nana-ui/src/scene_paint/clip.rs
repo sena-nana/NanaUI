@@ -534,6 +534,25 @@ pub(super) fn extra_fragment_clips(
     extras
 }
 
+/// Every clip the scissor cannot express — rotated, polygonal or rounded —
+/// outer to inner, each once: all of them dest-wrap a Custom node, which has
+/// no fragment clip of its own.
+pub(super) fn all_fragment_clips(
+    clips: &[nana_ui_scene::ClipRegion],
+    origin: PaintOrigin,
+) -> Vec<FragmentClip> {
+    let mut dest = Vec::new();
+    for clip in clips.iter().filter(|clip| needs_fragment_test(clip)) {
+        if let Some(fragment) = rotated_clip(clip, origin)
+            .or_else(|| polygon_clip(clip, origin))
+            .or_else(|| axis_aligned_rounded_clip(clip, origin))
+        {
+            push_unique_clip(&mut dest, fragment);
+        }
+    }
+    dest
+}
+
 /// Whether this clip needs more than the scissor: rounded, polygonal or
 /// rotated.
 ///
@@ -758,8 +777,8 @@ pub(super) fn paint_origin(target_origin: [f32; 2], scene_origin: [f32; 2]) -> [
 /// Rotated/sheared clips still contribute their AABB here as a coarse reject.
 /// Quad, Mesh, affine text, and HostTexture overflow clip to [`fragment_clip`]
 /// (innermost parallelogram). Extra outer rotated clips dest-composite through
-/// [`extra_fragment_clips`]. Custom nodes with a non-PASS fragment clip wrap
-/// the same dest path so renderers need not implement parallelogram clip.
+/// [`extra_fragment_clips`]. Custom nodes wrap every such clip in the same
+/// dest path ([`all_fragment_clips`]) so renderers need not implement one.
 /// Rounded HostTexture clip is the sibling Quad SDF, not this intersection.
 pub(super) fn intersect_clips(
     viewport: LogicalRect,

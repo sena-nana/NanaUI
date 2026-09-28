@@ -3113,7 +3113,7 @@ fn rounded_clip_around(child: ExtractedNode) -> [ExtractedNode; 2] {
     [parent, child]
 }
 
-/// The green channel inside, on and outside the 64px circle's curve.
+/// The pixels inside, on and outside the 64px circle's curve.
 fn rounded_clip_edge_samples(pixels: &[u8]) -> ([u8; 4], [u8; 4], [u8; 4]) {
     // Pixel (6, 12) has its center 0.1px outside the circle: a binary test
     // clears it, a one-pixel ramp keeps about 40%. (1, 1) is well outside,
@@ -3205,6 +3205,55 @@ fn child_host_texture_is_antialiased_by_its_parents_rounded_clip() {
     );
     assert_eq!(outside[1], 0, "outside the clip, got {outside:?}");
     drop(view);
+}
+
+#[test]
+fn custom_node_is_cut_by_its_parents_rounded_clip() {
+    // A renderer draws its whole region; the rounding is the painter's.
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        rounded_clip_around(custom_render_child(2, 1, 0.0, 0.0, 64.0, 64.0, "test.fill")),
+        [],
+    );
+    let mut renderers = SceneGpuRendererRegistry::new();
+    renderers.insert(
+        "test.fill",
+        Arc::new(FillClipRenderer::new(&device, format)),
+    );
+    let (texture, view) = test_copy_target(&device, format, 64, 64);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui custom under a rounded parent clip"),
+    });
+    painter
+        .paint_encoder(
+            &scene,
+            &mut encoder,
+            &view,
+            ScenePaintViewport {
+                logical_size: [64.0, 64.0],
+                physical_size: [64, 64],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                clear: true,
+            },
+            None,
+            Some(&renderers),
+        )
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    let (inside, edge, outside) = rounded_clip_edge_samples(&pixels);
+    assert!(is_red_slot(inside), "inside the clip, got {inside:?}");
+    assert!(
+        (40..=200).contains(&edge[0]),
+        "a pixel on the clip's curve must be partially covered, got {edge:?}"
+    );
+    assert_eq!(outside[0], 0, "outside the clip, got {outside:?}");
+    drop(texture);
 }
 
 #[test]
