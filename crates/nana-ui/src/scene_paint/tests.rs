@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use nana_ui_core::{ButtonKind, LengthSpec, OverflowSpec, PaintTransform, SemanticColorRole};
 use nana_ui_runtime::{
-    AppContext, Button as RuntimeButton, ComponentGeometry, ComputedStyle, CustomRenderNode,
-    DocumentId, ExtractedNode, GpuTextureView, LayoutBox, MutationQueue, NodeKind, NodeStyle,
-    StableNodeId, StandardVisual, TextContent,
+    AppContext, Avatar, Button as RuntimeButton, ComponentGeometry, ComputedStyle,
+    CustomRenderNode, DocumentId, ExtractedNode, GpuTextureView, LayoutBox, MutationQueue,
+    NodeKind, NodeStyle, StableNodeId, StandardVisual, TextContent,
 };
 #[cfg(feature = "graph-canvas")]
 use nana_ui_scene::StrokePattern;
@@ -3089,6 +3089,61 @@ fn host_texture_clips_each_corner_with_its_own_radius() {
             "bottom corner ({x},{y}) stays square, got {corner:?}"
         );
     }
+    drop(view);
+}
+
+#[test]
+fn avatar_edge_keeps_its_antialiasing_under_its_own_overflow_clip() {
+    // Avatar 同时带圆角与 overflow: hidden。自身的圆角裁剪若再作用于纹理,
+    // 像素中心落在圆外的那半圈抗锯齿会被硬裁成 0,边缘成锯齿。
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let avatar = context
+        .create_component(document, Avatar::new("face").size(64.0))
+        .unwrap();
+    let mut layout = MutationQueue::new();
+    write_box(&mut layout, avatar.stable_id(), 0.0, 0.0, 64.0, 64.0);
+    context.commit_mutations(layout).unwrap();
+    let scene = commit_scene(&mut context);
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let registry = register_host_texture("face", &view, 64, 64);
+    let (target, target_view) = test_copy_target(&device, format, 64, 64);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui avatar edge coverage"),
+    });
+    painter
+        .paint_encoder(
+            &scene,
+            &mut encoder,
+            &target_view,
+            ScenePaintViewport {
+                logical_size: [64.0, 64.0],
+                physical_size: [64, 64],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                clear: true,
+            },
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
+    assert!(is_green_slot(pixel(&pixels, 64, 32, 32)));
+    assert!(
+        pixel(&pixels, 64, 1, 1)[1] < 8,
+        "outside the circle stays clear"
+    );
+    // (6,12) 的像素中心距圆心约 32.10:在圆外 0.1px,约 40% 覆盖。
+    let edge = pixel(&pixels, 64, 6, 12);
+    assert!(
+        (40..=200).contains(&edge[1]),
+        "edge pixel just outside the circle must be partially covered, got {edge:?}"
+    );
     drop(view);
 }
 
