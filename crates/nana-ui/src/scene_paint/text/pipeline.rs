@@ -302,7 +302,7 @@ pub(super) struct TextRunGpu {
     pub color: [f32; 4],
     pub opacity: f32,
     /// Physical px per logical px the instances were resolved at: the device
-    /// scale, times the raster step a magnifying transform earned the entry.
+    /// scale, times the raster step a scaling transform earned the entry.
     /// Only a projected run reads it, to take its corners back to logical
     /// space before the homography.
     pub raster: f32,

@@ -100,18 +100,15 @@ type PresentationInputs = ([f32; 6], [f32; 2], clip::FragmentClip, u32);
 const RETIRE_INTERVAL: u64 = 64;
 const RETIRE_AFTER_FRAMES: u64 = 240;
 
-/// Raster factors a magnifying transform can earn a paragraph, half an octave
-/// apart. Magnification, not minification: text a transform shrinks is drawn
-/// from its device-scale bitmaps, which is what every press and zoom-in
-/// animation in a shell does, and a bitmap a little larger than its quad is
-/// what bilinear sampling handles well.
-const RASTER_STEPS: [f32; 5] = [
-    1.0,
-    std::f32::consts::SQRT_2,
-    2.0,
-    2.0 * std::f32::consts::SQRT_2,
-    4.0,
-];
+/// The raster factor a transform's scale earns a paragraph: half-octave steps
+/// from 1/4 (step -4) to 4 (step 4), step 0 the device scale. Shrinking earns
+/// smaller bitmaps as magnifying earns larger ones, so a glyph's edge stays
+/// about one device pixel either way; bilinear sampling a bitmap twice its
+/// quad's size would halve the edge and alias thin stems. A press or a
+/// zoom-in from 0.9 stays within step 0.
+fn raster_factor(step: i8) -> f32 {
+    2f32.powf(f32::from(step) * 0.5)
+}
 /// How far past the midpoint between two steps a magnification must travel
 /// before the step an entry holds gives way, in steps. A zoom that settles
 /// near a boundary does not flip between two bitmaps as it jitters, and a zoom
@@ -126,12 +123,11 @@ const MAX_RASTER_EM_PX: f32 = 256.0;
 /// The device scale is not an input: it is the DPI policy, applied whatever
 /// this says. This is the *scene* scale policy — separate, bucketed and
 /// hysteretic, so a transform animation cannot open a raster size per frame.
-fn raster_step(affine: [f32; 6], held: Option<u8>, em_px: f32) -> u8 {
+fn raster_step(affine: [f32; 6], held: Option<i8>, em_px: f32) -> i8 {
     let [a, b, c, d, _, _] = affine;
     let magnification = (a * a + b * b).max(c * c + d * d).sqrt();
-    let top = (RASTER_STEPS.len() - 1) as u8;
     let ceiling = if em_px > 0.0 && em_px.is_finite() {
-        ((2.0 * (MAX_RASTER_EM_PX / em_px).log2()).floor()).clamp(0.0, f32::from(top)) as u8
+        ((2.0 * (MAX_RASTER_EM_PX / em_px).log2()).floor()).clamp(0.0, 4.0) as i8
     } else {
         0
     };
@@ -141,7 +137,7 @@ fn raster_step(affine: [f32; 6], held: Option<u8>, em_px: f32) -> u8 {
     let wanted = 2.0 * magnification.log2();
     let step = match held {
         Some(held) if (wanted - f32::from(held)).abs() <= 0.5 + RASTER_HYSTERESIS => held,
-        _ => wanted.round().clamp(0.0, f32::from(top)) as u8,
+        _ => wanted.round().clamp(-4.0, 4.0) as i8,
     };
     step.min(ceiling)
 }
@@ -1244,9 +1240,9 @@ impl TextPipeline {
         // layout key, and what a span paints is baked into the instances this
         // entry already holds under the same primitive revision.
         //
-        // Text under a magnifying transform is resolved finer than the device
-        // scale — see [`raster_step`] — so the scale an entry is compared at
-        // is the raster one. A translation never magnifies, and costs no
+        // Text under a scaling transform is resolved at the scale it is seen,
+        // in steps — see [`raster_step`] — so the scale an entry is compared
+        // at is the raster one. A translation never scales, and costs no
         // lookup to find that out.
         let translation = clip::is_translation_projective(affine, persp);
         let step = if translation {
@@ -1260,7 +1256,7 @@ impl TextPipeline {
                 .map(|entry| entry.raster_step);
             raster_step(affine, held, size * scale)
         };
-        let raster = scale * RASTER_STEPS[usize::from(step)];
+        let raster = scale * raster_factor(step);
         let retained = self
             .target
             .entries
@@ -1747,7 +1743,7 @@ impl TextPipeline {
         // same paragraph into different glyphs. The device scale times the
         // raster step, which is kept on the entry for the next frame's
         // hysteresis.
-        (scale, step): (f32, u8),
+        (scale, step): (f32, i8),
         mode: GlyphRenderMode,
         default_color: [f32; 4],
         colors: &SpanColors,
@@ -4951,63 +4947,54 @@ mod tests {
     }
 
     #[test]
-    fn text_a_transform_magnifies_is_rasterized_at_the_size_it_is_seen() {
+    fn text_a_transform_scales_is_rasterized_at_the_size_it_is_seen() {
         let (device, queue) = test_device();
-        // The same text twice: 16 px under `scale(2)`, and 32 px upright. A
-        // magnified paragraph drawn from its 16 px bitmaps would be a blurred
-        // copy of the second; drawn from bitmaps rasterized at the size it is
-        // seen, it is the second.
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        // The same text scaled and upright at the size it is seen: 16 px under
+        // `scale(2)` against 32 px, and 32 px under `scale(0.5)` against 16 px.
+        // Drawn from bitmaps of its own size, a magnified glyph would be
+        // blurred and a shrunk one's edge half a pixel with aliased stems.
         let canvas = LogicalRect::from_xywh(0.0, 0.0, 256.0, 96.0);
-        let zoomed = paint_text_with(
-            &device,
-            &queue,
-            &mut pipeline,
-            ("Sharp", 16.0),
-            LogicalRect::from_xywh(0.0, 0.0, 120.0, 40.0),
-            canvas,
-            [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
-            [0.0; 2],
-            clip::FragmentClip::PASS,
-            [256, 96],
-        );
-        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let upright = paint_text_with(
-            &device,
-            &queue,
-            &mut pipeline,
-            ("Sharp", 32.0),
-            LogicalRect::from_xywh(0.0, 0.0, 240.0, 80.0),
-            canvas,
-            clip::IDENTITY_AFFINE,
-            [0.0; 2],
-            clip::FragmentClip::PASS,
-            [256, 96],
-        );
-        let (zoomed, upright) = (zoomed.as_chunks::<4>().0, upright.as_chunks::<4>().0);
-        let differing = zoomed
-            .iter()
-            .zip(upright)
-            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 24))
-            .count();
-        let inked = upright.iter().filter(|pixel| inked(**pixel)).count();
-        assert!(inked > 200, "the reference must paint something");
-        assert!(
-            differing * 20 < inked,
-            "text under scale(2) must be the 32 px glyphs, not 16 px ones \
-             stretched: {differing} of {inked} inked pixels differ"
-        );
+        let paint = |size: f32, factor: f32| {
+            let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+            paint_text_with(
+                &device,
+                &queue,
+                &mut pipeline,
+                ("Sharp", size),
+                LogicalRect::from_xywh(0.0, 0.0, size * 7.5, size * 2.5),
+                canvas,
+                [factor, 0.0, 0.0, factor, 0.0, 0.0],
+                [0.0; 2],
+                clip::FragmentClip::PASS,
+                [256, 96],
+            )
+        };
+        for (size, factor) in [(16.0, 2.0), (32.0, 0.5)] {
+            let (scaled, upright) = (paint(size, factor), paint(size * factor, 1.0));
+            let (scaled, upright) = (scaled.as_chunks::<4>().0, upright.as_chunks::<4>().0);
+            let differing = scaled
+                .iter()
+                .zip(upright)
+                .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 24))
+                .count();
+            let inked = upright.iter().filter(|pixel| inked(**pixel)).count();
+            assert!(inked > 100, "the reference must paint something");
+            assert!(
+                differing * 20 < inked,
+                "{size} px text under scale({factor}) must be the {} px glyphs: \
+                 {differing} of {inked} inked pixels differ",
+                size * factor
+            );
+        }
     }
 
     #[test]
     fn raster_steps_are_half_octaves_held_with_hysteresis_and_capped_by_size() {
         let scaled = |factor: f32| [factor, 0.0, 0.0, factor, 0.0, 0.0];
         assert_eq!(raster_step(scaled(1.0), None, 16.0), 0);
-        assert_eq!(
-            raster_step(scaled(0.5), None, 16.0),
-            0,
-            "shrinking never re-rasterizes"
-        );
+        assert_eq!(raster_step(scaled(0.9), None, 16.0), 0, "a press stays");
+        assert_eq!(raster_step(scaled(0.5), None, 16.0), -2, "shrinking steps");
+        assert_eq!(raster_step(scaled(0.01), None, 16.0), -4, "down to 1/4");
         assert_eq!(raster_step(scaled(2.0), None, 16.0), 2);
         assert_eq!(raster_step(scaled(1.4), None, 16.0), 1);
         let turned = [0.0, 2.0, -2.0, 0.0, 0.0, 0.0];

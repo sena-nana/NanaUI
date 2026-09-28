@@ -93,10 +93,11 @@ pub(super) struct TextGpuEntry {
     /// Physical px per logical px the glyphs were resolved at: the device
     /// scale times [`Self::raster_step`]'s factor.
     pub scale_bits: u32,
-    /// The magnification step a transform above this text earned it, held
-    /// between frames so a zoom that hovers near a step boundary does not
-    /// rasterize the paragraph again every time it crosses it.
-    pub raster_step: u8,
+    /// The half-octave scale step a transform above this text earned it,
+    /// negative when it shrinks, held between frames so a zoom that hovers
+    /// near a step boundary does not rasterize the paragraph again every time
+    /// it crosses it.
+    pub raster_step: i8,
     /// What the paragraph measured: the widest line and the height the lines
     /// laid out to, in **logical** px — the layout is laid out there and the
     /// device scale only reaches the glyph coordinates. A pure function of the
