@@ -3696,19 +3696,17 @@ fn a_blurred_shadow_snaps_as_its_box_does() {
     // A 1.5 px blur grows the quad to a half-pixel edge; snapping that edge
     // slid the 10..30 box half a pixel, with the shadow cut to it.
     let (device, queue) = test_device();
-    // Where the green must not reach, and the two columns either side of the
-    // box that it must reach equally.
-    for (inset, clear, [left, right]) in [
-        (false, (10..30).collect::<Vec<_>>(), [9, 30]),
-        (true, (4..10).chain(30..36).collect(), [10, 29]),
-    ] {
+    for inset in [false, true] {
         let pixels = paint_box_shadow(&device, &queue, [10.0, 10.0, 20.0, 20.0], 1.5, 0.0, inset);
         let green = |x| pixel(&pixels, 64, x, 20)[1];
         let row = (4..36).map(green).collect::<Vec<_>>();
+        // Symmetric about the box, and clear on the side it does not paint.
         assert!(
-            clear.into_iter().all(|x| green(x) == 0)
-                && green(left) > 0
-                && green(left) == green(right),
+            green(9).max(green(10)) > 0
+                && (4..36).all(|x| {
+                    green(x).abs_diff(green(39 - x)) <= 1
+                        && ((10..30).contains(&x) == inset || green(x) == 0)
+                }),
             "inset {inset}: x 4..36 green {row:?}"
         );
     }

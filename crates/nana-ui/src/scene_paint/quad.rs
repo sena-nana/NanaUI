@@ -26,8 +26,6 @@ const PAINT_RADIAL: u32 = 32;
 const PAINT_MASK_RADIAL: u32 = 64;
 const PAINT_SHADOW_INSET: u32 = 128;
 const PAINT_MASK_URL: u32 = 256;
-/// Instance `snap` bit: an inset shadow, whose quad stays on its box.
-const SNAP_SHADOW_INSET: u32 = 1 << 16;
 const QUAD_VERTEX_FRAGMENT: &[ShaderStage] = &[ShaderStage::Vertex, ShaderStage::Fragment];
 const QUAD_FRAGMENT: &[ShaderStage] = &[ShaderStage::Fragment];
 fn quad_layout_key() -> u64 {
@@ -62,8 +60,8 @@ struct SolidInstance {
     shadow_spread_radius: f32,
     /// Scene-space pivot of the GPU transform overlay.
     motion_origin: [f32; 2],
-    /// Pixel snap and transform id, the vertex stage's part of the packed
-    /// motion snap, plus [`SNAP_SHADOW_INSET`].
+    /// Pixel snap and transform id, the vertex stage's half of the packed
+    /// motion snap; the high half carries the paint's inset shadow flag.
     snap: u32,
     affine_abcd: [f32; 4],
     affine_ef: [f32; 4],
@@ -1068,10 +1066,7 @@ fn push_solid_instance(
             _ => -shadow.spread_radius,
         }) + paint.outline_width.max(0.0),
         motion_origin,
-        snap: match paint.flags & PAINT_SHADOW_INSET {
-            0 => snap & 0xffff,
-            _ => snap & 0xffff | SNAP_SHADOW_INSET,
-        },
+        snap: snap & 0xffff | (paint.flags & PAINT_SHADOW_INSET) << 16,
         affine_abcd: [
             instance_affine[0],
             instance_affine[1],

@@ -1,7 +1,4 @@
 // Adapted from historical Iced (MIT).
-// Instance `snap` bit: an inset shadow, whose quad stays on its box.
-const SNAP_SHADOW_INSET: u32 = 0x10000u;
-
 struct SolidVertexInput {
     @builtin(vertex_index) vertex_index: u32,
     @builtin(instance_index) instance_index: u32,
@@ -100,7 +97,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     // inset shadow paints only inside its box, so its quad stays on the box.
     let shadow_blur_radius = input.shadow_radii.x;
     let shadow_spread_radius = input.shadow_radii.y;
-    let inset = (input.snap & SNAP_SHADOW_INSET) != 0u;
+    let inset = ((input.snap >> 16u) & PAINT_SHADOW_INSET) != 0u;
     let shadow_offset = select(input.shadow_offset, vec2(0.0), inset);
     let shadow_outset = select(shadow_blur_radius + max(shadow_spread_radius, 0.0), 0.0, inset);
     let pos = input.pos * globals.scale;
