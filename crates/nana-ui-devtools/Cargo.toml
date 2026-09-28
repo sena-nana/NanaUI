@@ -31,6 +31,12 @@ name = "nana-hover-benchmark"
 path = "src/bin/nana-hover-benchmark.rs"
 required-features = ["agent-bin"]
 
+# Per-event input routing cost on the L3 path, without paint.
+[[bin]]
+name = "nana-input-benchmark"
+path = "src/bin/nana-input-benchmark.rs"
+required-features = ["runtime-agent"]
+
 [features]
 default = []
 offscreen = [
