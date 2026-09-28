@@ -1,5 +1,5 @@
 use std::any::TypeId;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{ComponentView, DocumentId, Entity, MutationQueue, StableNodeId, View};
 
@@ -225,6 +225,11 @@ impl AssemblyScope<'_> {
 
 /// Shared projection path for framework components already building one batch.
 /// Input validity is checked by that batch's normal Runtime transaction.
+///
+/// Moves as few children as the new order allows: the longest run of kept
+/// children already in increasing order stays put, and every other child is
+/// inserted before its successor. Reversing costs n moves, inserting or
+/// removing one child costs one.
 pub(crate) fn reconcile_child_order(
     parent: StableNodeId,
     ordered: &[StableNodeId],
@@ -238,16 +243,175 @@ pub(crate) fn reconcile_child_order(
     if current.as_slice() == ordered {
         return false;
     }
-    let keep = ordered.iter().copied().collect::<HashSet<_>>();
+    let position: HashMap<StableNodeId, usize> = current
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (*id, index))
+        .collect();
+    let positions: Vec<Option<usize>> =
+        ordered.iter().map(|id| position.get(id).copied()).collect();
+    let stays = longest_increasing(&positions);
     // Extract retained descendants before parking their former ancestors. A
     // live-to-live reparent must never retire focus, IME or pointer ownership.
-    for &child in ordered {
-        mutations.insert(parent, child, None);
+    // Walking backwards, each moved child goes before the one that follows
+    // it, which is already where it belongs.
+    let mut next = None;
+    for (index, &child) in ordered.iter().enumerate().rev() {
+        if !stays[index] {
+            mutations.insert(parent, child, next);
+        }
+        next = Some(child);
     }
+    let keep = ordered.iter().copied().collect::<HashSet<_>>();
     for child in &current {
         if !keep.contains(child) {
             mutations.park_subtree(*child);
         }
     }
     true
+}
+
+/// Marks one longest strictly increasing subsequence of the known positions
+/// (patience sorting, O(n log n)).
+fn longest_increasing(positions: &[Option<usize>]) -> Vec<bool> {
+    // tails[k]: index in `positions` ending the best subsequence of length k+1.
+    let mut tails: Vec<usize> = Vec::new();
+    let mut previous: Vec<Option<usize>> = vec![None; positions.len()];
+    for (index, position) in positions.iter().enumerate() {
+        let Some(position) = *position else {
+            continue;
+        };
+        let length = tails.partition_point(|&tail| {
+            positions[tail].expect("tails hold known positions") < position
+        });
+        if length > 0 {
+            previous[index] = Some(tails[length - 1]);
+        }
+        if length == tails.len() {
+            tails.push(index);
+        } else {
+            tails[length] = index;
+        }
+    }
+    let mut stays = vec![false; positions.len()];
+    let mut cursor = tails.last().copied();
+    while let Some(index) = cursor {
+        stays[index] = true;
+        cursor = previous[index];
+    }
+    stays
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AppContext, DocumentId, Stack};
+
+    fn children(context: &AppContext, parent: StableNodeId) -> Vec<StableNodeId> {
+        context.world().node(parent).unwrap().children.to_vec()
+    }
+
+    /// Reorder `parent` to `ordered`, returning how many inserts it took.
+    fn reorder(context: &mut AppContext, parent: StableNodeId, ordered: &[StableNodeId]) -> usize {
+        let mut mutations = MutationQueue::new();
+        reconcile_child_order(parent, ordered, context.world(), &mut mutations);
+        let moves = mutations
+            .as_slice()
+            .iter()
+            .filter(|mutation| matches!(mutation, crate::UiMutation::Insert { .. }))
+            .count();
+        context.commit_mutations(mutations).unwrap();
+        assert_eq!(children(context, parent), ordered);
+        moves
+    }
+
+    #[test]
+    fn reordering_moves_only_children_outside_the_longest_kept_run() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let parent = context
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let other = context
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let mut all = Vec::new();
+        for _ in 0..40 {
+            let child = context
+                .create_component(document, Stack::column(0.0))
+                .unwrap()
+                .stable_id();
+            context
+                .append_child(
+                    crate::Entity::<Stack>::from_stable_id(parent),
+                    crate::Entity::<Stack>::from_stable_id(child),
+                )
+                .unwrap();
+            all.push(child);
+        }
+        let outsider = context
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        context
+            .append_child(
+                crate::Entity::<Stack>::from_stable_id(other),
+                crate::Entity::<Stack>::from_stable_id(outsider),
+            )
+            .unwrap();
+
+        let mut order = all.clone();
+        // Insert at the front (taken from another parent): one move.
+        order.insert(0, outsider);
+        assert_eq!(reorder(&mut context, parent, &order), 1);
+        // Remove from the middle: no move, one park.
+        order.remove(20);
+        assert_eq!(reorder(&mut context, parent, &order), 0);
+        // Move one child from the end to the front: one move.
+        let last = order.pop().unwrap();
+        order.insert(0, last);
+        assert_eq!(reorder(&mut context, parent, &order), 1);
+        // Swap two: two moves at most.
+        order.swap(3, 30);
+        assert!(reorder(&mut context, parent, &order) <= 2);
+        // Reverse: everything but one child moves.
+        order.reverse();
+        assert_eq!(reorder(&mut context, parent, &order), order.len() - 1);
+        // Pseudo-random shuffles land exactly, with moves bounded by n - LIS.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..20 {
+            for index in (1..order.len()).rev() {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                order.swap(index, (seed % (index as u64 + 1)) as usize);
+            }
+            let before = children(&context, parent);
+            let positions: Vec<Option<usize>> = order
+                .iter()
+                .map(|id| before.iter().position(|b| b == id))
+                .collect();
+            let kept = longest_increasing(&positions)
+                .iter()
+                .filter(|s| **s)
+                .count();
+            assert_eq!(reorder(&mut context, parent, &order), order.len() - kept);
+        }
+    }
+
+    #[test]
+    fn the_longest_increasing_run_skips_unknown_positions() {
+        let positions = [Some(3), None, Some(0), Some(1), Some(4), Some(2), None];
+        let marks = longest_increasing(&positions);
+        let run: Vec<usize> = positions
+            .iter()
+            .zip(&marks)
+            .filter(|(_, stays)| **stays)
+            .map(|(position, _)| position.expect("marked known"))
+            .collect();
+        assert_eq!(run.len(), 3);
+        assert!(run.windows(2).all(|pair| pair[0] < pair[1]));
+    }
 }
