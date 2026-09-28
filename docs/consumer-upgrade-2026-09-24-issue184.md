@@ -1,5 +1,7 @@
 # Issue #184：统一 GPU policy
 
+> 2026-09-28：本文的 upload arena、`realize_texture` 与 `begin_frame` 等待描述已被 [帧上传与帧槽重写](consumer-upgrade-2026-09-28-issue184-uploads.md) 取代。
+
 `nana-gpu` now exposes a per-device `GpuDeviceState` through `GpuContext::policy()`.
 The policy owns bounded upload accounting, in-flight frame-slot bookkeeping, transient
 resource keys, pipeline/realization identities, and submission retirement records. The

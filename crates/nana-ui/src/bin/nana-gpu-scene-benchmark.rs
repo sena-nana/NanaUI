@@ -123,7 +123,13 @@ struct GpuPolicySnapshot {
     pipeline_registry_hits: u64,
     pipeline_registry_misses: u64,
     frame_slot_stalls: u64,
+    frame_slot_waits: u64,
     retired_resources: u64,
+    upload_writes: u64,
+    upload_copies: u64,
+    upload_flushes: u64,
+    upload_ring_allocations: u64,
+    upload_ring_waits: u64,
 }
 
 impl From<nana_gpu::GpuPolicyStats> for GpuPolicySnapshot {
@@ -136,7 +142,13 @@ impl From<nana_gpu::GpuPolicyStats> for GpuPolicySnapshot {
             pipeline_registry_hits: stats.pipeline_registry_hits,
             pipeline_registry_misses: stats.pipeline_registry_misses,
             frame_slot_stalls: stats.frame_slot_stalls,
+            frame_slot_waits: stats.frame_slot_waits,
             retired_resources: stats.retired_resources,
+            upload_writes: stats.upload_writes,
+            upload_copies: stats.upload_copies,
+            upload_flushes: stats.upload_flushes,
+            upload_ring_allocations: stats.upload_ring_allocations,
+            upload_ring_waits: stats.upload_ring_waits,
         }
     }
 }
