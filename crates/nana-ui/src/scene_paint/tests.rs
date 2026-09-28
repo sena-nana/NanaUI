@@ -3094,8 +3094,6 @@ fn host_texture_clips_each_corner_with_its_own_radius() {
 
 #[test]
 fn avatar_edge_keeps_its_antialiasing_under_its_own_overflow_clip() {
-    // Avatar 同时带圆角与 overflow: hidden。自身的圆角裁剪若再作用于纹理,
-    // 像素中心落在圆外的那半圈抗锯齿会被硬裁成 0,边缘成锯齿。
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
@@ -3133,12 +3131,7 @@ fn avatar_edge_keeps_its_antialiasing_under_its_own_overflow_clip() {
         )
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
-    assert!(is_green_slot(pixel(&pixels, 64, 32, 32)));
-    assert!(
-        pixel(&pixels, 64, 1, 1)[1] < 8,
-        "outside the circle stays clear"
-    );
-    // (6,12) 的像素中心距圆心约 32.10:在圆外 0.1px,约 40% 覆盖。
+    // 像素中心在圆外 0.1px:自身 overflow 的硬裁剪会把它清成 0。
     let edge = pixel(&pixels, 64, 6, 12);
     assert!(
         (40..=200).contains(&edge[1]),

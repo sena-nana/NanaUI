@@ -103,9 +103,8 @@ impl UiScene {
         // The overflow clip's rounding is for what the box contains. The box's
         // own fill and border already have that shape, and cutting them with
         // it again would fade their anti-aliased corners, so they keep the
-        // plain border-box rectangle. So does a host texture the box shows as
-        // its own content: the painter rounds it with this box's radii, and
-        // the clip's hard edge would cut the outer half of that ramp.
+        // plain border-box rectangle. So does its host texture, which the
+        // painter rounds with the same radii.
         let surface_clips: Arc<[ClipRegion]> = match &overflow {
             Some(region) if region.corner_radius > 0.0 => {
                 let mut chain = parent_clips.to_vec();
@@ -321,17 +320,17 @@ impl UiScene {
             if let Some(custom) = node.custom_render.clone()
                 && !viewer_owns_content
             {
-                let content_clips = if custom.renderer.as_ref() == HOST_TEXTURE_RENDERER {
-                    Arc::clone(&surface_clips)
+                let clips = if custom.renderer.as_ref() == HOST_TEXTURE_RENDERER {
+                    &surface_clips
                 } else {
-                    clips.clone()
+                    &clips
                 };
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 1 },
                     node: id,
                     bounds,
                     transform,
-                    clips: content_clips,
+                    clips: Arc::clone(clips),
                     opacity,
                     z_index: node.z_index,
                     document_order: node_order,
