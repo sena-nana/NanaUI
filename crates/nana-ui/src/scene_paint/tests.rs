@@ -3612,6 +3612,85 @@ fn inset_shadow_spread_shrinks_its_shape_inside_the_box() {
     }
 }
 
+/// A black box at `[x, y, w, h]` with one green `box-shadow`, in a 64 px target.
+fn paint_box_shadow(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    [x, y, w, h]: [f32; 4],
+    blur_radius: f32,
+    spread_radius: f32,
+    inset: bool,
+) -> Vec<u8> {
+    let black = [0.0, 0.0, 0.0, 1.0];
+    let shadow = nana_ui_core::BoxShadowSpec {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur_radius,
+        spread_radius,
+        color: [0.0, 1.0, 0.0, 1.0],
+        inset,
+    };
+    let layout = nana_ui_core::LayoutStyle {
+        background: Some(black),
+        paint: nana_ui_core::PaintStyle {
+            box_shadows: vec![shadow],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut scene = UiScene::new();
+    scene.apply_delta([extracted_div(1, &[], x, y, w, h, layout, Some(black))], []);
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    paint_scene_rgba(
+        device,
+        queue,
+        &mut painter,
+        &scene,
+        [64.0, 64.0],
+        [64, 64],
+        1.0,
+    )
+}
+
+#[test]
+fn blurred_shadow_is_full_strength_its_blur_inside_its_edge() {
+    // A 4 px blur: full strength 4 px inside the shape's edge, half on it,
+    // none 4 px past it. Spread 12 puts the outer shape's left edge at x 8
+    // and the inset one's at x 20.
+    let (device, queue) = test_device();
+    let outer = paint_box_shadow(&device, &queue, [20.0, 20.0, 24.0, 24.0], 4.0, 12.0, false);
+    let inset = paint_box_shadow(&device, &queue, [8.0, 8.0, 48.0, 48.0], 4.0, 12.0, true);
+    // Each shape's left edge, and which way from it is away from the paint.
+    for (label, pixels, columns, edge, away) in [
+        ("outer", &outer, 0..20, 8.0, -1.0),
+        ("inset", &inset, 9..32, 20.0, 1.0),
+    ] {
+        for px in columns {
+            let t = (((px as f32 + 0.5 - edge) * away + 4.0) / 8.0).clamp(0.0, 1.0);
+            let expected = (1.0 - t * t * (3.0 - 2.0 * t)) * 255.0;
+            let green = f32::from(pixel(pixels, 64, px, 32)[1]);
+            assert!(
+                (green - expected).abs() <= 3.0,
+                "{label}: x {px} expected green {expected:.0}, got {green}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_shadow_thinner_than_its_blur_peaks_below_full_strength() {
+    // 2.5 px above a 2 px strip with an 8 px blur: the ramp's 0.273 of the
+    // Gaussian's peak, erf(2 / (√2·8)) ≈ 0.197.
+    let (device, queue) = test_device();
+    let pixels = paint_box_shadow(&device, &queue, [8.0, 31.0, 48.0, 2.0], 8.0, 0.0, false);
+    let expected = 0.197 * 0.273 * 255.0;
+    let green = f32::from(pixel(&pixels, 64, 32, 28)[1]);
+    assert!(
+        (green - expected).abs() <= 3.0,
+        "expected green {expected:.0}, got {green}"
+    );
+}
+
 fn hosted_preview_scene(device: &wgpu::Device) -> (UiScene, HostTextureRegistry) {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

@@ -984,6 +984,19 @@ fn collect_shadows(
     shadows
 }
 
+/// A blurred outer shadow thinner than its blur never reaches full strength:
+/// a Gaussian over a strip `t` wide peaks at `erf(t / (√2·blur))`, as the
+/// Path shadow fades it.
+fn shadow_peak(size: [f32; 2], shadow: &ComponentElevation) -> f32 {
+    if shadow.inset || shadow.blur_radius <= 0.0 {
+        return 1.0;
+    }
+    let t = (size[0].min(size[1]) + shadow.spread_radius * 2.0).max(0.0);
+    let x = t / (std::f32::consts::SQRT_2 * shadow.blur_radius);
+    // erf(x) for x >= 0, to 5e-4 (Abramowitz and Stegun 7.1.27).
+    1.0 - (1.0 + x * (0.278_393 + x * (0.230_389 + x * (0.000_972 + x * 0.078_108)))).powi(-4)
+}
+
 fn shadow_only_paint(inset: bool) -> QuadPaintData {
     let mut paint = QuadPaintData::default();
     if inset {
@@ -1034,9 +1047,10 @@ fn push_solid_instance(
         border_radius: corner_radius,
         border_widths,
         shadow_color: pack_linear(with_opacity(
-            shadow
-                .map(|shadow| shadow.color)
-                .unwrap_or([0.0, 0.0, 0.0, 0.0]),
+            shadow.map_or([0.0; 4], |shadow| {
+                let [r, g, b, a] = shadow.color;
+                [r, g, b, a * shadow_peak(size, &shadow)]
+            }),
             opacity,
         )),
         shadow_offset: [

@@ -286,12 +286,13 @@ fn solid_fs_main(
         // Distance past the shadow's edge, away from where it paints.
         let shadow_dist = rounded_box_sdf(shadow_p, shadow_size, shadow_radius * 2.0) / 2.0
             * select(1.0, -1.0, inset);
-        // A blur is a CSS length and scales with the transform; an unblurred
-        // edge ramps over one device pixel, as the box's own edge does.
+        // A blur ramps from full strength `blur` inside the edge to none `blur`
+        // past it, as the Path shadow's band, and scales with the transform; an
+        // unblurred edge ramps over one device pixel, as the box's own edge does.
         let blur = input.shadow_blur_radius;
         let shadow_px = rounded_box_pixel(shadow_p, shadow_size, shadow_radius * 2.0, local_dx, local_dy);
         let shadow_alpha = select(
-            1.0 - smoothstep(-blur, blur, max(shadow_dist, 0.0)),
+            1.0 - smoothstep(-blur, blur, shadow_dist),
             clamp(0.5 - shadow_dist / shadow_px, 0.0, 1.0),
             blur <= 0.0,
         );
