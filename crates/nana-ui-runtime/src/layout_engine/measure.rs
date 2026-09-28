@@ -293,10 +293,6 @@ pub(super) fn intrinsic_size_scoped(
 
     let (mut flow_children, descendant_dependent_flow) =
         collect_flow_children_reporting(&child_ids, nodes, style.display)?;
-    // Measure in the order placement lays the children out: a wrapping line
-    // break depends on which item comes next, so measuring in document order
-    // while placing by `order` sizes the container for lines it never has.
-    sort_by_order(&mut flow_children, nodes);
     let grid_measure = uses_2d_grid(style, &flow_children, nodes);
     let ifc = !grid_measure
         && !style
@@ -306,6 +302,26 @@ pub(super) fn intrinsic_size_scoped(
             .iter()
             .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
     let direction = used_flow_direction(style, writing, ifc);
+    let wrap = style.flex_wrap;
+    let wrapping = ifc
+        || match direction {
+            FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
+            FlexDirection::Column => {
+                matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
+                    && content_available.height > 0.5
+            }
+        };
+    let grid_tracks = match direction {
+        FlexDirection::Row => style.active_grid_columns(),
+        FlexDirection::Column => style.active_grid_rows(),
+    };
+    // Line breaks and grid auto-placement depend on which item comes next, so
+    // measure those in the order placement lays the children out; measuring
+    // in document order while placing by `order` sizes the container for lines
+    // it never has. A single unwrapped line sums the same in any order.
+    if grid_measure || wrapping || grid_tracks.is_some_and(|tracks| !tracks.is_empty()) {
+        sort_by_order(&mut flow_children, nodes);
+    }
     let mut child_sizes = Vec::with_capacity(flow_children.len());
     for child in &flow_children {
         // Resolving the child style is a map lookup plus an `Arc` clone, so keep
@@ -336,19 +352,6 @@ pub(super) fn intrinsic_size_scoped(
     let parent_box = gap_containing_block(style, content_available);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
-    let wrap = style.flex_wrap;
-    let wrapping = ifc
-        || match direction {
-            FlexDirection::Row => matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
-            FlexDirection::Column => {
-                matches!(wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
-                    && content_available.height > 0.5
-            }
-        };
-    let grid_tracks = match direction {
-        FlexDirection::Row => style.active_grid_columns(),
-        FlexDirection::Column => style.active_grid_rows(),
-    };
     // This node is every child's containing block.
     let child_edge_base = writing
         .logical_size(content_available.width, content_available.height)

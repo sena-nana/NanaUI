@@ -535,6 +535,26 @@ fn subscribe_to(
     }
 }
 
+/// Call every observer once per slot. The callbacks are snapshotted first so a
+/// callback may subscribe or unsubscribe without deadlocking.
+fn notify_to(observers: &TextureObservers, slots: &[impl AsRef<str>]) {
+    if slots.is_empty() {
+        return;
+    }
+    let callbacks = observers
+        .callbacks
+        .read()
+        .expect("texture observers")
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for slot in slots {
+        for callback in &callbacks {
+            callback(slot.as_ref());
+        }
+    }
+}
+
 /// Dropping a subscription disconnects its host notification.
 pub struct TextureSubscription {
     observers: Arc<TextureObservers>,
@@ -630,11 +650,21 @@ impl HostTextureRegistry {
     }
 
     pub(crate) fn commit_painted(&self, channel: u64, pass: &mut crate::painted_demand::Extents) {
+        // Steady-state frames re-commit the same pass; settle those under the
+        // read lock so they never contend with readers.
+        if self
+            .painted
+            .read()
+            .is_ok_and(|demand| demand.unchanged(channel, pass))
+        {
+            pass.clear();
+            return;
+        }
         let changed = match self.painted.write() {
             Ok(mut demand) => demand.commit(channel, pass),
             Err(_) => return,
         };
-        self.notify_painted(&changed);
+        notify_to(&self.painted_observers, &changed);
     }
 
     pub(crate) fn retire_painted_channel(&self, channel: u64) {
@@ -642,30 +672,11 @@ impl HostTextureRegistry {
             Ok(mut demand) => demand.retire(channel),
             Err(_) => return,
         };
-        self.notify_painted(&changed);
+        notify_to(&self.painted_observers, &changed);
     }
 
     pub(crate) fn same_registry(&self, other: &HostTextureRegistry) -> bool {
         Arc::ptr_eq(&self.painted, &other.painted)
-    }
-
-    fn notify_painted(&self, changed: &[Arc<str>]) {
-        if changed.is_empty() {
-            return;
-        }
-        let callbacks = self
-            .painted_observers
-            .callbacks
-            .read()
-            .expect("painted observers")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for slot in changed {
-            for callback in &callbacks {
-                callback(slot);
-            }
-        }
     }
 
     pub fn slot(&self, name: impl Into<Arc<str>>) -> TextureSlot {
@@ -683,17 +694,7 @@ impl HostTextureRegistry {
     }
 
     fn notify(&self, slot: &str) {
-        let callbacks = self
-            .observers
-            .callbacks
-            .read()
-            .expect("texture observers")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for callback in callbacks {
-            callback(slot);
-        }
+        notify_to(&self.observers, &[slot]);
     }
 
     pub fn new() -> Self {

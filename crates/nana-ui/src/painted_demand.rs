@@ -10,7 +10,7 @@
 //! 没变。合并值是所有通道的逐边最大值;没有任何通道画到的 slot 没有需求。
 
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::HashMap,
     sync::{
         Arc, RwLock,
         atomic::{AtomicU64, Ordering},
@@ -24,7 +24,7 @@ pub(crate) type Extents = HashMap<Arc<str>, [u32; 2]>;
 #[derive(Debug, Default)]
 pub(crate) struct PaintedDemand {
     channels: HashMap<u64, Extents>,
-    merged: HashMap<Arc<str>, [u32; 2]>,
+    merged: Extents,
     /// slot → 合并值最后一次变化时的 revision。slot 被 `remove` 时一并
     /// 删掉,所以大小受已登记 slot 数约束。
     changed_at: HashMap<Arc<str>, u64>,
@@ -49,26 +49,34 @@ impl PaintedDemand {
         );
     }
 
+    /// `pass` 与 `channel` 上一份记录相同:提交它不会改变任何东西。
+    pub(crate) fn unchanged(&self, channel: u64, pass: &Extents) -> bool {
+        self.channels
+            .get(&channel)
+            .map_or(pass.is_empty(), |previous| previous == pass)
+    }
+
     /// 用 `pass` 替换 `channel` 的上一份记录;`pass` 换回旧记录(已清空),
-    /// 供下一帧复用分配。返回合并值变了的 slot。
+    /// 供下一帧复用分配。只重新合并这条通道里增、删或尺寸变了的 slot,
+    /// 返回合并值变了的 slot。
     pub(crate) fn commit(&mut self, channel: u64, pass: &mut Extents) -> Vec<Arc<str>> {
-        let mut previous = match self.channels.entry(channel) {
-            Entry::Occupied(mut entry) => std::mem::replace(entry.get_mut(), std::mem::take(pass)),
-            Entry::Vacant(entry) => {
-                entry.insert(std::mem::take(pass));
-                Extents::new()
-            }
-        };
-        let mut touched: Vec<Arc<str>> = previous.keys().cloned().collect();
-        if let Some(current) = self.channels.get(&channel) {
-            touched.extend(
-                current
-                    .keys()
-                    .filter(|slot| !previous.contains_key(*slot))
-                    .cloned(),
-            );
-        }
-        if self.channels.get(&channel).is_some_and(Extents::is_empty) {
+        let mut previous = self
+            .channels
+            .insert(channel, std::mem::take(pass))
+            .unwrap_or_default();
+        let current = &self.channels[&channel];
+        let mut touched: Vec<Arc<str>> = previous
+            .iter()
+            .filter(|(slot, extent)| current.get(*slot) != Some(*extent))
+            .map(|(slot, _)| Arc::clone(slot))
+            .collect();
+        touched.extend(
+            current
+                .keys()
+                .filter(|slot| !previous.contains_key(*slot))
+                .cloned(),
+        );
+        if current.is_empty() {
             self.channels.remove(&channel);
         }
         previous.clear();
@@ -107,11 +115,19 @@ impl PaintedDemand {
                 .filter_map(|extents| extents.get(&slot))
                 .copied()
                 .reduce(|a, b| [a[0].max(b[0]), a[1].max(b[1])]);
-            let previous = match merged {
-                Some(extent) => self.merged.insert(Arc::clone(&slot), extent),
-                None => self.merged.remove(&slot),
+            let differs = match (merged, self.merged.get_mut(&slot)) {
+                (Some(extent), Some(current)) => std::mem::replace(current, extent) != extent,
+                (Some(extent), None) => {
+                    self.merged.insert(Arc::clone(&slot), extent);
+                    true
+                }
+                (None, Some(_)) => {
+                    self.merged.remove(&slot);
+                    true
+                }
+                (None, None) => false,
             };
-            if previous != merged {
+            if differs {
                 changed.push(slot);
             }
         }

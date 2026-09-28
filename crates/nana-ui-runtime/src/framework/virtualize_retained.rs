@@ -323,6 +323,40 @@ impl AppContext {
         C: ComponentView,
     {
         let viewport = self.virtual_list_viewport(scroll, list, overscan)?;
+        self.sync_virtual_list_in_viewport(
+            list,
+            items,
+            layout,
+            viewport,
+            fingerprint,
+            retained_keys,
+            key_at,
+            index_of_key,
+            build,
+            on_mount,
+        )
+    }
+
+    /// The range gate and commit of [`Self::sync_virtual_list_retained_with`]
+    /// against a viewport the caller already read from the ScrollView.
+    #[allow(clippy::too_many_arguments)]
+    fn sync_virtual_list_in_viewport<K, C>(
+        &mut self,
+        list: Entity<List>,
+        items: &mut VirtualListItems<K, C>,
+        layout: &VirtualListLayout,
+        viewport: VirtualViewport,
+        fingerprint: u64,
+        retained_keys: &[K],
+        key_at: impl FnMut(usize) -> K,
+        index_of_key: impl FnMut(&K) -> Option<usize>,
+        build: impl FnMut(usize, &K) -> C,
+        on_mount: impl FnMut(&mut Self, Entity<C>, usize, &K) -> Result<(), FrameworkError>,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
         let window = layout.window_for(viewport);
         let activity = self.virtual_list_activity(list, items)?;
         if items.list_range_unchanged(layout, &window, &activity, fingerprint) {
@@ -410,14 +444,16 @@ impl AppContext {
                 },
             );
             self.world.commit(mutations)?;
+            // The world clamps the offset to the extent it knows, so the
+            // window follows the offset it actually kept.
+            viewport = self.virtual_list_viewport(scroll, list, overscan)?;
         }
         items.pending_measure = unmeasured;
-        self.sync_virtual_list_retained_with(
-            scroll,
+        self.sync_virtual_list_in_viewport(
             list,
             items,
             layout,
-            overscan,
+            viewport,
             fingerprint,
             retained_keys,
             key_at,
