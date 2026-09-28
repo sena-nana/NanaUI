@@ -1,6 +1,7 @@
 //! Vue host input projection boundary.
 
 use crate::*;
+use nana_ui_platform::{CanonicalInputEvent, CommittedText, InputPayload};
 
 #[derive(Debug, Default)]
 pub(crate) struct State {
@@ -13,6 +14,12 @@ pub(crate) struct State {
     /// these remember the previous JS view so blur/over events still fire.
     pub(crate) js_focus: Option<NodeHandle>,
     pub(crate) js_pointer_hover: BTreeMap<u64, Option<NodeHandle>>,
+    /// This window's input source when no scene host routes for it; bound
+    /// on first use.
+    pub(crate) source: Option<nana_ui_runtime::HeadlessInput>,
+    /// The generation the last detached source had; the next binds above
+    /// it, so a reopened window never reuses one.
+    pub(crate) retired_generation: u64,
 }
 
 impl VueHost {
@@ -379,109 +386,61 @@ impl VueHost {
         }
         Ok(())
     }
-    fn dispatch_terminal_key(&mut self, input: &KeyboardInput) -> Result<bool, JsEngineError> {
+    /// Route one event through the Runtime router, as a window's input
+    /// source does. Vue's own input API reaches the Runtime only through
+    /// here; the page then observes the event like any routed one.
+    pub fn route_input(
+        &mut self,
+        payload: InputPayload,
+    ) -> Result<(CanonicalInputEvent, nana_ui_runtime::InputRouteOutcome), JsEngineError> {
         let mut doc = self.document.lock().expect("vue doc");
+        // Focus set outside input (a host, a script) is where this event's
+        // blur and focus start from.
+        self.input_projection.js_focus = doc.focused();
+        let now = doc.runtime_now();
         let document = doc.runtime_document().document();
-        if doc.context().focused_terminal(document).is_none() {
-            return Ok(false);
-        }
-        let text = (input.key.chars().count() == 1).then_some(input.key.as_str());
+        let context = doc.context_mut();
+        let binding = context.input_binding(nana_ui_runtime::HeadlessInput::SOURCE);
+        let retired = self.input_projection.retired_generation;
+        let source = match &mut self.input_projection.source {
+            Some(source) if binding == Some((source.generation(), document)) => source,
+            slot => {
+                let newest = binding.map_or(retired, |(generation, _)| generation.0.max(retired));
+                slot.insert(
+                    nana_ui_runtime::HeadlessInput::bind_source(
+                        context,
+                        nana_ui_runtime::HeadlessInput::SOURCE,
+                        nana_ui_platform::EndpointGeneration(newest + 1),
+                        document,
+                    )
+                    .map_err(|error| JsEngineError::new(error.to_string()))?,
+                )
+            }
+        };
+        source.set_now(now.max(source.now()));
+        let event = source.stamp(payload);
+        let outcome = context
+            .route_input(&event, source.services_mut(), None)
+            .map_err(|error| JsEngineError::new(error.to_string()))?;
+        Ok((event, outcome))
+    }
+
+    /// Forget this window's input source: what it held is cancelled while
+    /// the document is alive, and the next event binds a newer generation.
+    #[cfg(feature = "hosted")]
+    pub(crate) fn detach_input_source(&mut self) -> Result<(), JsEngineError> {
+        let Some(source) = self.input_projection.source.take() else {
+            return Ok(());
+        };
+        self.input_projection.retired_generation = source.generation().0;
+        let mut doc = self.document.lock().expect("vue doc");
+        let now = doc.runtime_now();
         doc.context_mut()
-            .terminal_key(
-                document,
-                &input.key,
-                text,
-                input.modifiers.control,
-                input.modifiers.alt,
-                input.modifiers.shift,
-            )
+            .unbind_input_source(nana_ui_runtime::HeadlessInput::SOURCE, now)
+            .map(|_| ())
             .map_err(|error| JsEngineError::new(error.to_string()))
     }
-    fn dispatch_terminal_pointer(
-        &mut self,
-        hit: Option<NodeHandle>,
-        input: &PointerInput,
-        phase: u8,
-    ) -> Result<bool, JsEngineError> {
-        let mut doc = self.document.lock().expect("vue doc");
-        let document = doc.runtime_document().document();
-        let target = hit.and_then(|handle| {
-            let mut id = nana_ui_runtime::StableNodeId::try_from(handle).ok()?;
-            loop {
-                if doc
-                    .context()
-                    .view_entity::<nana_ui_runtime::TerminalView>(id)
-                    .is_some()
-                {
-                    return Some(id);
-                }
-                id = doc.context().world().node(id)?.parent?;
-            }
-        });
-        doc.context_mut()
-            .terminal_pointer(
-                document,
-                target,
-                input.pointer_id,
-                phase,
-                input.client_x,
-                input.client_y,
-            )
-            .map_err(|error| JsEngineError::new(error.to_string()))
-    }
-    fn activate_runtime_at(
-        &mut self,
-        x: f32,
-        y: f32,
-        skip: Option<NodeHandle>,
-    ) -> Result<bool, JsEngineError> {
-        let mut doc = self.document.lock().expect("vue doc");
-        let document = doc.runtime_document().document();
-        let mut id = doc.context().world().hit_test(document, x, y);
-        while let Some(current) = id {
-            if skip != Some(NodeHandle::from(current))
-                && doc
-                    .context_mut()
-                    .activate_node_at(current, x, y)
-                    .unwrap_or(false)
-            {
-                return Ok(true);
-            }
-            id = doc
-                .context()
-                .world()
-                .node(current)
-                .and_then(|node| node.parent);
-        }
-        Ok(false)
-    }
-    pub(crate) fn focus_target_at(
-        &self,
-        x: f32,
-        y: f32,
-    ) -> (Option<NodeHandle>, Option<NodeHandle>) {
-        let mut doc = self.document.lock().expect("vue doc");
-        let previous = doc.focused();
-        let next = doc.hit_test(x, y).and_then(|hit| {
-            let route = doc.event_route(hit)?;
-            for id in std::iter::once(route.target).chain(route.bubble) {
-                let node = NodeHandle::from(id);
-                let tag = doc.element_tag(node).unwrap_or_default();
-                if is_focusable_tag(&tag) || self.native_component_name(node.0).is_some() {
-                    return Some(node);
-                }
-            }
-            None
-        });
-        if previous != next {
-            if let Some(next) = next {
-                doc.set_focus(next);
-            } else {
-                doc.clear_focus();
-            }
-        }
-        (previous, next)
-    }
+
     pub(crate) fn flush_interactive_css_if_needed(&self) {
         let mut bridge = self.bridge.lock().expect("vue bridge");
         if !bridge.has_interactive_css() {
@@ -509,6 +468,27 @@ impl VueHost {
         );
         bridge.sync_cascaded_layout_into_runtime(&mut doc);
         doc.flush_host_frame();
+    }
+    /// Fire `blur` and `focus` for a focus move the page has not heard of,
+    /// and restyle what `:focus` and `:focus-within` match.
+    fn emit_focus_change<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+    ) -> Result<(), JsEngineError> {
+        let previous = self.input_projection.js_focus;
+        let next = self.document.lock().expect("vue doc").focused();
+        if previous == next {
+            return Ok(());
+        }
+        if let Some(previous) = previous {
+            self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
+        }
+        if let Some(next) = next {
+            self.fire_dom_event(engine, next, "focus", BTreeMap::new())?;
+        }
+        self.flush_focus_cascade(previous, next);
+        self.input_projection.js_focus = next;
+        Ok(())
     }
     pub(crate) fn pointer_detail(
         &self,
@@ -683,26 +663,22 @@ impl VueHost {
         })
     }
     /// Dispatch one browser-style pointer event with hit-testing and capture.
+    /// Route a pointer event, then fire the page's events for it.
     pub fn dispatch_pointer_result<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         input: PointerInput,
     ) -> Result<HostedInputResult, JsEngineError> {
-        self.dispatch_pointer_result_with(engine, input, true)
+        let (_, outcome) = self.route_input(InputPayload::Pointer(input.to_canonical()))?;
+        let mut result = self.emit_pointer_from_runtime(engine, input)?;
+        result.consumed |= outcome.handled;
+        Ok(result)
     }
-    /// Fire Vue/DOM pointer events after the Scene host already applied Runtime input.
+    /// Fire Vue/DOM pointer events for pointer input the Runtime already routed.
     pub fn emit_pointer_from_runtime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         input: PointerInput,
-    ) -> Result<HostedInputResult, JsEngineError> {
-        self.dispatch_pointer_result_with(engine, input, false)
-    }
-    pub(crate) fn dispatch_pointer_result_with<E: JsEngine + ?Sized>(
-        &mut self,
-        engine: &mut E,
-        input: PointerInput,
-        commit_runtime: bool,
     ) -> Result<HostedInputResult, JsEngineError> {
         let physical_hit = {
             let doc = self.document.lock().expect("vue doc");
@@ -750,18 +726,12 @@ impl VueHost {
             PointerEventKind::Move | PointerEventKind::Cancel
         ) && captured.is_none()
         {
-            let previous = if commit_runtime {
-                self.document
-                    .lock()
-                    .expect("vue doc")
-                    .pointer_hover(input.pointer_id)
-            } else {
-                self.input_projection
-                    .js_pointer_hover
-                    .get(&input.pointer_id)
-                    .copied()
-                    .flatten()
-            };
+            let previous = self
+                .input_projection
+                .js_pointer_hover
+                .get(&input.pointer_id)
+                .copied()
+                .flatten();
             if previous != physical_hit {
                 if let Some(previous) = previous {
                     let mut transition = detail.clone();
@@ -816,13 +786,7 @@ impl VueHost {
                         self.fire_dom_event(engine, node, "mouseenter", transition)?;
                     }
                 }
-                if commit_runtime {
-                    self.document
-                        .lock()
-                        .expect("vue doc")
-                        .set_pointer_hover(input.pointer_id, physical_hit);
-                    self.flush_interactive_css_if_needed();
-                }
+                self.flush_interactive_css_if_needed();
                 self.input_projection
                     .js_pointer_hover
                     .insert(input.pointer_id, physical_hit);
@@ -846,45 +810,12 @@ impl VueHost {
         let mut consumed = false;
         match input.kind {
             PointerEventKind::Down => {
-                if commit_runtime && let Some(target) = target {
-                    self.document
-                        .lock()
-                        .expect("vue doc")
-                        .press_pointer(input.pointer_id, target);
-                    self.flush_interactive_css_if_needed();
-                }
-                let (previous, next) = if commit_runtime {
-                    self.focus_target_at(input.client_x, input.client_y)
-                } else {
-                    let previous = self.input_projection.js_focus;
-                    let next = self.document.lock().expect("vue doc").focused();
-                    (previous, next)
-                };
-                if previous != next {
-                    if let Some(previous) = previous {
-                        self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
-                    }
-                    if let Some(next) = next {
-                        self.fire_dom_event(engine, next, "focus", BTreeMap::new())?;
-                    }
-                    if commit_runtime {
-                        self.flush_focus_cascade(previous, next);
-                    }
-                }
-                self.input_projection.js_focus = next;
+                self.flush_interactive_css_if_needed();
+                self.emit_focus_change(engine)?;
             }
             PointerEventKind::Up => {
-                let pressed = if commit_runtime {
-                    self.document
-                        .lock()
-                        .expect("vue doc")
-                        .release_pointer_press(input.pointer_id)
-                } else {
-                    target.or(physical_hit)
-                };
-                if commit_runtime && pressed.is_some() {
-                    self.flush_interactive_css_if_needed();
-                }
+                let pressed = target.or(physical_hit);
+                self.flush_interactive_css_if_needed();
                 if !default_prevented
                     && let Some(click_target) = pressed
                     && physical_hit == Some(click_target)
@@ -916,55 +847,13 @@ impl VueHost {
                                 detail.clone(),
                             )?;
                         }
-                        if commit_runtime && !default_prevented {
-                            consumed |= self.activate_runtime_at(
-                                input.client_x,
-                                input.client_y,
-                                is_semantic.then_some(click_target),
-                            )?;
-                        }
                     }
                 }
             }
-            PointerEventKind::Cancel => {
-                if commit_runtime {
-                    self.document
-                        .lock()
-                        .expect("vue doc")
-                        .release_pointer_press(input.pointer_id);
-                    self.flush_interactive_css_if_needed();
-                }
-            }
+            PointerEventKind::Cancel => self.flush_interactive_css_if_needed(),
             PointerEventKind::Move => {}
         }
-        if commit_runtime {
-            let phase = match input.kind {
-                PointerEventKind::Down => 0,
-                PointerEventKind::Move => 1,
-                PointerEventKind::Up => 2,
-                PointerEventKind::Cancel => 3,
-            };
-            let _ = self.dispatch_terminal_pointer(target, &input, phase)?;
-        }
-
         self.flush_pointer_capture_events(engine)?;
-
-        if matches!(input.kind, PointerEventKind::Up | PointerEventKind::Cancel) {
-            if commit_runtime {
-                let captured = self
-                    .document
-                    .lock()
-                    .expect("vue doc")
-                    .pointer_capture(input.pointer_id);
-                if let Some(captured) = captured {
-                    self.document
-                        .lock()
-                        .expect("vue doc")
-                        .release_pointer(input.pointer_id, captured);
-                }
-            }
-            self.flush_pointer_capture_events(engine)?;
-        }
         self.drain_native_dom_events(engine)?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
@@ -1015,25 +904,20 @@ impl VueHost {
         let up = self.dispatch_pointer(engine, PointerInput::mouse(PointerEventKind::Up, x, y))?;
         Ok(down || up)
     }
+    /// Route a wheel event, then fire the page's `wheel` for it.
     pub fn dispatch_wheel_result<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         input: WheelInput,
     ) -> Result<HostedInputResult, JsEngineError> {
-        self.dispatch_wheel_result_with(engine, input, true)
+        self.route_input(InputPayload::Wheel(input.to_canonical()))?;
+        self.emit_wheel_from_runtime(engine, input)
     }
+    /// Fire the page's `wheel` for a wheel event the Runtime already routed.
     pub fn emit_wheel_from_runtime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         input: WheelInput,
-    ) -> Result<HostedInputResult, JsEngineError> {
-        self.dispatch_wheel_result_with(engine, input, false)
-    }
-    pub(crate) fn dispatch_wheel_result_with<E: JsEngine + ?Sized>(
-        &mut self,
-        engine: &mut E,
-        input: WheelInput,
-        commit_runtime: bool,
     ) -> Result<HostedInputResult, JsEngineError> {
         let target = {
             let doc = self.document.lock().expect("vue doc");
@@ -1046,47 +930,10 @@ impl VueHost {
         let allowed = self.fire_dom_event(engine, target, "wheel", input.detail())?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
-        let mut consumed = !allowed;
-        if allowed && commit_runtime {
-            let delta = crate::scroll::wheel_scroll_delta(&input);
-            let scrolled = {
-                let painted = self.layout_boxes.snapshot();
-                let mut document = self.document.lock().expect("vue doc");
-                // `pump_frame` / engine flush rewrites fixture chrome and
-                // shrinks overflow content. Restore the host paint boxes
-                // before committing ScrollOffset so chrome stays put.
-                if !painted.is_empty() {
-                    document.inject_layout_boxes(&painted);
-                }
-                let bridge = self.bridge.lock().expect("vue bridge");
-                crate::scroll::apply_runtime_wheel_from(
-                    &mut document,
-                    &bridge,
-                    &self.layout_boxes,
-                    Some(target),
-                    delta,
-                )
-                .is_some()
-            };
-            // Consume only after catalog qualification, when Scene owns the
-            // offset/clip.
-            consumed |= scrolled && {
-                #[cfg(feature = "scene-view")]
-                {
-                    nana_ui::component_uses_runtime(nana_ui::component_ids::SIDEBAR_FRAME)
-                }
-                #[cfg(not(feature = "scene-view"))]
-                {
-                    true
-                }
-            };
-        } else if allowed {
-            consumed = true;
-        }
         Ok(HostedInputResult {
             targeted: true,
             default_prevented: !allowed,
-            consumed,
+            consumed: true,
         })
     }
     pub fn dispatch_wheel<E: JsEngine + ?Sized>(
@@ -1107,28 +954,25 @@ impl VueHost {
     ) -> Result<bool, JsEngineError> {
         self.dispatch_wheel(engine, WheelInput::pixels(x, y, delta_x, delta_y))
     }
+    /// Route a key transition, then fire the page's key event at `target`
+    /// (the focused node when `None`). `false` when a control or the page
+    /// took the key.
     pub fn dispatch_keyboard<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         input: &KeyboardInput,
         target: Option<NodeHandle>,
     ) -> Result<bool, JsEngineError> {
-        self.dispatch_keyboard_with(engine, input, target, true)
+        let (_, outcome) = self.route_input(InputPayload::Key(input.to_canonical()))?;
+        let allowed = self.emit_keyboard_from_runtime(engine, input, target)?;
+        Ok(allowed && !outcome.handled)
     }
+    /// Fire the page's key event for a key the Runtime already routed.
     pub fn emit_keyboard_from_runtime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         input: &KeyboardInput,
         target: Option<NodeHandle>,
-    ) -> Result<bool, JsEngineError> {
-        self.dispatch_keyboard_with(engine, input, target, false)
-    }
-    pub(crate) fn dispatch_keyboard_with<E: JsEngine + ?Sized>(
-        &mut self,
-        engine: &mut E,
-        input: &KeyboardInput,
-        target: Option<NodeHandle>,
-        commit_runtime: bool,
     ) -> Result<bool, JsEngineError> {
         let target = {
             let doc = self.document.lock().expect("vue doc");
@@ -1146,13 +990,6 @@ impl VueHost {
             detail.insert("repeat".into(), HostValue::Bool(true));
         }
         let mut allowed = self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
-        if allowed
-            && commit_runtime
-            && input.kind == KeyboardEventKind::Down
-            && self.dispatch_terminal_key(input)?
-        {
-            allowed = false;
-        }
         if allowed && input.kind == KeyboardEventKind::Down {
             let key = input.key.to_ascii_lowercase();
             let activate_key =
@@ -1167,6 +1004,8 @@ impl VueHost {
                     .get(target.0)
                     .cloned();
                 if let Some(widget) = widget {
+                    // A page range is projection-only in the Runtime: its
+                    // keyboard steps are the page's to take.
                     let requested_value = match widget.kind {
                         WidgetKind::Range => match key.as_str() {
                             "arrowleft" | "arrowdown" => {
@@ -1199,7 +1038,7 @@ impl VueHost {
                             !repeated && matches!(key.as_str(), " " | "space" | "spacebar")
                         }
                         WidgetKind::SettingsCollapsibleCard => activate_key,
-                        WidgetKind::Range => commit_runtime && requested_value.is_some(),
+                        WidgetKind::Range => requested_value.is_some(),
                         _ => false,
                     };
                     if activates {
@@ -1216,30 +1055,9 @@ impl VueHost {
                 }
             }
         }
-        if allowed && input.kind == KeyboardEventKind::Down && input.key.eq_ignore_ascii_case("tab")
-        {
-            let (previous, next) = if commit_runtime {
-                self.advance_tab_focus(input.modifiers.shift)
-            } else {
-                let previous = self.input_projection.js_focus;
-                let next = self.document.lock().expect("vue doc").focused();
-                (previous, next)
-            };
-            if previous != next {
-                if let Some(previous) = previous {
-                    self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
-                }
-                if let Some(next) = next {
-                    self.fire_dom_event(engine, next, "focus", BTreeMap::new())?;
-                }
-            }
-            self.input_projection.js_focus = next;
-            if commit_runtime {
-                self.flush_focus_cascade(previous, next);
-            }
-        } else if !commit_runtime {
-            self.input_projection.js_focus = self.document.lock().expect("vue doc").focused();
-        }
+        // Tab, roving arrows or an activated control may have moved focus
+        // in the route; the page hears it as a browser's would.
+        self.emit_focus_change(engine)?;
         self.drain_native_dom_events(engine)?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
@@ -1368,159 +1186,36 @@ impl VueHost {
         let _ = self.pump_frame(engine)?;
         Ok(true)
     }
-    pub(crate) fn advance_tab_focus(
-        &self,
-        reverse: bool,
-    ) -> (Option<NodeHandle>, Option<NodeHandle>) {
-        let mut document = self.document.lock().expect("vue doc");
-        let previous = document.focused();
-        let root = document.mount_root();
-        let mut order = document
-            .collect_element_preorder(root)
-            .into_iter()
-            .map(NodeHandle)
-            .filter_map(|node| {
-                let tag = document.element_tag(node)?;
-                if document.get_attribute(node, "disabled").is_some() {
-                    return None;
-                }
-                let tabindex = document
-                    .get_attribute(node, "tabindex")
-                    .and_then(|value| value.parse::<i32>().ok());
-                if tabindex.is_some_and(|value| value < 0) {
-                    return None;
-                }
-                let naturally_focusable = is_focusable_tag(&tag)
-                    || self.native_component_name(node.0).is_some()
-                    || document
-                        .get_attribute(node, "contenteditable")
-                        .is_some_and(|value| value != "false");
-                (naturally_focusable || tabindex.is_some()).then_some((tabindex.unwrap_or(0), node))
-            })
-            .collect::<Vec<_>>();
-        order.sort_by_key(|(tabindex, _)| {
-            if *tabindex > 0 {
-                (0, *tabindex)
-            } else {
-                (1, 0)
-            }
-        });
-        if order.is_empty() {
-            document.clear_focus();
-            return (previous, None);
-        }
-        let current = previous.and_then(|focused| {
-            order
-                .iter()
-                .position(|(_, candidate)| *candidate == focused)
-        });
-        let next_index = if reverse {
-            current.map_or(order.len() - 1, |index| {
-                if index == 0 {
-                    order.len() - 1
-                } else {
-                    index - 1
-                }
-            })
-        } else {
-            current.map_or(0, |index| (index + 1) % order.len())
-        };
-        let next = order.get(next_index).map(|(_, node)| *node);
-        if let Some(next) = next {
-            document.set_focus(next);
-        }
-        (previous, next)
-    }
-    /// Commit text from a keyboard or IME into the focused Vue control.
+    /// Route text the platform committed with no key press (a soft
+    /// keyboard, a paste), then fire the page's `beforeinput` and `input`.
     pub fn commit_text<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         text: &str,
         input_type: &str,
     ) -> Result<bool, JsEngineError> {
-        let Some(target) = self.document.lock().expect("vue doc").focused() else {
-            return Ok(false);
-        };
-        self.commit_text_on(engine, target, text, input_type)
+        self.commit_routed_text(engine, CommittedText::new(text), input_type)
     }
-    /// Commit text into a specific field. Used so leftover IME after blur
-    /// cannot retarget the newly focused node.
-    pub(crate) fn commit_text_on<E: JsEngine + ?Sized>(
+    fn commit_routed_text<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
-        target: NodeHandle,
-        text: &str,
+        committed: CommittedText,
         input_type: &str,
     ) -> Result<bool, JsEngineError> {
-        if self.text_commit_blocked(target) {
-            return Ok(false);
-        }
-        let (widget_editable, existing, fallback_value, tag, contenteditable) = {
-            let widget_editable = self
-                .bridge
+        let text = committed.text.clone();
+        let (_, outcome) = self.route_input(InputPayload::Text(committed))?;
+        let target = self.focused().filter(|&target| {
+            self.document
                 .lock()
-                .expect("vue bridge")
-                .get(target.0)
-                .is_some_and(|widget| {
-                    widget.kind.is_choice_field()
-                        || matches!(
-                            widget.kind,
-                            WidgetKind::Input
-                                | WidgetKind::NumberInput
-                                | WidgetKind::Textarea
-                                | WidgetKind::ContextMenu
-                        )
-                });
-            let document = self.document.lock().expect("vue doc");
-            (
-                widget_editable,
-                document.text_input_state(target),
-                document.get_attribute(target, "value").unwrap_or_default(),
-                document.element_tag(target),
-                document.get_attribute(target, "contenteditable"),
-            )
-        };
-        let editable = widget_editable
-            || matches!(
-                tag.as_deref(),
-                Some(
-                    "input"
-                        | "textarea"
-                        | "nana-context-menu"
-                        | "search-dropdown"
-                        | "nana-search"
-                        | "nana-dropdown"
-                )
-            )
-            || contenteditable.is_some_and(|value| value != "false");
-        let Some(mut state) =
-            existing.or_else(|| editable.then(|| TextInputState::new(fallback_value)))
-        else {
-            return Ok(false);
-        };
-        if !state.replace_selection(text) {
-            return Ok(false);
-        }
-        let next = state;
-        let mut detail = BTreeMap::new();
-        detail.insert("data".into(), HostValue::string(text));
-        detail.insert("inputType".into(), HostValue::string(input_type));
-        detail.insert("value".into(), HostValue::string(next.value.as_str()));
-        detail.insert("isComposing".into(), HostValue::Bool(false));
-        if !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
-            return Ok(false);
-        }
-        {
-            let mut document = self.document.lock().expect("vue doc");
-            if !document.set_text_input_state(target, next.clone()) {
-                return Ok(false);
+                .expect("vue doc")
+                .has_text_input_state(target)
+        });
+        match target {
+            Some(target) if outcome.handled => {
+                self.emit_text_events_from_runtime(engine, target, &text, input_type)
             }
-            document.set_attribute(target, "value", &next.value);
+            _ => Ok(false),
         }
-        self.fire_dom_event(engine, target, "input", detail)?;
-        engine.run_microtasks()?;
-        let _ = self.pump_frame(engine)?;
-        Ok(true)
     }
     pub(crate) fn text_commit_blocked(&self, target: NodeHandle) -> bool {
         if self
@@ -1545,82 +1240,31 @@ impl VueHost {
         self.input_projection.ime_target = None;
         self.input_projection.ime_preedit.clear();
     }
-    pub(crate) fn ime_composition_target(document: &NanaTreeDocument) -> Option<NodeHandle> {
-        document
-            .collect_element_preorder(document.html_root())
-            .into_iter()
-            .map(NodeHandle)
-            .find(|&node| document.ime_composition(node).is_some())
-    }
-    /// Composition target and leftover preedit. Runtime drops `ImeComposition`
-    /// on blur, so the remembered field wins over current focus.
-    pub(crate) fn take_ime_leftover(&mut self) -> Option<(NodeHandle, String)> {
-        let remembered = self.input_projection.ime_target.take();
-        let remembered_text = std::mem::take(&mut self.input_projection.ime_preedit);
-        let mut document = self.document.lock().expect("vue doc");
-        let target = Self::ime_composition_target(&document).or(remembered)?;
-        let data = document
-            .ime_composition(target)
-            .map(|ime| ime.text)
-            .unwrap_or(remembered_text);
-        document.set_ime_composition(target, None);
-        Some((target, data))
-    }
+    /// Route a page composition event as the platform IME event it stands
+    /// for, then fire the page's composition events.
     pub fn dispatch_composition<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         input: &CompositionInput,
     ) -> Result<bool, JsEngineError> {
-        let Some(target) = self.document.lock().expect("vue doc").focused() else {
+        let composition = input.to_canonical();
+        let (_, outcome) = self.route_input(InputPayload::Composition(composition.clone()))?;
+        if input.kind != CompositionEventKind::Start {
+            return self.emit_native_ime_from_runtime(engine, &composition, outcome.handled);
+        }
+        // The page asked for a start alone, not the platform's start and
+        // empty preedit.
+        let Some(target) = self.focused() else {
             return Ok(false);
         };
-        {
-            let mut document = self.document.lock().expect("vue doc");
-            if !document.has_text_input_state(target) {
-                let value = document.get_attribute(target, "value").unwrap_or_default();
-                if !document.set_text_input_state(target, TextInputState::new(value)) {
-                    return Err(JsEngineError::new(
-                        "composition target has no retained text input state",
-                    ));
-                }
-            }
-            let composition = match input.kind {
-                CompositionEventKind::Start | CompositionEventKind::Update => {
-                    Some(nana_ui_runtime::ImeComposition {
-                        text: input.data.clone(),
-                        selection: None,
-                    })
-                }
-                CompositionEventKind::End => None,
-            };
-            if !document.set_ime_composition(target, composition) {
-                return Err(JsEngineError::new("invalid composition state"));
-            }
-        }
-        match input.kind {
-            CompositionEventKind::Start | CompositionEventKind::Update => {
-                self.remember_ime_target(target, input.data.clone());
-            }
-            CompositionEventKind::End => {
-                self.clear_ime_target();
-            }
-        }
-        self.dispatch_composition_event(engine, target, input)
+        self.remember_ime_target(target, String::new());
+        self.emit_composition_event(engine, target, input)
     }
-    pub(crate) fn dispatch_composition_event<E: JsEngine + ?Sized>(
+    fn emit_composition_event<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         target: NodeHandle,
         input: &CompositionInput,
-    ) -> Result<bool, JsEngineError> {
-        self.dispatch_composition_event_with(engine, target, input, true)
-    }
-    pub(crate) fn dispatch_composition_event_with<E: JsEngine + ?Sized>(
-        &mut self,
-        engine: &mut E,
-        target: NodeHandle,
-        input: &CompositionInput,
-        commit_runtime: bool,
     ) -> Result<bool, JsEngineError> {
         let mut detail = BTreeMap::new();
         detail.insert("data".into(), HostValue::string(&input.data));
@@ -1631,16 +1275,12 @@ impl VueHost {
         self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
         engine.run_microtasks()?;
         if input.kind == CompositionEventKind::End && !input.data.is_empty() {
-            return if commit_runtime {
-                self.commit_text_on(engine, target, &input.data, "insertCompositionText")
-            } else {
-                self.emit_text_events_from_runtime(
-                    engine,
-                    target,
-                    &input.data,
-                    "insertCompositionText",
-                )
-            };
+            return self.emit_text_events_from_runtime(
+                engine,
+                target,
+                &input.data,
+                "insertCompositionText",
+            );
         }
         let _ = self.pump_frame(engine)?;
         Ok(true)
@@ -1677,87 +1317,64 @@ impl VueHost {
         let _ = self.pump_frame(engine)?;
         Ok(true)
     }
-    /// Forwards desktop winit IME lifecycle into Vue composition events.
-    ///
-    /// Preedit stays on Runtime [`nana_ui_runtime::ImeComposition`]. Commit and
-    /// leftover Disabled preedit update Runtime [`TextInputState`] on the
-    /// original composition field through [`Self::commit_text_on`], matching
-    /// [`Self::dispatch_composition`] End even if focus has moved. This path
-    /// does not write a second editor buffer.
+    /// Route a platform IME event, then fire the page's composition and
+    /// `input` events for it.
     pub fn dispatch_native_ime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         event: &nana_ui_platform::CompositionInput,
     ) -> Result<bool, JsEngineError> {
-        self.dispatch_native_ime_with(engine, event, true)
+        let (_, outcome) = self.route_input(InputPayload::Composition(event.clone()))?;
+        if matches!(
+            event,
+            nana_ui_platform::CompositionInput::DeleteSurrounding { .. }
+        ) && !outcome.handled
+        {
+            // A span off a character boundary deletes nothing.
+            return Ok(false);
+        }
+        self.emit_native_ime_from_runtime(engine, event, outcome.handled)
     }
-    /// Emit JS composition/`input` after the Scene host already applied Runtime IME.
+    /// Fire the page's composition events for IME input the Runtime already
+    /// routed: preedit lives on the Runtime's `ImeComposition`, commits in
+    /// its `TextInputState`. `applied` is whether the route changed the
+    /// field. A commit or leftover it did not apply ends the composition
+    /// with no text, as a cancelled one does: focus leaving an editor
+    /// cancels its preedit, so text never lands in the field focus moved to.
     pub fn emit_native_ime_from_runtime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         event: &nana_ui_platform::CompositionInput,
-    ) -> Result<bool, JsEngineError> {
-        self.dispatch_native_ime_with(engine, event, false)
-    }
-    pub(crate) fn dispatch_native_ime_with<E: JsEngine + ?Sized>(
-        &mut self,
-        engine: &mut E,
-        event: &nana_ui_platform::CompositionInput,
-        commit_runtime: bool,
+        applied: bool,
     ) -> Result<bool, JsEngineError> {
         match event {
             nana_ui_platform::CompositionInput::Enabled => Ok(self.focused().is_some()),
             // A composition that starts is an empty preedit until it updates.
-            nana_ui_platform::CompositionInput::Start => self.dispatch_native_ime_with(
+            nana_ui_platform::CompositionInput::Start => self.emit_native_ime_from_runtime(
                 engine,
                 &nana_ui_platform::CompositionInput::Update {
                     text: String::new(),
                     selection: None,
                 },
-                commit_runtime,
+                applied,
             ),
-            nana_ui_platform::CompositionInput::Update { text, selection } => {
+            nana_ui_platform::CompositionInput::Update { text, .. } => {
                 let Some(target) = self.focused() else {
                     return Ok(false);
                 };
-                let started = if commit_runtime {
-                    let mut document = self.document.lock().expect("vue doc");
-                    if !document.has_text_input_state(target) {
-                        let value = document.get_attribute(target, "value").unwrap_or_default();
-                        if !document.set_text_input_state(target, TextInputState::new(value)) {
-                            return Err(JsEngineError::new(
-                                "native IME target has no retained text input state",
-                            ));
-                        }
-                    }
-                    let started = document.ime_composition(target).is_none();
-                    if !document.set_ime_composition(
-                        target,
-                        Some(nana_ui_runtime::ImeComposition {
-                            text: text.clone(),
-                            selection: *selection,
-                        }),
-                    ) {
-                        return Err(JsEngineError::new("invalid native IME preedit state"));
-                    }
-                    started
-                } else {
-                    self.input_projection.ime_target.is_none()
-                };
+                let started = self.input_projection.ime_target.is_none();
                 self.remember_ime_target(target, text.clone());
                 if started {
-                    self.dispatch_composition_event_with(
+                    self.emit_composition_event(
                         engine,
                         target,
                         &CompositionInput::new(CompositionEventKind::Start, ""),
-                        commit_runtime,
                     )?;
                 }
-                self.dispatch_composition_event_with(
+                self.emit_composition_event(
                     engine,
                     target,
                     &CompositionInput::new(CompositionEventKind::Update, text),
-                    commit_runtime,
                 )
             }
             nana_ui_platform::CompositionInput::Commit(text) => {
@@ -1766,45 +1383,18 @@ impl VueHost {
                     return Ok(false);
                 };
                 self.clear_ime_target();
-                if commit_runtime {
-                    self.document
-                        .lock()
-                        .expect("vue doc")
-                        .set_ime_composition(target, None);
-                }
-                self.dispatch_composition_event_with(
+                let committed = if applied { text.as_str() } else { "" };
+                self.emit_composition_event(
                     engine,
                     target,
-                    &CompositionInput::new(CompositionEventKind::End, text),
-                    commit_runtime,
+                    &CompositionInput::new(CompositionEventKind::End, committed),
                 )
             }
-            nana_ui_platform::CompositionInput::DeleteSurrounding {
-                before_bytes,
-                after_bytes,
-            } => self.dispatch_native_delete_surrounding(
-                engine,
-                *before_bytes,
-                *after_bytes,
-                commit_runtime,
-            ),
+            nana_ui_platform::CompositionInput::DeleteSurrounding { .. } => {
+                self.emit_native_delete_surrounding(engine)
+            }
             nana_ui_platform::CompositionInput::Disabled
             | nana_ui_platform::CompositionInput::End => {
-                if commit_runtime {
-                    let leftover = self.take_ime_leftover();
-                    let Some((target, data)) = leftover else {
-                        return Ok(self.focused().is_some());
-                    };
-                    if self.text_commit_blocked(target) {
-                        return Ok(true);
-                    }
-                    return self.dispatch_composition_event_with(
-                        engine,
-                        target,
-                        &CompositionInput::new(CompositionEventKind::End, data),
-                        true,
-                    );
-                }
                 let leftover = self.input_projection.ime_target.take().map(|target| {
                     let data = std::mem::take(&mut self.input_projection.ime_preedit);
                     (target, data)
@@ -1815,21 +1405,18 @@ impl VueHost {
                 if data.is_empty() {
                     return Ok(true);
                 }
-                self.dispatch_composition_event_with(
+                let committed = if applied { data } else { String::new() };
+                self.emit_composition_event(
                     engine,
                     target,
-                    &CompositionInput::new(CompositionEventKind::End, data),
-                    false,
+                    &CompositionInput::new(CompositionEventKind::End, committed),
                 )
             }
         }
     }
-    pub(crate) fn dispatch_native_delete_surrounding<E: JsEngine + ?Sized>(
+    fn emit_native_delete_surrounding<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
-        before_bytes: usize,
-        after_bytes: usize,
-        commit_runtime: bool,
     ) -> Result<bool, JsEngineError> {
         let Some(target) = self.focused() else {
             return Ok(false);
@@ -1837,39 +1424,29 @@ impl VueHost {
         if self.text_commit_blocked(target) {
             return Ok(true);
         }
-        let next = {
-            let document = self.document.lock().expect("vue doc");
-            let Some(mut state) = document.text_input_state(target) else {
+        let value = {
+            let mut document = self.document.lock().expect("vue doc");
+            let Some(value) = document
+                .text_input_state(target)
+                .map(|state| state.value.to_string())
+            else {
                 return Ok(false);
             };
-            if commit_runtime && !state.delete_surrounding(before_bytes, after_bytes) {
-                return Ok(false);
-            }
-            state
+            document.set_attribute(target, "value", &value);
+            value
         };
         let mut detail = BTreeMap::new();
         detail.insert("data".into(), HostValue::string(""));
         detail.insert("inputType".into(), HostValue::string("deleteContent"));
-        detail.insert("value".into(), HostValue::string(next.value.as_str()));
+        detail.insert("value".into(), HostValue::string(&value));
         detail.insert("isComposing".into(), HostValue::Bool(false));
-        if commit_runtime && !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
-            return Ok(false);
-        }
-        if commit_runtime {
-            let mut document = self.document.lock().expect("vue doc");
-            if !document.set_text_input_state(target, next.clone()) {
-                return Err(JsEngineError::new(
-                    "native IME delete surrounding could not write text input state",
-                ));
-            }
-            document.set_attribute(target, "value", &next.value);
-        }
         self.fire_dom_event(engine, target, "input", detail)?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(true)
     }
-    /// Legacy keydown helper; printable text is committed separately for compatibility.
+    /// A key press and, for a printable key, the text it types, delivered as
+    /// a keyboard delivers them.
     pub fn dispatch_key<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -1878,15 +1455,19 @@ impl VueHost {
         target: Option<NodeHandle>,
     ) -> Result<bool, JsEngineError> {
         let input = KeyboardInput::key_down(key, code);
-        self.dispatch_keyboard(engine, &input, target)?;
-        if target.or_else(|| self.focused()).is_some()
-            && key.chars().count() == 1
-            && !key
-                .chars()
-                .next()
-                .is_some_and(|character| character.is_control())
-        {
-            self.commit_text(engine, key, "insertText")?;
+        let (pressed, _) = self.route_input(InputPayload::Key(input.to_canonical()))?;
+        self.emit_keyboard_from_runtime(engine, &input, target)?;
+        let printable =
+            key.chars().count() == 1 && !key.chars().next().is_some_and(char::is_control);
+        if printable {
+            self.commit_routed_text(
+                engine,
+                CommittedText {
+                    text: key.to_owned(),
+                    key: Some(pressed.metadata.sequence),
+                },
+                "insertText",
+            )?;
         }
         Ok(true)
     }

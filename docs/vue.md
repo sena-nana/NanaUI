@@ -77,6 +77,8 @@ Early Splash 在 Rust 侧配置：`nana_ui::with_startup(StartupOptions { splash
 
 两种写法可以混在同一棵界面里。对话框、抽屉、菜单请用对应的 Nana 控件，不要用 `position: fixed` 自己搭网页浮层。
 
+输入只有一条路：原生窗口、`VueHostedRuntime::runtime_input` 和 `VueHost` 自己的 `dispatch_*` / `commit_text` 都先把事件交给 Runtime 路由，页面再收到 `pointer*` / `key*` / `wheel` / `input` / `composition*`。所以焦点、Tab 顺序、滚动和文字编辑按 Runtime 的规则走：可聚焦的是注册成控件的标签（`tabindex` 不参与），页面对 `wheel` / `keydown` 调用 `preventDefault` 拦不住已经发生的滚动和输入，焦点离开时未完成的组字被取消。
+
 ## 长列表上的 hover
 
 一个 render function 拥有整列时，hover 处理器改一个参与渲染的 `ref` 会让 Vue 重建整列的 vnode——实测 2,000 行时一次鼠标移动 9 ms（超过半帧），是同一棵树无处理器时的 140 倍。模板里的 `v-for` 编译出来就是这个形状，不生成子组件。这是长列表上最容易写出来的写法，也是这条路径上目前唯一还随树增长的成本。把行拆成各自的组件能省 39%（2,000 行 8.6 → 5.3 ms），但**不会变成常数**——剩下的在 Runtime 的脏帧路径上（2 个脏节点在 2,000 节点的树上要 1.5 ms，是 Issue #8 一直未过的门禁），与 Vue 怎么写无关，见 [输入成本](input-cost.md)。今天就能拿到常数的写法是让 hover 只改不参与渲染的状态。

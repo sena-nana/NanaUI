@@ -447,16 +447,4 @@ impl VueHost {
             self.components.unmount(&component, id);
         }
     }
-    #[cfg(feature = "scene-view")]
-    pub(crate) fn native_component_name(&self, id: WidgetId) -> Option<String> {
-        self.bridge
-            .lock()
-            .ok()?
-            .get(id)
-            .and_then(|widget| widget.props.native_component.clone())
-    }
-    #[cfg(not(feature = "scene-view"))]
-    pub(crate) fn native_component_name(&self, _id: u64) -> Option<String> {
-        None
-    }
 }

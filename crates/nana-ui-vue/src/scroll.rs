@@ -16,11 +16,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use nana_ui_core::{LayoutStyle, LengthSpec, PositionSpec};
 
 use crate::bridge::{MessageBridge, WidgetId, WidgetProps};
-use crate::input::WheelInput;
 use crate::tree::{LayoutBox, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from};
-
-/// Matches [`nana_ui::RuntimeInputAdapter`] line-wheel scale.
-const LINE_SCROLL_EXTENT: f32 = 60.0;
 
 /// Absolute scroll offset for one scroll container (CSS px).
 pub use nana_ui_runtime::ScrollOffset;
@@ -156,83 +152,6 @@ pub(crate) fn is_runtime_scroll_body(props: &WidgetProps) -> bool {
             .class_names
             .iter()
             .any(|class| class.contains("nana-sidebar-frame__body"))
-}
-
-/// Convert a hosted/DOM wheel into a Runtime content-offset delta.
-pub(crate) fn wheel_scroll_delta(input: &WheelInput) -> ScrollOffset {
-    let (dx, dy) = if input.modifiers.shift && !cfg!(target_os = "macos") {
-        (input.delta_y, input.delta_x)
-    } else {
-        (input.delta_x, input.delta_y)
-    };
-    let scale = match input.delta_mode {
-        1 => LINE_SCROLL_EXTENT,
-        2 => LINE_SCROLL_EXTENT * 16.0,
-        _ => 1.0,
-    };
-    ScrollOffset {
-        x: -dx * scale,
-        y: -dy * scale,
-    }
-}
-
-/// Apply a hosted wheel to the nearest Runtime scroll container.
-///
-/// Matches projected `ScrollView` bodies (sidebar-frame) and L1
-/// `overflow: auto|scroll`. Does not enqueue pending scroll Tasks; Runtime
-/// `scroll_offset` is authoritative. No L1 scrollbar chrome.
-/// Production callers use [`apply_runtime_wheel_from`] with a pre-`pump_frame`
-/// hit target.
-#[cfg(test)]
-pub(crate) fn apply_runtime_wheel(
-    doc: &mut NanaTreeDocument,
-    bridge: &MessageBridge,
-    layout_store: &LayoutBoxStore,
-    x: f32,
-    y: f32,
-    delta: ScrollOffset,
-) -> Option<NodeHandle> {
-    apply_runtime_wheel_from(doc, bridge, layout_store, doc.hit_test(x, y), delta)
-}
-
-/// Scroll from a known event target. VueHost must pass the pre-`pump_frame`
-/// hit so engine layout cannot drop the wheel after `resolve_layout`.
-pub(crate) fn apply_runtime_wheel_from(
-    doc: &mut NanaTreeDocument,
-    bridge: &MessageBridge,
-    layout_store: &LayoutBoxStore,
-    start: Option<NodeHandle>,
-    delta: ScrollOffset,
-) -> Option<NodeHandle> {
-    let mut current = start;
-    let mut matching = Vec::new();
-    while let Some(node) = current {
-        if is_wheel_scroll_container(doc, bridge, node) {
-            matching.push(node);
-        }
-        current = doc.parent_node(node);
-    }
-    for node in matching {
-        let moved = match doc.layout_scroll_metrics_from(node, layout_store) {
-            Some(metrics) => doc.scroll_by_with_metrics(node, delta, metrics),
-            None => doc.scroll_by(node, delta),
-        };
-        if moved {
-            return Some(node);
-        }
-    }
-    None
-}
-
-fn is_wheel_scroll_container(
-    doc: &NanaTreeDocument,
-    bridge: &MessageBridge,
-    node: NodeHandle,
-) -> bool {
-    doc.overflow_scrolls(node)
-        || bridge.get(node.0).is_some_and(|widget| {
-            is_runtime_scroll_body(&widget.props) || scrolls_axis(&widget.props.layout)
-        })
 }
 
 fn scrolls_axis(layout: &LayoutStyle) -> bool {
@@ -555,6 +474,29 @@ mod tests {
     use crate::bridge::{MessageBridge, WidgetKind, WidgetProps};
     use nana_ui_core::OverflowSpec;
 
+    /// Route a wheel through the Runtime at `(x, y)`, asking to move content
+    /// by `offset`, as a window or `VueHost` delivers it. Whether anything
+    /// scrolled.
+    fn route_wheel(doc: &mut NanaTreeDocument, x: f32, y: f32, offset: ScrollOffset) -> bool {
+        let document = doc.runtime_document().document();
+        let context = doc.context_mut();
+        nana_ui_runtime::HeadlessInput::bind(context, document)
+            .route(
+                context,
+                nana_ui_platform::InputPayload::Wheel(nana_ui_platform::WheelInput {
+                    pointer_id: nana_ui_platform::PointerId(1),
+                    x,
+                    y,
+                    delta_x: -offset.x,
+                    delta_y: -offset.y,
+                    unit: nana_ui_platform::WheelUnit::Pixels,
+                    modifiers: Default::default(),
+                }),
+            )
+            .expect("route wheel")
+            .handled
+    }
+
     fn seed_scroll_tree() -> (
         NanaTreeDocument,
         MessageBridge,
@@ -732,12 +674,8 @@ mod tests {
 
         let top_before = doc.layout_box(top).expect("top");
         let footer_before = doc.layout_box(footer).expect("footer");
-        let delta = wheel_scroll_delta(&crate::WheelInput::pixels(20.0, 80.0, 0.0, -48.0));
-        assert_eq!(delta.y, 48.0);
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 20.0, 80.0, delta),
-            Some(body)
-        );
+        let delta = ScrollOffset { x: 0.0, y: 48.0 };
+        assert!(route_wheel(&mut doc, 20.0, 80.0, delta));
         assert!((doc.scroll_offset(body).y - 48.0).abs() < 0.5);
         assert_eq!(doc.scroll_offset(top).y, 0.0);
         assert_eq!(doc.scroll_offset(footer).y, 0.0);
@@ -748,14 +686,11 @@ mod tests {
 
     #[test]
     fn runtime_wheel_scrolls_overflow_auto() {
-        let (mut doc, bridge, layout_store, scroller, target) = seed_scroll_tree();
+        let (mut doc, mut bridge, layout_store, scroller, target) = seed_scroll_tree();
+        doc.sync_semantic_styles(&bridge.snapshot());
         doc.inject_layout_boxes(&layout_store.snapshot());
-        let delta = wheel_scroll_delta(&crate::WheelInput::pixels(10.0, 10.0, 0.0, -48.0));
-        assert_eq!(delta.y, 48.0);
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 10.0, 10.0, delta),
-            Some(scroller)
-        );
+        let delta = ScrollOffset { x: 0.0, y: 48.0 };
+        assert!(route_wheel(&mut doc, 10.0, 10.0, delta));
         assert!((doc.scroll_offset(scroller).y - 48.0).abs() < 0.5);
         assert_eq!(doc.scroll_offset(target).y, 0.0);
         assert!(shared_scroll_offset_store().take_pending().is_empty());
@@ -809,24 +744,17 @@ mod tests {
         assert_eq!(set(&mut doc, -120.0), -120.0);
         assert_eq!(set(&mut doc, -1_000.0), -300.0);
         let left = ScrollOffset { x: -48.0, y: 0.0 };
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 150.0, 10.0, left),
-            None,
+        assert!(
+            !route_wheel(&mut doc, 150.0, 10.0, left),
             "already at the far edge"
         );
         let right = ScrollOffset { x: 48.0, y: 0.0 };
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 150.0, 10.0, right),
-            Some(scroller)
-        );
+        assert!(route_wheel(&mut doc, 150.0, 10.0, right));
         assert_eq!(doc.scroll_offset(scroller).x, -252.0);
         let metrics = doc.scroll_metrics(scroller).expect("measured");
         assert_eq!((metrics.origin_x, metrics.content_width), (-300.0, 500.0));
         reapply_scroll_translations(&mut doc, &bridge, &layout_store);
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 150.0, 10.0, left),
-            Some(scroller)
-        );
+        assert!(route_wheel(&mut doc, 150.0, 10.0, left));
         assert_eq!(doc.scroll_offset(scroller).x, -300.0);
     }
 
@@ -857,30 +785,18 @@ mod tests {
         doc.sync_semantic_styles(&bridge.snapshot());
         doc.inject_layout_boxes(&layout_store.snapshot());
 
-        let delta = wheel_scroll_delta(&crate::WheelInput::pixels(10.0, 10.0, 0.0, -48.0));
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 10.0, 10.0, delta),
-            Some(inner)
-        );
+        let delta = ScrollOffset { x: 0.0, y: 48.0 };
+        assert!(route_wheel(&mut doc, 10.0, 10.0, delta));
         assert!((doc.scroll_offset(inner).y - 48.0).abs() < 0.5);
         assert_eq!(doc.scroll_offset(outer).y, 0.0);
 
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 10.0, 10.0, delta),
-            Some(inner)
-        );
+        assert!(route_wheel(&mut doc, 10.0, 10.0, delta));
         assert!((doc.scroll_offset(inner).y - 96.0).abs() < 0.5);
 
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 10.0, 10.0, delta),
-            Some(inner)
-        );
+        assert!(route_wheel(&mut doc, 10.0, 10.0, delta));
         assert!((doc.scroll_offset(inner).y - 120.0).abs() < 0.5);
 
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 10.0, 10.0, delta),
-            Some(outer)
-        );
+        assert!(route_wheel(&mut doc, 10.0, 10.0, delta));
         assert!((doc.scroll_offset(inner).y - 120.0).abs() < 0.5);
         assert!((doc.scroll_offset(outer).y - 48.0).abs() < 0.5);
     }
@@ -912,11 +828,8 @@ mod tests {
         doc.sync_semantic_styles(&bridge.snapshot());
         doc.inject_layout_boxes(&layout_store.snapshot());
 
-        let delta = wheel_scroll_delta(&crate::WheelInput::pixels(10.0, 10.0, 0.0, -48.0));
-        assert_eq!(
-            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 10.0, 10.0, delta),
-            Some(scroller)
-        );
+        let delta = ScrollOffset { x: 0.0, y: 48.0 };
+        assert!(route_wheel(&mut doc, 10.0, 10.0, delta));
         assert!((doc.scroll_offset(scroller).y - 48.0).abs() < 0.5);
         assert_eq!(doc.scroll_offset(mask).y, 0.0);
     }

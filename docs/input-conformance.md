@@ -12,7 +12,7 @@
 | 组件行为（原 adapter 测试） | 指针、滚轮、键盘、文本、组字进入各类组件的原有行为，经新路由逐条保留（83 条） | 同上，`framework::input::tests::dispatch` |
 | 分配与命中门禁 | 未捕获移动每次恰好 1 次命中查询、捕获移动 0 次；同一行、跨行（每次都切换悬停）、滚动视口内、捕获中的稳态移动都零分配 | `cargo test -p nana-ui-runtime --all-features --test input_alloc --locked`（计数分配器只统计测试自己的线程） |
 | native scene host | winit 事件直接降级为 canonical（W3C 物理键名、滚轮与鼠标同一指针、指针离开带自己的设备；拖放降级为 `FileDrag`，含延迟到达的路径与取路径失败时的取消）；IME 请求在 host services 中合成；光标由 Runtime 意图、窗口边框缩放与程序覆盖合成 | `cargo test -p nana-ui --features hosted --lib scene_host --locked`（仅仓内证据） |
-| Vue observation | scene host 已路由的事件只进入 Vue 观察层，不再路由；独立模式下每个窗口一个输入源，时间戳取自动画时钟；被处理或被页面阻止的按键不再发出 `insertText` | `cargo test -p nana-ui-vue --all-features --lib --locked` |
+| Vue | scene host 已路由的事件只进入 Vue 观察层；没有原生窗口时（`VueHost` 的 `dispatch_*` / `commit_text` / `dispatch_key` / 组字与 IME、`VueHostedRuntime::runtime_input`）由每个 `VueHost` 自己的输入源先路由、再观察，Vue 不再自己改 Runtime。滚轮的 overflow、RTL 负向横滚、嵌套冒泡、`pointer-events: none` 穿透经路由验证；被处理或被页面阻止的按键不再发出 `insertText`；失焦取消组字 | `cargo test -p nana-ui-vue --all-features --lib --locked` |
 | devtools headless | `RuntimeAgentSession` 经 `HeadlessInput` 走同一条路由；1000 次指针事件后路由计数与空闲 flush 正确 | `cargo test -p nana-ui-devtools --features runtime-agent --all-targets --locked` |
 
 ## 性能

@@ -14,17 +14,14 @@ use nana_ui::{
     window_material_effect,
 };
 use nana_ui_platform::{
-    CanonicalInputEvent, DeviceId, EndpointGeneration, HeadlessHostServices, InputPayload,
-    InputSequence, InputSequencer, InputSourceId, PointerPhase, WindowEvent, WindowGeometry,
-    WindowId,
+    CanonicalInputEvent, InputPayload, InputSequence, WindowEvent, WindowGeometry, WindowId,
 };
 use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 
 use crate::{
-    BridgeEvent, KeyboardEventKind, KeyboardInput, PointerEventKind, PointerInput,
-    SharedRuntimeDocument, VueRuntime, VueWindowId, WheelInput, WindowLifecycleEvent,
-    theme_tokens_from_appearance,
+    BridgeEvent, KeyboardInput, PointerInput, SharedRuntimeDocument, VueRuntime, VueWindowId,
+    WheelInput, WindowLifecycleEvent, theme_tokens_from_appearance,
 };
 
 thread_local! {
@@ -53,84 +50,9 @@ pub struct VueHostedRuntime<E: JsEngine> {
     engine: E,
     vue: VueRuntime,
     application_api: HostApiRegistry,
-    /// Input sources of windows this runtime routes itself (no native host).
-    inputs: HashMap<VueWindowId, StandaloneInput>,
-    /// Zero of the input clock: the animation clock's epoch once the host
-    /// syncs it, so event times are Runtime clock times.
-    input_epoch: Instant,
     /// Per window, the last key press a control handled or the page
     /// prevented; text naming it is not typed.
     handled_keys: HashMap<VueWindowId, InputSequence>,
-}
-
-/// A window's input source when this runtime routes its input itself.
-struct StandaloneInput {
-    sequencer: InputSequencer,
-    services: HeadlessHostServices,
-}
-
-impl StandaloneInput {
-    fn new(source: InputSourceId, generation: EndpointGeneration) -> Self {
-        Self {
-            sequencer: InputSequencer::new(source, generation),
-            services: HeadlessHostServices::new(),
-        }
-    }
-}
-
-fn vue_pointer(pointer: &nana_ui_platform::PointerInput) -> PointerInput {
-    PointerInput {
-        kind: match pointer.phase {
-            PointerPhase::Down => PointerEventKind::Down,
-            PointerPhase::Move => PointerEventKind::Move,
-            PointerPhase::Up => PointerEventKind::Up,
-            PointerPhase::Cancel => PointerEventKind::Cancel,
-        },
-        pointer_id: pointer.pointer_id.0,
-        pointer_type: pointer.pointer_type,
-        is_primary: pointer.is_primary,
-        client_x: pointer.x,
-        client_y: pointer.y,
-        screen_x: pointer.screen_x,
-        screen_y: pointer.screen_y,
-        button: pointer.button,
-        buttons: pointer.buttons,
-        pressure: pointer.pressure,
-        tangential_pressure: pointer.tangential_pressure,
-        tilt_x: pointer.tilt_x,
-        tilt_y: pointer.tilt_y,
-        twist: pointer.twist,
-        modifiers: pointer.modifiers,
-    }
-}
-
-fn vue_wheel(wheel: &nana_ui_platform::WheelInput) -> WheelInput {
-    WheelInput {
-        client_x: wheel.x,
-        client_y: wheel.y,
-        screen_x: wheel.x,
-        screen_y: wheel.y,
-        delta_x: wheel.delta_x,
-        delta_y: wheel.delta_y,
-        delta_mode: u8::from(wheel.unit == nana_ui_platform::WheelUnit::Lines),
-        modifiers: wheel.modifiers,
-    }
-}
-
-fn vue_key(key: &nana_ui_platform::KeyInput) -> KeyboardInput {
-    KeyboardInput {
-        kind: if key.is_pressed() {
-            KeyboardEventKind::Down
-        } else {
-            KeyboardEventKind::Up
-        },
-        key: key.logical.0.to_string(),
-        code: key.physical.0.to_string(),
-        location: 0,
-        repeat: key.repeat,
-        composing: false,
-        modifiers: key.modifiers,
-    }
 }
 
 #[derive(PartialEq)]
@@ -194,8 +116,6 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             engine,
             vue,
             application_api,
-            inputs: HashMap::new(),
-            input_epoch: Instant::now(),
             handled_keys: HashMap::new(),
         };
         runtime
@@ -444,34 +364,10 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         window: VueWindowId,
         payload: InputPayload,
     ) -> Result<(CanonicalInputEvent, nana_ui::InputRouteOutcome), JsEngineError> {
-        let host = self.require_host(window)?;
-        let document = host
+        self.require_host(window)?
             .lock()
             .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-            .document();
-        let mut document = document
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue document poisoned"))?;
-        let runtime = document.runtime_document_mut();
-        let document_id = runtime.document();
-        let now = self.input_epoch.elapsed();
-        let source = self.inputs.entry(window).or_insert_with(|| {
-            StandaloneInput::new(InputSourceId(window.0), EndpointGeneration(1))
-        });
-        let generation = source.sequencer.generation();
-        runtime
-            .context_mut()
-            .bind_input_source(InputSourceId(window.0), generation, document_id)
-            .map_err(|error| JsEngineError::new(error.to_string()))?;
-        let event = CanonicalInputEvent {
-            metadata: source.sequencer.stamp(DeviceId(0), now),
-            payload,
-        };
-        let outcome = runtime
-            .context_mut()
-            .route_input(&event, &mut source.services, None)
-            .map_err(|error| JsEngineError::new(error.to_string()))?;
-        Ok((event, outcome))
+            .route_input(payload)
     }
 
     /// Emit the browser-shaped events a page sees for one routed event. This
@@ -490,13 +386,17 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         let engine = &mut self.engine;
         match &event.payload {
             InputPayload::Pointer(pointer) => {
-                host.emit_pointer_from_runtime(engine, vue_pointer(pointer))?;
+                host.emit_pointer_from_runtime(engine, PointerInput::from_canonical(pointer))?;
             }
             InputPayload::Wheel(wheel) => {
-                host.emit_wheel_from_runtime(engine, vue_wheel(wheel))?;
+                host.emit_wheel_from_runtime(engine, WheelInput::from_canonical(wheel))?;
             }
             InputPayload::Key(key) => {
-                let allowed = host.emit_keyboard_from_runtime(engine, &vue_key(key), None)?;
+                let allowed = host.emit_keyboard_from_runtime(
+                    engine,
+                    &KeyboardInput::from_canonical(key),
+                    None,
+                )?;
                 // Text a handled or prevented key typed is not typed: the
                 // page sees no `input` for it, as a browser would not.
                 if key.is_pressed() && (disposition.handled || !allowed) {
@@ -530,7 +430,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                         .has_blocking_runtime_overlay(runtime.document())
                 });
                 if !blocked {
-                    host.emit_native_ime_from_runtime(engine, composition)?;
+                    host.emit_native_ime_from_runtime(engine, composition, disposition.handled)?;
                 }
             }
             InputPayload::FileDrag(drag) => {
@@ -845,7 +745,6 @@ impl<E: JsEngine> VueHostedRuntime<E> {
 
     pub fn sync_animation_clock(&mut self, epoch: std::time::Instant) {
         self.vue.sync_animation_clock(epoch);
-        self.input_epoch = epoch;
     }
 
     pub fn prepare_runtime_window(&self, id: WindowId) {
@@ -906,30 +805,13 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     /// generation.
     fn detach_input_source(&mut self, window: VueWindowId) -> Result<(), JsEngineError> {
         self.handled_keys.remove(&window);
-        let Some(mut input) = self.inputs.remove(&window) else {
-            return Ok(());
-        };
-        let generation = input.sequencer.advance();
-        let now = self.input_epoch.elapsed();
-        if let Some(host) = self.vue.host(window) {
-            let document = host
+        match self.vue.host(window) {
+            Some(host) => host
                 .lock()
                 .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                .document();
-            let mut document = document
-                .lock()
-                .map_err(|_| JsEngineError::new("Vue document poisoned"))?;
-            document
-                .runtime_document_mut()
-                .context_mut()
-                .unbind_input_source(InputSourceId(window.0), now)
-                .map_err(|error| JsEngineError::new(error.to_string()))?;
+                .detach_input_source(),
+            None => Ok(()),
         }
-        self.inputs.insert(
-            window,
-            StandaloneInput::new(InputSourceId(window.0), generation),
-        );
-        Ok(())
     }
 
     fn register_complete_host_api(&mut self) -> Result<(), JsEngineError> {
@@ -1560,6 +1442,7 @@ mod tests {
     use nana_ui::{
         TitleBarDragTracker, WindowChromeAction, WindowChromeState, apply_title_bar_pointer,
     };
+    use nana_ui_platform::{DeviceId, EndpointGeneration, InputSourceId, PointerPhase};
 
     #[test]
     fn pending_vue_bootstrap_guard_clears_untaken_slot() {
@@ -1579,8 +1462,6 @@ mod tests {
             engine: InputEngine::default(),
             vue: VueRuntime::new(400, 300, 1.0),
             application_api: HostApiRegistry::new(),
-            inputs: HashMap::new(),
-            input_epoch: Instant::now(),
             handled_keys: HashMap::new(),
         }
     }
@@ -1602,18 +1483,23 @@ mod tests {
         runtime
             .runtime_input(WindowId::PRIMARY, InputPayload::Focus { focused: true })
             .unwrap();
-        assert_eq!(
-            runtime.inputs[&VueWindowId::PRIMARY].sequencer.generation(),
-            EndpointGeneration(1)
-        );
+        let generation = |runtime: &VueHostedRuntime<InputEngine>| {
+            let host = runtime.vue.host(VueWindowId::PRIMARY).unwrap();
+            let document = host.lock().unwrap().document();
+            let document = document.lock().unwrap();
+            document
+                .runtime_document()
+                .context()
+                .input_binding(nana_ui::HeadlessInput::SOURCE)
+                .map(|(generation, _)| generation)
+        };
+        assert_eq!(generation(&runtime), Some(EndpointGeneration(1)));
         runtime.detach_input_source(VueWindowId::PRIMARY).unwrap();
-        assert_eq!(
-            runtime.inputs[&VueWindowId::PRIMARY].sequencer.generation(),
-            EndpointGeneration(2)
-        );
+        assert_eq!(generation(&runtime), None);
         runtime
             .runtime_input(WindowId::PRIMARY, InputPayload::Focus { focused: true })
             .unwrap();
+        assert_eq!(generation(&runtime), Some(EndpointGeneration(2)));
     }
 
     #[test]
@@ -1748,8 +1634,6 @@ mod tests {
             engine: InputEngine::default(),
             vue,
             application_api: HostApiRegistry::new(),
-            inputs: HashMap::new(),
-            input_epoch: Instant::now(),
             handled_keys: HashMap::new(),
         };
         let artifact = RuntimeArtifact::from_source("reload.js", "");
@@ -1882,8 +1766,6 @@ mod tests {
             engine,
             vue,
             application_api: HostApiRegistry::new(),
-            inputs: HashMap::new(),
-            input_epoch: Instant::now(),
             handled_keys: HashMap::new(),
         };
         runtime
@@ -1938,8 +1820,6 @@ mod tests {
             engine,
             vue,
             application_api: HostApiRegistry::new(),
-            inputs: HashMap::new(),
-            input_epoch: Instant::now(),
             handled_keys: HashMap::new(),
         };
 
@@ -1971,8 +1851,6 @@ mod tests {
             engine: InputEngine::default(),
             vue,
             application_api: HostApiRegistry::new(),
-            inputs: HashMap::new(),
-            input_epoch: Instant::now(),
             handled_keys: HashMap::new(),
         };
         for id in &ids {
@@ -2049,8 +1927,6 @@ mod tests {
             engine: InputEngine::default(),
             vue: VueRuntime::new(400, 300, 1.0),
             application_api: HostApiRegistry::new(),
-            inputs: HashMap::new(),
-            input_epoch: Instant::now(),
             handled_keys: HashMap::new(),
         };
         runtime

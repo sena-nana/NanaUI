@@ -30,10 +30,10 @@ use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AppContext,
     AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, ComponentBindKind,
     ComponentTypeId, ComponentView, CustomRenderNode, DiffEvent, DiffLayout, DiffView,
-    Dock as RuntimeDock, DockAxis, DockNode, Entity, HOST_TEXTURE_RENDERER, ImeComposition,
-    InteractionState, LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue, NodeKind,
-    NodeStyle, SegmentedOption as RuntimeSegmentedOption, SelectionChrome, SemanticOption,
-    SemanticSpec, SettingsPage as RuntimeSettingsPage, SidebarFrame as RuntimeSidebarFrame,
+    Dock as RuntimeDock, DockAxis, DockNode, Entity, HOST_TEXTURE_RENDERER, InteractionState,
+    LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue, NodeKind, NodeStyle,
+    SegmentedOption as RuntimeSegmentedOption, SelectionChrome, SemanticOption, SemanticSpec,
+    SettingsPage as RuntimeSettingsPage, SidebarFrame as RuntimeSidebarFrame,
     SplitPane as RuntimeSplitPane, StableNodeId, TerminalEvent, TerminalView, TextContent,
     TextInputState, UiMutation, UiWorld, Workspace as RuntimeWorkspace, WorkspaceRegionSlot,
 };
@@ -1019,13 +1019,6 @@ impl NanaTreeDocument {
             .unwrap_or_default()
     }
 
-    pub(crate) fn overflow_scrolls(&self, node: NodeHandle) -> bool {
-        let Ok(id) = StableNodeId::try_from(node) else {
-            return false;
-        };
-        self.context().overflow_scrolls(id)
-    }
-
     pub fn scroll_metrics(&self, node: NodeHandle) -> Option<nana_ui_runtime::ScrollMetrics> {
         StableNodeId::try_from(node)
             .ok()
@@ -1051,55 +1044,6 @@ impl NanaTreeDocument {
         }
         self.flush_runtime_systems();
         true
-    }
-
-    pub(crate) fn scroll_by(
-        &mut self,
-        node: NodeHandle,
-        delta: nana_ui_runtime::ScrollOffset,
-    ) -> bool {
-        if !delta.x.is_finite() || !delta.y.is_finite() {
-            return false;
-        }
-        // The Runtime measured the scrolling area when the boxes were written.
-        let current = self.scroll_offset(node);
-        self.set_scroll_offset(
-            node,
-            nana_ui_runtime::ScrollOffset {
-                x: current.x + delta.x,
-                y: current.y + delta.y,
-            },
-        )
-    }
-
-    /// Apply `delta` using host/Scene metrics in the same commit as the offset
-    /// so engine boxes cannot clamp the wheel to zero.
-    pub(crate) fn scroll_by_with_metrics(
-        &mut self,
-        node: NodeHandle,
-        delta: nana_ui_runtime::ScrollOffset,
-        metrics: nana_ui_runtime::ScrollMetrics,
-    ) -> bool {
-        if !delta.x.is_finite() || !delta.y.is_finite() {
-            return false;
-        }
-        let Ok(id) = StableNodeId::try_from(node) else {
-            return false;
-        };
-        let current = self.scroll_offset(node);
-        let next = metrics.clamp(nana_ui_runtime::ScrollOffset {
-            x: current.x + delta.x,
-            y: current.y + delta.y,
-        });
-        if next == current {
-            return false;
-        }
-        self.commit_pending_with(|mutations| {
-            mutations.set_scroll_metrics(id, Some(metrics));
-            mutations.set_scroll_offset(id, next);
-        })
-        .ok();
-        self.runtime.scroll_offset(id) == Some(next)
     }
 
     /// The scrolling area over the Scene's un-scrolled writeback boxes, else
@@ -1213,27 +1157,14 @@ impl NanaTreeDocument {
             .is_some_and(|current| current == expected)
     }
 
-    pub(crate) fn ime_composition(&self, node: NodeHandle) -> Option<ImeComposition> {
+    #[cfg(test)]
+    pub(crate) fn ime_composition(
+        &self,
+        node: NodeHandle,
+    ) -> Option<nana_ui_runtime::ImeComposition> {
         self.runtime
             .ime(StableNodeId::try_from(node).ok()?)
             .map(|ime| ime.to_composition())
-    }
-
-    pub(crate) fn set_ime_composition(
-        &mut self,
-        node: NodeHandle,
-        composition: Option<ImeComposition>,
-    ) -> bool {
-        let Ok(id) = StableNodeId::try_from(node) else {
-            return false;
-        };
-        let expected = composition.clone();
-        self.commit_pending_with(|mutations| mutations.set_ime(id, composition))
-            .ok();
-        match (self.runtime.ime(id), expected.as_ref()) {
-            (Some(current), Some(expected)) => current == *expected,
-            (current, expected) => current.is_none() && expected.is_none(),
-        }
     }
 
     pub fn scene(&self) -> &UiScene {

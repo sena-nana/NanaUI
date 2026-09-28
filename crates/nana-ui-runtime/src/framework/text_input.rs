@@ -94,7 +94,7 @@ impl AppContext {
         if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
             return self.commit_editable_ime(entity, text);
         }
-        self.commit_world_text_input_ime(document, text)
+        self.replace_world_text_input_selection(document, text)
     }
 
     /// Delete UTF-8 bytes surrounding the focused editor's selection.
@@ -122,7 +122,10 @@ impl AppContext {
         self.delete_world_text_input_surrounding(document, before_bytes, after_bytes)
     }
 
-    pub(super) fn commit_world_text_input_ime(
+    /// Replace the selection of a focused text input with no editor
+    /// component: a field a host projects as text-input state alone, as
+    /// Vue's are. Typed text and IME commits reach it the same way.
+    pub(super) fn replace_world_text_input_selection(
         &mut self,
         document: DocumentId,
         text: &str,
@@ -270,7 +273,7 @@ impl AppContext {
         if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
             return self.replace_editable_selection(entity, text, origin);
         }
-        Ok(false)
+        self.replace_world_text_input_selection(document, text)
     }
 
     pub fn delete_focused_text_backward(

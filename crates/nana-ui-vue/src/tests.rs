@@ -108,21 +108,41 @@ fn install_focused_native_input(
     (input, document_id)
 }
 
-fn install_textarea_node(host: &mut VueHost, value: &str) -> NodeHandle {
+/// The button [`install_input_nodes`] puts after the field.
+fn installed_button(host: &VueHost) -> NodeHandle {
     let document = host.document();
-    let mut doc = document.lock().expect("document");
-    let root = doc.mount_root();
-    let area = doc.create_element("textarea");
-    doc.set_attribute(area, "value", value);
-    assert!(doc.set_text_input_state(area, TextInputState::new(value)));
-    doc.insert(area, root, None);
-    doc.set_focus(area);
-    drop(doc);
+    let doc = document.lock().expect("document");
+    doc.children_of(doc.mount_root())[1]
+}
 
+/// A focused textarea bound to the Runtime `TextArea` it is in a window.
+fn install_textarea_node(host: &mut VueHost, value: &str) -> NodeHandle {
+    let area = {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        let root = doc.mount_root();
+        let area = doc.create_element("textarea");
+        doc.insert(area, root, None);
+        area
+    };
     let store = host.layout_box_store();
     store.begin_frame();
     store.record(area, 0.0, 0.0, 160.0, 80.0);
     host.sync_scene_layout_boxes();
+    host.bridge().lock().expect("bridge").register(
+        area.0,
+        WidgetKind::Textarea,
+        WidgetProps {
+            value: value.into(),
+            ..WidgetProps::default()
+        },
+    );
+    let snapshot = host.bridge().lock().expect("bridge").snapshot();
+    let document = host.document();
+    let mut doc = document.lock().expect("document");
+    doc.sync_semantic_styles(&snapshot);
+    doc.set_attribute(area, "value", value);
+    doc.set_focus(area);
     area
 }
 
@@ -449,7 +469,7 @@ fn range_keyboard_and_accessibility_share_quantized_change_action() {
 }
 
 fn install_sidebar_frame(host: &mut VueHost) -> (NodeHandle, NodeHandle, NodeHandle, NodeHandle) {
-    let (frame, top, body, footer, content) = {
+    let (frame, top, body, footer, rows) = {
         let document = host.document();
         let mut doc = document.lock().expect("document");
         let root = doc.mount_root();
@@ -457,21 +477,29 @@ fn install_sidebar_frame(host: &mut VueHost) -> (NodeHandle, NodeHandle, NodeHan
         let top = doc.create_element("nana-column");
         let body = doc.create_element("nana-column");
         let footer = doc.create_element("nana-column");
-        let content = doc.create_element("nana-sidebar-row");
+        // Rows enough to overflow the body in layout, not only in the
+        // recorded paint boxes, so it still scrolls after a relayout.
+        let rows: Vec<_> = (0..20)
+            .map(|_| doc.create_element("nana-sidebar-row"))
+            .collect();
         doc.set_attribute(body, "class", "nana-sidebar-frame__body");
         doc.set_attribute(body, "data-slot", "sidebar-body");
         doc.insert(frame, root, None);
         doc.insert(top, frame, None);
         doc.insert(body, frame, None);
         doc.insert(footer, frame, None);
-        doc.insert(content, body, None);
-        (frame, top, body, footer, content)
+        for &row in &rows {
+            doc.insert(row, body, None);
+        }
+        (frame, top, body, footer, rows)
     };
 
     {
         let mut bridge = host.bridge.lock().expect("bridge");
         let mut frame_props = WidgetProps::default();
         frame_props.class_names = vec!["nana-sidebar-frame".into()];
+        frame_props.layout.width = Some(nana_ui_core::LengthSpec::Px(220.0));
+        frame_props.layout.height = Some(nana_ui_core::LengthSpec::Px(320.0));
         frame_props
             .layout
             .apply_class_layout_hints(&frame_props.class_names);
@@ -507,14 +535,18 @@ fn install_sidebar_frame(host: &mut VueHost) -> (NodeHandle, NodeHandle, NodeHan
             .apply_class_layout_hints(&footer_props.class_names);
         bridge.register(footer.0, WidgetKind::Column, footer_props);
 
-        let mut content_props = WidgetProps::default();
-        content_props.label = "工作区".into();
-        bridge.register(content.0, WidgetKind::SidebarRow, content_props);
+        for &row in &rows {
+            let mut row_props = WidgetProps::default();
+            row_props.label = "工作区".into();
+            bridge.register(row.0, WidgetKind::SidebarRow, row_props);
+        }
 
         bridge.insert_child(top.0, frame.0, None);
         bridge.insert_child(body.0, frame.0, None);
         bridge.insert_child(footer.0, frame.0, None);
-        bridge.insert_child(content.0, body.0, None);
+        for &row in &rows {
+            bridge.insert_child(row.0, body.0, None);
+        }
     }
 
     let snapshot = host.bridge.lock().expect("bridge").snapshot();
@@ -523,7 +555,7 @@ fn install_sidebar_frame(host: &mut VueHost) -> (NodeHandle, NodeHandle, NodeHan
     store.record(frame, 0.0, 0.0, 220.0, 320.0);
     store.record(top, 0.0, 0.0, 220.0, 40.0);
     store.record(body, 0.0, 40.0, 220.0, 200.0);
-    store.record(content, 0.0, 40.0, 220.0, 400.0);
+    store.record(rows[0], 0.0, 40.0, 220.0, 400.0);
     store.record(footer, 0.0, 250.0, 220.0, 40.0);
     {
         let mut doc = host.document.lock().expect("document");
@@ -539,6 +571,9 @@ fn sidebar_frame_wheel_updates_runtime_body_without_moving_chrome() {
     host.callbacks.fire_event = Some(JsFunctionId(1));
     let (_frame, top, body, footer) = install_sidebar_frame(&mut host);
     let mut engine = RecordingEngine::default();
+    // Chrome positions as the page's own layout has them, which every wheel
+    // frame relays out to.
+    host.pump_frame(&mut engine).expect("layout");
 
     let top_before = host
         .document
@@ -615,7 +650,7 @@ fn sidebar_frame_wheel_updates_runtime_body_without_moving_chrome() {
 }
 
 #[test]
-fn sidebar_frame_wheel_prevent_default_does_not_scroll_runtime() {
+fn a_prevented_wheel_is_reported_after_the_runtime_scrolled() {
     let mut host = VueHost::new();
     host.callbacks.fire_event = Some(JsFunctionId(1));
     let (_frame, top, body, footer) = install_sidebar_frame(&mut host);
@@ -631,8 +666,11 @@ fn sidebar_frame_wheel_prevent_default_does_not_scroll_runtime() {
     assert!(result.default_prevented);
     assert!(result.consumed);
 
+    // The page hears input after the Runtime routed it, as in a window: its
+    // `preventDefault` is reported to the host but cannot take back the
+    // scroll the route already made.
     let document = host.document.lock().expect("document");
-    assert_eq!(document.scroll_offset(body).y, 0.0);
+    assert!(document.scroll_offset(body).y > 0.0);
     assert_eq!(document.scroll_offset(top).y, 0.0);
     assert_eq!(document.scroll_offset(footer).y, 0.0);
 }
@@ -1174,14 +1212,7 @@ fn vue_diff_button_activation_fires_hunk_accept() {
 #[test]
 fn composition_end_commits_through_beforeinput_and_input() {
     let mut host = VueHost::new();
-    host.callbacks.fire_event = Some(JsFunctionId(1));
-    let (input, _) = install_input_nodes(&mut host);
-    {
-        let document = host.document();
-        let mut doc = document.lock().expect("document");
-        doc.set_attribute(input, "value", "Nana");
-        doc.set_focus(input);
-    }
+    let (input, _) = install_focused_native_input(&mut host, "Nana");
     let mut engine = RecordingEngine::default();
 
     host.dispatch_composition(
@@ -1254,13 +1285,10 @@ fn composition_end_commits_through_beforeinput_and_input() {
 #[test]
 fn committed_text_replaces_runtime_owned_unicode_selection() {
     let mut host = VueHost::new();
-    host.callbacks.fire_event = Some(JsFunctionId(1));
-    let (input, _) = install_input_nodes(&mut host);
+    let (input, _) = install_focused_native_input(&mut host, "你好ab");
     {
         let document = host.document();
         let mut doc = document.lock().expect("document");
-        doc.set_attribute(input, "value", "你好ab");
-        doc.set_focus(input);
         assert!(doc.set_text_input_state(
             input,
             TextInputState {
@@ -1309,14 +1337,7 @@ fn a_state_write_the_editor_fuses_still_reports_success() {
 #[test]
 fn native_ime_commit_updates_runtime_value_and_emits_input() {
     let mut host = VueHost::new();
-    host.callbacks.fire_event = Some(JsFunctionId(1));
-    let (input, _) = install_input_nodes(&mut host);
-    {
-        let document = host.document();
-        let mut doc = document.lock().expect("document");
-        doc.set_attribute(input, "value", "Nana");
-        doc.set_focus(input);
-    }
+    let (input, _) = install_focused_native_input(&mut host, "Nana");
     let mut engine = RecordingEngine::default();
 
     host.dispatch_native_ime(
@@ -1394,15 +1415,7 @@ fn native_ime_commit_updates_runtime_value_and_emits_input() {
 #[test]
 fn native_ime_delete_surrounding_updates_runtime_value_and_skips_invalid_spans() {
     let mut host = VueHost::new();
-    host.callbacks.fire_event = Some(JsFunctionId(1));
-    let (input, _) = install_input_nodes(&mut host);
-    {
-        let document = host.document();
-        let mut doc = document.lock().expect("document");
-        doc.set_attribute(input, "value", "你好");
-        doc.set_focus(input);
-        assert!(doc.set_text_input_state(input, TextInputState::new("你好")));
-    }
+    let (input, _) = install_focused_native_input(&mut host, "你好");
     let mut engine = RecordingEngine::default();
 
     assert!(
@@ -1473,6 +1486,7 @@ fn scene_host_ime_path_commits_once_into_runtime_then_emits_js() {
             text: "世".into(),
             selection: Some((0, "世".len())),
         },
+        true,
     )
     .expect("emit preedit");
     {
@@ -1498,7 +1512,7 @@ fn scene_host_ime_path_commits_once_into_runtime_then_emits_js() {
                 .expect("runtime commit")
         );
     }
-    host.emit_native_ime_from_runtime(&mut engine, &NativeComposition::Commit("世界".into()))
+    host.emit_native_ime_from_runtime(&mut engine, &NativeComposition::Commit("世界".into()), true)
         .expect("emit commit");
 
     let document = host.document();
@@ -1562,6 +1576,7 @@ fn scene_host_ime_disabled_commits_leftover_once() {
             text: "世".into(),
             selection: Some((0, "世".len())),
         },
+        true,
     )
     .expect("emit preedit");
     {
@@ -1574,7 +1589,7 @@ fn scene_host_ime_disabled_commits_leftover_once() {
                 .expect("runtime leftover commit")
         );
     }
-    host.emit_native_ime_from_runtime(&mut engine, &NativeComposition::Disabled)
+    host.emit_native_ime_from_runtime(&mut engine, &NativeComposition::Disabled, true)
         .expect("emit disabled");
 
     let document = host.document();
@@ -1705,14 +1720,7 @@ fn native_ime_commit_updates_runtime_textarea_multiline_state() {
 #[test]
 fn native_ime_disabled_commits_leftover_runtime_preedit() {
     let mut host = VueHost::new();
-    host.callbacks.fire_event = Some(JsFunctionId(1));
-    let (input, _) = install_input_nodes(&mut host);
-    {
-        let document = host.document();
-        let mut doc = document.lock().expect("document");
-        doc.set_attribute(input, "value", "Nana");
-        doc.set_focus(input);
-    }
+    let (input, _) = install_focused_native_input(&mut host, "Nana");
     let mut engine = RecordingEngine::default();
 
     host.dispatch_native_ime(
@@ -1853,16 +1861,10 @@ fn commit_text_ignores_disabled_and_read_only_input() {
 }
 
 #[test]
-fn native_ime_disabled_after_blur_commits_original_field() {
+fn native_ime_disabled_after_blur_cancels_the_preedit() {
     let mut host = VueHost::new();
-    host.callbacks.fire_event = Some(JsFunctionId(1));
-    let (input, next) = install_input_nodes(&mut host);
-    {
-        let document = host.document();
-        let mut doc = document.lock().expect("document");
-        doc.set_attribute(input, "value", "Nana");
-        doc.set_focus(input);
-    }
+    let (input, _) = install_focused_native_input(&mut host, "Nana");
+    let next = installed_button(&host);
     let mut engine = RecordingEngine::default();
 
     host.dispatch_native_ime(
@@ -1877,73 +1879,39 @@ fn native_ime_disabled_after_blur_commits_original_field() {
     host.dispatch_native_ime(&mut engine, &NativeComposition::Disabled)
         .expect("disabled leftover after blur");
 
+    // Focus leaving the field cancels its preedit: nothing is inserted,
+    // there or in the field focus moved to, and the page hears the
+    // composition end with no text.
     let document = host.document();
     let document = document.lock().expect("document");
     assert!(document.ime_composition(input).is_none());
-    let state = document
-        .text_input_state(input)
-        .expect("original IME field");
-    assert_eq!(state.value, "Nana世");
     assert_eq!(
-        document.get_attribute(input, "value").as_deref(),
-        Some("Nana世")
+        document.text_input_state(input).map(|state| state.value),
+        Some("Nana".into())
     );
     assert!(document.text_input_state(next).is_none());
     assert!(document.get_attribute(next, "value").is_none());
     drop(document);
 
     let events = fired_events(&engine);
+    let end = events
+        .iter()
+        .find(|(target, name, _)| *target == input.0 && name == "compositionend")
+        .expect("the composition ends on the field it started in");
+    assert_eq!(end.2.get("data").and_then(HostValue::as_str), Some(""));
     assert!(
-        events
+        !events
             .iter()
-            .any(|(target, name, _)| *target == input.0 && name == "compositionend")
-    );
-    assert!(
-        events
-            .iter()
-            .any(|(target, name, _)| *target == input.0 && name == "beforeinput")
-    );
-    assert!(
-        events
-            .iter()
-            .any(|(target, name, _)| *target == input.0 && name == "input")
-    );
-    assert!(
-        !events.iter().any(|(target, name, _)| {
-            *target == next.0 && matches!(name.as_str(), "compositionend" | "beforeinput" | "input")
-        }),
-        "leftover preedit must not insert into the new focus"
-    );
-    assert_eq!(
-        events
-            .iter()
-            .rev()
-            .find(|(_, name, _)| name == "input")
-            .and_then(|(_, _, detail)| detail.get("inputType"))
-            .and_then(HostValue::as_str),
-        Some("insertCompositionText")
+            .any(|(_, name, _)| matches!(name.as_str(), "beforeinput" | "input")),
+        "a cancelled preedit inserts nothing"
     );
 }
 
 #[test]
 fn native_ime_disabled_clears_blocked_original_without_commit() {
     let mut host = VueHost::new();
-    host.callbacks.fire_event = Some(JsFunctionId(1));
-    let (input, next) = install_input_nodes(&mut host);
-    host.bridge().lock().expect("bridge").register(
-        input.0,
-        WidgetKind::Input,
-        WidgetProps {
-            value: "Nana".into(),
-            ..WidgetProps::default()
-        },
-    );
-    {
-        let document = host.document();
-        let mut doc = document.lock().expect("document");
-        doc.set_attribute(input, "value", "Nana");
-        doc.set_focus(input);
-    }
+    let (input, _) = install_focused_native_input(&mut host, "Nana");
+    let next = installed_button(&host);
     let mut engine = RecordingEngine::default();
     host.dispatch_native_ime(
         &mut engine,
@@ -2047,7 +2015,21 @@ fn tab_and_shift_tab_move_focus_in_document_order() {
     let mut host = VueHost::new();
     host.callbacks.fire_event = Some(JsFunctionId(1));
     let (first, second) = install_input_nodes(&mut host);
-    host.document().lock().expect("document").set_focus(first);
+    // Focus order is the Runtime's: the page's field and button take part as
+    // the widgets they are registered as.
+    for (node, kind) in [(first, WidgetKind::Input), (second, WidgetKind::Button)] {
+        host.bridge()
+            .lock()
+            .expect("bridge")
+            .register(node.0, kind, WidgetProps::default());
+    }
+    let snapshot = host.bridge().lock().expect("bridge").snapshot();
+    {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        doc.sync_semantic_styles(&snapshot);
+        doc.set_focus(first);
+    }
     let mut engine = RecordingEngine::default();
 
     host.dispatch_keyboard(&mut engine, &KeyboardInput::key_down("Tab", "Tab"), None)

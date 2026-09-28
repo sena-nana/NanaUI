@@ -81,6 +81,17 @@ input.advance(Duration::from_millis(16)); // 事件时间戳驱动双击、长�
 
 `HeadlessInput::services()` 记录宿主会显示的光标、文本输入状态与剪贴板内容。自建宿主实现 `HostServices`，按 source 调 `AppContext::bind_input_source`（返回 `Result`），每轮 `drain_input`，窗口关闭时 `unbind_input_source`。
 
+## Vue
+
+`VueHost` 的输入方法签名不变（`dispatch_pointer` / `dispatch_pointer_result`、`dispatch_wheel`、`dispatch_keyboard`、`commit_text`、`dispatch_key`、`dispatch_composition`、`dispatch_native_ime`），但它们不再在 Vue 里自己改 Runtime：每个 `VueHost` 有一个输入源，事件先经 Runtime 路由，页面再观察，与原生窗口托管 Vue 时完全一致。由此带来的变化：
+
+- **`preventDefault` 拦不住 Runtime 的默认动作。** 页面在路由之后才收到 `wheel` / `keydown`，滚动与插入文字已经发生；结果里的 `default_prevented` 照样报告。原生窗口里一直如此。
+- **焦点与 Tab 顺序是 Runtime 的**：只有注册成部件的元素（Button、Input 等）可聚焦，`tabindex` 与按标签推断的可聚焦性不再参与。焦点因任何按键或指针移动时，页面都会收到 `blur` / `focus`（此前只有 Tab 与按下），`:focus-within` 随之重算。
+- **文字只写进 Runtime 认得的文本输入**：注册成 Input / Textarea / NumberInput 部件、或带 `TextInputState` 的节点。原生窗口里给 Vue 输入框打字此前不会改 Runtime 的值（只有 IME 提交会），现在会。
+- **组字随焦点离开而取消**：输入法关闭时只有当前聚焦字段里的剩余组字会提交；焦点已经移走时，页面收到 `data` 为空的 `compositionend`，不再把组字补提交到原字段。
+- **键盘调 Range 由页面完成**：Runtime 里 Vue 的 Range 只有投影，方向键、PageUp/PageDown、Home/End 走页面的默认动作；此前原生窗口里这一步被关掉了。
+- `emit_native_ime_from_runtime(engine, event, applied)` 多了 `applied`：路由是否应用了这次 IME 事件。
+
 ## NanaLive 受影响位置
 
 锁定 rev 61c4edc41 之后升级时需要改：

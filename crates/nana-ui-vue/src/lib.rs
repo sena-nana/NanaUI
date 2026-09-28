@@ -257,6 +257,7 @@ use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
 pub use nana_ui_platform::CompositionInput as NativeComposition;
 /// The phase of a native file drag the Runtime routed.
 pub use nana_ui_platform::FileDragKind;
+#[cfg(any(test, feature = "hosted"))]
 use nana_ui_runtime::TextInputState;
 use nana_ui_web_api::{
     SharedCanvasRuntime, SharedMediaRuntime, SharedWebApiState, compose_runtime_artifact,
@@ -1293,28 +1294,6 @@ fn quantize_range_value(props: &WidgetProps, value: f64) -> f64 {
     }
     let steps = ((value.clamp(minimum, maximum) - minimum) / step).round();
     (minimum + steps * step).clamp(minimum, maximum)
-}
-
-fn is_focusable_tag(tag: &str) -> bool {
-    matches!(
-        tag,
-        "input"
-            | "textarea"
-            | "button"
-            | "select"
-            | "a"
-            | "checkbox"
-            | "dialog"
-            | "progress"
-            | "nana-switch"
-            | "nana-sidebar-row"
-            | "nana-number-input"
-            | "nana-icon-button"
-            | "range-field"
-            | "nana-list-item"
-            | "nana-scroll-view"
-            | "nana-terminal"
-    )
 }
 
 /// Measure the semantic forest with the Style-Model layout subset and map boxes

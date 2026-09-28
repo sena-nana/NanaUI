@@ -283,3 +283,148 @@ impl InputState {
         self.pressed_keys.clear();
     }
 }
+
+// The page's event shapes and the canonical input the Runtime routes carry
+// the same fields; these convert at the boundary in both directions.
+impl PointerInput {
+    #[cfg(feature = "hosted")]
+    pub(crate) fn from_canonical(pointer: &nana_ui_platform::PointerInput) -> Self {
+        use nana_ui_platform::PointerPhase;
+        Self {
+            kind: match pointer.phase {
+                PointerPhase::Down => PointerEventKind::Down,
+                PointerPhase::Move => PointerEventKind::Move,
+                PointerPhase::Up => PointerEventKind::Up,
+                PointerPhase::Cancel => PointerEventKind::Cancel,
+            },
+            pointer_id: pointer.pointer_id.0,
+            pointer_type: pointer.pointer_type,
+            is_primary: pointer.is_primary,
+            client_x: pointer.x,
+            client_y: pointer.y,
+            screen_x: pointer.screen_x,
+            screen_y: pointer.screen_y,
+            button: pointer.button,
+            buttons: pointer.buttons,
+            pressure: pointer.pressure,
+            tangential_pressure: pointer.tangential_pressure,
+            tilt_x: pointer.tilt_x,
+            tilt_y: pointer.tilt_y,
+            twist: pointer.twist,
+            modifiers: pointer.modifiers,
+        }
+    }
+
+    pub(crate) fn to_canonical(self) -> nana_ui_platform::PointerInput {
+        use nana_ui_platform::PointerPhase;
+        nana_ui_platform::PointerInput {
+            phase: match self.kind {
+                PointerEventKind::Down => PointerPhase::Down,
+                PointerEventKind::Move => PointerPhase::Move,
+                PointerEventKind::Up => PointerPhase::Up,
+                PointerEventKind::Cancel => PointerPhase::Cancel,
+            },
+            pointer_id: nana_ui_platform::PointerId(self.pointer_id),
+            pointer_type: self.pointer_type,
+            x: self.client_x,
+            y: self.client_y,
+            screen_x: self.screen_x,
+            screen_y: self.screen_y,
+            button: self.button,
+            buttons: self.buttons,
+            pressure: self.pressure,
+            tangential_pressure: self.tangential_pressure,
+            tilt_x: self.tilt_x,
+            tilt_y: self.tilt_y,
+            twist: self.twist,
+            is_primary: self.is_primary,
+            activation_click: false,
+            modifiers: self.modifiers,
+        }
+    }
+}
+
+impl WheelInput {
+    #[cfg(feature = "hosted")]
+    pub(crate) fn from_canonical(wheel: &nana_ui_platform::WheelInput) -> Self {
+        Self {
+            client_x: wheel.x,
+            client_y: wheel.y,
+            screen_x: wheel.x,
+            screen_y: wheel.y,
+            delta_x: wheel.delta_x,
+            delta_y: wheel.delta_y,
+            delta_mode: u8::from(wheel.unit == nana_ui_platform::WheelUnit::Lines),
+            modifiers: wheel.modifiers,
+        }
+    }
+
+    /// A page delta counts as lines: the Runtime knows pixels and lines.
+    pub(crate) fn to_canonical(self) -> nana_ui_platform::WheelInput {
+        nana_ui_platform::WheelInput {
+            pointer_id: nana_ui_platform::PointerId(1),
+            x: self.client_x,
+            y: self.client_y,
+            delta_x: self.delta_x,
+            delta_y: self.delta_y,
+            unit: if self.delta_mode == 0 {
+                nana_ui_platform::WheelUnit::Pixels
+            } else {
+                nana_ui_platform::WheelUnit::Lines
+            },
+            modifiers: self.modifiers,
+        }
+    }
+}
+
+impl KeyboardInput {
+    #[cfg(feature = "hosted")]
+    pub(crate) fn from_canonical(key: &nana_ui_platform::KeyInput) -> Self {
+        Self {
+            kind: if key.is_pressed() {
+                KeyboardEventKind::Down
+            } else {
+                KeyboardEventKind::Up
+            },
+            key: key.logical.0.to_string(),
+            code: key.physical.0.to_string(),
+            location: 0,
+            repeat: key.repeat,
+            composing: false,
+            modifiers: key.modifiers,
+        }
+    }
+
+    pub(crate) fn to_canonical(&self) -> nana_ui_platform::KeyInput {
+        nana_ui_platform::KeyInput {
+            physical: nana_ui_platform::PhysicalKey(self.code.clone().into()),
+            logical: nana_ui_platform::LogicalKey(self.key.clone().into()),
+            state: match self.kind {
+                KeyboardEventKind::Down => nana_ui_platform::KeyState::Pressed,
+                KeyboardEventKind::Up => nana_ui_platform::KeyState::Released,
+            },
+            repeat: self.repeat,
+            modifiers: self.modifiers,
+        }
+    }
+}
+
+impl CompositionInput {
+    /// What the platform would have sent for this page composition event:
+    /// an end with text commits it.
+    pub(crate) fn to_canonical(&self) -> nana_ui_platform::CompositionInput {
+        match self.kind {
+            CompositionEventKind::Start => nana_ui_platform::CompositionInput::Start,
+            CompositionEventKind::Update => nana_ui_platform::CompositionInput::Update {
+                text: self.data.clone(),
+                selection: None,
+            },
+            CompositionEventKind::End if self.data.is_empty() => {
+                nana_ui_platform::CompositionInput::End
+            }
+            CompositionEventKind::End => {
+                nana_ui_platform::CompositionInput::Commit(self.data.clone())
+            }
+        }
+    }
+}
