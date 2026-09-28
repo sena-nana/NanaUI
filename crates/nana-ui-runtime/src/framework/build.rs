@@ -188,7 +188,7 @@ impl<'a> UiBuilder<'a> {
             return Entity::from_stable_id(DUMMY_NODE);
         }
         let key = key.into();
-        if key.is_empty() {
+        if !super::valid_assembly_key(&key) {
             return self.fail(FrameworkError::InvalidInput);
         }
         if self.current().seen.iter().any(|seen| seen == &key) {

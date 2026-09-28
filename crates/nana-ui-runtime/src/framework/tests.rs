@@ -454,6 +454,164 @@ fn a_placed_keyed_child_keeps_its_identity_across_reassembly() {
     assert!(context.assembly_path(a).is_none());
 }
 
+/// `page / pane / slot` built under `parent`; returns `(page, pane, slot)`.
+fn keyed_page(
+    context: &mut AppContext,
+    parent: Entity<Stack>,
+) -> (StableNodeId, StableNodeId, StableNodeId) {
+    context
+        .build_child(parent, |ui| {
+            ui.with("page", Stack::column(0.0), |ui| {
+                let page = ui.child("marker", Stack::column(0.0));
+                let _ = page;
+                ui.with("pane", Stack::column(0.0), |ui| {
+                    ui.child("slot", Stack::column(0.0)).stable_id()
+                })
+            })
+        })
+        .unwrap();
+    let page = context
+        .resolve_assembly_path(parent.stable_id(), "page")
+        .unwrap();
+    let pane = context.resolve_assembly_path(page, "pane").unwrap();
+    let slot = context.resolve_assembly_path(pane, "slot").unwrap();
+    (page, pane, slot)
+}
+
+#[test]
+fn keys_with_the_path_separator_are_rejected_on_every_keyed_entry() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let nodes = context.world().len();
+    let built = context.build_child(parent, |ui| {
+        ui.child("ok", Stack::column(0.0));
+        ui.child("a/b", Stack::column(0.0));
+    });
+    assert!(matches!(built, Err(FrameworkError::InvalidInput)));
+    assert_eq!(
+        context.world().len(),
+        nodes,
+        "a rejected build commits nothing"
+    );
+    let mounted = context.mount(parent, |scope| {
+        scope.child("a/b", Stack::column(0.0))?;
+        Ok(())
+    });
+    assert!(matches!(mounted, Err(FrameworkError::InvalidInput)));
+    assert_eq!(context.world().len(), nodes);
+}
+
+#[test]
+fn resolve_assembly_entity_checks_the_path_and_the_component_type() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    context
+        .build_child(parent, |ui| {
+            ui.with("page", Stack::column(0.0), |ui| {
+                ui.child("title", Text::new("标题"));
+            });
+        })
+        .unwrap();
+    let title = context
+        .resolve_assembly_entity::<Text>(parent.stable_id(), "page/title")
+        .unwrap();
+    assert_eq!(
+        context.assembly_path(title.stable_id()).as_deref(),
+        Some("page/title")
+    );
+    assert!(matches!(
+        context.resolve_assembly_entity::<Button>(parent.stable_id(), "page/title"),
+        Err(FrameworkError::ViewType(_))
+    ));
+    assert!(matches!(
+        context.resolve_assembly_entity::<Text>(parent.stable_id(), "page/missing"),
+        Err(FrameworkError::MissingView(_))
+    ));
+}
+
+#[test]
+fn a_despawned_declared_parent_takes_its_placed_child() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let body = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap()
+        .stable_id();
+    let (page, _, slot) = keyed_page(&mut context, parent);
+    context.place_assembled(slot, body).unwrap();
+    // Torn down without reassembly: the placed child goes with its declared
+    // parent, and the placement parent survives.
+    let mut teardown = MutationQueue::new();
+    teardown.despawn_subtree(page);
+    context.commit_mutations(teardown).unwrap();
+    assert!(!context.world().contains(slot));
+    assert!(context.world().node(body).unwrap().children.is_empty());
+    assert!(context.assembly_path(slot).is_none());
+    assert!(context.view_entity::<Stack>(slot).is_none());
+}
+
+#[test]
+fn placing_a_node_back_under_its_declared_parent_ends_the_placement() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let body = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap()
+        .stable_id();
+    let (_, pane, slot) = keyed_page(&mut context, parent);
+    context.place_assembled(slot, body).unwrap();
+    context.place_assembled(slot, pane).unwrap();
+    assert_eq!(context.world().node(slot).unwrap().parent, Some(pane));
+    let mut teardown = MutationQueue::new();
+    teardown.despawn_subtree(body);
+    context.commit_mutations(teardown).unwrap();
+    assert!(context.world().contains(slot));
+}
+
+/// With no composition owner guard, a keyed node may be placed inside any
+/// subtree. When that subtree dies first, the node dies with it; its
+/// declared parent must forget it and reassemble cleanly.
+#[test]
+fn a_node_placed_into_a_subtree_that_dies_leaves_no_stale_records() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let other = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let (_, other_pane, _) = keyed_page(&mut context, other);
+    let (_, pane, slot) = keyed_page(&mut context, parent);
+    context.place_assembled(slot, other_pane).unwrap();
+    let mut teardown = MutationQueue::new();
+    teardown.despawn_subtree(other.stable_id());
+    context.commit_mutations(teardown).unwrap();
+    assert!(!context.world().contains(slot));
+    assert!(context.assembled_child(pane, "slot").is_none());
+    assert!(context.assembly_path(slot).is_none());
+    let rebuilt = context.mount(Entity::<Stack>::from_stable_id(pane), |scope| {
+        scope.child("slot", Stack::column(0.0))?;
+        Ok(())
+    });
+    rebuilt.unwrap();
+    let fresh = context.assembled_child(pane, "slot").unwrap();
+    assert_ne!(fresh, slot);
+    assert_eq!(context.world().node(pane).unwrap().children, vec![fresh]);
+}
+
 #[test]
 fn place_assembled_rejects_unkeyed_nodes_and_cycles() {
     let mut context = AppContext::new();

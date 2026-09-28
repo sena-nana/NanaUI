@@ -120,7 +120,7 @@ impl AssemblyScope<'_> {
         key: String,
         component: C,
     ) -> Result<Entity<C>, FrameworkError> {
-        if key.is_empty() {
+        if !super::valid_assembly_key(&key) {
             return Err(FrameworkError::InvalidInput);
         }
         if self.seen.iter().any(|seen| seen == &key) {

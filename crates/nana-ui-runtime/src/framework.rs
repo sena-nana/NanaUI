@@ -106,6 +106,15 @@ pub use text_edit::{TextDeleteKind, TextFindScope};
 pub use text_history::TextEditOrigin;
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
+/// Joins assembly keys into a path ([`AppContext::assembly_path`]). Keys may
+/// not contain it, so every keyed node stays reachable by path.
+pub const ASSEMBLY_PATH_SEPARATOR: &str = "/";
+
+/// Whether `key` may name a keyed child: non-empty and free of the path
+/// separator.
+pub(crate) fn valid_assembly_key(key: &str) -> bool {
+    !key.is_empty() && !key.contains(ASSEMBLY_PATH_SEPARATOR)
+}
 pub(crate) const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
 pub trait View: Send + 'static {}
@@ -965,9 +974,6 @@ impl From<UiWorldError> for FrameworkError {
 /// Owns typed view state while [`UiWorld`] remains the retained UI authority.
 pub struct AppContext {
     world: UiWorld,
-    /// Roots mounted by a [`crate::CompositionHost`]. A node belongs to the
-    /// first root on its declared chain ([`Self::assembly_owner`]).
-    composition_roots: HashSet<StableNodeId>,
     views: HashMap<StableNodeId, Box<dyn Any + Send>>,
     /// Opt-in reproject entry points keyed by node, registered from
     /// [`ComponentView::wants_child_reproject`] when a component view is
@@ -1306,7 +1312,6 @@ impl AppContext {
     pub fn from_world(world: UiWorld) -> Self {
         let mut context = Self {
             world,
-            composition_roots: HashSet::new(),
             views: HashMap::new(),
             child_reproject_views: HashMap::new(),
             metrics_reproject_views: HashMap::new(),
@@ -1417,7 +1422,7 @@ impl AppContext {
             return None;
         }
         segments.reverse();
-        Some(segments.join("/"))
+        Some(segments.join(ASSEMBLY_PATH_SEPARATOR))
     }
 
     /// The node `path` names below `root`: each `/`-separated segment is the
@@ -1430,9 +1435,27 @@ impl AppContext {
         if path.is_empty() {
             return Some(root);
         }
-        path.split('/').try_fold(root, |parent, key| {
-            self.assembled.get(&parent)?.get(key).map(|child| child.id)
-        })
+        path.split(ASSEMBLY_PATH_SEPARATOR)
+            .try_fold(root, |parent, key| {
+                self.assembled.get(&parent)?.get(key).map(|child| child.id)
+            })
+    }
+
+    /// [`Self::resolve_assembly_path`] as a typed handle: fails with
+    /// [`FrameworkError::MissingView`] naming `root` when nothing is at
+    /// `path`, and with [`FrameworkError::ViewType`] when the node there is
+    /// another component.
+    pub fn resolve_assembly_entity<C: ComponentView>(
+        &self,
+        root: StableNodeId,
+        path: &str,
+    ) -> Result<Entity<C>, FrameworkError> {
+        let id = self
+            .resolve_assembly_path(root, path)
+            .ok_or(FrameworkError::MissingView(root))?;
+        let entity = Entity::from_stable_id(id);
+        self.read(entity, |_| ())?;
+        Ok(entity)
     }
 
     /// Move a keyed node to `parent` without changing its identity.
@@ -1482,40 +1505,6 @@ impl AppContext {
             self.placed_assembled.insert(node);
         }
         Ok(())
-    }
-
-    /// The composition root `id` belongs to: the first mounted root found
-    /// walking from `id` along declared parents (world parents for unkeyed
-    /// nodes). A node placed elsewhere still belongs to its declaring host.
-    pub(crate) fn assembly_owner(&self, id: StableNodeId) -> Option<StableNodeId> {
-        if self.composition_roots.is_empty() {
-            return None;
-        }
-        let mut cursor = Some(id);
-        let mut steps = 0usize;
-        while let Some(node) = cursor {
-            if self.composition_roots.contains(&node) {
-                return Some(node);
-            }
-            cursor = self
-                .assembled_parent
-                .get(&node)
-                .map(|(parent, _)| *parent)
-                .or_else(|| self.world.parent_id(node));
-            steps += 1;
-            if steps > self.world.len() + 1 {
-                return None;
-            }
-        }
-        None
-    }
-
-    pub(crate) fn register_composition_root(&mut self, root: StableNodeId) {
-        self.composition_roots.insert(root);
-    }
-
-    pub(crate) fn unregister_composition_root(&mut self, root: StableNodeId) {
-        self.composition_roots.remove(&root);
     }
 
     /// Replace `parent`'s keyed children and keep the reverse index in step.
@@ -3278,7 +3267,6 @@ impl AppContext {
         self.assembled_parent
             .retain(|child, (parent, _)| !removed.contains(child) && !removed.contains(parent));
         self.placed_assembled.retain(|id| !removed.contains(id));
-        self.composition_roots.retain(|id| !removed.contains(id));
     }
 }
 

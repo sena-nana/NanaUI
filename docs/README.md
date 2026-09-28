@@ -69,3 +69,4 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 - [窗口不出现在任务栏（2026-09-15）](consumer-upgrade-2026-09-15.md)
 - [应用打包与资源包；未变化的写入不再有成本；两阶段启动（2026-09-23）](consumer-upgrade-2026-09-23.md)
 - [编辑器存储统一到 EditSession、共享文本值；GPU 后端合同隔离（2026-09-24）](consumer-upgrade-2026-09-24.md)
+- [Composition 移除，并入 builder / assembly key（2026-09-28）](consumer-upgrade-2026-09-28-composition-removed.md)

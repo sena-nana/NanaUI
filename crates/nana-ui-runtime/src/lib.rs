@@ -24,7 +24,6 @@ mod command_palette;
 pub mod component_descriptors;
 mod component_registry;
 mod components;
-mod composition;
 mod custom_paint;
 mod paint_script;
 pub use paint_script::PaintScript;
@@ -179,10 +178,6 @@ pub use components::{
     TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry, TextValue,
     TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
 };
-pub use composition::{
-    COMPOSITION_PATH_SEPARATOR, CompositionError, CompositionHost, CompositionNode,
-    CompositionRegistry, CompositionSpec,
-};
 pub use custom_paint::{
     AFFINE_IDENTITY, Affine, BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient,
     GradientExtend, GradientShape, ImageFit, LineCap, LineJoin, NodePainter, Paint, PaintColor,
@@ -208,11 +203,11 @@ pub use feedback::{
 pub use file_tab::{FileTab, FileTabEvent};
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
-    ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FormValidity,
-    FrameworkError, HeadlessInput, InputBindError, InputCounters, InputRouteError,
-    InputRouteOutcome, OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RoutedEvent,
-    RuntimeOverlayKind, Subscription, Task, TextDeleteKind, TextEditOrigin, TextFindScope,
-    UiBuilder, UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
+    ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity,
+    ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError, InputCounters,
+    InputRouteError, InputRouteOutcome, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
+    RoutedEvent, RuntimeOverlayKind, Subscription, Task, TextDeleteKind, TextEditOrigin,
+    TextFindScope, UiBuilder, UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
     VirtualTreeItems,
 };
 pub use glyph_cache::GlyphCache;

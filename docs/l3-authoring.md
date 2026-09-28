@@ -45,6 +45,7 @@ let start = cx.build(document_id, |ui| {
 - 容器快捷方式（`column` 等）自动分配 `#column-0` 形式的 key，同一父节点下按调用顺序稳定。
 - 动态列表继续 `mount` / `materialize_virtual_*`，不要每帧 `build`。
 - 同一 parent 下 key 重复 → `DuplicateAssemblyKey`，且不 commit。
+- key 不能为空、不能含 `/`（`ASSEMBLY_PATH_SEPARATOR`），否则 `InvalidInput`，且不 commit。所以每个 keyed 节点都能按路径找到：`resolve_assembly_path(root, "page/content/list")`，带类型的版本是 `resolve_assembly_entity::<C>(root, path)`。
 - 类型变化 → despawn 再建（与 `mount` 相同）。
 
 ## 更新（不要整树 render）

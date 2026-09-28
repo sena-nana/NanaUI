@@ -1,6 +1,6 @@
 # Composition 并入 assembly key
 
-`CompositionSpec` / `CompositionHost` 不再有自己的一套身份。节点身份就是 assembly key（与 `AppContext::build` / `mount` 同一合同），一个节点由从声明根开始、用 `/` 拼接的 key 路径命名。框架不再内置 Page/Pane/Group/Option/Slot/Extension 分类与父子规则；分类是应用自己的类型参数，规则由应用在校验时传入。说明见 [composition](composition.md)。
+`CompositionSpec` / `CompositionHost` 不再有自己的一套身份。节点身份就是 assembly key（与 `AppContext::build` / `mount` 同一合同），一个节点由从声明根开始、用 `/` 拼接的 key 路径命名。框架不再内置 Page/Pane/Group/Option/Slot/Extension 分类与父子规则；分类是应用自己的类型参数，规则由应用在校验时传入。说明原在 `composition.md`；Composition 随后已移除，见 [Composition 移除](consumer-upgrade-2026-09-28-composition-removed.md)。
 
 ## 删除
 
