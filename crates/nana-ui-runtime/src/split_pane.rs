@@ -417,8 +417,20 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Option<StableNodeId> {
+        self.split_handle_near_hit(document, x, y, self.pointer_target(document, x, y))
+    }
+
+    /// [`Self::split_handle_near`] for a caller that already hit-tested the
+    /// point: `hit` is the topmost node there.
+    pub fn split_handle_near_hit(
+        &self,
+        document: crate::DocumentId,
+        x: f32,
+        y: f32,
+        hit: Option<StableNodeId>,
+    ) -> Option<StableNodeId> {
         const SLOP: f32 = nana_ui_core::space::SM;
-        if let Some(target) = self.pointer_target(document, x, y) {
+        if let Some(target) = hit {
             if self.is_split_handle(target) {
                 return Some(target);
             }
@@ -540,10 +552,29 @@ impl AppContext {
         y: f32,
         now: std::time::Duration,
     ) -> Result<bool, crate::FrameworkError> {
+        self.sync_split_handle_hover_near_hit(
+            document,
+            x,
+            y,
+            self.pointer_target(document, x, y),
+            now,
+        )
+    }
+
+    /// [`Self::sync_split_handle_hover_near`] with the point already
+    /// hit-tested.
+    pub fn sync_split_handle_hover_near_hit(
+        &mut self,
+        document: crate::DocumentId,
+        x: f32,
+        y: f32,
+        hit: Option<StableNodeId>,
+        now: std::time::Duration,
+    ) -> Result<bool, crate::FrameworkError> {
         if !self.begin_split_hover_probe(document, now) {
             return Ok(false);
         }
-        let near = self.split_handle_near(document, x, y);
+        let near = self.split_handle_near_hit(document, x, y, hit);
         self.sync_split_handle_hover(document, near)
     }
 

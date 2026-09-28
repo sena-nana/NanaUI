@@ -457,6 +457,16 @@ fn hit_test_matches_the_first_collected_candidate() {
 }
 
 #[test]
+fn every_hit_query_is_counted_once() {
+    let world = hit_fixture(2, 4);
+    let before = world.hit_test_queries();
+    world.hit_test(document(1), 5.0, 5.0);
+    world.hit_test(document(1), 500.0, 500.0);
+    world.hit_test_candidates(document(1), 15.0, 5.0);
+    assert_eq!(world.hit_test_queries() - before, 3);
+}
+
+#[test]
 fn tree_depth_is_bounded_where_the_tree_is_written() {
     let mut world = UiWorld::new();
     let mut create = MutationQueue::new();

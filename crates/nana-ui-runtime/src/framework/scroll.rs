@@ -309,19 +309,29 @@ impl AppContext {
         if !x.is_finite() || !y.is_finite() || !delta.x.is_finite() || !delta.y.is_finite() {
             return Err(FrameworkError::InvalidInput);
         }
-        let Some(target) = self.world.hit_test(document, x, y) else {
-            return Ok(None);
-        };
-        let mut ancestors = Vec::new();
-        let mut current = Some(target);
-        while let Some(id) = current {
-            ancestors.push(id);
-            current = self.world.node(id).and_then(|node| node.parent);
+        let hit = self.world.hit_test(document, x, y);
+        self.scroll_from_hit(hit, delta)
+    }
+
+    /// [`Self::scroll_at`] with the point already hit-tested: scroll the
+    /// nearest container at or above `hit` that can still move.
+    pub fn scroll_from_hit(
+        &mut self,
+        hit: Option<StableNodeId>,
+        delta: ScrollOffset,
+    ) -> Result<Option<StableNodeId>, FrameworkError> {
+        if !delta.x.is_finite() || !delta.y.is_finite() {
+            return Err(FrameworkError::InvalidInput);
         }
-        for id in ancestors {
+        let mut current = hit;
+        while let Some(id) = current {
+            // The parent is read before scrolling: a scroll mutates the
+            // container, never the hierarchy above it.
+            let parent = self.world.node(id).and_then(|node| node.parent);
             if self.scroll_node_by(id, delta)? {
                 return Ok(Some(id));
             }
+            current = parent;
         }
         Ok(None)
     }
@@ -472,7 +482,17 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Option<(StableNodeId, nana_ui_core::ScrollbarAxis)> {
-        let mut current = self.world.hit_test(document, x, y);
+        self.scrollbar_target_near_hit(x, y, self.world.hit_test(document, x, y))
+    }
+
+    /// [`Self::scrollbar_target_near`] with the point already hit-tested.
+    pub fn scrollbar_target_near_hit(
+        &self,
+        x: f32,
+        y: f32,
+        hit: Option<StableNodeId>,
+    ) -> Option<(StableNodeId, nana_ui_core::ScrollbarAxis)> {
+        let mut current = hit;
         while let Some(id) = current {
             if let Some(axis) = self.scrollbar_axis_at(id, x, y) {
                 return Some((id, axis));

@@ -728,6 +728,10 @@ pub struct UiWorld {
     /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
     bracket_color_spans_cache: RefCell<Option<(crate::TextValue, Arc<[(usize, usize, usize)]>)>>,
     presentation_transform_documents_cache: RefCell<Option<(u64, u64, HashSet<DocumentId>)>>,
+    /// Queries answered by the hit index; see [`Self::hit_test_queries`].
+    hit_test_queries: Cell<u64>,
+    /// Reused by `hit_test` when it has to order candidates by paint.
+    hit_scratch: RefCell<hit_test::HitScratch>,
 }
 
 impl Default for UiWorld {
@@ -825,6 +829,8 @@ impl UiWorld {
             minimap_line_lengths_cache: RefCell::new(None),
             bracket_color_spans_cache: RefCell::new(None),
             presentation_transform_documents_cache: RefCell::new(None),
+            hit_test_queries: Cell::new(0),
+            hit_scratch: RefCell::new(hit_test::HitScratch::default()),
         }
     }
 

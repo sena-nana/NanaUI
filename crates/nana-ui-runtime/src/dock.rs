@@ -2418,8 +2418,19 @@ impl AppContext {
 
     /// Handle under the pointer, including a few pixels of slop around the 8px bar.
     pub fn dock_handle_near(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
+        self.dock_handle_near_hit(document, x, y, self.pointer_target(document, x, y))
+    }
+
+    /// [`Self::dock_handle_near`] with the point already hit-tested.
+    pub fn dock_handle_near_hit(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+        hit: Option<StableNodeId>,
+    ) -> Option<StableNodeId> {
         const SLOP: f32 = nana_ui_core::space::SM;
-        if let Some(target) = self.pointer_target(document, x, y) {
+        if let Some(target) = hit {
             if let Some(handle) = self.unlocked_dock_handle(target) {
                 return Some(handle);
             }
@@ -2448,7 +2459,18 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Option<StableNodeId> {
-        if let Some(target) = self.pointer_target(document, x, y) {
+        self.dock_tab_strip_near_hit(document, x, y, self.pointer_target(document, x, y))
+    }
+
+    /// [`Self::dock_tab_strip_near`] with the point already hit-tested.
+    pub fn dock_tab_strip_near_hit(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+        hit: Option<StableNodeId>,
+    ) -> Option<StableNodeId> {
+        if let Some(target) = hit {
             if let Some(strip) = self.unlocked_dock_tab_strip(target) {
                 return Some(strip);
             }

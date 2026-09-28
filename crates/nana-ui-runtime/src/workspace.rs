@@ -984,7 +984,18 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Option<StableNodeId> {
-        if let Some(target) = self.pointer_target(document, x, y)
+        self.workspace_handle_near_hit(document, x, y, self.pointer_target(document, x, y))
+    }
+
+    /// [`Self::workspace_handle_near`] with the point already hit-tested.
+    pub fn workspace_handle_near_hit(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+        hit: Option<StableNodeId>,
+    ) -> Option<StableNodeId> {
+        if let Some(target) = hit
             && let Some(handle) = self.workspace_handle_id(target)
         {
             return Some(handle);

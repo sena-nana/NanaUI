@@ -960,6 +960,65 @@ impl UiWorld {
     }
 }
 
+/// Paint order of one hit candidate: its stacking groups from the root down,
+/// each a z-index and the length of the sibling-order path that reaches it.
+///
+/// Every group's path is a prefix of the one path, so the key is that path
+/// plus the group cut points. It is compared as the list of `(z, path
+/// prefix)` pairs it stands for, lexicographically. Kept as reusable buffers
+/// so picking the topmost of several candidates allocates nothing once warm.
+#[derive(Debug, Default, Clone)]
+pub(super) struct HitPaintKey {
+    groups: Vec<(i32, usize)>,
+    path: Vec<usize>,
+    chain: Vec<StableNodeId>,
+}
+
+impl HitPaintKey {
+    fn clear(&mut self) {
+        self.groups.clear();
+        self.path.clear();
+        self.chain.clear();
+    }
+}
+
+impl PartialEq for HitPaintKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for HitPaintKey {}
+
+impl PartialOrd for HitPaintKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HitPaintKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        for (&(z, len), &(other_z, other_len)) in self.groups.iter().zip(&other.groups) {
+            let order = z
+                .cmp(&other_z)
+                .then_with(|| self.path[..len].cmp(&other.path[..other_len]));
+            if order.is_ne() {
+                return order;
+            }
+        }
+        self.groups.len().cmp(&other.groups.len())
+    }
+}
+
+/// Scratch for [`UiWorld::hit_test`]: the candidates at the point and the
+/// best and current paint keys, reused across queries.
+#[derive(Debug, Default)]
+pub(super) struct HitScratch {
+    candidates: Vec<StableNodeId>,
+    best: HitPaintKey,
+    current: HitPaintKey,
+}
+
 impl UiWorld {
     // Fixed branches are separate spatial roots. Paint already stops the
     // stacking-group prefix at `position: fixed` so menus leave a parent
@@ -971,7 +1030,9 @@ impl UiWorld {
         target: StableNodeId,
         x: f32,
         y: f32,
-    ) -> Vec<(i32, Vec<usize>)> {
+        key: &mut HitPaintKey,
+    ) {
+        key.clear();
         let shift = index.inherited_shift(target);
         let has_overlay = self
             .document_of(target)
@@ -994,22 +1055,20 @@ impl UiWorld {
                 }
             })
         });
-        let mut chain = Vec::new();
         let mut cursor = Some(target);
         while let Some(id) = cursor {
-            chain.push(id);
+            key.chain.push(id);
             if self.hit_motion_layout(id).position == PositionSpec::Fixed {
                 break;
             }
             cursor = self.parent_id(id);
         }
-        let mut path = Vec::new();
-        let mut groups = Vec::new();
         let mut inherited_z = 0;
-        for id in chain.into_iter().rev() {
+        for &id in key.chain.iter().rev() {
             let node = self.record(id);
             let style = self.hit_motion_layout(id);
-            path.push(index.entries.get(&id).map_or(0, |entry| entry.entry.order));
+            key.path
+                .push(index.entries.get(&id).map_or(0, |entry| entry.entry.order));
             inherited_z = style.z_index.unwrap_or(inherited_z);
             let children = node
                 .hierarchy
@@ -1041,10 +1100,9 @@ impl UiWorld {
                 } else {
                     inherited_z
                 };
-                groups.push((z, path.clone()));
+                key.groups.push((z, key.path.len()));
             }
         }
-        groups
     }
 
     fn visit_presentation_roots(
@@ -1177,11 +1235,34 @@ impl UiWorld {
         false
     }
 
+    /// Every hit at `(x, y)`, topmost first.
     pub fn hit_test_candidates(&self, document: DocumentId, x: f32, y: f32) -> Vec<StableNodeId> {
-        let Some(forest) = self.hit_test_index.get(&document) else {
-            return Vec::new();
-        };
+        self.hit_test_queries.set(self.hit_test_queries.get() + 1);
         let mut candidates = Vec::new();
+        let Some(forest) = self.collect_hit_candidates(document, x, y, &mut candidates) else {
+            return candidates;
+        };
+        if forest.viewport_hit_at(x, y) || self.has_compositor_transform_overlay_for(document) {
+            candidates.sort_by_cached_key(|id| {
+                let mut key = HitPaintKey::default();
+                self.hit_paint_key(forest, *id, x, y, &mut key);
+                std::cmp::Reverse(key)
+            });
+        }
+        candidates
+    }
+
+    /// Hits at `(x, y)` in visit order, motion-blocked ones dropped. `None`
+    /// when the document has no hit index.
+    fn collect_hit_candidates(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+        candidates: &mut Vec<StableNodeId>,
+    ) -> Option<&HitIndex> {
+        candidates.clear();
+        let forest = self.hit_test_index.get(&document)?;
         if self.has_compositor_transform_overlay_for(document) {
             self.visit_presentation_roots(forest, x, y, &mut |id| {
                 candidates.push(id);
@@ -1194,11 +1275,14 @@ impl UiWorld {
             });
         }
         candidates.retain(|id| !self.motion_blocks_input(*id));
-        if forest.viewport_hit_at(x, y) || self.has_compositor_transform_overlay_for(document) {
-            candidates
-                .sort_by_cached_key(|id| std::cmp::Reverse(self.hit_paint_key(forest, *id, x, y)));
-        }
-        candidates
+        Some(forest)
+    }
+
+    /// Hit-test queries answered since the world was created: one per
+    /// [`Self::hit_test`] or [`Self::hit_test_candidates`] call. Input routing
+    /// is budgeted against it (at most one per uncaptured pointer event).
+    pub fn hit_test_queries(&self) -> u64 {
+        self.hit_test_queries.get()
     }
 }
 
@@ -1209,13 +1293,14 @@ impl UiWorld {
     /// first hit, so pointer dispatch on every move does not collect and then
     /// discard the full candidate list.
     pub fn hit_test(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
+        self.hit_test_queries.set(self.hit_test_queries.get() + 1);
         if !self.closing_surfaces.is_empty()
             || self
                 .hit_test_index
                 .get(&document)
                 .is_some_and(|index| index.viewport_hit_at(x, y))
         {
-            return self.hit_test_candidates(document, x, y).into_iter().next();
+            return self.topmost_candidate(document, x, y);
         }
         let forest = self.hit_test_index.get(&document)?;
         let mut found = None;
@@ -1231,6 +1316,35 @@ impl UiWorld {
             });
         }
         found
+    }
+
+    /// The first of [`Self::hit_test_candidates`] without collecting or
+    /// sorting them: the highest paint key wins, the earliest visited on a
+    /// tie (the stable sort's first). Reuses the world's scratch, so a pointer
+    /// moving inside a scroll viewport allocates nothing once warm.
+    fn topmost_candidate(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
+        let Ok(mut scratch) = self.hit_scratch.try_borrow_mut() else {
+            // Only a hit query made from inside another one lands here.
+            return self.hit_test_candidates(document, x, y).into_iter().next();
+        };
+        let HitScratch {
+            candidates,
+            best,
+            current,
+        } = &mut *scratch;
+        let forest = self.collect_hit_candidates(document, x, y, candidates)?;
+        if !forest.viewport_hit_at(x, y) && !self.has_compositor_transform_overlay_for(document) {
+            return candidates.first().copied();
+        }
+        let mut top = None;
+        for &id in candidates.iter() {
+            self.hit_paint_key(forest, id, x, y, current);
+            if top.is_none() || *current > *best {
+                std::mem::swap(best, current);
+                top = Some(id);
+            }
+        }
+        top
     }
 }
 

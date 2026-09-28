@@ -3249,15 +3249,42 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Result<(), FrameworkError> {
-        if let Some(node) = self.world.text_hover_panel_at(document, x, y)
-            && self
-                .world
-                .text_hover_view(node)
-                .is_some_and(|state| state.diagnostic)
-        {
+        if self.diagnostic_hover_panel_holds(document, x, y) {
             return Ok(());
         }
         let target = self.world.hit_test(document, x, y);
+        self.update_text_diagnostic_hover_hit(document, x, y, target)
+    }
+
+    /// The pointer rests on an open diagnostic hover panel, which keeps it.
+    fn diagnostic_hover_panel_holds(&self, document: DocumentId, x: f32, y: f32) -> bool {
+        self.world
+            .text_hover_panel_at(document, x, y)
+            .is_some_and(|node| {
+                self.world
+                    .text_hover_view(node)
+                    .is_some_and(|state| state.diagnostic)
+            })
+    }
+
+    /// [`Self::update_text_diagnostic_hover`] with the point already
+    /// hit-tested: `target` is the topmost node there.
+    pub fn update_text_diagnostic_hover_hit(
+        &mut self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+        target: Option<StableNodeId>,
+    ) -> Result<(), FrameworkError> {
+        if self.diagnostic_hover_panel_holds(document, x, y) {
+            return Ok(());
+        }
+        // Nothing to open and nothing open: the common move over plain UI.
+        if target.is_none_or(|id| self.world.editor_frame(id).is_none())
+            && self.world.diagnostic_hover_ids().is_empty()
+        {
+            return Ok(());
+        }
         let hit = target.and_then(|id| {
             let (local_x, local_y) = self.world.editor_frame(id)?.text_point(x, y);
             self.world
