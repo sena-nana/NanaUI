@@ -77,7 +77,7 @@ impl Splash {
         );
         let splash_window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
-                NSWindow::alloc(),
+                mtm.alloc::<NSWindow>(),
                 frame,
                 NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
                 NSBackingStoreType::Buffered,
@@ -97,18 +97,15 @@ impl Splash {
                 | NSWindowCollectionBehavior::IgnoresCycle,
         );
         unsafe { splash_window.setReleasedWhenClosed(false) };
-        let content = unsafe {
-            NSView::initWithFrame(
-                NSView::alloc(),
-                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size.0, size.1)),
-            )
-        };
+        let content = NSView::initWithFrame(
+            mtm.alloc::<NSView>(),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size.0, size.1)),
+        );
         content.setWantsLayer(true);
         splash_window.setContentView(Some(&content));
         let root = content
             .layer()
             .ok_or_else(|| native("splash content has no layer"))?;
-        let _ = mtm;
 
         // One decode, by ImageIO; the header was checked against the limits
         // before this.
