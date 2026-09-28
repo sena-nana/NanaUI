@@ -1,6 +1,6 @@
 //! Engine-neutral browser-style input contracts for Vue surfaces.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use nana_js_engine::HostValue;
 pub use nana_ui_platform::{InputModifiers, PointerType};
@@ -261,26 +261,6 @@ impl CompositionInput {
             kind,
             data: data.into(),
         }
-    }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct InputState {
-    pressed_keys: BTreeSet<String>,
-}
-
-impl InputState {
-    pub fn note_key(&mut self, code: &str, pressed: bool) -> bool {
-        if pressed {
-            !self.pressed_keys.insert(code.to_string())
-        } else {
-            self.pressed_keys.remove(code);
-            false
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.pressed_keys.clear();
     }
 }
 

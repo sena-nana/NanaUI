@@ -13,9 +13,7 @@ use nana_ui::{
     RuntimeProgramUpdate, RuntimeRedraw, ThemeMode, WindowDescriptor, install_theme_tokens,
     window_material_effect,
 };
-use nana_ui_platform::{
-    CanonicalInputEvent, InputPayload, InputSequence, WindowEvent, WindowGeometry, WindowId,
-};
+use nana_ui_platform::{CanonicalInputEvent, InputPayload, WindowEvent, WindowGeometry, WindowId};
 use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 
@@ -50,9 +48,6 @@ pub struct VueHostedRuntime<E: JsEngine> {
     engine: E,
     vue: VueRuntime,
     application_api: HostApiRegistry,
-    /// Per window, the last key press a control handled or the page
-    /// prevented; text naming it is not typed.
-    handled_keys: HashMap<VueWindowId, InputSequence>,
 }
 
 #[derive(PartialEq)]
@@ -116,7 +111,6 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             engine,
             vue,
             application_api,
-            handled_keys: HashMap::new(),
         };
         runtime
             .vue
@@ -400,17 +394,13 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 // Text a handled or prevented key typed is not typed: the
                 // page sees no `input` for it, as a browser would not.
                 if key.is_pressed() && (disposition.handled || !allowed) {
-                    self.handled_keys.insert(window, event.metadata.sequence);
+                    host.input_projection.handled_key = Some(event.metadata.sequence);
                 }
             }
             InputPayload::Text(committed) => {
-                let suppressed = committed.key.is_some()
-                    && self.handled_keys.get(&window) == committed.key.as_ref();
-                let target = host.focused().filter(|&target| {
-                    host.document()
-                        .lock()
-                        .is_ok_and(|document| document.has_text_input_state(target))
-                });
+                let suppressed =
+                    committed.key.is_some() && host.input_projection.handled_key == committed.key;
+                let target = host.focused_text_input();
                 if let Some(target) = target.filter(|_| !suppressed && !committed.text.is_empty()) {
                     host.emit_text_events_from_runtime(
                         engine,
@@ -804,7 +794,6 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     /// while its document is alive, and a reused id starts a newer
     /// generation.
     fn detach_input_source(&mut self, window: VueWindowId) -> Result<(), JsEngineError> {
-        self.handled_keys.remove(&window);
         match self.vue.host(window) {
             Some(host) => host
                 .lock()
@@ -1442,7 +1431,9 @@ mod tests {
     use nana_ui::{
         TitleBarDragTracker, WindowChromeAction, WindowChromeState, apply_title_bar_pointer,
     };
-    use nana_ui_platform::{DeviceId, EndpointGeneration, InputSourceId, PointerPhase};
+    use nana_ui_platform::{
+        DeviceId, EndpointGeneration, InputSequence, InputSourceId, PointerPhase,
+    };
 
     #[test]
     fn pending_vue_bootstrap_guard_clears_untaken_slot() {
@@ -1462,7 +1453,6 @@ mod tests {
             engine: InputEngine::default(),
             vue: VueRuntime::new(400, 300, 1.0),
             application_api: HostApiRegistry::new(),
-            handled_keys: HashMap::new(),
         }
     }
 
@@ -1634,7 +1624,6 @@ mod tests {
             engine: InputEngine::default(),
             vue,
             application_api: HostApiRegistry::new(),
-            handled_keys: HashMap::new(),
         };
         let artifact = RuntimeArtifact::from_source("reload.js", "");
         let replace_engine = || -> InputEngine { panic!("reload tore down the surviving runtime") };
@@ -1766,7 +1755,6 @@ mod tests {
             engine,
             vue,
             application_api: HostApiRegistry::new(),
-            handled_keys: HashMap::new(),
         };
         runtime
             .prepare_window_creation(WindowId(1), window_geometry())
@@ -1820,7 +1808,6 @@ mod tests {
             engine,
             vue,
             application_api: HostApiRegistry::new(),
-            handled_keys: HashMap::new(),
         };
 
         assert!(
@@ -1851,7 +1838,6 @@ mod tests {
             engine: InputEngine::default(),
             vue,
             application_api: HostApiRegistry::new(),
-            handled_keys: HashMap::new(),
         };
         for id in &ids {
             runtime
@@ -1927,7 +1913,6 @@ mod tests {
             engine: InputEngine::default(),
             vue: VueRuntime::new(400, 300, 1.0),
             application_api: HostApiRegistry::new(),
-            handled_keys: HashMap::new(),
         };
         runtime
             .vue

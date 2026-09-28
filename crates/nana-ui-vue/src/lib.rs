@@ -583,7 +583,6 @@ pub struct VueHost {
     /// Only `scene-view` flushes frames, so only it reads this.
     #[cfg(feature = "scene-view")]
     reported_unsupported_css: crate::css_cascade::UnsupportedCssReport,
-    input: Arc<Mutex<input::InputState>>,
     #[cfg(feature = "scene-view")]
     components: NativeComponentRegistry,
     /// Window-local bindings for host, Canvas, and JS WebGPU textures. Views
@@ -720,7 +719,6 @@ impl VueHost {
             reported_unsupported_css: crate::css_cascade::UnsupportedCssReport::default(),
             input_projection: host::input_projection::State::default(),
             callbacks: host::callbacks::State::default(),
-            input: Arc::new(Mutex::new(input::InputState::default())),
             #[cfg(feature = "scene-view")]
             components: NativeComponentRegistry::new(),
             #[cfg(feature = "scene-view")]

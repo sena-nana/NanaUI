@@ -91,6 +91,8 @@ input.advance(Duration::from_millis(16)); // 事件时间戳驱动双击、长�
 - **组字随焦点离开而取消**：输入法关闭时只有当前聚焦字段里的剩余组字会提交；焦点已经移走时，页面收到 `data` 为空的 `compositionend`，不再把组字补提交到原字段。
 - **键盘调 Range 由页面完成**：Runtime 里 Vue 的 Range 只有投影，方向键、PageUp/PageDown、Home/End 走页面的默认动作；此前原生窗口里这一步被关掉了。
 - `emit_native_ime_from_runtime(engine, event, applied)` 多了 `applied`：路由是否应用了这次 IME 事件。
+- 键盘事件的 `repeat` 取自事件本身，不再由 Vue 按键码推断；连按两次同一个键不再被当成重复。
+- 删除：`VueHost::dispatch_pointer_result`（用 `dispatch_pointer`）、`VueHost::dispatch_wheel`（用 `dispatch_wheel_result` 或 `pointer_wheel`）、`NanaTreeDocument::press_pointer` / `release_pointer_press`；`set_pointer_hover` 只留给测试。按下、悬停由路由维护。
 
 ## NanaLive 受影响位置
 

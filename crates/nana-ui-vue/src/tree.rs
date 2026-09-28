@@ -2883,6 +2883,7 @@ impl NanaTreeDocument {
             .map(NodeHandle::from)
     }
 
+    #[cfg(test)]
     pub fn set_pointer_hover(&mut self, pointer_id: u64, target: Option<NodeHandle>) -> bool {
         let target = match target.map(StableNodeId::try_from).transpose() {
             Ok(target) => target,
@@ -2896,30 +2897,6 @@ impl NanaTreeDocument {
                 target,
             )
             .is_ok()
-    }
-
-    pub fn press_pointer(&mut self, pointer_id: u64, target: NodeHandle) -> bool {
-        let Ok(target) = StableNodeId::try_from(target) else {
-            return false;
-        };
-        self.runtime
-            .press_pointer(
-                nana_ui_runtime::DocumentId::try_from(self.id)
-                    .expect("Vue document IDs are nonzero"),
-                pointer_id,
-                target,
-            )
-            .is_ok()
-    }
-
-    pub fn release_pointer_press(&mut self, pointer_id: u64) -> Option<NodeHandle> {
-        self.runtime
-            .release_pointer_press(
-                nana_ui_runtime::DocumentId::try_from(self.id)
-                    .expect("Vue document IDs are nonzero"),
-                pointer_id,
-            )
-            .map(NodeHandle::from)
     }
 
     pub fn clear_pointer_interactions(&mut self) {

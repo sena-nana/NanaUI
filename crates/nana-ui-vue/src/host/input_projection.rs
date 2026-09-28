@@ -6,10 +6,14 @@ use nana_ui_platform::{CanonicalInputEvent, CommittedText, InputPayload};
 #[derive(Debug, Default)]
 pub(crate) struct State {
     pub(crate) file_drag_target: Option<NodeHandle>,
-    /// Last IME field and leftover preedit for JS `compositionend` after Runtime
-    /// has already dropped [`nana_ui_runtime::ImeComposition`].
-    pub(crate) ime_target: Option<NodeHandle>,
-    pub(crate) ime_preedit: String,
+    /// The field a composition started in and its last preedit, for the
+    /// page's `compositionend` after the Runtime already dropped its
+    /// [`nana_ui_runtime::ImeComposition`].
+    pub(crate) ime: Option<(NodeHandle, String)>,
+    /// The last key press a control handled or the page prevented; text
+    /// naming it is not typed.
+    #[cfg(feature = "hosted")]
+    pub(crate) handled_key: Option<nana_ui_platform::InputSequence>,
     /// Last focus/hover emitted to JS. Scene-host input updates Runtime first;
     /// these remember the previous JS view so blur/over events still fire.
     pub(crate) js_focus: Option<NodeHandle>,
@@ -331,22 +335,6 @@ impl VueHost {
         Ok(true)
     }
 
-    fn dispatch_chip_dismiss_at<E: JsEngine + ?Sized>(
-        &mut self,
-        engine: &mut E,
-        x: f32,
-        y: f32,
-    ) -> Result<bool, JsEngineError> {
-        let hit = {
-            let doc = self.document.lock().expect("vue doc");
-            doc.hit_test(x, y)
-        };
-        match hit {
-            Some(target) => self.dispatch_chip_dismiss(engine, target),
-            None => Ok(false),
-        }
-    }
-
     pub(crate) fn fire_dom_event<E: JsEngine + ?Sized>(
         &self,
         engine: &mut E,
@@ -429,6 +417,7 @@ impl VueHost {
     /// the document is alive, and the next event binds a newer generation.
     #[cfg(feature = "hosted")]
     pub(crate) fn detach_input_source(&mut self) -> Result<(), JsEngineError> {
+        self.input_projection.handled_key = None;
         let Some(source) = self.input_projection.source.take() else {
             return Ok(());
         };
@@ -662,63 +651,35 @@ impl VueHost {
             default_prevented: false,
         })
     }
-    /// Dispatch one browser-style pointer event with hit-testing and capture.
-    /// Route a pointer event, then fire the page's events for it.
-    pub fn dispatch_pointer_result<E: JsEngine + ?Sized>(
-        &mut self,
-        engine: &mut E,
-        input: PointerInput,
-    ) -> Result<HostedInputResult, JsEngineError> {
-        let (_, outcome) = self.route_input(InputPayload::Pointer(input.to_canonical()))?;
-        let mut result = self.emit_pointer_from_runtime(engine, input)?;
-        result.consumed |= outcome.handled;
-        Ok(result)
-    }
     /// Fire Vue/DOM pointer events for pointer input the Runtime already routed.
     pub fn emit_pointer_from_runtime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         input: PointerInput,
     ) -> Result<HostedInputResult, JsEngineError> {
-        let physical_hit = {
-            let doc = self.document.lock().expect("vue doc");
-            doc.hit_test(input.client_x, input.client_y)
+        let (physical_hit, captured, target, event_target, released) = {
+            let mut doc = self.document.lock().expect("vue doc");
+            let physical_hit = doc.hit_test(input.client_x, input.client_y);
+            let mut captured = doc.pointer_capture(input.pointer_id);
+            // A capture held by a node the page unmounted ends here.
+            let stale = captured.filter(|&node| doc.element_tag(node).is_none());
+            if let Some(node) = stale {
+                doc.release_pointer(input.pointer_id, node);
+                captured = None;
+            }
+            let released = stale.is_some();
+            let target = captured.or_else(|| match input.kind {
+                PointerEventKind::Cancel => doc.pointer_hover(input.pointer_id),
+                _ => doc
+                    .hit_event_target(input.client_x, input.client_y, input.kind.pointer_name())
+                    .or(physical_hit),
+            });
+            let event_target = target.unwrap_or_else(|| doc.mount_root());
+            (physical_hit, captured, target, event_target, released)
         };
-        let mut captured = self
-            .document
-            .lock()
-            .expect("vue doc")
-            .pointer_capture(input.pointer_id);
-        if captured.is_some_and(|target| {
-            self.document
-                .lock()
-                .expect("vue doc")
-                .element_tag(target)
-                .is_none()
-        }) {
-            if let Some(captured) = captured {
-                self.document
-                    .lock()
-                    .expect("vue doc")
-                    .release_pointer(input.pointer_id, captured);
-            }
+        if released {
             self.flush_pointer_capture_events(engine)?;
-            captured = None;
         }
-        let target = captured.or_else(|| {
-            if input.kind == PointerEventKind::Cancel {
-                return self
-                    .document
-                    .lock()
-                    .expect("vue doc")
-                    .pointer_hover(input.pointer_id);
-            }
-            let doc = self.document.lock().expect("vue doc");
-            doc.hit_event_target(input.client_x, input.client_y, input.kind.pointer_name())
-                .or(physical_hit)
-        });
-        let fallback = self.document.lock().expect("vue doc").mount_root();
-        let event_target = target.unwrap_or(fallback);
         let detail = self.pointer_detail(input, event_target);
 
         if matches!(
@@ -820,7 +781,7 @@ impl VueHost {
                     && let Some(click_target) = pressed
                     && physical_hit == Some(click_target)
                 {
-                    if self.dispatch_chip_dismiss_at(engine, input.client_x, input.client_y)? {
+                    if self.dispatch_chip_dismiss(engine, click_target)? {
                         consumed = true;
                     } else {
                         let is_semantic = self
@@ -884,12 +845,15 @@ impl VueHost {
                 + f64::from(ratio) * f64::from(widget.props.max - widget.props.min),
         )
     }
+    /// Route a pointer event, then fire the page's events for it. Whether
+    /// it had a target.
     pub fn dispatch_pointer<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
         input: PointerInput,
     ) -> Result<bool, JsEngineError> {
-        self.dispatch_pointer_result(engine, input)
+        self.route_input(InputPayload::Pointer(input.to_canonical()))?;
+        self.emit_pointer_from_runtime(engine, input)
             .map(|result| result.targeted)
     }
     /// Compatibility helper for callers that only expose an atomic click.
@@ -936,14 +900,6 @@ impl VueHost {
             consumed: true,
         })
     }
-    pub fn dispatch_wheel<E: JsEngine + ?Sized>(
-        &mut self,
-        engine: &mut E,
-        input: WheelInput,
-    ) -> Result<bool, JsEngineError> {
-        self.dispatch_wheel_result(engine, input)
-            .map(|result| result.targeted)
-    }
     pub fn pointer_wheel<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -952,7 +908,8 @@ impl VueHost {
         delta_x: f32,
         delta_y: f32,
     ) -> Result<bool, JsEngineError> {
-        self.dispatch_wheel(engine, WheelInput::pixels(x, y, delta_x, delta_y))
+        self.dispatch_wheel_result(engine, WheelInput::pixels(x, y, delta_x, delta_y))
+            .map(|result| result.targeted)
     }
     /// Route a key transition, then fire the page's key event at `target`
     /// (the focused node when `None`). `false` when a control or the page
@@ -980,16 +937,9 @@ impl VueHost {
                 .or_else(|| doc.focused())
                 .unwrap_or_else(|| doc.mount_root())
         };
-        let repeated = self
-            .input
-            .lock()
-            .expect("input state")
-            .note_key(&input.code, input.kind == KeyboardEventKind::Down);
-        let mut detail = input.detail();
-        if repeated {
-            detail.insert("repeat".into(), HostValue::Bool(true));
-        }
-        let mut allowed = self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
+        let repeated = input.repeat;
+        let mut allowed =
+            self.fire_dom_event(engine, target, input.kind.as_str(), input.detail())?;
         if allowed && input.kind == KeyboardEventKind::Down {
             let key = input.key.to_ascii_lowercase();
             let activate_key =
@@ -1204,13 +1154,7 @@ impl VueHost {
     ) -> Result<bool, JsEngineError> {
         let text = committed.text.clone();
         let (_, outcome) = self.route_input(InputPayload::Text(committed))?;
-        let target = self.focused().filter(|&target| {
-            self.document
-                .lock()
-                .expect("vue doc")
-                .has_text_input_state(target)
-        });
-        match target {
+        match self.focused_text_input() {
             Some(target) if outcome.handled => {
                 self.emit_text_events_from_runtime(engine, target, &text, input_type)
             }
@@ -1232,13 +1176,12 @@ impl VueHost {
             || document.get_attribute(target, "disabled").is_some()
             || document.get_attribute(target, "readonly").is_some()
     }
-    pub(crate) fn remember_ime_target(&mut self, target: NodeHandle, preedit: String) {
-        self.input_projection.ime_target = Some(target);
-        self.input_projection.ime_preedit = preedit;
-    }
-    pub(crate) fn clear_ime_target(&mut self) {
-        self.input_projection.ime_target = None;
-        self.input_projection.ime_preedit.clear();
+    /// The focused node, when text can go into it.
+    pub(crate) fn focused_text_input(&self) -> Option<NodeHandle> {
+        let document = self.document.lock().expect("vue doc");
+        document
+            .focused()
+            .filter(|&target| document.has_text_input_state(target))
     }
     /// Route a page composition event as the platform IME event it stands
     /// for, then fire the page's composition events.
@@ -1257,7 +1200,7 @@ impl VueHost {
         let Some(target) = self.focused() else {
             return Ok(false);
         };
-        self.remember_ime_target(target, String::new());
+        self.input_projection.ime = Some((target, String::new()));
         self.emit_composition_event(engine, target, input)
     }
     fn emit_composition_event<E: JsEngine + ?Sized>(
@@ -1362,8 +1305,8 @@ impl VueHost {
                 let Some(target) = self.focused() else {
                     return Ok(false);
                 };
-                let started = self.input_projection.ime_target.is_none();
-                self.remember_ime_target(target, text.clone());
+                let started = self.input_projection.ime.is_none();
+                self.input_projection.ime = Some((target, text.clone()));
                 if started {
                     self.emit_composition_event(
                         engine,
@@ -1378,11 +1321,15 @@ impl VueHost {
                 )
             }
             nana_ui_platform::CompositionInput::Commit(text) => {
-                let Some(target) = self.input_projection.ime_target.or_else(|| self.focused())
+                let Some(target) = self
+                    .input_projection
+                    .ime
+                    .take()
+                    .map(|(target, _)| target)
+                    .or_else(|| self.focused())
                 else {
                     return Ok(false);
                 };
-                self.clear_ime_target();
                 let committed = if applied { text.as_str() } else { "" };
                 self.emit_composition_event(
                     engine,
@@ -1395,10 +1342,7 @@ impl VueHost {
             }
             nana_ui_platform::CompositionInput::Disabled
             | nana_ui_platform::CompositionInput::End => {
-                let leftover = self.input_projection.ime_target.take().map(|target| {
-                    let data = std::mem::take(&mut self.input_projection.ime_preedit);
-                    (target, data)
-                });
+                let leftover = self.input_projection.ime.take();
                 let Some((target, data)) = leftover else {
                     return Ok(self.focused().is_some());
                 };
