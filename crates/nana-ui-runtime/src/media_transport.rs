@@ -4,8 +4,8 @@
 //! and fullscreen. Applications append scene-specific widgets into named slots.
 //! An empty or fully hidden `secondary` slot collapses the bar to a single row.
 //!
-//! [`MediaTransportDensity`] picks the regular two-level chrome or a compact
-//! single row; [`MediaTransportPlacement`] floats the bar over its stage or
+//! [`MediaTransportDensity`] picks the regular two-level chrome, a compact
+//! single row, or a stacked variant with the progress on its own line; [`MediaTransportPlacement`] floats the bar over its stage or
 //! lets it take part in the parent's layout (a shell mini player strip, the
 //! bottom bar of a second window). Both are plain fields: the next
 //! [`AppContext::sync_media_transport_bar`] applies a change to assembled
@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
+    AlignSpec, ControlSize, FlexDirection, FlexWrap, Icon, JustifySpec, LayoutStyle, LengthSpec,
     PointerEventsSpec, PopoverPlacement, PositionSpec, SemanticColorRole, space,
 };
 
@@ -65,6 +65,10 @@ pub enum MediaTransportDensity {
     /// One tight row with the readout beside the range. Settings and
     /// fullscreen are hidden unless shown explicitly; every slot still works.
     Compact,
+    /// Compact controls with the readout and range on a full-width line above
+    /// them, so a narrow surface (a mini player) keeps a usable seek track
+    /// instead of squeezing it between the buttons.
+    Stacked,
 }
 
 /// Where the bar sits relative to its parent.
@@ -135,6 +139,10 @@ pub struct MediaTransportBar {
     pub fullscreen: bool,
     pub muted: bool,
     pub disabled: bool,
+    /// Whether the on-demand media can be sought right now (it may still be
+    /// loading or have no known duration). When false the range stays in
+    /// place, disabled; live media shows its meter regardless.
+    pub seekable: bool,
     pub position: f64,
     pub duration: f64,
     pub volume: f64,
@@ -169,6 +177,7 @@ impl MediaTransportBar {
             fullscreen: false,
             muted: false,
             disabled: false,
+            seekable: true,
             position: 0.0,
             duration: 0.0,
             volume: 100.0,
@@ -194,6 +203,11 @@ impl MediaTransportBar {
 
     pub fn live(mut self, live: bool) -> Self {
         self.live = live;
+        self
+    }
+
+    pub fn seekable(mut self, seekable: bool) -> Self {
+        self.seekable = seekable;
         self
     }
 
@@ -315,8 +329,24 @@ impl ChromeLayout {
     fn row(self, layout: &mut LayoutStyle) {
         let (gap, inline, top, bottom) = match self.density {
             MediaTransportDensity::Regular => (space::XL, space::XL, space::XL, space::XS),
-            MediaTransportDensity::Compact => (space::MD, space::MD, space::SM, space::SM),
+            MediaTransportDensity::Compact | MediaTransportDensity::Stacked => {
+                (space::MD, space::MD, space::SM, space::SM)
+            }
         };
+        // Stacked: the center takes the first line (see `center`); the button
+        // groups wrap onto the second, pushed to its two ends.
+        let stacked = self.density == MediaTransportDensity::Stacked;
+        layout.flex_wrap = if stacked {
+            FlexWrap::Wrap
+        } else {
+            FlexWrap::NoWrap
+        };
+        layout.justify_content = if stacked {
+            JustifySpec::SpaceBetween
+        } else {
+            JustifySpec::Start
+        };
+        layout.row_gap = stacked.then_some(LengthSpec::Px(space::XS));
         layout.gap = Some(LengthSpec::Px(gap));
         layout.padding_left = Some(LengthSpec::Px(inline));
         layout.padding_right = Some(LengthSpec::Px(inline));
@@ -329,8 +359,13 @@ impl ChromeLayout {
             MediaTransportDensity::Regular => {
                 (FlexDirection::Column, space::XXS, AlignSpec::Stretch)
             }
-            MediaTransportDensity::Compact => (FlexDirection::Row, space::MD, AlignSpec::Center),
+            MediaTransportDensity::Compact | MediaTransportDensity::Stacked => {
+                (FlexDirection::Row, space::MD, AlignSpec::Center)
+            }
         };
+        let stacked = self.density == MediaTransportDensity::Stacked;
+        layout.order = if stacked { -1 } else { 0 };
+        layout.flex_basis = stacked.then_some(LengthSpec::Percent(100.0));
         layout.direction = Some(direction);
         layout.gap = Some(LengthSpec::Px(gap));
         layout.align_items = align;
@@ -433,6 +468,8 @@ impl RegisterableComponent for MediaTransportBar {
             );
         if keyword("density", "compact") {
             bar.density = MediaTransportDensity::Compact;
+        } else if keyword("density", "stacked") {
+            bar.density = MediaTransportDensity::Stacked;
         }
         if keyword("placement", "inline") {
             bar.placement = MediaTransportPlacement::Inline;
@@ -571,8 +608,11 @@ impl AppContext {
             Arc::make_mut(&mut time.style.layout).flex_shrink = Some(0.0);
             let time = self.create_detached_component(document, time)?;
             self.append_child(center, time)?;
+            // The readout beside it already says what the track is; the name
+            // stays for assistive technology only.
             let mut seek = RangeField::new(0.0, 0.0, 1.0, 1.0)
                 .show_value(false)
+                .show_label(false)
                 .size(ControlSize::Small)
                 .label("进度");
             {
@@ -773,7 +813,7 @@ impl AppContext {
             }
         }
         if let Some(seek) = seek {
-            let disabled = snapshot.disabled || snapshot.live;
+            let disabled = snapshot.disabled || snapshot.live || !snapshot.seekable;
             let maximum = duration.max(1.0);
             let stale = self.read(seek, |range| {
                 range.style.layout.hidden != snapshot.live
@@ -1505,6 +1545,78 @@ mod tests {
         );
         assert!(!regular.hidden(slots.settings_group.unwrap()));
         assert!(!regular.hidden(slots.fullscreen.unwrap()));
+    }
+
+    #[test]
+    fn stacked_puts_the_progress_on_its_own_line_above_the_controls() {
+        let stage = Stage::new(
+            document(),
+            MediaTransportBar::new().density(MediaTransportDensity::Stacked),
+        );
+        let slots = stage.slots();
+        let seek = stage.frame(slots.seek.unwrap());
+        let time = stage.frame(slots.time.unwrap());
+        let play = stage.frame(slots.play.unwrap());
+        let volume = stage.frame(slots.volume_menu.unwrap());
+        let row = stage.frame(slots.row.unwrap());
+        assert!(
+            seek.y + seek.height <= play.y,
+            "the range sits above the buttons: seek={seek:?} play={play:?}"
+        );
+        assert!(time.x + time.width <= seek.x, "readout beside the range");
+        assert!(
+            seek.width > row.width * 0.6,
+            "the range gets most of the line: seek={seek:?} row={row:?}"
+        );
+        assert!(
+            volume.x > row.x + row.width / 2.0,
+            "the trailing group stays at the end of the button line"
+        );
+        assert!(stage.hidden(slots.settings_group.unwrap()));
+        assert!(stage.hidden(slots.fullscreen.unwrap()));
+    }
+
+    #[test]
+    fn an_unseekable_program_keeps_its_range_in_place_but_disabled() {
+        let mut stage = Stage::new(document(), MediaTransportBar::new());
+        let slots = stage.slots();
+        let seek = Entity::<RangeField>::from_stable_id(slots.seek.unwrap());
+        stage
+            .cx
+            .update_component(stage.bar, |bar, _| {
+                bar.seekable = false;
+                bar.duration = 120.0;
+            })
+            .unwrap();
+        stage.cx.sync_media_transport_bar(stage.bar).unwrap();
+        let (disabled, hidden) = stage
+            .cx
+            .read(seek, |range| (range.disabled, range.style.layout.hidden))
+            .unwrap();
+        assert!(disabled && !hidden);
+        stage
+            .cx
+            .update_component(stage.bar, |bar, _| bar.seekable = true)
+            .unwrap();
+        stage.cx.sync_media_transport_bar(stage.bar).unwrap();
+        assert!(!stage.cx.read(seek, |range| range.disabled).unwrap());
+    }
+
+    #[test]
+    fn the_seek_range_is_named_for_assistive_technology_but_draws_no_label() {
+        let stage = Stage::new(document(), MediaTransportBar::new());
+        let seek = stage.slots().seek.unwrap();
+        let world = stage.cx.world();
+        assert!(matches!(
+            world.standard_visual(seek),
+            Some(crate::StandardVisual::Range { label: None, .. })
+        ));
+        let accessible = world
+            .project_accessibility(stage.cx.world().node(seek).unwrap().document)
+            .into_iter()
+            .find(|node| node.id == seek)
+            .and_then(|node| node.label);
+        assert_eq!(accessible.as_deref(), Some("进度"));
     }
 
     #[test]

@@ -23,7 +23,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 ## 目录
 
-**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`、`DatePicker`。`RangeField` 默认在轨道旁画当前值和单位；`.show_value(false)`（Vue `showValue`）只留轨道，读屏仍能读到数值。
+**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`、`DatePicker`。`RangeField` 默认在轨道旁画当前值和单位；`.show_value(false)`（Vue `showValue`）只留轨道，读屏仍能读到数值；`.show_label(false)` 不画标签、轨道占满，标签仍是读屏名称。
 
 **布局与文本基元。** `Text`、`Stack`（`row` / `column` / `bar` / `spacer` / `overlay_layer` 等预设）、`Divider`、`IconGlyph`、`ScrollView`。`Stack::spacer()` 是零宽 flex-grow，把其后兄弟推到行尾。`Stack::overlay_layer()` 铺满已定位父级、脱流、不命中、裁剪，给舞台 HUD / 弹幕当容器；节点池仍由应用挂。`Divider` 默认交叉轴 `Fill` + `align_self: Stretch`，放进 `align_items: Start` 的列里仍能看见。
 
@@ -106,10 +106,12 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 同一控件有两个正交维度，改字段后下一次 `sync_media_transport_bar` 生效，不是第二套绘制：
 
-- `density`：`Regular`（读数在进度上方，可开第二行）或 `Compact`（单行紧凑，读数在进度旁；设置 / 全屏默认隐藏，`show_settings` / `show_fullscreen` 可显式打开，三个槽照常可用）。
+- `density`：`Regular`（读数在进度上方，可开第二行）、`Compact`（单行紧凑，读数在进度旁；设置 / 全屏默认隐藏，`show_settings` / `show_fullscreen` 可显式打开，三个槽照常可用）或 `Stacked`（按钮与 Compact 相同，读数与进度单独占上面一整行，窄表面如迷你播放器不必把进度挤在按钮之间）。
 - `placement`：`Overlay`（Absolute 贴父级底边、`max_width` 封顶、外壳不命中）或 `Inline`（参与父级文档流，高度即 chrome 高度，横向填满父级，不用 `max_width`）。
 
-Compact + Overlay 适合分离窗底栏（单行加边距约 52px）；Compact + Inline 适合壳层迷你条，画面、封面与标题仍由应用放在条外。第二个 `RuntimeDocument` / 窗口直接 `assemble_media_transport_bar` 得到同一 chrome。标记里用 `density="compact"`、`placement="inline"`、`show-settings` / `show-fullscreen` 布尔属性；重新绑定只更新这些配置，保留播放状态与已组装的 chrome。
+`seekable = false` 表示点播内容此刻还不能拖（仍在加载、时长未知）：进度留在原处置灰，不必由应用去改进度控件；直播仍换成进度表。进度控件的「进度」只作读屏名称，不占轨道宽度。
+
+Compact + Overlay 适合分离窗底栏（单行加边距约 52px）；Compact + Inline 适合壳层迷你条，画面、封面与标题仍由应用放在条外。第二个 `RuntimeDocument` / 窗口直接 `assemble_media_transport_bar` 得到同一 chrome。标记里用 `density="compact"` / `density="stacked"`、`placement="inline"`、`show-settings` / `show-fullscreen` 布尔属性；重新绑定只更新这些配置，保留播放状态与已组装的 chrome。
 
 进度拖拽只预览读数（宿主暂停、没有 tick 时也会跟随），抬手才发一次 `Seek`；取消的拖拽不发。键盘 / 无障碍每一步都是提交，与原生 range 一致。音量跟随拖拽实时发 `Volume`。条在发 `Seek` / `Volume` 前先把目标写进 `position` / `volume`，宿主下一次写入仍是权威值；宿主若在 seek 完成前继续写旧位置，滑块会短暂回到旧位置。
 

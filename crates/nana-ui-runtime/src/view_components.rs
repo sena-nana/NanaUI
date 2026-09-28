@@ -3699,6 +3699,9 @@ pub struct RangeField {
     /// When false, the current-value (and unit) readout is omitted so the track
     /// can fill the control. Accessibility still exposes the numeric value.
     pub show_value: bool,
+    /// When false, [`Self::label`] names the slider for accessibility only and
+    /// the track takes the width the drawn label would have used.
+    pub show_label: bool,
     pub size: nana_ui_core::ControlSize,
     pub disabled: bool,
     pub invalid: bool,
@@ -3769,6 +3772,7 @@ impl RangeField {
             label: None,
             unit: None,
             show_value: true,
+            show_label: true,
             size: nana_ui_core::ControlSize::Medium,
             disabled: false,
             invalid: false,
@@ -3785,6 +3789,10 @@ impl RangeField {
     }
     pub fn unit(mut self, unit: impl Into<Arc<str>>) -> Self {
         self.unit = Some(unit.into());
+        self
+    }
+    pub fn show_label(mut self, show_label: bool) -> Self {
+        self.show_label = show_label;
         self
     }
     pub fn show_value(mut self, show_value: bool) -> Self {
@@ -3832,7 +3840,7 @@ impl ComponentView for RangeField {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let value = format_range_value(self.value, self.step);
         let visual = StandardVisual::Range {
-            label: self.label.clone(),
+            label: self.label.clone().filter(|_| self.show_label),
             value: if self.show_value {
                 Arc::clone(&value)
             } else {
