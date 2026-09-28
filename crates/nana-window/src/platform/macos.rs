@@ -388,6 +388,20 @@ pub(crate) fn show_without_activation<W: HasWindowHandle + ?Sized>(window: &W) -
     true
 }
 
+/// An alpha of zero keeps the window ordered in, so its `CAMetalLayer`
+/// keeps presenting and `isVisible` stays true, while the window server
+/// neither draws it nor routes pointer events to it.
+pub(crate) fn set_presentation_hold<W: HasWindowHandle + ?Sized>(window: &W, hold: bool) -> bool {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return false;
+    };
+    let Some(window) = ns_window(window, mtm) else {
+        return false;
+    };
+    window.setAlphaValue(if hold { 0.0 } else { 1.0 });
+    true
+}
+
 /// The `NSWindow` behind a raw handle.
 fn ns_window<W: HasWindowHandle + ?Sized>(
     window: &W,

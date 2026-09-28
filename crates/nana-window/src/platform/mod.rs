@@ -6,14 +6,16 @@ mod macos;
 mod windows;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub(crate) use fallback::{apply, clear, set_application_icon_png, show_without_activation};
+pub(crate) use fallback::{
+    apply, clear, set_application_icon_png, set_presentation_hold, show_without_activation,
+};
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{
     apply, clear, describe_configured_panel, install_menu_bar, installed_menu_bar,
-    open_file_dialog, set_application_icon_png, show_without_activation,
+    open_file_dialog, set_application_icon_png, set_presentation_hold, show_without_activation,
 };
 #[cfg(target_os = "windows")]
 pub(crate) use windows::{
-    DialogCancellation, apply, clear, install_menu_bar, set_application_icon_png, set_skip_taskbar,
-    show_without_activation,
+    DialogCancellation, apply, clear, install_menu_bar, set_application_icon_png,
+    set_presentation_hold, set_skip_taskbar, show_without_activation,
 };

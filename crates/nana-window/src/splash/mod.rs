@@ -314,9 +314,6 @@ pub enum SplashSkip {
     Embedded,
     /// This platform has no native splash path.
     PlatformUnsupported,
-    /// The window presents through a platform compositor tree of NanaUI's own
-    /// (Windows `WS_EX_NOREDIRECTIONBITMAP`), which has no topmost slot left.
-    CompositionTarget,
 }
 
 impl SplashSkip {
@@ -326,7 +323,6 @@ impl SplashSkip {
             Self::HiddenStart => "window starts hidden",
             Self::Embedded => "embedded host",
             Self::PlatformUnsupported => "platform has no native splash",
-            Self::CompositionTarget => "window presents through a composition tree",
         }
     }
 }
@@ -442,8 +438,9 @@ impl SplashOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplashHandoff {
     /// Present the target frame with the window's Metal layer in transaction
-    /// mode, then [`NativeSplash::remove`] before the turn ends: the drawable
-    /// and the removal land in one Core Animation commit.
+    /// mode, then [`NativeSplash::remove`] before the turn ends. The drawable
+    /// and the layer removal share the turn's Core Animation commit; the
+    /// splash window's `orderOut` is a separate window-server change.
     SameTransaction,
     /// Present the target frame, wait until its GPU work has completed, then
     /// [`NativeSplash::remove`], which waits for one compositor pass (so the

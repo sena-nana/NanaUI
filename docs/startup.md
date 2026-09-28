@@ -46,14 +46,13 @@ Logo 的上限：编码后 ≤ 1 MiB（与打包器 `early-splash` pack 的上�
 
 | 平台 | 实现 | 动画 | 交接 | 验证 |
 | --- | --- | --- | --- | --- |
-| macOS | 独立无标题栏、透明背景的 `NSWindow`，内容为 `CALayer`；窗口忽略鼠标事件，交接期间输入仍归主窗口 | `CABasicAnimation`，由 render server 推进 | 目标帧以 `presentsWithTransaction` present，同一轮里移除独立 Splash；drawable 与移除落在同一个 Core Animation 提交里 | 本机真窗口，60 fps 录屏逐帧检查 |
-| Windows，普通 HWND | topmost `CreateTargetForHwnd(hwnd, TRUE)` 上的 DirectComposition 视觉树；Logo 与背景由一个短生命周期 D3D11 设备上传一次；独立 HWND 对 `WM_NCHITTEST` 返回 `HTTRANSPARENT`，交接期间输入仍归主窗口；子类跟随 `WM_SIZE` / `WM_DPICHANGED` 重新居中 | `IDCompositionAnimation`（透明度、旋转），由 DWM 推进 | 目标帧 present → 等它的 GPU 工作完成（`on_submitted_work_done`）→ `DwmFlush()` 一次 → 移除视觉并提交 → 释放 D3D11 / DComp | **只交叉编译检查过，未经 Windows 真机验证** |
-| Windows，合成路径（`WS_EX_NOREDIRECTIONBITMAP`） | 不显示，`Skipped(CompositionTarget)`：这扇窗口的 topmost 槽已经被 NanaUI 自己的合成树占用 | — | — | — |
+| macOS | 独立无标题栏、透明背景的 `NSWindow`，内容为 `CALayer`；窗口忽略鼠标事件 | `CABasicAnimation`，由 render server 推进 | 主窗口在 splash 期间以 `alphaValue = 0` 显示（照常 present，用户看不见、不接收指针）；目标帧 present 后把 alpha 恢复为 1，再 `orderOut` 独立 Splash。两个窗口的变化由 window server 分别合成，**不保证**落在同一个 Core Animation 提交里 | 本机真窗口 |
+| Windows（普通 HWND 与合成路径相同） | 独立无激活 `WS_POPUP` 上 `CreateTargetForHwnd(hwnd, TRUE)` 的 DirectComposition 视觉树；Logo 与背景由一个短生命周期 D3D11 设备上传一次；对 `WM_NCHITTEST` 返回 `HTTRANSPARENT`（只对同线程窗口穿透）；主窗口移动 / 缩放 / DPI 变化时重新居中，只改位置不改 z 序，主窗口最小化时隐藏。主窗口在 splash 期间以 `DWMWA_CLOAK` 显示：照常收到 `WM_PAINT` 并 present，但 DWM 不合成、不命中 | `IDCompositionAnimation`（透明度、旋转），由 DWM 推进 | 目标帧 present → 等它的 GPU 工作完成（`on_submitted_work_done`）→ 取消 cloak → `DwmFlush()` 一次 → 移除视觉并提交 → 释放 D3D11 / DComp | **只交叉编译检查过，未经 Windows 真机验证** |
 | Linux 及其他 | 不显示，`Skipped(PlatformUnsupported)` | — | — | — |
 
 D3D11 设备只用来上传两张小图，与 wgpu 的 adapter / backend 选择无关，交接时和合成树一起释放。
 
-平台不支持、合成路径、隐藏启动（`WindowDescriptor::visible = false`，例如托盘启动）或嵌入宿主时，splash 一律跳过，不分配任何资源，`UiReady` 与接管合同照常工作。
+平台不支持、隐藏启动（`WindowDescriptor::visible = false`，例如托盘启动）或嵌入宿主时，splash 一律跳过，不分配任何资源，`UiReady` 与接管合同照常工作。
 
 ### 降级
 
@@ -138,7 +137,7 @@ startup.cancel_takeover(ticket)?;    // 撤回；这张 ticket 作废
 
 - **代次**：`cancel_takeover` 让当前 ticket 作废；接管帧已经 present 之后（Windows 上正在等合成器取走它）再撤回会被拒绝（`AlreadyHandedOff`）。取消之前发出的任务稍后带着旧 ticket 回来，会被拒绝（`StartupError::StaleTicket`），不会用没人要求的内容接管。新请求要用 `status()` 里的新 ticket。
 - **目标帧**：请求记录主窗口此刻的 flush 序号。只有在这之后 flush、并且 **present 成功** 的主窗口帧才算数。旧帧、跳过的帧（`Skipped` / `Retry`）和失败的帧都到不了这个判断；设备或 surface 重建期间窗口不 present，重建后的第一帧才算。
-- **接管之前**：主窗口已创建并用于 Surface/GPU 初始化，但保持隐藏；宿主照常为它布局、排版、settle 文档，但不 present。独立小 Splash 保持可见，有了请求，下一帧直接 present；交接时先显示主窗口，再按平台合成器条件移除 Splash，不会闪出大尺寸空窗口。
+- **接管之前**：主窗口已创建并用于 Surface/GPU 初始化，以“呈现保持”（`nana_window::set_presentation_hold`：Windows `DWMWA_CLOAK`，macOS `alphaValue = 0`）显示——对平台是可见窗口，能 present、收到重绘，对用户不可见也不接收指针。宿主照常为它布局、排版、settle 文档，但不 present；有了请求，下一帧直接 present，present 成功后解除保持、按 `focus_on_show` 聚焦，再按平台合成器条件移除 Splash，不会闪出大尺寸空窗口，也不会出现“隐藏窗口等 present、不 present 又不显示”的死锁。保持期间主窗口的遮挡通知不参与 present 判定。平台无法保持时，主窗口直接显示在 Splash 之后。
 - **其他窗口**：不受影响，照常创建和绘制。
 
 阶段变化（请求、撤回、交接完成）通过 `RuntimeProgram::startup_changed(status, ctx)` 送达，也随时可以从 `RuntimeProgramContext::startup().status()` 读到。`WindowEvent::Ready` 仍是每扇窗口一次，与启动阶段无关。

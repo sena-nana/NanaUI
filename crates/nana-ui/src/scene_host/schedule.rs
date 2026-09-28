@@ -198,7 +198,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.window_contexts
             .get(&id)
             .is_some_and(|host| host.surface_retry.is_none())
-            && !self.occluded.contains(&id)
+            && (!self.occluded.contains(&id) || self.startup_presentation_held(id))
             && self.window(id).is_some_and(|window| {
                 window.is_visible() != Some(false) && window.is_minimized() != Some(true)
             })

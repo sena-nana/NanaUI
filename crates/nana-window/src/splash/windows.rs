@@ -42,9 +42,10 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, GetClientRect, HTTRANSPARENT, HWND_TOPMOST, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SetWindowPos, ShowWindow, WM_DPICHANGED, WM_MOVE,
-    WM_NCHITTEST, WM_SIZE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, DestroyWindow, GetClientRect, HTTRANSPARENT, IsIconic, SW_HIDE,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER, SetWindowPos, ShowWindow,
+    WM_DPICHANGED, WM_MOVE, WM_NCHITTEST, WM_SIZE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use super::{LogoInfo, SplashAnimation, SplashFailure, SplashWork, fit_logo};
@@ -201,11 +202,11 @@ impl Splash {
         // SAFETY: the tree lives until the end of this function.
         let hwnd = unsafe { (*self.tree).hwnd };
         let owner = unsafe { (*self.tree).owner };
-        // SAFETY: the subclass was installed with this id and pointer.
+        // SAFETY: the subclasses were installed with these ids and pointer.
         let removed = unsafe { RemoveWindowSubclass(hwnd.0, Some(splash_proc), SUBCLASS_ID) };
-        if let Some(owner) = owner {
-            unsafe { RemoveWindowSubclass(owner.0, Some(splash_proc), OWNER_SUBCLASS_ID) };
-        }
+        let owner_removed = owner.is_none_or(|owner| unsafe {
+            RemoveWindowSubclass(owner.0, Some(splash_proc), OWNER_SUBCLASS_ID) != 0
+        });
         if handoff {
             // SAFETY: blocks until the next composition pass; no arguments.
             unsafe { DwmFlush() };
@@ -217,14 +218,14 @@ impl Splash {
         if cleared.is_ok() {
             work.commits += tree.commits + 1;
         }
-        if removed != 0 {
-            unsafe { drop(Box::from_raw(self.tree)) };
-        }
         if owner.is_some() {
             unsafe { DestroyWindow(hwnd.0) };
         }
-        // A subclass that could not be removed keeps its pointer valid; the
-        // tree is then leaked rather than freed under it.
+        // Either subclass that could not be removed still holds the pointer:
+        // the tree is then leaked rather than freed under it.
+        if removed != 0 && owner_removed {
+            unsafe { drop(Box::from_raw(self.tree)) };
+        }
     }
 }
 
@@ -457,17 +458,27 @@ unsafe extern "system" fn splash_proc(
 
 fn sync_overlay_geometry(tree: &Tree) {
     let Some(owner) = tree.owner else { return };
+    // A minimized owner has no client area to centre on (its origin is
+    // parked near -32000); the splash goes away with it and comes back on
+    // restore.
+    if unsafe { IsIconic(owner.0) } != 0 {
+        unsafe { ShowWindow(tree.hwnd.0, SW_HIDE) };
+        return;
+    }
     let (position, width, height) = splash_geometry(owner, tree.logo_box);
+    // Position only: the splash keeps the z-order it was shown with rather
+    // than floating above every other application.
     unsafe {
         SetWindowPos(
             tree.hwnd.0,
-            HWND_TOPMOST,
+            std::ptr::null_mut(),
             position.x,
             position.y,
             width,
             height,
-            SWP_NOACTIVATE | SWP_NOSENDCHANGING,
+            SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
         );
+        ShowWindow(tree.hwnd.0, SW_SHOWNOACTIVATE);
     }
 }
 

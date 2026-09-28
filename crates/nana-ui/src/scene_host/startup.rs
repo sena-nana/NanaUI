@@ -195,6 +195,8 @@ pub(super) struct DeviceStart {
 /// the splash comes off before the window it covers goes.
 struct Attempt {
     splash: Option<NativeSplash>,
+    /// The primary is shown but held invisible behind the splash.
+    held: bool,
     #[cfg(not(target_os = "android"))]
     accessibility: Option<HostedAccessibility>,
     surface: PendingPrimarySurface,
@@ -385,9 +387,15 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         ));
         let (splash, outcome) = self.show_splash(window.as_ref());
         let committed = splash.is_some().then(|| self.handle.elapsed());
-        // The primary host remains hidden while the independent Splash window
-        // is visible. It is shown only immediately before the handoff frame
-        // releases the Splash, so the user never sees the large host window.
+        // The takeover frame has to be presented before the splash comes off,
+        // and a hidden window never presents. So the primary is shown now but
+        // held invisible to the user until the handoff releases it; where the
+        // platform cannot hold it, it is simply shown behind the splash.
+        let held = splash.is_some() && nana_window::set_presentation_hold(window.as_ref(), true);
+        if splash.is_some() {
+            let focus = !held && self.settings.focus_on_show;
+            windows::set_native_visible(window.as_ref(), true, focus);
+        }
         nana_diagnostics::event!(host::SPLASH_OUTCOME, outcome = outcome.code());
         if let Some(at) = committed {
             startup_event(StartupMark::SplashCommitted, at);
@@ -401,6 +409,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         });
         self.attempt = Some(Attempt {
             splash,
+            held,
             #[cfg(not(target_os = "android"))]
             accessibility,
             surface,
@@ -491,6 +500,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     ) -> Result<StartupStep<Program>, String> {
         let Attempt {
             splash,
+            held,
             #[cfg(not(target_os = "android"))]
             accessibility,
             surface,
@@ -522,7 +532,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         let (graphics, surface) = context.into_parts();
         let composition =
             settle_primary_target(target, self.policy, graphics.adapter_info().backend);
-        let startup = HostStartup::new(self.handle, splash, self.longest_block);
+        let startup = HostStartup::new(self.handle, splash, held, self.longest_block);
         complete_startup::<Program>(
             event_loop,
             self.channels,
@@ -642,14 +652,23 @@ struct ActiveStartup {
     /// An `Immediate` takeover waiting for the startup messages: the frame
     /// that removes the splash has to show their effects too.
     auto_takeover: bool,
+    /// The primary is held invisible (cloaked / zero alpha) until handoff.
+    /// Occlusion reports for it mean nothing until then.
+    held: bool,
 }
 
 impl HostStartup {
-    fn new(handle: StartupHandle, splash: Option<NativeSplash>, longest_block: Duration) -> Self {
+    fn new(
+        handle: StartupHandle,
+        splash: Option<NativeSplash>,
+        held: bool,
+        longest_block: Duration,
+    ) -> Self {
         Self {
             handle,
             active: Some(Box::new(ActiveStartup {
                 coordinator: StartupCoordinator::new(splash.is_some()),
+                held,
                 splash,
                 latch: None,
                 primary_flushes: 0,
@@ -841,24 +860,42 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     fn startup_handed_off(&mut self, event_loop: &dyn ActiveEventLoop) {
         let at = self.startup.handle.elapsed();
-        let show_primary = self
-            .startup
-            .active
-            .as_ref()
-            .is_some_and(|active| active.splash.is_some());
-        if show_primary && let Some(window) = self.window(WindowId::PRIMARY) {
-            windows::set_native_visible(
-                window.as_ref(),
-                self.settings.visible,
-                self.settings.focus_on_show,
-            );
-        }
+        self.release_primary_hold();
         self.startup.release_splash(true);
         self.startup.active = None;
         startup_event(StartupMark::HandedOff, at);
         self.startup
             .publish(|status| status.timeline.handoff_completed = Some(at));
         self.notify_startup_changed(event_loop);
+    }
+
+    /// Puts a primary held behind the splash on screen and gives it the focus
+    /// its descriptor asks for. Idempotent.
+    fn release_primary_hold(&mut self) {
+        let held = self
+            .startup
+            .active
+            .as_mut()
+            .is_some_and(|active| std::mem::take(&mut active.held));
+        if held && let Some(window) = self.window(WindowId::PRIMARY) {
+            nana_window::set_presentation_hold(window.as_ref(), false);
+            windows::set_native_visible(
+                window.as_ref(),
+                self.settings.visible,
+                self.settings.focus_on_show,
+            );
+        }
+    }
+
+    /// Whether the primary is presenting behind the splash, invisible to the
+    /// user. Its occlusion state is not the user's view until the handoff.
+    pub(super) fn startup_presentation_held(&self, id: WindowId) -> bool {
+        id == WindowId::PRIMARY
+            && self
+                .startup
+                .active
+                .as_ref()
+                .is_some_and(|active| active.held)
     }
 
     /// With the startup messages applied, asks for the `Immediate` takeover
@@ -938,6 +975,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// The primary window is closing: nothing is left for the splash to
     /// cover, and it has to come off before the window goes.
     pub(super) fn release_startup_splash(&mut self) {
+        self.release_primary_hold();
         if let Some(active) = self.startup.active.as_mut() {
             active.latch = None;
         }

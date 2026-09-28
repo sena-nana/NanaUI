@@ -110,6 +110,24 @@ pub fn show_without_activation<W: raw_window_handle::HasWindowHandle + ?Sized>(w
     platform::show_without_activation(window)
 }
 
+/// Keep a shown window invisible to the user while it presents normally.
+///
+/// A held window is visible to the platform: it has a live surface, gets
+/// paint messages and its frames reach the compositor, but the compositor
+/// does not put it on screen and it takes no pointer input (Windows cloaks
+/// it through DWM; macOS gives it an alpha of zero). Startup uses this to
+/// prepare the primary window's first frame behind an independent splash.
+///
+/// Returns whether the hold was applied or released here. Platforms without
+/// the capability return false; the caller must then keep the window visible
+/// normally, since a hidden window can never present.
+pub fn set_presentation_hold<W: raw_window_handle::HasWindowHandle + ?Sized>(
+    window: &W,
+    hold: bool,
+) -> bool {
+    platform::set_presentation_hold(window, hold)
+}
+
 /// macOS Dock / application icon from PNG bytes. No-op on other platforms.
 ///
 /// winit's window icon is ignored on macOS; this talks to `NSApplication`.

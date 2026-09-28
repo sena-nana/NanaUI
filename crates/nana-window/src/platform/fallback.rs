@@ -26,3 +26,10 @@ pub(crate) fn show_without_activation<W: raw_window_handle::HasWindowHandle + ?S
 ) -> bool {
     false
 }
+
+pub(crate) fn set_presentation_hold<W: raw_window_handle::HasWindowHandle + ?Sized>(
+    _window: &W,
+    _hold: bool,
+) -> bool {
+    false
+}

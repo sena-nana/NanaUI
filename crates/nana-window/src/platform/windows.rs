@@ -75,6 +75,27 @@ pub(crate) fn show_without_activation<W: HasWindowHandle + ?Sized>(_window: &W) 
     false
 }
 
+/// DWM cloaking: the window stays visible to Win32 (it gets `WM_PAINT`, its
+/// swap chain presents and `IsWindowVisible` is true) but is not composed to
+/// the screen and is not hit-tested.
+pub(crate) fn set_presentation_hold<W: HasWindowHandle + ?Sized>(window: &W, hold: bool) -> bool {
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAK, DwmSetWindowAttribute};
+
+    let Some(hwnd) = hwnd(window) else {
+        return false;
+    };
+    let cloak: i32 = hold.into();
+    // SAFETY: `hwnd` is a live window; the attribute takes a BOOL by pointer.
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAK as u32,
+            std::ptr::from_ref(&cloak).cast(),
+            std::mem::size_of_val(&cloak) as u32,
+        ) >= 0
+    }
+}
+
 fn apply_solid<W: HasWindowHandle + ?Sized>(window: &W) {
     let Some(hwnd) = hwnd(window) else {
         return;
