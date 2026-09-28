@@ -92,6 +92,14 @@ fn rounded_box_pixel(p: vec2<f32>, size: vec2<f32>, corners: vec4<f32>, dx: vec2
     return max(length(vec2(dot(normal, dx), dot(normal, dy))), 1.0e-6);
 }
 
+// How much of the box `lo`..`lo + size` with `radii` covers the pixel at
+// `local`, ramping over one device pixel (`dx`/`dy`: its screen derivatives).
+fn box_cover(local: vec2<f32>, lo: vec2<f32>, size: vec2<f32>, radii: vec4<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
+    let p = -(local - lo - size * 0.5) * 2.0;
+    let dist = rounded_box_sdf(p, size, radii * 2.0) / 2.0;
+    return clamp(0.5 - dist / rounded_box_pixel(p, size, radii * 2.0, dx, dy), 0.0, 1.0);
+}
+
 fn to_world(local: vec2<f32>) -> vec2<f32> {
     let xp = layer.affine.x * local.x + layer.affine.z * local.y + layer.origin.x;
     let yp = layer.affine.y * local.x + layer.affine.w * local.y + layer.origin.y;
@@ -124,10 +132,8 @@ fn vertex_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     let unit = units[index];
     let size = layer.params.zw;
     let corner = layer.origin.zw + unit * size;
-    // Only a rounded texture grows: its SDF masks the fringe (`fragment_main`),
-    // while a square one keeps the rasterizer's edge.
-    let rounded = any(layer.corners > vec4(0.0)) && all(size > vec2(0.0));
-    let grow = select(vec2(0.0), edge_grow(corner), rounded);
+    // Grown for the edge ramp's outer half; `fragment_main` masks the fringe.
+    let grow = select(vec2(0.0), edge_grow(corner), all(size > vec2(0.0)));
     let outward = unit * 2.0 - 1.0;
     let local = corner + outward * grow;
     let uv = unit + outward * grow / max(size, vec2(1.0e-4));
@@ -320,19 +326,14 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
     // Premultiplied, so the clip's edge scales all four channels.
     color = color * clip_cover;
+    // The image ends where its fitted dest meets the box and takes the box's
+    // rounding; `vertex_main` grew the quad for both edges' outer ramps.
+    let lo = max(layer.origin.zw, box_pos);
+    let hi = min(layer.origin.zw + layer.params.zw, box_pos + box_size);
     let radii = min(layer.corners, vec4(min(box_size.x, box_size.y) * 0.5));
-    if max(max(radii.x, radii.y), max(radii.z, radii.w)) <= 0.0 {
-        return color;
-    }
-    let p = -(input.local - box_pos - box_size * 0.5) * 2.0;
-    let dist = rounded_box_sdf(p, box_size, radii * 2.0) / 2.0;
-    // `vertex_main` grew the quad past the fitted dest for the edge's outer
-    // ramp. Past the dest but still inside the box is letterbox, not edge.
-    if dist < 0.0 && (any(input.uv < vec2(0.0)) || any(input.uv > vec2(1.0))) {
-        discard;
-    }
-    let edge_px = rounded_box_pixel(p, box_size, radii * 2.0, local_dx, local_dy);
-    return color * clamp(0.5 - dist / edge_px, 0.0, 1.0);
+    let image = box_cover(input.local, lo, hi - lo, vec4(0.0), local_dx, local_dy);
+    let shape = box_cover(input.local, box_pos, box_size, radii, local_dx, local_dy);
+    return color * min(image, shape);
 }
 "#;
 

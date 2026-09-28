@@ -3506,6 +3506,88 @@ fn rounded_host_texture_edge_stays_one_device_pixel_under_scale_and_fractional_d
 }
 
 #[test]
+fn square_host_texture_edge_stays_one_device_pixel_under_transform_and_fractional_dpi() {
+    // A square green texture filling its box: edges off the pixel grid under
+    // `scale(0.45)`, diagonal under `rotate(30deg)`, and at device x = 3.75
+    // at 150%. Every pixel near the edge is compared with a one device pixel
+    // ramp over its exact distance to the square.
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let registry = register_host_texture("layer", &view, 64, 64);
+    let cases = [
+        ("scale(0.45)", [0.0, 0.0, 64.0], 0.45, 0f32, 1.0),
+        ("rotate(30deg)", [16.0, 16.0, 32.0], 1.0, 30.0, 1.0),
+        ("150%", [2.5, 2.5, 30.0], 1.0, 0.0, 1.5),
+    ];
+    for (label, [x, y, w], scale, degrees, factor) in cases {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        let mut context = AppContext::new();
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).transform = Some(PaintTransform {
+            a: scale * cos,
+            b: scale * sin,
+            c: -scale * sin,
+            d: scale * cos,
+            ..PaintTransform::default()
+        });
+        let preview = context
+            .create_component(
+                DocumentId::new(1).unwrap(),
+                GpuTextureView::new("layer").style(style),
+            )
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, preview.stable_id(), x, y, w, w);
+        context.commit_mutations(layout).unwrap();
+        let scene = commit_scene(&mut context);
+        let side = (64.0 * factor) as u32;
+        let (target, target_view) = test_copy_target(&device, format, side, side);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        SceneWgpuPainter::for_test(format)
+            .paint_encoder(
+                &scene,
+                &mut encoder,
+                &target_view,
+                ScenePaintViewport {
+                    logical_size: [64.0, 64.0],
+                    physical_size: [side, side],
+                    scale_factor: factor,
+                    scene_origin: [0.0, 0.0],
+                    target_origin: [0.0, 0.0],
+                    clear_color: [0.0, 0.0, 0.0, 1.0],
+                    clear: true,
+                },
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &target, side, side);
+        let center = (x + w * 0.5) * factor;
+        let half = w * 0.5 * scale * factor;
+        for py in 0..side {
+            for px in 0..side {
+                let [dx, dy] = [px as f32 + 0.5 - center, py as f32 + 0.5 - center];
+                let [u, v] = [cos * dx + sin * dy, cos * dy - sin * dx];
+                let q = [u.abs() - half, v.abs() - half];
+                let outside = q[0].max(0.0).hypot(q[1].max(0.0)) + q[0].max(q[1]).min(0.0);
+                if outside.abs() > 1.5 {
+                    continue;
+                }
+                let expected = (0.5 - outside).clamp(0.0, 1.0) * 255.0;
+                let green = f32::from(pixel(&pixels, side, px, py)[1]);
+                assert!(
+                    (green - expected).abs() <= 16.0,
+                    "{label}: ({px},{py}) is {outside:+.3} px from the edge, \
+                     expected green {expected:.0}, got {green}"
+                );
+            }
+        }
+    }
+    drop(view);
+}
+
+#[test]
 fn unblurred_shadow_and_outline_edges_stay_one_device_pixel_under_transform_scale() {
     // Each circle is the outer edge of a band `w / 8` wide around a smaller
     // round box: a black box's spread shadow, or a green box's green outline.
