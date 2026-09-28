@@ -1456,15 +1456,15 @@ impl VueHost {
 /// The DOM `inputType` of an edit a key made.
 fn key_input_type(input: &KeyboardInput) -> &'static str {
     let command = input.modifiers.control || input.modifiers.meta;
-    match input.key.as_str() {
-        "Backspace" => "deleteContentBackward",
-        "Delete" => "deleteContentForward",
-        "Enter" => "insertLineBreak",
-        key if command && key.eq_ignore_ascii_case("z") && input.modifiers.shift => "historyRedo",
-        key if command && key.eq_ignore_ascii_case("z") => "historyUndo",
-        key if command && key.eq_ignore_ascii_case("y") => "historyRedo",
-        key if command && key.eq_ignore_ascii_case("x") => "deleteByCut",
-        key if command && key.eq_ignore_ascii_case("v") => "insertFromPaste",
+    match (input.key.to_ascii_lowercase().as_str(), command) {
+        ("backspace", _) => "deleteContentBackward",
+        ("delete", _) => "deleteContentForward",
+        ("enter", _) => "insertLineBreak",
+        ("z", true) if input.modifiers.shift => "historyRedo",
+        ("z", true) => "historyUndo",
+        ("y", true) => "historyRedo",
+        ("x", true) => "deleteByCut",
+        ("v", true) => "insertFromPaste",
         _ => "insertText",
     }
 }
