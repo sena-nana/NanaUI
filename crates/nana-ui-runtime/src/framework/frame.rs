@@ -5,6 +5,12 @@ use super::*;
 impl AppContext {
     /// Drain deterministic work scheduled since the previous frame.
     pub fn take_system_work(&mut self) -> crate::SystemWork {
+        // Signal writes outside input (timers, program updates, other
+        // contexts) land here, before the frame reads the world.
+        #[cfg(feature = "reactive-view")]
+        if self.flush_reactive().is_err() {
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+        }
         self.world.take_system_work()
     }
 

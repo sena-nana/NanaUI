@@ -1,0 +1,15 @@
+[package]
+name = "nana-ui-view-macros"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "The view! template macro for nana-ui-runtime's declarative views; expands to the function API"
+license = "MIT OR Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

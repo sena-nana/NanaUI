@@ -2,6 +2,7 @@
 members = [
     "crates/nana-ui-core",
     "crates/nana-ui-runtime",
+    "crates/nana-ui-view-macros",
     "crates/nana-ui-scene",
     "crates/nana-ui",
     "crates/nana-window",

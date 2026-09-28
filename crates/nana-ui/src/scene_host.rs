@@ -1428,6 +1428,20 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             self.request_redraw(id);
         }
+        // A program update, timer or other window may have written signals a
+        // view in this window reads; its bindings apply at the next frame, so
+        // that frame must be asked for.
+        #[cfg(feature = "reactive-view")]
+        for id in self.known_window_ids() {
+            if painting != Some(id)
+                && self
+                    .program
+                    .read_document(id, |document| document.context().has_pending_reactive())
+                    .unwrap_or(false)
+            {
+                self.request_redraw(id);
+            }
+        }
     }
 
     fn known_window_ids(&self) -> Vec<WindowId> {

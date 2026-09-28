@@ -46,6 +46,7 @@ let start = cx.build(document_id, |ui| {
 - 动态列表继续 `mount` / `materialize_virtual_*`，不要每帧 `build`。
 - 同一 parent 下 key 重复 → `DuplicateAssemblyKey`，且不 commit。
 - key 不能为空、不能含 `/`（`ASSEMBLY_PATH_SEPARATOR`），否则 `InvalidInput`，且不 commit。所以每个 keyed 节点都能按路径找到：`resolve_assembly_path(root, "page/content/list")`，带类型的版本是 `resolve_assembly_entity::<C>(root, path)`。
+- 结构来自数据时，在 `build_child` 里对数据递归调用 `ui.with(key, component, |ui| …)`，key 可以是运行时的 `String`。结构要跟着数据变时，用 [声明式视图](reactive-view.md) 的 `each` / `when`。
 - 类型变化 → despawn 再建（与 `mount` 相同）。
 
 ## 更新（不要整树 render）

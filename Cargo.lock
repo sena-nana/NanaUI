@@ -2718,6 +2718,7 @@ dependencies = [
  "nana-text",
  "nana-ui-core",
  "nana-ui-input",
+ "nana-ui-view-macros",
  "pulldown-cmark",
  "qrcode",
  "ratex-layout",
@@ -2743,6 +2744,15 @@ dependencies = [
  "nana-ui-runtime",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nana-ui-view-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

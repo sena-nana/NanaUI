@@ -4191,6 +4191,16 @@ impl Stack {
         self
     }
 
+    #[cfg(feature = "reactive-view")]
+    pub(crate) fn style_ref(&self) -> &NodeStyle {
+        &self.style
+    }
+
+    #[cfg(feature = "reactive-view")]
+    pub(crate) fn style_mut(&mut self) -> &mut NodeStyle {
+        &mut self.style
+    }
+
     /// 水平排列，宽度随内容收缩，子项垂直居中。
     pub fn row(gap: f32) -> Self {
         Self::base(

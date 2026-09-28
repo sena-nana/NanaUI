@@ -19,3 +19,7 @@
 
 - **key 合同统一**：`UiBuilder::child` / `with` 和 `mount` 的 `child` 现在都拒绝含 `/` 的 key，返回 `FrameworkError::InvalidInput`，这次构建不提交。此前 builder 接受这种 key，但按路径永远找不到这样的节点。
 - `AppContext` 不再维护组合根表。
+
+## 由数据驱动的结构
+
+结构要跟着数据变（增删行、切换分支）时，用 [声明式视图](reactive-view.md) 的 `each` / `when`。它们建在同一张 assembly 表上，保留的行不会重建。

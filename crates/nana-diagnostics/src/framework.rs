@@ -74,6 +74,42 @@ pub mod runtime {
     // 28 runtime.host_requests.rejected, 29 runtime.host_requests.drained,
     // 30 runtime.host_requests.stale, 32 runtime.input.mapping,
     // 38 runtime.input.routing_cache_hits, 39 runtime.input.routing_cache_misses.
+
+    /// Reactive view flushes that ran at least one effect.
+    pub static REACTIVE_FLUSHES: Metric =
+        Metric::counter(D, 40, "runtime.reactive.flushes", "count");
+    /// Signal writes (`set` / `update`), whether or not anything subscribed.
+    pub static REACTIVE_SIGNAL_WRITES: Metric =
+        Metric::counter(D, 41, "runtime.reactive.signal_writes", "count");
+    /// Effects a flush ran: node bindings, structural blocks and watchers.
+    pub static REACTIVE_EFFECTS_RUN: Metric =
+        Metric::counter(D, 42, "runtime.reactive.effects_run", "count");
+    /// Nodes whose bound fields actually changed and were projected.
+    pub static REACTIVE_NODES_PATCHED: Metric =
+        Metric::counter(D, 43, "runtime.reactive.nodes_patched", "count");
+    /// Mutation commits the binding batches made (one per flush round).
+    pub static REACTIVE_COMMITS: Metric =
+        Metric::counter(D, 44, "runtime.reactive.commits", "count");
+    histogram!(pub REACTIVE_FLUSH_NS, D, 45, "runtime.reactive.flush", "ns");
+
+    /// Fault: effects kept re-queueing each other past the round limit; the
+    /// rest of the queue was dropped.
+    pub static REACTIVE_DID_NOT_SETTLE: EventDescriptor = EventDescriptor::new(
+        D,
+        1,
+        "runtime.reactive.did_not_settle",
+        Severity::Error,
+        &[F::u64("rounds")],
+    );
+    /// Fault: a signal was read or written after its scope was disposed. The
+    /// message names where it was created.
+    pub static REACTIVE_DISPOSED_ACCESS: EventDescriptor = EventDescriptor::new(
+        D,
+        2,
+        "runtime.reactive.disposed_access",
+        Severity::Error,
+        &[],
+    );
 }
 
 pub mod layout {

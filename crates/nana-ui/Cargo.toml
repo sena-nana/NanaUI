@@ -34,6 +34,10 @@ controls = ["nana-ui-runtime/controls", "nana-ui-scene/controls"]
 syntax-highlighting = [
     "nana-ui-runtime/syntax-highlighting",
 ]
+# Unstable declarative view layer (`nana_ui::runtime::view`), docs/reactive-view.md.
+reactive-view = ["nana-ui-runtime/reactive-view"]
+reactive-trace = ["reactive-view", "nana-ui-runtime/reactive-trace"]
+view-macro = ["reactive-view", "nana-ui-runtime/view-macro"]
 # AccessKit TreeUpdate projection for hosts that own their platform adapter
 # wiring (e.g. Android via `accesskit_android`). Desktop `hosted` implies it.
 accesskit-tree = ["dep:accesskit"]
@@ -130,6 +134,10 @@ required-features = ["hosted", "bundled-fonts"]
 [[example]]
 name = "application-counter"
 required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
+name = "reactive-counter"
+required-features = ["hosted", "bundled-fonts", "view-macro"]
 
 [[example]]
 name = "startup-splash"

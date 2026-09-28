@@ -108,6 +108,8 @@ mod thumbnail;
 mod toast;
 mod tree_view;
 mod video;
+#[cfg(feature = "reactive-view")]
+pub mod view;
 mod view_components;
 mod workspace;
 mod world;
@@ -202,6 +204,8 @@ pub use feedback::{
 };
 pub use file_tab::{FileTab, FileTabEvent};
 pub use form_surfaces::{FormField, InteractiveCard};
+#[cfg(feature = "reactive-view")]
+pub use framework::MountedView;
 pub use framework::{
     ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity,
     ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError, InputCounters,
