@@ -87,7 +87,7 @@ input.advance(Duration::from_millis(16)); // 事件时间戳驱动双击、长�
 
 - **`preventDefault` 拦不住 Runtime 的默认动作。** 页面在路由之后才收到 `wheel` / `keydown`，滚动与插入文字已经发生；结果里的 `default_prevented` 照样报告。原生窗口里一直如此。
 - **焦点与 Tab 顺序是 Runtime 的**：只有注册成部件的元素（Button、Input 等）可聚焦，`tabindex` 与按标签推断的可聚焦性不再参与。焦点因任何按键或指针移动时，页面都会收到 `blur` / `focus`（此前只有 Tab 与按下），`:focus-within` 随之重算。
-- **文字只写进 Runtime 认得的文本输入**：注册成 Input / Textarea / NumberInput 部件、或带 `TextInputState` 的节点。原生窗口里给 Vue 输入框打字此前不会改 Runtime 的值（只有 IME 提交会），现在会。
+- **页面的 Input / Textarea / NumberInput 是 Runtime 的编辑器**：绑定时保留 `TextInput` / `TextArea` / `NumberInput` 组件，打字、退格、Delete、方向键与选区、Home/End、撤销、剪贴板都由它处理；页面重新渲染时光标与选区保留，只有页面改了值才替换文本。改了值的按键会给页面补发 `beforeinput` / `input`（`inputType` 如 `deleteContentBackward`、`historyUndo`、`insertFromPaste`），只移动光标的按键不发。此前原生窗口里这些键对 Vue 输入框不起作用，打字也不改 Runtime 的值。
 - **组字随焦点离开而取消**：输入法关闭时只有当前聚焦字段里的剩余组字会提交；焦点已经移走时，页面收到 `data` 为空的 `compositionend`，不再把组字补提交到原字段。
 - **键盘调 Range 由页面完成**：Runtime 里 Vue 的 Range 只有投影，方向键、PageUp/PageDown、Home/End 走页面的默认动作；此前原生窗口里这一步被关掉了。
 - `emit_native_ime_from_runtime(engine, event, applied)` 多了 `applied`：路由是否应用了这次 IME 事件。

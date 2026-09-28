@@ -2980,3 +2980,123 @@ fn host_clear_stylesheets_empties_both_the_cascade_and_the_diagnostics_list() {
     );
     assert_eq!(host.document.lock().expect("vue doc").stylesheet_count(), 0);
 }
+
+fn field_state(host: &VueHost, node: NodeHandle) -> (String, nana_ui_runtime::TextSelection) {
+    let state = host
+        .document()
+        .lock()
+        .expect("document")
+        .text_input_state(node)
+        .expect("text input state");
+    (state.value.to_string(), state.selection)
+}
+
+fn press(host: &mut VueHost, engine: &mut RecordingEngine, key: &str) {
+    host.dispatch_keyboard(engine, &KeyboardInput::key_down(key, key), None)
+        .expect("key");
+}
+
+/// A page's field is the Runtime's editor: deleting, caret keys and typing
+/// at the caret edit it, and each edit reaches the page as `input`.
+#[test]
+fn a_page_field_edits_with_editing_keys_and_tells_the_page() {
+    let mut host = VueHost::new();
+    let (input, _) = install_focused_native_input(&mut host, "abc");
+    let mut engine = RecordingEngine::default();
+
+    press(&mut host, &mut engine, "Backspace");
+    assert_eq!(field_state(&host, input).0, "ab");
+    let deleted = fired_events(&engine)
+        .into_iter()
+        .rfind(|(target, name, _)| *target == input.0 && name == "input")
+        .expect("the page hears the deletion");
+    assert_eq!(
+        deleted.2.get("inputType").and_then(HostValue::as_str),
+        Some("deleteContentBackward")
+    );
+    assert_eq!(
+        deleted.2.get("value").and_then(HostValue::as_str),
+        Some("ab")
+    );
+
+    let inputs_before = fired_events(&engine)
+        .iter()
+        .filter(|(_, name, _)| name == "input")
+        .count();
+    press(&mut host, &mut engine, "ArrowLeft");
+    assert_eq!(
+        field_state(&host, input).1,
+        nana_ui_runtime::TextSelection::caret(1)
+    );
+    assert_eq!(
+        fired_events(&engine)
+            .iter()
+            .filter(|(_, name, _)| name == "input")
+            .count(),
+        inputs_before,
+        "a caret move is not an edit"
+    );
+
+    host.dispatch_key(&mut engine, "X", "KeyX", None)
+        .expect("type");
+    assert_eq!(field_state(&host, input).0, "aXb");
+
+    press(&mut host, &mut engine, "Home");
+    press(&mut host, &mut engine, "Delete");
+    assert_eq!(field_state(&host, input).0, "Xb");
+}
+
+/// The page re-rendering its field keeps the caret; a value it changes
+/// replaces the text.
+#[test]
+fn a_page_rebind_keeps_the_caret_and_takes_a_new_value() {
+    let mut host = VueHost::new();
+    let (input, _) = install_focused_native_input(&mut host, "abc");
+    let mut engine = RecordingEngine::default();
+    press(&mut host, &mut engine, "ArrowLeft");
+
+    let rebind = |host: &mut VueHost, value: &str, placeholder: &str| {
+        host.bridge().lock().expect("bridge").register(
+            input.0,
+            WidgetKind::Input,
+            WidgetProps {
+                value: value.into(),
+                placeholder: placeholder.into(),
+                ..WidgetProps::default()
+            },
+        );
+        let snapshot = host.bridge().lock().expect("bridge").snapshot();
+        host.document()
+            .lock()
+            .expect("document")
+            .sync_semantic_styles(&snapshot);
+    };
+    rebind(&mut host, "abc", "name");
+    assert_eq!(
+        field_state(&host, input),
+        ("abc".into(), nana_ui_runtime::TextSelection::caret(2))
+    );
+
+    rebind(&mut host, "xyz", "name");
+    assert_eq!(field_state(&host, input).0, "xyz");
+}
+
+#[test]
+fn enter_in_a_page_textarea_breaks_the_line() {
+    let mut host = VueHost::new();
+    host.callbacks.fire_event = Some(JsFunctionId(1));
+    let area = install_textarea_node(&mut host, "第一行");
+    let mut engine = RecordingEngine::default();
+
+    press(&mut host, &mut engine, "Enter");
+
+    assert_eq!(field_state(&host, area).0, "第一行\n");
+    let broke = fired_events(&engine)
+        .into_iter()
+        .rfind(|(target, name, _)| *target == area.0 && name == "input")
+        .expect("the page hears the line break");
+    assert_eq!(
+        broke.2.get("inputType").and_then(HostValue::as_str),
+        Some("insertLineBreak")
+    );
+}

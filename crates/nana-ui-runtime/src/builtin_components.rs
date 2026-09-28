@@ -310,6 +310,16 @@ impl RegisterableComponent for Divider {
 impl RegisterableComponent for NumberInput {
     const TYPE_ID: &'static str = crate::component_descriptors::NUMBER_INPUT.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::NUMBER_INPUT.tags;
+    const RETAIN_SEMANTIC_STATE: bool = true;
+    /// The draft being typed survives a rebind that carries the same number.
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        let mut input = Self::from_semantic(spec);
+        if let Some(previous) = previous.filter(|previous| previous.requested == input.requested) {
+            input.state = previous.state.clone();
+            input.value = previous.value;
+        }
+        input
+    }
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut input = NumberInput::new(f64::from(spec.number))
             .range(f64::from(spec.min), f64::from(spec.max))
@@ -507,9 +517,27 @@ impl RegisterableComponent for Thumbnail {
     }
 }
 
+/// An editor's state across a host rebind: its caret, selection and edits
+/// stay unless the host's value differs, which replaces the text.
+fn retained_edit_state(previous: &TextInputState, value: &str) -> TextInputState {
+    let mut state = previous.clone();
+    if state.value != value {
+        state.replace_value(value);
+    }
+    state
+}
+
 impl RegisterableComponent for TextInput {
     const TYPE_ID: &'static str = crate::component_descriptors::TEXT_INPUT.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::TEXT_INPUT.tags;
+    const RETAIN_SEMANTIC_STATE: bool = true;
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        let mut input = Self::from_semantic(spec);
+        if let Some(previous) = previous {
+            input.state = retained_edit_state(&previous.state, spec.value);
+        }
+        input
+    }
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = if spec.placeholder.is_empty() {
             spec.hint
@@ -537,6 +565,17 @@ impl RegisterableComponent for TextInput {
 impl RegisterableComponent for TextArea {
     const TYPE_ID: &'static str = crate::component_descriptors::TEXT_AREA.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::TEXT_AREA.tags;
+    const RETAIN_SEMANTIC_STATE: bool = true;
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        let mut area = Self::from_semantic(spec);
+        if let Some(previous) = previous {
+            area.state = retained_edit_state(&previous.state, spec.value);
+            area.resized_height = previous.resized_height;
+            area.resize_drag = previous.resize_drag;
+            area.scroll_offset = previous.scroll_offset;
+        }
+        area
+    }
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let placeholder = textarea_placeholder(spec);
         let mut component = TextArea::new("")

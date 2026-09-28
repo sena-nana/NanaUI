@@ -1150,8 +1150,10 @@ impl NanaTreeDocument {
         {
             return false;
         }
-        self.commit_pending_with(|mutations| mutations.set_text_input(id, Some(state)))
-            .ok();
+        // Through the editor component when the field has one: a world write
+        // alone would be undone by its next projection.
+        self.commit_pending_queue().ok();
+        self.context_mut().set_text_input_state(id, state).ok();
         self.runtime
             .text_input(id)
             .is_some_and(|current| current == expected)

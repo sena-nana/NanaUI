@@ -125,6 +125,26 @@ impl AppContext {
     /// Replace the selection of a focused text input with no editor
     /// component: a field a host projects as text-input state alone, as
     /// Vue's are. Typed text and IME commits reach it the same way.
+    /// Set a text input's value and selections. An editor component holds
+    /// the state its next projection writes, so its state is set through it;
+    /// a field with no component (a host's projection) is written directly.
+    pub fn set_text_input_state(
+        &mut self,
+        node: StableNodeId,
+        state: TextInputState,
+    ) -> Result<(), FrameworkError> {
+        if let Some(kind) = self.plain_editor_kind(node) {
+            return with_editor_type!(kind, C => self.update_component(
+                Entity::<C>::from_stable_id(node),
+                |editor: &mut C, _| *editor.state_mut() = state,
+            ));
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_text_input(node, Some(state));
+        self.world.commit(mutations)?;
+        Ok(())
+    }
+
     pub(super) fn replace_world_text_input_selection(
         &mut self,
         document: DocumentId,

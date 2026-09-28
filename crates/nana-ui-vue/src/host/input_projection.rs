@@ -1012,6 +1012,9 @@ impl VueHost {
                 }
             }
         }
+        if input.kind == KeyboardEventKind::Down {
+            self.emit_key_edit(engine, input)?;
+        }
         // Tab, roving arrows or an activated control may have moved focus
         // in the route; the page hears it as a browser's would.
         self.emit_focus_change(engine)?;
@@ -1019,6 +1022,29 @@ impl VueHost {
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(allowed)
+    }
+    /// A key the route turned into an edit (deleting, pasting, undoing)
+    /// reaches the page as `beforeinput` and `input`: the field's text moved
+    /// away from the value the page last saw. A key that only moved the caret
+    /// changed nothing the page hears.
+    fn emit_key_edit<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        input: &KeyboardInput,
+    ) -> Result<(), JsEngineError> {
+        let Some(target) = self.focused_text_input() else {
+            return Ok(());
+        };
+        let edited = {
+            let document = self.document.lock().expect("vue doc");
+            document.text_input_state(target).is_some_and(|state| {
+                *state.value != document.get_attribute(target, "value").unwrap_or_default()
+            })
+        };
+        if edited {
+            self.emit_text_events_from_runtime(engine, target, "", key_input_type(input))?;
+        }
+        Ok(())
     }
     #[cfg(any(test, feature = "hosted"))]
     pub(crate) fn accessibility_focus<E: JsEngine + ?Sized>(
@@ -1424,5 +1450,21 @@ impl VueHost {
     }
     pub fn focused(&self) -> Option<NodeHandle> {
         self.document.lock().expect("vue doc").focused()
+    }
+}
+
+/// The DOM `inputType` of an edit a key made.
+fn key_input_type(input: &KeyboardInput) -> &'static str {
+    let command = input.modifiers.control || input.modifiers.meta;
+    match input.key.as_str() {
+        "Backspace" => "deleteContentBackward",
+        "Delete" => "deleteContentForward",
+        "Enter" => "insertLineBreak",
+        key if command && key.eq_ignore_ascii_case("z") && input.modifiers.shift => "historyRedo",
+        key if command && key.eq_ignore_ascii_case("z") => "historyUndo",
+        key if command && key.eq_ignore_ascii_case("y") => "historyRedo",
+        key if command && key.eq_ignore_ascii_case("x") => "deleteByCut",
+        key if command && key.eq_ignore_ascii_case("v") => "insertFromPaste",
+        _ => "insertText",
     }
 }

@@ -555,13 +555,18 @@ impl AppContext {
         document: DocumentId,
     ) -> Option<(StableNodeId, TextEditorKind)> {
         let (target, _) = self.world.focused_text_input(document)?;
-        let view = self.views.get(&target)?;
+        Some((target, self.plain_editor_kind(target)?))
+    }
+
+    /// The plain editor component behind `node`, if it is one.
+    pub(super) fn plain_editor_kind(&self, node: StableNodeId) -> Option<TextEditorKind> {
+        let view = self.views.get(&node)?;
         if view.is::<TextArea>() {
-            Some((target, TextEditorKind::Area))
+            Some(TextEditorKind::Area)
         } else if view.is::<TextInput>() {
-            Some((target, TextEditorKind::Field))
+            Some(TextEditorKind::Field)
         } else if view.is::<NumberInput>() {
-            Some((target, TextEditorKind::Number))
+            Some(TextEditorKind::Number)
         } else {
             None
         }
