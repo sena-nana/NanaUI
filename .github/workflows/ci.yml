@@ -250,6 +250,10 @@ jobs:
           # reach shaping or layout, a static frame does zero text work, and
           # every #33 head-dirty candidate is decided on revision alone.
           cargo test -p nana-ui-scene --locked --test retained_text_node
+          # Issue #250: steady pointer moves allocate nothing on the routing
+          # path, an uncaptured move costs one hit query and a captured one
+          # none. Counted, so it holds on a loaded runner.
+          cargo test -p nana-ui-runtime --all-features --locked --test input_alloc
           python3 scripts/validate-runtime-performance.py --self-test
           python3 perf/contract.py --self-test
           mkdir -p target/performance/issue8/invariants

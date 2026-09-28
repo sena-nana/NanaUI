@@ -1002,6 +1002,22 @@ fn chrome_has_handle(chrome: &DockChrome, handle: StableNodeId) -> bool {
     }
 }
 
+/// The first node `pick` answers for, depth first, splits before their panes.
+fn chrome_find(
+    chrome: &DockChrome,
+    pick: &mut impl FnMut(&DockChrome) -> Option<StableNodeId>,
+) -> Option<StableNodeId> {
+    if let Some(found) = pick(chrome) {
+        return Some(found);
+    }
+    match chrome {
+        DockChrome::Split { first, second, .. } => {
+            chrome_find(first, pick).or_else(|| chrome_find(second, pick))
+        }
+        DockChrome::Item { .. } | DockChrome::Tabs { .. } => None,
+    }
+}
+
 fn chrome_has_strip(chrome: &DockChrome, strip: StableNodeId) -> bool {
     match chrome {
         DockChrome::Tabs { strip: current, .. } => *current == strip,
@@ -2434,21 +2450,43 @@ impl AppContext {
             if let Some(handle) = self.unlocked_dock_handle(target) {
                 return Some(handle);
             }
-            if let Some(parent) = self.world().node(target).and_then(|node| node.parent)
+            if let Some(parent) = self.world().parent_id(target)
                 && let Some(handle) = self.unlocked_dock_handle(parent)
             {
                 return Some(handle);
             }
         }
+        // Every pointer move off a handle reaches here, so ask the docks for
+        // their handles instead of walking the document.
+        self.unlocked_dock_chrome_find(document, |chrome| {
+            chrome_find(chrome, &mut |node| match node {
+                DockChrome::Split { handle, .. } => self
+                    .world()
+                    .layout_box(*handle)
+                    .is_some_and(|bounds| point_near_box(bounds, x, y, SLOP))
+                    .then_some(*handle),
+                _ => None,
+            })
+        })
+    }
+
+    /// The first answer `find` gives for the chrome of an unlocked dock in
+    /// `document`, docks in no particular order.
+    fn unlocked_dock_chrome_find(
+        &self,
+        document: DocumentId,
+        find: impl Fn(&DockChrome) -> Option<StableNodeId>,
+    ) -> Option<StableNodeId> {
         self.world()
-            .document_order(document)
-            .into_iter()
-            .find(|&id| {
-                self.unlocked_dock_handle(id).is_some()
-                    && self
-                        .world()
-                        .layout_box(id)
-                        .is_some_and(|bounds| point_near_box(bounds, x, y, SLOP))
+            .nodes_of_component(document, crate::component_descriptors::DOCK.type_id)
+            .find_map(|dock| {
+                self.read(Entity::<Dock>::from_stable_id(dock), |dock| {
+                    (!dock.locked)
+                        .then(|| dock.chrome.as_ref().and_then(&find))
+                        .flatten()
+                })
+                .ok()
+                .flatten()
             })
     }
 
@@ -2479,19 +2517,19 @@ impl AppContext {
                 if let Some(strip) = self.unlocked_dock_tab_strip(id) {
                     return Some(strip);
                 }
-                current = self.world().node(id).and_then(|node| node.parent);
+                current = self.world().parent_id(id);
             }
         }
-        self.world()
-            .document_order(document)
-            .into_iter()
-            .find(|&id| {
-                self.unlocked_dock_tab_strip(id).is_some()
-                    && self
-                        .world()
-                        .layout_box(id)
-                        .is_some_and(|bounds| bounds.contains(x, y))
+        self.unlocked_dock_chrome_find(document, |chrome| {
+            chrome_find(chrome, &mut |node| match node {
+                DockChrome::Tabs { strip, .. } => self
+                    .world()
+                    .layout_box(*strip)
+                    .is_some_and(|bounds| bounds.contains(x, y))
+                    .then_some(*strip),
+                _ => None,
             })
+        })
     }
 
     pub fn begin_dock_split_resize(
@@ -2810,7 +2848,7 @@ impl AppContext {
             if self.is_dock(id) {
                 return Some(Entity::from_stable_id(id));
             }
-            current = self.world().node(id).and_then(|node| node.parent);
+            current = self.world().parent_id(id);
         }
         None
     }
@@ -2847,7 +2885,7 @@ impl AppContext {
                 .filter(|matches| *matches)
                 .map(|_| id);
         }
-        let parent = self.world().node(id)?.parent?;
+        let parent = self.world().parent_id(id)?;
         if self
             .read(Entity::<DockHandle>::from_stable_id(parent), |_| ())
             .is_ok()
@@ -2925,7 +2963,7 @@ impl AppContext {
                 }
                 return Ok(strip_for_tabs(&chrome, &visible, id));
             }
-            current = self.world().node(id).and_then(|node| node.parent);
+            current = self.world().parent_id(id);
         }
         Ok(None)
     }

@@ -2,9 +2,9 @@
 //!
 //! Host-facing command-palette `KeyStroke` / `Keymap` / `ActionRegistry` live in
 //! `nana-ui::command`. This module uses [`CapturedStroke`] and a thin
-//! enabled-state registry — not a second command palette. Hosts map
-//! `nana_ui_platform::InputEvent::Keyboard` (or a Vue `KeyboardEvent`) into
-//! [`KeyInput`]; this file does not depend on platform types.
+//! enabled-state registry — not a second command palette. The input router
+//! maps a canonical key press (or a Vue `KeyboardEvent`) into [`KeyInput`];
+//! this file itself stays free of platform types.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -20,7 +20,7 @@ use crate::{
 
 /// Modifier bits for a backend-neutral key event.
 ///
-/// Fields match `nana_ui_platform::InputModifiers` 1:1:
+/// Fields match `nana_ui_input::InputModifiers` 1:1:
 /// - `alt` ← `InputModifiers::alt`
 /// - `control` ← `InputModifiers::control`
 /// - `meta` ← `InputModifiers::meta` / `nana_ui::command::KeyModifiers::logo`
@@ -86,7 +86,7 @@ pub struct KeyInput {
 impl KeyInput {
     /// Host-normalized keyboard event from platform fields.
     ///
-    /// Map `nana_ui_platform::InputEvent::Keyboard` as
+    /// Map `nana_ui_input::InputEvent::Keyboard` as
     /// `(pressed, key, modifiers.alt, modifiers.control, modifiers.shift,
     /// modifiers.meta, repeat)`. Vue `KeyboardEvent` uses the same flag names
     /// (`altKey`/`ctrlKey`/`shiftKey`/`metaKey`).

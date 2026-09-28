@@ -24,6 +24,10 @@ mod charts;
 mod choice;
 mod events;
 mod frame;
+mod input;
+pub use input::{
+    HeadlessInput, InputBindError, InputCounters, InputRouteError, InputRouteOutcome, RoutedEvent,
+};
 mod keyboard;
 mod lifecycle;
 mod modal;
@@ -1029,6 +1033,9 @@ pub struct AppContext {
     text_edit: text_edit::TextEditSession,
     /// Undo journals, one per editor node.
     text_histories: text_history::TextHistories,
+    /// Input sources bound to this context and what routing keeps per
+    /// source.
+    input: input::InputState,
 }
 
 /// Bookkeeping for multi-click selection inside a text editor.
@@ -1335,6 +1342,7 @@ impl AppContext {
             program_messages: Vec::new(),
             text_edit: text_edit::TextEditSession::default(),
             text_histories: text_history::TextHistories::default(),
+            input: input::InputState::default(),
         };
         context
             .install(&crate::builtin_components::NanaBuiltinComponents)
@@ -1396,7 +1404,7 @@ impl AppContext {
                     segments.push(key.as_str());
                     Some(*parent)
                 }
-                None => self.world.node(node).and_then(|snapshot| snapshot.parent),
+                None => self.world.parent_id(node),
             };
             // Declared and world parents are each acyclic; a malformed mix
             // must still not hang.
@@ -1455,10 +1463,8 @@ impl AppContext {
             .world
             .node(parent)
             .ok_or(FrameworkError::MissingView(parent))?;
-        let cycle = std::iter::successors(Some(parent), |id| {
-            self.world.node(*id).and_then(|snapshot| snapshot.parent)
-        })
-        .any(|ancestor| ancestor == node);
+        let cycle = std::iter::successors(Some(parent), |id| self.world.parent_id(*id))
+            .any(|ancestor| ancestor == node);
         if cycle || target.document != snapshot.document {
             return Err(FrameworkError::InvalidComponentHierarchy {
                 parent,
@@ -1495,7 +1501,7 @@ impl AppContext {
                 .assembled_parent
                 .get(&node)
                 .map(|(parent, _)| *parent)
-                .or_else(|| self.world.node(node).and_then(|snapshot| snapshot.parent));
+                .or_else(|| self.world.parent_id(node));
             steps += 1;
             if steps > self.world.len() + 1 {
                 return None;
@@ -2057,7 +2063,7 @@ impl AppContext {
             {
                 return Some(Entity::from_stable_id(id));
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         None
     }
@@ -2093,7 +2099,7 @@ impl AppContext {
             ) {
                 return Some(id);
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         None
     }
@@ -2108,7 +2114,7 @@ impl AppContext {
             {
                 return Some(Entity::from_stable_id(id));
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         None
     }
@@ -2122,7 +2128,7 @@ impl AppContext {
             if id == root {
                 return true;
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         false
     }
@@ -2247,7 +2253,7 @@ impl AppContext {
     /// Picking a command dismisses the menu that offered it, so the caller does
     /// not have to mirror the open state just to close it again.
     fn close_owning_menu(&mut self, item: StableNodeId) -> Result<(), FrameworkError> {
-        let mut current = self.world.node(item).and_then(|node| node.parent);
+        let mut current = self.world.parent_id(item);
         while let Some(id) = current {
             if let Some(entity) = self.view_entity::<ActionMenu>(id) {
                 if self.read(entity, |menu| menu.popover.open)? {
@@ -2261,7 +2267,7 @@ impl AppContext {
                 }
                 return Ok(());
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         Ok(())
     }
@@ -2270,7 +2276,7 @@ impl AppContext {
         &mut self,
         entity: Entity<SegmentedOption>,
     ) -> Result<bool, FrameworkError> {
-        let Some(parent) = self.world.node(entity.id).and_then(|node| node.parent) else {
+        let Some(parent) = self.world.parent_id(entity.id) else {
             return Ok(false);
         };
         if self
@@ -2298,7 +2304,7 @@ impl AppContext {
                 return Ok(false);
             }
             if close_action == Some(id) {
-                let Some(host) = self.world.node(root).and_then(|node| node.parent) else {
+                let Some(host) = self.world.parent_id(root) else {
                     return Ok(false);
                 };
                 return self.request_dialog_close(
@@ -2491,7 +2497,7 @@ impl AppContext {
             self.settle_focused_number_input(document)?;
         }
         if self.is_segmented_option_node(target) {
-            let Some(parent) = self.world.node(target).and_then(|node| node.parent) else {
+            let Some(parent) = self.world.parent_id(target) else {
                 return Ok(false);
             };
             if self
@@ -2567,7 +2573,7 @@ impl AppContext {
         document: DocumentId,
         request: AccessibilityActionRequest,
     ) -> Result<bool, FrameworkError> {
-        if self.world.node(request.target).map(|node| node.document) != Some(document) {
+        if self.world.document_of(request.target) != Some(document) {
             return Ok(false);
         }
         match request.action {
@@ -2655,7 +2661,7 @@ impl AppContext {
                 return Ok(false);
             }
             if close_action == Some(entity.id) {
-                let Some(host) = self.world.node(root).and_then(|node| node.parent) else {
+                let Some(host) = self.world.parent_id(root) else {
                     return Ok(false);
                 };
                 return self.request_dialog_close(
@@ -2716,7 +2722,7 @@ impl AppContext {
             if self.views.get(&id).is_some_and(|view| view.is::<Table>()) {
                 return self.navigate_table(Entity::from_stable_id(id), navigation, page_rows);
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         Ok(false)
     }
@@ -2807,7 +2813,7 @@ impl AppContext {
         if TypeId::of::<T>() != TypeId::of::<SegmentedOption>() {
             return;
         }
-        let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
+        let Some(parent) = self.world.parent_id(id) else {
             return;
         };
         // Tabs own their options directly, with the tab chrome.
@@ -3206,10 +3212,8 @@ impl AppContext {
             return;
         }
         let under = |roots: &HashSet<StableNodeId>, id: StableNodeId| {
-            std::iter::successors(Some(id), |id| {
-                self.world.node(*id).and_then(|snapshot| snapshot.parent)
-            })
-            .any(|ancestor| roots.contains(&ancestor))
+            std::iter::successors(Some(id), |id| self.world.parent_id(*id))
+                .any(|ancestor| roots.contains(&ancestor))
         };
         loop {
             let found: Vec<_> = self

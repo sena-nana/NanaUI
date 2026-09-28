@@ -504,7 +504,7 @@ impl AppContext {
             if self.emit_reorder_row_secondary(id, x, y)? {
                 return Ok(Some(id));
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         Ok(None)
     }

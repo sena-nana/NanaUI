@@ -1,12 +1,14 @@
-use nana_ui::{RuntimeInputAdapter, runtime::*};
+use nana_ui::{HeadlessInput, runtime::*};
 use nana_ui_core::{
     RadiusTier, RegionId, RegionRole, RegionState, WorkspaceLayout, WorkspaceModel,
 };
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
-fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
-    InputEvent::Pointer {
+use nana_ui_platform::{
+    InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase, PointerType,
+};
+fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputPayload {
+    InputPayload::Pointer(PointerInput {
         phase,
-        pointer_id: 1,
+        pointer_id: PointerId(1),
         pointer_type: PointerType::Mouse,
         x,
         y,
@@ -22,7 +24,7 @@ fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
         is_primary: true,
         activation_click: false,
         modifiers: InputModifiers::default(),
-    }
+    })
 }
 
 #[test]
@@ -126,9 +128,9 @@ fn borrowed_workspace_scrollport_preserves_region_surface_through_hover_and_drag
             bounds.y + bounds.height * 0.5,
         )
         .unwrap();
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut adapter = HeadlessInput::bind(&mut cx, doc);
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Move, hover_x, hover_y))
+        .route(&mut cx, pointer(PointerPhase::Move, hover_x, hover_y))
         .unwrap();
     assert!(
         cx.read(scroll, |view| view.scrollbars_revealed()).unwrap(),
@@ -150,20 +152,20 @@ fn borrowed_workspace_scrollport_preserves_region_surface_through_hover_and_drag
     let x = bar.thumb.x + bar.thumb.width / 2.0;
     let y = bar.thumb.y + bar.thumb.height / 2.0;
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Down, x, y))
+        .route(&mut cx, pointer(PointerPhase::Down, x, y))
         .unwrap();
     assert_eq!(cx.world().pointer_capture(doc, 1), Some(scroll.stable_id()));
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Move, x, y + 70.0))
+        .route(&mut cx, pointer(PointerPhase::Move, x, y + 70.0))
         .unwrap();
     assert!(cx.world().scroll_offset(scroll.stable_id()).unwrap().y > 0.0);
     assert_eq!(cx.world().node_style(scroll.stable_id()), Some(&style));
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Up, x, y + 70.0))
+        .route(&mut cx, pointer(PointerPhase::Up, x, y + 70.0))
         .unwrap();
     assert!(cx.read(scroll, |view| view.dragging.is_none()).unwrap());
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Move, -20.0, -20.0))
+        .route(&mut cx, pointer(PointerPhase::Move, -20.0, -20.0))
         .unwrap();
     assert!(!cx.read(scroll, |view| view.scrollbars_revealed()).unwrap());
     assert_eq!(cx.world().node_style(scroll.stable_id()), Some(&style));

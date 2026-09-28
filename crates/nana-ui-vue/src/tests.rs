@@ -1271,7 +1271,7 @@ fn native_ime_commit_updates_runtime_value_and_emits_input() {
 
     host.dispatch_native_ime(
         &mut engine,
-        &ImeEvent::Preedit {
+        &NativeComposition::Update {
             text: "世".into(),
             selection: Some((3, 3)),
         },
@@ -1291,7 +1291,7 @@ fn native_ime_commit_updates_runtime_value_and_emits_input() {
             "preedit must not mutate committed Runtime value"
         );
     }
-    host.dispatch_native_ime(&mut engine, &ImeEvent::Commit("世界".into()))
+    host.dispatch_native_ime(&mut engine, &NativeComposition::Commit("世界".into()))
         .expect("commit lifecycle");
     let document = host.document();
     let document = document.lock().expect("document");
@@ -1358,7 +1358,7 @@ fn native_ime_delete_surrounding_updates_runtime_value_and_skips_invalid_spans()
     assert!(
         host.dispatch_native_ime(
             &mut engine,
-            &ImeEvent::DeleteSurrounding {
+            &NativeComposition::DeleteSurrounding {
                 before_bytes: "好".len(),
                 after_bytes: 0,
             },
@@ -1386,7 +1386,7 @@ fn native_ime_delete_surrounding_updates_runtime_value_and_skips_invalid_spans()
         !host
             .dispatch_native_ime(
                 &mut engine,
-                &ImeEvent::DeleteSurrounding {
+                &NativeComposition::DeleteSurrounding {
                     before_bytes: 1,
                     after_bytes: 0,
                 },
@@ -1419,7 +1419,7 @@ fn scene_host_ime_path_commits_once_into_runtime_then_emits_js() {
     }
     host.emit_native_ime_from_runtime(
         &mut engine,
-        &ImeEvent::Preedit {
+        &NativeComposition::Update {
             text: "世".into(),
             selection: Some((0, "世".len())),
         },
@@ -1448,7 +1448,7 @@ fn scene_host_ime_path_commits_once_into_runtime_then_emits_js() {
                 .expect("runtime commit")
         );
     }
-    host.emit_native_ime_from_runtime(&mut engine, &ImeEvent::Commit("世界".into()))
+    host.emit_native_ime_from_runtime(&mut engine, &NativeComposition::Commit("世界".into()))
         .expect("emit commit");
 
     let document = host.document();
@@ -1508,7 +1508,7 @@ fn scene_host_ime_disabled_commits_leftover_once() {
     }
     host.emit_native_ime_from_runtime(
         &mut engine,
-        &ImeEvent::Preedit {
+        &NativeComposition::Update {
             text: "世".into(),
             selection: Some((0, "世".len())),
         },
@@ -1524,7 +1524,7 @@ fn scene_host_ime_disabled_commits_leftover_once() {
                 .expect("runtime leftover commit")
         );
     }
-    host.emit_native_ime_from_runtime(&mut engine, &ImeEvent::Disabled)
+    host.emit_native_ime_from_runtime(&mut engine, &NativeComposition::Disabled)
         .expect("emit disabled");
 
     let document = host.document();
@@ -1579,7 +1579,7 @@ fn native_ime_commit_updates_runtime_textarea_multiline_state() {
 
     host.dispatch_native_ime(
         &mut engine,
-        &ImeEvent::Preedit {
+        &NativeComposition::Update {
             text: "第二".into(),
             selection: Some((0, "第".len())),
         },
@@ -1602,7 +1602,7 @@ fn native_ime_commit_updates_runtime_textarea_multiline_state() {
         );
     }
 
-    host.dispatch_native_ime(&mut engine, &ImeEvent::Commit("第二行".into()))
+    host.dispatch_native_ime(&mut engine, &NativeComposition::Commit("第二行".into()))
         .expect("textarea commit");
     let document = host.document();
     let document = document.lock().expect("document");
@@ -1653,22 +1653,6 @@ fn native_ime_commit_updates_runtime_textarea_multiline_state() {
 }
 
 #[test]
-fn focused_runtime_textarea_advertises_hosted_ime_request() {
-    let mut host = VueHost::new();
-    let area = install_textarea_node(&mut host, "第一行\n");
-    {
-        let document = host.document();
-        let mut doc = document.lock().expect("document");
-        doc.set_focus(area);
-    }
-    let request = host
-        .text_input_request()
-        .expect("focused textarea owns IME");
-    assert!(request.enabled);
-    assert_eq!(request.purpose, nana_ui_platform::TextInputPurpose::Normal);
-}
-
-#[test]
 fn native_ime_disabled_commits_leftover_runtime_preedit() {
     let mut host = VueHost::new();
     host.callbacks.fire_event = Some(JsFunctionId(1));
@@ -1683,13 +1667,13 @@ fn native_ime_disabled_commits_leftover_runtime_preedit() {
 
     host.dispatch_native_ime(
         &mut engine,
-        &ImeEvent::Preedit {
+        &NativeComposition::Update {
             text: "世".into(),
             selection: Some((0, "世".len())),
         },
     )
     .expect("preedit");
-    host.dispatch_native_ime(&mut engine, &ImeEvent::Disabled)
+    host.dispatch_native_ime(&mut engine, &NativeComposition::Disabled)
         .expect("disabled leftover");
 
     let document = host.document();
@@ -1833,14 +1817,14 @@ fn native_ime_disabled_after_blur_commits_original_field() {
 
     host.dispatch_native_ime(
         &mut engine,
-        &ImeEvent::Preedit {
+        &NativeComposition::Update {
             text: "世".into(),
             selection: Some((0, "世".len())),
         },
     )
     .expect("preedit");
     host.document().lock().expect("document").set_focus(next);
-    host.dispatch_native_ime(&mut engine, &ImeEvent::Disabled)
+    host.dispatch_native_ime(&mut engine, &NativeComposition::Disabled)
         .expect("disabled leftover after blur");
 
     let document = host.document();
@@ -1913,7 +1897,7 @@ fn native_ime_disabled_clears_blocked_original_without_commit() {
     let mut engine = RecordingEngine::default();
     host.dispatch_native_ime(
         &mut engine,
-        &ImeEvent::Preedit {
+        &NativeComposition::Update {
             text: "世".into(),
             selection: Some((0, "世".len())),
         },
@@ -1927,7 +1911,7 @@ fn native_ime_disabled_clears_blocked_original_without_commit() {
         .props
         .disabled = true;
     host.document().lock().expect("document").set_focus(next);
-    host.dispatch_native_ime(&mut engine, &ImeEvent::Disabled)
+    host.dispatch_native_ime(&mut engine, &NativeComposition::Disabled)
         .expect("disabled leftover on blocked field");
 
     let document = host.document();

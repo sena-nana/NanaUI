@@ -19,7 +19,7 @@ use crate::{
     CompositionInput, DocumentId, KeyboardInput, NodeHandle, PointerInput, SemanticSnapshot,
     VueHost, WheelInput, WindowLifecycleEvent, compose_vue_artifact,
 };
-use nana_ui_platform::{ImeEvent, WindowIcon};
+use nana_ui_platform::WindowIcon;
 
 /// Stable JS/native identity for one Vue window. Zero is the primary window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1990,7 +1990,7 @@ impl VueRuntime {
         &self,
         engine: &mut E,
         id: VueWindowId,
-        event: &ImeEvent,
+        event: &nana_ui_platform::CompositionInput,
     ) -> Result<bool, JsEngineError> {
         let host = self
             .host(id)

@@ -1,16 +1,14 @@
-use super::*;
-use nana_ui_platform::{InputModifiers, PointerType};
-use nana_ui_runtime::{
-    Activate, Button, Entity, HoverCard, LayoutViewport, QrCode, Stack, TextInput,
-};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
+use super::*;
+use crate::{Activate, Button, Entity, HoverCard, LayoutViewport, QrCode, Stack, TextInput};
+
 struct Fixture {
     cx: AppContext,
-    input: RuntimeInputAdapter,
+    input: TestInput,
     doc: DocumentId,
     editor: Entity<TextInput>,
     other: Entity<TextInput>,
@@ -62,7 +60,7 @@ impl Fixture {
         cx.focus_node(doc, editor.stable_id()).unwrap();
         let mut f = Self {
             cx,
-            input: RuntimeInputAdapter::default(),
+            input: TestInput::default(),
             doc,
             editor,
             other,
@@ -86,7 +84,7 @@ impl Fixture {
             .dispatch(
                 &mut self.cx,
                 self.doc,
-                &InputEvent::Keyboard {
+                &key_fixture! {
                     pressed: true,
                     key: key.into(),
                     code: key.into(),
@@ -112,7 +110,7 @@ impl Fixture {
             .dispatch_at(
                 &mut self.cx,
                 self.doc,
-                &InputEvent::Pointer {
+                &pointer_fixture! {
                     phase,
                     pointer_id: 1,
                     pointer_type: PointerType::Mouse,
@@ -177,7 +175,7 @@ fn hover_card_pointer_actions_preserve_editor_selection_and_deliver_activation()
     f.assert_editor();
     assert_eq!(
         f.cx.world().accessibility(f.qr.stable_id()).unwrap().role,
-        nana_ui_runtime::AccessibilityRole::Image
+        crate::AccessibilityRole::Image
     );
     for target in [f.card.stable_id(), f.qr.stable_id(), f.refresh.stable_id()] {
         if !f.cx.read(f.card, |card| card.open).unwrap() {
@@ -292,7 +290,7 @@ fn hover_card_close_never_restores_hidden_disabled_or_removed_editor() {
             } else {
                 Arc::make_mut(&mut hidden.layout).display = Some(nana_ui_core::DisplaySpec::None);
             }
-            let mut mutations = nana_ui_runtime::MutationQueue::new();
+            let mut mutations = crate::MutationQueue::new();
             mutations.set_style(f.editor.stable_id(), hidden);
             f.cx.commit_mutations(mutations).unwrap();
         }
@@ -346,7 +344,7 @@ fn hover_card_close_validates_restore_target_after_the_whole_update() {
                     cx.mutations().set_accessibility(editor, disabled);
                     cx.mutations().set_interaction(
                         editor,
-                        nana_ui_runtime::InteractionState {
+                        crate::InteractionState {
                             pointer_events: false,
                             focusable: false,
                         },
@@ -418,7 +416,7 @@ fn hover_card_close_honors_focus_scope_restoration_in_same_update() {
             .unwrap()
             .parent
             .unwrap();
-    let mut changes = nana_ui_runtime::MutationQueue::new();
+    let mut changes = crate::MutationQueue::new();
     changes.insert(root, scope.stable_id(), None);
     changes.insert(scope.stable_id(), f.other.stable_id(), None);
     f.cx.commit_mutations(changes).unwrap();
@@ -475,14 +473,14 @@ fn hover_card_hidden_or_parked_subtree_restores_editor() {
                 .unwrap()
                 .parent
                 .unwrap();
-        let mut changes = nana_ui_runtime::MutationQueue::new();
+        let mut changes = crate::MutationQueue::new();
         changes.insert(root, parent.stable_id(), Some(f.other.stable_id()));
         changes.insert(parent.stable_id(), f.card.stable_id(), None);
         f.cx.commit_mutations(changes).unwrap();
         f.open();
         f.key("Tab", false, None);
         assert_eq!(f.cx.world().focused(f.doc), Some(f.refresh.stable_id()));
-        let mut changes = nana_ui_runtime::MutationQueue::new();
+        let mut changes = crate::MutationQueue::new();
         let target = if invalidation < 2 || invalidation == 4 {
             parent.stable_id()
         } else {
@@ -535,7 +533,7 @@ fn hover_card_refresh_invalidation_then_close_preserves_editor() {
                     Arc::make_mut(&mut style.layout).display =
                         Some(nana_ui_core::DisplaySpec::None);
                 }
-                let mut changes = nana_ui_runtime::MutationQueue::new();
+                let mut changes = crate::MutationQueue::new();
                 changes.set_style(f.refresh.stable_id(), style);
                 f.cx.commit_mutations(changes).unwrap();
             }
@@ -560,7 +558,7 @@ fn hover_card_pointer_actions_preserve_active_ime_composition() {
         .dispatch_ime(
             &mut f.cx,
             f.doc,
-            &ImeEvent::Preedit {
+            &CompositionInput::Update {
                 text: "你".into(),
                 selection: Some((0, 3)),
             },
@@ -585,7 +583,7 @@ fn hover_card_pointer_actions_preserve_active_ime_composition() {
         .unwrap();
     f.assert_editor();
     f.input
-        .dispatch_ime(&mut f.cx, f.doc, &ImeEvent::Commit("你".into()))
+        .dispatch_ime(&mut f.cx, f.doc, &CompositionInput::Commit("你".into()))
         .unwrap();
     assert_eq!(
         f.cx.world().text_input(f.editor.stable_id()).unwrap().value,

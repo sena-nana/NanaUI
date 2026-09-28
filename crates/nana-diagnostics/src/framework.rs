@@ -55,20 +55,11 @@ pub mod runtime {
         Metric::counter(D, 23, "runtime.input.payload_bytes", "bytes");
     pub static INPUT_ROUTE_REJECTED: Metric =
         Metric::counter(D, 24, "runtime.input.route_rejected", "count");
-    pub static INPUT_INVERSE_RECOMPUTES: Metric =
-        Metric::counter(D, 25, "runtime.input.inverse_recomputes", "count");
     pub static INPUT_CLIP_REJECTIONS: Metric =
         Metric::counter(D, 26, "runtime.input.clip_rejections", "count");
-    pub static HOST_REQUESTS_ENQUEUED: Metric =
-        Metric::counter(D, 27, "runtime.host_requests.enqueued", "count");
-    pub static HOST_REQUESTS_REJECTED: Metric =
-        Metric::counter(D, 28, "runtime.host_requests.rejected", "count");
-    pub static HOST_REQUESTS_DRAINED: Metric =
-        Metric::counter(D, 29, "runtime.host_requests.drained", "count");
-    pub static HOST_REQUESTS_STALE: Metric =
-        Metric::counter(D, 30, "runtime.host_requests.stale", "count");
     histogram!(pub INPUT_ROUTE_NS, D, 31, "runtime.input.route", "ns");
-    histogram!(pub INPUT_MAPPING_NS, D, 32, "runtime.input.mapping", "ns");
+    /// Hit-test queries input routing made (one per uncaptured pointer
+    /// event at most), read from the world's own count.
     pub static INPUT_HIT_TESTS: Metric = Metric::counter(D, 33, "runtime.input.hit_tests", "count");
     pub static INPUT_ROUTED_DISPATCHES: Metric =
         Metric::counter(D, 34, "runtime.input.routed_dispatches", "count");
@@ -78,10 +69,12 @@ pub mod runtime {
         Metric::counter(D, 36, "runtime.input.capture_changes", "count");
     pub static INPUT_HOVER_CHANGES: Metric =
         Metric::counter(D, 37, "runtime.input.hover_changes", "count");
-    pub static INPUT_ROUTING_CACHE_HITS: Metric =
-        Metric::counter(D, 38, "runtime.input.routing_cache_hits", "count");
-    pub static INPUT_ROUTING_CACHE_MISSES: Metric =
-        Metric::counter(D, 39, "runtime.input.routing_cache_misses", "count");
+    // Retired with the host-request queue, the coordinate bridge and a
+    // routing cache that never existed; the IDs stay taken:
+    // 25 runtime.input.inverse_recomputes, 27 runtime.host_requests.enqueued,
+    // 28 runtime.host_requests.rejected, 29 runtime.host_requests.drained,
+    // 30 runtime.host_requests.stale, 32 runtime.input.mapping,
+    // 38 runtime.input.routing_cache_hits, 39 runtime.input.routing_cache_misses.
 }
 
 pub mod layout {

@@ -6,36 +6,31 @@
 
 | Fixture | 合同 | 证据 |
 | --- | --- | --- |
-| canonical endpoint | source/device/pointer identity、generation、source-local sequence、断连、stale、pointer/wheel 合并和不可丢失 transition | `cargo test -p nana-ui-platform --lib --locked` |
-| canonical wire envelope | explicit contract version、JSON round-trip、未知版本拒绝；不把 Rust enum layout 当作 ABI | `cargo test -p nana-ui-platform --lib canonical::tests::versioned_wire_round_trip_and_rejects_unknown_version --locked` |
-| coordinate bridge / Runtime clip | DPI、logical/presentation/host extent、旋转、非均匀缩放、clip、non-invertible、revision-bound inverse cache、parent-local/viewport/content host-supplied transforms；Runtime 命中复用 inset/circle/ellipse/polygon clip | `cargo test -p nana-ui-platform --lib coordinates::tests --locked`、`cargo test -p nana-ui-runtime --lib world::hit_test::presentation_tests --locked` |
-| runtime router | 多 source/device/pointer、capture/focus revoke、IME 生命周期、pending work revision、HostService outcome | `cargo test -p nana-ui --features hosted --lib --locked` |
-| native scene host | pointer/key/wheel winit lowering 进入 per-window `InputEndpoint` 后再由 Router drain；physical cursor bridge、native window lifecycle、capture observation 不重复全局 hit-test；Router 已生产 Cursor intent，native scene host 已执行 Cursor request；NativeTextInput intent 在 host 边界复用既有 IME request state machine | `cargo test -p nana-ui --features hosted --lib scene_host::tests --locked`：62 passed（仅仓内证据） |
-| Vue observation | Vue injected canonical input now enters a per-window `InputEndpoint`; native already-routed input only enters Vue observation layer and does not repeat Runtime text/IME mutation | `cargo test -p nana-ui-vue --features hosted --lib --locked`：883 passed |
+| canonical endpoint | source/device/pointer identity、generation、source-local sequence、断连、stale、pointer/wheel 合并、容量拒绝归还所有权；`InputSequencer` 按 generation 重新计数 | `cargo test -p nana-ui-input --lib --locked` |
+| host services | 光标与文本输入是最新值槽位；headless 服务记下宿主会显示的状态；共享剪贴板忙时回答 `Busy` 而不等待 | `cargo test -p nana-ui-input --lib --locked`、`cargo test -p nana-ui-platform --lib --locked` |
+| runtime router | 绑定与校验（stale、乱序、时间回退、断连、同 generation 换 document）；多 source/device 指针身份；窗口失焦只取消指针、保留 document 焦点、重新获得焦点时重发文本输入；source 断开时才清焦点；触控抬起不留悬停；首个事件不读其他 source 的捕获；被处理按键的文本被丢弃；剪贴板在按键链原位置；两个 source 各自的文本输入与光标 | `cargo test -p nana-ui-runtime --all-features --lib framework::input --locked` |
+| 组件行为（原 adapter 测试） | 指针、滚轮、键盘、文本、组字进入各类组件的原有行为，经新路由逐条保留（83 条） | 同上，`framework::input::tests::dispatch` |
+| 分配与命中门禁 | 未捕获移动每次恰好 1 次命中查询、捕获移动 0 次；同一行、跨行（每次都切换悬停）、滚动视口内、捕获中的稳态移动都零分配 | `cargo test -p nana-ui-runtime --all-features --test input_alloc --locked`（计数分配器只统计测试自己的线程） |
+| native scene host | winit 事件直接降级为 canonical（W3C 物理键名、滚轮与鼠标同一指针、指针离开带自己的设备）；IME 请求在 host services 中合成；光标由 Runtime 意图、窗口边框缩放与程序覆盖合成 | `cargo test -p nana-ui --features hosted --lib scene_host --locked`（仅仓内证据） |
+| Vue observation | scene host 已路由的事件只进入 Vue 观察层，不再路由；独立模式下每个窗口一个输入源，时间戳取自动画时钟；被处理或被页面阻止的按键不再发出 `insertText` | `cargo test -p nana-ui-vue --all-features --lib --locked` |
+| devtools headless | `RuntimeAgentSession` 经 `HeadlessInput` 走同一条路由；1000 次指针事件后路由计数与空闲 flush 正确 | `cargo test -p nana-ui-devtools --features runtime-agent --all-targets --locked` |
 
-## 性能门禁
+## 性能
 
-- canonical 高频 pointer lowering 使用 inline iterator；pointer payload 不分配 heap object，adjacent move/wheel 可合并。
-- unchanged transform revision 重复映射只计算一次 inverse；测试检查 1000 次查询只有一次 recompute。
-- 坐标桥累计记录 mapping latency，并通过 `runtime.input.mapping` 诊断 histogram 暴露。
-- Vue hosted adapter 保留 bounded HostService outcomes，调用方可观察 headless capability denial，不再静默丢弃结果。
-- IME composition 在 Runtime mutation 前同时检查 request slot 与 payload budget，队列背压不会再消费该输入事件；surrounding request carries the focused caret `cursor_area`. Pointer/key 导致焦点切换时，当前只能预检旧焦点 payload；新 editor 的 surrounding-text 大小要在 Runtime mutation 后才能得知，因此接近 payload 上限时仍需事务式 reservation 或 retry intent 的后续合同。
-- native Focused transitions drain IME lifecycle intents at the same event-loop boundary even when no pointer/key event follows.
-- focus lifecycle emits a bounded `NativeTextInput` capability intent while text content and caret state remain owned by the existing IME request path.
-- focused IME anchor regression verifies the logical caret rectangle survives into `ImeEnable` without host-side coordinate guessing.
-- endpoint drain 在 HostService 背压时保留队首 canonical event；释放 request slot 后可按原 sequence 重试，不丢失输入或改变顺序。
-- native scene host 的 endpoint capacity rejection 会把拥有权移入 per-window bounded pending queue；窗口销毁时一并清理，避免 `RejectedInput.event` 被静默丢弃。
-- Vue hosted endpoint 在 Runtime 路由后始终 drain `UnsupportedHostServices` outcome，即使本轮遇到 HostService backpressure，也不会把 capability queue 永久锁住。
-- HostService drain 以 `UiWorld` 的 live document roots 作为生命周期权威；未挂载 document 的 request 会被丢弃并计入 stale counter。
-- Clipboard response validation distinguishes document-selection Copy (live selected node/document is sufficient) from Cut/Paste (focused editable owner is required), preserving async capability semantics without rejecting a valid unfocused document selection.
-- captured pointer move 复用 `InputRouter` 的 capture owner，不调用 scene host 的全局 hit-test。
-- native `PointerLeft` 现在 lowering 为 canonical `PointerLeave`；它清理 hover 但不撤销 pointer capture，后续 move/up 仍可由 capture owner 接收；frame-move 仍保留显式 cancel 路径。
-- canonical router regression drives 1000 captured PointerMove events: only the initial Down increments `hit_tests`; all moves increment the routing-cache hit counter.
-- The same 1000-event regression snapshots `UiWorld::pending_work_revision`; captured moves leave the Runtime work revision unchanged, so the fixture rejects accidental layout/render invalidation.
-- empty endpoint drain is an explicit idle fixture: zero routed events, hit-tests, cache hits, or pending Runtime work.
-- Runtime 路由通过单调 `pending_work_revision` 报告 invalidation，不 drain `SystemWork`。
-- presentation transform overlay 的命中文档集合按 PresentationStore/world revision 缓存，PointerMove 不扫描所有节点或所有文档。
-- idle、静态 hover、真实 1000Hz/240Hz host 的完整 wall-clock 和 native frame counters 仍需要宿主 benchmark；本文件不以单元测试冒充这些证据。
+- 确定性门禁用计数，不用时间：见上表“分配与命中门禁”。
+- 墙钟对比用 `nana-input-benchmark`（`crates/nana-ui-devtools/src/bin/nana-input-benchmark.rs`），只走 `RuntimeAgentSession::pointer_event`，不含 flush。两份二进制交替运行，读每轮 p50 的最小值。2026-09-28 本机（负载 3–5，交替 4 轮）：
+
+  | 场景 | 重写前 | 重写后 | 每事件分配 |
+  | --- | --- | --- | --- |
+  | 同一行内移动 | 364 ns | 248 ns（−31.8%） | 1 → 0 |
+  | 跨行移动 | 362 ns | 249 ns（−31.2%） | 1 → 0 |
+  | 滚动视口内移动 | 631 ns | 415 ns（−34.2%） | 5 → 0 |
+  | 捕获中拖动 range | 1331 ns | 1056 ns（−20.7%） | 7.86 → 2.79 |
+
+  拖动 range 剩下的分配是组件每次发出的 `RangeInput` 事件，不在路由路径上。
+- 空闲 drain 不做任何工作：0 次路由、0 次命中查询、pending work revision 不变（`an_idle_drain_does_no_work`）。
+- 1000 次捕获中的指针移动不改变 `pending_work_revision`（`hit_queries_are_budgeted_and_a_disconnect_revokes_capture`）。
+- 真实 1000Hz/240Hz 宿主的墙钟与原生帧计数仍需要宿主基准；本文件不以单元测试冒充这些证据。
 
 ## 尚未具备生产证据的 adapter
 
@@ -43,19 +38,11 @@
 
 | Adapter | 当前仓内证据 | #253 结论 |
 | --- | --- | --- |
-| Window/winit | `crates/nana-ui/src/scene_host` 的 native lowering、per-window endpoint、scene-host tests | 有 reference path；真实 OS window 兼容性仍需 Windows/macOS/Linux 验收 |
-| Nested NanaUI | Coordinate bridge 的 ParentLocal/Viewport/Content 数学测试，没有 embedded child host producer | 缺少真实 nested endpoint、focus/capture/IME delegation fixture |
-| Native host | `examples/runtime-host-fixture` 是 Runtime host 示例，但没有 Qt/game-engine input adapter 和 HostServices mapping | 不满足 native reference adapter 门禁 |
-| XR | 只有 `XrSurfaceUv` 数据空间和映射单测 | 缺 OpenXR/OpenVR ray intersection、trigger、thumbstick lifecycle |
-| Web/WebView | Vue hosted injected input 与 JS observation tests | 缺真实 WebView composition、DPR/resize、clipboard/cursor capability fixture |
-| Remote/headless | canonical wire/sequence/generation/stale/disconnect 单测 | 缺认证、重放防护、限流、网络 reorder/latency 和远程帧率解耦证据 |
+| Window/winit | `crates/nana-ui/src/scene_host` 的原生降级、每窗口 endpoint、host services | 有参考路径；真实 OS window 兼容性仍需 Windows/macOS/Linux 验收 |
+| Nested NanaUI | 无；坐标桥已删除，没有真实嵌入生产者 | #251 回到 OPEN，随 #247 的嵌入生产者再加 |
+| Native host | `examples/runtime-host-fixture` 是 Runtime host 示例，没有 Qt/游戏引擎输入适配 | 不满足 native reference adapter 门禁 |
+| XR | 无 | 缺 OpenXR/OpenVR 射线求交、扳机、摇杆生命周期 |
+| Web/WebView | Vue 独立模式注入输入与 JS 观察测试 | 缺真实 WebView composition、DPR/resize、剪贴板/光标能力 fixture |
+| Remote/headless | `HeadlessInput`、sequence/generation/stale/disconnect 单测 | 缺认证、重放防护、限流、网络乱序与延迟证据 |
 
-Window/winit 与 Vue hosted 的 injected pointer/key/wheel/Focus/IME 已经过 per-window endpoint；native already-routed observation 不重复路由。native 动态 presentation transform metadata、XR ray intersection、Web/WebView DPR/composition、Android IME、OpenXR、remote authentication/replay/rate limit、跨线程背压，以及真实 accessibility provider 仍需独立 adapter fixture 和平台验收。
-
-远程 payload、拖放文件权限、FFI/serialization ABI、multi-window/document/presentation-target 持久绑定也不能由当前 headless fixture 推断完成；这些保持为后续 Issue 的明确验收项。
-
-当前生产链路仍有两个已知边界：Canonical Router 的 Ctrl+C/X/V 已使用可返回结果的
-`HostServiceRequest`，native Scene host 已在输入路由外执行 OS clipboard request；但
-`RuntimeInputAdapter` 兼容入口仍直接使用现有 `ClipboardHost` 的 try-lock 快速探测，
-无焦点 IME update 已在 host drain 处丢弃；native candidate UI、selection lifecycle 和完整焦点撤销仍需真实宿主接线后验收。`CompositionInput::End` 已映射为取消并丢弃 preedit，
-`Disabled` 才保留既有的失焦提交语义。
+真实 Windows IME（CJK 候选框）、macOS 候选框、Android 软键盘、窗口边框缩放与程序光标覆盖的组合，都需要逐平台人工验收；headless 测试不覆盖。

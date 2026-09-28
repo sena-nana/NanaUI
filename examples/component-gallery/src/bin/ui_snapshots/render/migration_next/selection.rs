@@ -104,7 +104,7 @@ pub(super) fn exercise_segmented_contract(
     // requests the control emitted — and a single `false` cannot say which.
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut adapter = SnapshotInput::default();
     let ids = segmented
         .options
         .iter()

@@ -138,8 +138,7 @@ impl UiWorld {
     ) -> bool {
         // OverlayHost owns presence while its child is activated or closing.
         if self
-            .node(id)
-            .and_then(|node| node.parent)
+            .parent_id(id)
             .and_then(|parent| self.overlay_host(parent))
             .is_some_and(|host| host.active == Some(id))
             && self.surface_closed(id)
@@ -178,7 +177,7 @@ impl UiWorld {
             if self.surface_closing(id) {
                 return true;
             }
-            current = self.node(id).and_then(|node| node.parent);
+            current = self.parent_id(id);
         }
         false
     }

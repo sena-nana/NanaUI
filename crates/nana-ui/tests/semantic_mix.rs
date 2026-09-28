@@ -1,8 +1,10 @@
-use nana_ui::{RuntimeInputAdapter, runtime::*};
+use nana_ui::{HeadlessInput, runtime::*};
 use nana_ui_core::{
     SemanticColor, SemanticColorMix, SemanticColorRole as R, StyleModelRef, ThemeMode,
 };
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui_platform::{
+    InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase, PointerType,
+};
 use std::time::Duration;
 
 fn close(a: [f32; 4], b: [f32; 4]) {
@@ -10,10 +12,10 @@ fn close(a: [f32; 4], b: [f32; 4]) {
         assert!((a[i] - b[i]).abs() < 0.00001, "{a:?} != {b:?}");
     }
 }
-fn hover(x: f32, y: f32) -> InputEvent {
-    InputEvent::Pointer {
+fn hover(x: f32, y: f32) -> InputPayload {
+    InputPayload::Pointer(PointerInput {
         phase: PointerPhase::Move,
-        pointer_id: 1,
+        pointer_id: PointerId(1),
         pointer_type: PointerType::Mouse,
         x,
         y,
@@ -29,7 +31,7 @@ fn hover(x: f32, y: f32) -> InputEvent {
         is_primary: true,
         activation_click: false,
         modifiers: InputModifiers::default(),
-    }
+    })
 }
 
 #[test]
@@ -88,7 +90,7 @@ fn semantic_mix_theme_hover_disabled_and_raw_priority_share_the_normal_resolver(
         .create_component(doc, Button::new("Save").style(style))
         .unwrap();
     let id = button.stable_id();
-    let mut input = RuntimeInputAdapter::default();
+    let mut input = HeadlessInput::bind(&mut cx, doc);
     for (n, mode) in [ThemeMode::Light, ThemeMode::Dark].into_iter().enumerate() {
         cx.set_theme(mode).unwrap();
         cx.resolve_styles(&[id]).unwrap();
@@ -100,14 +102,14 @@ fn semantic_mix_theme_hover_disabled_and_raw_priority_share_the_normal_resolver(
             mix.resolve(cx.world().style_model()).as_rgba_array(),
         );
         assert_eq!(cx.pointer_target(doc, 10.0, 10.0), Some(id));
-        input.dispatch(&mut cx, doc, &hover(10.0, 10.0)).unwrap();
+        input.route(&mut cx, hover(10.0, 10.0)).unwrap();
         cx.advance_animations(Duration::from_secs((n * 4 + 1) as u64));
         cx.resolve_styles(&[id]).unwrap();
         close(
             cx.world().computed_style(id).unwrap().background.unwrap(),
             cx.world().style_model().color(R::Hover).as_rgba_array(),
         );
-        input.dispatch(&mut cx, doc, &hover(400.0, 400.0)).unwrap();
+        input.route(&mut cx, hover(400.0, 400.0)).unwrap();
         cx.advance_animations(Duration::from_secs((n * 4 + 2) as u64));
         cx.resolve_styles(&[id]).unwrap();
         close(

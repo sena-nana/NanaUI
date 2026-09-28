@@ -211,9 +211,7 @@ impl AppContext {
             let entity = next_entities
                 .get(key)
                 .ok_or(FrameworkError::InvalidVirtualization)?;
-            if self.world.contains(entity.id)
-                && self.world.node(entity.id).and_then(|node| node.parent) != Some(list.id)
-            {
+            if self.world.contains(entity.id) && self.world.parent_id(entity.id) != Some(list.id) {
                 return Err(FrameworkError::InvalidVirtualization);
             }
             mutations.insert(list.id, entity.id, None);

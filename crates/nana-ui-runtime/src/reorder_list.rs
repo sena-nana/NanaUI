@@ -524,7 +524,7 @@ impl crate::AppContext {
             if self.is_reorder_list(id) {
                 return Some(id);
             }
-            id = self.world().node(id)?.parent?;
+            id = self.world().parent_id(id)?;
         }
     }
 

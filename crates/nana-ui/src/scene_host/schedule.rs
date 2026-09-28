@@ -126,6 +126,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
 
     pub(super) fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // Pointer moves and wheel deltas merged through this turn route once.
+        self.drain_deferred_input(event_loop);
         let now = Instant::now();
         if self
             .host_work_deadline

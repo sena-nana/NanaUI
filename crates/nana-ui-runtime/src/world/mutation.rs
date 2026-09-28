@@ -1449,7 +1449,7 @@ impl UiWorld {
                             | DirtyMask::ACCESSIBILITY
                             | DirtyMask::RENDER,
                     );
-                    if let Some(parent) = self.node(*id).and_then(|node| node.parent) {
+                    if let Some(parent) = self.parent_id(*id) {
                         self.mark(parent, DirtyMask::ACCESSIBILITY);
                     }
                 } else if paint_visibility_changed {
@@ -1461,7 +1461,7 @@ impl UiWorld {
                             | DirtyMask::ACCESSIBILITY
                             | DirtyMask::RENDER,
                     );
-                    if let Some(parent) = self.node(*id).and_then(|node| node.parent) {
+                    if let Some(parent) = self.parent_id(*id) {
                         self.mark(parent, DirtyMask::ACCESSIBILITY);
                     }
                 }
@@ -1505,7 +1505,7 @@ impl UiWorld {
                     );
                 }
                 if (layout_changed || inherited_text_changed || omits_box_changed)
-                    && let Some(parent) = self.node(*id).and_then(|node| node.parent)
+                    && let Some(parent) = self.parent_id(*id)
                 {
                     self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
                 }

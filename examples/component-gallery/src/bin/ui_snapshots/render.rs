@@ -17,10 +17,10 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, LogicalRect, NanaTextShaper,
-    RuntimeInputAdapter, SettingsTabId, ThemeMode, WindowChrome, WorkspaceAction,
+    SettingsTabId, ThemeMode, WindowChrome, WorkspaceAction,
 };
 use nana_ui_core::{LayoutStyle, LengthSpec, SemanticColorRole, type_scale};
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui_platform::{InputPayload, PointerInput, PointerPhase};
 
 use crate::baseline::{Recorder, Report};
 use crate::write::Size;
@@ -1374,28 +1374,13 @@ fn dispatch_pointer(
     point: LogicalPoint,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let document_id = document.document();
-    RuntimeInputAdapter::default().dispatch(
+    nana_ui::HeadlessInput::bind(document.context_mut(), document_id).route(
         document.context_mut(),
-        document_id,
-        &InputEvent::Pointer {
-            phase,
-            pointer_id: 1,
-            pointer_type: PointerType::Mouse,
-            x: point.x,
-            y: point.y,
-            screen_x: point.x,
-            screen_y: point.y,
-            button: 0,
+        InputPayload::Pointer(PointerInput {
             buttons: 0,
             pressure: 0.5,
-            tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
-            twist: 0,
-            is_primary: true,
-            activation_click: false,
-            modifiers: InputModifiers::default(),
-        },
+            ..PointerInput::mouse(phase, point.x, point.y)
+        }),
     )?;
     document.flush(
         LayoutViewport::new(size.width as f32, size.height as f32),

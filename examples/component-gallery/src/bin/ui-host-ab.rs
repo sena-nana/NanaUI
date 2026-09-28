@@ -18,7 +18,7 @@ use nana_ui::{
 };
 use nana_ui_core::{SplitPaneModel, WorkspaceModel};
 use nana_ui_platform::host::WindowCommand;
-use nana_ui_platform::{InputEvent, WindowId};
+use nana_ui_platform::{InputPayload, WindowId};
 use nana_ui_scene::RuntimeDocument;
 
 const SLOT_INSET: f32 = 8.0;
@@ -159,14 +159,13 @@ impl RuntimeProgram for App {
         input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        let event = input.event;
-        let InputEvent::Keyboard {
-            pressed: true, key, ..
-        } = event
-        else {
+        let InputPayload::Key(key) = &input.event.payload else {
             return Ok(RuntimeProgramUpdate::redraw(id));
         };
-        let changed = match key.as_str() {
+        if !key.is_pressed() {
+            return Ok(RuntimeProgramUpdate::redraw(id));
+        }
+        let changed = match &*key.logical.0 {
             "ArrowRight" | "]" => {
                 self.case = self.case.next();
                 true

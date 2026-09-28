@@ -485,7 +485,7 @@ impl crate::AppContext {
             return Err(crate::FrameworkError::InvalidInput);
         }
         let id = viewer.stable_id();
-        let Some(document) = self.world().node(id).map(|node| node.document) else {
+        let Some(document) = self.world().document_of(id) else {
             return Ok(false);
         };
         if !self.world().is_mounted(id) {

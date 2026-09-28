@@ -4,9 +4,6 @@
 mod clipboard;
 #[cfg(feature = "fetch")]
 mod fetch;
-mod host_services;
-mod ime;
-mod input;
 mod paths;
 mod persist;
 mod persistence_worker;
@@ -24,7 +21,7 @@ pub use clipboard::OsClipboard;
 #[cfg(feature = "clipboard")]
 pub use clipboard::{
     ClipboardHost, MemoryClipboard, SharedClipboardHost, UnsupportedClipboard,
-    default_shared_clipboard, shared_clipboard,
+    default_shared_clipboard, read_shared_clipboard, shared_clipboard, write_shared_clipboard,
 };
 #[cfg(feature = "fetch")]
 pub use fetch::{
@@ -32,15 +29,6 @@ pub use fetch::{
     FetchPolicy, FetchRequest, FetchResponse, FetchSink, NativeFetchHost, SharedFetchHost,
     shared_fetch_host,
 };
-#[cfg(feature = "clipboard")]
-pub use host_services::ClipboardHostServices;
-pub use host_services::{
-    DragPayload, HostCapability, HostRequestContext, HostServiceBroker, HostServiceOutcome,
-    HostServiceQueue, HostServiceQueueCounters, HostServiceQueueFull, HostServiceRequest,
-    HostServiceResponse, HostServices, ImeSurroundingText, UnsupportedHostServices,
-};
-pub use ime::ImeEvent;
-pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
 #[doc(hidden)]
 pub use paths::__identity_marker_bytes;
 pub use paths::{
@@ -53,11 +41,10 @@ pub use persist::{
 };
 pub use window::{
     DisplayBounds, DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest, MousePassthroughMode,
-    SystemAppearance, TextInputPurpose, TextInputRequest, WindowDescriptor, WindowEvent,
-    WindowGeometry, WindowIcon, WindowIconError, WindowId, WindowLevel, WindowModeState,
-    WindowResizeEdge, WindowRole, WindowSurfacePreference, clamp_position_to_displays,
-    clear_registered_application_icon, fit_window_to_displays, register_application_icon,
-    resolve_window_icon, window_resize_edge,
+    SystemAppearance, WindowDescriptor, WindowEvent, WindowGeometry, WindowIcon, WindowIconError,
+    WindowId, WindowLevel, WindowModeState, WindowResizeEdge, WindowRole, WindowSurfacePreference,
+    clamp_position_to_displays, clear_registered_application_icon, fit_window_to_displays,
+    register_application_icon, resolve_window_icon, window_resize_edge,
 };
 #[cfg(feature = "ws")]
 pub use ws::{
@@ -165,18 +152,5 @@ pub enum SurfacePhase {
 pub mod host {
     pub use crate::window::{MousePassthroughMode, WindowCommand};
 }
-mod canonical;
-mod coordinates;
-pub use canonical::{
-    CANONICAL_INPUT_CONTRACT_VERSION, CanonicalInputEvent, CanonicalInputWireEvent,
-    CompositionInput, DeviceId, EndpointGeneration, InputDeviceCounters, InputEndpoint,
-    InputEndpointCounters, InputEnqueueOutcome, InputMetadata, InputPayload, InputRejection,
-    InputSequence, InputSourceId, InputTimestamp, KeyInput, KeyState, LogicalKey, PhysicalKey,
-    PointerId, PointerInput, RejectedInput, WheelInput, WheelUnit, WireInputError, lower_ime_event,
-    lower_input_event,
-};
-pub use coordinates::{
-    ApplicationSpaceTransform, CoordinateBridgeCounters, CoordinateError, CoordinateExtent,
-    InputCoordinateSpace, PresentationCoordinateBridge, PresentationCoordinateMetadata,
-    PresentationTransform,
-};
+/// The canonical input contract, owned by `nana-ui-input`.
+pub use nana_ui_input::*;

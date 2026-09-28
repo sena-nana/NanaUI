@@ -33,7 +33,7 @@ struct HostState {
     /// Mirrors the soft keyboard: `true` after we asked InputMethodManager to
     /// show it while the slot text input held focus.
     ime_shown: bool,
-    /// Last GameTextInput buffer we acknowledged (for ImeEvent diffs).
+    /// Last GameTextInput buffer we acknowledged (for composition diffs).
     ime_buffer: SlotImeBuffer,
     /// Last EditorInfo pushed to GameActivity.
     editor_info: Option<SlotEditorInfo>,
@@ -222,7 +222,7 @@ impl HostState {
 
     /// Mirror Runtime text-input focus onto GameTextInput / the soft keyboard.
     ///
-    /// Composition then flows through `ImeEvent::{Preedit,Commit,DeleteSurrounding}`
+    /// Composition then flows through `CompositionInput::{Update,Commit,DeleteSurrounding}`
     /// on the slot Runtime. GameTextInput's buffer is a host mirror, not a
     /// second editor.
     fn sync_soft_input(&mut self, app: &AndroidApp) {

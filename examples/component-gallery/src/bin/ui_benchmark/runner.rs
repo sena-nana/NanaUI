@@ -9,11 +9,12 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     GpuContext, GpuRenderTarget, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages,
-    NanaTextShaper, RegionId, RegionRole, RegionState, RuntimeInputAdapter, ScenePaintViewport,
-    SceneWgpuPainter, SettingsTabId, ThemeMode, WorkspaceAction, WorkspaceLayout, WorkspaceModel,
-    WorkspaceMutation,
+    NanaTextShaper, RegionId, RegionRole, RegionState, ScenePaintViewport, SceneWgpuPainter,
+    SettingsTabId, ThemeMode, WorkspaceAction, WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
 };
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui_platform::{
+    InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase, WheelInput, WheelUnit,
+};
 
 use crate::report::{AdapterReport, BenchmarkReport, CaseReport, RendererReport, Sample};
 
@@ -625,7 +626,7 @@ fn workspace_document(state: &WorkspaceBenchmarkState) -> RuntimeDocument {
 
 fn dispatch_pointer_sequence(document: &mut RuntimeDocument, iteration: usize) {
     let document_id = document.document();
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut input = nana_ui::HeadlessInput::bind(document.context_mut(), document_id);
     let x = 450.0;
     let y = 320.0;
     let direction = if iteration % 20 < 10 { -2.0 } else { 2.0 };
@@ -633,41 +634,24 @@ fn dispatch_pointer_sequence(document: &mut RuntimeDocument, iteration: usize) {
         pointer(PointerPhase::Move, x, y),
         pointer(PointerPhase::Down, x, y),
         pointer(PointerPhase::Up, x, y),
-        InputEvent::Wheel {
+        InputPayload::Wheel(WheelInput {
+            pointer_id: PointerId(1),
             x,
             y,
             delta_x: 0.0,
             delta_y: direction,
-            line_delta: true,
+            unit: WheelUnit::Lines,
             modifiers: InputModifiers::default(),
-        },
+        }),
     ] {
-        adapter
-            .dispatch(document.context_mut(), document_id, &event)
+        input
+            .route(document.context_mut(), event)
             .expect("benchmark input");
     }
 }
 
-fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
-    InputEvent::Pointer {
-        phase,
-        pointer_id: 1,
-        pointer_type: PointerType::Mouse,
-        x,
-        y,
-        screen_x: x,
-        screen_y: y,
-        button: 0,
-        buttons: u16::from(phase == PointerPhase::Down),
-        pressure: 0.5,
-        tangential_pressure: 0.0,
-        tilt_x: 0,
-        tilt_y: 0,
-        twist: 0,
-        is_primary: true,
-        activation_click: false,
-        modifiers: InputModifiers::default(),
-    }
+fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputPayload {
+    InputPayload::Pointer(PointerInput::mouse(phase, x, y))
 }
 
 fn layout_viewport() -> LayoutViewport {

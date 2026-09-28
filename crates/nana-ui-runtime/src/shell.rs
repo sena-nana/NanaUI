@@ -283,8 +283,7 @@ impl AppTitleBar {
             // before `assemble` runs, a mounted center (e.g. a `Breadcrumb`
             // component) is still detached, and stamping the column style on
             // it would clobber the component's own layout for good.
-            let is_bar_child =
-                |node: StableNodeId| world.node(node).and_then(|n| n.parent) == Some(id);
+            let is_bar_child = |node: StableNodeId| world.parent_id(node) == Some(id);
             if let Some(leading) = self.leading.filter(|&n| is_bar_child(n)) {
                 patch_layout(world, mutations, leading, |layout| {
                     apply_hug_slot(layout, AlignSpec::Center, JustifySpec::Start);
@@ -1494,7 +1493,7 @@ fn app_shell_child_ids(
 }
 
 fn app_shell_parent(context: &AppContext, title_bar: StableNodeId) -> Option<StableNodeId> {
-    let parent = context.world().node(title_bar)?.parent?;
+    let parent = context.world().parent_id(title_bar)?;
     if view_is::<AppShell>(context, parent) {
         return Some(parent);
     }
@@ -2128,12 +2127,12 @@ mod tests {
     }
 
     fn is_descendant(world: &UiWorld, ancestor: StableNodeId, node: StableNodeId) -> bool {
-        let mut current = world.node(node).and_then(|node| node.parent);
+        let mut current = world.parent_id(node);
         while let Some(id) = current {
             if id == ancestor {
                 return true;
             }
-            current = world.node(id).and_then(|node| node.parent);
+            current = world.parent_id(id);
         }
         false
     }

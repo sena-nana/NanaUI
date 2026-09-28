@@ -20,7 +20,7 @@ pub(super) fn exercise_feedback_action_lifecycle(
         .world()
         .layout_box(action.action.stable_id())
         .expect("mounted feedback action layout");
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut adapter = SnapshotInput::default();
     let action_x = action_bounds.x + action_bounds.width / 2.0;
     let action_y = action_bounds.y + action_bounds.height / 2.0;
     adapter.dispatch(

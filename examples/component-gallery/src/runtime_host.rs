@@ -5,8 +5,14 @@ use nana_ui::runtime::{
     IconButton, InteractionState, JustifySpec, LengthSpec, MutationQueue, NodeKind, NodeStyle,
     RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, ViewContext, Workspace,
 };
-use nana_ui::{ButtonKind, ControlSize, Icon, LogicalPoint, ThemeMode, TitleBarDragTracker};
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui::{
+    ButtonKind, ControlSize, HeadlessInput, Icon, LogicalPoint, ThemeMode, TitleBarDragTracker,
+};
+use nana_ui_platform::{
+    EndpointGeneration, InputModifiers, InputPayload, InputSourceId, KeyInput, KeyState,
+    LogicalKey, PhysicalKey, PointerId, PointerInput, PointerPhase, PointerType, WheelInput,
+    WheelUnit,
+};
 
 use super::GalleryMessage;
 
@@ -45,7 +51,7 @@ impl RuntimeChrome {
     pub(super) fn title_bar_chrome_messages(
         &mut self,
         document: &RuntimeDocument,
-        event: &InputEvent,
+        event: &InputPayload,
     ) -> Vec<GalleryMessage> {
         self.title_bar
             .events(document.context(), document.document(), event)
@@ -210,10 +216,70 @@ pub(super) fn take_pending(pending: &Arc<Mutex<Vec<GalleryMessage>>>) -> Vec<Gal
         .unwrap_or_default()
 }
 
+/// Source of the gallery's scripted input; never a window's id.
+const SCRIPTED_SOURCE: InputSourceId = InputSourceId(u64::MAX);
+
+/// Scripted input into whichever document the gallery drives, through a
+/// headless source bound to it. A new document gets a newer binding; the
+/// same one keeps its pointers, so a scripted drag holds its capture.
+#[derive(Default)]
+pub(super) struct ScriptedInput {
+    input: Option<HeadlessInput>,
+}
+
+impl ScriptedInput {
+    pub(super) fn route(&mut self, document: &mut RuntimeDocument, payload: InputPayload) {
+        self.route_typed(document, payload, None);
+    }
+
+    /// Route `payload`; for a key press, then the `text` it types.
+    pub(super) fn route_typed(
+        &mut self,
+        document: &mut RuntimeDocument,
+        payload: InputPayload,
+        text: Option<&str>,
+    ) {
+        let id = document.document();
+        let context = document.context_mut();
+        let binding = context.input_binding(SCRIPTED_SOURCE);
+        let bound = self
+            .input
+            .as_ref()
+            .is_some_and(|input| binding == Some((input.generation(), id)));
+        if !bound {
+            let next = binding
+                .map(|(generation, _)| generation.0)
+                .into_iter()
+                .chain(self.input.as_ref().map(|input| input.generation().0))
+                .max()
+                .map_or(1, |generation| generation + 1);
+            self.input =
+                HeadlessInput::bind_source(context, SCRIPTED_SOURCE, EndpointGeneration(next), id)
+                    .ok();
+        }
+        let Some(input) = self.input.as_mut() else {
+            return;
+        };
+        let _ = match (payload, text) {
+            (InputPayload::Key(key), Some(text)) => input.press(context, key, Some(text), None),
+            (payload, _) => input.route(context, payload),
+        };
+    }
+}
+
+/// Where a pointer or wheel event is, if it has a place.
+pub(super) fn event_point(event: &InputPayload) -> Option<LogicalPoint> {
+    match event {
+        InputPayload::Pointer(pointer) => Some(LogicalPoint::new(pointer.x, pointer.y)),
+        InputPayload::Wheel(wheel) => Some(LogicalPoint::new(wheel.x, wheel.y)),
+        _ => None,
+    }
+}
+
 pub(super) fn runtime_input_event(
     input: &RuntimeSceneInput,
     last_pointer: LogicalPoint,
-) -> InputEvent {
+) -> InputPayload {
     match *input {
         RuntimeSceneInput::PointerMove(point) => runtime_pointer(PointerPhase::Move, point, 0),
         RuntimeSceneInput::PointerDown { button, point } => {
@@ -225,34 +291,46 @@ pub(super) fn runtime_input_event(
         RuntimeSceneInput::Scroll {
             delta_y,
             line_delta,
-        } => InputEvent::Wheel {
+        } => InputPayload::Wheel(WheelInput {
+            pointer_id: PointerId(1),
             x: last_pointer.x,
             y: last_pointer.y,
             delta_x: 0.0,
             delta_y,
-            line_delta,
+            unit: if line_delta {
+                WheelUnit::Lines
+            } else {
+                WheelUnit::Pixels
+            },
             modifiers: InputModifiers::default(),
-        },
+        }),
         RuntimeSceneInput::Key {
             pressed,
             ref key,
             repeat,
             modifiers,
-        } => InputEvent::Keyboard {
-            pressed,
-            key: key.clone(),
-            text: None,
-            code: key.clone(),
+        } => InputPayload::Key(KeyInput {
+            physical: PhysicalKey(key.clone().into()),
+            logical: LogicalKey(key.clone().into()),
+            state: if pressed {
+                KeyState::Pressed
+            } else {
+                KeyState::Released
+            },
             repeat,
             modifiers,
-        },
+        }),
     }
 }
 
-pub(super) fn runtime_pointer(phase: PointerPhase, point: LogicalPoint, button: i16) -> InputEvent {
-    InputEvent::Pointer {
+pub(super) fn runtime_pointer(
+    phase: PointerPhase,
+    point: LogicalPoint,
+    button: i16,
+) -> InputPayload {
+    InputPayload::Pointer(PointerInput {
         phase,
-        pointer_id: 1,
+        pointer_id: PointerId(1),
         pointer_type: PointerType::Mouse,
         x: point.x,
         y: point.y,
@@ -272,7 +350,7 @@ pub(super) fn runtime_pointer(phase: PointerPhase, point: LogicalPoint, button: 
         is_primary: button == 0,
         activation_click: false,
         modifiers: InputModifiers::default(),
-    }
+    })
 }
 
 #[derive(Clone, PartialEq)]

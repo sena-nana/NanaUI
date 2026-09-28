@@ -333,7 +333,7 @@ impl AppContext {
             if id == root {
                 break;
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         Ok(None)
     }
@@ -603,7 +603,7 @@ impl AppContext {
             if let Some(drawer) = view.downcast_ref::<Drawer>() {
                 return Some((root, drawer.slots().close_action, false, None));
             }
-            current = self.world.node(root).and_then(|node| node.parent);
+            current = self.world.parent_id(root);
         }
         None
     }
@@ -705,7 +705,7 @@ impl AppContext {
             if candidate == root {
                 return true;
             }
-            current = self.world.node(candidate).and_then(|node| node.parent);
+            current = self.world.parent_id(candidate);
         }
         false
     }
@@ -758,7 +758,7 @@ impl AppContext {
             if candidate == root {
                 return true;
             }
-            let parent = self.world.node(candidate).and_then(|node| node.parent);
+            let parent = self.world.parent_id(candidate);
             if let Some(parent) = parent {
                 if parent != root
                     && self

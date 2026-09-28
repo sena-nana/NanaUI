@@ -23,7 +23,7 @@ CARGO_BUILD_JOBS=2 cargo test -p nana-ui-scene --features components --test imag
 CARGO_BUILD_JOBS=2 cargo run -p nana-ui-devtools --features runtime-agent,nana-ui/components --example restored-content-probe -- target/restored-content-probe
 ```
 
-The probe paints real SVG/math/image content and an uploaded host texture through the shared Scene path in light and dark themes. It routes a normal pointer drag through `RuntimeInputAdapter`, checks the resulting height and captures before/after frames. Pixel output must be inspected; process success alone is insufficient acceptance.
+The probe paints real SVG/math/image content and an uploaded host texture through the shared Scene path in light and dark themes. It routes a normal pointer drag through the Runtime input route (`RuntimeAgentSession`), checks the resulting height and captures before/after frames. Pixel output must be inspected; process success alone is insufficient acceptance.
 
 ## Current recovery evidence (2026-09-10)
 

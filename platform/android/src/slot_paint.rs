@@ -5,7 +5,7 @@
 //! Hit-testing must use [`crate::control_slot::control_slot_paint_bounds`].
 //! Pointer + KeyEvent + GameTextInput events are applied through
 //! [`crate::slot_runtime::SlotRuntime`]. Composition maps to
-//! [`nana_ui_platform::ImeEvent`] via `dispatch_ime`. Accessibility
+//! [`nana_ui_platform::CompositionInput`] routed like other input. Accessibility
 //! publication lives in [`crate::slot_ax`].
 
 use nana_ui::{
@@ -13,7 +13,7 @@ use nana_ui::{
     SceneWgpuPainter,
 };
 use nana_ui_core::PhysicalRect;
-use nana_ui_platform::ImeEvent;
+use nana_ui_platform::CompositionInput;
 
 use crate::slot_ime::{SlotEditorInfo, SlotImeBuffer};
 use crate::slot_input::{SlotKeyMods, SlotLogicalKey, SlotTouchKind};
@@ -91,7 +91,7 @@ impl SlotPainter {
         }
     }
 
-    pub fn push_ime(&mut self, event: &ImeEvent) -> bool {
+    pub fn push_ime(&mut self, event: &CompositionInput) -> bool {
         let before = self.runtime.snapshot();
         match self.runtime.push_ime(event) {
             Ok(handled) => {

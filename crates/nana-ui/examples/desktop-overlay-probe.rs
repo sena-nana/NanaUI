@@ -8,7 +8,9 @@ use nana_ui::{
 };
 use nana_ui_core::LengthSpec;
 use nana_ui_platform::host::WindowCommand;
-use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowId, WindowRole};
+use nana_ui_platform::{
+    InputPayload, PointerInput, PointerPhase, WindowEvent, WindowId, WindowRole,
+};
 use std::{
     convert::Infallible,
     io::{self, BufRead, Write},
@@ -300,12 +302,12 @@ impl RuntimeProgram for Probe {
         _: &RuntimeProgramContext<Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         let event = input.event;
-        if let InputEvent::Pointer {
+        if let InputPayload::Pointer(PointerInput {
             phase: PointerPhase::Down,
             x,
             y,
             ..
-        } = event
+        }) = &event.payload
         {
             report(serde_json::json!({"event":"pointer_down", "window":id.0, "x":x, "y":y}));
         }

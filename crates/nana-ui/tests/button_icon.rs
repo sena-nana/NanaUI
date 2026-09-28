@@ -1,6 +1,6 @@
-use nana_ui::{NanaTextShaper, RuntimeInputAdapter, runtime::*};
+use nana_ui::{HeadlessInput, NanaTextShaper, runtime::*};
 use nana_ui_core::{Icon, LengthSpec};
-use nana_ui_platform::{InputEvent, InputModifiers};
+use nana_ui_platform::{InputModifiers, InputPayload, KeyInput, KeyState};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -162,19 +162,17 @@ fn button_loading_replaces_icon_and_preserves_normal_activation_gates() {
     })
     .unwrap();
     let ids = [button.stable_id()];
-    let mut adapter = RuntimeInputAdapter::default();
-    let enter = InputEvent::Keyboard {
-        key: "Enter".into(),
-        code: "Enter".into(),
-        pressed: true,
-        text: None,
-        repeat: false,
-        modifiers: InputModifiers::default(),
-    };
+    let mut adapter = HeadlessInput::bind(&mut cx, doc);
+    let enter = InputPayload::Key(KeyInput::named(
+        "Enter",
+        "Enter",
+        KeyState::Pressed,
+        InputModifiers::default(),
+    ));
     layout(&mut cx, doc, &ids);
     let width = cx.world().layout_box(ids[0]).unwrap().width;
     cx.focus_node(doc, ids[0]).unwrap();
-    adapter.dispatch(&mut cx, doc, &enter).unwrap();
+    adapter.route(&mut cx, enter.clone()).unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     cx.update_component(button, |view, _| view.loading = true)
         .unwrap();
@@ -187,19 +185,19 @@ fn button_loading_replaces_icon_and_preserves_normal_activation_gates() {
     };
     assert!(icon.is_none());
     assert_eq!(spinner.unwrap().width, 14.0);
-    adapter.dispatch(&mut cx, doc, &enter).unwrap();
+    adapter.route(&mut cx, enter.clone()).unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     cx.update_component(button, |view, _| {
         view.loading = false;
         view.disabled = true;
     })
     .unwrap();
-    adapter.dispatch(&mut cx, doc, &enter).unwrap();
+    adapter.route(&mut cx, enter.clone()).unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     cx.update_component(button, |view, _| view.disabled = false)
         .unwrap();
     cx.focus_node(doc, ids[0]).unwrap();
-    adapter.dispatch(&mut cx, doc, &enter).unwrap();
+    adapter.route(&mut cx, enter.clone()).unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 

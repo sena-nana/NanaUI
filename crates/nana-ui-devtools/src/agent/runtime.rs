@@ -8,12 +8,13 @@ use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, LayoutViewport, RuntimeDocument,
     RuntimeFrameUpdate, StableNodeId,
 };
-use nana_ui::{HostTextureRegistry, InputRouter, InputRouterCounters, NanaTextShaper, ThemeMode};
+use nana_ui::{HeadlessInput, HostTextureRegistry, InputCounters, NanaTextShaper, ThemeMode};
 use nana_ui_core::SemanticColorRole;
 use nana_ui_platform::{
-    CanonicalInputEvent, EndpointGeneration, InputEvent, InputMetadata, InputModifiers,
-    InputSequence, InputSourceId, InputTimestamp, PointerPhase, PointerType, lower_input_event,
+    InputModifiers, InputPayload, KeyInput, KeyState, LogicalKey, PhysicalKey, PointerInput,
+    PointerPhase, WheelInput, WheelUnit,
 };
+use std::borrow::Cow;
 
 use super::protocol::{
     HitDump, KeyStroke, PixelStats, PointerGesture, SceneProbeDump, SessionInfo, ThemeName,
@@ -34,22 +35,14 @@ pub struct RuntimeAgentSession {
     /// every dark-theme screenshot lie about its background.
     clear: Option<[f32; 4]>,
     host_textures: HostTextureRegistry,
-    /// Headless input uses the same canonical lowering and Runtime router as
-    /// native windows. The source is stable for this session and its sequence
-    /// is advanced for every canonical event (including key + committed text).
-    input_router: InputRouter,
-    input_sequence: u64,
-    /// Monotonic input clock, advanced one frame per dispatched event.
+    /// The session's input source: the same routing a native window's input
+    /// takes, bound to this document, with a headless host behind it.
     ///
-    /// A zero timestamp silently disables every time-gated path in the
-    /// Runtime: tooltip delay, the split handle hover probe, anything else
-    /// that throttles on elapsed time fires once and then never again. A
-    /// headless session that exists to reproduce what a window does must not
-    /// be permanently frozen at t=0.
-    ///
-    /// Advanced by a fixed step rather than read from the wall clock, so a
-    /// scripted session stays reproducible.
-    clock: Duration,
+    /// Its clock moves one frame per dispatched event. A zero timestamp would
+    /// silently disable every time-gated path in the Runtime (tooltip delay,
+    /// the split handle hover probe); a fixed step rather than the wall clock
+    /// keeps a scripted session reproducible.
+    input: HeadlessInput,
 }
 
 /// One frame at 60Hz. What the input clock advances per dispatched event.
@@ -72,6 +65,9 @@ impl RuntimeAgentSession {
                 "snapshot scale must be finite and positive".into(),
             ));
         }
+        let document_id = document.document();
+        let mut document = document;
+        let input = HeadlessInput::bind(document.context_mut(), document_id);
         let mut session = Self {
             scale_factor,
             document,
@@ -81,9 +77,7 @@ impl RuntimeAgentSession {
             height,
             clear: None,
             host_textures: HostTextureRegistry::new(),
-            input_router: InputRouter::default(),
-            input_sequence: 0,
-            clock: Duration::ZERO,
+            input,
         };
         session.flush()?;
         Ok(session)
@@ -117,56 +111,17 @@ impl RuntimeAgentSession {
         &mut self.document
     }
 
-    /// Canonical input counters for adapter conformance and performance
-    /// fixtures. Reading counters does not schedule a frame or traverse the
-    /// document.
-    pub fn input_router_counters(&self) -> InputRouterCounters {
-        self.input_router.counters()
+    /// Input routing counters for adapter conformance and performance
+    /// fixtures. Reading them does not schedule a frame or walk the document.
+    pub fn input_counters(&self) -> InputCounters {
+        self.document.context().input_counters()
     }
 
-    /// Move the input clock on one frame and return the new instant.
-    fn advance_clock(&mut self) -> Duration {
-        self.clock = self.clock.saturating_add(INPUT_FRAME);
-        self.clock
-    }
-
-    fn dispatch_input(&mut self, input: &InputEvent, now: Duration) -> Result<(), AgentError> {
-        const SOURCE: InputSourceId = InputSourceId(1);
-        const GENERATION: EndpointGeneration = EndpointGeneration(1);
-        let document = self.document.document();
-        self.input_router
-            .ensure_attached(SOURCE, GENERATION, document);
-        self.input_sequence = self.input_sequence.saturating_add(1).max(1);
-        let metadata = InputMetadata {
-            source: SOURCE,
-            device: nana_ui_platform::DeviceId(0),
-            generation: GENERATION,
-            sequence: InputSequence(self.input_sequence),
-            timestamp: InputTimestamp(now.as_nanos().min(u128::from(u64::MAX)) as u64),
-        };
-        let lowered = lower_input_event(input, metadata);
-        let count = lowered.len();
-        if count > 1 {
-            self.input_sequence = self.input_sequence.saturating_add((count - 1) as u64);
-        }
-        for event in lowered {
-            self.route_canonical(event, now)?;
-        }
-        Ok(())
-    }
-
-    fn route_canonical(
-        &mut self,
-        event: CanonicalInputEvent,
-        now: Duration,
-    ) -> Result<(), AgentError> {
-        self.input_router
-            .route(
-                self.document.context_mut(),
-                &event,
-                now,
-                Some(&mut self.shaper),
-            )
+    /// Route one event at the next input frame.
+    fn dispatch_input(&mut self, payload: InputPayload) -> Result<(), AgentError> {
+        self.input.advance(INPUT_FRAME);
+        self.input
+            .route_shaped(self.document.context_mut(), payload, Some(&mut self.shaper))
             .map(|_| ())
             .map_err(|error| AgentError(error.to_string()))
     }
@@ -178,30 +133,13 @@ impl RuntimeAgentSession {
         y: f32,
         button: i16,
         buttons: u16,
-        now: Duration,
     ) -> Result<(), AgentError> {
-        self.dispatch_input(
-            &InputEvent::Pointer {
-                phase,
-                pointer_id: 1,
-                pointer_type: PointerType::Mouse,
-                x,
-                y,
-                screen_x: x,
-                screen_y: y,
-                button,
-                buttons,
-                pressure: 0.5,
-                tangential_pressure: 0.0,
-                tilt_x: 0,
-                tilt_y: 0,
-                twist: 0,
-                is_primary: true,
-                activation_click: false,
-                modifiers: InputModifiers::default(),
-            },
-            now,
-        )
+        self.dispatch_input(InputPayload::Pointer(PointerInput {
+            button,
+            buttons,
+            pressure: 0.5,
+            ..PointerInput::mouse(phase, x, y)
+        }))
     }
 
     /// Deliver one headless pointer sample through the canonical input
@@ -215,8 +153,7 @@ impl RuntimeAgentSession {
         button: i16,
         buttons: u16,
     ) -> Result<(), AgentError> {
-        let now = self.advance_clock();
-        self.dispatch_pointer(phase, x, y, button, buttons, now)
+        self.dispatch_pointer(phase, x, y, button, buttons)
     }
 
     /// Drains one frame. Work counters survive idle frames; per-frame
@@ -246,10 +183,8 @@ impl RuntimeAgentSession {
     }
 
     pub fn click_xy(&mut self, x: f32, y: f32) -> Result<bool, AgentError> {
-        let down = self.advance_clock();
-        self.dispatch_pointer(PointerPhase::Down, x, y, 0, button_mask(0), down)?;
-        let up = self.advance_clock();
-        self.dispatch_pointer(PointerPhase::Up, x, y, 0, 0, up)?;
+        self.dispatch_pointer(PointerPhase::Down, x, y, 0, button_mask(0))?;
+        self.dispatch_pointer(PointerPhase::Up, x, y, 0, 0)?;
         self.flush()?;
         Ok(true)
     }
@@ -257,13 +192,11 @@ impl RuntimeAgentSession {
     /// Secondary-button click (button 2), the way a right-click reaches the
     /// tree. Context menus open on the press, so both phases are sent with the
     /// button held then released — a primary [`Self::click_xy`] never routes
-    /// there, and hand-rolling the `InputEvent` is the same boilerplate in
+    /// there, and hand-rolling the pointer events is the same boilerplate in
     /// every consumer that wants to verify a context menu headlessly.
     pub fn secondary_click_xy(&mut self, x: f32, y: f32) -> Result<bool, AgentError> {
-        let down = self.advance_clock();
-        self.dispatch_pointer(PointerPhase::Down, x, y, 2, button_mask(2), down)?;
-        let up = self.advance_clock();
-        self.dispatch_pointer(PointerPhase::Up, x, y, 2, 0, up)?;
+        self.dispatch_pointer(PointerPhase::Down, x, y, 2, button_mask(2))?;
+        self.dispatch_pointer(PointerPhase::Up, x, y, 2, 0)?;
         self.flush()?;
         Ok(true)
     }
@@ -290,18 +223,21 @@ impl RuntimeAgentSession {
     pub fn type_text(&mut self, text: &str) -> Result<(), AgentError> {
         for character in text.chars() {
             let key = character.to_string();
-            let now = self.advance_clock();
-            self.dispatch_input(
-                &InputEvent::Keyboard {
-                    pressed: true,
-                    key: key.clone(),
-                    text: Some(key),
-                    code: "Unidentified".into(),
-                    repeat: false,
-                    modifiers: InputModifiers::default(),
-                },
-                now,
-            )?;
+            self.input.advance(INPUT_FRAME);
+            self.input
+                .press(
+                    self.document.context_mut(),
+                    KeyInput {
+                        physical: PhysicalKey(Cow::Borrowed("Unidentified")),
+                        logical: LogicalKey(Cow::Owned(key.clone())),
+                        state: KeyState::Pressed,
+                        repeat: false,
+                        modifiers: InputModifiers::default(),
+                    },
+                    Some(&key),
+                    Some(&mut self.shaper),
+                )
+                .map_err(|error| AgentError(error.to_string()))?;
         }
         self.flush()?;
         Ok(())
@@ -319,18 +255,15 @@ impl RuntimeAgentSession {
         delta_x: f32,
         delta_y: f32,
     ) -> Result<(), AgentError> {
-        let now = self.advance_clock();
-        self.dispatch_input(
-            &InputEvent::Wheel {
-                x,
-                y,
-                delta_x,
-                delta_y,
-                line_delta: false,
-                modifiers: InputModifiers::default(),
-            },
-            now,
-        )?;
+        self.dispatch_input(InputPayload::Wheel(WheelInput {
+            pointer_id: nana_ui_platform::PointerId(1),
+            x,
+            y,
+            delta_x,
+            delta_y,
+            unit: WheelUnit::Pixels,
+            modifiers: InputModifiers::default(),
+        }))?;
         self.flush()?;
         Ok(())
     }
@@ -338,8 +271,7 @@ impl RuntimeAgentSession {
     /// Move the pointer without pressing, so hover-only presentation (tooltips,
     /// hover cards, row affordances) can be captured.
     pub fn hover_xy(&mut self, x: f32, y: f32) -> Result<(), AgentError> {
-        let now = self.advance_clock();
-        self.dispatch_pointer(PointerPhase::Move, x, y, 0, 0, now)?;
+        self.dispatch_pointer(PointerPhase::Move, x, y, 0, 0)?;
         self.flush()?;
         Ok(())
     }
@@ -353,19 +285,14 @@ impl RuntimeAgentSession {
         code: &str,
         modifiers: InputModifiers,
     ) -> Result<(), AgentError> {
-        for pressed in [true, false] {
-            let now = self.advance_clock();
-            self.dispatch_input(
-                &InputEvent::Keyboard {
-                    pressed,
-                    key: key.to_owned(),
-                    text: None,
-                    code: code.to_owned(),
-                    repeat: false,
-                    modifiers,
-                },
-                now,
-            )?;
+        for state in [KeyState::Pressed, KeyState::Released] {
+            self.dispatch_input(InputPayload::Key(KeyInput {
+                physical: PhysicalKey(Cow::Owned(code.to_owned())),
+                logical: LogicalKey(Cow::Owned(key.to_owned())),
+                state,
+                repeat: false,
+                modifiers,
+            }))?;
         }
         self.flush()?;
         Ok(())
@@ -600,7 +527,7 @@ mod tests {
         let document = RuntimeDocument::new(document_id);
         let mut session = RuntimeAgentSession::new(document, 240, 160).expect("session");
         assert!(session.flush().expect("idle flush").is_idle());
-        assert_eq!(session.input_router_counters().events_routed, 0);
+        assert_eq!(session.input_counters().events_routed, 0);
 
         for index in 0..1_000 {
             session
@@ -613,7 +540,7 @@ mod tests {
                 )
                 .expect("canonical pointer route");
         }
-        assert_eq!(session.input_router_counters().events_routed, 1_000);
+        assert_eq!(session.input_counters().events_routed, 1_000);
         assert!(session.flush().expect("pointer fixture flush").is_idle());
     }
 

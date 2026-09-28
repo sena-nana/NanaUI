@@ -1,13 +1,15 @@
-use nana_ui::{NanaTextShaper, RuntimeInputAdapter, runtime::*};
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui::{HeadlessInput, NanaTextShaper, runtime::*};
+use nana_ui_platform::{
+    InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase, PointerType,
+};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
-    InputEvent::Pointer {
+fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputPayload {
+    InputPayload::Pointer(PointerInput {
         phase,
-        pointer_id: 1,
+        pointer_id: PointerId(1),
         pointer_type: PointerType::Mouse,
         x,
         y,
@@ -23,7 +25,7 @@ fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
         is_primary: true,
         activation_click: false,
         modifiers: InputModifiers::default(),
-    }
+    })
 }
 
 fn layout(cx: &mut AppContext, doc: DocumentId, area: Entity<TextArea>) {
@@ -67,28 +69,24 @@ fn textarea_resize_normal_pointer_clamps_preserves_text_and_cancel_restores_heig
     .unwrap();
     layout(&mut cx, doc, area);
     let initial = cx.read(area, |view| view.state.clone()).unwrap();
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut adapter = HeadlessInput::bind(&mut cx, doc);
     let (x, y) = grip(&cx, area);
     assert!(
         adapter
-            .dispatch(&mut cx, doc, &pointer(PointerPhase::Down, x, y))
+            .route(&mut cx, pointer(PointerPhase::Down, x, y))
             .unwrap()
             .prevent_default
     );
     assert_eq!(cx.world().pointer_capture(doc, 1), Some(area.stable_id()));
     adapter
-        .dispatch(
-            &mut cx,
-            doc,
-            &pointer(PointerPhase::Move, x + 100.0, y + 500.0),
-        )
+        .route(&mut cx, pointer(PointerPhase::Move, x + 100.0, y + 500.0))
         .unwrap();
     layout(&mut cx, doc, area);
     let bounds = cx.world().layout_box(area.stable_id()).unwrap();
     assert_eq!(bounds.width, 280.0);
     assert_eq!(bounds.height, 240.0);
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Cancel, x, y))
+        .route(&mut cx, pointer(PointerPhase::Cancel, x, y))
         .unwrap();
     layout(&mut cx, doc, area);
     assert_eq!(
@@ -98,13 +96,13 @@ fn textarea_resize_normal_pointer_clamps_preserves_text_and_cancel_restores_heig
     assert_eq!(cx.world().pointer_capture(doc, 1), None);
     let (x, y) = grip(&cx, area);
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Down, x, y))
+        .route(&mut cx, pointer(PointerPhase::Down, x, y))
         .unwrap();
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Move, x, y - 100.0))
+        .route(&mut cx, pointer(PointerPhase::Move, x, y - 100.0))
         .unwrap();
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Up, x, y - 100.0))
+        .route(&mut cx, pointer(PointerPhase::Up, x, y - 100.0))
         .unwrap();
     layout(&mut cx, doc, area);
     assert_eq!(
@@ -138,17 +136,17 @@ fn textarea_resize_readonly_allowed_disabled_rejected_and_removal_releases_captu
                 .resize_vertical(true),
         )
         .unwrap();
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut adapter = HeadlessInput::bind(&mut cx, doc);
     layout(&mut cx, doc, area);
     let (x, y) = grip(&cx, area);
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Down, x, y))
+        .route(&mut cx, pointer(PointerPhase::Down, x, y))
         .unwrap();
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Move, x, y + 30.0))
+        .route(&mut cx, pointer(PointerPhase::Move, x, y + 30.0))
         .unwrap();
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Up, x, y + 30.0))
+        .route(&mut cx, pointer(PointerPhase::Up, x, y + 30.0))
         .unwrap();
     layout(&mut cx, doc, area);
     assert_eq!(
@@ -160,7 +158,7 @@ fn textarea_resize_readonly_allowed_disabled_rejected_and_removal_releases_captu
     layout(&mut cx, doc, area);
     let (x, y) = grip(&cx, area);
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Down, x, y))
+        .route(&mut cx, pointer(PointerPhase::Down, x, y))
         .unwrap();
     assert_eq!(cx.world().pointer_capture(doc, 1), None);
     cx.update_component(area, |view, _| view.disabled = false)
@@ -168,13 +166,13 @@ fn textarea_resize_readonly_allowed_disabled_rejected_and_removal_releases_captu
     layout(&mut cx, doc, area);
     let (x, y) = grip(&cx, area);
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Down, x, y))
+        .route(&mut cx, pointer(PointerPhase::Down, x, y))
         .unwrap();
     assert_eq!(cx.world().pointer_capture(doc, 1), Some(area.stable_id()));
     cx.remove_view(area).unwrap();
     assert_eq!(cx.world().pointer_capture(doc, 1), None);
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Move, x, y + 30.0))
+        .route(&mut cx, pointer(PointerPhase::Move, x, y + 30.0))
         .unwrap();
 }
 
@@ -198,15 +196,15 @@ fn textarea_resize_uses_transformed_logical_coordinates_and_content_box_chrome()
     layout(&mut cx, doc, area);
     let height = cx.world().layout_box(area.stable_id()).unwrap().height;
     let (x, y) = grip(&cx, area);
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut adapter = HeadlessInput::bind(&mut cx, doc);
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Down, x, y))
+        .route(&mut cx, pointer(PointerPhase::Down, x, y))
         .unwrap();
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Move, x, y + 40.0))
+        .route(&mut cx, pointer(PointerPhase::Move, x, y + 40.0))
         .unwrap();
     adapter
-        .dispatch(&mut cx, doc, &pointer(PointerPhase::Up, x, y + 40.0))
+        .route(&mut cx, pointer(PointerPhase::Up, x, y + 40.0))
         .unwrap();
     layout(&mut cx, doc, area);
     assert!((cx.world().layout_box(area.stable_id()).unwrap().height - height - 20.0).abs() < 0.1);

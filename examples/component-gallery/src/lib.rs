@@ -42,7 +42,7 @@ use nana_ui::{
     SharedStore, SplitAxis, SplitPaneAction, SplitPaneController, memory_store,
 };
 use nana_ui_platform::host::WindowCommand;
-use nana_ui_platform::{InputEvent, WindowDescriptor, WindowEvent, WindowId, WindowRole};
+use nana_ui_platform::{InputPayload, WindowDescriptor, WindowEvent, WindowId, WindowRole};
 
 #[path = "views/graph.rs"]
 mod graph_view;
@@ -1200,7 +1200,7 @@ impl GalleryApp {
         }
     }
 
-    fn drain_primary_input(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
+    fn drain_primary_input(&mut self, event: &InputPayload) -> Vec<GalleryMessage> {
         let mut messages = if self.state.settings_open {
             self.state
                 .settings_runtime
@@ -1370,7 +1370,7 @@ impl RuntimeProgram for GalleryApp {
         input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        let event = input.event;
+        let event = &input.event.payload;
         if id == WindowId::PRIMARY {
             let mut messages = self.drain_menu_activations();
             messages.extend(self.drain_primary_input(event));
@@ -1574,21 +1574,16 @@ impl GalleryApp {
     }
 }
 
-fn shortcut_message(event: &InputEvent) -> Option<GalleryMessage> {
-    let InputEvent::Keyboard {
-        pressed: true,
-        key,
-        modifiers,
-        ..
-    } = event
-    else {
+fn shortcut_message(event: &InputPayload) -> Option<GalleryMessage> {
+    let InputPayload::Key(key) = event else {
         return None;
     };
-    if !modifiers.meta && !modifiers.control {
+    let modifiers = key.modifiers;
+    if !key.is_pressed() || (!modifiers.meta && !modifiers.control) {
         return None;
     }
     Some(GalleryMessage::KeyStroke(KeyStroke::new(
-        key.as_str(),
+        &*key.logical.0,
         KeyModifiers {
             control: modifiers.control,
             alt: modifiers.alt,

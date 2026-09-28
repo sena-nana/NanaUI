@@ -132,7 +132,7 @@ impl AppContext {
                     active.push((*key).clone());
                     break;
                 }
-                current = self.world.node(id).and_then(|node| node.parent);
+                current = self.world.parent_id(id);
             }
         }
         let retained = active
@@ -478,7 +478,7 @@ impl AppContext {
                     active.insert((*key).clone());
                     break;
                 }
-                current = self.world.node(id).and_then(|node| node.parent);
+                current = self.world.parent_id(id);
             }
         }
         let mut rows = Vec::new();
@@ -677,7 +677,7 @@ impl AppContext {
                     if owned.contains(&id) {
                         return Some(id);
                     }
-                    current = self.world.node(id).and_then(|node| node.parent);
+                    current = self.world.parent_id(id);
                 }
                 None
             })

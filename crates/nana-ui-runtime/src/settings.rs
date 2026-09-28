@@ -3334,7 +3334,7 @@ mod tests {
             if id == root {
                 return true;
             }
-            current = context.world().node(id).and_then(|node| node.parent);
+            current = context.world().parent_id(id);
         }
         false
     }

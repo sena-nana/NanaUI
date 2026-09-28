@@ -2682,6 +2682,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-ui-input"
+version = "0.1.0"
+dependencies = [
+ "nana-diagnostics",
+ "nana-ui-core",
+ "serde",
+]
+
+[[package]]
 name = "nana-ui-platform"
 version = "0.1.0"
 dependencies = [
@@ -2689,6 +2698,7 @@ dependencies = [
  "jni 0.21.1",
  "nana-diagnostics",
  "nana-ui-core",
+ "nana-ui-input",
  "ndk-context",
  "serde",
  "serde_json",
@@ -2708,6 +2718,7 @@ dependencies = [
  "nana-diagnostics",
  "nana-text",
  "nana-ui-core",
+ "nana-ui-input",
  "pulldown-cmark",
  "qrcode",
  "ratex-layout",

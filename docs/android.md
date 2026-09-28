@@ -7,8 +7,8 @@ Android 是实验宿主路径，**不是当前产品目标**，也**不是第二
 Phase 2 合同（相对 NativeActivity）：
 
 - **Activity**：`android-activity` 的 `game-activity` feature，`NanaActivity` 继承 `GameActivity`，因此存在 `InputConnection` / GameTextInput。
-- **IME**：composing → `ImeEvent::Preedit`，commit → `Commit`，删除 → `DeleteSurrounding`，全部喂给现有 `RuntimeInputAdapter::dispatch_ime`。不另造 Android 文本状态机。`EditorInfo` 从焦点编辑器镜像 password / multiline。`PlatformCapabilities::android_mvp().ime = true` 表示这条路径已接通，不是桌面同款验收。
-- **剪贴板**：JNI `ClipboardManager` 实现 `ClipboardHost`；`default_shared_clipboard()` 的 Android 分支使用它；web-api 与 slot `RuntimeInputAdapter::with_clipboard` 走同一后端。`clipboard = true`。
+- **IME**：composing → `CompositionInput::Update`，commit → `Commit`，删除 → `DeleteSurrounding`，与触摸、按键一样经 slot 的输入源盖戳后走 `AppContext::route_input`。不另造 Android 文本状态机。`EditorInfo` 从焦点编辑器镜像 password / multiline。`PlatformCapabilities::android_mvp().ime = true` 表示这条路径已接通，不是桌面同款验收。
+- **剪贴板**：JNI `ClipboardManager` 实现 `ClipboardHost`；`default_shared_clipboard()` 的 Android 分支使用它；web-api 与 slot 的 `HostServices`（`read_shared_clipboard` / `write_shared_clipboard`）走同一后端。`clipboard = true`。
 - **数据目录**：`app_data_dir` 在 Android 上返回 `Context.getFilesDir()`（应用已沙箱，忽略 `app_id`）。宿主自行 `FileStore::open` 后注入，框架不会自己写盘。
 - **TalkBack**：Click / Focus / SetValue / SetSelection 投影后，Button / Switch / TextInput 可激活（TextInput 的 Click 会聚焦以便唤起 IME）。滚动与虚拟列表仍留后期。
 

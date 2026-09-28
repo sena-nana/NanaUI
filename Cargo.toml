@@ -14,6 +14,7 @@ members = [
     "crates/nana-ui-vue",
     "tools/css-parity",
     "crates/nana-ui-platform",
+    "crates/nana-ui-input",
     "crates/nana-ui-devtools",
     "crates/nana-frame-exchange",
     "crates/nana-gpu",
@@ -45,6 +46,7 @@ nana-svg-raster = { path = "crates/nana-svg-raster" }
 nana-text = { path = "crates/nana-text" }
 nana-ui-vue = { path = "crates/nana-ui-vue" }
 nana-ui-platform = { path = "crates/nana-ui-platform", default-features = false }
+nana-ui-input = { path = "crates/nana-ui-input" }
 nana-ui-devtools = { path = "crates/nana-ui-devtools" }
 nana-frame-exchange = { path = "crates/nana-frame-exchange" }
 nana-gpu = { path = "crates/nana-gpu" }

@@ -10307,17 +10307,18 @@ fn a_fractional_horizontal_scroll_of_an_editor_keeps_every_glyph() {
         let still = frame(&context, &mut scene, &mut painter);
         let warm = painter.text_glyph_counters();
         let (content, _) = context.world().text_input_pointer_context(node).unwrap();
-        let wheel = nana_ui_platform::InputEvent::Wheel {
+        let wheel = nana_ui_platform::InputPayload::Wheel(nana_ui_platform::WheelInput {
+            pointer_id: nana_ui_platform::PointerId(1),
             x: content.x + content.width / 2.0,
             y: content.y + content.height / 2.0,
             delta_x: -0.37,
             delta_y: 0.0,
-            line_delta: false,
+            unit: nana_ui_platform::WheelUnit::Pixels,
             modifiers: nana_ui_platform::InputModifiers::default(),
-        };
-        let mut adapter = crate::RuntimeInputAdapter::default();
+        });
+        let mut input = nana_ui_runtime::HeadlessInput::bind(&mut context, document);
         for step in 1..24 {
-            adapter.dispatch(&mut context, document, &wheel).unwrap();
+            input.route(&mut context, wheel.clone()).unwrap();
             let offset = context.world().scroll_offset(node).unwrap_or_default().x;
             assert!(
                 (offset - step as f32 * 0.37).abs() < 1.0e-3,

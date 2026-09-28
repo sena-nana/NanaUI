@@ -1730,7 +1730,7 @@ impl VueHost {
     pub fn dispatch_native_ime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
-        event: &ImeEvent,
+        event: &nana_ui_platform::CompositionInput,
     ) -> Result<bool, JsEngineError> {
         self.dispatch_native_ime_with(engine, event, true)
     }
@@ -1738,19 +1738,28 @@ impl VueHost {
     pub fn emit_native_ime_from_runtime<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
-        event: &ImeEvent,
+        event: &nana_ui_platform::CompositionInput,
     ) -> Result<bool, JsEngineError> {
         self.dispatch_native_ime_with(engine, event, false)
     }
     pub(crate) fn dispatch_native_ime_with<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
-        event: &ImeEvent,
+        event: &nana_ui_platform::CompositionInput,
         commit_runtime: bool,
     ) -> Result<bool, JsEngineError> {
         match event {
-            ImeEvent::Enabled => Ok(self.focused().is_some()),
-            ImeEvent::Preedit { text, selection } => {
+            nana_ui_platform::CompositionInput::Enabled => Ok(self.focused().is_some()),
+            // A composition that starts is an empty preedit until it updates.
+            nana_ui_platform::CompositionInput::Start => self.dispatch_native_ime_with(
+                engine,
+                &nana_ui_platform::CompositionInput::Update {
+                    text: String::new(),
+                    selection: None,
+                },
+                commit_runtime,
+            ),
+            nana_ui_platform::CompositionInput::Update { text, selection } => {
                 let Some(target) = self.focused() else {
                     return Ok(false);
                 };
@@ -1794,7 +1803,7 @@ impl VueHost {
                     commit_runtime,
                 )
             }
-            ImeEvent::Commit(text) => {
+            nana_ui_platform::CompositionInput::Commit(text) => {
                 let Some(target) = self.input_projection.ime_target.or_else(|| self.focused())
                 else {
                     return Ok(false);
@@ -1813,7 +1822,7 @@ impl VueHost {
                     commit_runtime,
                 )
             }
-            ImeEvent::DeleteSurrounding {
+            nana_ui_platform::CompositionInput::DeleteSurrounding {
                 before_bytes,
                 after_bytes,
             } => self.dispatch_native_delete_surrounding(
@@ -1822,7 +1831,8 @@ impl VueHost {
                 *after_bytes,
                 commit_runtime,
             ),
-            ImeEvent::Disabled | ImeEvent::Cancelled => {
+            nana_ui_platform::CompositionInput::Disabled
+            | nana_ui_platform::CompositionInput::End => {
                 if commit_runtime {
                     let leftover = self.take_ime_leftover();
                     let Some((target, data)) = leftover else {
@@ -1925,58 +1935,5 @@ impl VueHost {
     }
     pub fn focused(&self) -> Option<NodeHandle> {
         self.document.lock().expect("vue doc").focused()
-    }
-    /// Platform IME request for a focused Runtime Input/Textarea.
-    ///
-    /// When this is enabled, the hosted window must not also feed winit IME
-    /// into a second editor.
-    pub fn text_input_request(&self) -> Option<nana_ui_platform::TextInputRequest> {
-        let target = self.focused()?;
-        let document = self.document.lock().ok()?;
-        let _ = document.text_input_state(target)?;
-        let widget = self.bridge.lock().ok()?.get(target.0).cloned();
-        let (disabled, read_only, secure) = widget
-            .as_ref()
-            .map(|widget| {
-                (
-                    widget.props.disabled,
-                    widget.props.read_only,
-                    widget.props.secure,
-                )
-            })
-            .unwrap_or((false, false, false));
-        if disabled || read_only {
-            return Some(nana_ui_platform::TextInputRequest {
-                enabled: false,
-                cursor_area: None,
-                purpose: nana_ui_platform::TextInputPurpose::Normal,
-            });
-        }
-        // The caret, as the native host reports it: candidates open beside
-        // the line or column being edited, not beside the whole field. The
-        // Runtime draws it relative to its own box; carry that offset onto
-        // the box this host reports for the node.
-        let field = crate::get_layout_box_from(&self.layout_boxes, &document, target);
-        let caret = document
-            .text_input_caret(target)
-            .zip(document.layout_box(target));
-        let cursor_area = field.map(|field| match caret {
-            Some((caret, runtime)) => nana_ui_core::LogicalRect::new(
-                field.x + caret.x - runtime.x,
-                field.y + caret.y - runtime.y,
-                caret.width,
-                caret.height,
-            ),
-            None => nana_ui_core::LogicalRect::new(field.x, field.y, field.width, field.height),
-        });
-        Some(nana_ui_platform::TextInputRequest {
-            enabled: true,
-            cursor_area,
-            purpose: if secure {
-                nana_ui_platform::TextInputPurpose::Password
-            } else {
-                nana_ui_platform::TextInputPurpose::Normal
-            },
-        })
     }
 }

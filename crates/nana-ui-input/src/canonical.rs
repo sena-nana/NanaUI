@@ -1,8 +1,11 @@
 //! Source-local semantic input. Hosts lower native messages once at this boundary.
 //!
-//! Timestamps use a host-selected monotonic epoch (never wall time). Sequence is
-//! strictly increasing within an endpoint generation, across all its devices.
-//! This module owns no thread, timer, OS window, or document state.
+//! Timestamps are nanoseconds in the Runtime's animation-clock domain: the
+//! router reads each event's time from its timestamp, so tooltip delays, hover
+//! probes and click timing run on the same clock the host animates with.
+//! Sequence is strictly increasing within an endpoint generation, across all
+//! its devices; [`InputSequencer`] stamps both. This module owns no thread,
+//! timer, OS window, or document state.
 
 use crate::{InputModifiers, PointerPhase, PointerType};
 use nana_diagnostics::metric;
@@ -10,12 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet, VecDeque},
+    time::Duration,
 };
-
-/// Version of the public canonical input contract. Serialized or FFI hosts
-/// must negotiate this value before exchanging events; Rust enum layout is not
-/// itself a wire format.
-pub const CANONICAL_INPUT_CONTRACT_VERSION: u32 = 1;
 
 macro_rules! identity {
     ($($name:ident),+ $(,)?) => {$ (
@@ -113,6 +112,61 @@ pub struct KeyInput {
     pub modifiers: InputModifiers,
 }
 
+impl PointerInput {
+    /// A primary mouse sample at `(x, y)`, with the screen position equal to
+    /// the client one. A press or release uses the primary button; tests and
+    /// headless hosts adjust the rest with struct update syntax.
+    pub fn mouse(phase: PointerPhase, x: f32, y: f32) -> Self {
+        let pressed = phase == PointerPhase::Down;
+        Self {
+            phase,
+            pointer_id: PointerId(1),
+            pointer_type: PointerType::Mouse,
+            x,
+            y,
+            screen_x: x,
+            screen_y: y,
+            button: if matches!(phase, PointerPhase::Down | PointerPhase::Up) {
+                0
+            } else {
+                -1
+            },
+            buttons: u16::from(pressed),
+            pressure: if pressed { 0.5 } else { 0.0 },
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers: InputModifiers::default(),
+        }
+    }
+}
+
+impl KeyInput {
+    /// A key transition whose physical and logical names are static, as named
+    /// keys and headless fixtures are.
+    pub fn named(
+        physical: &'static str,
+        logical: &'static str,
+        state: KeyState,
+        modifiers: InputModifiers,
+    ) -> Self {
+        Self {
+            physical: PhysicalKey(Cow::Borrowed(physical)),
+            logical: LogicalKey(Cow::Borrowed(logical)),
+            state,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    pub fn is_pressed(&self) -> bool {
+        self.state == KeyState::Pressed
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompositionInput {
     Enabled,
@@ -131,166 +185,6 @@ pub enum CompositionInput {
     },
 }
 
-/// Lower the pre-existing platform event into canonical events at the host
-/// boundary. A keyboard event may produce two ordered canonical events: the
-/// physical/logical key transition and separately committed text. The iterator
-/// stores both events inline, so pointer lowering allocates no heap storage.
-///
-/// # Panics
-/// Panics if committed text requires a second sequence after `u64::MAX`. Hosts
-/// must advance endpoint generation before sequence exhaustion.
-pub fn lower_input_event(
-    event: &crate::InputEvent,
-    metadata: InputMetadata,
-) -> impl ExactSizeIterator<Item = CanonicalInputEvent> {
-    let next = |payload| CanonicalInputEvent { metadata, payload };
-    let events =
-        match event {
-            crate::InputEvent::Pointer {
-                phase,
-                pointer_id,
-                pointer_type,
-                x,
-                y,
-                screen_x,
-                screen_y,
-                button,
-                buttons,
-                pressure,
-                tangential_pressure,
-                tilt_x,
-                tilt_y,
-                twist,
-                is_primary,
-                activation_click,
-                modifiers,
-            } => [
-                Some(next(InputPayload::Pointer(PointerInput {
-                    phase: *phase,
-                    pointer_id: PointerId(*pointer_id),
-                    pointer_type: *pointer_type,
-                    x: *x,
-                    y: *y,
-                    screen_x: *screen_x,
-                    screen_y: *screen_y,
-                    button: *button,
-                    buttons: *buttons,
-                    pressure: *pressure,
-                    tangential_pressure: *tangential_pressure,
-                    tilt_x: *tilt_x,
-                    tilt_y: *tilt_y,
-                    twist: *twist,
-                    is_primary: *is_primary,
-                    activation_click: *activation_click,
-                    modifiers: *modifiers,
-                }))),
-                None,
-            ],
-            crate::InputEvent::Wheel {
-                x,
-                y,
-                delta_x,
-                delta_y,
-                line_delta,
-                modifiers,
-            } => [
-                Some(next(InputPayload::Wheel(WheelInput {
-                    pointer_id: PointerId(0),
-                    x: *x,
-                    y: *y,
-                    delta_x: *delta_x,
-                    delta_y: *delta_y,
-                    unit: if *line_delta {
-                        WheelUnit::Lines
-                    } else {
-                        WheelUnit::Pixels
-                    },
-                    modifiers: *modifiers,
-                }))),
-                None,
-            ],
-            crate::InputEvent::Keyboard {
-                pressed,
-                key,
-                text,
-                code,
-                repeat,
-                modifiers,
-            } => {
-                let key = next(InputPayload::Key(KeyInput {
-                    physical: PhysicalKey(Cow::Owned(code.clone())),
-                    logical: LogicalKey(Cow::Owned(key.clone())),
-                    state: if *pressed {
-                        KeyState::Pressed
-                    } else {
-                        KeyState::Released
-                    },
-                    repeat: *repeat,
-                    modifiers: *modifiers,
-                }));
-                let text =
-                    text.as_deref()
-                        .filter(|text| *pressed && !text.is_empty())
-                        .map(|text| CanonicalInputEvent {
-                            metadata: InputMetadata {
-                                sequence: InputSequence(metadata.sequence.0.checked_add(1).expect(
-                                    "input sequence exhausted; advance endpoint generation",
-                                )),
-                                ..metadata
-                            },
-                            payload: InputPayload::TextInput(text.to_owned()),
-                        });
-                [Some(key), text]
-            }
-        };
-    LoweredInputEvents(events)
-}
-
-struct LoweredInputEvents([Option<CanonicalInputEvent>; 2]);
-
-impl Iterator for LoweredInputEvents {
-    type Item = CanonicalInputEvent;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0[0].take().or_else(|| self.0[1].take())
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = usize::from(self.0[0].is_some()) + usize::from(self.0[1].is_some());
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for LoweredInputEvents {}
-
-/// Lower IME lifecycle data without turning it into keyboard input.
-pub fn lower_ime_event(
-    event: &crate::ImeEvent,
-    metadata: InputMetadata,
-) -> Option<CanonicalInputEvent> {
-    let payload = match event {
-        crate::ImeEvent::Enabled => CompositionInput::Enabled,
-        crate::ImeEvent::Disabled => CompositionInput::Disabled,
-        crate::ImeEvent::Cancelled => CompositionInput::End,
-        crate::ImeEvent::Preedit { text, selection } => CompositionInput::Update {
-            text: text.clone(),
-            selection: *selection,
-        },
-        crate::ImeEvent::Commit(text) => CompositionInput::Commit(text.clone()),
-        crate::ImeEvent::DeleteSurrounding {
-            before_bytes,
-            after_bytes,
-        } => CompositionInput::DeleteSurrounding {
-            before_bytes: *before_bytes,
-            after_bytes: *after_bytes,
-        },
-    };
-    Some(CanonicalInputEvent {
-        metadata,
-        payload: InputPayload::Composition(payload),
-    })
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum InputPayload {
     /// Touch and pen share the pointer contract, including pressure and tilt.
@@ -306,7 +200,7 @@ pub enum InputPayload {
     Wheel(WheelInput),
     Key(KeyInput),
     /// The platform's committed text. Never inferred from `KeyInput`.
-    TextInput(String),
+    Text(CommittedText),
     Composition(CompositionInput),
     Focus {
         focused: bool,
@@ -317,63 +211,47 @@ pub enum InputPayload {
     SourceDisconnected,
 }
 
-/// Versioned wire envelope for adapters that cross a process or FFI boundary.
-/// Rust enum layout is deliberately not part of the protocol.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CanonicalInputWireEvent {
-    pub version: u32,
-    pub event: CanonicalInputEvent,
+/// Text the platform committed, and the key press that produced it when it
+/// came with one. A key whose press the Runtime handled (a shortcut, focus
+/// traversal, a submitted field) inserts no text: the router drops the text
+/// that names it, the way a browser skips `input` after a prevented
+/// `keydown`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommittedText {
+    pub text: String,
+    /// Sequence of the [`InputPayload::Key`] press this text belongs to.
+    pub key: Option<InputSequence>,
 }
 
-impl CanonicalInputWireEvent {
-    pub fn new(event: CanonicalInputEvent) -> Self {
+impl CommittedText {
+    /// Text that came with no key press (paste from a soft keyboard, a
+    /// synthesized insert).
+    pub fn new(text: impl Into<String>) -> Self {
         Self {
-            version: CANONICAL_INPUT_CONTRACT_VERSION,
-            event,
-        }
-    }
-
-    pub fn into_event(self) -> Result<CanonicalInputEvent, WireInputError> {
-        if self.version != CANONICAL_INPUT_CONTRACT_VERSION {
-            return Err(WireInputError::UnsupportedVersion(self.version));
-        }
-        Ok(self.event)
-    }
-
-    pub fn to_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(self)
-    }
-
-    pub fn from_json(json: &str) -> Result<CanonicalInputEvent, WireInputError> {
-        let envelope: Self = serde_json::from_str(json).map_err(WireInputError::Decode)?;
-        envelope.into_event()
-    }
-}
-
-#[derive(Debug)]
-pub enum WireInputError {
-    UnsupportedVersion(u32),
-    Decode(serde_json::Error),
-}
-
-impl std::fmt::Display for WireInputError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnsupportedVersion(version) => {
-                write!(f, "unsupported input contract version {version}")
-            }
-            Self::Decode(error) => write!(f, "invalid canonical input wire event: {error}"),
+            text: text.into(),
+            key: None,
         }
     }
 }
-
-impl std::error::Error for WireInputError {}
 
 impl InputPayload {
+    /// Pointer moves and wheel deltas: the endpoint may merge adjacent ones,
+    /// so a host can defer draining them to the end of its event-loop turn.
+    /// Every other payload is a transition and is drained at once.
+    pub fn is_coalescible(&self) -> bool {
+        matches!(
+            self,
+            Self::Pointer(PointerInput {
+                phase: PointerPhase::Move,
+                ..
+            }) | Self::Wheel(_)
+        )
+    }
+
     /// Owned variable payload capacity, excluding the inline event itself.
     pub fn allocation_bytes(&self) -> usize {
         match self {
-            Self::TextInput(text)
+            Self::Text(CommittedText { text, .. })
             | Self::Composition(CompositionInput::Commit(text))
             | Self::Composition(CompositionInput::Update { text, .. }) => text.capacity(),
             Self::Key(key) => {
@@ -391,6 +269,69 @@ impl InputPayload {
             }
             _ => 0,
         }
+    }
+}
+
+/// Stamps one source's events with its generation, a strictly increasing
+/// sequence and a timestamp. Every host keeps one per source instead of
+/// counting sequences by hand.
+#[derive(Debug, Clone)]
+pub struct InputSequencer {
+    source: InputSourceId,
+    generation: EndpointGeneration,
+    last: u64,
+}
+
+impl InputSequencer {
+    pub fn new(source: InputSourceId, generation: EndpointGeneration) -> Self {
+        Self {
+            source,
+            generation,
+            last: 0,
+        }
+    }
+
+    pub fn source(&self) -> InputSourceId {
+        self.source
+    }
+
+    pub fn generation(&self) -> EndpointGeneration {
+        self.generation
+    }
+
+    /// Metadata for the next event. `now` is the Runtime clock time the event
+    /// happened at.
+    ///
+    /// # Panics
+    /// When the generation's sequence space is exhausted; call [`Self::advance`]
+    /// long before (a source would need 2^64 events).
+    pub fn stamp(&mut self, device: DeviceId, now: Duration) -> InputMetadata {
+        self.last = self
+            .last
+            .checked_add(1)
+            .expect("input sequence exhausted; advance the endpoint generation");
+        InputMetadata {
+            source: self.source,
+            device,
+            generation: self.generation,
+            sequence: InputSequence(self.last),
+            timestamp: InputTimestamp(now.as_nanos().min(u128::from(u64::MAX)) as u64),
+        }
+    }
+
+    /// A new endpoint generation: sequences restart and nothing stamped
+    /// before is accepted again.
+    pub fn advance(&mut self) -> EndpointGeneration {
+        self.generation = EndpointGeneration(self.generation.0.saturating_add(1));
+        self.last = 0;
+        self.generation
+    }
+}
+
+impl InputTimestamp {
+    /// The Runtime clock time this timestamp stands for.
+    pub fn as_duration(self) -> Duration {
+        Duration::from_nanos(self.0)
     }
 }
 
@@ -749,48 +690,13 @@ mod tests {
     }
 
     #[test]
-    fn high_frequency_host_lowering_uses_inline_events() {
-        let event = crate::InputEvent::Pointer {
-            phase: PointerPhase::Move,
-            pointer_id: 3,
-            pointer_type: PointerType::Mouse,
-            x: 1.0,
-            y: 2.0,
-            screen_x: 1.0,
-            screen_y: 2.0,
-            button: 0,
-            buttons: 0,
-            pressure: 0.0,
-            tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
-            twist: 0,
-            is_primary: true,
-            activation_click: false,
-            modifiers: InputModifiers::default(),
-        };
-        let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 8, 0);
-        for sequence in 1..=1_000 {
-            let mut lowered = lower_input_event(&event, meta(sequence));
-            assert_eq!(lowered.len(), 1);
-            let canonical = lowered.next().unwrap();
-            assert_eq!(canonical.payload.allocation_bytes(), 0);
-            assert_eq!(lowered.len(), 0);
-            endpoint.push(canonical).unwrap();
-        }
-        assert_eq!(endpoint.len(), 1);
-        assert_eq!(endpoint.counters().input_events_coalesced, 999);
-        assert_eq!(endpoint.counters().input_payload_alloc_bytes, 0);
-    }
-
-    #[test]
     fn stale_and_capacity_return_owned_events_and_count_rejections() {
         let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 1, 1);
         let mut text = meta(1);
         text.timestamp = InputTimestamp(1);
         let event = CanonicalInputEvent {
             metadata: text,
-            payload: InputPayload::TextInput("hello".to_owned()),
+            payload: InputPayload::Text(CommittedText::new("hello")),
         };
         let rejected = endpoint.push(event).unwrap_err();
         assert_eq!(rejected.reason, InputRejection::Capacity);
@@ -820,25 +726,10 @@ mod tests {
             modifiers: InputModifiers::default(),
         });
         assert_eq!(key.allocation_bytes(), 0);
-        assert!(!matches!(key, InputPayload::TextInput(_)));
+        assert!(!matches!(key, InputPayload::Text(_)));
         assert!(matches!(
             InputPayload::Composition(CompositionInput::Start),
             InputPayload::Composition(_)
-        ));
-    }
-
-    #[test]
-    fn versioned_wire_round_trip_and_rejects_unknown_version() {
-        let event = pointer(7, PointerPhase::Move);
-        let wire = CanonicalInputWireEvent::new(event.clone());
-        let json = wire.to_json().unwrap();
-        assert_eq!(CanonicalInputWireEvent::from_json(&json).unwrap(), event);
-
-        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        value["version"] = serde_json::json!(99);
-        assert!(matches!(
-            CanonicalInputWireEvent::from_json(&value.to_string()),
-            Err(WireInputError::UnsupportedVersion(99))
         ));
     }
 
@@ -935,44 +826,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_keyboard_lowers_key_before_committed_text() {
-        let event = crate::InputEvent::Keyboard {
-            pressed: true,
-            key: "a".into(),
-            text: Some("あ".into()),
-            code: "KeyA".into(),
-            repeat: false,
-            modifiers: InputModifiers::default(),
-        };
-        let events: Vec<_> = lower_input_event(&event, meta(7)).collect();
-        assert!(matches!(events[0].payload, InputPayload::Key(_)));
-        assert!(matches!(events[1].payload, InputPayload::TextInput(_)));
-        assert_eq!(events[1].metadata.sequence, InputSequence(8));
-    }
-
-    #[test]
-    fn released_key_never_commits_text() {
-        let event = crate::InputEvent::Keyboard {
-            pressed: false,
-            key: "a".into(),
-            text: Some("a".into()),
-            code: "KeyA".into(),
-            repeat: false,
-            modifiers: InputModifiers::default(),
-        };
-        let mut events = lower_input_event(&event, meta(1));
-        assert_eq!(events.len(), 1);
-        assert!(matches!(
-            events.next().unwrap().payload,
-            InputPayload::Key(KeyInput {
-                state: KeyState::Released,
-                ..
-            })
-        ));
-        assert_eq!(events.len(), 0);
-    }
-
-    #[test]
     fn device_bookkeeping_is_bounded_even_when_drained_or_rejected() {
         let mut endpoint = InputEndpoint::new(InputSourceId(1), EndpointGeneration(1), 2, 0);
         for device in 0..100 {
@@ -1056,24 +909,47 @@ mod tests {
     }
 
     #[test]
-    fn ime_lowering_does_not_synthesize_a_key_event() {
-        let event = crate::ImeEvent::Preedit {
-            text: "かな".into(),
-            selection: Some((0, 6)),
-        };
-        let lowered = lower_ime_event(&event, meta(1)).unwrap();
-        assert!(matches!(
-            lowered.payload,
-            InputPayload::Composition(CompositionInput::Update { .. })
-        ));
+    fn the_sequencer_orders_events_and_restarts_per_generation() {
+        let mut sequencer = InputSequencer::new(InputSourceId(4), EndpointGeneration(1));
+        let first = sequencer.stamp(DeviceId(1), Duration::from_millis(16));
+        let second = sequencer.stamp(DeviceId(2), Duration::from_millis(16));
+        assert_eq!(first.sequence, InputSequence(1));
+        assert_eq!(second.sequence, InputSequence(2));
+        assert_eq!(first.timestamp.as_duration(), Duration::from_millis(16));
+        let mut endpoint = InputEndpoint::new(InputSourceId(4), EndpointGeneration(1), 4, 0);
+        endpoint
+            .push(CanonicalInputEvent {
+                metadata: second,
+                payload: InputPayload::Focus { focused: true },
+            })
+            .unwrap();
+        assert_eq!(
+            endpoint
+                .push(CanonicalInputEvent {
+                    metadata: first,
+                    payload: InputPayload::Focus { focused: false },
+                })
+                .unwrap_err()
+                .reason,
+            InputRejection::OutOfOrder
+        );
+        assert_eq!(sequencer.advance(), EndpointGeneration(2));
+        let restarted = sequencer.stamp(DeviceId(1), Duration::ZERO);
+        assert_eq!(restarted.sequence, InputSequence(1));
+        assert_eq!(restarted.generation, EndpointGeneration(2));
     }
 
     #[test]
-    fn ime_cancel_lowering_preserves_end_without_commit() {
-        let lowered = lower_ime_event(&crate::ImeEvent::Cancelled, meta(1)).unwrap();
-        assert!(matches!(
-            lowered.payload,
-            InputPayload::Composition(CompositionInput::End)
-        ));
+    fn only_moves_and_wheel_are_coalescible() {
+        assert!(
+            InputPayload::Pointer(PointerInput::mouse(PointerPhase::Move, 1.0, 2.0))
+                .is_coalescible()
+        );
+        assert!(
+            !InputPayload::Pointer(PointerInput::mouse(PointerPhase::Down, 1.0, 2.0))
+                .is_coalescible()
+        );
+        assert!(!InputPayload::Text(CommittedText::new("a")).is_coalescible());
+        assert!(!InputPayload::Focus { focused: true }.is_coalescible());
     }
 }

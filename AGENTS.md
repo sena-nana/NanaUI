@@ -18,7 +18,8 @@ Rust / Vue input
 Supporting boundaries:
 
 - \`nana-text\` is the product text measurement, shaping, and retained text-layout authority.
-- \`nana-ui-platform\` owns platform-neutral window/input contracts; \`nana-window\` owns native handles, materials, title-bar chrome, scaling, and fullscreen behavior.
+- \`nana-ui-input\` owns the canonical input event, endpoint, sequencer, and \`HostServices\` contract; hosts lower native input into it and the per-\`AppContext\` router in \`nana-ui-runtime\` is its only consumer.
+- \`nana-ui-platform\` owns platform-neutral window contracts and re-exports the input contract; \`nana-window\` owns native handles, materials, title-bar chrome, scaling, and fullscreen behavior.
 - \`nana-ui-vue\` and the JS host are input adapters into the same \`UiWorld\`; they do not create another tree or painter.
 - \`nana-gpu\` is the GPU backend contract: \`GpuContext\` (device, generation, capabilities, loss, textures, submission guard), \`FrameContext\` (one frame's encoder, submit/discard), and \`GpuTexture\`. WGPU is the only backend; \`wgpu-interop\` is the explicit escape hatch.
 - \`nana-frame-exchange\` carries producer frames. It does not own the UI device or submission.

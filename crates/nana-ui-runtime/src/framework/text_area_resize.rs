@@ -13,7 +13,7 @@ impl AppContext {
         let Some(entity) = self.view_entity::<TextArea>(target) else {
             return Ok(false);
         };
-        let Some(document) = self.world.node(target).map(|node| node.document) else {
+        let Some(document) = self.world.document_of(target) else {
             return Ok(false);
         };
         let mut restored_height = None;

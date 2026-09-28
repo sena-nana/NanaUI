@@ -20,16 +20,16 @@ use nana_ui::runtime::{
 };
 use nana_ui::theme::type_scale;
 use nana_ui::{
-    ButtonKind, CardKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
-    RuntimeInputAdapter, StatusTone, ToastTone, ValidationIntent, WorkspaceAction, WorkspaceModel,
+    ButtonKind, CardKind, ControlSize, Icon, NanaTextShaper, RegionId, StatusTone, ToastTone,
+    ValidationIntent, WorkspaceAction, WorkspaceModel,
 };
-use nana_ui_platform::InputEvent;
+use nana_ui_platform::InputPayload;
 
 use super::runtime_host::{
-    DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, apply_title_bar_maximized,
-    apply_workspace_corners, bind_event, bind_event_ui, hugging_text, labeled_text,
-    node_is_or_under, reconcile_children, runtime_input_event, search_command_button,
-    sidebar_toggle_button, styled_text, take_pending, theme_toggle_button,
+    DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, ScriptedInput,
+    apply_title_bar_maximized, apply_workspace_corners, bind_event, bind_event_ui, event_point,
+    hugging_text, labeled_text, node_is_or_under, reconcile_children, runtime_input_event,
+    search_command_button, sidebar_toggle_button, styled_text, take_pending, theme_toggle_button,
 };
 use super::{
     GalleryDock, GalleryMessage, GallerySection, GalleryState, SurfaceView, section_label,
@@ -160,6 +160,7 @@ pub(super) struct GalleryRuntime {
     _toolbar_reset: Entity<Button>,
     last_viewport: LayoutViewport,
     chrome: RuntimeChrome,
+    scripted: ScriptedInput,
     pending: Arc<Mutex<Vec<GalleryMessage>>>,
     text: NanaTextShaper,
 }
@@ -446,6 +447,7 @@ impl GalleryRuntime {
             _toolbar_reset: toolbar_reset,
             last_viewport,
             chrome: RuntimeChrome::default(),
+            scripted: ScriptedInput::default(),
             pending,
             text,
         })
@@ -621,9 +623,9 @@ impl GalleryRuntime {
         self.flush(size);
     }
 
-    pub(super) fn note_pointer(&mut self, event: &InputEvent) {
-        if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = *event {
-            self.chrome.last_pointer = LogicalPoint::new(x, y);
+    pub(super) fn note_pointer(&mut self, event: &InputPayload) {
+        if let Some(point) = event_point(event) {
+            self.chrome.last_pointer = point;
         }
     }
 
@@ -641,7 +643,7 @@ impl GalleryRuntime {
             .unwrap_or(false)
     }
 
-    pub(super) fn take_host_messages(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
+    pub(super) fn take_host_messages(&mut self, event: &InputPayload) -> Vec<GalleryMessage> {
         self.note_pointer(event);
         let extra = self.host_pointer_messages(event);
         let mut messages = take_pending(&self.pending);
@@ -652,14 +654,10 @@ impl GalleryRuntime {
         messages
     }
 
-    fn dispatch(&mut self, event: InputEvent) -> Vec<GalleryMessage> {
-        if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = event {
-            self.chrome.last_pointer = LogicalPoint::new(x, y);
-        }
+    fn dispatch(&mut self, event: InputPayload) -> Vec<GalleryMessage> {
+        self.note_pointer(&event);
         let extra = self.host_pointer_messages(&event);
-        let document = self.document.document();
-        let _ =
-            RuntimeInputAdapter::default().dispatch(self.document.context_mut(), document, &event);
+        self.scripted.route(&mut self.document, event.clone());
         let mut messages = take_pending(&self.pending);
         messages.extend(extra);
         if !self.workspace_is_resizing() {
@@ -671,14 +669,14 @@ impl GalleryRuntime {
         messages
     }
 
-    fn host_pointer_messages(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
-        let InputEvent::Pointer {
+    fn host_pointer_messages(&mut self, event: &InputPayload) -> Vec<GalleryMessage> {
+        let InputPayload::Pointer(nana_ui_platform::PointerInput {
             phase,
             button,
             x,
             y,
             ..
-        } = *event
+        }) = *event
         else {
             return Vec::new();
         };
@@ -878,7 +876,7 @@ impl GalleryRuntime {
     }
 
     #[cfg(test)]
-    fn first_dock_handle_drag(&self) -> Option<(LogicalPoint, LogicalPoint)> {
+    fn first_dock_handle_drag(&self) -> Option<(nana_ui::LogicalPoint, nana_ui::LogicalPoint)> {
         let context = self.document.context();
         let document = self.document.document();
         context
@@ -893,14 +891,14 @@ impl GalleryRuntime {
                 if bounds.width <= 0.0 || bounds.height <= 0.0 {
                     return None;
                 }
-                let start = LogicalPoint::new(
+                let start = nana_ui::LogicalPoint::new(
                     bounds.x + bounds.width / 2.0,
                     bounds.y + bounds.height / 2.0,
                 );
                 let end = if bounds.width <= bounds.height {
-                    LogicalPoint::new(start.x + 40.0, start.y)
+                    nana_ui::LogicalPoint::new(start.x + 40.0, start.y)
                 } else {
-                    LogicalPoint::new(start.x, start.y + 40.0)
+                    nana_ui::LogicalPoint::new(start.x, start.y + 40.0)
                 };
                 Some((start, end))
             })
@@ -1071,7 +1069,9 @@ impl GalleryState {
     }
 
     #[cfg(test)]
-    pub(crate) fn gallery_runtime_dock_handle_drag(&self) -> Option<(LogicalPoint, LogicalPoint)> {
+    pub(crate) fn gallery_runtime_dock_handle_drag(
+        &self,
+    ) -> Option<(nana_ui::LogicalPoint, nana_ui::LogicalPoint)> {
         self.gallery_runtime
             .as_ref()
             .and_then(GalleryRuntime::first_dock_handle_drag)

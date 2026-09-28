@@ -209,9 +209,11 @@ pub use file_tab::{FileTab, FileTabEvent};
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::{
     ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity, ExtensionRegistrar, FormValidity,
-    FrameworkError, OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RuntimeOverlayKind,
-    Subscription, Task, TextDeleteKind, TextEditOrigin, TextFindScope, UiBuilder, UiExtension,
-    View, ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
+    FrameworkError, HeadlessInput, InputBindError, InputCounters, InputRouteError,
+    InputRouteOutcome, OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RoutedEvent,
+    RuntimeOverlayKind, Subscription, Task, TextDeleteKind, TextEditOrigin, TextFindScope,
+    UiBuilder, UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
+    VirtualTreeItems,
 };
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{

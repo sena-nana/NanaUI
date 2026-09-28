@@ -169,10 +169,6 @@ pub enum WindowEvent {
         id: WindowId,
         inside: bool,
     },
-    Ime {
-        id: WindowId,
-        event: crate::ImeEvent,
-    },
     CloseRequested {
         id: WindowId,
     },
@@ -292,21 +288,6 @@ pub struct WindowModeState {
 pub enum SystemAppearance {
     Light,
     Dark,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TextInputRequest {
-    pub enabled: bool,
-    pub cursor_area: Option<nana_ui_core::LogicalRect>,
-    pub purpose: TextInputPurpose,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum TextInputPurpose {
-    #[default]
-    Normal,
-    Password,
-    Terminal,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -899,7 +880,6 @@ mod tests {
             },
             WindowEvent::Ready { geometry, .. } if geometry.scale_factor == 2.0
         ));
-        assert_eq!(TextInputPurpose::default(), TextInputPurpose::Normal);
     }
 
     #[test]

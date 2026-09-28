@@ -99,7 +99,6 @@ mod runtime_animation;
 mod runtime_dock;
 #[cfg(feature = "hosted")]
 mod runtime_host;
-mod runtime_input;
 #[cfg(feature = "gpu")]
 mod scene_gpu;
 #[cfg(feature = "gpu")]
@@ -239,11 +238,18 @@ pub use nana_ui_core::{
     WorkspaceModel, WorkspaceMutation,
 };
 pub use nana_ui_core::{XYPadEvent, XYPadValue};
+/// Canonical input: what hosts deliver and programs observe in
+/// [`RoutedInput`], routed through the context each source is bound to.
+pub use nana_ui_platform::{
+    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, HeadlessHostServices,
+    HostServiceError, HostServices, InputDisposition, InputModifiers, InputPayload, KeyInput,
+    KeyState, PointerInput, PointerPhase, PointerType, TextInputContext, TextInputPurpose,
+    WheelInput, WheelUnit,
+};
 #[cfg(feature = "hosted")]
 pub use nana_ui_platform::{
-    DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest, ImeEvent, MousePassthroughMode,
-    WindowIcon, WindowIconError, WindowModeState, clear_registered_application_icon,
-    register_application_icon,
+    DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest, MousePassthroughMode, WindowIcon,
+    WindowIconError, WindowModeState, clear_registered_application_icon, register_application_icon,
 };
 /// Fetch host boundary, re-exported so hosts can supply
 /// [`SceneWgpuPainter::set_resource_fetch_host`] without depending on
@@ -255,6 +261,9 @@ pub use nana_ui_platform::{
 };
 pub use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityNode, AccessibilityRole, AccessibilityUpdate,
+};
+pub use nana_ui_runtime::{
+    HeadlessInput, InputBindError, InputCounters, InputRouteError, InputRouteOutcome, RoutedEvent,
 };
 #[cfg(feature = "hosted")]
 pub use nana_window::apply_hosted_system_material;
@@ -276,10 +285,6 @@ pub use runtime_host::{
     FrameDemand, HostFailure, ReportHostFailure, RoutedInput, RuntimeProgram,
     RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, run_runtime,
     run_runtime_with_store, with_startup,
-};
-pub use runtime_input::{
-    CanonicalInputKind, InputRouteOutcome, InputRouteSnapshot, InputRouter, InputRouterCounters,
-    InputRouterError, RuntimeInputAdapter,
 };
 #[cfg(feature = "gpu")]
 pub use scene_gpu::{

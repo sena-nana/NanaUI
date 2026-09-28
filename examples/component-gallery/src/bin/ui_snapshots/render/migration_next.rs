@@ -76,15 +76,18 @@ use nana_ui::{
     ActionId, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId, ControlSize,
     GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind,
     GraphPortSide, GraphSize, Icon, NanaTextShaper, RegionId, RegionRole, RegionState,
-    RuntimeInputAdapter, SettingsModel, SettingsState, SettingsTab, SettingsTabId, SplitAxis,
-    ThemeMode, TooltipConfig, TooltipPlacement, WindowMaterialMode, WorkspaceLayout, XYPadValue,
-    component_catalog, component_ids,
+    SettingsModel, SettingsState, SettingsTab, SettingsTabId, SplitAxis, ThemeMode, TooltipConfig,
+    TooltipPlacement, WindowMaterialMode, WorkspaceLayout, XYPadValue, component_catalog,
+    component_ids,
 };
 use nana_ui_core::{
     ContentFit, DialogSize, DrawerSide, LengthSpec, SemanticColorRole, SplitPaneModel, StatusTone,
     SwitchControlPosition, ToastTone, UI_METRICS, ValidationIntent, WorkspaceModel,
 };
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui_platform::{
+    InputDisposition, InputModifiers, InputPayload, KeyInput, KeyState, LogicalKey, PhysicalKey,
+    PointerInput, PointerPhase,
+};
 use nana_ui_scene::ScenePrimitiveKind;
 
 use crate::baseline::Recorder;
@@ -1717,7 +1720,7 @@ fn apply_runtime_state(
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let context = document.context_mut();
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut adapter = SnapshotInput::default();
     let bounds = context.world().layout_box(target).expect("target layout");
     let center_x = bounds.x + bounds.width / 2.0;
     let center_y = bounds.y + bounds.height / 2.0;
@@ -1963,7 +1966,7 @@ fn dispatch_range_key(
     context: &mut nana_ui::runtime::AppContext,
     document: DocumentId,
     target: StableNodeId,
-    mut adapter: RuntimeInputAdapter,
+    mut adapter: SnapshotInput,
     key: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     context.focus_node(document, target)?;
@@ -1972,52 +1975,91 @@ fn dispatch_range_key(
         .prevent_default)
 }
 
-fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
-    InputEvent::Pointer {
-        phase,
-        pointer_id: 1,
-        pointer_type: PointerType::Mouse,
-        x,
-        y,
-        screen_x: x,
-        screen_y: y,
-        button: 0,
-        buttons: u16::from(phase == PointerPhase::Down),
-        pressure: 0.0,
-        tangential_pressure: 0.0,
-        tilt_x: 0,
-        tilt_y: 0,
-        twist: 0,
-        is_primary: true,
-        activation_click: false,
-        modifiers: InputModifiers::default(),
+/// A scripted event and, for a key that types, its text.
+type Gesture = (InputPayload, Option<String>);
+
+/// Interaction scripts route through a headless input source bound to the
+/// document they drive, as a window's input does.
+#[derive(Default)]
+struct SnapshotInput {
+    bound: Option<(DocumentId, nana_ui::HeadlessInput)>,
+}
+
+impl SnapshotInput {
+    fn dispatch(
+        &mut self,
+        context: &mut nana_ui::runtime::AppContext,
+        document: DocumentId,
+        gesture: &Gesture,
+    ) -> Result<InputDisposition, nana_ui::InputRouteError> {
+        let input = match &mut self.bound {
+            Some((bound, input)) if *bound == document => input,
+            bound => {
+                &mut bound
+                    .insert((document, nana_ui::HeadlessInput::bind(context, document)))
+                    .1
+            }
+        };
+        let (payload, text) = gesture;
+        let outcome = match (payload, text) {
+            (InputPayload::Key(key), Some(text)) => {
+                input.press(context, key.clone(), Some(text), None)?
+            }
+            (payload, _) => input.route(context, payload.clone())?,
+        };
+        Ok(outcome.disposition())
+    }
+
+    /// Scripts step time themselves; every event lands at `now`.
+    fn dispatch_at(
+        &mut self,
+        context: &mut nana_ui::runtime::AppContext,
+        document: DocumentId,
+        gesture: &Gesture,
+        now: Duration,
+    ) -> Result<InputDisposition, nana_ui::InputRouteError> {
+        if let Some((bound, input)) = &mut self.bound
+            && *bound == document
+        {
+            input.set_now(now.max(input.now()));
+        }
+        self.dispatch(context, document, gesture)
     }
 }
 
-fn keyboard(key: &str) -> InputEvent {
+fn pointer(phase: PointerPhase, x: f32, y: f32) -> Gesture {
+    (
+        InputPayload::Pointer(PointerInput {
+            pressure: 0.0,
+            ..PointerInput::mouse(phase, x, y)
+        }),
+        None,
+    )
+}
+
+fn keyboard(key: &str) -> Gesture {
     keyboard_with_repeat(key, false)
 }
 
-fn keyboard_with_repeat(key: &str, repeat: bool) -> InputEvent {
-    InputEvent::Keyboard {
-        pressed: true,
-        key: key.into(),
-        text: None,
-        code: key.into(),
+fn key_input(key: &str, code: &str, repeat: bool) -> KeyInput {
+    KeyInput {
+        physical: PhysicalKey(code.to_owned().into()),
+        logical: LogicalKey(key.to_owned().into()),
+        state: KeyState::Pressed,
         repeat,
         modifiers: InputModifiers::default(),
     }
 }
 
-fn keyboard_text(text: &str) -> InputEvent {
-    InputEvent::Keyboard {
-        pressed: true,
-        key: text.into(),
-        text: Some(text.into()),
-        code: "KeyX".into(),
-        repeat: false,
-        modifiers: InputModifiers::default(),
-    }
+fn keyboard_with_repeat(key: &str, repeat: bool) -> Gesture {
+    (InputPayload::Key(key_input(key, key, repeat)), None)
+}
+
+fn keyboard_text(text: &str) -> Gesture {
+    (
+        InputPayload::Key(key_input(text, "KeyX", false)),
+        Some(text.to_owned()),
+    )
 }
 
 #[cfg(test)]

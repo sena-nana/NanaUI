@@ -642,6 +642,12 @@ impl AppContext {
         }
         let application_cursor = self.read(entity, |view| view.screen.application_cursor)?;
         let bytes = terminal_key_bytes(key, text, control, alt, shift, application_cursor);
+        // A printable key without its text sends nothing: the text arrives as
+        // its own event, and the key must not count as handled or that text
+        // would be dropped with it.
+        if bytes.is_empty() {
+            return Ok(false);
+        }
         self.terminal_input(document, bytes)
     }
 

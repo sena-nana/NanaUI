@@ -20,7 +20,7 @@ use nana_ui::{
     RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode,
     WindowDescriptor, run_runtime,
 };
-use nana_ui_platform::{ImeEvent, InputEvent, PointerType, WindowEvent, WindowId};
+use nana_ui_platform::{CompositionInput, InputPayload, PointerType, WindowEvent, WindowId};
 use nana_ui_runtime::FrameworkError;
 use nana_ui_scene::RuntimeDocument;
 use nana_ui_vue::{
@@ -198,6 +198,40 @@ impl AcceptanceProgram {
     /// Includes the focused field's layout box so #20 can check the candidate
     /// window position against the field it belongs to. Windows never plumbs an
     /// IME cursor area, so this box is the closest caret anchor the host knows.
+    fn observe_composition(&mut self, id: WindowId, composition: &CompositionInput) {
+        match composition {
+            CompositionInput::Update { text, selection } => {
+                eprintln!(
+                    "nana ime window={} preedit={text:?} selection={selection:?}",
+                    id.0
+                );
+                if self.input_probe {
+                    self.composition
+                        .get_or_insert_with(CompositionProbe::default)
+                        .push(text);
+                }
+            }
+            CompositionInput::Commit(text) => {
+                eprintln!("nana ime window={} commit={text:?}", id.0);
+                if self.input_probe {
+                    self.report_composition(id, "commit", Some(text));
+                }
+            }
+            CompositionInput::Enabled | CompositionInput::Start => {
+                eprintln!("nana ime window={} {composition:?}", id.0);
+            }
+            other => {
+                eprintln!("nana ime window={} {other:?}", id.0);
+                // Disabled / End / DeleteSurrounding while composing means the
+                // composition ended without a commit; report it rather than
+                // leaving the probe waiting for one that never arrives.
+                if self.input_probe && self.composition.is_some() {
+                    self.report_composition(id, "ended-without-commit", None);
+                }
+            }
+        }
+    }
+
     fn report_composition(&mut self, id: WindowId, outcome: &str, commit: Option<&str>) {
         let Some(probe) = self.composition.take() else {
             return;
@@ -355,27 +389,26 @@ impl RuntimeProgram for AcceptanceProgram {
         input: RoutedInput<'_>,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        let event = input.event;
-        if let InputEvent::Pointer {
-            pointer_type: PointerType::Pen,
-            phase,
-            pointer_id,
-            x,
-            y,
-            pressure,
-            tangential_pressure,
-            tilt_x,
-            tilt_y,
-            twist,
-            button,
-            buttons,
-            ..
-        } = event
-        {
-            eprintln!(
-                "nana pen window={} phase={phase:?} id={pointer_id} xy=({x:.1},{y:.1}) pressure={pressure:.3} tangential={tangential_pressure:.3} tilt=({tilt_x},{tilt_y}) twist={twist} button={button} buttons={buttons}",
-                id.0
-            );
+        match &input.event.payload {
+            InputPayload::Pointer(pointer) if pointer.pointer_type == PointerType::Pen => {
+                eprintln!(
+                    "nana pen window={} phase={:?} id={} xy=({:.1},{:.1}) pressure={:.3} tangential={:.3} tilt=({},{}) twist={} button={} buttons={}",
+                    id.0,
+                    pointer.phase,
+                    pointer.pointer_id.0,
+                    pointer.x,
+                    pointer.y,
+                    pointer.pressure,
+                    pointer.tangential_pressure,
+                    pointer.tilt_x,
+                    pointer.tilt_y,
+                    pointer.twist,
+                    pointer.button,
+                    pointer.buttons
+                );
+            }
+            InputPayload::Composition(composition) => self.observe_composition(id, composition),
+            _ => {}
         }
         self.inner.input_event(id, input, context)
     }
@@ -396,47 +429,16 @@ impl RuntimeProgram for AcceptanceProgram {
         event: WindowEvent,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        match &event {
-            WindowEvent::Ready { id, .. } => {
-                if let Some(probe) = self.lifecycle.as_mut() {
-                    probe.ready(*id, context);
-                }
-                eprintln!(
-                    "nana window ready id={} material={:?} alpha={:?}",
-                    id.0,
-                    context.material(),
-                    context.surface_alpha_mode()
-                );
+        if let WindowEvent::Ready { id, .. } = &event {
+            if let Some(probe) = self.lifecycle.as_mut() {
+                probe.ready(*id, context);
             }
-            WindowEvent::Ime { id, event: ime } => match ime {
-                ImeEvent::Preedit { text, selection } => {
-                    eprintln!(
-                        "nana ime window={} preedit={text:?} selection={selection:?}",
-                        id.0
-                    );
-                    if self.input_probe {
-                        self.composition
-                            .get_or_insert_with(CompositionProbe::default)
-                            .push(text);
-                    }
-                }
-                ImeEvent::Commit(text) => {
-                    eprintln!("nana ime window={} commit={text:?}", id.0);
-                    if self.input_probe {
-                        self.report_composition(*id, "commit", Some(text));
-                    }
-                }
-                other => {
-                    eprintln!("nana ime window={} {other:?}", id.0);
-                    // Disabled / DeleteSurrounding while composing means the
-                    // composition ended without a commit; report it rather than
-                    // leaving the probe waiting for one that never arrives.
-                    if self.input_probe && self.composition.is_some() {
-                        self.report_composition(*id, "ended-without-commit", None);
-                    }
-                }
-            },
-            _ => {}
+            eprintln!(
+                "nana window ready id={} material={:?} alpha={:?}",
+                id.0,
+                context.material(),
+                context.surface_alpha_mode()
+            );
         }
         let closed = match &event {
             WindowEvent::Closed { id } => Some(*id),

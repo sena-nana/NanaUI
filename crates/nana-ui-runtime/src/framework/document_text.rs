@@ -167,7 +167,7 @@ impl AppContext {
     ) -> Option<StableNodeId> {
         let depth_of = |mut id: StableNodeId| {
             let mut depth = 0_u32;
-            while let Some(parent) = self.world.node(id).and_then(|node| node.parent) {
+            while let Some(parent) = self.world.parent_id(id) {
                 depth += 1;
                 id = parent;
             }

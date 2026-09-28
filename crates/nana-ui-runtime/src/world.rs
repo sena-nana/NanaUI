@@ -1996,7 +1996,8 @@ impl UiWorld {
             .map_or_else(Default::default, record_containing_writing)
     }
 
-    pub(crate) fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
+    /// The node's parent, without copying the node as [`Self::node`] does.
+    pub fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
         self.nodes.get(id)?.hierarchy.parent
     }
 

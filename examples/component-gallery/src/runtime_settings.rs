@@ -11,15 +11,16 @@ use nana_ui::runtime::{
 };
 use nana_ui::theme::type_scale;
 use nana_ui::{
-    AppearanceEvent, ButtonKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
-    RuntimeInputAdapter, WorkspaceAction, WorkspaceModel,
+    AppearanceEvent, ButtonKind, ControlSize, Icon, NanaTextShaper, RegionId, WorkspaceAction,
+    WorkspaceModel,
 };
-use nana_ui_platform::InputEvent;
+use nana_ui_platform::InputPayload;
 
 use super::runtime_host::{
-    DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, apply_title_bar_maximized,
-    apply_workspace_corners, bind_event, hugging_text, runtime_input_event, search_command_button,
-    sidebar_toggle_button, styled_text, take_pending, theme_toggle_button,
+    DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, ScriptedInput,
+    apply_title_bar_maximized, apply_workspace_corners, bind_event, event_point, hugging_text,
+    runtime_input_event, search_command_button, sidebar_toggle_button, styled_text, take_pending,
+    theme_toggle_button,
 };
 use super::{GalleryMessage, GalleryState, appearance_message, settings_view};
 
@@ -44,6 +45,7 @@ pub(super) struct GallerySettingsRuntime {
     title_trailing: Entity<HostStack>,
     last_viewport: LayoutViewport,
     chrome: RuntimeChrome,
+    scripted: ScriptedInput,
     pending: Arc<Mutex<Vec<GalleryMessage>>>,
     text: NanaTextShaper,
     #[cfg(test)]
@@ -298,6 +300,7 @@ impl GallerySettingsRuntime {
             title_trailing,
             last_viewport,
             chrome: RuntimeChrome::default(),
+            scripted: ScriptedInput::default(),
             pending,
             text,
             #[cfg(test)]
@@ -413,9 +416,9 @@ impl GallerySettingsRuntime {
         self.flush(size);
     }
 
-    pub(super) fn note_pointer(&mut self, event: &InputEvent) {
-        if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = *event {
-            self.chrome.last_pointer = LogicalPoint::new(x, y);
+    pub(super) fn note_pointer(&mut self, event: &InputPayload) {
+        if let Some(point) = event_point(event) {
+            self.chrome.last_pointer = point;
         }
     }
 
@@ -433,7 +436,7 @@ impl GallerySettingsRuntime {
             .unwrap_or(false)
     }
 
-    pub(super) fn take_host_messages(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
+    pub(super) fn take_host_messages(&mut self, event: &InputPayload) -> Vec<GalleryMessage> {
         self.note_pointer(event);
         let mut messages = take_pending(&self.pending);
         if !self.workspace_is_resizing() {
@@ -452,13 +455,9 @@ impl GallerySettingsRuntime {
         messages
     }
 
-    fn dispatch(&mut self, event: InputEvent) -> Vec<GalleryMessage> {
-        if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = event {
-            self.chrome.last_pointer = LogicalPoint::new(x, y);
-        }
-        let document = self.document.document();
-        let _ =
-            RuntimeInputAdapter::default().dispatch(self.document.context_mut(), document, &event);
+    fn dispatch(&mut self, event: InputPayload) -> Vec<GalleryMessage> {
+        self.note_pointer(&event);
+        self.scripted.route(&mut self.document, event.clone());
         let mut messages = take_pending(&self.pending);
         if !self.workspace_is_resizing() {
             messages.extend(

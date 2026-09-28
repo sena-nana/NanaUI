@@ -139,12 +139,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return;
             }
         };
-        // A cursor declaration can change while the pointer is stationary;
-        // refresh the native cursor after the document's computed styles settle.
-        // Ordinary redraws keep the pointer-event throttle and avoid a full
-        // document probe on every animation/GPU frame.
+        // A cursor declaration can change under a resting pointer; the
+        // Runtime re-derives it once the document's computed styles settle.
         if update.cursor_changed {
-            self.sync_window_cursor_forced(id);
+            self.refresh_window_input(id);
         }
         self.sync_native_window_controls(id, &update);
         let Some(pending) = self.accessibility_pending_mut(id) else {
@@ -387,7 +385,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if !self.is_live_resize(id) {
             self.synchronize_accessibility(id);
         }
-        self.apply_ime_request(id);
+        // Layout moved the caret, or the field under it: the IME follows.
+        self.refresh_window_input(id);
         let mut update = self
             .program
             .window_frame_presented(id, &self.context_for(id));

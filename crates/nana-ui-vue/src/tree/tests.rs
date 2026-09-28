@@ -2062,8 +2062,15 @@ fn a_focused_textarea_reports_its_caret_for_the_ime() {
             },
         )]);
         doc.set_focus(area);
-        doc.text_input_caret(area)
-            .expect("a focused editor draws a caret")
+        match doc
+            .runtime
+            .component_geometry(StableNodeId::try_from(area).unwrap())
+        {
+            Some(nana_ui_runtime::ComponentGeometry::TextInput {
+                caret: Some(caret), ..
+            }) => caret,
+            _ => panic!("a focused editor draws a caret"),
+        }
     };
     let horizontal = caret(None);
     assert!(

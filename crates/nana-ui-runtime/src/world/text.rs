@@ -3711,7 +3711,7 @@ impl UiWorld {
             Arc::make_mut(&mut style.layout).padding_top = Some(padding_top);
             self.write_node_style(id, style);
             self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
-            if let Some(parent) = self.node(id).and_then(|node| node.parent) {
+            if let Some(parent) = self.parent_id(id) {
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
             }
             changed = true;

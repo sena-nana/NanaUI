@@ -1,11 +1,11 @@
-//! GameTextInput buffer → [`ImeEvent`] mapping (host-testable).
+//! GameTextInput buffer → [`CompositionInput`] mapping (host-testable).
 //!
 //! GameActivity's InputConnection owns a full text buffer. Nana's editor
 //! authority stays on Runtime `TextInput`; this module only diffs the buffer
-//! into [`RuntimeInputAdapter::dispatch_ime`] events. It is not a second
+//! into composition events the Runtime routes. It is not a second
 //! text state machine.
 
-use nana_ui_platform::ImeEvent;
+use nana_ui_platform::CompositionInput;
 
 /// Android `InputType` / `EditorInfo` bits mirrored for host tests.
 pub const TYPE_CLASS_TEXT: u32 = 1;
@@ -25,7 +25,7 @@ pub struct SlotImeBuffer {
     pub compose: Option<(usize, usize)>,
 }
 
-/// `EditorInfo` subset mirrored from [`nana_ui_platform::TextInputRequest`].
+/// `EditorInfo` subset mirrored from [`nana_ui_platform::TextInputContext`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotEditorInfo {
     pub input_type: u32,
@@ -55,14 +55,14 @@ pub fn editor_info_from_request(password: bool, multiline: bool) -> SlotEditorIn
 
 /// Diff `previous` → `next` into desktop IME events.
 ///
-/// Composing spans become [`ImeEvent::Preedit`]; a composition that ends
-/// becomes [`ImeEvent::Commit`]; committed-only edits become
-/// [`ImeEvent::DeleteSurrounding`] and/or [`ImeEvent::Commit`]. Selection-only
+/// Composing spans become [`CompositionInput::Update`]; a composition that
+/// ends becomes [`CompositionInput::Commit`]; committed-only edits become
+/// [`CompositionInput::DeleteSurrounding`] and/or [`CompositionInput::Commit`]. Selection-only
 /// updates produce no events.
 pub fn ime_events_from_buffer_delta(
     previous: &SlotImeBuffer,
     next: &SlotImeBuffer,
-) -> Vec<ImeEvent> {
+) -> Vec<CompositionInput> {
     let previous = previous.clamped();
     let next = next.clamped();
     if previous == next {
@@ -76,7 +76,7 @@ pub fn ime_events_from_buffer_delta(
             let prev_committed = without_compose(&previous);
             if prev_committed.text != next_committed.text {
                 match composition_replacement(&previous, &next_committed) {
-                    Some(committed) => events.push(ImeEvent::Commit(committed)),
+                    Some(committed) => events.push(CompositionInput::Commit(committed)),
                     None => events.extend(committed_edit_events(&prev_committed, &next_committed)),
                 }
             }
@@ -95,7 +95,7 @@ pub fn ime_events_from_buffer_delta(
                 floor_boundary(&preedit, rel_end),
             )
         });
-        events.push(ImeEvent::Preedit {
+        events.push(CompositionInput::Update {
             text: preedit,
             selection,
         });
@@ -104,7 +104,7 @@ pub fn ime_events_from_buffer_delta(
 
     if previous.compose.is_some() {
         return match composition_replacement(&previous, &next) {
-            Some(committed) => vec![ImeEvent::Commit(committed)],
+            Some(committed) => vec![CompositionInput::Commit(committed)],
             // Nothing in `next` lines up with the text that surrounded the
             // composition, so nothing identifies what replaced it. Committing
             // the old preedit here would put back text the IME just abandoned;
@@ -209,7 +209,7 @@ fn without_compose(buffer: &SlotImeBuffer) -> SlotImeBuffer {
     }
 }
 
-fn committed_edit_events(previous: &SlotImeBuffer, next: &SlotImeBuffer) -> Vec<ImeEvent> {
+fn committed_edit_events(previous: &SlotImeBuffer, next: &SlotImeBuffer) -> Vec<CompositionInput> {
     if previous.text == next.text {
         return Vec::new();
     }
@@ -233,13 +233,13 @@ fn committed_edit_events(previous: &SlotImeBuffer, next: &SlotImeBuffer) -> Vec<
         let caret = previous.selection_end.min(previous.text.len());
         let before_bytes = caret.saturating_sub(prefix).min(deleted.len());
         let after_bytes = deleted.len().saturating_sub(before_bytes);
-        events.push(ImeEvent::DeleteSurrounding {
+        events.push(CompositionInput::DeleteSurrounding {
             before_bytes,
             after_bytes,
         });
     }
     if !inserted.is_empty() {
-        events.push(ImeEvent::Commit(inserted.to_string()));
+        events.push(CompositionInput::Commit(inserted.to_string()));
     }
     events
 }
@@ -371,7 +371,7 @@ mod tests {
         assert!(
             !events.iter().any(|event| matches!(
                 event,
-                ImeEvent::Commit(text) if text.contains('\u{4e16}')
+                CompositionInput::Commit(text) if text.contains('\u{4e16}')
             )),
             "the discarded preedit must not come back: {events:?}"
         );
@@ -388,7 +388,7 @@ mod tests {
         let next = buffer("你", 3, Some((0, 3)));
         assert_eq!(
             ime_events_from_buffer_delta(&prev, &next),
-            vec![ImeEvent::Preedit {
+            vec![CompositionInput::Update {
                 text: "你".into(),
                 selection: Some((3, 3)),
             }]
@@ -401,7 +401,7 @@ mod tests {
         let next = buffer("你", 3, None);
         assert_eq!(
             ime_events_from_buffer_delta(&prev, &next),
-            vec![ImeEvent::Commit("你".into())]
+            vec![CompositionInput::Commit("你".into())]
         );
     }
 
@@ -411,7 +411,7 @@ mod tests {
         let next = buffer("nan", 3, None);
         assert_eq!(
             ime_events_from_buffer_delta(&prev, &next),
-            vec![ImeEvent::Commit("n".into())]
+            vec![CompositionInput::Commit("n".into())]
         );
     }
 
@@ -421,7 +421,7 @@ mod tests {
         let next = buffer("na", 2, None);
         assert_eq!(
             ime_events_from_buffer_delta(&prev, &next),
-            vec![ImeEvent::DeleteSurrounding {
+            vec![CompositionInput::DeleteSurrounding {
                 before_bytes: 1,
                 after_bytes: 0,
             }]
@@ -453,8 +453,8 @@ mod tests {
         assert_eq!(
             ime_events_from_buffer_delta(&prev, &next),
             vec![
-                ImeEvent::Commit("你".into()),
-                ImeEvent::Preedit {
+                CompositionInput::Commit("你".into()),
+                CompositionInput::Update {
                     text: "好".into(),
                     selection: Some((3, 3)),
                 }
@@ -468,7 +468,7 @@ mod tests {
         let next = buffer("您", 3, Some((0, 3)));
         assert_eq!(
             ime_events_from_buffer_delta(&prev, &next),
-            vec![ImeEvent::Preedit {
+            vec![CompositionInput::Update {
                 text: "您".into(),
                 selection: Some((3, 3)),
             }]

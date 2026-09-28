@@ -11,12 +11,12 @@ use nana_ui::runtime::{
     DocumentId, Entity, FrameworkError, GpuTextureView, List, RuntimeDocument, Text, TextInput,
 };
 use nana_ui::{
-    HostTexture, HostTextureAlphaMode, HostTextureRegistry, RoutedInput, RuntimeInputAdapter,
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, ThemeMode,
-    WindowDescriptor, dock_workspace_window_id, run_runtime, runtime_dock_window_update,
+    HostTexture, HostTextureAlphaMode, HostTextureRegistry, RoutedInput, RuntimeProgram,
+    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, ThemeMode, WindowDescriptor,
+    dock_workspace_window_id, run_runtime, runtime_dock_window_update,
 };
 use nana_ui_platform::host::WindowCommand;
-use nana_ui_platform::{ImeEvent, WindowEvent, WindowId, WindowRole};
+use nana_ui_platform::{WindowEvent, WindowId, WindowRole};
 
 const TOOL: WindowId = WindowId(100);
 const PREVIEW_SLOT: &str = "preview";
@@ -135,35 +135,8 @@ impl Fixture {
                 window_commands: vec![WindowCommand::Close(id)],
                 exit: false,
             }),
-            WindowEvent::Ime { id, event } => self.apply_ime(id, event),
             _ => Ok(RuntimeProgramUpdate::default()),
         }
-    }
-
-    fn apply_ime(
-        &mut self,
-        id: WindowId,
-        event: ImeEvent,
-    ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        let ime_changed = self
-            .documents
-            .get_mut(&id)
-            .map(|document| {
-                let document_id = document.document();
-                RuntimeInputAdapter::default()
-                    .dispatch_ime(document.context_mut(), document_id, &event)
-                    .map(|disposition| {
-                        disposition.prevent_default && !matches!(event, ImeEvent::Enabled)
-                    })
-            })
-            .transpose()?
-            .unwrap_or(false);
-        let pending = self.drain_pending()?;
-        Ok(if ime_changed {
-            merge_update(RuntimeProgramUpdate::redraw(id), pending)
-        } else {
-            pending
-        })
     }
 
     fn on_accessibility_action(
@@ -367,18 +340,10 @@ impl RuntimeProgram for Fixture {
     fn input_event(
         &mut self,
         id: WindowId,
-        input: RoutedInput<'_>,
+        _input: RoutedInput<'_>,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
-        let event = input.event;
-        if let Some(document) = self.documents.get_mut(&id) {
-            let document_id = document.document();
-            let _ = RuntimeInputAdapter::default().dispatch(
-                document.context_mut(),
-                document_id,
-                event,
-            )?;
-        }
+        // The host routed the event into this window's document already.
         let pending = self.drain_pending()?;
         Ok(if pending == RuntimeProgramUpdate::default() {
             RuntimeProgramUpdate::redraw(id)
@@ -392,10 +357,6 @@ impl RuntimeProgram for Fixture {
         event: WindowEvent,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        // Scene host already applied IME; re-dispatch would commit twice.
-        if matches!(event, WindowEvent::Ime { .. }) {
-            return RuntimeProgramUpdate::default();
-        }
         self.on_window_event(event)
             .unwrap_or_else(|error| panic!("fixture window event failed: {error}"))
     }
@@ -673,16 +634,24 @@ mod tests {
         let preedit = "你";
         let commit = "你好";
 
-        let preedited = fixture
-            .on_window_event(WindowEvent::Ime {
-                id: WindowId::PRIMARY,
-                event: ImeEvent::Preedit {
+        // Composition reaches the document through its input source, as
+        // the host routes it.
+        let document = fixture
+            .documents
+            .get_mut(&WindowId::PRIMARY)
+            .expect("primary");
+        let document_id = document.document();
+        let mut input = nana_ui::HeadlessInput::bind(document.context_mut(), document_id);
+        let preedited = input
+            .composition(
+                document.context_mut(),
+                nana_ui::CompositionInput::Update {
                     text: preedit.into(),
                     selection: Some((0, preedit.len())),
                 },
-            })
+            )
             .expect("preedit");
-        assert_eq!(preedited.redraw, RuntimeRedraw::Window(WindowId::PRIMARY));
+        assert!(preedited.handled);
 
         let (value, sel) = name_state(&fixture);
         assert_eq!(value, committed);
@@ -698,16 +667,17 @@ mod tests {
         assert_eq!(composition.text, preedit);
         assert_eq!(composition.selection, Some((0, preedit.len())));
 
-        let committed_update = fixture
-            .on_window_event(WindowEvent::Ime {
-                id: WindowId::PRIMARY,
-                event: ImeEvent::Commit(commit.into()),
-            })
+        let document = fixture
+            .documents
+            .get_mut(&WindowId::PRIMARY)
+            .expect("primary");
+        let committed_update = input
+            .composition(
+                document.context_mut(),
+                nana_ui::CompositionInput::Commit(commit.into()),
+            )
             .expect("commit");
-        assert_eq!(
-            committed_update.redraw,
-            RuntimeRedraw::Window(WindowId::PRIMARY)
-        );
+        assert!(committed_update.handled);
 
         let (value, sel) = name_state(&fixture);
         assert_eq!(value, format!("{committed}{commit}"));

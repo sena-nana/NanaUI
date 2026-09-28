@@ -434,7 +434,7 @@ impl AppContext {
             if self.is_split_handle(target) {
                 return Some(target);
             }
-            let mut ancestor = self.world().node(target).and_then(|node| node.parent);
+            let mut ancestor = self.world().parent_id(target);
             while let Some(node) = ancestor {
                 if self.is_split_handle(node) {
                     return Some(node);
@@ -445,7 +445,7 @@ impl AppContext {
                 {
                     return Some(handle);
                 }
-                ancestor = self.world().node(node).and_then(|inner| inner.parent);
+                ancestor = self.world().parent_id(node);
             }
         }
         // Every pointer move that is not inside a split reaches here, so walk
@@ -642,7 +642,7 @@ impl AppContext {
     }
 
     fn split_for_handle(&self, id: StableNodeId) -> Option<crate::Entity<SplitPane>> {
-        let parent = self.world().node(id)?.parent?;
+        let parent = self.world().parent_id(id)?;
         let entity = self.split_pane_entity(parent)?;
         self.read(entity, |pane| pane.handle == Some(id))
             .ok()

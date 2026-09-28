@@ -3,8 +3,11 @@
 //! and crosses columns with Left/Right, and a click lands on the glyph under
 //! it — end to end, through the real engine.
 
-use nana_ui::{NanaTextShaper, RuntimeInputAdapter, runtime::*};
-use nana_ui_platform::{InputEvent, InputModifiers};
+use nana_ui::{HeadlessInput, NanaTextShaper, runtime::*};
+use nana_ui_platform::{
+    InputModifiers, InputPayload, KeyInput, KeyState, PointerId, WheelInput, WheelUnit,
+};
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,16 +19,15 @@ fn press(
     modifiers: InputModifiers,
     shaper: &mut NanaTextShaper,
 ) {
-    let event = InputEvent::Keyboard {
-        pressed: true,
-        key: key.into(),
-        code: key.into(),
-        text: None,
+    let event = InputPayload::Key(KeyInput {
+        physical: nana_ui_platform::PhysicalKey(Cow::Owned(key.into())),
+        logical: nana_ui_platform::LogicalKey(Cow::Owned(key.into())),
+        state: KeyState::Pressed,
         repeat: false,
         modifiers,
-    };
-    RuntimeInputAdapter::default()
-        .dispatch_with_shaper(cx, doc, &event, Duration::ZERO, Some(shaper))
+    });
+    HeadlessInput::bind(cx, doc)
+        .route_shaped(cx, event, Some(shaper))
         .unwrap();
 }
 
@@ -175,28 +177,31 @@ fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
     let node = area.stable_id();
     settle(&mut cx, doc, &[node]);
     let bounds = cx.world().layout_box(node).unwrap();
-    let wheel = |delta_x: f32| InputEvent::Wheel {
-        x: bounds.x + bounds.width / 2.0,
-        y: bounds.y + bounds.height / 2.0,
-        delta_x,
-        delta_y: 0.0,
-        line_delta: false,
-        modifiers: InputModifiers::default(),
+    let wheel = |delta_x: f32| {
+        InputPayload::Wheel(WheelInput {
+            pointer_id: PointerId(1),
+            x: bounds.x + bounds.width / 2.0,
+            y: bounds.y + bounds.height / 2.0,
+            delta_x,
+            delta_y: 0.0,
+            unit: WheelUnit::Pixels,
+            modifiers: InputModifiers::default(),
+        })
     };
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut adapter = HeadlessInput::bind(&mut cx, doc);
     // A platform's positive horizontal delta scrolls the page leftwards,
     // which in `vertical-rl` is going on through the text.
     let metrics = cx.world().scroll_metrics(node).expect("measured editor");
     assert!(metrics.origin_x < 0.0, "columns overflow left: {metrics:?}");
     assert_eq!(metrics.max_offset().x, 0.0);
-    adapter.dispatch(&mut cx, doc, &wheel(40.0)).unwrap();
+    adapter.route(&mut cx, wheel(40.0)).unwrap();
     let scrolled = cx.world().scroll_offset(node).unwrap_or_default();
     assert!(
         scrolled.x < 0.0,
         "towards the later columns on the left: {scrolled:?}"
     );
     // As far as the last column, and no further.
-    adapter.dispatch(&mut cx, doc, &wheel(4_000.0)).unwrap();
+    adapter.route(&mut cx, wheel(4_000.0)).unwrap();
     assert_eq!(
         cx.world().scroll_offset(node).unwrap_or_default().x,
         metrics.origin_x
@@ -226,7 +231,7 @@ fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
         focus_of(&cx, area)
     );
     // And rightwards comes back to the first column.
-    adapter.dispatch(&mut cx, doc, &wheel(-400.0)).unwrap();
+    adapter.route(&mut cx, wheel(-400.0)).unwrap();
     assert_eq!(cx.world().scroll_offset(node).unwrap_or_default().x, 0.0);
 }
 
@@ -264,18 +269,18 @@ fn a_vertical_rl_editor_hands_its_column_scroll_to_the_painter() {
     assert_eq!(at_rest.text_x, still.x);
 
     let bounds = cx.world().layout_box(node).unwrap();
-    RuntimeInputAdapter::default()
-        .dispatch(
+    HeadlessInput::bind(&mut cx, doc)
+        .route(
             &mut cx,
-            doc,
-            &InputEvent::Wheel {
+            InputPayload::Wheel(WheelInput {
+                pointer_id: PointerId(1),
                 x: bounds.x + bounds.width / 2.0,
                 y: bounds.y + bounds.height / 2.0,
                 delta_x: 40.37,
                 delta_y: 0.0,
-                line_delta: false,
+                unit: WheelUnit::Pixels,
                 modifiers: InputModifiers::default(),
-            },
+            }),
         )
         .unwrap();
     let scrolled = cx.world().scroll_offset(node).unwrap_or_default().x;

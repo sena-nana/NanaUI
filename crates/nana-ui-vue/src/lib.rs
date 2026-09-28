@@ -253,7 +253,8 @@ use nana_js_engine::{
 };
 #[cfg(feature = "scene-view")]
 use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
-pub use nana_ui_platform::ImeEvent;
+/// Native composition (IME) as the platform delivers it.
+pub use nana_ui_platform::CompositionInput as NativeComposition;
 use nana_ui_runtime::TextInputState;
 use nana_ui_web_api::{
     SharedCanvasRuntime, SharedMediaRuntime, SharedWebApiState, compose_runtime_artifact,

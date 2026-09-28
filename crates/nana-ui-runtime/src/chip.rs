@@ -221,7 +221,7 @@ impl AppContext {
 
     /// If `id` is a Chip's assembled close control, return that Chip.
     pub fn chip_dismiss_target(&self, id: StableNodeId) -> Option<Entity<Chip>> {
-        let parent = self.world().node(id)?.parent?;
+        let parent = self.world().parent_id(id)?;
         let chip = self.view_entity::<Chip>(parent)?;
         let close = self.read(chip, |chip| chip.close).ok().flatten()?;
         (close == id).then_some(chip)

@@ -1,6 +1,6 @@
 use nana_ui_core::LogicalPoint;
 use nana_ui_platform::host::WindowCommand;
-use nana_ui_platform::{InputEvent, PointerPhase, WindowId};
+use nana_ui_platform::{InputPayload, PointerInput, PointerPhase, WindowId};
 use nana_ui_runtime::{
     AccessibilityRole, AppContext, AppTitleBar, AppTitleBarControls, DocumentId, Entity, NodeKind,
 };
@@ -161,7 +161,7 @@ impl TitleBarDragTracker {
         &mut self,
         context: &AppContext,
         document: DocumentId,
-        event: &InputEvent,
+        event: &InputPayload,
     ) -> Vec<WindowChromeEvent> {
         if self.pressed
             && self.control.is_none()
@@ -173,8 +173,11 @@ impl TitleBarDragTracker {
             self.drag_bar = None;
             return vec![WindowChromeEvent::PointerCancelled];
         }
-        match event {
-            InputEvent::Pointer {
+        let InputPayload::Pointer(pointer) = event else {
+            return Vec::new();
+        };
+        match pointer {
+            PointerInput {
                 phase: PointerPhase::Down,
                 button: 0,
                 is_primary: true,
@@ -205,7 +208,7 @@ impl TitleBarDragTracker {
                     }
                 }
             }
-            InputEvent::Pointer {
+            PointerInput {
                 phase: PointerPhase::Move,
                 x,
                 y,
@@ -213,7 +216,7 @@ impl TitleBarDragTracker {
             } if self.pressed && self.control.is_none() => {
                 vec![WindowChromeEvent::PointerMoved(LogicalPoint::new(*x, *y))]
             }
-            InputEvent::Pointer {
+            PointerInput {
                 phase: PointerPhase::Up,
                 button: 0,
                 x,
@@ -233,7 +236,7 @@ impl TitleBarDragTracker {
                     vec![WindowChromeEvent::PointerReleased]
                 }
             }
-            InputEvent::Pointer {
+            PointerInput {
                 phase: PointerPhase::Cancel,
                 ..
             } if self.pressed => {
@@ -392,7 +395,7 @@ pub fn apply_title_bar_pointer(
     tracker: &mut TitleBarDragTracker,
     context: &AppContext,
     document: DocumentId,
-    event: &InputEvent,
+    event: &InputPayload,
 ) -> Option<WindowChromeAction> {
     let mut action = None;
     for chrome_event in tracker.events(context, document, event) {
@@ -477,7 +480,7 @@ mod tests {
         WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState, WindowControlMode,
     };
     use nana_ui_core::LogicalPoint;
-    use nana_ui_platform::WindowId;
+    use nana_ui_platform::{InputPayload, PointerInput, PointerPhase, WindowId};
 
     #[cfg(not(target_os = "macos"))]
     #[test]
@@ -649,57 +652,32 @@ mod tests {
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn with_activation_click(
-        mut event: nana_ui_platform::InputEvent,
-    ) -> nana_ui_platform::InputEvent {
-        if let nana_ui_platform::InputEvent::Pointer {
-            activation_click, ..
-        } = &mut event
-        {
-            *activation_click = true;
+    fn with_activation_click(mut event: InputPayload) -> InputPayload {
+        if let InputPayload::Pointer(pointer) = &mut event {
+            pointer.activation_click = true;
         }
         event
     }
 
-    fn pointer_down(x: f32, y: f32) -> nana_ui_platform::InputEvent {
-        nana_ui_platform::InputEvent::Pointer {
-            phase: nana_ui_platform::PointerPhase::Down,
-            pointer_id: 1,
-            pointer_type: nana_ui_platform::PointerType::Mouse,
-            x,
-            y,
-            screen_x: x,
-            screen_y: y,
-            button: 0,
-            buttons: 1,
+    fn pointer_at(phase: PointerPhase, x: f32, y: f32) -> InputPayload {
+        InputPayload::Pointer(PointerInput {
+            buttons: u16::from(phase != PointerPhase::Up),
             pressure: 0.0,
-            tangential_pressure: 0.0,
-            tilt_x: 0,
-            tilt_y: 0,
-            twist: 0,
-            is_primary: true,
-            activation_click: false,
-            modifiers: nana_ui_platform::InputModifiers::default(),
-        }
+            ..PointerInput::mouse(phase, x, y)
+        })
     }
 
-    fn pointer_move(x: f32, y: f32) -> nana_ui_platform::InputEvent {
-        let mut event = pointer_down(x, y);
-        if let nana_ui_platform::InputEvent::Pointer { phase, buttons, .. } = &mut event {
-            *phase = nana_ui_platform::PointerPhase::Move;
-            *buttons = 1;
-        }
-        event
+    fn pointer_down(x: f32, y: f32) -> InputPayload {
+        pointer_at(PointerPhase::Down, x, y)
+    }
+
+    fn pointer_move(x: f32, y: f32) -> InputPayload {
+        pointer_at(PointerPhase::Move, x, y)
     }
 
     #[cfg(not(target_os = "macos"))]
-    fn pointer_up(x: f32, y: f32) -> nana_ui_platform::InputEvent {
-        let mut event = pointer_down(x, y);
-        if let nana_ui_platform::InputEvent::Pointer { phase, buttons, .. } = &mut event {
-            *phase = nana_ui_platform::PointerPhase::Up;
-            *buttons = 0;
-        }
-        event
+    fn pointer_up(x: f32, y: f32) -> InputPayload {
+        pointer_at(PointerPhase::Up, x, y)
     }
 
     fn title_bar_document() -> (

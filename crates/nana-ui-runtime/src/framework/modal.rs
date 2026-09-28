@@ -397,15 +397,11 @@ impl AppContext {
         if !self.world.surface_closed(root) {
             return Ok(());
         }
-        let host = self
-            .world
-            .node(root)
-            .and_then(|node| node.parent)
-            .filter(|host| {
-                self.world
-                    .overlay_host(*host)
-                    .is_some_and(|state| state.active == Some(root))
-            });
+        let host = self.world.parent_id(root).filter(|host| {
+            self.world
+                .overlay_host(*host)
+                .is_some_and(|state| state.active == Some(root))
+        });
         if let Some(host) = host {
             self.update_component(Entity::<OverlayHost>::from_stable_id(host), |_, cx| {
                 cx.mutations()

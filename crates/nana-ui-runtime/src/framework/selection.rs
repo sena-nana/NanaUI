@@ -74,7 +74,7 @@ impl AppContext {
     ) -> Option<(StableNodeId, nana_ui_core::DropEffect)> {
         let depth_of = |mut id: StableNodeId| {
             let mut depth = 0_u32;
-            while let Some(parent) = self.world.node(id).and_then(|node| node.parent) {
+            while let Some(parent) = self.world.parent_id(id) {
                 depth += 1;
                 id = parent;
             }
@@ -609,7 +609,7 @@ impl AppContext {
         let Some(focused) = self.world.focused(document) else {
             return Ok(false);
         };
-        let Some(parent) = self.world.node(focused).and_then(|node| node.parent) else {
+        let Some(parent) = self.world.parent_id(focused) else {
             return Ok(false);
         };
         if self
@@ -656,7 +656,7 @@ impl AppContext {
         {
             return true;
         }
-        let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
+        let Some(parent) = self.world.parent_id(id) else {
             return false;
         };
         if let Some(control) = self

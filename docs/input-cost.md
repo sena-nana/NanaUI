@@ -109,8 +109,9 @@ host count, not world size"），只是那个函数没用。后三处没有索�
 
 ## 修掉的一个测量盲区：基准以前把时钟冻在 0
 
-`RuntimeAgentSession` 用的是 `RuntimeInputAdapter::dispatch`，那个便捷方法把 `now` 传成
-`Duration::ZERO`（带时钟的是 `dispatch_at`）。于是所有按时间节流的路径**只放行第一次**：
+`RuntimeAgentSession` 当时用的是旧 adapter 的便捷派发方法，它把 `now` 传成
+`Duration::ZERO`（带时钟的是另一个方法）。现在路由从每个事件自己的时间戳取时间，没有冻结时钟
+的入口了。于是所有按时间节流的路径**只放行第一次**：
 `split_handle_near` 前面有 8 ms 节流，`now` 恒为 0 意味着第一次之后永远 false，它的全文档
 扫描全程只跑了一遍。
 

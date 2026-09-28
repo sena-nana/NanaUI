@@ -7,68 +7,73 @@
 | 消费方 | crate / 包 | 入口 |
 | --- | --- | --- |
 | 新的桌面界面 | `nana-ui`（feature `hosted`） | `nana_ui::runtime`、`ApplicationState`、`RuntimeApplication`、`NanaApplication::builder` / `run_runtime` |
-| 窗口设置 / 输入类型 | 通常经 `nana-ui` 再导出；需要时直接 `nana-ui-platform` | `WindowDescriptor`、`WindowHandle`、`InputEvent`、`CanonicalInputEvent`、`InputEndpoint` |
+| 窗口设置 / 输入类型 | 通常经 `nana-ui` 再导出；需要时直接 `nana-ui-platform`（输入合同本身在 `nana-ui-input`） | `WindowDescriptor`、`WindowHandle`、`CanonicalInputEvent`、`InputPayload`、`InputEndpoint`、`HostServices` |
 | Vue 宿主 | `nana-ui-vue` + `nana-js-v8` | `nana_ui_vue::prelude`（`VueRuntimeProgram::run`） |
 | Vue 控件 | `@nanaui/nanavue-components` | `NanaButton` 等 |
 | Vue renderer | `@nanaui/nanavue-runtime` | `createApp()` |
 
 不要直接依赖 `nana-ui-devtools`、`nana-css-parity` 来画产品界面。前者是无头调试，后者是 CSS 对照测试。
 
-### 输入 lowering 与宿主能力
+### 输入：一条路由
 
 长期 conformance 矩阵与可重复命令见 [Issue 243 输入 conformance](input-conformance.md)。
 
-窗口、Vue 和 headless 入口都先把旧的 `InputEvent` / IME 事件 lowering 成
-`nana_ui_platform::CanonicalInputEvent`，再交给同一个
-`nana_ui::InputRouter`；Vue 的 DOM 事件只作为 Runtime 路由后的观察层。文本提交和
-IME composition 是独立事件，不能从 `KeyInput` 的逻辑键名推导 Unicode。跨线程或远程
-入口使用有界的 `InputEndpoint`；队列满、stale generation、source-local 顺序错误和断连
-都会返回明确结果，不会静默丢弃按键、焦点或 IME transition。连续 pointer/wheel 样本可以
-合并，button transition、key、focus 和 composition 不合并。Window/Vue source 在关闭后重开
-会递增 endpoint generation，不能复用旧 generation 接收迟到事件。
-`InputRouter::attach` 也拒绝 generation 回退或同 generation 换 document；生命周期重绑必须先
-完成旧 document 的 detach/cancel。
-窗口关闭、source/device disconnect 和 focus revoke 会先向活动 capture 发送
-`PointerCancel`，再撤销 capture/hover；拖拽控件不会只看到静默的状态清理。
-focus revoke 的 capture/hover/press 回收按 source/device/pointer 隔离；同一 Document
-仍有其他 source 持有 focus 时，不会误清除它们的 Runtime pointer 状态。
-canonical contract version 当前为 `CANONICAL_INPUT_CONTRACT_VERSION = 1`；强类型 identity
-可作为透明 `u64` 传递，但 `CanonicalInputEvent` 的 Rust enum 布局不是 wire/FFI 格式，外部
-序列化器必须显式协商版本并编码 payload。
-native host 的 physical/logical DPI 转换也经过 `PresentationCoordinateBridge`；presentation
-transform、XR surface intersection 和 remote normalized mapping 仍要求对应 adapter 提供元数据。
-headless conformance 还覆盖静态文档 240 个高频空 hover sample，最终 flush 必须保持 idle，
-以验证 pointer 路由没有触发 layout 或 scene work。
-`InputRouter::last_route_snapshot` 提供低成本的最后路由诊断快照，包含 source/device/pointer、
-canonical kind、hover/focus/capture owner 和 route latency；它是 Copy 状态，不在每个事件上分配
-诊断对象。`InputRouter::route_with_outcome` 额外返回 consumed/`prevent_default`、本次 dispatch
-是否新增 Runtime pending work，以及本次排队的 HostService request 数；它读取单调 work revision，
-不会为了报告 invalidation 而消费 `SystemWork`。`handled` 与 `prevent_default` 是独立结果；
-overlay barrier 可以阻止宿主默认行为但不代表 Runtime 已消费事件。
+所有输入只有一种形态：`CanonicalInputEvent`（`nana-ui-input`，经 `nana-ui-platform` 和
+`nana-ui` 再导出）。原生窗口、Vue、devtools、Android 和测试都在自己的边界把原生事件降级成
+它一次，之后只走一条路由：
 
-IME、clipboard、cursor、drag-and-drop、accessibility 和 native text input 的 capability
-合同位于 `nana_ui_platform::{HostServices, HostServiceRequest}`。请求必须携带 source、
-endpoint generation、document 和可选 node；宿主返回 `Success`、typed clipboard result、
-`Unsupported`、`Denied` 或 `StaleGeneration`。跨帧传递 request 使用有界的
-`HostServiceQueue`；队列满时返回 request 所有权和 capacity outcome，不静默丢失。现阶段
-`InputRouter::take_host_service_requests` 和 `service_host_requests` 已提供非阻塞的 IME intent
-排空/消费出口，并在调用宿主前检查 capability，unsupported request 不会进入 host 实现；IME
-surrounding data includes the focused caret `cursor_area` in application logical coordinates。
-Canonical
-Router 的 clipboard request 已由 native Scene host 在路由外执行并回写；pointer hover 的
-cursor intent 也由同一 Router 生产并去重，native Scene host 在路由外执行 cursor request。
-focus lifecycle 同时发出 `NativeTextInput` capability intent，但文本和 caret 仍复用既有 IME
-state machine。旧 IME/clipboard 执行路径仍保留兼容实现，drag-drop/accessibility 的统一生产和真实平台
-adapter 仍属于 Issue 243 后续阶段。宿主必须在自己的 event-loop/frame 边界排空 request，不能
-在输入路由中同步等待 capability 结果；endpoint detach 或 document 替换后，Runtime outlet
-会在 drain 前丢弃 stale request，request 数量和 variable-payload bytes 都有上限。
+```text
+宿主降级 → InputSequencer 盖戳（source / device / generation / sequence / timestamp）
+        → InputEndpoint（有界；相邻 pointer move 与 wheel 合并）
+        → AppContext::drain_input / route_input（Runtime，按 source 绑定的 document）
+        → RoutedEvent → 宿主 → RuntimeProgram::input_event(RoutedInput)
+```
 
-Issue 243 的边界审计还保留以下 follow-up：remote source 的认证/授权/重放防护与限流，
-跨线程 endpoint 的同步、背压和进程级内存配额，多 Window/Document/presentation target
-的持久绑定规则，canonical payload 的正式 FFI/序列化版本，拖放文件权限和异步生命周期，
-以及真实 Windows IME、Android、WebView、XR/OpenXR、远程网络和 accessibility provider
-验收。这些没有用 headless 或 offscreen 结果替代；它们需要独立 adapter/安全边界或真实设备
-证据后再关闭 follow-up。
+- **负载**：`Pointer`、`PointerEnter` / `PointerLeave`、`Wheel`、`Key`（物理键为 W3C
+  `code`，如 `KeyA`；逻辑键为布局解析后的名称）、`Text(CommittedText)`、`Composition`、
+  `Focus` 以及设备与 source 的连接/断开。一次按键和它输入的文本是两个事件，文本带着按键的
+  sequence：按键被控件处理（快捷键、焦点切换、提交表单、终端已发出字节）时，路由丢弃这段
+  文本，不会再插入。IME 组字只经 `Composition`，从不由按键名推导。
+- **绑定**：`AppContext::bind_input_source(source, generation, document)` 返回
+  `Result`；generation 回退或同一 generation 换 document 都会被拒绝（`InputBindError`）。
+  `unbind_input_source` 先让仍被按住或捕获的指针走一次与显式 `PointerCancel` 相同的取消，
+  再撤销捕获与悬停。窗口关闭后重开会用更新的 generation，迟到的旧事件不会被接受。
+- **路由状态属于 context**：每个 source 的指针身份、顺序、断连标记、光标与文本输入槽位都
+  存在它所绑定的 `AppContext` 里，两个窗口不会共享指针、IME 所有者或光标。事件的时间取自
+  它自己的时间戳（Runtime 动画时钟域），tooltip 延迟、悬停探测和多击判定都用这个时间。
+- **焦点**：窗口失焦只取消该 source 按住与捕获的指针，document 的焦点控件保持不变；重新
+  获得焦点时把文本输入状态再交给宿主一次。只有 source 断开且再没有其他获得焦点的 source
+  驱动同一 document 时，才清除 document 焦点。
+- **命中**：未捕获的指针事件只做一次命中查询（`UiWorld::hit_test_queries` 计数），overlay
+  路由、悬停、诊断 hover、handle 探测、光标和 `RoutedInput::pointer_hit` 共用这一个结果；
+  被捕获的指针事件不做命中查询。稳态指针移动（包括每次都切换悬停的移动）不分配内存。
+- **drain**：`drain_input` 把事件从端点取出后再路由，任何事件都不会卡在队首。原生宿主对
+  状态转换（按下、抬起、按键、文本、组字、焦点）立即 drain，指针移动和滚轮在事件循环本轮
+  末尾或下一次重绘前 drain，因此程序每轮看到的是合并后的一个 move。
+- **结果**：`InputRouteOutcome` 给出 `handled`、`prevent_default`、`pointer_hit` 和
+  `invalidated_work`。`handled` 与 `prevent_default` 相互独立：阻塞型 overlay 可以阻止宿主
+  默认行为而不表示控件处理了事件。`AppContext::input_counters()` 给出路由、拒绝、命中查询、
+  焦点/捕获/悬停变化、光标与文本输入更新次数，以及被丢弃的文本数。
+
+宿主能力走 `HostServices`（同样在 `nana-ui-input`）：
+
+- **光标**与**文本输入（IME）**是“最新值”槽位，不是请求队列：Runtime 只在值变化时调用
+  `set_cursor(CursorIcon)` 和 `set_text_input(Option<&TextInputContext>)`，窗口重新获得焦点
+  时再发一次文本输入状态。`TextInputContext` 携带用途（普通、密码、终端）、候选框锚点（插入
+  符，逻辑坐标）和选区附近最多 `SurroundingText::MAX_BYTES`（4000 字节）的文本窗口；字段再
+  大也只复制这个窗口，密码与终端不提供周围文本。原生宿主把 Runtime 的光标与窗口边框缩放
+  光标、程序的 `WindowCursor` 覆盖合成后再设给窗口。
+- **剪贴板**是唯一有返回值的调用，在复制/剪切/粘贴快捷键在按键链中原来的位置同步发生：应用
+  的按键策略（`on_key`）和终端先看到按键。宿主不等待忙碌的后端，返回 `HostServiceError::Busy`；
+  剪贴板拒绝写入时，剪切不删除文本。原生宿主整个进程只打开一次系统剪贴板。
+- `HeadlessInput` 是没有窗口的输入源（devtools、测试、离屏测试工具），自带
+  `HeadlessHostServices`，保存宿主本应显示的光标与 IME 状态和一个私有剪贴板；
+  `UnsupportedHostServices` 给不需要这些能力的宿主。
+
+仍在范围之外、没有用无头结果代替的：远程 source 的认证/重放/限流，跨线程 endpoint 的
+同步与进程级内存配额，canonical 负载的正式 FFI/序列化版本（Rust enum 布局不是 wire 格式），
+嵌套 NanaUI 的坐标变换（#251，随 #247 的真实嵌入生产者再加），以及真实 Windows IME、
+Android、XR 与 accessibility provider 的设备验收。
 
 新代码从 `nana_ui::runtime` 引入控件。crate 根控件兼容面已删除。`runtime::internal` 给 Gallery 和宿主适配器，不是第二套产品 API。`runtime::host` 是 Scene / GPU slot 类型；`runtime::perf` 是帧计数，不是视图状态。
 
@@ -393,7 +398,7 @@ let app = mount_vue_as_nana(MountOptions {
 
 消息有两个入口，按类型选：`dispatch_program` **按 Rust 类型只保留最后一条**，适合「后一条取代前一条」的状态消息（resize、主题变了、请求重绘）；`dispatch_program_all` 按派发顺序全部送达。业务消息通常是一个 `enum`，那就是**同一个类型**——用 `dispatch_program` 会让同一帧内的两次点击塌成一次、悄悄丢掉第一次，这种情况用 `dispatch_program_all`。两者都在下一帧进入 `update`。
 
-控件需要先于默认编辑处理按键时，用 `AppContext::on_key` 或 `on_view_key` 注册一个策略；后者读取当前保留的控件值。返回 `true` 表示消费，重复注册替换旧策略，删除视图会移除策略。`RuntimeInputAdapter` 在浮层处理后、默认编辑前调用 `dispatch_focused_key`，只投递给当前文档中已挂载且未禁用的焦点节点，IME 组合期间跳过业务策略。
+控件需要先于默认编辑处理按键时，用 `AppContext::on_key` 或 `on_view_key` 注册一个策略；后者读取当前保留的控件值。返回 `true` 表示消费，重复注册替换旧策略，删除视图会移除策略。输入路由在浮层处理后、终端与默认编辑前调用 `dispatch_focused_key`，只投递按键（提交的文本不经过策略），只投递给当前文档中已挂载且未禁用的焦点节点，IME 组合期间跳过业务策略；策略消费的按键不再插入它所输入的文本。
 
 应用改写编辑器文本（`update_component`、`set_component`、`mount` 或直接提交 `SetTextInput`）时，只要字节变了，该编辑器的 undo/redo 随这次提交清空（直接写 `UiWorld` 的，在下一次使用时清空）：载入另一份文档后 Ctrl+Z 不会退回上一份。写回编辑器自己报告的值、或重建出相同文本，不算改写，日志保留。从应用侧（`update_component` 等）做的发送后清空、格式化写回同样会清掉用户的撤销历史；要让它成为用户可撤销的一步（格式快捷键、补全），改用 `edit_text_area(entity, range, text)` / `edit_text_input(…)`：把 `range` 替换成 `text`，走用户自己编辑的同一条路径，记成独立的一步，不并入前后的连续输入。编辑器只读、禁用或正在输入法组字时与用户输入一样被拒绝，`TextInput` 的长度上限照样生效；范围碰到的 atom 整体替换，包括用户自己的光标在内的每个光标都随编辑平移、不会被移到编辑处，唯一的例外是正好停在插入点上的光标会移到插入文本之后，与打字一致（在光标处补全）；它不是在 snippet 占位里打字，联动占位不跟随，进行中的 snippet 会话像任何值变化一样被重映射或结束；超出 `TextInput` 长度上限时整体拒绝、不截断；替换成相同文本不算编辑、不发变更事件；范围越界或不在字素边界上返回错误。编辑器自己的 `TextChanged` 处理器（`on` 注册）在事件投递中改写编辑器（转大写、过滤字符），算这个编辑器接收输入的一部分：这一步记下处理器改写后的文本，照常可撤销；不改变任何文本的一步不保留。发送后清空时，已发送的草稿能否撤销回来由应用决定：不希望撤回时，在发送时调用 `clear_text_history(node)`。只有 `TextInput` 与 `TextArea` 记撤销日志：数字框、搜索下拉、命令面板、右键菜单的输入框还带着文本以外的状态（已提交的数值、筛选结果），只还原文本会让两者对不上，所以它们不记日志，`can_undo_text` 对它们恒为假。
 

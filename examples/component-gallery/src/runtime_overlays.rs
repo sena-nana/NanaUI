@@ -10,14 +10,12 @@ use nana_ui::runtime::{
 };
 #[cfg(test)]
 use nana_ui::runtime::{StableNodeId, StandardVisual};
-use nana_ui::{
-    ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, RuntimeInputAdapter,
-};
-use nana_ui_platform::{InputEvent, PointerPhase};
+use nana_ui::{ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint};
+use nana_ui_platform::{InputPayload, PointerInput, PointerPhase};
 
 use super::runtime_host::{
-    HostStack, RuntimeSceneInput, bind_event, bind_event_ui, hugging_text, runtime_input_event,
-    styled_text, take_pending,
+    HostStack, RuntimeSceneInput, ScriptedInput, bind_event, bind_event_ui, event_point,
+    hugging_text, runtime_input_event, styled_text, take_pending,
 };
 use super::{
     ContextAction, DialogCloseTrigger, GalleryContextMenuEvent, GalleryMessage, GalleryOverlay,
@@ -55,6 +53,7 @@ pub(super) struct GalleryOverlaysRuntime {
     menu: Option<Entity<ContextMenu>>,
     last_menu_path: Vec<usize>,
     last_pointer: LogicalPoint,
+    scripted: ScriptedInput,
 }
 
 impl fmt::Debug for GalleryOverlaysRuntime {
@@ -257,6 +256,7 @@ impl GalleryOverlaysRuntime {
             menu,
             last_menu_path: state.context_path.clone(),
             last_pointer: LogicalPoint::default(),
+            scripted: ScriptedInput::default(),
         })
     }
 
@@ -316,42 +316,42 @@ impl GalleryOverlaysRuntime {
         }
     }
 
-    fn apply_pointer(&mut self, document: &mut RuntimeDocument, event: &InputEvent) {
-        if let InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } = *event {
-            self.last_pointer = LogicalPoint::new(x, y);
+    fn apply_pointer(&mut self, document: &mut RuntimeDocument, event: &InputPayload) {
+        if let Some(point) = event_point(event) {
+            self.last_pointer = point;
         }
         let Some(viewer) = self.image else {
             return;
         };
         let context = document.context_mut();
         match *event {
-            InputEvent::Pointer {
+            InputPayload::Pointer(PointerInput {
                 phase: PointerPhase::Down,
                 pointer_id,
                 x,
                 y,
                 ..
-            } => {
-                let _ = context.image_viewer_pointer_down(viewer, pointer_id, x, y);
+            }) => {
+                let _ = context.image_viewer_pointer_down(viewer, pointer_id.0, x, y);
             }
-            InputEvent::Pointer {
+            InputPayload::Pointer(PointerInput {
                 phase: PointerPhase::Move,
                 pointer_id,
                 x,
                 y,
                 ..
-            } => {
-                let _ = context.image_viewer_pointer_move(viewer, pointer_id, x, y);
+            }) => {
+                let _ = context.image_viewer_pointer_move(viewer, pointer_id.0, x, y);
             }
-            InputEvent::Pointer {
+            InputPayload::Pointer(PointerInput {
                 phase: PointerPhase::Up | PointerPhase::Cancel,
                 pointer_id,
                 ..
-            } => {
-                let _ = context.image_viewer_pointer_up(viewer, pointer_id);
+            }) => {
+                let _ = context.image_viewer_pointer_up(viewer, pointer_id.0);
             }
-            InputEvent::Wheel { x, y, delta_y, .. } => {
-                let _ = context.image_viewer_wheel(viewer, x, y, delta_y);
+            InputPayload::Wheel(wheel) => {
+                let _ = context.image_viewer_wheel(viewer, wheel.x, wheel.y, wheel.delta_y);
             }
             _ => {}
         }
@@ -382,13 +382,11 @@ impl GalleryOverlaysRuntime {
     fn dispatch(
         &mut self,
         document: &mut RuntimeDocument,
-        event: InputEvent,
+        (event, text): (InputPayload, Option<String>),
         pending: &Arc<Mutex<Vec<GalleryMessage>>>,
     ) -> Vec<GalleryMessage> {
         self.apply_pointer(document, &event);
-        let document_id = document.document();
-        let _ =
-            RuntimeInputAdapter::default().dispatch(document.context_mut(), document_id, &event);
+        self.scripted.route_typed(document, event, text.as_deref());
         self.take_messages(document, pending)
     }
 
@@ -484,7 +482,7 @@ impl GalleryState {
         }
     }
 
-    pub(super) fn apply_overlay_host_input(&mut self, event: &InputEvent) -> Vec<GalleryMessage> {
+    pub(super) fn apply_overlay_host_input(&mut self, event: &InputPayload) -> Vec<GalleryMessage> {
         let Some(mut runtime) = self.overlay_runtime.take() else {
             return Vec::new();
         };
@@ -676,7 +674,7 @@ impl GalleryState {
 }
 
 impl GalleryOverlaysRuntime {
-    fn apply_pointer_on_active(&mut self, state: &mut GalleryState, event: &InputEvent) {
+    fn apply_pointer_on_active(&mut self, state: &mut GalleryState, event: &InputPayload) {
         state.with_active_document_mut(|document, _| self.apply_pointer(document, event));
     }
 }
@@ -713,23 +711,29 @@ fn collect_node_text(context: &AppContext, root: nana_ui::runtime::StableNodeId)
     texts
 }
 
-fn overlay_input_event(input: &RuntimeSceneInput, last_pointer: LogicalPoint) -> InputEvent {
-    let mut event = runtime_input_event(input, last_pointer);
-    if let RuntimeSceneInput::Key {
-        pressed: true,
-        key,
-        modifiers,
-        ..
-    } = input
-        && !modifiers.alt
-        && !modifiers.control
-        && !modifiers.meta
-        && key.chars().count() == 1
-        && let InputEvent::Keyboard { text, .. } = &mut event
-    {
-        *text = Some(key.clone());
-    }
-    event
+/// The scripted event and, for a plain character key press, the text it
+/// types.
+fn overlay_input_event(
+    input: &RuntimeSceneInput,
+    last_pointer: LogicalPoint,
+) -> (InputPayload, Option<String>) {
+    let event = runtime_input_event(input, last_pointer);
+    let text = match input {
+        RuntimeSceneInput::Key {
+            pressed: true,
+            key,
+            modifiers,
+            ..
+        } if !modifiers.alt
+            && !modifiers.control
+            && !modifiers.meta
+            && key.chars().count() == 1 =>
+        {
+            Some(key.clone())
+        }
+        _ => None,
+    };
+    (event, text)
 }
 
 fn context_menu_anchor(state: &GalleryState) -> (f32, f32) {

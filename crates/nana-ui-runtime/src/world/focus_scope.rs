@@ -17,7 +17,7 @@ impl UiWorld {
                     self.input.focus_scopes.insert(root, Some(target));
                     break;
                 }
-                ancestor = self.node(node).and_then(|node| node.parent);
+                ancestor = self.parent_id(node);
             }
         }
         Ok(())
@@ -36,7 +36,7 @@ impl UiWorld {
             if let Some(remembered) = self.input.focus_scopes.get_mut(&node) {
                 *remembered = Some(target);
             }
-            ancestor = self.node(node).and_then(|node| node.parent);
+            ancestor = self.parent_id(node);
         }
     }
 }

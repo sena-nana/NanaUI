@@ -553,7 +553,7 @@ impl AppContext {
                 Some(parent) => slots[parent],
                 None => id,
             };
-            if self.world.node(slot).and_then(|node| node.parent) != Some(parent) {
+            if self.world.parent_id(slot) != Some(parent) {
                 mutations.insert(parent, slot, None);
             }
             // In the same commit as the box itself, so a tree is laid out
@@ -564,7 +564,7 @@ impl AppContext {
                 mutations.set_style(slot, entry.style.clone());
             }
             if let Some(content) = entry.content.filter(|c| self.world.node(*c).is_some())
-                && self.world.node(content).and_then(|node| node.parent) != Some(slot)
+                && self.world.parent_id(content) != Some(slot)
             {
                 mutations.insert(slot, content, None);
             }
@@ -1246,7 +1246,7 @@ impl AppContext {
     }
 
     pub(super) fn pointer_location_on(&self, target: StableNodeId) -> Option<(f32, f32)> {
-        let document = self.world.node(target)?.document;
+        let document = self.world.document_of(target)?;
         self.component_lifecycle.pointer_positions.iter().find_map(
             |(&(owner, pointer_id), &position)| {
                 (owner == document && self.world.pointer_hover(owner, pointer_id) == Some(target))

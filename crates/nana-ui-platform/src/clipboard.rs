@@ -267,6 +267,38 @@ impl ClipboardHost for OsClipboard {
     }
 }
 
+/// Clipboard calls against a shared backend. The lock is tried, never
+/// waited on: an OS or JNI clipboard call must not stall input routing.
+pub fn read_shared_clipboard(
+    clipboard: &SharedClipboardHost,
+) -> Result<Option<String>, nana_ui_input::HostServiceError> {
+    let mut clipboard = clipboard
+        .try_lock()
+        .map_err(|_| nana_ui_input::HostServiceError::Busy)?;
+    if !clipboard.is_available() {
+        return Err(nana_ui_input::HostServiceError::Unsupported);
+    }
+    Ok(clipboard.read_text())
+}
+
+/// See [`read_shared_clipboard`].
+pub fn write_shared_clipboard(
+    clipboard: &SharedClipboardHost,
+    text: &str,
+) -> Result<(), nana_ui_input::HostServiceError> {
+    let mut clipboard = clipboard
+        .try_lock()
+        .map_err(|_| nana_ui_input::HostServiceError::Busy)?;
+    if !clipboard.is_available() {
+        return Err(nana_ui_input::HostServiceError::Unsupported);
+    }
+    if clipboard.write_text(text) {
+        Ok(())
+    } else {
+        Err(nana_ui_input::HostServiceError::Failed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +368,17 @@ mod tests {
         if let Some(prev) = previous {
             let _ = clip.write_text(&prev);
         }
+    }
+
+    #[test]
+    fn a_busy_shared_clipboard_answers_busy_instead_of_waiting() {
+        let clipboard = shared_clipboard(MemoryClipboard::new());
+        write_shared_clipboard(&clipboard, "hello").unwrap();
+        assert_eq!(read_shared_clipboard(&clipboard), Ok(Some("hello".into())));
+        let _held = clipboard.lock().unwrap();
+        assert_eq!(
+            read_shared_clipboard(&clipboard),
+            Err(nana_ui_input::HostServiceError::Busy)
+        );
     }
 }

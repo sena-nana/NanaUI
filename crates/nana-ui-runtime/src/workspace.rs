@@ -1000,15 +1000,24 @@ impl AppContext {
         {
             return Some(handle);
         }
+        // Every pointer move off a handle reaches here, so ask the
+        // workspaces for their handles instead of walking the document.
         self.world()
-            .document_order(document)
-            .into_iter()
-            .find(|&id| {
-                self.workspace_handle_id(id).is_some()
-                    && self
-                        .world()
-                        .layout_box(id)
-                        .is_some_and(|bounds| point_near_box(bounds, x, y, HANDLE_HIT_SLOP))
+            .nodes_of_component(document, crate::component_descriptors::WORKSPACE.type_id)
+            .find_map(|workspace| {
+                self.read(
+                    Entity::<Workspace>::from_stable_id(workspace),
+                    |workspace| {
+                        workspace.handles.values().copied().find(|&handle| {
+                            self.workspace_handle_id(handle).is_some()
+                                && self.world().layout_box(handle).is_some_and(|bounds| {
+                                    point_near_box(bounds, x, y, HANDLE_HIT_SLOP)
+                                })
+                        })
+                    },
+                )
+                .ok()
+                .flatten()
             })
     }
 
@@ -1129,7 +1138,7 @@ impl AppContext {
                     return Some(entity);
                 }
             }
-            current = self.world().node(id).and_then(|node| node.parent);
+            current = self.world().parent_id(id);
         }
         None
     }

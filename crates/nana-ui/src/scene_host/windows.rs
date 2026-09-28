@@ -448,8 +448,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     continue;
                 }
                 self.dispatch_forward_move(event_loop, id, point);
-            } else {
-                self.sync_window_cursor(id);
             }
         }
     }
@@ -466,7 +464,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .and_then(|window| window_screen_origin(window.as_ref()));
         let modifiers = platform_input_modifiers(self.input_of(id).modifiers);
         let buttons = self.input_of(id).buttons;
-        let input = self.input_of(id).pointer_event(
+        let pointer = self.input_of(id).pointer_event(
             mapped_pointer(1, PointerType::Mouse, true, None),
             PointerPhase::Move,
             -1,
@@ -476,10 +474,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             origin,
             None,
         );
-        let _ = self.dispatch_input(event_loop, id, input);
-        if self.window_contexts.contains_key(&id) {
-            self.sync_window_cursor(id);
-        }
+        let now = self.animation_clock.runtime_time(Instant::now());
+        let device = self.input_of(id).last_device;
+        let _ = self.deliver_input(
+            event_loop,
+            id,
+            LoweredInput::event(device, InputPayload::Pointer(pointer), now),
+        );
     }
 
     fn dispatch_forward_leave(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
@@ -494,8 +495,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let origin = self
             .window(id)
             .and_then(|window| window_screen_origin(window.as_ref()));
-        let input = self.input_mut(id).cancel_mouse(origin);
-        let _ = self.dispatch_input(event_loop, id, input);
+        let pointer = self.input_mut(id).cancel_mouse(origin);
+        let now = self.animation_clock.runtime_time(Instant::now());
+        let device = self.input_of(id).last_device;
+        let _ = self.deliver_input(
+            event_loop,
+            id,
+            LoweredInput::event(device, InputPayload::Pointer(pointer), now),
+        );
     }
 
     pub(super) fn forward_os_passthrough_ignores_pointer(
@@ -740,6 +747,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         };
         let pending_fullscreen = settings.fullscreen;
         let skip_taskbar_report = descriptor_skip_taskbar(window.as_ref(), &settings);
+        let generation = *self.input_generations.entry(id).or_insert(1);
         self.window_contexts.insert(
             id,
             WindowContext {
@@ -753,6 +761,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 surface,
                 geometry,
                 input: InputTracker::default(),
+                input_source: WindowInputSource::new(
+                    nana_ui_platform::InputSourceId(id.0),
+                    nana_ui_platform::EndpointGeneration(generation),
+                ),
                 presentation,
                 settings,
                 #[cfg(not(target_os = "android"))]
@@ -772,17 +784,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 shadow_body: None,
             },
         );
-        let generation = *self.input_generations.entry(id).or_insert(1);
-        self.input_endpoints.insert(
-            id,
-            nana_ui_platform::InputEndpoint::new(
-                nana_ui_platform::InputSourceId(id.0),
-                nana_ui_platform::EndpointGeneration(generation),
-                1024,
-                1024 * 1024,
-            ),
-        );
-        self.input_pending.remove(&id);
         #[cfg(target_os = "windows")]
         if let Some(parent) = modal_parent.and_then(|parent| self.window(parent)) {
             parent.set_enable(false);
@@ -805,18 +806,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         *generation = generation.saturating_add(1).max(1);
         let source = nana_ui_platform::InputSourceId(id.0);
         let now = self.animation_clock.runtime_time(Instant::now());
-        let detached = self.program.write_document(id, |document| {
-            self.input_router
-                .detach_with_context(document.context_mut(), source, now)
+        // Presses and captures the window held are cancelled while its
+        // document is alive; a reused WindowId binds a newer generation.
+        self.program.write_document(id, |document| {
+            let _ = document.context_mut().unbind_input_source(source, now);
         });
-        if !matches!(detached, Some(Ok(_))) {
-            // The document may already have been released; still remove the
-            // host binding so a reused WindowId cannot route old input.
-            self.input_router.detach(source);
-        }
         self.windows.unregister(id);
-        self.input_endpoints.remove(&id);
-        self.input_pending.remove(&id);
         if id == WindowId::PRIMARY {
             self.release_startup_splash();
         }
@@ -885,7 +880,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 self.focus_window(parent_id);
             }
             self.window_ids.remove(&host.surface.window().id());
-            self.ime.remove(&id);
             drop(host);
             nana_diagnostics::event!(nana_diagnostics::framework::window::CLOSED, window = id.0);
             let update = self
@@ -1145,96 +1139,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .get(&id)
             .is_some_and(|host| host.size_move.is_active())
     }
-    /// Program callbacks earlier in the same dispatch may have closed `id`.
-    pub(super) fn sync_window_cursor(&mut self, id: WindowId) {
-        let Some(host) = self.window_contexts.get_mut(&id) else {
-            return;
-        };
-        if host.input.begin_cursor_sync(std::time::Instant::now()) {
-            self.sync_window_cursor_now(id);
-        }
-    }
-
-    /// Refresh the cursor after a document flush even when pointer-driven
-    /// synchronization ran moments earlier in the same frame.
-    pub(super) fn sync_window_cursor_forced(&mut self, id: WindowId) {
-        // Treat the forced probe as the latest sync so a pointer event in the
-        // same frame does not immediately repeat the document walk.
-        let Some(host) = self.window_contexts.get_mut(&id) else {
-            return;
-        };
-        host.input.cursor_sync_last = Some(std::time::Instant::now());
-        self.sync_window_cursor_now(id);
-    }
-
     /// Restore the native cursor after the pointer leaves this window. This
     /// must not probe the document: the last in-window target may have had
     /// `cursor:none`, and that state must not leak outside the window.
-    pub(super) fn reset_window_cursor(&self, id: WindowId) {
-        if let Some(window) = self.window(id) {
-            window.set_cursor_visible(true);
-            window.set_cursor(CursorIcon::Default.into());
-        }
+    pub(super) fn reset_window_cursor(&mut self, id: WindowId) {
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        host.input_source.applied_cursor = Some((CursorIcon::Default, true));
+        let window = host.surface.window();
+        window.set_cursor_visible(true);
+        window.set_cursor(CursorIcon::Default.into());
     }
 
-    /// Apply a cursor intent produced by the canonical Runtime router. The
-    /// request has already been hit-tested and lifecycle-validated, so this
-    /// path only performs the native side effect and never walks the UI tree.
-    pub(super) fn apply_host_cursor(&mut self, id: WindowId, cursor: &str) -> bool {
-        let Some(spec) = host_cursor_spec(cursor) else {
-            return false;
-        };
-        let Some(host) = self.window_contexts.get(&id) else {
-            return false;
-        };
-        if host.cursor_override.is_some() || host.cursor_visible_override.is_some() {
-            return true;
-        }
-        let (icon, visible) = scene_cursor_icon(None, None, Some(spec), false);
-        let Some(window) = self.window(id) else {
-            return false;
-        };
-        window.set_cursor_visible(visible);
-        if visible {
-            window.set_cursor(icon.into());
-        }
-        true
-    }
-
-    fn sync_window_cursor_now(&mut self, id: WindowId) {
-        let cursor = self.input_of(id).cursor;
-        let frame_edge = self.frame_resize_edge_at(id, cursor.0, cursor.1);
-        let (handle, css_cursor, text_field) = self
-            .program
-            .read_document(id, |document| {
-                let context = document.context();
-                let document_id = document.document();
-                let handle = context
-                    .split_handle_near(document_id, cursor.0, cursor.1)
-                    .or_else(|| context.dock_handle_near(document_id, cursor.0, cursor.1))
-                    .or_else(|| context.workspace_handle_near(document_id, cursor.0, cursor.1))
-                    .and_then(|handle| context.world().layout_box(handle))
-                    .map(|bounds| (bounds.width, bounds.height));
-                let target = context.pointer_target(document_id, cursor.0, cursor.1);
-                let text_field =
-                    target.is_some_and(|node| context.world().text_input(node).is_some());
-                let css_cursor = target
-                    .and_then(|node| context.world().computed_style(node))
-                    .and_then(|style| style.cursor_specified.then_some(style.cursor));
-                (handle, css_cursor, text_field)
-            })
-            .unwrap_or((None, None, false));
-        if let Some(window) = self.window(id) {
-            let (icon, visible) = scene_cursor_icon(frame_edge, handle, css_cursor, text_field);
-            let host = self.window_contexts.get(&id).unwrap();
-            let icon = host.cursor_override.unwrap_or(icon);
-            let visible = host.cursor_visible_override.unwrap_or(visible);
-            window.set_cursor_visible(visible);
-            if visible {
-                window.set_cursor(icon.into());
-            }
-        }
-    }
     /// Starts a window move for `WindowCommand::Drag`, the one signal any
     /// trigger uses to say "move this window with the gesture in flight".
     ///
@@ -1311,7 +1228,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         &mut self,
         event_loop: &dyn ActiveEventLoop,
         id: WindowId,
-        input: &InputEvent,
+        input: &InputPayload,
     ) -> bool {
         // The host-driven window move exists only on macOS and Windows; the
         // rest of this function never touches the event loop.
@@ -1322,7 +1239,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             && session == id
         {
             match input {
-                InputEvent::Pointer { phase, button, .. } => {
+                InputPayload::Pointer(PointerInput { phase, button, .. }) => {
                     match frame_move_step(*phase, *button, owner) {
                         FrameMoveStep::Follow => {
                             if let Some(window) = self.window(id) {
@@ -1344,12 +1261,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 // The pointer is holding the window, so a wheel that reaches
                 // the document would zoom or scroll whatever is under it in
                 // the middle of repositioning the window.
-                InputEvent::Wheel { .. } => return true,
+                InputPayload::Wheel(_) => return true,
                 // Escape puts the window back, the same way the system move
                 // loop answers it.
-                InputEvent::Keyboard {
-                    pressed: true, key, ..
-                } if key == "Escape" => {
+                InputPayload::Key(key) if key.is_pressed() && key.logical.0 == "Escape" => {
                     if let Some(window) = self.window(id) {
                         let _ = live.cancel(window.as_ref());
                     }
@@ -1398,7 +1313,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         &mut self,
         event_loop: &dyn ActiveEventLoop,
         id: WindowId,
-        input: &InputEvent,
+        input: &InputPayload,
     ) -> bool {
         // The live frame-resize session exists only on macOS and Windows; the
         // rest of this function never touches the event loop.
@@ -1414,10 +1329,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             // not end the session; only Up, a fresh primary press (lost Up),
             // or focus loss does.
             match input {
-                InputEvent::Pointer {
+                InputPayload::Pointer(PointerInput {
                     phase: PointerPhase::Move,
                     ..
-                } => {
+                }) => {
                     if let Some(window) = self.window(id) {
                         let _ = live.update(window.as_ref());
                     }
@@ -1429,42 +1344,42 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     // the native live-resize path already does.
                     self.sync_geometry(id);
                     self.redraw(event_loop, id);
-                    self.sync_window_cursor(id);
+                    self.apply_window_cursor(id);
                     return true;
                 }
-                InputEvent::Pointer {
+                InputPayload::Pointer(PointerInput {
                     phase: PointerPhase::Cancel,
                     ..
-                } => {
-                    self.sync_window_cursor(id);
+                }) => {
+                    self.apply_window_cursor(id);
                     return true;
                 }
-                InputEvent::Pointer {
+                InputPayload::Pointer(PointerInput {
                     phase: PointerPhase::Up,
                     ..
-                } => {
+                }) => {
                     self.end_live_frame_resize(id);
                     self.request_redraw(id);
-                    self.sync_window_cursor(id);
+                    self.apply_window_cursor(id);
                     return true;
                 }
-                InputEvent::Pointer {
+                InputPayload::Pointer(PointerInput {
                     phase: PointerPhase::Down,
                     button: 0,
                     is_primary: true,
                     ..
-                } => self.end_live_frame_resize(id),
+                }) => self.end_live_frame_resize(id),
                 _ => {}
             }
         }
-        let InputEvent::Pointer {
+        let InputPayload::Pointer(PointerInput {
             phase: PointerPhase::Down,
             button: 0,
             is_primary: true,
             x,
             y,
             ..
-        } = input
+        }) = input
         else {
             return false;
         };
@@ -1706,7 +1621,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn title_bar_chrome_action(
         &mut self,
         id: WindowId,
-        input: &InputEvent,
+        input: &InputPayload,
     ) -> Option<WindowChromeAction> {
         let program = &mut self.program;
         let chrome = &mut self.chrome;
@@ -1795,26 +1710,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         });
     }
-}
-
-fn host_cursor_spec(cursor: &str) -> Option<CursorSpec> {
-    Some(match cursor {
-        "default" => CursorSpec::Default,
-        "pointer" => CursorSpec::Pointer,
-        "text" => CursorSpec::Text,
-        "move" => CursorSpec::Move,
-        "grab" => CursorSpec::Grab,
-        "grabbing" => CursorSpec::Grabbing,
-        "not-allowed" => CursorSpec::NotAllowed,
-        "crosshair" => CursorSpec::Crosshair,
-        "help" => CursorSpec::Help,
-        "wait" => CursorSpec::Wait,
-        "progress" => CursorSpec::Progress,
-        "zoom-in" => CursorSpec::ZoomIn,
-        "zoom-out" => CursorSpec::ZoomOut,
-        "none" => CursorSpec::None,
-        _ => return None,
-    })
 }
 
 impl<Program: RuntimeProgram> WindowManager<Program> {
@@ -2023,7 +1918,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 } else if host.cursor_visible_override == Some(false) {
                     host.cursor_visible_override = None;
                 }
-                self.sync_window_cursor_now(id);
+                self.apply_window_cursor(id);
             }
             Control::Redraw => window.request_redraw(),
             Control::Resize(edge) => {
@@ -2131,14 +2026,6 @@ fn apply_changed_appearance<T>(
 #[cfg(test)]
 mod appearance_tests {
     use super::*;
-
-    #[test]
-    fn canonical_cursor_names_share_the_window_cursor_contract() {
-        assert_eq!(host_cursor_spec("pointer"), Some(CursorSpec::Pointer));
-        assert_eq!(host_cursor_spec("zoom-out"), Some(CursorSpec::ZoomOut));
-        assert_eq!(host_cursor_spec("none"), Some(CursorSpec::None));
-        assert_eq!(host_cursor_spec("unknown"), None);
-    }
 
     #[test]
     fn unchanged_windows_do_not_reapply_native_material() {

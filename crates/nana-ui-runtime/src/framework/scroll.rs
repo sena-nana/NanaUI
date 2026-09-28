@@ -66,12 +66,12 @@ impl AppContext {
     }
 
     fn scroll_contains_row(&self, scroll: StableNodeId, row: StableNodeId) -> bool {
-        let mut parent = self.world.node(row).and_then(|node| node.parent);
+        let mut parent = self.world.parent_id(row);
         while let Some(id) = parent {
             if id == scroll {
                 return true;
             }
-            parent = self.world.node(id).and_then(|node| node.parent);
+            parent = self.world.parent_id(id);
         }
         false
     }
@@ -327,7 +327,7 @@ impl AppContext {
         while let Some(id) = current {
             // The parent is read before scrolling: a scroll mutates the
             // container, never the hierarchy above it.
-            let parent = self.world.node(id).and_then(|node| node.parent);
+            let parent = self.world.parent_id(id);
             if self.scroll_node_by(id, delta)? {
                 return Ok(Some(id));
             }
@@ -497,7 +497,7 @@ impl AppContext {
             if let Some(axis) = self.scrollbar_axis_at(id, x, y) {
                 return Some((id, axis));
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         None
     }
@@ -657,7 +657,7 @@ impl AppContext {
             if self.is_scroll_view(id) {
                 return Some(id);
             }
-            current = self.world.node(id).and_then(|node| node.parent);
+            current = self.world.parent_id(id);
         }
         None
     }

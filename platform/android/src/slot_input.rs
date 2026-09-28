@@ -1,11 +1,11 @@
 //! GameActivity pointer / key / GameTextInput → NanaUI Runtime control-slot
 //! (host-testable).
 //!
-//! - Touch samples → platform [`InputEvent::Pointer`] in **logical** px.
-//! - Editing keys → platform [`InputEvent::Keyboard`]
+//! - Touch samples → canonical [`PointerInput`] in **logical** px.
+//! - Editing keys → canonical [`KeyInput`]
 //!   (US-QWERTY subset + named editing keys).
 //! - Printable commits while the slot text input is focused →
-//!   [`ImeEvent::Commit`] so hardware KeyEvents reuse the desktop IME path.
+//!   [`CompositionInput::Commit`] so hardware KeyEvents reuse the IME path.
 //!   Composition (CJK) arrives from GameTextInput and is mapped in
 //!   [`crate::slot_ime`].
 //!
@@ -16,7 +16,12 @@
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
 use nana_ui_core::PhysicalRect;
-use nana_ui_platform::{ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType};
+use std::borrow::Cow;
+
+use nana_ui_platform::{
+    CompositionInput, InputModifiers, KeyInput, KeyState, LogicalKey, PhysicalKey, PointerId,
+    PointerInput, PointerPhase, PointerType,
+};
 
 /// Touch / pointer phase from the host (Android MotionAction subset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,22 +180,22 @@ pub fn logical_point(physical_x: f32, physical_y: f32, scale: f32) -> [f32; 2] {
     [physical_x / scale, physical_y / scale]
 }
 
-/// Map one touch sample to a platform pointer event (logical window coords).
+/// Map one touch sample to a pointer sample (logical window coords).
 pub fn touch_to_pointer_event(
     kind: SlotTouchKind,
     logical: [f32; 2],
     pointer_id: i32,
     modifiers: InputModifiers,
-) -> InputEvent {
+) -> PointerInput {
     let (phase, button, buttons) = match kind {
         SlotTouchKind::Down => (PointerPhase::Down, 0, 1),
         SlotTouchKind::Move => (PointerPhase::Move, 0, 0),
         SlotTouchKind::Up => (PointerPhase::Up, 0, 0),
         SlotTouchKind::Cancel => (PointerPhase::Cancel, 0, 0),
     };
-    InputEvent::Pointer {
+    PointerInput {
         phase,
-        pointer_id: pointer_id.max(0) as u64,
+        pointer_id: PointerId(pointer_id.max(0) as u64),
         pointer_type: PointerType::Touch,
         x: logical[0],
         y: logical[1],
@@ -212,13 +217,13 @@ pub fn touch_to_pointer_event(
 /// Where a control-slot key sample should go.
 ///
 /// Printable commits while the slot text input is focused become
-/// [`ImeEvent::Commit`] so hardware KeyEvents reuse
-/// [`nana_ui::RuntimeInputAdapter::dispatch_ime`]. Editing keys and shortcuts
-/// stay [`InputEvent::Keyboard`]. There is no second Android text buffer.
+/// [`CompositionInput::Commit`] so hardware KeyEvents reuse the IME path.
+/// Editing keys and shortcuts stay key presses, with the text a press types
+/// delivered after it. There is no second Android text buffer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SlotKeyDispatch {
-    Keyboard(InputEvent),
-    Ime(ImeEvent),
+    Key { key: KeyInput, text: Option<String> },
+    Ime(CompositionInput),
 }
 
 /// Map one key sample onto the desktop keyboard or IME contract.
@@ -234,9 +239,12 @@ pub fn slot_key_to_dispatch(
         && !mods.is_shortcut()
         && let Some(text) = key.committed_text()
     {
-        return SlotKeyDispatch::Ime(ImeEvent::Commit(text));
+        return SlotKeyDispatch::Ime(CompositionInput::Commit(text));
     }
-    SlotKeyDispatch::Keyboard(key_to_input_event(down, key, mods.to_input(), repeat))
+    SlotKeyDispatch::Key {
+        key: key_to_input_event(down, key, mods.to_input(), repeat),
+        text: if down { key.committed_text() } else { None },
+    }
 }
 
 /// Should the host swallow this key for the InputConnection rather than push it
@@ -260,19 +268,23 @@ pub fn host_swallows_for_input_connection(
         && key.is_some_and(|key| key.committed_text().is_some())
 }
 
-/// Map one key sample to a platform keyboard event.
+/// Map one key sample to a key transition; the text a press types is
+/// [`SlotLogicalKey::committed_text`], delivered after it.
 pub fn key_to_input_event(
     down: bool,
     key: SlotLogicalKey,
     modifiers: InputModifiers,
     repeat: bool,
-) -> InputEvent {
+) -> KeyInput {
     let name = key.as_input_key();
-    InputEvent::Keyboard {
-        pressed: down,
-        text: if down { key.committed_text() } else { None },
-        code: name.clone(),
-        key: name,
+    KeyInput {
+        physical: PhysicalKey(Cow::Owned(name.clone())),
+        logical: LogicalKey(Cow::Owned(name)),
+        state: if down {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        },
         repeat,
         modifiers,
     }
@@ -571,27 +583,13 @@ mod tests {
             3,
             InputModifiers::default(),
         );
-        match event {
-            InputEvent::Pointer {
-                phase,
-                pointer_id,
-                pointer_type,
-                x,
-                y,
-                is_primary,
-                button,
-                ..
-            } => {
-                assert_eq!(phase, PointerPhase::Down);
-                assert_eq!(pointer_id, 3);
-                assert_eq!(pointer_type, PointerType::Touch);
-                assert!((x - 1.0).abs() < f32::EPSILON);
-                assert!((y - 2.0).abs() < f32::EPSILON);
-                assert!(is_primary);
-                assert_eq!(button, 0);
-            }
-            other => panic!("unexpected {other:?}"),
-        }
+        assert_eq!(event.phase, PointerPhase::Down);
+        assert_eq!(event.pointer_id, PointerId(3));
+        assert_eq!(event.pointer_type, PointerType::Touch);
+        assert!((event.x - 1.0).abs() < f32::EPSILON);
+        assert!((event.y - 2.0).abs() < f32::EPSILON);
+        assert!(event.is_primary);
+        assert_eq!(event.button, 0);
     }
 
     #[test]
@@ -636,26 +634,15 @@ mod tests {
     }
 
     #[test]
-    fn key_press_emits_text_for_character() {
+    fn key_press_names_the_character() {
         let event = key_to_input_event(
             true,
             SlotLogicalKey::Character('x'),
             InputModifiers::default(),
             false,
         );
-        match event {
-            InputEvent::Keyboard {
-                pressed,
-                key,
-                text: Some(t),
-                ..
-            } => {
-                assert!(pressed);
-                assert_eq!(key, "x");
-                assert_eq!(t, "x");
-            }
-            other => panic!("unexpected {other:?}"),
-        }
+        assert!(event.is_pressed());
+        assert_eq!(event.logical.0, "x");
     }
 
     #[test]
@@ -666,15 +653,8 @@ mod tests {
             InputModifiers::default(),
             false,
         );
-        match event {
-            InputEvent::Keyboard {
-                key,
-                text: None,
-                pressed: true,
-                ..
-            } => assert_eq!(key, "Backspace"),
-            other => panic!("unexpected {other:?}"),
-        }
+        assert!(event.is_pressed());
+        assert_eq!(event.logical.0, "Backspace");
     }
 
     #[test]
@@ -708,7 +688,10 @@ mod tests {
             false,
             true,
         );
-        assert_eq!(dispatch, SlotKeyDispatch::Ime(ImeEvent::Commit("h".into())));
+        assert_eq!(
+            dispatch,
+            SlotKeyDispatch::Ime(CompositionInput::Commit("h".into()))
+        );
     }
 
     #[test]
@@ -721,11 +704,10 @@ mod tests {
             false,
         );
         match dispatch {
-            SlotKeyDispatch::Keyboard(InputEvent::Keyboard {
-                pressed: true,
+            SlotKeyDispatch::Key {
+                key,
                 text: Some(text),
-                ..
-            }) => assert_eq!(text, "h"),
+            } if key.is_pressed() => assert_eq!(text, "h"),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -739,9 +721,7 @@ mod tests {
         let dispatch =
             slot_key_to_dispatch(true, SlotLogicalKey::Character('c'), mods, false, true);
         match dispatch {
-            SlotKeyDispatch::Keyboard(InputEvent::Keyboard { key, .. }) => {
-                assert_eq!(key, "c");
-            }
+            SlotKeyDispatch::Key { key, .. } => assert_eq!(key.logical.0, "c"),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -756,12 +736,9 @@ mod tests {
             true,
         );
         match dispatch {
-            SlotKeyDispatch::Keyboard(InputEvent::Keyboard {
-                key,
-                text: None,
-                pressed: true,
-                ..
-            }) => assert_eq!(key, "Backspace"),
+            SlotKeyDispatch::Key { key, text: None } if key.is_pressed() => {
+                assert_eq!(key.logical.0, "Backspace")
+            }
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -776,7 +753,7 @@ mod tests {
             true,
         );
         match dispatch {
-            SlotKeyDispatch::Keyboard(InputEvent::Keyboard { pressed: false, .. }) => {}
+            SlotKeyDispatch::Key { key, text: None } if !key.is_pressed() => {}
             other => panic!("unexpected {other:?}"),
         }
     }

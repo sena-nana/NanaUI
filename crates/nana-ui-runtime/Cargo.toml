@@ -24,6 +24,9 @@ hashbrown = "0.16.1"
 futures-core.workspace = true
 nana-ui-core.workspace = true
 nana-diagnostics.workspace = true
+# Canonical input and the host services contract. Input routing, focus and IME
+# state are Runtime responsibilities; the contract crate has no platform deps.
+nana-ui-input.workspace = true
 # Issue #95: the retained text node resolves through `nana-text`'s engine and
 # keeps its layouts behind `nana-text` handles.
 nana-text.workspace = true

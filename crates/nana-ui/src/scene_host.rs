@@ -6,6 +6,7 @@ mod accessibility;
 mod browser;
 mod dialogs;
 mod display;
+mod host_services;
 mod input;
 mod presence;
 mod present;
@@ -14,8 +15,9 @@ mod startup;
 mod windows;
 
 use accessibility::PendingAccessibility;
+use host_services::{NativeWindowServices, WindowInputSource};
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
@@ -23,19 +25,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::presentation::{ResolvedWindowPresentation, WindowSurfaceTarget};
-use nana_ui_core::{
-    AppearanceSettings, CursorSpec, RESIZE_HANDLE_SIZE, SharedStore, TITLE_BAR_HEIGHT,
-};
+use nana_ui_core::{AppearanceSettings, RESIZE_HANDLE_SIZE, SharedStore, TITLE_BAR_HEIGHT};
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
-    ClipboardHostServices, CoordinateExtent, DisplayBounds, FullscreenRequest, HostCapability,
-    HostServiceRequest, HostServiceResponse, ImeEvent, InputCoordinateSpace, InputEvent,
-    InputModifiers, MousePassthroughMode, PointerPhase, PointerType, PresentationCoordinateBridge,
-    PresentationTransform, SystemAppearance, TextInputPurpose, TextInputRequest, WindowEvent,
+    CompositionInput, DisplayBounds, FullscreenRequest, InputModifiers, InputPayload,
+    MousePassthroughMode, PointerInput, PointerPhase, PointerType, SystemAppearance, WindowEvent,
     WindowGeometry, WindowIcon, WindowId, WindowLevel, WindowModeState, WindowResizeEdge,
-    clamp_position_to_displays, clear_registered_application_icon, default_shared_clipboard,
-    persist_live_window_geometry, register_application_icon, restore_window_geometry,
-    window_resize_edge,
+    clamp_position_to_displays, clear_registered_application_icon, persist_live_window_geometry,
+    register_application_icon, restore_window_geometry, window_resize_edge,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, StableNodeId, Task,
@@ -68,26 +65,20 @@ use winit::raw_window_handle::HasWindowHandle;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::RawWindowHandle;
 use winit::window::Theme as WinitTheme;
-use winit::window::{
-    ImeCapabilities, ImeEnableRequest, ImeHint, ImePurpose, ImeRequest, ImeRequestData,
-    ImeRequestError, ImeSurroundingText,
-};
 
 #[cfg(not(target_os = "android"))]
 use crate::accessibility::HostedAccessibility;
 use crate::gpu_raw::GpuRaw;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
-    HostDocumentAccess, HostFailure, ImeSurroundingSnapshot, ReportHostFailure, RuntimeProgram,
-    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, WindowDescriptor,
-    gated_runtime_window_update, runtime_ime_surrounding, runtime_text_input_request,
+    HostDocumentAccess, HostFailure, ReportHostFailure, RuntimeProgram, RuntimeProgramContext,
+    RuntimeProgramUpdate, RuntimeRedraw, WindowDescriptor,
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
-    HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, InputRouter,
-    RuntimeAnimationClock, TitleBarDragTracker, WindowChromeAction, WindowChromeEvent,
-    WindowChromeState, apply_title_bar_pointer,
-    title_bar_hits_window_control as pointer_hits_window_control,
+    HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, RuntimeAnimationClock,
+    TitleBarDragTracker, WindowChromeAction, WindowChromeEvent, WindowChromeState,
+    apply_title_bar_pointer, title_bar_hits_window_control as pointer_hits_window_control,
     window_commands_for_chrome_action,
 };
 
@@ -95,7 +86,6 @@ const GPU_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_PROGRAM_DISPATCHES: usize = 32;
 const TASK_QUEUE_CAPACITY: usize = 256;
 const TASK_WORKERS: usize = 4;
-const NATIVE_PENDING_INPUT_CAPACITY: usize = 1024;
 
 /// Run a [`RuntimeProgram`] on the Nana Scene host.
 ///
@@ -189,6 +179,9 @@ struct WindowContext {
     surface: HostedGpuSurface,
     geometry: WindowGeometry,
     input: InputTracker,
+    /// This window as an input source: its endpoint, stamps and what the
+    /// Runtime last had applied to it.
+    input_source: WindowInputSource,
     /// The only authority for what this window presents and for the native
     /// chrome that presentation requires. Nothing re-derives either from the
     /// request; see [`crate::presentation`].
@@ -305,7 +298,6 @@ struct WindowManager<Program: RuntimeProgram> {
     /// System reduce-motion preference, as last delivered to the program.
     reduced_motion: bool,
     settings: WindowDescriptor,
-    ime: HashMap<WindowId, AppliedIme>,
     chrome: HashMap<WindowId, WindowChromeSession>,
     bind_after_present: HashSet<WindowId>,
     startup_failure: Arc<Mutex<Option<String>>>,
@@ -323,19 +315,13 @@ struct WindowManager<Program: RuntimeProgram> {
     /// This host's startup: the coordinator, the splash it owns until
     /// handoff, and the record programs read.
     startup: startup::HostStartup,
-    /// Canonical input endpoint bindings. Window/winit is only a lowering
-    /// provider; Runtime owns hit testing, focus, and pointer capture.
-    input_router: InputRouter,
     /// Monotonic generation per source identity. Window ids may be reused by
     /// an embedding host, so a reopened window must not accept old events.
     input_generations: HashMap<WindowId, u64>,
-    /// Canonical event inbox per native input source. Native winit input is
-    /// only a lowering provider; enqueueing here keeps coalescing, capacity,
-    /// ordering and endpoint counters identical to headless adapters.
-    input_endpoints: HashMap<WindowId, nana_ui_platform::InputEndpoint>,
-    /// Events returned by an endpoint while it is full or host-service
-    /// backpressured. They retain ownership until a later event-loop turn.
-    input_pending: HashMap<WindowId, VecDeque<nana_ui_platform::CanonicalInputEvent>>,
+    /// The process's clipboard, the one backend every window's input uses.
+    clipboard: nana_ui_platform::SharedClipboardHost,
+    /// Routed events of the drain in progress, reused across drains.
+    routed_input: Vec<nana_ui_runtime::RoutedEvent>,
     /// The primary window's icons, while the startup thread still renders them.
     pending_icons: Option<Receiver<SceneIcons>>,
     /// Messages `initialize` returned, not yet applied (only with a splash).
@@ -356,12 +342,6 @@ impl<Program: RuntimeProgram> Drop for WindowManager<Program> {
 struct WindowChromeSession {
     state: WindowChromeState,
     drag: TitleBarDragTracker,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct AppliedIme {
-    request: TextInputRequest,
-    surrounding: Option<ImeSurroundingSnapshot>,
 }
 
 fn scene_image_keys(scene: &nana_ui_scene::UiScene) -> HashSet<String> {
@@ -445,87 +425,6 @@ fn remove_image_target_index(
                 targets.remove(&key);
             }
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum ImeApply {
-    None,
-    Disable,
-    Enable {
-        capabilities: ImeCapabilities,
-        data: ImeRequestData,
-    },
-    Replace {
-        capabilities: ImeCapabilities,
-        data: ImeRequestData,
-    },
-    Update(ImeRequestData),
-}
-
-fn ime_capabilities(request: &TextInputRequest, has_surrounding: bool) -> ImeCapabilities {
-    if !request.enabled {
-        return ImeCapabilities::new();
-    }
-    let mut capabilities = ImeCapabilities::new().with_hint_and_purpose();
-    if request.cursor_area.is_some() {
-        capabilities = capabilities.with_cursor_area();
-    }
-    if has_surrounding {
-        capabilities = capabilities.with_surrounding_text();
-    }
-    capabilities
-}
-
-fn ime_request_data(
-    request: TextInputRequest,
-    surrounding: Option<ImeSurroundingText>,
-) -> ImeRequestData {
-    let purpose = match request.purpose {
-        TextInputPurpose::Normal => ImePurpose::Normal,
-        TextInputPurpose::Password => ImePurpose::Password,
-        TextInputPurpose::Terminal => ImePurpose::Terminal,
-    };
-    let mut data = ImeRequestData::default().with_hint_and_purpose(ImeHint::NONE, purpose);
-    if let Some(cursor) = request.cursor_area {
-        data = data.with_cursor_area(
-            winit::dpi::LogicalPosition::new(cursor.x, cursor.y + cursor.height).into(),
-            winit::dpi::LogicalSize::new(cursor.width.max(1.0), cursor.height.max(1.0)).into(),
-        );
-    }
-    if let Some(surrounding) = surrounding {
-        data = data.with_surrounding_text(surrounding);
-    }
-    data
-}
-
-fn ime_apply(
-    previous: Option<&TextInputRequest>,
-    previous_surrounding: bool,
-    next: TextInputRequest,
-    surrounding: Option<ImeSurroundingText>,
-) -> ImeApply {
-    let was_enabled = previous.is_some_and(|request| request.enabled);
-    if !next.enabled {
-        return if was_enabled {
-            ImeApply::Disable
-        } else {
-            ImeApply::None
-        };
-    }
-    let has_surrounding = surrounding.is_some();
-    let capabilities = ime_capabilities(&next, has_surrounding);
-    let data = ime_request_data(next, surrounding);
-    if !was_enabled {
-        return ImeApply::Enable { capabilities, data };
-    }
-    let previous_capabilities = previous
-        .map(|request| ime_capabilities(request, previous_surrounding))
-        .unwrap_or_default();
-    if previous_capabilities != capabilities {
-        ImeApply::Replace { capabilities, data }
-    } else {
-        ImeApply::Update(data)
     }
 }
 
@@ -1292,6 +1191,10 @@ fn complete_startup<Program: RuntimeProgram>(
         surface,
         geometry,
         input: InputTracker::default(),
+        input_source: WindowInputSource::new(
+            nana_ui_platform::InputSourceId(WindowId::PRIMARY.0),
+            nana_ui_platform::EndpointGeneration(1),
+        ),
         presentation,
         settings: settings.clone(),
         #[cfg(not(target_os = "android"))]
@@ -1356,7 +1259,6 @@ fn complete_startup<Program: RuntimeProgram>(
         last_theme,
         reduced_motion,
         settings,
-        ime: HashMap::new(),
         chrome: HashMap::new(),
         bind_after_present: HashSet::new(),
         startup_failure,
@@ -1369,18 +1271,9 @@ fn complete_startup<Program: RuntimeProgram>(
         #[cfg(target_os = "macos")]
         present_transaction_pinned: HashSet::new(),
         startup: host_startup,
-        input_router: InputRouter::default(),
         input_generations: HashMap::from([(WindowId::PRIMARY, 1)]),
-        input_endpoints: HashMap::from([(
-            WindowId::PRIMARY,
-            nana_ui_platform::InputEndpoint::new(
-                nana_ui_platform::InputSourceId(WindowId::PRIMARY.0),
-                nana_ui_platform::EndpointGeneration(1),
-                1024,
-                1024 * 1024,
-            ),
-        )]),
-        input_pending: HashMap::new(),
+        clipboard: host_services::process_clipboard(),
+        routed_input: Vec::new(),
         pending_icons,
         startup_messages: std::collections::VecDeque::new(),
     };
@@ -1939,48 +1832,13 @@ fn window_cursor_override(cursor: crate::WindowCursor) -> (Option<CursorIcon>, O
     }
 }
 
-fn scene_cursor_icon(
-    frame_edge: Option<WindowResizeEdge>,
-    handle: Option<(f32, f32)>,
-    css_cursor: Option<CursorSpec>,
-    text_field: bool,
-) -> (CursorIcon, bool) {
-    match frame_edge {
-        Some(WindowResizeEdge::East | WindowResizeEdge::West) => (CursorIcon::EwResize, true),
-        Some(WindowResizeEdge::North | WindowResizeEdge::South) => (CursorIcon::NsResize, true),
-        Some(WindowResizeEdge::NorthEast | WindowResizeEdge::SouthWest) => {
-            (CursorIcon::NeswResize, true)
-        }
-        Some(WindowResizeEdge::NorthWest | WindowResizeEdge::SouthEast) => {
-            (CursorIcon::NwseResize, true)
-        }
-        None => match handle {
-            Some((width, height)) => {
-                if width <= height {
-                    (CursorIcon::EwResize, true)
-                } else {
-                    (CursorIcon::NsResize, true)
-                }
-            }
-            None => match css_cursor {
-                Some(CursorSpec::None) => (CursorIcon::Default, false),
-                Some(CursorSpec::Default) => (CursorIcon::Default, true),
-                Some(CursorSpec::Pointer) => (CursorIcon::Pointer, true),
-                Some(CursorSpec::Text) => (CursorIcon::Text, true),
-                Some(CursorSpec::Move) => (CursorIcon::Move, true),
-                Some(CursorSpec::Grab) => (CursorIcon::Grab, true),
-                Some(CursorSpec::Grabbing) => (CursorIcon::Grabbing, true),
-                Some(CursorSpec::NotAllowed) => (CursorIcon::NotAllowed, true),
-                Some(CursorSpec::Crosshair) => (CursorIcon::Crosshair, true),
-                Some(CursorSpec::Help) => (CursorIcon::Help, true),
-                Some(CursorSpec::Wait) => (CursorIcon::Wait, true),
-                Some(CursorSpec::Progress) => (CursorIcon::Progress, true),
-                Some(CursorSpec::ZoomIn) => (CursorIcon::ZoomIn, true),
-                Some(CursorSpec::ZoomOut) => (CursorIcon::ZoomOut, true),
-                None if text_field => (CursorIcon::Text, true),
-                None => (CursorIcon::Default, true),
-            },
-        },
+/// The resize cursor a window frame edge shows.
+fn frame_edge_cursor(edge: WindowResizeEdge) -> CursorIcon {
+    match edge {
+        WindowResizeEdge::East | WindowResizeEdge::West => CursorIcon::EwResize,
+        WindowResizeEdge::North | WindowResizeEdge::South => CursorIcon::NsResize,
+        WindowResizeEdge::NorthEast | WindowResizeEdge::SouthWest => CursorIcon::NeswResize,
+        WindowResizeEdge::NorthWest | WindowResizeEdge::SouthEast => CursorIcon::NwseResize,
     }
 }
 
@@ -2016,49 +1874,6 @@ fn scene_clear_color(
     // system background could not match.
     let color = window_background.unwrap_or_else(|| theme.palette().background);
     crate::scene_paint::pack_linear([color.r, color.g, color.b, color.a])
-}
-
-fn resolved_scene_ime_request(
-    document: Option<&nana_ui_scene::RuntimeDocument>,
-) -> TextInputRequest {
-    document
-        .map(runtime_text_input_request)
-        .unwrap_or(TextInputRequest {
-            enabled: false,
-            cursor_area: None,
-            purpose: TextInputPurpose::Normal,
-        })
-}
-
-fn enable_ime(
-    window: &dyn winit::window::Window,
-    capabilities: ImeCapabilities,
-    data: ImeRequestData,
-) {
-    let Some(enable) = ImeEnableRequest::new(capabilities, data.clone()) else {
-        return;
-    };
-    if window.request_ime_update(ImeRequest::Enable(enable)) == Err(ImeRequestError::AlreadyEnabled)
-    {
-        let _ = window.request_ime_update(ImeRequest::Update(data));
-    }
-}
-
-fn apply_text_input_request(window: &dyn winit::window::Window, apply: ImeApply) {
-    match apply {
-        ImeApply::None => {}
-        ImeApply::Disable => {
-            let _ = window.request_ime_update(ImeRequest::Disable);
-        }
-        ImeApply::Enable { capabilities, data } => enable_ime(window, capabilities, data),
-        ImeApply::Replace { capabilities, data } => {
-            let _ = window.request_ime_update(ImeRequest::Disable);
-            enable_ime(window, capabilities, data);
-        }
-        ImeApply::Update(data) => {
-            let _ = window.request_ime_update(ImeRequest::Update(data));
-        }
-    }
 }
 
 /// Scale between desktop pixels and the global logical space shared by
@@ -2640,29 +2455,6 @@ fn invalidate_program_host_textures(
     invalidated
 }
 
-fn should_deliver_program_ime(modal_blocks: bool) -> bool {
-    !modal_blocks
-}
-
-/// Topmost interactive node under the pointer for pointer and wheel events;
-/// `None` for every other event.
-fn input_pointer_hit(
-    document: Option<&nana_ui_scene::RuntimeDocument>,
-    event: &InputEvent,
-) -> Option<StableNodeId> {
-    match event {
-        InputEvent::Pointer { x, y, .. } | InputEvent::Wheel { x, y, .. } => {
-            document.and_then(|document| {
-                document
-                    .context()
-                    .world()
-                    .hit_test(document.document(), *x, *y)
-            })
-        }
-        _ => None,
-    }
-}
-
 /// Always invoke the program input hook. Runtime `prevent_default` still
 /// requests a window redraw; it does not drop Gallery/Vue delivery. A failed
 /// handler degrades to an empty update (the caller reports it via
@@ -2756,12 +2548,23 @@ fn normalized_scale_factor(scale_factor: f32) -> f32 {
     }
 }
 
-fn platform_input_key(key: &winit::keyboard::Key) -> Option<String> {
-    Some(match key {
-        winit::keyboard::Key::Named(named) => format!("{named:?}"),
-        winit::keyboard::Key::Character(character) => character.to_string(),
-        winit::keyboard::Key::Unidentified(_) | winit::keyboard::Key::Dead(_) => return None,
-    })
+/// The layout-resolved key name: a named key's name (`ArrowLeft`, `Enter`),
+/// a character key's character.
+fn platform_input_key(key: &winit::keyboard::Key) -> std::borrow::Cow<'static, str> {
+    match key {
+        winit::keyboard::Key::Named(named) => format!("{named:?}").into(),
+        winit::keyboard::Key::Character(character) => character.to_string().into(),
+        winit::keyboard::Key::Dead(_) => "Dead".into(),
+        winit::keyboard::Key::Unidentified(_) => "Unidentified".into(),
+    }
+}
+
+/// The key's position as a W3C `code` (`KeyA`, `Digit1`, `ShiftLeft`).
+fn platform_physical_key(key: &winit::keyboard::PhysicalKey) -> std::borrow::Cow<'static, str> {
+    match key {
+        winit::keyboard::PhysicalKey::Code(code) => format!("{code:?}").into(),
+        winit::keyboard::PhysicalKey::Unidentified(_) => "Unidentified".into(),
+    }
 }
 
 fn system_input_modifiers(keys: nana_window::KeyboardModifiers) -> InputModifiers {
@@ -2789,20 +2592,23 @@ fn dnd_advertises_files(event_loop: &dyn ActiveEventLoop, transfer: DataTransfer
         .unwrap_or(true)
 }
 
-fn platform_ime_event(ime: winit::event::Ime) -> ImeEvent {
+fn platform_composition(ime: &winit::event::Ime) -> CompositionInput {
     match ime {
-        winit::event::Ime::Enabled => ImeEvent::Enabled,
-        winit::event::Ime::Disabled => ImeEvent::Disabled,
-        winit::event::Ime::Preedit(text, selection) => ImeEvent::Preedit { text, selection },
-        winit::event::Ime::Commit(text) => ImeEvent::Commit(text),
+        winit::event::Ime::Enabled => CompositionInput::Enabled,
+        winit::event::Ime::Disabled => CompositionInput::Disabled,
+        winit::event::Ime::Preedit(text, selection) => CompositionInput::Update {
+            text: text.clone(),
+            selection: *selection,
+        },
+        winit::event::Ime::Commit(text) => CompositionInput::Commit(text.clone()),
         winit::event::Ime::DeleteSurrounding {
             before_bytes,
             after_bytes,
-        } => ImeEvent::DeleteSurrounding {
-            before_bytes,
-            after_bytes,
+        } => CompositionInput::DeleteSurrounding {
+            before_bytes: *before_bytes,
+            after_bytes: *after_bytes,
         },
-        _ => ImeEvent::Disabled,
+        _ => CompositionInput::Disabled,
     }
 }
 
@@ -3027,13 +2833,35 @@ fn map_button_source(
     }
 }
 
+/// One native event lowered to canonical input, not yet stamped: the device
+/// it came from, its payload, the text a key press typed, and when.
+#[derive(Debug)]
+struct LoweredInput {
+    device: nana_ui_platform::DeviceId,
+    payload: InputPayload,
+    /// For a key press: the text it typed, delivered right after the key.
+    text: Option<String>,
+    /// Runtime clock time of the event.
+    now: Duration,
+}
+
+impl LoweredInput {
+    fn event(device: nana_ui_platform::DeviceId, payload: InputPayload, now: Duration) -> Self {
+        Self {
+            device,
+            payload,
+            text: None,
+            now,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct InputTracker {
     cursor: (f32, f32),
-    canonical_sequence: u64,
-    canonical_device: nana_ui_platform::DeviceId,
-    coordinate_bridge: Option<PresentationCoordinateBridge>,
-    cursor_sync_last: Option<std::time::Instant>,
+    /// Device of the last pointer or key event, for events that carry none
+    /// (window focus).
+    last_device: nana_ui_platform::DeviceId,
     buttons: u16,
     modifiers: ModifiersState,
     active_touches: HashSet<u64>,
@@ -3048,48 +2876,14 @@ struct InputTracker {
 }
 
 impl InputTracker {
-    fn next_canonical_sequence(&mut self) -> nana_ui_platform::InputSequence {
-        self.canonical_sequence = self.canonical_sequence.saturating_add(1).max(1);
-        nana_ui_platform::InputSequence(self.canonical_sequence)
-    }
-
-    fn advance_canonical_sequence(&mut self, count: usize) {
-        self.canonical_sequence = self.canonical_sequence.saturating_add(count as u64).max(1);
-    }
-
     fn clear_pointers(&mut self) {
         self.buttons = 0;
         self.active_touches.clear();
         self.primary_touch = None;
     }
 
-    fn set_coordinate_extents(&mut self, logical: (f32, f32), physical: (u32, u32)) {
-        let logical_extent = CoordinateExtent::new(logical.0, logical.1);
-        let physical_extent = CoordinateExtent::new(physical.0 as f32, physical.1 as f32);
-        let Some(bridge) = self.coordinate_bridge.as_mut() else {
-            self.coordinate_bridge = PresentationCoordinateBridge::new(
-                logical_extent,
-                logical_extent,
-                logical_extent,
-                physical_extent,
-                PresentationTransform {
-                    affine: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
-                    revision: 1,
-                },
-            )
-            .ok();
-            return;
-        };
-        let _ = bridge.set_extents(
-            logical_extent,
-            logical_extent,
-            logical_extent,
-            physical_extent,
-        );
-    }
-
     /// Ends the mouse gesture whose release the platform will not deliver.
-    fn cancel_mouse(&mut self, screen_origin: Option<ScreenSpace>) -> InputEvent {
+    fn cancel_mouse(&mut self, screen_origin: Option<ScreenSpace>) -> PointerInput {
         let buttons = std::mem::take(&mut self.buttons);
         self.pointer_event(
             mapped_pointer(1, PointerType::Mouse, true, None),
@@ -3104,41 +2898,8 @@ impl InputTracker {
     }
 
     fn set_cursor_physical(&mut self, position: PhysicalPosition<f64>, scale: f32) {
-        let point = self
-            .coordinate_bridge
-            .as_mut()
-            .and_then(|bridge| {
-                bridge
-                    .map_unclipped(
-                        InputCoordinateSpace::Physical,
-                        [position.x as f32, position.y as f32],
-                    )
-                    .ok()
-            })
-            .map(|point| (point[0], point[1]))
-            .unwrap_or_else(|| {
-                let point = position.to_logical::<f32>(f64::from(scale));
-                (point.x, point.y)
-            });
-        self.cursor = point;
-    }
-
-    /// Whether a cursor-icon sync may run now; records the sync when true.
-    ///
-    /// The sync probes split/dock/workspace handles, and each probe walks the
-    /// whole document when the pointer is outside every handle slop. Pointer
-    /// moves arrive faster than frames, so gate the probe to one per frame
-    /// interval; the icon lagging a frame is imperceptible.
-    fn begin_cursor_sync(&mut self, now: std::time::Instant) -> bool {
-        const CURSOR_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
-        if self
-            .cursor_sync_last
-            .is_some_and(|last| now.duration_since(last) < CURSOR_SYNC_INTERVAL)
-        {
-            return false;
-        }
-        self.cursor_sync_last = Some(now);
-        true
+        let point = position.to_logical::<f32>(f64::from(scale));
+        self.cursor = (point.x, point.y);
     }
 
     #[expect(
@@ -3155,11 +2916,11 @@ impl InputTracker {
         modifiers: InputModifiers,
         screen_origin: Option<ScreenSpace>,
         pressure: Option<f32>,
-    ) -> InputEvent {
+    ) -> PointerInput {
         let screen = screen_position(screen_origin, self.cursor);
-        InputEvent::Pointer {
+        PointerInput {
             phase,
-            pointer_id: mapped.pointer_id,
+            pointer_id: nana_ui_platform::PointerId(mapped.pointer_id),
             pointer_type: mapped.pointer_type,
             x: self.cursor.0,
             y: self.cursor.1,
@@ -3266,32 +3027,38 @@ impl InputTracker {
         })
     }
 
+    /// Lower one native event to canonical input, or `None` for events that
+    /// are not input.
     fn map(
         &mut self,
         event: &WinitWindowEvent,
         scale: f32,
         screen_origin: Option<ScreenSpace>,
-    ) -> Option<InputEvent> {
+        now: Duration,
+    ) -> Option<LoweredInput> {
         let modifiers = platform_input_modifiers(self.modifiers);
-        match event {
+        let (device, payload, text) = match event {
             WinitWindowEvent::PointerMoved {
                 device_id,
                 position,
                 primary,
                 source,
             } => {
-                self.canonical_device = canonical_device_id(*device_id);
                 self.set_cursor_physical(*position, scale);
-                Some(self.pointer_event(
-                    map_pointer_source(source, *primary, *device_id),
-                    PointerPhase::Move,
-                    -1,
-                    self.buttons,
-                    false,
-                    modifiers,
-                    screen_origin,
+                (
+                    device_id,
+                    InputPayload::Pointer(self.pointer_event(
+                        map_pointer_source(source, *primary, *device_id),
+                        PointerPhase::Move,
+                        -1,
+                        self.buttons,
+                        false,
+                        modifiers,
+                        screen_origin,
+                        None,
+                    )),
                     None,
-                ))
+                )
             }
             WinitWindowEvent::PointerEntered {
                 device_id,
@@ -3299,18 +3066,21 @@ impl InputTracker {
                 primary,
                 kind,
             } => {
-                self.canonical_device = canonical_device_id(*device_id);
                 self.set_cursor_physical(*position, scale);
-                Some(self.pointer_event(
-                    map_pointer_kind(kind, *primary, *device_id),
-                    PointerPhase::Move,
-                    -1,
-                    self.buttons,
-                    false,
-                    modifiers,
-                    screen_origin,
+                (
+                    device_id,
+                    InputPayload::Pointer(self.pointer_event(
+                        map_pointer_kind(kind, *primary, *device_id),
+                        PointerPhase::Move,
+                        -1,
+                        self.buttons,
+                        false,
+                        modifiers,
+                        screen_origin,
+                        None,
+                    )),
                     None,
-                ))
+                )
             }
             WinitWindowEvent::PointerButton {
                 device_id,
@@ -3320,7 +3090,6 @@ impl InputTracker {
                 button,
                 is_macos_activation_click,
             } => {
-                self.canonical_device = canonical_device_id(*device_id);
                 self.set_cursor_physical(*position, scale);
                 let mouse = button.clone().mouse_button().unwrap_or(MouseButton::Left);
                 let button_code = mouse_button_code(mouse);
@@ -3331,64 +3100,75 @@ impl InputTracker {
                 } else {
                     self.buttons &= !mask;
                 }
-                Some(self.pointer_event(
-                    map_button_source(button, *primary, *device_id),
-                    if pressed {
-                        PointerPhase::Down
-                    } else {
-                        PointerPhase::Up
-                    },
-                    button_code,
-                    self.buttons,
-                    *is_macos_activation_click,
-                    modifiers,
-                    screen_origin,
+                (
+                    device_id,
+                    InputPayload::Pointer(self.pointer_event(
+                        map_button_source(button, *primary, *device_id),
+                        if pressed {
+                            PointerPhase::Down
+                        } else {
+                            PointerPhase::Up
+                        },
+                        button_code,
+                        self.buttons,
+                        *is_macos_activation_click,
+                        modifiers,
+                        screen_origin,
+                        None,
+                    )),
                     None,
-                ))
+                )
             }
+            // Leaving the surface is not a cancellation: hover clears while
+            // a capture, if any, keeps its pointer. The leave carries its own
+            // device, not the last event's.
             WinitWindowEvent::PointerLeft {
                 device_id,
                 position,
                 primary,
                 kind,
             } => {
-                self.canonical_device = canonical_device_id(*device_id);
                 if let Some(position) = position {
                     self.set_cursor_physical(*position, scale);
                 }
-                let buttons = std::mem::take(&mut self.buttons);
-                Some(self.pointer_event(
-                    map_pointer_kind(kind, *primary, *device_id),
-                    PointerPhase::Cancel,
-                    -1,
-                    buttons,
-                    false,
-                    modifiers,
-                    screen_origin,
-                    Some(0.0),
-                ))
+                self.buttons = 0;
+                let pointer = map_pointer_kind(kind, *primary, *device_id);
+                (
+                    device_id,
+                    InputPayload::PointerLeave {
+                        pointer_id: nana_ui_platform::PointerId(pointer.pointer_id),
+                    },
+                    None,
+                )
             }
             WinitWindowEvent::MouseWheel {
                 device_id, delta, ..
             } => {
-                self.canonical_device = canonical_device_id(*device_id);
-                let (delta_x, delta_y, line_delta) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (*x, *y, true),
+                let (delta_x, delta_y, unit) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        (*x, *y, nana_ui_platform::WheelUnit::Lines)
+                    }
                     MouseScrollDelta::PixelDelta(delta) => (
                         (delta.x / f64::from(scale)) as f32,
                         (delta.y / f64::from(scale)) as f32,
-                        false,
+                        nana_ui_platform::WheelUnit::Pixels,
                     ),
-                    _ => (0.0, 0.0, false),
+                    _ => (0.0, 0.0, nana_ui_platform::WheelUnit::Pixels),
                 };
-                Some(InputEvent::Wheel {
-                    x: self.cursor.0,
-                    y: self.cursor.1,
-                    delta_x,
-                    delta_y,
-                    line_delta,
-                    modifiers,
-                })
+                // The wheel belongs to the mouse: same pointer, same hover.
+                (
+                    device_id,
+                    InputPayload::Wheel(nana_ui_platform::WheelInput {
+                        pointer_id: nana_ui_platform::PointerId(1),
+                        x: self.cursor.0,
+                        y: self.cursor.1,
+                        delta_x,
+                        delta_y,
+                        unit,
+                        modifiers,
+                    }),
+                    None,
+                )
             }
             // A press synthesized on focus gain was typed into another window,
             // e.g. the Esc that dismissed an owned native dialog; delivering it
@@ -3397,22 +3177,48 @@ impl InputTracker {
                 event,
                 is_synthetic: true,
                 ..
-            } if event.state == ElementState::Pressed => None,
+            } if event.state == ElementState::Pressed => return None,
             WinitWindowEvent::KeyboardInput {
                 device_id, event, ..
             } => {
-                self.canonical_device = canonical_device_id(*device_id);
-                Some(InputEvent::Keyboard {
-                    pressed: event.state == ElementState::Pressed,
-                    key: platform_input_key(&event.logical_key).unwrap_or_default(),
-                    text: event.text.as_ref().map(ToString::to_string),
-                    code: format!("{:?}", event.physical_key),
+                let pressed = event.state == ElementState::Pressed;
+                let key = nana_ui_platform::KeyInput {
+                    physical: nana_ui_platform::PhysicalKey(platform_physical_key(
+                        &event.physical_key,
+                    )),
+                    logical: nana_ui_platform::LogicalKey(platform_input_key(&event.logical_key)),
+                    state: if pressed {
+                        nana_ui_platform::KeyState::Pressed
+                    } else {
+                        nana_ui_platform::KeyState::Released
+                    },
                     repeat: event.repeat,
                     modifiers,
-                })
+                };
+                let text = event
+                    .text
+                    .as_ref()
+                    .filter(|text| pressed && !text.is_empty())
+                    .map(ToString::to_string);
+                (device_id, InputPayload::Key(key), text)
             }
-            _ => None,
-        }
+            WinitWindowEvent::Ime(ime) => {
+                return Some(LoweredInput::event(
+                    self.last_device,
+                    InputPayload::Composition(platform_composition(ime)),
+                    now,
+                ));
+            }
+            _ => return None,
+        };
+        let device = canonical_device_id(*device);
+        self.last_device = device;
+        Some(LoweredInput {
+            device,
+            payload,
+            text,
+            now,
+        })
     }
 
     fn map_file_window_event(
@@ -3487,10 +3293,6 @@ fn platform_window_event(
         WinitWindowEvent::Focused(focused) => WindowEvent::FocusChanged {
             id,
             focused: *focused,
-        },
-        WinitWindowEvent::Ime(ime) => WindowEvent::Ime {
-            id,
-            event: platform_ime_event(ime.clone()),
         },
         WinitWindowEvent::SurfaceResized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
             WindowEvent::Resized { id, geometry }
@@ -3644,16 +3446,16 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        Desktop, DisplayBounds, ForwardPointerAction, FrameMoveStep, ImeApply, InputTracker,
-        PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position, frame_move_step,
-        held_mouse_button, ime_apply, input_pointer_hit, invalidate_program_host_textures,
-        mouse_button_code, mouse_button_mask, platform_ime_event, platform_input_key,
-        platform_input_modifiers, platform_window_event, remove_image_target_index,
-        replace_image_target_index, resolved_scene_ime_request, route_window_command,
-        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, surface_image_keys, system_input_modifiers, tablet_pointer_id,
-        window_cursor_override, window_level, window_surface_effect,
-        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
+        Desktop, DisplayBounds, ForwardPointerAction, FrameMoveStep, InputTracker,
+        PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position, frame_edge_cursor,
+        frame_move_step, held_mouse_button, invalidate_program_host_textures, mouse_button_code,
+        mouse_button_mask, platform_composition, platform_input_key, platform_input_modifiers,
+        platform_physical_key, platform_window_event, remove_image_target_index,
+        replace_image_target_index, route_window_command, scene_clear_color,
+        scene_runtime_input_update, scene_window_attributes, screen_position, surface_image_keys,
+        system_input_modifiers, tablet_pointer_id, window_cursor_override, window_level,
+        window_surface_effect, window_wants_transparent_surface, windows_scene_chrome,
+        windows_to_redraw, winit_icon,
     };
     use crate::presentation::{
         ResolvedSurfaceTarget, ResolvedWindowPresentation, WindowSurfaceTarget,
@@ -3664,9 +3466,10 @@ mod tests {
     };
     use nana_ui_platform::host::WindowCommand;
     use nana_ui_platform::{
-        ImeEvent, InputDisposition, InputEvent, InputModifiers, MousePassthroughMode, PointerPhase,
-        PointerType, TextInputPurpose, TextInputRequest, WindowDescriptor, WindowEvent,
-        WindowGeometry, WindowIcon, WindowId, WindowResizeEdge,
+        CompositionInput, InputDisposition, InputModifiers, InputPayload, KeyInput, KeyState,
+        MousePassthroughMode, PointerId, PointerInput, PointerPhase, PointerType, WheelInput,
+        WheelUnit, WindowDescriptor, WindowEvent, WindowGeometry, WindowIcon, WindowId,
+        WindowResizeEdge,
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
@@ -3677,6 +3480,18 @@ mod tests {
     };
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+    /// Lower one native event and keep only the payload.
+    fn map_input(
+        tracker: &mut InputTracker,
+        event: &WinitWindowEvent,
+        scale: f32,
+        origin: Option<ScreenSpace>,
+    ) -> Option<InputPayload> {
+        tracker
+            .map(event, scale, origin, std::time::Duration::ZERO)
+            .map(|lowered| lowered.payload)
+    }
+
     fn geometry() -> WindowGeometry {
         WindowGeometry {
             physical_size: (200, 100),
@@ -3684,62 +3499,6 @@ mod tests {
             scale_factor: 2.0,
             ..WindowGeometry::default()
         }
-    }
-
-    #[test]
-    fn input_pointer_hit_reports_the_topmost_node() {
-        use nana_ui_platform::InputModifiers;
-        use nana_ui_runtime::{Button, DocumentId, LayoutViewport, MeasureTextShaper};
-        use nana_ui_scene::RuntimeDocument;
-
-        let document_id = DocumentId::new(1).unwrap();
-        let mut runtime = RuntimeDocument::new(document_id);
-        let button = runtime
-            .context_mut()
-            .build(document_id, |ui| ui.child("build", Button::new("Build")))
-            .unwrap();
-        runtime
-            .flush(LayoutViewport::new(320.0, 180.0), &mut MeasureTextShaper)
-            .unwrap();
-        let layout = runtime
-            .context()
-            .world()
-            .layout_box(button.stable_id())
-            .unwrap();
-
-        let wheel = InputEvent::Wheel {
-            x: layout.x + layout.width / 2.0,
-            y: layout.y + layout.height / 2.0,
-            delta_x: 0.0,
-            delta_y: 1.0,
-            line_delta: true,
-            modifiers: InputModifiers::default(),
-        };
-        assert_eq!(
-            input_pointer_hit(Some(&runtime), &wheel),
-            Some(button.stable_id())
-        );
-
-        let outside = InputEvent::Wheel {
-            x: layout.x + layout.width + 40.0,
-            y: layout.y + layout.height + 40.0,
-            delta_x: 0.0,
-            delta_y: -1.0,
-            line_delta: true,
-            modifiers: InputModifiers::default(),
-        };
-        assert_eq!(input_pointer_hit(Some(&runtime), &outside), None);
-
-        let keyboard = InputEvent::Keyboard {
-            pressed: true,
-            key: "Escape".to_string(),
-            text: None,
-            code: "Escape".to_string(),
-            repeat: false,
-            modifiers: InputModifiers::default(),
-        };
-        assert_eq!(input_pointer_hit(Some(&runtime), &keyboard), None);
-        assert_eq!(input_pointer_hit(None, &wheel), None);
     }
 
     #[cfg(not(target_os = "android"))]
@@ -4394,15 +4153,19 @@ mod tests {
     fn input_key_uses_named_debug_and_character_text() {
         assert_eq!(
             platform_input_key(&Key::Named(NamedKey::ArrowDown)),
-            Some("ArrowDown".into())
+            "ArrowDown"
         );
+        assert_eq!(platform_input_key(&Key::Character("V".into())), "V");
         assert_eq!(
-            platform_input_key(&Key::Character("V".into())),
-            Some("V".into())
+            platform_input_key(&Key::Unidentified(winit::keyboard::NativeKey::Unidentified)),
+            "Unidentified"
         );
-        assert!(
-            platform_input_key(&Key::Unidentified(winit::keyboard::NativeKey::Unidentified))
-                .is_none()
+        // Physical keys are W3C codes, not the backend's debug spelling.
+        assert_eq!(
+            platform_physical_key(&winit::keyboard::PhysicalKey::Code(
+                winit::keyboard::KeyCode::KeyA
+            )),
+            "KeyA"
         );
     }
 
@@ -4421,22 +4184,11 @@ mod tests {
     }
 
     #[test]
-    fn cursor_sync_is_throttled_to_one_per_frame_interval() {
+    fn physical_cursor_positions_become_logical() {
         let mut tracker = InputTracker::default();
-        assert!(tracker.begin_cursor_sync(std::time::Instant::now()));
-        // A second sync inside the frame interval is skipped.
-        assert!(!tracker.begin_cursor_sync(std::time::Instant::now()));
-        std::thread::sleep(std::time::Duration::from_millis(9));
-        assert!(tracker.begin_cursor_sync(std::time::Instant::now()));
-    }
-
-    #[test]
-    fn physical_cursor_mapping_uses_the_canonical_coordinate_bridge() {
-        let mut tracker = InputTracker::default();
-        tracker.set_coordinate_extents((100.0, 50.0), (200, 100));
-        tracker.set_cursor_physical(PhysicalPosition::new(100.0, 50.0), 99.0);
+        tracker.set_cursor_physical(PhysicalPosition::new(100.0, 50.0), 2.0);
         assert_eq!(tracker.cursor, (50.0, 25.0));
-        tracker.set_cursor_physical(PhysicalPosition::new(220.0, 110.0), 99.0);
+        tracker.set_cursor_physical(PhysicalPosition::new(220.0, 110.0), 2.0);
         assert_eq!(tracker.cursor, (110.0, 55.0));
     }
 
@@ -4458,17 +4210,29 @@ mod tests {
         };
         let mut tracker = InputTracker::default();
         assert!(
-            tracker
-                .map(&escape(ElementState::Pressed, true), 1.0, None)
-                .is_none()
+            map_input(
+                &mut tracker,
+                &escape(ElementState::Pressed, true),
+                1.0,
+                None
+            )
+            .is_none()
         );
         assert!(matches!(
-            tracker.map(&escape(ElementState::Released, true), 1.0, None),
-            Some(InputEvent::Keyboard { pressed: false, .. })
+            map_input(
+                &mut tracker,
+                &escape(ElementState::Released, true),
+                1.0,
+                None
+            ),
+            Some(InputPayload::Key(KeyInput {
+                state: KeyState::Released,
+                ..
+            }))
         ));
         assert!(matches!(
-            tracker.map(&escape(ElementState::Pressed, false), 1.0, None),
-            Some(InputEvent::Keyboard { pressed: true, ref key, .. }) if key == "Escape"
+            map_input(&mut tracker, &escape(ElementState::Pressed, false), 1.0, None),
+            Some(InputPayload::Key(ref key)) if key.is_pressed() && key.logical.0 == "Escape"
         ));
     }
 
@@ -4525,7 +4289,8 @@ mod tests {
     #[test]
     fn mouse_cancel_ends_a_press_whose_release_never_arrives() {
         let mut tracker = InputTracker::default();
-        tracker.map(
+        map_input(
+            &mut tracker,
             &WinitWindowEvent::PointerButton {
                 device_id: None,
                 state: ElementState::Pressed,
@@ -4537,20 +4302,18 @@ mod tests {
             1.0,
             None,
         );
-        let InputEvent::Pointer {
+        let PointerInput {
             phase,
             pointer_type,
             buttons,
             ..
-        } = tracker.cancel_mouse(None)
-        else {
-            panic!("expected pointer");
-        };
+        } = tracker.cancel_mouse(None);
         assert_eq!(phase, PointerPhase::Cancel);
         assert_eq!(pointer_type, PointerType::Mouse);
         assert_eq!(buttons, 1);
 
-        let Some(InputEvent::Pointer { phase, buttons, .. }) = tracker.map(
+        let Some(InputPayload::Pointer(PointerInput { phase, buttons, .. })) = map_input(
+            &mut tracker,
             &WinitWindowEvent::PointerMoved {
                 device_id: None,
                 position: PhysicalPosition::new(60.0, 10.0),
@@ -4569,22 +4332,22 @@ mod tests {
     #[test]
     fn pointer_move_down_and_leave_match_hosted_coordinates() {
         let mut tracker = InputTracker::default();
-        let moved = tracker
-            .map(
-                &WinitWindowEvent::PointerMoved {
-                    device_id: None,
-                    position: PhysicalPosition::new(20.0, 40.0),
-                    primary: true,
-                    source: PointerSource::Mouse,
-                },
-                2.0,
-                Some(ScreenSpace {
-                    origin: (100.0, 200.0),
-                    client_ratio: 1.0,
-                }),
-            )
-            .expect("cursor move");
-        let InputEvent::Pointer {
+        let moved = map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerMoved {
+                device_id: None,
+                position: PhysicalPosition::new(20.0, 40.0),
+                primary: true,
+                source: PointerSource::Mouse,
+            },
+            2.0,
+            Some(ScreenSpace {
+                origin: (100.0, 200.0),
+                client_ratio: 1.0,
+            }),
+        )
+        .expect("cursor move");
+        let InputPayload::Pointer(PointerInput {
             phase,
             x,
             y,
@@ -4593,7 +4356,7 @@ mod tests {
             pointer_type,
             button,
             ..
-        } = moved
+        }) = moved
         else {
             panic!("expected pointer");
         };
@@ -4603,29 +4366,29 @@ mod tests {
         assert_eq!((screen_x, screen_y), (110.0, 220.0));
         assert_eq!(button, -1);
 
-        let down = tracker
-            .map(
-                &WinitWindowEvent::PointerButton {
-                    device_id: None,
-                    state: ElementState::Pressed,
-                    position: PhysicalPosition::new(20.0, 40.0),
-                    primary: true,
-                    button: ButtonSource::Mouse(MouseButton::Left),
-                    is_macos_activation_click: false,
-                },
-                2.0,
-                Some(ScreenSpace {
-                    origin: (100.0, 200.0),
-                    client_ratio: 1.0,
-                }),
-            )
-            .expect("mouse down");
-        let InputEvent::Pointer {
+        let down = map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerButton {
+                device_id: None,
+                state: ElementState::Pressed,
+                position: PhysicalPosition::new(20.0, 40.0),
+                primary: true,
+                button: ButtonSource::Mouse(MouseButton::Left),
+                is_macos_activation_click: false,
+            },
+            2.0,
+            Some(ScreenSpace {
+                origin: (100.0, 200.0),
+                client_ratio: 1.0,
+            }),
+        )
+        .expect("mouse down");
+        let InputPayload::Pointer(PointerInput {
             phase,
             buttons,
             pressure,
             ..
-        } = down
+        }) = down
         else {
             panic!("expected pointer");
         };
@@ -4633,76 +4396,76 @@ mod tests {
         assert_eq!(buttons, 1);
         assert_eq!(pressure, 0.5);
 
-        let activation = tracker
-            .map(
-                &WinitWindowEvent::PointerButton {
-                    device_id: None,
-                    state: ElementState::Pressed,
-                    position: PhysicalPosition::new(20.0, 40.0),
-                    primary: true,
-                    button: ButtonSource::Mouse(MouseButton::Left),
-                    is_macos_activation_click: true,
-                },
-                2.0,
-                Some(ScreenSpace {
-                    origin: (100.0, 200.0),
-                    client_ratio: 1.0,
-                }),
-            )
-            .expect("activation down");
-        let InputEvent::Pointer {
+        let activation = map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerButton {
+                device_id: None,
+                state: ElementState::Pressed,
+                position: PhysicalPosition::new(20.0, 40.0),
+                primary: true,
+                button: ButtonSource::Mouse(MouseButton::Left),
+                is_macos_activation_click: true,
+            },
+            2.0,
+            Some(ScreenSpace {
+                origin: (100.0, 200.0),
+                client_ratio: 1.0,
+            }),
+        )
+        .expect("activation down");
+        let InputPayload::Pointer(PointerInput {
             activation_click, ..
-        } = activation
+        }) = activation
         else {
             panic!("expected pointer");
         };
         assert!(activation_click);
 
-        let left = tracker
-            .map(
-                &WinitWindowEvent::PointerLeft {
-                    device_id: None,
-                    position: None,
-                    primary: true,
-                    kind: PointerKind::Mouse,
-                },
-                2.0,
-                Some(ScreenSpace {
-                    origin: (100.0, 200.0),
-                    client_ratio: 1.0,
-                }),
-            )
-            .expect("cursor left");
-        let InputEvent::Pointer {
-            phase, x, buttons, ..
-        } = left
-        else {
-            panic!("expected pointer");
-        };
-        assert_eq!(phase, PointerPhase::Cancel);
-        assert_eq!(x, 10.0);
-        assert_eq!(buttons, 1);
+        let left = map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerLeft {
+                device_id: None,
+                position: None,
+                primary: true,
+                kind: PointerKind::Mouse,
+            },
+            2.0,
+            Some(ScreenSpace {
+                origin: (100.0, 200.0),
+                client_ratio: 1.0,
+            }),
+        )
+        .expect("cursor left");
+        // Leaving is not a cancel: hover goes, a capture keeps its pointer.
+        assert_eq!(
+            left,
+            InputPayload::PointerLeave {
+                pointer_id: PointerId(1)
+            }
+        );
+        assert_eq!(tracker.cursor.0, 10.0);
+        assert_eq!(tracker.buttons, 0);
     }
 
     #[test]
     fn pointer_enter_emits_move_without_a_followup_moved() {
         let mut tracker = InputTracker::default();
-        let entered = tracker
-            .map(
-                &WinitWindowEvent::PointerEntered {
-                    device_id: None,
-                    position: PhysicalPosition::new(20.0, 40.0),
-                    primary: true,
-                    kind: PointerKind::Mouse,
-                },
-                2.0,
-                Some(ScreenSpace {
-                    origin: (100.0, 200.0),
-                    client_ratio: 1.0,
-                }),
-            )
-            .expect("pointer enter");
-        let InputEvent::Pointer {
+        let entered = map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerEntered {
+                device_id: None,
+                position: PhysicalPosition::new(20.0, 40.0),
+                primary: true,
+                kind: PointerKind::Mouse,
+            },
+            2.0,
+            Some(ScreenSpace {
+                origin: (100.0, 200.0),
+                client_ratio: 1.0,
+            }),
+        )
+        .expect("pointer enter");
+        let InputPayload::Pointer(PointerInput {
             phase,
             x,
             y,
@@ -4711,7 +4474,7 @@ mod tests {
             pointer_type,
             button,
             ..
-        } = entered
+        }) = entered
         else {
             panic!("expected pointer");
         };
@@ -4728,23 +4491,20 @@ mod tests {
             cursor: (1.0, 1.0),
             ..InputTracker::default()
         };
-        let left = tracker
-            .map(
-                &WinitWindowEvent::PointerLeft {
-                    device_id: None,
-                    position: Some(PhysicalPosition::new(40.0, 80.0)),
-                    primary: true,
-                    kind: PointerKind::Mouse,
-                },
-                2.0,
-                None,
-            )
-            .expect("pointer leave");
-        let InputEvent::Pointer { phase, x, y, .. } = left else {
-            panic!("expected pointer");
-        };
-        assert_eq!(phase, PointerPhase::Cancel);
-        assert_eq!((x, y), (20.0, 40.0));
+        let left = map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerLeft {
+                device_id: None,
+                position: Some(PhysicalPosition::new(40.0, 80.0)),
+                primary: true,
+                kind: PointerKind::Mouse,
+            },
+            2.0,
+            None,
+        )
+        .expect("pointer leave");
+        assert!(matches!(left, InputPayload::PointerLeave { .. }));
+        assert_eq!(tracker.cursor, (20.0, 40.0));
     }
 
     #[test]
@@ -4760,35 +4520,35 @@ mod tests {
             tablet_pointer_id(Some(other), TabletToolKind::Pen)
         );
         let mut tracker = InputTracker::default();
-        let moved = tracker
-            .map(
-                &WinitWindowEvent::PointerMoved {
-                    device_id: Some(pen),
-                    position: PhysicalPosition::new(4.0, 8.0),
-                    primary: true,
-                    source: PointerSource::TabletTool {
-                        kind: TabletToolKind::Eraser,
-                        data: TabletToolData::default(),
-                    },
+        let moved = map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerMoved {
+                device_id: Some(pen),
+                position: PhysicalPosition::new(4.0, 8.0),
+                primary: true,
+                source: PointerSource::TabletTool {
+                    kind: TabletToolKind::Eraser,
+                    data: TabletToolData::default(),
                 },
-                1.0,
-                None,
-            )
-            .expect("pen move");
-        let InputEvent::Pointer {
+            },
+            1.0,
+            None,
+        )
+        .expect("pen move");
+        let InputPayload::Pointer(PointerInput {
             pointer_id,
             pointer_type,
             ..
-        } = moved
+        }) = moved
         else {
             panic!("expected pointer");
         };
         assert_eq!(pointer_type, PointerType::Pen);
         assert_eq!(
-            pointer_id,
+            pointer_id.0,
             tablet_pointer_id(Some(pen), TabletToolKind::Eraser)
         );
-        assert_ne!(pointer_id, 1000);
+        assert_ne!(pointer_id.0, 1000);
     }
 
     #[test]
@@ -4797,74 +4557,75 @@ mod tests {
             cursor: (8.0, 16.0),
             ..InputTracker::default()
         };
-        let line = tracker
-            .map(
-                &WinitWindowEvent::MouseWheel {
-                    device_id: None,
-                    delta: MouseScrollDelta::LineDelta(1.0, -2.0),
-                    phase: TouchPhase::Moved,
-                },
-                2.0,
-                None,
-            )
-            .expect("line wheel");
+        let line = map_input(
+            &mut tracker,
+            &WinitWindowEvent::MouseWheel {
+                device_id: None,
+                delta: MouseScrollDelta::LineDelta(1.0, -2.0),
+                phase: TouchPhase::Moved,
+            },
+            2.0,
+            None,
+        )
+        .expect("line wheel");
         assert_eq!(
             line,
-            InputEvent::Wheel {
+            InputPayload::Wheel(WheelInput {
+                pointer_id: PointerId(1),
                 x: 8.0,
                 y: 16.0,
                 delta_x: 1.0,
                 delta_y: -2.0,
-                line_delta: true,
+                unit: WheelUnit::Lines,
                 modifiers: Default::default(),
-            }
+            })
         );
 
-        let pixel = tracker
-            .map(
-                &WinitWindowEvent::MouseWheel {
-                    device_id: None,
-                    delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(8.0, -4.0)),
-                    phase: TouchPhase::Moved,
-                },
-                2.0,
-                None,
-            )
-            .expect("pixel wheel");
-        let InputEvent::Wheel {
+        let pixel = map_input(
+            &mut tracker,
+            &WinitWindowEvent::MouseWheel {
+                device_id: None,
+                delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(8.0, -4.0)),
+                phase: TouchPhase::Moved,
+            },
+            2.0,
+            None,
+        )
+        .expect("pixel wheel");
+        let InputPayload::Wheel(WheelInput {
             delta_x,
             delta_y,
-            line_delta,
+            unit,
             ..
-        } = pixel
+        }) = pixel
         else {
             panic!("expected wheel");
         };
         assert_eq!((delta_x, delta_y), (4.0, -2.0));
-        assert!(!line_delta);
+        assert_eq!(unit, WheelUnit::Pixels);
     }
 
     #[test]
     fn first_touch_is_primary_and_uses_hosted_pointer_id() {
         let mut tracker = InputTracker::default();
-        let start = tracker
-            .map(
-                &WinitWindowEvent::PointerButton {
-                    device_id: None,
-                    state: ElementState::Pressed,
-                    position: PhysicalPosition::new(4.0, 8.0),
-                    primary: true,
-                    button: ButtonSource::Touch {
-                        finger_id: FingerId::from_raw(3),
-                        force: None,
-                    },
-                    is_macos_activation_click: false,
+        let start = map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerButton {
+                device_id: None,
+                state: ElementState::Pressed,
+                position: PhysicalPosition::new(4.0, 8.0),
+                primary: true,
+                button: ButtonSource::Touch {
+                    finger_id: FingerId::from_raw(3),
+                    force: None,
                 },
-                2.0,
-                None,
-            )
-            .expect("touch start");
-        let InputEvent::Pointer {
+                is_macos_activation_click: false,
+            },
+            2.0,
+            None,
+        )
+        .expect("touch start");
+        let InputPayload::Pointer(PointerInput {
             phase,
             pointer_id,
             pointer_type,
@@ -4873,12 +4634,12 @@ mod tests {
             y,
             buttons,
             ..
-        } = start
+        }) = start
         else {
             panic!("expected pointer");
         };
         assert_eq!(phase, PointerPhase::Down);
-        assert_eq!(pointer_id, 5);
+        assert_eq!(pointer_id, PointerId(5));
         assert_eq!(pointer_type, PointerType::Touch);
         assert!(is_primary);
         assert_eq!((x, y), (2.0, 4.0));
@@ -4888,22 +4649,22 @@ mod tests {
     #[test]
     fn ime_and_window_lifecycle_mapping_is_backend_neutral() {
         assert_eq!(
-            platform_ime_event(winit::event::Ime::Commit("你".into())),
-            ImeEvent::Commit("你".into())
+            platform_composition(&winit::event::Ime::Commit("你".into())),
+            CompositionInput::Commit("你".into())
         );
         assert_eq!(
-            platform_ime_event(winit::event::Ime::Preedit("かな".into(), Some((3, 6)))),
-            ImeEvent::Preedit {
+            platform_composition(&winit::event::Ime::Preedit("かな".into(), Some((3, 6)))),
+            CompositionInput::Update {
                 text: "かな".into(),
                 selection: Some((3, 6)),
             }
         );
         assert_eq!(
-            platform_ime_event(winit::event::Ime::DeleteSurrounding {
+            platform_composition(&winit::event::Ime::DeleteSurrounding {
                 before_bytes: 3,
                 after_bytes: 0,
             }),
-            ImeEvent::DeleteSurrounding {
+            CompositionInput::DeleteSurrounding {
                 before_bytes: 3,
                 after_bytes: 0,
             }
@@ -4940,16 +4701,14 @@ mod tests {
                 hidden: true,
             })
         );
-        assert_eq!(
+        // Composition is input, routed and observed like any other.
+        assert!(
             platform_window_event(
                 &WinitWindowEvent::Ime(winit::event::Ime::Enabled),
                 WindowId::PRIMARY,
                 geometry(),
-            ),
-            Some(WindowEvent::Ime {
-                id: WindowId::PRIMARY,
-                event: ImeEvent::Enabled,
-            })
+            )
+            .is_none()
         );
         assert!(
             platform_window_event(
@@ -5140,92 +4899,6 @@ mod tests {
     }
 
     #[test]
-    fn scene_ime_follows_focused_text_input_without_window_key_status() {
-        let disabled = resolved_scene_ime_request(None);
-        assert!(!disabled.enabled);
-        assert_eq!(disabled.purpose, TextInputPurpose::Normal);
-
-        let document_id = nana_ui_runtime::DocumentId::new(1).unwrap();
-        let mut document = nana_ui_scene::RuntimeDocument::new(document_id);
-        let input = document
-            .context_mut()
-            .create_component(document_id, nana_ui_runtime::TextInput::new("NanaUI"))
-            .unwrap();
-        assert!(!resolved_scene_ime_request(Some(&document)).enabled);
-
-        assert!(
-            document
-                .context_mut()
-                .focus_node(document_id, input.stable_id())
-                .unwrap()
-        );
-        let enabled = resolved_scene_ime_request(Some(&document));
-        assert!(enabled.enabled);
-        assert_eq!(enabled.purpose, TextInputPurpose::Normal);
-    }
-
-    fn ime_request(
-        enabled: bool,
-        cursor: Option<(f32, f32, f32, f32)>,
-        purpose: TextInputPurpose,
-    ) -> TextInputRequest {
-        TextInputRequest {
-            enabled,
-            cursor_area: cursor
-                .map(|(x, y, width, height)| nana_ui_core::LogicalRect::new(x, y, width, height)),
-            purpose,
-        }
-    }
-
-    #[test]
-    fn ime_apply_enables_once_then_updates_caret() {
-        let off = ime_request(false, None, TextInputPurpose::Normal);
-        let first = ime_request(
-            true,
-            Some((10.0, 20.0, 8.0, 16.0)),
-            TextInputPurpose::Normal,
-        );
-        assert!(matches!(
-            ime_apply(Some(&off), false, first, None),
-            ImeApply::Enable { .. }
-        ));
-
-        let moved = ime_request(
-            true,
-            Some((12.0, 20.0, 8.0, 16.0)),
-            TextInputPurpose::Normal,
-        );
-        assert!(matches!(
-            ime_apply(Some(&first), false, moved, None),
-            ImeApply::Update(_)
-        ));
-    }
-
-    #[test]
-    fn ime_apply_replaces_when_cursor_area_capability_appears() {
-        let without_caret = ime_request(true, None, TextInputPurpose::Normal);
-        let with_caret = ime_request(true, Some((4.0, 8.0, 2.0, 12.0)), TextInputPurpose::Normal);
-        assert!(matches!(
-            ime_apply(Some(&without_caret), false, with_caret, None),
-            ImeApply::Replace { .. }
-        ));
-    }
-
-    #[test]
-    fn ime_apply_disables_when_leaving_the_field() {
-        let on = ime_request(true, Some((1.0, 2.0, 3.0, 4.0)), TextInputPurpose::Normal);
-        let off = ime_request(false, None, TextInputPurpose::Normal);
-        assert!(matches!(
-            ime_apply(Some(&on), false, off, None),
-            ImeApply::Disable
-        ));
-        assert!(matches!(
-            ime_apply(Some(&off), false, off, None),
-            ImeApply::None
-        ));
-    }
-
-    #[test]
     fn screen_position_falls_back_to_client_without_origin() {
         assert_eq!(screen_position(None, (3.0, 4.0)), (3.0, 4.0));
         assert_eq!(
@@ -5411,7 +5084,7 @@ mod tests {
 
     #[test]
     fn client_frame_resize_hits_edges_unless_caption_or_maximized() {
-        use super::{CursorSpec, frame_resize_edge_for, scene_cursor_icon};
+        use super::frame_resize_edge_for;
         use winit::cursor::CursorIcon;
 
         let mut settings = WindowDescriptor::new("Scene");
@@ -5436,57 +5109,20 @@ mod tests {
         geometry.maximized = false;
         assert!(frame_resize_edge_for(&settings, &geometry, true, 2.0, 300.0).is_none());
         assert_eq!(
-            scene_cursor_icon(Some(WindowResizeEdge::East), Some((8.0, 200.0)), None, true,),
-            (CursorIcon::EwResize, true)
+            frame_edge_cursor(WindowResizeEdge::East),
+            CursorIcon::EwResize
         );
         assert_eq!(
-            scene_cursor_icon(None, Some((8.0, 200.0)), None, true),
-            (CursorIcon::EwResize, true)
+            frame_edge_cursor(WindowResizeEdge::South),
+            CursorIcon::NsResize
         );
         assert_eq!(
-            scene_cursor_icon(None, Some((200.0, 8.0)), None, false),
-            (CursorIcon::NsResize, true)
+            frame_edge_cursor(WindowResizeEdge::NorthEast),
+            CursorIcon::NeswResize
         );
         assert_eq!(
-            scene_cursor_icon(None, None, None, true),
-            (CursorIcon::Text, true)
-        );
-        assert_eq!(
-            scene_cursor_icon(None, None, Some(CursorSpec::Pointer), false),
-            (CursorIcon::Pointer, true)
-        );
-        assert_eq!(
-            scene_cursor_icon(None, None, Some(CursorSpec::None), false),
-            (CursorIcon::Default, false)
-        );
-        assert_eq!(
-            scene_cursor_icon(
-                Some(WindowResizeEdge::West),
-                None,
-                Some(CursorSpec::Pointer),
-                false,
-            ),
-            (CursorIcon::EwResize, true)
-        );
-        assert_eq!(
-            scene_cursor_icon(None, None, Some(CursorSpec::Help), false),
-            (CursorIcon::Help, true)
-        );
-        assert_eq!(
-            scene_cursor_icon(None, None, Some(CursorSpec::Progress), false),
-            (CursorIcon::Progress, true)
-        );
-        assert_eq!(
-            scene_cursor_icon(None, None, Some(CursorSpec::ZoomIn), false),
-            (CursorIcon::ZoomIn, true)
-        );
-        assert_eq!(
-            scene_cursor_icon(None, None, Some(CursorSpec::ZoomOut), false),
-            (CursorIcon::ZoomOut, true)
-        );
-        assert_eq!(
-            scene_cursor_icon(None, None, None, false),
-            (CursorIcon::Default, true)
+            frame_edge_cursor(WindowResizeEdge::SouthEast),
+            CursorIcon::NwseResize
         );
     }
 
@@ -5624,12 +5260,6 @@ mod tests {
         assert_eq!(targets["shared.png"], HashSet::from([first]));
         assert!(!targets.contains_key("only-second.png"));
         assert!(!window_keys.contains_key(&second));
-    }
-
-    #[test]
-    fn runtime_ime_ownership_does_not_drop_program_notification() {
-        assert!(should_deliver_program_ime(false));
-        assert!(!should_deliver_program_ime(true));
     }
 
     #[test]

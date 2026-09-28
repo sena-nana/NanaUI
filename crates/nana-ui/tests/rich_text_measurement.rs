@@ -6,17 +6,19 @@
 //! layout: a click on the second painted line selects from that line.
 #![cfg(feature = "rich-text")]
 
-use nana_ui::{NanaTextShaper, RuntimeInputAdapter, runtime::*};
+use nana_ui::{HeadlessInput, NanaTextShaper, runtime::*};
 use nana_ui_core::LengthSpec;
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui_platform::{
+    InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase, PointerType,
+};
 use std::sync::Arc;
 
 const TEXT: &str = "Selectable rich text that is long enough to wrap onto several lines";
 
-fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
-    InputEvent::Pointer {
+fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputPayload {
+    InputPayload::Pointer(PointerInput {
         phase,
-        pointer_id: 1,
+        pointer_id: PointerId(1),
         pointer_type: PointerType::Mouse,
         x,
         y,
@@ -32,7 +34,7 @@ fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
         is_primary: true,
         activation_click: false,
         modifiers: InputModifiers::default(),
-    }
+    })
 }
 
 fn settle(cx: &mut AppContext, doc: DocumentId, ids: &[StableNodeId]) {
@@ -105,15 +107,13 @@ fn wrapped_rich_text_box_is_as_tall_as_its_measured_lines_and_hits_them() {
     let press_y = bounds.y + second.bounds.y + second.bounds.height / 2.0;
     let end_x = bounds.x + bounds.width - 0.5;
     let end_y = bounds.y + last.bounds.y + last.bounds.height / 2.0;
-    let mut adapter = RuntimeInputAdapter::default();
+    let mut adapter = HeadlessInput::bind(&mut cx, doc);
     for (phase, x, y) in [
         (PointerPhase::Down, bounds.x + 0.5, press_y),
         (PointerPhase::Move, end_x, end_y),
         (PointerPhase::Up, end_x, end_y),
     ] {
-        adapter
-            .dispatch(&mut cx, doc, &pointer(phase, x, y))
-            .unwrap();
+        adapter.route(&mut cx, pointer(phase, x, y)).unwrap();
     }
     let selected = cx
         .read(text, |view| view.selected_text())

@@ -1,0 +1,18 @@
+[package]
+name = "nana-ui-input"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Canonical input events, endpoints and the host services contract input routing speaks"
+license = "MIT OR Apache-2.0"
+
+[lints]
+
+[lib]
+name = "nana_ui_input"
+path = "src/lib.rs"
+
+[dependencies]
+nana-ui-core.workspace = true
+nana-diagnostics.workspace = true
+serde.workspace = true

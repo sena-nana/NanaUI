@@ -1,11 +1,11 @@
 //! Experimental Android slot as a NanaUI Runtime document.
 //!
-//! Hosts [`RuntimeDocument`] + [`RuntimeInputAdapter`] + host text shaping — the
-//! same contract `run_runtime` uses on desktop. The Android Activity still owns
-//! the window and event loop; this type does not call `run_runtime` (winit).
+//! Hosts [`RuntimeDocument`] + one input source + host text shaping — the same
+//! routing `run_runtime` uses on desktop. The Android Activity still owns the
+//! window and event loop; this type does not call `run_runtime` (winit).
 //! Soft keyboard show/hide is driven by the host from [`Self::text_input_focused`];
-//! GameTextInput composition maps to [`ImeEvent`] via
-//! [`RuntimeInputAdapter::dispatch_ime`]. Accessibility name/role/value is the
+//! GameTextInput composition maps to [`CompositionInput`] events routed like
+//! any other input. Accessibility name/role/value is the
 //! same Runtime projection desktop hosts publish; Click/Focus/SetValue/SetSelection
 //! activate Button/Switch/TextInput.
 
@@ -19,9 +19,14 @@ use nana_ui::runtime::{
     LayoutViewport, List, NodeStyle, RuntimeDocument, Switch, Text, TextChanged, TextInput,
     ToggleChanged,
 };
-use nana_ui::{AccessibilityNode, NanaTextShaper, RuntimeAnimationClock, RuntimeInputAdapter};
+use nana_ui::{AccessibilityNode, NanaTextShaper, RuntimeAnimationClock};
 use nana_ui_core::{AlignSpec, FlexDirection, JustifySpec, LengthSpec, PhysicalRect};
-use nana_ui_platform::{ImeEvent, default_shared_clipboard};
+use nana_ui_platform::{
+    CanonicalInputEvent, CommittedText, CompositionInput, CursorIcon, DeviceId, EndpointGeneration,
+    HostServiceError, HostServices, InputPayload, InputSequencer, InputSourceId,
+    SharedClipboardHost, TextInputContext, default_shared_clipboard, read_shared_clipboard,
+    write_shared_clipboard,
+};
 
 use crate::control_slot::{CONTROL_SLOT_INSET, CONTROL_SLOT_LOGICAL_HEIGHT};
 use crate::slot_ime::{SlotEditorInfo, SlotImeBuffer, editor_info_from_request};
@@ -50,11 +55,35 @@ pub(crate) struct SlotSnapshot {
     pub input_len: usize,
 }
 
+/// The slot's host services: the Android clipboard. The soft keyboard
+/// follows [`SlotRuntime::text_input_focused`] and there is no cursor.
+struct SlotServices {
+    clipboard: SharedClipboardHost,
+}
+
+impl HostServices for SlotServices {
+    fn set_cursor(&mut self, _cursor: CursorIcon) {}
+
+    fn set_text_input(&mut self, _state: Option<&TextInputContext>) {}
+
+    fn read_clipboard(&mut self) -> Result<Option<String>, HostServiceError> {
+        read_shared_clipboard(&self.clipboard)
+    }
+
+    fn write_clipboard(&mut self, text: &str) -> Result<(), HostServiceError> {
+        write_shared_clipboard(&self.clipboard, text)
+    }
+}
+
+/// The slot's one input source.
+const SLOT_SOURCE: InputSourceId = InputSourceId(1);
+
 /// Retained NanaUI document for the bottom control strip.
 pub struct SlotRuntime {
     document: RuntimeDocument,
     shaper: NanaTextShaper,
-    adapter: RuntimeInputAdapter,
+    sequencer: InputSequencer,
+    services: SlotServices,
     clock: RuntimeAnimationClock,
     physical_size: (u32, u32),
     scale: f32,
@@ -77,6 +106,10 @@ impl SlotRuntime {
         let presses = Arc::clone(&state);
         let toggles = Arc::clone(&state);
         let inputs = Arc::clone(&state);
+        document
+            .context_mut()
+            .bind_input_source(SLOT_SOURCE, EndpointGeneration(1), document_id)
+            .expect("a fresh slot document binds its source");
         let (button, field) = document.context_mut().build(document_id, |ui| {
             ui.with("column", column_host(), |ui| {
                 ui.with("row", row_strip(), |ui| {
@@ -106,7 +139,10 @@ impl SlotRuntime {
         let mut runtime = Self {
             document,
             shaper: NanaTextShaper::default(),
-            adapter: RuntimeInputAdapter::default().with_clipboard(default_shared_clipboard()),
+            sequencer: InputSequencer::new(SLOT_SOURCE, EndpointGeneration(1)),
+            services: SlotServices {
+                clipboard: default_shared_clipboard(),
+            },
             clock: RuntimeAnimationClock::now(),
             physical_size: (physical_size.0.max(1), physical_size.1.max(1)),
             scale: scale.max(0.25),
@@ -228,7 +264,7 @@ impl SlotRuntime {
             pointer_id,
             nana_ui_platform::InputModifiers::default(),
         );
-        self.dispatch(&event)?;
+        self.dispatch(InputPayload::Pointer(event))?;
         self.sync_ime_lifecycle()?;
         Ok(true)
     }
@@ -237,7 +273,7 @@ impl SlotRuntime {
     ///
     /// Returns `false` when the slot does not hold keyboard focus so the host
     /// does not swallow whole-window keys. Printable soft-keyboard commits
-    /// become [`ImeEvent::Commit`] while the text input is focused; editing
+    /// become [`CompositionInput::Commit`] while the text input is focused; editing
     /// keys stay on the keyboard path. When `key` is `None`, only modifier
     /// state is recorded.
     pub fn push_key(
@@ -262,22 +298,31 @@ impl SlotRuntime {
             self.commit_ime_on_blur()?;
         }
         match slot_key_to_dispatch(down, key, mods, repeat, focused) {
-            SlotKeyDispatch::Keyboard(event) => self.dispatch(&event)?,
-            SlotKeyDispatch::Ime(event) => self.dispatch_ime_event(&event)?,
+            SlotKeyDispatch::Key { key, text } => {
+                let sequence = self.route(InputPayload::Key(key))?;
+                if let Some(text) = text {
+                    self.route(InputPayload::Text(CommittedText {
+                        text,
+                        key: Some(sequence),
+                    }))?;
+                }
+                self.flush()?;
+            }
+            SlotKeyDispatch::Ime(event) => self.dispatch_ime_event(event)?,
         }
         self.sync_ime_lifecycle()?;
         Ok(true)
     }
 
-    /// Inject a desktop IME event into the focused Runtime editor.
+    /// Route a composition event into the focused Runtime editor.
     ///
-    /// GameActivity TextEvents (and tests) call this so composition uses
-    /// [`RuntimeInputAdapter::dispatch_ime`] instead of a second buffer.
-    pub fn push_ime(&mut self, event: &ImeEvent) -> Result<bool, FrameworkError> {
+    /// GameActivity TextEvents (and tests) call this so composition goes
+    /// through the one input route instead of a second buffer.
+    pub fn push_ime(&mut self, event: &CompositionInput) -> Result<bool, FrameworkError> {
         if !self.gate.accept_key() {
             return Ok(false);
         }
-        self.dispatch_ime_event(event)?;
+        self.dispatch_ime_event(event.clone())?;
         self.sync_ime_lifecycle()?;
         Ok(true)
     }
@@ -309,26 +354,44 @@ impl SlotRuntime {
         Ok(applied)
     }
 
-    fn dispatch(&mut self, event: &nana_ui_platform::InputEvent) -> Result<(), FrameworkError> {
-        let document_id = self.document.document();
+    /// Stamp and route one event on the slot's source; the sequence it got.
+    fn route(
+        &mut self,
+        payload: InputPayload,
+    ) -> Result<nana_ui_platform::InputSequence, FrameworkError> {
         let now = self.clock.runtime_time(Instant::now());
-        self.adapter
-            .dispatch_at(self.document.context_mut(), document_id, event, now)?;
+        let event = CanonicalInputEvent {
+            metadata: self.sequencer.stamp(DeviceId(0), now),
+            payload,
+        };
+        let sequence = event.metadata.sequence;
+        match self.document.context_mut().route_input(
+            &event,
+            &mut self.services,
+            Some(&mut self.shaper),
+        ) {
+            Ok(_) => Ok(sequence),
+            Err(nana_ui::InputRouteError::Dispatch(error)) => Err(error),
+            // The slot binds its one source once and stamps in order; a
+            // rejection is a host bug, reported as invalid input.
+            Err(_) => Err(FrameworkError::InvalidInput),
+        }
+    }
+
+    fn dispatch(&mut self, payload: InputPayload) -> Result<(), FrameworkError> {
+        self.route(payload)?;
         self.flush()
     }
 
-    fn dispatch_ime_event(&mut self, event: &ImeEvent) -> Result<(), FrameworkError> {
-        let document_id = self.document.document();
-        self.adapter
-            .dispatch_ime(self.document.context_mut(), document_id, event)?;
-        self.flush()
+    fn dispatch_ime_event(&mut self, event: CompositionInput) -> Result<(), FrameworkError> {
+        self.dispatch(InputPayload::Composition(event))
     }
 
     fn sync_ime_lifecycle(&mut self) -> Result<(), FrameworkError> {
         let focused = self.text_input_focused();
         if focused && !self.ime_enabled {
             self.ime_enabled = true;
-            self.dispatch_ime_event(&ImeEvent::Enabled)?;
+            self.dispatch_ime_event(CompositionInput::Enabled)?;
         } else if !focused && self.ime_enabled {
             self.commit_ime_on_blur()?;
         }
@@ -341,7 +404,7 @@ impl SlotRuntime {
             return Ok(());
         }
         self.ime_enabled = false;
-        self.dispatch_ime_event(&ImeEvent::Disabled)
+        self.dispatch_ime_event(CompositionInput::Disabled)
     }
 
     /// GameTextInput mirror of the focused editor (committed text + preedit),
@@ -667,7 +730,7 @@ mod tests {
         tap_entity(&mut slot, field);
         assert!(slot.text_input_focused());
         assert!(
-            slot.push_ime(&ImeEvent::Commit("你好".into()))
+            slot.push_ime(&CompositionInput::Commit("你好".into()))
                 .expect("commit")
         );
         assert_eq!(slot.input_value(), "你好");
@@ -679,7 +742,7 @@ mod tests {
         let field = field_id(&slot);
         tap_entity(&mut slot, field);
         assert!(
-            slot.push_ime(&ImeEvent::Preedit {
+            slot.push_ime(&CompositionInput::Update {
                 text: "你".into(),
                 selection: Some((0, "你".len())),
             })
@@ -690,7 +753,7 @@ mod tests {
             "preedit must not commit the editor value"
         );
         assert!(
-            slot.push_ime(&ImeEvent::Commit("你好".into()))
+            slot.push_ime(&CompositionInput::Commit("你好".into()))
                 .expect("commit")
         );
         assert_eq!(slot.input_value(), "你好");
@@ -705,7 +768,7 @@ mod tests {
         let field = field_id(&slot);
         tap_entity(&mut slot, field);
         assert!(
-            slot.push_ime(&ImeEvent::Preedit {
+            slot.push_ime(&CompositionInput::Update {
                 text: "\u{4e16}".into(),
                 selection: Some((0, "\u{4e16}".len())),
             })
@@ -756,7 +819,7 @@ mod tests {
         let field = field_id(&slot);
         tap_entity(&mut slot, field);
         assert!(
-            slot.push_ime(&ImeEvent::Preedit {
+            slot.push_ime(&CompositionInput::Update {
                 text: "世".into(),
                 selection: Some((0, "世".len())),
             })
@@ -912,7 +975,7 @@ mod tests {
         let field = field_id(&slot);
         tap_entity(&mut slot, field);
         assert!(
-            slot.push_ime(&ImeEvent::Preedit {
+            slot.push_ime(&CompositionInput::Update {
                 text: "你".into(),
                 selection: Some((0, "你".len())),
             })
@@ -948,7 +1011,7 @@ mod tests {
             .expect("set selection")
         );
         assert!(
-            slot.push_ime(&ImeEvent::Preedit {
+            slot.push_ime(&CompositionInput::Update {
                 text: "你".into(),
                 selection: None,
             })
