@@ -3506,46 +3506,64 @@ fn rounded_host_texture_edge_stays_one_device_pixel_under_scale_and_fractional_d
 }
 
 #[test]
-fn unblurred_shadow_edge_stays_one_device_pixel_under_transform_scale() {
-    // Each circle is a spread shadow's shape around a smaller black round box.
+fn unblurred_shadow_and_outline_edges_stay_one_device_pixel_under_transform_scale() {
+    // Each circle is the outer edge of a band `w / 8` wide around a smaller
+    // round box: a black box's spread shadow, or a green box's green outline.
     let (device, queue) = test_device();
     let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
-    let black = [0.0, 0.0, 0.0, 1.0];
-    for circle @ (_, [x, y, w, h], scale, factor) in SCALED_CIRCLES {
-        let spread = w / 8.0;
-        let shadow = nana_ui_core::BoxShadowSpec {
-            offset_x: 0.0,
-            offset_y: 0.0,
-            blur_radius: 0.0,
-            spread_radius: spread,
-            color: [0.0, 1.0, 0.0, 1.0],
-            inset: false,
-        };
-        let layout = nana_ui_core::LayoutStyle {
-            background: Some(black),
-            border_radius: Some(w.min(h) * 0.5 - spread),
-            transform: scale_transform(scale),
-            paint: nana_ui_core::PaintStyle {
-                box_shadows: vec![shadow],
+    let green = [0.0, 1.0, 0.0, 1.0];
+    for outline in [false, true] {
+        for circle @ (_, [x, y, w, h], scale, factor) in SCALED_CIRCLES {
+            let band = w / 8.0;
+            let (fill, paint) = if outline {
+                let outline = nana_ui_core::OutlineSpec {
+                    width: band,
+                    color: Some(green),
+                    style: nana_ui_core::OutlineStyle::Solid,
+                };
+                let paint = nana_ui_core::PaintStyle {
+                    outline,
+                    ..Default::default()
+                };
+                (green, paint)
+            } else {
+                let shadow = nana_ui_core::BoxShadowSpec {
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    blur_radius: 0.0,
+                    spread_radius: band,
+                    color: green,
+                    inset: false,
+                };
+                let paint = nana_ui_core::PaintStyle {
+                    box_shadows: vec![shadow],
+                    ..Default::default()
+                };
+                ([0.0, 0.0, 0.0, 1.0], paint)
+            };
+            let layout = nana_ui_core::LayoutStyle {
+                background: Some(fill),
+                border_radius: Some(w.min(h) * 0.5 - band),
+                transform: scale_transform(scale),
+                paint,
                 ..Default::default()
-            },
-            ..Default::default()
-        };
-        let [x, y, w, h] = [x + spread, y + spread, w - spread * 2.0, h - spread * 2.0];
-        let node = extracted_div(1, &[], x, y, w, h, layout, Some(black));
-        let mut scene = UiScene::new();
-        scene.apply_delta([node], []);
-        let side = (64.0 * factor) as u32;
-        let pixels = paint_scene_rgba(
-            &device,
-            &queue,
-            &mut painter,
-            &scene,
-            [64.0, 64.0],
-            [side, side],
-            factor,
-        );
-        assert_one_pixel_rim(&pixels, circle, Painted::Inside);
+            };
+            let [x, y, w, h] = [x + band, y + band, w - band * 2.0, h - band * 2.0];
+            let node = extracted_div(1, &[], x, y, w, h, layout, Some(fill));
+            let mut scene = UiScene::new();
+            scene.apply_delta([node], []);
+            let side = (64.0 * factor) as u32;
+            let pixels = paint_scene_rgba(
+                &device,
+                &queue,
+                &mut painter,
+                &scene,
+                [64.0, 64.0],
+                [side, side],
+                factor,
+            );
+            assert_one_pixel_rim(&pixels, circle, Painted::Inside);
+        }
     }
 }
 
