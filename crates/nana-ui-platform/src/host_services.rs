@@ -1,6 +1,8 @@
 //! Non-blocking capability requests emitted by Runtime and fulfilled by hosts.
 
-use crate::{EndpointGeneration, InputSourceId, PointerId, SharedClipboardHost};
+#[cfg(feature = "clipboard")]
+use crate::SharedClipboardHost;
+use crate::{EndpointGeneration, InputSourceId, PointerId};
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -160,6 +162,7 @@ pub struct HostServiceResponse {
     pub outcome: HostServiceOutcome,
 }
 
+#[cfg(feature = "clipboard")]
 /// Thin HostServices adapter over the existing clipboard contract. It owns no
 /// clipboard state of its own and therefore cannot diverge from Runtime's
 /// `ClipboardHost` path.
@@ -168,6 +171,7 @@ pub struct ClipboardHostServices {
     clipboard: SharedClipboardHost,
 }
 
+#[cfg(feature = "clipboard")]
 impl std::fmt::Debug for ClipboardHostServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClipboardHostServices")
@@ -175,12 +179,14 @@ impl std::fmt::Debug for ClipboardHostServices {
     }
 }
 
+#[cfg(feature = "clipboard")]
 impl ClipboardHostServices {
     pub fn new(clipboard: SharedClipboardHost) -> Self {
         Self { clipboard }
     }
 }
 
+#[cfg(feature = "clipboard")]
 impl HostServices for ClipboardHostServices {
     fn supports(&self, capability: HostCapability) -> bool {
         matches!(capability, HostCapability::Clipboard)
@@ -427,6 +433,7 @@ impl HostServices for UnsupportedHostServices {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "clipboard")]
     use crate::shared_clipboard;
     #[test]
     fn request_keeps_generation_and_explicit_denial() {
@@ -476,6 +483,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "clipboard")]
     #[test]
     fn clipboard_host_adapter_round_trips_typed_read_results() {
         let clipboard = shared_clipboard(crate::MemoryClipboard::new());
@@ -500,6 +508,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "clipboard")]
     #[test]
     fn unsupported_clipboard_reports_capability_denial() {
         let clipboard = shared_clipboard(crate::UnsupportedClipboard);

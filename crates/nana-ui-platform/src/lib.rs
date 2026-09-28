@@ -32,11 +32,12 @@ pub use fetch::{
     FetchPolicy, FetchRequest, FetchResponse, FetchSink, NativeFetchHost, SharedFetchHost,
     shared_fetch_host,
 };
+#[cfg(feature = "clipboard")]
+pub use host_services::ClipboardHostServices;
 pub use host_services::{
-    ClipboardHostServices, DragPayload, HostCapability, HostRequestContext, HostServiceBroker,
-    HostServiceOutcome, HostServiceQueue, HostServiceQueueCounters, HostServiceQueueFull,
-    HostServiceRequest, HostServiceResponse, HostServices, ImeSurroundingText,
-    UnsupportedHostServices,
+    DragPayload, HostCapability, HostRequestContext, HostServiceBroker, HostServiceOutcome,
+    HostServiceQueue, HostServiceQueueCounters, HostServiceQueueFull, HostServiceRequest,
+    HostServiceResponse, HostServices, ImeSurroundingText, UnsupportedHostServices,
 };
 pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
