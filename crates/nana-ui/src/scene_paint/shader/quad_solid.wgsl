@@ -66,7 +66,9 @@ fn edge_grow(abcd: vec4<f32>, ef: vec4<f32>, p: vec2<f32>) -> vec2<f32> {
     return clamp(grow, vec2(0.5), vec2(256.0));
 }
 
-fn border_dash_mask(along: f32, across: f32, width: f32, style: u32) -> f32 {
+// `to_screen` takes a gradient in (along, across) to device pixels, so a
+// dash end or dot rim ramps over one device pixel under any scale.
+fn border_dash_mask(along: f32, across: f32, width: f32, style: u32, to_screen: mat2x2<f32>) -> f32 {
     if (style == 0u) {
         return 1.0;
     }
@@ -74,14 +76,16 @@ fn border_dash_mask(along: f32, across: f32, width: f32, style: u32) -> f32 {
     if (style == 2u) {
         let period = w * 2.0;
         let nearest = round(along / period) * period;
-        let d = length(vec2(along - nearest, across));
-        return clamp(0.5 - (d - w * 0.5), 0.0, 1.0);
+        let offset = vec2(along - nearest, across);
+        let d = length(offset);
+        let px = max(length(to_screen * (offset / max(d, 1.0e-6))), 1.0e-6);
+        return clamp(0.5 - (d - w * 0.5) / px, 0.0, 1.0);
     }
     let dash = w * 3.0;
     let period = dash + w * 2.0;
     let t = fract(along / period) * period;
     let sd = select(min(t - dash, period - t), -min(t, dash - t), t < dash);
-    return clamp(0.5 - sd, 0.0, 1.0);
+    return clamp(0.5 - sd / max(length(to_screen[0]), 1.0e-6), 0.0, 1.0);
 }
 
 @vertex
@@ -217,23 +221,35 @@ fn solid_fs_main(
             var along = lp.x;
             var across = lp.y - input.border_widths.x * 0.5;
             var bw = input.border_widths.x;
+            // Local directions of `along` and `across` on this side.
+            var along_axis = vec2(1.0, 0.0);
+            var across_axis = vec2(0.0, 1.0);
             if (nearest == dr) {
                 side = 1u;
                 along = lp.y;
                 across = (input.scale.x - lp.x) - input.border_widths.y * 0.5;
                 bw = input.border_widths.y;
+                along_axis = vec2(0.0, 1.0);
+                across_axis = vec2(-1.0, 0.0);
             } else if (nearest == db) {
                 side = 2u;
                 along = lp.x;
                 across = (input.scale.y - lp.y) - input.border_widths.z * 0.5;
                 bw = input.border_widths.z;
+                across_axis = vec2(0.0, -1.0);
             } else if (nearest == dl) {
                 side = 3u;
                 along = lp.y;
                 across = lp.x - input.border_widths.w * 0.5;
                 bw = input.border_widths.w;
+                along_axis = vec2(0.0, 1.0);
+                across_axis = vec2(1.0, 0.0);
             }
-            cover *= border_dash_mask(along, across, bw, (paint.border_styles >> (side * 2u)) & 3u);
+            let to_screen = mat2x2(
+                vec2(dot(along_axis, local_dx), dot(along_axis, local_dy)),
+                vec2(dot(across_axis, local_dx), dot(across_axis, local_dy)),
+            );
+            cover *= border_dash_mask(along, across, bw, (paint.border_styles >> (side * 2u)) & 3u, to_screen);
         }
         mixed_color = mix(mixed_color, edge_color, cover);
     }

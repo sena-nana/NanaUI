@@ -1212,6 +1212,67 @@ fn sdf_dotted_border_skips_gaps_on_gpu() {
 }
 
 #[test]
+fn dash_ends_and_dot_rims_stay_one_device_pixel_under_transform_scale() {
+    // An 80px box with a 4px red border on white, scaled 0.6 about its centre:
+    // local x lands at device 16 + 0.6x, and device row 17 is local y 2.5,
+    // mid-border on the top side.
+    let scale = 0.6;
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    for style in [
+        nana_ui_core::BorderStyle::Dashed,
+        nana_ui_core::BorderStyle::Dotted,
+    ] {
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let layout = nana_ui_core::LayoutStyle {
+            background: Some(white),
+            border_width: Some(4.0),
+            border_color: Some([1.0, 0.0, 0.0, 1.0]),
+            border_style: Some(style),
+            transform: scale_transform(scale),
+            ..Default::default()
+        };
+        let node = extracted_div(1, &[], 0.0, 0.0, 80.0, 80.0, layout, Some(white));
+        let mut scene = UiScene::new();
+        scene.apply_delta([node], []);
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [80.0, 80.0],
+            [80, 80],
+            1.0,
+        );
+        for x in 22..58 {
+            let along = (x as f32 + 0.5 - 16.0) / scale;
+            // The shader's signed distance, in local px: dashes 12 on 8 off,
+            // dots of radius 2 every 8, the top centreline at local y 2.
+            let local = if style == nana_ui_core::BorderStyle::Dashed {
+                let t = along.rem_euclid(20.0);
+                if t < 12.0 {
+                    -t.min(12.0 - t)
+                } else {
+                    (t - 12.0).min(20.0 - t)
+                }
+            } else {
+                let nearest = (along / 8.0).round() * 8.0;
+                (along - nearest).hypot(0.5) - 2.0
+            };
+            let cover = (0.5 - local * scale).clamp(0.0, 1.0);
+            let expected = (1.0 - cover) * 255.0;
+            let green = f32::from(pixel(&pixels, 80, x, 17)[1]);
+            assert!(
+                (green - expected).abs() <= 16.0,
+                "{style:?}: ({x},17) is {:+.3} device px from the edge, \
+                 expected green {expected:.0}, got {green}",
+                local * scale
+            );
+        }
+    }
+}
+
+#[test]
 #[cfg(feature = "graph-canvas")]
 fn per_point_stroke_colors_paint_on_gpu() {
     let (device, queue) = test_device();
