@@ -183,6 +183,8 @@ pub mod gpu {
         Metric::counter(D, 15, "gpu.pipeline_registry_misses", "count");
     pub static FRAME_SLOT_STALLS: Metric = Metric::counter(D, 16, "gpu.frame_slot_stalls", "count");
     pub static RETIRED_RESOURCES: Metric = Metric::counter(D, 17, "gpu.retired_resources", "count");
+    /// Retired: the texture realization cache it counted was removed. The
+    /// id stays reserved.
     pub static REALIZATION_HITS: Metric = Metric::counter(D, 18, "gpu.realization_hits", "count");
     pub static REALIZATION_MISSES: Metric =
         Metric::counter(D, 19, "gpu.realization_misses", "count");

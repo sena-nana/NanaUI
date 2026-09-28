@@ -490,45 +490,6 @@ fn real_transient_pool_reuses_only_matching_resources_and_obeys_budget() {
 }
 
 #[test]
-fn realization_cache_reuses_the_real_texture_for_one_cpu_identity_and_version() {
-    let gpu = context();
-    let original = texture(&gpu, GpuTextureUsages::SAMPLED);
-    let (first, first_hit) = gpu
-        .policy()
-        .realize_texture(41, 7, original.clone())
-        .unwrap();
-    let (second, second_hit) = gpu
-        .policy()
-        .realize_texture(41, 7, texture(&gpu, GpuTextureUsages::SAMPLED))
-        .unwrap();
-    assert!(!first_hit);
-    assert!(second_hit);
-    assert!(first.ptr_eq(&original));
-    assert!(second.ptr_eq(&original));
-    let (different_descriptor, descriptor_hit) = gpu
-        .policy()
-        .realize_texture(41, 7, {
-            gpu.create_texture(&GpuTextureDescriptor {
-                label: Some("different realization descriptor"),
-                width: 8,
-                height: 2,
-                format: GpuTextureFormat::RGBA8_UNORM,
-                usage: GpuTextureUsages::SAMPLED,
-            })
-            .unwrap()
-        })
-        .unwrap();
-    assert!(!descriptor_hit);
-    assert!(!different_descriptor.ptr_eq(&original));
-    let (_, changed_hit) = gpu
-        .policy()
-        .realize_texture(41, 8, texture(&gpu, GpuTextureUsages::SAMPLED))
-        .unwrap();
-    assert!(!changed_hit);
-    assert_eq!(gpu.policy().stats().realization_hits, 1);
-}
-
-#[test]
 fn concurrent_transient_cold_requests_create_distinct_real_textures() {
     let gpu = context();
     let policy = gpu.policy().clone();

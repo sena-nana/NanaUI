@@ -124,8 +124,6 @@ struct GpuPolicySnapshot {
     pipeline_registry_misses: u64,
     frame_slot_stalls: u64,
     retired_resources: u64,
-    realization_hits: u64,
-    realization_misses: u64,
 }
 
 impl From<nana_gpu::GpuPolicyStats> for GpuPolicySnapshot {
@@ -139,8 +137,6 @@ impl From<nana_gpu::GpuPolicyStats> for GpuPolicySnapshot {
             pipeline_registry_misses: stats.pipeline_registry_misses,
             frame_slot_stalls: stats.frame_slot_stalls,
             retired_resources: stats.retired_resources,
-            realization_hits: stats.realization_hits,
-            realization_misses: stats.realization_misses,
         }
     }
 }

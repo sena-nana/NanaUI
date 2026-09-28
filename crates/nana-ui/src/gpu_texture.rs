@@ -298,8 +298,6 @@ struct HostTextureSnapshot {
     id: u64,
     generation: u64,
     instance_identity: u64,
-    version: u64,
-    texture: GpuTexture,
     view: wgpu::TextureView,
 }
 
@@ -420,8 +418,6 @@ impl HostTexture {
             id: self.id(),
             generation,
             instance_identity: self.state.instance_identity,
-            version: self.version(),
-            texture: texture.clone(),
             view: __framework::texture_view(&texture).clone(),
         }
     }
@@ -870,18 +866,9 @@ impl GpuTexturePrimitive {
         dest_size: [u32; 2],
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
-        let mut texture = self.layer.texture.snapshot();
-        if let Some(policy) = &pipeline.policy {
-            let (realized, _) = policy
-                .realize_texture(
-                    texture.instance_identity,
-                    texture.version,
-                    texture.texture.clone(),
-                )
-                .expect("host texture realization uses this context generation");
-            texture.view = __framework::texture_view(&realized).clone();
-            texture.texture = realized;
-        }
+        // A HostTexture is already a texture on this painter's device (its
+        // generation is validated); there is nothing to realize.
+        let texture = self.layer.texture.snapshot();
         let key = TextureKey::new(self.presentation, texture.id);
         let (slot, viewport_rect) = slot_for_bounds(texture.id, bounds, scale_factor);
         // `layer.clip` is pre-affine (same space as dest / the sibling Quad).
@@ -1068,7 +1055,6 @@ pub struct GpuTexturePipeline {
     mask_fallback: wgpu::TextureView,
     url_cache: UrlTextureCache,
     textures: HashMap<TextureKey, PreparedTexture>,
-    policy: Option<nana_gpu::GpuDeviceState>,
 }
 
 impl GpuTexturePipeline {
@@ -1273,7 +1259,6 @@ impl GpuTexturePipeline {
             mask_fallback,
             url_cache: UrlTextureCache::default(),
             textures: HashMap::new(),
-            policy: policy.cloned(),
         }
     }
 

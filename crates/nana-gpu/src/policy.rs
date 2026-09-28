@@ -11,7 +11,63 @@ use std::sync::{Arc, Mutex};
 
 use crate::{DeviceGeneration, GpuTexture, GpuTextureFormat};
 
-type RealizationKey = (u64, u64, DeviceGeneration, GpuTextureFormat, u32, u32, u32);
+/// A bounded map whose hits cost one stamp write. When full it evicts the
+/// least recently used eighth at once, found with a linear selection, so
+/// eviction is amortized O(1) per insert instead of an O(n) reorder on every
+/// hit.
+#[derive(Debug)]
+struct StampedCache<K, V> {
+    entries: HashMap<K, (V, u64)>,
+    clock: u64,
+    capacity: usize,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V> StampedCache<K, V> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            clock: 0,
+            capacity: capacity.max(8),
+        }
+    }
+
+    fn get(&mut self, key: &K) -> Option<&V> {
+        self.clock += 1;
+        let clock = self.clock;
+        self.entries.get_mut(key).map(|(value, stamp)| {
+            *stamp = clock;
+            &*value
+        })
+    }
+
+    /// Insert, handing back whatever was evicted to make room.
+    fn insert(&mut self, key: K, value: V, evicted: &mut Vec<V>) {
+        if self.entries.len() >= self.capacity && !self.entries.contains_key(&key) {
+            let mut stamps: Vec<u64> = self.entries.values().map(|(_, stamp)| *stamp).collect();
+            let cut = (self.capacity / 8).max(1) - 1;
+            let (_, threshold, _) = stamps.select_nth_unstable(cut);
+            let threshold = *threshold;
+            let doomed: Vec<K> = self
+                .entries
+                .iter()
+                .filter(|(_, (_, stamp))| *stamp <= threshold)
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in doomed {
+                if let Some((value, _)) = self.entries.remove(&key) {
+                    evicted.push(value);
+                }
+            }
+        }
+        self.clock += 1;
+        self.entries.insert(key, (value, self.clock));
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GpuPolicyStats {
@@ -23,8 +79,6 @@ pub struct GpuPolicyStats {
     pub pipeline_registry_misses: u64,
     pub frame_slot_stalls: u64,
     pub retired_resources: u64,
-    pub realization_hits: u64,
-    pub realization_misses: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -215,16 +269,11 @@ struct PolicyState {
     transient: HashMap<TransientResourceKey, VecDeque<u64>>,
     transient_buffers: HashMap<TransientResourceKey, VecDeque<wgpu::Buffer>>,
     transient_textures: HashMap<TransientResourceKey, VecDeque<GpuTexture>>,
-    pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
-    pipeline_order: VecDeque<PipelineKey>,
+    pipelines: StampedCache<PipelineKey, wgpu::RenderPipeline>,
     retired_pipelines: Vec<(u64, wgpu::RenderPipeline)>,
-    layouts: HashMap<u64, Arc<wgpu::BindGroupLayout>>,
-    layout_order: VecDeque<u64>,
+    layouts: StampedCache<u64, Arc<wgpu::BindGroupLayout>>,
     retired_layouts: Vec<(u64, Arc<wgpu::BindGroupLayout>)>,
-    retired_realizations: Vec<(u64, GpuTexture)>,
     retired_uploads: Vec<(u64, wgpu::Buffer)>,
-    realizations: HashMap<RealizationKey, GpuTexture>,
-    realization_order: VecDeque<RealizationKey>,
     retired: Vec<RetiredResource>,
     frame_slots: Vec<Option<u64>>,
     stats: GpuPolicyStats,
@@ -267,16 +316,11 @@ impl GpuDeviceState {
                 transient: HashMap::new(),
                 transient_buffers: HashMap::new(),
                 transient_textures: HashMap::new(),
-                pipelines: HashMap::new(),
-                pipeline_order: VecDeque::new(),
+                pipelines: StampedCache::new(MAX_PIPELINES),
                 retired_pipelines: Vec::new(),
-                layouts: HashMap::new(),
-                layout_order: VecDeque::new(),
+                layouts: StampedCache::new(MAX_LAYOUTS),
                 retired_layouts: Vec::new(),
-                retired_realizations: Vec::new(),
                 retired_uploads: Vec::new(),
-                realizations: HashMap::new(),
-                realization_order: VecDeque::new(),
                 retired: Vec::new(),
                 frame_slots: vec![None, None, None],
                 stats: GpuPolicyStats::default(),
@@ -616,25 +660,18 @@ impl GpuDeviceState {
         // the same pipeline twice. The factory must not reenter this registry.
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pipeline) = state.pipelines.get(&key).cloned() {
-            state.pipeline_order.retain(|entry| *entry != key);
-            state.pipeline_order.push_back(key);
             state.stats.pipeline_registry_hits += 1;
             nana_diagnostics::metric!(nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_HITS);
             return Ok(pipeline);
         }
         let pipeline = create();
-        const MAX_PIPELINES: usize = 256;
-        if state.pipelines.len() == MAX_PIPELINES
-            && let Some(oldest) = state.pipeline_order.pop_front()
-            && let Some(pipeline) = state.pipelines.remove(&oldest)
-        {
-            // Keep the backend object alive until at least one queue
-            // completion callback drains this list. A command buffer may
-            // still reference an evicted pipeline.
-            state.retired_pipelines.push((0, pipeline));
-        }
-        state.pipelines.insert(key, pipeline.clone());
-        state.pipeline_order.push_back(key);
+        let mut evicted = Vec::new();
+        state.pipelines.insert(key, pipeline.clone(), &mut evicted);
+        // Keep evicted backend objects alive until a queue completion
+        // callback drains this list: a command buffer may still use them.
+        state
+            .retired_pipelines
+            .extend(evicted.into_iter().map(|pipeline| (0, pipeline)));
         state.stats.pipeline_registry_misses += 1;
         nana_diagnostics::metric!(nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_MISSES);
         Ok(pipeline)
@@ -647,65 +684,15 @@ impl GpuDeviceState {
     ) -> Arc<wgpu::BindGroupLayout> {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(layout) = state.layouts.get(&key).cloned() {
-            state.layout_order.retain(|entry| *entry != key);
-            state.layout_order.push_back(key);
             return layout;
         }
         let layout = create();
-        const MAX_LAYOUTS: usize = 256;
-        if state.layouts.len() == MAX_LAYOUTS
-            && let Some(oldest) = state.layout_order.pop_front()
-            && let Some(layout) = state.layouts.remove(&oldest)
-        {
-            state.retired_layouts.push((0, layout));
-        }
-        state.layouts.insert(key, layout.clone());
-        state.layout_order.push_back(key);
+        let mut evicted = Vec::new();
+        state.layouts.insert(key, layout.clone(), &mut evicted);
+        state
+            .retired_layouts
+            .extend(evicted.into_iter().map(|layout| (0, layout)));
         layout
-    }
-
-    pub fn realize_texture(
-        &self,
-        resource: u64,
-        version: u64,
-        texture: GpuTexture,
-    ) -> Result<(GpuTexture, bool), crate::GpuError> {
-        if texture.generation() != self.generation {
-            return Err(crate::GpuError::DeviceMismatch {
-                expected: self.generation,
-                found: texture.generation(),
-            });
-        }
-        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let key = (
-            resource,
-            version,
-            self.generation,
-            texture.format(),
-            texture.size().0,
-            texture.size().1,
-            texture.usage().bits(),
-        );
-        if let Some(cached) = state.realizations.get(&key).cloned() {
-            state.realization_order.retain(|entry| *entry != key);
-            state.realization_order.push_back(key);
-            state.stats.realization_hits += 1;
-            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::REALIZATION_HITS);
-            Ok((cached, true))
-        } else {
-            const MAX_REALIZATIONS: usize = 4096;
-            if state.realizations.len() == MAX_REALIZATIONS
-                && let Some(oldest) = state.realization_order.pop_front()
-                && let Some(texture) = state.realizations.remove(&oldest)
-            {
-                state.retired_realizations.push((0, texture));
-            }
-            state.realizations.insert(key, texture.clone());
-            state.realization_order.push_back(key);
-            state.stats.realization_misses += 1;
-            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::REALIZATION_MISSES);
-            Ok((texture, false))
-        }
     }
 
     pub(crate) fn bind_pipeline_retirement(&self, submission: u64) {
@@ -716,11 +703,6 @@ impl GpuDeviceState {
             }
         }
         for (retired_at, _) in &mut state.retired_layouts {
-            if *retired_at == 0 {
-                *retired_at = submission;
-            }
-        }
-        for (retired_at, _) in &mut state.retired_realizations {
             if *retired_at == 0 {
                 *retired_at = submission;
             }
@@ -762,9 +744,6 @@ impl GpuDeviceState {
             .retired_layouts
             .retain(|(submission, _)| *submission == 0 || *submission > completed_submission);
         state
-            .retired_realizations
-            .retain(|(submission, _)| *submission == 0 || *submission > completed_submission);
-        state
             .retired_uploads
             .retain(|(submission, _)| *submission == 0 || *submission > completed_submission);
         bytes
@@ -774,6 +753,9 @@ impl GpuDeviceState {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).stats
     }
 }
+
+const MAX_PIPELINES: usize = 256;
+const MAX_LAYOUTS: usize = 256;
 
 fn texture_matches_key(texture: &GpuTexture, key: TransientResourceKey) -> bool {
     let raw = texture.raw();
@@ -842,6 +824,32 @@ mod tests {
 
     fn state() -> GpuDeviceState {
         GpuDeviceState::new(DeviceGeneration::next())
+    }
+
+    #[test]
+    fn stamped_cache_evicts_the_least_recently_used_eighth() {
+        let mut cache = StampedCache::new(64);
+        let mut evicted = Vec::new();
+        for key in 0..64u32 {
+            cache.insert(key, key, &mut evicted);
+        }
+        // Touch the oldest eight: the next eight become the oldest.
+        for key in 0..8 {
+            assert_eq!(cache.get(&key), Some(&key));
+        }
+        cache.insert(64, 64, &mut evicted);
+        evicted.sort_unstable();
+        assert_eq!(evicted, (8..16).collect::<Vec<_>>());
+        assert_eq!(cache.len(), 57);
+        for key in 0..8 {
+            assert!(cache.get(&key).is_some());
+        }
+        // Re-inserting a present key never evicts.
+        evicted.clear();
+        for key in 57..64 {
+            cache.insert(key, key, &mut evicted);
+        }
+        assert!(evicted.is_empty());
     }
 
     #[test]
