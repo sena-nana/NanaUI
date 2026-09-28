@@ -873,11 +873,19 @@ impl BackdropPipeline {
             0.0,
             1.0,
         );
+        // Every pixel the panel touches: the outer half of its edge ramp lies
+        // in the partly covered ones.
+        let [x, y, width, height] = request.physical_bounds;
+        let [target_w, target_h] = dest_physical.map(|edge| edge.max(1) as f32);
+        let left = x.floor().clamp(0.0, target_w - 1.0);
+        let top = y.floor().clamp(0.0, target_h - 1.0);
+        let right = (x + width).ceil().min(target_w).max(left + 1.0);
+        let bottom = (y + height).ceil().min(target_h).max(top + 1.0);
         pass.set_scissor_rect(
-            request.physical_bounds[0].max(0.0) as u32,
-            request.physical_bounds[1].max(0.0) as u32,
-            request.physical_bounds[2].ceil().max(1.0) as u32,
-            request.physical_bounds[3].ceil().max(1.0) as u32,
+            left as u32,
+            top as u32,
+            (right - left) as u32,
+            (bottom - top) as u32,
         );
         pass.set_pipeline(&self.composite_pipeline);
         pass.set_bind_group(0, &composite_bind, &[]);

@@ -48,13 +48,6 @@ struct VertexOutput {
     @location(1) world: vec2<f32>,
 }
 
-fn rounded_box_sdf(p: vec2<f32>, size: vec2<f32>, corners: vec4<f32>) -> f32 {
-    var box_half = select(corners.yz, corners.xw, p.x > 0.0);
-    var corner = select(box_half.y, box_half.x, p.y > 0.0);
-    var q = abs(p) - size + corner;
-    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - corner;
-}
-
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     var positions = array<vec2<f32>, 6>(
@@ -67,36 +60,36 @@ fn vs_main(@builtin(vertex_index) index: u32) -> VertexOutput {
     );
     var output: VertexOutput;
     let uv = positions[index];
-    let logical = composite.quad_logical_origin + uv * composite.quad_logical_size;
+    let m = composite.quad_abcd;
+    let axis_aligned = m.x == 1.0 && m.y == 0.0 && m.z == 0.0 && m.w == 1.0;
+    let size = select(composite.quad_logical_size, composite.quad_size, axis_aligned);
+    // Device px (local) the quad reaches past each edge so the rounded edge's
+    // outer half device pixel is rasterized under the transform, as
+    // `edge_grow` in `quad_solid.wgsl`.
+    let det = abs(m.x * m.w - m.y * m.z);
+    let grow = min(0.5 * vec2(length(m.zw), length(m.xy)) / max(det, 1.0e-6), vec2(256.0));
+    let local = uv * size + (uv * 2.0 - 1.0) * grow;
+    let logical = composite.quad_logical_origin + local;
     let transformed = vec2(
-        composite.quad_abcd.x * logical.x + composite.quad_abcd.z * logical.y + composite.quad_ef.x,
-        composite.quad_abcd.y * logical.x + composite.quad_abcd.w * logical.y + composite.quad_ef.y,
+        m.x * logical.x + m.z * logical.y + composite.quad_ef.x,
+        m.y * logical.x + m.w * logical.y + composite.quad_ef.y,
     );
-    let axis_aligned = composite.quad_abcd.x == 1.0
-        && composite.quad_abcd.y == 0.0
-        && composite.quad_abcd.z == 0.0
-        && composite.quad_abcd.w == 1.0;
-    let world = select(
-        transformed,
-        composite.quad_origin + uv * composite.quad_size,
-        axis_aligned,
-    );
+    let world = select(transformed, composite.quad_origin + local, axis_aligned);
     let ndc = vec2(
         world.x / composite.dest_size.x * 2.0 - 1.0,
         1.0 - world.y / composite.dest_size.y * 2.0,
     );
     output.position = vec4(ndc, 0.0, 1.0);
-    output.local = select(
-        uv * composite.quad_logical_size,
-        uv * composite.quad_size,
-        axis_aligned,
-    );
+    output.local = local;
     output.world = world;
     return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    // Local px per device pixel, for the rounded edge's ramp.
+    let local_dx = dpdx(input.local);
+    let local_dy = dpdy(input.local);
     let clip_cover = fragment_clip_coverage(
         input.world,
         composite.clip_rect,
@@ -131,12 +124,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let half_size = quad_size * 0.5;
-    let dist = rounded_box_sdf(
+    let edge = rounded_box_distance(
         input.local - half_size,
         half_size,
-        composite.corner_radius
+        composite.corner_radius,
+        local_dx,
+        local_dy,
     );
-    var alpha = clamp(0.5 - dist, 0.0, 1.0) * clip_cover;
+    var alpha = clamp(0.5 - edge, 0.0, 1.0) * clip_cover;
 
     if ((paint.flags & PAINT_MASK) != 0u && (paint.flags & PAINT_MASK_URL) == 0u) {
         alpha *= mask_alpha(local_uv, paint);

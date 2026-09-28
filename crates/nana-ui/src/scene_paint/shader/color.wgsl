@@ -168,3 +168,35 @@ fn apply_color_filter_channels(
     rgb = mix(rgb, vec3(1.0) - rgb, invert);
     return vec4(clamp(rgb, vec3(0.0), vec3(1.0)), color.a * opacity);
 }
+
+// Signed distance in device px from `p` to a rounded box of half extents
+// `half` and per-corner `radii` (in `rounded_box_sdf`'s order), all in the
+// local px `p` is measured in; `dx`/`dy` are that position's screen
+// derivatives. Each side is measured across its own normal and the nearer one
+// on screen wins, which a distance taken in local px and scaled afterwards
+// gets wrong under an anisotropic transform; past a square corner the corner
+// is the nearest point. Both exact under any affine map, a rounded corner's
+// arc to first order along its normal.
+fn rounded_box_distance(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
+    let pair = select(radii.yz, radii.xw, p.x > 0.0);
+    let radius = select(pair.y, pair.x, p.y > 0.0);
+    let q = abs(p) - half + radius;
+    let s = select(vec2(-1.0), vec2(1.0), p >= vec2(0.0));
+    let v = q * s;
+    if radius <= 0.0 && any(q > vec2(0.0)) {
+        // The corner is nearest where the pixel's foot on both sides falls
+        // past it. On screen: `J⁻¹` (up to its determinant) of the local
+        // offset and of each side's direction past the corner.
+        let adjugate = mat2x2(vec2(dy.y, -dx.y), vec2(-dy.x, dx.x));
+        let offset = adjugate * v;
+        if dot(offset, adjugate * vec2(0.0, s.y)) >= 0.0 && dot(offset, adjugate * vec2(s.x, 0.0)) >= 0.0 {
+            return length(offset) / max(abs(dx.x * dy.y - dx.y * dy.x), 1.0e-12);
+        }
+    }
+    if radius > 0.0 && all(q > vec2(0.0)) {
+        let n = normalize(v);
+        return (length(q) - radius) / max(length(vec2(dot(n, dx), dot(n, dy))), 1.0e-6);
+    }
+    let across = max(vec2(length(vec2(dx.x, dy.x)), length(vec2(dx.y, dy.y))), vec2(1.0e-6));
+    return max((q.x - radius) / across.x, (q.y - radius) / across.y);
+}

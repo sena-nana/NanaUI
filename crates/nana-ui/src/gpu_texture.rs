@@ -73,31 +73,38 @@ struct VertexOutput {
     @location(2) world: vec2<f32>,
 }
 
-// Same SDF as scene quad solids so HostTexture and the sibling Quad share a clip.
-fn rounded_box_sdf(p: vec2<f32>, size: vec2<f32>, corners: vec4<f32>) -> f32 {
-    var box_half = select(corners.yz, corners.xw, p.x > 0.0);
-    var corner = select(box_half.y, box_half.x, p.y > 0.0);
-    var q = abs(p) - size + corner;
-    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - corner;
-}
-
-// Same as scene quad solids (`quad.wgsl`): SDF units per device pixel.
-fn rounded_box_pixel(p: vec2<f32>, size: vec2<f32>, corners: vec4<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
-    let box_half = select(corners.yz, corners.xw, p.x > 0.0);
-    let corner = select(box_half.y, box_half.x, p.y > 0.0);
-    let q = abs(p) - size + corner;
-    let side = select(vec2(0.0, 1.0), vec2(1.0, 0.0), q.x > q.y);
-    let normal = select(side, normalize(q), all(q > vec2(0.0)))
-        * select(vec2(-1.0), vec2(1.0), p >= vec2(0.0));
-    return max(length(vec2(dot(normal, dx), dot(normal, dy))), 1.0e-6);
+// The scene quads' `rounded_box_distance` (`color.wgsl`), so a HostTexture and
+// its sibling Quad share an edge: signed device px to a rounded box of half
+// extents `half`, `p` in local px with screen derivatives `dx`/`dy`.
+fn rounded_box_distance(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
+    let pair = select(radii.yz, radii.xw, p.x > 0.0);
+    let radius = select(pair.y, pair.x, p.y > 0.0);
+    let q = abs(p) - half + radius;
+    let s = select(vec2(-1.0), vec2(1.0), p >= vec2(0.0));
+    let v = q * s;
+    if radius <= 0.0 && any(q > vec2(0.0)) {
+        // The corner is nearest where the pixel's foot on both sides falls
+        // past it. On screen: `J⁻¹` (up to its determinant) of the local
+        // offset and of each side's direction past the corner.
+        let adjugate = mat2x2(vec2(dy.y, -dx.y), vec2(-dy.x, dx.x));
+        let offset = adjugate * v;
+        if dot(offset, adjugate * vec2(0.0, s.y)) >= 0.0 && dot(offset, adjugate * vec2(s.x, 0.0)) >= 0.0 {
+            return length(offset) / max(abs(dx.x * dy.y - dx.y * dy.x), 1.0e-12);
+        }
+    }
+    if radius > 0.0 && all(q > vec2(0.0)) {
+        let n = normalize(v);
+        return (length(q) - radius) / max(length(vec2(dot(n, dx), dot(n, dy))), 1.0e-6);
+    }
+    let across = max(vec2(length(vec2(dx.x, dy.x)), length(vec2(dx.y, dy.y))), vec2(1.0e-6));
+    return max((q.x - radius) / across.x, (q.y - radius) / across.y);
 }
 
 // How much of the box `lo`..`lo + size` with `radii` covers the pixel at
 // `local`, ramping over one device pixel (`dx`/`dy`: its screen derivatives).
 fn box_cover(local: vec2<f32>, lo: vec2<f32>, size: vec2<f32>, radii: vec4<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
-    let p = -(local - lo - size * 0.5) * 2.0;
-    let dist = rounded_box_sdf(p, size, radii * 2.0) / 2.0;
-    return clamp(0.5 - dist / rounded_box_pixel(p, size, radii * 2.0, dx, dy), 0.0, 1.0);
+    let p = -(local - lo - size * 0.5);
+    return clamp(0.5 - rounded_box_distance(p, size * 0.5, radii, dx, dy), 0.0, 1.0);
 }
 
 fn to_world(local: vec2<f32>) -> vec2<f32> {

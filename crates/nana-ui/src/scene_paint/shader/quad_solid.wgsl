@@ -52,9 +52,11 @@ fn apply_affine(abcd: vec4<f32>, ef: vec4<f32>, p: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(x, y) / w;
 }
 
-// Local px the quad reaches past each edge so the ramp's outer half device
-// pixel is rasterized under the transform at `p`: an edge moves
-// `det / |other column| / w` device px per local px (Jacobian columns × w).
+// Local px the quad reaches past each edge under the transform at `p`: an
+// edge moves `det / |other column| / w` device px per local px (Jacobian
+// columns × w). One and a half device pixels: the ramp's outer half, plus
+// the reach of a pixel's MSAA samples, which a geometry edge crossing the
+// pixel would otherwise leave uncovered and so halve that pixel's ramp.
 // At least the untransformed half pixel; capped for near-singular transforms.
 fn edge_grow(abcd: vec4<f32>, ef: vec4<f32>, p: vec2<f32>) -> vec2<f32> {
     let world = apply_affine(abcd, ef, p);
@@ -62,7 +64,7 @@ fn edge_grow(abcd: vec4<f32>, ef: vec4<f32>, p: vec2<f32>) -> vec2<f32> {
     let along_x = vec2(abcd.x - world.x * ef.z, abcd.y - world.y * ef.z);
     let along_y = vec2(abcd.z - world.x * ef.w, abcd.w - world.y * ef.w);
     let det = abs(along_x.x * along_y.y - along_x.y * along_y.x);
-    let grow = 0.5 * w * vec2(length(along_y), length(along_x)) / max(det, 1.0e-6);
+    let grow = 1.5 * w * vec2(length(along_y), length(along_x)) / max(det, 1.0e-6);
     return clamp(grow, vec2(0.5), vec2(256.0));
 }
 
@@ -179,9 +181,9 @@ fn solid_fs_main(
 
     var mixed_color: vec4<f32> = compose_quad_fill(input.color, local_uv, paint);
 
-    let outer_p = -(input.local_pos - input.pos - input.scale * 0.5) * 2.0;
-    let dist = rounded_box_sdf(outer_p, input.scale, input.border_radius * 2.0) / 2.0;
-    let edge_px = rounded_box_pixel(outer_p, input.scale, input.border_radius * 2.0, local_dx, local_dy);
+    let outer_p = -(input.local_pos - input.pos - input.scale * 0.5);
+    let half = input.scale * 0.5;
+    let edge = rounded_box_distance(outer_p, half, input.border_radius, local_dx, local_dy);
 
     if (max(max(input.border_widths.x, input.border_widths.y), max(input.border_widths.z, input.border_widths.w)) > 0.0) {
         let inner_shift = vec2(
@@ -205,9 +207,8 @@ fn solid_fs_main(
             vec4(0.0),
         );
         inner_radii = min(inner_radii, vec4(min(inner_size.x, inner_size.y) * 0.5));
-        let inner_p = -(input.local_pos - input.pos - input.scale * 0.5 - inner_shift) * 2.0;
-        let inner_dist = rounded_box_sdf(inner_p, inner_size, inner_radii * 2.0) / 2.0
-            / rounded_box_pixel(inner_p, inner_size, inner_radii * 2.0, local_dx, local_dy);
+        let inner_p = outer_p + inner_shift;
+        let inner_dist = rounded_box_distance(inner_p, inner_size * 0.5, inner_radii, local_dx, local_dy);
         let lp = input.local_pos - input.pos;
         let dt = select(1e8, lp.y / max(input.border_widths.x, 1e-4), input.border_widths.x > 0.0);
         let dr = select(1e8, (input.scale.x - lp.x) / max(input.border_widths.y, 1e-4), input.border_widths.y > 0.0);
@@ -261,14 +262,22 @@ fn solid_fs_main(
         mixed_color = mix(mixed_color, edge_color, cover);
     }
 
-    let fill_alpha = clamp(0.5 - dist / edge_px, 0.0, 1.0);
+    let fill_alpha = clamp(0.5 - edge, 0.0, 1.0);
     var quad_alpha: f32 = fill_alpha;
 
-    // Storage keeps CSS px (same as instance spread before VS scale). `dist`
-    // and interpolated `shadow_spread_radius` are already physical.
+    // Storage keeps CSS px (same as instance spread before VS scale); the
+    // interpolated `shadow_spread_radius` is already physical.
     let outline_px = paint.outline_width * globals.scale;
     if (outline_px > 0.0) {
-        let cover = clamp(0.5 - (dist - outline_px) / edge_px, 0.0, 1.0);
+        // The box grown by the outline, its corners with it.
+        let outline_edge = rounded_box_distance(
+            outer_p,
+            half + outline_px,
+            input.border_radius + outline_px,
+            local_dx,
+            local_dy,
+        );
+        let cover = clamp(0.5 - outline_edge, 0.0, 1.0);
         let outline_premult = premultiply(paint.outline_color);
         mixed_color = mix(outline_premult, mixed_color, quad_alpha);
         quad_alpha = cover;
@@ -287,19 +296,26 @@ fn solid_fs_main(
         let css_spread = input.shadow_spread_radius - outline_px;
         let shadow_size = max(input.scale + vec2(css_spread * 2.0), vec2(0.0));
         let shadow_radius = max(input.border_radius + vec4(css_spread), vec4(0.0));
-        let shadow_p = -(input.local_pos - input.pos - input.shadow_offset - input.scale/2.0) * 2.0;
+        let shadow_p = outer_p + input.shadow_offset;
         let inset = (paint.flags & PAINT_SHADOW_INSET) != 0u;
-        // Distance past the shadow's edge, away from where it paints.
-        let shadow_dist = rounded_box_sdf(shadow_p, shadow_size, shadow_radius * 2.0) / 2.0
-            * select(1.0, -1.0, inset);
+        // Distance past the shadow's edge, away from where it paints: local
+        // px for the blur, device px for an unblurred edge.
+        let flip = select(1.0, -1.0, inset);
+        let shadow_dist = rounded_box_sdf(shadow_p * 2.0, shadow_size, shadow_radius * 2.0) / 2.0 * flip;
+        let shadow_edge = rounded_box_distance(
+            shadow_p,
+            shadow_size * 0.5,
+            shadow_radius,
+            local_dx,
+            local_dy,
+        ) * flip;
         // A blur ramps from full strength `blur` inside the edge to none `blur`
         // past it, as the Path shadow's band, and scales with the transform; an
         // unblurred edge ramps over one device pixel, as the box's own edge does.
         let blur = input.shadow_blur_radius;
-        let shadow_px = rounded_box_pixel(shadow_p, shadow_size, shadow_radius * 2.0, local_dx, local_dy);
         let shadow_alpha = select(
             1.0 - smoothstep(-blur, blur, shadow_dist),
-            clamp(0.5 - shadow_dist / shadow_px, 0.0, 1.0),
+            clamp(0.5 - shadow_edge, 0.0, 1.0),
             blur <= 0.0,
         );
         let under = select(1.0 - quad_alpha, fill_alpha, inset);

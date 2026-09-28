@@ -3505,82 +3505,141 @@ fn rounded_host_texture_edge_stays_one_device_pixel_under_scale_and_fractional_d
     drop(view);
 }
 
+/// Signed device px from `p` to the convex quadrilateral `corners`: the
+/// exact distance a one device pixel ramp is measured against.
+fn quadrilateral_distance(p: [f32; 2], corners: &[[f32; 2]; 4]) -> f32 {
+    let (mut outside, mut inside, mut nearest_side) = (f32::INFINITY, true, f32::INFINITY);
+    let orientation = (0..4)
+        .map(|i| {
+            let [a, b] = [corners[i], corners[(i + 1) % 4]];
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum::<f32>()
+        .signum();
+    for i in 0..4 {
+        let [a, b] = [corners[i], corners[(i + 1) % 4]];
+        let side = [b[0] - a[0], b[1] - a[1]];
+        let to_p = [p[0] - a[0], p[1] - a[1]];
+        let length = side[0].hypot(side[1]);
+        let t = ((to_p[0] * side[0] + to_p[1] * side[1]) / (length * length)).clamp(0.0, 1.0);
+        outside = outside.min((to_p[0] - side[0] * t).hypot(to_p[1] - side[1] * t));
+        let across = (side[0] * to_p[1] - side[1] * to_p[0]) * orientation / length;
+        inside &= across >= 0.0;
+        nearest_side = nearest_side.min(across.abs());
+    }
+    if inside { -nearest_side } else { outside }
+}
+
 #[test]
-fn square_host_texture_edge_stays_one_device_pixel_under_transform_and_fractional_dpi() {
-    // A square green texture filling its box: edges off the pixel grid under
-    // `scale(0.45)`, diagonal under `rotate(30deg)`, and at device x = 3.75
-    // at 150%. Every pixel near the edge is compared with a one device pixel
-    // ramp over its exact distance to the square.
+fn square_edges_stay_one_device_pixel_under_any_affine_transform() {
+    // A square green quad and a square green texture filling the same box,
+    // off the pixel grid, rotated, 10:1 anisotropic, skewed to a 30° corner,
+    // and at 150%. Every pixel near the edge, corners included, is compared
+    // with a one device pixel ramp over its exact distance to the shape.
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
     let registry = register_host_texture("layer", &view, 64, 64);
-    let cases = [
-        ("scale(0.45)", [0.0, 0.0, 64.0], 0.45, 0f32, 1.0),
-        ("rotate(30deg)", [16.0, 16.0, 32.0], 1.0, 30.0, 1.0),
-        ("150%", [2.5, 2.5, 30.0], 1.0, 0.0, 1.5),
-    ];
-    for (label, [x, y, w], scale, degrees, factor) in cases {
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let turn = |degrees: f32, sx: f32, sy: f32| {
         let (sin, cos) = degrees.to_radians().sin_cos();
-        let mut context = AppContext::new();
-        let mut style = NodeStyle::default();
-        Arc::make_mut(&mut style.layout).transform = Some(PaintTransform {
-            a: scale * cos,
-            b: scale * sin,
-            c: -scale * sin,
-            d: scale * cos,
+        [cos * sx, sin * sx, -sin * sy, cos * sy]
+    };
+    let cases = [
+        ("scale(0.45)", [0.0, 0.0, 64.0], turn(0.0, 0.45, 0.45), 1.0),
+        (
+            "rotate(30deg)",
+            [16.0, 16.0, 32.0],
+            turn(30.0, 1.0, 1.0),
+            1.0,
+        ),
+        (
+            "rotate(10deg) scale(3, 0.3)",
+            [22.0, 22.0, 20.0],
+            turn(10.0, 3.0, 0.3),
+            1.0,
+        ),
+        (
+            "skewX(60deg)",
+            [22.4, 22.4, 20.0],
+            [1.0, 0.0, 60f32.to_radians().tan(), 1.0],
+            1.0,
+        ),
+        ("150%", [2.5, 2.5, 30.0], turn(0.0, 1.0, 1.0), 1.5),
+    ];
+    for (label, [x, y, w], [a, b, c, d], factor) in cases {
+        let transform = PaintTransform {
+            a,
+            b,
+            c,
+            d,
             ..PaintTransform::default()
-        });
+        };
+        let [cx, cy, h] = [x + w * 0.5, y + w * 0.5, w * 0.5];
+        let corners = [[-h, -h], [h, -h], [h, h], [-h, h]]
+            .map(|[u, v]| [(cx + a * u + c * v) * factor, (cy + b * u + d * v) * factor]);
+        let style = nana_ui_core::LayoutStyle {
+            background: Some(green),
+            transform: Some(transform),
+            ..Default::default()
+        };
+        let mut quad = UiScene::new();
+        quad.apply_delta([extracted_div(1, &[], x, y, w, w, style, Some(green))], []);
+        let mut context = AppContext::new();
+        let mut node_style = NodeStyle::default();
+        Arc::make_mut(&mut node_style.layout).transform = Some(transform);
         let preview = context
             .create_component(
                 DocumentId::new(1).unwrap(),
-                GpuTextureView::new("layer").style(style),
+                GpuTextureView::new("layer").style(node_style),
             )
             .unwrap();
         let mut layout = MutationQueue::new();
         write_box(&mut layout, preview.stable_id(), x, y, w, w);
         context.commit_mutations(layout).unwrap();
-        let scene = commit_scene(&mut context);
-        let side = (64.0 * factor) as u32;
-        let (target, target_view) = test_copy_target(&device, format, side, side);
-        let mut encoder = device.create_command_encoder(&Default::default());
-        SceneWgpuPainter::for_test(format)
-            .paint_encoder(
-                &scene,
-                &mut encoder,
-                &target_view,
-                ScenePaintViewport {
-                    logical_size: [64.0, 64.0],
-                    physical_size: [side, side],
-                    scale_factor: factor,
-                    scene_origin: [0.0, 0.0],
-                    target_origin: [0.0, 0.0],
-                    clear_color: [0.0, 0.0, 0.0, 1.0],
-                    clear: true,
-                },
-                Some(&registry),
-                None,
-            )
-            .unwrap();
-        let pixels = readback_rgba(&device, &queue, encoder, &target, side, side);
-        let center = (x + w * 0.5) * factor;
-        let half = w * 0.5 * scale * factor;
-        for py in 0..side {
-            for px in 0..side {
-                let [dx, dy] = [px as f32 + 0.5 - center, py as f32 + 0.5 - center];
-                let [u, v] = [cos * dx + sin * dy, cos * dy - sin * dx];
-                let q = [u.abs() - half, v.abs() - half];
-                let outside = q[0].max(0.0).hypot(q[1].max(0.0)) + q[0].max(q[1]).min(0.0);
-                if outside.abs() > 1.5 {
-                    continue;
+        let texture = commit_scene(&mut context);
+        // A quad under a pure translation snaps to whole pixels by design;
+        // only the texture keeps its box's fractional edge there.
+        let translated = [a, b, c, d] == [1.0, 0.0, 0.0, 1.0];
+        let scenes = [("quad", &quad), ("texture", &texture)];
+        for (kind, scene) in scenes.into_iter().skip(usize::from(translated)) {
+            let side = (64.0 * factor) as u32;
+            let (target, target_view) = test_copy_target(&device, format, side, side);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            SceneWgpuPainter::for_test(format)
+                .paint_encoder(
+                    scene,
+                    &mut encoder,
+                    &target_view,
+                    ScenePaintViewport {
+                        logical_size: [64.0, 64.0],
+                        physical_size: [side, side],
+                        scale_factor: factor,
+                        scene_origin: [0.0, 0.0],
+                        target_origin: [0.0, 0.0],
+                        clear_color: [0.0, 0.0, 0.0, 1.0],
+                        clear: true,
+                    },
+                    Some(&registry),
+                    None,
+                )
+                .unwrap();
+            let pixels = readback_rgba(&device, &queue, encoder, &target, side, side);
+            for py in 0..side {
+                for px in 0..side {
+                    let center = [px as f32 + 0.5, py as f32 + 0.5];
+                    let outside = quadrilateral_distance(center, &corners);
+                    if outside.abs() > 1.5 {
+                        continue;
+                    }
+                    let expected = (0.5 - outside).clamp(0.0, 1.0) * 255.0;
+                    let green = f32::from(pixel(&pixels, side, px, py)[1]);
+                    assert!(
+                        (green - expected).abs() <= 8.0,
+                        "{kind} under {label}: ({px},{py}) is {outside:+.3} px from the edge, \
+                         expected green {expected:.0}, got {green}"
+                    );
                 }
-                let expected = (0.5 - outside).clamp(0.0, 1.0) * 255.0;
-                let green = f32::from(pixel(&pixels, side, px, py)[1]);
-                assert!(
-                    (green - expected).abs() <= 16.0,
-                    "{label}: ({px},{py}) is {outside:+.3} px from the edge, \
-                     expected green {expected:.0}, got {green}"
-                );
             }
         }
     }
@@ -8288,6 +8347,61 @@ fn icon_batch_reuses_atlas_and_vertex_uploads() {
         second.gpu_upload_bytes, 0,
         "a stable IconBatch must reuse its atlas and vertex buffer"
     );
+}
+
+#[test]
+fn a_frosted_panel_edge_stays_one_device_pixel_under_transform_scale() {
+    // A round frosted panel over green, desaturated to grey (luminance
+    // 0.7152) with no fill of its own: its red channel is 0.7152 of its
+    // coverage, whose rim must ramp over one device pixel.
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    let filter = nana_ui_core::BackdropFilter {
+        blur_radius: 2.0,
+        saturate: 0.0,
+    };
+    for (label, [x, y, w, h], scale, factor) in SCALED_CIRCLES {
+        let mut panel = frost_quad_node_with_fill(2, x, y, w, h, [0.0; 4], filter);
+        let layout = Arc::make_mut(&mut panel.source_style.layout);
+        layout.border_radius = Some(w.min(h) * 0.5);
+        layout.transform = scale_transform(scale);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 1.0, 0.0, 1.0]),
+                panel,
+            ],
+            [],
+        );
+        let side = (64.0 * factor) as u32;
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [side, side],
+            factor,
+        );
+        let center = [(x + w * 0.5) * factor, (y + h * 0.5) * factor];
+        let radius = w.min(h) * 0.5 * scale * factor;
+        for py in 0..side {
+            for px in 0..side {
+                let from_rim =
+                    (px as f32 + 0.5 - center[0]).hypot(py as f32 + 0.5 - center[1]) - radius;
+                if from_rim.abs() > 1.5 {
+                    continue;
+                }
+                let expected = (0.5 - from_rim).clamp(0.0, 1.0) * 0.7152 * 255.0;
+                let red = f32::from(pixel(&pixels, side, px, py)[0]);
+                assert!(
+                    (red - expected).abs() <= 16.0,
+                    "{label}: ({px},{py}) is {from_rim:+.3} px from the rim, \
+                     expected red {expected:.0}, got {red}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
