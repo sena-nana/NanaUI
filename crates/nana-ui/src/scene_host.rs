@@ -295,6 +295,9 @@ struct WindowManager<Program: RuntimeProgram> {
     bind_after_present: HashSet<WindowId>,
     startup_failure: Arc<Mutex<Option<String>>>,
     store: SharedStore,
+    /// What programs see through `RuntimeProgramContext::store`; the host
+    /// keeps `store` for its own bounded shutdown flush.
+    program_store: SharedStore,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
     /// Window, the button code whose release ends the gesture, and the session.
@@ -1206,7 +1209,7 @@ fn complete_startup<Program: RuntimeProgram>(
     .with_windows(&windows)
     .with_window_tag(settings.tag.clone())
     .with_reduced_motion(reduced_motion)
-    .with_store(Arc::clone(&store));
+    .with_store(nana_ui_core::ProgramStore::share(Arc::clone(&store)));
     host_startup.ui_ready_begins();
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     // Locals drop in reverse order: if the remaining host setup fails, close
@@ -1340,6 +1343,7 @@ fn complete_startup<Program: RuntimeProgram>(
         chrome: HashMap::new(),
         bind_after_present: HashSet::new(),
         startup_failure,
+        program_store: nana_ui_core::ProgramStore::share(Arc::clone(&store)),
         store,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         live_frame_resize: None,
@@ -1468,7 +1472,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .and_then(|host| host.settings.tag.clone()),
         )
         .with_reduced_motion(self.reduced_motion)
-        .with_store(Arc::clone(&self.store))
+        .with_store(Arc::clone(&self.program_store))
     }
 
     fn apply_update(

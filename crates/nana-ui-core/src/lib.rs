@@ -118,7 +118,7 @@ pub use packaged::{
 };
 pub use persist::{
     APP_STORAGE_PREFIX, AppSettings, FlushStats, KEY_APPEARANCE_PREFIX, KEY_DOCK_PREFIX,
-    KEY_WINDOW_PREFIX, KvBackend, LocalStorageAdapter, MemoryStore, RestorationKey,
+    KEY_WINDOW_PREFIX, KvBackend, LocalStorageAdapter, MemoryStore, ProgramStore, RestorationKey,
     RestorationPath, RestorationScopeId, SETTINGS_PREFIX, SharedStore, StoreError,
     VIEW_STATE_PREFIX, ViewStateEnvelope, ViewStateSchemaVersion, ViewStateStore,
     appearance_storage_key, dock_storage_key, is_framework_storage_key, memory_store, shared_store,

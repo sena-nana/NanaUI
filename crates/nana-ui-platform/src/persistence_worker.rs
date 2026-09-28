@@ -27,6 +27,9 @@ struct State {
     force: bool,
     stop: bool,
     error: Option<StoreError>,
+    /// A bounded wait already timed out on a write that has not finished;
+    /// later waits return at once instead of blocking again on the same IO.
+    stalled: bool,
 }
 #[derive(Debug)]
 struct Lane {
@@ -87,6 +90,7 @@ impl PersistenceCoordinator {
                 force: false,
                 stop: false,
                 error: None,
+                stalled: false,
             }),
             wake: Condvar::new(),
         });
@@ -125,6 +129,9 @@ impl PersistenceCoordinator {
         if state.work.completed_generation >= target {
             return Ok(());
         }
+        if state.stalled {
+            return Err(StoreError::new("persistence flush timed out"));
+        }
         state.force = true;
         state.error = None;
         self.owner.lane.wake.notify_all();
@@ -137,6 +144,8 @@ impl PersistenceCoordinator {
             }
             let remaining = until.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
+                state.stalled = true;
+                nana_diagnostics::event!(nana_diagnostics::framework::persistence::FLUSH_TIMED_OUT);
                 return Err(StoreError::new("persistence flush timed out"));
             }
             state = self
@@ -225,13 +234,31 @@ impl KvBackend for PersistenceCoordinator {
     fn flush(&self) -> Result<(), StoreError> {
         self.flush_timeout(Duration::from_secs(2))
     }
+    fn flush_soon(&self) -> Result<(), StoreError> {
+        let mut state = self
+            .owner
+            .lane
+            .state
+            .lock()
+            .map_err(|_| StoreError::poisoned())?;
+        if state.work.completed_generation < state.work.generation {
+            state.force = true;
+            self.owner.lane.wake.notify_all();
+        }
+        Ok(())
+    }
 }
 impl Drop for PersistenceCoordinator {
     fn drop(&mut self) {
-        if self.owner.hosts.fetch_sub(1, Ordering::AcqRel) != 1 {
-            return;
+        {
+            // Under the registry lock, as in `new`: a host attaching now
+            // either sees this owner still running or sees it stopping.
+            let _known = registry().lock().unwrap_or_else(|e| e.into_inner());
+            if self.owner.hosts.fetch_sub(1, Ordering::AcqRel) != 1 {
+                return;
+            }
+            self.owner.stopping.store(true, Ordering::Release);
         }
-        self.owner.stopping.store(true, Ordering::Release);
         {
             let mut state = self
                 .owner
@@ -314,6 +341,7 @@ fn run(owner: Arc<Owner>, backend: SharedStore) {
         match result {
             Ok(()) => {
                 state.work.completed_generation = generation;
+                state.stalled = false;
                 state.work.writes_completed += 1;
                 let stats = backend.last_flush_stats().unwrap_or(FlushStats {
                     encoded_bytes: snapshot_bytes,
@@ -559,6 +587,41 @@ mod tests {
             Some("memory-value")
         );
         assert_eq!(lane.work().completed_generation, 1);
+    }
+    #[test]
+    fn a_timed_out_wait_does_not_block_again_until_the_write_lands() {
+        let memory = memory_store();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend = shared_store(Blocked {
+            store: memory.clone(),
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+            release_once: true,
+            released: AtomicBool::new(false),
+        });
+        let lane = PersistenceCoordinator::new(backend).unwrap();
+        lane.set("key", "value".into()).unwrap();
+        // flush_soon starts the write and returns while the IO is blocked.
+        let started = Instant::now();
+        lane.flush_soon().unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(lane.flush_timeout(Duration::from_millis(50)).is_err());
+        // The same stuck write: the next bounded wait returns at once.
+        let started = Instant::now();
+        assert!(lane.flush_timeout(Duration::from_secs(2)).is_err());
+        assert!(started.elapsed() < Duration::from_millis(200));
+        release_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while lane.work().writes_completed == 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(memory.get("key").unwrap().as_deref(), Some("value"));
+        // Once it lands, waits block again for new writes.
+        lane.set("key", "next".into()).unwrap();
+        lane.flush_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(memory.get("key").unwrap().as_deref(), Some("next"));
     }
     #[derive(Debug)]
     struct Blocked {

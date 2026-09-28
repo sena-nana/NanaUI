@@ -99,6 +99,7 @@ FLIP / list-move 是显式策略，不是把 width 动画偷成 scale。
 | 最新帧槽池（`FrameExchange`） | 生产线程；`FrameInbox` / `FrameBinding` 在窗口侧取样 |
 | 业务状态、应用配置、Region / pane **内容** | 应用 |
 | opt-in 的窗口 / Dock view-state 恢复 | `ViewStateStore`；应用选择稳定 scope/key |
+| 持久化写盘 | 宿主的 `PersistenceCoordinator` 在后台线程合并写入；程序经 `RuntimeProgramContext::store()` 拿到的是 `ProgramStore`：`flush` 只请求尽快写、不等待，`clear` 只清程序自己的键，不动 `nana.*` 框架命名空间。关闭时宿主做一次有界（2 s）的最终 flush，超时发 `persistence.flush_timed_out` |
 | 树、样式、未滚动布局、命中、焦点、IME、无障碍 | `UiWorld` |
 | Motion IR（曲线、timing、属性分类、CPU 求值、presentation overlay、MotionDescriptor slab） | `nana-ui-core::motion`；Runtime `AnimationSpec` 是同一套 timing 子集；L3 `transition` / `Spring::to` / `Timeline` 编译进这条 IR；内建 hover/switch/spinner/surface 不再平行自管时钟；`PresentationStore` 是 IR overlay；descriptor 只覆盖 `AnimationClass::Compositor` |
 | 绘制图 | `UiScene`（`CompositorLayer` 持有 presentation 与 `CompositorMotionBinding`；`SceneWgpuPainter` 上传 MotionDescriptor storage + time uniform） |

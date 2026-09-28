@@ -65,6 +65,11 @@ impl FileStore {
                     loaded: true,
                 },
                 None => {
+                    // Kept aside for inspection; the application starts from
+                    // empty storage rather than failing.
+                    nana_diagnostics::metric!(
+                        nana_diagnostics::framework::persistence::CORRUPTIONS
+                    );
                     let _ = replace_file(&path, &path.with_extension("bin.corrupt"));
                     StoreCache {
                         entries: BTreeMap::new(),
@@ -200,7 +205,13 @@ fn replace_file(from: &Path, to: &Path) -> Result<(), StoreError> {
     }
     #[cfg(not(windows))]
     {
-        fs::rename(from, to).map_err(|error| StoreError::new(error.to_string()))
+        fs::rename(from, to).map_err(|error| StoreError::new(error.to_string()))?;
+        // The rename is durable only once the directory entry is: without
+        // this a crash can bring back the old file after a reported flush.
+        if let Some(dir) = to.parent() {
+            let _ = fs::File::open(dir).and_then(|dir| dir.sync_all());
+        }
+        Ok(())
     }
 }
 

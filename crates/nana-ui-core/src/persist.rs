@@ -217,12 +217,13 @@ impl ViewStateStore {
     pub fn remove(&self, path: &RestorationPath) -> Result<(), StoreError> {
         self.backend.remove(&self.physical(path))
     }
+    /// Remove the view state of this scope and every scope below it.
+    ///
+    /// Scope keys are length-prefixed segments (`7:profile`, then `1:a` for a
+    /// child), so a descendant's key always starts with this scope's key and
+    /// no unrelated scope's key can.
     pub fn reset_scope(&self) -> Result<(), StoreError> {
-        let prefix = if self.scope.key().is_empty() {
-            VIEW_STATE_PREFIX.to_string()
-        } else {
-            format!("{VIEW_STATE_PREFIX}{}/", self.scope.key())
-        };
+        let prefix = format!("{VIEW_STATE_PREFIX}{}", self.scope.key());
         for key in self
             .backend
             .keys()?
@@ -391,6 +392,13 @@ pub trait KvBackend: Send + Sync + fmt::Debug {
     fn keys(&self) -> Result<Vec<String>, StoreError>;
     fn flush(&self) -> Result<(), StoreError>;
 
+    /// Ask for pending writes to reach storage soon, without waiting for
+    /// them. Backends that write asynchronously start a write and return;
+    /// the default is a plain [`Self::flush`].
+    fn flush_soon(&self) -> Result<(), StoreError> {
+        self.flush()
+    }
+
     /// Statistics for the most recent successful flush, when the backend can
     /// report its encoded and physical write sizes precisely.
     fn last_flush_stats(&self) -> Option<FlushStats> {
@@ -410,6 +418,55 @@ pub type SharedStore = Arc<dyn KvBackend>;
 /// Wrap any [`KvBackend`] for injection.
 pub fn shared_store<S: KvBackend + 'static>(store: S) -> SharedStore {
     Arc::new(store)
+}
+
+/// The store as an application program sees it (`RuntimeProgramContext::store`).
+///
+/// Reads and writes pass through. `flush` only asks for an early write and
+/// never waits, so program code on the UI thread cannot block on disk; the
+/// host keeps the bounded shutdown flush. `clear` removes the program's own
+/// keys and leaves the framework's namespaces (window geometry, view state,
+/// settings, script localStorage) alone.
+#[derive(Debug)]
+pub struct ProgramStore(SharedStore);
+
+impl ProgramStore {
+    pub fn share(inner: SharedStore) -> SharedStore {
+        Arc::new(Self(inner))
+    }
+}
+
+impl KvBackend for ProgramStore {
+    fn get(&self, key: &str) -> Result<Option<String>, StoreError> {
+        self.0.get(key)
+    }
+    fn set(&self, key: &str, value: String) -> Result<(), StoreError> {
+        self.0.set(key, value)
+    }
+    fn remove(&self, key: &str) -> Result<(), StoreError> {
+        self.0.remove(key)
+    }
+    fn clear(&self) -> Result<(), StoreError> {
+        for key in self.0.keys()? {
+            let framework = is_framework_storage_key(&key)
+                || [APP_STORAGE_PREFIX, VIEW_STATE_PREFIX, SETTINGS_PREFIX]
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix));
+            if !framework {
+                self.0.remove(&key)?;
+            }
+        }
+        Ok(())
+    }
+    fn keys(&self) -> Result<Vec<String>, StoreError> {
+        self.0.keys()
+    }
+    fn flush(&self) -> Result<(), StoreError> {
+        self.0.flush_soon()
+    }
+    fn flush_soon(&self) -> Result<(), StoreError> {
+        self.0.flush_soon()
+    }
 }
 
 /// Default memory-only store. Values vanish when the last handle is dropped.
@@ -532,6 +589,41 @@ mod authority_tests {
         assert_eq!(b.read(&path("main"), 1).unwrap().as_deref(), Some("b"));
         root.reset_scope().unwrap();
         assert_eq!(b.read(&path("main"), 1).unwrap(), None);
+    }
+    #[test]
+    fn resetting_a_scope_resets_its_children_and_nothing_beside_it() {
+        let backend = memory_store();
+        let root = ViewStateStore::new(backend, RestorationPath::root());
+        let profile = root.child(RestorationScopeId::new("profile").unwrap());
+        let child = profile.child(RestorationScopeId::new("a").unwrap());
+        // One segment whose text merely starts with the parent's.
+        let lookalike = root.child(RestorationScopeId::new("profile1:a").unwrap());
+        profile.write(&path("main"), 1, "p".into()).unwrap();
+        child.write(&path("main"), 1, "c".into()).unwrap();
+        lookalike.write(&path("main"), 1, "l".into()).unwrap();
+        profile.reset_scope().unwrap();
+        assert_eq!(profile.read(&path("main"), 1).unwrap(), None);
+        assert_eq!(child.read(&path("main"), 1).unwrap(), None);
+        assert_eq!(
+            lookalike.read(&path("main"), 1).unwrap().as_deref(),
+            Some("l")
+        );
+    }
+    #[test]
+    fn a_program_store_never_clears_framework_keys() {
+        let backend = memory_store();
+        backend.set("nana.window.main", "w".into()).unwrap();
+        backend.set("nana.view.v1./1:x", "v".into()).unwrap();
+        backend.set("nana.app.theme", "t".into()).unwrap();
+        backend.set("recent-files", "r".into()).unwrap();
+        let program = ProgramStore::share(Arc::clone(&backend));
+        program.clear().unwrap();
+        assert_eq!(
+            backend.keys().unwrap().len(),
+            3,
+            "only the program's own key goes"
+        );
+        assert_eq!(backend.get("recent-files").unwrap(), None);
     }
     #[test]
     fn migration_is_once_and_bad_entry_is_local() {

@@ -349,6 +349,10 @@ pub mod persistence {
     pub static ENCODED_BYTES: Metric = Metric::counter(D, 31, "persistence.encoded_bytes", "bytes");
     pub static FAILURE: EventDescriptor =
         EventDescriptor::new(D, 20, "persistence.failure", Severity::Warn, &[]);
+    /// A bounded flush gave up waiting; the write may still land later, or be
+    /// lost if the process exits first.
+    pub static FLUSH_TIMED_OUT: EventDescriptor =
+        EventDescriptor::new(D, 21, "persistence.flush_timed_out", Severity::Warn, &[]);
     pub static RESTORE_HITS: Metric = Metric::counter(D, 26, "persistence.restore_hits", "count");
     pub static RESTORE_MISSES: Metric =
         Metric::counter(D, 27, "persistence.restore_misses", "count");
