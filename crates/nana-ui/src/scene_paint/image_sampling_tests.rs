@@ -244,3 +244,72 @@ fn a_host_texture_samples_its_mip_chain_trilinearly_only_on_request() {
         "trilinear blends white level 0 into red level 1, got {mipmapped:?}"
     );
 }
+
+/// A single-level 64px texture of 1px black and white columns.
+fn host_stripes(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let size = wgpu::Extent3d {
+        width: 64,
+        height: 64,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("nana-ui image sampling host stripes"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let rgba: Vec<u8> = (0..64 * 64)
+        .flat_map(|index| {
+            let value = if index % 2 == 0 { 0 } else { 255 };
+            [value, value, value, 255]
+        })
+        .collect();
+    queue.write_texture(
+        texture.as_image_copy(),
+        &rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * 64),
+            rows_per_image: Some(64),
+        },
+        size,
+    );
+    texture.create_view(&Default::default())
+}
+
+#[test]
+fn a_single_level_host_texture_shown_smaller_filters_over_the_device_pixel() {
+    // 64 texels into 28 px, by its box or by `scale(28 / 64)` about the box's
+    // centre: one bilinear tap per pixel lands anywhere between a black and a
+    // white column; the pixel's whole footprint is mid grey.
+    let (device, queue) = test_device();
+    let view = host_stripes(&device, &queue);
+    let registry = register_host_texture("layer", &view, 64, 64);
+    for (side, scale, inner) in [(28.0, 1.0, 3..25), (64.0, 28.0 / 64.0, 21..43)] {
+        let mut context = AppContext::new();
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).transform = scale_transform(scale);
+        let preview = context
+            .create_component(
+                DocumentId::new(1).unwrap(),
+                GpuTextureView::new("layer").style(style),
+            )
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, preview.stable_id(), 0.0, 0.0, side, side);
+        context.commit_mutations(layout).unwrap();
+        let scene = commit_scene(&mut context);
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+        let pixels = paint_once(&mut painter, &scene, 64, Some(&registry));
+        let (low, high) = red_range(&pixels, 64, inner);
+        assert!(
+            low >= 90 && high <= 165,
+            "stripes shown at scale {scale} in a {side} px box must read as mid grey, \
+             got {low}..{high}"
+        );
+    }
+}

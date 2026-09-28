@@ -270,18 +270,41 @@ fn mask_alpha(local: vec2<f32>) -> f32 {
     return lum;
 }
 
+// One device pixel's worth of `source` at `uv`, whose screen derivatives are
+// `dx`/`dy`. Shown smaller than it is, one bilinear tap per pixel skips texels
+// and aliases, so a single-level texture averages a grid of taps over the
+// pixel's footprint; a mip chain is the sampler's to filter.
+fn sample_source(uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+    if textureNumLevels(source) > 1u {
+        return textureSampleGrad(source, source_sampler, uv, dx, dy);
+    }
+    let texels = vec2<f32>(textureDimensions(source));
+    let footprint = vec2(length(dx * texels), length(dy * texels));
+    let taps = clamp(ceil(footprint - 1.0 / 16.0), vec2(1.0), vec2(4.0));
+    var sum = vec4(0.0);
+    for (var i = 0.0; i < taps.x; i += 1.0) {
+        for (var j = 0.0; j < taps.y; j += 1.0) {
+            let offset = ((i + 0.5) / taps.x - 0.5) * dx + ((j + 0.5) / taps.y - 0.5) * dy;
+            sum += textureSampleLevel(source, source_sampler, uv + offset, 0.0);
+        }
+    }
+    return sum / (taps.x * taps.y);
+}
+
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Logical px per device pixel, for the rounded edge's ramp.
     let local_dx = dpdx(input.local);
     let local_dy = dpdy(input.local);
+    let zoom = max(layer.editor.y, 1.0);
+    let sample_uv = (input.uv - vec2(0.5)) / zoom + vec2(0.5);
+    let uv_dx = dpdx(sample_uv);
+    let uv_dy = dpdy(sample_uv);
     let clip_cover = overflow_clip_coverage(input.world);
     if clip_cover <= 0.0 {
         discard;
     }
-    let zoom = max(layer.editor.y, 1.0);
-    let sample_uv = (input.uv - vec2(0.5)) / zoom + vec2(0.5);
-    let sampled = textureSample(source, source_sampler, sample_uv);
+    let sampled = sample_source(sample_uv, uv_dx, uv_dy);
     let source_alpha = select(sampled.a, 1.0, layer.source.x > 0.5);
     let has_clip = layer.clip.z > 0.0 && layer.clip.w > 0.0;
     let box_pos = select(layer.origin.zw, layer.clip.xy, has_clip);
