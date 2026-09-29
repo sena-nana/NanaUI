@@ -440,6 +440,7 @@ enum ContainerStyleOp {
     Class(Class, &'static Location<'static>),
     ClassWhen(Class, PropSource<bool>, &'static Location<'static>),
     Css(InlineStyle, &'static Location<'static>),
+    Visible(PropSource<bool>, &'static Location<'static>),
 }
 
 impl ContainerStyle {
@@ -451,12 +452,14 @@ impl ContainerStyle {
                 element.class_when_at(class, condition, at)
             }
             ContainerStyleOp::Css(style, at) => element.css_at(style, at),
+            ContainerStyleOp::Visible(visible, at) => element.visible_at(visible, at),
         })
     }
 }
 
-/// `.class`, `.class_when` and `.css` on a structural view: they style the
-/// container its rows or branches are built in, as they style an element.
+/// `.class`, `.class_when`, `.css` and `.visible` on a structural view: they
+/// style the container its rows or branches are built in, as they style an
+/// element.
 macro_rules! container_styles {
     ($([$($generics:tt)*] $view:ty),* $(,)?) => {$(
         impl<$($generics)*> $view {
@@ -490,6 +493,18 @@ macro_rules! container_styles {
                 self.container_style_mut().push_css(style, ::std::panic::Location::caller());
                 self
             }
+
+            /// Keep the container, and what is built in it, but take it out
+            /// of layout, paint and hit testing while `visible` is false
+            /// (`v-show`), as [`El::visible`] does an element's.
+            #[track_caller]
+            pub fn visible(mut self, visible: impl $crate::view::IntoProp<bool>) -> Self {
+                self.container_style_mut().push_visible(
+                    visible.into_source(),
+                    ::std::panic::Location::caller(),
+                );
+                self
+            }
         }
     )*};
 }
@@ -512,5 +527,13 @@ impl ContainerStyle {
 
     pub(crate) fn push_css(&mut self, style: InlineStyle, at: &'static Location<'static>) {
         self.0.push(ContainerStyleOp::Css(style, at));
+    }
+
+    pub(crate) fn push_visible(
+        &mut self,
+        visible: PropSource<bool>,
+        at: &'static Location<'static>,
+    ) {
+        self.0.push(ContainerStyleOp::Visible(visible, at));
     }
 }

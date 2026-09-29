@@ -724,8 +724,20 @@ impl Gen<'_> {
             if is_class_directive(&attr.name) {
                 continue;
             }
+            // `v-show` keeps the list (its scroll area, or the list itself
+            // under `within`) and hides it, as on an element.
+            if let AttrName::Directive(directive, at) = &attr.name
+                && directive == "show"
+            {
+                let value = prop(&attr.value);
+                out = quote_spanned!(*at=> #out.visible(#value));
+                continue;
+            }
             let AttrName::Plain(name) = &attr.name else {
-                return Err(syn::Error::new(span, "`<Virtual>` takes attributes only"));
+                return Err(syn::Error::new(
+                    span,
+                    "`<Virtual>` takes attributes, `class` and `v-show` only",
+                ));
             };
             let at = name.span();
             out = match name.to_string().as_str() {
@@ -759,7 +771,7 @@ impl Gen<'_> {
                         format!(
                             "`<Virtual>` has no attribute `{other}`; it has `row-height`, \
                              `measured`, `height`, `width`, `grow`, `overscan`, `scroll`, \
-                             `within`, `grid`, `gap`, `list-ref`, `key`, `class`"
+                             `within`, `grid`, `gap`, `list-ref`, `key`, `class`, `v-show`"
                         ),
                     ));
                 }

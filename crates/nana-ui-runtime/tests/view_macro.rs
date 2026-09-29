@@ -573,6 +573,34 @@ fn a_virtual_element_takes_a_list_ref() {
     assert!(rows.row(&0).is_some() && rows.row(&50).is_none());
 }
 
+/// `v-show` on `<Virtual>` shows and hides the list's scroll area.
+#[test]
+fn a_virtual_element_takes_v_show() {
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let shown = std::cell::Cell::new(None);
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            let items: Signal<Vec<u32>> = signal((0..100).collect());
+            let visible = signal(true);
+            shown.set(Some(visible));
+            view! {
+                <Virtual row_height=20 height=100 v-show={visible}>
+                    <Text v-for={n in items} key={*n}>"行 {n}"</Text>
+                </Virtual>
+            }
+        })
+        .unwrap();
+    let visible = shown.get().unwrap();
+    let list = Entity::<nana_ui_runtime::ScrollView>::from_stable_id(mounted.roots()[0]);
+    let hidden = |cx: &AppContext| cx.read(list, |scroll| scroll.style.layout.hidden).unwrap();
+    assert!(!hidden(&cx));
+    visible.set(false);
+    cx.flush_reactive().unwrap();
+    assert!(hidden(&cx));
+}
+
 #[test]
 fn media_controls_and_theme_roles_bind_from_a_template() {
     use nana_ui_runtime::view::{Signal, signal};

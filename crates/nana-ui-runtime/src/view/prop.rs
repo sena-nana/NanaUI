@@ -93,6 +93,28 @@ fn bind_direct<C, T: Clone + 'static, W: FieldWrite<C, T>>(
     });
 }
 
+/// A prop kept for later binds as what it was given as: a constant is
+/// written, a signal or computed binds directly, a closure is boxed.
+impl<T: Clone + Send + 'static> IntoProp<T> for PropSource<T> {
+    fn bind_field<C: 'static, W: FieldWrite<C, T> + 'static>(
+        self,
+        target: &mut C,
+        bindings: &mut NodeBindings<C>,
+        site: &'static Location<'static>,
+    ) {
+        match self {
+            Self::Const(value) => W::write(target, value),
+            Self::Signal(signal) => signal.bind_field::<C, W>(target, bindings, site),
+            Self::Computed(computed) => computed.bind_field::<C, W>(target, bindings, site),
+            Self::Dyn(f) => f.bind_field::<C, W>(target, bindings, site),
+        }
+    }
+
+    fn into_source(self) -> PropSource<T> {
+        self
+    }
+}
+
 impl<T: Clone + 'static> IntoProp<T> for Signal<T> {
     fn bind_field<C: 'static, W: FieldWrite<C, T> + 'static>(
         self,

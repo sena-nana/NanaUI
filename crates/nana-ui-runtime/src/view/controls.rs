@@ -103,6 +103,17 @@ impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
     pub fn visible(self, visible: impl IntoProp<bool>) -> Self {
         self.prop::<bool, Visible>(visible)
     }
+
+    /// [`Self::visible`] declared at `at`: a structural view's container.
+    pub(crate) fn visible_at(
+        mut self,
+        visible: super::prop::PropSource<bool>,
+        at: &'static std::panic::Location<'static>,
+    ) -> Self {
+        let (component, bindings) = self.parts_mut();
+        visible.bind_field::<C, Visible>(component, bindings, at);
+        self
+    }
 }
 
 /// Components outside the control table whose style views may still write.

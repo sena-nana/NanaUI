@@ -388,9 +388,10 @@ fn a_virtual_element_sizes_the_list_it_holds() {
         "Sized.vue",
         r#"<script setup lang="rust">
 let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
+let shown = signal(true);
 </script>
 <template>
-  <Virtual row-height="24" height="400" measured grow>
+  <Virtual row-height="24" height="400" measured grow v-show="shown">
     <Text v-for="n in rows" :key="*n">行 {{ n }}</Text>
   </Virtual>
 </template>"#,
@@ -401,6 +402,7 @@ let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
     assert!(code.contains(&squash(".measured()")), "{code}");
     assert!(code.contains(&squash(".grow()")), "{code}");
     assert!(code.contains(&squash(".height(400_f32)")), "{code}");
+    assert!(code.contains(&squash(".visible(shown)")), "{code}");
 
     let empty = compile(&[(
         "Empty.vue",

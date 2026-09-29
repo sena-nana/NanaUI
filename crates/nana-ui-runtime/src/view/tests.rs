@@ -2903,6 +2903,62 @@ fn keys_of_branches_and_rows_built_after_mount_resolve_by_path() {
     assert_eq!(at(&cx, "switch/b"), "0");
 }
 
+/// `.visible` on a virtual list hides its box and keeps it: the scroll area
+/// it owns, or the list itself when it scrolls `within` a page.
+#[test]
+fn a_virtual_list_is_shown_and_hidden_on_its_container() {
+    let (mut cx, document, parent) = setup();
+    let state = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let (own, within) = (signal(true), signal(true));
+            let page = node_ref();
+            state.set(Some((own, within)));
+            column().children((
+                each_virtual(signal(virtual_items(100)), |row| row.id, 40.0, keyed_row)
+                    .height(200.0)
+                    .visible(own)
+                    .key("own"),
+                widget(
+                    crate::ScrollView::new(crate::ScrollAxes::Vertical)
+                        .with_layout(|l| l.height = Some(LengthSpec::Px(200.0))),
+                )
+                .node_ref(page)
+                .key("page")
+                .children(
+                    each_virtual(signal(virtual_items(100)), |row| row.id, 40.0, keyed_row)
+                        .within(page)
+                        .visible(within)
+                        .key("list"),
+                ),
+            ))
+        })
+        .unwrap();
+    settle(&mut cx, document, LayoutViewport::new(320.0, 600.0));
+    let (own, within) = state.get().unwrap();
+    let root = view.roots()[0];
+    let hidden = |cx: &AppContext, path: &str| {
+        let id = cx.resolve_assembly_path(root, path).unwrap();
+        cx.world().layout_style(id).unwrap().hidden
+    };
+    let scroll = cx.resolve_assembly_path(root, "own").unwrap();
+    assert!(
+        cx.read(Entity::<crate::ScrollView>::from_stable_id(scroll), |_| ())
+            .is_ok(),
+        "the list's own container is its scroll area"
+    );
+    assert!(!hidden(&cx, "own") && !hidden(&cx, "page/list"));
+    own.set(false);
+    within.set(false);
+    settle(&mut cx, document, LayoutViewport::new(320.0, 600.0));
+    assert!(hidden(&cx, "own"), "its own scroll area");
+    assert!(hidden(&cx, "page/list"), "the list inside the page");
+    assert!(!hidden(&cx, "page"), "the page it scrolls within stays");
+    own.set(true);
+    settle(&mut cx, document, LayoutViewport::new(320.0, 600.0));
+    assert!(!hidden(&cx, "own"));
+}
+
 /// The list's ref answers where every item is, built or not, and which node
 /// a built item is in: its key scope, where what the row keys is found.
 #[test]
