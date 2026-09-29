@@ -171,6 +171,18 @@ widget(DesktopShell::from_model(model).title("Gallery"))
     .primary(page())
 ```
 
+模板里写成 `<template #name>`，展开成同样的方法调用：
+
+```rust
+view! {
+    <Widget of={DesktopShell::from_model(model).title("Gallery")}>
+        <template #title-trailing><Row gap=6>…</Row></template>
+        <template #navigation>{sidebar()}</template>
+        <template #primary>{page()}</template>
+    </Widget>
+}
+```
+
 - **`.slot(view, |c, id| c.xxx(id))`**：slot 由控件自己放置（shell 的区域、标题栏的三列）。先建 slot 视图，不插到任何地方，再把根节点 id 写进组件，最后建组件本身。
 - **`.child_slot(view, write)`**：slot 是本节点自己的子节点（section 的 header、list item 的图标），按 slot 的声明顺序插在 `.children(..)` 前面。
 - slot 必须恰好有一个根节点，否则挂载失败，返回 `InvalidInput`，这次什么也不提交。slot 和组件在同一次提交里建好，slot 里创建的信号归同一个挂载作用域，卸载时一起回收。
@@ -218,6 +230,7 @@ fn todos() -> impl IntoView {
 | `v-for={pat in items} key={…}` | `each(items, move \|item\| { let pat = item; key }, move \|pat\| 元素)`；手写也可以 `items.each(key, row)` |
 | `v-show={x}`、`v-model={sig}`、`key="x"` | `.visible(x)`、`.model(sig)`、`.key("x")` |
 | `<style>…</style>`、`class="a"`、`class:a={c}` | `stylesheet! { mod s; … }`、`.class(s::a)`、`.class_when(s::a, c)` |
+| `<template #navigation>…</template>`（具名 slot） | `.navigation(…)`：元素上同名的方法，`#title-trailing` 是 `.title_trailing(…)`；`#default` 就是普通子节点 |
 
 多于 12 个子节点时，宏会嵌套成多层 tuple。写错的地方会被准确指出，例如：未闭合的标签、`</Row>` 关了 `<Column>`、`v-else` 前面没有 `v-if`、`v-for` 没写 `key`、未知指令、`v-if` 和 `v-for` 写在同一个元素上。`tests/view_macro.rs` 把同一个页面用模板和手写函数调用各写一遍，挂载后的保留树逐节点相同，改完信号 flush 之后也相同。
 

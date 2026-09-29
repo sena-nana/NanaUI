@@ -313,6 +313,10 @@ impl Compiler {
             rows: &mut rows,
         };
         rewrite.nodes(&mut template)?;
+        // Named slots left on builtin elements (the known components' are
+        // arguments now) become `.name(view)`, as in `view!`.
+        nana_ui_view_codegen::lift_slots(&mut template)
+            .map_err(|error| parse::syn_error(file, error))?;
         let (body, lints) = nana_ui_view_codegen::expand_checked(&self.runtime, &template)
             .map_err(|error| parse::syn_error(file, error))?;
         let mut warnings = analysis.warnings.clone();

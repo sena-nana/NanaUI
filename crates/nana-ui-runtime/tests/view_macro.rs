@@ -250,6 +250,75 @@ fn the_block_spelling_mounts_and_updates_like_the_template() {
     });
 }
 
+/// Named slots: `<template #name>` in a template is `.name(view)` in Rust.
+struct Slots {
+    checked: Signal<bool>,
+    template: bool,
+}
+
+impl Probe for Slots {
+    fn tree(&self) -> nana_ui_runtime::view::AnyView {
+        use nana_ui_runtime::DesktopShell;
+        use nana_ui_runtime::view::{settings_row, switch};
+        let checked = self.checked;
+        if self.template {
+            return view! {
+                <Widget of={DesktopShell::new().title("T")}>
+                    <template #title-trailing>
+                        <Row gap=6><Text>"搜索"</Text></Row>
+                    </template>
+                    <template #navigation><Text>"导航"</Text></template>
+                    <template #primary>
+                        <SettingsRow label="高亮">
+                            <template #control><Switch label="开关" checked={checked} /></template>
+                        </SettingsRow>
+                    </template>
+                </Widget>
+            }
+            .into_any();
+        }
+        widget(DesktopShell::new().title("T"))
+            .title_trailing(row().gap(6).children(text("搜索")))
+            .navigation(text("导航"))
+            .primary(settings_row("高亮").control(switch("开关").checked(checked)))
+            .into_any()
+    }
+
+    fn poke(&self) {
+        self.checked.set(true);
+    }
+}
+
+#[test]
+fn named_slots_mount_like_their_methods() {
+    let mut cx_t = AppContext::new();
+    let mut cx_f = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let t = cx_t
+        .mount_view_root(document, || {
+            Slots {
+                checked: signal(false),
+                template: true,
+            }
+            .tree()
+        })
+        .unwrap();
+    let f = cx_f
+        .mount_view_root(document, || {
+            Slots {
+                checked: signal(false),
+                template: false,
+            }
+            .tree()
+        })
+        .unwrap();
+    let dump_t = dump(&cx_t, t.roots()[0]);
+    assert_eq!(dump_t, dump(&cx_f, f.roots()[0]));
+    for needle in ["搜索", "导航", "高亮"] {
+        assert!(dump_t.contains(needle), "{needle}: {dump_t}");
+    }
+}
+
 #[test]
 fn more_than_twelve_children_nest_into_tuples() {
     let mut cx = AppContext::new();

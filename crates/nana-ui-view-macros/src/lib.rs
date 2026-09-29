@@ -147,6 +147,7 @@ fn locate(
 
 fn expand_tokens(input: TokenStream) -> TokenStream {
     let expanded = parse_template.parse2(input).and_then(|mut template| {
+        nana_ui_view_codegen::lift_slots(&mut template.nodes)?;
         let styles = template.style.as_ref().map(|style| {
             let compiled = nana_ui_view_codegen::compile_styles(
                 &style.text,
@@ -325,6 +326,17 @@ fn parse_attr(input: ParseStream) -> syn::Result<Attr> {
     let name = if input.peek(Token![@]) {
         input.parse::<Token![@]>()?;
         AttrName::Event(Ident::parse_any(input)?)
+    } else if input.peek(Token![#]) {
+        // `<template #name>`: a named slot, `#title-trailing` spelled either
+        // way.
+        let hash = input.parse::<Token![#]>()?;
+        let mut name = Ident::parse_any(input)?.to_string();
+        while input.peek(Token![-]) {
+            input.parse::<Token![-]>()?;
+            name.push('-');
+            name.push_str(&Ident::parse_any(input)?.to_string());
+        }
+        AttrName::Directive(format!("slot:{name}"), hash.span)
     } else {
         let first = Ident::parse_any(input)?;
         if first == "on" && input.peek(Token![:]) && !input.peek(Token![::]) {
@@ -531,5 +543,18 @@ mod tests {
             found.iter().any(|at| (at.line, at.column) == (3, 3)),
             "{found:?}"
         );
+    }
+
+    #[test]
+    fn named_slots_are_method_calls_and_default_is_children() {
+        let expanded = expand(
+            "crate = x; <Widget of={shell}><template #title-trailing>\"t\"</template>\
+             <template #default>\"d\"</template></Widget>",
+        );
+        assert!(expanded.contains(". title_trailing ("), "{expanded}");
+        assert!(!expanded.contains("default"), "{expanded}");
+        assert!(expanded.contains("text (\"d\")"), "{expanded}");
+        let unnamed = expand("crate = x; <Column><template>\"a\"</template></Column>");
+        assert!(unnamed.contains("needs `#slot-name`"), "{unnamed}");
     }
 }

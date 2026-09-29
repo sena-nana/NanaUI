@@ -197,13 +197,87 @@ pub enum AttrValue {
     For(Pat, Expr),
     /// A value a front end already wrote as a prop.
     Verbatim(TokenStream),
-    /// A view argument of a component: a `.vue` named slot's content.
+    /// A view argument of a component (a `.vue` named slot's content), or
+    /// under `slot:name` a named slot's content ([`lift_slots`]).
     View(Vec<Node>),
 }
 
 pub struct Attr {
     pub name: AttrName,
     pub value: AttrValue,
+}
+
+/// Move each `<template #name>…</template>` child onto its element as a
+/// `slot:name` directive holding that content, which expands to
+/// `.name(view)`: the call the Rust spelling writes (`.navigation(…)`,
+/// `.control(…)`). `#default` content joins the other children.
+/// `<Suspense>` keeps its templates: its `#fallback` is not a method.
+pub fn lift_slots(nodes: &mut [Node]) -> syn::Result<()> {
+    for node in nodes {
+        let Node::Element(element) = node else {
+            continue;
+        };
+        for attr in &mut element.attrs {
+            if let AttrValue::View(slot) = &mut attr.value {
+                lift_slots(slot)?;
+            }
+        }
+        lift_slots(&mut element.children)?;
+        if element.name == "Suspense" {
+            continue;
+        }
+        let mut children = Vec::new();
+        for child in std::mem::take(&mut element.children) {
+            let Node::Element(template) = child else {
+                children.push(child);
+                continue;
+            };
+            if template.name != "template" {
+                children.push(Node::Element(template));
+                continue;
+            }
+            let slot = template.attrs.iter().find_map(|attr| match &attr.name {
+                AttrName::Directive(directive, span) => directive
+                    .strip_prefix("slot:")
+                    .map(|name| (name.to_owned(), *span)),
+                _ => None,
+            });
+            match slot {
+                Some((name, _)) if name == "default" => children.extend(template.children),
+                Some((name, span)) => element.attrs.push(Attr {
+                    name: AttrName::Directive(format!("slot:{name}"), span),
+                    value: AttrValue::View(template.children),
+                }),
+                None => {
+                    return Err(syn::Error::new(
+                        template.name.span(),
+                        "`<template>` here needs `#slot-name`",
+                    ));
+                }
+            }
+        }
+        element.children = children;
+    }
+    Ok(())
+}
+
+/// `.name(view)` for each named slot of `element`, after `out`.
+fn slot_calls(
+    generator: &Gen<'_>,
+    element: &Element,
+    mut out: TokenStream,
+) -> syn::Result<TokenStream> {
+    for attr in &element.attrs {
+        if let (AttrName::Directive(directive, span), AttrValue::View(nodes)) =
+            (&attr.name, &attr.value)
+            && let Some(name) = directive.strip_prefix("slot:")
+        {
+            let method = Ident::new(&name.replace('-', "_"), *span);
+            let body = generator.nodes(nodes)?;
+            out = quote_spanned!(*span=> #out.#method(#body));
+        }
+    }
+    Ok(out)
 }
 
 /// A closure literal is passed through; a path or field (a signal, a value)
@@ -1064,6 +1138,7 @@ impl Gen<'_> {
                         out = quote_spanned!(*span=> #out.class_when(#value));
                     }
                     "if" | "else-if" | "else" | "for" => {}
+                    slot if slot.starts_with("slot:") => {}
                     virtual_rows if virtual_rows.split('.').next() == Some("virtual") => {
                         if element.directive("for").is_none() {
                             return Err(syn::Error::new(*span, "`v-virtual` goes with `v-for`"));
@@ -1078,7 +1153,7 @@ impl Gen<'_> {
                 },
             }
         }
-        Ok(out)
+        slot_calls(self, element, out)
     }
 
     /// `<TodoRow todo={t} />` → `todo_row(t)`; attribute values are the
@@ -1101,6 +1176,7 @@ impl Gen<'_> {
                 }),
                 AttrName::Directive(directive, _)
                     if matches!(directive.as_str(), "if" | "else-if" | "else" | "for")
+                        || directive.starts_with("slot:")
                         || directive.split('.').next() == Some("virtual") => {}
                 _ => {
                     return Err(syn::Error::new(
@@ -1113,7 +1189,7 @@ impl Gen<'_> {
         if !element.children.is_empty() {
             args.push(self.nodes(&element.children)?);
         }
-        let call = quote_spanned!(span=> #function(#(#args),*));
+        let call = slot_calls(self, element, quote_spanned!(span=> #function(#(#args),*)))?;
         let krate = self.krate;
         Ok(match key {
             Some(key) => quote_spanned!(span=> #krate::view::keyed(#key, #call)),
