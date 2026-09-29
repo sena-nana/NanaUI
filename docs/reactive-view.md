@@ -2,7 +2,9 @@
 
 `reactive-view` feature 下的 `nana_ui::runtime::view`：视图写成一个表达式，动态部分是信号或闭包，树只建一次，之后每个绑定只更新它写的那个节点字段。不整树 render，不做 diff。它和 `build` / `mount` 写同一棵 `UiWorld`、同一张 assembly key 表，最后落到的还是 `create` / `insert` / `project` / `commit`。
 
-**状态：不稳定。** 稳定前不进入公开合同。开关：`nana-ui` 的 `reactive-view`；模板宏 `view!` 另加 `view-macro`；追踪另加 `reactive-trace`。`.vue` 方言由 `nana-ui-sfc` 在 `build.rs` 里编译。示例：`crates/nana-ui/examples/reactive-counter.rs`（用 `view!` 写），`examples/reactive-sfc`（用 `.vue` 文件写）。
+**状态：不稳定。** 稳定前不进入公开合同。开关：`nana-ui` 的 `reactive-view`；模板宏 `view!`、`css!`、`stylesheet!` 另加 `view-macro`；追踪另加 `reactive-trace`。示例：`crates/nana-ui/examples/reactive-counter.rs`（用 `view!` 写），`examples/reactive-sfc`（用 `.vue` 文件写）。
+
+**两种一级写法，一条路径。** `view!` 模板和 Rust 函数写法都是正式写法，能力对齐：`view!` 展开出来就是 Rust 写法的那些调用（`column().gap(8)`、`.class(..)`、`each(..)`……），两者没有各自的实现。每个模板构造都有同名的 Rust 方法，对应表见 [`view!` 与 Rust 写法](#view-与-rust-写法)。`tests/view_macro.rs` 把同一个页面分别写成模板、tuple 子节点和 `.with` 块三种形式，挂载后逐节点相同，信号变化后也相同；样式同样一份写成 `<style>`、一份写成 `stylesheet!`，布局相同。模板贴近 Vue，适合成段的界面；Rust 写法是普通 Rust，能写 `for` / `if`，有完整的补全和类型检查，类名写错是编译错误。`.vue` 文件属于[高级用法](#高级用法vue-方言)。
 
 ## 写法
 
@@ -31,6 +33,23 @@ fn todos(list: Signal<Vec<Todo>>, draft: Signal<String>) -> impl IntoView {
 
 let view = cx.mount_view(parent, counter)?;                    // 或 mount_view_root(document, …)
 ```
+
+同一个 `todos` 写成模板（展开结果和上面相同）：
+
+```rust
+view! {
+    <Column gap=8>
+        <TextInput placeholder="新任务" v-model={draft} />
+        <Button disabled={draft.with(|d| d.is_empty())}>"添加"</Button>
+        <Text v-for={t in list} key={t.id}>{t.title}</Text>
+        <Text v-if={list.with(Vec::is_empty)}>"还没有任务"</Text>
+        <Text v-else>"有任务"</Text>
+    </Column>
+}
+```
+
+- **子节点**：写死的几个用 tuple，`.children((a, b))`，零成本；需要 `for`、`if`、`let` 时用块，`.with(|c| { c.add(a); … })`，每个子节点装箱一次。块在建树时只跑一次，里面的 `for` / `if` 决定的是建树那一刻的结构，不跟着数据变；要跟着数据变，用 `each` / `when`。
+- **从数据出发**：`list.each(key, row)` 就是 `each(list, key, row)`，`cond.then_show(|| v).otherwise(|| w)` 就是 `when(cond, || v).otherwise(|| w)`（不叫 `show`：Vue 的 `v-show` 保留节点，对应的是 `.visible(..)`）。
 
 - **属性**接受常量、`Signal<T>` / `Computed<T>`、`Fn() -> T` 闭包三种。常量在建节点时写进去，之后没有任何成本。信号直接绑定，只存一条"信号 id + 字段写入函数"的记录，没有闭包。闭包装箱一次。
 - **控件属性**由 `view/controls.rs` 里的 `props!` 宏按字段生成 setter（`button(..).disabled(..)`、`slider(..).value(..)`），每个 setter 对应一个 `FieldWrite`。任意控件都能用 `widget(component).bind(|c| …)` 和 `.on::<E>(|e| …)`，自定义字段写 `FieldWrite` 后用 `.prop::<T, W>(..)`。
@@ -97,15 +116,28 @@ view! {
     </style>
     <Column class="todos" class:empty={list.with(Vec::is_empty)} gap=8>…</Column>
 }
+
+// Rust 写法：同一份 CSS 放进 stylesheet!，类是常量
+stylesheet! {
+    mod todo_styles;
+    .todos { opacity: 1; transition: opacity 120ms ease-out; }
+    .todos.empty { opacity: 0.6; font-size: "1.1em"; }
+}
+column()
+    .gap(8)
+    .class(todo_styles::todos)
+    .class_when(todo_styles::empty, move || list.with(Vec::is_empty))
 ```
+
+- **一条路径**：模板的 `<style>` 编译成一张 `Sheet`，`class="a"`、`class:a={条件}` 展开成 `.class(..)`、`.class_when(..)`，和 `stylesheet!` 加手写调用完全一样。`stylesheet!` 为每个类生成一个 `Class` 常量（`-` 换成 `_`，`.todo-item` 是 `todo_styles::todo_item`），类名写错就是编译错误。`mod x;` 的常量只给父模块用，`pub mod x;` 是公开的。一个元素的类来自同一张表。
 
 - **`view!` 里的 CSS 是 Rust token**：`<style>` 放在模板最前面，里面直接写 CSS。空格按 token 在源码里的位置还原，所以 `.a.b`（复合）和 `.a .b`（后代）不会混。Rust 词法写不出的值放进双引号，编译时去掉引号原样拼接：`em` / `ex` 单位（`"1.5em"`；`1em` 会被 rustc 当成缺指数的浮点数，在宏展开之前就报 `expected at least one digit in exponent`）、数字后紧跟 `e` 的十六进制颜色（`"#9ecafe"`）。CSS 里的单引号字符串改用双引号；`//` 只能写在引号里。`url("…")` 里的字符串和选择器里的字符串保留引号。
 - **检查**：每条警告都落在它说的那段 CSS 上：不支持的选择器和 at-rule 落在选择器上，Style Model 没有对应字段的声明落在那条声明上，没有规则用到的类落在元素的 `class` 属性上。`view!` 里是那个 token（编辑器里的波浪线就在那里），`.vue` 里是文件的行列。
 - `.vue` 的 `<style>` 是原样的 CSS 文本，不受上面的词法限制；两种写法编译出同样的补丁。
 
 - **写法**：`class="a b"` 是固定的类；`class:名字="条件"` 是条件为真时才有的类（Rust 表达式写不出 Vue 的 `{ active: x }` 对象语法，所以用 Svelte 的写法）。函数 API 用 `.css(css! { padding: 12px; opacity: 0.8 })` 给单个元素写一段声明，写法规则和 `<style>` 相同。
-- **编译**：`.a` 和 `.a.b` 这样的类选择器，按 `!important`、特异性、源码顺序排好级联。每条规则用 `nana-ui-css` 把声明施加到一份默认布局上，改动了的 Style Model 字段就是这条规则的补丁，以 JSON 数据嵌进程序；`var()` 按样式表自己的自定义属性在构建时求值。每个元素得到一张"补丁 + 需要哪些条件类"的表。
-- **运行时**：不解析 CSS，不匹配选择器，`nana-ui-runtime` 里也没有 CSS 代码。每个模板位置按"基础布局 + 当前生效的条件类"合成一次，结果是一份共享的布局，之后同一位置的所有实例（包括 `v-for` 的每一行）都只拿它的引用。条件类的条件是普通绑定，变化时换一份合成结果。
+- **编译**：`.a` 和 `.a.b` 这样的类选择器，按 `!important`、特异性、源码顺序排好级联。每条规则用 `nana-ui-css` 把声明施加到一份默认布局上，改动了的 Style Model 字段就是这条规则的补丁，以 JSON 数据嵌进程序；`var()` 按样式表自己的自定义属性在构建时求值。样式表成为一张按级联顺序排好的"需要哪些类 → 补丁"的表。
+- **运行时**：不解析 CSS，`nana-ui-runtime` 里也没有 CSS 代码。一个元素第一次以某组"固定类 + 条件类"出现时，样式表从表里挑出这组类可能命中的规则（比较的是类的编号），之后同一组类直接复用。再按"基础布局 + 当前生效的条件类"合成一次，结果是一份共享的布局，同一组类的所有实例（包括 `v-for` 的每一行）都只拿它的引用。条件类的条件是普通绑定，变化时换一份合成结果。
 - **`transition`**：编成隐式动画（`El::animate`）。绑定改变了 `opacity`、`transform`、`width`、`height` 或 `background` 时，在合成器轨道上从当前显示的值播到新值，逻辑样式直接取新值。只认元素固定类上的 `transition`。
 - **不编译、会报警告的**：其他选择器（标签、id、组合器、属性）、`:hover` / `:focus` / `:active`、`@media`、`@keyframes` 和 `animation`、`@font-face`、伪元素、Style Model 里没有对应字段的声明、元素上没有规则用到的类、绑定式的 `:class`。
 - **已知取舍**：补丁只记录"和默认值不同"的字段，所以把属性写回默认值（例如 `position: static`）不会覆盖元素原来的非默认值；颜色在构建时按亮色主题求值，跟随主题切换的颜色请用组件自带的语义色。
@@ -148,9 +180,9 @@ widget(DesktopShell::from_model(model).title("Gallery"))
 - **分段选择**：`segmented().children((segmented_option("面捕").selected(..).on_select(..), …))`（`view/selection.rs`）。选项就是控件的子节点，`label`、`disabled`、`selected` 可绑定；控件按子节点和 `selected` 标记登记选项与选中项（`assemble_segmented_control`），任一选项的绑定变了也会重新登记。用户选中一项时，控件先发 `SegmentedSelectionRequested`，再在那一项上发 `SegmentedOptionChosen`，`.on_select` 听的是后者。要隐藏的选项仍留作子节点，同时把它禁用。
 - **设置行**：`settings_row(label).hint(..).divided(..).control(switch(""))`。行自己建标签和说明（`assemble_settings_row`），结构和 `mount_settings_leaf_row` 建出的行逐节点相同；`label`、`hint`、`divided`、`stacked`、`first_in_group`、`last_in_group` 都可绑定，`.visible(..)` 控制显隐。分组里哪一行是首行、末行，由应用按自己的数据算好再绑定。
 
-## `view!` 模板
+## `view!` 与 Rust 写法
 
-`view-macro` feature 提供 `view!`（`nana_ui::runtime::view!`）。它是 Vue 模板写法的对应，展开结果就是上面那些函数调用，不增加任何运行时概念。宏在独立的 proc-macro crate `nana-ui-view-macros` 里，不开 feature 就不参与编译。
+`view-macro` feature 提供 `view!`（`nana_ui::runtime::view!`）。它是 Vue 模板写法的对应，展开结果就是 Rust 写法的调用，不增加任何运行时概念。宏在独立的 proc-macro crate `nana-ui-view-macros` 里，不开 feature 就不参与编译。
 
 ```rust
 fn todos() -> impl IntoView {
@@ -169,7 +201,7 @@ fn todos() -> impl IntoView {
 }
 ```
 
-| 模板 | 展开 |
+| 模板 | Rust 写法（也就是展开结果） |
 | --- | --- |
 | `<Column gap=8>…</Column>` / `<Row>` | `column().gap(8_f32).children((…))` / `row()…`；数字字面量带上类型后缀，表达式原样传入 |
 | `<Text>"计数 {count}"</Text>` | `text!("计数 {count}")`；没有 `{…}` 的字符串是 `text("…")` |
@@ -182,15 +214,18 @@ fn todos() -> impl IntoView {
 | `name={\|\| …}` | 闭包原样传入 |
 | `@activate={表达式}` | `.on_activate(move \|\| { 表达式; })`；`@activate={add}` 直接传函数值 |
 | `on:RangeChanged={\|e: &RangeChanged\| …}` | `.on::<RangeChanged>(…)` |
-| `v-if` / `v-else-if` / `v-else`（兄弟节点） | `when(…).otherwise(…)`，`v-else-if` 嵌套在 `otherwise` 里 |
-| `v-for={pat in items} key={…}` | `each(items, move \|item\| { let pat = item; key }, move \|pat\| 元素)` |
+| `v-if` / `v-else-if` / `v-else`（兄弟节点） | `when(…).otherwise(…)`，`v-else-if` 嵌套在 `otherwise` 里；手写也可以 `cond.then_show(…)` |
+| `v-for={pat in items} key={…}` | `each(items, move \|item\| { let pat = item; key }, move \|pat\| 元素)`；手写也可以 `items.each(key, row)` |
 | `v-show={x}`、`v-model={sig}`、`key="x"` | `.visible(x)`、`.model(sig)`、`.key("x")` |
+| `<style>…</style>`、`class="a"`、`class:a={c}` | `stylesheet! { mod s; … }`、`.class(s::a)`、`.class_when(s::a, c)` |
 
 多于 12 个子节点时，宏会嵌套成多层 tuple。写错的地方会被准确指出，例如：未闭合的标签、`</Row>` 关了 `<Column>`、`v-else` 前面没有 `v-if`、`v-for` 没写 `key`、未知指令、`v-if` 和 `v-for` 写在同一个元素上。`tests/view_macro.rs` 把同一个页面用模板和手写函数调用各写一遍，挂载后的保留树逐节点相同，改完信号 flush 之后也相同。
 
-在宏里能静态区分的只有三类：常量（字面量）、直接值或信号（路径、字段）、闭包（其他表达式）。"静态依赖"那一类需要知道哪个标识符是信号，只有能看到整段脚本的 [`.vue` 方言](#vue-方言)编译器才能做到。
+在宏里能静态区分的只有三类：常量（字面量）、直接值或信号（路径、字段）、闭包（其他表达式）。"静态依赖"那一类需要知道哪个标识符是信号，只有能看到整段脚本的 [`.vue` 方言](#高级用法vue-方言)编译器才能做到。
 
-## `.vue` 方言
+## 高级用法：`.vue` 方言
+
+日常写视图用 `view!` 或 Rust 写法。`.vue` 文件适合两种情况：从 Vue 迁移、想逐文件对照着改；或者希望模板、脚本、样式分在独立文件里。它编译出来的代码和 `view!` 走同一个代码生成器、同一套 Rust 调用，能力上没有多出来的东西；多出来的是编译器能看到整段脚本，所以能做下面的依赖分析和常量折叠，代价是脚本和模板表达式没有 rust-analyzer 支持。
 
 视图也可以写成 `.vue` 文件：模板是 Vue 语法，`<script setup lang="rust">` 里写 Rust。`nana-ui-sfc` 在构建期把它们编译成普通的 Rust 函数，模板部分和 `view!` 共用 `nana-ui-view-codegen` 这一个代码生成器。
 
