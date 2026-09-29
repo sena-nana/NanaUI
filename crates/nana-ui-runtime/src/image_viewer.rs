@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ButtonKind, ControlSize, Icon, LengthSpec, OverflowSpec, PaintTransform, PositionSpec,
-    SemanticColorRole, ThemeMetrics,
+    ButtonKind, ControlSize, Icon, JustifySpec, LengthSpec, OverflowSpec, PaintTransform,
+    PositionSpec, RadiusTier, SemanticColorRole, ThemeMetrics,
 };
 
 use crate::overlay_surfaces::modal_root_style;
-use crate::view_components::{Activate, IconButton, project_common};
+use crate::view_components::{Activate, IconButton, Stack, Text, project_common};
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, CustomRenderNode, Entity,
     FrameworkError, HOST_TEXTURE_RENDERER, InteractionState, LayoutBox, MutationQueue, NodeKind,
@@ -27,14 +27,56 @@ const CLOSE_INSET: f32 = nana_ui_core::space::XXL;
 const METADATA_GAP: f32 = nana_ui_core::space::LG;
 const METADATA_HEIGHT: f32 = nana_ui_core::type_scale::LINE;
 const COVERAGE: f32 = 0.75;
+/// How far the navigation sits above the foot of the stage.
+const NAVIGATION_INSET: f32 = nana_ui_core::space::XL;
 
 /// Close, outside (scrim), and surface interaction are distinct.
 /// Mounted viewers dismiss through the shared overlay lifecycle on Escape.
+///
+/// `Previous` and `Next` ask for the neighbouring image of the gallery the
+/// viewer shows ([`ImageViewer::gallery`]); the application loads it and
+/// writes the new position back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageViewerEvent {
     Close,
     Outside,
     Interaction,
+    Previous,
+    Next,
+}
+
+/// Where the image on screen sits in the gallery the application shows:
+/// `index` (from zero) of `count`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageViewerPosition {
+    pub index: usize,
+    pub count: usize,
+}
+
+impl ImageViewerPosition {
+    pub const fn new(index: usize, count: usize) -> Self {
+        Self { index, count }
+    }
+
+    /// Whether there is an image before this one.
+    pub const fn has_previous(self) -> bool {
+        self.index > 0 && self.index < self.count
+    }
+
+    /// Whether there is an image after this one.
+    pub const fn has_next(self) -> bool {
+        self.index + 1 < self.count
+    }
+
+    /// "3 / 9": the image's place, counted from one.
+    pub fn counter(self) -> String {
+        format!("{} / {}", self.index + 1, self.count)
+    }
+
+    /// A gallery of one image has nowhere to go.
+    const fn navigates(self) -> bool {
+        self.count > 1
+    }
 }
 
 /// Application-owned visual content. NanaUI never stores pixels or codecs.
@@ -161,11 +203,17 @@ impl ImageViewerGeometry {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ImageViewerControls {
     pub(crate) close: Option<StableNodeId>,
+    /// The row that centres the navigation over the foot of the stage.
+    pub(crate) navigation: Option<StableNodeId>,
+    pub(crate) previous: Option<StableNodeId>,
+    pub(crate) counter: Option<StableNodeId>,
+    pub(crate) next: Option<StableNodeId>,
 }
 
 impl ImageViewerControls {
+    /// The viewer's own children among them, in their order.
     fn ids(self) -> impl Iterator<Item = StableNodeId> {
-        [self.close].into_iter().flatten()
+        [self.navigation, self.close].into_iter().flatten()
     }
 }
 
@@ -184,8 +232,16 @@ pub struct ImageViewer {
     pub zoom: f32,
     pub offset: ImageViewerOffset,
     pub dragging: Option<ImageViewerDrag>,
+    /// The gallery this image belongs to. With more than one image the
+    /// viewer shows previous / next controls and the image's place ("3 / 9"),
+    /// and ← / → ask for the neighbouring image.
+    pub gallery: Option<ImageViewerPosition>,
     /// Accessible name of the close control.
     pub close_label: Arc<str>,
+    /// Accessible name of the previous-image control.
+    pub previous_label: Arc<str>,
+    /// Accessible name of the next-image control.
+    pub next_label: Arc<str>,
     pub style: NodeStyle,
     pub(crate) controls: ImageViewerControls,
 }
@@ -200,7 +256,10 @@ impl ImageViewer {
             zoom: ZOOM_MIN,
             offset: ImageViewerOffset::ZERO,
             dragging: None,
+            gallery: None,
             close_label: Arc::from("关闭"),
+            previous_label: Arc::from("上一张"),
+            next_label: Arc::from("下一张"),
             style: overlay_style(),
             controls: ImageViewerControls::default(),
         }
@@ -221,9 +280,49 @@ impl ImageViewer {
         self
     }
 
+    /// Show image `index` (from zero) of a gallery of `count`.
+    pub fn gallery(mut self, index: usize, count: usize) -> Self {
+        self.gallery = Some(ImageViewerPosition::new(index, count));
+        self
+    }
+
     pub fn close_label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.close_label = label.into();
         self
+    }
+
+    pub fn previous_label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.previous_label = label.into();
+        self
+    }
+
+    pub fn next_label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.next_label = label.into();
+        self
+    }
+
+    /// The gallery, when it has somewhere to go.
+    fn navigation(&self) -> Option<ImageViewerPosition> {
+        self.gallery.filter(|gallery| gallery.navigates())
+    }
+
+    /// Height of the caption row under the stage, with the gap above it.
+    fn caption_band(&self) -> f32 {
+        if self.name.is_some() || self.metadata.is_some() {
+            METADATA_GAP + METADATA_HEIGHT
+        } else {
+            0.0
+        }
+    }
+
+    /// The event asking for the neighbouring image, if there is one.
+    fn step(&self, forward: bool) -> Option<ImageViewerEvent> {
+        let gallery = self.navigation()?;
+        if forward {
+            gallery.has_next().then_some(ImageViewerEvent::Next)
+        } else {
+            gallery.has_previous().then_some(ImageViewerEvent::Previous)
+        }
     }
 
     pub fn style(mut self, style: NodeStyle) -> Self {
@@ -245,11 +344,7 @@ impl ImageViewer {
         );
         let has_name = self.name.is_some();
         let has_metadata = self.metadata.is_some();
-        let band = if has_name || has_metadata {
-            METADATA_GAP + METADATA_HEIGHT
-        } else {
-            0.0
-        };
+        let band = self.caption_band();
         let stage = LayoutBox {
             x: surface.x,
             y: surface.y,
@@ -478,6 +573,7 @@ impl ComponentView for ImageViewer {
             AccessibilityState {
                 role: AccessibilityRole::Dialog,
                 label,
+                value: self.navigation().map(|gallery| gallery.counter().into()),
                 description: self.metadata.clone(),
                 modal: true,
                 ..AccessibilityState::default()
@@ -499,10 +595,55 @@ fn close_control(label: Arc<str>) -> IconButton {
     button
 }
 
+fn step_control(icon: Icon, label: Arc<str>) -> IconButton {
+    IconButton::new(icon, label)
+        .kind(ButtonKind::Text)
+        .size(ControlSize::Small)
+}
+
+fn navigation_bottom(caption_band: f32) -> f32 {
+    SURFACE_PAD_BOTTOM + caption_band + NAVIGATION_INSET
+}
+
+/// A row as wide as the stage, over its foot, that centres the navigation.
+/// It takes no pointer itself: only the controls on it do.
+fn navigation_row(caption_band: f32) -> Stack {
+    Stack::row(0.0).with_layout(|layout| {
+        layout.position = PositionSpec::Absolute;
+        layout.offset_left = Some(LengthSpec::Px(SURFACE_PAD_LEFT));
+        layout.offset_right = Some(LengthSpec::Px(SURFACE_PAD_RIGHT));
+        layout.offset_bottom = Some(LengthSpec::Px(navigation_bottom(caption_band)));
+        layout.width = None;
+        layout.justify_content = JustifySpec::Center;
+    })
+}
+
+/// The surface the previous / next controls and the counter sit on, so they
+/// read over any image.
+fn navigation_pill() -> Stack {
+    let mut pill = Stack::row(nana_ui_core::space::XS).with_layout(|layout| {
+        let pad = Some(LengthSpec::Px(nana_ui_core::space::XXS));
+        layout.padding_left = pad;
+        layout.padding_right = pad;
+        layout.padding_top = pad;
+        layout.padding_bottom = pad;
+        layout.border_width = Some(nana_ui_core::HAIRLINE);
+    });
+    let style = pill.style_mut();
+    style.background = Some(SemanticColorRole::Surface);
+    style.border = Some(SemanticColorRole::BorderSoft);
+    style.foreground = Some(SemanticColorRole::Text);
+    style.radius = Some(RadiusTier::Md);
+    pill
+}
+
 impl AppContext {
     /// Builds (or refreshes) the controls of an [`ImageViewer`]: the close
-    /// button, placed where [`ImageViewerGeometry::close`] is and kept after
-    /// every other child, so the content never paints or hit-tests above it.
+    /// button, placed where [`ImageViewerGeometry::close`] is, and — for a
+    /// [`ImageViewer::gallery`] of more than one image — previous / next
+    /// buttons around the image's place ("3 / 9") over the foot of the
+    /// stage. They are kept after every other child, so the content never
+    /// paints or hit-tests above them.
     ///
     /// Runs after each write to the viewer and when a view builds one; a
     /// viewer made with `create_component` calls it once itself. Idempotent,
@@ -517,38 +658,114 @@ impl AppContext {
             .node(viewer.stable_id())
             .ok_or(FrameworkError::MissingView(viewer.stable_id()))?
             .document;
-        let (controls, close_label) = self.read(viewer, |viewer| {
-            (viewer.controls, Arc::clone(&viewer.close_label))
-        })?;
-        let existing = controls
+        let snapshot = self.read(viewer, Clone::clone)?;
+        let mut controls = snapshot.controls;
+        let created = !controls
             .close
-            .filter(|id| self.world().contains(*id))
-            .map(Entity::<IconButton>::from_stable_id);
-        let created = existing.is_none();
-        let close = match existing {
-            Some(close) => close,
-            None => {
-                let close = self
-                    .create_detached_component(document, close_control(Arc::clone(&close_label)))?;
+            .is_some_and(|close| self.world().contains(close));
+        if created {
+            let close = self.create_detached_component(
+                document,
+                close_control(Arc::clone(&snapshot.close_label)),
+            )?;
+            let navigation =
+                self.create_detached_component(document, navigation_row(snapshot.caption_band()))?;
+            let pill = self.create_detached_component(document, navigation_pill())?;
+            let previous = self.create_detached_component(
+                document,
+                step_control(Icon::ArrowLeft, Arc::clone(&snapshot.previous_label)),
+            )?;
+            let counter = self.create_detached_component(
+                document,
+                Text::new("").font_size(nana_ui_core::type_scale::META),
+            )?;
+            let next = self.create_detached_component(
+                document,
+                step_control(Icon::ArrowRight, Arc::clone(&snapshot.next_label)),
+            )?;
+            self.append_child(pill, previous)?;
+            self.append_child(pill, counter)?;
+            self.append_child(pill, next)?;
+            self.append_child(navigation, pill)?;
+            self.observe(
+                close,
+                viewer,
+                |viewer: &mut ImageViewer, _: &Activate, cx| {
+                    viewer.dragging = None;
+                    cx.emit(ImageViewerEvent::Close);
+                },
+            )?;
+            for (button, forward) in [(previous, false), (next, true)] {
                 self.observe(
-                    close,
+                    button,
                     viewer,
-                    |viewer: &mut ImageViewer, _: &Activate, cx| {
-                        viewer.dragging = None;
-                        cx.emit(ImageViewerEvent::Close);
+                    move |viewer: &mut ImageViewer, _: &Activate, cx| {
+                        if let Some(event) = viewer.step(forward) {
+                            cx.emit(event);
+                        }
                     },
                 )?;
-                let id = close.stable_id();
-                self.update_component(viewer, |viewer, _| viewer.controls.close = Some(id))?;
-                close
             }
-        };
-        if !created && self.read(close, |button| button.label != close_label)? {
-            self.update_component(close, |button, _| button.label = close_label)?;
+            controls = ImageViewerControls {
+                close: Some(close.stable_id()),
+                navigation: Some(navigation.stable_id()),
+                previous: Some(previous.stable_id()),
+                counter: Some(counter.stable_id()),
+                next: Some(next.stable_id()),
+            };
+            self.update_component(viewer, |viewer, _| viewer.controls = controls)?;
+        }
+        let button = |id: Option<StableNodeId>| id.map(Entity::<IconButton>::from_stable_id);
+        if let Some(close) = button(controls.close) {
+            let label = Arc::clone(&snapshot.close_label);
+            self.update_component(close, |close, _| close.label = label)?;
+        }
+        let gallery = snapshot.navigation();
+        if let Some(navigation) = controls.navigation.map(Entity::<Stack>::from_stable_id) {
+            let hidden = gallery.is_none();
+            let bottom = Some(LengthSpec::Px(navigation_bottom(snapshot.caption_band())));
+            self.update_component(navigation, |row, _| {
+                let layout = &row.style_ref().layout;
+                if layout.hidden != hidden || layout.offset_bottom != bottom {
+                    let layout = Arc::make_mut(&mut row.style_mut().layout);
+                    layout.hidden = hidden;
+                    layout.offset_bottom = bottom;
+                }
+            })?;
+        }
+        let steps = [
+            (
+                controls.previous,
+                &snapshot.previous_label,
+                gallery.is_some_and(ImageViewerPosition::has_previous),
+            ),
+            (
+                controls.next,
+                &snapshot.next_label,
+                gallery.is_some_and(ImageViewerPosition::has_next),
+            ),
+        ];
+        for (id, label, enabled) in steps {
+            if let Some(step) = button(id) {
+                let label = Arc::clone(label);
+                self.update_component(step, |step, _| {
+                    step.label = label;
+                    step.disabled = !enabled;
+                })?;
+            }
+        }
+        if let Some(counter) = controls.counter.map(Entity::<Text>::from_stable_id) {
+            let value = gallery
+                .map(ImageViewerPosition::counter)
+                .unwrap_or_default();
+            self.update_component(counter, |counter, _| {
+                if counter.value != value {
+                    counter.value = value;
+                }
+            })?;
         }
         // Content placed after the controls would cover them: move the
         // controls back to the end, in their order.
-        let controls = self.read(viewer, |viewer| viewer.controls)?;
         let children = self
             .world()
             .node(viewer.stable_id())
@@ -557,10 +774,33 @@ impl AppContext {
         let wanted = controls.ids().collect::<Vec<_>>();
         if !children.ends_with(&wanted) {
             for id in wanted {
-                self.append_child(viewer, Entity::<IconButton>::from_stable_id(id))?;
+                self.attach_child(viewer.stable_id(), id)?;
             }
         }
         Ok(created)
+    }
+
+    /// ← / → on a focused viewer, or on a control inside one: ask for the
+    /// neighbouring image of its gallery. Answers whether it asked.
+    pub(crate) fn step_focused_image_viewer(
+        &mut self,
+        document: crate::DocumentId,
+        forward: bool,
+    ) -> Result<bool, FrameworkError> {
+        let mut current = self.world().focused(document);
+        while let Some(id) = current {
+            if let Some(viewer) = self.view_entity::<ImageViewer>(id) {
+                return self.update_component(viewer, |viewer, cx| match viewer.step(forward) {
+                    Some(event) => {
+                        cx.emit(event);
+                        true
+                    }
+                    None => false,
+                });
+            }
+            current = self.world().parent_id(id);
+        }
+        Ok(false)
     }
 
     pub fn image_viewer_pointer_down(
@@ -1089,9 +1329,13 @@ mod tests {
         // Content that arrives after the viewer assembled its controls.
         context.append_child(viewer, cover).unwrap();
         let close = close_control(&context, viewer);
+        let navigation = context
+            .read(viewer, |viewer| viewer.controls.navigation)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             context.world().node(viewer.stable_id()).unwrap().children,
-            [cover.stable_id(), close]
+            [cover.stable_id(), navigation, close]
         );
         context
             .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
@@ -1121,6 +1365,109 @@ mod tests {
             .unwrap();
         assert!(context.activate_node(close).unwrap());
         assert_eq!(*events.lock().unwrap(), [ImageViewerEvent::Close]);
+    }
+
+    /// A gallery of more than one image shows previous / next controls and
+    /// the image's place; each control asks for its neighbour and is off at
+    /// the end it points past.
+    #[test]
+    fn a_gallery_shows_named_previous_and_next_controls_and_the_place() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let viewer = context
+            .create_component(document, ImageViewer::new(ImageViewerContent::None))
+            .unwrap();
+        context.assemble_image_viewer(viewer).unwrap();
+        let controls = context.read(viewer, |viewer| viewer.controls).unwrap();
+        let (navigation, previous, counter, next) = (
+            controls.navigation.unwrap(),
+            controls.previous.unwrap(),
+            controls.counter.unwrap(),
+            controls.next.unwrap(),
+        );
+        let hidden = |context: &AppContext| {
+            context
+                .world()
+                .node_style(navigation)
+                .unwrap()
+                .layout
+                .hidden
+        };
+        // No gallery, then a gallery of one: nowhere to go.
+        assert!(hidden(&context));
+        context
+            .update_component(viewer, |viewer, _| {
+                viewer.gallery = Some(ImageViewerPosition::new(0, 1))
+            })
+            .unwrap();
+        assert!(hidden(&context));
+
+        context
+            .update_component(viewer, |viewer, _| {
+                viewer.gallery = Some(ImageViewerPosition::new(2, 9))
+            })
+            .unwrap();
+        assert!(!hidden(&context));
+        assert_eq!(context.world().text(counter), Some("3 / 9"));
+        let accessibility = |id| context.world().accessibility(id).unwrap().clone();
+        assert_eq!(accessibility(previous).label.as_deref(), Some("上一张"));
+        assert_eq!(accessibility(next).label.as_deref(), Some("下一张"));
+        assert_eq!(
+            accessibility(viewer.stable_id()).value.as_deref(),
+            Some("3 / 9")
+        );
+        // The controls stay after the content, over it.
+        assert_eq!(
+            context.world().node(viewer.stable_id()).unwrap().children,
+            [navigation, controls.close.unwrap()]
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&events);
+        context
+            .on(viewer, move |_viewer, event: &ImageViewerEvent, _cx| {
+                observed.lock().unwrap().push(*event);
+            })
+            .unwrap();
+        assert!(context.activate_node(previous).unwrap());
+        assert!(context.activate_node(next).unwrap());
+        assert_eq!(
+            *events.lock().unwrap(),
+            [ImageViewerEvent::Previous, ImageViewerEvent::Next]
+        );
+
+        let disabled =
+            |context: &AppContext, id| context.world().accessibility(id).unwrap().disabled;
+        context
+            .update_component(viewer, |viewer, _| {
+                viewer.gallery = Some(ImageViewerPosition::new(0, 9))
+            })
+            .unwrap();
+        assert!(disabled(&context, previous) && !disabled(&context, next));
+        context
+            .update_component(viewer, |viewer, _| {
+                viewer.gallery = Some(ImageViewerPosition::new(8, 9))
+            })
+            .unwrap();
+        assert!(!disabled(&context, previous) && disabled(&context, next));
+        assert_eq!(context.world().text(counter), Some("9 / 9"));
+
+        // Over the foot of the stage, above the caption row.
+        context
+            .update_component(viewer, |viewer, _| viewer.name = Some("图".into()))
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        let bounds = context.world().layout_box(viewer.stable_id()).unwrap();
+        let stage = context
+            .read(viewer, |view| {
+                view.geometry(bounds, context.world().theme_metrics()).stage
+            })
+            .unwrap();
+        let row = context.world().layout_box(navigation).unwrap();
+        assert!(row.y + row.height <= stage.y + stage.height);
+        assert!(row.y >= stage.y);
     }
 
     #[test]

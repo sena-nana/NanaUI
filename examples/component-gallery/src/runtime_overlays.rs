@@ -181,7 +181,11 @@ impl GalleryOverlaysRuntime {
                             ImageViewerEvent::Outside => {
                                 GalleryMessage::RequestImageViewerClose(DialogCloseTrigger::Outside)
                             }
-                            ImageViewerEvent::Interaction => GalleryMessage::OverlayInteraction,
+                            // One preview, no gallery: the viewer never asks for a
+                            // neighbour.
+                            ImageViewerEvent::Interaction
+                            | ImageViewerEvent::Previous
+                            | ImageViewerEvent::Next => GalleryMessage::OverlayInteraction,
                         }));
                     with_refs(view, overlay)
                 })?;

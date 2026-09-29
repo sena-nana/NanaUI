@@ -914,6 +914,19 @@ impl AppContext {
         {
             return Ok(true);
         }
+        #[cfg(feature = "image-viewer")]
+        {
+            let step = match key {
+                "ArrowLeft" => Some(false),
+                "ArrowRight" => Some(true),
+                _ => None,
+            };
+            if let Some(forward) = step
+                && self.step_focused_image_viewer(document, forward)?
+            {
+                return Ok(true);
+            }
+        }
         #[cfg(feature = "graph-canvas")]
         {
             let graph_adjustment = match key {

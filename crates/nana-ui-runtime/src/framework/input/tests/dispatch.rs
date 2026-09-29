@@ -6116,3 +6116,60 @@ fn hover_wheel_scrolls_without_editor_focus() {
     );
     assert_eq!(context.world().text_hover_scroll(node), 1);
 }
+
+/// ← / → on a viewer that shows a gallery ask for the neighbouring image,
+/// from the viewer or from a control inside it; at an end there is nowhere
+/// to go and the key passes on.
+#[cfg(feature = "image-viewer")]
+#[test]
+fn arrow_keys_step_through_an_image_viewer_gallery() {
+    use crate::{ImageViewer, ImageViewerContent, ImageViewerEvent};
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let viewer = context
+        .create_component(
+            document,
+            ImageViewer::new(ImageViewerContent::None).gallery(0, 3),
+        )
+        .unwrap();
+    context.assemble_image_viewer(viewer).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&events);
+    context
+        .on(viewer, move |_viewer, event: &ImageViewerEvent, _cx| {
+            observed.lock().unwrap().push(*event);
+        })
+        .unwrap();
+    assert!(context.focus_node(document, viewer.stable_id()).unwrap());
+    let mut adapter = TestInput::default();
+    let mut press = |context: &mut AppContext, key: &str| {
+        adapter
+            .dispatch(context, document, &plain_key(key))
+            .unwrap()
+            .handled
+    };
+    // The first image: nothing before it.
+    assert!(!press(&mut context, "ArrowLeft"));
+    assert!(press(&mut context, "ArrowRight"));
+    context
+        .update_component(viewer, |viewer, _| {
+            viewer.gallery = Some(crate::ImageViewerPosition::new(2, 3))
+        })
+        .unwrap();
+    let close = context
+        .world()
+        .node(viewer.stable_id())
+        .unwrap()
+        .children
+        .last()
+        .copied()
+        .unwrap();
+    assert!(context.focus_node(document, close).unwrap());
+    assert!(press(&mut context, "ArrowLeft"));
+    // The last image: nothing after it.
+    assert!(!press(&mut context, "ArrowRight"));
+    assert_eq!(
+        *events.lock().unwrap(),
+        [ImageViewerEvent::Next, ImageViewerEvent::Previous]
+    );
+}

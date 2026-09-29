@@ -232,7 +232,7 @@ pub use hover_card::HoverCard;
 #[cfg(feature = "image-viewer")]
 pub use image_viewer::{
     ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent, ImageViewerGeometry,
-    ImageViewerHit, ImageViewerOffset, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
+    ImageViewerHit, ImageViewerOffset, ImageViewerPosition, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
 };
 pub use key_layers::{
     ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,

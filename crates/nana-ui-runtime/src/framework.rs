@@ -3242,7 +3242,7 @@ impl AppContext {
             .map_err(|_| FrameworkError::ViewType(entity.id))
     }
 
-    pub(super) fn attach_child(
+    pub(crate) fn attach_child(
         &mut self,
         parent: StableNodeId,
         child: StableNodeId,
