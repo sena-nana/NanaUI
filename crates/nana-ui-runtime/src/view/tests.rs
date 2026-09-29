@@ -2406,6 +2406,39 @@ fn entity_refs_and_context_handlers_serve_code_that_works_by_hand() {
 }
 
 #[test]
+fn an_element_fills_its_entity_ref_and_its_node_refs_alike() {
+    let (mut cx, _, parent) = setup();
+    let refs = std::cell::Cell::new(None);
+    cx.mount_view(parent, || {
+        let (entity_first, node_first) = (entity_ref::<Button>(), node_ref());
+        let (node_second, entity_second) = (node_ref(), entity_ref::<Text>());
+        let anchor = node_ref();
+        refs.set(Some((
+            entity_first,
+            node_first,
+            node_second,
+            entity_second,
+            anchor,
+        )));
+        column().children((
+            button("按").entity_ref(entity_first).node_ref(node_first),
+            text("标题")
+                .node_ref(node_second)
+                .node_ref(anchor)
+                .entity_ref(entity_second),
+        ))
+    })
+    .unwrap();
+    let (entity_first, node_first, node_second, entity_second, anchor) = refs.get().unwrap();
+    let button = entity_first.get().expect("the entity ref").stable_id();
+    assert_eq!(node_first.get_untracked(), Some(button));
+    let label = entity_second.get().expect("the entity ref").stable_id();
+    assert_eq!(node_second.get_untracked(), Some(label));
+    assert_eq!(anchor.get_untracked(), Some(label));
+    assert_ne!(button, label);
+}
+
+#[test]
 fn with_refs_hands_back_resolved_entities_or_fails_whole() {
     let (mut cx, document, _) = setup();
     let (view, (label, [first, second])) = cx

@@ -650,7 +650,9 @@ impl<C: View> EntityRef<C> {
 pub struct El<C: ComponentView, K = ()> {
     component: C,
     key: Option<Cow<'static, str>>,
-    node_ref: Option<NodeRef>,
+    /// Every [`NodeRef`] (an [`EntityRef`]'s among them) to record the node
+    /// in once it is built.
+    node_refs: Vec<NodeRef>,
     bindings: NodeBindings<C>,
     events: Vec<EventInstall<C>>,
     /// Properties that animate to their new value when a binding changes
@@ -673,7 +675,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
     El {
         component,
         key: None,
-        node_ref: None,
+        node_refs: Vec::new(),
         bindings: NodeBindings::default(),
         events: Vec::new(),
         implicit: Vec::new(),
@@ -693,9 +695,11 @@ impl<C: ComponentView, K> El<C, K> {
     }
 
     /// Record this node's id in `node_ref` once it is built (Vue's template
-    /// `ref`), for [`on_mount`](super::on_mount) and event handlers.
+    /// `ref`), for [`on_mount`](super::on_mount) and event handlers. An
+    /// element can fill several: each `node_ref` / [`Self::entity_ref`] it is
+    /// given gets the node.
     pub fn node_ref(mut self, node_ref: NodeRef) -> Self {
-        self.node_ref = Some(node_ref);
+        self.node_refs.push(node_ref);
         self
     }
 
@@ -761,7 +765,8 @@ impl<C: ComponentView, K> El<C, K> {
         self
     }
 
-    /// Record the entity this element is built as in `entity_ref`.
+    /// Record the entity this element is built as in `entity_ref`, beside
+    /// any [`Self::node_ref`] it also fills.
     pub fn entity_ref(self, entity_ref: EntityRef<C>) -> Self {
         self.node_ref(entity_ref.node)
     }
@@ -792,7 +797,7 @@ impl<C: ComponentView, K> El<C, K> {
         El {
             component: self.component,
             key: self.key,
-            node_ref: self.node_ref,
+            node_refs: self.node_refs,
             bindings: self.bindings,
             events: self.events,
             implicit: self.implicit,
@@ -859,7 +864,7 @@ impl<C: ComponentView, K> El<C, K> {
         let El {
             mut component,
             key,
-            node_ref,
+            node_refs,
             mut bindings,
             events,
             mut implicit,
@@ -903,7 +908,7 @@ impl<C: ComponentView, K> El<C, K> {
             }
             return None;
         }
-        if let Some(node_ref) = node_ref {
+        for node_ref in node_refs {
             node_ref.set(Some(id));
         }
         if let Some(effect) = effect {
