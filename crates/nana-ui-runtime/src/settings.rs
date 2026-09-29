@@ -529,6 +529,7 @@ impl SettingsCollapsibleCard {
 impl ComponentView for SettingsCollapsibleCard {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::activate_settings_collapsible_card),
+        slot_assembler: Some(AppContext::assemble_settings_collapsible_card),
         ..crate::TypeBehavior::NONE
     };
 
@@ -856,6 +857,11 @@ impl AppearanceSection {
 }
 
 impl ComponentView for AppearanceSection {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(AppContext::assemble_appearance_section),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "appearance-section".into(),
@@ -916,6 +922,11 @@ impl AboutSection {
 }
 
 impl ComponentView for AboutSection {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(AppContext::assemble_about_section),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "about-section".into(),
@@ -995,6 +1006,11 @@ fn settings_sidebar_frame_style() -> NodeStyle {
 }
 
 impl ComponentView for SettingsSidebar {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(AppContext::assemble_settings_sidebar),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "settings-sidebar".into(),
@@ -1071,6 +1087,11 @@ impl SettingsPage {
 }
 
 impl ComponentView for SettingsPage {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(AppContext::assemble_settings_page),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "settings-page".into(),

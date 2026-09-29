@@ -2233,3 +2233,82 @@ fn markdown_in_a_view_gets_its_fence_children() {
     assert_eq!(shape(&cx, view.roots()[0]), shape(&cx, hand.stable_id()));
     assert!(!children(&cx, hand.stable_id()).is_empty());
 }
+
+#[test]
+fn settings_composites_assemble_in_a_view_as_by_hand() {
+    use crate::{
+        AboutMetadata, AboutSection, AppearanceSection, SettingsCollapsibleCard, SettingsPage,
+        SettingsSidebar,
+    };
+    use nana_ui_core::{AppearanceSettings, SettingsModel, SettingsState, SettingsTab, ThemeMode};
+    let (mut cx, document, _) = setup();
+    let model = SettingsModel::new("appearance", [SettingsTab::new("appearance", "外观")]).unwrap();
+    let state = SettingsState::new(&model);
+    let metadata = AboutMetadata::new("产品", "1.0.0");
+
+    let appearance = cx
+        .create_component(
+            document,
+            AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default()),
+        )
+        .unwrap();
+    cx.assemble_appearance_section(appearance).unwrap();
+    let about = cx
+        .create_component(document, AboutSection::new(metadata.clone()))
+        .unwrap();
+    cx.assemble_about_section(about).unwrap();
+    let sidebar = cx
+        .create_component(document, SettingsSidebar::new(model.clone(), state.clone()))
+        .unwrap();
+    cx.assemble_settings_sidebar(sidebar).unwrap();
+    let card = cx
+        .build(document, |ui| {
+            let summary = ui.detached(Text::new("摘要"));
+            let details = ui.detached(Text::new("详情"));
+            ui.child(
+                "card",
+                SettingsCollapsibleCard::new(true)
+                    .summary(summary.stable_id())
+                    .details(details.stable_id()),
+            )
+        })
+        .unwrap();
+    cx.assemble_settings_collapsible_card(card).unwrap();
+    let page = cx
+        .build(document, |ui| {
+            let content = ui.detached(Text::new("页面"));
+            ui.child(
+                "page",
+                SettingsPage::new(model.clone(), state.clone()).content(content.stable_id()),
+            )
+        })
+        .unwrap();
+    cx.assemble_settings_page(page).unwrap();
+
+    let views = cx
+        .mount_view_root(document, || {
+            (
+                widget(AppearanceSection::new(
+                    ThemeMode::Dark,
+                    AppearanceSettings::default(),
+                )),
+                widget(AboutSection::new(metadata.clone())),
+                widget(SettingsSidebar::new(model.clone(), state.clone())),
+                widget(SettingsCollapsibleCard::new(true))
+                    .summary(text("摘要"))
+                    .details(text("详情")),
+                widget(SettingsPage::new(model.clone(), state.clone())).content(text("页面")),
+            )
+        })
+        .unwrap();
+    for (view, hand) in views.roots().iter().zip([
+        appearance.stable_id(),
+        about.stable_id(),
+        sidebar.stable_id(),
+        card.stable_id(),
+        page.stable_id(),
+    ]) {
+        assert_eq!(shape(&cx, *view), shape(&cx, hand));
+        assert!(!children(&cx, *view).is_empty(), "{}", shape(&cx, *view));
+    }
+}

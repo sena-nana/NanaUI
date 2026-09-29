@@ -21,7 +21,7 @@ use std::sync::Arc;
 use super::controls::StyledComponent;
 use super::node::{El, IntoView, widget};
 use super::prop::{FieldWrite, IntoProp};
-use crate::{NodeStyle, SettingsRow};
+use crate::{NodeStyle, SettingsCollapsibleCard, SettingsPage, SettingsRow};
 
 /// A row labelled `label`, laid out as the rows the framework assembles:
 /// its control goes under its copy once the row is narrower than they fit.
@@ -87,6 +87,30 @@ row_fields! {
     stacked: bool,
     first_in_group: bool,
     last_in_group: bool,
+}
+
+impl<K> El<SettingsCollapsibleCard, K> {
+    /// What the card shows in its header, collapsed or not.
+    pub fn summary(self, view: impl IntoView) -> Self {
+        self.slot(view, SettingsCollapsibleCard::summary)
+    }
+
+    /// What it shows while expanded.
+    pub fn details(self, view: impl IntoView) -> Self {
+        self.slot(view, SettingsCollapsibleCard::details)
+    }
+
+    /// A control at the end of the header.
+    pub fn accessory(self, view: impl IntoView) -> Self {
+        self.slot(view, SettingsCollapsibleCard::accessory)
+    }
+}
+
+impl<K> El<SettingsPage, K> {
+    /// The page's content, under its header in its scroll area.
+    pub fn content(self, view: impl IntoView) -> Self {
+        self.slot(view, SettingsPage::content)
+    }
 }
 
 impl<K> El<SettingsRow, K> {
