@@ -868,6 +868,13 @@ fn normalize_math_delimiters(source: &str) -> String {
 }
 
 impl ComponentView for NativeMarkdown {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "markdown".into(),
@@ -1393,6 +1400,13 @@ impl SelectableRichText {
 }
 
 impl ComponentView for SelectableRichText {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "rich-text".into(),

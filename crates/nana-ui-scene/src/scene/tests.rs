@@ -6906,7 +6906,8 @@ fn css_gradient_and_clip_path_surface_paint_travels_on_quad() {
                     round: None,
                 })),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -6957,7 +6958,8 @@ fn css_clip_path_inset_round_applies_surface_corner_radius() {
                     round: Some(nana_ui_core::LengthSpec::Px(8.0)),
                 })),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7008,7 +7010,8 @@ fn css_clip_path_inset_clips_text_child() {
                     round: None,
                 })),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7060,7 +7063,8 @@ fn css_filter_group_omits_leaf_shader_on_parent_quad() {
                     ..Default::default()
                 }),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7115,7 +7119,8 @@ fn css_mix_blend_and_element_blur_isolate_dest_groups() {
             paint: nana_ui_core::PaintStyle {
                 mix_blend: MixBlendMode::Multiply,
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7144,7 +7149,8 @@ fn css_mix_blend_and_element_blur_isolate_dest_groups() {
                     ..Default::default()
                 }),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7185,7 +7191,8 @@ fn css_drop_shadow_isolates_dest_group_not_box_shadow() {
                     ..Default::default()
                 }),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7258,7 +7265,8 @@ fn css_box_shadow_layers_outline_and_line_clamp_travel() {
                     style: nana_ui_core::OutlineStyle::Solid,
                 },
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7320,7 +7328,8 @@ fn inset_box_shadow_on_a_leaf_is_not_an_outset_elevation() {
                     inset: true,
                 }],
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7376,7 +7385,8 @@ fn inset_box_shadow_with_children_is_a_dest_group_not_parent_quad() {
                     inset: true,
                 }],
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7444,7 +7454,8 @@ fn css_mask_and_gradient_both_travel_on_quad() {
                     }),
                 )),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7480,7 +7491,8 @@ fn css_backdrop_filter_travels_on_quad_surface() {
                     saturate: 1.2,
                 }),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7520,7 +7532,8 @@ fn img_content_image_and_two_background_layers_travel_on_quad() {
                     nana_ui_core::BackgroundImageFit::Contain,
                 )),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7602,7 +7615,8 @@ fn border_image_travels_on_quad() {
                     fill: true,
                 }),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7640,7 +7654,8 @@ fn unsupported_border_image_does_not_travel_on_quad() {
                     fill: true,
                 }),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7689,7 +7704,8 @@ fn host_texture_custom_carries_css_mask() {
                     }),
                 )),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -7719,7 +7735,8 @@ fn css_mask_url_travels_on_quad_and_host_texture() {
             paint: nana_ui_core::PaintStyle {
                 mask: Some(nana_ui_core::MaskImage::Url("fade.png".into())),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         }),
         ..Default::default()

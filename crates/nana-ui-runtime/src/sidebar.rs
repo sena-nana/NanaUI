@@ -309,6 +309,13 @@ impl Default for SidebarFrame {
 }
 
 impl ComponentView for SidebarFrame {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     /// Lends its body node to a scrollport that another component projects too.
     const ALWAYS_REPROJECT: bool = true;
 
@@ -579,6 +586,13 @@ impl ComponentView for SidebarRow {
         activation: Some(crate::AppContext::activate_sidebar_row),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     /// Patches the layout of the tools slot, which another component owns.
     const ALWAYS_REPROJECT: bool = true;
@@ -1216,6 +1230,13 @@ impl ComponentView for SidebarSection {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     /// Writes text, visual and style onto its body port, a `List` with its own projection.
     const ALWAYS_REPROJECT: bool = true;
 
@@ -1314,6 +1335,13 @@ impl Default for SidebarFooter {
 }
 
 impl ComponentView for SidebarFooter {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "sidebar-footer".into(),

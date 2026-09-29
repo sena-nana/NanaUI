@@ -267,6 +267,13 @@ impl Default for PaneChrome {
 }
 
 impl ComponentView for PaneChrome {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     /// Lays out header, tab, body and action slot nodes other components own.
     const ALWAYS_REPROJECT: bool = true;
 
@@ -481,6 +488,13 @@ impl PaneSlot {
 }
 
 impl ComponentView for PaneSlot {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "pane-slot".into(),
@@ -639,6 +653,13 @@ impl ComponentView for PaneTree {
         lifecycle: Some(crate::framework::lifecycle_hooks::pane_tree),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     /// Makes the content nodes it hosts fill their slot; their own projection overwrites that.
     const ALWAYS_REPROJECT: bool = true;

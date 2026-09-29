@@ -2363,7 +2363,8 @@ fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
                         ..Default::default()
                     }),
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             },
             Some([1.0, 0.0, 0.0, 1.0]),
@@ -2454,7 +2455,8 @@ fn drop_shadow_dest_group_follows_scene_origin() {
                         ..Default::default()
                     }),
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             },
             Some([1.0, 0.0, 0.0, 1.0]),
@@ -2524,7 +2526,8 @@ fn outline_and_shadow_spread_stay_css_px_at_hidpi() {
                         inset: false,
                     }],
                     ..Default::default()
-                },
+                }
+                .into(),
                 ..Default::default()
             },
             Some([1.0, 0.0, 0.0, 1.0]),
@@ -4103,7 +4106,7 @@ fn unblurred_shadow_and_outline_edges_stay_one_device_pixel_under_transform_scal
                 background: Some(fill),
                 border_radius: Some(w.min(h) * 0.5 - band),
                 transform: scale_transform(scale),
-                paint,
+                paint: paint.into(),
                 ..Default::default()
             };
             let [x, y, w, h] = [x + band, y + band, w - band * 2.0, h - band * 2.0];
@@ -4149,7 +4152,8 @@ fn inset_shadow_spread_shrinks_its_shape_inside_the_box() {
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![shadow],
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         };
         let node = extracted_div(1, &[], x, y, w, h, layout, Some(black));
@@ -4193,7 +4197,8 @@ fn paint_box_shadow(
         paint: nana_ui_core::PaintStyle {
             box_shadows: vec![shadow],
             ..Default::default()
-        },
+        }
+        .into(),
         ..Default::default()
     };
     let mut scene = UiScene::new();
@@ -5461,7 +5466,8 @@ fn paint_surface_quad_node(
                 mask: surface.mask.clone(),
                 border_image: surface.border_image.clone(),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
         Some(background),
@@ -5489,7 +5495,8 @@ fn frost_quad_node_with_fill(
             paint: nana_ui_core::PaintStyle {
                 backdrop_filter: Some(filter),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
         Some(fill),
@@ -5524,7 +5531,8 @@ fn clip_path_inset_round_parent(
                     round: Some(LengthSpec::Px(round_px)),
                 })),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
         None,
@@ -5554,7 +5562,8 @@ fn clip_path_circle_parent(
                     cy: LengthSpec::Percent(50.0),
                 })),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
         None,
@@ -5593,7 +5602,8 @@ fn clip_path_polygon_parent(
                     },
                 ])),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
         None,
@@ -6536,7 +6546,8 @@ fn host_texture_mask_linear_fade_samples_in_document_order() {
                     }),
                 )),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
         None,
@@ -6717,7 +6728,8 @@ fn check_host_texture_url_mask(remote: bool) {
             paint: nana_ui_core::PaintStyle {
                 mask: Some(nana_ui_core::MaskImage::Url(mask)),
                 ..Default::default()
-            },
+            }
+            .into(),
             ..Default::default()
         },
         None,
@@ -8411,7 +8423,8 @@ fn unsupported_border_image_does_not_paint_nine_slice() {
                 fill: true,
             }),
             ..Default::default()
-        },
+        }
+        .into(),
         ..Default::default()
     };
     let center = paint_layout_sample(layout, [40.0, 40.0], 20, 20);

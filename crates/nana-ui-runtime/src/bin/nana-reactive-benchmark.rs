@@ -9,7 +9,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use nana_ui_runtime::view::{Signal, button, column, each, signal, text};
+use nana_ui_runtime::view::{Signal, button, column, each, row, signal, text};
 use nana_ui_runtime::{AppContext, DocumentId, Entity, Stack, Text};
 
 const ROUNDS: usize = 15;
@@ -117,6 +117,52 @@ fn mount(n: usize) {
             (Series::new("build (old)"), &mut old),
             (Series::new("mount_view constant"), &mut constant),
             (Series::new("mount_view bound"), &mut bound),
+        ],
+    );
+}
+
+/// Styled controls: every row holds its own layouts, unlike plain texts.
+fn mount_controls(n: usize) {
+    let scenario = format!("mount {n} button rows");
+    let mut old = || {
+        let mut cx = AppContext::new();
+        timed(|| {
+            cx.build(document(), |ui| {
+                ui.column(0.0, |ui| {
+                    for i in 0..n {
+                        ui.child(format!("r{i}"), Stack::row(8.0));
+                        ui.child(
+                            format!("b{i}"),
+                            nana_ui_runtime::Button::new(format!("按钮 {i}")),
+                        );
+                    }
+                })
+            })
+            .unwrap();
+            black_box(&cx);
+        })
+    };
+    let mut new = || {
+        let mut cx = AppContext::new();
+        timed(|| {
+            black_box(
+                cx.mount_view_root(document(), || {
+                    column(
+                        0.0,
+                        (0..n)
+                            .map(|i| (row(8.0, ()), button(format!("按钮 {i}"))))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .unwrap(),
+            );
+        })
+    };
+    interleave(
+        &scenario,
+        &mut [
+            (Series::new("build (old)"), &mut old),
+            (Series::new("mount_view"), &mut new),
         ],
     );
 }
@@ -425,6 +471,7 @@ fn main() {
     println!("load before: {}", load());
     mount(1_000);
     mount(5_000);
+    mount_controls(1_000);
     updates(5_000, 1);
     updates(5_000, 100);
     list(2_000);

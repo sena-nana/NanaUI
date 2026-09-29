@@ -33,6 +33,7 @@ pub mod scrollbar;
 pub mod selection;
 pub mod semantics;
 pub mod settings;
+pub mod shared;
 pub mod split_pane;
 pub mod style_model;
 pub mod tab_drag;

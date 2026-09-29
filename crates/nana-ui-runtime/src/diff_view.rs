@@ -146,6 +146,13 @@ impl ComponentView for DiffView {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "diff".into() }
     }

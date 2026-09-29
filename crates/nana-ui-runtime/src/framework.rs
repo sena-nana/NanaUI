@@ -1976,8 +1976,9 @@ impl AppContext {
     pub fn create_component<C: ComponentView>(
         &mut self,
         document: DocumentId,
-        component: C,
+        mut component: C,
     ) -> Result<Entity<C>, FrameworkError> {
+        self.share_layouts(&mut component);
         let id = self.allocate_id();
         let mut queue = MutationQueue::new();
         queue.create(id, document, component.node_kind());
@@ -1987,6 +1988,11 @@ impl AppContext {
         self.views.insert(id, Box::new(component));
         self.sync_component_lifecycle(id)?;
         Ok(Entity::from_stable_id(id))
+    }
+
+    /// Let `component` share its layouts with equal ones already written.
+    pub(crate) fn share_layouts<C: ComponentView>(&mut self, component: &mut C) {
+        component.share_layouts(&mut |layout| self.world.share_layout(layout));
     }
 
     /// Bind a typed component view onto an existing world node.
@@ -1999,8 +2005,9 @@ impl AppContext {
     pub fn bind_component<C: ComponentView>(
         &mut self,
         id: StableNodeId,
-        component: C,
+        mut component: C,
     ) -> Result<Entity<C>, FrameworkError> {
+        self.share_layouts(&mut component);
         if !self.world.contains(id) {
             return Err(FrameworkError::MissingView(id));
         }
@@ -2018,8 +2025,9 @@ impl AppContext {
     pub fn create_detached_component<C: ComponentView>(
         &mut self,
         document: DocumentId,
-        component: C,
+        mut component: C,
     ) -> Result<Entity<C>, FrameworkError> {
+        self.share_layouts(&mut component);
         let id = self.allocate_id();
         let mut queue = MutationQueue::new();
         queue.create(id, document, component.node_kind());

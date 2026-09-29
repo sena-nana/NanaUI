@@ -2065,7 +2065,7 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.mask {
+        match layout.paint.mask.clone() {
             Some(MaskImage::Gradient(CssGradient::Linear(ref grad))) => {
                 assert!((grad.angle_deg - 180.0).abs() < 0.01);
             }
@@ -2095,7 +2095,7 @@ mod tests {
     fn mask_image_url_applies_via_css() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("mask-image: url(\"hero.png\")", None, None);
-        match layout.paint.mask {
+        match layout.paint.mask.clone() {
             Some(MaskImage::Url(ref url)) => assert_eq!(url, "hero.png"),
             other => panic!("expected relative url mask, got {other:?}"),
         }
@@ -2105,7 +2105,7 @@ mod tests {
     fn webkit_mask_image_url_applies_via_css() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("-webkit-mask-image: url(\"fade.png\")", None, None);
-        match layout.paint.mask {
+        match layout.paint.mask.clone() {
             Some(MaskImage::Url(ref url)) => assert_eq!(url, "fade.png"),
             other => panic!("expected webkit url mask, got {other:?}"),
         }
@@ -2157,7 +2157,7 @@ mod tests {
     fn mask_image_url_reuses_background_url_parse() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("mask-image: url(\"hero.png\")", None, None);
-        match layout.paint.mask {
+        match layout.paint.mask.clone() {
             Some(MaskImage::Url(ref url)) => assert_eq!(url, "hero.png"),
             other => panic!("expected mask url, got {other:?}"),
         }
@@ -2260,7 +2260,7 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.mask {
+        match layout.paint.mask.clone() {
             Some(MaskImage::Gradient(CssGradient::Radial(ref radial))) => {
                 assert_eq!(radial.center[0], LengthSpec::Px(10.0));
                 assert_eq!(radial.center[1], LengthSpec::Px(20.0));
@@ -2278,7 +2278,7 @@ mod tests {
     fn background_image_relative_url_applies_via_css() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("background-image: url(\"hero.png\")", None, None);
-        match layout.paint.background_image {
+        match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url { ref url, .. }) => assert_eq!(url, "hero.png"),
             other => panic!("expected relative url, got {other:?}"),
         }
@@ -2305,7 +2305,7 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image {
+        match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url { ref url, .. }) => assert_eq!(url, "a.png"),
             other => panic!("expected first url, got {other:?}"),
         }
@@ -2324,7 +2324,7 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image {
+        match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url {
                 fit,
                 size_width,
@@ -2348,7 +2348,7 @@ mod tests {
             None,
             None,
         );
-        match auto.paint.background_image {
+        match auto.paint.background_image.clone() {
             Some(BackgroundImage::Url { fit, .. }) => assert_eq!(fit, BackgroundImageFit::Auto),
             other => panic!("expected auto size, got {other:?}"),
         }
@@ -2362,7 +2362,7 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image {
+        match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url { position, .. }) => {
                 assert_eq!(
                     position.x,
@@ -2395,7 +2395,7 @@ mod tests {
             None,
             None,
         );
-        match ok.paint.background_image {
+        match ok.paint.background_image.clone() {
             Some(BackgroundImage::Url { position, .. }) => {
                 assert_eq!(position.x, LengthSpec::Px(10.0));
                 assert_eq!(position.y, LengthSpec::Px(20.0));
@@ -2410,7 +2410,7 @@ mod tests {
             None,
         );
         stale.apply_css_text("background-position: left 1px top 2px extra", None, None);
-        match stale.paint.background_image {
+        match stale.paint.background_image.clone() {
             Some(BackgroundImage::Url { position, .. }) => {
                 assert_eq!(
                     position.x,
@@ -2435,7 +2435,7 @@ mod tests {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("object-fit: contain; object-position: left top", None, None);
         apply_img_replaced_content(&mut layout, "photo.png");
-        match layout.paint.content_image {
+        match layout.paint.content_image.clone() {
             Some(BackgroundImage::Url {
                 ref url,
                 fit,
@@ -2459,7 +2459,7 @@ mod tests {
         layout.apply_css_text("object-fit: scale-down", None, None);
         assert_eq!(layout.paint.object_fit, Some(BackgroundImageFit::ScaleDown));
         apply_img_replaced_content(&mut layout, "photo.png");
-        match layout.paint.content_image {
+        match layout.paint.content_image.clone() {
             Some(BackgroundImage::Url { fit, .. }) => {
                 assert_eq!(fit, BackgroundImageFit::ScaleDown);
             }
@@ -2471,7 +2471,7 @@ mod tests {
     fn video_poster_and_iframe_skip_fail_closed() {
         let mut poster = LayoutStyle::default();
         apply_video_poster(&mut poster, "still.png", false);
-        match poster.paint.content_image {
+        match poster.paint.content_image.clone() {
             Some(BackgroundImage::Url { ref url, .. }) => assert_eq!(url, "still.png"),
             other => panic!("expected poster, got {other:?}"),
         }
@@ -2531,7 +2531,7 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image {
+        match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url {
                 fit,
                 size_width,
@@ -2558,14 +2558,14 @@ mod tests {
             None,
             None,
         );
-        match layout.paint.background_image {
+        match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url { repeat, .. }) => {
                 assert_eq!(repeat, BackgroundRepeat::Unsupported);
             }
             other => panic!("expected space url layer, got {other:?}"),
         }
         layout.apply_css_text("background-repeat: round", None, None);
-        match layout.paint.background_image {
+        match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url { repeat, .. }) => {
                 assert_eq!(repeat, BackgroundRepeat::Round);
             }
@@ -2597,7 +2597,7 @@ mod tests {
             other => panic!("expected shorthand url, got {other:?}"),
         }
         layout.apply_css_text("background-image: url(\"b.png\")", None, None);
-        match layout.paint.background_image {
+        match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url { repeat, fit, .. }) => {
                 assert_eq!(
                     repeat,
@@ -2619,7 +2619,7 @@ mod tests {
             None,
         );
         assert!(layout.background.is_some());
-        match layout.paint.background_image {
+        match layout.paint.background_image.clone() {
             Some(BackgroundImage::Url {
                 ref url,
                 fit,

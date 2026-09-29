@@ -371,6 +371,13 @@ impl ComponentView for Dropdown {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn reconcile(&mut self, mut next: Self) {
         // Selection and options are the application's; the open menu and its
         // keyboard highlight belong to the interaction in flight, and survive a

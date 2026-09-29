@@ -208,6 +208,13 @@ impl SettingsRow {
 }
 
 impl ComponentView for SettingsRow {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     /// Lays out the control slots the application provides.
     const ALWAYS_REPROJECT: bool = true;
 
@@ -397,6 +404,13 @@ impl SettingsCard {
 }
 
 impl ComponentView for SettingsCard {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "settings-card".into(),
@@ -512,6 +526,13 @@ impl ComponentView for SettingsCollapsibleCard {
         activation: Some(crate::AppContext::activate_settings_collapsible_card),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     /// Lays out and hides the summary and detail slots the application provides.
     const ALWAYS_REPROJECT: bool = true;

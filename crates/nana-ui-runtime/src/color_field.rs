@@ -157,6 +157,13 @@ impl ComponentView for ColorField {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn reconcile(&mut self, mut next: Self) {
         // The open picker and the HSV cursor track the drag in progress; the
         // committed value is the application's.

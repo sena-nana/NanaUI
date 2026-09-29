@@ -164,6 +164,13 @@ fn project_bar(
 }
 
 impl ComponentView for Toolbar {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "toolbar".into(),
@@ -183,6 +190,13 @@ impl ComponentView for Toolbar {
 }
 
 impl ComponentView for StatusBar {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "status-bar".into(),

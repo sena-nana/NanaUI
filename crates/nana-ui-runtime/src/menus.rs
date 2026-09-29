@@ -125,6 +125,13 @@ impl crate::ComponentView for ActionMenuItem {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "action-menu-item".into(),
@@ -261,6 +268,13 @@ impl AnchoredActionMenu {
 }
 
 impl crate::ComponentView for AnchoredActionMenu {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "anchored-action-menu".into(),
@@ -565,6 +579,13 @@ impl crate::ComponentView for ContextMenu {
         editable: Some(&crate::framework::Editable::<Self>::HOOKS),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {

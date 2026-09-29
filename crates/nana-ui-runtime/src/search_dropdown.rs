@@ -329,6 +329,13 @@ impl ComponentView for SearchDropdown {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn reconcile(&mut self, mut next: Self) {
         // The filter field's text state is the user's typing, not application
         // props: a refresh must not reset the caret mid-query.

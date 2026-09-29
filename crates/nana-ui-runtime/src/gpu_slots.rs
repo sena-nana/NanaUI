@@ -380,6 +380,13 @@ impl GpuTextureView {
 }
 
 impl ComponentView for GpuView {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: GPU_VIEW_RENDERER.into(),
@@ -409,6 +416,13 @@ impl ComponentView for GpuView {
 }
 
 impl ComponentView for GpuTextureView {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: GPU_TEXTURE_VIEW_RENDERER.into(),

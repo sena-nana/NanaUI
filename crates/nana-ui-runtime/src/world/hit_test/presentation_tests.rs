@@ -178,7 +178,8 @@ fn hit_test_respects_ellipse_clip_path() {
                     cy: nana_ui_core::LengthSpec::Percent(50.0),
                 })),
                 ..nana_ui_core::PaintStyle::default()
-            },
+            }
+            .into(),
             ..LayoutStyle::default()
         }),
         ..NodeStyle::default()
@@ -214,7 +215,8 @@ fn hit_test_respects_polygon_clip_path() {
                     point(0.0, 100.0),
                 ])),
                 ..nana_ui_core::PaintStyle::default()
-            },
+            }
+            .into(),
             ..LayoutStyle::default()
         }),
         ..NodeStyle::default()
@@ -248,7 +250,8 @@ fn hit_test_respects_rounded_inset_clip_path() {
                     round: Some(nana_ui_core::LengthSpec::Px(20.0)),
                 })),
                 ..nana_ui_core::PaintStyle::default()
-            },
+            }
+            .into(),
             ..LayoutStyle::default()
         }),
         ..NodeStyle::default()

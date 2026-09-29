@@ -32,7 +32,7 @@ macro_rules! set_val {
         $(
             #[inline]
             pub fn $name(mut self, value: $ty) -> Self {
-                self.$name = value;
+                self.$name = value.into();
                 self
             }
         )+

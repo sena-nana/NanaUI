@@ -508,7 +508,7 @@ pub(super) fn layout_grid_2d(
         let child_style = nodes.style(id);
         let placement = child_style
             .as_ref()
-            .map(|child| &child.grid_placement)
+            .map(|child| &*child.grid_placement)
             .unwrap_or(&default_placement);
         let (col_origin, col_span, row_origin, row_span) = resolve_item_grid_placement(
             style,

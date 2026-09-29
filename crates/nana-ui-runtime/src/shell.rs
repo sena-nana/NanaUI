@@ -328,6 +328,13 @@ impl AppTitleBar {
 }
 
 impl ComponentView for AppTitleBar {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     /// Lays out the leading, center and trailing slot nodes the application owns.
     const ALWAYS_REPROJECT: bool = true;
 
@@ -538,6 +545,13 @@ impl Default for AppTitleBarControls {
 }
 
 impl ComponentView for AppTitleBarControls {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "app-title-bar-controls".into(),
@@ -700,6 +714,13 @@ impl Default for AppShell {
 }
 
 impl ComponentView for AppShell {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     /// Patches the title bar, body and overlay nodes, which other components own and project.
     const ALWAYS_REPROJECT: bool = true;
 
@@ -920,6 +941,13 @@ impl Default for DesktopShell {
 }
 
 impl ComponentView for DesktopShell {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     /// Patches the body and status nodes, which other components own and project.
     const ALWAYS_REPROJECT: bool = true;
 

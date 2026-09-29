@@ -208,6 +208,13 @@ impl Default for SegmentedControl {
 }
 
 impl ComponentView for SegmentedControl {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "segmented-control".into(),
@@ -487,6 +494,13 @@ impl ComponentView for SegmentedOption {
         activation: Some(crate::AppContext::activate_segmented_option),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {

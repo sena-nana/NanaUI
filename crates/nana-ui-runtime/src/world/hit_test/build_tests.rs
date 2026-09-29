@@ -313,7 +313,8 @@ fn scoped_hidden_ancestor_updates_match_full_rebuild() {
                                     nana_ui_core::VisibilitySpec::Visible
                                 }),
                                 ..Default::default()
-                            },
+                            }
+                            .into(),
                             ..Default::default()
                         }),
                         ..Default::default()

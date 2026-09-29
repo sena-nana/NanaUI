@@ -147,7 +147,8 @@ impl<'a> UiBuilder<'a> {
         format!("#{kind}-{index}")
     }
 
-    fn spawn<C: ComponentView>(&mut self, component: C) -> Entity<C> {
+    fn spawn<C: ComponentView>(&mut self, mut component: C) -> Entity<C> {
+        self.context.share_layouts(&mut component);
         let id = self.context.allocate_id();
         self.queue.create(id, self.document, component.node_kind());
         component.project(id, &self.context.world, &mut self.queue);

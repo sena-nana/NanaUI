@@ -306,15 +306,27 @@ impl UiWorld {
         (layout, true)
     }
 
+    /// Replace `layout` with an equal one written recently, if any.
+    pub(crate) fn share_layout(&mut self, layout: &mut Arc<nana_ui_core::LayoutStyle>) {
+        self.layouts.intern(layout);
+    }
+
     /// Write a node's authored style and keep its resolved layout in step.
     ///
     /// The two have to move together: projection diffs against the authored
     /// style, while layout and extraction read the resolved one. Every path
     /// that writes `record.style` goes through here so the pair cannot drift.
-    pub(crate) fn write_node_style(&mut self, id: StableNodeId, style: NodeStyle) {
-        let (resolved, copied) = Self::resolve_layout_intent(&style, self.style_model.metrics);
+    pub(crate) fn write_node_style(&mut self, id: StableNodeId, mut style: NodeStyle) {
+        let current = &self.record(id).style.layout;
+        if !Arc::ptr_eq(current, &style.layout) && **current == *style.layout {
+            style.layout = Arc::clone(current);
+        } else {
+            self.layouts.intern(&mut style.layout);
+        }
+        let (mut resolved, copied) = Self::resolve_layout_intent(&style, self.style_model.metrics);
         if copied {
             self.record_resolved_layout_copy();
+            self.layouts.intern(&mut resolved);
         }
         let record = self.record_mut(id);
         record.style = style;
@@ -324,10 +336,11 @@ impl UiWorld {
     /// Re-resolve one node's layout after its authored layout was mutated in
     /// place. A node without design intent keeps sharing the same `Arc`.
     pub(crate) fn refresh_resolved_layout(&mut self, id: StableNodeId) {
-        let (resolved, copied) =
+        let (mut resolved, copied) =
             Self::resolve_layout_intent(&self.record(id).style, self.style_model.metrics);
         if copied {
             self.record_resolved_layout_copy();
+            self.layouts.intern(&mut resolved);
         }
         self.record_mut(id).resolved_layout = resolved;
     }
@@ -347,9 +360,11 @@ impl UiWorld {
             {
                 continue;
             }
-            let (resolved, copied) = Self::resolve_layout_intent(&self.record(id).style, metrics);
+            let (mut resolved, copied) =
+                Self::resolve_layout_intent(&self.record(id).style, metrics);
             if copied {
                 self.record_resolved_layout_copy();
+                self.layouts.intern(&mut resolved);
             }
             self.record_mut(id).resolved_layout = resolved;
         }
@@ -772,3 +787,32 @@ impl UiWorld {
 #[cfg(test)]
 #[path = "style_sharing_tests.rs"]
 mod sharing_tests;
+
+/// How many recent layouts a world keeps to share. Siblings built alike
+/// (list rows, toolbars) repeat within a few writes.
+const RECENT_LAYOUTS: usize = 8;
+
+/// Layouts written recently, so nodes and resolutions whose layouts are
+/// equal share one allocation instead of one each. Comparing is cheap: the
+/// large groups of a layout are shared and compare by pointer first.
+#[derive(Default)]
+pub(crate) struct LayoutInterner {
+    recent: [Option<Arc<nana_ui_core::LayoutStyle>>; RECENT_LAYOUTS],
+    next: usize,
+}
+
+impl LayoutInterner {
+    /// Replace `layout` with an equal recent one, or remember it.
+    pub(crate) fn intern(&mut self, layout: &mut Arc<nana_ui_core::LayoutStyle>) {
+        let recent = self.recent.iter().flatten();
+        if recent.clone().any(|kept| Arc::ptr_eq(kept, layout)) {
+            return;
+        }
+        if let Some(kept) = recent.clone().find(|kept| ***kept == **layout) {
+            *layout = Arc::clone(kept);
+            return;
+        }
+        self.recent[self.next] = Some(Arc::clone(layout));
+        self.next = (self.next + 1) % RECENT_LAYOUTS;
+    }
+}

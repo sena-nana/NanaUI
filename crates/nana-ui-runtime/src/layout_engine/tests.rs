@@ -1785,7 +1785,8 @@ fn grid_column_span_two_on_three_columns() {
             grid_placement: GridPlacement {
                 column_start: GridLine::Span(2),
                 ..GridPlacement::default()
-            },
+            }
+            .into(),
             ..LayoutStyle::default()
         },
         children: Vec::new(),
@@ -2293,7 +2294,8 @@ fn subgrid_inherits_parent_column_track_sizes() {
                 column_start: GridLine::Index(1),
                 column_end: GridLine::Index(-1),
                 ..GridPlacement::default()
-            },
+            }
+            .into(),
             align_items: AlignSpec::Stretch,
             ..LayoutStyle::default()
         },
@@ -3652,7 +3654,8 @@ fn named_line_nth_uses_second_foo() {
                 column_start: GridLine::NthName("foo".into(), 2),
                 column_end: GridLine::Name("foo".into()),
                 ..GridPlacement::default()
-            },
+            }
+            .into(),
             ..LayoutStyle::default()
         },
         children: Vec::new(),
@@ -3693,7 +3696,8 @@ fn auto_fill_nth_named_line_uses_expanded_copies() {
                 column_start: GridLine::NthName("mid".into(), 2),
                 column_end: GridLine::Name("mid".into()),
                 ..GridPlacement::default()
-            },
+            }
+            .into(),
             ..LayoutStyle::default()
         },
         children: Vec::new(),

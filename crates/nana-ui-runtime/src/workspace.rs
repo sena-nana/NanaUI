@@ -521,6 +521,13 @@ impl ComponentView for Workspace {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     /// Writes region styles onto the content nodes the application puts in its regions.
     const ALWAYS_REPROJECT: bool = true;
 

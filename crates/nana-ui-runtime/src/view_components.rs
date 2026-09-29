@@ -232,6 +232,16 @@ pub trait ComponentView: Clone + PartialEq + Send + 'static {
     #[doc(hidden)]
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior::NONE;
 
+    /// Hand each layout this component holds to `share`, which may replace
+    /// it with an equal one other nodes already use. Called when the
+    /// component is created, so equal siblings keep one layout between them.
+    #[doc(hidden)]
+    fn share_layouts(
+        &mut self,
+        _share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+    }
+
     /// Apply declarative properties to a retained component. Stateful controls
     /// override this to preserve interaction state; explicit `update_component`
     /// remains available when the caller intends to replace that state.
@@ -406,6 +416,13 @@ impl Text {
 }
 
 impl ComponentView for Text {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Text
     }
@@ -607,6 +624,13 @@ impl ComponentView for Button {
         activation: Some(crate::AppContext::activate_button),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -839,6 +863,13 @@ impl ComponentView for IconButton {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "icon-button".into(),
@@ -990,6 +1021,13 @@ impl IconGlyph {
 }
 
 impl ComponentView for IconGlyph {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "icon-glyph".into(),
@@ -1105,6 +1143,13 @@ impl Default for Card {
 }
 
 impl ComponentView for Card {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "card".into() }
     }
@@ -1388,6 +1433,13 @@ impl ComponentView for ListItem {
         activation: Some(crate::AppContext::activate_list_item),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -1680,6 +1732,13 @@ impl ComponentView for TextInput {
         editable: Some(&crate::framework::Editable::<Self>::EDITOR_HOOKS),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     /// Equal host values preserve the editing selection. A different value uses
     /// the supplied selection (`TextInput::new` places its caret at the end).
@@ -2044,6 +2103,13 @@ impl ComponentView for NumberInput {
         editable: Some(&crate::framework::Editable::<Self>::EDITOR_HOOKS),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -2482,6 +2548,13 @@ impl ComponentView for TextArea {
         editable: Some(&crate::framework::Editable::<Self>::EDITOR_HOOKS),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -2995,6 +3068,13 @@ impl OverlayHost {
 }
 
 impl ComponentView for OverlayHost {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "overlay-host".into(),
@@ -3076,6 +3156,13 @@ impl Dialog {
 }
 
 impl ComponentView for Dialog {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "dialog".into(),
@@ -3142,6 +3229,13 @@ impl Tooltip {
 }
 
 impl ComponentView for Tooltip {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "tooltip".into(),
@@ -3342,6 +3436,13 @@ impl ComponentView for Checkbox {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "checkbox".into(),
@@ -3511,6 +3612,13 @@ impl Default for Divider {
 }
 
 impl ComponentView for Divider {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "divider".into(),
@@ -3604,6 +3712,13 @@ impl ComponentView for Switch {
         activation: Some(crate::AppContext::toggle_switch),
         ..crate::TypeBehavior::NONE
     };
+
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -3877,6 +3992,13 @@ impl RangeField {
 }
 
 impl ComponentView for RangeField {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "range-field".into(),
@@ -4106,6 +4228,13 @@ impl ScrollView {
 }
 
 impl ComponentView for ScrollView {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn reconcile(&mut self, mut next: Self) {
         next.hovered = self.hovered;
         next.dragging = self.dragging;
@@ -4157,6 +4286,13 @@ impl Default for List {
 }
 
 impl ComponentView for List {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "list".into() }
     }
@@ -4459,6 +4595,13 @@ impl Stack {
 }
 
 impl ComponentView for Stack {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "stack".into(),
@@ -4506,6 +4649,13 @@ impl Table {
 }
 
 impl ComponentView for Table {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "table".into(),
@@ -4554,6 +4704,13 @@ impl TableRow {
 }
 
 impl ComponentView for TableRow {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "tr".into() }
     }
@@ -4616,6 +4773,13 @@ impl TableCell {
 }
 
 impl ComponentView for TableCell {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: if self.column_header { "th" } else { "td" }.into(),

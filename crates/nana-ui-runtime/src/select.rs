@@ -303,6 +303,13 @@ impl crate::ComponentView for Select {
         ..crate::TypeBehavior::NONE
     };
 
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     fn reconcile(&mut self, mut next: Self) {
         // Value/options are application state; the open menu and its keyboard
         // highlight belong to the current interaction while those props agree.

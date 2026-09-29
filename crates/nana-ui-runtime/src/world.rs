@@ -652,6 +652,8 @@ pub struct UiWorld {
     /// the same boundary. Separate from the reads because a write is rare
     /// and the two are never observed together.
     pending_layout_copies: Cell<usize>,
+    /// Recently written layouts, shared by nodes whose layouts are equal.
+    layouts: style::LayoutInterner,
     /// Live Confirm modal frames. Extract, a11y, and hit-test skip ancestor
     /// confirm walks when this is zero.
     confirm_modals: usize,
@@ -806,6 +808,7 @@ impl UiWorld {
             theme_frame_work: ThemeWorkCounters::default(),
             pending_theme_reads: Cell::new(0),
             pending_layout_copies: Cell::new(0),
+            layouts: style::LayoutInterner::default(),
             confirm_modals: 0,
             clip_visuals: 0,
             z_index_nodes: 0,

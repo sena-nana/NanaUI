@@ -3232,7 +3232,7 @@ pub struct LayoutStyle {
     pub padding_left: Option<LengthSpec>,
     /// Specified `padding-inline-*` plus physical left/right they compete with.
     #[serde(default)]
-    pub logical_padding: LogicalEdges,
+    pub logical_padding: crate::shared::Shared<LogicalEdges>,
     /// Uniform margin shorthand residue（`%` 合同同 padding）。
     pub margin: Option<LengthSpec>,
     pub margin_top: Option<LengthSpec>,
@@ -3240,7 +3240,7 @@ pub struct LayoutStyle {
     pub margin_bottom: Option<LengthSpec>,
     pub margin_left: Option<LengthSpec>,
     #[serde(default)]
-    pub logical_margin: LogicalEdges,
+    pub logical_margin: crate::shared::Shared<LogicalEdges>,
     /// Inset：`relative` / `absolute` / `fixed` 用（`Px` 或 `%`；measure 时相对 CB 解析）。
     /// `Static` 忽略；`sticky` defer。
     #[serde(default)]
@@ -3252,7 +3252,7 @@ pub struct LayoutStyle {
     #[serde(default)]
     pub offset_left: Option<LengthSpec>,
     #[serde(default)]
-    pub logical_inset: LogicalEdges,
+    pub logical_inset: crate::shared::Shared<LogicalEdges>,
     pub width: Option<LengthSpec>,
     pub height: Option<LengthSpec>,
     /// `min-width`：保留 [`LengthSpec`]（px / `%` / calc / em / viewport），布局时解析。
@@ -3421,7 +3421,7 @@ pub struct LayoutStyle {
     pub grid_rows_subgrid: bool,
     /// `grid-column` / `grid-row` 项放置。
     #[serde(default)]
-    pub grid_placement: GridPlacement,
+    pub grid_placement: crate::shared::Shared<GridPlacement>,
     /// `grid-template-areas` 命名区域。
     #[serde(default)]
     pub grid_template_areas: Option<GridTemplateAreas>,
@@ -3434,7 +3434,7 @@ pub struct LayoutStyle {
     pub hidden: bool,
     /// Paint-only surface: corner radii, box-shadow, CSS visibility.
     #[serde(default)]
-    pub paint: PaintStyle,
+    pub paint: crate::shared::Shared<PaintStyle>,
     /// CSS `opacity` (0..=1). `None` = unset / inherit (treated as 1.0 at paint).
     /// Parsed with other declarations so L1 adapters need not re-scan the style
     /// string.
@@ -3511,18 +3511,18 @@ impl Default for LayoutStyle {
             padding_right: None,
             padding_bottom: None,
             padding_left: None,
-            logical_padding: LogicalEdges::default(),
+            logical_padding: Default::default(),
             margin: None,
             margin_top: None,
             margin_right: None,
             margin_bottom: None,
             margin_left: None,
-            logical_margin: LogicalEdges::default(),
+            logical_margin: Default::default(),
             offset_top: None,
             offset_right: None,
             offset_bottom: None,
             offset_left: None,
-            logical_inset: LogicalEdges::default(),
+            logical_inset: Default::default(),
             width: None,
             height: None,
             min_width: None,
@@ -3582,12 +3582,12 @@ impl Default for LayoutStyle {
             grid_rows_repeat: None,
             grid_columns_subgrid: false,
             grid_rows_subgrid: false,
-            grid_placement: GridPlacement::default(),
+            grid_placement: Default::default(),
             grid_template_areas: None,
             grid_column_line_names: None,
             grid_row_line_names: None,
             hidden: false,
-            paint: PaintStyle::default(),
+            paint: Default::default(),
             opacity: None,
             background: None,
             border_radius: None,
@@ -6082,3 +6082,5 @@ mod tests {
         assert!(flat.paint_border_edges_with(Some(semantic)).is_zero());
     }
 }
+
+crate::shared::shared_default!(PaintStyle, LogicalEdges, GridPlacement);

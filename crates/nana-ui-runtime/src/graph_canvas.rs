@@ -861,6 +861,13 @@ impl GraphCanvas {
 }
 
 impl ComponentView for GraphCanvas {
+    fn share_layouts(
+        &mut self,
+        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
+    ) {
+        share(&mut self.style.layout);
+    }
+
     /// Positions, hides and sets interaction on the content children the application provides.
     const ALWAYS_REPROJECT: bool = true;
 
