@@ -16,6 +16,7 @@ pub mod css_cascade;
 pub mod css_font_face;
 pub mod css_interactive;
 pub mod css_map;
+pub mod css_motion;
 pub mod css_paint;
 pub mod css_paint_transform;
 pub mod shell_contract;
