@@ -381,6 +381,24 @@ impl AppContext {
                 cx.emit(ScrollChanged { offset });
             })?;
         }
+        let asked: Vec<_> = self
+            .laid_out_notices
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.world
+                    .node(*id)
+                    .is_some_and(|node| node.document == document)
+            })
+            .collect();
+        for id in asked {
+            self.laid_out_notices.remove(&id);
+            if self.is_scroll_view(id) {
+                self.update(Entity::<ScrollView>::from_stable_id(id), |_, cx| {
+                    cx.emit(ScrollLaidOut);
+                })?;
+            }
+        }
         for id in self.world.take_scroll_resized() {
             let Some(metrics) = self.world.scroll_metrics(id) else {
                 continue;

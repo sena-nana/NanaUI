@@ -1585,6 +1585,11 @@ pub struct ScrollChanged {
     pub offset: crate::ScrollOffset,
 }
 
+/// A layout pass finished a `ScrollView` that asked to be told (rows that
+/// measure themselves read their laid-out heights now).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollLaidOut;
+
 /// A layout pass gave a `ScrollView` a viewport of a new size: the first
 /// layout, a window resize. Virtualized content widens or narrows its window.
 #[derive(Debug, Clone, Copy, PartialEq)]

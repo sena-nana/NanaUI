@@ -62,12 +62,13 @@ use crate::{
     ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
     NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
     ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RangeInput, RovingFocusIntent,
-    ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, ScrollViewportChanged,
-    SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
-    SidebarSection, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged,
-    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
-    UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
+    ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollMetrics, ScrollOffset, ScrollView,
+    ScrollViewportChanged, SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl,
+    SegmentedOption, SegmentedSelectionRequested, Select, SettingsCollapsibleCard,
+    SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId, Switch, Table, TableCell,
+    TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState, TextPresenter, TextSelection,
+    ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
+    XYPadEvent,
     component_registry::{
         ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
         RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
@@ -1037,6 +1038,8 @@ pub struct AppContext {
     /// [`ComponentView::BEHAVIOR`] per component type created through this
     /// context.
     behaviors: HashMap<TypeId, hooks::ErasedBehavior>,
+    /// ScrollViews to send [`ScrollLaidOut`] after the next layout pass.
+    laid_out_notices: HashSet<StableNodeId>,
     /// Router hooks installed by the types created so far.
     type_hooks: TypeHooks,
     assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
@@ -1390,6 +1393,7 @@ impl AppContext {
             file_drops: HashMap::new(),
             reprojectors: HashMap::new(),
             behaviors: HashMap::new(),
+            laid_out_notices: HashSet::new(),
             type_hooks: TypeHooks::default(),
             assembled: HashMap::new(),
             assembled_parent: HashMap::new(),

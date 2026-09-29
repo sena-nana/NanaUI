@@ -906,3 +906,81 @@ fn table_controls_bind_their_fields_and_model_both_ways() {
     assert_eq!(choice.get_untracked().as_deref(), Some("a"));
     assert_eq!(activated.get_untracked(), 1);
 }
+
+#[test]
+fn value_events_hand_their_handler_the_event_without_annotation() {
+    use crate::{Switch, ToggleChanged};
+    let (mut cx, _, parent) = setup();
+    let seen = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let last = signal(None::<bool>);
+            seen.set(Some(last));
+            switch("通知")
+                .on_change(move |e| last.set(Some(e.checked)))
+                .key("switch")
+        })
+        .unwrap();
+    let switch = Entity::<Switch>::from_stable_id(view.roots()[0]);
+    cx.update_component(switch, |_, cx| cx.emit(ToggleChanged { checked: true }))
+        .unwrap();
+    cx.flush_reactive().unwrap();
+    assert_eq!(seen.get().unwrap().get_untracked(), Some(true));
+}
+
+#[test]
+fn a_measured_virtual_list_places_rows_at_their_laid_out_heights() {
+    let (mut cx, document, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            let items = signal(
+                (0..1_000)
+                    .map(|id| VirtualRow {
+                        id,
+                        title: format!("行 {id}"),
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            // Rows are 40 px; 20 is only the estimate.
+            each_virtual(
+                items,
+                |row| row.id,
+                20.0,
+                |row| {
+                    widget(
+                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(40.0))),
+                    )
+                    .children(text(row.title))
+                },
+            )
+            .measured()
+            .overscan(0.0)
+            .scroll_view(crate::ScrollView::new(crate::ScrollAxes::Vertical).style({
+                let mut style = crate::NodeStyle::default();
+                std::sync::Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(200.0));
+                style
+            }))
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    let list = |cx: &AppContext| children(cx, children(cx, scroll)[0]).len();
+    // Layout announces the viewport; the estimate fills it with ten rows.
+    cx.layout_document(document, viewport).unwrap();
+    cx.flush_reactive().unwrap();
+    assert!(
+        (10..=12).contains(&list(&cx)),
+        "{} rows by estimate",
+        list(&cx)
+    );
+    // The next layout measures them at 40 px: half as many fill it.
+    for _ in 0..3 {
+        cx.layout_document(document, viewport).unwrap();
+        cx.flush_reactive().unwrap();
+    }
+    assert!(
+        (5..=7).contains(&list(&cx)),
+        "{} rows once measured",
+        list(&cx)
+    );
+}

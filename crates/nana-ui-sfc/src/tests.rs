@@ -323,3 +323,61 @@ let choice: Signal<Option<Arc<str>>> = signal(None);
         "{model}"
     );
 }
+
+#[test]
+fn a_statement_handler_of_a_value_event_ignores_the_value() {
+    let out = compile(&[(
+        "Events.vue",
+        r#"<script setup lang="rust">
+let seen = signal(0u32);
+</script>
+<template>
+  <Column>
+    <Switch @change="seen.update(|n| *n += 1)">开关</Switch>
+    <Button @activate="seen.set(0)">清零</Button>
+    <Text>{{ seen }}</Text>
+  </Column>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(
+        code.contains(&squash(
+            ".on_change(move |_| { seen.update(|n| *n += 1); })"
+        )),
+        "{code}"
+    );
+    assert!(
+        code.contains(&squash(".on_activate(move || { seen.set(0); })")),
+        "{code}"
+    );
+}
+
+#[test]
+fn v_virtual_builds_only_the_rows_in_view() {
+    let out = compile(&[(
+        "Long.vue",
+        r#"<script setup lang="rust">
+let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
+</script>
+<template>
+  <Text v-for="n in rows" :key="*n" v-virtual.measured="24">行 {{ n }}</Text>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(code.contains(&squash("each_virtual(rows,")), "{code}");
+    assert!(code.contains(&squash("24_f32,")), "{code}");
+    assert!(code.contains(&squash(".measured()")), "{code}");
+
+    let alone = compile(&[(
+        "Alone.vue",
+        "<template>\n<Text v-virtual=\"24\">x</Text>\n</template>",
+    )])
+    .err()
+    .expect("an error");
+    assert!(
+        alone.message.contains("`v-virtual` goes with `v-for`"),
+        "{alone}"
+    );
+}

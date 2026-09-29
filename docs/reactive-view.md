@@ -190,7 +190,7 @@ impl ApplicationState for App {
 | flush | `AppContext::flush_reactive`。按轮执行：先跑 `watch_effect`，再跑 `each` / `when` 的结构更新，最后把这一轮所有需要改的节点各暂存一次、合进**一次** commit。输入路由在每个事件末尾调用它（所以 `InputRouteOutcome::invalidated_work` 会反映绑定的变化），`take_system_work` 在每帧开头调用它 |
 | 节点绑定 | 同一个节点的所有动态字段共用一个副作用。任何一个输入变了，先按字段逐个与保留的视图比较（`FieldWrite::differs`），全部相等就到此为止：不复制、不投影、不提交。只要有一个字段不同，才复制一份、写入、投影一次 |
 | `each` | 用 key 对照：保留的行不重建，节点 id 和控件的交互状态都不变；删掉的行回收作用域并销毁节点；新行在一次 detached build 里建好。重排只移动最长递增子序列之外的节点：插入或删除一行不移动任何已有节点，整体反转移动 n−1 个。一行里的字段变化应该用行内信号，这样不会触发列表重算 |
-| `each_virtual` | `each_virtual(items, key, 行高, row)`：行放在一个纵向 `ScrollView` 里，只建视口（加 overscan）盖到的行，底层是 Runtime 已有的保留式虚拟列表。滚走的行连同作用域一起回收，持有焦点或输入法组合的行保留。数据变化、滚动（`ScrollChanged`）和视口尺寸变化（`ScrollViewportChanged`，布局后发出）都会移动窗口。5 万行：挂载加布局加出窗口 2.4 ms，`each` 要 175 ms、每行常驻约 2.3 KB。行高固定 |
+| `each_virtual` | `each_virtual(items, key, 行高, row)`：行放在一个纵向 `ScrollView` 里，只建视口（加 overscan）盖到的行，底层是 Runtime 已有的保留式虚拟列表。滚走的行连同作用域一起回收，持有焦点或输入法组合的行保留。数据变化、滚动（`ScrollChanged`）和视口尺寸变化（`ScrollViewportChanged`，布局后发出）都会移动窗口。5 万行：挂载加布局加出窗口 2.4 ms，`each` 要 175 ms、每行常驻约 2.3 KB。行高默认固定；`.measured()` 让行按内容量高，给定的行高只作估计：新行出现后，下一次布局（`ScrollLaidOut`）量出真实高度并重新放置，视口顶部那一行保持不动。模板里写 `v-for` 加 `v-virtual="行高"`，按内容量高写 `v-virtual.measured` |
 | `when` | 条件变了才动：旧分支回收作用域并销毁，新分支建好后插入。`.visible(sig)` 则保留节点，只切 `layout.hidden`（对应 `v-show`） |
 | 回收 | 节点被销毁时（不管从哪条路径），`commit_mutations` 的清理段会回收它的绑定、结构副作用和锚定在它身上的作用域 |
 | 上下文 | `provide(value)` / `use_context::<T>()`：值挂在当前作用域上，下层作用域（包括之后才建出来的行和分支）沿父链读取，最近的提供者优先。只能在构建视图时读；事件处理器运行时不在任何作用域里 |
@@ -209,6 +209,7 @@ impl ApplicationState for App {
 | `v-if` / `v-else` | `when(cond, \|\| a).otherwise(\|\| b)` |
 | `v-show` | `.visible(sig)` |
 | `v-for` + `:key` | `each(items, key, row)` |
+| 长列表（虚拟滚动） | `each_virtual(items, key, 行高, row)`；模板里 `v-virtual="行高"` / `v-virtual.measured` |
 | `v-model` | `.model(sig)`（文本输入、滑块、复选框） |
 | props / emits | 函数参数 / `impl Fn(T)` 回调参数 |
 | slot / 具名 slot | `impl IntoView` 参数；`.vue` 里 `<slot name="x"/>` 与 `<template #x>` |
@@ -305,7 +306,7 @@ fn page() -> impl IntoView {
 - 闭包绑定每个各自装箱一次；只有 `view!` 能看到的整段模板，才有机会把同一节点的闭包合成一个。
 - 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`，外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
 
-控件表是唯一来源：每条写明模板标签、元素函数及其参数、可绑定字段和类型、`v-model` 对应的字段和事件、事件方法。运行时由它生成 setter、`model` 和事件方法；`view!` 和 `.vue` 编译器由它得知哪些标签是内置的、接受哪些属性。写错的属性名、不存在的事件、对没有 `v-model` 的控件写 `v-model`，都在编译模板时报出行列。数值字段接受 `max="100"` 这样的字面量，生成带类型后缀的常量。事件方法同时接受 `|| …` 和 `|e: &Event| …`。
+控件表是唯一来源：每条写明模板标签、元素函数及其参数、可绑定字段和类型、`v-model` 对应的字段和事件、事件方法。运行时由它生成 setter、`model` 和事件方法；`view!` 和 `.vue` 编译器由它得知哪些标签是内置的、接受哪些属性。写错的属性名、不存在的事件、对没有 `v-model` 的控件写 `v-model`，都在编译模板时报出行列。数值字段接受 `max="100"` 这样的字面量，生成带类型后缀的常量。没有数据的事件（`@activate`）接受 `|| …`；带数据的事件（`@change`、`@input`、`@submit`）接受 `|e| …`，`e` 的类型自动推断，不用标注。模板里的语句式写法两种都可以，编译器会生成对应的闭包。
 
 ## 不做的事
 

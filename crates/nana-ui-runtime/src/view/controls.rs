@@ -9,8 +9,8 @@ use super::prop::{FieldWrite, IntoProp};
 use super::reactive::Signal;
 use crate::{
     Activate, Button, Checkbox, Divider, ListItem, NodeStyle, NumberChanged, NumberInput, Progress,
-    RangeField, RangeInput, Select, SelectChanged, SelectOption, Spinner, Stack, Switch, Text,
-    TextArea, TextChanged, TextInput, ToggleChanged,
+    RangeChanged, RangeField, RangeInput, Select, SelectChanged, SelectOption, Spinner, Stack,
+    Switch, Text, TextArea, TextChanged, TextInput, TextSubmitted, ToggleChanged,
 };
 
 /// Components whose [`NodeStyle`] the view layer may write (visibility).
@@ -58,25 +58,6 @@ impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
     }
 }
 
-/// What a control's event method accepts: `|| …`, or `|event| …` with the
-/// event (annotate its type: `|e: &ToggleChanged| …`).
-#[doc(hidden)]
-pub trait EventHandler<E, Marker>: Send + 'static {
-    fn call(&mut self, event: &E);
-}
-
-impl<E, F: FnMut() + Send + 'static> EventHandler<E, ()> for F {
-    fn call(&mut self, _: &E) {
-        self()
-    }
-}
-
-impl<E, F: FnMut(&E) + Send + 'static> EventHandler<E, (E,)> for F {
-    fn call(&mut self, event: &E) {
-        self(event)
-    }
-}
-
 /// Expands the control table of `nana-ui-view-schema`: per control, one
 /// [`FieldWrite`] and `El` setter per field, `model` and event methods, and
 /// [`StyledComponent`] for `.visible`.
@@ -86,6 +67,7 @@ macro_rules! controls {
             $($field:ident: $ty:ty = $write:ident),* $(,)?
         }
         $(on { $($on:ident: $on_event:ident),* $(,)? })?
+        $(with { $($with:ident: $with_event:ident),* $(,)? })?
         $(model $model:ident: $model_ty:ty => $model_event:ident |$event:ident| $from_event:expr)?
         ;
     )*) => {$(
@@ -128,8 +110,15 @@ macro_rules! controls {
 
             $($(
                 /// `@` event of the template.
-                pub fn $on<M>(self, mut handler: impl EventHandler<$on_event, M>) -> Self {
-                    self.on(move |event: &$on_event| handler.call(event))
+                pub fn $on(self, mut handler: impl FnMut() + Send + 'static) -> Self {
+                    self.on(move |_: &$on_event| handler())
+                }
+            )*)?
+
+            $($(
+                /// `@` event of the template, with its value.
+                pub fn $with(self, handler: impl FnMut(&$with_event) + Send + 'static) -> Self {
+                    self.on(handler)
                 }
             )*)?
         }

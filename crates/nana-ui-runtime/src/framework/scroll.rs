@@ -144,6 +144,12 @@ impl AppContext {
         })
     }
 
+    /// Send `scroll` a [`ScrollLaidOut`] after the next layout pass of its
+    /// document.
+    pub(crate) fn notify_laid_out(&mut self, scroll: Entity<ScrollView>) {
+        self.laid_out_notices.insert(scroll.id);
+    }
+
     pub fn scroll_to(
         &mut self,
         entity: Entity<ScrollView>,

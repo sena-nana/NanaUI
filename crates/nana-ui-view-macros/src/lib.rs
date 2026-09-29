@@ -128,6 +128,12 @@ fn parse_attr(input: ParseStream) -> syn::Result<Attr> {
                 directive.push('-');
                 directive.push_str(&Ident::parse_any(input)?.to_string());
             }
+            // Modifiers: `v-virtual.measured`.
+            while input.peek(Token![.]) {
+                input.parse::<Token![.]>()?;
+                directive.push('.');
+                directive.push_str(&Ident::parse_any(input)?.to_string());
+            }
             AttrName::Directive(directive, first.span())
         } else {
             AttrName::Plain(first)

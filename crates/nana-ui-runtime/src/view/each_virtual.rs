@@ -6,7 +6,8 @@
 //! a fixed height inside a `ScrollView` and builds only those the viewport
 //! (plus overscan) covers, through the retained virtual list the Runtime
 //! already has: a row scrolled away is despawned with its scope, a row that
-//! holds focus or an IME composition is kept.
+//! holds focus or an IME composition is kept. With [`EachVirtual::measured`]
+//! rows size to their content, the given height only an estimate.
 
 use std::borrow::Cow;
 use std::hash::Hash;
@@ -20,8 +21,8 @@ use super::node::{IntoView, StructuralBinding, UNBUILT, ViewBuilder};
 use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey, Signal};
 use super::structural::{build_detached_into, build_scoped};
 use crate::{
-    AppContext, Entity, FrameworkError, List, MutationQueue, ScrollAxes, ScrollChanged, ScrollView,
-    ScrollViewportChanged, StableNodeId, Stack, VirtualListItems,
+    AppContext, Entity, FrameworkError, List, MutationQueue, ScrollAxes, ScrollChanged,
+    ScrollLaidOut, ScrollView, ScrollViewportChanged, StableNodeId, Stack, VirtualListItems,
 };
 
 /// `v-for` over many rows: see the module docs.
@@ -30,6 +31,7 @@ pub struct EachVirtual<T, K, S, KF, RF> {
     key_fn: KF,
     row_fn: RF,
     row_height: f32,
+    measured: bool,
     overscan: f32,
     scroll: ScrollView,
     key: Option<Cow<'static, str>>,
@@ -59,6 +61,7 @@ where
         key_fn: key,
         row_fn: row,
         row_height: row_height.max(1.0),
+        measured: false,
         overscan: row_height.max(1.0) * 4.0,
         scroll: ScrollView::new(ScrollAxes::Vertical),
         key: None,
@@ -72,6 +75,15 @@ impl<T, K, S, KF, RF> EachVirtual<T, K, S, KF, RF> {
     /// four rows).
     pub fn overscan(mut self, overscan: f32) -> Self {
         self.overscan = overscan.max(0.0);
+        self
+    }
+
+    /// Rows size to their content; the row height given is the estimate for
+    /// rows not measured yet. Each layout pass that shows new rows is
+    /// followed by one that places them at their measured heights, keeping
+    /// the row at the top of the viewport where it is.
+    pub fn measured(mut self) -> Self {
+        self.measured = true;
         self
     }
 
@@ -100,6 +112,7 @@ struct EachVirtualBinding<T, K, S, KF, RF> {
     state: VirtualListItems<K, Stack>,
     layout: VirtualListLayout,
     row_height: f32,
+    measured: bool,
     overscan: f32,
     keys: Vec<K>,
     index: HashMap<K, usize>,
@@ -154,21 +167,44 @@ where
             self.version += 1;
         }
         let (keys, index, row_fn, scope) = (&self.keys, &self.index, &self.row_fn, self.scope);
-        cx.sync_virtual_list_retained_with(
-            self.scroll,
-            self.list,
-            &mut self.state,
-            &self.layout,
-            self.overscan,
-            self.version,
-            &[],
-            |at| keys[at].clone(),
-            |key| index.get(key).copied(),
-            |_, _| Stack::column(0.0),
-            |cx, slot, at, _| {
-                mount_row(cx, slot.stable_id(), scope, || row_fn(items[at].1.clone()))
-            },
-        )?;
+        let key_at = |at: usize| keys[at].clone();
+        let index_of = |key: &K| index.get(key).copied();
+        let mount = |cx: &mut AppContext, slot: Entity<Stack>, at: usize, _: &K| {
+            mount_row(cx, slot.stable_id(), scope, || row_fn(items[at].1.clone()))
+        };
+        if self.measured {
+            cx.sync_virtual_list_measured_with(
+                self.scroll,
+                self.list,
+                &mut self.state,
+                &mut self.layout,
+                self.overscan,
+                self.version,
+                &[],
+                key_at,
+                index_of,
+                |_, _| Stack::column(0.0),
+                mount,
+            )?;
+            // Rows mounted now are measured after the next layout pass.
+            if self.state.pending_measure() {
+                cx.notify_laid_out(self.scroll);
+            }
+        } else {
+            cx.sync_virtual_list_retained_with(
+                self.scroll,
+                self.list,
+                &mut self.state,
+                &self.layout,
+                self.overscan,
+                self.version,
+                &[],
+                key_at,
+                index_of,
+                |_, _| Stack::column(0.0),
+                mount,
+            )?;
+        }
         Ok(())
     }
 }
@@ -218,6 +254,11 @@ where
         vb.ui.on(scroll, move |_, _: &ScrollViewportChanged, _| {
             moved.update(|at| *at += 1)
         });
+        if self.measured {
+            vb.ui.on(scroll, move |_, _: &ScrollLaidOut, _| {
+                moved.update(|at| *at += 1)
+            });
+        }
         let effect =
             reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, self.site);
         let binding = EachVirtualBinding {
@@ -228,9 +269,14 @@ where
             moved,
             scroll,
             list,
-            state: VirtualListItems::default(),
+            state: if self.measured {
+                VirtualListItems::measured()
+            } else {
+                VirtualListItems::default()
+            },
             layout: VirtualListLayout::new([]),
             row_height: self.row_height,
+            measured: self.measured,
             overscan: self.overscan,
             keys: Vec::new(),
             index: HashMap::new(),

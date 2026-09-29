@@ -28,8 +28,6 @@ mod structural;
 #[cfg(feature = "reactive-trace")]
 pub(crate) mod trace;
 
-#[doc(hidden)]
-pub use controls::EventHandler;
 pub use controls::{
     StyledComponent, button, checkbox, column, divider, list_item, number_input, progress, row,
     select, slider, spinner, switch, text, text_area, text_input,

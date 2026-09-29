@@ -16,8 +16,9 @@ pub struct Control {
     pub arguments: &'static [(&'static str, &'static str)],
     /// Bindable fields and their types.
     pub fields: &'static [(&'static str, &'static str)],
-    /// Event methods (`on_activate`).
-    pub events: &'static [&'static str],
+    /// Event methods (`on_activate`), and whether their handler takes the
+    /// event.
+    pub events: &'static [(&'static str, bool)],
     pub model: bool,
 }
 
@@ -49,6 +50,7 @@ macro_rules! table {
             $($field:ident: $ty:ty = $write:ident),* $(,)?
         }
         $(on { $($on:ident: $on_event:ident),* $(,)? })?
+        $(with { $($with:ident: $with_event:ident),* $(,)? })?
         $(model $model:ident: $model_ty:ty => $model_event:ident |$event:ident| $from_event:expr)?
         ;
     )*) => {
@@ -58,7 +60,7 @@ macro_rules! table {
             function: stringify!($function),
             arguments: &[$((stringify!($argument), stringify!($kind))),*],
             fields: &[$((stringify!($field), stringify!($ty))),*],
-            events: &[$($(stringify!($on)),*)?],
+            events: &[$($((stringify!($on), false)),*)? $($((stringify!($with), true)),*)?],
             model: table!(@model $($model)?),
         }),*];
     };
@@ -241,10 +243,19 @@ fn raw(value: &AttrValue, span: Span) -> syn::Result<TokenStream> {
 /// An event handler: a closure or function value as is, any other
 /// expression run as a statement.
 pub fn handler(value: &AttrValue, span: Span) -> syn::Result<TokenStream> {
+    event_handler(value, false, span)
+}
+
+/// [`handler`] for an event whose handler takes the event: a statement
+/// ignores it.
+fn event_handler(value: &AttrValue, takes_event: bool, span: Span) -> syn::Result<TokenStream> {
     match value {
         AttrValue::Expr(Expr::Closure(closure)) => Ok(quote!(#closure)),
         // A function or closure value: `@activate={add}`.
         AttrValue::Expr(expr @ (Expr::Path(_) | Expr::Field(_))) => Ok(quote!(#expr)),
+        AttrValue::Expr(expr) if takes_event => {
+            Ok(quote_spanned!(expr.span()=> move |_| { #expr; }))
+        }
         AttrValue::Expr(expr) => Ok(quote_spanned!(expr.span()=> move || { #expr; })),
         AttrValue::Verbatim(tokens) => Ok(tokens.clone()),
         _ => Err(syn::Error::new(span, "an event handler is `{expression}`")),
@@ -455,6 +466,34 @@ impl Gen<'_> {
         })?;
         let key = raw(&key.value, element.name.span())?;
         let row = self.single(element)?;
+        // `v-virtual="row height"`: build only the rows in view;
+        // `v-virtual.measured`: rows size to their content.
+        if let Some((directive, attr)) = element.attrs.iter().find_map(|attr| match &attr.name {
+            AttrName::Directive(directive, _) if directive.split('.').next() == Some("virtual") => {
+                Some((directive, attr))
+            }
+            _ => None,
+        }) {
+            let height = number(&attr.value, "f32", element.name.span())?;
+            let measured = match directive.split_once('.') {
+                None => quote!(),
+                Some((_, "measured")) => quote!(.measured()),
+                Some((_, other)) => {
+                    return Err(syn::Error::new(
+                        element.name.span(),
+                        format!("unknown modifier `v-virtual.{other}`"),
+                    ));
+                }
+            };
+            return Ok(quote! {
+                #krate::view::each_virtual(
+                    #source,
+                    move |__nana_item: &_| { let #pattern = __nana_item; #key },
+                    #height,
+                    move |#pattern| #row,
+                )#measured
+            });
+        }
         Ok(quote! {
             #krate::view::each(
                 #source,
@@ -570,15 +609,21 @@ impl Gen<'_> {
                 }
                 AttrName::Event(event) => {
                     let method = format_ident!("on_{}", event, span = event.span());
-                    if let Some(control) = control
-                        && !control.events.contains(&method.to_string().as_str())
-                    {
-                        return Err(syn::Error::new(
-                            event.span(),
-                            format!("`<{tag}>` has no event `@{event}`"),
-                        ));
-                    }
-                    let handler = handler(&attr.value, event.span())?;
+                    let takes_event = match control {
+                        Some(control) => control
+                            .events
+                            .iter()
+                            .find(|(name, _)| method == name)
+                            .map(|(_, takes_event)| *takes_event)
+                            .ok_or_else(|| {
+                                syn::Error::new(
+                                    event.span(),
+                                    format!("`<{tag}>` has no event `@{event}`"),
+                                )
+                            })?,
+                        None => false,
+                    };
+                    let handler = event_handler(&attr.value, takes_event, event.span())?;
                     out = quote!(#out.#method(#handler));
                 }
                 AttrName::On(event) => {
@@ -601,6 +646,11 @@ impl Gen<'_> {
                         out = quote_spanned!(*span=> #out.model(#signal));
                     }
                     "if" | "else-if" | "else" | "for" => {}
+                    virtual_rows if virtual_rows.split('.').next() == Some("virtual") => {
+                        if element.directive("for").is_none() {
+                            return Err(syn::Error::new(*span, "`v-virtual` goes with `v-for`"));
+                        }
+                    }
                     other => {
                         return Err(syn::Error::new(
                             *span,
@@ -632,7 +682,8 @@ impl Gen<'_> {
                     value => raw(value, name.span())?,
                 }),
                 AttrName::Directive(directive, _)
-                    if matches!(directive.as_str(), "if" | "else-if" | "else" | "for") => {}
+                    if matches!(directive.as_str(), "if" | "else-if" | "else" | "for")
+                        || directive.split('.').next() == Some("virtual") => {}
                 _ => {
                     return Err(syn::Error::new(
                         span,

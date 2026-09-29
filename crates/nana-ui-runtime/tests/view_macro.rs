@@ -335,3 +335,27 @@ fn table_controls_take_their_attributes_in_templates() {
         (true, "通知".to_owned())
     );
 }
+
+#[test]
+fn v_virtual_in_a_template_mounts_a_virtual_list() {
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
+            view! {
+                <Text v-for={n in rows} key={*n} v-virtual={20}>"行 {n}"</Text>
+            }
+        })
+        .unwrap();
+    let scroll = mounted.roots()[0];
+    assert!(
+        cx.read(
+            Entity::<nana_ui_runtime::ScrollView>::from_stable_id(scroll),
+            |_| ()
+        )
+        .is_ok(),
+        "the rows live in a ScrollView"
+    );
+}

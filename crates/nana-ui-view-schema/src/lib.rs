@@ -14,7 +14,8 @@
 //!     field: FieldType = write,      // write: set | text_state | assign
 //!     …
 //! }
-//! [on { on_event_name: EventType, … }]
+//! [on { on_event_name: EventType, … }]        // handlers take no argument
+//! [with { on_event_name: EventType, … }]      // handlers take `&EventType`
 //! [model field: FieldType => EventType |event| value_from_event]
 //! ;
 //! ```
@@ -42,6 +43,7 @@ macro_rules! for_each_control {
                 checked: bool = set,
                 disabled: bool = set,
             }
+            with { on_change: ToggleChanged }
             model checked: bool => ToggleChanged |event| event.checked;
             Switch => switch(label: text) for Switch {
                 label: String = set,
@@ -49,17 +51,20 @@ macro_rules! for_each_control {
                 disabled: bool = set,
                 loading: bool = set,
             }
+            with { on_change: ToggleChanged }
             model checked: bool => ToggleChanged |event| event.checked;
             Slider => slider(min: f64, max: f64, step: f64) for RangeField {
                 value: f64 = set,
                 disabled: bool = set,
             }
+            with { on_input: RangeInput, on_change: RangeChanged }
             model value: f64 => RangeInput |event| event.value;
             TextInput => text_input() for TextInput {
                 value: String = text_state,
                 placeholder: Arc<str> = set,
                 disabled: bool = set,
             }
+            with { on_input: TextChanged, on_submit: TextSubmitted }
             model value: String => TextChanged |event| event.value.to_string();
             TextArea => text_area() for TextArea {
                 value: String = text_state,
@@ -67,6 +72,7 @@ macro_rules! for_each_control {
                 disabled: bool = set,
                 read_only: bool = set,
             }
+            with { on_input: TextChanged }
             model value: String => TextChanged |event| event.value.to_string();
             NumberInput => number_input() for NumberInput {
                 value: f64 = assign,
@@ -74,6 +80,7 @@ macro_rules! for_each_control {
                 disabled: bool = set,
                 read_only: bool = set,
             }
+            with { on_change: NumberChanged }
             model value: f64 => NumberChanged |event| event.value;
             Select => select() for Select {
                 value: Option<Arc<str>> = set,
@@ -82,6 +89,7 @@ macro_rules! for_each_control {
                 disabled: bool = set,
                 loading: bool = set,
             }
+            with { on_change: SelectChanged }
             model value: Option<Arc<str>> => SelectChanged |event| Some(event.value.clone());
             ListItem => list_item(label: text) for ListItem {
                 label: String = set,
