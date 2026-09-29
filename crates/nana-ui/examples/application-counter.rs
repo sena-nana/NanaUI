@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use nana_ui::runtime::{Activate, Button, Entity, FrameworkError, List, Text};
+use nana_ui::runtime::view::{button, entity_ref, text, widget, with_refs};
+use nana_ui::runtime::{Activate, Entity, FrameworkError, List, Text};
 use nana_ui::{
     ApplicationIdentity, ApplicationState, ApplicationWindow, DiagnosticsConfig, NanaApplication,
     RuntimeApplication, RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor,
@@ -31,19 +32,20 @@ impl ApplicationState for Counter {
     ) -> Result<(), Self::Error> {
         let id = context.window_id();
         let document = window.document.document();
-        let label = window.document.context_mut().build(document, |ui| {
-            ui.with("counter", List::new(), |ui| {
-                let label = ui.child("value", Text::new("0"));
-                let increment = ui.child("increment", Button::new("增加"));
-                // `dispatch_program_all`, not `dispatch_program`: the message
-                // type is `WindowId`, so coalescing by type would drop every
-                // click but the last whenever two land in the same frame.
-                ui.on(increment, move |_, _: &Activate, cx| {
-                    cx.dispatch_program_all(id)
-                });
-                label
-            })
-        })?;
+        let (_, label) = window
+            .document
+            .context_mut()
+            .mount_view_root(document, || {
+                let label = entity_ref::<Text>();
+                let counter = widget(List::new()).children((
+                    text("0").entity_ref(label),
+                    // `dispatch_program_all`, not `dispatch_program`: the message
+                    // type is `WindowId`, so coalescing by type would drop every
+                    // click but the last whenever two land in the same frame.
+                    button("增加").on_cx(move |_, _: &Activate, cx| cx.dispatch_program_all(id)),
+                ));
+                with_refs(counter, label)
+            })?;
         self.values.insert(id, (0, label));
         Ok(())
     }

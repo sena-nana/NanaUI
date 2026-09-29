@@ -2348,3 +2348,77 @@ fn entity_refs_and_context_handlers_serve_code_that_works_by_hand() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].downcast_ref::<Pressed>(), Some(&Pressed(1)));
 }
+
+#[test]
+fn with_refs_hands_back_resolved_entities_or_fails_whole() {
+    let (mut cx, document, _) = setup();
+    let (view, (label, [first, second])) = cx
+        .mount_view_root(document, || {
+            let label = entity_ref::<Text>();
+            let buttons = [entity_ref::<Button>(), entity_ref::<Button>()];
+            with_refs(
+                column().children((
+                    text("标题").entity_ref(label),
+                    button("一").entity_ref(buttons[0]),
+                    button("二").entity_ref(buttons[1]),
+                )),
+                (label, buttons),
+            )
+        })
+        .unwrap();
+    assert_eq!(text_of(&cx, label), "标题");
+    assert_eq!(cx.read(second, |b| b.label.clone()).unwrap(), "二");
+    assert_eq!(
+        children(&cx, view.roots()[0]),
+        [label.stable_id(), first.stable_id(), second.stable_id()]
+    );
+
+    let before = cx.world().len();
+    let error = cx
+        .mount_view_root(document, || {
+            let hidden = entity_ref::<Text>();
+            with_refs(
+                column().children(when(false, move || text("不在").entity_ref(hidden))),
+                hidden,
+            )
+        })
+        .err();
+    assert_eq!(error, Some(crate::FrameworkError::InvalidInput));
+    assert_eq!(cx.world().len(), before, "a failed mount leaves nothing");
+}
+
+#[test]
+fn list_item_slots_in_a_view_are_the_slots_set_by_hand() {
+    use crate::{ListItem, ListItemSlots};
+    let (mut cx, document, _) = setup();
+    let item = cx
+        .create_component(document, ListItem::new("文件"))
+        .unwrap();
+    let lead = cx.create_component(document, Text::new("▸")).unwrap();
+    let tail = cx.create_component(document, Text::new("3")).unwrap();
+    cx.set_list_item_slots(
+        item,
+        ListItemSlots {
+            leading: Some(lead.stable_id()),
+            content: None,
+            trailing: Some(tail.stable_id()),
+        },
+    )
+    .unwrap();
+    let view = cx
+        .mount_view_root(document, || {
+            widget(ListItem::new("文件"))
+                .leading(text("▸"))
+                .trailing(text("3"))
+        })
+        .unwrap();
+    let viewed = view.roots()[0];
+    assert_eq!(shape(&cx, viewed), shape(&cx, item.stable_id()));
+    let slots = cx
+        .read(Entity::<ListItem>::from_stable_id(viewed), |item| {
+            item.slots
+        })
+        .unwrap();
+    assert_eq!(slots.leading, Some(children(&cx, viewed)[0]));
+    assert_eq!(slots.trailing, Some(children(&cx, viewed)[1]));
+}

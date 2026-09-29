@@ -387,3 +387,37 @@ pub(crate) fn edit_control(
     nana_ui_view_schema::for_each_control!(editors);
     None
 }
+
+macro_rules! item_slots {
+    ($($component:ty),*) => {$(
+        /// A list row's slots, as its own children: give them in the order
+        /// leading, content, trailing.
+        impl<K> El<$component, K> {
+            /// Before the label (an icon, a check).
+            pub fn leading(self, view: impl super::IntoView) -> Self {
+                self.child_slot(view, |mut item: $component, id| {
+                    item.slots.leading = Some(id);
+                    item
+                })
+            }
+
+            /// In place of the label.
+            pub fn content(self, view: impl super::IntoView) -> Self {
+                self.child_slot(view, |mut item: $component, id| {
+                    item.slots.content = Some(id);
+                    item
+                })
+            }
+
+            /// After the label (a count, a shortcut, a control).
+            pub fn trailing(self, view: impl super::IntoView) -> Self {
+                self.child_slot(view, |mut item: $component, id| {
+                    item.slots.trailing = Some(id);
+                    item
+                })
+            }
+        }
+    )*};
+}
+
+item_slots!(ListItem, crate::SidebarRow);

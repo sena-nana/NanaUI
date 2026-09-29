@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::view::reactive::{self as rx, EffectKey, EffectTarget, ScopeKey};
-use crate::view::{IntoView, NodePatch, StructuralBinding, ViewBuilder, ViewParts, ViewState};
+use crate::view::{Mount, NodePatch, Refs, StructuralBinding, ViewBuilder, ViewParts, ViewState};
 use crate::{AnimatableProperty, AnimationFillMode, AnimationId, Easing, MotionValue};
 
 /// Rounds a flush runs before it gives up on effects that keep re-queueing
@@ -164,11 +164,11 @@ impl AppContext {
     ///
     /// `view` runs inside the mount's scope, so the signals it and the
     /// components it calls create are disposed with the mount.
-    pub fn mount_view<V: IntoView>(
+    pub fn mount_view<M: Mount>(
         &mut self,
         parent: StableNodeId,
-        view: impl FnOnce() -> V,
-    ) -> Result<MountedView, FrameworkError> {
+        view: impl FnOnce() -> M,
+    ) -> Result<M::Output, FrameworkError> {
         let document = self
             .world
             .node(parent)
@@ -178,38 +178,40 @@ impl AppContext {
     }
 
     /// Like [`Self::mount_view`], with the view's roots as document roots.
-    pub fn mount_view_root<V: IntoView>(
+    pub fn mount_view_root<M: Mount>(
         &mut self,
         document: DocumentId,
-        view: impl FnOnce() -> V,
-    ) -> Result<MountedView, FrameworkError> {
+        view: impl FnOnce() -> M,
+    ) -> Result<M::Output, FrameworkError> {
         self.mount_view_in(document, None, view, false)
     }
 
     /// Like [`Self::mount_view_root`], with the roots parked: in no tree
     /// until something places them (a composite's slot given by id, a
     /// later `reconcile_children`).
-    pub fn mount_view_detached<V: IntoView>(
+    pub fn mount_view_detached<M: Mount>(
         &mut self,
         document: DocumentId,
-        view: impl FnOnce() -> V,
-    ) -> Result<MountedView, FrameworkError> {
+        view: impl FnOnce() -> M,
+    ) -> Result<M::Output, FrameworkError> {
         self.mount_view_in(document, None, view, true)
     }
 
-    fn mount_view_in<V: IntoView>(
+    fn mount_view_in<M: Mount>(
         &mut self,
         document: DocumentId,
         parent: Option<StableNodeId>,
-        view: impl FnOnce() -> V,
+        view: impl FnOnce() -> M,
         park: bool,
-    ) -> Result<MountedView, FrameworkError> {
+    ) -> Result<M::Output, FrameworkError> {
         let tag = self.reactive.tag;
         let scope = rx::create_scope(rx::current_scope());
+        let mut refs = None;
         let build = |ui: &mut UiBuilder<'_>| {
             let mut st = ViewState::new(tag);
             let roots = rx::with_scope(scope, || {
-                let view = view();
+                let (view, made) = view().split();
+                refs = Some(made);
                 ViewBuilder { ui, st: &mut st }.build_collect(view)
             });
             (roots, st.parts)
@@ -253,7 +255,16 @@ impl AppContext {
             self.reactive.anchors.insert(*root, scope);
         }
         rx::run_mounted(self);
-        Ok(MountedView { roots, scope })
+        let mounted = MountedView { roots, scope };
+        // Every ref names an element that was built, or the caller asked
+        // for a node that is not there.
+        match refs.and_then(Refs::resolve) {
+            Some(refs) => Ok(M::finish(mounted, refs)),
+            None => {
+                mounted.unmount(self)?;
+                Err(FrameworkError::InvalidInput)
+            }
+        }
     }
 
     pub(crate) fn reactive_tag(&self) -> u64 {

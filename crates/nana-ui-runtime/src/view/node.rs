@@ -403,6 +403,128 @@ tuple_views!(A, B, C, D, E, F, G, H, I, J);
 tuple_views!(A, B, C, D, E, F, G, H, I, J, K);
 tuple_views!(A, B, C, D, E, F, G, H, I, J, K, L);
 
+/// A view and the refs its mount hands back resolved: the closure given to
+/// [`AppContext::mount_view_root`] (and the other mounts) may return
+/// `with_refs(tree, (label, ok))`, and the mount then returns the
+/// [`MountedView`](crate::MountedView) with `(Entity<Text>, Entity<Button>)`.
+pub struct WithRefs<V, R> {
+    view: V,
+    refs: R,
+}
+
+/// See [`WithRefs`]. Make the refs inside the closure: they are signals, and
+/// there they belong to the mount.
+pub fn with_refs<V: IntoView, R: Refs>(view: V, refs: R) -> WithRefs<V, R> {
+    WithRefs { view, refs }
+}
+
+/// Refs a mount resolves once the tree is built: an [`EntityRef<C>`] becomes
+/// its `Entity<C>`, a [`NodeRef`] its node id, and tuples, arrays and `Vec`s
+/// of them the same shape of results. `None` when an element was not built
+/// (one under a `when` that did not hold).
+pub trait Refs {
+    type Resolved;
+    fn resolve(self) -> Option<Self::Resolved>;
+}
+
+impl<C: View> Refs for EntityRef<C> {
+    type Resolved = Entity<C>;
+    fn resolve(self) -> Option<Entity<C>> {
+        self.get()
+    }
+}
+
+impl Refs for NodeRef {
+    type Resolved = StableNodeId;
+    fn resolve(self) -> Option<StableNodeId> {
+        self.get_untracked()
+    }
+}
+
+impl Refs for () {
+    type Resolved = ();
+    fn resolve(self) -> Option<()> {
+        Some(())
+    }
+}
+
+impl<R: Refs, const N: usize> Refs for [R; N] {
+    type Resolved = [R::Resolved; N];
+    fn resolve(self) -> Option<Self::Resolved> {
+        let resolved: Vec<_> = self.into_iter().map(Refs::resolve).collect::<Option<_>>()?;
+        resolved.try_into().ok()
+    }
+}
+
+impl<R: Refs> Refs for Vec<R> {
+    type Resolved = Vec<R::Resolved>;
+    fn resolve(self) -> Option<Self::Resolved> {
+        self.into_iter().map(Refs::resolve).collect()
+    }
+}
+
+macro_rules! tuple_refs {
+    ($($name:ident),+) => {
+        impl<$($name: Refs),+> Refs for ($($name,)+) {
+            type Resolved = ($($name::Resolved,)+);
+            #[allow(non_snake_case)]
+            fn resolve(self) -> Option<Self::Resolved> {
+                let ($($name,)+) = self;
+                Some(($($name.resolve()?,)+))
+            }
+        }
+    };
+}
+
+tuple_refs!(A);
+tuple_refs!(A, B);
+tuple_refs!(A, B, C);
+tuple_refs!(A, B, C, D);
+tuple_refs!(A, B, C, D, E);
+tuple_refs!(A, B, C, D, E, F);
+tuple_refs!(A, B, C, D, E, F, G);
+tuple_refs!(A, B, C, D, E, F, G, H);
+
+/// What a mount's closure returns: a view (the mount returns a
+/// [`MountedView`](crate::MountedView)), or [`with_refs`] (it returns the
+/// mounted view and the resolved refs).
+pub trait Mount {
+    #[doc(hidden)]
+    type View: IntoView;
+    #[doc(hidden)]
+    type Refs: Refs;
+    #[doc(hidden)]
+    type Output;
+    #[doc(hidden)]
+    fn split(self) -> (Self::View, Self::Refs);
+    #[doc(hidden)]
+    fn finish(mounted: crate::MountedView, refs: <Self::Refs as Refs>::Resolved) -> Self::Output;
+}
+
+impl<V: IntoView> Mount for V {
+    type View = V;
+    type Refs = ();
+    type Output = crate::MountedView;
+    fn split(self) -> (V, ()) {
+        (self, ())
+    }
+    fn finish(mounted: crate::MountedView, _: ()) -> crate::MountedView {
+        mounted
+    }
+}
+
+impl<V: IntoView, R: Refs> Mount for WithRefs<V, R> {
+    type View = V;
+    type Refs = R;
+    type Output = (crate::MountedView, R::Resolved);
+    fn split(self) -> (V, R) {
+        (self.view, self.refs)
+    }
+    fn finish(mounted: crate::MountedView, refs: R::Resolved) -> Self::Output {
+        (mounted, refs)
+    }
+}
+
 /// The children [`El::with`] collects.
 pub struct Children(Vec<AnyView>);
 
