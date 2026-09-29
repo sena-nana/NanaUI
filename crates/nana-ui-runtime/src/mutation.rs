@@ -103,6 +103,12 @@ pub enum UiMutation {
         id: StableNodeId,
         accessibility: AccessibilityState,
     },
+    /// Name `id` for assistive technology by `label`'s text when it has no
+    /// label of its own (`aria-labelledby`); `None` removes the relation.
+    SetLabelledBy {
+        id: StableNodeId,
+        label: Option<StableNodeId>,
+    },
     SetSurfaceOpen {
         id: StableNodeId,
         open: bool,
@@ -356,6 +362,15 @@ impl MutationQueue {
     pub fn set_accessibility(&mut self, id: StableNodeId, accessibility: AccessibilityState) {
         self.mutations
             .push(UiMutation::SetAccessibility { id, accessibility });
+    }
+
+    /// Let `label`'s text name `id` when `id` has no label of its own: a
+    /// composite whose label sits beside the control it holds (a settings
+    /// row's switch). The relation belongs to the composite, not to the
+    /// control's own [`AccessibilityState`], so the control re-projecting
+    /// its state keeps it.
+    pub fn set_labelled_by(&mut self, id: StableNodeId, label: Option<StableNodeId>) {
+        self.mutations.push(UiMutation::SetLabelledBy { id, label });
     }
 
     pub fn set_overlay_host(&mut self, host: StableNodeId, state: OverlayHostState) {

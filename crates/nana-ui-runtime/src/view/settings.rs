@@ -191,6 +191,68 @@ mod tests {
         );
     }
 
+    /// The row's label names the control it holds for assistive technology,
+    /// and follows the row's label; a control with a label of its own keeps
+    /// it, and a select is named by its row, not by the option it shows.
+    #[test]
+    fn a_row_label_names_the_control_it_holds() {
+        use crate::view::{IntoView, column, select};
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let label = signal(Arc::<str>::from("深色模式"));
+        let view = cx
+            .mount_view_root(document, move || {
+                column()
+                    .children((
+                        settings_row(label).control(switch("")),
+                        settings_row("通知").control(switch("静音")),
+                        settings_row("字号").control(
+                            select()
+                                .options(vec![crate::SelectOption::new("m", "中")])
+                                .value(Some(Arc::from("m"))),
+                        ),
+                    ))
+                    .into_any()
+            })
+            .unwrap();
+        cx.layout_document(document, crate::LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        let rows = children(&cx, view.roots()[0]);
+        let control = |cx: &AppContext, row: StableNodeId| {
+            cx.read(Entity::<SettingsRow>::from_stable_id(row), |row| {
+                row.control.unwrap()
+            })
+            .unwrap()
+        };
+        let name = |cx: &AppContext, id: StableNodeId| {
+            cx.world()
+                .project_accessibility(document)
+                .into_iter()
+                .find(|node| node.id == id)
+                .and_then(|node| node.label.map(|label| label.to_string()))
+        };
+        let (dark, mute, size) = (
+            control(&cx, rows[0]),
+            control(&cx, rows[1]),
+            control(&cx, rows[2]),
+        );
+        assert_eq!(name(&cx, dark).as_deref(), Some("深色模式"));
+        assert_eq!(name(&cx, mute).as_deref(), Some("静音"));
+        assert_eq!(name(&cx, size).as_deref(), Some("字号"));
+
+        cx.take_system_work();
+        label.set(Arc::from("HDR"));
+        cx.flush_reactive().unwrap();
+        let work = cx.take_system_work();
+        let delta = cx.world().project_accessibility_delta(&work);
+        let renamed = delta.updated.iter().find(|node| node.id == dark);
+        assert_eq!(
+            renamed.and_then(|node| node.label.as_deref()),
+            Some("HDR"),
+            "the control is projected again when the label it is named by changes"
+        );
+    }
+
     #[test]
     fn a_view_row_matches_a_leaf_row_node_for_node() {
         let document = DocumentId::new(1).unwrap();

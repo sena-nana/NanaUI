@@ -59,6 +59,8 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 `SettingsRow::stack_below(480.0)` 可选开启按**该行实际布局宽度**的响应式排列：小于阈值时标签与控件上下排列，等于或大于时同行。默认未开启，`stacked(true)` 始终上下排列；无效阈值视为未开启。控件节点不重建，容器调整宽度由 Runtime 布局回流处理，应用不需要每帧扫描行。Vue 对应 `NanaSettingsRow` 的 `stackBelow` 属性。
 
+设置行的标签给它放的控件起无障碍名字：`SettingsRow` 装配时（视图里的 `settings_row(..).control(..)`、`mount_settings_leaf_row`、`AppearanceSection` 的各行）用 `MutationQueue::set_labelled_by(控件, 标签节点)` 把两者关联起来。控件自己有非空的名字时用它自己的（`switch("静音")`），没有时（`switch("")`、分段控件、滑块、下拉选择）用行标签；行标签改了，控件的无障碍节点跟着重新投影。这层关联归组合控件所有，存在 `UiWorld` 里，不是控件 `AccessibilityState` 的一部分，所以控件重新投影自己的状态不会冲掉它；任一端被销毁时关联一起去掉。`Select` 的无障碍名字因此不再取它显示的选项：没人给它起名时仍按显示的文字命名，显示的选项是它的值（`value`）。
+
 `mount_settings_leaf_row` 保留标签、提示和控件槽，初始没有提示也可以随后通过 `update_component(row, |row, _| row.hint = Some(...))` 显示提示，设置 `None` 隐藏。`assemble_appearance_section` 刷新已有行时保留应用设置的 `stack_below` 与 `stacked`。
 
 

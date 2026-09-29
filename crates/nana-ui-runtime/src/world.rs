@@ -721,6 +721,12 @@ pub struct UiWorld {
     /// never touches `stamp_component_type`.
     nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>,
     overlay_dependents: HashMap<StableNodeId, HashSet<StableNodeId>, BuildIdHasher>,
+    /// `control -> label`: the node whose text names a control that has no
+    /// label of its own ([`MutationQueue::set_labelled_by`]).
+    labelled_by: HashMap<StableNodeId, StableNodeId, BuildIdHasher>,
+    /// `label -> controls` it names: projected again when its text changes,
+    /// and let go of with it.
+    labels: HashMap<StableNodeId, HashSet<StableNodeId>, BuildIdHasher>,
     /// Nodes visited by mutation validation since the last drain, summed over
     /// every commit the next frame will consume. Validation must scale with the
     /// batch, not the retained world; this is the sentinel for that invariant.
@@ -836,6 +842,8 @@ impl UiWorld {
             overlay_hosts_by_document: HashMap::default(),
             nodes_by_component: HashMap::new(),
             overlay_dependents: HashMap::default(),
+            labelled_by: HashMap::default(),
+            labels: HashMap::default(),
             validation_nodes_scanned: 0,
             palette_epoch: 1,
             structural_change_parents: Vec::new(),
@@ -1769,6 +1777,41 @@ impl UiWorld {
 
     pub fn accessibility(&self, id: StableNodeId) -> Option<&AccessibilityState> {
         self.nodes.get(id).map(|node| &node.accessibility)
+    }
+
+    /// The node whose text names `id` when it has no label of its own; see
+    /// [`MutationQueue::set_labelled_by`].
+    pub fn labelled_by(&self, id: StableNodeId) -> Option<StableNodeId> {
+        self.labelled_by.get(&id).copied()
+    }
+
+    /// Relate `id` to the node that names it, or drop the relation.
+    fn set_labelled_by(&mut self, id: StableNodeId, label: Option<StableNodeId>) {
+        if let Some(previous) = self.labelled_by.remove(&id)
+            && let Some(controls) = self.labels.get_mut(&previous)
+        {
+            controls.remove(&id);
+            if controls.is_empty() {
+                self.labels.remove(&previous);
+            }
+        }
+        if let Some(label) = label {
+            self.labelled_by.insert(id, label);
+            self.labels.entry(label).or_default().insert(id);
+        }
+    }
+
+    /// Drop every naming relation `id` is an end of: it is gone.
+    fn forget_labelled_by(&mut self, id: StableNodeId) {
+        self.set_labelled_by(id, None);
+        if let Some(controls) = self.labels.remove(&id) {
+            for control in controls {
+                self.labelled_by.remove(&control);
+                if self.nodes.contains(control) {
+                    self.mark(control, DirtyMask::ACCESSIBILITY);
+                }
+            }
+        }
     }
 
     pub fn overlay_host(&self, id: StableNodeId) -> Option<OverlayHostState> {

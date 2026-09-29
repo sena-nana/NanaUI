@@ -196,6 +196,19 @@ impl UiWorld {
 mod viewport_tests;
 
 impl UiWorld {
+    /// What `id` says to assistive technology as the name of a node it
+    /// labels: its own label, or its text.
+    fn accessible_text(&self, id: StableNodeId) -> Option<Arc<str>> {
+        let node = self.nodes.get(id)?;
+        node.accessibility
+            .label
+            .clone()
+            .filter(|label| !label.is_empty())
+            .or_else(|| {
+                (!node.text.value.is_empty()).then(|| Arc::<str>::from(node.text.value.as_str()))
+            })
+    }
+
     fn project_accessibility_node(
         &self,
         id: StableNodeId,
@@ -248,10 +261,21 @@ impl UiWorld {
             self.nodes.visual(id),
             Some(StandardVisual::TextInput { secure: true, .. })
         );
-        // A password field's text is its secret, not a name for it.
-        let label = state.label.clone().or_else(|| {
-            (!secure && !text_value.is_empty()).then(|| Arc::<str>::from(text_value.as_str()))
-        });
+        // A node another one names (a settings row's label beside its
+        // switch) keeps a label of its own first, as `aria-label` wins over
+        // `aria-labelledby`; an empty one names nothing. Its own text (a
+        // select's shown option) is its value then, not its name.
+        let label = match self.labelled_by(id) {
+            Some(source) if visible => state
+                .label
+                .clone()
+                .filter(|label| !label.is_empty())
+                .or_else(|| self.accessible_text(source)),
+            // A password field's text is its secret, not a name for it.
+            _ => state.label.clone().or_else(|| {
+                (!secure && !text_value.is_empty()).then(|| Arc::<str>::from(text_value.as_str()))
+            }),
+        };
         let bounds = self.visible_accessibility_bounds(id, memo)?;
         Some(AccessibilityNode {
             id,
@@ -330,6 +354,14 @@ impl UiWorld {
         // `BTreeSet` pays a tree insert and node allocation per id to do that;
         // sorting a flat vec once yields the identical sequence for far less.
         let mut affected = work.accessibility.clone();
+        // A node named by another one's text is projected again with it.
+        let named = affected
+            .iter()
+            .filter_map(|id| self.labels.get(id))
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        affected.extend(named);
         let mut pending = work
             .input_hit_test
             .iter()

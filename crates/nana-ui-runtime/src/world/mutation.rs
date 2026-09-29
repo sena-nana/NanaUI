@@ -369,6 +369,12 @@ impl<'a> ValidationPlan<'a> {
                         self.accessibility.insert(*id, accessibility.clone());
                     }
                 }
+                UiMutation::SetLabelledBy { id, label } => {
+                    self.require_exists(*id)?;
+                    if let Some(label) = label {
+                        self.require_exists(*label)?;
+                    }
+                }
                 UiMutation::SetSurfaceOpen { id, open, .. } => {
                     self.require_exists(*id)?;
                     self.surface_open.insert(*id, *open);
@@ -1303,6 +1309,7 @@ impl UiWorld {
                     }
                     self.write_overlay_host(id, None);
                     self.reindex_component(id, None);
+                    self.forget_labelled_by(id);
                     let _removed = self.nodes.remove(id);
                     self.input.focus_scopes.retain(|root, target| {
                         if *target == Some(id) {
@@ -1798,6 +1805,12 @@ impl UiWorld {
                             | DirtyMask::ACCESSIBILITY
                             | DirtyMask::RENDER,
                     );
+                }
+            }
+            UiMutation::SetLabelledBy { id, label } => {
+                if self.labelled_by(*id) != *label {
+                    self.set_labelled_by(*id, *label);
+                    self.mark(*id, DirtyMask::ACCESSIBILITY);
                 }
             }
             UiMutation::SetAccessibility { id, accessibility } => {

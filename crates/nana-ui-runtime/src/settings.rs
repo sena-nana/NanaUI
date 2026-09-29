@@ -1418,6 +1418,33 @@ fn document_of(
         .ok_or(FrameworkError::MissingView(id))
 }
 
+/// Let a settings row's label name the control it holds for assistive
+/// technology; a control with a label of its own keeps that. A control that
+/// left the row (`previous` children) stops being named by it.
+fn label_row_control(
+    context: &mut AppContext,
+    label: StableNodeId,
+    control: Option<StableNodeId>,
+    previous: &[StableNodeId],
+) -> Result<(), FrameworkError> {
+    let mut queue = MutationQueue::new();
+    let world = context.world();
+    for &old in previous {
+        if Some(old) != control && world.labelled_by(old) == Some(label) {
+            queue.set_labelled_by(old, None);
+        }
+    }
+    if let Some(control) = control
+        && world.labelled_by(control) != Some(label)
+    {
+        queue.set_labelled_by(control, Some(label));
+    }
+    if !queue.is_empty() {
+        context.commit_mutations(queue)?;
+    }
+    Ok(())
+}
+
 fn reconcile_children<C: ComponentView>(
     context: &mut AppContext,
     parent: Entity<C>,
@@ -1562,7 +1589,13 @@ fn mount_settings_row(
         copy,
         &[label_text.stable_id(), hint_text.stable_id()],
     )?;
+    let previous = context
+        .world()
+        .node(row.stable_id())
+        .map(|node| node.children.to_vec())
+        .unwrap_or_default();
     reconcile_children(context, row, &[copy.stable_id(), control])?;
+    label_row_control(context, label_text.stable_id(), Some(control), &previous)?;
     Ok(row)
 }
 
@@ -1847,10 +1880,15 @@ impl AppContext {
         }
         let copy = Entity::<SettingsRowCopy>::from_stable_id(copy_slot);
         let mut changed = reconcile_children(self, copy, &[label_slot, hint_slot])?;
-        let children: Vec<_> = std::iter::once(copy_slot)
-            .chain(live(self, control))
-            .collect();
+        let control = live(self, control);
+        let children: Vec<_> = std::iter::once(copy_slot).chain(control).collect();
+        let previous = self
+            .world()
+            .node(row.stable_id())
+            .map(|node| node.children.to_vec())
+            .unwrap_or_default();
         changed |= reconcile_children(self, row, &children)?;
+        label_row_control(self, label_slot, control, &previous)?;
         Ok(created || changed)
     }
 
@@ -3923,6 +3961,46 @@ mod spacing_tests {
         let layout = &context.world().node_style(body).unwrap().layout;
         assert_eq!(layout.resolved_padding().bottom, 24.0);
         assert_eq!(layout.gap, Some(LengthSpec::Px(16.0)));
+    }
+
+    /// The appearance section's controls are named by the labels of the
+    /// rows that hold them, as a view's settings rows are.
+    #[test]
+    fn appearance_controls_are_named_by_their_rows() {
+        let document = crate::DocumentId::new(1).unwrap();
+        let mut context = AppContext::new();
+        let section = context
+            .create_component(
+                document,
+                AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default()),
+            )
+            .unwrap();
+        context.assemble_appearance_section(section).unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(800.0, 900.0))
+            .unwrap();
+        let named = context
+            .world()
+            .project_accessibility(document)
+            .into_iter()
+            .filter(|node| {
+                matches!(
+                    node.role,
+                    AccessibilityRole::RadioGroup
+                        | AccessibilityRole::Switch
+                        | AccessibilityRole::Slider
+                )
+            })
+            .map(|node| (node.role, node.label.as_deref().unwrap_or("").to_owned()))
+            .collect::<Vec<_>>();
+        assert!(
+            named.contains(&(AccessibilityRole::RadioGroup, "主题".into())),
+            "{named:?}"
+        );
+        assert!(
+            named.iter().all(|(_, label)| !label.is_empty()),
+            "every control has a name: {named:?}"
+        );
     }
 
     #[test]

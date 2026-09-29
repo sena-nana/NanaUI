@@ -373,8 +373,12 @@ impl crate::ComponentView for Select {
             },
             AccessibilityState {
                 role: AccessibilityRole::ComboBox,
-                label: Some(label),
-                value: self.value.clone(),
+                // Named by its field (a settings row's label, see
+                // `MutationQueue::set_labelled_by`), or by the option it shows
+                // through its text when nothing names it; the option shown
+                // is its value.
+                label: None,
+                value: (!placeholder).then_some(label),
                 disabled: self.inactive(),
                 busy: self.loading,
                 invalid: self.invalid,
