@@ -664,13 +664,27 @@ impl Gen<'_> {
             )
         })?;
         let mut out = self.virtual_rows(rows, number(&height.value, "f32", span)?)?;
+        if let Some(grid) = element.plain("grid") {
+            let at = span;
+            let min_width = number(&grid.value, "f32", at)?;
+            let gap = match element.plain("gap") {
+                Some(gap) => number(&gap.value, "f32", at)?,
+                None => quote!(0_f32),
+            };
+            out = quote!(#out.grid(#min_width, #gap));
+        } else if element.plain("gap").is_some() {
+            return Err(syn::Error::new(
+                span,
+                "`gap=` goes with `grid=` on `<Virtual>`",
+            ));
+        }
         for attr in &element.attrs {
             let AttrName::Plain(name) = &attr.name else {
                 return Err(syn::Error::new(span, "`<Virtual>` takes attributes only"));
             };
             let at = name.span();
             out = match name.to_string().as_str() {
-                "row_height" => out,
+                "row_height" | "grid" | "gap" => out,
                 "measured" => quote!(#out.measured()),
                 "grow" => quote!(#out.grow()),
                 method @ ("height" | "width" | "overscan") => {
@@ -681,6 +695,10 @@ impl Gen<'_> {
                 "scroll" => {
                     let scroll = raw(&attr.value, at)?;
                     quote!(#out.scroll_view(#scroll))
+                }
+                "within" => {
+                    let within = raw(&attr.value, at)?;
+                    quote!(#out.within(#within))
                 }
                 "key" => {
                     let key = raw(&attr.value, at)?;

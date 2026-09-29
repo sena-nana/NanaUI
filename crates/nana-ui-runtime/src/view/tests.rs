@@ -2422,3 +2422,190 @@ fn list_item_slots_in_a_view_are_the_slots_set_by_hand() {
     assert_eq!(slots.leading, Some(children(&cx, viewed)[0]));
     assert_eq!(slots.trailing, Some(children(&cx, viewed)[1]));
 }
+
+/// Every text under `id`, in document order.
+fn texts_under(cx: &AppContext, id: StableNodeId) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(text) = cx.world().text(id).filter(|text| !text.is_empty()) {
+        out.push(text.to_owned());
+    }
+    for child in children(cx, id) {
+        out.extend(texts_under(cx, child));
+    }
+    out
+}
+
+fn virtual_items(n: u32) -> Vec<VirtualRow> {
+    (0..n)
+        .map(|id| VirtualRow {
+            id,
+            title: format!("行 {id}"),
+        })
+        .collect()
+}
+
+fn settle(cx: &mut AppContext, document: DocumentId, viewport: LayoutViewport) {
+    for _ in 0..4 {
+        cx.layout_document(document, viewport).unwrap();
+        cx.flush_reactive().unwrap();
+    }
+}
+
+#[test]
+fn a_virtual_list_within_a_page_builds_the_rows_the_page_shows() {
+    let (mut cx, document, parent) = setup();
+    let header_shown = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let page = node_ref();
+            let header = signal(true);
+            header_shown.set(Some(header));
+            widget(
+                crate::ScrollView::new(crate::ScrollAxes::Vertical).with_layout(|l| {
+                    l.height = Some(LengthSpec::Px(300.0));
+                }),
+            )
+            .node_ref(page)
+            .children(
+                column().key("content").children((
+                    widget(
+                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(500.0))),
+                    )
+                    .visible(header),
+                    each_virtual(
+                        signal(virtual_items(10_000)),
+                        |row| row.id,
+                        20.0,
+                        |row| text(row.title),
+                    )
+                    .within(page)
+                    .overscan(0.0)
+                    .key("rows"),
+                )),
+            )
+        })
+        .unwrap();
+    let page = view.roots()[0];
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    settle(&mut cx, document, viewport);
+    let list = cx.resolve_assembly_path(page, "content/rows").unwrap();
+    assert_eq!(
+        cx.world().node(list).unwrap().parent,
+        cx.resolve_assembly_path(page, "content"),
+        "the list sits in the page's content, not in a scroll area of its own"
+    );
+    // Below the page's viewport: nothing past the list's first row.
+    assert!(
+        texts_under(&cx, list).len() <= 1,
+        "{:?}",
+        texts_under(&cx, list)
+    );
+
+    // 600 px down, the list's first 100 px are above the viewport.
+    cx.scroll_to(
+        Entity::from_stable_id(page),
+        crate::ScrollOffset { x: 0.0, y: 600.0 },
+    )
+    .unwrap();
+    settle(&mut cx, document, viewport);
+    let rows = texts_under(&cx, list);
+    assert_eq!(rows.first().map(String::as_str), Some("行 5"), "{rows:?}");
+    assert!((15..=16).contains(&rows.len()), "{rows:?}");
+
+    // Content above the list goes away with no scroll event: the window
+    // follows where the list now sits.
+    header_shown.get().unwrap().set(false);
+    settle(&mut cx, document, viewport);
+    let rows = texts_under(&cx, list);
+    assert_eq!(rows.first().map(String::as_str), Some("行 30"), "{rows:?}");
+}
+
+#[test]
+fn a_virtual_grid_fits_columns_to_its_width() {
+    let (mut cx, document, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            each_virtual(
+                signal(virtual_items(100)),
+                |row| row.id,
+                50.0,
+                |row| text(row.title),
+            )
+            .grid(100.0, 10.0)
+            .overscan(0.0)
+            .height(200.0)
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let list = children(&cx, scroll)[0];
+    let columns_at = |cx: &mut AppContext, width: f32| {
+        settle(cx, document, LayoutViewport::new(width, 600.0));
+        let list_width = cx.world().layout_box(list).unwrap().width;
+        let expected = (((list_width + 10.0) / 110.0).floor() as usize).max(1);
+        let rows = children(cx, list);
+        (expected, rows.len(), texts_under(cx, rows[0]))
+    };
+
+    let (columns, rows, first) = columns_at(&mut cx, 360.0);
+    assert!(columns >= 3, "{columns} columns in 360 px");
+    assert_eq!(
+        first,
+        (0..columns)
+            .map(|at| format!("行 {at}"))
+            .collect::<Vec<_>>()
+    );
+    // 60 px a row (50 and the gap) in a 200 px viewport.
+    assert!((4..=5).contains(&rows), "{rows} grid rows built");
+
+    let (columns, _, first) = columns_at(&mut cx, 150.0);
+    assert_eq!(columns, 1);
+    assert_eq!(first, ["行 0"]);
+}
+
+#[test]
+fn a_measured_virtual_list_keeps_measured_heights_when_rows_are_added() {
+    let (mut cx, document, parent) = setup();
+    let items = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let list = signal(virtual_items(100));
+            items.set(Some(list));
+            each_virtual(
+                list,
+                |row| row.id,
+                20.0,
+                |row| {
+                    widget(
+                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(40.0))),
+                    )
+                    .children(text(row.title))
+                },
+            )
+            .measured()
+            .overscan(0.0)
+            .height(200.0)
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    let first = |cx: &AppContext| texts_under(cx, children(cx, scroll)[0]).first().cloned();
+    settle(&mut cx, document, viewport);
+    // Ten 40 px rows down: rows 0–9 were measured and are scrolled away.
+    cx.scroll_to(
+        Entity::from_stable_id(scroll),
+        crate::ScrollOffset { x: 0.0, y: 400.0 },
+    )
+    .unwrap();
+    settle(&mut cx, document, viewport);
+    assert_eq!(first(&cx).as_deref(), Some("行 10"));
+
+    // A page of rows arrives. The rows above keep their measured 40 px, so
+    // the same rows stay in view instead of those 400 px of 20 px estimates
+    // would reach.
+    items
+        .get()
+        .unwrap()
+        .update(|list| list.extend(virtual_items(120).into_iter().skip(100)));
+    settle(&mut cx, document, viewport);
+    assert_eq!(first(&cx).as_deref(), Some("行 10"));
+}

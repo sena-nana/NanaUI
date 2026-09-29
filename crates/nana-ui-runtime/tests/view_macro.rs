@@ -511,6 +511,41 @@ fn a_virtual_element_in_a_template_sizes_its_scroll_area() {
     assert_eq!(cx.world().layout_box(scroll).unwrap().height, 200.0);
 }
 
+#[test]
+fn a_virtual_grid_in_a_template_scrolls_with_its_page() {
+    use nana_ui_runtime::view::node_ref;
+    use nana_ui_runtime::{ScrollAxes, ScrollView};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
+            let page = node_ref();
+            let scroll = ScrollView::new(ScrollAxes::Vertical)
+                .with_layout(|l| l.height = Some(nana_ui_runtime::LengthSpec::Px(200.0)));
+            view! {
+                <Widget of={scroll} ref={page}>
+                    <Virtual row_height=40 within={page} grid=100 gap=10 overscan=0 key="rows">
+                        <Text v-for={n in rows} key={*n}>"格 {n}"</Text>
+                    </Virtual>
+                </Widget>
+            }
+        })
+        .unwrap();
+    let page = mounted.roots()[0];
+    for _ in 0..4 {
+        cx.layout_document(document, nana_ui_runtime::LayoutViewport::new(320.0, 600.0))
+            .unwrap();
+        cx.flush_reactive().unwrap();
+    }
+    let list = cx.resolve_assembly_path(page, "rows").unwrap();
+    assert_eq!(cx.world().node(list).unwrap().parent, Some(page));
+    let rows = cx.world().node(list).unwrap().children.len();
+    // 50 px grid rows (40 and the gap) in the page's 200 px viewport.
+    assert!((4..=5).contains(&rows), "{rows} grid rows built");
+}
+
 mod store_derive {
     use nana_ui_runtime::view::{Store, StoreList, StorePath, reactive_stats, store, text};
     use nana_ui_runtime::{AppContext, DocumentId, Entity, Stack, Text};
