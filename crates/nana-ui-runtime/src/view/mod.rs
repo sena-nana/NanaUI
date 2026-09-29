@@ -18,6 +18,7 @@
 //! read the signal; the owning [`crate::AppContext`] flushes them after
 //! input and before a frame, merging every changed node into one commit.
 
+mod composites;
 mod controls;
 mod each_virtual;
 mod error;

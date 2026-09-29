@@ -72,6 +72,16 @@ impl AppContext {
         Ok(true)
     }
 
+    /// Place the slots a view wrote into a modal surface
+    /// (`TypeBehavior::slot_assembler`).
+    pub(crate) fn assemble_modal_slots<C: ModalSurface>(
+        &mut self,
+        modal: Entity<C>,
+    ) -> Result<bool, FrameworkError> {
+        let slots = self.read(modal, |modal| modal.slots().clone())?;
+        self.set_modal_slots(modal, slots)
+    }
+
     /// Atomically validate and attach an EmptyState's application-owned action.
     /// Intrinsic icon and message content remain fields of EmptyState.
     pub fn set_empty_state_action(

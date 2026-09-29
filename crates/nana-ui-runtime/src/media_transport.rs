@@ -109,6 +109,14 @@ impl Default for MediaTransportIcons {
     }
 }
 
+/// Application nodes the bar places in its groups: [`MediaTransportBar::leading_content`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct MediaTransportContent {
+    leading: Option<StableNodeId>,
+    trailing: Option<StableNodeId>,
+    secondary: Option<StableNodeId>,
+}
+
 /// Child nodes [`AppContext::assemble_media_transport_bar`] owns.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MediaTransportSlots {
@@ -162,6 +170,7 @@ pub struct MediaTransportBar {
     pub fullscreen_exit_label: Arc<str>,
     pub style: NodeStyle,
     pub(crate) slots: MediaTransportSlots,
+    pub(crate) content: MediaTransportContent,
     pub(crate) visibility: OverlayVisibility,
     pub(crate) menu_was_open: bool,
     /// Chrome layout the assembled children carry, so a playback tick skips
@@ -195,6 +204,7 @@ impl MediaTransportBar {
             fullscreen_exit_label: Arc::from("退出全屏"),
             style: bar_style(),
             slots: MediaTransportSlots::default(),
+            content: MediaTransportContent::default(),
             visibility: OverlayVisibility::default(),
             menu_was_open: false,
             applied: None,
@@ -203,6 +213,26 @@ impl MediaTransportBar {
 
     pub fn live(mut self, live: bool) -> Self {
         self.live = live;
+        self
+    }
+
+    /// An application node the bar keeps in its leading group, after play.
+    /// Hosts that build the bar themselves append to [`Self::leading`]
+    /// instead; views use `El::leading`.
+    pub fn leading_content(mut self, node: StableNodeId) -> Self {
+        self.content.leading = Some(node);
+        self
+    }
+
+    /// An application node the bar keeps in its trailing group.
+    pub fn trailing_content(mut self, node: StableNodeId) -> Self {
+        self.content.trailing = Some(node);
+        self
+    }
+
+    /// An application node the bar keeps in its second row.
+    pub fn secondary_content(mut self, node: StableNodeId) -> Self {
+        self.content.secondary = Some(node);
         self
     }
 
@@ -773,8 +803,39 @@ impl AppContext {
                 bar.applied = None;
             })?;
         }
+        self.place_media_transport_content(bar)?;
         self.sync_media_transport_bar(bar)?;
         Ok(created)
+    }
+
+    /// Keep the bar's application content in its groups; a move only on the
+    /// first assembly, so a playback tick finds each already in place.
+    fn place_media_transport_content(
+        &mut self,
+        bar: Entity<MediaTransportBar>,
+    ) -> Result<(), FrameworkError> {
+        let placements = self.read(bar, |bar| {
+            [
+                (bar.slots.leading, bar.content.leading),
+                (bar.slots.trailing, bar.content.trailing),
+                (bar.slots.secondary, bar.content.secondary),
+            ]
+        })?;
+        let mut mutations = MutationQueue::new();
+        for (group, node) in placements {
+            if let (Some(group), Some(node)) = (group, node)
+                && self
+                    .world()
+                    .node(node)
+                    .is_some_and(|placed| placed.parent != Some(group))
+            {
+                mutations.insert(group, node, None);
+            }
+        }
+        if !mutations.is_empty() {
+            self.commit_mutations(mutations)?;
+        }
+        Ok(())
     }
 
     /// Refreshes built-in chrome and collapses an empty second row, writing

@@ -626,6 +626,63 @@ fn media_controls_and_theme_roles_bind_from_a_template() {
     );
 }
 
+#[test]
+fn rows_dialogs_and_the_transport_bar_place_their_slots() {
+    use nana_ui_runtime::{Dialog, ListItem, MediaTransportBar};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            view! {
+                <Column>
+                    <ListItem label="视频" key="row">
+                        <template #leading><Text key="cover">"封面"</Text></template>
+                        <template #content><Text key="title">"标题"</Text></template>
+                        <template #trailing><Button key="more">"更多"</Button></template>
+                    </ListItem>
+                    <Widget of={Dialog::new("投币")} key="dialog">
+                        <template #body><Text key="body">"投几枚？"</Text></template>
+                        <template #footer><Button key="confirm">"确认"</Button></template>
+                    </Widget>
+                    <Widget of={MediaTransportBar::new()} key="bar">
+                        <template #leading><Button key="next">"下一P"</Button></template>
+                        <template #secondary><Text key="danmaku">"弹幕"</Text></template>
+                    </Widget>
+                </Column>
+            }
+        })
+        .unwrap();
+    cx.flush_reactive().unwrap();
+    let root = mounted.roots()[0];
+    let world = |cx: &AppContext, id| cx.world().node(id).unwrap().clone();
+    let named = |cx: &AppContext, path: &str| cx.resolve_assembly_path(root, path).unwrap();
+
+    let row = Entity::<ListItem>::from_stable_id(named(&cx, "row"));
+    let children = world(&cx, row.stable_id()).children;
+    assert_eq!(children.len(), 3, "leading, content and trailing, in order");
+    assert_eq!(cx.world().text(children[1]), Some("标题"));
+
+    let dialog = named(&cx, "dialog");
+    let placed = world(&cx, dialog).children;
+    assert_eq!(placed.len(), 2, "body and footer");
+    assert_eq!(cx.world().text(placed[0]), Some("投几枚？"));
+
+    let bar = Entity::<MediaTransportBar>::from_stable_id(named(&cx, "bar"));
+    let (leading, secondary) = cx
+        .read(bar, |bar| {
+            (bar.leading().unwrap(), bar.secondary().unwrap())
+        })
+        .unwrap();
+    let next = world(&cx, leading.stable_id()).children;
+    assert_eq!(next.len(), 1, "the application's control sits after play");
+    let row = world(&cx, secondary.stable_id()).children;
+    assert!(
+        row.iter().any(|id| cx.world().text(*id) == Some("弹幕")),
+        "the second row holds the application's content"
+    );
+}
+
 mod store_derive {
     use nana_ui_runtime::view::{Store, StoreList, StorePath, reactive_stats, store, text};
     use nana_ui_runtime::{AppContext, DocumentId, Entity, Stack, Text};

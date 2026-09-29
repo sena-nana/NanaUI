@@ -286,6 +286,11 @@ impl ModalSurface for Drawer {
 }
 
 impl ComponentView for Drawer {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(crate::AppContext::assemble_modal_slots::<Self>),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
