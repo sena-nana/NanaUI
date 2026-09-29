@@ -35,7 +35,7 @@ let (view, start) = cx.mount_view_root(document_id, || {
 
 - 静态结构只建一次，没写 key 的节点按位置命名；需要按路径找的节点才写 `.key("…")`。
 - 同一 parent 下 key 重复 → `DuplicateAssemblyKey`，不 commit。
-- key 不能为空、不能含 `/`（`ASSEMBLY_PATH_SEPARATOR`），否则 `InvalidInput`，不 commit。所以每个 keyed 节点都能按路径找到：`resolve_assembly_path(root, "page/content/list")`，带类型的版本是 `resolve_assembly_entity::<C>(root, path)`。
+- key 不能为空、不能含 `/`（`ASSEMBLY_PATH_SEPARATOR`），否则 `InvalidInput`，不 commit。所以视图里每个 keyed 节点都能按路径找到：`resolve_assembly_path(root, "content/list")`，带类型的版本是 `resolve_assembly_entity::<C>(root, path)`。路径从视图的根算起：`mount_view(parent, …)` 的根不带 key 插进 parent，根自己的 key 不登记在 parent 下，否则以后对 parent 调用 `mount` 时，没写到的 key 会连同整个视图一起被删掉。只是想拿到节点的话，用 `with_refs` 更直接。
 - 结构来自数据时，在视图里用普通 Rust 生成子节点（`.children(items.iter().map(…).collect::<Vec<_>>())` 或 `.with(|c| for … { c.add(…) })`）；要跟着数据变，用 `each` / `when`。
 - Dock 的面板是 key 等于面板 id 的子节点。
 

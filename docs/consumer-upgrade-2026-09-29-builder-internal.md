@@ -10,6 +10,7 @@
 | `cx.build_detached(document, \|ui\| …)` | `cx.mount_view_detached(document, \|\| view)` |
 | `cx.build_child(parent, \|ui\| …)` | `cx.mount_view(parent, \|\| view)`；要和以后的 `mount` 共用 key，用 `cx.mount(parent, \|scope\| …)` |
 | `ui.child(key, c)` / `ui.with(key, c, \|ui\| …)` | `widget(c).key(key)` / `widget(c).key(key).children(…)`；静态结构不需要 key |
+| `resolve_assembly_path(parent, "page/content")`，`page` 是 `build_child(parent, …)` 建的 | 视图的根不带 key 插进 parent，根的 key 不登记在 parent 下（否则以后对 parent 的 `mount` 会删掉它）：路径从根算起，`resolve_assembly_path(root, "content")`，根从 `MountedView::roots()` 或 `entity_ref` 拿。只为拿节点的话用 `with_refs` |
 | `ui.column(gap, …)` / `ui.row(gap, …)` | `column().gap(gap).children(…)` / `row()…` |
 | `ui.on(entity, \|c, e, cx\| …)` | 元素上写 `.on_cx(\|c, e: &E, cx\| …)`（不要组件时用 `.on(\|e\| …)`） |
 | `ui.detached(c)`：交给组合控件按 id 收 | 组合控件的具名 slot（`.primary(view)`、`.body(view)`…）或通用的 `.slot(view, write)`；交给 `set_modal_slots` 这类按 id 收的接口时用 `detached(view)` 加 `entity_ref` |

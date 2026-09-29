@@ -1861,6 +1861,27 @@ fn a_child_slot_comes_before_the_children_and_names_itself_to_its_parent() {
 }
 
 #[test]
+fn keys_inside_a_view_resolve_from_its_root_not_from_the_mount_parent() {
+    let (mut cx, _, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            column()
+                .key("page")
+                .children(column().key("content").children(text("正文").key("body")))
+        })
+        .unwrap();
+    let page = view.roots()[0];
+    let body = cx.resolve_assembly_path(page, "content/body").unwrap();
+    assert_eq!(text_of(&cx, Entity::from_stable_id(body)), "正文");
+    // The root goes in unkeyed, so a later `mount` on the parent, which
+    // drops the keys it does not name, cannot take the view with it.
+    assert!(cx.resolve_assembly_path(parent, "page").is_none());
+    cx.mount(Entity::<Stack>::from_stable_id(parent), |_| Ok(()))
+        .unwrap();
+    assert!(cx.world().contains(page));
+}
+
+#[test]
 fn a_slot_must_have_one_root() {
     let (mut cx, document, _) = setup();
     let before = cx.world().len();
