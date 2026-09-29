@@ -250,6 +250,8 @@ const_props! {
     usize => usize, |v| v;
     Option<Arc<str>> => Option<Arc<str>>, |v| v;
     Option<&'static str> => Option<Arc<str>>, |v| v.map(Arc::from);
+    &'static str => Option<Arc<str>>, |v| Some(Arc::from(v));
+    String => Option<Arc<str>>, |v| Some(Arc::from(v));
     Vec<crate::SelectOption> => Vec<crate::SelectOption>, |v| v;
     crate::StableNodeId => Option<crate::StableNodeId>, |v| Some(v);
     Option<crate::StableNodeId> => Option<crate::StableNodeId>, |v| v;

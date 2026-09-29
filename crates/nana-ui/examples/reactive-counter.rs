@@ -56,7 +56,7 @@ fn todos() -> impl IntoView {
     };
     view! {
         <Column gap=8>
-            <TextInput placeholder="新任务" v-model={draft} />
+            <TextInput label="新任务" placeholder="新任务" v-model={draft} />
             <Button disabled={draft.with(|d| d.trim().is_empty())} @activate={add}>"添加"</Button>
             <TodoRow v-for={todo in list} key={todo.id} todo={todo} list={list} />
             <Text v-if={list.with(Vec::is_empty)}>"还没有任务"</Text>
@@ -70,7 +70,7 @@ fn volume() -> impl IntoView {
     view! {
         <Column gap=4>
             <Text>{format!("音量 {:.0}%", level.get() * 100.0)}</Text>
-            <Slider min=0 max=1 step=0.05 v-model={level} />
+            <Slider min=0 max=1 step=0.05 label="音量" v-model={level} />
         </Column>
     }
 }

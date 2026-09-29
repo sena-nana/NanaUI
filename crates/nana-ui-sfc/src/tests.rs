@@ -600,3 +600,37 @@ fn an_error_boundary_takes_its_fallback_as_a_closure() {
         "{code}"
     );
 }
+
+#[test]
+fn controls_a_screen_reader_cannot_name_are_warnings() {
+    let out = compile(&[(
+        "Form.vue",
+        r#"<script setup lang="rust">
+let name = signal(String::new());
+</script>
+<template>
+  <Column>
+    <TextInput v-model="name" />
+    <TextInput label="名字" v-model="name" />
+    <Button></Button>
+    <Button>保存</Button>
+    <Slider min="0" max="1" step="0.1" />
+  </Column>
+</template>"#,
+    )])
+    .unwrap();
+    let warnings = out.warnings.join("\n");
+    assert!(
+        warnings.contains("Form.vue: 6:6: `<TextInput>` has no `label`"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("8:6: `<Button>` has no text"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("10:6: `<Slider>` has no `label`"),
+        "{warnings}"
+    );
+    assert_eq!(out.warnings.len(), 3, "{warnings}");
+}

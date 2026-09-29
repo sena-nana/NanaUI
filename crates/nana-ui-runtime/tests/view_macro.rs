@@ -128,8 +128,8 @@ impl Probe for Page {
                     <Text v-if={loading}>"加载中"</Text>
                     <Text v-else-if={mode.get() == 1}>"模式一"</Text>
                     <Text v-else>"完成"</Text>
-                    <Slider min=0 max=1 step=0.05 v-model={volume} on:RangeChanged={|_: &RangeChanged| {}} />
-                    <TextInput placeholder="名字" v-show={shown} key="name" />
+                    <Slider min=0 max=1 step=0.05 label="音量" v-model={volume} on:RangeChanged={|_: &RangeChanged| {}} />
+                    <TextInput label="名字" placeholder="名字" v-show={shown} key="name" />
                     <TodoRow v-for={t in todos} key={t.id} todo={t} done={false} />
                     <Widget of={Stack::row(2.0)}>
                         <Text>"a"</Text>
@@ -154,9 +154,14 @@ impl Probe for Page {
                             .otherwise(move || text("完成"))
                     }),
                     slider(0.0, 1.0, 0.05)
+                        .label("音量")
                         .model(volume)
                         .on::<RangeChanged>(|_: &RangeChanged| {}),
-                    text_input().placeholder("名字").visible(shown).key("name"),
+                    text_input()
+                        .label("名字")
+                        .placeholder("名字")
+                        .visible(shown)
+                        .key("name"),
                     each(todos, move |t: &Todo| t.id, move |t| todo_row(t, false)),
                     widget(Stack::row(2.0))
                         .children((text("a"), text(move || format!("b{}", count.get())))),
@@ -309,8 +314,8 @@ fn table_controls_take_their_attributes_in_templates() {
             view! {
                 <Column gap=4>
                     <Switch v-model={on} key="switch">"通知"</Switch>
-                    <NumberInput v-model={amount} placeholder={"数量"} key="number" />
-                    <Progress max=10 value={amount.get()} key="progress" />
+                    <NumberInput v-model={amount} label="数量" placeholder={"数量"} key="number" />
+                    <Progress max=10 value={amount.get()} label="进度" key="progress" />
                     <Divider />
                 </Column>
             }

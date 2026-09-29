@@ -32,10 +32,34 @@ pub fn derive_store(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 mod store;
 
 fn expand_tokens(input: TokenStream) -> TokenStream {
-    let expanded = parse_template
-        .parse2(input)
-        .and_then(|template| nana_ui_view_codegen::expand(&template.krate, &template.nodes));
-    expanded.unwrap_or_else(|error| error.to_compile_error())
+    let expanded = parse_template.parse2(input).and_then(|template| {
+        nana_ui_view_codegen::expand_checked(&template.krate, &template.nodes)
+    });
+    match expanded {
+        Ok((tokens, warnings)) if warnings.is_empty() => tokens,
+        Ok((tokens, warnings)) => with_warnings(tokens, warnings),
+        Err(error) => error.to_compile_error(),
+    }
+}
+
+/// Stable proc macros cannot warn, so each warning is the use of a
+/// deprecated constant whose note is the message, at the element's span.
+fn with_warnings(tokens: TokenStream, warnings: Vec<nana_ui_view_codegen::Warning>) -> TokenStream {
+    let uses = warnings.into_iter().enumerate().map(|(index, warning)| {
+        let name = quote::format_ident!("__nana_view_warning_{index}");
+        let note = format!("view!: {}", warning.message);
+        let used = quote::quote_spanned!(warning.span=> #name);
+        quote! {
+            #[deprecated(note = #note)]
+            #[allow(non_upper_case_globals)]
+            const #name: () = ();
+            let () = #used;
+        }
+    });
+    quote! {{
+        #(#uses)*
+        #tokens
+    }}
 }
 
 struct Template {
@@ -210,6 +234,16 @@ mod tests {
             assert!(expanded.contains("compile_error"), "{source}: {expanded}");
             assert!(expanded.contains(message), "{source}: {expanded}");
         }
+    }
+
+    #[test]
+    fn an_unnamed_control_expands_to_a_deprecation_warning_at_it() {
+        let expanded =
+            expand("crate = x; <Column><TextInput/><TextInput label=\"名字\"/></Column>");
+        assert_eq!(expanded.matches("deprecated").count(), 1, "{expanded}");
+        assert!(expanded.contains("has no `label`"), "{expanded}");
+        let clean = expand("crate = x; <Button>\"保存\"</Button>");
+        assert!(!clean.contains("deprecated"), "{clean}");
     }
 
     #[test]

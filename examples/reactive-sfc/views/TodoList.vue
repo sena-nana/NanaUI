@@ -25,7 +25,7 @@ let add = move || {
 
 <template>
   <Column :gap="8">
-    <TextInput key="draft" ref="draft_input" placeholder="新任务" v-model="draft" />
+    <TextInput key="draft" ref="draft_input" label="新任务" placeholder="新任务" v-model="draft" />
     <Button key="add" :disabled="draft.with(|d| d.trim().is_empty())" @activate="add">添加</Button>
     <TodoItem
       v-for="todo in list"

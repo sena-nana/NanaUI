@@ -116,8 +116,32 @@ pub fn is_argument(tag: &str, attribute: &str) -> bool {
 /// Expand `nodes` into one view expression. `krate` is the path of
 /// `nana-ui-runtime` as seen from the generated code.
 pub fn expand(krate: &TokenStream, nodes: &[Node]) -> syn::Result<TokenStream> {
-    Gen { krate }.nodes(nodes)
+    Ok(expand_checked(krate, nodes)?.0)
 }
+
+/// A problem in a template that still compiles: where, and what.
+pub struct Warning {
+    pub span: Span,
+    pub message: String,
+}
+
+/// [`expand`], with the warnings the template earns: controls a screen
+/// reader could not name.
+pub fn expand_checked(
+    krate: &TokenStream,
+    nodes: &[Node],
+) -> syn::Result<(TokenStream, Vec<Warning>)> {
+    let generator = Gen {
+        krate,
+        warnings: std::cell::RefCell::new(Vec::new()),
+    };
+    let tokens = generator.nodes(nodes)?;
+    Ok((tokens, generator.warnings.into_inner()))
+}
+
+/// Controls whose accessible name is their `label` field and that have no
+/// other text to fall back on.
+const NAMED_BY_LABEL: &[&str] = &["TextInput", "TextArea", "NumberInput", "Slider", "Progress"];
 
 /// One template node.
 pub enum Node {
@@ -394,6 +418,7 @@ fn fragment(children: Vec<TokenStream>) -> TokenStream {
 
 struct Gen<'a> {
     krate: &'a TokenStream,
+    warnings: std::cell::RefCell<Vec<Warning>>,
 }
 
 impl Gen<'_> {
@@ -907,6 +932,7 @@ impl Gen<'_> {
                 )
             }
             (_, Some(control)) => {
+                self.check_name(element, control);
                 let function = Ident::new(control.function, span);
                 let mut args = Vec::new();
                 for &(name, kind) in control.arguments {
@@ -1077,6 +1103,49 @@ impl Gen<'_> {
 
     /// A text-bearing element's value: the `name=` attribute, or its one
     /// child (a string, interpolated or not, or an expression).
+    /// Warn when a control would have no accessible name: an empty text
+    /// argument (`<Button></Button>`), or no `label` on a control named only
+    /// by it.
+    fn check_name(&self, element: &Element, control: &Control) {
+        let tag = control.tag;
+        let empty_text = |name: &str| match element.plain(name) {
+            Some(attr) => matches!(&attr.value, AttrValue::Lit(Expr::Lit(syn::ExprLit {
+                lit: Lit::Str(text), ..
+            })) if text.value().trim().is_empty()),
+            None => match element.children.as_slice() {
+                [] => true,
+                [Node::Text(text)] => text.value().trim().is_empty(),
+                _ => false,
+            },
+        };
+        let message = if let Some((name, _)) =
+            control.arguments.iter().find(|(_, kind)| *kind == "text")
+            && *name == "label"
+            && empty_text(name)
+        {
+            Some(format!(
+                "`<{tag}>` has no text: a screen reader cannot name it; give it a label"
+            ))
+        } else if NAMED_BY_LABEL.contains(&tag)
+            && !element
+                .attrs
+                .iter()
+                .any(|attr| matches!(&attr.name, AttrName::Plain(name) if name == "label"))
+        {
+            Some(format!(
+                "`<{tag}>` has no `label`: a screen reader cannot say what it is for"
+            ))
+        } else {
+            None
+        };
+        if let Some(message) = message {
+            self.warnings.borrow_mut().push(Warning {
+                span: element.name.span(),
+                message,
+            });
+        }
+    }
+
     fn string_child(&self, element: &Element, name: &str) -> syn::Result<TokenStream> {
         if let Some(attr) = element.plain(name) {
             return Ok(prop(&attr.value));

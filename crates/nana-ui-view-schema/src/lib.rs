@@ -55,12 +55,14 @@ macro_rules! for_each_control {
             model checked: bool => ToggleChanged |event| event.checked;
             Slider => slider(min: f64, max: f64, step: f64) for RangeField {
                 value: f64 = set,
+                label: Option<Arc<str>> = set,
                 disabled: bool = set,
             }
             with { on_input: RangeInput, on_change: RangeChanged }
             model value: f64 => RangeInput |event| event.value;
             TextInput => text_input() for TextInput {
                 value: String = text_state,
+                label: Option<Arc<str>> = set,
                 placeholder: Arc<str> = set,
                 disabled: bool = set,
             }
@@ -68,6 +70,7 @@ macro_rules! for_each_control {
             model value: String => TextChanged |event| event.value.to_string();
             TextArea => text_area() for TextArea {
                 value: String = text_state,
+                label: Option<Arc<str>> = set,
                 placeholder: Arc<str> = set,
                 disabled: bool = set,
                 read_only: bool = set,
@@ -76,6 +79,7 @@ macro_rules! for_each_control {
             model value: String => TextChanged |event| event.value.to_string();
             NumberInput => number_input() for NumberInput {
                 value: f64 = assign,
+                label: Option<Arc<str>> = set,
                 placeholder: Arc<str> = set,
                 disabled: bool = set,
                 read_only: bool = set,

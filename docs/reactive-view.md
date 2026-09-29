@@ -377,6 +377,8 @@ fn page() -> impl IntoView {
 - 闭包绑定每个各自装箱一次；只有 `view!` 能看到的整段模板，才有机会把同一节点的闭包合成一个。
 - 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`，外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
 
+**无障碍检查**：编译模板时，读屏器无法命名的控件会得到一条警告，不会编译失败。规则两条：`Button`、`Checkbox`、`Switch`、`ListItem` 没有文字（空的子节点或空的 `label`）；`TextInput`、`TextArea`、`NumberInput`、`Slider`、`Progress` 没写 `label`（它们的无障碍名字只来自 `label`，占位文字不算）。`.vue` 的警告经 `cargo:warning` 带行列打印；`view!` 在稳定版上没有警告接口，警告以"使用了已弃用常量"的形式出现在宏调用处，说明写在弃用提示里。
+
 控件表是唯一来源：每条写明模板标签、元素函数及其参数、可绑定字段和类型、`v-model` 对应的字段和事件、事件方法。运行时由它生成 setter、`model` 和事件方法；`view!` 和 `.vue` 编译器由它得知哪些标签是内置的、接受哪些属性。写错的属性名、不存在的事件、对没有 `v-model` 的控件写 `v-model`，都在编译模板时报出行列。数值字段接受 `max="100"` 这样的字面量，生成带类型后缀的常量。没有数据的事件（`@activate`）接受 `|| …`；带数据的事件（`@change`、`@input`、`@submit`）接受 `|e| …`，`e` 的类型自动推断，不用标注。模板里的语句式写法两种都可以，编译器会生成对应的闭包。
 
 ## 不做的事

@@ -198,8 +198,13 @@ impl Compiler {
             rows: &mut rows,
         };
         rewrite.nodes(&mut template)?;
-        let body = nana_ui_view_codegen::expand(&self.runtime, &template)
+        let (body, lints) = nana_ui_view_codegen::expand_checked(&self.runtime, &template)
             .map_err(|error| parse::syn_error(file, error))?;
+        let mut warnings = analysis.warnings.clone();
+        warnings.extend(lints.into_iter().map(|lint| {
+            let start = lint.span.start();
+            format!("{}:{}: {}", start.line, start.column + 1, lint.message)
+        }));
         let runtime = &self.runtime;
         let script: Vec<Stmt> = script
             .into_iter()
@@ -219,7 +224,7 @@ impl Compiler {
             }
         };
         let section = report(file, &name, &analysis, &rows);
-        Ok((item, section, analysis.warnings))
+        Ok((item, section, warnings))
     }
 }
 
