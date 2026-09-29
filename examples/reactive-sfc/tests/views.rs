@@ -1,6 +1,8 @@
 //! The compiled `.vue` views, driven headless.
 
-use nana_ui::runtime::view::{IntoView, button, reactive_stats, row, signal, text};
+use nana_ui::runtime::view::{
+    AnyView, IntoView, Signal, button, column, reactive_stats, row, signal, text,
+};
 use nana_ui::runtime::{
     AppContext, Button, DocumentId, Entity, StableNodeId, Text, TextChanged, TextInput,
 };
@@ -258,4 +260,83 @@ fn view_styles_apply_and_follow_their_classes() {
         cx.world().node_style(title).unwrap().layout.flex_grow,
         Some(1.0)
     );
+}
+
+/// Mount `view` and list its nodes in tree order: kind, text, layout.
+fn tree(view: impl FnOnce() -> AnyView) -> Vec<String> {
+    fn walk(cx: &AppContext, id: StableNodeId, out: &mut Vec<String>) {
+        let node = cx.world().node(id).unwrap();
+        // CSS `padding` also records which edges were declared physically;
+        // `Stack::padding_xy` sets the same edges without that record.
+        let mut layout = (*cx.world().node_style(id).unwrap().layout).clone();
+        layout.logical_padding = Default::default();
+        out.push(format!(
+            "{:?} {:?} {layout:?}",
+            node.kind,
+            cx.world().text(id)
+        ));
+        for child in node.children {
+            walk(cx, child, out);
+        }
+    }
+    let mut cx = AppContext::typed();
+    let root = cx
+        .mount_view_root(DocumentId::new(1).unwrap(), view)
+        .unwrap()
+        .roots()[0];
+    let mut out = Vec::new();
+    walk(&cx, root, &mut out);
+    out
+}
+
+/// `sfc-benchmark` compares the `bench/` views with functions written by
+/// hand; its numbers mean something only if they build the same tree.
+#[test]
+fn the_benchmark_views_build_what_their_hand_written_twins_build() {
+    use reactive_sfc::bench::{Item, hot, idiomatic, inline_css, naive, views as bench};
+
+    let rows = |row: fn(usize) -> AnyView| {
+        tree(move || column(0.0, (0..3).map(row).collect::<Vec<_>>()).into_any())
+    };
+    let compiled = rows(|i| bench::static_row(i).into_any());
+    assert_eq!(compiled, rows(|i| idiomatic::static_row(i).into_any()));
+    assert_eq!(compiled, rows(|i| naive::static_row(i).into_any()));
+
+    // Row 1 carries the conditional class.
+    let styled = |row: fn(usize, Signal<usize>) -> AnyView| {
+        tree(move || {
+            let selected = signal(1);
+            column(0.0, (0..3).map(|i| row(i, selected)).collect::<Vec<_>>()).into_any()
+        })
+    };
+    let compiled = styled(|i, s| bench::styled_row(i, s).into_any());
+    assert!(
+        compiled
+            .iter()
+            .any(|node| node.contains("opacity: Some(0.6)"))
+    );
+    assert_eq!(
+        compiled,
+        styled(|i, s| idiomatic::styled_row(i, s).into_any())
+    );
+    assert_eq!(
+        compiled,
+        styled(|i, s| inline_css::styled_row(i, s).into_any())
+    );
+    assert_eq!(compiled, styled(|i, s| hot::styled_row(i, s).into_any()));
+
+    let list = |view: fn(Signal<Vec<Item>>) -> AnyView| {
+        tree(move || {
+            let items = (0..3)
+                .map(|id| Item {
+                    id,
+                    title: signal(format!("任务 {id}")),
+                })
+                .collect();
+            view(signal(items))
+        })
+    };
+    let compiled = list(|l| bench::row_list(l).into_any());
+    assert_eq!(compiled, list(|l| idiomatic::row_list(l).into_any()));
+    assert_eq!(compiled, list(|l| hot::row_list(l).into_any()));
 }

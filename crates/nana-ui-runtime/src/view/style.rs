@@ -63,6 +63,18 @@ impl StyleSite {
         }
     }
 
+    /// The base layout equal to `base` that this site has composed from
+    /// before, or `base` itself. A binding that keeps its base holds this
+    /// one: every instance then shares it, and composing finds it by
+    /// pointer instead of comparing whole layouts.
+    fn shared_base(&self, base: &Arc<LayoutStyle>) -> Arc<LayoutStyle> {
+        let composed = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
+        composed
+            .iter()
+            .find(|(known, _, _)| Arc::ptr_eq(known, base) || **known == **base)
+            .map_or_else(|| Arc::clone(base), |(known, _, _)| Arc::clone(known))
+    }
+
     /// `base` with the patches that apply under `active`, in order.
     pub fn compose(&self, base: &Arc<LayoutStyle>, active: u64) -> Arc<LayoutStyle> {
         let mut composed = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
@@ -136,11 +148,12 @@ impl<C: StyledComponent + ComponentView, K> El<C, K> {
     #[doc(hidden)]
     #[track_caller]
     pub fn styles(self, site: &'static StyleSite, classes: Vec<PropSource<bool>>) -> Self {
-        let base = Arc::clone(&self.component_ref().node_style().layout);
+        let base = &self.component_ref().node_style().layout;
         if classes.is_empty() {
-            let composed = site.compose(&base, 0);
+            let composed = site.compose(base, 0);
             return self.prop::<Arc<LayoutStyle>, ComposedLayout>(super::Fixed(composed));
         }
+        let base = site.shared_base(base);
         self.prop::<Arc<LayoutStyle>, ComposedLayout>(move || {
             let active =
                 classes
