@@ -74,3 +74,4 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 - [声明式视图：两种一级写法、token 样式表、具名 slot（2026-09-29）](consumer-upgrade-2026-09-29-view-spelling.md)
 - [builder 转为内部：界面用视图建（2026-09-29）](consumer-upgrade-2026-09-29-builder-internal.md)
 - [视图迁移补缺：写回默认值的类、结构块的容器、虚拟列表句柄（2026-09-30）](consumer-upgrade-2026-09-30-view-gaps.md)
+- [视图迁移补缺（二）：图片查看器的控件与遮罩、对话框长高、换行行、富触发器（2026-09-30）](consumer-upgrade-2026-09-30-view-gaps-2.md)
