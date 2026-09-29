@@ -205,6 +205,7 @@ impl AppContext {
         for root in &roots {
             self.reactive.anchors.insert(*root, scope);
         }
+        rx::run_mounted(self);
         Ok(MountedView { roots, scope })
     }
 
@@ -282,6 +283,9 @@ impl AppContext {
             if queue.is_empty() {
                 break;
             }
+            // An effect reached only through computeds that recomputed to
+            // the same value has nothing to do.
+            queue.retain(|&(effect, _)| rx::confirm(effect));
             #[cfg(feature = "reactive-trace")]
             let round = rx::with_trace(|trace| trace.begin_round());
             #[cfg(not(feature = "reactive-trace"))]
@@ -296,6 +300,8 @@ impl AppContext {
                     outcome = outcome.and(self.run_structural(node, effect));
                 }
             }
+            // Rows and branches are placed now.
+            rx::run_mounted(self);
             patches.clear();
             patches.extend(queue.iter().filter_map(|&(effect, target)| match target {
                 EffectTarget::Node(node) => Some((node, effect)),

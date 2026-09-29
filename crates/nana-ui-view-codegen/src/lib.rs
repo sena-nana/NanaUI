@@ -4,7 +4,7 @@
 //! a runtime concept; the output is the call chain a person would write.
 
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote, quote_spanned};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Expr, Ident, Lit, LitStr, Pat};
 
@@ -61,6 +61,8 @@ pub enum AttrValue {
     For(Pat, Expr),
     /// A value a front end already wrote as a prop.
     Verbatim(TokenStream),
+    /// A view argument of a component: a `.vue` named slot's content.
+    View(Vec<Node>),
 }
 
 pub struct Attr {
@@ -79,7 +81,7 @@ fn prop(value: &AttrValue) -> TokenStream {
         AttrValue::Expr(expr @ (Expr::Path(_) | Expr::Lit(_) | Expr::Field(_))) => quote!(#expr),
         AttrValue::Expr(expr) => quote_spanned!(expr.span()=> move || #expr),
         AttrValue::Verbatim(tokens) => tokens.clone(),
-        AttrValue::For(..) => unreachable!("only v-for takes a loop"),
+        AttrValue::For(..) | AttrValue::View(_) => unreachable!("only a component takes these"),
     }
 }
 
@@ -128,6 +130,7 @@ fn raw(value: &AttrValue, span: Span) -> syn::Result<TokenStream> {
         AttrValue::Verbatim(tokens) => Ok(tokens.clone()),
         AttrValue::None => Err(syn::Error::new(span, "this attribute needs a value")),
         AttrValue::For(..) => Err(syn::Error::new(span, "unexpected loop")),
+        AttrValue::View(_) => Err(syn::Error::new(span, "a slot fills a component argument")),
     }
 }
 
@@ -425,6 +428,18 @@ impl Gen<'_> {
                     if consumed.contains(&text.as_str()) {
                         continue;
                     }
+                    if text == "ref" {
+                        // `ref="input"` (`.vue`) names the `NodeRef` as a string.
+                        let node_ref = match &attr.value {
+                            AttrValue::Lit(Expr::Lit(syn::ExprLit {
+                                lit: Lit::Str(name),
+                                ..
+                            })) => Ident::new(&name.value(), name.span()).into_token_stream(),
+                            value => raw(value, name.span())?,
+                        };
+                        out = quote!(#out.node_ref(#node_ref));
+                        continue;
+                    }
                     if text == "key" {
                         if element.directive("for").is_none() {
                             let key = raw(&attr.value, name.span())?;
@@ -481,7 +496,10 @@ impl Gen<'_> {
                 AttrName::Plain(name) if name == "key" => {
                     key = Some(raw(&attr.value, name.span())?)
                 }
-                AttrName::Plain(name) => args.push(raw(&attr.value, name.span())?),
+                AttrName::Plain(name) => args.push(match &attr.value {
+                    AttrValue::View(nodes) => self.nodes(nodes)?,
+                    value => raw(value, name.span())?,
+                }),
                 AttrName::Directive(directive, _)
                     if matches!(directive.as_str(), "if" | "else-if" | "else" | "for") => {}
                 _ => {

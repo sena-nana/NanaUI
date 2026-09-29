@@ -7,6 +7,12 @@
 //! Writes never touch the tree. A write marks its subscribers: effects are
 //! queued for the owning [`AppContext`](crate::AppContext)'s next flush,
 //! computeds only turn dirty and recompute when next read.
+//!
+//! What sits behind a computed is only *possibly* stale: a write marks the
+//! computed's own readers dirty, and everything further down "check". A
+//! checked computed or effect first brings its computed dependencies up to
+//! date and runs only if one of them produced a different value, so a
+//! computed whose result did not change stops the update there.
 
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -108,10 +114,23 @@ enum Observer {
     Computed(SignalKey),
 }
 
-type ComputeFn = Box<dyn FnMut(&dyn Any)>;
+type MountFn = Box<dyn FnOnce(&mut crate::AppContext)>;
+
+/// Recompute into the cell; answers whether the value changed.
+type ComputeFn = Box<dyn FnMut(&dyn Any) -> bool>;
+
+/// How stale a computed may be.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Staleness {
+    Clean,
+    /// A computed it reads may have changed.
+    Check,
+    /// Something it reads changed.
+    Dirty,
+}
 
 struct ComputedNode {
-    dirty: bool,
+    state: Staleness,
     deps: Vec<SignalKey>,
     compute: Option<ComputeFn>,
 }
@@ -138,6 +157,9 @@ pub(crate) enum EffectTarget {
 struct EffectNode {
     deps: Vec<SignalKey>,
     queued: bool,
+    /// A signal it read changed; otherwise a queued effect only checks its
+    /// computed dependencies before it runs ([`confirm`]).
+    dirty: bool,
     context: u64,
     target: EffectTarget,
     run: Option<Box<dyn FnMut()>>,
@@ -187,8 +209,10 @@ struct Runtime {
     captures: Vec<(usize, Vec<SignalKey>)>,
     pool: Vec<Vec<SignalKey>>,
     pending: Vec<EffectKey>,
-    notify_stack: Vec<Observer>,
+    notify_stack: Vec<(Observer, Staleness)>,
     current_scope: Option<ScopeKey>,
+    /// [`on_mount`] callbacks of views being built, with their scopes.
+    mounted: Vec<(Option<ScopeKey>, MountFn)>,
     stats: ReactiveStats,
     #[cfg(feature = "reactive-trace")]
     trace: super::trace::Ring,
@@ -216,6 +240,7 @@ impl Runtime {
             pending: Vec::new(),
             notify_stack: Vec::new(),
             current_scope: None,
+            mounted: Vec::new(),
             stats: ReactiveStats::default(),
             #[cfg(feature = "reactive-trace")]
             trace: super::trace::Ring::new(),
@@ -354,18 +379,25 @@ impl Runtime {
             let created = self.signal(key).map(|node| node.created);
             self.trace.write(key, _at, created);
         }
+        self.mark(key, Staleness::Dirty);
+    }
+
+    /// Mark `key`'s readers `direct` (dirty for a write or a changed
+    /// computed) and everything further down "check".
+    fn mark(&mut self, key: SignalKey, direct: Staleness) {
         let mut stack = std::mem::take(&mut self.notify_stack);
         if let Some(node) = self.signal(key) {
-            stack.extend(node.subscribers.iter().copied());
+            stack.extend(node.subscribers.iter().map(|observer| (*observer, direct)));
         }
-        while let Some(observer) = stack.pop() {
+        while let Some((observer, staleness)) = stack.pop() {
             match observer {
                 Observer::Effect(effect) => {
-                    if let Some(node) = self.effect_mut(effect)
-                        && !node.queued
-                    {
-                        node.queued = true;
-                        self.pending.push(effect);
+                    if let Some(node) = self.effect_mut(effect) {
+                        node.dirty |= staleness == Staleness::Dirty;
+                        if !node.queued {
+                            node.queued = true;
+                            self.pending.push(effect);
+                        }
                     }
                     #[cfg(feature = "reactive-trace")]
                     self.trace.notify(key, effect);
@@ -373,15 +405,31 @@ impl Runtime {
                 Observer::Computed(computed) => {
                     if let Some(node) = self.signal_mut(computed)
                         && let Some(state) = node.computed.as_mut()
-                        && !state.dirty
+                        && state.state < staleness
                     {
-                        state.dirty = true;
-                        stack.extend(node.subscribers.iter().copied());
+                        let was_clean = state.state == Staleness::Clean;
+                        state.state = staleness;
+                        if was_clean {
+                            stack.extend(
+                                node.subscribers
+                                    .iter()
+                                    .map(|observer| (*observer, Staleness::Check)),
+                            );
+                        }
                     }
                 }
             }
         }
         self.notify_stack = stack;
+    }
+
+    /// The computed dependencies of `observer` that may be stale.
+    fn stale_computeds(&self, deps: &[SignalKey], out: &mut Vec<SignalKey>) {
+        out.extend(deps.iter().copied().filter(|dep| {
+            self.signal(*dep)
+                .and_then(|node| node.computed.as_ref())
+                .is_some_and(|computed| computed.state != Staleness::Clean)
+        }));
     }
 
     fn remove_effect(&mut self, key: EffectKey, released: &mut Released) {
@@ -460,6 +508,7 @@ fn disposed(at: &'static Location<'static>) -> ! {
 
 enum ReadState {
     Ready(Rc<dyn Any>),
+    Check,
     Recompute,
 }
 
@@ -472,10 +521,12 @@ pub(crate) fn read_cell(
 ) -> Rc<dyn Any> {
     loop {
         let state = with_rt(|rt| {
-            rt.signal(key).map(|node| match &node.computed {
-                Some(computed) if computed.dirty => ReadState::Recompute,
-                _ => ReadState::Ready(Rc::clone(&node.value)),
-            })
+            rt.signal(key)
+                .map(|node| match node.computed.as_ref().map(|c| c.state) {
+                    Some(Staleness::Dirty) => ReadState::Recompute,
+                    Some(Staleness::Check) => ReadState::Check,
+                    _ => ReadState::Ready(Rc::clone(&node.value)),
+                })
         });
         match state {
             None => disposed(at),
@@ -485,7 +536,71 @@ pub(crate) fn read_cell(
                 }
                 return cell;
             }
+            Some(ReadState::Check) => check(key, at),
             Some(ReadState::Recompute) => recompute(key, at),
+        }
+    }
+}
+
+/// Bring a "check" computed's computed dependencies up to date. One that
+/// changed marks this one dirty; otherwise it is clean again.
+fn check(key: SignalKey, at: &'static Location<'static>) {
+    let mut stale = Vec::new();
+    with_rt(|rt| {
+        let deps = rt
+            .signal(key)
+            .and_then(|node| node.computed.as_ref())
+            .map(|computed| computed.deps.clone())
+            .unwrap_or_default();
+        rt.stale_computeds(&deps, &mut stale);
+    });
+    for dep in stale {
+        read_cell(dep, at, false);
+        if staleness(key) == Some(Staleness::Dirty) {
+            return;
+        }
+    }
+    with_rt(|rt| {
+        if let Some(computed) = rt.signal_mut(key).and_then(|node| node.computed.as_mut())
+            && computed.state == Staleness::Check
+        {
+            computed.state = Staleness::Clean;
+        }
+    });
+}
+
+fn staleness(key: SignalKey) -> Option<Staleness> {
+    with_rt(|rt| {
+        rt.signal(key)
+            .and_then(|node| node.computed.as_ref())
+            .map(|computed| computed.state)
+    })
+}
+
+/// Whether a queued effect must run: a signal it read changed, or one of
+/// its computed dependencies, brought up to date now, produced a new value.
+pub(crate) fn confirm(effect: EffectKey) -> bool {
+    let mut stale = Vec::new();
+    let dirty = with_rt(|rt| {
+        let node = rt.effects.get(effect.index, effect.generation)?;
+        if node.dirty {
+            return Some((true, node.site));
+        }
+        let (deps, site) = (node.deps.clone(), node.site);
+        rt.stale_computeds(&deps, &mut stale);
+        Some((false, site))
+    });
+    match dirty {
+        None => false,
+        Some((true, _)) => true,
+        Some((false, at)) => {
+            for dep in stale {
+                read_cell(dep, at, false);
+                if with_rt(|rt| rt.effect_mut(effect).is_some_and(|node| node.dirty)) {
+                    return true;
+                }
+            }
+            false
         }
     }
 }
@@ -504,14 +619,17 @@ fn recompute(key: SignalKey, at: &'static Location<'static>) {
         panic!("computed read at {at} depends on itself");
     };
     with_rt(|rt| rt.begin(Some(Observer::Computed(key))));
-    compute(&*cell);
+    let changed = compute(&*cell);
     with_rt(|rt| {
         rt.end();
         if let Some(node) = rt.signal_mut(key)
             && let Some(computed) = node.computed.as_mut()
         {
-            computed.dirty = false;
+            computed.state = Staleness::Clean;
             computed.compute = Some(compute);
+        }
+        if changed {
+            rt.mark(key, Staleness::Dirty);
         }
     });
 }
@@ -538,15 +656,16 @@ pub fn signal<T: 'static>(value: T) -> Signal<T> {
 
 /// Create a derived value owned by the current scope. It is computed now,
 /// turns dirty when anything it read changes, and recomputes on the next
-/// read.
+/// read. A recomputed value equal to the last one updates nothing that
+/// reads it.
 #[track_caller]
-pub fn computed<T: 'static>(f: impl Fn() -> T + 'static) -> Computed<T> {
+pub fn computed<T: PartialEq + 'static>(f: impl Fn() -> T + 'static) -> Computed<T> {
     let created = Location::caller();
     let key = with_rt(|rt| {
         rt.new_signal(
             Rc::new(()),
             Some(ComputedNode {
-                dirty: true,
+                state: Staleness::Dirty,
                 deps: Vec::new(),
                 compute: None,
             }),
@@ -561,12 +680,18 @@ pub fn computed<T: 'static>(f: impl Fn() -> T + 'static) -> Computed<T> {
         if let Some(node) = rt.signal_mut(key) {
             node.value = Rc::new(RefCell::new(value));
             let computed = node.computed.as_mut().expect("created as a computed");
-            computed.dirty = false;
+            computed.state = Staleness::Clean;
             computed.compute = Some(Box::new(move |cell: &dyn Any| {
-                *cell
+                let value = f();
+                let mut current = cell
                     .downcast_ref::<RefCell<T>>()
                     .expect("computed cell holds its own type")
-                    .borrow_mut() = f();
+                    .borrow_mut();
+                let changed = *current != value;
+                if changed {
+                    *current = value;
+                }
+                changed
             }));
         }
     });
@@ -640,6 +765,37 @@ pub fn use_context<T: Clone + 'static>() -> Option<T> {
     })
 }
 
+/// Run `f` once the view being built is in the tree: after the mount's
+/// commit, or after the keyed row or conditional branch it builds is placed.
+/// It runs untracked, in the scope that registered it, with the context
+/// that placed the view; a scope disposed first (a failed mount) drops it.
+/// A [`node_ref`] set on one of the view's elements holds its node by then.
+///
+/// [`node_ref`]: super::node_ref
+pub fn on_mount(f: impl FnOnce(&mut crate::AppContext) + 'static) {
+    with_rt(|rt| {
+        let scope = rt.current_scope;
+        rt.mounted.push((scope, Box::new(f)));
+    });
+}
+
+/// Run the [`on_mount`] callbacks of the views just placed.
+pub(crate) fn run_mounted(cx: &mut crate::AppContext) {
+    loop {
+        let batch = with_rt(|rt| std::mem::take(&mut rt.mounted));
+        if batch.is_empty() {
+            return;
+        }
+        for (scope, f) in batch {
+            match scope {
+                Some(scope) if !with_rt(|rt| rt.scope_mut(scope).is_some()) => drop(f),
+                Some(scope) => with_scope(scope, || untrack(|| f(cx))),
+                None => untrack(|| f(cx)),
+            }
+        }
+    }
+}
+
 /// Run `f` without recording what it reads.
 pub fn untrack<R>(f: impl FnOnce() -> R) -> R {
     with_rt(|rt| rt.begin(None));
@@ -677,6 +833,7 @@ pub(crate) fn create_effect(
         let (index, generation) = rt.effects.insert(EffectNode {
             deps,
             queued: false,
+            dirty: false,
             context,
             target,
             run,
@@ -717,6 +874,9 @@ pub(crate) fn dispose_effect(key: EffectKey) {
 /// Run `f` as `effect`, making what it reads the effect's dependencies.
 pub(crate) fn run_tracked<R>(effect: EffectKey, f: impl FnOnce() -> R) -> R {
     with_rt(|rt| {
+        if let Some(node) = rt.effect_mut(effect) {
+            node.dirty = false;
+        }
         rt.begin(Some(Observer::Effect(effect)));
         rt.stats.effects_run += 1;
     });
@@ -1175,7 +1335,9 @@ mod tests {
         take_pending(0, &mut queue);
         for (key, target) in queue {
             assert_eq!(target, EffectTarget::User);
-            run_user_effect(key);
+            if confirm(key) {
+                run_user_effect(key);
+            }
         }
     }
 
@@ -1196,6 +1358,75 @@ mod tests {
         count.set(3);
         flush_user_effects();
         assert_eq!(runs.get(), 2);
+        flush_user_effects();
+        assert_eq!(runs.get(), 2);
+        dispose_scope(scope);
+    }
+
+    #[test]
+    fn a_computed_that_recomputes_to_the_same_value_stops_the_update() {
+        let (runs, last) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+        let (scope, count) = scoped(|| {
+            let count = signal(1u32);
+            let parity = computed(move || count.get() % 2);
+            // A chain: the second computed only sees the first.
+            let label = computed(move || if parity.get() == 0 { "even" } else { "odd" });
+            let (runs, last) = (Rc::clone(&runs), Rc::clone(&last));
+            watch_effect(move || {
+                runs.set(runs.get() + 1);
+                last.set(label.get().len());
+            });
+            count
+        });
+        assert_eq!(runs.get(), 1);
+        count.set(3);
+        flush_user_effects();
+        assert_eq!(runs.get(), 1, "odd stays odd: nothing downstream runs");
+        count.set(4);
+        flush_user_effects();
+        assert_eq!((runs.get(), last.get()), (2, 4));
+        dispose_scope(scope);
+    }
+
+    #[test]
+    fn every_reader_of_a_changed_computed_runs_whichever_pulls_it_first() {
+        let runs = Rc::new(Cell::new(0));
+        let (scope, count) = scoped(|| {
+            let count = signal(1u32);
+            let doubled = computed(move || count.get() * 2);
+            for _ in 0..2 {
+                let runs = Rc::clone(&runs);
+                watch_effect(move || {
+                    doubled.get();
+                    runs.set(runs.get() + 1);
+                });
+            }
+            count
+        });
+        assert_eq!(runs.get(), 2);
+        count.set(2);
+        flush_user_effects();
+        assert_eq!(runs.get(), 4);
+        dispose_scope(scope);
+    }
+
+    #[test]
+    fn a_direct_read_still_runs_an_effect_whose_computed_did_not_change() {
+        let runs = Rc::new(Cell::new(0));
+        let (scope, (count, other)) = scoped(|| {
+            let count = signal(1u32);
+            let other = signal(0u32);
+            let parity = computed(move || count.get() % 2);
+            let seen = Rc::clone(&runs);
+            watch_effect(move || {
+                parity.get();
+                other.get();
+                seen.set(seen.get() + 1);
+            });
+            (count, other)
+        });
+        count.set(3);
+        other.set(1);
         flush_user_effects();
         assert_eq!(runs.get(), 2);
         dispose_scope(scope);

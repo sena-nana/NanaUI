@@ -453,13 +453,38 @@ impl Rewrite<'_> {
     }
 
     /// Match a known view's arguments by prop name: `@done` fills
-    /// `on_done`, the element's children fill `children`.
+    /// `on_done`, `<template #header>` fills `header`, the other children
+    /// fill `children`.
     fn component(&mut self, element: &mut Element, props: &[PatType]) -> Result<(), Error> {
         let name = tag(element);
+        let mut values: HashMap<String, AttrValue> = HashMap::new();
+        let (slots, rest): (Vec<Node>, Vec<Node>) = std::mem::take(&mut element.children)
+            .into_iter()
+            .partition(|child| matches!(child, Node::Element(e) if e.name == "template"));
+        element.children = rest;
+        for slot in slots {
+            let Node::Element(mut template) = slot else {
+                unreachable!("partitioned on elements");
+            };
+            let Some(slot) = template.attrs.iter().find_map(|attr| match &attr.name {
+                AttrName::Directive(directive, _) => directive.strip_prefix("slot:"),
+                _ => None,
+            }) else {
+                return Err(parse::syn_error(
+                    self.file,
+                    syn::Error::new(template.name.span(), "`<template>` here needs `#slot-name`"),
+                ));
+            };
+            let slot = match slot.replace('-', "_") {
+                default if default == "default" => String::from("children"),
+                other => other,
+            };
+            self.nodes(&mut template.children)?;
+            values.insert(slot, AttrValue::View(template.children));
+        }
         let error = |message: String| {
             parse::syn_error(self.file, syn::Error::new(element.name.span(), message))
         };
-        let mut values: HashMap<String, AttrValue> = HashMap::new();
         let mut kept = Vec::new();
         for attr in std::mem::take(&mut element.attrs) {
             if matches!(&attr.name, AttrName::Plain(ident) if ident == "key")
@@ -503,6 +528,14 @@ impl Rewrite<'_> {
                     return Err(error(format!("`{name}`: `children` must be the last prop")));
                 }
                 wants_children = true;
+                if let Some(AttrValue::View(nodes)) = values.remove("children") {
+                    if !element.children.is_empty() {
+                        return Err(error(format!(
+                            "`<{name}>` has both `#default` and other children"
+                        )));
+                    }
+                    element.children = nodes;
+                }
                 continue;
             }
             let value = values

@@ -103,6 +103,36 @@ fn expr_at(text: &str, pos: Pos, file: &str) -> Result<Expr, Error> {
     parse_at(<Expr as syn::parse::Parse>::parse, text, pos, file)
 }
 
+/// `<slot/>` places the `children` argument, `<slot name="header"/>` the
+/// `header` one.
+fn slot(element: Element, file: &str) -> Result<Node, Error> {
+    let span = element.name.span();
+    let mut name = String::from("children");
+    for attr in element.attrs {
+        match (attr.name, attr.value) {
+            (AttrName::Plain(ident), AttrValue::Lit(syn::Expr::Lit(lit))) if ident == "name" => {
+                if let syn::Lit::Str(text) = lit.lit {
+                    name = text.value().replace('-', "_");
+                }
+            }
+            _ => {
+                return Err(syn_error(
+                    file,
+                    syn::Error::new(span, "`<slot>` takes only `name=\"…\"`"),
+                ));
+            }
+        }
+    }
+    if !element.children.is_empty() {
+        return Err(syn_error(
+            file,
+            syn::Error::new(span, "`<slot>` has no fallback content"),
+        ));
+    }
+    let ident = Ident::new(&name, span);
+    Ok(Node::Expr(syn::parse_quote_spanned!(span=> #ident)))
+}
+
 /// `todo-row` → `TodoRow`; `TodoRow` stays.
 fn pascal_case(tag: &str) -> String {
     if !tag.contains('-') {
@@ -267,7 +297,12 @@ impl Template<'_, '_> {
                 };
             }
             if self.rest().starts_with('<') {
-                nodes.push(Node::Element(self.element()?));
+                let element = self.element()?;
+                nodes.push(if element.name == "slot" {
+                    slot(element, self.src.file)?
+                } else {
+                    Node::Element(element)
+                });
             } else if let Some(text) = self.text()? {
                 nodes.push(text);
             }
@@ -379,6 +414,12 @@ impl Template<'_, '_> {
             };
             let span = ident_at("v", pos, file)?.span();
             (AttrName::Directive(directive.to_owned(), span), value)
+        } else if let Some(slot) = raw.strip_prefix('#') {
+            // `#name` is `v-slot:name`.
+            (
+                AttrName::Directive(format!("slot:{slot}"), ident_at("v", pos, file)?.span()),
+                expr(&value)?,
+            )
         } else if let Some(bound) = raw.strip_prefix(':') {
             let name = ident_at(&bound.replace('-', "_"), pos, file)?;
             (AttrName::Plain(name), expr(&value)?)

@@ -686,3 +686,48 @@ fn a_component_key_names_its_root_over_the_root_s_own() {
     assert_eq!(children(&cx, root).len(), 3);
     assert!(cx.resolve_assembly_path(root, "inner").is_none());
 }
+
+#[test]
+fn on_mount_runs_once_the_nodes_are_in_the_tree() {
+    use std::sync::{Arc, Mutex};
+    let (mut cx, _, parent) = setup();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let shown_flag = std::cell::Cell::new(None);
+    let (log, flag) = (Arc::clone(&seen), &shown_flag);
+    cx.mount_view(parent, move || {
+        let shown = signal(false);
+        flag.set(Some(shown));
+        let (outer, inner) = (Arc::clone(&log), Arc::clone(&log));
+        on_mount(move |_| outer.lock().unwrap().push("mount"));
+        column(
+            0.0,
+            when(shown, move || {
+                let inner = Arc::clone(&inner);
+                let node = node_ref();
+                // The node is built and placed under its container by now.
+                on_mount(move |cx| {
+                    let id = node.get_untracked().expect("the ref is set when built");
+                    if cx.world().node(id).is_some_and(|n| n.parent.is_some()) {
+                        inner.lock().unwrap().push("branch");
+                    }
+                });
+                text("shown").node_ref(node)
+            }),
+        )
+    })
+    .unwrap();
+    assert_eq!(*seen.lock().unwrap(), ["mount"]);
+    let shown = shown_flag.get().unwrap();
+    shown.set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(*seen.lock().unwrap(), ["mount", "branch"]);
+    shown.set(false);
+    cx.flush_reactive().unwrap();
+    shown.set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["mount", "branch", "branch"],
+        "a rebuilt branch mounts again"
+    );
+}

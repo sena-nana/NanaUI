@@ -10,6 +10,9 @@ let page = Stack::fill_column(16.0)
 <template>
   <Widget :of="page">
     <Counter key="counter" />
-    <TodoList key="todos" />
+    <Section key="todo-section">
+      <template #header><Text>待办</Text></template>
+      <TodoList key="todos" />
+    </Section>
   </Widget>
 </template>

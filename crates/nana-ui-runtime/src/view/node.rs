@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::panic::Location;
 
 use super::prop::{FieldWrite, IntoProp};
-use super::reactive::{self, EffectKey, EffectTarget, ScopeKey, SignalKey};
+use super::reactive::{self, EffectKey, EffectTarget, ScopeKey, Signal, SignalKey};
 use crate::{
     AppContext, ComponentView, Entity, FrameworkError, MutationQueue, StableNodeId, UiBuilder, View,
 };
@@ -370,11 +370,21 @@ impl<V: IntoView> IntoView for Keyed<V> {
 
 type EventInstall<C> = Box<dyn FnOnce(&mut UiBuilder<'_>, Entity<C>)>;
 
+/// The node an element was built as ([`El::node_ref`]); `None` until then.
+pub type NodeRef = Signal<Option<StableNodeId>>;
+
+/// A [`NodeRef`] owned by the current scope.
+#[track_caller]
+pub fn node_ref() -> NodeRef {
+    super::signal(None)
+}
+
 /// One component node with its constant fields, bindings, event handlers
 /// and children.
 pub struct El<C: ComponentView, K = ()> {
     component: C,
     key: Option<Cow<'static, str>>,
+    node_ref: Option<NodeRef>,
     bindings: NodeBindings<C>,
     events: Vec<EventInstall<C>>,
     children: K,
@@ -388,6 +398,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
     El {
         component,
         key: None,
+        node_ref: None,
         bindings: NodeBindings::default(),
         events: Vec::new(),
         children: (),
@@ -400,6 +411,13 @@ impl<C: ComponentView, K> El<C, K> {
     /// Undeclared keys are positional.
     pub fn key(mut self, key: impl Into<Cow<'static, str>>) -> Self {
         self.key = Some(key.into());
+        self
+    }
+
+    /// Record this node's id in `node_ref` once it is built (Vue's template
+    /// `ref`), for [`on_mount`](super::on_mount) and event handlers.
+    pub fn node_ref(mut self, node_ref: NodeRef) -> Self {
+        self.node_ref = Some(node_ref);
         self
     }
 
@@ -437,6 +455,7 @@ impl<C: ComponentView, K> El<C, K> {
         El {
             component: self.component,
             key: self.key,
+            node_ref: self.node_ref,
             bindings: self.bindings,
             events: self.events,
             children,
@@ -450,6 +469,7 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
         let El {
             mut component,
             key,
+            node_ref,
             mut bindings,
             events,
             children,
@@ -473,6 +493,9 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             return;
         }
         vb.push_root(id);
+        if let Some(node_ref) = node_ref {
+            node_ref.set(Some(id));
+        }
         if let Some(effect) = effect {
             reactive::set_effect_target(effect, EffectTarget::Node(id));
             vb.st.parts.nodes.push((id, effect, Box::new(bindings)));

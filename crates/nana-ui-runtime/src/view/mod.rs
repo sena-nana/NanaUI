@@ -29,7 +29,8 @@ pub(crate) mod trace;
 
 pub use controls::{StyledComponent, button, checkbox, column, row, slider, text, text_input};
 pub use node::{
-    AnyView, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, ViewBuilder, keyed, widget,
+    AnyView, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef, ViewBuilder, keyed,
+    node_ref, widget,
 };
 pub(crate) use node::{NodePatch, StructuralBinding, ViewParts, ViewState};
 #[doc(hidden)]
@@ -39,7 +40,7 @@ pub use prop::{FieldWrite, IntoProp, PropSource};
 pub use reactive::{__checked, Dep};
 pub use reactive::{
     Computed, Const, Effect, ReactiveStats, Readable, Signal, computed, constant, on_cleanup,
-    provide, reactive_stats, signal, untrack, use_context, watch_effect,
+    on_mount, provide, reactive_stats, signal, untrack, use_context, watch_effect,
 };
 pub use structural::{Each, When, each, when};
 #[cfg(feature = "reactive-trace")]

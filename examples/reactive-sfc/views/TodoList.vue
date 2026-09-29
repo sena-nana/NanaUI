@@ -2,6 +2,15 @@
 let draft = signal(String::new());
 let list: Signal<Vec<Todo>> = signal(Vec::new());
 let next_id = signal(1u32);
+let draft_input = node_ref();
+// Typing can start as soon as the list is shown.
+on_mount(move |cx| {
+    if let Some(id) = draft_input.get_untracked()
+        && let Some(document) = cx.world().node(id).map(|node| node.document)
+    {
+        let _ = cx.focus_node(document, id);
+    }
+});
 let add = move || {
     let title = draft.get_untracked().trim().to_owned();
     if title.is_empty() {
@@ -16,7 +25,7 @@ let add = move || {
 
 <template>
   <Column :gap="8">
-    <TextInput key="draft" placeholder="新任务" v-model="draft" />
+    <TextInput key="draft" ref="draft_input" placeholder="新任务" v-model="draft" />
     <Button key="add" :disabled="draft.with(|d| d.trim().is_empty())" @activate="add">添加</Button>
     <TodoItem
       v-for="todo in list"

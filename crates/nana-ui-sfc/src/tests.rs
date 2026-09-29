@@ -231,3 +231,45 @@ let items: Signal<Vec<u32>> = signal(Vec::new());
         out.code
     );
 }
+
+#[test]
+fn named_slots_fill_view_arguments() {
+    let card = (
+        "Card.vue",
+        r#"<script setup lang="rust">
+defineProps!(header: impl IntoView, children: impl IntoView);
+</script>
+<template><Column><slot name="header"/><slot/></Column></template>"#,
+    );
+    let out = compile(&[
+        card,
+        (
+            "Page.vue",
+            "<template><Card><template #header><Text>标题</Text></template><template #default><Text>内容</Text></template></Card></template>",
+        ),
+    ])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(
+        code.contains(&squash("column(0.0_f32, (header, children))")),
+        "{code}"
+    );
+    assert!(
+        code.contains(&squash(
+            "card(::nana_ui_runtime::view::text(\"标题\"), ::nana_ui_runtime::view::text(\"内容\"))"
+        )),
+        "{code}"
+    );
+
+    let unnamed = compile(&[
+        card,
+        (
+            "Page.vue",
+            "<template>\n<Card><template><Text>x</Text></template></Card>\n</template>",
+        ),
+    ])
+    .err()
+    .expect("an error");
+    assert!(unnamed.message.contains("needs `#slot-name`"), "{unnamed}");
+    assert_eq!(unnamed.line, 2);
+}

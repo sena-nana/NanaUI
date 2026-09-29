@@ -123,6 +123,8 @@ pub mod views {
 - `TodoList.vue` 编译成 `pub fn todo_list(…) -> impl IntoView`。`defineProps!(todo: Todo, on_remove: impl Fn() + Send + 'static)` 声明参数。
 - 属性写法和 Vue 一致：`name="x"` 是字符串，`:name="表达式"` 是 Rust 表达式，`{{ 表达式 }}` 用 `Display` 插值。
 - 同一批编译的组件之间按 prop 名匹配参数，不按书写顺序：`@remove` 对应 `on_remove` 回调，子节点对应最后一个名为 `children` 的 prop。缺少的参数、多余的参数都是编译错误。
+- 具名插槽：子组件声明 `header: impl IntoView` 这样的视图参数，模板里用 `<slot name="header"/>` 放置（`<slot/>` 放 `children`）；父组件写 `<template #header>…</template>`，`#default` 等于其余子节点。插槽内容是按值传入的视图，只能放一次，也没有后备内容。
+- `ref="name"` 把元素的节点 id 写进脚本里的 `let name = node_ref();`；`on_mount(move |cx| …)` 在视图进树之后执行，可以拿它聚焦、读布局。
 - 组件上的 `key` 落在组件的第一个根节点上（`keyed`）。不在这一批里的标签，按 `view!` 的规则调用同名的 Rust 函数。
 - `<style>` 不支持：CSS 子集属于 Vue 路径。模板里仍然要遵守 Rust 的所有权规则，例如同一个值既要传给组件又要被事件闭包使用时，得写 `todo.clone()`。
 - 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`，rustc 的报错会指向可读的代码。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出，带文件、行、列。
@@ -184,6 +186,7 @@ impl ApplicationState for App {
 | --- | --- |
 | 挂载 | 整棵声明树在一次 `build_detached` 里建完；挂到父节点下再多一次插入 commit。根节点无 key 插入，不影响父节点自己的 keyed 子节点 |
 | 写信号 | `set` / `update` 只把订阅它的副作用排进队列，不碰树；`computed` 只标脏，下次被读时才重算 |
+| 等值截断 | 写入只把直接读者标脏，更下游标"待查"。待查的 computed 或副作用先把它依赖的 computed 更新一遍，只有其中某个算出了**不同的值**才重跑（`computed` 要求 `T: PartialEq`）。所以 `computed(\|\| n.get() % 2)` 在 1 → 3 时，读它的绑定一个都不跑 |
 | flush | `AppContext::flush_reactive`。按轮执行：先跑 `watch_effect`，再跑 `each` / `when` 的结构更新，最后把这一轮所有需要改的节点各暂存一次、合进**一次** commit。输入路由在每个事件末尾调用它（所以 `InputRouteOutcome::invalidated_work` 会反映绑定的变化），`take_system_work` 在每帧开头调用它 |
 | 节点绑定 | 同一个节点的所有动态字段共用一个副作用。任何一个输入变了，先按字段逐个与保留的视图比较（`FieldWrite::differs`），全部相等就到此为止：不复制、不投影、不提交。只要有一个字段不同，才复制一份、写入、投影一次 |
 | `each` | 用 key 对照：保留的行不重建，节点 id 和控件的交互状态都不变；删掉的行回收作用域并销毁节点；新行在一次 detached build 里建好。重排只移动最长递增子序列之外的节点：插入或删除一行不移动任何已有节点，整体反转移动 n−1 个。一行里的字段变化应该用行内信号，这样不会触发列表重算 |
@@ -207,7 +210,9 @@ impl ApplicationState for App {
 | `v-for` + `:key` | `each(items, key, row)` |
 | `v-model` | `.model(sig)`（文本输入、滑块、复选框） |
 | props / emits | 函数参数 / `impl Fn(T)` 回调参数 |
-| slot | `impl IntoView` 参数 |
+| slot / 具名 slot | `impl IntoView` 参数；`.vue` 里 `<slot name="x"/>` 与 `<template #x>` |
+| 模板 `ref` | `node_ref()` + `.node_ref(r)`；`.vue` 里 `ref="r"` |
+| `onMounted` | `on_mount(move \|cx\| …)` |
 | `provide` / `inject` | `provide(value)` / `use_context::<T>()` |
 | `onUnmounted` | `on_cleanup` |
 | `defineProps` | `defineProps!(name: Type, …)`（`.vue`） |

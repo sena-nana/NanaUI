@@ -35,13 +35,19 @@ fn the_counter_and_the_todo_list_work_as_written() {
 
     // TodoList.vue: type, add, remove.
     let draft = cx
-        .resolve_assembly_entity::<TextInput>(page, "todos/draft")
+        .resolve_assembly_entity::<TextInput>(page, "todo-section/todos/draft")
         .unwrap();
     let add = cx
-        .resolve_assembly_entity::<Button>(page, "todos/add")
+        .resolve_assembly_entity::<Button>(page, "todo-section/todos/add")
         .unwrap();
     assert!(cx.read(add, |b| b.disabled).unwrap(), "empty draft");
-    let todos = cx.resolve_assembly_path(page, "todos").unwrap();
+    // Section.vue's `#header` slot, and TodoList.vue's `on_mount` focus.
+    let section = cx.resolve_assembly_path(page, "todo-section").unwrap();
+    assert_eq!(text_of(&cx, children(&cx, section)[0]), "待办");
+    assert_eq!(cx.world().focused(document), Some(draft.stable_id()));
+    let todos = cx
+        .resolve_assembly_path(page, "todo-section/todos")
+        .unwrap();
     let list = children(&cx, todos)[2];
     let summary = children(&cx, todos)[3];
     assert_eq!(text_of(&cx, children(&cx, summary)[0]), "还没有任务");
