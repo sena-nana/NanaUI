@@ -8,18 +8,24 @@
 //! CSS is parsed and no selector is matched at run time, and this crate has
 //! no CSS in it.
 //!
-//! A [`StyleSite`] composes an element's base layout with the patches whose
-//! classes are active, once per distinct base and class set, and hands out
-//! the same shared layout to every instance after that.
+//! A [`Sheet`] is a stylesheet's class rules in cascade order. An element
+//! names its classes with [`El::class`] and [`El::class_when`]; the sheet
+//! picks the rules those classes can match, once per distinct set of
+//! classes, into a [`StyleSite`]. The site composes the element's base
+//! layout with the patches whose classes are active, once per distinct base
+//! and active set, and hands out the same shared layout to every instance
+//! after that.
 
+use std::panic::Location;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use nana_ui_core::LayoutStyle;
 use serde_json::Value;
 
 use super::controls::StyledComponent;
-use super::node::El;
-use super::prop::{FieldWrite, PropSource};
+use super::node::{El, NodeBindings};
+use super::prop::{FieldWrite, IntoProp, PropSource};
+use super::transition::Implicit;
 use crate::ComponentView;
 
 /// The Style Model fields one rule's declarations set, as the JSON of
@@ -94,6 +100,173 @@ impl StyleSite {
     }
 }
 
+/// A stylesheet compiled at build time (`stylesheet!`, a view's `<style>`):
+/// its class rules and transitions, each in cascade order.
+pub struct Sheet {
+    rules: &'static [SheetRule],
+    transitions: &'static [SheetTransition],
+    /// `(fixed classes, conditional classes) -> (site, animations)`.
+    resolved: Mutex<Vec<Resolved>>,
+}
+
+type Resolved = (Vec<u16>, Vec<u16>, &'static StyleSite, &'static [Implicit]);
+
+/// One rule: the classes its selector needs and its patch.
+#[doc(hidden)]
+pub struct SheetRule {
+    pub classes: &'static [u16],
+    pub patch: &'static StylePatch,
+}
+
+/// One `transition`: the classes its selector needs and what it animates.
+#[doc(hidden)]
+pub struct SheetTransition {
+    pub classes: &'static [u16],
+    pub animate: &'static [Implicit],
+}
+
+impl Sheet {
+    #[doc(hidden)]
+    pub const fn new(rules: &'static [SheetRule], transitions: &'static [SheetTransition]) -> Self {
+        Self {
+            rules,
+            transitions,
+            resolved: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The rules an element with these classes can match, with the bit of
+    /// each conditional class they need, and the winning transition among
+    /// those its fixed classes match.
+    fn resolve(
+        &self,
+        fixed: &[u16],
+        conditional: &[u16],
+    ) -> (&'static StyleSite, &'static [Implicit]) {
+        let mut resolved = self.resolved.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, _, site, animate)) = resolved
+            .iter()
+            .find(|(f, c, _, _)| f.as_slice() == fixed && c.as_slice() == conditional)
+        {
+            return (site, animate);
+        }
+        let bit = |class: &u16| {
+            conditional
+                .iter()
+                .position(|c| c == class)
+                .map_or(0, |at| 1u64 << at)
+        };
+        let rules: Vec<(u64, &'static StylePatch)> = self
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.classes
+                    .iter()
+                    .all(|class| fixed.contains(class) || conditional.contains(class))
+            })
+            .map(|rule| {
+                let needs = rule
+                    .classes
+                    .iter()
+                    .filter(|class| !fixed.contains(class))
+                    .fold(0, |needs, class| needs | bit(class));
+                (needs, rule.patch)
+            })
+            .collect();
+        // One per distinct class set an element is written with: bounded
+        // by the program's source, not by how many nodes it builds.
+        let site: &'static StyleSite = Box::leak(Box::new(StyleSite::new(Box::leak(
+            rules.into_boxed_slice(),
+        ))));
+        let animate = self
+            .transitions
+            .iter()
+            .rfind(|t| t.classes.iter().all(|class| fixed.contains(class)))
+            .map_or(&[][..], |t| t.animate);
+        resolved.push((fixed.to_vec(), conditional.to_vec(), site, animate));
+        (site, animate)
+    }
+}
+
+/// One class of a [`Sheet`], as `stylesheet!` names it: `styles::card`.
+#[derive(Clone, Copy)]
+pub struct Class {
+    sheet: &'static Sheet,
+    index: u16,
+}
+
+impl Class {
+    #[doc(hidden)]
+    pub const fn new(sheet: &'static Sheet, index: u16) -> Self {
+        Self { sheet, index }
+    }
+}
+
+/// The classes [`El::class`] and [`El::class_when`] gave an element.
+pub(crate) struct Classes<C> {
+    sheet: &'static Sheet,
+    fixed: Vec<u16>,
+    conditional: Vec<(u16, PropSource<bool>)>,
+    apply: ApplySite<C>,
+    at: &'static Location<'static>,
+}
+
+type ApplySite<C> = fn(
+    &mut C,
+    &mut NodeBindings<C>,
+    &'static StyleSite,
+    Vec<PropSource<bool>>,
+    &'static Location<'static>,
+);
+
+impl<C> Classes<C> {
+    /// Write the element's styles into it, and return its animations.
+    pub(crate) fn apply(
+        self,
+        component: &mut C,
+        bindings: &mut NodeBindings<C>,
+    ) -> &'static [Implicit] {
+        let indices: Vec<u16> = self.conditional.iter().map(|(class, _)| *class).collect();
+        let (site, animate) = self.sheet.resolve(&self.fixed, &indices);
+        let sources = self
+            .conditional
+            .into_iter()
+            .map(|(_, source)| source)
+            .collect();
+        (self.apply)(component, bindings, site, sources, self.at);
+        animate
+    }
+}
+
+/// `site` over the component's layout as built; the `i`-th condition
+/// switches the site's `i`-th conditional class.
+fn apply_site<C: StyledComponent + ComponentView>(
+    component: &mut C,
+    bindings: &mut NodeBindings<C>,
+    site: &'static StyleSite,
+    conditions: Vec<PropSource<bool>>,
+    at: &'static Location<'static>,
+) {
+    let base = &component.node_style().layout;
+    if conditions.is_empty() {
+        let composed = site.compose(base, 0);
+        <ComposedLayout as FieldWrite<C, Arc<LayoutStyle>>>::write(component, composed);
+        return;
+    }
+    let base = site.shared_base(base);
+    let composed = move || {
+        let active = conditions
+            .iter()
+            .enumerate()
+            .fold(0u64, |mask, (bit, class)| match class.get() {
+                true => mask | 1 << bit,
+                false => mask,
+            });
+        site.compose(&base, active)
+    };
+    composed.bind_field::<C, ComposedLayout>(component, bindings, at);
+}
+
 fn apply<'a>(base: &LayoutStyle, patches: impl Iterator<Item = &'a Value>) -> LayoutStyle {
     let mut value = serde_json::to_value(base).expect("a layout serializes");
     for patch in patches {
@@ -141,30 +314,60 @@ impl<C: StyledComponent> FieldWrite<C, Arc<LayoutStyle>> for ComposedLayout {
 }
 
 impl<C: StyledComponent + ComponentView, K> El<C, K> {
-    /// Compiled styles (the `.vue` compiler writes these): the site's rules
-    /// over the element's layout as built, the `i`-th entry of `classes`
-    /// switching the element's `i`-th conditional class. Call it before
-    /// other layout props.
-    #[doc(hidden)]
+    /// Give the element `class` of a stylesheet:
+    ///
+    /// ```ignore
+    /// stylesheet! {
+    ///     mod styles;
+    ///     .card { padding: 12px; }
+    ///     .card.done { opacity: 0.5; }
+    /// }
+    /// widget(card).class(styles::card).class_when(styles::done, done)
+    /// ```
+    ///
+    /// Every class of one element comes from one sheet. Its rules apply
+    /// over the layout the element was built with, in the sheet's cascade
+    /// order; a `transition` on its fixed classes animates what bindings
+    /// change.
     #[track_caller]
-    pub fn styles(self, site: &'static StyleSite, classes: Vec<PropSource<bool>>) -> Self {
-        let base = &self.component_ref().node_style().layout;
-        if classes.is_empty() {
-            let composed = site.compose(base, 0);
-            return self.prop::<Arc<LayoutStyle>, ComposedLayout>(super::Fixed(composed));
-        }
-        let base = site.shared_base(base);
-        self.prop::<Arc<LayoutStyle>, ComposedLayout>(move || {
-            let active =
-                classes
-                    .iter()
-                    .enumerate()
-                    .fold(0u64, |mask, (bit, class)| match class.get() {
-                        true => mask | 1 << bit,
-                        false => mask,
-                    });
-            site.compose(&base, active)
+    pub fn class(self, class: Class) -> Self {
+        self.with_classes(class, |classes, index| classes.fixed.push(index))
+    }
+
+    /// `class` while `condition` holds (Vue's `:class="{ done: … }"`).
+    #[track_caller]
+    pub fn class_when(self, class: Class, condition: impl IntoProp<bool>) -> Self {
+        let condition = condition.into_source();
+        self.with_classes(class, move |classes, index| {
+            if classes.conditional.len() < 64 {
+                classes.conditional.push((index, condition));
+            }
         })
+    }
+
+    #[track_caller]
+    fn with_classes(mut self, class: Class, add: impl FnOnce(&mut Classes<C>, u16)) -> Self {
+        let classes = self.classes_mut().get_or_insert_with(|| Classes {
+            sheet: class.sheet,
+            fixed: Vec::new(),
+            conditional: Vec::new(),
+            apply: apply_site::<C>,
+            at: Location::caller(),
+        });
+        assert!(
+            std::ptr::eq(classes.sheet, class.sheet),
+            "an element's classes come from one stylesheet"
+        );
+        add(classes, class.index);
+        self
+    }
+
+    /// A compiled site over the element's layout as built, now (`css!`).
+    #[track_caller]
+    fn styles(mut self, site: &'static StyleSite) -> Self {
+        let (component, bindings) = self.parts_mut();
+        apply_site(component, bindings, site, Vec::new(), Location::caller());
+        self
     }
 }
 
@@ -193,7 +396,7 @@ impl<C: StyledComponent + ComponentView, K> El<C, K> {
     #[track_caller]
     pub fn css(self, style: InlineStyle) -> Self {
         let styled = match style.site {
-            Some(site) => self.styles(site, Vec::new()),
+            Some(site) => self.styles(site),
             None => self,
         };
         styled.animate(style.animate.iter().copied())

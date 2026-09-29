@@ -601,8 +601,70 @@ mod suspense_block {
 }
 
 mod styles {
-    use nana_ui_runtime::view::{IntoView, signal, text, widget};
-    use nana_ui_runtime::{AppContext, DocumentId, LengthSpec, Stack, css, view};
+    use nana_ui_runtime::view::{IntoView, column, signal, text, widget};
+    use nana_ui_runtime::{AppContext, DocumentId, LengthSpec, Stack, css, stylesheet, view};
+
+    stylesheet! {
+        mod panel_styles;
+        .panel { padding: 6px; transition: opacity 150ms; }
+        .panel.open { opacity: 0.5; }
+        .title { flex-grow: 1; font-size: "1.5em"; }
+    }
+
+    /// The same sheet as a template's `<style>` and as `stylesheet!`, the
+    /// same classes as attributes and as calls: the same layouts, before
+    /// and after the conditional class turns on.
+    #[test]
+    fn a_stylesheet_styles_rust_elements_as_style_does_a_template() {
+        let document = DocumentId::new(1).unwrap();
+        let mount = |template: bool| {
+            let mut cx = AppContext::new();
+            let flag = std::cell::Cell::new(None);
+            let view = cx
+                .mount_view_root(document, || {
+                    let open = signal(false);
+                    flag.set(Some(open));
+                    if template {
+                        view! {
+                            <style>
+                                .panel { padding: 6px; transition: opacity 150ms; }
+                                .panel.open { opacity: 0.5; }
+                                .title { flex-grow: 1; font-size: "1.5em"; }
+                            </style>
+                            <Column class="panel" class:open={open}>
+                                <Text class="title">"x"</Text>
+                            </Column>
+                        }
+                        .into_any()
+                    } else {
+                        column()
+                            .class(panel_styles::panel)
+                            .class_when(panel_styles::open, open)
+                            .children(text("x").class(panel_styles::title))
+                            .into_any()
+                    }
+                })
+                .unwrap();
+            (cx, view, flag.get().unwrap())
+        };
+        let layouts = |cx: &AppContext, root| {
+            let child = cx.world().node(root).unwrap().children[0];
+            (layout_of(cx, root), layout_of(cx, child))
+        };
+        let (mut template, t, t_open) = mount(true);
+        let (mut rust, r, r_open) = mount(false);
+        let before = layouts(&template, t.roots()[0]);
+        assert_eq!(before, layouts(&rust, r.roots()[0]));
+        assert_eq!(before.0.padding, Some(LengthSpec::Px(6.0)));
+        assert_eq!(before.1.flex_grow, Some(1.0));
+        t_open.set(true);
+        r_open.set(true);
+        template.flush_reactive().unwrap();
+        rust.flush_reactive().unwrap();
+        let after = layouts(&template, t.roots()[0]);
+        assert_eq!(after, layouts(&rust, r.roots()[0]));
+        assert_eq!(after.0.opacity, Some(0.5));
+    }
 
     fn layout_of(cx: &AppContext, id: nana_ui_runtime::StableNodeId) -> nana_ui_core::LayoutStyle {
         (*cx.world().node_style(id).unwrap().layout).clone()

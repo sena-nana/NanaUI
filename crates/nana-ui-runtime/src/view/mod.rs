@@ -75,7 +75,9 @@ pub use store::{Paths, StoreKey};
 pub use structural::{Dynamic, Each, EachExt, When, WhenExt, dynamic, each, when};
 #[doc(hidden)]
 pub use style::ComposedLayout;
-pub use style::{InlineStyle, StylePatch, StyleSite};
+pub use style::{Class, InlineStyle, Sheet, StylePatch, StyleSite};
+#[doc(hidden)]
+pub use style::{SheetRule, SheetTransition};
 pub use task::{
     Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,
 };
@@ -115,6 +117,34 @@ macro_rules! css {
 #[cfg(feature = "view-macro")]
 #[doc(hidden)]
 pub use nana_ui_view_macros::css as __css;
+
+/// A stylesheet written as CSS, compiled at build time into a module with
+/// one [`Class`] per class (feature `view-macro`):
+///
+/// ```ignore
+/// stylesheet! {
+///     mod styles;
+///     .card { padding: 12px; transition: opacity 150ms; }
+///     .card.done { opacity: 0.5; }
+/// }
+/// widget(card).class(styles::card).class_when(styles::done, done)
+/// ```
+///
+/// The same CSS, rules and checks as a `view!` template's `<style>`.
+#[cfg(feature = "view-macro")]
+#[macro_export]
+macro_rules! stylesheet {
+    ($($sheet:tt)*) => {
+        $crate::view::__stylesheet!(crate = $crate; $($sheet)*);
+    };
+}
+
+#[cfg(feature = "view-macro")]
+#[doc(hidden)]
+pub use nana_ui_view_macros::stylesheet as __stylesheet;
+
+#[cfg(feature = "view-macro")]
+pub use crate::stylesheet;
 
 /// `#[derive(Store)]` (feature `view-macro`): field accessors for a struct
 /// kept in a [`Store`], as a `<Name>StoreFields` trait.

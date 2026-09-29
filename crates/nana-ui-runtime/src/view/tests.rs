@@ -1653,7 +1653,21 @@ fn a_store_with_history_undoes_one_handler_at_a_time() {
 
 static CARD: StylePatch = StylePatch::new(r#"{"opacity":0.8,"padding":{"Px":12.0}}"#);
 static DIM: StylePatch = StylePatch::new(r#"{"opacity":0.4}"#);
-static CARD_SITE: StyleSite = StyleSite::new(&[(0, &CARD), (1, &DIM)]);
+static CARD_SHEET: Sheet = Sheet::new(
+    &[
+        SheetRule {
+            classes: &[0],
+            patch: &CARD,
+        },
+        SheetRule {
+            classes: &[1],
+            patch: &DIM,
+        },
+    ],
+    &[],
+);
+const CARD_CLASS: Class = Class::new(&CARD_SHEET, 0);
+const DIM_CLASS: Class = Class::new(&CARD_SHEET, 1);
 
 #[test]
 fn compiled_styles_compose_once_per_class_set_and_follow_conditional_classes() {
@@ -1666,7 +1680,9 @@ fn compiled_styles_compose_once_per_class_set_and_follow_conditional_classes() {
             column().children(
                 (0..3)
                     .map(|_| {
-                        widget(Stack::column(0.0)).styles(&CARD_SITE, vec![dimmed.into_source()])
+                        widget(Stack::column(0.0))
+                            .class(CARD_CLASS)
+                            .class_when(DIM_CLASS, dimmed)
                     })
                     .collect::<Vec<_>>(),
             )
@@ -1706,7 +1722,8 @@ fn an_implicit_transition_plays_from_the_shown_value_to_the_new_one() {
             let dimmed = signal(false);
             dim.set(Some(dimmed));
             widget(Stack::column(0.0))
-                .styles(&CARD_SITE, vec![dimmed.into_source()])
+                .class(CARD_CLASS)
+                .class_when(DIM_CLASS, dimmed)
                 .animate([Implicit::new(
                     crate::AnimatableProperty::Opacity,
                     Duration::from_millis(200),

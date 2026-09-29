@@ -466,6 +466,7 @@ pub struct El<C: ComponentView, K = ()> {
     /// them (CSS `transition`).
     implicit: Vec<super::Implicit>,
     slots: Vec<Slot<C>>,
+    classes: Option<super::style::Classes<C>>,
     children: K,
     site: &'static Location<'static>,
 }
@@ -482,6 +483,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         events: Vec::new(),
         implicit: Vec::new(),
         slots: Vec::new(),
+        classes: None,
         children: (),
         site: Location::caller(),
     }
@@ -502,13 +504,17 @@ impl<C: ComponentView, K> El<C, K> {
         self
     }
 
-    pub(crate) fn component_ref(&self) -> &C {
-        &self.component
-    }
-
     pub(crate) fn map_component(mut self, f: impl FnOnce(C) -> C) -> Self {
         self.component = f(self.component);
         self
+    }
+
+    pub(crate) fn classes_mut(&mut self) -> &mut Option<super::style::Classes<C>> {
+        &mut self.classes
+    }
+
+    pub(crate) fn parts_mut(&mut self) -> (&mut C, &mut NodeBindings<C>) {
+        (&mut self.component, &mut self.bindings)
     }
 
     /// Drive one field through a [`FieldWrite`].
@@ -571,6 +577,7 @@ impl<C: ComponentView, K> El<C, K> {
             events: self.events,
             implicit: self.implicit,
             slots: self.slots,
+            classes: self.classes,
             children,
             site: self.site,
         }
@@ -627,11 +634,15 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             node_ref,
             mut bindings,
             events,
-            implicit,
+            mut implicit,
             slots,
+            classes,
             children,
             site,
         } = self;
+        if let Some(classes) = classes {
+            implicit.extend_from_slice(classes.apply(&mut component, &mut bindings));
+        }
         let mut adopt = Vec::new();
         for slot in slots {
             match vb.build_slot(slot.view)[..] {

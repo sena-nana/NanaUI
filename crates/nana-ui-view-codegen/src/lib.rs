@@ -5,7 +5,9 @@
 
 mod style;
 
-pub use style::{CompiledStyles, StyleAt, StyleWarning, compile_inline, compile_styles};
+pub use style::{
+    CompiledStyles, StyleAt, StyleWarning, compile_inline, compile_styles, compile_stylesheet,
+};
 
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote, quote_spanned};
@@ -1051,15 +1053,15 @@ impl Gen<'_> {
                         let signal = raw(&attr.value, *span)?;
                         out = quote_spanned!(*span=> #out.model(#signal));
                     }
-                    // Written by the `.vue` compiler from `class` and the
-                    // view's `<style>`: compiled rules, then transitions.
-                    "styles" => {
+                    // Written from `class` and `class:name` against the
+                    // view's `<style>`: the calls the Rust spelling writes.
+                    "class" => {
                         let value = raw(&attr.value, *span)?;
-                        out = quote_spanned!(*span=> #out.styles(#value));
+                        out = quote_spanned!(*span=> #out.class(#value));
                     }
-                    "animate" => {
+                    "class_when" => {
                         let value = raw(&attr.value, *span)?;
-                        out = quote_spanned!(*span=> #out.animate(#value));
+                        out = quote_spanned!(*span=> #out.class_when(#value));
                     }
                     "if" | "else-if" | "else" | "for" => {}
                     virtual_rows if virtual_rows.split('.').next() == Some("virtual") => {

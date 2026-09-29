@@ -21,6 +21,18 @@ pub(crate) struct CssText {
 }
 
 impl CssText {
+    /// Where `.class` is first written in a selector.
+    pub(crate) fn class_span(&self, class: &str) -> Span {
+        let name = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+        let dotted = format!(".{class}");
+        self.text
+            .match_indices(&dotted)
+            .find(|(at, _)| !self.text[at + dotted.len()..].starts_with(name))
+            .map_or(self.whole, |(at, _)| {
+                self.span(&(at + 1..at + dotted.len()))
+            })
+    }
+
     /// The token a range of the text starts in (or the next one).
     pub(crate) fn span(&self, range: &Range<usize>) -> Span {
         self.pieces

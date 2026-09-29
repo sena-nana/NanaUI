@@ -66,6 +66,53 @@ pub fn css(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     .into()
 }
 
+/// `stylesheet! { mod styles; .card { padding: 12px; } … }`: a
+/// stylesheet written as CSS tokens (the rules of `<style>`), compiled now
+/// into a module holding the sheet and one `view::Class` per class
+/// (`styles::card`; `-` becomes `_`), named at the class in the sheet. With
+/// `pub mod` the classes are public; otherwise the parent module sees them.
+/// Use it through `nana_ui_runtime::stylesheet!`.
+#[proc_macro]
+pub fn stylesheet(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let parsed = (|input: ParseStream| -> syn::Result<_> {
+        let krate = parse_crate(input)?;
+        let public = input.peek(Token![pub]);
+        if public {
+            input.parse::<syn::Visibility>()?;
+        }
+        input.parse::<Token![mod]>()?;
+        let module = input.parse::<Ident>()?;
+        input.parse::<Token![;]>()?;
+        Ok((krate, public, module, input.parse::<TokenStream>()?))
+    })
+    .parse2(input.into());
+    match parsed {
+        Ok((krate, public, module, sheet)) => {
+            let css = css_tokens::css(sheet, false, module.span());
+            let (tokens, warnings) = nana_ui_view_codegen::compile_stylesheet(
+                &css.text,
+                &module,
+                public,
+                &krate,
+                &|class| css.class_span(class),
+            );
+            let warnings = locate(&css, warnings);
+            if warnings.is_empty() {
+                tokens
+            } else {
+                // Items cannot hold the warning's `let`: put it in a const.
+                let warned = with_warnings("stylesheet!", quote!(()), warnings);
+                quote! {
+                    #tokens
+                    const _: () = #warned;
+                }
+            }
+        }
+        Err(error) => error.to_compile_error(),
+    }
+    .into()
+}
+
 /// `crate = path;`, which the runtime's `macro_rules!` wrappers pass first.
 fn parse_crate(input: ParseStream) -> syn::Result<TokenStream> {
     if !(input.peek(Token![crate]) && input.peek2(Token![=])) {
@@ -133,7 +180,9 @@ fn with_warnings(
     let uses = warnings.into_iter().enumerate().map(|(index, warning)| {
         let name = quote::format_ident!("__nana_view_warning_{index}");
         let note = format!("{macro_name}: {}", warning.message);
-        let used = quote::quote_spanned!(warning.span=> #name);
+        // The use carries the warning's span, so the lint lands there;
+        // `quote_spanned!` would keep the interpolated name's own span.
+        let used = Ident::new(&name.to_string(), warning.span);
         quote! {
             #[deprecated(note = #note)]
             #[allow(non_upper_case_globals)]
@@ -457,5 +506,30 @@ mod tests {
         assert!(expanded.contains("takes CSS, not a string"), "{expanded}");
         let expanded = expand("crate = x; style = \".a {}\"; <Column/>");
         assert!(expanded.contains("is gone"), "{expanded}");
+    }
+
+    /// The lint lands where the use of the warning's constant is spanned:
+    /// that must be the element, not the macro call.
+    #[test]
+    fn a_warning_is_used_at_the_span_it_is_about() {
+        fn uses(tokens: TokenStream, out: &mut Vec<proc_macro2::LineColumn>) {
+            for token in tokens {
+                match token {
+                    TokenTree::Group(group) => uses(group.stream(), out),
+                    TokenTree::Ident(ident) if ident == "__nana_view_warning_0" => {
+                        out.push(ident.span().start());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let source = "crate = x;\n<Column>\n  <TextInput/>\n</Column>";
+        let mut found = Vec::new();
+        uses(expand_tokens(source.parse().unwrap()), &mut found);
+        // The declaration, then the use at `TextInput` (line 3, column 3).
+        assert!(
+            found.iter().any(|at| (at.line, at.column) == (3, 3)),
+            "{found:?}"
+        );
     }
 }

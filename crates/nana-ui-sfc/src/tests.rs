@@ -703,23 +703,25 @@ let done = signal(false);
     let code = squash(&out.code);
     assert!(code.contains("StylePatch::new("), "{code}");
     assert!(code.contains(r#"\"padding\""#), "{code}");
+    // Elements name their classes on the view's sheet, as Rust would.
     assert!(
         code.contains(&squash(
-            ".styles(&__NANA_STYLE_1, ::std::vec![::nana_ui_runtime::view::IntoProp::<bool>::into_source(done)])"
+            ".class(::nana_ui_runtime::view::Class::new(&__NANA_SHEET, 0u16)).class_when(::nana_ui_runtime::view::Class::new(&__NANA_SHEET, 2u16), done)"
         )),
         "the column's class condition binds the signal: {code}"
     );
-    // `.title`: the later normal rule, then the important one on top.
-    assert!(
-        code.contains(&squash(
-            "StyleSite::new(&[(0u64, &__NANA_PATCH_0), (0u64, &__NANA_PATCH_1)])"
-        )),
-        "{code}"
-    );
+    // Cascade order: `.card`, the later normal `.title`, `.card.done`,
+    // then the important `.title` on top.
+    let order = [
+        "SheetRule{classes:&[0u16],",
+        "SheetRule{classes:&[1u16],patch:&__NANA_SHEET_PATCH_1",
+        "SheetRule{classes:&[0u16,2u16],",
+        "SheetRule{classes:&[1u16],patch:&__NANA_SHEET_PATCH_3",
+    ]
+    .map(|rule| code.find(rule).unwrap_or_else(|| panic!("{rule}: {code}")));
+    assert!(order.is_sorted(), "{order:?}: {code}");
     assert!(code.contains("AnimatableProperty::Opacity"), "{code}");
     assert!(code.contains("Easing::Linear"), "{code}");
-    // `.card.done` needs bit 0; `.title`'s important rule comes last.
-    assert!(code.contains("(1u64,&__NANA_PATCH_"), "{code}");
     let warnings = out.warnings.join("\n");
     assert!(warnings.contains(":hover"), "{warnings}");
     assert!(warnings.contains("class selectors"), "{warnings}");

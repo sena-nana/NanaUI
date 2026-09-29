@@ -534,25 +534,114 @@ const BLOCKS: &[&str] = &[
     "ErrorBoundary",
 ];
 
-/// Compiles the classes of a view's elements against its sheet.
+/// A sheet's rules and transitions as the runtime's `view::Sheet`: patch
+/// statics, then the sheet, both in cascade order. `classes` numbers every
+/// class a rule or transition names.
+struct SheetItems {
+    classes: Vec<String>,
+    items: Vec<TokenStream>,
+}
+
+impl Sheet {
+    fn class_index(classes: &mut Vec<String>, class: &str) -> u16 {
+        match classes.iter().position(|known| known == class) {
+            Some(at) => at as u16,
+            None => {
+                classes.push(class.to_owned());
+                (classes.len() - 1) as u16
+            }
+        }
+    }
+
+    /// The statics of this sheet, `name` the sheet's.
+    fn items(&self, name: &syn::Ident, runtime: &TokenStream) -> SheetItems {
+        let mut classes = Vec::new();
+        let mut patches: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut items = Vec::new();
+        let mut ordered: Vec<&Rule> = self.rules.iter().collect();
+        ordered.sort_by_key(|rule| rule.rank);
+        let mut rules = Vec::new();
+        for rule in ordered {
+            let next = patches.len();
+            let index = *patches.entry(&rule.patch).or_insert(next);
+            let patch = format_ident!("{name}_PATCH_{index}");
+            if index == next {
+                let json = &rule.patch;
+                items.push(quote! {
+                    static #patch: #runtime::view::StylePatch =
+                        #runtime::view::StylePatch::new(#json);
+                });
+            }
+            let needs = rule
+                .classes
+                .iter()
+                .map(|class| Self::class_index(&mut classes, class));
+            rules.push(quote! {
+                #runtime::view::SheetRule { classes: &[#(#needs),*], patch: &#patch }
+            });
+        }
+        let mut ordered: Vec<&TransitionRule> = self.transitions.iter().collect();
+        ordered.sort_by_key(|rule| rule.rank);
+        let mut transitions = Vec::new();
+        for rule in ordered {
+            let needs = rule
+                .classes
+                .iter()
+                .map(|class| Self::class_index(&mut classes, class));
+            let animate = animate_tokens(&rule.items, runtime);
+            transitions.push(quote! {
+                #runtime::view::SheetTransition { classes: &[#(#needs),*], animate: &#animate }
+            });
+        }
+        items.push(quote! {
+            static #name: #runtime::view::Sheet =
+                #runtime::view::Sheet::new(&[#(#rules),*], &[#(#transitions),*]);
+        });
+        SheetItems { classes, items }
+    }
+}
+
+fn animate_tokens(items: &[(&'static str, f32, Easing)], runtime: &TokenStream) -> TokenStream {
+    let items = items.iter().map(|(property, ms, easing)| {
+        let property = format_ident!("{property}");
+        let easing = easing_tokens(*easing, runtime);
+        let nanos = (f64::from(*ms) * 1_000_000.0).round() as u64;
+        quote! {
+            #runtime::view::Implicit::new(
+                #runtime::AnimatableProperty::#property,
+                ::std::time::Duration::from_nanos(#nanos),
+            )
+            .ease(#easing)
+        }
+    });
+    quote!([#(#items),*])
+}
+
+/// Turns the classes of a view's elements into `.class(…)` and
+/// `.class_when(…)` on its sheet, the calls the Rust spelling writes.
 pub(crate) struct Styler<'a> {
-    pub(crate) sheet: &'a Sheet,
-    pub(crate) runtime: &'a TokenStream,
-    /// Patch JSON → its static's index.
-    patches: BTreeMap<String, usize>,
-    sites: usize,
-    pub(crate) items: Vec<TokenStream>,
+    sheet: &'a Sheet,
+    name: syn::Ident,
+    runtime: &'a TokenStream,
+    classes: Vec<String>,
+    /// Whether an element uses the sheet, so its statics are needed.
+    used: bool,
     pub(crate) warnings: Vec<StyleWarning>,
 }
 
 impl<'a> Styler<'a> {
-    pub(crate) fn new(sheet: &'a Sheet, runtime: &'a TokenStream) -> Self {
+    fn new(
+        sheet: &'a Sheet,
+        classes: Vec<String>,
+        name: syn::Ident,
+        runtime: &'a TokenStream,
+    ) -> Self {
         Self {
             sheet,
+            name,
             runtime,
-            patches: BTreeMap::new(),
-            sites: 0,
-            items: Vec::new(),
+            classes,
+            used: false,
             warnings: Vec::new(),
         }
     }
@@ -581,18 +670,15 @@ impl<'a> Styler<'a> {
         }
         let tag = element.name.to_string();
         let at_element = element.name.span();
-        let mut fixed: Vec<String> = Vec::new();
-        let mut conditional: Vec<(String, Expr)> = Vec::new();
-        // Where each class is written, for a warning about it.
-        let mut written: Vec<(String, Span)> = Vec::new();
+        let mut fixed: Vec<(String, Span)> = Vec::new();
+        let mut conditional: Vec<(String, Expr, Span)> = Vec::new();
         let mut kept = Vec::new();
         for attr in std::mem::take(&mut element.attrs) {
             match (&attr.name, &attr.value) {
                 (AttrName::Plain(name), AttrValue::Lit(Expr::Lit(literal))) if name == "class" => {
                     if let Lit::Str(text) = &literal.lit {
                         for class in text.value().split_whitespace() {
-                            fixed.push(class.to_owned());
-                            written.push((class.to_owned(), name.span()));
+                            fixed.push((class.to_owned(), name.span()));
                         }
                     }
                 }
@@ -609,8 +695,7 @@ impl<'a> Styler<'a> {
                     if directive.starts_with("class:") =>
                 {
                     let class = directive["class:".len()..].to_owned();
-                    written.push((class.clone(), *span));
-                    conditional.push((class, condition.clone()));
+                    conditional.push((class, condition.clone(), *span));
                 }
                 _ => kept.push(attr),
             }
@@ -633,98 +718,18 @@ impl<'a> Styler<'a> {
             );
             return;
         }
-        let bit = |class: &str| {
-            conditional
-                .iter()
-                .position(|(name, _)| name == class)
-                .map(|at| 1u64 << at)
+        let holds = |classes: &[String], conditional_too: bool| {
+            classes.iter().all(|class| {
+                fixed.iter().any(|(name, _)| name == class)
+                    || (conditional_too && conditional.iter().any(|(name, _, _)| name == class))
+            })
         };
-        let applies = |classes: &[String]| {
-            classes
-                .iter()
-                .all(|class| fixed.contains(class) || bit(class).is_some())
-        };
-        let mask = |classes: &[String]| {
-            classes
-                .iter()
-                .filter(|class| !fixed.contains(class))
-                .filter_map(|class| bit(class))
-                .fold(0u64, |mask, bit| mask | bit)
-        };
-        let mut matched: Vec<&Rule> = self
-            .sheet
-            .rules
-            .iter()
-            .filter(|rule| applies(&rule.classes))
-            .collect();
-        matched.sort_by_key(|rule| rule.rank);
-        for (class, span) in &written {
-            let known = self
-                .sheet
-                .rules
-                .iter()
-                .any(|rule| rule.classes.contains(class))
-                || self
-                    .sheet
-                    .transitions
-                    .iter()
-                    .any(|rule| rule.classes.contains(class));
-            if !known {
-                self.warn(
-                    *span,
-                    format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
-                );
-            }
-        }
-        let runtime = self.runtime;
-        let mut injected = Vec::new();
-        if !matched.is_empty() {
-            let mut entries = Vec::new();
-            for rule in matched {
-                let next = self.patches.len();
-                let index = *self.patches.entry(rule.patch.clone()).or_insert(next);
-                if index == next {
-                    let name = format_ident!("__NANA_PATCH_{index}");
-                    let json = &rule.patch;
-                    self.items.push(quote! {
-                        static #name: #runtime::view::StylePatch =
-                            #runtime::view::StylePatch::new(#json);
-                    });
-                }
-                let name = format_ident!("__NANA_PATCH_{index}");
-                let needs = mask(&rule.classes);
-                entries.push(quote!((#needs, &#name)));
-            }
-            let site = format_ident!("__NANA_STYLE_{}", self.sites);
-            self.sites += 1;
-            self.items.push(quote! {
-                static #site: #runtime::view::StyleSite =
-                    #runtime::view::StyleSite::new(&[#(#entries),*]);
-            });
-            let conditions = conditional.iter().map(|(_, condition)| match condition {
-                Expr::Path(_) => {
-                    quote!(#runtime::view::IntoProp::<bool>::into_source(#condition))
-                }
-                condition => {
-                    quote!(#runtime::view::IntoProp::<bool>::into_source(move || #condition))
-                }
-            });
-            injected.push(Attr {
-                name: AttrName::Directive("styles".into(), Span::call_site()),
-                value: AttrValue::Verbatim(quote!(&#site, ::std::vec![#(#conditions),*])),
-            });
-        }
-        // `transition` is single-valued: the winning rule among those that
-        // hold whatever the conditions.
-        let transition = self
+        if self
             .sheet
             .transitions
             .iter()
-            .filter(|rule| rule.classes.iter().all(|class| fixed.contains(class)))
-            .max_by_key(|rule| rule.rank);
-        if self.sheet.transitions.iter().any(|rule| {
-            applies(&rule.classes) && !rule.classes.iter().all(|class| fixed.contains(class))
-        }) {
+            .any(|rule| holds(&rule.classes, true) && !holds(&rule.classes, false))
+        {
             self.warn(
                 at_element,
                 format!(
@@ -733,25 +738,47 @@ impl<'a> Styler<'a> {
                 ),
             );
         }
-        if let Some(transition) = transition {
-            let items = transition.items.iter().map(|(property, ms, easing)| {
-                let property = format_ident!("{property}");
-                let easing = easing_tokens(*easing, runtime);
-                let nanos = (f64::from(*ms) * 1_000_000.0).round() as u64;
-                quote! {
-                    #runtime::view::Implicit::new(
-                        #runtime::AnimatableProperty::#property,
-                        ::std::time::Duration::from_nanos(#nanos),
-                    )
-                    .ease(#easing)
-                }
-            });
+        let runtime = self.runtime;
+        let name = self.name.clone();
+        let mut injected = Vec::new();
+        let index = |classes: &[String], class: &str| {
+            classes
+                .iter()
+                .position(|known| known == class)
+                .map(|at| at as u16)
+        };
+        for (class, span) in fixed {
+            match index(&self.classes, &class) {
+                Some(at) => injected.push(Attr {
+                    name: AttrName::Directive("class".into(), span),
+                    value: AttrValue::Verbatim(quote!(#runtime::view::Class::new(&#name, #at))),
+                }),
+                None => self.warn(
+                    span,
+                    format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
+                ),
+            }
+        }
+        for (class, condition, span) in conditional {
+            let Some(at) = index(&self.classes, &class) else {
+                self.warn(
+                    span,
+                    format!("`<{tag}>`: no rule in `<style>` uses class `{class}`"),
+                );
+                continue;
+            };
+            let condition = match condition {
+                Expr::Path(_) => quote!(#condition),
+                condition => quote!(move || #condition),
+            };
             injected.push(Attr {
-                name: AttrName::Directive("animate".into(), Span::call_site()),
-                value: AttrValue::Verbatim(quote!([#(#items),*])),
+                name: AttrName::Directive("class_when".into(), span),
+                value: AttrValue::Verbatim(
+                    quote!(#runtime::view::Class::new(&#name, #at), #condition),
+                ),
             });
         }
-        // Compiled styles go first, so later layout props land on top.
+        self.used |= !injected.is_empty();
         injected.append(&mut element.attrs);
         element.attrs = injected;
     }
@@ -765,18 +792,64 @@ pub struct CompiledStyles {
 }
 
 /// Compile `css` against the elements of `nodes`: each element's
-/// `class="…"` and `class:name="…"` become compiled styles and implicit
-/// animations, and are removed from the element.
+/// `class="…"` and `class:name="…"` become `.class(…)` and
+/// `.class_when(…)` on the view's sheet, and are removed from the element.
 pub fn compile_styles(css: &str, nodes: &mut [Node], runtime: &TokenStream) -> CompiledStyles {
     let sheet = parse(css);
-    let mut styler = Styler::new(&sheet, runtime);
+    let name = format_ident!("__NANA_SHEET");
+    let SheetItems { classes, items } = sheet.items(&name, runtime);
+    let mut styler = Styler::new(&sheet, classes, name, runtime);
     styler.nodes(nodes);
     let mut warnings = sheet.warnings.clone();
     warnings.extend(styler.warnings);
     CompiledStyles {
-        items: styler.items,
+        items: if styler.used { items } else { Vec::new() },
         warnings,
     }
+}
+
+/// `stylesheet! { mod name; … }`: a module holding the sheet and one
+/// `view::Class` constant per class, named as the class with `-` as `_`.
+/// `class_at` gives the span a class is written at: an unused class then
+/// warns there.
+pub fn compile_stylesheet(
+    css: &str,
+    module: &syn::Ident,
+    public: bool,
+    runtime: &TokenStream,
+    class_at: &dyn Fn(&str) -> Span,
+) -> (TokenStream, Vec<StyleWarning>) {
+    let sheet = parse(css);
+    let name = format_ident!("SHEET");
+    let SheetItems { classes, items } = sheet.items(&name, runtime);
+    let visibility = if public {
+        quote!(pub)
+    } else {
+        quote!(pub(super))
+    };
+    let constants = classes.iter().enumerate().map(|(index, class)| {
+        let ident = class.replace('-', "_");
+        let span = class_at(class);
+        let ident = match syn::parse_str::<syn::Ident>(&ident) {
+            Ok(_) => syn::Ident::new(&ident, span),
+            Err(_) => syn::Ident::new_raw(&ident, span),
+        };
+        let index = index as u16;
+        quote! {
+            #visibility const #ident: #runtime::view::Class = #runtime::view::Class::new(&#name, #index);
+        }
+    });
+    let module_visibility = if public { quote!(pub) } else { quote!() };
+    (
+        quote! {
+            #[allow(non_upper_case_globals)]
+            #module_visibility mod #module {
+                #(#items)*
+                #(#constants)*
+            }
+        },
+        sheet.warnings.clone(),
+    )
 }
 
 /// `css! { padding: 8px; transition: opacity 120ms }`: one declaration
@@ -789,16 +862,6 @@ pub fn compile_inline(
     const OPEN: &str = ".__nana_inline { ";
     let css = format!("{OPEN}{declarations} }}");
     let sheet = parse(&css);
-    let mut element = Element {
-        name: syn::Ident::new("Widget", Span::call_site()),
-        attrs: vec![Attr {
-            name: AttrName::Plain(syn::Ident::new("class", Span::call_site())),
-            value: AttrValue::Lit(syn::parse_quote!("__nana_inline")),
-        }],
-        children: Vec::new(),
-    };
-    let mut styler = Styler::new(&sheet, runtime);
-    styler.element(&mut element);
     // The wrapper is not the author's: what points at it points at the
     // whole block.
     let inner = |range: Range<usize>| {
@@ -814,7 +877,6 @@ pub fn compile_inline(
         .warnings
         .iter()
         .cloned()
-        .chain(styler.warnings)
         .map(|warning| StyleWarning {
             at: match warning.at {
                 StyleAt::Sheet(range) => StyleAt::Sheet(inner(range)),
@@ -823,35 +885,36 @@ pub fn compile_inline(
             message: warning.message,
         })
         .collect();
-    let find = |name: &str| {
-        element
-            .attrs
-            .iter()
-            .find_map(|attr| match (&attr.name, &attr.value) {
-                (AttrName::Directive(directive, _), AttrValue::Verbatim(tokens))
-                    if directive == name =>
-                {
-                    Some(tokens.clone())
-                }
-                _ => None,
-            })
-    };
-    let site = match find("styles") {
-        // `&SITE, vec![]`: the site alone.
-        Some(tokens) => {
-            let site = tokens.into_iter().take_while(|token| {
-                !matches!(token, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ',')
-            });
-            let site: TokenStream = site.collect();
-            quote!(::core::option::Option::Some(#site))
+    let mut rules: Vec<&Rule> = sheet.rules.iter().collect();
+    rules.sort_by_key(|rule| rule.rank);
+    let patches = rules.iter().enumerate().map(|(index, rule)| {
+        let name = format_ident!("__NANA_PATCH_{index}");
+        let json = &rule.patch;
+        quote! {
+            static #name: #runtime::view::StylePatch = #runtime::view::StylePatch::new(#json);
         }
-        None => quote!(::core::option::Option::None),
+    });
+    let entries = (0..rules.len()).map(|index| {
+        let name = format_ident!("__NANA_PATCH_{index}");
+        quote!((0u64, &#name))
+    });
+    let site = if rules.is_empty() {
+        quote!(::core::option::Option::None)
+    } else {
+        quote! {{
+            static __NANA_SITE: #runtime::view::StyleSite =
+                #runtime::view::StyleSite::new(&[#(#entries),*]);
+            ::core::option::Option::Some(&__NANA_SITE)
+        }}
     };
-    let animate = find("animate").unwrap_or_else(|| quote!([]));
-    let items = styler.items;
+    let animate = sheet
+        .transitions
+        .iter()
+        .max_by_key(|rule| rule.rank)
+        .map_or_else(|| quote!([]), |rule| animate_tokens(&rule.items, runtime));
     (
         quote! {{
-            #(#items)*
+            #(#patches)*
             static __NANA_ANIMATE: &[#runtime::view::Implicit] = &#animate;
             #runtime::view::InlineStyle::new(#site, __NANA_ANIMATE)
         }},
