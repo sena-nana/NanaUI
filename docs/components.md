@@ -106,7 +106,7 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 ### OverlayVisibility
 
-媒体/舞台 HUD 的自动隐藏用 `OverlayVisibility` **策略对象**：idle 超时隐藏、hover dwell 延迟显现、焦点 / 拖拽 / 菜单锁（`OverlayLocks`）保持可见。`active = false`（加载 / 暂停 / 空）保持可见。它不是叶子控件，不进 `register_component`，没有 Vue 标签，不参与布局或命中。`MediaTransportBar` 内持一份策略；用 `AppContext::sync_overlay_visibility(bar, now, active)` 从 world 收集锁（焦点 / capture 是否在条或其菜单内、任一子 `Popover.open`）、写回 `hidden`、返回 wakeup。画面上的指针活动用 `reveal_overlay`。祖先查询走公开的 `AppContext::is_descendant`。仍允许宿主在 sync 之后按业务覆盖 `hidden`（例如传输不可用）。
+媒体/舞台 HUD 的自动隐藏用 `OverlayVisibility` **策略对象**：idle 超时隐藏、hover dwell 延迟显现、焦点 / 拖拽 / 菜单锁（`OverlayLocks`）保持可见。`active = false`（加载 / 暂停 / 空）保持可见。它不是叶子控件，不进 `register_component`，没有 Vue 标签，不参与布局或命中。`MediaTransportBar` 内持一份策略；用 `AppContext::sync_overlay_visibility(bar, now, active)` 从 world 收集锁（焦点 / capture 是否在条或其菜单内、任一子 `Popover.open`）、推进策略、返回 wakeup。画面上的指针活动用 `reveal_overlay`。祖先查询走公开的 `AppContext::is_descendant`。**空闲收起不写条的 `hidden`**：条自己的 `hidden`（视图里 `.visible(..)` / `v-show`）只归应用，用来表达「传输不可用时整条不出现」；两者任一要藏，条就不出现（`MediaTransportBar::shown()` 读合起来的结果，投影出去的节点样式同样是它），所以绑定重跑（播放进度每次刷新）不会把空闲收起的条又显出来，`reveal_overlay` 也不会显出应用藏起的条。
 
 ### MediaTransportBar
 

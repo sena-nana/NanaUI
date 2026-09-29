@@ -23,7 +23,10 @@
 //!
 //! Idle hide is [`crate::OverlayVisibility`] held on this control and driven by
 //! [`crate::AppContext::sync_overlay_visibility`]; an inline bar that the host
-//! never syncs that way stays visible.
+//! never syncs that way stays visible. It is kept apart from the bar's own
+//! `hidden` (a view's `.visible(..)`), which stays the application's: the bar
+//! shows while neither hides it ([`MediaTransportBar::shown`]), so hiding it
+//! while playback is unavailable and the idle hide do not undo each other.
 
 use std::sync::Arc;
 
@@ -294,6 +297,12 @@ impl MediaTransportBar {
         &self.slots
     }
 
+    /// Whether the bar shows: the application has not hidden it (its style's
+    /// `hidden`, a view's `.visible(..)`) and the idle policy has not either.
+    pub fn shown(&self) -> bool {
+        !self.style.layout.hidden && self.visibility.visible()
+    }
+
     pub fn leading(&self) -> Option<Entity<Stack>> {
         self.slots.leading.map(Entity::from_stable_id)
     }
@@ -462,6 +471,9 @@ impl ComponentView for MediaTransportBar {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
+        // Hidden by the application or by the idle policy: two owners, one
+        // box, so neither write undoes the other.
+        layout.hidden = !self.shown();
         layout.pointer_events = Some(PointerEventsSpec::None);
         layout.justify_content = JustifySpec::Center;
         layout.width = Some(LengthSpec::Fill);
@@ -2112,6 +2124,65 @@ mod tests {
         assert_eq!(media_clock(f64::NAN), "0:00");
     }
 
+    /// The application hides the bar while playback is unavailable
+    /// (`.visible(..)`) and the idle policy hides it after a while: neither
+    /// undoes the other. A binding re-run (a playback tick) keeps an idle
+    /// bar hidden, reveal does not show a bar the application hid, and the
+    /// bar shows again once both allow it.
+    #[test]
+    fn availability_and_idle_hide_the_bar_together() {
+        use crate::view::{signal, widget};
+        use std::time::{Duration, Instant};
+        let mut cx = AppContext::new();
+        let parent = cx.create_component(document(), Stack::column(0.0)).unwrap();
+        let state = std::cell::Cell::new(None);
+        let refs = std::cell::Cell::new(None);
+        cx.mount_view(parent.stable_id(), || {
+            let (available, position) = (signal(true), signal(0.0f64));
+            let bar = crate::view::entity_ref::<MediaTransportBar>();
+            state.set(Some((available, position)));
+            refs.set(Some(bar));
+            widget(MediaTransportBar::new())
+                .entity_ref(bar)
+                .visible(available)
+                .bind(move |bar| bar.position = position.get())
+        })
+        .unwrap();
+        let (available, position) = state.get().unwrap();
+        let bar = refs.get().unwrap().get().unwrap();
+        let hidden = |cx: &AppContext| {
+            cx.world()
+                .node_style(bar.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        };
+        let now = Instant::now();
+        cx.sync_overlay_visibility(bar, now, true).unwrap();
+        cx.sync_overlay_visibility(bar, now + crate::OVERLAY_IDLE, true)
+            .unwrap();
+        assert!(hidden(&cx), "idle");
+
+        position.set(12.0);
+        cx.flush_reactive().unwrap();
+        assert_eq!(cx.read(bar, |bar| bar.position).unwrap(), 12.0);
+        assert!(hidden(&cx), "a playback tick keeps the idle bar hidden");
+
+        available.set(false);
+        cx.flush_reactive().unwrap();
+        cx.reveal_overlay(bar, now + Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            hidden(&cx),
+            "reveal does not show a bar the application hid"
+        );
+        assert!(!cx.read(bar, MediaTransportBar::shown).unwrap());
+
+        available.set(true);
+        cx.flush_reactive().unwrap();
+        assert!(!hidden(&cx), "available again, and revealed");
+        assert!(cx.read(bar, MediaTransportBar::shown).unwrap());
+    }
     #[test]
     fn assemble_is_idempotent() {
         let mut cx = AppContext::new();

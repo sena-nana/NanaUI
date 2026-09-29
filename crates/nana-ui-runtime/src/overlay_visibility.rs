@@ -216,8 +216,10 @@ impl crate::AppContext {
         false
     }
 
-    /// Collect locks from the world, drive the bar's overlay policy, write
-    /// `hidden`, and return the next wakeup instant.
+    /// Collect locks from the world, drive the bar's overlay policy, and
+    /// return the next wakeup instant. The bar hides while the policy says
+    /// so ([`crate::MediaTransportBar::shown`]); its own `hidden` stays the
+    /// application's.
     pub fn sync_overlay_visibility(
         &mut self,
         bar: crate::Entity<crate::MediaTransportBar>,
@@ -248,8 +250,6 @@ impl crate::AppContext {
             bar.visibility.synchronize(now, active, locks);
             bar.visibility.tick(now);
             bar.menu_was_open = locks.menu_open;
-            let hidden = !bar.visibility.visible();
-            std::sync::Arc::make_mut(&mut bar.style.layout).hidden = hidden;
             bar.visibility.wakeup()
         })
     }
@@ -263,11 +263,7 @@ impl crate::AppContext {
         self.update_component(bar, |bar, _| {
             let before = bar.visibility.wakeup();
             let changed = bar.visibility.activity(now);
-            let hidden = !bar.visibility.visible();
-            let layout = std::sync::Arc::make_mut(&mut bar.style.layout);
-            let wrote = layout.hidden != hidden;
-            layout.hidden = hidden;
-            changed || wrote || before != bar.visibility.wakeup()
+            changed || before != bar.visibility.wakeup()
         })
     }
 
@@ -356,22 +352,22 @@ mod tests {
         let now = Instant::now();
         let wakeup = cx.sync_overlay_visibility(bar, now, true).unwrap();
         assert_eq!(wakeup, Some(now + OVERLAY_IDLE));
-        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+        assert!(!cx.read(bar, |bar| !bar.shown()).unwrap());
 
         cx.sync_overlay_visibility(bar, now + OVERLAY_IDLE, true)
             .unwrap();
-        assert!(cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+        assert!(cx.read(bar, |bar| !bar.shown()).unwrap());
 
         let play = cx.read(bar, |bar| bar.play()).unwrap().unwrap();
         assert!(
             cx.reveal_overlay(bar, now + OVERLAY_IDLE)
                 .expect("keyboard activity")
         );
-        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+        assert!(!cx.read(bar, |bar| !bar.shown()).unwrap());
         assert!(cx.focus_node(document, play.stable_id()).unwrap());
         cx.sync_overlay_visibility(bar, now + OVERLAY_IDLE, true)
             .unwrap();
-        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+        assert!(!cx.read(bar, |bar| !bar.shown()).unwrap());
         assert!(cx.overlay_wakeup(bar).unwrap().is_none());
 
         cx.clear_focus(document).unwrap();
@@ -380,7 +376,7 @@ mod tests {
         cx.commit_mutations(mutations).unwrap();
         cx.sync_overlay_visibility(bar, now + Duration::from_secs(40), true)
             .unwrap();
-        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+        assert!(!cx.read(bar, |bar| !bar.shown()).unwrap());
 
         let mut mutations = MutationQueue::new();
         mutations.release_pointer(1, play.stable_id());
@@ -396,7 +392,7 @@ mod tests {
             cx.reveal_overlay(bar, now + Duration::from_secs(41))
                 .unwrap()
         );
-        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+        assert!(!cx.read(bar, |bar| !bar.shown()).unwrap());
         assert_eq!(
             cx.overlay_wakeup(bar).unwrap(),
             Some(now + Duration::from_secs(44)),
@@ -430,7 +426,7 @@ mod tests {
         cx.sync_overlay_visibility(bar, now + OVERLAY_IDLE, true)
             .unwrap();
         assert!(
-            !cx.read(bar, |bar| bar.style.layout.hidden).unwrap(),
+            !cx.read(bar, |bar| !bar.shown()).unwrap(),
             "an open ActionMenu must lock the bar from the component open flag"
         );
         assert!(cx.overlay_wakeup(bar).unwrap().is_none());
