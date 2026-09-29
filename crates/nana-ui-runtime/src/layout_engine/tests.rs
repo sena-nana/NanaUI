@@ -1351,6 +1351,112 @@ fn row_wrap_breaks_to_the_next_line() {
     assert_eq!(layouts[&id(1)].height, 88.0);
 }
 
+/// Lay out a wrapping row `width` wide holding `children`, and answer each
+/// child's box.
+fn wrapping_row(width: f32, children: &[LayoutStyle]) -> Vec<LayoutBox> {
+    let document = DocumentId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(id(1), document, NodeKind::Document);
+    for (index, style) in children.iter().enumerate() {
+        let child = id(index as u64 + 2);
+        queue.create(child, document, NodeKind::Element { tag: "div".into() });
+        queue.insert(id(1), child, None);
+        queue.set_style(
+            child,
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    height: Some(LengthSpec::Px(40.0)),
+                    ..style.clone()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+    }
+    queue.set_style(
+        id(1),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(width)),
+                direction: Some(FlexDirection::Row),
+                flex_wrap: FlexWrap::Wrap,
+                gap: Some(LengthSpec::Px(8.0)),
+                align_items: AlignSpec::Start,
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    let layouts = RuntimeLayoutEngine
+        .layout_document(&world, document, LayoutViewport::new(width, 400.0))
+        .unwrap()
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    (0..children.len())
+        .map(|index| layouts[&id(index as u64 + 2)])
+        .collect()
+}
+
+/// Items join a wrapping line by the size they would have before growing
+/// (CSS Flexbox §9.3): a growing item shares its line with the siblings that
+/// fit beside it, then takes what is left of that line.
+#[test]
+fn a_growing_item_in_a_wrapping_row_shares_its_line_with_siblings_that_fit() {
+    let grow = |width: f32| LayoutStyle {
+        width: Some(LengthSpec::Px(width)),
+        flex_grow: Some(1.0),
+        ..LayoutStyle::default()
+    };
+    let fixed = LayoutStyle {
+        width: Some(LengthSpec::Px(80.0)),
+        ..LayoutStyle::default()
+    };
+    let boxes = wrapping_row(300.0, &[grow(100.0), fixed.clone()]);
+    assert_eq!((boxes[0].y, boxes[1].y), (0.0, 0.0));
+    assert_eq!(boxes[0].width, 300.0 - 8.0 - 80.0);
+    assert_eq!(boxes[1].x, 300.0 - 80.0);
+
+    // Two columns side by side while each gets its basis, stacked below it.
+    let column = LayoutStyle {
+        flex_basis: Some(LengthSpec::Px(140.0)),
+        flex_grow: Some(1.0),
+        flex_shrink: Some(1.0),
+        ..LayoutStyle::default()
+    };
+    let wide = wrapping_row(300.0, &[column.clone(), column.clone()]);
+    assert_eq!((wide[0].y, wide[1].y), (0.0, 0.0));
+    assert_eq!((wide[0].width, wide[1].width), (146.0, 146.0));
+    let narrow = wrapping_row(250.0, &[column.clone(), column]);
+    assert_eq!((narrow[0].y, narrow[1].y), (0.0, 48.0));
+    assert_eq!((narrow[0].width, narrow[1].width), (250.0, 250.0));
+
+    // `flex: 1` with a floor: the floor, not the zero basis, decides the line.
+    let floored = LayoutStyle {
+        flex_basis: Some(LengthSpec::Px(0.0)),
+        flex_grow: Some(1.0),
+        min_width: Some(LengthSpec::Px(180.0)),
+        ..LayoutStyle::default()
+    };
+    let floors = wrapping_row(300.0, &[floored.clone(), floored.clone()]);
+    assert_eq!((floors[0].y, floors[1].y), (0.0, 48.0));
+    let floors = wrapping_row(400.0, &[floored.clone(), floored]);
+    assert_eq!((floors[0].y, floors[1].y), (0.0, 0.0));
+
+    // A growing item with nothing to size it by is its content's size.
+    let auto = wrapping_row(
+        300.0,
+        &[
+            LayoutStyle {
+                flex_grow: Some(1.0),
+                ..LayoutStyle::default()
+            },
+            fixed,
+        ],
+    );
+    assert_eq!((auto[0].y, auto[1].y), (0.0, 0.0));
+}
+
 #[test]
 fn a_wrapping_row_is_measured_in_the_order_it_is_placed() {
     // B 按 `order` 排在最前、独占一行,A 与 C 并排在第二行:两行高。按文档顺序

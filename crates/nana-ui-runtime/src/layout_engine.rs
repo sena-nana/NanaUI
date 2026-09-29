@@ -1352,16 +1352,50 @@ fn packing_main_size(
     parent_font_px: f32,
     track: Option<GridTrack>,
 ) -> f32 {
-    let spec = style
-        .child_main_length(direction)
-        .or_else(|| track.map(GridTrack::as_row_main_length));
+    // A line takes an item by the size it has before it grows (CSS Flexbox
+    // §9.3, the hypothetical main size): its basis, else its main size, else
+    // its content, within its min and max. Growth is shared out once the
+    // line is known (`distribute_flex_main`), so a growing item no longer
+    // claims a whole line and pushes siblings that fit beside it onto the
+    // next.
+    let spec = if style.grows() {
+        style
+            .flex_basis
+            .filter(|basis| !matches!(basis, LengthSpec::Auto))
+            .or(match direction {
+                FlexDirection::Row => style.width,
+                FlexDirection::Column => style.height,
+            })
+    } else {
+        style.child_main_length(direction)
+    }
+    .or_else(|| track.map(GridTrack::as_row_main_length));
     let fonts = fonts_of(style, parent_font_px);
+    let vp = Some((viewport.width, viewport.height));
+    let (min, max) = match direction {
+        FlexDirection::Row => (
+            style.resolved_min_width_fonts(Some(content_main), vp, fonts),
+            style.resolved_max_width_fonts(Some(content_main), vp, fonts),
+        ),
+        FlexDirection::Column => (
+            style.resolved_min_height_fonts(Some(content_main), vp, fonts),
+            style.resolved_max_height_fonts(Some(content_main), vp, fonts),
+        ),
+    };
+    let clamp = |value: f32| {
+        let value = value.max(min);
+        max.map_or(value, |max| value.min(max))
+    };
     match resolve_child_main(spec, content_main, viewport, fonts) {
-        Some(value) => {
-            content_box_main_border_size(style, direction, Some(edge_percent_base), value, fonts)
-        }
-        None if style.grows() || matches!(spec, Some(LengthSpec::Fill)) => content_main,
-        None => main_extent(intrinsic, direction),
+        Some(value) => content_box_main_border_size(
+            style,
+            direction,
+            Some(edge_percent_base),
+            clamp(value),
+            fonts,
+        ),
+        None if matches!(spec, Some(LengthSpec::Fill)) => content_main,
+        None => clamp(main_extent(intrinsic, direction)),
     }
 }
 

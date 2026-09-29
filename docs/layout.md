@@ -6,7 +6,7 @@ Rust 第一路径用控件自己的布局，不写 CSS；排行与列、边框�
 
 ## 能用的
 
-**Flex。** `flex-direction`、`flex-wrap`、`gap`、`align-items` / `align-self`、`justify-content`、多行换行时的 `align-content`（含 `stretch` / `normal`：剩余交叉空间均分给各行）、`order`、`flex-grow` / `flex-shrink` / `flex-basis`。侧栏加主区用这一套就够。
+**Flex。** `flex-direction`、`flex-wrap`、`gap`、`align-items` / `align-self`、`justify-content`、多行换行时的 `align-content`（含 `stretch` / `normal`：剩余交叉空间均分给各行）、`order`、`flex-grow` / `flex-shrink` / `flex-basis`。侧栏加主区用这一套就够。换行的行按项目**长大之前**的尺寸分行（CSS 的 hypothetical main size）：`flex-basis`，没有就取主轴尺寸，再没有就取内容，并受 `min-*` / `max-*` 约束；分好行之后才把行里剩下的空间按 `flex-grow` 分出去。所以 `flex: 1 1 320px` 的两栏放得下就并排、放不下就各占一行，带 `flex-grow` 的项目也不会独占一行把放得下的兄弟挤走。
 
 未写 `flex-shrink` 长手时按 **0** 处理，不是网页 CSS 的 initial **1**。溢出的定宽行（列表、工具条）会保留盒子，不会被悄悄压扁。`flex` **简写**省略 shrink 时仍按 CSS 写成 1（`flex: initial`、`flex: 1`、`flex: 1 100px`）。需要网页那种收缩时，显式写 `flex-shrink` 或用简写。`flex: none` / `auto` / 数字简写仍按 CSS 含义写 shrink。
 
