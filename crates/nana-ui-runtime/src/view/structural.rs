@@ -7,7 +7,9 @@
 //! state survive reordering.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+
+// foldhash: row keys are hashed on every list change.
+use hashbrown::{HashMap, HashSet};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::panic::Location;
@@ -248,13 +250,14 @@ where
         effect: EffectKey,
     ) -> Result<(), FrameworkError> {
         let (keys, fresh) = reactive::run_tracked(effect, || self.read());
-        let kept: HashSet<&K> = keys.iter().collect();
-        let removed: Vec<K> = self
-            .order
-            .iter()
-            .filter(|key| !kept.contains(key))
-            .cloned()
-            .collect();
+        let removed: Vec<K> = {
+            let kept: HashSet<&K> = keys.iter().collect();
+            self.order
+                .iter()
+                .filter(|key| !kept.contains(key))
+                .cloned()
+                .collect()
+        };
         let removed = removed
             .into_iter()
             .filter_map(|key| self.rows.remove(&key))

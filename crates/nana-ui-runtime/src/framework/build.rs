@@ -19,7 +19,10 @@ type UnplacedOrigin = (&'static str, &'static std::panic::Location<'static>);
 
 struct Level {
     parent: Option<StableNodeId>,
+    /// Keys used at this level, in order.
     seen: Vec<String>,
+    /// [`Self::seen`] as a set, for membership in wide levels.
+    seen_keys: HashSet<String>,
     autos: HashMap<&'static str, usize>,
 }
 
@@ -37,6 +40,10 @@ pub struct UiBuilder<'a> {
     /// the same tree replaces its handlers instead of stacking new ones.
     on_slots: HashMap<(StableNodeId, TypeId), usize>,
     pending_forget: HashSet<StableNodeId>,
+    /// Children this build's queue appends under each parent, in order.
+    appended: HashMap<StableNodeId, Vec<StableNodeId>>,
+    /// Nodes [`UiBuilder::adopt`] moved in this build.
+    adopted: HashSet<StableNodeId>,
     /// Nodes this build parked that have not yet been given a placement story.
     /// [`UiBuilder::adopt`] discharges one by inserting it here;
     /// [`UiBuilder::place_later`] discharges one by declaring that a parent spec
@@ -108,6 +115,7 @@ impl<'a> UiBuilder<'a> {
             stack: vec![Level {
                 parent,
                 seen: Vec::new(),
+                seen_keys: HashSet::new(),
                 autos: HashMap::new(),
             }],
             queue: MutationQueue::new(),
@@ -116,6 +124,8 @@ impl<'a> UiBuilder<'a> {
             pending_ons: Vec::new(),
             on_slots: HashMap::new(),
             pending_forget: HashSet::new(),
+            appended: HashMap::new(),
+            adopted: HashSet::new(),
             unplaced: Vec::new(),
             lifecycle: Vec::new(),
             park_roots,
@@ -192,7 +202,7 @@ impl<'a> UiBuilder<'a> {
         if !super::valid_assembly_key(&key) {
             return self.fail(FrameworkError::InvalidInput);
         }
-        if self.current().seen.iter().any(|seen| seen == &key) {
+        if !self.current_mut().seen_keys.insert(key.clone()) {
             let parent = self.current().parent.unwrap_or(DUMMY_NODE);
             return self.fail(FrameworkError::DuplicateAssemblyKey { parent, key });
         }
@@ -214,6 +224,7 @@ impl<'a> UiBuilder<'a> {
         let entity = self.spawn(component);
         if let Some(parent) = self.current().parent {
             self.queue.insert(parent, entity.id, None);
+            self.appended.entry(parent).or_default().push(entity.id);
             self.slots(parent).insert(
                 key,
                 AssembledChild {
@@ -319,8 +330,11 @@ impl<'a> UiBuilder<'a> {
         };
         self.unplaced.retain(|(id, _)| *id != child.id);
         let key = self.auto_key("adopt");
+        self.current_mut().seen_keys.insert(key.clone());
         self.current_mut().seen.push(key.clone());
         self.queue.insert(parent, child.id, None);
+        self.appended.entry(parent).or_default().push(child.id);
+        self.adopted.insert(child.id);
         self.slots(parent).insert(
             key,
             AssembledChild {
@@ -342,6 +356,7 @@ impl<'a> UiBuilder<'a> {
         self.stack.push(Level {
             parent: Some(parent.id),
             seen: Vec::new(),
+            seen_keys: HashSet::new(),
             autos: HashMap::new(),
         });
         let result = children(self);
@@ -393,10 +408,11 @@ impl<'a> UiBuilder<'a> {
             return;
         };
         let seen = self.current().seen.clone();
+        let seen_keys = std::mem::take(&mut self.current_mut().seen_keys);
         let unused: Vec<_> = self
             .slots(parent)
             .iter()
-            .filter(|(key, _)| !seen.iter().any(|seen| seen == *key))
+            .filter(|(key, _)| !seen_keys.contains(*key))
             .map(|(_, child)| child.id)
             .collect();
         for id in unused {
@@ -406,9 +422,7 @@ impl<'a> UiBuilder<'a> {
         self.working
             .get_mut(&parent)
             .expect("finish_level has working slots")
-            .retain(|key, child| {
-                seen.iter().any(|seen| seen == key) && !forgotten.contains(&child.id)
-            });
+            .retain(|key, child| seen_keys.contains(key) && !forgotten.contains(&child.id));
         // A child placed under another parent keeps its identity here but is
         // not pulled back.
         let slots = self.slots(parent);
@@ -435,8 +449,28 @@ impl<'a> UiBuilder<'a> {
         if current.as_slice() == ordered.as_slice() {
             return;
         }
-        for child in ordered {
-            self.queue.insert(parent, child, None);
+        // The queue already appends this build's new children, so the order
+        // it leaves is usually the one wanted; move only what it leaves out
+        // of place. Reinserting every child instead costs a sibling scan
+        // each, quadratic in a wide level.
+        let appended = self.appended.remove(&parent).unwrap_or_default();
+        let forgotten = &self.pending_forget;
+        let queued: Vec<_> = current
+            .iter()
+            .chain(&appended)
+            .copied()
+            .filter(|id| !forgotten.contains(id))
+            .collect();
+        let exact =
+            queued.len() == ordered.len() && !queued.iter().any(|id| self.adopted.contains(id));
+        if !exact {
+            for child in ordered {
+                self.queue.insert(parent, child, None);
+            }
+            return;
+        }
+        if queued != ordered {
+            super::assemble::move_into_order(parent, &queued, &ordered, &mut self.queue);
         }
     }
 

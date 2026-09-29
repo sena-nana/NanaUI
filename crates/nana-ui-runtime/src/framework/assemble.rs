@@ -1,5 +1,5 @@
 use std::any::TypeId;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::{ComponentView, DocumentId, Entity, MutationQueue, StableNodeId, View};
 
@@ -40,7 +40,7 @@ impl AppContext {
         if current.as_slice() == ordered {
             return Ok(false);
         }
-        let mut seen = HashSet::with_capacity(ordered.len());
+        let mut seen = crate::NodeSet::with_capacity_and_hasher(ordered.len(), Default::default());
         for &child in ordered {
             if !self.world.contains(child) {
                 return Err(FrameworkError::MissingView(child));
@@ -230,6 +230,53 @@ impl AssemblyScope<'_> {
 /// children already in increasing order stays put, and every other child is
 /// inserted before its successor. Reversing costs n moves, inserting or
 /// removing one child costs one.
+/// Insert the children of `ordered` that are not already in order in
+/// `current` (the longest increasing run stays put), each before its
+/// successor. Children of `current` missing from `ordered` are left alone.
+pub(crate) fn move_into_order(
+    parent: StableNodeId,
+    current: &[StableNodeId],
+    ordered: &[StableNodeId],
+    mutations: &mut MutationQueue,
+) {
+    // A common head and tail stay put: one row inserted or removed anywhere
+    // leaves only the rows between to compare.
+    let head = current
+        .iter()
+        .zip(ordered)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let tail = current[head..]
+        .iter()
+        .rev()
+        .zip(ordered[head..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (current, ordered_middle) = (
+        &current[head..current.len() - tail],
+        &ordered[head..ordered.len() - tail],
+    );
+    let mut next = ordered.get(ordered.len() - tail).copied();
+    let position: crate::NodeMap<usize> = current
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (*id, index))
+        .collect();
+    let positions: Vec<Option<usize>> = ordered_middle
+        .iter()
+        .map(|id| position.get(id).copied())
+        .collect();
+    let stays = longest_increasing(&positions);
+    // Walking backwards, each moved child goes before the one that follows
+    // it, which is already where it belongs.
+    for (index, &child) in ordered_middle.iter().enumerate().rev() {
+        if !stays[index] {
+            mutations.insert(parent, child, next);
+        }
+        next = Some(child);
+    }
+}
+
 pub(crate) fn reconcile_child_order(
     parent: StableNodeId,
     ordered: &[StableNodeId],
@@ -243,25 +290,9 @@ pub(crate) fn reconcile_child_order(
     if current.as_slice() == ordered {
         return false;
     }
-    let position: HashMap<StableNodeId, usize> = current
-        .iter()
-        .enumerate()
-        .map(|(index, id)| (*id, index))
-        .collect();
-    let positions: Vec<Option<usize>> =
-        ordered.iter().map(|id| position.get(id).copied()).collect();
-    let stays = longest_increasing(&positions);
     // Extract retained descendants before parking their former ancestors. A
     // live-to-live reparent must never retire focus, IME or pointer ownership.
-    // Walking backwards, each moved child goes before the one that follows
-    // it, which is already where it belongs.
-    let mut next = None;
-    for (index, &child) in ordered.iter().enumerate().rev() {
-        if !stays[index] {
-            mutations.insert(parent, child, next);
-        }
-        next = Some(child);
-    }
+    move_into_order(parent, &current, ordered, mutations);
     let keep = ordered.iter().copied().collect::<HashSet<_>>();
     for child in &current {
         if !keep.contains(child) {
@@ -323,6 +354,41 @@ mod tests {
         context.commit_mutations(mutations).unwrap();
         assert_eq!(children(context, parent), ordered);
         moves
+    }
+
+    #[test]
+    fn a_common_head_and_tail_stay_put() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let parent = context
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let mut all = Vec::new();
+        for _ in 0..8 {
+            let child = context
+                .create_component(document, Stack::column(0.0))
+                .unwrap()
+                .stable_id();
+            all.push(child);
+        }
+        let mut mutations = MutationQueue::new();
+        for child in &all {
+            mutations.insert(parent, *child, None);
+        }
+        context.commit_mutations(mutations).unwrap();
+        // Swap the middle two: head and tail of three each stay.
+        let mut swapped = all.clone();
+        swapped.swap(3, 4);
+        assert_eq!(reorder(&mut context, parent, &swapped), 1);
+        // A new first child moves nothing else.
+        let fresh = context
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let mut with_fresh = vec![fresh];
+        with_fresh.extend(&swapped);
+        assert_eq!(reorder(&mut context, parent, &with_fresh), 1);
     }
 
     #[test]
