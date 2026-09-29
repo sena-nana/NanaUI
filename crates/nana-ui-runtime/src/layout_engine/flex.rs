@@ -52,6 +52,19 @@ pub(super) fn distribute_flex_main(
                 style.resolved_max_height_fonts(Some(content_main), vp, fonts),
             ),
         };
+        // `min-width: min-content` / `max-content` / `fit-content`: the item
+        // does not give up the size its content measured to, however the
+        // line shares out its space.
+        let min_spec = match direction {
+            FlexDirection::Row => style.min_width,
+            FlexDirection::Column => style.min_height,
+        };
+        let min_main = match min_spec {
+            Some(LengthSpec::MinContent | LengthSpec::MaxContent | LengthSpec::FitContent) => {
+                min_main.max(main_extent(sizes[index], direction))
+            }
+            _ => min_main,
+        };
         margin_mains.push(margin_main);
         mins.push(min_main);
         maxs.push(max_main);

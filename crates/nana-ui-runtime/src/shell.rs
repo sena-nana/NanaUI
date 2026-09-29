@@ -228,7 +228,7 @@ impl AppTitleBar {
                 Some(LEADING_COLUMN_TAG) => {
                     saw_columns = true;
                     patch_layout(world, mutations, child, |layout| {
-                        apply_fill_column(layout, JustifySpec::Start);
+                        apply_fill_column(layout, JustifySpec::Start, false);
                         layout.overflow_x = OverflowSpec::Hidden;
                         // The native placeholder sits flush with the bar edge
                         // and carries its own clearance.
@@ -258,7 +258,7 @@ impl AppTitleBar {
                             apply_hug_slot(layout, AlignSpec::Center, JustifySpec::End);
                             layout.hidden = false;
                         } else {
-                            apply_fill_column(layout, JustifySpec::End);
+                            apply_fill_column(layout, JustifySpec::End, true);
                         }
                         layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
                         // Custom controls hug the window edge; native or
@@ -2108,15 +2108,31 @@ fn apply_hug_slot(layout: &mut nana_ui_core::LayoutStyle, align: AlignSpec, just
     layout.min_width = Some(LengthSpec::Px(0.0));
 }
 
-fn apply_fill_column(layout: &mut nana_ui_core::LayoutStyle, justify: JustifySpec) {
+/// A side column shares the space the centre leaves, evenly so the centre
+/// stays centred. The trailing one, which holds the window controls, never
+/// goes below what its content measures: the centre gives way first
+/// ([`apply_center_column`]), so the controls are never cut. The leading one
+/// may be squeezed.
+fn apply_fill_column(
+    layout: &mut nana_ui_core::LayoutStyle,
+    justify: JustifySpec,
+    keeps_content: bool,
+) {
     layout.direction = Some(FlexDirection::Row);
     layout.align_items = AlignSpec::Center;
     layout.justify_content = justify;
-    layout.width = Some(LengthSpec::Fill);
+    if keeps_content {
+        // Sized by its content (what the minimum keeps), then grown into the
+        // space the centre leaves.
+        layout.width = None;
+        layout.min_width = Some(LengthSpec::MaxContent);
+    } else {
+        layout.width = Some(LengthSpec::Fill);
+        layout.min_width = Some(LengthSpec::Px(0.0));
+    }
     layout.height = Some(LengthSpec::Fill);
     layout.flex_grow = Some(1.0);
     layout.flex_shrink = Some(1.0);
-    layout.min_width = Some(LengthSpec::Px(0.0));
     layout.hidden = false;
 }
 
@@ -2128,7 +2144,9 @@ fn apply_center_column(layout: &mut nana_ui_core::LayoutStyle, width: f32) {
     layout.max_width = Some(LengthSpec::Px(width));
     layout.height = Some(LengthSpec::Fill);
     layout.flex_grow = Some(0.0);
-    layout.flex_shrink = Some(0.0);
+    // Its width is what it asks for when there is room; in a narrow window
+    // it shrinks, and its content ellipsizes, before the side columns do.
+    layout.flex_shrink = Some(1.0);
     layout.min_width = Some(LengthSpec::Px(0.0));
     layout.padding_left = Some(LengthSpec::Px(CENTER_PADDING_X));
     layout.padding_right = Some(LengthSpec::Px(CENTER_PADDING_X));
@@ -2596,6 +2614,87 @@ mod tests {
         let close = world.layout_box(buttons[2]).unwrap();
         assert_eq!(close.x + close.width, window_width - WINDOW_CONTROL_PADDING);
         assert!(close.y > container.y);
+    }
+
+    /// A wide centre column gives way before the trailing cluster and the
+    /// window controls do: at 800 px a 420 px centre moves over so the
+    /// account button and all three controls stay inside the window, at
+    /// 600 px it shrinks, and with room to spare it keeps its width, centred.
+    #[test]
+    fn a_narrow_window_shrinks_the_centre_before_the_trailing_cluster() {
+        let mut context = AppContext::new();
+        let sized = |context: &mut AppContext, width: f32| {
+            context
+                .create_detached_component(
+                    document(),
+                    crate::Stack::row(0.0).with_layout(move |layout| {
+                        layout.width = Some(LengthSpec::Px(width));
+                        layout.height = Some(LengthSpec::Px(24.0));
+                        layout.flex_shrink = Some(0.0);
+                    }),
+                )
+                .unwrap()
+        };
+        let leading = sized(&mut context, 60.0);
+        let center = sized(&mut context, 300.0);
+        let trailing = sized(&mut context, 110.0);
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("Nana")
+                    .native_controls(false)
+                    .center_width(420.0)
+                    .leading(leading.stable_id())
+                    .center(center.stable_id())
+                    .trailing(trailing.stable_id()),
+            )
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        let controls = find_title_bar_controls_child(&context, bar.stable_id()).unwrap();
+        let close = *context
+            .world()
+            .node(controls)
+            .unwrap()
+            .children
+            .last()
+            .unwrap();
+        let column = |context: &AppContext, tag: &str| {
+            context
+                .world()
+                .node(bar.stable_id())
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|child| node_tag(context.world(), *child).as_deref() == Some(tag))
+                .unwrap()
+        };
+        let center_column = column(&context, CENTER_COLUMN_TAG);
+        for width in [800.0, 600.0] {
+            context
+                .layout_document(document(), LayoutViewport::new(width, 400.0))
+                .unwrap();
+            let world = context.world();
+            let close_box = world.layout_box(close).unwrap();
+            assert!(
+                close_box.x + close_box.width <= width,
+                "{width}: close {close_box:?} is inside the window"
+            );
+            let trailing_box = world.layout_box(trailing.stable_id()).unwrap();
+            let center_box = world.layout_box(center_column).unwrap();
+            assert!(
+                trailing_box.x >= center_box.x + center_box.width,
+                "{width}: the trailing cluster {trailing_box:?} is not under the centre {center_box:?}"
+            );
+            if width < 700.0 {
+                assert!(center_box.width < 420.0, "{width}: the centre gave way");
+            }
+        }
+        context
+            .layout_document(document(), LayoutViewport::new(1400.0, 400.0))
+            .unwrap();
+        let center_box = context.world().layout_box(center_column).unwrap();
+        assert_eq!(center_box.width, 420.0);
+        assert!((center_box.x + center_box.width / 2.0 - 700.0).abs() < 0.5);
     }
 
     #[test]

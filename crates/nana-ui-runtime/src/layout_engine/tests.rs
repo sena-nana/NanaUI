@@ -1457,6 +1457,73 @@ fn a_growing_item_in_a_wrapping_row_shares_its_line_with_siblings_that_fit() {
     assert_eq!((auto[0].y, auto[1].y), (0.0, 0.0));
 }
 
+/// `min-width: max-content` keeps a growing item at least as wide as its
+/// content: the line shrinks its other items first.
+#[test]
+fn a_max_content_minimum_keeps_a_growing_item_at_its_content() {
+    let document = DocumentId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(id(1), document, NodeKind::Document);
+    let style = |layout: LayoutStyle| NodeStyle {
+        layout: Arc::new(layout),
+        ..NodeStyle::default()
+    };
+    for (child, parent, layout) in [
+        (
+            2,
+            1,
+            LayoutStyle {
+                direction: Some(FlexDirection::Row),
+                flex_grow: Some(1.0),
+                flex_shrink: Some(1.0),
+                min_width: Some(LengthSpec::MaxContent),
+                ..LayoutStyle::default()
+            },
+        ),
+        (
+            3,
+            2,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                flex_shrink: Some(0.0),
+                ..LayoutStyle::default()
+            },
+        ),
+        (
+            4,
+            1,
+            LayoutStyle {
+                width: Some(LengthSpec::Px(150.0)),
+                height: Some(LengthSpec::Px(20.0)),
+                flex_shrink: Some(1.0),
+                ..LayoutStyle::default()
+            },
+        ),
+    ] {
+        queue.create(id(child), document, NodeKind::Element { tag: "div".into() });
+        queue.insert(id(parent), id(child), None);
+        queue.set_style(id(child), style(layout));
+    }
+    queue.set_style(
+        id(1),
+        style(LayoutStyle {
+            width: Some(LengthSpec::Px(300.0)),
+            direction: Some(FlexDirection::Row),
+            ..LayoutStyle::default()
+        }),
+    );
+    world.commit(queue).unwrap();
+    let layouts = RuntimeLayoutEngine
+        .layout_document(&world, document, LayoutViewport::new(300.0, 100.0))
+        .unwrap()
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    assert_eq!(layouts[&id(2)].width, 200.0);
+    assert_eq!(layouts[&id(4)].width, 100.0);
+}
+
 #[test]
 fn a_wrapping_row_is_measured_in_the_order_it_is_placed() {
     // B 按 `order` 排在最前、独占一行,A 与 C 并排在第二行:两行高。按文档顺序
