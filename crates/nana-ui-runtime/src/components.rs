@@ -2404,7 +2404,7 @@ fn explicit_line_at(value: &str, offset: usize) -> (usize, usize, usize) {
         .unwrap_or((last_line, value.len(), value.len()))
 }
 
-fn resolved_text_line_height(style: &ComputedStyle) -> f32 {
+pub(crate) fn resolved_text_line_height(style: &ComputedStyle) -> f32 {
     match style.line_height {
         Some(LineHeightSpec::Absolute(value)) => value.max(0.0),
         Some(LineHeightSpec::Relative(value)) => style.font_size * value.max(0.0),

@@ -264,6 +264,7 @@ fn measure_node(
     let child_ids = node.children.clone();
     let text_metrics = node.text_metrics;
     let (writing, containing_writing) = (node.writing, node.containing_writing);
+    let text_natural_width = text_metrics.and_then(|_| nodes.world.text_natural_width(id));
     let style = style_arc.as_ref();
     if style.omits_box() {
         return Ok(Size::default());
@@ -378,6 +379,7 @@ fn measure_node(
             &style_arc,
             &child_ids,
             text_metrics,
+            text_natural_width,
             writing,
         )
         // An ancestor can rewrite a child's effective style without touching
@@ -595,8 +597,15 @@ fn measure_node(
         }
     };
     let text = text_metrics.unwrap_or_default();
+    // Text that wrapped is as wide as the lines it wrapped to. The width it
+    // asks for is its lines unwrapped, as far as this box gives it room: a
+    // box that shrinks to its content widens again once its limit grows,
+    // and then the text rewraps to the new width.
+    let text_width = text_natural_width.map_or(text.width, |natural| {
+        text.width.max(natural.min(content_available.width))
+    });
     let mut content = Size::new(
-        children.width.max(text.width),
+        children.width.max(text_width),
         children.height.max(text.height),
     );
     #[cfg(feature = "rich-text")]
@@ -751,6 +760,7 @@ fn measure_node(
                 writing,
                 children: Arc::clone(&child_ids),
                 text_metrics,
+                text_natural_width,
                 child_available: content_available,
                 child_direction: direction,
                 entries,

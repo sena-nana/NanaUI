@@ -871,6 +871,8 @@ struct MeasurePlan {
     /// The container's own shaped text, which competes with the children for
     /// the content size.
     text_metrics: Option<crate::TextMetrics>,
+    /// That text's unwrapped width, when it wrapped narrower.
+    text_natural_width: Option<f32>,
     /// Available size every in-flow child was measured against. One value for
     /// all of them: the per-child variant only arises on the grid paths, which
     /// are not cached.
@@ -947,6 +949,7 @@ impl MeasurePlan {
         style: &Arc<nana_ui_core::LayoutStyle>,
         children: &Arc<Vec<StableNodeId>>,
         text_metrics: Option<crate::TextMetrics>,
+        text_natural_width: Option<f32>,
         writing: nana_ui_core::WritingContext,
     ) -> bool {
         self.writing == writing
@@ -955,6 +958,7 @@ impl MeasurePlan {
             && self.viewport == viewport
             && self.parent_font_px == parent_font_px
             && self.text_metrics == text_metrics
+            && self.text_natural_width == text_natural_width
             && Arc::ptr_eq(&self.children, children)
             && (Arc::ptr_eq(&self.style, style) || layout_inputs_equal(&self.style, style))
     }

@@ -414,6 +414,89 @@ fn shrink_row_around_an_ellipsizing_label(header: f32, label: &str) -> RuntimeDo
     runtime
 }
 
+/// A chat bubble: a `fit-content` box capped at 65% of its row around one
+/// wrapping message. The row is the viewport's width.
+fn chat_bubble(message: &str) -> RuntimeDocument {
+    let (mut runtime, _) = document([message.to_string()]);
+    commit(&mut runtime, |queue| {
+        queue.set_style(
+            id(COLUMN),
+            label_style(LayoutStyle {
+                width: Some(LengthSpec::Fill),
+                height: Some(LengthSpec::Fill),
+                direction: Some(FlexDirection::Column),
+                ..LayoutStyle::default()
+            }),
+        );
+        queue.set_style(
+            row_id(0),
+            label_style(LayoutStyle {
+                width: Some(LengthSpec::FitContent),
+                max_width: Some(LengthSpec::Percent(65.0)),
+                direction: Some(FlexDirection::Column),
+                // The message takes the bubble's width and wraps to it.
+                align_items: nana_ui_core::AlignSpec::Stretch,
+                ..LayoutStyle::default()
+            }),
+        );
+    });
+    runtime
+}
+
+fn bubble_at(runtime: &mut RuntimeDocument, shaper: &mut impl TextShaper, width: f32) -> f32 {
+    let viewport = LayoutViewport::new(width, 800.0);
+    for _ in 0..4 {
+        runtime.flush(viewport, shaper).unwrap();
+    }
+    runtime
+        .context()
+        .world()
+        .layout_box(row_id(0))
+        .unwrap()
+        .width
+}
+
+/// A bubble laid out narrow, its message wrapped to that, widens with its
+/// cap when the window does: its width is the message's, not the width the
+/// message last wrapped to. It ends where a bubble laid out wide at once
+/// does.
+fn a_fit_content_box_widens_when_its_max_width_grows_with(shaper: &mut impl TextShaper) {
+    let message = "a message long enough to wrap in a narrow window";
+    let mut fresh = chat_bubble(message);
+    let wide = bubble_at(&mut fresh, shaper, 1000.0);
+    assert!(
+        wide < 650.0,
+        "the message fits the wide cap on one line: {wide}"
+    );
+
+    let mut runtime = chat_bubble(message);
+    let narrow = bubble_at(&mut runtime, shaper, 300.0);
+    assert!(narrow <= 195.0 + 0.5, "capped at 65% of 300: {narrow}");
+    let widened = bubble_at(&mut runtime, shaper, 1000.0);
+    assert_eq!(
+        widened, wide,
+        "the bubble widens to its message once the cap allows it"
+    );
+    let text = runtime.context().world().layout_box(label_id(0)).unwrap();
+    let fresh_text = fresh.context().world().layout_box(label_id(0)).unwrap();
+    assert_eq!(text.height, fresh_text.height, "and the message rewraps");
+
+    let narrowed = bubble_at(&mut runtime, shaper, 300.0);
+    assert_eq!(narrowed, narrow, "and narrows back");
+}
+
+#[test]
+fn a_fit_content_box_widens_when_its_max_width_grows() {
+    a_fit_content_box_widens_when_its_max_width_grows_with(
+        &mut NanaTextEngineShaper::new(engine()),
+    );
+}
+
+#[test]
+fn a_fit_content_box_widens_when_its_max_width_grows_on_a_host_shaper() {
+    a_fit_content_box_widens_when_its_max_width_grows_with(&mut MeasureTextShaper);
+}
+
 fn relabel(runtime: &mut RuntimeDocument, label: &str) {
     commit(runtime, |queue| {
         queue.set_text(

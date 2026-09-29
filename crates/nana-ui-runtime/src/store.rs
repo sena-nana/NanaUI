@@ -309,6 +309,11 @@ pub(crate) struct NodeStore {
     /// 拖拽移动选中文本的落点指示线（仅拖拽态编辑器持有条目；文本空间
     /// 矩形）。框架侧拖拽状态机写入，提取层翻译为节点空间图元。
     text_drop_indicators: HashMap<StableNodeId, LayoutBox>,
+    /// The width a plain text that wrapped to its box would take on its
+    /// own lines, unwrapped (its max-content width). Only text that wrapped
+    /// holds an entry: its metrics are the lines it wrapped to, and layout
+    /// needs this to give it more room once its box may grow.
+    text_natural_widths: HashMap<StableNodeId, f32>,
     /// Revisions, resolution stamp and retained layout handle of every node's
     /// text (Issue #95), one entry per node. Kept apart from the dense records
     /// on purpose: a large relayout scope decides "no text work" for every
@@ -388,6 +393,7 @@ impl NodeStore {
         self.text_signatures.remove(&id);
         self.text_viewport_pins.remove(&id);
         self.text_drop_indicators.remove(&id);
+        self.text_natural_widths.remove(&id);
         if let Some(text) = self.text_nodes.remove(&id) {
             self.text_layouts.remove(text.layout);
         }
@@ -544,6 +550,12 @@ impl NodeStore {
         LayoutBox,
         text_drop_indicator,
         set_text_drop_indicator
+    );
+    sparse!(
+        text_natural_widths,
+        f32,
+        text_natural_width,
+        set_text_natural_width
     );
 
     pub(crate) fn text_layouts(&self) -> &nana_text::TextLayoutStore {

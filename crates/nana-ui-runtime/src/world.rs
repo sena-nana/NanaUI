@@ -1675,6 +1675,13 @@ impl UiWorld {
         self.nodes.get(id).map(|node| node.text_metrics)
     }
 
+    /// The width a plain text that wrapped to its box takes unwrapped, when
+    /// that is wider than the lines it wrapped to: what it asks of layout
+    /// once its box may grow. `None` for text that did not wrap.
+    pub(crate) fn text_natural_width(&self, id: StableNodeId) -> Option<f32> {
+        self.nodes.text_natural_width(id).copied()
+    }
+
     /// The editor's IME state: its preedit, or an empty one while an IME is
     /// attached with nothing composed.
     pub fn ime(&self, id: StableNodeId) -> Option<crate::ImeView<'_>> {
