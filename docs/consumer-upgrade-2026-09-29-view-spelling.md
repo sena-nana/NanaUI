@@ -22,6 +22,8 @@
 - **组合控件在它收的内容之后装配。** 一个视图里，放进 slot 的组合控件（例如 `DesktopShell` 的 `.primary(widget(SettingsPage…))`）先装配，收它的控件后装配，所以外层对内容的补丁（主区域的圆角等）不再被内容自己的装配覆盖。子节点仍在父节点之前装配。
 - **类覆盖元素上已有的布局。** `.class` 的规则施加在元素建好时的布局上（包括 `.css(..)` 写的），冲突时类里的声明生效。
 
+- **新的内置标签会遮蔽同名的自定义组件。** `view!` 里不带路径的标签先查内置控件表，查不到才调用同名的 snake_case 函数；宏看不到作用域里有哪些函数，所以内置表新增一个名字，同名的自定义组件就改为解析成内置控件，属性名碰巧对得上时不报错。这次新增的内置标签：`Avatar`、`Chip`、`EmptyState`、`IconButton`、`StatusBadge`、`Texture`、`Thumbnail`。自定义组件用了这些名字的，改成带路径的标签（`<kit::EmptyState …>`，同模块里写 `<self::EmptyState …>`），带路径的标签一律调用函数。
+
 ## 新增
 
 - `list.each(key, row)` 等于 `each(list, key, row)`；`cond.then_show(|| v).otherwise(|| w)` 等于 `when(cond, || v).otherwise(|| w)`（`EachExt`、`WhenExt`）。

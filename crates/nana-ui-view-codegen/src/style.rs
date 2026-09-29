@@ -668,7 +668,7 @@ impl<'a> Styler<'a> {
                 self.nodes(slot);
             }
         }
-        let tag = element.name.to_string();
+        let tag = element.tag();
         let at_element = element.name.span();
         let mut fixed: Vec<(String, Span)> = Vec::new();
         let mut conditional: Vec<(String, Expr, Span)> = Vec::new();

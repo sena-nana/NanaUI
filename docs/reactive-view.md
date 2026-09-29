@@ -238,6 +238,7 @@ fn todos() -> impl IntoView {
 | `<Slider min=0 max=1 step=0.05/>`、`<TextInput/>` | `slider(0_f64, 1_f64, 0.05_f64)`、`text_input()` |
 | `<Widget of={component}>…</Widget>` | `widget(component).children((…))` |
 | `<TodoRow todo={t} list={list}/>`（其他标签） | `todo_row(t, list)`：标签名转成 snake_case，属性值按书写顺序作为参数，子节点作为最后一个参数 |
+| `<kit::EmptyState title={t}/>`（带路径的标签） | `kit::empty_state(t)`：带路径的标签一律调用函数，即使最后一段和内置标签同名。不带路径时，内置标签优先：宏看不到作用域里的函数，同名的自定义组件会被内置控件遮蔽，属性对得上时不报错。自定义组件和内置标签重名时写成带路径的形式（同模块里用 `self::`） |
 | `name="x"`、`name=3`、`name={x}`、`name={a.b}` | 原样传入：常量，或者信号本身 |
 | `name={其他表达式}` | `move \|\| 表达式`：读到的信号变了就重算 |
 | `name={\|\| …}` | 闭包原样传入 |

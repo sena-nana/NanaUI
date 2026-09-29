@@ -277,13 +277,15 @@ fn parse_node(input: ParseStream) -> syn::Result<Node> {
 
 fn parse_element(input: ParseStream) -> syn::Result<Element> {
     input.parse::<Token![<]>()?;
-    let name = Ident::parse_any(input)?;
+    let (module, name) = parse_tag(input)?;
+    let tag = tag_text(&module, &name);
     let mut attrs = Vec::new();
     loop {
         if input.peek(Token![/]) {
             input.parse::<Token![/]>()?;
             input.parse::<Token![>]>()?;
             return Ok(Element {
+                module,
                 name,
                 attrs,
                 children: Vec::new(),
@@ -300,26 +302,49 @@ fn parse_element(input: ParseStream) -> syn::Result<Element> {
         if input.is_empty() {
             return Err(syn::Error::new(
                 name.span(),
-                format!("`<{name}>` is never closed"),
+                format!("`<{tag}>` is never closed"),
             ));
         }
         children.push(parse_node(input)?);
     }
     input.parse::<Token![<]>()?;
     input.parse::<Token![/]>()?;
-    let closing = Ident::parse_any(input)?;
-    if closing != name {
+    let (closing_module, closing) = parse_tag(input)?;
+    let closing_tag = tag_text(&closing_module, &closing);
+    if closing_tag != tag {
         return Err(syn::Error::new(
             closing.span(),
-            format!("`</{closing}>` closes `<{name}>`"),
+            format!("`</{closing_tag}>` closes `<{tag}>`"),
         ));
     }
     input.parse::<Token![>]>()?;
     Ok(Element {
+        module,
         name,
         attrs,
         children,
     })
+}
+
+/// `Name`, or `path::to::Name`: the path segments and the name.
+fn parse_tag(input: ParseStream) -> syn::Result<(Vec<Ident>, Ident)> {
+    let mut module = Vec::new();
+    let mut name = Ident::parse_any(input)?;
+    while input.peek(Token![::]) {
+        input.parse::<Token![::]>()?;
+        module.push(std::mem::replace(&mut name, Ident::parse_any(input)?));
+    }
+    Ok((module, name))
+}
+
+fn tag_text(module: &[Ident], name: &Ident) -> String {
+    let mut tag = String::new();
+    for segment in module {
+        tag.push_str(&segment.to_string());
+        tag.push_str("::");
+    }
+    tag.push_str(&name.to_string());
+    tag
 }
 
 fn parse_attr(input: ParseStream) -> syn::Result<Attr> {

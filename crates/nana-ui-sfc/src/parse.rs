@@ -364,6 +364,7 @@ impl Template<'_, '_> {
             if self.rest().starts_with("/>") {
                 self.offset += 2;
                 return Ok(Element {
+                    module: Vec::new(),
                     name,
                     attrs,
                     children: Vec::new(),
@@ -380,6 +381,7 @@ impl Template<'_, '_> {
         }
         let children = self.nodes(Some(&tag))?;
         Ok(Element {
+            module: Vec::new(),
             name,
             attrs,
             children,

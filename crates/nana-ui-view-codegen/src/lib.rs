@@ -177,6 +177,10 @@ pub enum TextPart {
 }
 
 pub struct Element {
+    /// The path before the name: `kit` in `<kit::EmptyState>`. A tag with a
+    /// path always calls the component function it names, even when its
+    /// last segment is also a built-in tag.
+    pub module: Vec<Ident>,
     pub name: Ident,
     pub attrs: Vec<Attr>,
     pub children: Vec<Node>,
@@ -227,7 +231,7 @@ pub fn lift_slots(nodes: &mut [Node]) -> syn::Result<()> {
             }
         }
         lift_slots(&mut element.children)?;
-        if element.name == "Suspense" {
+        if element.module.is_empty() && element.name == "Suspense" {
             continue;
         }
         let mut children = Vec::new();
@@ -768,10 +772,11 @@ impl Gen<'_> {
             .collect::<syn::Result<_>>()?;
         match children.as_slice() {
             [inner]
-                if matches!(
-                    inner.name.to_string().as_str(),
-                    "Transition" | "TransitionGroup" | "KeepAlive"
-                ) =>
+                if inner.module.is_empty()
+                    && matches!(
+                        inner.name.to_string().as_str(),
+                        "Transition" | "TransitionGroup" | "KeepAlive"
+                    ) =>
             {
                 self.block(inner, modifiers, lists)
             }
@@ -922,7 +927,7 @@ impl Gen<'_> {
         let mut content = Vec::new();
         for node in &element.children {
             match node {
-                Node::Element(slot) if slot.name == "template" => {
+                Node::Element(slot) if slot.module.is_empty() && slot.name == "template" => {
                     let named = slot.attrs.iter().find_map(|attr| match &attr.name {
                         AttrName::Directive(directive, _) => directive.strip_prefix("slot:"),
                         _ => None,
@@ -954,6 +959,9 @@ impl Gen<'_> {
 
     /// The element itself: constructor, fields, directives, handlers.
     fn single(&self, element: &Element) -> syn::Result<TokenStream> {
+        if !element.module.is_empty() {
+            return self.component(element);
+        }
         let krate = self.krate;
         let tag = element.name.to_string();
         let span = element.name.span();
@@ -1233,7 +1241,12 @@ impl Gen<'_> {
         if !element.children.is_empty() {
             args.push(self.nodes(&element.children)?);
         }
-        let call = slot_calls(self, element, quote_spanned!(span=> #function(#(#args),*)))?;
+        let module = &element.module;
+        let call = slot_calls(
+            self,
+            element,
+            quote_spanned!(span=> #(#module::)* #function(#(#args),*)),
+        )?;
         let krate = self.krate;
         Ok(match key {
             Some(key) => quote_spanned!(span=> #krate::view::keyed(#key, #call)),
@@ -1305,6 +1318,17 @@ impl Gen<'_> {
 }
 
 impl Element {
+    /// The tag as written: `EmptyState`, or `kit::EmptyState` with a path.
+    pub fn tag(&self) -> String {
+        let mut tag = String::new();
+        for segment in &self.module {
+            tag.push_str(&segment.to_string());
+            tag.push_str("::");
+        }
+        tag.push_str(&self.name.to_string());
+        tag
+    }
+
     fn directive(&self, name: &str) -> Option<&Attr> {
         self.attrs.iter().find(
             |attr| matches!(&attr.name, AttrName::Directive(directive, _) if directive == name),

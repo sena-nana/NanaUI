@@ -1215,3 +1215,35 @@ fn a_three_argument_handler_gets_the_component_and_its_context() {
     let messages = cx.take_program_messages();
     assert_eq!(messages[0].downcast_ref::<u32>(), Some(&7));
 }
+
+/// An application's own `EmptyState`, named like the built-in one.
+mod kit {
+    use nana_ui_runtime::view::{IntoView, column, text};
+
+    pub fn empty_state(title: &'static str) -> impl IntoView {
+        column().children(text(title))
+    }
+}
+
+#[test]
+fn a_tag_with_a_path_calls_its_function_even_when_the_name_is_built_in() {
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mounted = cx
+        .mount_view_root(document, || {
+            view! {
+                <Column>
+                    <kit::EmptyState title={"自己的"}></kit::EmptyState>
+                    <EmptyState title="内置" />
+                </Column>
+            }
+        })
+        .unwrap();
+    let tree = dump(&cx, mounted.roots()[0]);
+    let mut lines = tree.lines().skip(1);
+    // The path picks the application's function: a column around a text.
+    assert!(lines.next().unwrap().contains("stack"), "{tree}");
+    assert!(lines.next().unwrap().contains("\"自己的\""), "{tree}");
+    // The bare tag is the built-in control.
+    assert!(lines.next().unwrap().contains("empty-state"), "{tree}");
+}
