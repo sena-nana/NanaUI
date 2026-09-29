@@ -176,6 +176,27 @@ impl<'a> UiBuilder<'a> {
             .expect("working slots inserted")
     }
 
+    /// Key `root`, a top-level node of this detached build, under `parent`,
+    /// the existing node it will be placed in: what [`Self::child`] records
+    /// for a node built under its parent. `parent`'s other keys stay.
+    pub(crate) fn key_parked_root<C: ComponentView>(
+        &mut self,
+        parent: StableNodeId,
+        key: String,
+        root: Entity<C>,
+    ) {
+        if self.error.is_some() || self.stack.len() != 1 || self.current().parent.is_some() {
+            return;
+        }
+        self.slots(parent).insert(
+            key,
+            AssembledChild {
+                id: root.id,
+                type_id: TypeId::of::<C>(),
+            },
+        );
+    }
+
     /// Create or reuse a keyed component under the current parent.
     pub fn child<C: ComponentView>(&mut self, key: impl Into<String>, component: C) -> Entity<C> {
         if self.error.is_some() {

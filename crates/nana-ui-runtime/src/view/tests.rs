@@ -2803,6 +2803,106 @@ fn keyed_row(row: VirtualRow) -> impl IntoView {
         .children(text(row.title).key("title"))
 }
 
+/// A branch a `dynamic` builds when it switches is keyed where the first
+/// one was: inside a virtual row, `a/b` resolves to the branch shown, before
+/// and after the switch, and after switching back to a kept branch.
+#[test]
+fn keys_in_a_switched_branch_resolve_by_path_inside_a_virtual_row() {
+    let (mut cx, document, parent) = setup();
+    let rows = virtual_list_ref::<u32>();
+    let list_ref = rows.clone();
+    let modes = std::cell::Cell::new(None);
+    let shared = &modes;
+    cx.mount_view(parent, move || {
+        let mode = signal(0u32);
+        shared.set(Some(mode));
+        each_virtual(
+            signal(virtual_items(100)),
+            |row| row.id,
+            40.0,
+            move |row| {
+                let title = row.title.clone();
+                dynamic(mode, move |mode: &u32| {
+                    text(format!("{title} {mode}")).key("b")
+                })
+                .key("a")
+            },
+        )
+        .overscan(0.0)
+        .height(200.0)
+        .list_ref(list_ref.clone())
+    })
+    .unwrap();
+    settle(&mut cx, document, LayoutViewport::new(320.0, 600.0));
+    let mode = modes.get().unwrap();
+    let shown = |cx: &AppContext| {
+        let row = rows.row(&0).expect("row 0 is built");
+        let id = cx
+            .resolve_assembly_path(row, "a/b")
+            .expect("a/b resolves in the row");
+        text_of(cx, Entity::from_stable_id(id))
+    };
+    assert_eq!(shown(&cx), "行 0 0");
+    mode.set(1);
+    cx.flush_reactive().unwrap();
+    assert_eq!(shown(&cx), "行 0 1", "the rebuilt branch is keyed too");
+    mode.set(2);
+    cx.flush_reactive().unwrap();
+    assert_eq!(shown(&cx), "行 0 2");
+}
+
+/// The same outside a virtual list: a `dynamic` at the top of a view, a
+/// kept-alive one switching back to a branch it kept, and rows an `each`
+/// adds after it was built, each keyed under its container.
+#[test]
+fn keys_of_branches_and_rows_built_after_mount_resolve_by_path() {
+    let (mut cx, _, parent) = setup();
+    let signals = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let mode = signal(0u32);
+            let items = signal(vec![1u32]);
+            signals.set(Some((mode, items)));
+            column().key("page").children((
+                dynamic(mode, |mode: &u32| text(format!("{mode}")).key("b")).key("switch"),
+                dynamic(mode, |mode: &u32| text(format!("{mode}")).key("b"))
+                    .keep_alive()
+                    .key("kept"),
+                each(
+                    items,
+                    |id| *id,
+                    |id| {
+                        column()
+                            .key(format!("r{id}"))
+                            .children(text(format!("行 {id}")).key("title"))
+                    },
+                )
+                .key("list"),
+            ))
+        })
+        .unwrap();
+    let (mode, items) = signals.get().unwrap();
+    let root = view.roots()[0];
+    let at = |cx: &AppContext, path: &str| {
+        let id = cx
+            .resolve_assembly_path(root, path)
+            .unwrap_or_else(|| panic!("{path} resolves"));
+        text_of(cx, Entity::from_stable_id(id))
+    };
+    assert_eq!(at(&cx, "switch/b"), "0");
+    mode.set(1);
+    items.set(vec![1, 2]);
+    cx.flush_reactive().unwrap();
+    assert_eq!(at(&cx, "switch/b"), "1");
+    assert_eq!(at(&cx, "kept/b"), "1");
+    assert_eq!(at(&cx, "list/r2/title"), "行 2", "a row added later");
+    assert_eq!(at(&cx, "list/r1/title"), "行 1");
+    mode.set(0);
+    cx.flush_reactive().unwrap();
+    assert_eq!(at(&cx, "kept/b"), "0", "the kept branch, shown again");
+    assert_eq!(at(&cx, "switch/b"), "0");
+}
+
 /// The list's ref answers where every item is, built or not, and which node
 /// a built item is in: its key scope, where what the row keys is found.
 #[test]

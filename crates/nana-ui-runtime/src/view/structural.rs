@@ -15,7 +15,9 @@ use std::marker::PhantomData;
 use std::panic::Location;
 
 use super::controls::StyledComponent;
-use super::node::{AnyView, El, IntoView, StructuralBinding, ViewBuilder, ViewState, widget};
+use super::node::{
+    AnyView, El, IntoView, RootKeys, StructuralBinding, ViewBuilder, ViewState, widget,
+};
 use super::prop::{IntoProp, PropSource};
 use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey};
 use super::style::{ContainerStyle, container_styles};
@@ -47,10 +49,14 @@ pub(super) fn build_scoped(
 
 /// Build detached subtrees for a container that already exists, in one
 /// commit, and hand their parts to the context. `build` records every scope
-/// it creates so a failed commit disposes them.
+/// it creates so a failed commit disposes them. The roots are keyed under
+/// `container` as the ones built with it were (only declared keys unless
+/// `positional`; see [`RootKeys`]), so a path through the container finds
+/// them.
 pub(super) fn build_detached_into<R>(
     cx: &mut AppContext,
     container: StableNodeId,
+    positional: bool,
     build: impl FnOnce(&mut ViewBuilder<'_, '_, '_>, &mut Vec<ScopeKey>) -> R,
 ) -> Result<R, FrameworkError> {
     let document = cx
@@ -62,6 +68,10 @@ pub(super) fn build_detached_into<R>(
     let mut created = Vec::new();
     let result = cx.build_detached(document, |ui| {
         let mut st = ViewState::new(tag);
+        st.root_keys = Some(RootKeys {
+            container,
+            positional,
+        });
         let built = build(&mut ViewBuilder { ui, st: &mut st }, &mut created);
         (built, st.parts)
     });
@@ -407,7 +417,7 @@ where
         let mut entered = Vec::new();
         if !fresh.is_empty() {
             let this = &*self;
-            let built = build_detached_into(cx, container, |vb, created| {
+            let built = build_detached_into(cx, container, false, |vb, created| {
                 let built = this.build_rows(vb, fresh);
                 created.extend(built.iter().map(|(_, built)| built.scope));
                 built
@@ -715,8 +725,10 @@ struct SwitchBinding<K> {
     scope: Option<ScopeKey>,
     shown: K,
     branch: Option<Built>,
-    /// Branches kept alive, the one shown longest ago first.
-    kept: Vec<(K, Built)>,
+    /// Branches kept alive, the one shown longest ago first, with the keys
+    /// their roots held under the container: a branch shown after them may
+    /// take the same keys, and a kept branch shown again takes them back.
+    kept: Vec<(K, Built, Vec<crate::framework::AssembledKey>)>,
     /// The hidden stack kept branches wait in, created on first use.
     holder: Option<StableNodeId>,
     leaving: Vec<StableNodeId>,
@@ -763,9 +775,14 @@ impl<K: Clone + PartialEq + Send + 'static> SwitchBinding<K> {
                 mutations.insert(holder, *root, None);
             }
         }
-        self.kept.push((key, branch));
+        let keys = branch
+            .roots
+            .iter()
+            .filter_map(|root| cx.assembled_key(container, *root))
+            .collect();
+        self.kept.push((key, branch, keys));
         while self.kept.len() > limit {
-            let (_, evicted) = self.kept.remove(0);
+            let (_, evicted, _) = self.kept.remove(0);
             reactive::dispose_scope(evicted.scope);
             for root in evicted.roots {
                 if cx.world().contains(root) {
@@ -795,8 +812,8 @@ impl<K: Clone + PartialEq + Send + 'static> StructuralBinding for SwitchBinding<
         let kept = self
             .kept
             .iter()
-            .position(|(key, _)| *key == shown)
-            .map(|at| self.kept.remove(at).1);
+            .position(|(key, ..)| *key == shown)
+            .map(|at| self.kept.remove(at));
         if let Some(branch) = self.branch.take() {
             match self.keep_alive {
                 Some(limit) => self.stash(cx, container, previous, branch, limit)?,
@@ -804,10 +821,15 @@ impl<K: Clone + PartialEq + Send + 'static> StructuralBinding for SwitchBinding<
             }
         }
         let branch = match kept {
-            Some(branch) => Some(branch),
+            Some((_, branch, keys)) => {
+                for key in keys {
+                    cx.rekey_assembled(container, key);
+                }
+                Some(branch)
+            }
             None if self.render.exists(&shown) => {
                 let (render, scope) = (&self.render, self.scope);
-                Some(build_detached_into(cx, container, |vb, created| {
+                Some(build_detached_into(cx, container, true, |vb, created| {
                     let built = build_scoped(vb, scope, || render.make(&shown));
                     created.push(built.scope);
                     built

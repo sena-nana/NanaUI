@@ -76,6 +76,7 @@ use crate::{
 
 mod assemble;
 mod build;
+pub(crate) use assemble::AssembledKey;
 mod document_text;
 mod overlay;
 mod reactive;
@@ -1593,6 +1594,42 @@ impl AppContext {
                 .insert(child.id, (parent, key.clone()));
         }
         self.assembled.insert(parent, slots);
+    }
+
+    /// The key `child` holds under `parent`, to put back with
+    /// [`Self::rekey_assembled`] after another node took it.
+    pub(crate) fn assembled_key(
+        &self,
+        parent: StableNodeId,
+        child: StableNodeId,
+    ) -> Option<AssembledKey> {
+        let (declared, key) = self.assembled_parent.get(&child)?;
+        let entry = self.assembled.get(declared)?.get(key)?;
+        (*declared == parent && entry.id == child).then(|| AssembledKey {
+            key: key.clone(),
+            child: *entry,
+        })
+    }
+
+    /// Key `key.child` under `parent` again, displacing whichever node holds
+    /// that key now: a kept-alive branch shown again takes its key back from
+    /// the branch it replaces.
+    pub(crate) fn rekey_assembled(&mut self, parent: StableNodeId, key: AssembledKey) {
+        if !self.world.contains(parent) || !self.world.contains(key.child.id) {
+            return;
+        }
+        let slots = self.assembled.entry(parent).or_default();
+        if let Some(previous) = slots.insert(key.key.clone(), key.child)
+            && previous.id != key.child.id
+            && self
+                .assembled_parent
+                .get(&previous.id)
+                .is_some_and(|(declared, held)| *declared == parent && *held == key.key)
+        {
+            self.assembled_parent.remove(&previous.id);
+        }
+        self.assembled_parent
+            .insert(key.child.id, (parent, key.key));
     }
 
     /// Whether `id` is a keyed child placed away from its declared parent.

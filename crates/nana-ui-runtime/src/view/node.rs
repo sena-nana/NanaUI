@@ -240,6 +240,22 @@ pub(crate) struct ViewState {
     pub(crate) parts: ViewParts,
     /// A [`keyed`] key waiting for the next unkeyed root at this level.
     pending_key: Option<Cow<'static, str>>,
+    /// Where a detached build's roots are keyed: the container a structural
+    /// view places them in afterwards.
+    pub(crate) root_keys: Option<RootKeys>,
+}
+
+/// [`ViewState::root_keys`]: a structural view building roots for a
+/// container that already exists keys them under it, as the roots it built
+/// at mount were.
+#[derive(Clone, Copy)]
+pub(crate) struct RootKeys {
+    pub(crate) container: StableNodeId,
+    /// Positional roots too. A branch replaces the roots before it, so its
+    /// positional keys are the ones they had; rows join others, whose
+    /// positional keys are counted from another build, so only a declared
+    /// key names a row.
+    pub(crate) positional: bool,
 }
 
 impl ViewState {
@@ -249,6 +265,7 @@ impl ViewState {
             levels: vec![Level::default()],
             parts: ViewParts::default(),
             pending_key: None,
+            root_keys: None,
         }
     }
 }
@@ -290,7 +307,16 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
                 Some(key) => key.to_string(),
                 None => self.auto_key(),
             };
-            self.ui.child(key, component)
+            let root_key = self
+                .st
+                .root_keys
+                .filter(|keys| self.st.levels.len() == 1 && (keys.positional || declared.is_some()))
+                .map(|keys| (keys.container, key.clone()));
+            let entity = self.ui.child(key, component);
+            if let Some((container, key)) = root_key {
+                self.ui.key_parked_root(container, key, entity);
+            }
+            entity
         };
         if entity.stable_id() != UNBUILT {
             let level = self.level();

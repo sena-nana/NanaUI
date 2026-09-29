@@ -11,6 +11,14 @@ pub(crate) struct AssembledChild {
     pub type_id: TypeId,
 }
 
+/// One entry of a parent's key table, taken out to be put back
+/// ([`AppContext::assembled_key`], [`AppContext::rekey_assembled`]).
+#[derive(Clone)]
+pub(crate) struct AssembledKey {
+    pub(super) key: String,
+    pub(super) child: AssembledChild,
+}
+
 /// Identity-stable child builder for one retained parent.
 pub struct AssemblyScope<'a> {
     context: &'a mut AppContext,
