@@ -2149,3 +2149,87 @@ fn dock_panels_are_the_children_keyed_with_their_ids() {
     );
     assert!(cx.world().len() <= nodes + 4, "no panel is rebuilt");
 }
+
+#[test]
+fn panes_and_leaf_composites_assemble_in_a_view_as_by_hand() {
+    use crate::{ConfirmDialog, DatePicker, PaneSection, SplitPane};
+    use nana_ui_core::{CivilDate, SplitAxis, SplitPaneModel};
+    let (mut cx, document, _) = setup();
+    let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 100.0, 400.0);
+    let date = CivilDate::new(2026, 9, 29).unwrap();
+
+    let split = cx
+        .build(document, |ui| {
+            let first = ui.detached(Text::new("左"));
+            let second = ui.detached(Text::new("右"));
+            ui.child(
+                "split",
+                SplitPane::from_model(&model, first.stable_id(), second.stable_id()),
+            )
+        })
+        .unwrap();
+    cx.assemble_split_pane(split).unwrap();
+    let section = cx
+        .build(document, |ui| {
+            let header = ui.detached(Text::new("标题"));
+            let body = ui.detached(Text::new("内容"));
+            ui.child(
+                "section",
+                PaneSection::new()
+                    .header(header.stable_id())
+                    .body(body.stable_id()),
+            )
+        })
+        .unwrap();
+    cx.assemble_pane_section(section).unwrap();
+    let dialog = cx
+        .create_component(document, ConfirmDialog::new("删除？", "不能撤销"))
+        .unwrap();
+    cx.assemble_confirm_dialog(dialog).unwrap();
+    let picker = cx
+        .create_component(document, DatePicker::new(date))
+        .unwrap();
+    cx.assemble_date_picker(picker).unwrap();
+
+    let views = cx
+        .mount_view_root(document, || {
+            (
+                widget(SplitPane::new(&model))
+                    .first(text("左"))
+                    .second(text("右")),
+                widget(PaneSection::new())
+                    .header(text("标题"))
+                    .body(text("内容")),
+                widget(ConfirmDialog::new("删除？", "不能撤销")),
+                widget(DatePicker::new(date)),
+            )
+        })
+        .unwrap();
+    let roots = views.roots();
+    for (view, hand) in roots.iter().zip([
+        split.stable_id(),
+        section.stable_id(),
+        dialog.stable_id(),
+        picker.stable_id(),
+    ]) {
+        assert_eq!(shape(&cx, *view), shape(&cx, hand));
+        assert!(!children(&cx, *view).is_empty(), "{}", shape(&cx, *view));
+    }
+}
+
+#[cfg(feature = "rich-text")]
+#[test]
+fn markdown_in_a_view_gets_its_fence_children() {
+    use crate::NativeMarkdown;
+    let (mut cx, document, _) = setup();
+    let source = "文字\n\n```rust\nfn main() {}\n```\n";
+    let hand = cx
+        .create_component(document, NativeMarkdown::from_source(source))
+        .unwrap();
+    cx.assemble_markdown(hand).unwrap();
+    let view = cx
+        .mount_view_root(document, || widget(NativeMarkdown::from_source(source)))
+        .unwrap();
+    assert_eq!(shape(&cx, view.roots()[0]), shape(&cx, hand.stable_id()));
+    assert!(!children(&cx, hand.stable_id()).is_empty());
+}

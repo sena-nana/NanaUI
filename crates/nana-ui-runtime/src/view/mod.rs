@@ -24,6 +24,7 @@ mod each_virtual;
 mod error;
 mod hot;
 mod node;
+mod panes;
 mod prop;
 pub(crate) mod reactive;
 mod resource;

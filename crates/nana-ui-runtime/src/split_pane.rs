@@ -49,6 +49,20 @@ impl SplitPane {
         self.style = style;
         self
     }
+    /// A split with no content yet; a view gives it with `.first(..)` and
+    /// `.second(..)`.
+    pub fn new(model: &SplitPaneModel) -> Self {
+        Self {
+            first: None,
+            second: None,
+            handle: None,
+            first_slot: None,
+            second_slot: None,
+            model: model.clone(),
+            style: NodeStyle::default(),
+        }
+    }
+
     pub fn from_model(model: &SplitPaneModel, first: StableNodeId, second: StableNodeId) -> Self {
         Self {
             first: Some(first),
@@ -324,6 +338,11 @@ pub(crate) fn split_direction(axis: SplitAxis) -> FlexDirection {
 }
 
 impl ComponentView for SplitPane {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(crate::AppContext::assemble_split_pane),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),

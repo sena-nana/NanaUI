@@ -186,6 +186,11 @@ impl ModalSurface for ConfirmDialog {
 }
 
 impl ComponentView for ConfirmDialog {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(crate::AppContext::assemble_confirm_dialog),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
