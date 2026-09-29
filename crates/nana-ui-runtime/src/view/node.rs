@@ -402,6 +402,17 @@ tuple_views!(A, B, C, D, E, F, G, H, I, J);
 tuple_views!(A, B, C, D, E, F, G, H, I, J, K);
 tuple_views!(A, B, C, D, E, F, G, H, I, J, K, L);
 
+/// The children [`El::with`] collects.
+pub struct Children(Vec<AnyView>);
+
+impl Children {
+    /// Add `view` after the children added so far.
+    pub fn add(&mut self, view: impl IntoView) -> &mut Self {
+        self.0.push(view.into_any());
+        self
+    }
+}
+
 /// A view whose first root takes `key`: a key on a component, as Vue puts
 /// it on the component's root element.
 pub struct Keyed<V> {
@@ -495,6 +506,11 @@ impl<C: ComponentView, K> El<C, K> {
         &self.component
     }
 
+    pub(crate) fn map_component(mut self, f: impl FnOnce(C) -> C) -> Self {
+        self.component = f(self.component);
+        self
+    }
+
     /// Drive one field through a [`FieldWrite`].
     #[track_caller]
     pub fn prop<T: 'static, W: FieldWrite<C, T> + 'static>(
@@ -522,6 +538,27 @@ impl<C: ComponentView, K> El<C, K> {
             ui.on(entity, move |_: &mut C, event: &E, _| f(event));
         }));
         self
+    }
+
+    /// The children, added in a block of ordinary Rust:
+    ///
+    /// ```ignore
+    /// column().gap(8).with(|c| {
+    ///     c.add(text("标题"));
+    ///     for tag in ["a", "b"] {
+    ///         c.add(text(tag));
+    ///     }
+    /// })
+    /// ```
+    ///
+    /// The block runs once, while the view is built: a `for` or `if` in it
+    /// shapes the tree then and does not follow data. For structure that
+    /// follows data, add an [`each`](super::each) or a
+    /// [`when`](super::when).
+    pub fn with(self, add: impl FnOnce(&mut Children)) -> El<C, Vec<AnyView>> {
+        let mut children = Children(Vec::new());
+        add(&mut children);
+        self.children(children.0)
     }
 
     /// Replace the children.

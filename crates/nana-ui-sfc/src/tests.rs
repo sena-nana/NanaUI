@@ -251,7 +251,7 @@ defineProps!(header: impl IntoView, children: impl IntoView);
     .unwrap();
     let code = squash(&out.code);
     assert!(
-        code.contains(&squash("column(0.0_f32, (header, children))")),
+        code.contains(&squash("column().children((header, children))")),
         "{code}"
     );
     assert!(

@@ -189,14 +189,14 @@ where
 
 impl<T, K, S, KF, RF> Each<T, K, S, KF, RF> {
     /// Gap between rows.
-    pub fn gap(mut self, gap: f32) -> Self {
-        self.container = Stack::column(gap);
+    pub fn gap(mut self, gap: impl super::Px) -> Self {
+        self.container = Stack::column(gap.px());
         self
     }
 
     /// Lay rows out horizontally.
-    pub fn horizontal(mut self, gap: f32) -> Self {
-        self.container = Stack::row(gap);
+    pub fn horizontal(mut self, gap: impl super::Px) -> Self {
+        self.container = Stack::row(gap.px());
         self
     }
 
@@ -410,6 +410,35 @@ pub fn when<V: IntoView>(
         site: Location::caller(),
     }
 }
+
+/// [`each`] from the data: `todos.each(|t| t.id, todo_row)`.
+pub trait EachExt<T: Clone + 'static>: Readable<Vec<T>> + Sized {
+    /// A keyed list over these items; see [`each`].
+    #[track_caller]
+    fn each<K, KF, RF, V>(self, key: KF, row: RF) -> Each<T, K, Self, KF, RF>
+    where
+        K: Eq + Hash + Clone + Send + 'static,
+        KF: Fn(&T) -> K + Send + 'static,
+        RF: Fn(T) -> V + Send + 'static,
+        V: IntoView,
+    {
+        each(self, key, row)
+    }
+}
+
+impl<T: Clone + 'static, S: Readable<Vec<T>>> EachExt<T> for S {}
+
+/// [`when`] from the condition: `loading.then_show(spinner)`. Not `show`:
+/// Vue's `v-show` keeps the node, which is [`El::visible`](super::El::visible).
+pub trait WhenExt: IntoProp<bool> + Sized {
+    /// Build `then` while this holds; see [`when`].
+    #[track_caller]
+    fn then_show<V: IntoView>(self, then: impl Fn() -> V + Send + 'static) -> When {
+        when(self, then)
+    }
+}
+
+impl<P: IntoProp<bool>> WhenExt for P {}
 
 /// What a switching block does with branches it stops showing.
 #[derive(Default)]

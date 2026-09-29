@@ -5,7 +5,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::node::{El, IntoView, widget};
+use super::node::{El, widget};
 use super::prop::{FieldWrite, IntoProp};
 use super::reactive::Signal;
 use crate::{
@@ -161,16 +161,42 @@ macro_rules! controls {
 
 nana_ui_view_schema::for_each_control!(controls);
 
-/// Vertical stack.
+/// Vertical stack: `column().gap(8).with(|c| { c.add(…); })`, or
+/// `.children((a, b))` for a fixed few.
 #[track_caller]
-pub fn column<K: IntoView>(gap: f32, children: K) -> El<Stack, K> {
-    widget(Stack::column(gap)).children(children)
+pub fn column() -> El<Stack> {
+    widget(Stack::column(0.0))
 }
 
-/// Horizontal stack.
+/// Horizontal stack; see [`column`].
 #[track_caller]
-pub fn row<K: IntoView>(gap: f32, children: K) -> El<Stack, K> {
-    widget(Stack::row(gap)).children(children)
+pub fn row() -> El<Stack> {
+    widget(Stack::row(0.0))
+}
+
+/// A length in logical pixels, whole or not: `gap(8)`, `gap(7.5)`.
+pub trait Px {
+    fn px(self) -> f32;
+}
+
+macro_rules! px {
+    ($($ty:ty),*) => {$(
+        impl Px for $ty {
+            fn px(self) -> f32 {
+                self as f32
+            }
+        }
+    )*};
+}
+
+px!(f32, f64, i32, u32, i64, u64, usize, u16, u8);
+
+impl<K> El<Stack, K> {
+    /// Space between the children, in logical pixels.
+    pub fn gap(self, gap: impl Px) -> Self {
+        let gap = crate::LengthSpec::Px(gap.px().max(0.0));
+        self.map_component(|stack| stack.with_layout(|layout| layout.gap = Some(gap)))
+    }
 }
 
 /// Text. For interpolation see [`crate::text!`].

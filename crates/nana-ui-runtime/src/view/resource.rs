@@ -199,16 +199,13 @@ impl<V: IntoView, C: FnOnce() -> V + 'static> IntoView for Suspense<C> {
         let pending = signal(0usize);
         let fallback = self.fallback;
         let ready = move || pending.get() == 0;
-        let view = super::column(
-            0.0,
-            (
-                widget(Stack::column(0.0)).visible(ready).children(Scoped {
-                    pending,
-                    content: self.content,
-                }),
-                when(move || pending.get() > 0, fallback),
-            ),
-        );
+        let view = super::column().children((
+            widget(Stack::column(0.0)).visible(ready).children(Scoped {
+                pending,
+                content: self.content,
+            }),
+            when(move || pending.get() > 0, fallback),
+        ));
         view.build(vb);
     }
 }

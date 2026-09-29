@@ -120,9 +120,8 @@ impl<V: IntoView, C: FnOnce() -> V + 'static> IntoView for ErrorBoundary<C> {
         let messages = move || {
             errors.with(|errors| errors.iter().map(|(_, message)| message.clone()).collect())
         };
-        super::column(
-            0.0,
-            (
+        super::column()
+            .children((
                 widget(Stack::column(0.0))
                     .visible(move || errors.with(Vec::is_empty))
                     .children(Guarded {
@@ -132,8 +131,7 @@ impl<V: IntoView, C: FnOnce() -> V + 'static> IntoView for ErrorBoundary<C> {
                 dynamic(messages, move |messages: &Vec<Arc<str>>| {
                     (!messages.is_empty()).then(|| fallback(messages.clone()))
                 }),
-            ),
-        )
-        .build(vb);
+            ))
+            .build(vb);
     }
 }

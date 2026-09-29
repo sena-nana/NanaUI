@@ -2,7 +2,7 @@
 //!
 //! ```ignore
 //! widget(DesktopShell::from_model(model).title("Gallery"))
-//!     .title_trailing(row(6.0, (search, theme)))
+//!     .title_trailing(row().gap(6.0).children((search, theme)))
 //!     .navigation(sidebar())
 //!     .primary(page())
 //! ```

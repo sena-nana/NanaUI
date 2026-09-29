@@ -88,8 +88,7 @@ fn rerunning_an_effect_with_unchanged_dependencies_allocates_nothing() {
 
 fn bound_rows(n: usize, bound: bool) -> impl IntoView {
     let label = signal(String::from("行"));
-    column(
-        0.0,
+    column().children(
         (0..n)
             .map(|_| {
                 if bound {

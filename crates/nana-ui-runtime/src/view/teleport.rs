@@ -4,7 +4,7 @@
 //!
 //! ```ignore
 //! let layer = node_ref();
-//! column(0.0, (
+//! column().children((
 //!     widget(Stack::column(0.0)).node_ref(layer),
 //!     teleport(layer, text("在浮层里")),
 //! ))

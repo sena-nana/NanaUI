@@ -43,16 +43,15 @@ fn delta(before: ReactiveStats) -> ReactiveStats {
 
 fn counter() -> impl IntoView {
     let count = signal(0u64);
-    column(
-        12.0,
-        (
+    column()
+        .gap(12.0)
+        .children((
             crate::text!("计数 {count}").key("value"),
             button("加一")
                 .key("inc")
                 .on_activate(move || count.update(|c| *c += 1)),
-        ),
-    )
-    .key("counter")
+        ))
+        .key("counter")
 }
 
 #[test]
@@ -108,7 +107,9 @@ fn constant_props_create_no_effect() {
     let (mut cx, _, parent) = setup();
     let before = reactive_stats();
     cx.mount_view(parent, || {
-        column(4.0, (text("静态"), button("按钮").disabled(true)))
+        column()
+            .gap(4.0)
+            .children((text("静态"), button("按钮").disabled(true)))
     })
     .unwrap();
     let delta = delta(before);
@@ -123,8 +124,7 @@ fn a_hundred_bound_nodes_commit_once() {
     cx.mount_view(parent, || {
         let count = signal(0);
         shared.set(Some(count));
-        column(
-            0.0,
+        column().children(
             (0..100)
                 .map(move |_| text(count.map(|c| c.to_string())))
                 .collect::<Vec<_>>(),
@@ -309,14 +309,11 @@ fn unmount_releases_every_signal_effect_scope_and_handler() {
         .mount_view(parent, || {
             let todos = signal(vec![1u32, 2, 3]);
             let open = signal(true);
-            column(
-                0.0,
-                (
-                    counter(),
-                    each(todos, |id| *id, |id| text(format!("{id}"))),
-                    when(open, || text("x")),
-                ),
-            )
+            column().children((
+                counter(),
+                each(todos, |id| *id, |id| text(format!("{id}"))),
+                when(open, || text("x")),
+            ))
         })
         .unwrap();
     assert!(cx.event_handler_count() > handlers);
@@ -373,14 +370,11 @@ fn models_write_back_through_their_signal() {
             let name = signal(String::new());
             let agreed = signal(false);
             signals.set(Some((volume, name, agreed)));
-            column(
-                0.0,
-                (
-                    slider(0.0, 1.0, 0.05).model(volume).key("volume"),
-                    text_input().model(name).key("name"),
-                    checkbox("同意").model(agreed).key("agreed"),
-                ),
-            )
+            column().children((
+                slider(0.0, 1.0, 0.05).model(volume).key("volume"),
+                text_input().model(name).key("name"),
+                checkbox("同意").model(agreed).key("agreed"),
+            ))
         })
         .unwrap();
     let (volume, name, agreed) = signals.get().unwrap();
@@ -428,20 +422,13 @@ fn visible_takes_a_node_out_of_layout_without_dropping_it() {
         .mount_view(parent, || {
             let shown = signal(true);
             flag.set(Some(shown));
-            column(
-                0.0,
-                (
-                    widget(
-                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(40.0))),
-                    )
+            column().children((
+                widget(Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(40.0))))
                     .visible(shown)
                     .key("first"),
-                    widget(
-                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(40.0))),
-                    )
+                widget(Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(40.0))))
                     .key("second"),
-                ),
-            )
+            ))
         })
         .unwrap();
     let root = view.roots()[0];
@@ -564,16 +551,13 @@ fn provided_values_reach_rows_and_branches_built_later() {
                 let theme = use_context::<Theme>().map_or("无", |theme| theme.0);
                 text(format!("{tag} {theme}"))
             };
-            column(
-                0.0,
-                (
-                    each(rows, |n| *n, move |n| label(&format!("行{n}"))),
-                    when(open, move || {
-                        provide(Theme("浅色"));
-                        column(0.0, (label("分支"),))
-                    }),
-                ),
-            )
+            column().children((
+                each(rows, |n| *n, move |n| label(&format!("行{n}"))),
+                when(open, move || {
+                    provide(Theme("浅色"));
+                    column().children((label("分支"),))
+                }),
+            ))
         })
         .unwrap();
     let (rows, open) = source.get().unwrap();
@@ -613,7 +597,7 @@ fn a_constant_prop_is_written_once_and_binds_nothing() {
     let view = cx
         .mount_view(parent, || {
             let title = constant(String::from("标题"));
-            column(0.0, (text(title), text!("副 {title}")))
+            column().children((text(title), text!("副 {title}")))
         })
         .unwrap();
     let delta = delta(before);
@@ -640,21 +624,18 @@ fn a_checked_binding_reports_reads_outside_its_declared_dependencies() {
         let hidden = signal(2);
         let doubled = computed(move || declared.get() * 2);
         signals.set(Some((declared, hidden)));
-        column(
-            0.0,
-            (
-                text(__checked("ok", [declared.dep()], move || {
-                    declared.get().to_string()
-                })),
-                text(__checked("wrong", [declared.dep()], move || {
-                    (declared.get() + hidden.get()).to_string()
-                })),
-                // Recomputing `doubled` reads `declared` in its own frame.
-                text(__checked("computed", [doubled.dep()], move || {
-                    doubled.get().to_string()
-                })),
-            ),
-        )
+        column().children((
+            text(__checked("ok", [declared.dep()], move || {
+                declared.get().to_string()
+            })),
+            text(__checked("wrong", [declared.dep()], move || {
+                (declared.get() + hidden.get()).to_string()
+            })),
+            // Recomputing `doubled` reads `declared` in its own frame.
+            text(__checked("computed", [doubled.dep()], move || {
+                doubled.get().to_string()
+            })),
+        ))
     })
     .unwrap();
     let before = reactive_stats();
@@ -674,10 +655,7 @@ fn a_component_key_names_its_root_over_the_root_s_own() {
     let item = |label: &'static str| text(label).key("inner");
     let view = cx
         .mount_view(parent, move || {
-            column(
-                0.0,
-                (keyed("a", item("A")), keyed("b", item("B")), text("C")),
-            )
+            column().children((keyed("a", item("A")), keyed("b", item("B")), text("C")))
         })
         .unwrap();
     let root = view.roots()[0];
@@ -699,21 +677,18 @@ fn on_mount_runs_once_the_nodes_are_in_the_tree() {
         flag.set(Some(shown));
         let (outer, inner) = (Arc::clone(&log), Arc::clone(&log));
         on_mount(move |_| outer.lock().unwrap().push("mount"));
-        column(
-            0.0,
-            when(shown, move || {
-                let inner = Arc::clone(&inner);
-                let node = node_ref();
-                // The node is built and placed under its container by now.
-                on_mount(move |cx| {
-                    let id = node.get_untracked().expect("the ref is set when built");
-                    if cx.world().node(id).is_some_and(|n| n.parent.is_some()) {
-                        inner.lock().unwrap().push("branch");
-                    }
-                });
-                text("shown").node_ref(node)
-            }),
-        )
+        column().children(when(shown, move || {
+            let inner = Arc::clone(&inner);
+            let node = node_ref();
+            // The node is built and placed under its container by now.
+            on_mount(move |cx| {
+                let id = node.get_untracked().expect("the ref is set when built");
+                if cx.world().node(id).is_some_and(|n| n.parent.is_some()) {
+                    inner.lock().unwrap().push("branch");
+                }
+            });
+            text("shown").node_ref(node)
+        }))
     })
     .unwrap();
     assert_eq!(*seen.lock().unwrap(), ["mount"]);
@@ -831,24 +806,21 @@ fn table_controls_bind_their_fields_and_model_both_ways() {
             let choice: Signal<Option<std::sync::Arc<str>>> = signal(None);
             let activated = signal(0u32);
             signals.set(Some((on, amount, choice, activated)));
-            column(
-                0.0,
-                (
-                    switch("通知").model(on).key("switch"),
-                    number_input().model(amount).key("number"),
-                    select()
-                        .options(vec![
-                            SelectOption::new("a", "甲"),
-                            SelectOption::new("b", "乙"),
-                        ])
-                        .model(choice)
-                        .key("select"),
-                    list_item("行")
-                        .on_activate(move || activated.update(|n| *n += 1))
-                        .key("item"),
-                    progress(10.0).value(move || amount.get()).key("progress"),
-                ),
-            )
+            column().children((
+                switch("通知").model(on).key("switch"),
+                number_input().model(amount).key("number"),
+                select()
+                    .options(vec![
+                        SelectOption::new("a", "甲"),
+                        SelectOption::new("b", "乙"),
+                    ])
+                    .model(choice)
+                    .key("select"),
+                list_item("行")
+                    .on_activate(move || activated.update(|n| *n += 1))
+                    .key("item"),
+                progress(10.0).value(move || amount.get()).key("progress"),
+            ))
         })
         .unwrap();
     let root = view.roots()[0];
@@ -1023,13 +995,10 @@ fn mount_board(cx: &mut AppContext, parent: StableNodeId, n: u64) -> (Store<Boar
             });
             board.set(Some(state));
             state.tasks().keyed(|task| task.id).each(|task| {
-                row(
-                    4.0,
-                    (
-                        text(task.title()).key("title"),
-                        checkbox("").checked(task.done()).key("done"),
-                    ),
-                )
+                row().gap(4.0).children((
+                    text(task.title()).key("title"),
+                    checkbox("").checked(task.done()).key("done"),
+                ))
             })
         })
         .unwrap();
@@ -1487,18 +1456,15 @@ fn teleported_content_lives_under_the_target_and_dies_with_its_declaration() {
             let shown = signal(true);
             let target = signal(true);
             handles.set(Some((layer, shown, target)));
-            column(
-                0.0,
-                (
-                    widget(Stack::column(0.0)).node_ref(layer).key("layer"),
-                    when(shown, move || {
-                        teleport(
-                            move || target.get().then(|| layer.get()).flatten(),
-                            text("浮层"),
-                        )
-                    }),
-                ),
-            )
+            column().children((
+                widget(Stack::column(0.0)).node_ref(layer).key("layer"),
+                when(shown, move || {
+                    teleport(
+                        move || target.get().then(|| layer.get()).flatten(),
+                        text("浮层"),
+                    )
+                }),
+            ))
         })
         .unwrap();
     let (layer, shown, target) = handles.get().unwrap();
@@ -1697,8 +1663,7 @@ fn compiled_styles_compose_once_per_class_set_and_follow_conditional_classes() {
         .mount_view(parent, || {
             let dimmed = signal(false);
             dim.set(Some(dimmed));
-            column(
-                0.0,
+            column().children(
                 (0..3)
                     .map(|_| {
                         widget(Stack::column(0.0)).styles(&CARD_SITE, vec![dimmed.into_source()])
@@ -1780,7 +1745,7 @@ fn shape(cx: &AppContext, id: StableNodeId) -> String {
 fn shell_view() -> impl IntoView {
     widget(crate::DesktopShell::new().title("T"))
         .title_leading(text("L"))
-        .title_trailing(row(6.0, (text("A"), text("B"))))
+        .title_trailing(row().gap(6.0).children((text("A"), text("B"))))
         .navigation(text("nav"))
         .primary(text("page"))
 }

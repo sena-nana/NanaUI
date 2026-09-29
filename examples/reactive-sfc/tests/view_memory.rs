@@ -51,7 +51,7 @@ fn live_per_row<V: IntoView>(n: usize, row: fn(usize, Signal<usize>) -> V) -> f6
     let mount = |cx: &mut AppContext, n: usize| {
         cx.mount_view_root(document, move || {
             let selected = signal(0);
-            column(0.0, (0..n).map(|i| row(i, selected)).collect::<Vec<_>>())
+            column().children((0..n).map(|i| row(i, selected)).collect::<Vec<_>>())
         })
         .unwrap()
     };

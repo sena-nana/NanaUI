@@ -7,7 +7,7 @@
 //! ```ignore
 //! fn counter() -> impl IntoView {
 //!     let count = signal(0u64);
-//!     column(12.0, (
+//!     column().gap(12.0).children((
 //!         text!("计数 {count}"),
 //!         button("加一").on_activate(move || count.update(|c| *c += 1)),
 //!     ))
@@ -40,7 +40,7 @@ pub(crate) mod trace;
 mod transition;
 
 pub use controls::{
-    StyledComponent, button, checkbox, column, divider, list_item, number_input, progress, row,
+    Px, StyledComponent, button, checkbox, column, divider, list_item, number_input, progress, row,
     select, slider, spinner, switch, text, text_area, text_input,
 };
 pub(crate) use controls::{edit_control, inspect_control};
@@ -50,8 +50,8 @@ pub use error::{ErrorBoundary, error_boundary, report_error};
 pub use hot::{__hot_register, __hot_text};
 pub use hot::{HotReloadError, apply_hot_literals};
 pub use node::{
-    AnyView, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef, ViewBuilder, keyed,
-    node_ref, widget,
+    AnyView, Children, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef, ViewBuilder,
+    keyed, node_ref, widget,
 };
 pub use node::{InspectedField, Inspection};
 pub(crate) use node::{NodePatch, StructuralBinding, ViewParts, ViewState};
@@ -72,7 +72,7 @@ pub use store::{
 };
 #[doc(hidden)]
 pub use store::{Paths, StoreKey};
-pub use structural::{Dynamic, Each, When, dynamic, each, when};
+pub use structural::{Dynamic, Each, EachExt, When, WhenExt, dynamic, each, when};
 #[doc(hidden)]
 pub use style::ComposedLayout;
 pub use style::{InlineStyle, StylePatch, StyleSite};

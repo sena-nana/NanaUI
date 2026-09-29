@@ -187,7 +187,7 @@ impl InlineStyle {
 }
 
 impl<C: StyledComponent + ComponentView, K> El<C, K> {
-    /// A declaration block compiled by `css!`: `column(8.0, rows)
+    /// A declaration block compiled by `css!`: `column().gap(8.0).children(rows)
     /// .css(css! { padding: 12px; transition: opacity 150ms })`. Call it
     /// before other layout props.
     #[track_caller]

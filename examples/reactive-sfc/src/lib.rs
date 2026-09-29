@@ -57,7 +57,9 @@ pub mod bench {
 
         pub fn static_row(index: usize) -> impl IntoView {
             let label = "打开";
-            row(8.0, (text(format!("{label} 第 {index} 行")), button(label)))
+            row()
+                .gap(8.0)
+                .children((text(format!("{label} 第 {index} 行")), button(label)))
         }
 
         pub fn styled_row(index: usize, selected: Signal<usize>) -> impl IntoView {
@@ -75,26 +77,25 @@ pub mod bench {
             title: Signal<String>,
             on_remove: impl Fn() + Send + 'static,
         ) -> impl IntoView {
-            row(8.0, (text(title), button("删除").on_activate(on_remove)))
+            row()
+                .gap(8.0)
+                .children((text(title), button("删除").on_activate(on_remove)))
         }
 
         pub fn row_list(list: Signal<Vec<Item>>) -> impl IntoView {
-            column(
-                4.0,
-                (
-                    each(
-                        list,
-                        |item: &Item| item.id,
-                        move |item| {
-                            list_row(item.title, move || {
-                                list.update(|l| l.retain(|t| t.id != item.id))
-                            })
-                        },
-                    ),
-                    when(move || list.with(Vec::is_empty), || text("还没有任务"))
-                        .otherwise(move || text(move || format!("共 {} 项", list.with(Vec::len)))),
+            column().gap(4.0).children((
+                each(
+                    list,
+                    |item: &Item| item.id,
+                    move |item| {
+                        list_row(item.title, move || {
+                            list.update(|l| l.retain(|t| t.id != item.id))
+                        })
+                    },
                 ),
-            )
+                when(move || list.with(Vec::is_empty), || text("还没有任务"))
+                    .otherwise(move || text(move || format!("共 {} 项", list.with(Vec::len)))),
+            ))
         }
     }
 
@@ -105,13 +106,10 @@ pub mod bench {
 
         pub fn static_row(index: usize) -> impl IntoView {
             let label = signal(String::from("打开"));
-            row(
-                8.0,
-                (
-                    text(move || format!("{label} 第 {index} 行")),
-                    button(move || label.get()),
-                ),
-            )
+            row().gap(8.0).children((
+                text(move || format!("{label} 第 {index} 行")),
+                button(move || label.get()),
+            ))
         }
     }
 
@@ -123,15 +121,14 @@ pub mod bench {
         use super::Dimmed;
 
         pub fn styled_row(index: usize, selected: Signal<usize>) -> impl IntoView {
-            row(
-                8.0,
-                (
+            row()
+                .gap(8.0)
+                .children((
                     text(format!("第 {index} 行")).css(css! { flex-grow: 1 }),
                     button("打开"),
-                ),
-            )
-            .css(css! { padding: 4px 8px })
-            .prop::<bool, Dimmed>(move || selected.get() == index)
+                ))
+                .css(css! { padding: 4px 8px })
+                .prop::<bool, Dimmed>(move || selected.get() == index)
         }
     }
 

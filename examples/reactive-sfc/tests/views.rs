@@ -102,14 +102,11 @@ fn counter_by_hand() -> impl IntoView {
     let count = signal(0u64);
     let step = signal(1u64);
     let doubled = nana_ui::runtime::view::computed(move || count.get() * 2);
-    row(
-        8.0,
-        (
-            text(move || format!("计数 {count}（双倍 {doubled}）")),
-            button(move || format!("加 {step}"))
-                .on_activate(move || count.update(|c| *c += step.get())),
-        ),
-    )
+    row().gap(8.0).children((
+        text(move || format!("计数 {count}（双倍 {doubled}）")),
+        button(move || format!("加 {step}"))
+            .on_activate(move || count.update(|c| *c += step.get())),
+    ))
 }
 
 #[test]
@@ -296,7 +293,11 @@ fn the_benchmark_views_build_what_their_hand_written_twins_build() {
     use reactive_sfc::bench::{Item, hot, idiomatic, inline_css, naive, views as bench};
 
     let rows = |row: fn(usize) -> AnyView| {
-        tree(move || column(0.0, (0..3).map(row).collect::<Vec<_>>()).into_any())
+        tree(move || {
+            column()
+                .children((0..3).map(row).collect::<Vec<_>>())
+                .into_any()
+        })
     };
     let compiled = rows(|i| bench::static_row(i).into_any());
     assert_eq!(compiled, rows(|i| idiomatic::static_row(i).into_any()));
@@ -306,7 +307,9 @@ fn the_benchmark_views_build_what_their_hand_written_twins_build() {
     let styled = |row: fn(usize, Signal<usize>) -> AnyView| {
         tree(move || {
             let selected = signal(1);
-            column(0.0, (0..3).map(|i| row(i, selected)).collect::<Vec<_>>()).into_any()
+            column()
+                .children((0..3).map(|i| row(i, selected)).collect::<Vec<_>>())
+                .into_any()
         })
     };
     let compiled = styled(|i, s| bench::styled_row(i, s).into_any());

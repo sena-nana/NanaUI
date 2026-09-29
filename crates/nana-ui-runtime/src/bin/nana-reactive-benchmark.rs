@@ -86,10 +86,7 @@ fn mount(n: usize) {
         timed(|| {
             black_box(
                 cx.mount_view_root(document(), || {
-                    column(
-                        0.0,
-                        (0..n).map(|i| text(format!("行 {i}"))).collect::<Vec<_>>(),
-                    )
+                    column().children((0..n).map(|i| text(format!("行 {i}"))).collect::<Vec<_>>())
                 })
                 .unwrap(),
             );
@@ -100,8 +97,7 @@ fn mount(n: usize) {
         timed(|| {
             black_box(
                 cx.mount_view_root(document(), || {
-                    column(
-                        0.0,
+                    column().children(
                         (0..n)
                             .map(|i| text(signal(format!("行 {i}"))))
                             .collect::<Vec<_>>(),
@@ -147,10 +143,9 @@ fn mount_controls(n: usize) {
         timed(|| {
             black_box(
                 cx.mount_view_root(document(), || {
-                    column(
-                        0.0,
+                    column().children(
                         (0..n)
-                            .map(|i| (row(8.0, ()), button(format!("按钮 {i}"))))
+                            .map(|i| (row().gap(8.0).children(()), button(format!("按钮 {i}"))))
                             .collect::<Vec<_>>(),
                     )
                 })
@@ -188,8 +183,7 @@ fn new_tree(n: usize, shared: bool) -> (AppContext, Vec<Signal<String>>) {
     let mut signals = Vec::new();
     cx.mount_view_root(document(), || {
         let one = signal(String::from("行"));
-        column(
-            0.0,
+        column().children(
             (0..n)
                 .map(|i| {
                     let source = if shared {
@@ -432,8 +426,7 @@ fn rerun_unchanged(n: usize) {
         let draft = signal(String::from("x"));
         let label = signal(String::from("保存"));
         sources.set(Some((draft, label)));
-        column(
-            0.0,
+        column().children(
             (0..n)
                 .map(|_| {
                     button(label)

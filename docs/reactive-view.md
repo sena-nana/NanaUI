@@ -12,20 +12,21 @@ use nana_ui::runtime::text;
 
 fn counter() -> impl IntoView {
     let count = signal(0u64);                                   // 组件局部状态
-    row(8.0, (
+    row().gap(8).children((
         text!("计数 {count}"),                                   // 插值，读到的信号自动成为依赖
         button("增加").on_activate(move || count.update(|c| *c += 1)),
     ))
 }
 
 fn todos(list: Signal<Vec<Todo>>, draft: Signal<String>) -> impl IntoView {
-    column(8.0, (
-        text_input().placeholder("新任务").model(draft),          // v-model
-        button("添加").disabled(move || draft.with(|d| d.is_empty())),
-        each(list, |t| t.id, |t| text(t.title)),                // v-for + :key
-        when(move || list.with(Vec::is_empty), || text("还没有任务"))
-            .otherwise(|| text("有任务")),                        // v-if / v-else
-    ))
+    column().gap(8).with(|c| {
+        c.add(text_input().placeholder("新任务").model(draft));   // v-model
+        c.add(button("添加").disabled(move || draft.with(|d| d.is_empty())));
+        c.add(list.each(|t| t.id, |t| text(t.title)));           // v-for + :key
+        c.add((move || list.with(Vec::is_empty))
+            .then_show(|| text("还没有任务"))
+            .otherwise(|| text("有任务")));                       // v-if / v-else
+    })
 }
 
 let view = cx.mount_view(parent, counter)?;                    // 或 mount_view_root(document, …)
@@ -51,7 +52,7 @@ struct App { todos: Vec<Todo>, filter: String }
 
 let app = store(App { todos, filter: String::new() });
 let todos = app.todos().keyed(|t| t.id);            // 列表按 key 定位行
-todos.each(|t| row(4.0, (text(t.title()), checkbox("").checked(t.done()))));
+todos.each(|t| row().gap(4).children((text(t.title()), checkbox("").checked(t.done()))));
 
 todos.at(&7).done().set(true);     // 只有第 7 行的复选框更新
 app.todos().push(todo);            // 列表加一行，已有的行一个都不重读
@@ -133,7 +134,7 @@ each(items, |t| t.id, row).transition(Transition::slide(0.0, 12.0, ms(180)).move
 
 ```rust
 widget(DesktopShell::from_model(model).title("Gallery"))
-    .title_trailing(row(6.0, (search, theme)))   // 具名 slot，底下是 .slot(..)
+    .title_trailing(row().gap(6).children((search, theme)))   // 具名 slot，底下是 .slot(..)
     .navigation(sidebar())
     .primary(page())
 ```
@@ -170,7 +171,7 @@ fn todos() -> impl IntoView {
 
 | 模板 | 展开 |
 | --- | --- |
-| `<Column gap=8>…</Column>` / `<Row>` | `column(8_f32, (…))` / `row(…)`；数字字面量带上类型后缀，表达式原样传入 |
+| `<Column gap=8>…</Column>` / `<Row>` | `column().gap(8_f32).children((…))` / `row()…`；数字字面量带上类型后缀，表达式原样传入 |
 | `<Text>"计数 {count}"</Text>` | `text!("计数 {count}")`；没有 `{…}` 的字符串是 `text("…")` |
 | `<Button>"加一"</Button>`、`<Checkbox>` | `button("加一")`、`checkbox(…)` |
 | `<Slider min=0 max=1 step=0.05/>`、`<TextInput/>` | `slider(0_f64, 1_f64, 0.05_f64)`、`text_input()` |

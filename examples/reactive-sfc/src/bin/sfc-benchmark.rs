@@ -82,7 +82,9 @@ fn mount(
 fn rows<V: IntoView + 'static>(row: fn(usize) -> V) -> Mount {
     Box::new(move |cx, n| {
         mount(cx, move || {
-            column(0.0, (0..n).map(row).collect::<Vec<_>>()).into_any()
+            column()
+                .children((0..n).map(row).collect::<Vec<_>>())
+                .into_any()
         })
     })
 }
@@ -92,7 +94,9 @@ fn styled<V: IntoView + 'static>(row: fn(usize, Signal<usize>) -> V) -> Mount {
         mount(cx, move || {
             let selected = signal(usize::MAX);
             SELECTED.set(Some(selected));
-            column(0.0, (0..n).map(|i| row(i, selected)).collect::<Vec<_>>()).into_any()
+            column()
+                .children((0..n).map(|i| row(i, selected)).collect::<Vec<_>>())
+                .into_any()
         })
     })
 }

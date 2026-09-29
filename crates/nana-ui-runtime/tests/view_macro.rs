@@ -3,8 +3,8 @@
 #![cfg(feature = "view-macro")]
 
 use nana_ui_runtime::view::{
-    IntoView, Signal, button, checkbox, column, each, row, signal, slider, text, text_input, when,
-    widget,
+    EachExt, IntoView, Signal, WhenExt, button, checkbox, column, each, row, signal, slider, text,
+    text_input, when, widget,
 };
 use nana_ui_runtime::{
     AppContext, DocumentId, Entity, RangeChanged, StableNodeId, Stack, Text, view,
@@ -75,7 +75,9 @@ struct Todo {
 }
 
 fn todo_row(todo: Todo, done: bool) -> impl IntoView {
-    row(4.0, (text(todo.title), checkbox("完成").checked(done)))
+    row()
+        .gap(4.0)
+        .children((text(todo.title), checkbox("完成").checked(done)))
 }
 
 struct Page {
@@ -85,11 +87,21 @@ struct Page {
     todos: Signal<Vec<Todo>>,
     volume: Signal<f64>,
     shown: Signal<bool>,
-    template: bool,
+    form: Form,
+}
+
+/// The three ways to write the page.
+#[derive(Clone, Copy, PartialEq)]
+enum Form {
+    Template,
+    /// Function calls with tuple children.
+    Tuple,
+    /// Function calls in their block, data-first spelling.
+    Block,
 }
 
 impl Page {
-    fn new(template: bool) -> Self {
+    fn new(form: Form) -> Self {
         Self {
             count: signal(0),
             loading: signal(true),
@@ -104,7 +116,7 @@ impl Page {
             ]),
             volume: signal(0.5),
             shown: signal(true),
-            template,
+            form,
         }
     }
 }
@@ -120,7 +132,45 @@ impl Probe for Page {
             shown,
             ..
         } = *self;
-        if self.template {
+        if self.form == Form::Block {
+            return column()
+                .gap(12)
+                .with(|c| {
+                    c.add(nana_ui_runtime::text!("计数 {count}"));
+                    c.add(
+                        button("加一")
+                            .on_activate(move || count.update(|c| *c += 1))
+                            .disabled(loading),
+                    );
+                    c.add(loading.then_show(|| text("加载中")).otherwise(move || {
+                        (move || mode.get() == 1)
+                            .then_show(|| text("模式一"))
+                            .otherwise(|| text("完成"))
+                    }));
+                    c.add(
+                        slider(0.0, 1.0, 0.05)
+                            .label("音量")
+                            .model(volume)
+                            .on::<RangeChanged>(|_: &RangeChanged| {}),
+                    );
+                    c.add(
+                        text_input()
+                            .label("名字")
+                            .placeholder("名字")
+                            .visible(shown)
+                            .key("name"),
+                    );
+                    c.add(todos.each(|t| t.id, |t| todo_row(t, false)));
+                    c.add(widget(Stack::row(2.0)).with(|r| {
+                        let first = "a";
+                        r.add(text(first));
+                        r.add(text(move || format!("b{}", count.get())));
+                    }));
+                    c.add(text("尾"));
+                })
+                .into_any();
+        }
+        if self.form == Form::Template {
             view! {
                 <Column gap=12>
                     <Text>"计数 {count}"</Text>
@@ -140,9 +190,9 @@ impl Probe for Page {
             }
             .into_any()
         } else {
-            column(
-                12.0,
-                (
+            column()
+                .gap(12.0)
+                .children((
                     nana_ui_runtime::text!("计数 {count}"),
                     button("加一")
                         .on_activate(move || {
@@ -166,9 +216,8 @@ impl Probe for Page {
                     widget(Stack::row(2.0))
                         .children((text("a"), text(move || format!("b{}", count.get())))),
                     text("尾"),
-                ),
-            )
-            .into_any()
+                ))
+                .into_any()
         }
     }
 
@@ -189,8 +238,15 @@ impl Probe for Page {
 
 #[test]
 fn a_template_mounts_and_updates_exactly_like_its_function_calls() {
-    assert_same(&|| Box::new(Page::new(true)), &|| {
-        Box::new(Page::new(false))
+    assert_same(&|| Box::new(Page::new(Form::Template)), &|| {
+        Box::new(Page::new(Form::Tuple))
+    });
+}
+
+#[test]
+fn the_block_spelling_mounts_and_updates_like_the_template() {
+    assert_same(&|| Box::new(Page::new(Form::Template)), &|| {
+        Box::new(Page::new(Form::Block))
     });
 }
 

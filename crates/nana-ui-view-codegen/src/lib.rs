@@ -865,12 +865,15 @@ impl Gen<'_> {
             ("Column" | "Row", _) => {
                 let make = format_ident!("{}", tag.to_lowercase(), span = span);
                 let gap = match element.plain("gap") {
-                    Some(gap) => number(&gap.value, "f32", span)?,
-                    None => quote!(0.0_f32),
+                    Some(gap) => {
+                        let gap = number(&gap.value, "f32", span)?;
+                        quote_spanned!(span=> .gap(#gap))
+                    }
+                    None => TokenStream::new(),
                 };
                 let body = self.nodes(children)?;
                 (
-                    quote_spanned!(span=> #krate::view::#make(#gap, #body)),
+                    quote_spanned!(span=> #krate::view::#make() #gap .children(#body)),
                     vec!["gap"],
                 )
             }
