@@ -2013,3 +2013,139 @@ fn a_frame_takes_its_top_body_and_footer_in_order() {
     );
     assert_eq!(cx.world().text(children(&cx, body)[0]), Some("内容"));
 }
+
+#[test]
+fn app_shell_and_workspace_slots_build_what_their_assemblers_build() {
+    use crate::{AppShell, Workspace};
+    use nana_ui_core::RegionId;
+    let (mut cx, document, _) = setup();
+    let shell = cx
+        .build(document, |ui| {
+            let body = ui.detached(Text::new("正文"));
+            let overlay = ui.detached(Stack::column(0.0));
+            ui.child(
+                "shell",
+                AppShell::new()
+                    .body(body.stable_id())
+                    .overlay(overlay.stable_id()),
+            )
+        })
+        .unwrap();
+    cx.assemble_app_shell(shell).unwrap();
+    let workspace = cx
+        .build(document, |ui| {
+            let primary = ui.detached(Text::new("主区"));
+            let resources = ui.detached(Text::new("资源"));
+            ui.child(
+                "workspace",
+                Workspace::new()
+                    .slot(RegionId::Primary, primary.stable_id())
+                    .slot(RegionId::Resources, resources.stable_id()),
+            )
+        })
+        .unwrap();
+    cx.assemble_workspace(workspace).unwrap();
+
+    let views = cx
+        .mount_view_root(document, || {
+            (
+                widget(AppShell::new())
+                    .body(text("正文"))
+                    .overlay(widget(Stack::column(0.0))),
+                widget(Workspace::new())
+                    .region(RegionId::Primary, text("主区"))
+                    .region(RegionId::Resources, text("资源")),
+            )
+        })
+        .unwrap();
+    assert_eq!(shape(&cx, views.roots()[0]), shape(&cx, shell.stable_id()));
+    assert_eq!(
+        shape(&cx, views.roots()[1]),
+        shape(&cx, workspace.stable_id())
+    );
+    assert!(shape(&cx, workspace.stable_id()).contains("资源"));
+}
+
+fn dock_layout(
+    files: Option<StableNodeId>,
+    preview: Option<StableNodeId>,
+    log: Option<StableNodeId>,
+) -> crate::DockNode {
+    use crate::{DockAxis, DockNode};
+    DockNode::split(
+        DockAxis::Horizontal,
+        0.3,
+        DockNode::item("files", files),
+        DockNode::tabs(
+            ["preview", "log"],
+            "preview",
+            [("preview", preview), ("log", log)],
+        ),
+    )
+}
+
+#[test]
+fn dock_panels_are_the_children_keyed_with_their_ids() {
+    use crate::Dock;
+    let (mut cx, document, _) = setup();
+    let built = cx
+        .build(document, |ui| {
+            let files = ui.detached(Text::new("文件"));
+            let preview = ui.detached(Text::new("预览"));
+            let log = ui.detached(Text::new("日志"));
+            ui.child(
+                "dock",
+                Dock::new(dock_layout(
+                    Some(files.stable_id()),
+                    Some(preview.stable_id()),
+                    Some(log.stable_id()),
+                )),
+            )
+        })
+        .unwrap();
+    cx.assemble_dock(built).unwrap();
+
+    let tabs = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view_root(document, || {
+            let stacked = signal(false);
+            tabs.set(Some(stacked));
+            widget(Dock::new(dock_layout(None, None, None)))
+                .bind(move |dock| {
+                    if stacked.get() {
+                        dock.root = crate::DockNode::tabs(
+                            ["files", "preview", "log"],
+                            "files",
+                            [("files", None), ("preview", None), ("log", None)],
+                        );
+                    }
+                })
+                .children((
+                    text("文件").key("files"),
+                    text("预览").key("preview"),
+                    text("日志").key("log"),
+                ))
+        })
+        .unwrap();
+    let dock = view.roots()[0];
+    assert_eq!(shape(&cx, dock), shape(&cx, built.stable_id()));
+    assert!(shape(&cx, dock).contains("文件"));
+
+    let nodes = cx.world().len();
+    tabs.get().unwrap().set(true);
+    cx.flush_reactive().unwrap();
+    let after = shape(&cx, dock);
+    assert!(
+        after.contains("文件"),
+        "the panels follow the new layout: {after}"
+    );
+    let root = cx
+        .read(Entity::<Dock>::from_stable_id(dock), |d| d.root.clone())
+        .unwrap();
+    assert!(
+        matches!(&root, crate::DockNode::Tabs { contents, .. }
+            if contents.iter().all(|(_, content)| content.is_some())),
+        "every tab keeps its content: {root:?}"
+    );
+    assert!(cx.world().len() <= nodes + 4, "no panel is rebuilt");
+}

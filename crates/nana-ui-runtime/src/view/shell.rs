@@ -7,6 +7,9 @@
 //!     .primary(page())
 //! ```
 //!
+//! `AppShell`'s title bar, body and overlay and a `Workspace`'s regions are
+//! slots the same way.
+//!
 //! Each slot is built before the shell and placed by its assembler once the
 //! tree commits (`TypeBehavior::slot_assembler`), so a view never calls
 //! `assemble_desktop_shell`. A slot's node stays for the view's life: what
@@ -16,7 +19,7 @@
 use nana_ui_core::RegionId;
 
 use super::{El, IntoView};
-use crate::{AppTitleBar, DesktopShell};
+use crate::{AppShell, AppTitleBar, DesktopShell, Workspace};
 
 impl<K> El<DesktopShell, K> {
     pub fn title_leading(self, view: impl IntoView) -> Self {
@@ -65,6 +68,30 @@ impl<K> El<DesktopShell, K> {
     /// See [`DesktopShell::status`].
     pub fn status(self, view: impl IntoView) -> Self {
         self.slot(view, DesktopShell::status)
+    }
+}
+
+impl<K> El<AppShell, K> {
+    /// The title bar; without one the shell makes its own.
+    pub fn title_bar(self, view: impl IntoView) -> Self {
+        self.slot(view, AppShell::title_bar)
+    }
+
+    /// The content under the title bar, filling the shell.
+    pub fn body(self, view: impl IntoView) -> Self {
+        self.slot(view, AppShell::body)
+    }
+
+    /// The overlay layer above the body.
+    pub fn overlay(self, view: impl IntoView) -> Self {
+        self.slot(view, AppShell::overlay)
+    }
+}
+
+impl<K> El<Workspace, K> {
+    /// The content of region `id`; the workspace places and sizes it.
+    pub fn region(self, id: RegionId, view: impl IntoView) -> Self {
+        self.slot(view, move |workspace, content| workspace.slot(id, content))
     }
 }
 

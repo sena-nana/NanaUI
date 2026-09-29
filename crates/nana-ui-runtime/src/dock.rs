@@ -108,6 +108,32 @@ impl DockNode {
         }
     }
 
+    /// Make `content` the content of item `id`, wherever it is; whether
+    /// that changed anything.
+    pub fn bind_content(&mut self, id: &str, content: StableNodeId) -> bool {
+        match self {
+            Self::Item {
+                id: item,
+                content: slot,
+            } if item.as_ref() == id => slot.replace(content) != Some(content),
+            Self::Item { .. } => false,
+            Self::Tabs { tabs, contents, .. } => {
+                if let Some((_, slot)) = contents.iter_mut().find(|(tab, _)| tab.as_ref() == id) {
+                    return slot.replace(content) != Some(content);
+                }
+                let Some(tab) = tabs.iter().find(|tab| tab.as_ref() == id) else {
+                    return false;
+                };
+                contents.push((Arc::clone(tab), Some(content)));
+                true
+            }
+            Self::Split { first, second, .. } => {
+                let first = first.bind_content(id, content);
+                second.bind_content(id, content) || first
+            }
+        }
+    }
+
     pub fn flatten(&self) -> Vec<Arc<str>> {
         let mut ids = Vec::new();
         collect_ids(self, &mut ids);
@@ -1493,6 +1519,7 @@ impl Dock {
 impl ComponentView for Dock {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         hooks: Some(|hooks| hooks.dock = Some(&DOCK_HOOKS)),
+        slot_assembler: Some(crate::AppContext::assemble_dock_panels),
         ..crate::TypeBehavior::NONE
     };
 
@@ -2379,6 +2406,27 @@ impl AppContext {
     ///
     /// One [`Dock`] is one window surface. Floating surfaces are additional
     /// `Entity<Dock>` values assembled on the document that owns that window.
+    /// The dock's assembler in a view (`TypeBehavior::slot_assembler`):
+    /// the child a view keyed with an item's id is that item's content
+    /// (`widget(Dock::new(layout)).children(files().key("files"))`), then
+    /// [`Self::assemble_dock`]. A child whose key names no item is parked.
+    pub fn assemble_dock_panels(&mut self, dock: Entity<Dock>) -> Result<bool, FrameworkError> {
+        let mut root = self.read(dock, |dock| dock.root.clone())?;
+        let mut bound = false;
+        for id in root.flatten() {
+            if let Some(content) = self
+                .assembled_child(dock.stable_id(), &id)
+                .filter(|content| self.world().contains(*content))
+            {
+                bound |= root.bind_content(&id, content);
+            }
+        }
+        if bound {
+            self.update_component(dock, |dock, _| dock.root = root)?;
+        }
+        Ok(self.assemble_dock(dock)? || bound)
+    }
+
     pub fn assemble_dock(&mut self, dock: Entity<Dock>) -> Result<bool, FrameworkError> {
         let document = document_of(self, dock.stable_id())?;
         let snapshot = self.read(dock, |dock| {
