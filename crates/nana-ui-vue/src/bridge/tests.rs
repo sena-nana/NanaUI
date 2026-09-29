@@ -5066,7 +5066,7 @@ fn px_width_transition_dirties_layout() {
 }
 
 #[test]
-fn has_plus_transition_interactive_pass_builds_forest_once() {
+fn has_plus_transition_survives_an_interactive_pass() {
     let mut bridge = MessageBridge::new();
     for i in 1..=20u64 {
         bridge.register(
@@ -5090,23 +5090,16 @@ fn has_plus_transition_interactive_pass_builds_forest_once() {
         );
         bridge.insert_child(badge, i, None);
     }
-    bridge.inject_stylesheet(".card:has(.badge) { color: red; } .card { transition: color 0.2s; }");
-    let builds_after_inject = bridge.cascade.relative_forest_builds.get();
-    let nodes_after_inject = bridge.cascade.relative_forest_nodes.get();
+    bridge.inject_stylesheet(".card:has(.badge) { gap: 5px; } .card { transition: color 0.2s; }");
     let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
     bridge.reapply_interactive_cascade(&mut doc);
-    let builds = bridge.cascade.relative_forest_builds.get() - builds_after_inject;
-    let nodes = bridge.cascade.relative_forest_nodes.get() - nodes_after_inject;
-    let n = bridge.widgets.len();
-    assert_eq!(
-        builds, 1,
-        "interactive recascade must share one relative forest, got {builds}"
-    );
-    assert_eq!(
-        nodes, n,
-        "forest must clone each widget once (O(N)), not per-node root trees"
-    );
-    assert!(n >= 40);
+    for card in 1..=20u64 {
+        assert_eq!(
+            bridge.get(card).unwrap().props.layout.gap,
+            Some(LengthSpec::Px(5.0)),
+            "card {card} keeps its `:has()` match"
+        );
+    }
 }
 
 #[test]
@@ -6532,4 +6525,117 @@ fn an_app_run_on_a_vue_node_survives_cascade_syncs() {
     doc.flush_host_frame();
     let now = doc.runtime_now();
     assert!((presented_opacity(&doc, paragraph.0, now) - 0.3).abs() < 1e-4);
+}
+
+fn classed(tag: &str, class: &str) -> WidgetProps {
+    WidgetProps {
+        element_tag: tag.into(),
+        class_names: vec![class.into()],
+        ..Default::default()
+    }
+}
+
+/// A sheet whose selectors only look up the tree (`.list .row`) cannot see
+/// siblings: appending a row re-cascades that row, not the whole list.
+#[test]
+fn appending_under_descendant_rules_recascades_only_the_new_row() {
+    let mut bridge = MessageBridge::new();
+    bridge.inject_stylesheet(".list .row { width: 11px; } .list > .row { height: 7px; }");
+    bridge.register(1, WidgetKind::Column, classed("div", "list"));
+    for id in 2..=1001 {
+        bridge.register(id, WidgetKind::Row, classed("div", "row"));
+        bridge.insert_child(id, 1, None);
+    }
+    bridge.take_snapshot_changes();
+    bridge.register(1002, WidgetKind::Row, classed("div", "row"));
+    bridge.insert_child(1002, 1, None);
+    let dirty = bridge.take_snapshot_changes().dirty;
+    assert!(dirty.len() <= 2, "{} nodes re-cascaded", dirty.len());
+    assert_eq!(
+        bridge.get(1002).unwrap().props.layout.width,
+        Some(LengthSpec::Px(11.0))
+    );
+    assert_eq!(
+        bridge.get(1002).unwrap().props.layout.height,
+        Some(LengthSpec::Px(7.0))
+    );
+}
+
+/// Rules that count from the end or read the preceding sibling, and a
+/// parent's `:empty`, still follow insertions and removals.
+#[test]
+fn sibling_and_empty_rules_follow_insert_and_remove() {
+    let mut bridge = MessageBridge::new();
+    bridge.inject_stylesheet(
+        ".row:last-child { width: 5px; } .mark + .row { height: 9px; } \
+         .list:empty { min-height: 3px; }",
+    );
+    bridge.register(1, WidgetKind::Column, classed("div", "list"));
+    assert_eq!(
+        bridge.get(1).unwrap().props.layout.min_height,
+        Some(LengthSpec::Px(3.0))
+    );
+    for id in 2..=4 {
+        bridge.register(id, WidgetKind::Row, classed("div", "row"));
+        bridge.insert_child(id, 1, None);
+    }
+    assert_eq!(
+        bridge.get(1).unwrap().props.layout.min_height,
+        None,
+        "no longer empty"
+    );
+    let width = |bridge: &MessageBridge, id| bridge.get(id).unwrap().props.layout.width;
+    assert_ne!(
+        width(&bridge, 3),
+        Some(LengthSpec::Px(5.0)),
+        "row 3 is no longer last"
+    );
+    assert_eq!(width(&bridge, 4), Some(LengthSpec::Px(5.0)));
+
+    // Inserting before row 3 makes it `.mark + .row`.
+    bridge.register(10, WidgetKind::Row, classed("div", "mark"));
+    bridge.insert_child(10, 1, Some(3));
+    assert_eq!(
+        bridge.get(3).unwrap().props.layout.height,
+        Some(LengthSpec::Px(9.0))
+    );
+
+    bridge.unregister(4);
+    assert_eq!(
+        width(&bridge, 3),
+        Some(LengthSpec::Px(5.0)),
+        "row 3 is last now"
+    );
+    bridge.unregister(10);
+    assert_ne!(
+        bridge.get(3).unwrap().props.layout.height,
+        Some(LengthSpec::Px(9.0))
+    );
+}
+
+/// `:has()` reads descendants: an ancestor follows a grandchild coming and
+/// going, without the siblings being re-cascaded.
+#[test]
+fn has_follows_descendants_through_the_ancestor_chain_only() {
+    let mut bridge = MessageBridge::new();
+    bridge.inject_stylesheet(".list:has(.done) { min-width: 3px; }");
+    bridge.register(1, WidgetKind::Column, classed("div", "list"));
+    for id in 2..=201 {
+        bridge.register(id, WidgetKind::Row, classed("div", "row"));
+        bridge.insert_child(id, 1, None);
+    }
+    bridge.take_snapshot_changes();
+    bridge.register(500, WidgetKind::Text, classed("span", "done"));
+    bridge.insert_child(500, 100, None);
+    let dirty = bridge.take_snapshot_changes().dirty;
+    assert_eq!(
+        bridge.get(1).unwrap().props.layout.min_width,
+        Some(LengthSpec::Px(3.0))
+    );
+    assert!(dirty.len() <= 4, "{} nodes re-cascaded", dirty.len());
+    bridge.unregister(500);
+    assert_ne!(
+        bridge.get(1).unwrap().props.layout.min_width,
+        Some(LengthSpec::Px(3.0))
+    );
 }

@@ -29,7 +29,6 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use nana_ui_core::{
@@ -45,10 +44,10 @@ use crate::{
         load_font_face_bytes, parse_media_query_list,
     },
     css_cascade::{
-        MatchContext, MatchNode, RelativeMatchForest, RelativeMatchNode, SimpleCompound, StyleRule,
-        StylesheetParseReport, collect_document_custom_properties_from_rules,
-        parse_stylesheet_full_with_options, rebuild_layout_style_indexed, simple_matches,
-        stylesheet_matches, stylesheet_may_match_subject, stylesheet_needs_relative,
+        MatchContext, MatchNode, SimpleCompound, StyleRule, StylesheetParseReport,
+        collect_document_custom_properties_from_rules, parse_stylesheet_full_with_options,
+        rebuild_layout_style_indexed, simple_matches, stylesheet_matches,
+        stylesheet_may_match_subject, stylesheet_needs_relative,
     },
     css_interactive::{
         GeneratedPseudo, GeneratedPseudoRule, InteractiveMatchState, InteractiveStyleRule,
@@ -281,7 +280,7 @@ impl MessageBridge {
             let leaf_id = widget.props.element_id.clone();
             let (sibling_index, sibling_count) = self.sibling_position(origin);
             let (of_type_index, of_type_count) = self.of_type_position(origin);
-            let prev_snaps = self.prev_sibling_snaps(origin);
+            let prev_snaps = self.prev_sibling_snaps(origin, true);
             let ancestor_nodes: Vec<MatchNode<'_>> =
                 ancestry.iter().skip(1).map(|n| n.as_node()).collect();
             let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
@@ -736,15 +735,35 @@ impl MessageBridge {
         true
     }
 
-    fn reapply_parent_and_children(&mut self, parent: WidgetId) {
-        self.reapply_layout_for(parent);
+    /// After `parent`'s children changed at `index` (an insertion there,
+    /// or a removal from there): re-cascade what the sheet can see move —
+    /// the parent for `:empty`, the siblings after for rules counting from
+    /// the start or reading preceding siblings, those before for rules
+    /// counting from the end. Nothing else moved.
+    fn reapply_after_child_change(&mut self, parent: WidgetId, index: usize, inserted: bool) {
+        let deps = self.cascade.sibling_deps;
+        if deps.empty {
+            self.reapply_layout_for(parent);
+        }
+        if !deps.positional() {
+            return;
+        }
         let children = self
             .widgets
             .get(&parent)
             .map(|w| w.children.clone())
             .unwrap_or_default();
-        for id in children {
-            self.reapply_layout_for(id);
+        let index = index.min(children.len());
+        if deps.forward {
+            let after = if inserted { index + 1 } else { index };
+            for &id in children.get(after..).unwrap_or_default() {
+                self.reapply_layout_for(id);
+            }
+        }
+        if deps.backward {
+            for &id in &children[..index] {
+                self.reapply_layout_for(id);
+            }
         }
     }
 
@@ -765,18 +784,25 @@ impl MessageBridge {
         }
     }
 
-    fn prev_sibling_snaps(&self, id: WidgetId) -> Vec<MatchNodeSnap> {
+    /// The element siblings before `id`, nearest first: all of them for `~`
+    /// (`all`), else only the nearest, which is all `+` reads.
+    fn prev_sibling_snaps(&self, id: WidgetId, all: bool) -> Vec<MatchNodeSnap> {
         let Some(parent_id) = self.widgets.get(&id).and_then(|w| w.parent) else {
             return Vec::new();
         };
-        let real = self.real_child_ids(parent_id);
-        let Some(index) = real.iter().position(|&cid| cid == id) else {
+        let Some(parent) = self.widgets.get(&parent_id) else {
             return Vec::new();
         };
-        real[..index]
+        // From the back: a list grows at its end.
+        let Some(index) = parent.children.iter().rposition(|&cid| cid == id) else {
+            return Vec::new();
+        };
+        parent.children[..index]
             .iter()
             .rev()
             .copied()
+            .filter(|&cid| self.is_element_sibling(cid))
+            .take(if all { usize::MAX } else { 1 })
             .filter_map(|cid| {
                 let is_empty = self.widget_is_empty(cid);
                 let w = self.widgets.get(&cid)?;
@@ -814,135 +840,64 @@ impl MessageBridge {
             })
     }
 
-    fn begin_relative_pass(&mut self) {
-        if self.cascade.relative_pass.is_some() || !self.css_needs_relative() {
-            return;
-        }
-        self.cascade.relative_pass = Some(Arc::new(self.build_relative_forest()));
-    }
-
-    fn ensure_relative_pass(&mut self) {
-        self.begin_relative_pass();
-    }
-
-    fn end_relative_pass(&mut self) {
-        self.cascade.relative_pass = None;
-    }
-
-    fn invalidate_relative_pass(&mut self) {
-        self.cascade.relative_pass = None;
-    }
-
-    fn build_relative_forest(&self) -> RelativeMatchForest {
-        let mut forest = RelativeMatchForest::default();
-        for (&id, widget) in &self.widgets {
-            let tag = if widget.props.element_tag.is_empty() {
-                widget.kind.element_tag().to_string()
-            } else {
-                widget.props.element_tag.clone()
-            };
-            forest.insert(
-                id,
-                RelativeMatchNode {
-                    tag,
-                    css_id: widget.props.element_id.clone(),
-                    classes: widget.props.class_names.clone(),
-                    attrs: widget.props.attrs.clone(),
-                    children: widget.children.clone(),
-                    parent: widget.parent,
-                },
-            );
-        }
-        self.cascade
-            .relative_forest_builds
-            .set(self.cascade.relative_forest_builds.get().saturating_add(1));
-        self.cascade.relative_forest_nodes.set(
-            self.cascade
-                .relative_forest_nodes
-                .get()
-                .saturating_add(forest.len()),
-        );
-        forest
-    }
-
-    fn all_sibling_snaps(&self, id: WidgetId) -> Vec<MatchNodeSnap> {
-        let Some(widget) = self.widgets.get(&id) else {
-            return Vec::new();
-        };
-        let Some(parent_id) = widget.parent else {
-            return vec![match_snap_from_widget(widget, self.widget_is_empty(id))];
-        };
-        let Some(parent) = self.widgets.get(&parent_id) else {
-            return Vec::new();
-        };
-        parent
-            .children
-            .iter()
-            .filter_map(|&cid| {
-                let w = self.widgets.get(&cid)?;
-                Some(match_snap_from_widget(w, self.widget_is_empty(cid)))
-            })
-            .collect()
-    }
-
     fn reapply_relative_ancestors(&mut self, id: WidgetId) {
         self.reapply_relative_neighborhood(id);
     }
 
-    /// Recascade `id` (if present), all siblings, and the ancestor chain.
-    /// Required for `:has()`, `:nth-child`, and `of <selector-list>`.
+    /// After `id` was inserted or changed: re-cascade what can read it.
+    /// A `:has()` query is a descendant query (combinators inside it do not
+    /// parse), so only ancestors read a node through it; `+` / `~` read it
+    /// from the siblings after it. Positions and `:empty` follow insertions
+    /// and removals themselves ([`Self::reapply_after_child_change`]).
     fn reapply_relative_neighborhood(&mut self, id: WidgetId) {
         if !self.css_needs_relative() {
             return;
         }
-        self.invalidate_relative_pass();
+        if self.cascade.sibling_deps.preceding {
+            self.reapply_following_siblings(id);
+        }
         let parent = self.widgets.get(&id).and_then(|w| w.parent);
-        let mut dirty = HashSet::new();
-        if self.widgets.contains_key(&id) {
-            dirty.insert(id);
-        }
-        if let Some(pid) = parent {
-            dirty.insert(pid);
-            if let Some(p) = self.widgets.get(&pid) {
-                dirty.extend(p.children.iter().copied());
-            }
-            let mut cur = Some(pid);
-            while let Some(cid) = cur {
-                dirty.insert(cid);
-                cur = self.widgets.get(&cid).and_then(|w| w.parent);
-            }
-        }
-        let mut ordered: Vec<WidgetId> = dirty.into_iter().collect();
-        ordered.sort_by_cached_key(|wid| self.widget_depth(*wid));
-        self.begin_relative_pass();
-        for wid in ordered {
-            self.reapply_layout_for(wid);
-        }
-        self.end_relative_pass();
+        self.reapply_has_ancestors(parent);
     }
 
+    /// After a child left `parent`: its positions and `:empty` moved, and
+    /// the ancestors' `:has()` may no longer match.
     fn reapply_relative_neighborhood_of_parent(&mut self, parent: WidgetId) {
         if !self.css_needs_relative() {
             return;
         }
-        self.invalidate_relative_pass();
-        let mut dirty = HashSet::new();
-        dirty.insert(parent);
-        if let Some(p) = self.widgets.get(&parent) {
-            dirty.extend(p.children.iter().copied());
+        let deps = self.cascade.sibling_deps;
+        if deps.empty {
+            self.reapply_layout_for(parent);
         }
-        let mut cur = self.widgets.get(&parent).and_then(|w| w.parent);
-        while let Some(cid) = cur {
-            dirty.insert(cid);
-            cur = self.widgets.get(&cid).and_then(|w| w.parent);
+        if deps.positional() {
+            let children = self
+                .widgets
+                .get(&parent)
+                .map(|w| w.children.clone())
+                .unwrap_or_default();
+            for id in children {
+                self.reapply_layout_for(id);
+            }
         }
-        let mut ordered: Vec<WidgetId> = dirty.into_iter().collect();
-        ordered.sort_by_cached_key(|wid| self.widget_depth(*wid));
-        self.begin_relative_pass();
-        for wid in ordered {
-            self.reapply_layout_for(wid);
+        self.reapply_has_ancestors(Some(parent));
+    }
+
+    /// `from` and its ancestors, root first, when a `:has()` could read
+    /// what changed below them.
+    fn reapply_has_ancestors(&mut self, from: Option<WidgetId>) {
+        if !self.cascade.sibling_deps.has && self.cascade.has_args.is_empty() {
+            return;
         }
-        self.end_relative_pass();
+        let mut chain = Vec::new();
+        let mut cursor = from;
+        while let Some(id) = cursor.filter(|id| self.widgets.contains_key(id)) {
+            chain.push(id);
+            cursor = self.widgets.get(&id).and_then(|w| w.parent);
+        }
+        for id in chain.into_iter().rev() {
+            self.reapply_layout_for(id);
+        }
     }
 
     pub fn revision(&self) -> u64 {
@@ -1360,6 +1315,12 @@ impl MessageBridge {
             }
         }
         let svg_parent = self.widgets.get(&id).and_then(|w| w.parent);
+        let removed_at = svg_parent
+            .and_then(|parent| self.widgets.get(&parent))
+            .and_then(|parent| parent.children.iter().position(|&c| c == id))
+            .unwrap_or(0);
+        self.cascade.has_descendant_bits.remove(&id);
+        self.cascade.has_self_bits.remove(&id);
         if let Some(widget) = self.widgets.remove(&id) {
             if let Some(parent) = widget.parent
                 && let Some(p) = self.widgets.get_mut(&parent)
@@ -1370,6 +1331,8 @@ impl MessageBridge {
                 self.unregister(child);
             }
         }
+        // Before anything re-cascades against it.
+        self.has_recompute_up(svg_parent.filter(|pid| self.widgets.contains_key(pid)));
         self.roots.retain(|&r| r != id);
         self.cascade.unsupported_css.forget(id);
         self.motion.css_font_axes.remove(&id);
@@ -1401,9 +1364,9 @@ impl MessageBridge {
         if self.cascade.selector_topology
             && let Some(parent) = svg_parent.filter(|pid| self.widgets.contains_key(pid))
         {
-            self.cascade.has_index_ready = false;
-            self.reapply_parent_and_children(parent);
-            let mut walk = Some(parent);
+            self.reapply_after_child_change(parent, removed_at, false);
+            // `:has()` on the ancestors.
+            let mut walk = (!self.cascade.has_args.is_empty()).then_some(parent);
             while let Some(pid) = walk {
                 if !self.widgets.contains_key(&pid) {
                     break;
@@ -1412,7 +1375,7 @@ impl MessageBridge {
                 walk = self.widgets.get(&pid).and_then(|w| w.parent);
             }
         }
-        self.changed_structure();
+        self.changed_structure_indexed();
     }
 
     pub fn purge_generated_pseudo_runtime(
@@ -1485,10 +1448,21 @@ impl MessageBridge {
             }
         }
         self.sync_containing_block_from_parent(child);
-        // Parent combinators / `:empty` / sibling nth match on insert.
-        self.cascade.has_index_ready = false;
+        // `:has()` on the ancestors (old and new), `:empty` on the parent
+        // and sibling positions on insert.
+        if let Some(prev) = old_parent
+            && prev != parent
+        {
+            self.has_recompute_up(Some(prev));
+        }
+        self.has_inserted(child);
         if self.cascade.selector_topology {
-            self.reapply_parent_and_children(parent);
+            let index = self
+                .widgets
+                .get(&parent)
+                .and_then(|p| p.children.iter().position(|&c| c == child))
+                .unwrap_or(0);
+            self.reapply_after_child_change(parent, index, true);
         }
         if !self.cascade.has_args.is_empty() {
             let mut walk = Some(parent);
@@ -1506,7 +1480,7 @@ impl MessageBridge {
         }
         self.reapply_relative_neighborhood(child);
         self.recascade_inline_svg(parent);
-        self.changed_structure();
+        self.changed_structure_indexed();
     }
 
     fn recascade_inline_svg(&mut self, id: WidgetId) {
@@ -2214,9 +2188,7 @@ impl MessageBridge {
         let prev_dir = self.widgets.get(&id).map(|w| w.props.layout.dir);
         let restyle_has_ancestors = matches!(key_n.as_str(), "class" | "classname" | "id")
             && !self.cascade.has_args.is_empty();
-        if restyle_has_ancestors {
-            self.cascade.has_index_ready = false;
-        }
+        self.has_self_changed(id);
         if full_rebuild {
             self.reapply_layout_for(id);
             if matches!(key_n.as_str(), "class" | "classname" | "id" | "style")
@@ -2358,6 +2330,7 @@ impl MessageBridge {
         } else {
             return Vec::new();
         }
+        self.has_self_changed(id);
         self.reapply_layout_for(id);
         self.reapply_following_siblings(id);
         self.bump();
@@ -2493,17 +2466,25 @@ impl MessageBridge {
     /// Every revision bump must go through one of the `changed_*` helpers so
     /// the semantic sync can project only what mutated. Calling [`Self::bump`]
     /// directly silently loses the footprint and degrades to a full pass.
+    /// The `:has()` index follows its own changes (see
+    /// [`Self::has_self_changed`], [`Self::has_inserted`]); a revision bump
+    /// no longer throws it away, which made every mount step rebuild it for
+    /// the whole document.
     fn bump(&mut self) {
         self.revision = self.revision.saturating_add(1);
-        self.cascade.has_index_ready = false;
     }
 
     fn changed_widget(&mut self, id: WidgetId) {
+        self.has_self_changed(id);
         self.changes.dirty.insert(id);
         self.bump();
     }
 
     fn changed_widgets(&mut self, ids: impl IntoIterator<Item = WidgetId>) {
+        let ids: Vec<WidgetId> = ids.into_iter().collect();
+        for &id in &ids {
+            self.has_self_changed(id);
+        }
         self.changes.dirty.extend(ids);
         self.bump();
     }
@@ -2518,11 +2499,21 @@ impl MessageBridge {
                 walk.extend(widget.children.iter().copied());
             }
         }
+        self.cascade.has_index_ready = false;
         self.bump();
     }
 
-    /// Tree shape changed; the sync must reproject from the roots.
+    /// Tree shape changed; the sync must reproject from the roots. The
+    /// `:has()` index is rebuilt unless the caller kept it current
+    /// ([`Self::changed_structure_indexed`]).
     fn changed_structure(&mut self) {
+        self.cascade.has_index_ready = false;
+        self.changed_structure_indexed();
+    }
+
+    /// [`Self::changed_structure`] after an insertion or removal that
+    /// updated the `:has()` index itself.
+    fn changed_structure_indexed(&mut self) {
         self.changes.structure_changed = true;
         self.bump();
     }
@@ -2531,6 +2522,7 @@ impl MessageBridge {
     fn changed_all(&mut self) {
         self.changes.all = true;
         self.changes.dirty.clear();
+        self.cascade.has_index_ready = false;
         self.bump();
     }
 }
