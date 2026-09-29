@@ -75,9 +75,10 @@ pub fn control(tag: &str) -> Option<&'static Control> {
     CONTROLS.iter().find(|control| control.tag == tag)
 }
 
-/// Whether `tag` is built in: a control, `Column`, `Row` or `Widget`.
+/// Whether `tag` is built in: a control, `Column`, `Row`, `Widget` or
+/// `Virtual`.
 pub fn is_builtin(tag: &str) -> bool {
-    matches!(tag, "Column" | "Row" | "Widget") || control(tag).is_some()
+    matches!(tag, "Column" | "Row" | "Widget" | "Virtual") || control(tag).is_some()
 }
 
 /// Attributes of a built-in `tag` that are construction arguments rather
@@ -88,6 +89,7 @@ pub fn is_argument(tag: &str, attribute: &str) -> bool {
         || match tag {
             "Column" | "Row" => attribute == "gap",
             "Widget" => attribute == "of",
+            "Virtual" => true,
             _ => control(tag).is_some_and(|control| {
                 control
                     .arguments
@@ -341,6 +343,25 @@ fn snake_case(name: &str) -> String {
     out
 }
 
+/// The pattern, source and key of a `v-for` element.
+fn loop_parts(element: &Element) -> syn::Result<(&Pat, &Expr, TokenStream)> {
+    let span = element.name.span();
+    if element.directive("if").is_some() {
+        return Err(syn::Error::new(
+            span,
+            "put `v-if` on a wrapping element or inside the row, not next to `v-for`",
+        ));
+    }
+    let Some(AttrValue::For(pattern, source)) = element.directive("for").map(|each| &each.value)
+    else {
+        return Err(syn::Error::new(span, "`v-for={item in items}`"));
+    };
+    let key = element
+        .plain("key")
+        .ok_or_else(|| syn::Error::new(span, "`v-for` needs `key={…}` naming each item"))?;
+    Ok((pattern, source, raw(&key.value, span)?))
+}
+
 /// Children as one view: nothing, one view, or tuples of at most twelve.
 fn fragment(children: Vec<TokenStream>) -> TokenStream {
     match children.len() {
@@ -442,30 +463,10 @@ impl Gen<'_> {
 
     /// One element, with `v-for` wrapping it in `each` when present.
     fn element(&self, element: &Element) -> syn::Result<TokenStream> {
-        let Some(each) = element.directive("for") else {
+        if element.directive("for").is_none() {
             return self.single(element);
-        };
-        let krate = self.krate;
-        if element.directive("if").is_some() {
-            return Err(syn::Error::new(
-                element.name.span(),
-                "put `v-if` on a wrapping element or inside the row, not next to `v-for`",
-            ));
         }
-        let AttrValue::For(pattern, source) = &each.value else {
-            return Err(syn::Error::new(
-                element.name.span(),
-                "`v-for={item in items}`",
-            ));
-        };
-        let key = element.plain("key").ok_or_else(|| {
-            syn::Error::new(
-                element.name.span(),
-                "`v-for` needs `key={…}` naming each item",
-            )
-        })?;
-        let key = raw(&key.value, element.name.span())?;
-        let row = self.single(element)?;
+        let krate = self.krate;
         // `v-virtual="row height"`: build only the rows in view;
         // `v-virtual.measured`: rows size to their content.
         if let Some((directive, attr)) = element.attrs.iter().find_map(|attr| match &attr.name {
@@ -485,15 +486,11 @@ impl Gen<'_> {
                     ));
                 }
             };
-            return Ok(quote! {
-                #krate::view::each_virtual(
-                    #source,
-                    move |__nana_item: &_| { let #pattern = __nana_item; #key },
-                    #height,
-                    move |#pattern| #row,
-                )#measured
-            });
+            let rows = self.virtual_rows(element, height)?;
+            return Ok(quote!(#rows #measured));
         }
+        let (pattern, source, key) = loop_parts(element)?;
+        let row = self.single(element)?;
         Ok(quote! {
             #krate::view::each(
                 #source,
@@ -501,6 +498,80 @@ impl Gen<'_> {
                 move |#pattern| #row,
             )
         })
+    }
+
+    /// `each_virtual` over a `v-for` element's loop, rows `height` tall.
+    fn virtual_rows(&self, element: &Element, height: TokenStream) -> syn::Result<TokenStream> {
+        let krate = self.krate;
+        let (pattern, source, key) = loop_parts(element)?;
+        let row = self.single(element)?;
+        Ok(quote! {
+            #krate::view::each_virtual(
+                #source,
+                move |__nana_item: &_| { let #pattern = __nana_item; #key },
+                #height,
+                move |#pattern| #row,
+            )
+        })
+    }
+
+    /// `<Virtual row-height=… height=… measured>` around one `v-for`
+    /// element: the list and the scroll area it lives in.
+    fn virtual_list(&self, element: &Element) -> syn::Result<TokenStream> {
+        let span = element.name.span();
+        let [Node::Element(rows)] = element.children.as_slice() else {
+            return Err(syn::Error::new(
+                span,
+                "`<Virtual>` holds one element with `v-for`",
+            ));
+        };
+        if rows.directive("for").is_none() {
+            return Err(syn::Error::new(
+                rows.name.span(),
+                "the element inside `<Virtual>` needs `v-for`",
+            ));
+        }
+        let height = element.plain("row_height").ok_or_else(|| {
+            syn::Error::new(
+                span,
+                "`<Virtual>` needs `row-height=`, the row height or its estimate",
+            )
+        })?;
+        let mut out = self.virtual_rows(rows, number(&height.value, "f32", span)?)?;
+        for attr in &element.attrs {
+            let AttrName::Plain(name) = &attr.name else {
+                return Err(syn::Error::new(span, "`<Virtual>` takes attributes only"));
+            };
+            let at = name.span();
+            out = match name.to_string().as_str() {
+                "row_height" => out,
+                "measured" => quote!(#out.measured()),
+                "grow" => quote!(#out.grow()),
+                method @ ("height" | "width" | "overscan") => {
+                    let method = Ident::new(method, at);
+                    let value = number(&attr.value, "f32", at)?;
+                    quote!(#out.#method(#value))
+                }
+                "scroll" => {
+                    let scroll = raw(&attr.value, at)?;
+                    quote!(#out.scroll_view(#scroll))
+                }
+                "key" => {
+                    let key = raw(&attr.value, at)?;
+                    quote!(#out.key(#key))
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        at,
+                        format!(
+                            "`<Virtual>` has no attribute `{other}`; it has `row-height`, \
+                             `measured`, `height`, `width`, `grow`, `overscan`, `scroll`, `key`"
+                        ),
+                    ));
+                }
+            };
+        }
+        Ok(out)
     }
 
     /// The element itself: constructor, fields, directives, handlers.
@@ -523,6 +594,7 @@ impl Gen<'_> {
                     vec!["gap"],
                 )
             }
+            ("Virtual", _) => return self.virtual_list(element),
             ("Widget", _) => {
                 let component = element
                     .plain("of")

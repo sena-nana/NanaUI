@@ -359,3 +359,24 @@ fn v_virtual_in_a_template_mounts_a_virtual_list() {
         "the rows live in a ScrollView"
     );
 }
+
+#[test]
+fn a_virtual_element_in_a_template_sizes_its_scroll_area() {
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
+            view! {
+                <Virtual row_height=20 height=200 measured>
+                    <Text v-for={n in rows} key={*n}>"行 {n}"</Text>
+                </Virtual>
+            }
+        })
+        .unwrap();
+    let scroll = mounted.roots()[0];
+    cx.layout_document(document, nana_ui_runtime::LayoutViewport::new(320.0, 600.0))
+        .unwrap();
+    assert_eq!(cx.world().layout_box(scroll).unwrap().height, 200.0);
+}

@@ -4152,6 +4152,12 @@ impl ScrollView {
         }
     }
 
+    /// Edit the layout in place (size, flex), keeping the rest of the style.
+    pub fn with_layout(mut self, f: impl FnOnce(&mut nana_ui_core::LayoutStyle)) -> Self {
+        f(Arc::make_mut(&mut self.style.layout));
+        self
+    }
+
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
         self

@@ -770,12 +770,7 @@ fn each_virtual_builds_only_the_rows_in_view() {
             items_flag.set(Some(items));
             each_virtual(items, |row| row.id, 20.0, |row| text(row.title))
                 .overscan(0.0)
-                .scroll_view(crate::ScrollView::new(crate::ScrollAxes::Vertical).style({
-                    let mut style = crate::NodeStyle::default();
-                    std::sync::Arc::make_mut(&mut style.layout).height =
-                        Some(LengthSpec::Px(200.0));
-                    style
-                }))
+                .height(200.0)
         })
         .unwrap();
     let scroll = view.roots()[0];
@@ -955,11 +950,7 @@ fn a_measured_virtual_list_places_rows_at_their_laid_out_heights() {
             )
             .measured()
             .overscan(0.0)
-            .scroll_view(crate::ScrollView::new(crate::ScrollAxes::Vertical).style({
-                let mut style = crate::NodeStyle::default();
-                std::sync::Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(200.0));
-                style
-            }))
+            .height(200.0)
         })
         .unwrap();
     let scroll = view.roots()[0];

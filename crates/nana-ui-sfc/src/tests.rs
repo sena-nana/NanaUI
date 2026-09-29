@@ -381,3 +381,32 @@ let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
         "{alone}"
     );
 }
+
+#[test]
+fn a_virtual_element_sizes_the_list_it_holds() {
+    let out = compile(&[(
+        "Sized.vue",
+        r#"<script setup lang="rust">
+let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
+</script>
+<template>
+  <Virtual row-height="24" height="400" measured grow>
+    <Text v-for="n in rows" :key="*n">行 {{ n }}</Text>
+  </Virtual>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(code.contains(&squash("24_f32,")), "{code}");
+    assert!(code.contains(&squash(".measured()")), "{code}");
+    assert!(code.contains(&squash(".grow()")), "{code}");
+    assert!(code.contains(&squash(".height(400_f32)")), "{code}");
+
+    let empty = compile(&[(
+        "Empty.vue",
+        "<template>\n<Virtual row-height=\"24\"><Text>x</Text></Virtual>\n</template>",
+    )])
+    .err()
+    .expect("an error");
+    assert!(empty.message.contains("needs `v-for`"), "{empty}");
+}

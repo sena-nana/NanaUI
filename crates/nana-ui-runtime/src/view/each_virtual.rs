@@ -87,6 +87,32 @@ impl<T, K, S, KF, RF> EachVirtual<T, K, S, KF, RF> {
         self
     }
 
+    /// The list's height in pixels (the scroll container's).
+    pub fn height(mut self, height: f32) -> Self {
+        self.scroll = self
+            .scroll
+            .with_layout(|layout| layout.height = Some(nana_ui_core::LengthSpec::Px(height)));
+        self
+    }
+
+    /// The list's width in pixels.
+    pub fn width(mut self, width: f32) -> Self {
+        self.scroll = self
+            .scroll
+            .with_layout(|layout| layout.width = Some(nana_ui_core::LengthSpec::Px(width)));
+        self
+    }
+
+    /// Take the space left along the parent's main axis.
+    pub fn grow(mut self) -> Self {
+        self.scroll = self.scroll.with_layout(|layout| {
+            layout.flex_grow = Some(1.0);
+            layout.flex_shrink = Some(1.0);
+            layout.flex_basis = Some(nana_ui_core::LengthSpec::Px(0.0));
+        });
+        self
+    }
+
     /// The scroll container rows live in, to size or style it. It must scroll
     /// vertically.
     pub fn scroll_view(mut self, scroll: ScrollView) -> Self {
