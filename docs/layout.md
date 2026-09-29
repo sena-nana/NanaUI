@@ -20,7 +20,7 @@ Rust 第一路径用控件自己的布局，不写 CSS；排行与列、边框�
 
 **浮动子集。** `float: left | right` 把盒子从块流里拿出来，同侧多个浮动按几何并排，放不下就折到下一行。流内 `clear` 和浮动自身的 `clear` 都用折行之后的占用底边，不是单盒预排高度。IFC 行盒按当前行与**兄弟**浮动外边距盒相交的左右 inset 缩窄（shrink-to-avoid-float）；一行里放不下的原子行内项折到下一行，若缩短后仍放不下则把行盒下移到最近占用浮动的底边之下。流内**块级**边框盒不会缩窄去绕开浮动（与 CSS 非 BFC 块一致）。不是完整排除：祖先浮动不侵入子块 IFC，没有 `shape-outside`。flex / grid 项上的 float 按 CSS 被块化，忽略。
 
-**定位。** `relative`、脱流的 `absolute`、相对窗口的 `fixed`、文档流内的 `sticky`（滚动投影之后才贴住，不写回 Runtime `LayoutBox`）。`fixed` 只适合普通节点贴在视口上；产品浮层仍走控件，不要自己用 `fixed` 搭对话框。
+**定位。** `relative`、脱流的 `absolute`、相对窗口的 `fixed`、文档流内的 `sticky`（滚动投影之后才贴住，不写回 Runtime `LayoutBox`）。`fixed` 只适合普通节点贴在视口上；产品浮层仍走控件，不要自己用 `fixed` 搭对话框。脱流盒子的高度没写（也没同时写 `top` 和 `bottom`）时按内容算，它里面按高度填满（`Fill`、百分比高度）的子项没有确定的高度可依，按内容处理，不再取包含块的高度：包含块的高度由这些盒子撑出来时（按内容量高的虚拟列表行），那样会每一趟布局都长高一截、帧永远稳定不下来。
 
 **层叠上下文子集。** Scene 按 `(z_index, document_order)` 排序，并把隔离组当成一层：`opacity` 介于 0 和 1 的组、`isolation: isolate`、以及 `position` 非 static 且写了 `z-index`。高 z 子项不会画到组外的后出现兄弟之上。**例外：** `position: fixed` 的表面（Popover / ActionMenu / HoverCard 的弹出层）画在根层叠上下文，不被父级隔离组裁进卡片里。重叠处的命中排序用同一条前缀切断，否则后面的兄弟卡会抢走菜单点击。不要靠应用给整张卡抬 `z_index`。不是完整 CSS Appendix E（负 z 分层、float/inline 层、transform 单独成层等未全做）。命中仍走树结构，组内 z 只在兄弟间比。
 

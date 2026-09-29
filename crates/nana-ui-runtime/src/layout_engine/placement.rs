@@ -1185,9 +1185,24 @@ pub(super) fn place_node_scoped(
         } else {
             content_origin
         };
+        let child_fonts = fonts_of(child_style, child_font_px);
+        // An auto height is the content's (CSS shrink-to-fit): what inside it
+        // fills or takes a percentage of its height has nothing definite to
+        // resolve against, rather than the containing block's height --
+        // which a box that sizes the containing block (a measured virtual
+        // row) would feed back into itself.
+        let auto_height = child_style
+            .height
+            .is_none_or(|height| height == LengthSpec::Auto || height.is_content_sized())
+            && !(child_style.offset_top.is_some() && child_style.offset_bottom.is_some());
+        let measure_base = if auto_height {
+            Size::new(base.width, 0.0)
+        } else {
+            base
+        };
         let mut child_size = intrinsic_size_scoped(
             child,
-            base,
+            measure_base,
             None,
             viewport,
             child_font_px,
@@ -1195,7 +1210,6 @@ pub(super) fn place_node_scoped(
             intrinsic,
             scope,
         )?;
-        let child_fonts = fonts_of(child_style, child_font_px);
         let left =
             LayoutStyle::resolve_inset_fonts(child_style.offset_left, base.width, child_fonts);
         let right =

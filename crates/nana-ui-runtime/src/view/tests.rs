@@ -2646,6 +2646,104 @@ fn a_virtual_grid_fits_columns_to_its_width() {
     assert_eq!(first, ["行 0"]);
 }
 
+/// A measured grid measures each cell at its column's width: a square cell
+/// is as tall as the column is wide, and the rows do not overlap.
+#[test]
+fn a_measured_virtual_grid_measures_cells_at_their_column_width() {
+    let (mut cx, document, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            each_virtual(
+                signal(virtual_items(40)),
+                |row| row.id,
+                30.0,
+                |_| {
+                    widget(Stack::column(0.0).with_layout(|l| {
+                        l.width = Some(LengthSpec::Fill);
+                        l.aspect_ratio = Some(1.0);
+                    }))
+                },
+            )
+            .grid(100.0, 10.0)
+            .measured()
+            .overscan(0.0)
+            .height(400.0)
+            .width(340.0)
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let list = children(&cx, scroll)[0];
+    settle(&mut cx, document, LayoutViewport::new(400.0, 600.0));
+    // Three columns of (340 - 2 * 10) / 3 in 340 px.
+    let column = (340.0 - 20.0) / 3.0;
+    let mut placed = children(&cx, list)
+        .into_iter()
+        .map(|row| cx.world().layout_box(row).unwrap())
+        .collect::<Vec<_>>();
+    placed.sort_by(|a, b| a.y.total_cmp(&b.y));
+    assert!(placed.len() >= 2, "{placed:?}");
+    for pair in placed.windows(2) {
+        assert!(
+            (pair[0].height - (column + 10.0)).abs() < 0.5,
+            "a grid row is a cell tall plus the gap: {placed:?}"
+        );
+        assert!(
+            (pair[1].y - (pair[0].y + pair[0].height)).abs() < 0.5,
+            "rows follow each other: {placed:?}"
+        );
+    }
+}
+
+/// A measured row is as tall as its content: something in it that fills
+/// its parent's height has nothing definite to fill (the row's height is
+/// the content's), instead of the list's height, which the rows' heights
+/// make, so it grew every pass and the frame never settled.
+#[test]
+fn a_fill_height_inside_a_measured_row_does_not_feed_back_into_the_list() {
+    let (mut cx, document, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            each_virtual(
+                signal(virtual_items(40)),
+                |row| row.id,
+                30.0,
+                |_| {
+                    column().children((
+                        widget(Stack::column(0.0).with_layout(|l| {
+                            l.height = Some(LengthSpec::Fill);
+                        })),
+                        widget(Stack::column(0.0).with_layout(|l| {
+                            l.height = Some(LengthSpec::Px(24.0));
+                        })),
+                    ))
+                },
+            )
+            .grid(100.0, 10.0)
+            .measured()
+            .overscan(0.0)
+            .height(400.0)
+            .width(340.0)
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let list = children(&cx, scroll)[0];
+    let viewport = LayoutViewport::new(400.0, 600.0);
+    settle(&mut cx, document, viewport);
+    let heights = |cx: &AppContext| {
+        children(cx, list)
+            .into_iter()
+            .map(|row| cx.world().layout_box(row).unwrap().height)
+            .collect::<Vec<_>>()
+    };
+    let settled = heights(&cx);
+    assert!(
+        settled.iter().all(|height| (*height - 34.0).abs() < 0.5),
+        "a cell 24 tall and the gap: {settled:?}"
+    );
+    settle(&mut cx, document, viewport);
+    assert_eq!(heights(&cx), settled, "and it stays that tall");
+}
+
 #[test]
 fn a_measured_virtual_list_keeps_measured_heights_when_rows_are_added() {
     let (mut cx, document, parent) = setup();
