@@ -520,3 +520,41 @@ let id = signal(1u32);
     .expect("an error");
     assert!(missing.message.contains("needs a fallback"), "{missing}");
 }
+
+#[test]
+fn keep_alive_and_transition_nest_around_a_chain() {
+    let out = compile(&[(
+        "Tabs.vue",
+        r#"<script setup lang="rust">
+let tab = signal(0u32);
+</script>
+<template>
+  <Transition name="fade">
+    <KeepAlive>
+      <Text v-if="tab.get() == 0">一</Text>
+      <Text v-else-if="tab.get() == 1">二</Text>
+      <Text v-else>三</Text>
+    </KeepAlive>
+  </Transition>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert_eq!(
+        code.matches(&squash(".keep_alive()")).count(),
+        2,
+        "both levels of the chain keep their branches: {code}"
+    );
+    assert_eq!(code.matches(".transition(").count(), 2, "{code}");
+
+    let list = compile(&[(
+        "List.vue",
+        "<script setup lang=\"rust\">\nlet items: Signal<Vec<u32>> = signal(vec![]);\n</script>\n<template>\n<KeepAlive><Text v-for=\"n in items\" :key=\"*n\">x</Text></KeepAlive>\n</template>",
+    )])
+    .err()
+    .expect("an error");
+    assert!(
+        list.message.contains("`<KeepAlive>` holds a `v-if` chain"),
+        "{list}"
+    );
+}

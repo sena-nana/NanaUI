@@ -254,6 +254,7 @@ impl ApplicationState for App {
 | `each` | 用 key 对照：保留的行不重建，节点 id 和控件的交互状态都不变；删掉的行回收作用域并销毁节点；新行在一次 detached build 里建好。重排只移动最长递增子序列之外的节点：插入或删除一行不移动任何已有节点，整体反转移动 n−1 个。一行里的字段变化应该用行内信号或 `Store`，这样不会触发列表重算 |
 | `each_virtual` | `each_virtual(items, key, 行高, row)`：行放在一个纵向 `ScrollView` 里，只建视口（加 overscan）盖到的行，底层是 Runtime 已有的保留式虚拟列表。滚走的行连同作用域一起回收，持有焦点或输入法组合的行保留。数据变化、滚动（`ScrollChanged`）和视口尺寸变化（`ScrollViewportChanged`，布局后发出）都会移动窗口。5 万行：挂载加布局加出窗口 2.4 ms，`each` 要 175 ms、每行常驻约 2.3 KB。行高默认固定；`.measured()` 让行按内容量高，给定的行高只作估计：新行出现后，下一次布局（`ScrollLaidOut`）量出真实高度并重新放置，视口顶部那一行保持不动。模板里写 `v-for` 加 `v-virtual="行高"`，按内容量高写 `v-virtual.measured`；要定滚动区域的尺寸，把 `v-for` 元素包进 `<Virtual row-height="24" height="400" measured>`（另有 `width`、`grow`、`overscan`，`:scroll` 传入一个自己配置的 `ScrollView`）。函数 API 对应 `.height()`、`.width()`、`.grow()`、`.scroll_view()` |
 | `when` | 条件变了才动：旧分支回收作用域并销毁，新分支建好后插入。`.visible(sig)` 则保留节点，只切 `layout.hidden`（对应 `v-show`） |
+| 保活 | `when(..).keep_alive()`：没显示的那个分支连同节点和状态保留，切回来时原样出现（Vue `<KeepAlive>`）。保留的分支移进容器里一个隐藏的 `Stack`（不参与布局、绘制和命中测试，焦点会移走），容器销毁时一起销毁。`dynamic(key, render)` 按 key 显示一个视图（Vue `<component :is>`），`.keep_alive()` 保留之前 key 的视图，`.max(n)` 最多保留 n 个、先丢最久没显示的。模板里 `<KeepAlive>` 包住一条 `v-if` 链，可以和 `<Transition>` 互相嵌套；保活的分支切走时不播离场，切回来时播进场 |
 | 回收 | 节点被销毁时（不管从哪条路径），`commit_mutations` 的清理段会回收它的绑定、结构副作用和锚定在它身上的作用域 |
 | 上下文 | `provide(value)` / `use_context::<T>()`：值挂在当前作用域上，下层作用域（包括之后才建出来的行和分支）沿父链读取，最近的提供者优先。只能在构建视图时读；事件处理器运行时不在任何作用域里 |
 | 出帧 | 宿主每处理完一次更新（输入、程序消息、定时器），都会检查各窗口有没有待应用的绑定；有就请求重绘，所以在 `RuntimeProgram::update` 里改信号也会出帧 |
@@ -271,6 +272,7 @@ impl ApplicationState for App {
 | `@click` | `.on_activate(move \|\| …)`，其他事件用 `.on(move \|e: &E\| …)` |
 | `v-if` / `v-else` | `when(cond, \|\| a).otherwise(\|\| b)` |
 | `v-show` | `.visible(sig)` |
+| `<KeepAlive>` / `<component :is>` | `when(..).keep_alive()` / `dynamic(key, render).keep_alive().max(n)`；模板里 `<KeepAlive>` |
 | `<Transition>` / `<TransitionGroup>` | `when(..).transition(t)` / `each(..).transition(t.moves(..))`；模板里同名标签 |
 | `v-for` + `:key` | `each(items, key, row)` |
 | 长列表（虚拟滚动） | `each_virtual(items, key, 行高, row)`；模板里 `v-virtual="行高"` / `v-virtual.measured`，或 `<Virtual row-height height …>` 包住 `v-for` 元素 |

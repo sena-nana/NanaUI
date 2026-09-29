@@ -388,13 +388,13 @@ where
 }
 
 /// `v-if` / `v-else`. The branch that is not shown does not exist: its
-/// nodes are despawned and its scope disposed.
+/// nodes are despawned and its scope disposed, unless the block keeps
+/// branches alive.
 pub struct When {
     condition: PropSource<bool>,
     then: Box<dyn Fn() -> AnyView + Send>,
     otherwise: Option<Box<dyn Fn() -> AnyView + Send>>,
-    transition: Option<Transition>,
-    key: Option<Cow<'static, str>>,
+    options: SwitchOptions,
     site: &'static Location<'static>,
 }
 
@@ -408,10 +408,18 @@ pub fn when<V: IntoView>(
         condition: condition.into_source(),
         then: Box::new(move || then().into_any()),
         otherwise: None,
-        transition: None,
-        key: None,
+        options: SwitchOptions::default(),
         site: Location::caller(),
     }
+}
+
+/// What a switching block does with branches it stops showing.
+#[derive(Default)]
+struct SwitchOptions {
+    transition: Option<Transition>,
+    /// Keep at most this many branches that are not shown, alive.
+    keep_alive: Option<usize>,
+    key: Option<Cow<'static, str>>,
 }
 
 impl When {
@@ -422,7 +430,7 @@ impl When {
     }
 
     pub fn key(mut self, key: impl Into<Cow<'static, str>>) -> Self {
-        self.key = Some(key.into());
+        self.options.key = Some(key.into());
         self
     }
 
@@ -431,103 +439,297 @@ impl When {
     /// after it; with [`Transition::moves`] the new one slides up when the
     /// old one goes. The branch shown at mount does not enter.
     pub fn transition(mut self, transition: Transition) -> Self {
-        self.transition = Some(transition);
+        self.options.transition = Some(transition);
+        self
+    }
+
+    /// Keep the branch that is not shown alive, nodes and state, instead of
+    /// dropping it (Vue `<KeepAlive>`): switching back shows it as it was.
+    pub fn keep_alive(mut self) -> Self {
+        self.options.keep_alive = Some(1);
         self
     }
 }
 
-struct WhenBinding {
-    condition: PropSource<bool>,
+struct WhenBranches {
     then: Box<dyn Fn() -> AnyView + Send>,
     otherwise: Option<Box<dyn Fn() -> AnyView + Send>>,
-    transition: Option<Transition>,
-    leaving: Vec<StableNodeId>,
-    scope: Option<ScopeKey>,
-    shown: bool,
-    branch: Option<Built>,
 }
 
-impl WhenBinding {
-    fn branch_for(&self, shown: bool) -> Option<&(dyn Fn() -> AnyView + Send)> {
-        if shown {
-            Some(&*self.then)
-        } else {
-            self.otherwise.as_deref()
+impl Branches<bool> for WhenBranches {
+    fn exists(&self, shown: &bool) -> bool {
+        *shown || self.otherwise.is_some()
+    }
+
+    fn make(&self, shown: &bool) -> AnyView {
+        match (shown, &self.otherwise) {
+            (true, _) => (self.then)(),
+            (false, Some(otherwise)) => otherwise(),
+            (false, None) => ().into_any(),
         }
     }
 }
 
 impl IntoView for When {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        let key = vb.key_or_auto(self.key);
-        let container = vb.ui.child(key, Stack::column(0.0));
-        let id = container.stable_id();
-        if id == UNBUILT {
-            return;
-        }
-        vb.push_root(id);
-        let effect =
-            reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, self.site);
-        let mut binding = WhenBinding {
-            condition: self.condition,
+        let render: Render<bool> = Box::new(WhenBranches {
             then: self.then,
             otherwise: self.otherwise,
-            transition: self.transition,
-            leaving: Vec::new(),
-            scope: reactive::current_scope(),
-            shown: false,
-            branch: None,
-        };
-        binding.shown = reactive::run_tracked(effect, || binding.condition.get());
-        vb.nest(container, |vb| {
-            if let Some(branch) = binding.branch_for(binding.shown) {
-                binding.branch = Some(build_scoped(vb, binding.scope, branch));
-            }
         });
-        vb.st.parts.structural.push((id, effect, Box::new(binding)));
+        let condition = self.condition;
+        build_switch(
+            vb,
+            Box::new(move || condition.get()),
+            render,
+            self.options,
+            self.site,
+        );
     }
 }
 
-impl StructuralBinding for WhenBinding {
+/// One view at a time, chosen by a key (Vue `<component :is>`). See
+/// [`dynamic`].
+pub struct Dynamic<K: 'static> {
+    key: PropSource<K>,
+    render: Render<K>,
+    options: SwitchOptions,
+    site: &'static Location<'static>,
+}
+
+/// The branches of a switching block. `make` runs inside the branch's own
+/// scope, so what the view's functions create belongs to the branch.
+trait Branches<K>: Send {
+    fn exists(&self, key: &K) -> bool;
+    fn make(&self, key: &K) -> AnyView;
+}
+
+type Render<K> = Box<dyn Branches<K>>;
+
+struct DynamicRender<F>(F);
+
+impl<K, V: IntoView, F: Fn(&K) -> V + Send> Branches<K> for DynamicRender<F> {
+    fn exists(&self, _: &K) -> bool {
+        true
+    }
+
+    fn make(&self, key: &K) -> AnyView {
+        (self.0)(key).into_any()
+    }
+}
+
+/// Show `render(key)`, built again whenever `key` changes to a different
+/// value; with [`Dynamic::keep_alive`] the views of earlier keys are kept
+/// and shown again as they were (tabs).
+#[track_caller]
+pub fn dynamic<K, V>(key: impl IntoProp<K>, render: impl Fn(&K) -> V + Send + 'static) -> Dynamic<K>
+where
+    K: Clone + PartialEq + 'static,
+    V: IntoView,
+{
+    Dynamic {
+        key: key.into_source(),
+        render: Box::new(DynamicRender(render)),
+        options: SwitchOptions::default(),
+        site: Location::caller(),
+    }
+}
+
+impl<K> Dynamic<K> {
+    /// Keep the views of the keys shown before alive (Vue `<KeepAlive>`),
+    /// at most [`Self::max`] of them.
+    pub fn keep_alive(mut self) -> Self {
+        self.options.keep_alive.get_or_insert(usize::MAX);
+        self
+    }
+
+    /// Keep at most `max` views that are not shown; the one shown least
+    /// recently goes first (Vue `<KeepAlive :max>`).
+    pub fn max(mut self, max: usize) -> Self {
+        self.options.keep_alive = Some(max);
+        self
+    }
+
+    /// Animate the view entering and leaving.
+    pub fn transition(mut self, transition: Transition) -> Self {
+        self.options.transition = Some(transition);
+        self
+    }
+
+    pub fn key(mut self, key: impl Into<Cow<'static, str>>) -> Self {
+        self.options.key = Some(key.into());
+        self
+    }
+}
+
+impl<K: Clone + PartialEq + Send + 'static> IntoView for Dynamic<K> {
+    fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
+        let key = self.key;
+        build_switch(
+            vb,
+            Box::new(move || key.get()),
+            self.render,
+            self.options,
+            self.site,
+        );
+    }
+}
+
+fn build_switch<K: Clone + PartialEq + Send + 'static>(
+    vb: &mut ViewBuilder<'_, '_, '_>,
+    key: Box<dyn Fn() -> K + Send>,
+    render: Render<K>,
+    options: SwitchOptions,
+    site: &'static Location<'static>,
+) {
+    let node_key = vb.key_or_auto(options.key);
+    let container = vb.ui.child(node_key, Stack::column(0.0));
+    let id = container.stable_id();
+    if id == UNBUILT {
+        return;
+    }
+    vb.push_root(id);
+    let effect = reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, site);
+    let shown = reactive::run_tracked(effect, &key);
+    let mut binding = SwitchBinding {
+        key,
+        render,
+        transition: options.transition,
+        keep_alive: options.keep_alive,
+        scope: reactive::current_scope(),
+        shown,
+        branch: None,
+        kept: Vec::new(),
+        holder: None,
+        leaving: Vec::new(),
+    };
+    vb.nest(container, |vb| {
+        if binding.render.exists(&binding.shown) {
+            let (render, shown) = (&binding.render, &binding.shown);
+            binding.branch = Some(build_scoped(vb, binding.scope, || render.make(shown)));
+        }
+    });
+    vb.st.parts.structural.push((id, effect, Box::new(binding)));
+}
+
+struct SwitchBinding<K> {
+    key: Box<dyn Fn() -> K + Send>,
+    render: Render<K>,
+    transition: Option<Transition>,
+    keep_alive: Option<usize>,
+    scope: Option<ScopeKey>,
+    shown: K,
+    branch: Option<Built>,
+    /// Branches kept alive, the one shown longest ago first.
+    kept: Vec<(K, Built)>,
+    /// The hidden stack kept branches wait in, created on first use.
+    holder: Option<StableNodeId>,
+    leaving: Vec<StableNodeId>,
+}
+
+impl<K: Clone + PartialEq + Send + 'static> SwitchBinding<K> {
+    /// Move `branch` into the hidden holder, dropping the oldest kept
+    /// branches beyond the limit.
+    fn stash(
+        &mut self,
+        cx: &mut AppContext,
+        container: StableNodeId,
+        key: K,
+        branch: Built,
+        limit: usize,
+    ) -> Result<(), FrameworkError> {
+        let holder = match self.holder.filter(|holder| cx.world().contains(*holder)) {
+            Some(holder) => holder,
+            None => {
+                let document = cx
+                    .world()
+                    .node(container)
+                    .ok_or(FrameworkError::MissingView(container))?
+                    .document;
+                let hidden = Stack::column(0.0).with_layout(|layout| layout.hidden = true);
+                let holder = cx.create_component(document, hidden)?.stable_id();
+                self.holder = Some(holder);
+                holder
+            }
+        };
+        let mut mutations = MutationQueue::new();
+        if let Some(document) = cx.world().node(container).map(|node| node.document)
+            && cx.world().focused(document).is_some_and(|focused| {
+                branch
+                    .roots
+                    .iter()
+                    .any(|root| cx.world().is_descendant_or_self(focused, *root))
+            })
+        {
+            mutations.request_focus(document, None);
+        }
+        for root in &branch.roots {
+            if cx.world().contains(*root) {
+                mutations.insert(holder, *root, None);
+            }
+        }
+        self.kept.push((key, branch));
+        while self.kept.len() > limit {
+            let (_, evicted) = self.kept.remove(0);
+            reactive::dispose_scope(evicted.scope);
+            for root in evicted.roots {
+                if cx.world().contains(root) {
+                    mutations.despawn_subtree(root);
+                }
+            }
+        }
+        cx.commit_mutations(mutations).map(|_| ())
+    }
+}
+
+impl<K: Clone + PartialEq + Send + 'static> StructuralBinding for SwitchBinding<K> {
     fn update(
         &mut self,
         cx: &mut AppContext,
         container: StableNodeId,
         effect: EffectKey,
     ) -> Result<(), FrameworkError> {
-        let shown = reactive::run_tracked(effect, || self.condition.get());
+        let shown = reactive::run_tracked(effect, &self.key);
         if shown == self.shown {
             return Ok(());
         }
-        self.shown = shown;
+        let previous = std::mem::replace(&mut self.shown, shown.clone());
         let transition = self.transition;
         self.leaving.retain(|root| cx.is_leaving(*root));
-        remove(
-            cx,
-            self.branch.take().into_iter().collect(),
-            transition.as_ref(),
-            &mut self.leaving,
-        )?;
-        let roots = match self.branch_for(shown) {
-            Some(_) => {
-                let this = &*self;
-                let built = build_detached_into(cx, container, |vb, created| {
-                    let branch = this.branch_for(shown).expect("branch exists");
-                    let built = build_scoped(vb, this.scope, branch);
+        // Taken out first, so stashing the old branch cannot evict it.
+        let kept = self
+            .kept
+            .iter()
+            .position(|(key, _)| *key == shown)
+            .map(|at| self.kept.remove(at).1);
+        if let Some(branch) = self.branch.take() {
+            match self.keep_alive {
+                Some(limit) => self.stash(cx, container, previous, branch, limit)?,
+                None => remove(cx, vec![branch], transition.as_ref(), &mut self.leaving)?,
+            }
+        }
+        let branch = match kept {
+            Some(branch) => Some(branch),
+            None if self.render.exists(&shown) => {
+                let (render, scope) = (&self.render, self.scope);
+                Some(build_detached_into(cx, container, |vb, created| {
+                    let built = build_scoped(vb, scope, || render.make(&shown));
                     created.push(built.scope);
                     built
-                })?;
-                let roots = built.roots.clone();
-                self.branch = Some(built);
-                roots
+                })?)
             }
-            None => Vec::new(),
+            None => None,
         };
+        let roots = branch
+            .as_ref()
+            .map(|branch| branch.roots.clone())
+            .unwrap_or_default();
+        self.branch = branch;
         let ordered = self
             .leaving
             .iter()
             .copied()
             .chain(roots.iter().copied())
+            .chain(self.holder.filter(|holder| cx.world().contains(*holder)))
             .collect::<Vec<_>>();
         cx.reconcile_children(container, &ordered)?;
         if let Some(enter) = transition.and_then(|transition| transition.enter) {

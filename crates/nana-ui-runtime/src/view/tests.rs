@@ -1400,3 +1400,78 @@ fn suspense_shows_its_fallback_until_the_resources_inside_resolve() {
     let content = children(&cx, wrapper)[0];
     assert_eq!(text_of(&cx, Entity::from_stable_id(content)), "Some(42)");
 }
+
+#[test]
+fn a_kept_alive_branch_comes_back_with_its_nodes_and_state() {
+    let (mut cx, _, parent) = setup();
+    let handles = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let open = signal(true);
+            handles.set(Some(open));
+            when(open, move || {
+                let draft = signal(String::from("草稿"));
+                text(draft).key("draft")
+            })
+            .otherwise(|| text("别处"))
+            .keep_alive()
+        })
+        .unwrap();
+    let open = handles.get().unwrap();
+    let container = view.roots()[0];
+    let draft_node = children(&cx, container)[0];
+    let scopes = reactive_stats().scopes;
+
+    open.set(false);
+    cx.flush_reactive().unwrap();
+    assert!(cx.world().contains(draft_node), "kept, not despawned");
+    let shown = children(&cx, container);
+    assert_eq!(shown.len(), 2, "the other branch and the hidden holder");
+    assert!(!shown.contains(&draft_node));
+
+    open.set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        children(&cx, container)[0],
+        draft_node,
+        "the same node again"
+    );
+    assert_eq!(text_of(&cx, Entity::from_stable_id(draft_node)), "草稿");
+    // The first branch was never rebuilt, and the second is kept now.
+    assert_eq!(reactive_stats().scopes, scopes + 1);
+
+    view.unmount(&mut cx).unwrap();
+    assert!(!cx.world().contains(draft_node));
+}
+
+#[test]
+fn dynamic_keeps_at_most_max_views_alive() {
+    let (mut cx, _, parent) = setup();
+    let tab = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let current = signal(0u32);
+            tab.set(Some(current));
+            dynamic(current, |tab: &u32| text(format!("页 {tab}")))
+                .keep_alive()
+                .max(1)
+        })
+        .unwrap();
+    let tab = tab.get().unwrap();
+    let container = view.roots()[0];
+    let first = children(&cx, container)[0];
+    tab.set(1);
+    cx.flush_reactive().unwrap();
+    let second = children(&cx, container)[0];
+    tab.set(2);
+    cx.flush_reactive().unwrap();
+    assert!(
+        !cx.world().contains(first),
+        "evicted: only one view is kept"
+    );
+    assert!(cx.world().contains(second));
+    tab.set(1);
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, container)[0], second);
+    assert_eq!(text_of(&cx, Entity::from_stable_id(second)), "页 1");
+}

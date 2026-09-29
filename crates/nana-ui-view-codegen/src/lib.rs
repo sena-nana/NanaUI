@@ -76,11 +76,18 @@ pub fn control(tag: &str) -> Option<&'static Control> {
 }
 
 /// Whether `tag` is built in: a control, `Column`, `Row`, `Widget`,
-/// `Virtual`, `Transition`, `TransitionGroup` or `Suspense`.
+/// `Virtual`, `Transition`, `TransitionGroup`, `KeepAlive` or `Suspense`.
 pub fn is_builtin(tag: &str) -> bool {
     matches!(
         tag,
-        "Column" | "Row" | "Widget" | "Virtual" | "Transition" | "TransitionGroup" | "Suspense"
+        "Column"
+            | "Row"
+            | "Widget"
+            | "Virtual"
+            | "Transition"
+            | "TransitionGroup"
+            | "KeepAlive"
+            | "Suspense"
     ) || control(tag).is_some()
 }
 
@@ -92,7 +99,7 @@ pub fn is_argument(tag: &str, attribute: &str) -> bool {
         || match tag {
             "Column" | "Row" => attribute == "gap",
             "Widget" => attribute == "of",
-            "Virtual" | "Transition" | "TransitionGroup" | "Suspense" => true,
+            "Virtual" | "Transition" | "TransitionGroup" | "KeepAlive" | "Suspense" => true,
             _ => control(tag).is_some_and(|control| {
                 control
                     .arguments
@@ -410,7 +417,7 @@ impl Gen<'_> {
                             break;
                         }
                     }
-                    out.push(self.chain(&chain, None)?);
+                    out.push(self.chain(&chain, &[])?);
                     continue;
                 }
                 Node::Element(element)
@@ -447,12 +454,9 @@ impl Gen<'_> {
     }
 
     /// `v-if` / `v-else-if` / `v-else` → nested `when(..).otherwise(..)`,
-    /// each with `transition` when the chain sits in a `<Transition>`.
-    fn chain(
-        &self,
-        chain: &[&Element],
-        transition: Option<&TokenStream>,
-    ) -> syn::Result<TokenStream> {
+    /// each with the `modifiers` of the blocks around the chain
+    /// (`.transition(..)`, `.keep_alive()`).
+    fn chain(&self, chain: &[&Element], modifiers: &[TokenStream]) -> syn::Result<TokenStream> {
         let krate = self.krate;
         let (first, rest) = chain.split_first().expect("a chain has its v-if");
         let condition = first
@@ -466,14 +470,11 @@ impl Gen<'_> {
             let otherwise = if next.directive("else").is_some() {
                 self.element(next)?
             } else {
-                self.chain(rest, transition)?
+                self.chain(rest, modifiers)?
             };
             out = quote!(#out.otherwise(move || #otherwise));
         }
-        if let Some(transition) = transition {
-            out = quote!(#out.transition(#transition));
-        }
-        Ok(out)
+        Ok(quote!(#out #(#modifiers)*))
     }
 
     /// One element, with `v-for` wrapping it in `each` when present.
@@ -589,10 +590,102 @@ impl Gen<'_> {
         Ok(out)
     }
 
-    /// `<Transition name="fade" duration="150" move="200">` around a
-    /// `v-if` chain or one `v-for` element: their `when` / `each` with a
-    /// `Transition`. `:transition={value}` gives one directly.
-    fn transition_block(&self, element: &Element) -> syn::Result<TokenStream> {
+    /// `<Transition>`, `<TransitionGroup>` or `<KeepAlive>` around a `v-if`
+    /// chain, one `v-for` element (not under `<KeepAlive>`), or another of
+    /// these blocks: the `when` / `each` inside with each block's method.
+    fn block(
+        &self,
+        element: &Element,
+        mut modifiers: Vec<TokenStream>,
+        lists: bool,
+    ) -> syn::Result<TokenStream> {
+        let span = element.name.span();
+        let tag = element.name.to_string();
+        let lists = match tag.as_str() {
+            "KeepAlive" => {
+                if let Some(attr) = element.attrs.first() {
+                    let at = match &attr.name {
+                        AttrName::Plain(name) => name.span(),
+                        _ => span,
+                    };
+                    return Err(syn::Error::new(
+                        at,
+                        "`<KeepAlive>` takes no attributes; around a `v-if` chain it keeps \
+                         the branches not shown alive (use `dynamic(..).max(n)` for a limit)",
+                    ));
+                }
+                modifiers.push(quote!(.keep_alive()));
+                false
+            }
+            _ => {
+                let transition = self.transition(element)?;
+                modifiers.push(quote!(.transition(#transition)));
+                lists
+            }
+        };
+        let children: Vec<&Element> = element
+            .children
+            .iter()
+            .map(|node| match node {
+                Node::Element(child) => Ok(child),
+                _ => Err(syn::Error::new(
+                    span,
+                    format!("`<{tag}>` holds a `v-if` chain or one `v-for` element"),
+                )),
+            })
+            .collect::<syn::Result<_>>()?;
+        match children.as_slice() {
+            [inner]
+                if matches!(
+                    inner.name.to_string().as_str(),
+                    "Transition" | "TransitionGroup" | "KeepAlive"
+                ) =>
+            {
+                self.block(inner, modifiers, lists)
+            }
+            [rows] if rows.directive("for").is_some() => {
+                if !lists {
+                    return Err(syn::Error::new(
+                        rows.name.span(),
+                        "`<KeepAlive>` holds a `v-if` chain: list rows are kept by their key",
+                    ));
+                }
+                if rows.attrs.iter().any(|attr| {
+                    matches!(&attr.name, AttrName::Directive(directive, _)
+                        if directive.split('.').next() == Some("virtual"))
+                }) {
+                    return Err(syn::Error::new(
+                        rows.name.span(),
+                        "a virtual list does not animate its rows",
+                    ));
+                }
+                let list = self.element(rows)?;
+                Ok(quote!(#list #(#modifiers)*))
+            }
+            [first, ..] if first.directive("if").is_some() => {
+                for (index, link) in children.iter().enumerate().skip(1) {
+                    let last = link.directive("else").is_some();
+                    if (!last && link.directive("else-if").is_none())
+                        || (last && index + 1 != children.len())
+                    {
+                        return Err(syn::Error::new(
+                            link.name.span(),
+                            format!("`<{tag}>` holds one `v-if` chain"),
+                        ));
+                    }
+                }
+                self.chain(&children, &modifiers)
+            }
+            _ => Err(syn::Error::new(
+                span,
+                format!("`<{tag}>` holds a `v-if` chain or one `v-for` element"),
+            )),
+        }
+    }
+
+    /// The `Transition` a `<Transition name="fade" duration="150"
+    /// move="200">` describes; `:transition={value}` gives one directly.
+    fn transition(&self, element: &Element) -> syn::Result<TokenStream> {
         let krate = self.krate;
         let span = element.name.span();
         let tag = element.name.to_string();
@@ -662,57 +755,13 @@ impl Gen<'_> {
                 quote!(#krate::view::Transition::#preset)
             }
         };
-        let transition = match moves {
+        Ok(match moves {
             Some(ms) => {
                 let length = millis(&ms);
                 quote!(#transition.moves(#length))
             }
             None => transition,
-        };
-        let children: Vec<&Element> = element
-            .children
-            .iter()
-            .map(|node| match node {
-                Node::Element(child) => Ok(child),
-                _ => Err(syn::Error::new(
-                    span,
-                    format!("`<{tag}>` holds a `v-if` chain or one `v-for` element"),
-                )),
-            })
-            .collect::<syn::Result<_>>()?;
-        match children.as_slice() {
-            [rows] if rows.directive("for").is_some() => {
-                if rows.attrs.iter().any(|attr| {
-                    matches!(&attr.name, AttrName::Directive(directive, _)
-                        if directive.split('.').next() == Some("virtual"))
-                }) {
-                    return Err(syn::Error::new(
-                        rows.name.span(),
-                        "a virtual list does not animate its rows",
-                    ));
-                }
-                let list = self.element(rows)?;
-                Ok(quote!(#list.transition(#transition)))
-            }
-            [first, ..] if first.directive("if").is_some() => {
-                for (index, link) in children.iter().enumerate().skip(1) {
-                    let last = link.directive("else").is_some();
-                    if (!last && link.directive("else-if").is_none())
-                        || (last && index + 1 != children.len())
-                    {
-                        return Err(syn::Error::new(
-                            link.name.span(),
-                            format!("`<{tag}>` holds one `v-if` chain"),
-                        ));
-                    }
-                }
-                self.chain(&children, Some(&transition))
-            }
-            _ => Err(syn::Error::new(
-                span,
-                format!("`<{tag}>` holds a `v-if` chain or one `v-for` element"),
-            )),
-        }
+        })
     }
 
     /// `<Suspense fallback={view}>content</Suspense>`; in a `.vue` file the
@@ -792,7 +841,9 @@ impl Gen<'_> {
                 )
             }
             ("Virtual", _) => return self.virtual_list(element),
-            ("Transition" | "TransitionGroup", _) => return self.transition_block(element),
+            ("Transition" | "TransitionGroup" | "KeepAlive", _) => {
+                return self.block(element, Vec::new(), true);
+            }
             ("Suspense", _) => return self.suspense(element),
             ("Widget", _) => {
                 let component = element

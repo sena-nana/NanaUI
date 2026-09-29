@@ -55,7 +55,7 @@ pub use resource::{Resource, Suspense, resource, suspense};
 pub use store::{Item, KeyedList, Store, StoreList, StorePath, Subfield, store};
 #[doc(hidden)]
 pub use store::{Paths, StoreKey};
-pub use structural::{Each, When, each, when};
+pub use structural::{Dynamic, Each, When, dynamic, each, when};
 pub use task::{
     Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,
 };
