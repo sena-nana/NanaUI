@@ -122,6 +122,11 @@ impl<K> El<MediaTransportBar, K> {
     pub fn secondary(self, view: impl IntoView) -> Self {
         self.slot(view, MediaTransportBar::secondary_content)
     }
+
+    /// The items of the settings menu: theatre, a window of its own, stop.
+    pub fn settings(self, view: impl IntoView) -> Self {
+        self.slot(view, MediaTransportBar::settings_content)
+    }
 }
 
 impl<K> El<Popover, K> {

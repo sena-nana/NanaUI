@@ -13,8 +13,13 @@
 //!
 //! Seeking commits on release: dragging the progress range only previews the
 //! time readout, and [`MediaTransportEvent::Seek`] fires once per committed
-//! value (each keyboard step commits, as a native range does). Volume follows
-//! the drag live.
+//! value (each keyboard step commits, as a native range does). A drag is
+//! bracketed by [`MediaTransportEvent::SeekStarted`] and
+//! [`MediaTransportEvent::SeekEnded`], so a host can hold its position
+//! updates while the user drags. Volume follows the drag live.
+//!
+//! The settings menu's items are the application's
+//! ([`MediaTransportBar::settings_content`], a view's `.settings(..)`).
 //!
 //! Idle hide is [`crate::OverlayVisibility`] held on this control and driven by
 //! [`crate::AppContext::sync_overlay_visibility`]; an inline bar that the host
@@ -29,7 +34,8 @@ use nana_ui_core::{
 
 use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::view_components::{
-    Activate, IconButton, RangeChanged, RangeField, RangeInput, Stack, Text, project_common,
+    Activate, IconButton, RangeChanged, RangeDragging, RangeField, RangeInput, Stack, Text,
+    project_common,
 };
 use crate::{
     AccessibilityRole, AccessibilityState, ActionMenu, AppContext, ComponentView, Divider, Entity,
@@ -50,6 +56,11 @@ pub enum MediaTransportEvent {
     /// A committed seek target in seconds: pointer release or a keyboard /
     /// accessibility step, never an in-flight drag.
     Seek(f64),
+    /// The user began dragging the progress; the readout previews the drag.
+    SeekStarted,
+    /// The drag ended: after its `Seek` when it moved the position, or
+    /// without one when it was cancelled or let go where it began.
+    SeekEnded,
     /// Live volume in `0..=100`, including drag previews.
     Volume(f64),
     Fullscreen,
@@ -115,6 +126,7 @@ pub(crate) struct MediaTransportContent {
     leading: Option<StableNodeId>,
     trailing: Option<StableNodeId>,
     secondary: Option<StableNodeId>,
+    settings: Option<StableNodeId>,
 }
 
 /// Child nodes [`AppContext::assemble_media_transport_bar`] owns.
@@ -233,6 +245,13 @@ impl MediaTransportBar {
     /// An application node the bar keeps in its second row.
     pub fn secondary_content(mut self, node: StableNodeId) -> Self {
         self.content.secondary = Some(node);
+        self
+    }
+
+    /// An application node the bar keeps in its settings menu: the items
+    /// (theatre, a window of its own, stop) the menu shows when opened.
+    pub fn settings_content(mut self, node: StableNodeId) -> Self {
+        self.content.settings = Some(node);
         self
     }
 
@@ -772,6 +791,13 @@ impl AppContext {
             // The readout follows a drag even while a paused host sends no
             // ticks.
             self.observe(seek, bar, |_, _: &RangeInput, cx| cx.reassemble())?;
+            self.observe(seek, bar, |_, event: &RangeDragging, cx| {
+                cx.emit(if event.dragging {
+                    MediaTransportEvent::SeekStarted
+                } else {
+                    MediaTransportEvent::SeekEnded
+                });
+            })?;
             self.observe(volume, bar, |bar, event: &RangeInput, cx| {
                 bar.volume = event.value;
                 cx.reassemble();
@@ -819,6 +845,7 @@ impl AppContext {
                 (bar.slots.leading, bar.content.leading),
                 (bar.slots.trailing, bar.content.trailing),
                 (bar.slots.secondary, bar.content.secondary),
+                (bar.slots.settings, bar.content.settings),
             ]
         })?;
         let mut mutations = MutationQueue::new();
@@ -1856,13 +1883,21 @@ mod tests {
         sync_time(&mut stage.cx, bar, 11.0, 100.0);
         assert_eq!(readout(&stage.cx, &slots), "1:00 / 1:40");
         assert_eq!(seek_value(&stage.cx, &slots), 60.0);
-        assert!(
-            seen.lock().unwrap().is_empty(),
-            "no Seek while the drag is in flight"
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![MediaTransportEvent::SeekStarted],
+            "the drag began; no Seek while it is in flight"
         );
 
         stage.cx.end_range_drag(document(), 1, false).unwrap();
-        assert_eq!(*seen.lock().unwrap(), vec![MediaTransportEvent::Seek(60.0)]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                MediaTransportEvent::SeekStarted,
+                MediaTransportEvent::Seek(60.0),
+                MediaTransportEvent::SeekEnded,
+            ]
+        );
         assert_eq!(
             seek_value(&stage.cx, &slots),
             60.0,
@@ -1875,9 +1910,13 @@ mod tests {
             .begin_range_drag(document(), 2, seek, at(0.9))
             .unwrap();
         stage.cx.end_range_drag(document(), 2, true).unwrap();
-        assert!(
-            seen.lock().unwrap().is_empty(),
-            "a cancelled drag never seeks"
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                MediaTransportEvent::SeekStarted,
+                MediaTransportEvent::SeekEnded
+            ],
+            "a cancelled drag never seeks, and still ends"
         );
     }
 

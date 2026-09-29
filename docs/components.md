@@ -110,7 +110,7 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 ### MediaTransportBar
 
-媒体播放条（`nana.media-transport-bar`）。框架只提供基础 chrome：播放、点播进度 / 直播 Progress、音量弹出、设置 `ActionMenu`、全屏。场景控件挂到 `leading` / `trailing` / `secondary` 槽；`secondary` 没有可见子节点时第二行自动收起，条变单行。`assemble_media_transport_bar` 建槽并接线，`sync_media_transport_bar` 写回播放态、进度与时间读数（`media_clock`：`m:ss` / `h:mm:ss`）并折叠空第二行，只写有变化的值。`update_component(bar, …)` 写完字段后已自动同步，播放 tick 不必再显式调用 sync。事件是 `MediaTransportEvent`（PlayPause / Seek / Volume / Fullscreen）。idle 隐藏走 `AppContext::sync_overlay_visibility`；不要在应用里再复制 descendant / hit-test 锁。
+媒体播放条（`nana.media-transport-bar`）。框架只提供基础 chrome：播放、点播进度 / 直播 Progress、音量弹出、设置 `ActionMenu`、全屏。场景控件挂到 `leading` / `trailing` / `secondary` 槽，设置菜单里的条目（剧场、独立窗口、停止播放）挂到 `settings` 槽（`settings_content`，视图里 `.settings(view)`），放进条自己建的设置 `ActionMenu`；`secondary` 没有可见子节点时第二行自动收起，条变单行。`assemble_media_transport_bar` 建槽并接线，`sync_media_transport_bar` 写回播放态、进度与时间读数（`media_clock`：`m:ss` / `h:mm:ss`）并折叠空第二行，只写有变化的值。`update_component(bar, …)` 写完字段后已自动同步，播放 tick 不必再显式调用 sync。事件是 `MediaTransportEvent`（PlayPause / Seek / Volume / Fullscreen）。idle 隐藏走 `AppContext::sync_overlay_visibility`；不要在应用里再复制 descendant / hit-test 锁。
 
 同一控件有两个正交维度，改字段后下一次 `sync_media_transport_bar` 生效，不是第二套绘制：
 
@@ -121,7 +121,7 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 Compact + Overlay 适合分离窗底栏（单行加边距约 52px）；Compact + Inline 适合壳层迷你条，画面、封面与标题仍由应用放在条外。第二个 `RuntimeDocument` / 窗口直接 `assemble_media_transport_bar` 得到同一 chrome。标记里用 `density="compact"` / `density="stacked"`、`placement="inline"`、`show-settings` / `show-fullscreen` 布尔属性；重新绑定只更新这些配置，保留播放状态与已组装的 chrome。
 
-进度拖拽只预览读数（宿主暂停、没有 tick 时也会跟随），抬手才发一次 `Seek`；取消的拖拽不发。键盘 / 无障碍每一步都是提交，与原生 range 一致。音量跟随拖拽实时发 `Volume`。条在发 `Seek` / `Volume` 前先把目标写进 `position` / `volume`，宿主下一次写入仍是权威值；宿主若在 seek 完成前继续写旧位置，滑块会短暂回到旧位置。
+进度拖拽只预览读数（宿主暂停、没有 tick 时也会跟随），抬手才发一次 `Seek`；取消的拖拽不发。一次拖拽前后各有 `SeekStarted` / `SeekEnded`（结束在 `Seek` 之后；取消或原地松手时只有这一对），宿主据此在拖动期间不回写播放位置，不必去监听条内部进度控件的 `RangeInput`。`RangeField` 自己的拖动起止是 `RangeDragging { dragging }`（键盘与无障碍步进不算拖动）。键盘 / 无障碍每一步都是提交，与原生 range 一致。音量跟随拖拽实时发 `Volume`。条在发 `Seek` / `Volume` 前先把目标写进 `position` / `volume`，宿主下一次写入仍是权威值；宿主若在 seek 完成前继续写旧位置，滑块会短暂回到旧位置。
 
 `ReorderList` 可以挂 live 行子节点。`ReorderItem::tools` 标出行内可点控件；命中该子树不开始拖拽。没有子节点时仍按标签自绘行。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
 

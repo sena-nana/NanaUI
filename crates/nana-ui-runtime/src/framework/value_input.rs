@@ -319,6 +319,7 @@ impl AppContext {
                 initial_value,
             });
             cx.mutations().capture_pointer(pointer_id, target);
+            cx.emit(RangeDragging { dragging: true });
         })?;
         self.update_range_drag(document, pointer_id, x)
     }
@@ -378,6 +379,7 @@ impl AppContext {
                     cx.emit(RangeChanged { value: range.value });
                 }
             }
+            cx.emit(RangeDragging { dragging: false });
             true
         })
     }

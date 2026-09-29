@@ -3972,6 +3972,14 @@ pub struct RangeInput {
     pub value: f64,
 }
 
+/// A pointer drag on the range began (`true`) or ended (`false`), after the
+/// [`RangeChanged`] a release commits, or the [`RangeInput`] a cancel
+/// restores. Keyboard and accessibility steps are not drags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RangeDragging {
+    pub dragging: bool,
+}
+
 /// A committed value: pointer release, a keyboard step, an accessibility
 /// `SetValue` or [`crate::AppContext::set_range_value`]. A drag emits it once,
 /// on release, and only when the value moved; a cancelled drag never does.

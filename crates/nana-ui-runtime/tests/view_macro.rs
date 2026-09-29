@@ -675,6 +675,12 @@ fn rows_dialogs_and_the_transport_bar_place_their_slots() {
                     <Widget of={MediaTransportBar::new()} key="bar">
                         <template #leading><Button key="next">"下一P"</Button></template>
                         <template #secondary><Text key="danmaku">"弹幕"</Text></template>
+                        <template #settings>
+                            <Column key="menu">
+                                <Button key="theatre">"剧场"</Button>
+                                <Button key="stop">"停止播放"</Button>
+                            </Column>
+                        </template>
                     </Widget>
                 </Column>
             }
@@ -708,6 +714,14 @@ fn rows_dialogs_and_the_transport_bar_place_their_slots() {
         row.iter().any(|id| cx.world().text(*id) == Some("弹幕")),
         "the second row holds the application's content"
     );
+    let settings = cx.read(bar, |bar| bar.settings().unwrap()).unwrap();
+    let items = world(&cx, settings.stable_id()).children;
+    assert_eq!(
+        items.len(),
+        1,
+        "the settings menu holds the application's items"
+    );
+    assert_eq!(world(&cx, items[0]).children.len(), 2);
 }
 
 mod store_derive {
