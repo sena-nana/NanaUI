@@ -168,6 +168,10 @@ struct EffectNode {
 
 struct ScopeNode {
     parent: Option<ScopeKey>,
+    /// Where this scope sits in its parent's `children`, so leaving it is
+    /// a swap-remove, not a scan: a list dropping each of n rows would
+    /// otherwise pay O(n²).
+    slot: u32,
     signals: Vec<SignalKey>,
     effects: Vec<EffectKey>,
     children: Vec<ScopeKey>,
@@ -467,7 +471,15 @@ impl Runtime {
         if let Some(parent) = node.parent
             && let Some(parent) = self.scope_mut(parent)
         {
-            parent.children.retain(|child| *child != key);
+            let slot = node.slot as usize;
+            if parent.children.get(slot) == Some(&key) {
+                parent.children.swap_remove(slot);
+                if let Some(moved) = parent.children.get(slot).copied()
+                    && let Some(moved) = self.scope_mut(moved)
+                {
+                    moved.slot = slot as u32;
+                }
+            }
         }
         for child in node.children {
             self.dispose_scope(child, released);
@@ -939,8 +951,12 @@ pub(crate) fn drop_pending(context: u64) {
 
 pub(crate) fn create_scope(parent: Option<ScopeKey>) -> ScopeKey {
     with_rt(|rt| {
+        let slot = parent
+            .and_then(|parent| rt.scopes.get(parent.index, parent.generation))
+            .map_or(0, |parent| parent.children.len() as u32);
         let (index, generation) = rt.scopes.insert(ScopeNode {
             parent,
+            slot,
             signals: Vec::new(),
             effects: Vec::new(),
             children: Vec::new(),

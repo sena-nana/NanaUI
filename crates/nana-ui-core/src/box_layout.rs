@@ -4336,59 +4336,56 @@ impl LayoutStyle {
         if self.position == PositionSpec::Fixed {
             return true;
         }
+        let viewport =
+            |length: &Option<LengthSpec>| length.is_some_and(LengthSpec::depends_on_viewport);
+        // The logical groups are nearly always the shared default: skip them
+        // without reading their 24 lengths.
+        let logical = |edges: &crate::shared::Shared<LogicalEdges>| {
+            !edges.is_shared_default()
+                && [
+                    &edges.inline_start,
+                    &edges.inline_end,
+                    &edges.block_start,
+                    &edges.block_end,
+                    &edges.phys_top,
+                    &edges.phys_right,
+                    &edges.phys_bottom,
+                    &edges.phys_left,
+                ]
+                .into_iter()
+                .any(viewport)
+        };
         [
-            self.gap,
-            self.row_gap,
-            self.column_gap,
-            self.padding,
-            self.padding_top,
-            self.padding_right,
-            self.padding_bottom,
-            self.padding_left,
-            self.logical_padding.inline_start,
-            self.logical_padding.inline_end,
-            self.logical_padding.block_start,
-            self.logical_padding.block_end,
-            self.logical_padding.phys_top,
-            self.logical_padding.phys_right,
-            self.logical_padding.phys_bottom,
-            self.logical_padding.phys_left,
-            self.logical_margin.inline_start,
-            self.logical_margin.inline_end,
-            self.logical_margin.block_start,
-            self.logical_margin.block_end,
-            self.logical_margin.phys_top,
-            self.logical_margin.phys_right,
-            self.logical_margin.phys_bottom,
-            self.logical_margin.phys_left,
-            self.margin,
-            self.margin_top,
-            self.margin_right,
-            self.margin_bottom,
-            self.margin_left,
-            self.offset_top,
-            self.offset_right,
-            self.offset_bottom,
-            self.offset_left,
-            self.logical_inset.inline_start,
-            self.logical_inset.inline_end,
-            self.logical_inset.block_start,
-            self.logical_inset.block_end,
-            self.logical_inset.phys_top,
-            self.logical_inset.phys_right,
-            self.logical_inset.phys_bottom,
-            self.logical_inset.phys_left,
-            self.width,
-            self.height,
-            self.min_width,
-            self.max_width,
-            self.min_height,
-            self.max_height,
-            self.flex_basis,
+            &self.gap,
+            &self.row_gap,
+            &self.column_gap,
+            &self.padding,
+            &self.padding_top,
+            &self.padding_right,
+            &self.padding_bottom,
+            &self.padding_left,
+            &self.margin,
+            &self.margin_top,
+            &self.margin_right,
+            &self.margin_bottom,
+            &self.margin_left,
+            &self.offset_top,
+            &self.offset_right,
+            &self.offset_bottom,
+            &self.offset_left,
+            &self.width,
+            &self.height,
+            &self.min_width,
+            &self.max_width,
+            &self.min_height,
+            &self.max_height,
+            &self.flex_basis,
         ]
         .into_iter()
-        .flatten()
-        .any(LengthSpec::depends_on_viewport)
+        .any(viewport)
+            || logical(&self.logical_padding)
+            || logical(&self.logical_margin)
+            || logical(&self.logical_inset)
     }
 
     /// Internal `hidden` or `display: none` — skip layout flow.

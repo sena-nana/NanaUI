@@ -45,6 +45,12 @@ impl<T: SharedDefault> Shared<T> {
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
+
+    /// Whether this is the process-wide default instance, which a reader
+    /// that only cares about non-default values can skip.
+    pub fn is_shared_default(&self) -> bool {
+        Arc::ptr_eq(&self.0, T::shared_default())
+    }
 }
 
 impl<T: SharedDefault> Default for Shared<T> {

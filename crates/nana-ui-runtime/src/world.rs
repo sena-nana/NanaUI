@@ -127,6 +127,12 @@ pub type NodeMap<V> = HashMap<StableNodeId, V, BuildIdHasher>;
 /// [`HashSet`] of nodes, hashed by [`IdHasher`].
 pub type NodeSet = HashSet<StableNodeId, BuildIdHasher>;
 
+fn sorted_unique(mut ids: Vec<StableNodeId>) -> Vec<StableNodeId> {
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 /// See [`UiWorld::is_scroll_container`].
 fn scroll_container(layout: &nana_ui_core::LayoutStyle, visual: Option<&StandardVisual>) -> bool {
     layout.overflow_x.scrolls()
@@ -1139,9 +1145,11 @@ impl UiWorld {
             input_hit_test: Vec::new(),
             focus_ime: Vec::new(),
             accessibility: Vec::new(),
-            accessibility_removals: std::mem::take(&mut self.pending_accessibility_removals),
+            accessibility_removals: sorted_unique(std::mem::take(
+                &mut self.pending_accessibility_removals,
+            )),
             render_extraction: Vec::new(),
-            render_removals: std::mem::take(&mut self.pending_render_removals),
+            render_removals: sorted_unique(std::mem::take(&mut self.pending_render_removals)),
             entities_total: self.nodes.len(),
             entities_changed: 0,
             entities_spawned: std::mem::take(&mut self.spawned_since_drain),
@@ -2781,10 +2789,8 @@ impl UiWorld {
             }
         }
         self.clear_overlay_references_for(subtree);
-        self.pending_render_removals.sort_unstable();
-        self.pending_render_removals.dedup();
-        self.pending_accessibility_removals.sort_unstable();
-        self.pending_accessibility_removals.dedup();
+        // Sorted and deduplicated once, when system work takes them: doing
+        // it here, once per removed subtree, made dropping n rows O(n² log n).
     }
 
     pub(crate) fn layout_isolated(&self, id: StableNodeId) -> bool {
@@ -2974,27 +2980,42 @@ fn style_excluding_transform_and_cursor_eq(left: &NodeStyle, right: &NodeStyle) 
         && left.text_horizontal_alignment == right.text_horizontal_alignment
         && left.text_vertical_alignment == right.text_vertical_alignment
         && left.painter == right.painter
-        && layout_excluding_transform_and_cursor_eq(left.layout.as_ref(), right.layout.as_ref())
+        && (std::sync::Arc::ptr_eq(&left.layout, &right.layout)
+            || layout_excluding_transform_and_cursor_eq(
+                left.layout.as_ref(),
+                right.layout.as_ref(),
+            ))
 }
 
 fn layout_excluding_transform_and_cursor_eq(
     left: &nana_ui_core::LayoutStyle,
     right: &nana_ui_core::LayoutStyle,
 ) -> bool {
-    let strip = |style: &nana_ui_core::LayoutStyle| {
-        let mut style = style.clone();
-        style.transform = None;
-        style.transform_3d = None;
-        style.unsupported_transform = None;
-        style.transform_origin = None;
-        style.transform_box = nana_ui_core::TransformBox::ViewBox;
-        style.css_perspective = None;
-        style.preserve_3d = false;
-        style.cursor = None;
-        style.user_select = None;
-        style
-    };
-    strip(left) == strip(right)
+    let excluded_equal = left.transform == right.transform
+        && left.transform_3d == right.transform_3d
+        && left.unsupported_transform == right.unsupported_transform
+        && left.transform_origin == right.transform_origin
+        && left.transform_box == right.transform_box
+        && left.css_perspective == right.css_perspective
+        && left.preserve_3d == right.preserve_3d
+        && left.cursor == right.cursor
+        && left.user_select == right.user_select;
+    if excluded_equal {
+        return left == right;
+    }
+    // One copy, carrying the other side's excluded fields, instead of two
+    // stripped copies.
+    let mut left = left.clone();
+    left.transform = right.transform;
+    left.transform_3d = right.transform_3d;
+    left.unsupported_transform = right.unsupported_transform.clone();
+    left.transform_origin = right.transform_origin;
+    left.transform_box = right.transform_box;
+    left.css_perspective = right.css_perspective;
+    left.preserve_3d = right.preserve_3d;
+    left.cursor = right.cursor;
+    left.user_select = right.user_select;
+    left == *right
 }
 
 fn layout_semantics_changed(
