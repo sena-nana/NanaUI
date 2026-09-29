@@ -143,6 +143,7 @@ impl<'a> UiBuilder<'a> {
         self.stack.last_mut().expect("builder always has a level")
     }
 
+    #[cfg(feature = "reactive-view")]
     pub(crate) fn failed(&self) -> bool {
         self.error.is_some()
     }
