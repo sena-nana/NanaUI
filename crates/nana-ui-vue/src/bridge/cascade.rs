@@ -21,29 +21,24 @@ pub(super) struct SiblingDeps {
     pub(super) counted: bool,
     /// `:empty`: a parent's match follows its children.
     pub(super) empty: bool,
-    /// `:has()`: an element's match follows its descendants and siblings.
+    /// `:has()`: an element's match follows its descendants.
     pub(super) has: bool,
 }
 
 impl SiblingDeps {
     fn compound(&mut self, compound: &crate::css_cascade::CompoundSelector) {
-        self.counted |= compound.first_child
-            || compound.last_child
-            || compound.first_of_type
-            || compound.last_of_type
-            || compound.only_child
-            || compound.nth_child.is_some()
-            || compound.nth_last_child.is_some()
-            || compound.nth_of_type.is_some();
-        self.forward |= compound.first_child
+        let from_start = compound.first_child
             || compound.first_of_type
             || compound.only_child
             || compound.nth_child.is_some()
             || compound.nth_of_type.is_some();
-        self.backward |= compound.last_child
+        let from_end = compound.last_child
             || compound.last_of_type
             || compound.only_child
             || compound.nth_last_child.is_some();
+        self.counted |= from_start || from_end;
+        self.forward |= from_start;
+        self.backward |= from_end;
         self.has |= !compound.has_queries.is_empty();
         self.empty |= compound.empty
             || compound
@@ -54,25 +49,72 @@ impl SiblingDeps {
                 .any(|alternative| alternative.empty);
     }
 
-    pub(super) fn selector(&mut self, selector: &crate::css_cascade::Selector) {
-        self.compound(&selector.subject);
-        for (combinator, compound) in &selector.ancestors {
+    fn chain(
+        &mut self,
+        subject: &crate::css_cascade::CompoundSelector,
+        ancestors: &[(
+            crate::css_cascade::Combinator,
+            crate::css_cascade::CompoundSelector,
+        )],
+    ) {
+        use crate::css_cascade::Combinator;
+        self.compound(subject);
+        for (combinator, compound) in ancestors {
             self.compound(compound);
             if matches!(
                 combinator,
-                crate::css_cascade::Combinator::AdjacentSibling
-                    | crate::css_cascade::Combinator::SubsequentSibling
+                Combinator::AdjacentSibling | Combinator::SubsequentSibling
             ) {
                 self.preceding = true;
                 self.forward = true;
             }
-            self.subsequent |= *combinator == crate::css_cascade::Combinator::SubsequentSibling;
+            self.subsequent |= *combinator == Combinator::SubsequentSibling;
         }
     }
 
     /// Whether matching needs an element's position among its siblings.
     pub(super) fn positional(self) -> bool {
         self.forward || self.backward
+    }
+}
+
+/// What a cascade reads about an element's siblings.
+struct SiblingFacts {
+    sibling_index: usize,
+    sibling_count: usize,
+    of_type_index: usize,
+    of_type_count: usize,
+    prev_snaps: Vec<MatchNodeSnap>,
+}
+
+impl MessageBridge {
+    /// Positions and preceding siblings, only when a rule reads them: a
+    /// snapshot of every sibling per cascade made filling a list cubic.
+    fn sibling_facts(&self, id: WidgetId, topology: bool) -> SiblingFacts {
+        let deps = self.cascade.sibling_deps;
+        let counted = topology && deps.counted;
+        let (sibling_index, sibling_count) = if counted {
+            self.sibling_position(id)
+        } else {
+            (0, 1)
+        };
+        let (of_type_index, of_type_count) = if counted {
+            self.of_type_position(id)
+        } else {
+            (0, 1)
+        };
+        let prev_snaps = if topology && deps.preceding {
+            self.prev_sibling_snaps(id, deps.subsequent)
+        } else {
+            Vec::new()
+        };
+        SiblingFacts {
+            sibling_index,
+            sibling_count,
+            of_type_index,
+            of_type_count,
+            prev_snaps,
+        }
     }
 }
 
@@ -385,24 +427,13 @@ impl MessageBridge {
         let leaf_tag = element_tag;
         let leaf_id = element_id;
 
-        // Positions and preceding siblings only when a rule reads them: a
-        // snapshot of every sibling per cascade made filling a list cubic.
-        let deps = self.cascade.sibling_deps;
-        let (sibling_index, sibling_count) = if selectors && deps.counted {
-            self.sibling_position(id)
-        } else {
-            (0, 1)
-        };
-        let (of_type_index, of_type_count) = if selectors && deps.counted {
-            self.of_type_position(id)
-        } else {
-            (0, 1)
-        };
-        let prev_snaps = if selectors && deps.preceding {
-            self.prev_sibling_snaps(id, deps.subsequent)
-        } else {
-            Vec::new()
-        };
+        let SiblingFacts {
+            sibling_index,
+            sibling_count,
+            of_type_index,
+            of_type_count,
+            prev_snaps,
+        } = self.sibling_facts(id, selectors);
 
         let ancestor_nodes: Vec<MatchNode<'_>> =
             ancestry.iter().skip(1).map(|n| n.as_node()).collect();
@@ -703,22 +734,13 @@ impl MessageBridge {
         let leaf_id = widget.props.element_id.clone();
         let prop_style = widget.props.prop_style.clone();
         let inline_style = widget.props.inline_style.clone();
-        let deps = self.cascade.sibling_deps;
-        let (sibling_index, sibling_count) = if topology && deps.counted {
-            self.sibling_position(id)
-        } else {
-            (0, 1)
-        };
-        let (of_type_index, of_type_count) = if topology && deps.counted {
-            self.of_type_position(id)
-        } else {
-            (0, 1)
-        };
-        let prev_snaps = if topology && deps.preceding {
-            self.prev_sibling_snaps(id, deps.subsequent)
-        } else {
-            Vec::new()
-        };
+        let SiblingFacts {
+            sibling_index,
+            sibling_count,
+            of_type_index,
+            of_type_count,
+            prev_snaps,
+        } = self.sibling_facts(id, topology);
         let ancestor_nodes: Vec<MatchNode<'_>> =
             ancestry.iter().skip(1).map(|n| n.as_node()).collect();
         let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
@@ -929,22 +951,13 @@ impl MessageBridge {
         let leaf_classes = widget.props.class_names.clone();
         let leaf_attrs = cascade_attrs_from_widget(widget);
         let leaf_id = widget.props.element_id.clone();
-        let deps = self.cascade.sibling_deps;
-        let (sibling_index, sibling_count) = if topology && deps.counted {
-            self.sibling_position(id)
-        } else {
-            (0, 1)
-        };
-        let (of_type_index, of_type_count) = if topology && deps.counted {
-            self.of_type_position(id)
-        } else {
-            (0, 1)
-        };
-        let prev_snaps = if topology && deps.preceding {
-            self.prev_sibling_snaps(id, deps.subsequent)
-        } else {
-            Vec::new()
-        };
+        let SiblingFacts {
+            sibling_index,
+            sibling_count,
+            of_type_index,
+            of_type_count,
+            prev_snaps,
+        } = self.sibling_facts(id, topology);
         let ancestor_nodes: Vec<MatchNode<'_>> =
             ancestry.iter().skip(1).map(|n| n.as_node()).collect();
         let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
@@ -1102,10 +1115,6 @@ impl MessageBridge {
         self.cascade.has_index_ready && !self.cascade.has_args.is_empty()
     }
 
-    fn has_args_read_empty(&self) -> bool {
-        self.cascade.has_args.iter().any(|arg| arg.empty)
-    }
-
     /// `id`'s own match inputs (classes, id, attributes, checked, text) may
     /// have changed: when what it matches did, its ancestors' bits follow.
     pub(super) fn has_self_changed(&mut self, id: WidgetId) {
@@ -1137,9 +1146,8 @@ impl MessageBridge {
             self.cascade.has_descendant_bits.insert(id, held | bits);
             cursor = self.widgets.get(&id).and_then(|w| w.parent);
         }
-        if self.has_args_read_empty()
-            && let Some(parent) = parent
-        {
+        // A new child can end the parent's `:empty`.
+        if let Some(parent) = parent {
             self.has_self_changed(parent);
         }
     }
@@ -1150,25 +1158,17 @@ impl MessageBridge {
         if !self.has_index_live() {
             return;
         }
-        if self.has_args_read_empty()
-            && let Some(id) = from
-        {
-            // Losing a child can make `from` itself `:empty`.
-            let bits = self.node_self_has_bits(id);
-            self.cascade.has_self_bits.insert(id, bits);
-        }
         let mut cursor = from;
-        let mut first = true;
         while let Some(id) = cursor.filter(|id| self.widgets.contains_key(id)) {
             let bits = self.has_children_bits(id);
-            let previous = self.cascade.has_descendant_bits.insert(id, bits);
-            // `from`'s own match may have moved (`:empty`) even when what it
-            // holds below did not: always go one level further.
-            if previous == Some(bits) && !first {
+            if self.cascade.has_descendant_bits.insert(id, bits) == Some(bits) {
                 break;
             }
-            first = false;
             cursor = self.widgets.get(&id).and_then(|w| w.parent);
+        }
+        // Losing a child can make `from` itself `:empty`.
+        if let Some(from) = from {
+            self.has_self_changed(from);
         }
     }
 }
@@ -1359,22 +1359,10 @@ impl MessageBridge {
                     .map(|rule| &rule.originating_selector),
             );
         for selector in selectors {
-            deps.selector(selector);
+            deps.chain(&selector.subject, &selector.ancestors);
         }
         for rule in &self.cascade.interactive_rules {
-            deps.compound(&rule.selector.subject);
-            for (combinator, compound) in &rule.selector.ancestors {
-                deps.compound(compound);
-                if matches!(
-                    combinator,
-                    crate::css_cascade::Combinator::AdjacentSibling
-                        | crate::css_cascade::Combinator::SubsequentSibling
-                ) {
-                    deps.preceding = true;
-                    deps.forward = true;
-                }
-                deps.subsequent |= *combinator == crate::css_cascade::Combinator::SubsequentSibling;
-            }
+            deps.chain(&rule.selector.subject, &rule.selector.ancestors);
         }
         self.cascade.sibling_deps = deps;
         // Other rules may ask other `:has()` questions.

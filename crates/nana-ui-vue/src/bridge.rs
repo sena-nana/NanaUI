@@ -735,12 +735,12 @@ impl MessageBridge {
         true
     }
 
-    /// After `parent`'s children changed at `index` (an insertion there,
-    /// or a removal from there): re-cascade what the sheet can see move —
-    /// the parent for `:empty`, the siblings after for rules counting from
-    /// the start or reading preceding siblings, those before for rules
-    /// counting from the end. Nothing else moved.
-    fn reapply_after_child_change(&mut self, parent: WidgetId, index: usize, inserted: bool) {
+    /// After `parent`'s children changed — an insertion at, or a removal
+    /// from, `Some((index, inserted))`; somewhere for `None` — re-cascade
+    /// what the sheet can see move: the parent for `:empty`, the siblings
+    /// after for rules counting from the start or reading preceding
+    /// siblings, those before for rules counting from the end.
+    fn reapply_after_child_change(&mut self, parent: WidgetId, at: Option<(usize, bool)>) {
         let deps = self.cascade.sibling_deps;
         if deps.empty {
             self.reapply_layout_for(parent);
@@ -753,10 +753,16 @@ impl MessageBridge {
             .get(&parent)
             .map(|w| w.children.clone())
             .unwrap_or_default();
+        let Some((index, inserted)) = at else {
+            for id in children {
+                self.reapply_layout_for(id);
+            }
+            return;
+        };
         let index = index.min(children.len());
         if deps.forward {
-            let after = if inserted { index + 1 } else { index };
-            for &id in children.get(after..).unwrap_or_default() {
+            let after = (index + usize::from(inserted)).min(children.len());
+            for &id in &children[after..] {
                 self.reapply_layout_for(id);
             }
         }
@@ -866,20 +872,7 @@ impl MessageBridge {
         if !self.css_needs_relative() {
             return;
         }
-        let deps = self.cascade.sibling_deps;
-        if deps.empty {
-            self.reapply_layout_for(parent);
-        }
-        if deps.positional() {
-            let children = self
-                .widgets
-                .get(&parent)
-                .map(|w| w.children.clone())
-                .unwrap_or_default();
-            for id in children {
-                self.reapply_layout_for(id);
-            }
-        }
+        self.reapply_after_child_change(parent, None);
         self.reapply_has_ancestors(Some(parent));
     }
 
@@ -1364,7 +1357,7 @@ impl MessageBridge {
         if self.cascade.selector_topology
             && let Some(parent) = svg_parent.filter(|pid| self.widgets.contains_key(pid))
         {
-            self.reapply_after_child_change(parent, removed_at, false);
+            self.reapply_after_child_change(parent, Some((removed_at, false)));
             // `:has()` on the ancestors.
             let mut walk = (!self.cascade.has_args.is_empty()).then_some(parent);
             while let Some(pid) = walk {
@@ -1462,7 +1455,7 @@ impl MessageBridge {
                 .get(&parent)
                 .and_then(|p| p.children.iter().position(|&c| c == child))
                 .unwrap_or(0);
-            self.reapply_after_child_change(parent, index, true);
+            self.reapply_after_child_change(parent, Some((index, true)));
         }
         if !self.cascade.has_args.is_empty() {
             let mut walk = Some(parent);
