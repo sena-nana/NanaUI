@@ -41,13 +41,14 @@ mod teleport;
 pub(crate) mod trace;
 mod transition;
 
+pub use crate::VirtualAlignment;
 pub use controls::{
     Px, StyledComponent, avatar, button, checkbox, chip, column, divider, empty_state, icon_button,
     list_item, number_input, progress, row, select, slider, spinner, status_badge, switch, text,
     text_area, text_input, texture, thumbnail,
 };
 pub(crate) use controls::{edit_control, inspect_control};
-pub use each_virtual::{EachVirtual, each_virtual};
+pub use each_virtual::{EachVirtual, VirtualItem, VirtualListRef, each_virtual, virtual_list_ref};
 pub use error::{ErrorBoundary, error_boundary, report_error};
 #[doc(hidden)]
 pub use hot::{__hot_register, __hot_text};

@@ -79,6 +79,33 @@ pub(super) fn build_detached_into<R>(
     }
 }
 
+/// Build a view under `parent`, an existing node, in one commit: its roots
+/// become `parent`'s children, keyed under it, so `parent` is their key
+/// scope. `build` records every scope it creates so a failed commit
+/// disposes them.
+pub(super) fn build_under<P: crate::View>(
+    cx: &mut AppContext,
+    parent: crate::Entity<P>,
+    build: impl FnOnce(&mut ViewBuilder<'_, '_, '_>, &mut Vec<ScopeKey>),
+) -> Result<(), FrameworkError> {
+    let tag = cx.reactive_tag();
+    let mut created = Vec::new();
+    let result = cx.build_child(parent, |ui| {
+        let mut st = ViewState::new(tag);
+        build(&mut ViewBuilder { ui, st: &mut st }, &mut created);
+        st.parts
+    });
+    match result {
+        Ok(parts) => cx.install_view_parts(parts),
+        Err(error) => {
+            for scope in created {
+                reactive::dispose_scope(scope);
+            }
+            Err(error)
+        }
+    }
+}
+
 /// Dispose the scopes of `removed` and despawn their roots, or, under a
 /// transition with a leave, start it and add the root to `leaving`.
 fn remove(

@@ -745,6 +745,10 @@ impl Gen<'_> {
                     let within = raw(&attr.value, at)?;
                     quote!(#out.within(#within))
                 }
+                "list_ref" => {
+                    let list_ref = raw(&attr.value, at)?;
+                    quote!(#out.list_ref(#list_ref))
+                }
                 "key" => {
                     let key = raw(&attr.value, at)?;
                     quote!(#out.key(#key))
@@ -755,7 +759,7 @@ impl Gen<'_> {
                         format!(
                             "`<Virtual>` has no attribute `{other}`; it has `row-height`, \
                              `measured`, `height`, `width`, `grow`, `overscan`, `scroll`, \
-                             `within`, `grid`, `gap`, `key`, `class`"
+                             `within`, `grid`, `gap`, `list-ref`, `key`, `class`"
                         ),
                     ));
                 }

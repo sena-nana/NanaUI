@@ -546,6 +546,33 @@ fn a_virtual_grid_in_a_template_scrolls_with_its_page() {
     assert!((4..=5).contains(&rows), "{rows} grid rows built");
 }
 
+/// `list-ref` on `<Virtual>` hands the list's ref to the template's list.
+#[test]
+fn a_virtual_element_takes_a_list_ref() {
+    use nana_ui_runtime::view::virtual_list_ref;
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let rows = virtual_list_ref::<u32>();
+    let list_ref = rows.clone();
+    cx.mount_view(parent.stable_id(), move || {
+        let items: Signal<Vec<u32>> = signal((0..1_000).collect());
+        view! {
+            <Virtual row_height=20 height=100 list_ref={list_ref.clone()}>
+                <Text v-for={n in items} key={*n}>"行 {n}"</Text>
+            </Virtual>
+        }
+    })
+    .unwrap();
+    for _ in 0..3 {
+        cx.layout_document(document, nana_ui_runtime::LayoutViewport::new(320.0, 600.0))
+            .unwrap();
+        cx.flush_reactive().unwrap();
+    }
+    assert_eq!(rows.item(&50).map(|item| item.offset), Some(1_000.0));
+    assert!(rows.row(&0).is_some() && rows.row(&50).is_none());
+}
+
 #[test]
 fn media_controls_and_theme_roles_bind_from_a_template() {
     use nana_ui_runtime::view::{Signal, signal};

@@ -321,7 +321,50 @@ impl AppContext {
         K: Clone + Eq + Hash,
         C: ComponentView,
     {
-        let viewport = self.virtual_list_viewport(scroll, list, overscan)?;
+        self.sync_virtual_list_retained_at(
+            scroll,
+            list,
+            items,
+            layout,
+            overscan,
+            None,
+            fingerprint,
+            retained_keys,
+            key_at,
+            index_of_key,
+            build,
+            on_mount,
+        )
+    }
+
+    /// [`Self::sync_virtual_list_retained_with`], placing the window at
+    /// `at` (the list's own offset) instead of the one the ScrollView holds:
+    /// the caller is about to scroll there, and the ScrollView may not reach
+    /// it until the next layout gives it the list's new extent.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sync_virtual_list_retained_at<K, C>(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        list: Entity<List>,
+        items: &mut VirtualListItems<K, C>,
+        layout: &VirtualListLayout,
+        overscan: f32,
+        at: Option<f32>,
+        fingerprint: u64,
+        retained_keys: &[K],
+        key_at: impl FnMut(usize) -> K,
+        index_of_key: impl FnMut(&K) -> Option<usize>,
+        build: impl FnMut(usize, &K) -> C,
+        on_mount: impl FnMut(&mut Self, Entity<C>, usize, &K) -> Result<(), FrameworkError>,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        let mut viewport = self.virtual_list_viewport(scroll, list, overscan)?;
+        if let Some(at) = at {
+            viewport.offset[1] = at.max(0.0);
+        }
         self.sync_virtual_list_in_viewport(
             list,
             items,
@@ -398,10 +441,53 @@ impl AppContext {
         fingerprint: u64,
         retained_keys: &[K],
         key_at: impl FnMut(usize) -> K,
-        mut index_of_key: impl FnMut(&K) -> Option<usize>,
+        index_of_key: impl FnMut(&K) -> Option<usize>,
         build: impl FnMut(usize, &K) -> C,
         on_mount: impl FnMut(&mut Self, Entity<C>, usize, &K) -> Result<(), FrameworkError>,
     ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        self.sync_virtual_list_measured_at(
+            scroll,
+            list,
+            items,
+            layout,
+            overscan,
+            None,
+            fingerprint,
+            retained_keys,
+            key_at,
+            index_of_key,
+            build,
+            on_mount,
+        )
+        .map(|(window, _)| window)
+    }
+
+    /// [`Self::sync_virtual_list_measured_with`] with the window at `at`,
+    /// the list's own offset the caller is about to scroll to (see
+    /// [`Self::sync_virtual_list_retained_at`]). Measuring keeps the row at
+    /// the top of that offset where it is, so it may move: the offset the
+    /// window was placed at comes back with it, for the caller to scroll to.
+    /// With no `at`, the ScrollView's offset is moved here as before.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn sync_virtual_list_measured_at<K, C>(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        list: Entity<List>,
+        items: &mut VirtualListItems<K, C>,
+        layout: &mut VirtualListLayout,
+        overscan: f32,
+        at: Option<f32>,
+        fingerprint: u64,
+        retained_keys: &[K],
+        key_at: impl FnMut(usize) -> K,
+        mut index_of_key: impl FnMut(&K) -> Option<usize>,
+        build: impl FnMut(usize, &K) -> C,
+        on_mount: impl FnMut(&mut Self, Entity<C>, usize, &K) -> Result<(), FrameworkError>,
+    ) -> Result<(VirtualListWindow, f32), FrameworkError>
     where
         K: Clone + Eq + Hash,
         C: ComponentView,
@@ -410,6 +496,9 @@ impl AppContext {
             return Err(FrameworkError::InvalidVirtualization);
         }
         let mut viewport = self.virtual_list_viewport(scroll, list, overscan)?;
+        if let Some(at) = at {
+            viewport.offset[1] = at.max(0.0);
+        }
         let before = viewport.offset[1];
         let mut measured = false;
         let mut unmeasured = false;
@@ -432,7 +521,7 @@ impl AppContext {
             // Rows move with the new extents even when the window is the same.
             items.published = None;
         }
-        if viewport.offset[1] != before {
+        if at.is_none() && viewport.offset[1] != before {
             let current = self.world.scroll_offset(scroll.id).unwrap_or_default();
             let mut mutations = MutationQueue::new();
             mutations.set_scroll_offset(
@@ -448,6 +537,7 @@ impl AppContext {
             viewport = self.virtual_list_viewport(scroll, list, overscan)?;
         }
         items.pending_measure = unmeasured;
+        let offset = viewport.offset[1];
         self.sync_virtual_list_in_viewport(
             list,
             items,
@@ -460,6 +550,7 @@ impl AppContext {
             build,
             on_mount,
         )
+        .map(|window| (window, offset))
     }
 
     /// Materialize both axes, frozen prefixes and active cells in one commit.
@@ -772,7 +863,7 @@ impl AppContext {
     /// a page header starts that far down, and only the rows under the
     /// visible part of the viewport are its window. Before the first layout
     /// pass the list is taken to start at the content's top.
-    fn virtual_list_viewport(
+    pub(crate) fn virtual_list_viewport(
         &self,
         scroll: Entity<ScrollView>,
         list: Entity<List>,

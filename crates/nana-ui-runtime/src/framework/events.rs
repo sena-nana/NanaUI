@@ -45,6 +45,42 @@ impl AppContext {
         visited
     }
 
+    /// Drop every handler `observer` registered on `source` with
+    /// [`Self::observe`]; the handlers of anyone else stay.
+    pub(crate) fn unobserve(&mut self, source: StableNodeId, observer: StableNodeId) {
+        let Some(keys) = self.event_dependencies.get(&source) else {
+            return;
+        };
+        let keys = keys
+            .iter()
+            .copied()
+            .filter(|key| key.0 == source)
+            .collect::<Vec<_>>();
+        for key in keys {
+            let Some(handlers) = self.event_handlers.get_mut(&key) else {
+                continue;
+            };
+            handlers.retain(|handler| handler.observer != observer);
+            let empty = handlers.is_empty();
+            if empty {
+                self.event_handlers.remove(&key);
+            }
+            let owners = if empty {
+                vec![source, observer]
+            } else {
+                vec![observer]
+            };
+            for owner in owners {
+                if let Some(dependencies) = self.event_dependencies.get_mut(&owner) {
+                    dependencies.remove(&key);
+                    if dependencies.is_empty() {
+                        self.event_dependencies.remove(&owner);
+                    }
+                }
+            }
+        }
+    }
+
     fn index_event_handler(&mut self, key: (StableNodeId, TypeId), observer: StableNodeId) {
         self.event_dependencies
             .entry(key.0)

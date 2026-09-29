@@ -2763,6 +2763,238 @@ fn a_fill_height_inside_a_measured_row_does_not_feed_back_into_the_list() {
     assert_eq!(heights(&cx), settled, "and it stays that tall");
 }
 
+/// A row 40 px tall keyed `row`, holding a text keyed `title`.
+fn keyed_row(row: VirtualRow) -> impl IntoView {
+    widget(Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(40.0))))
+        .key("row")
+        .children(text(row.title).key("title"))
+}
+
+/// The list's ref answers where every item is, built or not, and which node
+/// a built item is in: its key scope, where what the row keys is found.
+#[test]
+fn a_virtual_list_ref_knows_every_item_and_each_built_row() {
+    let (mut cx, document, parent) = setup();
+    let rows = virtual_list_ref::<u32>();
+    let list_ref = rows.clone();
+    cx.mount_view(parent, move || {
+        each_virtual(signal(virtual_items(1_000)), |row| row.id, 40.0, keyed_row)
+            .overscan(0.0)
+            .height(200.0)
+            .list_ref(list_ref.clone())
+    })
+    .unwrap();
+    settle(&mut cx, document, LayoutViewport::new(320.0, 600.0));
+    assert_eq!(
+        rows.item(&700),
+        Some(VirtualItem {
+            offset: 28_000.0,
+            extent: 40.0
+        }),
+        "an item never built is placed by its estimate"
+    );
+    assert_eq!(rows.item(&1_000), None);
+    assert_eq!(rows.row(&700), None, "not built");
+    // Every built row is its own key scope: `row/title` is that row's.
+    for id in 0..5 {
+        let row = rows.row(&id).expect("built");
+        let title = cx.resolve_assembly_path(row, "row/title").unwrap();
+        assert_eq!(cx.world().text(title), Some(format!("行 {id}").as_str()));
+    }
+    assert_eq!(rows.first_visible(), Some((0, 0.0)));
+}
+
+/// Scrolling to a key builds the rows around it and puts it where asked;
+/// the reading position it leaves is the one to come back to.
+#[test]
+fn a_virtual_list_scrolls_to_an_item_by_key() {
+    let (mut cx, document, parent) = setup();
+    let rows = virtual_list_ref::<u32>();
+    let list_ref = rows.clone();
+    let view = cx
+        .mount_view(parent, move || {
+            each_virtual(signal(virtual_items(1_000)), |row| row.id, 20.0, keyed_row)
+                .measured()
+                .overscan(0.0)
+                .height(200.0)
+                .list_ref(list_ref.clone())
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let list = children(&cx, scroll)[0];
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    settle(&mut cx, document, viewport);
+
+    rows.scroll_to(&500, VirtualAlignment::Start);
+    settle(&mut cx, document, viewport);
+    let shown = texts_under(&cx, list);
+    assert_eq!(
+        shown.first().map(String::as_str),
+        Some("行 500"),
+        "{shown:?}"
+    );
+    assert_eq!(rows.first_visible(), Some((500, 0.0)));
+    let row = rows.row(&500).unwrap();
+    let offset = cx.world().scroll_offset(scroll).unwrap().y;
+    let top = cx.world().layout_box(row).unwrap().y - cx.world().layout_box(scroll).unwrap().y;
+    assert!(
+        (top - offset).abs() < 0.5,
+        "item 500 at the top: {top} vs {offset}"
+    );
+
+    rows.scroll_to(&900, VirtualAlignment::End);
+    settle(&mut cx, document, viewport);
+    let (first, _) = rows.first_visible().unwrap();
+    assert!(
+        (896..=897).contains(&first),
+        "item 900 at the bottom: {first}"
+    );
+
+    rows.scroll_to_inset(&500, 10.0);
+    settle(&mut cx, document, viewport);
+    assert_eq!(rows.first_visible(), Some((500, 10.0)));
+}
+
+/// Items inserted above the one at the top of the viewport keep it where
+/// it is (loading older messages above a chat), measured or not; items
+/// added below do not move anything.
+#[test]
+fn a_virtual_list_keeps_its_reading_position_when_items_are_inserted_above() {
+    for measured in [false, true] {
+        let (mut cx, document, parent) = setup();
+        let rows = virtual_list_ref::<u32>();
+        let list_ref = rows.clone();
+        let items = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let data = signal(
+                    (1_000..1_100)
+                        .map(|id| VirtualRow {
+                            id,
+                            title: format!("行 {id}"),
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                items.set(Some(data));
+                let list = each_virtual(data, |row| row.id, 20.0, keyed_row)
+                    .overscan(0.0)
+                    .height(200.0)
+                    .list_ref(list_ref.clone());
+                if measured { list.measured() } else { list }
+            })
+            .unwrap();
+        let scroll = view.roots()[0];
+        let viewport = LayoutViewport::new(320.0, 600.0);
+        settle(&mut cx, document, viewport);
+        rows.scroll_to_inset(&1_050, 7.0);
+        settle(&mut cx, document, viewport);
+        let on_screen = |cx: &AppContext| {
+            let row = rows.row(&1_050).expect("the anchor stays built");
+            cx.world().layout_box(row).unwrap().y
+                - cx.world().layout_box(scroll).unwrap().y
+                - cx.world().scroll_offset(scroll).unwrap().y
+        };
+        let before = on_screen(&cx);
+        assert!((before + 7.0).abs() < 0.5, "{before}");
+
+        // A page of older items arrives above.
+        items.get().unwrap().update(|data| {
+            let older = (800..1_000).map(|id| VirtualRow {
+                id,
+                title: format!("行 {id}"),
+            });
+            data.splice(0..0, older);
+        });
+        settle(&mut cx, document, viewport);
+        assert_eq!(
+            rows.first_visible(),
+            Some((1_050, 7.0)),
+            "measured {measured}"
+        );
+        assert!((on_screen(&cx) - before).abs() < 0.5, "measured {measured}");
+
+        // Newer items below move nothing.
+        let offset = cx.world().scroll_offset(scroll).unwrap().y;
+        items.get().unwrap().update(|data| {
+            data.extend((1_100..1_110).map(|id| VirtualRow {
+                id,
+                title: format!("行 {id}"),
+            }))
+        });
+        settle(&mut cx, document, viewport);
+        assert_eq!(cx.world().scroll_offset(scroll).unwrap().y, offset);
+    }
+}
+
+/// A list scrolling with an ancestor follows its ref to another scroll
+/// area when it moves there (a sidebar list moved between layouts), and
+/// lets go of the first.
+#[test]
+fn a_virtual_list_within_follows_its_ref_to_another_scroll_area() {
+    let (mut cx, document, parent) = setup();
+    let refs = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let (a, b, page) = (node_ref(), node_ref(), node_ref());
+            refs.set(Some((a, b, page)));
+            let area = |r| {
+                widget(
+                    crate::ScrollView::new(crate::ScrollAxes::Vertical)
+                        .with_layout(|l| l.height = Some(LengthSpec::Px(200.0))),
+                )
+                .node_ref(r)
+                .children(column().key("content"))
+            };
+            (
+                area(a),
+                area(b),
+                teleport(
+                    page,
+                    each_virtual(
+                        signal(virtual_items(1_000)),
+                        |row| row.id,
+                        20.0,
+                        |row| text(row.title),
+                    )
+                    .within(page)
+                    .overscan(0.0)
+                    .key("rows"),
+                ),
+            )
+        })
+        .unwrap();
+    let (a, b, page) = refs.get().unwrap();
+    let viewport = LayoutViewport::new(320.0, 900.0);
+    page.set(a.get_untracked());
+    settle(&mut cx, document, viewport);
+    let area_a = Entity::<crate::ScrollView>::from_stable_id(a.get_untracked().unwrap());
+    let area_b = Entity::<crate::ScrollView>::from_stable_id(b.get_untracked().unwrap());
+    // Teleported, the list keeps its key under the place it is declared.
+    let list = cx.resolve_assembly_path(view.roots()[2], "rows").unwrap();
+    let first = |cx: &AppContext| texts_under(cx, list).first().cloned();
+    cx.scroll_to(area_a, crate::ScrollOffset { x: 0.0, y: 2_000.0 })
+        .unwrap();
+    settle(&mut cx, document, viewport);
+    assert_eq!(first(&cx).as_deref(), Some("行 100"));
+
+    // The list moves to the other area: that one's scrolling moves the
+    // window now, and the first area's no longer does.
+    page.set(b.get_untracked());
+    settle(&mut cx, document, viewport);
+    cx.scroll_to(area_b, crate::ScrollOffset { x: 0.0, y: 400.0 })
+        .unwrap();
+    settle(&mut cx, document, viewport);
+    assert_eq!(first(&cx).as_deref(), Some("行 20"));
+    cx.scroll_to(area_a, crate::ScrollOffset { x: 0.0, y: 0.0 })
+        .unwrap();
+    settle(&mut cx, document, viewport);
+    assert_eq!(
+        first(&cx).as_deref(),
+        Some("行 20"),
+        "the first area is let go of"
+    );
+}
+
 #[test]
 fn a_measured_virtual_list_keeps_measured_heights_when_rows_are_added() {
     let (mut cx, document, parent) = setup();

@@ -76,7 +76,6 @@ impl AppContext {
     ///
     /// Keys share the table used by [`Self::mount`], so a later `mount` on the
     /// same parent reuses identities.
-    #[cfg(test)]
     pub(crate) fn build_child<P: View, R>(
         &mut self,
         parent: Entity<P>,
