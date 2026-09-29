@@ -1355,7 +1355,7 @@ fn subject_keys<'a>(
 }
 
 /// Split a declaration block into structured entries (once per rule at parse).
-pub(crate) fn parse_declaration_entries(block: &str) -> Vec<DeclarationEntry> {
+pub fn parse_declaration_entries(block: &str) -> Vec<DeclarationEntry> {
     let mut out = Vec::new();
     for (i, decl) in crate::css_font_face::split_decls(block)
         .into_iter()
@@ -1658,7 +1658,7 @@ fn apply_css_text_important_only(
     }
 }
 
-pub(crate) fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> bool {
+pub fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> bool {
     if let Some(tag) = &simple.type_name
         && !node.tag.eq_ignore_ascii_case(tag)
         && tag != "*"
@@ -1691,7 +1691,7 @@ pub(crate) fn simple_matches(simple: &SimpleCompound, node: &MatchNode<'_>) -> b
     true
 }
 
-pub(crate) fn compound_matches(compound: &CompoundSelector, node: &MatchNode<'_>) -> bool {
+pub fn compound_matches(compound: &CompoundSelector, node: &MatchNode<'_>) -> bool {
     if let Some(tag) = &compound.type_name
         && !node.tag.eq_ignore_ascii_case(tag)
         && tag != "*"

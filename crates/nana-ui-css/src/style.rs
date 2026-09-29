@@ -71,7 +71,7 @@ pub fn parse_css_color(input: &str) -> Option<[f32; 4]> {
 /// CSS2 / CSS Color 3 named keywords used by L1 paint, tests, and UI.
 ///
 /// Single table for [`parse_css_color`] and shadow-token classification.
-pub(crate) fn parse_css_named_color(input: &str) -> Option<[f32; 4]> {
+pub fn parse_css_named_color(input: &str) -> Option<[f32; 4]> {
     match input.trim().to_ascii_lowercase().as_str() {
         "transparent" => Some([0.0, 0.0, 0.0, 0.0]),
         // CSS 2.1 color keywords (HTML4 + orange).

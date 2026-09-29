@@ -4,6 +4,7 @@ members = [
     "crates/nana-ui-runtime",
     "crates/nana-ui-view-schema",
     "crates/nana-ui-view-codegen",
+    "crates/nana-ui-css",
     "crates/nana-ui-sfc",
     "crates/nana-ui-view-macros",
     "crates/nana-ui-scene",
@@ -58,6 +59,7 @@ nana-gpu = { path = "crates/nana-gpu" }
 nana-diagnostics = { path = "crates/nana-diagnostics" }
 nana-ui-dev = { path = "crates/nana-ui-dev" }
 nana-ui-sfc = { path = "crates/nana-ui-sfc" }
+nana-ui-css = { path = "crates/nana-ui-css" }
 nana-ui = { path = "crates/nana-ui" }
 nana-window = { path = "crates/nana-window" }
 nana-app-icon = { path = "crates/nana-app-icon", default-features = false }

@@ -201,14 +201,15 @@ mod app;
 mod bridge;
 #[cfg(feature = "hosted")]
 mod canvas_gpu;
-mod css_at_rule;
-mod css_cascade;
-mod css_font_face;
-mod css_interactive;
+// The CSS engine lives in `nana-ui-css`; the adapter keeps its paths.
+use nana_ui_css::{
+    css_at_rule, css_cascade, css_font_face, css_interactive, css_map, css_paint, style,
+};
+#[cfg(all(test, feature = "scene-view"))]
+mod css_font_face_ingest_tests;
 mod css_interactive_apply;
-mod css_map;
-mod css_paint;
-mod css_paint_transform;
+#[cfg(test)]
+mod css_paint_transform_tests;
 #[cfg(feature = "dev-reload")]
 pub mod dev;
 mod host;
@@ -225,10 +226,8 @@ mod native_component;
 mod renderer;
 mod scroll;
 mod shared_document;
-mod shell_contract;
 #[cfg(feature = "hosted")]
 mod startup;
-mod style;
 #[cfg(feature = "hosted")]
 mod svg_gpu;
 mod svg_inline;

@@ -1869,12 +1869,6 @@ pub trait LayoutStyleCss {
         percent_h: Option<f32>,
     );
     fn apply_flex_shorthand(&mut self, val: &str);
-    fn apply_host_style(
-        &mut self,
-        value: &nana_js_engine::HostValue,
-        percent_w: Option<f32>,
-        percent_h: Option<f32>,
-    );
 }
 
 impl LayoutStyleCss for LayoutStyle {
@@ -2915,50 +2909,6 @@ impl LayoutStyleCss for LayoutStyle {
             _ => {}
         }
     }
-
-    /// 从 HostValue（string 或 object）应用 style。
-    fn apply_host_style(
-        &mut self,
-        value: &nana_js_engine::HostValue,
-        percent_w: Option<f32>,
-        percent_h: Option<f32>,
-    ) {
-        match value {
-            nana_js_engine::HostValue::String(s) => {
-                self.apply_css_text(s, percent_w, percent_h);
-            }
-            nana_js_engine::HostValue::Object(map) => {
-                let mut pairs: Vec<(String, String)> = Vec::with_capacity(map.len());
-                for (k, v) in map {
-                    let s = match v {
-                        nana_js_engine::HostValue::String(s) => s.clone(),
-                        nana_js_engine::HostValue::Number(n) => format!("{n}px"),
-                        nana_js_engine::HostValue::Bool(b) => b.to_string(),
-                        nana_js_engine::HostValue::Null => continue,
-                        other => host_value_debug(other),
-                    };
-                    pairs.push((k.clone(), s));
-                }
-                for (k, s) in &pairs {
-                    if css_key_is_direction_or_writing_mode(k) {
-                        self.apply_css_property(k, s, percent_w, percent_h);
-                    }
-                }
-                for (k, s) in &pairs {
-                    if !css_key_is_direction_or_writing_mode(k) {
-                        self.apply_css_property(k, s, percent_w, percent_h);
-                    }
-                }
-            }
-            nana_js_engine::HostValue::Null => {}
-            other => {
-                let s = host_value_debug(other);
-                if !s.is_empty() {
-                    self.apply_css_text(&s, percent_w, percent_h);
-                }
-            }
-        }
-    }
 }
 
 /// 去掉 Box Alignment 的 `safe` / `unsafe` 前缀，保留对齐关键字序列。
@@ -3125,7 +3075,7 @@ fn apply_position_inset_shorthand(
 /// logical box properties in the same declaration batch so inline start/end
 /// map against the used direction (`text-orientation: upright` makes it `ltr`
 /// in a vertical mode).
-pub(crate) fn css_key_is_direction_or_writing_mode(key: &str) -> bool {
+pub fn css_key_is_direction_or_writing_mode(key: &str) -> bool {
     matches!(
         normalize_css_prop_key(key).as_str(),
         "direction" | "writing-mode" | "text-orientation"
@@ -3155,7 +3105,7 @@ fn apply_css_direction(layout: &mut LayoutStyle, val: &str) {
 /// HTML `dir` presentational hint → CSS `direction` used value.
 ///
 /// `auto` needs first-strong bidi; fail-closed (do not write [`DirSpec::Ltr`]).
-pub(crate) fn dir_spec_from_html_attr(raw: &str) -> Option<DirSpec> {
+pub fn dir_spec_from_html_attr(raw: &str) -> Option<DirSpec> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "rtl" => Some(DirSpec::Rtl),
         "ltr" => Some(DirSpec::Ltr),
@@ -4527,7 +4477,7 @@ fn for_each_css_decl(style: &str, mut visit: impl FnMut(&str, &str)) {
 /// Parse trailing `!important` (case-insensitive; whitespace around `!` / ident).
 ///
 /// Returns `(value without flag, is_important)`.
-pub(crate) fn split_important_flag(value: &str) -> (String, bool) {
+pub fn split_important_flag(value: &str) -> (String, bool) {
     let trimmed = value.trim();
     let Some(bang) = trimmed.rfind('!') else {
         return (trimmed.to_string(), false);
@@ -4658,7 +4608,7 @@ pub fn parse_css_font_size(input: &str) -> Option<f32> {
 /// Declared axes (including custom tags such as `BEVL`) are stored as-is.
 /// Missing face axes are skipped at shape time; malformed declarations set
 /// [`LayoutStyle::unsupported_font_variation`] and are never remapped onto weight.
-pub(crate) fn apply_font_variation_settings(style: &mut LayoutStyle, val: &str) {
+pub fn apply_font_variation_settings(style: &mut LayoutStyle, val: &str) {
     let trimmed = val.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("normal") {
         style.unsupported_font_variation = false;
@@ -5001,15 +4951,6 @@ fn ot_tag(raw: &str) -> Option<[u8; 4]> {
     Some(tag)
 }
 
-fn host_value_debug(value: &nana_js_engine::HostValue) -> String {
-    match value {
-        nana_js_engine::HostValue::String(s) => s.clone(),
-        nana_js_engine::HostValue::Number(n) => n.to_string(),
-        nana_js_engine::HostValue::Bool(b) => b.to_string(),
-        _ => String::new(),
-    }
-}
-
 fn camel_to_kebab(input: &str) -> String {
     let mut out = String::with_capacity(input.len() + 4);
     for (i, ch) in input.chars().enumerate() {
@@ -5287,7 +5228,7 @@ fn assign_border_side_style(style: &mut LayoutStyle, side: Option<usize>, parsed
     }
 }
 
-pub(crate) fn split_css_space_tokens(input: &str) -> Vec<String> {
+pub fn split_css_space_tokens(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut depth = 0i32;
     let mut start = 0usize;
@@ -5327,7 +5268,7 @@ fn parse_border_radius_shorthand(input: &str) -> Option<[LengthSpec; 4]> {
 }
 
 /// Parse `box-shadow` layers (`inset` + comma list, GPU-capped).
-pub(crate) fn parse_box_shadows(input: &str) -> Option<Vec<BoxShadowSpec>> {
+pub fn parse_box_shadows(input: &str) -> Option<Vec<BoxShadowSpec>> {
     let trimmed = input.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
         return Some(Vec::new());
@@ -5402,7 +5343,7 @@ fn parse_one_box_shadow_layer(input: &str) -> Option<BoxShadowSpec> {
 }
 
 /// Parse `filter: drop-shadow()` args. No inset, no spread (4th length).
-pub(crate) fn parse_drop_shadow(input: &str) -> Option<nana_ui_core::FilterDropShadow> {
+pub fn parse_drop_shadow(input: &str) -> Option<nana_ui_core::FilterDropShadow> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
@@ -5429,9 +5370,7 @@ pub(crate) fn parse_drop_shadow(input: &str) -> Option<nana_ui_core::FilterDropS
     })
 }
 
-pub(crate) fn parse_inline_paint_transform(
-    raw: &str,
-) -> Option<nana_ui_core::box_layout::PaintTransform> {
+pub fn parse_inline_paint_transform(raw: &str) -> Option<nana_ui_core::box_layout::PaintTransform> {
     match crate::css_paint_transform::parse_css_transform(raw)? {
         crate::css_paint_transform::ParsedPaintTransform::Affine(t) if !t.is_identity() => Some(t),
         _ => None,
@@ -5439,7 +5378,7 @@ pub(crate) fn parse_inline_paint_transform(
 }
 
 /// Parse single-layer `text-shadow` (`offset-x offset-y [blur-radius] color`).
-pub(crate) fn parse_text_shadow(input: &str) -> Option<TextShadowSpec> {
+pub fn parse_text_shadow(input: &str) -> Option<TextShadowSpec> {
     let trimmed = input.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
         return None;

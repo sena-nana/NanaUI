@@ -302,7 +302,7 @@ pub fn is_blocked_href(href: &str) -> bool {
         || nana_ui_core::href_is_protocol_relative_or_unc(href)
 }
 
-pub(crate) use nana_ui_core::stylesheet_base_from_href;
+pub use nana_ui_core::stylesheet_base_from_href;
 
 /// Cumulative `@font-face` host cap (per-file [`MAX_FONT_FACE_BYTES`], total
 /// [`MAX_REGISTERED_FONT_BYTES`]).
@@ -348,7 +348,7 @@ where
 }
 
 /// First `url(...)` in `src` suitable for host font loading.
-#[cfg(test)]
+#[doc(hidden)]
 pub fn font_face_url_src(face: &FontFaceRule) -> Option<&str> {
     font_face_url_srcs(face).next()
 }
@@ -356,7 +356,7 @@ pub fn font_face_url_src(face: &FontFaceRule) -> Option<&str> {
 /// `url(...)` entries in declaration order. `local()` is omitted here
 /// (host registration walks [`FontFaceRule::src`] including `local()`);
 /// `format()` / `tech()` were dropped while parsing `src`.
-#[cfg(test)]
+#[doc(hidden)]
 pub fn font_face_url_srcs(face: &FontFaceRule) -> impl Iterator<Item = &str> {
     face.src.iter().filter_map(|src| match src {
         FontFaceSrc::Url(url) => Some(url.as_str()),
@@ -380,7 +380,7 @@ fn packaged_target(href: &str, from: Option<&str>) -> Option<Option<String>> {
 /// inside the package no matter where the rule is applied. References that
 /// would leave the package, or that are not relative, are left untouched
 /// (and are then refused or resolved exactly as before).
-pub(crate) fn absolutize_packaged_urls(css: &str, sheet_url: &str) -> String {
+pub fn absolutize_packaged_urls(css: &str, sheet_url: &str) -> String {
     let has_url = css
         .as_bytes()
         .windows(4)
@@ -494,7 +494,7 @@ fn absolutize_one(tail: &str, sheet_url: &str, out: &mut String) -> usize {
 }
 
 /// Canonical `nana://res/` key of a packaged reference, without reading it.
-pub(crate) fn packaged_canonical(href: &str, from: Option<&str>) -> Option<String> {
+pub fn packaged_canonical(href: &str, from: Option<&str>) -> Option<String> {
     packaged_target(href, from).flatten()
 }
 
@@ -673,7 +673,7 @@ pub fn with_font_face_byte_cap<R>(cap: u64, f: impl FnOnce() -> R) -> R {
     })
 }
 
-pub(crate) fn resolve_memory_href(href: &str, from: Option<&str>) -> String {
+pub fn resolve_memory_href(href: &str, from: Option<&str>) -> String {
     let trimmed = href.trim().replace('\\', "/");
     if trimmed.starts_with('/') {
         return normalize_memory_path(&trimmed);
@@ -1235,7 +1235,7 @@ fn take_ident(s: &str) -> Option<(&str, &str)> {
     Some((&s[..end], &s[end..]))
 }
 
-pub(crate) fn parse_css_url_or_string(s: &str) -> Option<(String, &str)> {
+pub fn parse_css_url_or_string(s: &str) -> Option<(String, &str)> {
     let s = s.trim_start();
     if s.len() >= 4 && s[..4].eq_ignore_ascii_case("url(") {
         let inner = &s[4..];

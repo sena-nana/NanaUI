@@ -314,7 +314,7 @@ pub fn merge_parsed_stylesheet(dest: &mut ParsedStylesheet, src: ParsedStyleshee
     }
 }
 
-pub(crate) fn offset_source_order(sheet: &mut ParsedStylesheet, delta: u32) {
+pub fn offset_source_order(sheet: &mut ParsedStylesheet, delta: u32) {
     if delta == 0 {
         return;
     }

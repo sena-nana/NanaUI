@@ -31,7 +31,7 @@ use nana_ui_core::box_layout::{
 use crate::css_map::parse_css_length_px;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum ParsedPaintTransform {
+pub enum ParsedPaintTransform {
     Affine(PaintTransform),
     Mat4(PaintMat4),
 }
@@ -39,7 +39,7 @@ pub(crate) enum ParsedPaintTransform {
 /// Parse a CSS transform list. 2D stays 2×3; 3D functions stay 4×4 even when
 /// the z=0 projection is affine, so a parent `perspective` / `preserve-3d`
 /// can fail-close instead of painting an orthographic squash.
-pub(crate) fn parse_css_transform(raw: &str) -> Option<ParsedPaintTransform> {
+pub fn parse_css_transform(raw: &str) -> Option<ParsedPaintTransform> {
     let (mat, used_3d) = parse_transform_mat4(raw)?;
     if !mat.m.iter().all(|v| v.is_finite()) {
         return None;
@@ -276,7 +276,7 @@ fn parse_transform_angle(raw: &str) -> Option<f32> {
 
 /// CSS `transform-origin`: keywords, `%`, `px`, 1–3 values. The optional z
 /// length is accepted and dropped (2×3 has no z pivot).
-pub(crate) fn parse_transform_origin(raw: &str) -> Option<TransformOrigin> {
+pub fn parse_transform_origin(raw: &str) -> Option<TransformOrigin> {
     let tokens: Vec<&str> = raw
         .split_whitespace()
         .filter(|part| !part.is_empty())
@@ -294,7 +294,7 @@ pub(crate) fn parse_transform_origin(raw: &str) -> Option<TransformOrigin> {
 
 /// CSS `transform-box`. `stroke-box` is not parsed (HTML used-value would be
 /// border-box). `initial` / `unset` restore CSS initial `view-box`.
-pub(crate) fn parse_transform_box(raw: &str) -> Option<TransformBox> {
+pub fn parse_transform_box(raw: &str) -> Option<TransformBox> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "border-box" => Some(TransformBox::BorderBox),
         "fill-box" => Some(TransformBox::FillBox),
@@ -421,8 +421,6 @@ fn parse_transform_length(raw: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::css_interactive::parse_keyframes_at_rule;
-    use crate::css_interactive_apply::keyframe_paint_at;
     use crate::css_map::LayoutStyleCss;
     use nana_ui_core::LayoutStyle;
 
@@ -610,22 +608,6 @@ mod tests {
         approx(rotated.b, 1.0);
         approx(rotated.c, -1.0);
         approx(rotated.d, 0.0);
-    }
-
-    #[test]
-    fn keyframes_lerp_2d_rotate_affine() {
-        let (rule, _) = parse_keyframes_at_rule(
-            "@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(90deg); } }",
-            0,
-        )
-        .expect("keyframes");
-        let mid = keyframe_paint_at(&rule, 0.5).expect("sample");
-        let transform = mid.transform.expect("transform");
-        // Motion bucket lerps the 2×3, not the angle.
-        approx(transform.a, 0.5);
-        approx(transform.b, 0.5);
-        approx(transform.c, -0.5);
-        approx(transform.d, 0.5);
     }
 
     fn rotate_90() -> PaintTransform {

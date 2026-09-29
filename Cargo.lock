@@ -2646,6 +2646,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-ui-css"
+version = "0.1.0"
+dependencies = [
+ "nana-ui-core",
+]
+
+[[package]]
 name = "nana-ui-dev"
 version = "0.1.0"
 dependencies = [
@@ -2795,6 +2802,7 @@ dependencies = [
  "nana-svg-raster",
  "nana-ui",
  "nana-ui-core",
+ "nana-ui-css",
  "nana-ui-platform",
  "nana-ui-runtime",
  "nana-ui-scene",
