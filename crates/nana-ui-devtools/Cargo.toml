@@ -60,10 +60,8 @@ runtime-agent = [
     "dep:serde",
     "dep:serde_json",
 ]
-# The runtime session's view inspector: `inspect` / `set_field` over the
-# declarative view layer, and with `reactive-trace` why a node last changed.
-reactive-view = ["runtime-agent", "nana-ui/reactive-view"]
-reactive-trace = ["reactive-view", "nana-ui/reactive-trace"]
+# Why a node last changed, in the runtime session's view inspector.
+reactive-trace = ["runtime-agent", "nana-ui/reactive-trace"]
 agent = [
     "runtime-agent",
     "dep:nana-ui-vue",

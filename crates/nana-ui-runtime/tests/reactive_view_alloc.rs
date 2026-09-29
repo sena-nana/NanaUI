@@ -1,6 +1,5 @@
 //! Heap cost of the declarative view layer, counted per thread so parallel
 //! tests do not disturb each other.
-#![cfg(feature = "reactive-view")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

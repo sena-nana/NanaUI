@@ -699,7 +699,6 @@ mod tests {
 
     /// A field built by a view gets its swatch and hex field without the
     /// view assembling it.
-    #[cfg(feature = "reactive-view")]
     #[test]
     fn a_view_field_assembles_itself() {
         use crate::view::widget;

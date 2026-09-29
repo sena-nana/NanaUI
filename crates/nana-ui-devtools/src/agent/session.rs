@@ -87,18 +87,14 @@ pub trait AgentSession {
     }
 
     /// A node as the declarative view layer sees it. Only a Runtime session
-    /// built with `reactive-view` has one.
+    /// has one.
     fn inspect(&self, _node: u64) -> Result<InspectDump, AgentError> {
-        Err(AgentError(
-            "this session has no view inspector (build it with `reactive-view`)".into(),
-        ))
+        Err(AgentError("this session has no view inspector".into()))
     }
 
     /// Write one field of a built-in control from text.
     fn set_field(&mut self, _node: u64, _field: &str, _value: &str) -> Result<(), AgentError> {
-        Err(AgentError(
-            "this session has no view inspector (build it with `reactive-view`)".into(),
-        ))
+        Err(AgentError("this session has no view inspector".into()))
     }
 
     /// Vue overrides this to consult the semantic snapshot, which can carry a

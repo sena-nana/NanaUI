@@ -1,5 +1,4 @@
-//! Declarative views over the retained tree. Unstable, behind
-//! `reactive-view`; see `docs/reactive-view.md`.
+//! Declarative views over the retained tree; see `docs/reactive-view.md`.
 //!
 //! A view is an expression built once. Its dynamic parts are signals or
 //! closures, and each binding updates exactly the node field it names:

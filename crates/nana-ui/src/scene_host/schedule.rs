@@ -67,7 +67,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.drain_browser_events(event_loop);
         // Views' futures whose wakers fired: what they write lands in the
         // next frame of the windows that read it.
-        #[cfg(feature = "reactive-view")]
         if nana_ui_runtime::view::poll_tasks() > 0 {
             self.request_reactive_redraws(None);
         }

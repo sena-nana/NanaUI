@@ -16,18 +16,16 @@ rich-text = ["dep:pulldown-cmark", "dep:mermaid-svg", "dep:ratex-parser", "dep:r
 components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
 default = []
 benchmark = []
-# Unstable declarative view layer: signals, bindings, keyed lists (docs/reactive-view.md).
-reactive-view = ["dep:nana-ui-view-schema"]
 # Records the reactive causal chain into a preallocated ring for "why did this update".
-reactive-trace = ["reactive-view"]
+reactive-trace = []
 # The `view!` template macro over the view layer (a separate proc-macro crate).
-view-macro = ["reactive-view", "dep:nana-ui-view-macros"]
+view-macro = ["dep:nana-ui-view-macros"]
 syntax-highlighting = ["dep:two-face"]
 
 [dependencies]
 fancy-regex = "0.16.2"
 hashbrown = "0.16.1"
-nana-ui-view-schema = { path = "../nana-ui-view-schema", optional = true }
+nana-ui-view-schema = { path = "../nana-ui-view-schema" }
 futures-core.workspace = true
 nana-ui-core.workspace = true
 nana-diagnostics.workspace = true
@@ -64,7 +62,7 @@ required-features = ["benchmark"]
 [[bin]]
 name = "nana-reactive-benchmark"
 path = "src/bin/nana-reactive-benchmark.rs"
-required-features = ["benchmark", "reactive-view"]
+required-features = ["benchmark"]
 
 [[bin]]
 name = "nana-theme-benchmark"

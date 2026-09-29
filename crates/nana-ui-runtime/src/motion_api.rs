@@ -510,7 +510,6 @@ fn user_timeline_animation_id(
 /// A one-shot run from `from` to `to` on the node's user track for
 /// `property`, replacing whatever that track was playing: an enter or leave
 /// of the view layer's transitions.
-#[cfg(feature = "reactive-view")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn presence_spec(
     target: StableNodeId,

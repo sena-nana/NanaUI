@@ -4,7 +4,7 @@
 //! first each round, and reports the minimum and median per operation. The
 //! numbers cover the authoring layer and its commits, not layout or paint.
 //!
-//! `cargo run --release -p nana-ui-runtime --features benchmark,reactive-view --bin nana-reactive-benchmark`
+//! `cargo run --release -p nana-ui-runtime --features benchmark --bin nana-reactive-benchmark`
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};

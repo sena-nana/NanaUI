@@ -51,7 +51,7 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 | --- | --- |
 | 入口类型、feature、扩展控件 | [应用 API](application-api.md) |
 | L3 组成式建树（`build` / `mount`） | [L3 组成式建树](l3-authoring.md) |
-| 声明式视图：`view!` 模板与 Rust 写法、信号、绑定、keyed 列表、样式表（不稳定原型） | [声明式视图](reactive-view.md) |
+| 声明式视图：`view!` 模板与 Rust 写法、信号、绑定、keyed 列表、样式表 | [声明式视图](reactive-view.md) |
 | crate 分层、所有权（改框架时） | [架构](architecture.md) |
 | 保留树与抽取（改 Runtime 时） | [Runtime 与 Scene](runtime-scene.md) |
 | Theme/Style 合同、`ThemeDefinition` 与 typed token、硬编码清单、work counter 基线（改主题架构时） | [主题与样式](theme.md) |

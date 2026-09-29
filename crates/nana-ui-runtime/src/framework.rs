@@ -79,7 +79,6 @@ mod assemble;
 mod build;
 mod document_text;
 mod overlay;
-#[cfg(feature = "reactive-view")]
 mod reactive;
 pub(crate) mod text_edit;
 mod text_history;
@@ -91,9 +90,7 @@ pub use overlay::{
     ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
     RuntimeOverlayKind,
 };
-#[cfg(feature = "reactive-view")]
 pub use reactive::MountedView;
-#[cfg(feature = "reactive-view")]
 pub(crate) use reactive::{bound_view, stage_bound_node};
 pub use text_edit::{TextDeleteKind, TextFindScope};
 pub use text_history::TextEditOrigin;
@@ -1082,7 +1079,6 @@ pub struct AppContext {
     input: input::InputState,
     /// Bindings, keyed lists and scopes of views mounted with
     /// [`Self::mount_view`].
-    #[cfg(feature = "reactive-view")]
     reactive: reactive::ReactiveHost,
 }
 
@@ -1414,7 +1410,6 @@ impl AppContext {
             text_edit: text_edit::TextEditSession::default(),
             text_histories: text_history::TextHistories::default(),
             input: input::InputState::default(),
-            #[cfg(feature = "reactive-view")]
             reactive: reactive::ReactiveHost::default(),
         };
         context
@@ -3144,7 +3139,6 @@ impl AppContext {
     }
 
     /// [`TypeBehavior::slot_assembler`], for the view layer.
-    #[cfg(feature = "reactive-view")]
     pub(crate) fn run_slot_assembler(
         &mut self,
         id: StableNodeId,
@@ -3156,7 +3150,6 @@ impl AppContext {
 
     /// What assembles a composite a view just built: its slot assembler, or
     /// the assembler that otherwise runs only after a write.
-    #[cfg(feature = "reactive-view")]
     pub(crate) fn run_built_assembler(
         &mut self,
         id: StableNodeId,
@@ -3384,7 +3377,6 @@ impl AppContext {
         self.assembled_parent
             .retain(|child, (parent, _)| !removed.contains(child) && !removed.contains(parent));
         self.placed_assembled.retain(|id| !removed.contains(id));
-        #[cfg(feature = "reactive-view")]
         self.forget_reactive(removed);
     }
 }

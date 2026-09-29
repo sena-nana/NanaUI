@@ -580,7 +580,6 @@ impl AppContext {
         }
         // Handlers wrote signals; apply their bindings before deciding
         // whether this event invalidated the frame.
-        #[cfg(feature = "reactive-view")]
         self.flush_reactive()?;
         Ok(InputRouteOutcome {
             handled: disposition.handled,

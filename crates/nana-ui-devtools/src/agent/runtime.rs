@@ -416,7 +416,6 @@ impl AgentSession for RuntimeAgentSession {
         Self::type_text(self, text)
     }
 
-    #[cfg(feature = "reactive-view")]
     fn inspect(&self, node: u64) -> Result<super::protocol::InspectDump, AgentError> {
         use super::protocol::{CauseDump, FieldDump, InspectDump};
         let target =
@@ -456,7 +455,6 @@ impl AgentSession for RuntimeAgentSession {
         })
     }
 
-    #[cfg(feature = "reactive-view")]
     fn set_field(&mut self, node: u64, field: &str, value: &str) -> Result<(), AgentError> {
         let target =
             StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;

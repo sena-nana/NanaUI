@@ -24,7 +24,7 @@ vue = ["dep:nana-ui-vue"]
 headless = ["dep:nana-ui-devtools"]
 # Hot text for `.vue` views compiled in hot mode (`watch_templates`): a save
 # that changes only static text reaches the running window without a rebuild.
-templates = ["dep:nana-ui-sfc", "nana-ui/reactive-view"]
+templates = ["dep:nana-ui-sfc"]
 
 [dependencies]
 nana-js-engine.workspace = true

@@ -7,9 +7,7 @@ impl AppContext {
     pub fn take_system_work(&mut self) -> crate::SystemWork {
         // Signal writes outside input (timers, program updates, other
         // contexts) land here, before the frame reads the world.
-        #[cfg(feature = "reactive-view")]
         crate::view::poll_tasks();
-        #[cfg(feature = "reactive-view")]
         if self.flush_reactive().is_err() {
             nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
         }
@@ -347,7 +345,6 @@ impl AppContext {
             }
             completed(2);
             self.apply_document_scroll_retention(document, force_full)?;
-            #[cfg(feature = "reactive-view")]
             self.play_pending_flips(document);
             completed(3);
             Ok(report)
@@ -602,7 +599,6 @@ impl AppContext {
         for target in finished_surfaces {
             let _ = self.finish_surface_exit(target);
         }
-        #[cfg(feature = "reactive-view")]
         self.finish_leaves(&frame.events);
         let tooltip_targets = self
             .component_lifecycle

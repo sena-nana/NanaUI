@@ -4391,12 +4391,10 @@ impl Stack {
         self
     }
 
-    #[cfg(feature = "reactive-view")]
     pub(crate) fn style_ref(&self) -> &NodeStyle {
         &self.style
     }
 
-    #[cfg(feature = "reactive-view")]
     pub(crate) fn style_mut(&mut self) -> &mut NodeStyle {
         &mut self.style
     }

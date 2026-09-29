@@ -103,7 +103,6 @@ impl<C: View> TypeBehavior<C> {
 #[derive(Clone, Copy)]
 pub(crate) struct ErasedBehavior {
     pub(crate) assembler: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
-    #[cfg(feature = "reactive-view")]
     pub(crate) slot_assembler: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
     pub(crate) activate_at: Option<fn(&mut AppContext, StableNodeId, f32, f32) -> Handled>,
     pub(crate) close_options: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
@@ -120,7 +119,6 @@ impl ErasedBehavior {
                     (C::BEHAVIOR.assembler.unwrap())(cx, Entity::from_stable_id(node))
                 }) as _
             }),
-            #[cfg(feature = "reactive-view")]
             slot_assembler: behavior.slot_assembler.map(|_| {
                 (|cx: &mut AppContext, node| {
                     (C::BEHAVIOR.slot_assembler.unwrap())(cx, Entity::from_stable_id(node))

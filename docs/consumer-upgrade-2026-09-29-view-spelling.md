@@ -1,8 +1,10 @@
 # 声明式视图：两种一级写法、token 样式表、具名 slot
 
-`view!` 模板和 Rust 写法都是正式写法，`view!` 展开出来就是 Rust 写法的调用；`.vue` 退为高级用法。以下改动都在不稳定的 `reactive-view` / `view-macro` feature 下。说明见 [声明式视图](reactive-view.md)。
+`view!` 模板和 Rust 写法都是正式写法，`view!` 展开出来就是 Rust 写法的调用；`.vue` 退为高级用法。视图层转正，默认编译进来。说明见 [声明式视图](reactive-view.md)。
 
 ## 需要改的地方
+
+- **`reactive-view` feature 删除。** 视图层默认编译进来。`nana-ui`、`nana-ui-runtime`、`nana-ui-devtools` 依赖里的 `"reactive-view"` 要去掉，否则 Cargo 报 feature 不存在。`view-macro`（`view!` / `css!` / `stylesheet!`）和 `reactive-trace` 仍是可选 feature；`nana-ui-devtools` 的视图检查（`inspect` / `set_field`）随 `runtime-agent` 一起提供。
 
 | 旧 | 新 |
 | --- | --- |
