@@ -88,17 +88,21 @@ suspense(
 
 样式表就是 CSS，用的是 Vue 路径同一个 CSS 子集（[布局](layout.md)），由同一个引擎 `nana-ui-css` 处理。区别在于什么时候做：Vue 路径在运行时解析和级联，L3 视图在**构建时**解析和匹配，运行时只拿到结果。
 
-```vue
-<template>
-  <Column class="todos" class:empty="list.with(Vec::is_empty)" :gap="8">…</Column>
-</template>
-<style scoped>
-.todos { opacity: 1; transition: opacity 120ms ease-out; }
-.todos.empty { opacity: 0.6; }
-</style>
+```rust
+view! {
+    <style>
+        .todos { opacity: 1; transition: opacity 120ms ease-out; }
+        .todos.empty { opacity: 0.6; font-size: "1.1em"; }
+    </style>
+    <Column class="todos" class:empty={list.with(Vec::is_empty)} gap=8>…</Column>
+}
 ```
 
-- **写法**：`class="a b"` 是固定的类；`class:名字="条件"` 是条件为真时才有的类（Rust 表达式写不出 Vue 的 `{ active: x }` 对象语法，所以用 Svelte 的写法）。`view!` 里写 `style = "…";` 放在模板最前面，属性写法相同；函数 API 用 `.css(css!("padding: 12px; opacity: 0.8"))` 给单个元素写一段声明。
+- **`view!` 里的 CSS 是 Rust token**：`<style>` 放在模板最前面，里面直接写 CSS。空格按 token 在源码里的位置还原，所以 `.a.b`（复合）和 `.a .b`（后代）不会混。Rust 词法写不出的值放进双引号，编译时去掉引号原样拼接：`em` / `ex` 单位（`"1.5em"`；`1em` 会被 rustc 当成缺指数的浮点数，在宏展开之前就报 `expected at least one digit in exponent`）、数字后紧跟 `e` 的十六进制颜色（`"#9ecafe"`）。CSS 里的单引号字符串改用双引号；`//` 只能写在引号里。`url("…")` 里的字符串和选择器里的字符串保留引号。
+- **检查**：每条警告都落在它说的那段 CSS 上：不支持的选择器和 at-rule 落在选择器上，Style Model 没有对应字段的声明落在那条声明上，没有规则用到的类落在元素的 `class` 属性上。`view!` 里是那个 token（编辑器里的波浪线就在那里），`.vue` 里是文件的行列。
+- `.vue` 的 `<style>` 是原样的 CSS 文本，不受上面的词法限制；两种写法编译出同样的补丁。
+
+- **写法**：`class="a b"` 是固定的类；`class:名字="条件"` 是条件为真时才有的类（Rust 表达式写不出 Vue 的 `{ active: x }` 对象语法，所以用 Svelte 的写法）。函数 API 用 `.css(css! { padding: 12px; opacity: 0.8 })` 给单个元素写一段声明，写法规则和 `<style>` 相同。
 - **编译**：`.a` 和 `.a.b` 这样的类选择器，按 `!important`、特异性、源码顺序排好级联。每条规则用 `nana-ui-css` 把声明施加到一份默认布局上，改动了的 Style Model 字段就是这条规则的补丁，以 JSON 数据嵌进程序；`var()` 按样式表自己的自定义属性在构建时求值。每个元素得到一张"补丁 + 需要哪些条件类"的表。
 - **运行时**：不解析 CSS，不匹配选择器，`nana-ui-runtime` 里也没有 CSS 代码。每个模板位置按"基础布局 + 当前生效的条件类"合成一次，结果是一份共享的布局，之后同一位置的所有实例（包括 `v-for` 的每一行）都只拿它的引用。条件类的条件是普通绑定，变化时换一份合成结果。
 - **`transition`**：编成隐式动画（`El::animate`）。绑定改变了 `opacity`、`transform`、`width`、`height` 或 `background` 时，在合成器轨道上从当前显示的值播到新值，逻辑样式直接取新值。只认元素固定类上的 `transition`。
@@ -320,7 +324,7 @@ impl ApplicationState for App {
 | `v-show` | `.visible(sig)` |
 | `onErrorCaptured` / `<ErrorBoundary>` | `error_boundary(fallback, content)`，视图返回 `Result`；模板里 `<ErrorBoundary :fallback>` |
 | `<Teleport to>` | `teleport(to, content)`；模板里 `<Teleport :to>` |
-| `<style scoped>`、`:class` | `<style>` 在构建时编译；`class="a"`、`class:a="条件"`；函数 API 用 `.css(css!(…))` |
+| `<style scoped>`、`:class` | `<style>` 在构建时编译；`class="a"`、`class:a="条件"`；函数 API 用 `.css(css! { … })` |
 | `<KeepAlive>` / `<component :is>` | `when(..).keep_alive()` / `dynamic(key, render).keep_alive().max(n)`；模板里 `<KeepAlive>` |
 | `<Transition>` / `<TransitionGroup>` | `when(..).transition(t)` / `each(..).transition(t.moves(..))`；模板里同名标签 |
 | `v-for` + `:key` | `each(items, key, row)` |

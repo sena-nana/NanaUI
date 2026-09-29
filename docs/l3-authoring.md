@@ -90,4 +90,4 @@ let start = cx.build(document_id, |ui| {
 
 GPUI 的现代面是：`Entity` 保留状态，每帧 `render()` 返回嵌套的 `div().child(...)`。Nana 只借作者层的嵌套 `.child` / 事件就近绑定，运行时仍是保留 `UiWorld`（Vue L1/L2 与 Rust 写同一棵树、增量 flush、稳定 `StableNodeId`）。
 
-不抄这些：`div()` / Tailwind 式的链式样式 API（和 Style Model 冲突；要写 CSS 就写 CSS：L3 视图的 `<style>`、`style = "…"`、`css!` 在构建时由 `nana-ui-css` 编译成 Style Model 数据，见 [reactive-view](reactive-view.md)）、每帧 `impl Render`、`cx.notify()` 重投影整 View、把闭包塞进 `Button` 字段（`ComponentView` 要 `Clone`）。handler 仍在 `AppContext` 表里，只是写在 child 旁边。
+不抄这些：`div()` / Tailwind 式的链式样式 API（和 Style Model 冲突；要写 CSS 就写 CSS：L3 视图的 `<style>`、`css!` 在构建时由 `nana-ui-css` 编译成 Style Model 数据，见 [reactive-view](reactive-view.md)）、每帧 `impl Render`、`cx.notify()` 重投影整 View、把闭包塞进 `Button` 字段（`ComponentView` 要 `Clone`）。handler 仍在 `AppContext` 表里，只是写在 child 旁边。

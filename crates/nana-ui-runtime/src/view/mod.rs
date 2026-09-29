@@ -102,7 +102,8 @@ pub use crate::text;
 pub use nana_ui_view_macros::view as __view;
 
 /// One CSS declaration block compiled at build time, for [`El::css`]
-/// (feature `view-macro`): `.css(css!("padding: 12px; opacity: 0.8"))`.
+/// (feature `view-macro`): `.css(css! { padding: 12px; opacity: 0.8 })`.
+/// A value Rust cannot tokenize goes in double quotes: `font-size: "1.5em"`.
 #[cfg(feature = "view-macro")]
 #[macro_export]
 macro_rules! css {

@@ -126,11 +126,11 @@ pub mod bench {
             row(
                 8.0,
                 (
-                    text(format!("第 {index} 行")).css(css!("flex-grow: 1")),
+                    text(format!("第 {index} 行")).css(css! { flex-grow: 1 }),
                     button("打开"),
                 ),
             )
-            .css(css!("padding: 4px 8px"))
+            .css(css! { padding: 4px 8px })
             .prop::<bool, Dimmed>(move || selected.get() == index)
         }
     }

@@ -566,9 +566,12 @@ mod styles {
                 let open = signal(false);
                 flag.set(Some(open));
                 view! {
-                    style = ".panel { padding: 6px; } .panel.open { opacity: 0.5; }";
+                    <style>
+                        .panel { padding: 6px; }
+                        .panel.open { opacity: 0.5; }
+                    </style>
                     <Column class="panel" class:open={open}>
-                        {widget(Stack::row(0.0)).css(css!("margin: 3px; opacity: 0.25")).into_any()}
+                        {widget(Stack::row(0.0)).css(css! { margin: 3px; opacity: 0.25 }).into_any()}
                         <Text>"x"</Text>
                     </Column>
                 }
@@ -584,5 +587,40 @@ mod styles {
         assert_eq!(layout_of(&cx, inline).margin, Some(LengthSpec::Px(3.0)));
         assert_eq!(layout_of(&cx, inline).opacity, Some(0.25));
         let _ = text("");
+    }
+
+    /// The space in `.panel .open` is a descendant combinator, which L3
+    /// views do not compile; without it `.panel.open` is a compound that
+    /// applies. Quoted values are spliced bare.
+    #[test]
+    #[allow(deprecated)] // the descendant rule is a warning
+    fn style_tokens_keep_the_space_between_selectors() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let parent = cx
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let flag = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let open = signal(false);
+                flag.set(Some(open));
+                view! {
+                    <style>
+                        .panel .open { opacity: 0.5; }
+                        .panel.open { padding: "2px"; }
+                    </style>
+                    <Column class="panel" class:open={open}>
+                        <Text>"x"</Text>
+                    </Column>
+                }
+            })
+            .unwrap();
+        let panel = view.roots()[0];
+        flag.get().unwrap().set(true);
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, panel).padding, Some(LengthSpec::Px(2.0)));
+        assert_eq!(layout_of(&cx, panel).opacity, None);
     }
 }

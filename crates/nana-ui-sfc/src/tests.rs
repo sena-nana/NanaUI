@@ -728,5 +728,14 @@ let done = signal(false);
         warnings.contains("no rule in `<style>` uses class `ghost`"),
         "{warnings}"
     );
+    // Each at the file position of what it is about.
+    for expected in [
+        "Card.vue: 15:1: `:hover`",
+        "Card.vue: 16:1: the rule for `.card > .title`",
+        "Card.vue: 17:9: `frobnicate: 3`",
+        "Card.vue: 7:13: `<Button>`: no rule in `<style>` uses class `ghost`",
+    ] {
+        assert!(warnings.contains(expected), "{expected}\n{warnings}");
+    }
     assert!(!code.contains("frobnicate"), "{code}");
 }

@@ -25,7 +25,30 @@ pub struct Component {
     pub script: Vec<Stmt>,
     pub template: Vec<Node>,
     /// The `<style>` block's CSS, compiled against this view's elements.
-    pub style: Option<String>,
+    pub style: Option<Style>,
+}
+
+/// A `<style>` block's CSS and where it starts in the file.
+pub struct Style {
+    pub css: String,
+    /// 1-based.
+    pub line: usize,
+    /// 0-based, in characters.
+    pub column: usize,
+}
+
+impl Style {
+    /// `line:column` (1-based) of a byte offset into the CSS.
+    pub fn position(&self, offset: usize) -> (usize, usize) {
+        let before = &self.css[..offset.min(self.css.len())];
+        match before.rfind('\n') {
+            None => (self.line, self.column + before.chars().count() + 1),
+            Some(newline) => (
+                self.line + before.matches('\n').count(),
+                before[newline + 1..].chars().count() + 1,
+            ),
+        }
+    }
 }
 
 struct Source<'a> {
@@ -188,7 +211,12 @@ pub fn component(file: &str, text: &str) -> Result<Component, Error> {
             if attrs.contains("lang=") && !attrs.contains("lang=\"css\"") {
                 return Err(src.error(start, "`<style>` takes plain CSS (`lang=\"css\"`)"));
             }
-            Some(src.text[start..end].to_owned())
+            let pos = src.pos(start);
+            Some(Style {
+                css: src.text[start..end].to_owned(),
+                line: pos.line,
+                column: pos.column,
+            })
         }
         None => None,
     };

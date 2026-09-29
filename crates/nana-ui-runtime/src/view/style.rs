@@ -168,7 +168,7 @@ impl<C: StyledComponent + ComponentView, K> El<C, K> {
     }
 }
 
-/// One declaration block compiled at build time (`css!("…")`): its patch
+/// One declaration block compiled at build time (`css! { … }`): its patch
 /// and its implicit animations. See [`El::css`].
 #[derive(Clone, Copy)]
 pub struct InlineStyle {
@@ -188,7 +188,7 @@ impl InlineStyle {
 
 impl<C: StyledComponent + ComponentView, K> El<C, K> {
     /// A declaration block compiled by `css!`: `column(8.0, rows)
-    /// .css(css!("padding: 12px; transition: opacity 150ms"))`. Call it
+    /// .css(css! { padding: 12px; transition: opacity 150ms })`. Call it
     /// before other layout props.
     #[track_caller]
     pub fn css(self, style: InlineStyle) -> Self {

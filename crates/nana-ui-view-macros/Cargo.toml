@@ -12,6 +12,6 @@ proc-macro = true
 [dependencies]
 nana-ui-view-codegen = { path = "../nana-ui-view-codegen" }
 proc-macro-crate = "3"
-proc-macro2 = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 syn = { version = "2", features = ["full"] }

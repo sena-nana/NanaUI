@@ -300,7 +300,7 @@ impl Compiler {
             items: style_items,
             warnings: style_warnings,
         } = nana_ui_view_codegen::compile_styles(
-            style.as_deref().unwrap_or_default(),
+            style.as_ref().map_or("", |style| style.css.as_str()),
             &mut template,
             &self.runtime,
         );
@@ -316,7 +316,18 @@ impl Compiler {
         let (body, lints) = nana_ui_view_codegen::expand_checked(&self.runtime, &template)
             .map_err(|error| parse::syn_error(file, error))?;
         let mut warnings = analysis.warnings.clone();
-        warnings.extend(style_warnings);
+        warnings.extend(style_warnings.into_iter().map(|warning| {
+            let (line, column) = match warning.at {
+                nana_ui_view_codegen::StyleAt::Sheet(range) => style
+                    .as_ref()
+                    .map_or((1, 1), |style| style.position(range.start)),
+                nana_ui_view_codegen::StyleAt::Template(span) => {
+                    let start = span.start();
+                    (start.line, start.column + 1)
+                }
+            };
+            format!("{line}:{column}: {}", warning.message)
+        }));
         warnings.extend(lints.into_iter().map(|lint| {
             let start = lint.span.start();
             format!("{}:{}: {}", start.line, start.column + 1, lint.message)

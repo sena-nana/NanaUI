@@ -5,7 +5,7 @@
 
 mod style;
 
-pub use style::{CompiledStyles, compile_inline, compile_styles};
+pub use style::{CompiledStyles, StyleAt, StyleWarning, compile_inline, compile_styles};
 
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote, quote_spanned};
@@ -124,6 +124,7 @@ pub fn expand(krate: &TokenStream, nodes: &[Node]) -> syn::Result<TokenStream> {
 }
 
 /// A problem in a template that still compiles: where, and what.
+#[derive(Debug)]
 pub struct Warning {
     pub span: Span,
     pub message: String,
