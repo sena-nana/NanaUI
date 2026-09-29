@@ -21,6 +21,7 @@
 
 mod controls;
 mod each_virtual;
+mod error;
 mod node;
 mod prop;
 pub(crate) mod reactive;
@@ -38,6 +39,7 @@ pub use controls::{
     select, slider, spinner, switch, text, text_area, text_input,
 };
 pub use each_virtual::{EachVirtual, each_virtual};
+pub use error::{ErrorBoundary, error_boundary, report_error};
 pub use node::{
     AnyView, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef, ViewBuilder, keyed,
     node_ref, widget,

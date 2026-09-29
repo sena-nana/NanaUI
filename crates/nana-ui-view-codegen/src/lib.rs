@@ -76,8 +76,8 @@ pub fn control(tag: &str) -> Option<&'static Control> {
 }
 
 /// Whether `tag` is built in: a control, `Column`, `Row`, `Widget`,
-/// `Virtual`, `Transition`, `TransitionGroup`, `KeepAlive`, `Suspense` or
-/// `Teleport`.
+/// `Virtual`, `Transition`, `TransitionGroup`, `KeepAlive`, `Suspense`,
+/// `Teleport` or `ErrorBoundary`.
 pub fn is_builtin(tag: &str) -> bool {
     matches!(
         tag,
@@ -90,6 +90,7 @@ pub fn is_builtin(tag: &str) -> bool {
             | "KeepAlive"
             | "Suspense"
             | "Teleport"
+            | "ErrorBoundary"
     ) || control(tag).is_some()
 }
 
@@ -848,6 +849,28 @@ impl Gen<'_> {
                 return self.block(element, Vec::new(), true);
             }
             ("Suspense", _) => return self.suspense(element),
+            ("ErrorBoundary", _) => {
+                let krate = self.krate;
+                let fallback = element
+                    .attrs
+                    .iter()
+                    .find_map(|attr| match &attr.name {
+                        AttrName::Plain(name) if name == "fallback" => Some(raw(&attr.value, span)),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        syn::Error::new(
+                            span,
+                            "`<ErrorBoundary>` needs `fallback={|errors| view}`, the view shown \
+                             while an error stands",
+                        )
+                    })??;
+                let body = self.nodes(children)?;
+                (
+                    quote_spanned!(span=> #krate::view::error_boundary(#fallback, move || #body)),
+                    vec!["fallback"],
+                )
+            }
             ("Teleport", _) => {
                 let krate = self.krate;
                 let mut to = None;

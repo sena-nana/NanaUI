@@ -120,6 +120,10 @@ pub mod runtime {
         Severity::Error,
         &[],
     );
+    /// Fault: a view failed (`Err`) with no error boundary above it to show
+    /// it. The message carries the error.
+    pub static VIEW_ERROR_UNHANDLED: EventDescriptor =
+        EventDescriptor::new(D, 4, "runtime.view.error_unhandled", Severity::Error, &[]);
 }
 
 pub mod layout {

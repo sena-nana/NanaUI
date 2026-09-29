@@ -1525,3 +1525,52 @@ fn teleported_content_lives_under_the_target_and_dies_with_its_declaration() {
     );
     assert!(children(&cx, layer).is_empty());
 }
+
+#[test]
+fn an_error_boundary_shows_its_fallback_while_a_view_inside_failed() {
+    let (mut cx, _, parent) = setup();
+    let handle = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let input = signal(String::from("12"));
+            handle.set(Some(input));
+            error_boundary(
+                |errors| text(format!("出错：{}", errors.join("；"))),
+                move || {
+                    dynamic(input, |input: &String| {
+                        input
+                            .parse::<u32>()
+                            .map(|n| text(format!("数 {n}")))
+                            .map_err(|_| format!("{input} 不是数"))
+                    })
+                },
+            )
+        })
+        .unwrap();
+    let input = handle.get().unwrap();
+    let root = view.roots()[0];
+    let [content, fallback] = children(&cx, root)[..] else {
+        panic!("content and fallback blocks");
+    };
+    let hidden = |cx: &AppContext| {
+        cx.world()
+            .node_style(content)
+            .is_some_and(|style| style.layout.hidden)
+    };
+    assert!(!hidden(&cx));
+    assert!(children(&cx, fallback).is_empty());
+
+    input.set("abc".into());
+    cx.flush_reactive().unwrap();
+    assert!(hidden(&cx), "content hidden while the error stands");
+    let shown = children(&cx, fallback);
+    assert_eq!(
+        text_of(&cx, Entity::from_stable_id(shown[0])),
+        "出错：abc 不是数"
+    );
+
+    input.set("7".into());
+    cx.flush_reactive().unwrap();
+    assert!(!hidden(&cx), "the failed branch was dropped with its error");
+    assert!(children(&cx, fallback).is_empty());
+}

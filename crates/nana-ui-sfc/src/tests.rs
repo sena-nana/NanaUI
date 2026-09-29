@@ -582,3 +582,21 @@ let layer = node_ref();
         "{code}"
     );
 }
+
+#[test]
+fn an_error_boundary_takes_its_fallback_as_a_closure() {
+    let out = compile(&[(
+        "Guard.vue",
+        r#"<template>
+  <ErrorBoundary :fallback='|errors| text(errors.join("；"))'>
+    <Text>内容</Text>
+  </ErrorBoundary>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(
+        code.contains(&squash("::nana_ui_runtime::view::error_boundary(|errors|")),
+        "{code}"
+    );
+}

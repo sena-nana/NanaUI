@@ -1277,6 +1277,17 @@ impl<T: 'static> Signal<T> {
         with_rt(|rt| rt.notify(self.key, at));
     }
 
+    /// [`Self::update`], unless the signal's scope is already disposed;
+    /// answers whether it ran. For cleanups that may outlive the signal.
+    #[track_caller]
+    pub fn try_update(&self, f: impl FnOnce(&mut T)) -> bool {
+        if created_at(self.key).is_none() {
+            return false;
+        }
+        self.update(f);
+        true
+    }
+
     #[doc(hidden)]
     pub fn dep(&self) -> Dep {
         Dep(self.key)

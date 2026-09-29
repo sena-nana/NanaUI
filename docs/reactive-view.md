@@ -256,6 +256,7 @@ impl ApplicationState for App {
 | `when` | 条件变了才动：旧分支回收作用域并销毁，新分支建好后插入。`.visible(sig)` 则保留节点，只切 `layout.hidden`（对应 `v-show`） |
 | 保活 | `when(..).keep_alive()`：没显示的那个分支连同节点和状态保留，切回来时原样出现（Vue `<KeepAlive>`）。保留的分支移进容器里一个隐藏的 `Stack`（不参与布局、绘制和命中测试，焦点会移走），容器销毁时一起销毁。`dynamic(key, render)` 按 key 显示一个视图（Vue `<component :is>`），`.keep_alive()` 保留之前 key 的视图，`.max(n)` 最多保留 n 个、先丢最久没显示的。模板里 `<KeepAlive>` 包住一条 `v-if` 链，可以和 `<Transition>` 互相嵌套；保活的分支切走时不播离场，切回来时播进场 |
 | 传送 | `teleport(to, content)`：`content` 在声明处构建、归声明处的作用域，跟着声明处一起销毁，但在树里挂到 `to` 下面（Vue `<Teleport>`），所以布局、绘制、命中测试、焦点顺序和无障碍都按 `to` 的位置。`to` 可以是 `NodeRef`、节点 id 或选出节点的闭包，变化时跟着移动；为 `None` 或目标不在时留在原处。底层是 `place_assembled`。模板里写 `<Teleport :to="layer">` |
+| 错误 | 错误是值：`Result<V, E>`（`E: Display`）本身就是视图，`Err(e)` 什么都不建，把 `e` 报给上面最近的 `error_boundary(fallback, content)`；`report_error(e)` 手动报。边界里只要还有错误，就隐藏内容、显示 `fallback(错误列表)`。错误跟着报它的作用域走：失败的分支或行因为数据变化被丢掉，错误也就撤掉，内容原样回来。没有边界时报 `runtime.view.error_unhandled` fault。panic 是 bug，不捕获。模板里写 `<ErrorBoundary :fallback='\|errors\| …'>` |
 | 回收 | 节点被销毁时（不管从哪条路径），`commit_mutations` 的清理段会回收它的绑定、结构副作用和锚定在它身上的作用域 |
 | 上下文 | `provide(value)` / `use_context::<T>()`：值挂在当前作用域上，下层作用域（包括之后才建出来的行和分支）沿父链读取，最近的提供者优先。只能在构建视图时读；事件处理器运行时不在任何作用域里 |
 | 出帧 | 宿主每处理完一次更新（输入、程序消息、定时器），都会检查各窗口有没有待应用的绑定；有就请求重绘，所以在 `RuntimeProgram::update` 里改信号也会出帧 |
@@ -273,6 +274,7 @@ impl ApplicationState for App {
 | `@click` | `.on_activate(move \|\| …)`，其他事件用 `.on(move \|e: &E\| …)` |
 | `v-if` / `v-else` | `when(cond, \|\| a).otherwise(\|\| b)` |
 | `v-show` | `.visible(sig)` |
+| `onErrorCaptured` / `<ErrorBoundary>` | `error_boundary(fallback, content)`，视图返回 `Result`；模板里 `<ErrorBoundary :fallback>` |
 | `<Teleport to>` | `teleport(to, content)`；模板里 `<Teleport :to>` |
 | `<KeepAlive>` / `<component :is>` | `when(..).keep_alive()` / `dynamic(key, render).keep_alive().max(n)`；模板里 `<KeepAlive>` |
 | `<Transition>` / `<TransitionGroup>` | `when(..).transition(t)` / `each(..).transition(t.moves(..))`；模板里同名标签 |
