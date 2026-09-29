@@ -1019,3 +1019,27 @@ mod blocks_mirror {
         );
     }
 }
+
+/// `on:Event={|component, event, cx| …}` is `.on_cx`: the handler gets the
+/// component and its context, as in Rust.
+#[test]
+fn a_three_argument_handler_gets_the_component_and_its_context() {
+    use nana_ui_runtime::{Activate, Button};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let view = cx
+        .mount_view_root(document, || {
+            view! {
+                <Button on:Activate={|button: &mut Button, _: &Activate, cx| {
+                    button.label = "已按".into();
+                    cx.dispatch_program(7u32);
+                }}>"按"</Button>
+            }
+        })
+        .unwrap();
+    let button = view.root::<Button>().unwrap();
+    cx.activate_button(button).unwrap();
+    assert_eq!(cx.read(button, |b| b.label.clone()).unwrap(), "已按");
+    let messages = cx.take_program_messages();
+    assert_eq!(messages[0].downcast_ref::<u32>(), Some(&7));
+}

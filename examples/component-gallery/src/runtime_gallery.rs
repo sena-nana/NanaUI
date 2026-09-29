@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use nana_ui::runtime::view::{node_ref, widget};
+use nana_ui::runtime::view::{EntityRef, entity_ref, widget};
 use nana_ui::runtime::{
     Activate, AppShell, AppTitleBar, Avatar, Button, CalendarHeatmap, CalendarHeatmapDatum,
     CalendarHeatmapEvent, Card, Checkbox, Chip, DesktopShell, DiffHunk, DiffLine, DiffView,
@@ -300,11 +300,11 @@ impl GalleryRuntime {
         );
         let refs = std::cell::Cell::new(None);
         let view = context.mount_view_root(document_id, || {
-            let [toggle, search, theme, leading, center, trailing, label] =
-                std::array::from_fn(|_| node_ref());
-            refs.set(Some([
-                toggle, search, theme, leading, center, trailing, label,
-            ]));
+            let icons = [entity_ref(), entity_ref(), entity_ref()];
+            let [toggle, search, theme] = icons;
+            let (leading, trailing) = (entity_ref(), entity_ref());
+            let (center, label) = (entity_ref(), entity_ref());
+            refs.set(Some((icons, leading, center, trailing, label)));
             let muted = hugging_text(
                 section_label(state.section),
                 SemanticColorRole::Muted,
@@ -328,40 +328,25 @@ impl GalleryRuntime {
             )
             .title_leading(
                 widget(HostStack::leading_row(0.0))
-                    .node_ref(leading)
-                    .children(widget(sidebar_toggle_button(sidebar_collapsed)).node_ref(toggle)),
+                    .entity_ref(leading)
+                    .children(widget(sidebar_toggle_button(sidebar_collapsed)).entity_ref(toggle)),
             )
-            .title_center(widget(title).node_ref(center))
-            .title_trailing(widget(HostStack::row(6.0)).node_ref(trailing).children((
-                widget(muted).node_ref(label),
-                widget(search_command_button()).node_ref(search),
-                widget(theme_toggle_button(state.theme)).node_ref(theme),
+            .title_center(widget(title).entity_ref(center))
+            .title_trailing(widget(HostStack::row(6.0)).entity_ref(trailing).children((
+                widget(muted).entity_ref(label),
+                widget(search_command_button()).entity_ref(search),
+                widget(theme_toggle_button(state.theme)).entity_ref(theme),
             )))
         })?;
-        let shell = Entity::from_stable_id(view.roots()[0]);
-        let [
-            sidebar_toggle,
-            search_button,
-            theme_button,
-            title_leading,
-            title_center,
-            title_trailing,
-            context_label,
-        ] = refs
-            .get()
-            .expect("the shell view ran")
-            .map(|built| built.get().expect("the shell view built every node"));
-        let (sidebar_toggle, search_button, theme_button) = (
-            Entity::from_stable_id(sidebar_toggle),
-            Entity::from_stable_id(search_button),
-            Entity::from_stable_id(theme_button),
-        );
-        let (title_leading, title_center, title_trailing, context_label) = (
-            Entity::from_stable_id(title_leading),
-            Entity::from_stable_id(title_center),
-            Entity::from_stable_id(title_trailing),
-            Entity::from_stable_id(context_label),
-        );
+        let shell = view.root().expect("the shell view has its shell");
+        let (icons, leading, center, trailing, label) = refs.get().expect("the shell view ran");
+        let built = "the shell view built every node";
+        let [sidebar_toggle, search_button, theme_button] =
+            icons.map(|icon| icon.get().expect(built));
+        let (title_leading, title_center) =
+            (leading.get().expect(built), center.get().expect(built));
+        let (title_trailing, context_label) =
+            (trailing.get().expect(built), label.get().expect(built));
         context.assemble_dock(workspace.dock)?;
 
         bind_event(
@@ -1255,60 +1240,48 @@ fn mount_sidebar(
     document_id: DocumentId,
     state: &GalleryState,
 ) -> Result<SidebarMount, FrameworkError> {
-    context.build_detached(document_id, |ui| {
-        let mut spec = SidebarSection::new("Gallery").count(6);
-        let title = ui.parked(spec.title_label());
-        spec = spec.title_slot(title.stable_id());
-        let header = ui.parked(spec.header_item());
-        ui.nest(header, |ui| ui.adopt(title));
-        let body = ui.parked(SidebarSection::body_port());
-        let mut rows = Vec::with_capacity(6);
-        ui.nest(body, |ui| {
-            for (index, (target, label, icon)) in SECTIONS.iter().enumerate() {
-                let leading = ui.parked(SidebarRowIcon::new(*icon));
-                let row = ui.child(
-                    format!("row-{index}"),
-                    SidebarRow::new(*label)
-                        .state(if state.section == *target {
-                            SidebarRowState::Active
-                        } else {
-                            SidebarRowState::Idle
-                        })
-                        .slots(ListItemSlots {
-                            leading: Some(leading.stable_id()),
+    let refs = std::cell::Cell::new(None);
+    context.mount_view_detached(document_id, || {
+        let frame = entity_ref::<SidebarFrame>();
+        let rows: [EntityRef<SidebarRow>; 6] = std::array::from_fn(|_| entity_ref());
+        let settings = entity_ref::<SidebarFooterButton>();
+        refs.set(Some((frame, rows, settings)));
+        let row_views = SECTIONS
+            .iter()
+            .zip(rows)
+            .enumerate()
+            .map(|(index, ((target, label, icon), row))| {
+                let row_state = if state.section == *target {
+                    SidebarRowState::Active
+                } else {
+                    SidebarRowState::Idle
+                };
+                widget(SidebarRow::new(*label).state(row_state))
+                    .key(format!("row-{index}"))
+                    .entity_ref(row)
+                    .child_slot(widget(SidebarRowIcon::new(*icon)), |row, leading| {
+                        row.slots(ListItemSlots {
+                            leading: Some(leading),
                             content: None,
                             trailing: None,
-                        }),
-                );
-                ui.nest(row, |ui| ui.adopt(leading));
-                rows.push(row);
-            }
-        });
-        let section = ui.parked(spec.header(header.stable_id()).body(body.stable_id()));
-        ui.nest(section, |ui| {
-            ui.adopt(header);
-            ui.adopt(body);
-        });
-        let scroll = ui.parked(SidebarFrame::vertical_body_scroll());
-        ui.nest(scroll, |ui| ui.adopt(section));
-        let settings = ui.parked(SidebarFooterButton::new("设置", Icon::Settings));
-        let footer = ui.parked(SidebarFooter::new());
-        ui.nest(footer, |ui| ui.adopt(settings));
-        let frame = ui.detached(
-            SidebarFrame::new()
-                .body(scroll.stable_id())
-                .footer(footer.stable_id()),
-        );
-        ui.nest(frame, |ui| {
-            ui.adopt(scroll);
-            ui.adopt(footer);
-        });
-        (
-            frame,
-            [rows[0], rows[1], rows[2], rows[3], rows[4], rows[5]],
-            settings,
-        )
-    })
+                        })
+                    })
+            })
+            .collect::<Vec<_>>();
+        widget(SidebarFrame::new())
+            .entity_ref(frame)
+            .body(widget(SidebarSection::new("Gallery").count(6)).children(row_views))
+            .footer(widget(SidebarFooter::new()).children(
+                widget(SidebarFooterButton::new("设置", Icon::Settings)).entity_ref(settings),
+            ))
+    })?;
+    let (frame, rows, settings) = refs.get().expect("the sidebar view ran");
+    let built = "the sidebar view built every node";
+    Ok((
+        frame.get().expect(built),
+        rows.map(|row| row.get().expect(built)),
+        settings.get().expect(built),
+    ))
 }
 
 fn mount_controls(

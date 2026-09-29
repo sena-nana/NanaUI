@@ -25,6 +25,7 @@
 
 - `list.each(key, row)` 等于 `each(list, key, row)`；`cond.then_show(|| v).otherwise(|| w)` 等于 `when(cond, || v).otherwise(|| w)`（`EachExt`、`WhenExt`）。
 - `El::with(|c| …)` 和 `Children`：用普通 Rust 语句加子节点。
+- 和手写代码配合：`entity_ref::<C>()` / `El::entity_ref` / `EntityRef::get`（类型化句柄）、`El::on_cx`（处理器拿到组件和 `ViewContext`，模板里是三个参数的 `on:E={…}`）、`AppContext::mount_view_detached`、`MountedView::root`。
 - `stylesheet!`、`Class`、`Sheet`、`El::class`、`El::class_when`。
 - `view!` 的具名 slot：`<template #navigation>…</template>` 展开成元素上的 `.navigation(view)`，`#title-trailing` 是 `.title_trailing(…)`，`#default` 是普通子节点。`<Suspense>` 的 `#fallback` 在 `view!` 里也能写了。
 - 组合控件在视图里自己装配：`DesktopShell`、`AppTitleBar`、`SettingsRow`、`SegmentedControl`、`SidebarSection`、`AppShell`、`Workspace`、`Dock`、`SplitPane`（新增无内容的 `SplitPane::new(&model)`，内容用 `.first` / `.second`）、`PaneSection`（`.header` / `.tabs` / `.body`）、`GraphCanvas`、`DatePicker`、`NativeMarkdown`、`ConfirmDialog`、设置页的 `AppearanceSection` / `AboutSection` / `SettingsSidebar` / `SettingsCollapsibleCard`（`.summary` / `.details` / `.accessory`）/ `SettingsPage`（`.content`）登记了 `TypeBehavior::slot_assembler`（`SidebarSection` 自己建表头和 body，见 `AppContext::assemble_sidebar_section`；`SidebarFrame` 有 `.top` / `.body` / `.footer`；`AppShell` 有 `.title_bar` / `.body` / `.overlay`，`Workspace` 有 `.region(id, view)`；Dock 的面板是 key 等于面板 id 的子节点，见 `AppContext::assemble_dock_panels`）；`Chip`、`ColorField`、`PathField`、`FileTab`、`DiffView`、`MediaTransportBar` 在视图建好时运行自己的装配。视图里不再调用 `assemble_*`。

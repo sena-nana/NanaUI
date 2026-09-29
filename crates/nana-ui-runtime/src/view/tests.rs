@@ -2312,3 +2312,39 @@ fn settings_composites_assemble_in_a_view_as_by_hand() {
         assert!(!children(&cx, *view).is_empty(), "{}", shape(&cx, *view));
     }
 }
+
+#[test]
+fn entity_refs_and_context_handlers_serve_code_that_works_by_hand() {
+    #[derive(Debug, PartialEq)]
+    struct Pressed(u32);
+    let (mut cx, _, parent) = setup();
+    let refs = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let label = entity_ref::<Text>();
+            let press = entity_ref::<Button>();
+            refs.set(Some((label, press)));
+            column().children((
+                text("未按").entity_ref(label),
+                button("按").entity_ref(press).on_cx(
+                    |button: &mut Button, _: &crate::Activate, cx| {
+                        button.label = "已按".into();
+                        cx.dispatch_program(Pressed(1));
+                    },
+                ),
+            ))
+        })
+        .unwrap();
+    let (label, press) = refs.get().unwrap();
+    let (label, press) = (label.get().unwrap(), press.get().unwrap());
+    assert_eq!(view.root::<Stack>().unwrap().stable_id(), view.roots()[0]);
+    cx.update_component(label, |text, _| text.value = "手动".into())
+        .unwrap();
+    assert_eq!(text_of(&cx, label), "手动");
+
+    cx.activate_button(press).unwrap();
+    assert_eq!(cx.read(press, |b| b.label.clone()).unwrap(), "已按");
+    let messages = cx.take_program_messages();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].downcast_ref::<Pressed>(), Some(&Pressed(1)));
+}

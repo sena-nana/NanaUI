@@ -51,8 +51,8 @@ pub use error::{ErrorBoundary, error_boundary, report_error};
 pub use hot::{__hot_register, __hot_text};
 pub use hot::{HotReloadError, apply_hot_literals};
 pub use node::{
-    AnyView, Children, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef, ViewBuilder,
-    keyed, node_ref, widget,
+    AnyView, Children, El, EntityRef, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef,
+    ViewBuilder, entity_ref, keyed, node_ref, widget,
 };
 pub use node::{InspectedField, Inspection};
 pub(crate) use node::{NodePatch, StructuralBinding, ViewParts, ViewState};

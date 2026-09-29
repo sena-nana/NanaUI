@@ -8,7 +8,8 @@ use std::panic::Location;
 use super::prop::{FieldWrite, IntoProp};
 use super::reactive::{self, EffectKey, EffectTarget, ScopeKey, Signal, SignalKey};
 use crate::{
-    AppContext, ComponentView, Entity, FrameworkError, MutationQueue, StableNodeId, UiBuilder, View,
+    AppContext, ComponentView, Entity, FrameworkError, MutationQueue, StableNodeId, UiBuilder,
+    View, ViewContext,
 };
 
 pub(crate) const UNBUILT: StableNodeId = match StableNodeId::new(u64::MAX) {
@@ -454,6 +455,44 @@ pub fn node_ref() -> NodeRef {
     super::signal(None)
 }
 
+/// The entity an element of type `C` was built as ([`El::entity_ref`]): a
+/// typed [`NodeRef`], for code that updates the node by hand afterwards.
+pub struct EntityRef<C> {
+    node: NodeRef,
+    _type: std::marker::PhantomData<fn() -> C>,
+}
+
+impl<C> Clone for EntityRef<C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<C> Copy for EntityRef<C> {}
+
+/// An [`EntityRef`] owned by the current scope.
+#[track_caller]
+pub fn entity_ref<C: ComponentView>() -> EntityRef<C> {
+    EntityRef {
+        node: node_ref(),
+        _type: std::marker::PhantomData,
+    }
+}
+
+impl<C: View> EntityRef<C> {
+    /// The entity, once the element is built; `None` before. Not tracked:
+    /// reading it binds nothing.
+    pub fn get(&self) -> Option<Entity<C>> {
+        self.node.get_untracked().map(Entity::from_stable_id)
+    }
+
+    /// The same reference untyped, for what takes a [`NodeRef`] (a
+    /// teleport target).
+    pub fn node_ref(&self) -> NodeRef {
+        self.node
+    }
+}
+
 /// One component node with its constant fields, bindings, event handlers
 /// and children.
 pub struct El<C: ComponentView, K = ()> {
@@ -544,6 +583,24 @@ impl<C: ComponentView, K> El<C, K> {
             ui.on(entity, move |_: &mut C, event: &E, _| f(event));
         }));
         self
+    }
+
+    /// Like [`Self::on`], with the component and its context: to change
+    /// the component in place, emit an event, or send the application's
+    /// program a message (`cx.dispatch_program(..)`).
+    pub fn on_cx<E: Send + 'static>(
+        mut self,
+        f: impl FnMut(&mut C, &E, &mut ViewContext<'_, C>) + Send + 'static,
+    ) -> Self {
+        self.events.push(Box::new(move |ui, entity| {
+            ui.on(entity, f);
+        }));
+        self
+    }
+
+    /// Record the entity this element is built as in `entity_ref`.
+    pub fn entity_ref(self, entity_ref: EntityRef<C>) -> Self {
+        self.node_ref(entity_ref.node)
     }
 
     /// The children, added in a block of ordinary Rust:

@@ -1110,7 +1110,17 @@ impl Gen<'_> {
                 }
                 AttrName::On(event) => {
                     let handler = raw(&attr.value, event.span())?;
-                    out = quote!(#out.on::<#event>(#handler));
+                    // `|component, event, cx| …` also gets the component
+                    // and its context, as `on_cx` does in Rust.
+                    let with_context = matches!(
+                        &attr.value,
+                        AttrValue::Expr(Expr::Closure(closure)) if closure.inputs.len() == 3
+                    );
+                    out = if with_context {
+                        quote!(#out.on_cx::<#event>(#handler))
+                    } else {
+                        quote!(#out.on::<#event>(#handler))
+                    };
                 }
                 AttrName::Directive(directive, span) => match directive.as_str() {
                     "show" => {

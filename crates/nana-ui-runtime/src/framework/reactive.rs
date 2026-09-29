@@ -92,6 +92,12 @@ impl MountedView {
         &self.roots
     }
 
+    /// The first root as an entity of type `C`, for a view with one root
+    /// the caller knows the type of.
+    pub fn root<C: View>(&self) -> Option<Entity<C>> {
+        self.roots.first().copied().map(Entity::from_stable_id)
+    }
+
     /// Dispose every signal and effect the view created and despawn it.
     pub fn unmount(self, cx: &mut AppContext) -> Result<(), FrameworkError> {
         rx::dispose_scope(self.scope);
@@ -168,7 +174,7 @@ impl AppContext {
             .node(parent)
             .ok_or(FrameworkError::MissingView(parent))?
             .document;
-        self.mount_view_in(document, Some(parent), view)
+        self.mount_view_in(document, Some(parent), view, true)
     }
 
     /// Like [`Self::mount_view`], with the view's roots as document roots.
@@ -177,7 +183,18 @@ impl AppContext {
         document: DocumentId,
         view: impl FnOnce() -> V,
     ) -> Result<MountedView, FrameworkError> {
-        self.mount_view_in(document, None, view)
+        self.mount_view_in(document, None, view, false)
+    }
+
+    /// Like [`Self::mount_view_root`], with the roots parked: in no tree
+    /// until something places them (a composite's slot given by id, a
+    /// later `reconcile_children`).
+    pub fn mount_view_detached<V: IntoView>(
+        &mut self,
+        document: DocumentId,
+        view: impl FnOnce() -> V,
+    ) -> Result<MountedView, FrameworkError> {
+        self.mount_view_in(document, None, view, true)
     }
 
     fn mount_view_in<V: IntoView>(
@@ -185,6 +202,7 @@ impl AppContext {
         document: DocumentId,
         parent: Option<StableNodeId>,
         view: impl FnOnce() -> V,
+        park: bool,
     ) -> Result<MountedView, FrameworkError> {
         let tag = self.reactive.tag;
         let scope = rx::create_scope(rx::current_scope());
@@ -198,9 +216,10 @@ impl AppContext {
         };
         // Under a parent the roots are inserted unkeyed afterwards, so the
         // parent's own keyed children are not reassembled.
-        let built = match parent {
-            Some(_) => self.build_detached(document, build),
-            None => self.build(document, build),
+        let built = if park {
+            self.build_detached(document, build)
+        } else {
+            self.build(document, build)
         };
         let (roots, parts) = match built {
             Ok(built) => built,

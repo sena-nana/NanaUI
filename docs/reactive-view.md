@@ -49,6 +49,7 @@ view! {
 ```
 
 - **子节点**：写死的几个用 tuple，`.children((a, b))`，零成本；需要 `for`、`if`、`let` 时用块，`.with(|c| { c.add(a); … })`，每个子节点装箱一次。块在建树时只跑一次，里面的 `for` / `if` 决定的是建树那一刻的结构，不跟着数据变；要跟着数据变，用 `each` / `when`。
+- **和手写代码配合**：消息驱动的应用（程序保存控件句柄、事件发消息给 `RuntimeProgram`）也可以用视图建界面。`entity_ref::<C>()` 配 `.entity_ref(r)`，挂载后 `r.get()` 就是 `Entity<C>`，可以照常 `update_component`；`El<C>` 只收 `EntityRef<C>`，类型写错编译不过。`.on_cx::<E>(|组件, 事件, cx| …)` 的处理器拿到组件和 `ViewContext`，可以原地改组件、`cx.emit(..)`、`cx.dispatch_program(..)`；模板里把 `on:E={…}` 写成三个参数的闭包就是它。要先建好再交给别人放置（组合控件按 id 收的 slot），用 `mount_view_detached`；只有一个根的视图，`view.root::<C>()` 直接拿到它。
 - **从数据出发**：`list.each(key, row)` 就是 `each(list, key, row)`，`cond.then_show(|| v).otherwise(|| w)` 就是 `when(cond, || v).otherwise(|| w)`（不叫 `show`：Vue 的 `v-show` 保留节点，对应的是 `.visible(..)`）。
 
 - **属性**接受常量、`Signal<T>` / `Computed<T>`、`Fn() -> T` 闭包三种。常量在建节点时写进去，之后没有任何成本。信号直接绑定，只存一条"信号 id + 字段写入函数"的记录，没有闭包。闭包装箱一次。
@@ -227,7 +228,7 @@ fn todos() -> impl IntoView {
 | `name={其他表达式}` | `move \|\| 表达式`：读到的信号变了就重算 |
 | `name={\|\| …}` | 闭包原样传入 |
 | `@activate={表达式}` | `.on_activate(move \|\| { 表达式; })`；`@activate={add}` 直接传函数值 |
-| `on:RangeChanged={\|e: &RangeChanged\| …}` | `.on::<RangeChanged>(…)` |
+| `on:RangeChanged={\|e: &RangeChanged\| …}` | `.on::<RangeChanged>(…)`；写成 `\|组件, 事件, cx\|` 三个参数时是 `.on_cx::<…>(…)` |
 | `v-if` / `v-else-if` / `v-else`（兄弟节点） | `when(…).otherwise(…)`，`v-else-if` 嵌套在 `otherwise` 里；手写也可以 `cond.then_show(…)` |
 | `v-for={pat in items} key={…}` | `each(items, move \|item\| { let pat = item; key }, move \|pat\| 元素)`；手写也可以 `items.each(key, row)` |
 | `v-show={x}`、`v-model={sig}`、`key="x"` | `.visible(x)`、`.model(sig)`、`.key("x")` |
