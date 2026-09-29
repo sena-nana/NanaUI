@@ -65,6 +65,24 @@ app.filter().set("done".into());   // 只影响读 filter 的地方
 - 行按 key 的 64 位哈希定位，重排后仍指向同一项；同一列表里两个 key 的哈希不能相同。行被删掉后，它的触发器在下一次按 key 查找时释放；对已删除行的 `get` 会 panic，`try_with` 返回 `None`。
 - `.vue` 里 `let x = store(…)` 和 `Store` / `Subfield` / `Item` 类型的 prop 被当作 store：用到它的绑定一律在运行时追踪，不会被折叠成常量；单独写这个名字（例如 `:checked="done"`，`done` 是一个 `Subfield` prop）则直接绑定。
 
+## 进出场与移动动画
+
+`when(..)` 和 `each(..)`（包括 `Store` 的 `keyed(..).each`）可以加 `.transition(t)`，对应 Vue 的 `<Transition>` 和 `<TransitionGroup>`：
+
+```rust
+when(open, panel).transition(Transition::fade(ms(150)));
+each(items, |t| t.id, row).transition(Transition::slide(0.0, 12.0, ms(180)).moves(ms(200)));
+```
+
+- **进场**：新行、新分支从给定的透明度和变换播到节点自己的值。挂载时已经存在的行不播。
+- **离场**：被删掉的行或分支不立刻销毁。它的作用域马上回收（不再跟随数据），节点留在原位，不参与命中测试，焦点移走，播完离场后才销毁。
+- **移动**（`.moves(时长)`）：位置变了的行从原来的位置滑过去（FLIP）。插入、删除、重排都算，离场的行最终销毁、后面的行补位时也算。
+- 预设：`Transition::fade`、`slide(dx, dy, 时长)`、`scale(比例, 时长)`；自定义用 `Transition::new().enter(Presence::new(时长).opacity(0.0).translate(0.0, 8.0)).leave(..)`；`.ease(e)` 统一缓动，`without_enter()` / `without_leave()` 只要一半。
+- 全部走节点的合成器轨道，不写回逻辑样式；离场结束由 `advance_animations` 的完成事件驱动，移动在布局阶段之后、同一帧提取之前开始，所以不会先闪到新位置。
+- `when` 的新旧分支同时存在：旧分支原位离场，新分支接在它后面进场；加 `.moves` 后，旧分支消失时新分支平滑上移。Vue 的 `mode="out-in"`（先离场再进场）目前没有。
+- 虚拟列表（`each_virtual`）不支持：滚出视口的行本来就要立刻回收。
+- 模板：`<Transition name="fade" duration="150">` 包住一条 `v-if` / `v-else-if` / `v-else` 链，`<TransitionGroup duration="150" move="200">` 包住一个 `v-for` 元素（两个标签可以互换）。`name` 可选 `fade`、`slide-up`、`slide-down`、`slide-left`、`slide-right`、`scale`，默认 `fade`；时长单位是毫秒；`:transition="值"` 直接传一个 `Transition`。
+
 ## `view!` 模板
 
 `view-macro` feature 提供 `view!`（`nana_ui::runtime::view!`）。它是 Vue 模板写法的对应，展开结果就是上面那些函数调用，不增加任何运行时概念。宏在独立的 proc-macro crate `nana-ui-view-macros` 里，不开 feature 就不参与编译。
@@ -235,6 +253,7 @@ impl ApplicationState for App {
 | `@click` | `.on_activate(move \|\| …)`，其他事件用 `.on(move \|e: &E\| …)` |
 | `v-if` / `v-else` | `when(cond, \|\| a).otherwise(\|\| b)` |
 | `v-show` | `.visible(sig)` |
+| `<Transition>` / `<TransitionGroup>` | `when(..).transition(t)` / `each(..).transition(t.moves(..))`；模板里同名标签 |
 | `v-for` + `:key` | `each(items, key, row)` |
 | 长列表（虚拟滚动） | `each_virtual(items, key, 行高, row)`；模板里 `v-virtual="行高"` / `v-virtual.measured`，或 `<Virtual row-height height …>` 包住 `v-for` 元素 |
 | `v-model` | `.model(sig)`（文本输入、滑块、复选框） |

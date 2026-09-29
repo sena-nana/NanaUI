@@ -1141,3 +1141,138 @@ fn a_store_creates_triggers_only_for_paths_read_and_drops_those_of_removed_rows(
         "the removed row's trigger is released; untracked reads make none"
     );
 }
+
+fn opacity_at(cx: &AppContext, id: StableNodeId, now: std::time::Duration) -> f32 {
+    match cx
+        .world()
+        .presentation_motion_value(id, crate::AnimatableProperty::Opacity, now)
+    {
+        Some(crate::MotionValue::Scalar(value)) => value,
+        other => panic!("opacity of {id:?}: {other:?}"),
+    }
+}
+
+fn translate_y_at(cx: &AppContext, id: StableNodeId, now: std::time::Duration) -> f32 {
+    match cx
+        .world()
+        .presentation_motion_value(id, crate::AnimatableProperty::Transform, now)
+    {
+        Some(crate::MotionValue::Transform(transform)) => transform.f,
+        other => panic!("transform of {id:?}: {other:?}"),
+    }
+}
+
+#[test]
+fn a_transitioned_branch_leaves_before_it_is_despawned_and_the_next_one_enters() {
+    use std::time::Duration;
+    let (mut cx, document, parent) = setup();
+    let start = Duration::from_secs(10);
+    cx.advance_animations(start);
+    let flag = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let open = signal(true);
+            flag.set(Some(open));
+            when(open, || text("面板").key("panel"))
+                .otherwise(|| text("空").key("empty"))
+                .transition(Transition::fade(Duration::from_millis(200)))
+        })
+        .unwrap();
+    let container = view.roots()[0];
+    let panel = children(&cx, container)[0];
+    assert_eq!(opacity_at(&cx, panel, start), 1.0, "no enter at mount");
+
+    flag.get().unwrap().set(false);
+    cx.flush_reactive().unwrap();
+    let now = children(&cx, container);
+    assert_eq!(now.len(), 2, "the old branch stays while it leaves");
+    assert_eq!(now[0], panel);
+    let empty = now[1];
+    assert_eq!(
+        opacity_at(&cx, empty, start),
+        0.0,
+        "the new branch enters from 0"
+    );
+    let halfway = start + Duration::from_millis(100);
+    let fading = opacity_at(&cx, panel, halfway);
+    assert!(fading > 0.0 && fading < 1.0, "{fading}");
+
+    cx.layout_document(document, LayoutViewport::new(320.0, 240.0))
+        .unwrap();
+    let bounds = cx.world().layout_box(panel).unwrap();
+    let hit = cx
+        .world()
+        .hit_test(document, bounds.x + 1.0, bounds.y + 1.0);
+    assert!(
+        hit.is_none_or(|hit| !cx.world().is_descendant_or_self(hit, panel)),
+        "a leaving branch takes no pointer input"
+    );
+
+    cx.advance_animations(start + Duration::from_millis(250));
+    assert!(!cx.world().contains(panel), "despawned once the leave ends");
+    assert_eq!(children(&cx, container), vec![empty]);
+    assert_eq!(
+        opacity_at(&cx, empty, start + Duration::from_millis(250)),
+        1.0
+    );
+}
+
+#[test]
+fn a_transitioned_list_keeps_removed_rows_in_place_and_slides_the_rest() {
+    use std::time::Duration;
+    let (mut cx, document, parent) = setup();
+    let start = Duration::from_secs(10);
+    cx.advance_animations(start);
+    let items = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let list = signal(vec![1u32, 2, 3]);
+            items.set(Some(list));
+            each(
+                list,
+                |id| *id,
+                |id| {
+                    widget(
+                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(20.0))),
+                    )
+                    .key(format!("r{id}"))
+                },
+            )
+            .transition(
+                Transition::fade(Duration::from_millis(200)).moves(Duration::from_millis(200)),
+            )
+        })
+        .unwrap();
+    let viewport = LayoutViewport::new(320.0, 240.0);
+    cx.layout_document(document, viewport).unwrap();
+    let list = view.roots()[0];
+    let rows = children(&cx, list);
+    let third_y = cx.world().layout_box(rows[2]).unwrap().y;
+
+    items
+        .get()
+        .unwrap()
+        .update(|list| list.retain(|id| *id != 2));
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, list), rows, "row 2 leaves in place");
+    cx.layout_document(document, viewport).unwrap();
+    assert_eq!(cx.world().layout_box(rows[2]).unwrap().y, third_y);
+
+    // The leave ends: row 2 goes, row 3 moves up 20 px and slides there.
+    let ended = start + Duration::from_millis(250);
+    cx.advance_animations(ended);
+    assert!(!cx.world().contains(rows[1]));
+    cx.layout_document(document, viewport).unwrap();
+    assert_eq!(cx.world().layout_box(rows[2]).unwrap().y, third_y - 20.0);
+    let offset = translate_y_at(&cx, rows[2], ended);
+    assert!((offset - 20.0).abs() < 0.5, "starts where it was: {offset}");
+    let settled = translate_y_at(&cx, rows[2], ended + Duration::from_millis(250));
+    assert!(settled.abs() < 0.01, "{settled}");
+
+    // Reordering slides every row that moved.
+    items.get().unwrap().update(|list| list.reverse());
+    cx.flush_reactive().unwrap();
+    cx.layout_document(document, viewport).unwrap();
+    let moved = translate_y_at(&cx, rows[0], ended);
+    assert!(moved < -0.5, "row 1 slides down from above: {moved}");
+}

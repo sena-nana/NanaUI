@@ -28,6 +28,7 @@ mod store;
 mod structural;
 #[cfg(feature = "reactive-trace")]
 pub(crate) mod trace;
+mod transition;
 
 pub use controls::{
     StyledComponent, button, checkbox, column, divider, list_item, number_input, progress, row,
@@ -54,6 +55,7 @@ pub use store::{Paths, StoreKey};
 pub use structural::{Each, When, each, when};
 #[cfg(feature = "reactive-trace")]
 pub use trace::{Cause, WhyUpdated};
+pub use transition::{Presence, Transition};
 
 /// Text with `format!` interpolation that re-evaluates when a signal it
 /// names changes: `text!("{count} items")`.

@@ -436,3 +436,56 @@ let board = store(Board { tasks: Vec::new(), title: String::new() });
     assert!(!code.contains("__checked("), "{code}");
     assert!(out.report.contains("| `board` | store |"), "{}", out.report);
 }
+
+#[test]
+fn a_transition_element_animates_the_chain_or_list_it_holds() {
+    let out = compile(&[(
+        "Panel.vue",
+        r#"<script setup lang="rust">
+let open = signal(true);
+let items: Signal<Vec<u32>> = signal(vec![1, 2]);
+</script>
+<template>
+  <Column>
+    <Transition name="slide-up" duration="200">
+      <Text v-if="open.get()">开</Text>
+      <Text v-else>关</Text>
+    </Transition>
+    <TransitionGroup duration="120" move="200">
+      <Text v-for="n in items" :key="*n">{{ n }}</Text>
+    </TransitionGroup>
+    <Button @activate="open.update(|o| *o = !*o)">切换</Button>
+  </Column>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(
+        code.contains(&squash(
+            ".transition(::nana_ui_runtime::view::Transition::slide(0.0,12.0,"
+        )),
+        "{code}"
+    );
+    assert!(code.contains(&squash("200_f64")), "{code}");
+    assert!(code.contains(&squash(".moves(")), "{code}");
+
+    for (template, message) in [
+        (
+            "<Transition name=\"spin\"><Text v-if=\"true\">x</Text></Transition>",
+            "no transition named `spin`",
+        ),
+        (
+            "<Transition><Text>x</Text></Transition>",
+            "holds a `v-if` chain or one `v-for` element",
+        ),
+        (
+            "<Transition bogus=\"1\"><Text v-if=\"true\">x</Text></Transition>",
+            "has no attribute `bogus`",
+        ),
+    ] {
+        let error = compile(&[("Bad.vue", &format!("<template>\n{template}\n</template>"))])
+            .err()
+            .expect("an error");
+        assert!(error.message.contains(message), "{template}: {error}");
+    }
+}

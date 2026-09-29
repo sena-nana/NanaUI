@@ -448,3 +448,60 @@ mod store_derive {
         assert_eq!(app.todos().len(), 2);
     }
 }
+
+mod transition_block {
+    use std::time::Duration;
+
+    use nana_ui_runtime::view::{Transition, each, signal, text, when};
+    use nana_ui_runtime::{AppContext, DocumentId, Stack, view};
+
+    #[test]
+    fn a_transition_element_is_the_function_api_with_a_transition() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let parent = cx
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        cx.advance_animations(Duration::from_secs(1));
+        let flag = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let open = signal(true);
+                let items = signal(vec![1u32, 2]);
+                flag.set(Some(open));
+                view! {
+                    <Column>
+                        <Transition name="fade" duration=200>
+                            <Text v-if={open}>"开"</Text>
+                            <Text v-else>"关"</Text>
+                        </Transition>
+                        <TransitionGroup move=200>
+                            <Text v-for={n in items} key={*n}>{n.to_string()}</Text>
+                        </TransitionGroup>
+                    </Column>
+                }
+            })
+            .unwrap();
+        let column = view.roots()[0];
+        let block = cx.world().node(column).unwrap().children[0];
+        flag.get().unwrap().set(false);
+        cx.flush_reactive().unwrap();
+        assert_eq!(
+            cx.world().node(block).unwrap().children.len(),
+            2,
+            "the old branch leaves while the new one enters"
+        );
+        cx.advance_animations(Duration::from_secs(2));
+        assert_eq!(cx.world().node(block).unwrap().children.len(), 1);
+        // The function API it stands for compiles to the same calls.
+        let _ = || {
+            when(signal(true), || text("开"))
+                .otherwise(|| text("关"))
+                .transition(Transition::fade(Duration::from_millis(200)));
+            each(signal(vec![1u32]), |n| *n, |n| text(n.to_string())).transition(
+                Transition::fade(Duration::from_millis(150)).moves(Duration::from_millis(200)),
+            );
+        };
+    }
+}

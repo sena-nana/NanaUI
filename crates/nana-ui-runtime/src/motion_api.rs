@@ -507,6 +507,42 @@ fn user_timeline_animation_id(
     AnimationId::new(hasher.finish())
 }
 
+/// A one-shot run from `from` to `to` on the node's user track for
+/// `property`, replacing whatever that track was playing: an enter or leave
+/// of the view layer's transitions.
+#[cfg(feature = "reactive-view")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn presence_spec(
+    target: StableNodeId,
+    property: AnimatableProperty,
+    from: MotionValue,
+    to: MotionValue,
+    now: Duration,
+    duration: Duration,
+    easing: Easing,
+    fill_mode: AnimationFillMode,
+) -> AnimationSpec {
+    let timing = MotionTiming::new(now, duration, crate::framework::COMPONENT_FRAME_INTERVAL);
+    let playback = AnimationPlayback {
+        iteration_count: AnimationIteration::ONCE,
+        direction: AnimationDirection::Normal,
+        fill_mode,
+        play_state: AnimationPlayState::Running,
+        paused_at: None,
+    };
+    let mut spec = user_spec(
+        target,
+        property,
+        to,
+        timing,
+        MotionCurve::Easing(easing),
+        playback,
+    );
+    spec.from = from;
+    spec.interrupt = MotionInterrupt::Replace;
+    spec
+}
+
 fn user_spec(
     target: StableNodeId,
     property: AnimatableProperty,

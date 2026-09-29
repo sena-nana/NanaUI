@@ -75,10 +75,13 @@ pub fn control(tag: &str) -> Option<&'static Control> {
     CONTROLS.iter().find(|control| control.tag == tag)
 }
 
-/// Whether `tag` is built in: a control, `Column`, `Row`, `Widget` or
-/// `Virtual`.
+/// Whether `tag` is built in: a control, `Column`, `Row`, `Widget`,
+/// `Virtual`, `Transition` or `TransitionGroup`.
 pub fn is_builtin(tag: &str) -> bool {
-    matches!(tag, "Column" | "Row" | "Widget" | "Virtual") || control(tag).is_some()
+    matches!(
+        tag,
+        "Column" | "Row" | "Widget" | "Virtual" | "Transition" | "TransitionGroup"
+    ) || control(tag).is_some()
 }
 
 /// Attributes of a built-in `tag` that are construction arguments rather
@@ -89,7 +92,7 @@ pub fn is_argument(tag: &str, attribute: &str) -> bool {
         || match tag {
             "Column" | "Row" => attribute == "gap",
             "Widget" => attribute == "of",
-            "Virtual" => true,
+            "Virtual" | "Transition" | "TransitionGroup" => true,
             _ => control(tag).is_some_and(|control| {
                 control
                     .arguments
@@ -403,7 +406,7 @@ impl Gen<'_> {
                             break;
                         }
                     }
-                    out.push(self.chain(&chain)?);
+                    out.push(self.chain(&chain, None)?);
                     continue;
                 }
                 Node::Element(element)
@@ -439,8 +442,13 @@ impl Gen<'_> {
         })
     }
 
-    /// `v-if` / `v-else-if` / `v-else` → nested `when(..).otherwise(..)`.
-    fn chain(&self, chain: &[&Element]) -> syn::Result<TokenStream> {
+    /// `v-if` / `v-else-if` / `v-else` → nested `when(..).otherwise(..)`,
+    /// each with `transition` when the chain sits in a `<Transition>`.
+    fn chain(
+        &self,
+        chain: &[&Element],
+        transition: Option<&TokenStream>,
+    ) -> syn::Result<TokenStream> {
         let krate = self.krate;
         let (first, rest) = chain.split_first().expect("a chain has its v-if");
         let condition = first
@@ -454,9 +462,12 @@ impl Gen<'_> {
             let otherwise = if next.directive("else").is_some() {
                 self.element(next)?
             } else {
-                self.chain(rest)?
+                self.chain(rest, transition)?
             };
             out = quote!(#out.otherwise(move || #otherwise));
+        }
+        if let Some(transition) = transition {
+            out = quote!(#out.transition(#transition));
         }
         Ok(out)
     }
@@ -574,6 +585,132 @@ impl Gen<'_> {
         Ok(out)
     }
 
+    /// `<Transition name="fade" duration="150" move="200">` around a
+    /// `v-if` chain or one `v-for` element: their `when` / `each` with a
+    /// `Transition`. `:transition={value}` gives one directly.
+    fn transition_block(&self, element: &Element) -> syn::Result<TokenStream> {
+        let krate = self.krate;
+        let span = element.name.span();
+        let tag = element.name.to_string();
+        let mut name = None;
+        let mut duration = quote!(150_f64);
+        let mut moves = None;
+        let mut given = None;
+        for attr in &element.attrs {
+            let AttrName::Plain(attribute) = &attr.name else {
+                return Err(syn::Error::new(
+                    span,
+                    format!("`<{tag}>` takes attributes only"),
+                ));
+            };
+            let at = attribute.span();
+            match attribute.to_string().as_str() {
+                "name" => match &attr.value {
+                    AttrValue::Lit(Expr::Lit(syn::ExprLit {
+                        lit: Lit::Str(value),
+                        ..
+                    })) => name = Some((value.value(), value.span())),
+                    _ => return Err(syn::Error::new(at, "`name=\"fade\"`: a preset name")),
+                },
+                "duration" => duration = number(&attr.value, "f64", at)?,
+                "move" => moves = Some(number(&attr.value, "f64", at)?),
+                "transition" => given = Some(raw(&attr.value, at)?),
+                other => {
+                    return Err(syn::Error::new(
+                        at,
+                        format!(
+                            "`<{tag}>` has no attribute `{other}`; it has `name`, `duration`, \
+                             `move`, `transition`"
+                        ),
+                    ));
+                }
+            }
+        }
+        let millis =
+            |ms: &TokenStream| quote!(::std::time::Duration::from_secs_f64(#ms as f64 / 1000.0));
+        let length = millis(&duration);
+        let transition = match (given, name) {
+            (Some(_), Some((_, at))) => {
+                return Err(syn::Error::new(
+                    at,
+                    "`name=` and `transition=` exclude each other",
+                ));
+            }
+            (Some(given), None) => given,
+            (None, name) => {
+                let preset = match name.as_ref().map(|(name, at)| (name.as_str(), *at)) {
+                    None | Some(("fade", _)) => quote!(fade(#length)),
+                    Some(("slide-up", _)) => quote!(slide(0.0, 12.0, #length)),
+                    Some(("slide-down", _)) => quote!(slide(0.0, -12.0, #length)),
+                    Some(("slide-left", _)) => quote!(slide(12.0, 0.0, #length)),
+                    Some(("slide-right", _)) => quote!(slide(-12.0, 0.0, #length)),
+                    Some(("scale", _)) => quote!(scale(0.95, #length)),
+                    Some((other, at)) => {
+                        return Err(syn::Error::new(
+                            at,
+                            format!(
+                                "no transition named `{other}`; there are `fade`, `slide-up`, \
+                                 `slide-down`, `slide-left`, `slide-right`, `scale`"
+                            ),
+                        ));
+                    }
+                };
+                quote!(#krate::view::Transition::#preset)
+            }
+        };
+        let transition = match moves {
+            Some(ms) => {
+                let length = millis(&ms);
+                quote!(#transition.moves(#length))
+            }
+            None => transition,
+        };
+        let children: Vec<&Element> = element
+            .children
+            .iter()
+            .map(|node| match node {
+                Node::Element(child) => Ok(child),
+                _ => Err(syn::Error::new(
+                    span,
+                    format!("`<{tag}>` holds a `v-if` chain or one `v-for` element"),
+                )),
+            })
+            .collect::<syn::Result<_>>()?;
+        match children.as_slice() {
+            [rows] if rows.directive("for").is_some() => {
+                if rows.attrs.iter().any(|attr| {
+                    matches!(&attr.name, AttrName::Directive(directive, _)
+                        if directive.split('.').next() == Some("virtual"))
+                }) {
+                    return Err(syn::Error::new(
+                        rows.name.span(),
+                        "a virtual list does not animate its rows",
+                    ));
+                }
+                let list = self.element(rows)?;
+                Ok(quote!(#list.transition(#transition)))
+            }
+            [first, ..] if first.directive("if").is_some() => {
+                for (index, link) in children.iter().enumerate().skip(1) {
+                    let last = link.directive("else").is_some();
+                    if (!last && link.directive("else-if").is_none())
+                        || (last && index + 1 != children.len())
+                    {
+                        return Err(syn::Error::new(
+                            link.name.span(),
+                            format!("`<{tag}>` holds one `v-if` chain"),
+                        ));
+                    }
+                }
+                self.chain(&children, Some(&transition))
+            }
+            _ => Err(syn::Error::new(
+                span,
+                format!("`<{tag}>` holds a `v-if` chain or one `v-for` element"),
+            )),
+        }
+    }
+
     /// The element itself: constructor, fields, directives, handlers.
     fn single(&self, element: &Element) -> syn::Result<TokenStream> {
         let krate = self.krate;
@@ -595,6 +732,7 @@ impl Gen<'_> {
                 )
             }
             ("Virtual", _) => return self.virtual_list(element),
+            ("Transition" | "TransitionGroup", _) => return self.transition_block(element),
             ("Widget", _) => {
                 let component = element
                     .plain("of")

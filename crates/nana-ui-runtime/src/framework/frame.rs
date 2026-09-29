@@ -345,6 +345,8 @@ impl AppContext {
             }
             completed(2);
             self.apply_document_scroll_retention(document, force_full)?;
+            #[cfg(feature = "reactive-view")]
+            self.play_pending_flips(document);
             completed(3);
             Ok(report)
         })();
@@ -598,6 +600,8 @@ impl AppContext {
         for target in finished_surfaces {
             let _ = self.finish_surface_exit(target);
         }
+        #[cfg(feature = "reactive-view")]
+        self.finish_leaves(&frame.events);
         let tooltip_targets = self
             .component_lifecycle
             .tooltips

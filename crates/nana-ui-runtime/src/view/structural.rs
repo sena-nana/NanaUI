@@ -17,6 +17,7 @@ use std::panic::Location;
 use super::node::{AnyView, IntoView, StructuralBinding, UNBUILT, ViewBuilder, ViewState};
 use super::prop::{IntoProp, PropSource};
 use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey};
+use super::transition::Transition;
 use crate::{AppContext, FrameworkError, MutationQueue, StableNodeId, Stack};
 
 pub(super) struct Built {
@@ -76,20 +77,77 @@ pub(super) fn build_detached_into<R>(
     }
 }
 
-fn despawn(cx: &mut AppContext, removed: Vec<Built>) -> Result<(), FrameworkError> {
+/// Dispose the scopes of `removed` and despawn their roots, or, under a
+/// transition with a leave, start it and add the root to `leaving`.
+fn remove(
+    cx: &mut AppContext,
+    removed: Vec<Built>,
+    transition: Option<&Transition>,
+    leaving: &mut Vec<StableNodeId>,
+) -> Result<(), FrameworkError> {
     let mut mutations = MutationQueue::new();
     for built in removed {
         reactive::dispose_scope(built.scope);
         for root in built.roots {
-            if cx.world().contains(root) {
-                mutations.despawn_subtree(root);
+            if !cx.world().contains(root) {
+                continue;
             }
+            if let Some(transition) = transition
+                && let Some(leave) = &transition.leave
+                && cx.begin_leave(root, leave, transition.moves)?
+            {
+                leaving.push(root);
+                continue;
+            }
+            mutations.despawn_subtree(root);
         }
     }
     if mutations.is_empty() {
         return Ok(());
     }
     cx.commit_mutations(mutations).map(|_| ())
+}
+
+/// `ordered` with each node of `leaving` kept after the node it followed in
+/// `container`'s current children (or first, if none of those stays).
+fn with_leaving(
+    cx: &AppContext,
+    container: StableNodeId,
+    ordered: Vec<StableNodeId>,
+    leaving: &[StableNodeId],
+) -> Vec<StableNodeId> {
+    if leaving.is_empty() {
+        return ordered;
+    }
+    let current = cx
+        .world()
+        .node(container)
+        .map(|node| node.children.to_vec())
+        .unwrap_or_default();
+    let stays: HashSet<StableNodeId> = ordered.iter().copied().collect();
+    let leaves: HashSet<StableNodeId> = leaving.iter().copied().collect();
+    let mut front = Vec::new();
+    let mut after: HashMap<StableNodeId, Vec<StableNodeId>> = HashMap::new();
+    let mut anchor = None;
+    for child in current {
+        if stays.contains(&child) {
+            anchor = Some(child);
+        } else if leaves.contains(&child) {
+            match anchor {
+                Some(anchor) => after.entry(anchor).or_default().push(child),
+                None => front.push(child),
+            }
+        }
+    }
+    let mut out = front;
+    out.reserve(ordered.len() + leaving.len());
+    for node in ordered {
+        out.push(node);
+        if let Some(leaving) = after.remove(&node) {
+            out.extend(leaving);
+        }
+    }
+    out
 }
 
 /// `v-for` with `:key`. Rows whose key stays are kept as they are; a row
@@ -99,6 +157,7 @@ pub struct Each<T, K, S, KF, RF> {
     items: S,
     key_fn: KF,
     row_fn: RF,
+    transition: Option<Transition>,
     container: Stack,
     key: Option<Cow<'static, str>>,
     site: &'static Location<'static>,
@@ -120,6 +179,7 @@ where
         items,
         key_fn: key,
         row_fn: row,
+        transition: None,
         container: Stack::column(0.0),
         key: None,
         site: Location::caller(),
@@ -140,6 +200,14 @@ impl<T, K, S, KF, RF> Each<T, K, S, KF, RF> {
         self
     }
 
+    /// Animate rows entering, leaving and, with [`Transition::moves`],
+    /// changing place (Vue `<TransitionGroup>`). Rows present at mount do
+    /// not enter.
+    pub fn transition(mut self, transition: Transition) -> Self {
+        self.transition = Some(transition);
+        self
+    }
+
     pub fn key(mut self, key: impl Into<Cow<'static, str>>) -> Self {
         self.key = Some(key.into());
         self
@@ -150,6 +218,9 @@ struct EachBinding<T, K, S, KF, RF> {
     items: S,
     key_fn: KF,
     row_fn: RF,
+    transition: Option<Transition>,
+    /// Removed rows still playing their leave.
+    leaving: Vec<StableNodeId>,
     scope: Option<ScopeKey>,
     rows: HashMap<K, Built>,
     order: Vec<K>,
@@ -219,6 +290,8 @@ where
             items: self.items,
             key_fn: self.key_fn,
             row_fn: self.row_fn,
+            transition: self.transition,
+            leaving: Vec::new(),
             scope: reactive::current_scope(),
             rows: HashMap::new(),
             order: Vec::new(),
@@ -250,6 +323,8 @@ where
         effect: EffectKey,
     ) -> Result<(), FrameworkError> {
         let (keys, fresh) = reactive::run_tracked(effect, || self.read());
+        let transition = self.transition;
+        let moves = transition.and_then(|transition| transition.moves);
         let removed: Vec<K> = {
             let kept: HashSet<&K> = keys.iter().collect();
             self.order
@@ -262,7 +337,19 @@ where
             .into_iter()
             .filter_map(|key| self.rows.remove(&key))
             .collect();
-        despawn(cx, removed)?;
+        // Where kept rows are before the change, to slide them from.
+        let firsts: Vec<_> = match moves {
+            Some(_) => self
+                .rows
+                .values()
+                .flat_map(|built| built.roots.iter().copied())
+                .filter_map(|root| Some((root, cx.flip_first(root)?)))
+                .collect(),
+            None => Vec::new(),
+        };
+        self.leaving.retain(|root| cx.is_leaving(*root));
+        remove(cx, removed, transition.as_ref(), &mut self.leaving)?;
+        let mut entered = Vec::new();
         if !fresh.is_empty() {
             let this = &*self;
             let built = build_detached_into(cx, container, |vb, created| {
@@ -270,6 +357,13 @@ where
                 created.extend(built.iter().map(|(_, built)| built.scope));
                 built
             })?;
+            if transition.is_some_and(|transition| transition.enter.is_some()) {
+                entered.extend(
+                    built
+                        .iter()
+                        .flat_map(|(_, built)| built.roots.iter().copied()),
+                );
+            }
             self.rows.extend(built);
         }
         self.order = keys;
@@ -279,7 +373,16 @@ where
             .filter_map(|key| self.rows.get(key))
             .flat_map(|built| built.roots.iter().copied())
             .collect();
+        let ordered = with_leaving(cx, container, ordered, &self.leaving);
         cx.reconcile_children(container, &ordered)?;
+        if let Some(enter) = transition.and_then(|transition| transition.enter) {
+            cx.begin_enter(&entered, &enter)?;
+        }
+        if let Some(moves) = moves {
+            for (root, first) in firsts {
+                cx.flip_after_layout(root, first, moves);
+            }
+        }
         Ok(())
     }
 }
@@ -290,6 +393,7 @@ pub struct When {
     condition: PropSource<bool>,
     then: Box<dyn Fn() -> AnyView + Send>,
     otherwise: Option<Box<dyn Fn() -> AnyView + Send>>,
+    transition: Option<Transition>,
     key: Option<Cow<'static, str>>,
     site: &'static Location<'static>,
 }
@@ -304,6 +408,7 @@ pub fn when<V: IntoView>(
         condition: condition.into_source(),
         then: Box::new(move || then().into_any()),
         otherwise: None,
+        transition: None,
         key: None,
         site: Location::caller(),
     }
@@ -320,12 +425,23 @@ impl When {
         self.key = Some(key.into());
         self
     }
+
+    /// Animate the branch entering and leaving (Vue `<Transition>`). The
+    /// leaving branch stays in place until its leave ends, the new one
+    /// after it; with [`Transition::moves`] the new one slides up when the
+    /// old one goes. The branch shown at mount does not enter.
+    pub fn transition(mut self, transition: Transition) -> Self {
+        self.transition = Some(transition);
+        self
+    }
 }
 
 struct WhenBinding {
     condition: PropSource<bool>,
     then: Box<dyn Fn() -> AnyView + Send>,
     otherwise: Option<Box<dyn Fn() -> AnyView + Send>>,
+    transition: Option<Transition>,
+    leaving: Vec<StableNodeId>,
     scope: Option<ScopeKey>,
     shown: bool,
     branch: Option<Built>,
@@ -356,6 +472,8 @@ impl IntoView for When {
             condition: self.condition,
             then: self.then,
             otherwise: self.otherwise,
+            transition: self.transition,
+            leaving: Vec::new(),
             scope: reactive::current_scope(),
             shown: false,
             branch: None,
@@ -382,7 +500,14 @@ impl StructuralBinding for WhenBinding {
             return Ok(());
         }
         self.shown = shown;
-        despawn(cx, self.branch.take().into_iter().collect())?;
+        let transition = self.transition;
+        self.leaving.retain(|root| cx.is_leaving(*root));
+        remove(
+            cx,
+            self.branch.take().into_iter().collect(),
+            transition.as_ref(),
+            &mut self.leaving,
+        )?;
         let roots = match self.branch_for(shown) {
             Some(_) => {
                 let this = &*self;
@@ -398,7 +523,16 @@ impl StructuralBinding for WhenBinding {
             }
             None => Vec::new(),
         };
-        cx.reconcile_children(container, &roots)?;
+        let ordered = self
+            .leaving
+            .iter()
+            .copied()
+            .chain(roots.iter().copied())
+            .collect::<Vec<_>>();
+        cx.reconcile_children(container, &ordered)?;
+        if let Some(enter) = transition.and_then(|transition| transition.enter) {
+            cx.begin_enter(&roots, &enter)?;
+        }
         Ok(())
     }
 }

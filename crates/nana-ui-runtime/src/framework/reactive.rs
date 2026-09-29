@@ -4,6 +4,7 @@
 use super::*;
 use crate::view::reactive::{self as rx, EffectKey, EffectTarget, ScopeKey};
 use crate::view::{IntoView, NodePatch, StructuralBinding, ViewBuilder, ViewParts, ViewState};
+use crate::{AnimatableProperty, AnimationFillMode, AnimationId, Easing, MotionValue};
 
 /// Rounds a flush runs before it gives up on effects that keep re-queueing
 /// each other.
@@ -27,6 +28,23 @@ pub(crate) struct ReactiveHost {
     queue: Vec<(EffectKey, EffectTarget)>,
     patches: Vec<(StableNodeId, EffectKey)>,
     flushing: bool,
+    /// Removed rows and branches playing their leave, despawned when it
+    /// ends.
+    leaving: HashMap<StableNodeId, Leaving>,
+    /// Rows to slide from where they were once layout has placed them.
+    flips: Vec<PendingFlip>,
+}
+
+struct Leaving {
+    animation: AnimationId,
+    moves: Option<(Duration, Easing)>,
+}
+
+struct PendingFlip {
+    node: StableNodeId,
+    first: nana_ui_core::FlipRect,
+    duration: Duration,
+    easing: Easing,
 }
 
 impl Default for ReactiveHost {
@@ -39,6 +57,8 @@ impl Default for ReactiveHost {
             queue: Vec::new(),
             patches: Vec::new(),
             flushing: false,
+            leaving: HashMap::new(),
+            flips: Vec::new(),
         }
     }
 }
@@ -421,10 +441,15 @@ impl AppContext {
     /// Release the reactive state owned by despawned nodes.
     pub(crate) fn forget_reactive(&mut self, removed: &HashSet<StableNodeId>) {
         let host = &mut self.reactive;
-        if host.nodes.is_empty() && host.structural.is_empty() && host.anchors.is_empty() {
+        if host.nodes.is_empty()
+            && host.structural.is_empty()
+            && host.anchors.is_empty()
+            && host.leaving.is_empty()
+        {
             return;
         }
         for id in removed {
+            host.leaving.remove(id);
             if let Some(entry) = host.nodes.remove(id) {
                 rx::dispose_effect(entry.effect);
             }
@@ -462,6 +487,243 @@ impl AppContext {
             causes,
         })
     }
+}
+
+/// Enter, leave and move animations of rows and branches
+/// ([`crate::view::Transition`]).
+impl AppContext {
+    fn flip_rect(&self, id: StableNodeId) -> Option<nana_ui_core::FlipRect> {
+        let bounds = self.world.layout_box(id)?;
+        Some(nana_ui_core::FlipRect::new(
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            bounds.height,
+        ))
+    }
+
+    /// Play `enter` on each of `roots`, just placed: from its opacity and
+    /// transform to the node's own.
+    pub(crate) fn begin_enter(
+        &mut self,
+        roots: &[StableNodeId],
+        enter: &crate::view::Presence,
+    ) -> Result<(), FrameworkError> {
+        if !enter.plays() {
+            return Ok(());
+        }
+        let now = self.component_lifecycle.now;
+        let mut mutations = MutationQueue::new();
+        for &root in roots {
+            for (property, from) in presence_values(enter) {
+                let Some(to) = self.world.logical_motion_value(root, property) else {
+                    continue;
+                };
+                mutations.start_animation(crate::motion_api::presence_spec(
+                    root,
+                    property,
+                    from,
+                    to,
+                    now,
+                    enter.duration,
+                    enter.easing,
+                    AnimationFillMode::Backwards,
+                ));
+            }
+        }
+        if mutations.is_empty() {
+            return Ok(());
+        }
+        self.commit_mutations(mutations).map(|_| ())
+    }
+
+    /// Start `leave` on `root` instead of despawning it: it stays in place,
+    /// out of hit testing and focus, until the leave ends. `false` when
+    /// nothing plays, and the caller despawns it now.
+    pub(crate) fn begin_leave(
+        &mut self,
+        root: StableNodeId,
+        leave: &crate::view::Presence,
+        moves: Option<(Duration, Easing)>,
+    ) -> Result<bool, FrameworkError> {
+        let Some(node) = self.world.node(root) else {
+            return Ok(false);
+        };
+        if !leave.plays() || self.reactive.leaving.contains_key(&root) {
+            return Ok(self.reactive.leaving.contains_key(&root));
+        }
+        let document = node.document;
+        let now = self.component_lifecycle.now;
+        let mut mutations = MutationQueue::new();
+        let mut last = None;
+        for (property, to) in presence_values(leave) {
+            let Some(from) = self.world.logical_motion_value(root, property) else {
+                continue;
+            };
+            let spec = crate::motion_api::presence_spec(
+                root,
+                property,
+                from,
+                to,
+                now,
+                leave.duration,
+                leave.easing,
+                AnimationFillMode::Forwards,
+            );
+            last = Some(spec.id);
+            mutations.start_animation(spec);
+        }
+        let Some(animation) = last else {
+            return Ok(false);
+        };
+        if let Some(mut style) = self.world.node_style(root).cloned() {
+            Arc::make_mut(&mut style.layout).pointer_events =
+                Some(nana_ui_core::PointerEventsSpec::None);
+            mutations.set_style(root, style);
+        }
+        if self
+            .world
+            .focused(document)
+            .is_some_and(|focused| self.world.is_descendant_or_self(focused, root))
+        {
+            mutations.request_focus(document, None);
+        }
+        self.commit_mutations(mutations)?;
+        self.reactive
+            .leaving
+            .insert(root, Leaving { animation, moves });
+        Ok(true)
+    }
+
+    /// Whether `root` is playing its leave.
+    pub(crate) fn is_leaving(&self, root: StableNodeId) -> bool {
+        self.reactive.leaving.contains_key(&root)
+    }
+
+    /// Slide `node` from `first` to wherever the next layout puts it.
+    pub(crate) fn flip_after_layout(
+        &mut self,
+        node: StableNodeId,
+        first: nana_ui_core::FlipRect,
+        (duration, easing): (Duration, Easing),
+    ) {
+        self.reactive.flips.push(PendingFlip {
+            node,
+            first,
+            duration,
+            easing,
+        });
+    }
+
+    /// Where `node` is now, for [`Self::flip_after_layout`].
+    pub(crate) fn flip_first(&self, node: StableNodeId) -> Option<nana_ui_core::FlipRect> {
+        self.flip_rect(node)
+    }
+
+    /// Despawn the rows whose leave ended (or was cut short), sliding their
+    /// siblings into the space they leave when the transition moves rows.
+    pub(crate) fn finish_leaves(&mut self, events: &[crate::AnimationEvent]) {
+        if self.reactive.leaving.is_empty() {
+            return;
+        }
+        let done: Vec<StableNodeId> = events
+            .iter()
+            .filter(|event| {
+                self.reactive
+                    .leaving
+                    .get(&event.target)
+                    .is_some_and(|leaving| leaving.animation == event.id)
+            })
+            .map(|event| event.target)
+            .collect();
+        if done.is_empty() {
+            return;
+        }
+        let mut mutations = MutationQueue::new();
+        for root in done {
+            let Some(leaving) = self.reactive.leaving.remove(&root) else {
+                continue;
+            };
+            if !self.world.contains(root) {
+                continue;
+            }
+            if let Some(moves) = leaving.moves
+                && let Some(parent) = self.world.node(root).and_then(|node| node.parent)
+            {
+                let siblings = self
+                    .world
+                    .node(parent)
+                    .map(|node| node.children.to_vec())
+                    .unwrap_or_default();
+                for sibling in siblings {
+                    if sibling != root
+                        && !self.reactive.leaving.contains_key(&sibling)
+                        && let Some(first) = self.flip_rect(sibling)
+                    {
+                        self.flip_after_layout(sibling, first, moves);
+                    }
+                }
+            }
+            mutations.despawn_subtree(root);
+        }
+        if !mutations.is_empty() && self.commit_mutations(mutations).is_err() {
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+        }
+    }
+
+    /// After a layout pass of `document`: start the slides of rows it moved.
+    pub(crate) fn play_pending_flips(&mut self, document: DocumentId) {
+        if self.reactive.flips.is_empty() {
+            return;
+        }
+        let now = self.component_lifecycle.now;
+        let mut mutations = MutationQueue::new();
+        let flips = std::mem::take(&mut self.reactive.flips);
+        let mut kept = Vec::new();
+        for flip in flips {
+            let Some(node) = self.world.node(flip.node) else {
+                continue;
+            };
+            if node.document != document {
+                kept.push(flip);
+                continue;
+            }
+            let Some(last) = self.flip_rect(flip.node) else {
+                continue;
+            };
+            let moved = (flip.first.x - last.x).abs() > 0.5 || (flip.first.y - last.y).abs() > 0.5;
+            if moved {
+                mutations.start_layout_flip(
+                    flip.node,
+                    flip.first,
+                    last,
+                    now,
+                    flip.duration,
+                    flip.easing,
+                );
+            }
+        }
+        self.reactive.flips = kept;
+        if !mutations.is_empty() && self.commit_mutations(mutations).is_err() {
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
+        }
+    }
+}
+
+/// The properties a presence animates and its value for each.
+fn presence_values(
+    presence: &crate::view::Presence,
+) -> impl Iterator<Item = (AnimatableProperty, MotionValue)> {
+    presence
+        .opacity
+        .map(|opacity| (AnimatableProperty::Opacity, MotionValue::Scalar(opacity)))
+        .into_iter()
+        .chain(presence.transform.map(|transform| {
+            (
+                AnimatableProperty::Transform,
+                MotionValue::Transform(transform),
+            )
+        }))
 }
 
 #[cfg(test)]
