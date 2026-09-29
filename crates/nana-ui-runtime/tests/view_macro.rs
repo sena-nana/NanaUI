@@ -294,3 +294,44 @@ fn a_template_page_adds_and_removes_rows_through_its_handlers() {
     assert_eq!(summary(&cx), "共 1 项");
     assert_eq!(state.get().unwrap().with_untracked(Vec::len), 1);
 }
+
+#[test]
+fn table_controls_take_their_attributes_in_templates() {
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let flags = std::cell::Cell::new(None);
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            let on = signal(true);
+            let amount = signal(4.0f64);
+            flags.set(Some(amount));
+            view! {
+                <Column gap=4>
+                    <Switch v-model={on} key="switch">"通知"</Switch>
+                    <NumberInput v-model={amount} placeholder={"数量"} key="number" />
+                    <Progress max=10 value={amount.get()} key="progress" />
+                    <Divider />
+                </Column>
+            }
+        })
+        .unwrap();
+    let root = mounted.roots()[0];
+    let amount = flags.get().unwrap();
+    amount.set(6.0);
+    cx.flush_reactive().unwrap();
+    let progress = cx
+        .resolve_assembly_entity::<nana_ui_runtime::Progress>(root, "progress")
+        .unwrap();
+    assert_eq!(
+        cx.read(progress, |p| (p.value, p.max)).unwrap(),
+        (6.0, 10.0)
+    );
+    let switch = cx
+        .resolve_assembly_entity::<nana_ui_runtime::Switch>(root, "switch")
+        .unwrap();
+    assert_eq!(
+        cx.read(switch, |s| (s.checked, s.label.clone())).unwrap(),
+        (true, "通知".to_owned())
+    );
+}

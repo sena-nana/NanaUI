@@ -1,0 +1,9 @@
+[package]
+name = "nana-ui-view-schema"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "The built-in controls the declarative view layer knows by name, shared by the runtime and the template compilers"
+license = "MIT OR Apache-2.0"
+
+[dependencies]

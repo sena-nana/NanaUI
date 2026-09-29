@@ -2719,6 +2719,7 @@ dependencies = [
  "nana-ui-core",
  "nana-ui-input",
  "nana-ui-view-macros",
+ "nana-ui-view-schema",
  "pulldown-cmark",
  "qrcode",
  "ratex-layout",
@@ -2761,6 +2762,7 @@ dependencies = [
 name = "nana-ui-view-codegen"
 version = "0.1.0"
 dependencies = [
+ "nana-ui-view-schema",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -2775,6 +2777,10 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "nana-ui-view-schema"
+version = "0.1.0"
 
 [[package]]
 name = "nana-ui-vue"

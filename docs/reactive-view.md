@@ -302,7 +302,9 @@ fn page() -> impl IntoView {
 - 字段真的改变时，仍然会复制整个组件、完整投影一遍，再由 world 按字段比对标脏。只投影改动字段需要每个控件把投影按字段拆开，目前没做。
 - `.bind(|c| …)` 看不出改了哪个字段，所以每次都按"有改动"处理，走复制路径。
 - 闭包绑定每个各自装箱一次；只有 `view!` 能看到的整段模板，才有机会把同一节点的闭包合成一个。
-- `.model` 目前只覆盖 `TextInput`、`RangeField`、`Checkbox`；带类型的 setter 目前只覆盖 `Text`、`Button`、`RangeField`、`TextInput`、`Checkbox`。
+- 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`，外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
+
+控件表是唯一来源：每条写明模板标签、元素函数及其参数、可绑定字段和类型、`v-model` 对应的字段和事件、事件方法。运行时由它生成 setter、`model` 和事件方法；`view!` 和 `.vue` 编译器由它得知哪些标签是内置的、接受哪些属性。写错的属性名、不存在的事件、对没有 `v-model` 的控件写 `v-model`，都在编译模板时报出行列。数值字段接受 `max="100"` 这样的字面量，生成带类型后缀的常量。事件方法同时接受 `|| …` 和 `|e: &Event| …`。
 
 ## 不做的事
 

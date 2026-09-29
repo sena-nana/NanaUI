@@ -28,7 +28,12 @@ mod structural;
 #[cfg(feature = "reactive-trace")]
 pub(crate) mod trace;
 
-pub use controls::{StyledComponent, button, checkbox, column, row, slider, text, text_input};
+#[doc(hidden)]
+pub use controls::EventHandler;
+pub use controls::{
+    StyledComponent, button, checkbox, column, divider, list_item, number_input, progress, row,
+    select, slider, spinner, switch, text, text_area, text_input,
+};
 pub use each_virtual::{EachVirtual, each_virtual};
 pub use node::{
     AnyView, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef, ViewBuilder, keyed,

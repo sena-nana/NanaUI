@@ -273,3 +273,53 @@ defineProps!(header: impl IntoView, children: impl IntoView);
     assert!(unnamed.message.contains("needs `#slot-name`"), "{unnamed}");
     assert_eq!(unnamed.line, 2);
 }
+
+#[test]
+fn the_control_table_types_attributes_and_rejects_unknown_ones() {
+    let out = compile(&[(
+        "Form.vue",
+        r#"<script setup lang="rust">
+let on = signal(false);
+let amount = signal(3.0f64);
+let choice: Signal<Option<Arc<str>>> = signal(None);
+</script>
+<template>
+  <Column>
+    <Switch v-model="on">通知</Switch>
+    <NumberInput v-model="amount" placeholder="数量" />
+    <Select v-model="choice" />
+    <Progress max="100" :value="amount.get()" />
+  </Column>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(
+        code.contains(&squash("switch(\"通知\").model(on)")),
+        "{code}"
+    );
+    assert!(code.contains(&squash("progress(100_f64)")), "{code}");
+
+    let typo = compile(&[(
+        "Typo.vue",
+        "<template>\n<Column>\n  <Button lable=\"x\">保存</Button>\n</Column>\n</template>",
+    )])
+    .err()
+    .expect("an error");
+    assert_eq!(typo.line, 3, "{typo}");
+    assert!(
+        typo.message.contains("`<Button>` has no attribute `lable`"),
+        "{typo}"
+    );
+
+    let model = compile(&[(
+        "Model.vue",
+        "<script setup lang=\"rust\">\nlet n = signal(1u32);\n</script>\n<template>\n<Divider v-model=\"n\" />\n</template>",
+    )])
+    .err()
+    .expect("an error");
+    assert!(
+        model.message.contains("`<Divider>` has no `v-model`"),
+        "{model}"
+    );
+}

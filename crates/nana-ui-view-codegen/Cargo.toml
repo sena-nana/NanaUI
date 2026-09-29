@@ -7,6 +7,7 @@ description = "Template element tree to nana-ui-runtime view calls, shared by vi
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+nana-ui-view-schema = { path = "../nana-ui-view-schema" }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }

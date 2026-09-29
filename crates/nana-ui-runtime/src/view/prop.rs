@@ -248,4 +248,7 @@ const_props! {
     u32 => u32, |v| v;
     u64 => u64, |v| v;
     usize => usize, |v| v;
+    Option<Arc<str>> => Option<Arc<str>>, |v| v;
+    Option<&'static str> => Option<Arc<str>>, |v| v.map(Arc::from);
+    Vec<crate::SelectOption> => Vec<crate::SelectOption>, |v| v;
 }

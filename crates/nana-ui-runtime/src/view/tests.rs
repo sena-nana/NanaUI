@@ -821,3 +821,88 @@ fn each_virtual_builds_only_the_rows_in_view() {
         "{rows:?}"
     );
 }
+
+#[test]
+fn table_controls_bind_their_fields_and_model_both_ways() {
+    use crate::{
+        NumberChanged, NumberInput, Select, SelectChanged, SelectOption, Switch, ToggleChanged,
+    };
+    let (mut cx, _, parent) = setup();
+    let signals = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let on = signal(false);
+            let amount = signal(2.0f64);
+            let choice: Signal<Option<std::sync::Arc<str>>> = signal(None);
+            let activated = signal(0u32);
+            signals.set(Some((on, amount, choice, activated)));
+            column(
+                0.0,
+                (
+                    switch("通知").model(on).key("switch"),
+                    number_input().model(amount).key("number"),
+                    select()
+                        .options(vec![
+                            SelectOption::new("a", "甲"),
+                            SelectOption::new("b", "乙"),
+                        ])
+                        .model(choice)
+                        .key("select"),
+                    list_item("行")
+                        .on_activate(move || activated.update(|n| *n += 1))
+                        .key("item"),
+                    progress(10.0).value(move || amount.get()).key("progress"),
+                ),
+            )
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    let (on, amount, choice, activated) = signals.get().unwrap();
+
+    // signal → field
+    on.set(true);
+    amount.set(7.0);
+    choice.set(Some("b".into()));
+    cx.flush_reactive().unwrap();
+    assert!(
+        cx.read(node::<Switch>(&cx, root, "switch"), |s| s.checked)
+            .unwrap()
+    );
+    assert_eq!(
+        cx.read(node::<NumberInput>(&cx, root, "number"), |n| n.value())
+            .unwrap(),
+        7.0
+    );
+    assert_eq!(
+        cx.read(node::<Select>(&cx, root, "select"), |s| s.value.clone())
+            .unwrap()
+            .as_deref(),
+        Some("b")
+    );
+    assert_eq!(
+        cx.read(node::<crate::Progress>(&cx, root, "progress"), |p| p.value)
+            .unwrap(),
+        7.0
+    );
+
+    // event → signal
+    cx.update_component(node::<Switch>(&cx, root, "switch"), |_, cx| {
+        cx.emit(ToggleChanged { checked: false })
+    })
+    .unwrap();
+    cx.update_component(node::<NumberInput>(&cx, root, "number"), |_, cx| {
+        cx.emit(NumberChanged { value: 3.0 })
+    })
+    .unwrap();
+    cx.update_component(node::<Select>(&cx, root, "select"), |_, cx| {
+        cx.emit(SelectChanged { value: "a".into() })
+    })
+    .unwrap();
+    cx.activate_node(node::<crate::ListItem>(&cx, root, "item").stable_id())
+        .unwrap();
+    cx.flush_reactive().unwrap();
+    assert!(!on.get_untracked());
+    assert_eq!(amount.get_untracked(), 3.0);
+    assert_eq!(choice.get_untracked().as_deref(), Some("a"));
+    assert_eq!(activated.get_untracked(), 1);
+}

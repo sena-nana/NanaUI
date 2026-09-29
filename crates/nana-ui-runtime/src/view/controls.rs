@@ -1,5 +1,6 @@
-//! Element helpers for the controls the prototype covers, with typed
-//! bindable fields.
+//! Element functions of the built-in controls, and their typed bindable
+//! fields, `model` and event methods expanded from the control table in
+//! `nana-ui-view-schema`.
 
 use std::sync::Arc;
 
@@ -7,8 +8,9 @@ use super::node::{El, IntoView, widget};
 use super::prop::{FieldWrite, IntoProp};
 use super::reactive::Signal;
 use crate::{
-    Activate, Button, Checkbox, NodeStyle, RangeField, RangeInput, Stack, Text, TextChanged,
-    TextInput, ToggleChanged,
+    Activate, Button, Checkbox, Divider, ListItem, NodeStyle, NumberChanged, NumberInput, Progress,
+    RangeField, RangeInput, Select, SelectChanged, SelectOption, Spinner, Stack, Switch, Text,
+    TextArea, TextChanged, TextInput, ToggleChanged,
 };
 
 /// Components whose [`NodeStyle`] the view layer may write (visibility).
@@ -18,22 +20,6 @@ pub trait StyledComponent {
     #[doc(hidden)]
     fn node_style_mut(&mut self) -> &mut NodeStyle;
 }
-
-macro_rules! styled {
-    ($($component:ty),*) => {$(
-        impl StyledComponent for $component {
-            fn node_style(&self) -> &NodeStyle {
-                &self.style
-            }
-
-            fn node_style_mut(&mut self) -> &mut NodeStyle {
-                &mut self.style
-            }
-        }
-    )*};
-}
-
-styled!(Text, Button, TextInput, RangeField, Checkbox);
 
 impl StyledComponent for Stack {
     fn node_style(&self) -> &NodeStyle {
@@ -72,23 +58,53 @@ impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
     }
 }
 
-/// Generates a `FieldWrite` per field and the matching `El` setter. A field
-/// compares against `target.<field>` unless it names its own `differs`.
-macro_rules! props {
-    ($component:ident { $($field:ident: $ty:ty => $writer:ident |$target:ident, $value:ident| $body:expr $(, differs |$dt:ident, $dv:ident| $differs:expr)?);* $(;)? }) => {
-        $(
-            #[doc(hidden)]
-            pub struct $writer;
+/// What a control's event method accepts: `|| …`, or `|event| …` with the
+/// event (annotate its type: `|e: &ToggleChanged| …`).
+#[doc(hidden)]
+pub trait EventHandler<E, Marker>: Send + 'static {
+    fn call(&mut self, event: &E);
+}
 
-            impl FieldWrite<$component, $ty> for $writer {
+impl<E, F: FnMut() + Send + 'static> EventHandler<E, ()> for F {
+    fn call(&mut self, _: &E) {
+        self()
+    }
+}
+
+impl<E, F: FnMut(&E) + Send + 'static> EventHandler<E, (E,)> for F {
+    fn call(&mut self, event: &E) {
+        self(event)
+    }
+}
+
+/// Expands the control table of `nana-ui-view-schema`: per control, one
+/// [`FieldWrite`] and `El` setter per field, `model` and event methods, and
+/// [`StyledComponent`] for `.visible`.
+macro_rules! controls {
+    ($(
+        $tag:ident => $function:ident ($($argument:ident: $kind:ident),*) for $component:ident {
+            $($field:ident: $ty:ty = $write:ident),* $(,)?
+        }
+        $(on { $($on:ident: $on_event:ident),* $(,)? })?
+        $(model $model:ident: $model_ty:ty => $model_event:ident |$event:ident| $from_event:expr)?
+        ;
+    )*) => {$(
+        #[allow(non_camel_case_types)]
+        #[doc(hidden)]
+        pub mod $function {
+            $(pub struct $field;)*
+        }
+
+        $(
+            impl FieldWrite<$component, $ty> for $function::$field {
                 const FIELD: &'static str = concat!(stringify!($component), ".", stringify!($field));
 
-                fn write($target: &mut $component, $value: $ty) {
-                    $body
+                fn write(target: &mut $component, value: $ty) {
+                    controls!(@write $write target, value, $field)
                 }
 
                 fn differs(target: &$component, value: &$ty) -> bool {
-                    props!(@differs target, value, $field $(, |$dt, $dv| $differs)?)
+                    controls!(@differs $write target, value, $field)
                 }
             }
         )*
@@ -97,52 +113,62 @@ macro_rules! props {
             $(
                 #[track_caller]
                 pub fn $field(self, value: impl IntoProp<$ty>) -> Self {
-                    self.prop::<$ty, $writer>(value)
+                    self.prop::<$ty, $function::$field>(value)
                 }
             )*
+
+            $(
+                /// `v-model`: shows the signal and writes each change back.
+                #[track_caller]
+                pub fn model(self, value: Signal<$model_ty>) -> Self {
+                    self.$model(value)
+                        .on(move |$event: &$model_event| value.set($from_event))
+                }
+            )?
+
+            $($(
+                /// `@` event of the template.
+                pub fn $on<M>(self, mut handler: impl EventHandler<$on_event, M>) -> Self {
+                    self.on(move |event: &$on_event| handler.call(event))
+                }
+            )*)?
         }
+
+        impl StyledComponent for $component {
+            fn node_style(&self) -> &NodeStyle {
+                &self.style
+            }
+
+            fn node_style_mut(&mut self) -> &mut NodeStyle {
+                &mut self.style
+            }
+        }
+    )*};
+    (@write set $target:ident, $value:ident, $field:ident) => {
+        $target.$field = $value
     };
-    (@differs $target:ident, $value:ident, $field:ident) => {
+    (@differs set $target:ident, $value:ident, $field:ident) => {
         $target.$field != *$value
     };
-    (@differs $target:ident, $value:ident, $field:ident, |$dt:ident, $dv:ident| $differs:expr) => {{
-        let ($dt, $dv) = ($target, $value);
-        $differs
+    // Only a different value replaces the text, so echoing an edit back
+    // through its signal leaves the caret and selection alone.
+    (@write text_state $target:ident, $value:ident, $field:ident) => {
+        if $target.state.value != $value {
+            $target.state.replace_value($value);
+        }
+    };
+    (@differs text_state $target:ident, $value:ident, $field:ident) => {
+        $target.state.value != *$value
+    };
+    (@write assign $target:ident, $value:ident, $field:ident) => {{
+        $target.assign($value);
     }};
+    (@differs assign $target:ident, $value:ident, $field:ident) => {
+        $target.$field() != *$value
+    };
 }
 
-props!(Text {
-    value: String => TextValue |target, value| target.value = value;
-});
-
-props!(Button {
-    label: String => ButtonLabel |target, value| target.label = value;
-    disabled: bool => ButtonDisabled |target, value| target.disabled = value;
-    loading: bool => ButtonLoading |target, value| target.loading = value;
-});
-
-props!(RangeField {
-    value: f64 => RangeValue |target, value| target.value = value;
-    disabled: bool => RangeDisabled |target, value| target.disabled = value;
-});
-
-props!(TextInput {
-    value: String => TextInputValue |target, value| {
-        // Only a different value replaces the text, so echoing an edit back
-        // through its signal leaves the caret and selection alone.
-        if target.state.value != value {
-            target.state.replace_value(value);
-        }
-    }, differs |target, value| target.state.value != *value;
-    placeholder: Arc<str> => TextInputPlaceholder |target, value| target.placeholder = value;
-    disabled: bool => TextInputDisabled |target, value| target.disabled = value;
-});
-
-props!(Checkbox {
-    label: String => CheckboxLabel |target, value| target.label = value;
-    checked: bool => CheckboxChecked |target, value| target.checked = value;
-    disabled: bool => CheckboxDisabled |target, value| target.disabled = value;
-});
+nana_ui_view_schema::for_each_control!(controls);
 
 /// Vertical stack.
 #[track_caller]
@@ -183,37 +209,46 @@ pub fn checkbox(label: impl IntoProp<String>) -> El<Checkbox> {
     widget(Checkbox::new("", false)).label(label)
 }
 
-impl<K> El<Button, K> {
-    /// `@click`.
-    pub fn on_activate(self, mut f: impl FnMut() + Send + 'static) -> Self {
-        self.on(move |_: &Activate| f())
-    }
+#[track_caller]
+pub fn switch(label: impl IntoProp<String>) -> El<Switch> {
+    widget(Switch::new("", false)).label(label)
 }
 
-impl<K> El<RangeField, K> {
-    /// `v-model`: the slider shows `value` and every step it takes, drag
-    /// included, writes it back.
-    #[track_caller]
-    pub fn model(self, value: Signal<f64>) -> Self {
-        self.value(value)
-            .on(move |event: &RangeInput| value.set(event.value))
-    }
+/// A multi-line text field.
+#[track_caller]
+pub fn text_area() -> El<TextArea> {
+    widget(TextArea::new(""))
 }
 
-impl<K> El<TextInput, K> {
-    /// `v-model` over the field's text.
-    #[track_caller]
-    pub fn model(self, value: Signal<String>) -> Self {
-        self.value(value)
-            .on(move |event: &TextChanged| value.set(event.value.to_string()))
-    }
+#[track_caller]
+pub fn number_input() -> El<NumberInput> {
+    widget(NumberInput::new(0.0))
 }
 
-impl<K> El<Checkbox, K> {
-    /// `v-model` over the checked state.
-    #[track_caller]
-    pub fn model(self, checked: Signal<bool>) -> Self {
-        self.checked(checked)
-            .on(move |event: &ToggleChanged| checked.set(event.checked))
-    }
+/// A single-value field; give it `.options(…)`.
+#[track_caller]
+pub fn select() -> El<Select> {
+    widget(Select::new(None::<Arc<str>>))
+}
+
+#[track_caller]
+pub fn list_item(label: impl IntoProp<String>) -> El<ListItem> {
+    widget(ListItem::new("")).label(label)
+}
+
+/// Progress towards `max`; bind `.value(…)`.
+#[track_caller]
+pub fn progress(max: f64) -> El<Progress> {
+    widget(Progress::new(0.0, max))
+}
+
+#[track_caller]
+pub fn spinner() -> El<Spinner> {
+    widget(Spinner::new(""))
+}
+
+/// A horizontal rule.
+#[track_caller]
+pub fn divider() -> El<Divider> {
+    widget(Divider::horizontal())
 }

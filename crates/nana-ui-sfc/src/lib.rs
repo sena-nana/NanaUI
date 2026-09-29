@@ -83,20 +83,6 @@ pub struct Compiler {
     runtime: TokenStream,
 }
 
-/// Tags the code generator builds itself; everything else is a component.
-const BUILTIN: &[&str] = &[
-    "Column",
-    "Row",
-    "Text",
-    "Button",
-    "Checkbox",
-    "Slider",
-    "TextInput",
-    "Widget",
-];
-/// Builtin attributes that are constructor arguments, not props.
-const ARGUMENTS: &[&str] = &["gap", "min", "max", "step", "of", "key"];
-
 impl Compiler {
     /// `runtime` is the path of `nana-ui-runtime` in the generated code,
     /// e.g. `::nana_ui::runtime` or `::nana_ui_runtime`.
@@ -267,8 +253,10 @@ fn tag(element: &Element) -> String {
     element.name.to_string()
 }
 
+/// A tag the code generator builds itself (its control table); anything
+/// else is a component.
 fn is_builtin(element: &Element) -> bool {
-    BUILTIN.contains(&tag(element).as_str())
+    nana_ui_view_codegen::is_builtin(&tag(element))
 }
 
 /// First pass: count how every template expression uses the tracked names.
@@ -280,7 +268,12 @@ fn count(nodes: &mut [Node], analysis: &mut Analysis) {
                 for attr in &element.attrs {
                     match (&attr.name, &attr.value) {
                         (AttrName::Plain(name), AttrValue::Expr(expr)) => {
-                            if component || ARGUMENTS.contains(&name.to_string().as_str()) {
+                            if component
+                                || nana_ui_view_codegen::is_argument(
+                                    &tag(element),
+                                    &name.to_string(),
+                                )
+                            {
                                 analysis.scan_use(expr, &[Use::Escape]);
                             } else {
                                 analysis.count_binding(expr);
@@ -365,7 +358,7 @@ impl Rewrite<'_> {
         for attr in &mut element.attrs {
             let label = match &attr.name {
                 AttrName::Plain(ident)
-                    if builtin && !ARGUMENTS.contains(&ident.to_string().as_str()) =>
+                    if builtin && !nana_ui_view_codegen::is_argument(&name, &ident.to_string()) =>
                 {
                     format!("<{name} :{ident}>")
                 }

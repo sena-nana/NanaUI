@@ -8,6 +8,93 @@ use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Expr, Ident, Lit, LitStr, Pat};
 
+/// A built-in control, from the table in `nana-ui-view-schema`.
+pub struct Control {
+    pub tag: &'static str,
+    pub function: &'static str,
+    /// Element-function arguments: `text`, `f32` or `f64`.
+    pub arguments: &'static [(&'static str, &'static str)],
+    /// Bindable fields and their types.
+    pub fields: &'static [(&'static str, &'static str)],
+    /// Event methods (`on_activate`).
+    pub events: &'static [&'static str],
+    pub model: bool,
+}
+
+impl Control {
+    fn field(&self, name: &str) -> Option<&'static str> {
+        self.fields
+            .iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, ty)| *ty)
+    }
+
+    fn field_list(&self) -> String {
+        let names: Vec<_> = self
+            .fields
+            .iter()
+            .map(|(name, _)| format!("`{name}`"))
+            .collect();
+        if names.is_empty() {
+            String::from("none")
+        } else {
+            names.join(", ")
+        }
+    }
+}
+
+macro_rules! table {
+    ($(
+        $tag:ident => $function:ident ($($argument:ident: $kind:ident),*) for $component:ident {
+            $($field:ident: $ty:ty = $write:ident),* $(,)?
+        }
+        $(on { $($on:ident: $on_event:ident),* $(,)? })?
+        $(model $model:ident: $model_ty:ty => $model_event:ident |$event:ident| $from_event:expr)?
+        ;
+    )*) => {
+        /// Every built-in control the templates know by tag.
+        pub const CONTROLS: &[Control] = &[$(Control {
+            tag: stringify!($tag),
+            function: stringify!($function),
+            arguments: &[$((stringify!($argument), stringify!($kind))),*],
+            fields: &[$((stringify!($field), stringify!($ty))),*],
+            events: &[$($(stringify!($on)),*)?],
+            model: table!(@model $($model)?),
+        }),*];
+    };
+    (@model) => { false };
+    (@model $model:ident) => { true };
+}
+
+nana_ui_view_schema::for_each_control!(table);
+
+/// The built-in control a tag names.
+pub fn control(tag: &str) -> Option<&'static Control> {
+    CONTROLS.iter().find(|control| control.tag == tag)
+}
+
+/// Whether `tag` is built in: a control, `Column`, `Row` or `Widget`.
+pub fn is_builtin(tag: &str) -> bool {
+    matches!(tag, "Column" | "Row" | "Widget") || control(tag).is_some()
+}
+
+/// Attributes of a built-in `tag` that are construction arguments rather
+/// than bindings: numbers the element function takes, `gap`, `of`, `key`,
+/// `ref`.
+pub fn is_argument(tag: &str, attribute: &str) -> bool {
+    matches!(attribute, "key" | "ref")
+        || match tag {
+            "Column" | "Row" => attribute == "gap",
+            "Widget" => attribute == "of",
+            _ => control(tag).is_some_and(|control| {
+                control
+                    .arguments
+                    .iter()
+                    .any(|(name, kind)| *name == attribute && *kind != "text")
+            }),
+        }
+}
+
 /// Expand `nodes` into one view expression. `krate` is the path of
 /// `nana-ui-runtime` as seen from the generated code.
 pub fn expand(krate: &TokenStream, nodes: &[Node]) -> syn::Result<TokenStream> {
@@ -88,6 +175,15 @@ fn prop(value: &AttrValue) -> TokenStream {
 /// A numeric argument of type `ty`: a literal is written with that suffix
 /// (`8` → `8_f32`), anything else is passed as is for the compiler to check.
 fn number(value: &AttrValue, ty: &str, span: Span) -> syn::Result<TokenStream> {
+    match typed_number(value, ty) {
+        Some(tokens) => Ok(tokens),
+        None => raw(value, span),
+    }
+}
+
+/// A numeric literal (or a string holding one) written with the suffix of
+/// `ty`; `None` for anything else.
+fn typed_number(value: &AttrValue, ty: &str) -> Option<TokenStream> {
     fn digits(lit: &Lit) -> Option<String> {
         match lit {
             Lit::Int(int) => Some(int.base10_digits().to_owned()),
@@ -103,7 +199,19 @@ fn number(value: &AttrValue, ty: &str, span: Span) -> syn::Result<TokenStream> {
             quote!(#literal)
         })
     };
-    let literal = match value {
+    match value {
+        // A plain `.vue` attribute is a string: `max="100"`.
+        AttrValue::Lit(Expr::Lit(syn::ExprLit {
+            lit: Lit::Str(text),
+            ..
+        })) => text.value().trim().parse::<f64>().ok().map(|number| {
+            let literal = syn::LitFloat::new(&format!("{}_{ty}", number.abs()), text.span());
+            if number.is_sign_negative() {
+                quote!(-#literal)
+            } else {
+                quote!(#literal)
+            }
+        }),
         AttrValue::Lit(Expr::Lit(expr)) | AttrValue::Expr(Expr::Lit(expr)) => {
             typed(&expr.lit, false)
         }
@@ -116,10 +224,6 @@ fn number(value: &AttrValue, ty: &str, span: Span) -> syn::Result<TokenStream> {
             }
         }
         _ => None,
-    };
-    match literal {
-        Some(tokens) => Ok(tokens),
-        None => raw(value, span),
     }
 }
 
@@ -366,8 +470,9 @@ impl Gen<'_> {
         let tag = element.name.to_string();
         let span = element.name.span();
         let children = &element.children;
-        let (mut out, consumed): (TokenStream, &[&str]) = match tag.as_str() {
-            "Column" | "Row" => {
+        let control = control(&tag);
+        let (mut out, consumed): (TokenStream, Vec<&str>) = match (tag.as_str(), control) {
+            ("Column" | "Row", _) => {
                 let make = format_ident!("{}", tag.to_lowercase(), span = span);
                 let gap = match element.plain("gap") {
                     Some(gap) => number(&gap.value, "f32", span)?,
@@ -376,39 +481,10 @@ impl Gen<'_> {
                 let body = self.nodes(children)?;
                 (
                     quote_spanned!(span=> #krate::view::#make(#gap, #body)),
-                    &["gap"],
+                    vec!["gap"],
                 )
             }
-            "Text" => {
-                let value = self.string_child(element, "value")?;
-                (
-                    quote_spanned!(span=> #krate::view::text(#value)),
-                    &["value"],
-                )
-            }
-            "Button" | "Checkbox" => {
-                let make = format_ident!("{}", tag.to_lowercase(), span = span);
-                let label = self.string_child(element, "label")?;
-                (
-                    quote_spanned!(span=> #krate::view::#make(#label)),
-                    &["label"],
-                )
-            }
-            "Slider" => {
-                let bound = |name: &str| -> syn::Result<TokenStream> {
-                    let attr = element.plain(name).ok_or_else(|| {
-                        syn::Error::new(span, format!("`<Slider>` needs `{name}=`"))
-                    })?;
-                    number(&attr.value, "f64", span)
-                };
-                let (min, max, step) = (bound("min")?, bound("max")?, bound("step")?);
-                (
-                    quote_spanned!(span=> #krate::view::slider(#min, #max, #step)),
-                    &["min", "max", "step"],
-                )
-            }
-            "TextInput" => (quote_spanned!(span=> #krate::view::text_input()), &[]),
-            "Widget" => {
+            ("Widget", _) => {
                 let component = element
                     .plain("of")
                     .ok_or_else(|| syn::Error::new(span, "`<Widget of={component}>`"))?;
@@ -416,7 +492,31 @@ impl Gen<'_> {
                 let body = self.nodes(children)?;
                 (
                     quote_spanned!(span=> #krate::view::widget(#component).children(#body)),
-                    &["of"],
+                    vec!["of"],
+                )
+            }
+            (_, Some(control)) => {
+                let function = Ident::new(control.function, span);
+                let mut args = Vec::new();
+                for &(name, kind) in control.arguments {
+                    args.push(match kind {
+                        "text" => self.string_child(element, name)?,
+                        _ => {
+                            let attr = element.plain(name).ok_or_else(|| {
+                                syn::Error::new(span, format!("`<{tag}>` needs `{name}=`"))
+                            })?;
+                            number(&attr.value, kind, span)?
+                        }
+                    });
+                }
+                if !children.is_empty()
+                    && !control.arguments.iter().any(|(_, kind)| *kind == "text")
+                {
+                    return Err(syn::Error::new(span, format!("`<{tag}>` has no children")));
+                }
+                (
+                    quote_spanned!(span=> #krate::view::#function(#(#args),*)),
+                    control.arguments.iter().map(|(name, _)| *name).collect(),
                 )
             }
             _ => return self.component(element),
@@ -426,6 +526,13 @@ impl Gen<'_> {
                 AttrName::Plain(name) => {
                     let text = name.to_string();
                     if consumed.contains(&text.as_str()) {
+                        continue;
+                    }
+                    if text == "key" {
+                        if element.directive("for").is_none() {
+                            let key = raw(&attr.value, name.span())?;
+                            out = quote!(#out.key(#key));
+                        }
                         continue;
                     }
                     if text == "ref" {
@@ -440,19 +547,37 @@ impl Gen<'_> {
                         out = quote!(#out.node_ref(#node_ref));
                         continue;
                     }
-                    if text == "key" {
-                        if element.directive("for").is_none() {
-                            let key = raw(&attr.value, name.span())?;
-                            out = quote!(#out.key(#key));
+                    let value = match control.and_then(|control| control.field(&text)) {
+                        Some(ty @ ("f32" | "f64")) => {
+                            typed_number(&attr.value, ty).unwrap_or_else(|| prop(&attr.value))
                         }
-                        continue;
-                    }
-                    let value = prop(&attr.value);
+                        Some(_) => prop(&attr.value),
+                        None => {
+                            return Err(syn::Error::new(
+                                name.span(),
+                                match control {
+                                    Some(control) => format!(
+                                        "`<{tag}>` has no attribute `{text}`; it has {}",
+                                        control.field_list()
+                                    ),
+                                    None => format!("`<{tag}>` takes no attribute `{text}`"),
+                                },
+                            ));
+                        }
+                    };
                     let setter = Ident::new(&text, name.span());
                     out = quote!(#out.#setter(#value));
                 }
                 AttrName::Event(event) => {
                     let method = format_ident!("on_{}", event, span = event.span());
+                    if let Some(control) = control
+                        && !control.events.contains(&method.to_string().as_str())
+                    {
+                        return Err(syn::Error::new(
+                            event.span(),
+                            format!("`<{tag}>` has no event `@{event}`"),
+                        ));
+                    }
                     let handler = handler(&attr.value, event.span())?;
                     out = quote!(#out.#method(#handler));
                 }
@@ -466,6 +591,12 @@ impl Gen<'_> {
                         out = quote_spanned!(*span=> #out.visible(#value));
                     }
                     "model" => {
+                        if !control.is_some_and(|control| control.model) {
+                            return Err(syn::Error::new(
+                                *span,
+                                format!("`<{tag}>` has no `v-model`"),
+                            ));
+                        }
                         let signal = raw(&attr.value, *span)?;
                         out = quote_spanned!(*span=> #out.model(#signal));
                     }
