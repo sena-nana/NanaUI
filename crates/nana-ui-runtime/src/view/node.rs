@@ -226,6 +226,10 @@ pub(crate) struct ViewParts {
 struct Level {
     next_auto: usize,
     roots: Vec<StableNodeId>,
+    /// The key each root was declared with, beside `roots`; `None` for a
+    /// positional one. A slot's roots take it under the node that adopts
+    /// them.
+    declared: Vec<Option<Cow<'static, str>>>,
     /// A slot's level: its roots are left for the composite to place.
     detached: bool,
 }
@@ -270,29 +274,28 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
         format!("#v{index}")
     }
 
-    /// A component's key ([`keyed`]) names its root over the root's own.
-    pub(crate) fn key_or_auto(&mut self, key: Option<Cow<'static, str>>) -> String {
-        match self.st.pending_key.take().or(key) {
-            Some(key) => key.into_owned(),
-            None => self.auto_key(),
-        }
-    }
-
     /// Create `component` as a root of this level: keyed under the current
-    /// parent, or, in a slot, detached for the composite that places it.
+    /// parent, or, in a slot, detached for the composite that places it. A
+    /// component's key ([`keyed`]) names its root over the root's own.
     pub(crate) fn place<C: ComponentView>(
         &mut self,
         key: Option<Cow<'static, str>>,
         component: C,
     ) -> Entity<C> {
-        let key = self.key_or_auto(key);
+        let declared = self.st.pending_key.take().or(key);
         let entity = if self.level().detached {
             self.ui.detached(component)
         } else {
+            let key = match &declared {
+                Some(key) => key.to_string(),
+                None => self.auto_key(),
+            };
             self.ui.child(key, component)
         };
         if entity.stable_id() != UNBUILT {
-            self.level().roots.push(entity.stable_id());
+            let level = self.level();
+            level.roots.push(entity.stable_id());
+            level.declared.push(declared);
         }
         entity
     }
@@ -318,15 +321,23 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
         self.level().roots[start..].to_vec()
     }
 
-    /// Build `view` without placing its roots, for a slot.
-    fn build_slot(&mut self, view: impl IntoView) -> Vec<StableNodeId> {
+    /// Build `view` without placing its roots, for a slot: its roots, each
+    /// with the key it was declared with.
+    fn build_slot(
+        &mut self,
+        view: impl IntoView,
+    ) -> Vec<(StableNodeId, Option<Cow<'static, str>>)> {
         let pending = self.st.pending_key.take();
         self.st.levels.push(Level {
             detached: true,
             ..Level::default()
         });
         view.build(self);
-        let roots = self.st.levels.pop().map(|level| level.roots);
+        let roots = self
+            .st
+            .levels
+            .pop()
+            .map(|level| level.roots.into_iter().zip(level.declared).collect());
         self.st.pending_key = pending;
         roots.unwrap_or_default()
     }
@@ -833,12 +844,14 @@ impl<C: ComponentView, K> El<C, K> {
 
 impl<C: ComponentView, K> El<C, K> {
     /// Build this element's own node: its slots, classes, bindings and
-    /// events. Returns the entity, the slot roots to adopt as its children,
-    /// and the children to build under it; `None` when the build failed.
+    /// events. Returns the entity, the slot roots to adopt as its children
+    /// (with the keys they were declared with), and the children to build
+    /// under it; `None` when the build failed.
+    #[allow(clippy::type_complexity)]
     fn place_node(
         self,
         vb: &mut ViewBuilder<'_, '_, '_>,
-    ) -> Option<(Entity<C>, Vec<StableNodeId>, K)> {
+    ) -> Option<(Entity<C>, Vec<(StableNodeId, Option<Cow<'static, str>>)>, K)> {
         let El {
             mut component,
             key,
@@ -856,11 +869,11 @@ impl<C: ComponentView, K> El<C, K> {
         }
         let mut adopt = Vec::new();
         for slot in slots {
-            match vb.build_slot(slot.view)[..] {
-                [root] => {
-                    component = (slot.write)(component, root);
+            match &mut vb.build_slot(slot.view)[..] {
+                [(root, key)] => {
+                    component = (slot.write)(component, *root);
                     if slot.child {
-                        adopt.push(root);
+                        adopt.push((*root, key.take()));
                     }
                 }
                 // A failed build already recorded its error.
@@ -925,8 +938,8 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
         };
         let id = entity.stable_id();
         vb.nest(entity, |vb| {
-            for root in adopt {
-                vb.ui.adopt_as(root, TypeId::of::<AnyView>());
+            for (root, key) in adopt {
+                vb.ui.adopt_as(root, TypeId::of::<AnyView>(), key);
             }
             children.build(vb)
         });

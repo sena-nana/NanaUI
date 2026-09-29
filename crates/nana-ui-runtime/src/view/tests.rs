@@ -2443,6 +2443,25 @@ fn with_refs_hands_back_resolved_entities_or_fails_whole() {
     assert_eq!(cx.world().len(), before, "a failed mount leaves nothing");
 }
 
+/// What a composite's child slot holds keeps the keys it declared, under
+/// the composite: `item/leading` finds the list item's leading content.
+#[test]
+fn a_child_slot_keeps_the_keys_its_view_declared() {
+    let (mut cx, _, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            list_item("标题")
+                .leading(text("头").key("leading"))
+                .trailing(row().key("tools").children(text("尾").key("count")))
+        })
+        .unwrap();
+    let item = view.roots()[0];
+    let leading = cx.resolve_assembly_path(item, "leading").unwrap();
+    assert_eq!(cx.world().text(leading), Some("头"));
+    let count = cx.resolve_assembly_path(item, "tools/count").unwrap();
+    assert_eq!(cx.world().text(count), Some("尾"));
+}
+
 #[test]
 fn list_item_slots_in_a_view_are_the_slots_set_by_hand() {
     use crate::{ListItem, ListItemSlots};

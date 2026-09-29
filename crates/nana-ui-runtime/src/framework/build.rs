@@ -268,7 +268,14 @@ impl<'a> UiBuilder<'a> {
         entity
     }
 
-    pub(crate) fn adopt_as(&mut self, child: StableNodeId, type_id: TypeId) {
+    /// Place `child`, built detached, under the current parent, keyed
+    /// `key` there (the key its view declared) or by position.
+    pub(crate) fn adopt_as(
+        &mut self,
+        child: StableNodeId,
+        type_id: TypeId,
+        key: Option<std::borrow::Cow<'static, str>>,
+    ) {
         if self.error.is_some() || child == DUMMY_NODE {
             return;
         }
@@ -276,8 +283,14 @@ impl<'a> UiBuilder<'a> {
             self.fail::<Stack>(FrameworkError::InvalidInput);
             return;
         };
-        let key = self.auto_key("adopt");
-        self.current_mut().seen_keys.insert(key.clone());
+        let key = match key {
+            Some(key) => key.into_owned(),
+            None => self.auto_key("adopt"),
+        };
+        if !self.current_mut().seen_keys.insert(key.clone()) {
+            self.fail::<Stack>(FrameworkError::DuplicateAssemblyKey { parent, key });
+            return;
+        }
         self.current_mut().seen.push(key.clone());
         self.queue.insert(parent, child, None);
         self.appended.entry(parent).or_default().push(child);

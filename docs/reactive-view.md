@@ -200,7 +200,7 @@ view! {
 ```
 
 - **`.slot(view, |c, id| c.xxx(id))`**：slot 由控件自己放置（shell 的区域、标题栏的三列）。先建 slot 视图，不插到任何地方，再把根节点 id 写进组件，最后建组件本身。
-- **`.child_slot(view, write)`**：slot 是本节点自己的子节点（section 的 header、list item 的图标），按 slot 的声明顺序插在 `.children(..)` 前面。
+- **`.child_slot(view, write)`**：slot 是本节点自己的子节点（section 的 header、list item 的图标），按 slot 的声明顺序插在 `.children(..)` 前面。slot 的根保留它在视图里写的 key，登记在本节点下：`list_item(..).leading(icon.key("icon"))` 之后 `resolve_assembly_path(item, "icon")` 找得到它；没写 key 的按位置命名。
 - slot 必须恰好有一个根节点，否则挂载失败，返回 `InvalidInput`，这次什么也不提交。slot 和组件在同一次提交里建好，slot 里创建的信号归同一个挂载作用域，卸载时一起回收。
 - **装配**：需要装配的控件在 `TypeBehavior::slot_assembler` 里登记自己的 `assemble_*`。视图层在建好这类节点之后，以及绑定改了它之后，自动运行装配，所以视图里不写 `assemble_desktop_shell`。用 `create_component` 手工建的组合控件仍然由调用方自己调用 `assemble_*`：在每次写入时都装配会弄脏空闲的 world，见 `TypeBehavior::assembler`。一个视图里，组合控件在它的 slot 和子节点都装配完之后才装配，所以它对内容的补丁（例如 `DesktopShell` 给主区域内容的圆角）不会被内容自己的装配覆盖。只由自身属性决定子节点的叶子组合控件（`Chip`、`ColorField`、`PathField`、`FileTab`、`DiffView`、`MediaTransportBar`）登记的是 `TypeBehavior::assembler`：它本来就在每次写入后运行，视图层在建好这类节点时也运行一次，所以它们不必再登记 `slot_assembler`。
 - **初始焦点**：`Dialog`、`Drawer`、`ConfirmDialog` 的 `.initial_focus_on(entity_ref)` 在打开时聚焦 slot 里的某个控件，例如 `.confirm(button("退出").entity_ref(accept)).initial_focus_on(accept)`。slot 先于面板建好，所以这里读得到它的 id；还没建出来的目标保持面板默认的焦点。
