@@ -117,9 +117,11 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 - `density`：`Regular`（读数在进度上方，可开第二行）、`Compact`（单行紧凑，读数在进度旁；设置 / 全屏默认隐藏，`show_settings` / `show_fullscreen` 可显式打开，三个槽照常可用）或 `Stacked`（按钮与 Compact 相同，读数与进度单独占上面一整行，窄表面如迷你播放器不必把进度挤在按钮之间）。
 - `placement`：`Overlay`（Absolute 贴父级底边、`max_width` 封顶、外壳不命中）或 `Inline`（参与父级文档流，高度即 chrome 高度，横向填满父级，不用 `max_width`）。
 
+播放钮在每种密度下都显示；`show_play = Some(false)`（`MediaTransportBar::new().show_play(false)`，视图里 `.bind(move |bar| bar.show_play = Some(ready.get()))`，模板 `<Widget of={MediaTransportBar::new().show_play(false)}>`）把它藏起，例如直播间还没准备好播放时；藏起的钮不占位、不能聚焦，焦点在它上面时会被清掉。
+
 `seekable = false` 表示点播内容此刻还不能拖（仍在加载、时长未知）：进度留在原处置灰，不必由应用去改进度控件；直播仍换成进度表。进度控件的「进度」只作读屏名称，不占轨道宽度。
 
-Compact + Overlay 适合分离窗底栏（单行加边距约 52px）；Compact + Inline 适合壳层迷你条，画面、封面与标题仍由应用放在条外。第二个 `RuntimeDocument` / 窗口直接 `assemble_media_transport_bar` 得到同一 chrome。标记里用 `density="compact"` / `density="stacked"`、`placement="inline"`、`show-settings` / `show-fullscreen` 布尔属性；重新绑定只更新这些配置，保留播放状态与已组装的 chrome。
+Compact + Overlay 适合分离窗底栏（单行加边距约 52px）；Compact + Inline 适合壳层迷你条，画面、封面与标题仍由应用放在条外。第二个 `RuntimeDocument` / 窗口直接 `assemble_media_transport_bar` 得到同一 chrome。标记里用 `density="compact"` / `density="stacked"`、`placement="inline"`、`show-play` / `show-settings` / `show-fullscreen` 布尔属性；重新绑定只更新这些配置，保留播放状态与已组装的 chrome。
 
 进度拖拽只预览读数（宿主暂停、没有 tick 时也会跟随），抬手才发一次 `Seek`；取消的拖拽不发。一次拖拽前后各有 `SeekStarted` / `SeekEnded`（结束在 `Seek` 之后；取消或原地松手时只有这一对），宿主据此在拖动期间不回写播放位置，不必去监听条内部进度控件的 `RangeInput`。`RangeField` 自己的拖动起止是 `RangeDragging { dragging }`（键盘与无障碍步进不算拖动）。键盘 / 无障碍每一步都是提交，与原生 range 一致。音量跟随拖拽实时发 `Volume`。条在发 `Seek` / `Volume` 前先把目标写进 `position` / `volume`，宿主下一次写入仍是权威值；宿主若在 seek 完成前继续写旧位置，滑块会短暂回到旧位置。
 

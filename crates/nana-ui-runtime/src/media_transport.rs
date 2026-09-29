@@ -180,6 +180,9 @@ pub struct MediaTransportBar {
     pub max_width: f32,
     pub density: MediaTransportDensity,
     pub placement: MediaTransportPlacement,
+    /// `None` shows the play button in every density; `Some(false)` hides
+    /// it (a live room that is not ready to play).
+    pub show_play: Option<bool>,
     /// `None` follows the density: shown when regular, hidden when compact.
     pub show_settings: Option<bool>,
     /// `None` follows the density: shown when regular, hidden when compact.
@@ -216,6 +219,7 @@ impl MediaTransportBar {
             max_width: BAR_MAX_WIDTH,
             density: MediaTransportDensity::Regular,
             placement: MediaTransportPlacement::Overlay,
+            show_play: None,
             show_settings: None,
             show_fullscreen: None,
             icons: MediaTransportIcons::default(),
@@ -291,6 +295,12 @@ impl MediaTransportBar {
         self
     }
 
+    /// Show or hide the play button; hidden, it takes no focus or press.
+    pub fn show_play(mut self, show: bool) -> Self {
+        self.show_play = Some(show);
+        self
+    }
+
     pub fn show_settings(mut self, show: bool) -> Self {
         self.show_settings = Some(show);
         self
@@ -363,6 +373,7 @@ impl MediaTransportBar {
                 MediaTransportPlacement::Overlay => Some(self.max_width.to_bits()),
                 MediaTransportPlacement::Inline => None,
             },
+            play: self.show_play.unwrap_or(true),
             settings: self.show_settings.unwrap_or(regular),
             fullscreen: self.show_fullscreen.unwrap_or(regular),
         }
@@ -381,6 +392,7 @@ pub(crate) struct ChromeLayout {
     density: MediaTransportDensity,
     /// `f32` bits; `None` when the placement does not cap the width.
     max_width: Option<u32>,
+    play: bool,
     settings: bool,
     fullscreen: bool,
 }
@@ -555,6 +567,7 @@ impl RegisterableComponent for MediaTransportBar {
         if keyword("placement", "inline") {
             bar.placement = MediaTransportPlacement::Inline;
         }
+        bar.show_play = shown_attr(spec, "show-play");
         bar.show_settings = shown_attr(spec, "show-settings");
         bar.show_fullscreen = shown_attr(spec, "show-fullscreen");
         bar
@@ -572,6 +585,7 @@ impl RegisterableComponent for MediaTransportBar {
             max_width: next.max_width,
             density: next.density,
             placement: next.placement,
+            show_play: next.show_play,
             show_settings: next.show_settings,
             show_fullscreen: next.show_fullscreen,
             ..previous.clone()
@@ -1054,13 +1068,18 @@ impl AppContext {
                     .with_layout(|layout| layout.hidden = !chrome.settings);
             })?;
         }
-        if let Some(fullscreen) = slots.fullscreen {
-            self.update_component(
-                Entity::<IconButton>::from_stable_id(fullscreen),
-                |button, _| {
-                    Arc::make_mut(&mut button.style.layout).hidden = !chrome.fullscreen;
-                },
-            )?;
+        for (button, shown) in [
+            (slots.play, chrome.play),
+            (slots.fullscreen, chrome.fullscreen),
+        ] {
+            if let Some(button) = button {
+                self.update_component(
+                    Entity::<IconButton>::from_stable_id(button),
+                    |button, _| {
+                        Arc::make_mut(&mut button.style.layout).hidden = !shown;
+                    },
+                )?;
+            }
         }
         if !chrome.settings
             && let Some(settings) = slots.settings
@@ -1075,6 +1094,7 @@ impl AppContext {
         // Nor may focus stay on a hidden control: it would keep the overlay
         // locked visible and let the keyboard activate what is not shown.
         let hidden = [
+            (!chrome.play).then_some(slots.play).flatten(),
             (!chrome.settings).then_some(slots.settings_group).flatten(),
             (!chrome.fullscreen).then_some(slots.fullscreen).flatten(),
         ];
@@ -2127,6 +2147,7 @@ mod tests {
             ("density", "compact"),
             ("placement", "Inline"),
             ("show-fullscreen", ""),
+            ("show-play", "false"),
         ];
         let spec = crate::SemanticSpec {
             attrs: &attrs,
@@ -2137,6 +2158,7 @@ mod tests {
         assert_eq!(bar.placement, MediaTransportPlacement::Inline);
         assert_eq!(bar.show_fullscreen, Some(true));
         assert_eq!(bar.show_settings, None);
+        assert_eq!(bar.show_play, Some(false));
     }
 
     #[test]
@@ -2258,6 +2280,53 @@ mod tests {
             [MediaTransportEvent::MenuClosed],
             "hiding the open settings menu closes it"
         );
+    }
+
+    /// A live room that is not ready hides the play button, as a view binds
+    /// it; the focus does not stay on a hidden button, and the button comes
+    /// back when the room is ready.
+    #[test]
+    fn show_play_hides_the_play_button() {
+        use crate::view::{signal, widget};
+        let mut cx = AppContext::new();
+        let parent = cx.create_component(document(), Stack::column(0.0)).unwrap();
+        let state = std::cell::Cell::new(None);
+        let refs = std::cell::Cell::new(None);
+        cx.mount_view(parent.stable_id(), || {
+            let ready = signal(true);
+            let bar = crate::view::entity_ref::<MediaTransportBar>();
+            state.set(Some(ready));
+            refs.set(Some(bar));
+            widget(MediaTransportBar::new().live(true))
+                .entity_ref(bar)
+                .bind(move |bar| bar.show_play = Some(ready.get()))
+        })
+        .unwrap();
+        let ready = state.get().unwrap();
+        let bar = refs.get().unwrap().get().unwrap();
+        let play = cx.read(bar, |bar| bar.play().unwrap()).unwrap();
+        let hidden = |cx: &AppContext| {
+            cx.world()
+                .node_style(play.stable_id())
+                .unwrap()
+                .layout
+                .hidden
+        };
+        assert!(!hidden(&cx));
+        assert!(cx.focus_node(document(), play.stable_id()).unwrap());
+
+        ready.set(false);
+        cx.flush_reactive().unwrap();
+        assert!(hidden(&cx), "not ready: no play button");
+        assert_eq!(
+            cx.world().focused(document()),
+            None,
+            "the focus leaves the hidden button"
+        );
+
+        ready.set(true);
+        cx.flush_reactive().unwrap();
+        assert!(!hidden(&cx));
     }
     #[test]
     fn assemble_is_idempotent() {
