@@ -6,7 +6,7 @@
 //! receive the host shaper so layout stays backend-owned.
 
 use super::{AppContext, DocumentId, EditableText, Entity, FrameworkError, StableNodeId};
-use super::{NumberInput, TextArea, TextInput, TextInputState, TextSelection};
+use super::{TextArea, TextInputState, TextSelection};
 use crate::components::TextSnippetSession;
 use crate::text_editing::{
     CursorEdit, TextCaretIntent, TextLineDirection, TextReplacement, TextSearchOptions,
@@ -91,6 +91,109 @@ impl FocusedTextEditor {
     /// field instead of the editor's caret and submit handling.
     pub fn is_numeric(&self) -> bool {
         self.kind == TextEditorKind::Number
+    }
+}
+
+/// Text editing reached through the edited node's type
+/// ([`crate::TypeBehavior::editable`]), so a program links the editing
+/// paths of only the editors it creates.
+#[doc(hidden)]
+pub struct EditableHooks {
+    /// A plain editor's own operations; `None` for a composite's search
+    /// field.
+    pub(super) plain: Option<&'static PlainEditorHooks>,
+    pub(super) commit_ime: fn(&mut AppContext, StableNodeId, &str) -> Result<bool, FrameworkError>,
+    pub(super) delete_surrounding:
+        fn(&mut AppContext, StableNodeId, usize, usize) -> Result<bool, FrameworkError>,
+    pub(super) replace_selection: fn(
+        &mut AppContext,
+        StableNodeId,
+        &str,
+        crate::TextEditOrigin,
+    ) -> Result<bool, FrameworkError>,
+    pub(super) delete_backward: fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>,
+    pub(super) selected_text: fn(&AppContext, StableNodeId) -> Option<String>,
+    pub(super) select_all: fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>,
+}
+
+/// What only a plain editor (`TextArea`, `TextInput`, `NumberInput`) does:
+/// caret moves, whole-state edits, undo.
+pub(super) struct PlainEditorHooks {
+    pub(super) kind: TextEditorKind,
+    pub(super) info: fn(&AppContext, StableNodeId, TextEditorKind) -> Option<FocusedTextEditor>,
+    pub(super) state: fn(&AppContext, StableNodeId) -> Result<TextInputState, FrameworkError>,
+    pub(super) update_state: fn(
+        &mut AppContext,
+        StableNodeId,
+        &mut dyn FnMut(&mut TextInputState) -> bool,
+    ) -> Result<bool, FrameworkError>,
+    pub(super) replace_state: fn(
+        &mut AppContext,
+        StableNodeId,
+        crate::TextEditOrigin,
+        TextInputState,
+    ) -> Result<bool, FrameworkError>,
+    pub(super) restore: fn(
+        &mut AppContext,
+        StableNodeId,
+        super::text_history::EditorSnapshot,
+    ) -> Result<bool, FrameworkError>,
+    pub(super) set_state:
+        fn(&mut AppContext, StableNodeId, TextInputState) -> Result<(), FrameworkError>,
+}
+
+/// The editing tables of the editor type `C`.
+pub(crate) struct Editable<C>(std::marker::PhantomData<C>);
+
+impl<C: EditableText> Editable<C> {
+    /// A composite's search field.
+    pub(crate) const HOOKS: EditableHooks = Self::with_plain(None);
+
+    /// A plain editor (`C::PLAIN` names which).
+    pub(crate) const EDITOR_HOOKS: EditableHooks = Self::with_plain(Some(&Self::PLAIN));
+
+    const PLAIN: PlainEditorHooks = PlainEditorHooks {
+        kind: C::PLAIN.expect("a plain editor names its kind"),
+        info: |cx: &AppContext, node, kind| cx.editor_info(Entity::<C>::from_stable_id(node), kind),
+        state: |cx: &AppContext, node| cx.editor_state_of::<C>(node),
+        update_state: |cx: &mut AppContext, node, update| {
+            cx.update_editor_state_of::<C>(node, update)
+        },
+        replace_state: |cx: &mut AppContext, node, origin, next| {
+            cx.replace_editor_state_of::<C>(node, origin, next)
+        },
+        restore: |cx: &mut AppContext, node, snapshot| {
+            cx.restore_editor_snapshot_of::<C>(node, snapshot)
+        },
+        set_state: |cx: &mut AppContext, node, state| {
+            cx.update_component(Entity::<C>::from_stable_id(node), |editor: &mut C, _| {
+                *editor.state_mut() = state
+            })
+        },
+    };
+
+    const fn with_plain(plain: Option<&'static PlainEditorHooks>) -> EditableHooks {
+        EditableHooks {
+            plain,
+            commit_ime: |cx: &mut AppContext, node, text: &str| {
+                cx.commit_editable_ime(Entity::<C>::from_stable_id(node), text)
+            },
+            delete_surrounding: |cx: &mut AppContext, node, before, after| {
+                cx.delete_editable_surrounding(Entity::<C>::from_stable_id(node), before, after)
+            },
+            replace_selection: |cx: &mut AppContext, node, text: &str, origin| {
+                cx.replace_editable_selection(Entity::<C>::from_stable_id(node), text, origin)
+            },
+            delete_backward: |cx: &mut AppContext, node| {
+                cx.delete_editable_backward(Entity::<C>::from_stable_id(node))
+            },
+            selected_text: |cx: &AppContext, node| {
+                cx.editable_selected_text(Entity::<C>::from_stable_id(node))
+            },
+            select_all: |cx: &mut AppContext, node| {
+                cx.select_all_editable(Entity::<C>::from_stable_id(node))
+            },
+        }
     }
 }
 
@@ -545,7 +648,7 @@ impl AppContext {
 
     fn focused_plain_editor(&self, document: DocumentId) -> Option<FocusedTextEditor> {
         let (node, kind) = self.focused_plain_editor_kind(document)?;
-        with_editor_type!(kind, C => self.editor_info(Entity::<C>::from_stable_id(node), kind))
+        (self.plain_editor(node)?.info)(self, node, kind)
     }
 
     /// The one probe for which plain editor is focused, composition or not.
@@ -560,16 +663,17 @@ impl AppContext {
 
     /// The plain editor component behind `node`, if it is one.
     pub(super) fn plain_editor_kind(&self, node: StableNodeId) -> Option<TextEditorKind> {
-        let view = self.views.get(&node)?;
-        if view.is::<TextArea>() {
-            Some(TextEditorKind::Area)
-        } else if view.is::<TextInput>() {
-            Some(TextEditorKind::Field)
-        } else if view.is::<NumberInput>() {
-            Some(TextEditorKind::Number)
-        } else {
-            None
-        }
+        Some(self.plain_editor(node)?.kind)
+    }
+
+    /// The plain editor operations of the editor type behind `node`.
+    pub(super) fn plain_editor(&self, node: StableNodeId) -> Option<&'static PlainEditorHooks> {
+        self.editable_hooks(node)?.plain
+    }
+
+    /// The editing table of the editor type behind `node`.
+    pub(super) fn editable_hooks(&self, node: StableNodeId) -> Option<&'static EditableHooks> {
+        self.behavior(node)?.editable
     }
 
     fn editor_info<C: EditableText>(
@@ -708,7 +812,7 @@ impl AppContext {
         if !focused.accepts_selection {
             return Ok(false);
         }
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         // 折叠视图：无折叠态区间时为 None，全部按原始值解析（零成本）。
         let fold_view = self.world.text_display_view(focused.node);
         let probe_value: &str = fold_view.as_ref().map_or(&state.value, |view| &view.value);
@@ -867,7 +971,7 @@ impl AppContext {
                 .filter(|(index, _)| *index != primary_index)
                 .map(|(_, selection)| selection)
                 .collect();
-            return self.write_editor_selections(focused.node, focused.kind, primary, additional);
+            return self.write_editor_selections(focused.node, primary, additional);
         }
         let selection = to_display(state.selection);
         let selection = if vertical && focused.multiline {
@@ -1038,7 +1142,7 @@ impl AppContext {
             state.selection
         };
         let moved = snap_selection_over_atoms(previous, moved, extend, &atoms);
-        self.write_editor_selection(focused.node, focused.kind, moved)
+        self.write_editor_selection(focused.node, moved)
     }
 
     /// Delete around the caret(s) of the focused text editor. With multiple
@@ -1058,7 +1162,6 @@ impl AppContext {
         let atoms = self.editor_text_atoms(focused.node, focused.kind);
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Delete,
             |value, selection, _| {
                 let atoms = atoms_in(value, &atoms);
@@ -1100,7 +1203,6 @@ impl AppContext {
             .map(|code| code.indent_unit.to_string());
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Typing,
             |value, selection, _| {
                 let replacement = match &indent_unit {
@@ -1136,7 +1238,6 @@ impl AppContext {
         self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Typing,
             |value, selection, _| auto_pair_edit(value, selection, typed).map(CursorEdit::Span),
         )
@@ -1161,7 +1262,6 @@ impl AppContext {
         let unit = code.indent_unit.to_string();
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Structural,
             |value, selection, _| {
                 let (next, selection) = if outdent {
@@ -1192,7 +1292,6 @@ impl AppContext {
         let prefix = code.comment_prefix.to_string();
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Structural,
             |value, selection, _| {
                 let (next, selection) = toggle_line_comment(value, selection, &prefix)?;
@@ -1218,7 +1317,6 @@ impl AppContext {
         self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Structural,
             |value, selection, _| {
                 let (next, selection) = move_lines(value, selection, direction)?;
@@ -1242,7 +1340,6 @@ impl AppContext {
         self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Structural,
             |value, selection, _| {
                 let (next, selection) = duplicate_lines(value, selection)?;
@@ -1266,7 +1363,6 @@ impl AppContext {
         self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Delete,
             |value, selection, _| {
                 let (next, selection) = delete_lines(value, selection)?;
@@ -1290,7 +1386,6 @@ impl AppContext {
         self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Structural,
             |value, selection, _| {
                 let (next, selection) = join_lines(value, selection)?;
@@ -1314,7 +1409,6 @@ impl AppContext {
         self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Structural,
             |value, selection, _| {
                 let (next, selection) = transform_selection_case(value, selection, upper)?;
@@ -1341,7 +1435,6 @@ impl AppContext {
         self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Structural,
             |value, selection, _| {
                 let (next, selection) = sort_lines(value, selection, descending, unique)?;
@@ -1364,7 +1457,7 @@ impl AppContext {
         if !focused.accepts_selection {
             return Ok(false);
         }
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         let Some((open, close)) = matching_bracket_pair(&state.value, state.selection.focus) else {
             return Ok(false);
         };
@@ -1376,7 +1469,6 @@ impl AppContext {
         self.text_edit.caret_goal_x = None;
         self.write_editor_selection(
             focused.node,
-            focused.kind,
             moved_selection(state.selection, target, false),
         )
     }
@@ -1392,11 +1484,11 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         if !state.has_additional_selections() {
             return Ok(false);
         }
-        self.write_editor_selections(focused.node, focused.kind, state.selection, Vec::new())
+        self.write_editor_selections(focused.node, state.selection, Vec::new())
     }
 
     /// 把聚焦文本编辑器的选区设为唯一选区 `start..end`（`start == end`
@@ -1414,7 +1506,7 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         let start = clamp_focus(&state.value, start);
         let end = clamp_focus(&state.value, end);
         self.text_edit.caret_goal_x = None;
@@ -1422,12 +1514,7 @@ impl AppContext {
         // 必须可见）。write_editor_selections 内部还会按 focus 再对账一次，
         // 幂等无害。
         self.unfold_text_folds_containing(focused.node, &[start, end])?;
-        self.write_editor_selections(
-            focused.node,
-            focused.kind,
-            TextSelection::new(start, end),
-            Vec::new(),
-        )
+        self.write_editor_selections(focused.node, TextSelection::new(start, end), Vec::new())
     }
 
     /// Add one cursor on the visual line above (`above`) or below every
@@ -1447,7 +1534,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_selection {
             return Ok(false);
         }
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         let intent = if above {
             TextCaretIntent::Up
         } else {
@@ -1515,12 +1602,7 @@ impl AppContext {
         if !next.add_selections(&candidates) {
             return Ok(false);
         }
-        self.write_editor_selections(
-            focused.node,
-            focused.kind,
-            next.selection,
-            next.additional_selections,
-        )
+        self.write_editor_selections(focused.node, next.selection, next.additional_selections)
     }
 
     /// Select the next (`previous = false`) or previous literal occurrence of
@@ -1539,7 +1621,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_selection {
             return Ok(false);
         }
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         let Some(found) =
             next_occurrence(&state.value, &state.selections(), state.selection, previous)
         else {
@@ -1549,12 +1631,7 @@ impl AppContext {
         if !next.add_selections(&[TextSelection::new(found.start, found.end)]) {
             return Ok(false);
         }
-        self.write_editor_selections(
-            focused.node,
-            focused.kind,
-            next.selection,
-            next.additional_selections,
-        )
+        self.write_editor_selections(focused.node, next.selection, next.additional_selections)
     }
 
     /// Select every literal occurrence of the primary selection's text (or of
@@ -1570,7 +1647,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_selection {
             return Ok(false);
         }
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         let selections = state.selections().into_owned();
         let Some((query_start, query_end)) = occurrence_query(&state.value, state.selection) else {
             return Ok(false);
@@ -1596,12 +1673,7 @@ impl AppContext {
         if !next.add_selections(&candidates) {
             return Ok(false);
         }
-        self.write_editor_selections(
-            focused.node,
-            focused.kind,
-            next.selection,
-            next.additional_selections,
-        )
+        self.write_editor_selections(focused.node, next.selection, next.additional_selections)
     }
 
     /// Expand every selection of the focused editor one level — collapsed
@@ -1622,7 +1694,7 @@ impl AppContext {
         if !focused.accepts_selection {
             return Ok(false);
         }
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         let selections = state.selections().into_owned();
         let primary_index = selections
             .iter()
@@ -1656,7 +1728,7 @@ impl AppContext {
             .filter(|(index, _)| *index != primary_index)
             .map(|(_, selection)| selection)
             .collect();
-        self.write_editor_selections(focused.node, focused.kind, primary, additional)
+        self.write_editor_selections(focused.node, primary, additional)
     }
 
     /// Undo one [`AppContext::expand_focused_text_selection`] step: restore
@@ -1671,14 +1743,14 @@ impl AppContext {
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
         };
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         match &mut self.text_edit.selection_expansions {
             Some((node, history, value))
                 if *node == focused.node && **value == state.value && !history.is_empty() =>
             {
                 let (primary, additional) = history.pop().expect("non-empty checked above");
                 self.text_edit.caret_goal_x = None;
-                self.write_editor_selections(focused.node, focused.kind, primary, additional)
+                self.write_editor_selections(focused.node, primary, additional)
             }
             _ => {
                 self.text_edit.selection_expansions = None;
@@ -1710,17 +1782,13 @@ impl AppContext {
         if !focused.accepts_selection {
             return Ok(false);
         }
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         let matches = find_matches_in_scope(&state.value, query, options, scope, &state.selection);
         let Some(found) = find_next_match(&matches, state.selection.ordered().end) else {
             return Ok(false);
         };
         self.text_edit.caret_goal_x = None;
-        self.write_editor_selection(
-            focused.node,
-            focused.kind,
-            TextSelection::new(found.start, found.end),
-        )
+        self.write_editor_selection(focused.node, TextSelection::new(found.start, found.end))
     }
 
     /// Select the previous literal match of `query` in the focused text
@@ -1740,17 +1808,13 @@ impl AppContext {
         if !focused.accepts_selection {
             return Ok(false);
         }
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         let matches = find_matches_in_scope(&state.value, query, options, scope, &state.selection);
         let Some(found) = find_previous_match(&matches, state.selection.ordered().start) else {
             return Ok(false);
         };
         self.text_edit.caret_goal_x = None;
-        self.write_editor_selection(
-            focused.node,
-            focused.kind,
-            TextSelection::new(found.start, found.end),
-        )
+        self.write_editor_selection(focused.node, TextSelection::new(found.start, found.end))
     }
 
     /// Replace the focused editor's selection with `replacement` when the
@@ -1782,7 +1846,6 @@ impl AppContext {
         self.text_edit.caret_goal_x = None;
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Structural,
             |value, selection, is_primary| {
                 if !is_primary {
@@ -1835,11 +1898,8 @@ impl AppContext {
         }
         self.text_edit.caret_goal_x = None;
         let mut replaced = 0usize;
-        let applied = self.edit_editor(
-            focused.node,
-            focused.kind,
-            crate::TextEditOrigin::Structural,
-            |state| {
+        let applied =
+            self.edit_editor(focused.node, crate::TextEditOrigin::Structural, |state| {
                 let matches =
                     find_matches_in_scope(&state.value, query, options, scope, &state.selection);
                 if matches.is_empty() {
@@ -1870,8 +1930,7 @@ impl AppContext {
                         first.start + first_replacement.len(),
                     ),
                 })
-            },
-        )?;
+            })?;
         Ok(if applied { replaced } else { 0 })
     }
 
@@ -1911,7 +1970,7 @@ impl AppContext {
             self.text_edit.text_pointer_click = None;
             return Ok(true);
         }
-        let state = self.editor_state(node, focused.kind)?;
+        let state = self.editor_state(node)?;
         const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
         const DOUBLE_CLICK_SLOP: f32 = 4.0;
         let count = match &self.text_edit.text_pointer_click {
@@ -2013,7 +2072,7 @@ impl AppContext {
         // Alt+click toggles an extra cursor on multiline editors; single-line
         // fields keep their plain click semantics.
         if add_cursor && focused.multiline && count == 1 {
-            return self.text_editor_toggle_cursor(node, focused.kind, &state, hit);
+            return self.text_editor_toggle_cursor(node, &state, hit);
         }
         let atoms = atoms_in(&state.value, &self.editor_text_atoms(node, focused.kind));
         let (selection, additional) = match count {
@@ -2044,7 +2103,7 @@ impl AppContext {
             let anchor = if extend { selection.anchor } else { offset };
             self.text_edit.text_pointer_drag = Some((pointer_id, node, anchor));
         }
-        self.write_editor_selections(node, focused.kind, selection, additional)
+        self.write_editor_selections(node, selection, additional)
     }
 
     /// minimap 导航：把目标滚动写进世界与组件（组件字段是投影权威，
@@ -2079,7 +2138,6 @@ impl AppContext {
     fn text_editor_toggle_cursor(
         &mut self,
         node: StableNodeId,
-        kind: TextEditorKind,
         state: &TextInputState,
         hit: crate::TextHit,
     ) -> Result<bool, FrameworkError> {
@@ -2099,7 +2157,7 @@ impl AppContext {
             }
         }
         next.normalize_selections();
-        self.write_editor_selections(node, kind, next.selection, next.additional_selections)
+        self.write_editor_selections(node, next.selection, next.additional_selections)
     }
 
     /// Extend a live drag selection to the pointer position.
@@ -2144,7 +2202,7 @@ impl AppContext {
         if focused.node != node {
             return Ok(false);
         }
-        let state = self.editor_state(node, focused.kind)?;
+        let state = self.editor_state(node)?;
         // 命中换算与点击共用同一条 offset 路径。
         let Some(hit) = self.text_editor_hit_offset(node, focused.kind, x, y, shaper)? else {
             return Ok(false);
@@ -2154,7 +2212,6 @@ impl AppContext {
         }
         self.write_editor_selection(
             node,
-            focused.kind,
             TextSelection::new(anchor, hit.offset).with_affinity(hit.affinity),
         )
     }
@@ -2318,7 +2375,6 @@ impl AppContext {
             };
             return self.write_editor_selections(
                 drag.node,
-                focused.kind,
                 TextSelection::caret(hit.offset).with_affinity(hit.affinity),
                 Vec::new(),
             );
@@ -2329,7 +2385,7 @@ impl AppContext {
         else {
             return Ok(true);
         };
-        let state = self.editor_state(drag.node, focused.kind)?;
+        let state = self.editor_state(drag.node)?;
         if state.selection.ordered() != (drag.source.0..drag.source.1) {
             // 拖拽期间选区被外部改动：取消，不落文本。
             return Ok(true);
@@ -2380,7 +2436,6 @@ impl AppContext {
         let selection = TextSelection::new(insert_at, insert_at + length);
         self.commit_editor_value(
             drag.node,
-            focused.kind,
             next.into(),
             selection,
             Vec::new(),
@@ -2427,7 +2482,7 @@ impl AppContext {
         let Some((style, constraints)) = self.world.text_input_shape_context(node) else {
             return Ok(None);
         };
-        let state = self.editor_state(node, kind)?;
+        let state = self.editor_state(node)?;
         let fold_view = self.world.text_display_view(node);
         let probe_value: &str = fold_view.as_ref().map_or(&state.value, |view| &view.value);
         let mut geometry = EditorGeometry {
@@ -2491,7 +2546,7 @@ impl AppContext {
             return Ok(false);
         }
         let atoms = atoms_in(
-            &self.editor_state(focused.node, focused.kind)?.value,
+            &self.editor_state(focused.node)?.value,
             &self.editor_text_atoms(focused.node, focused.kind),
         );
         let Some(atom) = atoms
@@ -2501,11 +2556,7 @@ impl AppContext {
         else {
             return Ok(false);
         };
-        self.write_editor_selection(
-            focused.node,
-            focused.kind,
-            TextSelection::new(atom.start, atom.end),
-        )?;
+        self.write_editor_selection(focused.node, TextSelection::new(atom.start, atom.end))?;
         if !self.delete_focused_text(document, TextDeleteKind::Backward)? {
             return Ok(false);
         }
@@ -2553,12 +2604,11 @@ impl AppContext {
         }
     }
 
-    fn editor_state(
-        &self,
-        node: StableNodeId,
-        kind: TextEditorKind,
-    ) -> Result<TextInputState, FrameworkError> {
-        with_editor_type!(kind, C => self.editor_state_of::<C>(node))
+    fn editor_state(&self, node: StableNodeId) -> Result<TextInputState, FrameworkError> {
+        let hooks = self
+            .plain_editor(node)
+            .ok_or(FrameworkError::MissingView(node))?;
+        (hooks.state)(self, node)
     }
 
     fn editor_state_of<C: EditableText>(
@@ -2578,16 +2628,21 @@ impl AppContext {
     fn update_editor_state(
         &mut self,
         node: StableNodeId,
-        kind: TextEditorKind,
         update: impl FnOnce(&mut TextInputState) -> bool,
     ) -> Result<bool, FrameworkError> {
-        with_editor_type!(kind, C => self.update_editor_state_of::<C>(node, update))
+        let hooks = self
+            .plain_editor(node)
+            .ok_or(FrameworkError::MissingView(node))?;
+        let mut update = Some(update);
+        (hooks.update_state)(self, node, &mut |state| {
+            update.take().is_some_and(|update| update(state))
+        })
     }
 
     fn update_editor_state_of<C: EditableText>(
         &mut self,
         node: StableNodeId,
-        update: impl FnOnce(&mut TextInputState) -> bool,
+        update: &mut dyn FnMut(&mut TextInputState) -> bool,
     ) -> Result<bool, FrameworkError> {
         self.update_component(Entity::<C>::from_stable_id(node), |editable: &mut C, _| {
             update(editable.state_mut())
@@ -2599,11 +2654,13 @@ impl AppContext {
     pub(super) fn replace_editor_state(
         &mut self,
         node: StableNodeId,
-        kind: TextEditorKind,
         origin: crate::TextEditOrigin,
         next: TextInputState,
     ) -> Result<bool, FrameworkError> {
-        with_editor_type!(kind, C => self.replace_editor_state_of::<C>(node, origin, next))
+        let hooks = self
+            .plain_editor(node)
+            .ok_or(FrameworkError::MissingView(node))?;
+        (hooks.replace_state)(self, node, origin, next)
     }
 
     fn replace_editor_state_of<C: EditableText>(
@@ -2631,10 +2688,12 @@ impl AppContext {
     pub(super) fn restore_editor_snapshot(
         &mut self,
         node: StableNodeId,
-        kind: TextEditorKind,
         snapshot: super::text_history::EditorSnapshot,
     ) -> Result<bool, FrameworkError> {
-        with_editor_type!(kind, C => self.restore_editor_snapshot_of::<C>(node, snapshot))
+        let hooks = self
+            .plain_editor(node)
+            .ok_or(FrameworkError::MissingView(node))?;
+        (hooks.restore)(self, node, snapshot)
     }
 
     fn restore_editor_snapshot_of<C: EditableText>(
@@ -2660,13 +2719,12 @@ impl AppContext {
     fn write_editor_selection(
         &mut self,
         node: StableNodeId,
-        kind: TextEditorKind,
         selection: TextSelection,
     ) -> Result<bool, FrameworkError> {
         // 光标落在折叠隐藏区间内 → 该折叠自动展开（reveal 语义；查找导航
         // 跳转也经由此路径展开）。
         self.unfold_text_folds_containing(node, &[selection.focus])?;
-        let changed = self.update_editor_state(node, kind, |state| {
+        let changed = self.update_editor_state(node, |state| {
             if state.selection == selection {
                 return false;
             }
@@ -2688,7 +2746,6 @@ impl AppContext {
     fn write_editor_selections(
         &mut self,
         node: StableNodeId,
-        kind: TextEditorKind,
         selection: TextSelection,
         additional: Vec<TextSelection>,
     ) -> Result<bool, FrameworkError> {
@@ -2698,7 +2755,7 @@ impl AppContext {
             .chain(additional.iter().map(|selection| selection.focus))
             .collect();
         self.unfold_text_folds_containing(node, &focuses)?;
-        let changed = self.update_editor_state(node, kind, |state| {
+        let changed = self.update_editor_state(node, |state| {
             if state.selection == selection && state.additional_selections == additional {
                 return false;
             }
@@ -2719,11 +2776,10 @@ impl AppContext {
     fn edit_editor(
         &mut self,
         node: StableNodeId,
-        kind: TextEditorKind,
         origin: crate::TextEditOrigin,
         edit: impl FnOnce(&TextInputState) -> Option<EditorEdit>,
     ) -> Result<bool, FrameworkError> {
-        let state = self.editor_state(node, kind)?;
+        let state = self.editor_state(node)?;
         let Some(edited) = edit(&state) else {
             return Ok(false);
         };
@@ -2731,7 +2787,7 @@ impl AppContext {
             return Ok(false);
         }
         let EditorEdit { value, selection } = edited;
-        self.commit_editor_value(node, kind, value.into(), selection, Vec::new(), origin)
+        self.commit_editor_value(node, value.into(), selection, Vec::new(), origin)
     }
 
     /// Apply a per-cursor edit closure to every active selection and commit
@@ -2746,11 +2802,10 @@ impl AppContext {
     fn edit_editor_multi(
         &mut self,
         node: StableNodeId,
-        kind: TextEditorKind,
         origin: crate::TextEditOrigin,
         mut edit: impl FnMut(&str, TextSelection, bool) -> Option<CursorEdit>,
     ) -> Result<bool, FrameworkError> {
-        let state = self.editor_state(node, kind)?;
+        let state = self.editor_state(node)?;
         if !state.has_additional_selections() {
             let Some(edited) = edit(&state.value, state.selection, true) else {
                 return Ok(false);
@@ -2765,14 +2820,7 @@ impl AppContext {
             if value == state.value {
                 return Ok(false);
             }
-            return self.commit_editor_value(
-                node,
-                kind,
-                value.into(),
-                selection,
-                Vec::new(),
-                origin,
-            );
+            return self.commit_editor_value(node, value.into(), selection, Vec::new(), origin);
         }
         let selections = state.selections().into_owned();
         let primary_index = selections
@@ -2808,7 +2856,7 @@ impl AppContext {
             .filter(|(index, _)| *index != primary_index)
             .map(|(_, selection)| *selection)
             .collect();
-        self.commit_editor_value(node, kind, value.into(), primary, additional, origin)
+        self.commit_editor_value(node, value.into(), primary, additional, origin)
     }
 
     /// Commit a value edit together with the rebuilt selection set. The set
@@ -2817,14 +2865,13 @@ impl AppContext {
     fn commit_editor_value(
         &mut self,
         node: StableNodeId,
-        kind: TextEditorKind,
         value: crate::TextValue,
         selection: TextSelection,
         additional: Vec<TextSelection>,
         origin: crate::TextEditOrigin,
     ) -> Result<bool, FrameworkError> {
         let linked = self.world.text_snippet_session(node).and_then(|session| {
-            let old = self.editor_state(node, kind).ok()?;
+            let old = self.editor_state(node).ok()?;
             session.linked_edit(&old.value, &value, selection)
         });
         let (value, selection, linked_session) = if let Some((value, selection, session)) = linked {
@@ -2838,7 +2885,7 @@ impl AppContext {
             additional_selections: additional,
         };
         next.normalize_selections();
-        let changed = self.replace_editor_state(node, kind, origin, next)?;
+        let changed = self.replace_editor_state(node, origin, next)?;
         if changed && let Some(session) = linked_session {
             let mut mutations = MutationQueue::new();
             mutations.set_text_input_snippet(node, Some(session));
@@ -2983,12 +3030,11 @@ impl AppContext {
             && group.choices.iter().any(|choice| choice == &label)
             && let Some(range) = group.ranges.first()
         {
-            let mut next = self.editor_state(focused.node, focused.kind)?;
+            let mut next = self.editor_state(focused.node)?;
             next.selection = TextSelection::new(range.start, range.end);
             next.replace_primary_selection(&label);
             let changed = self.commit_editor_value(
                 focused.node,
-                focused.kind,
                 next.value,
                 next.selection,
                 Vec::new(),
@@ -3019,7 +3065,7 @@ impl AppContext {
             } else {
                 None
             };
-            let current = self.editor_state(focused.node, focused.kind)?;
+            let current = self.editor_state(focused.node)?;
             if current.value != edit.source.as_ref()
                 || current.selection != TextSelection::caret(edit.caret)
             {
@@ -3067,7 +3113,6 @@ impl AppContext {
                 .unwrap_or_else(|| TextSelection::caret(base + edit.text.len()));
             let changed = self.commit_editor_value(
                 focused.node,
-                focused.kind,
                 next.value,
                 next.selection,
                 next.additional_selections,
@@ -3114,7 +3159,6 @@ impl AppContext {
         }
         self.edit_editor_multi(
             focused.node,
-            focused.kind,
             crate::TextEditOrigin::Structural,
             |value, selection, is_primary| {
                 if !is_primary {
@@ -3409,7 +3453,7 @@ impl AppContext {
         if !focused.multiline || !focused.accepts_selection {
             return Ok(false);
         }
-        let state = self.editor_state(focused.node, focused.kind)?;
+        let state = self.editor_state(focused.node)?;
         let view = self.world.text_fold_view_state(focused.node);
         let offered = view.as_ref().map_or(&[][..], |state| &state.offered);
         let at = offset.unwrap_or(state.selection.focus);
@@ -3479,7 +3523,7 @@ impl AppContext {
         }
         let node = focused.node;
         self.text_edit.caret_goal_x = None;
-        let state = self.editor_state(node, focused.kind)?;
+        let state = self.editor_state(node)?;
         let (insert, stops, final_caret) =
             expand_snippet_body(&snippet.body, state.selection.ordered().start);
         let mut next = state.clone();
@@ -3507,7 +3551,6 @@ impl AppContext {
         }
         if !self.commit_editor_value(
             node,
-            focused.kind,
             next.value,
             next.selection,
             next.additional_selections,
@@ -3568,7 +3611,7 @@ impl AppContext {
             Some(caret)
         };
         if let Some(caret) = caret {
-            let state = self.editor_state(node, focused.kind)?;
+            let state = self.editor_state(node)?;
             if clamp_boundary(&state.value, caret) != caret {
                 // 跳位失效（文本边界已不在字符边界上）：结束会话。
                 ended = true;
@@ -3578,7 +3621,7 @@ impl AppContext {
                     .get(session.index.saturating_sub(1))
                     .copied()
                     .unwrap_or(caret);
-                self.write_editor_selection(node, focused.kind, TextSelection::new(caret, end))?;
+                self.write_editor_selection(node, TextSelection::new(caret, end))?;
             }
         }
         if session.exit_on_last && session.index == session.stops.len() {

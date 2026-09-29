@@ -82,17 +82,8 @@ impl AppContext {
         // Every component editor commits through its component: the world
         // path alone would leave the component's value behind, and its next
         // projection would write the commit away.
-        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
-            return with_editor_type!(kind, C => self.commit_editable_ime(Entity::<C>::from_stable_id(node), text));
-        }
-        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
-            return self.commit_editable_ime(entity, text);
-        }
-        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
-            return self.commit_editable_ime(entity, text);
-        }
-        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
-            return self.commit_editable_ime(entity, text);
+        if let Some((node, hooks)) = self.focused_editable(document) {
+            return (hooks.commit_ime)(self, node, text);
         }
         self.replace_world_text_input_selection(document, text)
     }
@@ -107,17 +98,8 @@ impl AppContext {
         before_bytes: usize,
         after_bytes: usize,
     ) -> Result<bool, FrameworkError> {
-        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
-            return with_editor_type!(kind, C => self.delete_editable_surrounding(Entity::<C>::from_stable_id(node), before_bytes, after_bytes));
-        }
-        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
-            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
-        }
-        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
-            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
-        }
-        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
-            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
+        if let Some((node, hooks)) = self.focused_editable(document) {
+            return (hooks.delete_surrounding)(self, node, before_bytes, after_bytes);
         }
         self.delete_world_text_input_surrounding(document, before_bytes, after_bytes)
     }
@@ -133,11 +115,8 @@ impl AppContext {
         node: StableNodeId,
         state: TextInputState,
     ) -> Result<(), FrameworkError> {
-        if let Some(kind) = self.plain_editor_kind(node) {
-            return with_editor_type!(kind, C => self.update_component(
-                Entity::<C>::from_stable_id(node),
-                |editor: &mut C, _| *editor.state_mut() = state,
-            ));
+        if let Some(plain) = self.plain_editor(node) {
+            return (plain.set_state)(self, node, state);
         }
         let mut mutations = MutationQueue::new();
         mutations.set_text_input(node, Some(state));
@@ -281,17 +260,8 @@ impl AppContext {
         {
             return Ok(false);
         }
-        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
-            return with_editor_type!(kind, C => self.replace_editable_selection(Entity::<C>::from_stable_id(node), text, origin));
-        }
-        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
-            return self.replace_editable_selection(entity, text, origin);
-        }
-        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
-            return self.replace_editable_selection(entity, text, origin);
-        }
-        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
-            return self.replace_editable_selection(entity, text, origin);
+        if let Some((node, hooks)) = self.focused_editable(document) {
+            return (hooks.replace_selection)(self, node, text, origin);
         }
         self.replace_world_text_input_selection(document, text)
     }
@@ -303,17 +273,8 @@ impl AppContext {
         if self.has_focused_ime_composition(document) {
             return Ok(false);
         }
-        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
-            return with_editor_type!(kind, C => self.delete_editable_backward(Entity::<C>::from_stable_id(node)));
-        }
-        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
-            return self.delete_editable_backward(entity);
-        }
-        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
-            return self.delete_editable_backward(entity);
-        }
-        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
-            return self.delete_editable_backward(entity);
+        if let Some((node, hooks)) = self.focused_editable(document) {
+            return (hooks.delete_backward)(self, node);
         }
         Ok(false)
     }
@@ -325,17 +286,8 @@ impl AppContext {
     /// the pasteboard with an empty string. The Runtime does not touch the OS
     /// pasteboard; the host writes what this returns.
     pub fn focused_selected_text(&self, document: DocumentId) -> Option<String> {
-        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
-            return with_editor_type!(kind, C => self.editable_selected_text(Entity::<C>::from_stable_id(node)));
-        }
-        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
-            return self.editable_selected_text(entity);
-        }
-        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
-            return self.editable_selected_text(entity);
-        }
-        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
-            return self.editable_selected_text(entity);
+        if let Some((node, hooks)) = self.focused_editable(document) {
+            return (hooks.selected_text)(self, node);
         }
         #[cfg(feature = "rich-text")]
         let focused = self.world.focused(document)?;
@@ -384,17 +336,8 @@ impl AppContext {
         &mut self,
         document: DocumentId,
     ) -> Result<bool, FrameworkError> {
-        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
-            return with_editor_type!(kind, C => self.select_all_editable(Entity::<C>::from_stable_id(node)));
-        }
-        if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
-            return self.select_all_editable(entity);
-        }
-        if let Some(entity) = self.focused_editor::<CommandPalette>(document) {
-            return self.select_all_editable(entity);
-        }
-        if let Some(entity) = self.focused_editor::<ContextMenu>(document) {
-            return self.select_all_editable(entity);
+        if let Some((node, hooks)) = self.focused_editable(document) {
+            return (hooks.select_all)(self, node);
         }
         Ok(false)
     }

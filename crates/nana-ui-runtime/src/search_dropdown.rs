@@ -325,6 +325,7 @@ impl ComponentView for SearchDropdown {
             })
         }),
         hooks: Some(|hooks| hooks.search_dropdown = Some(&SEARCH_DROPDOWN_HOOKS)),
+        editable: Some(&crate::framework::Editable::<Self>::HOOKS),
         ..crate::TypeBehavior::NONE
     };
 

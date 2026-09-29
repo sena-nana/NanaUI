@@ -219,6 +219,7 @@ impl ComponentView for CommandPalette {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activate_at: Some(crate::AppContext::activate_command_palette_at),
         hooks: Some(|hooks| hooks.command_palette = Some(&COMMAND_PALETTE_HOOKS)),
+        editable: Some(&crate::framework::Editable::<Self>::HOOKS),
         ..crate::TypeBehavior::NONE
     };
 

@@ -562,6 +562,7 @@ impl crate::ComponentView for ContextMenu {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::dismiss_context_menu),
         activate_at: Some(crate::AppContext::activate_context_menu_at),
+        editable: Some(&crate::framework::Editable::<Self>::HOOKS),
         ..crate::TypeBehavior::NONE
     };
 

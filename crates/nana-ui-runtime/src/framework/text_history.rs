@@ -490,7 +490,7 @@ impl crate::AppContext {
         }) else {
             return Ok(false);
         };
-        self.restore_editor_snapshot(node, focused.kind, target)
+        self.restore_editor_snapshot(node, target)
     }
 
     /// Ends the current typing or deletion run for an editor, so the next edit

@@ -1,24 +1,5 @@
 /// Evaluate `$body` with `$C` naming the component type behind a plain
 /// editor kind, so each generic editor operation dispatches in one place.
-macro_rules! with_editor_type {
-    ($kind:expr, $C:ident => $body:expr) => {
-        match $kind {
-            $crate::framework::text_edit::TextEditorKind::Area => {
-                type $C = $crate::TextArea;
-                $body
-            }
-            $crate::framework::text_edit::TextEditorKind::Field => {
-                type $C = $crate::TextInput;
-                $body
-            }
-            $crate::framework::text_edit::TextEditorKind::Number => {
-                type $C = $crate::NumberInput;
-                $body
-            }
-        }
-    };
-}
-
 #[cfg(feature = "charts")]
 mod charts;
 mod choice;
@@ -36,6 +17,8 @@ mod registry;
 pub(crate) use hooks::{ChoiceHooks, DockHooks, NavigateHooks, WorkspaceHooks, hooked};
 pub use hooks::{TypeBehavior, TypeHooks};
 pub(crate) use lifecycle::lifecycle_hooks;
+pub(crate) use text_edit::Editable;
+pub use text_edit::EditableHooks;
 mod scroll;
 mod selection;
 pub use selection::FormValidity;
@@ -137,8 +120,10 @@ pub trait View: Send + 'static {}
 
 impl<T: Send + 'static> View for T {}
 
-trait EditableText: ComponentView {
+pub(crate) trait EditableText: ComponentView {
     type Change: Send + 'static;
+    /// Which plain editor this is; `None` for a composite's search field.
+    const PLAIN: Option<text_edit::TextEditorKind> = None;
     fn accepts_input(&self) -> bool;
     fn accepts_selection(&self) -> bool {
         self.accepts_input()
@@ -220,6 +205,7 @@ fn scroll_offset_on(axis: nana_ui_core::ScrollbarAxis, offset: f32, hold: f32) -
 
 impl EditableText for TextInput {
     type Change = TextChanged;
+    const PLAIN: Option<text_edit::TextEditorKind> = Some(text_edit::TextEditorKind::Field);
 
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.loading && !self.read_only
@@ -255,6 +241,7 @@ impl EditableText for TextInput {
 
 impl EditableText for NumberInput {
     type Change = TextChanged;
+    const PLAIN: Option<text_edit::TextEditorKind> = Some(text_edit::TextEditorKind::Number);
 
     fn accepts_input(&self) -> bool {
         self.accepts_input()
@@ -320,6 +307,7 @@ fn number_text(text: &str) -> Option<std::borrow::Cow<'_, str>> {
 
 impl EditableText for TextArea {
     type Change = TextChanged;
+    const PLAIN: Option<text_edit::TextEditorKind> = Some(text_edit::TextEditorKind::Area);
 
     fn accepts_input(&self) -> bool {
         !self.disabled && !self.read_only
@@ -1635,6 +1623,15 @@ impl AppContext {
     fn focused_editor<C: EditableText>(&self, document: DocumentId) -> Option<Entity<C>> {
         let (target, _) = self.world.focused_text_input(document)?;
         self.view_entity(target)
+    }
+
+    /// The focused text input's node and its editor type's editing table.
+    fn focused_editable(
+        &self,
+        document: DocumentId,
+    ) -> Option<(StableNodeId, &'static text_edit::EditableHooks)> {
+        let (target, _) = self.world.focused_text_input(document)?;
+        Some((target, self.editable_hooks(target)?))
     }
 
     /// Mutable Runtime access for compatibility hosts and frame systems that

@@ -77,6 +77,8 @@ pub struct TypeBehavior<C: View> {
     pub lifecycle: Option<EntityFn<C, ()>>,
     /// The router hooks this type needs.
     pub hooks: Option<fn(&mut TypeHooks)>,
+    /// Text editing, for an editor or a composite with a search field.
+    pub editable: Option<&'static super::text_edit::EditableHooks>,
 }
 
 impl<C: View> TypeBehavior<C> {
@@ -87,6 +89,7 @@ impl<C: View> TypeBehavior<C> {
         close_options: None,
         lifecycle: None,
         hooks: None,
+        editable: None,
     };
 }
 
@@ -97,6 +100,7 @@ pub(crate) struct ErasedBehavior {
     pub(crate) activate_at: Option<fn(&mut AppContext, StableNodeId, f32, f32) -> Handled>,
     pub(crate) close_options: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
     pub(crate) lifecycle: Option<fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>>,
+    pub(crate) editable: Option<&'static super::text_edit::EditableHooks>,
 }
 
 impl ErasedBehavior {
@@ -123,6 +127,7 @@ impl ErasedBehavior {
                     (C::BEHAVIOR.lifecycle.unwrap())(cx, Entity::from_stable_id(node))
                 }) as _
             }),
+            editable: behavior.editable,
         }
     }
 }

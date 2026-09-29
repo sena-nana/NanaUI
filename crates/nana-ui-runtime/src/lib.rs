@@ -215,7 +215,7 @@ pub use framework::{
     VirtualTableItems, VirtualTreeItems,
 };
 #[doc(hidden)]
-pub use framework::{TypeBehavior, TypeHooks};
+pub use framework::{EditableHooks, TypeBehavior, TypeHooks};
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,

@@ -1676,6 +1676,11 @@ impl TextInput {
 }
 
 impl ComponentView for TextInput {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        editable: Some(&crate::framework::Editable::<Self>::EDITOR_HOOKS),
+        ..crate::TypeBehavior::NONE
+    };
+
     /// Equal host values preserve the editing selection. A different value uses
     /// the supplied selection (`TextInput::new` places its caret at the end).
     fn reconcile(&mut self, mut next: Self) {
@@ -2035,6 +2040,11 @@ impl NumberInput {
 }
 
 impl ComponentView for NumberInput {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        editable: Some(&crate::framework::Editable::<Self>::EDITOR_HOOKS),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "number-input".into(),
@@ -2468,6 +2478,11 @@ impl TextArea {
 }
 
 impl ComponentView for TextArea {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        editable: Some(&crate::framework::Editable::<Self>::EDITOR_HOOKS),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "textarea".into(),
