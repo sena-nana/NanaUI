@@ -2613,6 +2613,7 @@ impl UiWorld {
                 *offset_x,
                 *offset_y,
                 &self.style_model.palette,
+                self.theme.effects().media_scrim,
                 self.style_model.metrics,
             )),
             StandardVisual::KeyCaptureLayer { recording } => Some(key_capture_geometry(

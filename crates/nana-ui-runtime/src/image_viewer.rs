@@ -1470,6 +1470,50 @@ mod tests {
         assert!(row.y >= stage.y);
     }
 
+    /// The backdrop is the theme's media scrim, dark in the light theme
+    /// as in the dark one.
+    #[test]
+    fn the_backdrop_is_a_dark_scrim_in_both_themes() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let viewer = context
+            .create_component(document, ImageViewer::new(ImageViewerContent::None))
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        for (mode, palette) in [
+            (
+                nana_ui_core::ThemeMode::Light,
+                nana_ui_core::SemanticPalette::light(),
+            ),
+            (
+                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::SemanticPalette::dark(),
+            ),
+        ] {
+            context
+                .set_style_tokens(mode, nana_ui_core::UI_METRICS, palette, palette.surface)
+                .unwrap();
+            let Some(crate::ComponentGeometry::ImageViewer { scrim_color, .. }) =
+                context.world().component_geometry(viewer.stable_id())
+            else {
+                panic!("image viewer geometry");
+            };
+            assert_eq!(
+                scrim_color,
+                nana_ui_core::EffectTokens::for_mode(mode)
+                    .media_scrim
+                    .as_rgba_array()
+            );
+            let [r, g, b, a] = scrim_color;
+            assert!(
+                r.max(g).max(b) < 0.2 && a > 0.8,
+                "{mode:?}: {scrim_color:?}"
+            );
+        }
+    }
+
     #[test]
     fn overlay_host_can_activate_the_viewer() {
         let mut context = AppContext::new();

@@ -616,7 +616,8 @@ pub struct ShadowToken {
     pub inset: bool,
 }
 
-/// Effect tokens: the elevation ramp.
+/// Effect tokens: the elevation ramp, and the backdrop full-window media
+/// sits on.
 ///
 /// The two shadows used to live as a `match theme_mode` inside
 /// `ComponentElevation::surface_shadow` and as a `background.r > 0.5`
@@ -626,7 +627,14 @@ pub struct ShadowToken {
 pub struct EffectTokens {
     pub surface: ShadowToken,
     pub overlay: ShadowToken,
+    /// The near-opaque dark laid over the window behind full-window media
+    /// (an image viewer). Dark in every mode: an image is judged against
+    /// dark, and a light theme's page colour would wash it out.
+    pub media_scrim: SemanticColor,
 }
+
+/// The media scrim both built-in modes use.
+const MEDIA_SCRIM: SemanticColor = SemanticColor::rgba(0.0, 0.0, 0.0, 0.9);
 
 impl EffectTokens {
     /// Lilia `--shadow-surface` dark: `0 10px 30px -24px rgba(0,0,0,.62)`.
@@ -647,6 +655,7 @@ impl EffectTokens {
             spread_radius: 0.0,
             inset: false,
         },
+        media_scrim: MEDIA_SCRIM,
     };
 
     /// Lilia `--shadow-surface` light: `0 10px 26px -24px rgba(17,24,39,.24)`.
@@ -667,6 +676,7 @@ impl EffectTokens {
             spread_radius: 0.0,
             inset: false,
         },
+        media_scrim: MEDIA_SCRIM,
     };
 
     pub const fn shadow(self, role: ElevationRole) -> ShadowToken {

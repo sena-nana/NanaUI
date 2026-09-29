@@ -739,7 +739,7 @@ cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 | Border | `BorderTokens` | `HAIRLINE` 读它的 `DEFAULT` | 1 个裸 `const` |
 | Opacity | `OpacityTokens` | `StyleModelRef::color` 解析五个 soft 角色 | `SemanticPalette::get` 里的字面量 + `background.r > 0.5` 亮度嗅探 |
 | Motion | `MotionTokens` | hover 交叉淡入、switch 拨动读**安装值**；`motion::*` 八个 `const` 读 `DEFAULT` | 八个裸 `const` + 两个死字段 |
-| Effect / Elevation | `EffectTokens` | 菜单/浮层阴影、模态框阴影读**安装值** | `surface_shadow` 里的 `match mode` + 模态框的亮度嗅探 |
+| Effect / Elevation | `EffectTokens` | 菜单/浮层阴影、模态框阴影、图片查看器的媒体遮罩（`media_scrim`，两种模式都是深色）读**安装值** | `surface_shadow` 里的 `match mode` + 模态框的亮度嗅探 |
 | Surface / material | `SurfaceTokens` | `ThemeTokens::with_backdrop` 决定 backdrop 给哪个角色上 alpha | `match target` 写死在宿主适配层 |
 | Focus | `AccentRamp.focus` + `FocusSurface` / `FocusBorder` / `FocusText` | 11 个组件的 `InteractionStyle::focused`，以及 radio 焦点环的颜色 | 三个组件写 `border: Accent` 配零宽度边（画不出来）、三个与 hover 同值、一个与选中同值 |
 | Component recipe | `ComponentThemeRegistry` | extraction 的 family 前景表、`Button` 的 variant×state 表、status tone 表 | 25 臂 `match StandardVisual` + `Button::project` 里五张内联表 |

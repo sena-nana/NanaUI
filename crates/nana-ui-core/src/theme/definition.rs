@@ -568,6 +568,7 @@ impl ThemeDefinition {
             check.length(name, shadow.blur_radius);
             let _ = check.finite(name, shadow.spread_radius);
         }
+        check.color("effects.media_scrim", self.effects.media_scrim);
 
         if let Some(error) = error {
             return Err(error);
