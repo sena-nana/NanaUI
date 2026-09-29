@@ -1378,6 +1378,33 @@ impl AppContext {
 pub(crate) mod lifecycle_hooks {
     use super::*;
 
+    /// A scrollport told to follow its end goes there when told, not only
+    /// when its content next grows: a "back to latest" control writes
+    /// `follow_end` and the offset follows.
+    pub(crate) fn scroll_view(
+        context: &mut AppContext,
+        entity: Entity<crate::ScrollView>,
+    ) -> Result<(), FrameworkError> {
+        let (follow, dragging) =
+            context.read(entity, |view| (view.follow_end, view.dragging.is_some()))?;
+        if !follow || dragging {
+            return Ok(());
+        }
+        let id = entity.stable_id();
+        let at_end = match (
+            context.world.scroll_offset(id),
+            context.world.scroll_metrics(id),
+        ) {
+            (Some(offset), Some(metrics)) => offset.y >= metrics.max_offset().y - 0.5,
+            // Not laid out yet: the first layout places it.
+            _ => true,
+        };
+        if !at_end {
+            context.apply_scroll_retention(entity)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn terminal(
         context: &mut AppContext,
         entity: Entity<crate::TerminalView>,

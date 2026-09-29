@@ -4261,6 +4261,11 @@ impl ScrollView {
 }
 
 impl ComponentView for ScrollView {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        lifecycle: Some(crate::framework::lifecycle_hooks::scroll_view),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),

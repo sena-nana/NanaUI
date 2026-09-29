@@ -218,10 +218,7 @@ impl AppContext {
         }
 
         self.world.commit(mutations)?;
-        self.remove_event_handlers_for(&removed_nodes);
-        for id in &removed_nodes {
-            self.views.remove(id);
-        }
+        self.forget_subtree(&removed_nodes);
         for (_, entity, component) in staged {
             self.install_view(entity.id, component);
         }
@@ -635,10 +632,7 @@ impl AppContext {
             }
         }
         self.world.commit(mutations)?;
-        self.remove_event_handlers_for(&removed_nodes);
-        for id in &removed_nodes {
-            self.views.remove(id);
-        }
+        self.forget_subtree(&removed_nodes);
         for (entity, component) in staged_rows {
             self.install_view(entity.id, component);
         }

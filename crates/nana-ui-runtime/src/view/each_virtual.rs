@@ -474,13 +474,10 @@ where
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
         let moved = super::signal(0u64);
         let bump = move || moved.update(|at| *at += 1);
+        // The list takes the width it is given, not its rows': rows wrap
+        // their text to it and grid columns divide it.
         let mut list = List::new();
-        if self.grid.is_some() {
-            // Columns divide the list's width, so it takes the width it is
-            // given rather than its rows'.
-            std::sync::Arc::make_mut(&mut list.style.layout).width =
-                Some(LengthSpec::Percent(100.0));
-        }
+        std::sync::Arc::make_mut(&mut list.style.layout).width = Some(LengthSpec::Percent(100.0));
         let (scroll, list, within) = match self.container {
             Container::Own(scroll) => {
                 let scroll = vb.place(self.key, *scroll);

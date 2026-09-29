@@ -240,10 +240,9 @@ impl AppContext {
             self.world.commit(mutations)?;
         }
         if !removed.is_empty() {
-            self.remove_event_handlers_for(&removed);
-            for id in &removed {
-                self.views.remove(id);
-            }
+            // Everything a despawned row owned goes with it: handlers,
+            // views, and the scopes and bindings of a row built as a view.
+            self.forget_subtree(&removed);
         }
         self.views.insert(list.id, Box::new(content));
         for (id, component) in staged_items {

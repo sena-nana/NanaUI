@@ -2693,3 +2693,87 @@ fn a_measured_virtual_list_keeps_measured_heights_when_rows_are_added() {
     settle(&mut cx, document, viewport);
     assert_eq!(first(&cx).as_deref(), Some("行 10"));
 }
+
+#[test]
+fn a_virtual_row_scrolled_away_releases_its_scope() {
+    let (mut cx, document, parent) = setup();
+    use std::sync::atomic::{AtomicI32, Ordering::SeqCst};
+    let live = std::sync::Arc::new(AtomicI32::new(0));
+    let rows = std::sync::Arc::clone(&live);
+    let view = cx
+        .mount_view(parent, move || {
+            each_virtual(
+                signal(virtual_items(1_000)),
+                |row| row.id,
+                20.0,
+                move |row| {
+                    rows.fetch_add(1, SeqCst);
+                    let rows = std::sync::Arc::clone(&rows);
+                    on_cleanup(move || {
+                        rows.fetch_sub(1, SeqCst);
+                    });
+                    text(row.title)
+                },
+            )
+            .overscan(0.0)
+            .height(200.0)
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    settle(&mut cx, document, viewport);
+    let list = children(&cx, scroll)[0];
+    assert_eq!(
+        cx.world().layout_box(list).unwrap().width,
+        cx.world().layout_box(scroll).unwrap().width,
+        "the list is as wide as its scroll area, so rows wrap to it"
+    );
+    let built = live.load(SeqCst);
+    assert!((10..=12).contains(&built), "{built} rows live");
+
+    cx.scroll_to(
+        Entity::from_stable_id(scroll),
+        crate::ScrollOffset {
+            x: 0.0,
+            y: 10_000.0,
+        },
+    )
+    .unwrap();
+    settle(&mut cx, document, viewport);
+    assert_eq!(
+        live.load(SeqCst),
+        texts_under(&cx, list).len() as i32,
+        "rows scrolled away were cleaned up, not kept alive"
+    );
+}
+
+#[test]
+fn a_scroll_area_told_to_follow_its_end_goes_there() {
+    let (mut cx, document, parent) = setup();
+    let follow = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let end = signal(false);
+            follow.set(Some(end));
+            widget(
+                crate::ScrollView::new(crate::ScrollAxes::Vertical).with_layout(|l| {
+                    l.height = Some(LengthSpec::Px(100.0));
+                }),
+            )
+            .bind(move |scroll| scroll.follow_end = end.get())
+            .children(widget(
+                Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(1_000.0))),
+            ))
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    settle(&mut cx, document, viewport);
+    assert_eq!(cx.world().scroll_offset(scroll).unwrap_or_default().y, 0.0);
+
+    follow.get().unwrap().set(true);
+    cx.flush_reactive().unwrap();
+    let max = cx.world().scroll_metrics(scroll).unwrap().max_offset().y;
+    assert!(max > 0.0);
+    assert_eq!(cx.world().scroll_offset(scroll).unwrap().y, max);
+}
