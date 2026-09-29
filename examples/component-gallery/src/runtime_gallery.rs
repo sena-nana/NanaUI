@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use nana_ui::runtime::view::{EntityRef, entity_ref, widget};
+use nana_ui::runtime::view::{EntityRef, IntoView, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     Activate, AppShell, AppTitleBar, Avatar, Button, CalendarHeatmap, CalendarHeatmapDatum,
     CalendarHeatmapEvent, Card, Checkbox, Chip, DesktopShell, DiffHunk, DiffLine, DiffView,
@@ -15,8 +15,8 @@ use nana_ui::runtime::{
     SegmentedOption, SegmentedSelectionRequested, SemanticColorRole, SidebarFooter,
     SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState, SidebarSection,
     Skeleton, Spinner, StableNodeId, StatusBadge, Switch, TabOption, Tabs, TabsEvent,
-    TerminalScreen, TerminalView, TextArea, TextChanged, TextInput, Thumbnail, Toast,
-    ToggleChanged, TreeNode, TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
+    TerminalScreen, TerminalView, Text, TextArea, TextChanged, TextInput, Thumbnail, Toast,
+    ToggleChanged, TreeNode, TreeView, TreeViewEvent, ValidationMessage, XYPad, XYPadEvent,
 };
 use nana_ui::theme::type_scale;
 use nana_ui::{
@@ -27,8 +27,8 @@ use nana_ui_platform::InputPayload;
 
 use super::runtime_host::{
     DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, ScriptedInput,
-    apply_title_bar_maximized, apply_workspace_corners, bind_event, bind_event_ui, event_point,
-    hugging_text, labeled_text, node_is_or_under, reconcile_children, runtime_input_event,
+    apply_title_bar_maximized, apply_workspace_corners, bind_event, event_point, hugging_text,
+    keep_slot, labeled_text, node_is_or_under, queue, reconcile_children, runtime_input_event,
     search_command_button, sidebar_toggle_button, styled_text, take_pending, theme_toggle_button,
 };
 use super::{
@@ -1110,47 +1110,32 @@ impl DockWindowRuntime {
         let mut document = RuntimeDocument::new(document_id);
         let context = document.context_mut();
         let _ = context.set_theme(state.theme);
-        let mut panels = Vec::new();
-        let mut contents = std::collections::HashMap::new();
-        let dock = context.build(document_id, |ui| {
-            for id in surface.root.flatten() {
-                let (title, hint) = DOCK_PANELS
-                    .iter()
-                    .find(|(panel, _, _)| *panel == id.as_ref())
-                    .map(|(_, title, hint)| (*title, *hint))
-                    .unwrap_or(("Panel", ""));
-                let heading = ui.parked(styled_text(
-                    title,
-                    SemanticColorRole::Text,
-                    type_scale::META,
-                    type_scale::REGULAR,
-                ));
-                let detail = ui.parked(styled_text(
-                    hint,
-                    SemanticColorRole::Muted,
-                    type_scale::HINT,
-                    type_scale::REGULAR,
-                ));
-                let panel = ui.detached(HostStack::fill_column(5.0).padding(10.0));
-                ui.nest(panel, |ui| {
-                    ui.adopt(heading);
-                    ui.adopt(detail);
-                });
-                contents.insert(id.to_string(), panel.stable_id());
-                panels.push((id.to_string(), panel));
-            }
-            let dock = ui.child(
-                "dock",
-                runtime_dock_from_node(state, &surface.root, &contents),
-            );
-            ui.nest(dock, |ui| {
-                for (_, panel) in &panels {
-                    ui.adopt(*panel);
-                }
-            });
-            dock
+        let ids = surface.root.flatten();
+        let (_, (dock, panels)) = context.mount_view_root(document_id, || {
+            let dock = entity_ref::<nana_ui::runtime::Dock>();
+            let panels: Vec<EntityRef<HostStack>> = ids.iter().map(|_| entity_ref()).collect();
+            let panel_views = ids
+                .iter()
+                .zip(&panels)
+                .map(|(id, panel)| {
+                    let (title, hint) = DOCK_PANELS
+                        .iter()
+                        .find(|(panel, _, _)| *panel == id.as_ref())
+                        .map(|(_, title, hint)| (*title, *hint))
+                        .unwrap_or(("Panel", ""));
+                    dock_panel(id, title, hint, *panel)
+                })
+                .collect::<Vec<_>>();
+            let view = widget(runtime_dock_from_node(
+                state,
+                &surface.root,
+                &std::collections::HashMap::new(),
+            ))
+            .entity_ref(dock)
+            .children(panel_views);
+            with_refs(view, (dock, panels))
         })?;
-        context.assemble_dock(dock)?;
+        let panels = ids.iter().map(|id| id.to_string()).zip(panels).collect();
         let mut text = NanaTextShaper::default();
         let _ = document.flush(
             LayoutViewport::new(surface.width.max(1.0), surface.height.max(1.0)),
@@ -1290,429 +1275,351 @@ fn mount_controls(
     state: &GalleryState,
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<ControlsTree, FrameworkError> {
-    let tree = context.build_detached(document_id, |ui| {
-        let small = ui.parked(
-            Button::new("小")
-                .size(ControlSize::Small)
-                .kind(ButtonKind::Subtle),
-        );
-        let medium = ui.parked(
-            Button::new("中")
-                .size(ControlSize::Medium)
-                .kind(ButtonKind::Primary),
-        );
-        let large = ui.parked(
-            Button::new("大")
-                .size(ControlSize::Large)
-                .kind(ButtonKind::Subtle),
-        );
-        let loading = ui.parked(loading_button(state));
-        let add = ui.parked(IconButton::new(Icon::Add, "添加").size(ControlSize::Small));
-        let clicks = ui.parked(styled_text(
-            format!("主要操作已触发 {} 次", state.primary_clicks),
-            SemanticColorRole::Faint,
-            10.0,
-            400,
+    let sizes = [ControlSize::Small, ControlSize::Medium, ControlSize::Large];
+    let (_, refs) = context.mount_view_detached(document_id, || {
+        let root = entity_ref::<HostStack>();
+        let buttons: [EntityRef<Button>; 4] = std::array::from_fn(|_| entity_ref());
+        let add = entity_ref::<IconButton>();
+        let clicks = entity_ref::<Text>();
+        let segmented: [EntityRef<SegmentedControl>; 3] = std::array::from_fn(|_| entity_ref());
+        let segmented_on: [EntityRef<SegmentedOption>; 3] = std::array::from_fn(|_| entity_ref());
+        let segmented_off: [EntityRef<SegmentedOption>; 3] = std::array::from_fn(|_| entity_ref());
+        let inputs: [EntityRef<TextInput>; 4] = std::array::from_fn(|_| entity_ref());
+        let dropdowns: [EntityRef<Dropdown>; 3] = std::array::from_fn(|_| entity_ref());
+        let texts: [EntityRef<Text>; 3] = std::array::from_fn(|_| entity_ref());
+        let [field_status, editor_status, xy_label] = texts;
+        let checkbox = entity_ref::<Checkbox>();
+        let switch = entity_ref::<Switch>();
+        let range = entity_ref::<nana_ui::runtime::RangeField>();
+        let search = entity_ref::<SearchDropdown>();
+        let textarea = entity_ref::<TextArea>();
+        let xy_pad = entity_ref::<XYPad>();
+        let list_items: Vec<EntityRef<ListItem>> =
+            LIST_ITEMS.iter().map(|_| entity_ref()).collect();
+        let list_leads: Vec<EntityRef<Text>> = LIST_ITEMS.iter().map(|_| entity_ref()).collect();
+        let list_labels: Vec<EntityRef<Text>> = LIST_ITEMS.iter().map(|_| entity_ref()).collect();
+        let list_trails: Vec<EntityRef<Text>> = LIST_ITEMS.iter().map(|_| entity_ref()).collect();
+        let [small, medium, large, loading] = buttons;
+
+        let primary = |label: &'static str, size, kind, button: EntityRef<Button>| {
+            widget(Button::new(label).size(size).kind(kind))
+                .entity_ref(button)
+                .on(queue(pending, |_: &Activate| GalleryMessage::PrimaryAction))
+        };
+        let button_row = widget(HostStack::leading_row(6.0)).children((
+            primary("小", ControlSize::Small, ButtonKind::Subtle, small),
+            primary("中", ControlSize::Medium, ButtonKind::Primary, medium),
+            primary("大", ControlSize::Large, ButtonKind::Subtle, large),
+            widget(loading_button(state))
+                .entity_ref(loading)
+                .on(queue(pending, |_: &Activate| GalleryMessage::ToggleLoading)),
+            widget(IconButton::new(Icon::Add, "添加").size(ControlSize::Small))
+                .entity_ref(add)
+                .on(queue(pending, |_: &Activate| GalleryMessage::PrimaryAction)),
         ));
-        for button in [small, medium, large] {
-            bind_event_ui(ui, button, Arc::clone(pending), |event: &Activate| {
-                let _ = event;
-                GalleryMessage::PrimaryAction
-            });
-        }
-        bind_event_ui(ui, add, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::PrimaryAction
-        });
-        bind_event_ui(ui, loading, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::ToggleLoading
-        });
+        let segmented_row = widget(HostStack::leading_row(6.0)).children(
+            sizes
+                .iter()
+                .zip(segmented)
+                .map(|(size, control)| {
+                    widget(SegmentedControl::new().size(*size)).entity_ref(control)
+                })
+                .collect::<Vec<_>>(),
+        );
+        // Detached: `set_segmented_options` places them once they exist.
+        let segmented_options = sizes
+            .iter()
+            .enumerate()
+            .flat_map(|(index, size)| {
+                [
+                    widget(SegmentedOption::new("关").size(*size)).entity_ref(segmented_off[index]),
+                    widget(SegmentedOption::new("开").size(*size)).entity_ref(segmented_on[index]),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let buttons_panel = widget(panel(6.0, Some(LengthSpec::Px(170.0)), 1.0)).children((
+            widget(styled_text(
+                "三档操作",
+                SemanticColorRole::Muted,
+                type_scale::META,
+                type_scale::REGULAR,
+            )),
+            button_row,
+            segmented_row,
+            widget(styled_text(
+                format!("主要操作已触发 {} 次", state.primary_clicks),
+                SemanticColorRole::Faint,
+                10.0,
+                400,
+            ))
+            .entity_ref(clicks),
+        ));
 
-        let sizes = [ControlSize::Small, ControlSize::Medium, ControlSize::Large];
-        let mut segmented = [None; 3];
-        let mut segmented_on = [None; 3];
-        let mut segmented_off = [None; 3];
-        for (index, size) in sizes.iter().copied().enumerate() {
-            let control = ui.parked(SegmentedControl::new().size(size));
-            let off = ui.detached(SegmentedOption::new("关").size(size));
-            let on = ui.detached(SegmentedOption::new("开").size(size));
-            bind_event_ui(
-                ui,
-                control,
-                Arc::clone(pending),
-                move |event: &SegmentedSelectionRequested| {
-                    GalleryMessage::ToggleCheck(event.option == on.stable_id())
-                },
-            );
-            segmented[index] = Some(control);
-            segmented_on[index] = Some(on);
-            segmented_off[index] = Some(off);
-        }
-
-        let mut inputs = [None; 3];
-        for (index, (placeholder, size)) in ["小", "中", "大"].iter().zip(sizes).enumerate() {
-            let input = ui.detached(
-                TextInput::new(state.input.clone())
-                    .placeholder(*placeholder)
-                    .size(size)
-                    .invalid(state.input.trim().is_empty()),
-            );
-            bind_event_ui(ui, input, Arc::clone(pending), |event: &TextChanged| {
+        let text_changed = || {
+            queue(pending, |event: &TextChanged| {
                 GalleryMessage::InputChanged(event.value.to_string())
-            });
-            inputs[index] = Some(input);
-        }
-        let secure = ui.parked(
-            TextInput::new(state.input.clone())
-                .placeholder("配对密钥")
-                .secure(true),
+            })
+        };
+        let input_row = widget(HostStack::fill_row(6.0)).children(
+            ["小", "中", "大"]
+                .iter()
+                .zip(sizes)
+                .zip(inputs)
+                .map(|((placeholder, size), input)| {
+                    flex_cell(
+                        widget(
+                            TextInput::new(state.input.clone())
+                                .placeholder(*placeholder)
+                                .size(size)
+                                .invalid(state.input.trim().is_empty()),
+                        )
+                        .entity_ref(input)
+                        .on(text_changed()),
+                    )
+                })
+                .collect::<Vec<_>>(),
         );
-        bind_event_ui(ui, secure, Arc::clone(pending), |event: &TextChanged| {
-            GalleryMessage::InputChanged(event.value.to_string())
-        });
-
-        let mut dropdowns = [None; 3];
-        for (index, (placeholder, size)) in ["小", "中", "大"].iter().zip(sizes).enumerate() {
-            let dropdown = ui.detached(gallery_dropdown(state, placeholder, size));
-            bind_event_ui(
-                ui,
-                dropdown,
-                Arc::clone(pending),
-                |event: &DropdownEvent<Arc<str>>| map_dropdown_event(event),
-            );
-            dropdowns[index] = Some(dropdown);
-        }
-        let field_status = ui.parked(field_status_text(state));
-
-        let checkbox = ui.parked(Checkbox::new("启用选项", state.checked));
-        bind_event_ui(
-            ui,
-            checkbox,
-            Arc::clone(pending),
-            |event: &ToggleChanged| GalleryMessage::ToggleCheck(event.checked),
+        let dropdown_row = widget(HostStack::fill_row(6.0)).children(
+            ["小", "中", "大"]
+                .iter()
+                .zip(sizes)
+                .zip(dropdowns)
+                .map(|((placeholder, size), dropdown)| {
+                    flex_cell(
+                        widget(gallery_dropdown(state, placeholder, size))
+                            .entity_ref(dropdown)
+                            .on(queue(pending, |event: &DropdownEvent<Arc<str>>| {
+                                map_dropdown_event(event)
+                            })),
+                    )
+                })
+                .collect::<Vec<_>>(),
         );
-        let switch =
-            ui.parked(Switch::new("允许编辑说明", state.switched).disabled(!state.checked));
-        bind_event_ui(ui, switch, Arc::clone(pending), |event: &ToggleChanged| {
-            GalleryMessage::ToggleSwitch(event.checked)
-        });
-        let range = ui.detached(fill_range_field(
-            nana_ui::runtime::RangeField::new(f64::from(state.slider), 0.0, 100.0, 1.0)
-                .label("强度")
-                .unit("%"),
-        ));
-        bind_event_ui(ui, range, Arc::clone(pending), |event: &RangeInput| {
-            GalleryMessage::SetSlider(event.value.round() as u8)
-        });
-        let search = ui.parked(gallery_search(state));
-        bind_event_ui(
-            ui,
-            search,
-            Arc::clone(pending),
-            |event: &SearchDropdownEvent| map_search_event(event),
-        );
-
-        let textarea = ui.parked(gallery_textarea(state));
-        bind_event_ui(ui, textarea, Arc::clone(pending), |event: &TextChanged| {
-            GalleryMessage::SetEditorText(event.value.to_string())
-        });
-        let editor_status = ui.parked(editor_status_text(state));
-        let xy_pad = ui.parked(XYPad::new(state.xy_pad).step(0.01));
-        bind_event_ui(ui, xy_pad, Arc::clone(pending), |event: &XYPadEvent| {
-            GalleryMessage::SetXYPad(*event)
-        });
-        let xy_label = ui.parked(styled_text(
-            format!("X {:.2} · Y {:.2}", state.xy_pad.x, state.xy_pad.y),
-            SemanticColorRole::Muted,
-            type_scale::HINT,
-            type_scale::REGULAR,
+        let secure = inputs[3];
+        let fields = widget(panel(5.0, Some(LengthSpec::Px(208.0)), 1.0)).children((
+            widget(styled_text(
+                "字段名称 *",
+                SemanticColorRole::Text,
+                13.0,
+                600,
+            )),
+            input_row,
+            widget(
+                TextInput::new(state.input.clone())
+                    .placeholder("配对密钥")
+                    .secure(true),
+            )
+            .entity_ref(secure)
+            .on(text_changed()),
+            dropdown_row,
+            widget(field_status_text(state)).entity_ref(field_status),
         ));
 
-        let mut list_items = Vec::new();
-        let mut list_leads = Vec::new();
-        let mut list_labels = Vec::new();
-        let mut list_trails = Vec::new();
-        let list = ui.parked(
+        let toggle_row =
+            widget(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center)).children((
+                flex_cell(
+                    widget(fill_range_field(
+                        nana_ui::runtime::RangeField::new(f64::from(state.slider), 0.0, 100.0, 1.0)
+                            .label("强度")
+                            .unit("%"),
+                    ))
+                    .entity_ref(range)
+                    .on(queue(pending, |event: &RangeInput| {
+                        GalleryMessage::SetSlider(event.value.round() as u8)
+                    })),
+                ),
+                widget(
+                    HostStack::column(0.0)
+                        .width(LengthSpec::Px(116.0))
+                        .max_width(LengthSpec::Px(116.0))
+                        .grow(0.0)
+                        .shrink(0.0),
+                )
+                .children(widget(gallery_search(state)).entity_ref(search).on(
+                    queue(pending, |event: &SearchDropdownEvent| {
+                        map_search_event(event)
+                    }),
+                )),
+            ));
+        let toggles = widget(panel(8.0, Some(LengthSpec::Px(170.0)), 1.0)).children((
+            widget(styled_text(
+                "选择控件",
+                SemanticColorRole::Muted,
+                type_scale::META,
+                type_scale::REGULAR,
+            )),
+            widget(Checkbox::new("启用选项", state.checked))
+                .entity_ref(checkbox)
+                .on(queue(pending, |event: &ToggleChanged| {
+                    GalleryMessage::ToggleCheck(event.checked)
+                })),
+            widget(Switch::new("允许编辑说明", state.switched).disabled(!state.checked))
+                .entity_ref(switch)
+                .on(queue(pending, |event: &ToggleChanged| {
+                    GalleryMessage::ToggleSwitch(event.checked)
+                })),
+            toggle_row,
+        ));
+
+        let text_area = widget(filling_panel(5.0)).children((
+            widget(styled_text("多行文本", SemanticColorRole::Text, 13.0, 600)),
+            widget(gallery_textarea(state))
+                .entity_ref(textarea)
+                .on(queue(pending, |event: &TextChanged| {
+                    GalleryMessage::SetEditorText(event.value.to_string())
+                })),
+            widget(editor_status_text(state)).entity_ref(editor_status),
+        ));
+        let xy = widget(filling_panel(8.0)).children((
+            widget(styled_text(
+                "二维参数",
+                SemanticColorRole::Muted,
+                type_scale::META,
+                type_scale::REGULAR,
+            )),
+            widget(XYPad::new(state.xy_pad).step(0.01))
+                .entity_ref(xy_pad)
+                .on(queue(pending, |event: &XYPadEvent| {
+                    GalleryMessage::SetXYPad(*event)
+                })),
+            widget(styled_text(
+                format!("X {:.2} · Y {:.2}", state.xy_pad.x, state.xy_pad.y),
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+                type_scale::REGULAR,
+            ))
+            .entity_ref(xy_label),
+        ));
+
+        let list = widget(
             HostStack::column(4.0)
                 .height(LengthSpec::Fill)
                 .min_width(LengthSpec::Px(0.0)),
-        );
-        for (index, (label, disabled, size)) in LIST_ITEMS.into_iter().enumerate() {
-            let selected = state.selected_item == index;
-            let leading = ui.parked(list_leading_text(selected));
-            let content = ui.parked(list_label_text(label));
-            let trailing = ui.parked(list_trailing_text(disabled));
-            let item = ui.parked(gallery_list_item(
-                label, size, selected, disabled, leading, content, trailing,
-            ));
-            ui.nest(item, |ui| {
-                ui.adopt(leading);
-                ui.adopt(content);
-                ui.adopt(trailing);
-            });
-            if !disabled {
-                bind_event_ui(ui, item, Arc::clone(pending), move |event: &Activate| {
-                    let _ = event;
-                    GalleryMessage::SelectListItem(index)
+        )
+        .with(|list| {
+            for (index, (label, disabled, size)) in LIST_ITEMS.into_iter().enumerate() {
+                let selected = state.selected_item == index;
+                let item = widget(list_item_spec(label, size, selected, disabled))
+                    .entity_ref(list_items[index])
+                    .leading(widget(list_leading_text(selected)).entity_ref(list_leads[index]))
+                    .content(widget(list_label_text(label)).entity_ref(list_labels[index]))
+                    .trailing(widget(list_trailing_text(disabled)).entity_ref(list_trails[index]));
+                list.add(if disabled {
+                    item
+                } else {
+                    item.on(queue(pending, move |_: &Activate| {
+                        GalleryMessage::SelectListItem(index)
+                    }))
                 });
             }
-            ui.nest(list, |ui| ui.adopt(item));
-            list_items.push(item);
-            list_leads.push(leading);
-            list_labels.push(content);
-            list_trails.push(trailing);
-        }
-
-        let buttons_title = ui.parked(styled_text(
-            "三档操作",
-            SemanticColorRole::Muted,
-            type_scale::META,
-            type_scale::REGULAR,
+        });
+        let list_panel = widget(filling_panel(8.0)).children((
+            widget(styled_text(
+                "列表",
+                SemanticColorRole::Muted,
+                type_scale::META,
+                type_scale::REGULAR,
+            )),
+            widget(HostStack::leading_row(8.0)).children((
+                widget(Thumbnail::empty()),
+                widget(Thumbnail::loading()),
+                widget(Thumbnail::new("gallery.thumb")),
+                widget(Thumbnail::unavailable()),
+            )),
+            widget(HostStack::leading_row(8.0)).children((
+                widget(Chip::new("默认")),
+                widget(Chip::new("已选").selected(true)),
+            )),
+            widget(HostStack::leading_row(8.0)).children((
+                widget(Avatar::empty().label("空")),
+                widget(Avatar::empty().size(40.0).label("大")),
+            )),
+            widget(ListItem::new("缩略图项"))
+                .leading(widget(Thumbnail::empty()))
+                .content(widget(list_label_text("缩略图项"))),
+            list,
         ));
-        let buttons = panel(ui, 6.0, Some(LengthSpec::Px(170.0)), 1.0);
-        let button_row = ui.parked(HostStack::leading_row(6.0));
-        ui.nest(button_row, |ui| {
-            ui.adopt(small);
-            ui.adopt(medium);
-            ui.adopt(large);
-            ui.adopt(loading);
-            ui.adopt(add);
-        });
-        let segmented_row = ui.parked(HostStack::leading_row(6.0));
-        ui.nest(segmented_row, |ui| {
-            for control in segmented.iter().flatten().copied() {
-                ui.adopt(control);
-            }
-        });
-        ui.nest(buttons, |ui| {
-            ui.adopt(buttons_title);
-            ui.adopt(button_row);
-            ui.adopt(segmented_row);
-            ui.adopt(clicks);
-        });
 
-        let fields = panel(ui, 5.0, Some(LengthSpec::Px(208.0)), 1.0);
-        let name = ui.parked(styled_text(
-            "字段名称 *",
-            SemanticColorRole::Text,
-            13.0,
-            600,
-        ));
-        let input_row = ui.parked(HostStack::fill_row(6.0));
-        for input in inputs.iter().flatten().copied() {
-            append_flex_child(ui, input_row, input);
-        }
-        let dropdown_row = ui.parked(HostStack::fill_row(6.0));
-        for dropdown in dropdowns.iter().flatten().copied() {
-            append_flex_child(ui, dropdown_row, dropdown);
-        }
-        ui.nest(fields, |ui| {
-            ui.adopt(name);
-            ui.adopt(input_row);
-            ui.adopt(secure);
-            ui.adopt(dropdown_row);
-            ui.adopt(field_status);
-        });
-
-        let toggles = panel(ui, 8.0, Some(LengthSpec::Px(170.0)), 1.0);
-        let toggle_title = ui.parked(styled_text(
-            "选择控件",
-            SemanticColorRole::Muted,
-            type_scale::META,
-            type_scale::REGULAR,
-        ));
-        let toggle_row =
-            ui.parked(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
-        append_flex_child(ui, toggle_row, range);
-        let search_cell = ui.parked(
-            HostStack::column(0.0)
-                .width(LengthSpec::Px(116.0))
-                .max_width(LengthSpec::Px(116.0))
-                .grow(0.0)
-                .shrink(0.0),
+        let view = (
+            widget(HostStack::canvas()).entity_ref(root).children((
+                widget(HostStack::fill_row(10.0)).children((buttons_panel, fields, toggles)),
+                widget(
+                    HostStack::fill_row(10.0)
+                        .height(LengthSpec::Fill)
+                        .min_height(LengthSpec::Px(0.0))
+                        .grow(1.0),
+                )
+                .children((text_area, xy, list_panel)),
+            )),
+            segmented_options,
         );
-        ui.nest(search_cell, |ui| ui.adopt(search));
-        ui.nest(toggle_row, |ui| ui.adopt(search_cell));
-        ui.nest(toggles, |ui| {
-            ui.adopt(toggle_title);
-            ui.adopt(checkbox);
-            ui.adopt(switch);
-            ui.adopt(toggle_row);
-        });
-
-        let text_area = filling_panel(ui, 5.0);
-        let editor_title = ui.parked(styled_text("多行文本", SemanticColorRole::Text, 13.0, 600));
-        ui.nest(text_area, |ui| {
-            ui.adopt(editor_title);
-            ui.adopt(textarea);
-            ui.adopt(editor_status);
-        });
-
-        let xy = filling_panel(ui, 8.0);
-        let xy_title = ui.parked(styled_text(
-            "二维参数",
-            SemanticColorRole::Muted,
-            type_scale::META,
-            type_scale::REGULAR,
-        ));
-        ui.nest(xy, |ui| {
-            ui.adopt(xy_title);
-            ui.adopt(xy_pad);
-            ui.adopt(xy_label);
-        });
-
-        let list_panel = filling_panel(ui, 8.0);
-        let list_title = ui.parked(styled_text(
-            "列表",
-            SemanticColorRole::Muted,
-            type_scale::META,
-            type_scale::REGULAR,
-        ));
-        let thumb_row = ui.parked(HostStack::leading_row(8.0));
-        ui.nest(thumb_row, |ui| {
-            for thumb in [
-                Thumbnail::empty(),
-                Thumbnail::loading(),
-                Thumbnail::new("gallery.thumb"),
-                Thumbnail::unavailable(),
-            ] {
-                let node = ui.parked(thumb);
-                ui.adopt(node);
-            }
-        });
-        let chip_row = ui.parked(HostStack::leading_row(8.0));
-        ui.nest(chip_row, |ui| {
-            for chip in [Chip::new("默认"), Chip::new("已选").selected(true)] {
-                let node = ui.parked(chip);
-                ui.adopt(node);
-            }
-        });
-        let avatar_row = ui.parked(HostStack::leading_row(8.0));
-        ui.nest(avatar_row, |ui| {
-            for avatar in [
-                Avatar::empty().label("空"),
-                Avatar::empty().size(40.0).label("大"),
-            ] {
-                let node = ui.parked(avatar);
-                ui.adopt(node);
-            }
-        });
-        let thumb_lead = ui.parked(Thumbnail::empty());
-        let thumb_label = ui.parked(list_label_text("缩略图项"));
-        let thumb_item = ui.parked(ListItem::new("缩略图项").slots(ListItemSlots {
-            leading: Some(thumb_lead.stable_id()),
-            content: Some(thumb_label.stable_id()),
-            trailing: None,
-        }));
-        ui.nest(thumb_item, |ui| {
-            ui.adopt(thumb_lead);
-            ui.adopt(thumb_label);
-        });
-        ui.nest(list_panel, |ui| {
-            ui.adopt(list_title);
-            ui.adopt(thumb_row);
-            ui.adopt(chip_row);
-            ui.adopt(avatar_row);
-            ui.adopt(thumb_item);
-            ui.adopt(list);
-        });
-
-        let top = ui.parked(HostStack::fill_row(10.0));
-        ui.nest(top, |ui| {
-            ui.adopt(buttons);
-            ui.adopt(fields);
-            ui.adopt(toggles);
-        });
-        let bottom = ui.parked(
-            HostStack::fill_row(10.0)
-                .height(LengthSpec::Fill)
-                .min_height(LengthSpec::Px(0.0))
-                .grow(1.0),
-        );
-        ui.nest(bottom, |ui| {
-            ui.adopt(text_area);
-            ui.adopt(xy);
-            ui.adopt(list_panel);
-        });
-        // Subtree root: returned out of build_detached for the caller to place.
-        let root = ui.detached(HostStack::canvas());
-        ui.nest(root, |ui| {
-            ui.adopt(top);
-            ui.adopt(bottom);
-        });
-
-        ControlsTree {
-            root,
-            _small: small,
-            _medium: medium,
-            _large: large,
-            loading,
-            _add: add,
-            clicks,
-            segmented: [
-                segmented[0].expect("segmented"),
-                segmented[1].expect("segmented"),
-                segmented[2].expect("segmented"),
-            ],
-            segmented_on: [
-                segmented_on[0].expect("on"),
-                segmented_on[1].expect("on"),
-                segmented_on[2].expect("on"),
-            ],
-            segmented_off: [
-                segmented_off[0].expect("off"),
-                segmented_off[1].expect("off"),
-                segmented_off[2].expect("off"),
-            ],
-            inputs: [
-                inputs[0].expect("input"),
-                inputs[1].expect("input"),
-                inputs[2].expect("input"),
-            ],
-            secure,
-            dropdowns: [
-                dropdowns[0].expect("dropdown"),
-                dropdowns[1].expect("dropdown"),
-                dropdowns[2].expect("dropdown"),
-            ],
-            field_status,
-            checkbox,
-            switch,
-            range,
-            search,
-            textarea,
-            editor_status,
-            xy_pad,
-            xy_label,
-            list_items,
-            list_leads,
-            list_labels,
-            list_trails,
-        }
+        with_refs(
+            view,
+            (
+                (root, buttons, add, clicks),
+                (segmented, segmented_on, segmented_off),
+                (inputs, dropdowns, texts),
+                (checkbox, switch, range, search, textarea, xy_pad),
+                (list_items, list_leads, list_labels, list_trails),
+            ),
+        )
     })?;
+    let (
+        (root, [small, medium, large, loading], add, clicks),
+        (segmented, segmented_on, segmented_off),
+        (inputs, dropdowns, [field_status, editor_status, xy_label]),
+        (checkbox, switch, range, search, textarea, xy_pad),
+        (list_items, list_leads, list_labels, list_trails),
+    ) = refs;
     for index in 0..3 {
+        let on = segmented_on[index];
+        bind_event(
+            context,
+            segmented[index],
+            Arc::clone(pending),
+            move |event: &SegmentedSelectionRequested| {
+                GalleryMessage::ToggleCheck(event.option == on.stable_id())
+            },
+        )?;
         context.set_segmented_options(
-            tree.segmented[index],
-            vec![tree.segmented_off[index], tree.segmented_on[index]],
+            segmented[index],
+            vec![segmented_off[index], segmented_on[index]],
             Some(if state.checked {
-                tree.segmented_on[index]
+                segmented_on[index]
             } else {
-                tree.segmented_off[index]
+                segmented_off[index]
             }),
         )?;
     }
-    for index in 0..tree.list_items.len() {
-        context.set_list_item_slots(
-            tree.list_items[index],
-            list_item_slots(
-                tree.list_leads[index],
-                tree.list_labels[index],
-                tree.list_trails[index],
-            ),
-        )?;
-    }
-    Ok(tree)
+    let [input_small, input_medium, input_large, secure] = inputs;
+    Ok(ControlsTree {
+        root,
+        _small: small,
+        _medium: medium,
+        _large: large,
+        loading,
+        _add: add,
+        clicks,
+        segmented,
+        segmented_on,
+        segmented_off,
+        inputs: [input_small, input_medium, input_large],
+        secure,
+        dropdowns,
+        field_status,
+        checkbox,
+        switch,
+        range,
+        search,
+        textarea,
+        editor_status,
+        xy_pad,
+        xy_label,
+        list_items,
+        list_leads,
+        list_labels,
+        list_trails,
+    })
 }
 
 fn mount_surfaces(
@@ -1722,317 +1629,304 @@ fn mount_surfaces(
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<SurfacesTree, FrameworkError> {
     let selected = SurfaceView::from_index(state.surface_selection.selected());
-    let tree = context.build_detached(document_id, |ui| {
-        let tabs = ui.parked(
-            Tabs::new(if selected == SurfaceView::Cards {
-                "cards"
-            } else {
-                "overview"
-            })
-            .options([
-                TabOption::new("overview", "概览"),
-                TabOption::new("cards", "卡片"),
-            ]),
-        );
-        bind_event_ui(
-            ui,
-            tabs,
-            Arc::clone(pending),
-            |event: &TabsEvent| match event {
-                TabsEvent::Select(value) if value.as_ref() == "cards" => {
-                    GalleryMessage::SelectSurfaceView(SurfaceView::Cards)
-                }
-                TabsEvent::Select(_) => GalleryMessage::SelectSurfaceView(SurfaceView::Overview),
-                _ => GalleryMessage::OverlayInteraction,
-            },
-        );
+    let item_open = state.pane_chrome_item_open;
+    let split = state.pane_chrome_split;
+    let (_, refs) = context.mount_view_detached(document_id, || {
+        let root = entity_ref::<HostStack>();
+        let tabs = entity_ref::<Tabs>();
+        let surface_row = entity_ref::<HostStack>();
+        let overview: [EntityRef<Card>; 3] = std::array::from_fn(|_| entity_ref());
+        let cards: [EntityRef<InteractiveCard>; 3] = std::array::from_fn(|_| entity_ref());
+        let tree = entity_ref::<TreeView>();
+        let pane = entity_ref::<PaneChrome>();
+        let pane_texts: [EntityRef<Text>; 5] = std::array::from_fn(|_| entity_ref());
+        let [pane_tabs, pane_empty, pane_editor, pane_left, pane_right] = pane_texts;
+        let pane_tree = entity_ref::<PaneTree>();
+        let pane_split = entity_ref::<Button>();
+        let pane_close = entity_ref::<IconButton>();
+        let empty = entity_ref::<EmptyState>();
+        let labeled = entity_ref::<LabeledValue>();
 
         let overview_data = [
             ("基础表面", "主工作区内容层", CardKind::Surface),
             ("抬升表面", "侧栏与工具面板", CardKind::Raised),
             ("选中表面", "当前激活的内容", CardKind::Selected),
         ];
-        // Both sets are built and kept; sync_surfaces reconciles whichever one
-        // is visible into surface_row, so placement happens after this build.
-        let mut overview = [None; 3];
-        for (index, (title, detail, kind)) in overview_data.into_iter().enumerate() {
-            let mut card_view = Card::new().kind(kind).height(96.0).title(title);
-            apply_equal_fill(std::sync::Arc::make_mut(&mut card_view.style.layout), 96.0);
-            let card = ui.detached(card_view);
-            let hint = ui.parked(styled_text(
-                detail,
-                SemanticColorRole::Muted,
-                type_scale::HINT,
-                type_scale::REGULAR,
-            ));
-            ui.nest(card, |ui| ui.adopt(hint));
-            overview[index] = Some(card);
-        }
+        let overview_views = overview_data
+            .into_iter()
+            .zip(overview)
+            .map(|((title, detail, kind), card)| {
+                let mut card_view = Card::new().kind(kind).height(96.0).title(title);
+                apply_equal_fill(std::sync::Arc::make_mut(&mut card_view.style.layout), 96.0);
+                widget(card_view)
+                    .entity_ref(card)
+                    .children(widget(styled_text(
+                        detail,
+                        SemanticColorRole::Muted,
+                        type_scale::HINT,
+                        type_scale::REGULAR,
+                    )))
+            })
+            .collect::<Vec<_>>();
         let cards_data = [
             ("默认卡片", "普通内容容器", false),
             ("交互卡片", "支持选择操作", false),
             ("禁用卡片", "不可进行操作", true),
         ];
-        let mut cards = [None; 3];
-        for (index, (title, detail, disabled)) in cards_data.into_iter().enumerate() {
-            let card = ui.detached(
-                InteractiveCard::new()
-                    .selected(state.selected_surface_card == index)
-                    .disabled(disabled)
-                    .style({
-                        let mut style = nana_ui::runtime::NodeStyle::default();
-                        apply_equal_fill(std::sync::Arc::make_mut(&mut style.layout), 96.0);
-                        style
-                    }),
-            );
-            let heading = ui.parked(styled_text(
-                title,
-                SemanticColorRole::Text,
-                type_scale::BODY,
-                type_scale::REGULAR,
-            ));
-            let hint = ui.parked(styled_text(
-                detail,
-                SemanticColorRole::Muted,
+        let card_views = cards_data
+            .into_iter()
+            .zip(cards)
+            .enumerate()
+            .map(|(index, ((title, detail, disabled), card))| {
+                widget(
+                    InteractiveCard::new()
+                        .selected(state.selected_surface_card == index)
+                        .disabled(disabled)
+                        .style({
+                            let mut style = nana_ui::runtime::NodeStyle::default();
+                            apply_equal_fill(std::sync::Arc::make_mut(&mut style.layout), 96.0);
+                            style
+                        }),
+                )
+                .entity_ref(card)
+                .children((
+                    widget(styled_text(
+                        title,
+                        SemanticColorRole::Text,
+                        type_scale::BODY,
+                        type_scale::REGULAR,
+                    )),
+                    widget(styled_text(
+                        detail,
+                        SemanticColorRole::Muted,
+                        type_scale::HINT,
+                        type_scale::REGULAR,
+                    )),
+                ))
+            })
+            .collect::<Vec<_>>();
+        // Both sets are built and kept; sync_surfaces reconciles whichever one
+        // is visible into surface_row, and the other stays detached.
+        let (shown, hidden) = if selected == SurfaceView::Cards {
+            (card_views.into_any(), overview_views.into_any())
+        } else {
+            (overview_views.into_any(), card_views.into_any())
+        };
+
+        let pane_text = |value: &'static str, color, text: EntityRef<Text>| {
+            widget(hugging_text(
+                value,
+                color,
                 type_scale::HINT,
                 type_scale::REGULAR,
-            ));
-            ui.nest(card, |ui| {
-                ui.adopt(heading);
-                ui.adopt(hint);
-            });
-            cards[index] = Some(card);
-        }
-        let surface_row = ui.parked(HostStack::fill_row(10.0));
-        ui.nest(surface_row, |ui| {
-            if selected == SurfaceView::Cards {
-                for card in cards.iter().flatten().copied() {
-                    ui.adopt(card);
-                }
-            } else {
-                for card in overview.iter().flatten().copied() {
-                    ui.adopt(card);
-                }
-            }
-        });
-
-        let tree = ui.parked(gallery_tree(state));
-        bind_event_ui(
-            ui,
-            tree,
-            Arc::clone(pending),
-            |event: &TreeViewEvent<Arc<str>>| match event {
-                TreeViewEvent::Toggle(id) => {
-                    GalleryMessage::TreeView(TreeViewEvent::Toggle(id.to_string()))
-                }
-                TreeViewEvent::Select(id) => {
-                    GalleryMessage::TreeView(TreeViewEvent::Select(id.to_string()))
-                }
-            },
-        );
-
-        let pane_tabs = ui.parked(hugging_text(
-            if state.pane_chrome_item_open {
-                "main.rs"
-            } else {
-                "空窗格"
-            },
-            SemanticColorRole::Text,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let pane_empty = ui.detached(hugging_text(
-            "Item 已关闭",
-            SemanticColorRole::Muted,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let pane_editor = ui.detached(hugging_text(
-            "编辑器内容",
-            SemanticColorRole::Text,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let pane_left = ui.detached(hugging_text(
-            "左侧编辑器",
-            SemanticColorRole::Text,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let pane_right = ui.detached(hugging_text(
-            "右侧编辑器",
-            SemanticColorRole::Text,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let pane_tree = ui.parked(PaneTree::new(pane_tree_node(
-            state,
-            pane_empty,
-            pane_editor,
-            pane_left,
-            pane_right,
-        )));
-        let pane_split = ui.parked(
+            ))
+            .entity_ref(text)
+        };
+        let split_view = widget(
             Button::new("左右分栏")
                 .kind(ButtonKind::Text)
                 .size(ControlSize::Small),
-        );
-        bind_event_ui(ui, pane_split, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
+        )
+        .entity_ref(pane_split)
+        .on(queue(pending, |_: &Activate| {
             GalleryMessage::PaneChrome(PaneChromeActionKind::SplitHorizontal)
-        });
-        let pane_close = ui.parked(
+        }));
+        let close_view = widget(
             IconButton::new(Icon::Close, "关闭 Item")
                 .size(ControlSize::Small)
                 .kind(ButtonKind::Text),
-        );
-        bind_event_ui(ui, pane_close, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
+        )
+        .entity_ref(pane_close)
+        .on(queue(pending, |_: &Activate| {
             GalleryMessage::PaneChrome(PaneChromeActionKind::CloseItem)
-        });
-        let header = ui.parked(HostStack::fill_row(6.0));
-        ui.nest(header, |ui| {
-            ui.adopt(pane_tabs);
-            if state.pane_chrome_item_open && !state.pane_chrome_split {
-                ui.adopt(pane_split);
-            }
-            if state.pane_chrome_item_open {
-                ui.adopt(pane_close);
-            }
-        });
-        let pane = ui.parked(
-            PaneChrome::new()
-                .header(header.stable_id())
-                .tabs(pane_tabs.stable_id())
-                .body(pane_tree.stable_id())
-                .actions(pane_actions(
-                    state,
-                    pane_split.stable_id(),
-                    pane_close.stable_id(),
+        }));
+        // An action the header does not show stays detached: its node is
+        // still what the pane's action targets once it shows.
+        let (split_shown, split_hidden) = if item_open && !split {
+            (Some(split_view), None)
+        } else {
+            (None, Some(split_view))
+        };
+        let (close_shown, close_hidden) = if item_open {
+            (Some(close_view), None)
+        } else {
+            (None, Some(close_view))
+        };
+        let header = widget(HostStack::fill_row(6.0)).children((
+            pane_text(
+                if item_open { "main.rs" } else { "空窗格" },
+                SemanticColorRole::Text,
+                pane_tabs,
+            ),
+            split_shown,
+            close_shown,
+        ));
+        // The pane tree's leaves are detached; `reconcile_children` below
+        // places the ones its layout shows.
+        let pane_tree_view = widget(PaneTree::new(PaneTreeNode::leaf("empty")))
+            .entity_ref(pane_tree)
+            .slot(
+                pane_text("Item 已关闭", SemanticColorRole::Muted, pane_empty),
+                keep_slot,
+            )
+            .slot(
+                pane_text("编辑器内容", SemanticColorRole::Text, pane_editor),
+                keep_slot,
+            )
+            .slot(
+                pane_text("左侧编辑器", SemanticColorRole::Text, pane_left),
+                keep_slot,
+            )
+            .slot(
+                pane_text("右侧编辑器", SemanticColorRole::Text, pane_right),
+                move |mut tree: PaneTree, _| {
+                    let built = "the pane tree's leaves are built before it";
+                    tree.root = pane_tree_node_for(
+                        item_open,
+                        split,
+                        pane_empty.get().expect(built),
+                        pane_editor.get().expect(built),
+                        pane_left.get().expect(built),
+                        pane_right.get().expect(built),
+                    );
+                    tree
+                },
+            );
+        let pane_view = widget(PaneChrome::new())
+            .entity_ref(pane)
+            .child_slot(header, move |chrome: PaneChrome, header| {
+                let built = "the pane header is built before the pane";
+                chrome
+                    .header(header)
+                    .tabs(pane_tabs.get().expect(built).stable_id())
+                    .actions(pane_actions_for(
+                        item_open,
+                        split,
+                        pane_split.get().expect(built).stable_id(),
+                        pane_close.get().expect(built).stable_id(),
+                    ))
+            })
+            .child_slot(pane_tree_view, PaneChrome::body);
+
+        let section_text = |value: &'static str, color, size| {
+            widget(styled_text(value, color, size, type_scale::REGULAR))
+        };
+        let tab_bar = widget(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center))
+            .children((
+                widget(hugging_text(
+                    "表面状态",
+                    SemanticColorRole::Text,
+                    type_scale::META,
+                    type_scale::REGULAR,
                 )),
-        );
-        ui.nest(pane, |ui| {
-            ui.adopt(header);
-            ui.adopt(pane_tree);
-        });
-
-        let empty = ui.parked(EmptyState::new("没有选中的表面").message("选择一张卡片查看详情"));
-        let labeled = ui.parked(LabeledValue::new(
-            "当前卡片",
-            format!("{}", state.selected_surface_card),
+                widget(HostStack::spacer()),
+                widget(
+                    Tabs::new(if selected == SurfaceView::Cards {
+                        "cards"
+                    } else {
+                        "overview"
+                    })
+                    .options([
+                        TabOption::new("overview", "概览"),
+                        TabOption::new("cards", "卡片"),
+                    ]),
+                )
+                .entity_ref(tabs)
+                .on(queue(pending, |event: &TabsEvent| match event {
+                    TabsEvent::Select(value) if value.as_ref() == "cards" => {
+                        GalleryMessage::SelectSurfaceView(SurfaceView::Cards)
+                    }
+                    TabsEvent::Select(_) => {
+                        GalleryMessage::SelectSurfaceView(SurfaceView::Overview)
+                    }
+                    _ => GalleryMessage::OverlayInteraction,
+                })),
+            ));
+        let content = widget(HostStack::canvas()).entity_ref(root).children((
+            section_text("表面层级", SemanticColorRole::Text, type_scale::SECTION),
+            section_text(
+                "基础、抬升与选中状态",
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+            ),
+            widget(panel(8.0, None, 0.0)).children(tab_bar),
+            widget(HostStack::fill_row(10.0))
+                .entity_ref(surface_row)
+                .children(shown),
+            section_text("层级树", SemanticColorRole::Text, type_scale::SECTION),
+            section_text(
+                "稳定节点 ID 驱动展开与选择",
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+            ),
+            widget(panel(8.0, None, 0.0)).children(
+                widget(gallery_tree(state)).entity_ref(tree).on(queue(
+                    pending,
+                    |event: &TreeViewEvent<Arc<str>>| match event {
+                        TreeViewEvent::Toggle(id) => {
+                            GalleryMessage::TreeView(TreeViewEvent::Toggle(id.to_string()))
+                        }
+                        TreeViewEvent::Select(id) => {
+                            GalleryMessage::TreeView(TreeViewEvent::Select(id.to_string()))
+                        }
+                    },
+                )),
+            ),
+            section_text("Pane 组合", SemanticColorRole::Text, type_scale::SECTION),
+            section_text(
+                "动作只在具备真实 handler 时出现",
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+            ),
+            widget(panel(0.0, Some(LengthSpec::Px(140.0)), 0.0)).children(pane_view),
+            widget(EmptyState::new("没有选中的表面").message("选择一张卡片查看详情"))
+                .entity_ref(empty),
+            widget(LabeledValue::new(
+                "当前卡片",
+                format!("{}", state.selected_surface_card),
+            ))
+            .entity_ref(labeled),
         ));
-        let heading = ui.parked(styled_text(
-            "表面层级",
-            SemanticColorRole::Text,
-            type_scale::SECTION,
-            type_scale::REGULAR,
-        ));
-        let hint = ui.parked(styled_text(
-            "基础、抬升与选中状态",
-            SemanticColorRole::Muted,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let tab_label = ui.parked(hugging_text(
-            "表面状态",
-            SemanticColorRole::Text,
-            type_scale::META,
-            type_scale::REGULAR,
-        ));
-        let tab_spacer = ui.parked(HostStack::spacer());
-        let tab_bar =
-            ui.parked(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
-        ui.nest(tab_bar, |ui| {
-            ui.adopt(tab_label);
-            ui.adopt(tab_spacer);
-            ui.adopt(tabs);
-        });
-        let tab_row = panel(ui, 8.0, None, 0.0);
-        ui.nest(tab_row, |ui| ui.adopt(tab_bar));
-        let tree_heading = ui.parked(styled_text(
-            "层级树",
-            SemanticColorRole::Text,
-            type_scale::SECTION,
-            type_scale::REGULAR,
-        ));
-        let tree_hint = ui.parked(styled_text(
-            "稳定节点 ID 驱动展开与选择",
-            SemanticColorRole::Muted,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let tree_panel = panel(ui, 8.0, None, 0.0);
-        ui.nest(tree_panel, |ui| ui.adopt(tree));
-        let pane_heading = ui.parked(styled_text(
-            "Pane 组合",
-            SemanticColorRole::Text,
-            type_scale::SECTION,
-            type_scale::REGULAR,
-        ));
-        let pane_hint = ui.parked(styled_text(
-            "动作只在具备真实 handler 时出现",
-            SemanticColorRole::Muted,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let pane_panel = panel(ui, 0.0, Some(LengthSpec::Px(140.0)), 0.0);
-        ui.nest(pane_panel, |ui| ui.adopt(pane));
-        let root = ui.detached(HostStack::canvas());
-        ui.nest(root, |ui| {
-            ui.adopt(heading);
-            ui.adopt(hint);
-            ui.adopt(tab_row);
-            ui.adopt(surface_row);
-            ui.adopt(tree_heading);
-            ui.adopt(tree_hint);
-            ui.adopt(tree_panel);
-            ui.adopt(pane_heading);
-            ui.adopt(pane_hint);
-            ui.adopt(pane_panel);
-            ui.adopt(empty);
-            ui.adopt(labeled);
-        });
-
-        SurfacesTree {
-            root,
-            tabs,
-            surface_row,
-            overview: [
-                overview[0].expect("overview"),
-                overview[1].expect("overview"),
-                overview[2].expect("overview"),
-            ],
-            cards: [
-                cards[0].expect("card"),
-                cards[1].expect("card"),
-                cards[2].expect("card"),
-            ],
-            tree,
-            pane,
-            pane_tabs,
-            pane_tree,
-            pane_empty,
-            pane_editor,
-            pane_left,
-            pane_right,
-            pane_split,
-            pane_close,
-            _empty: empty,
-            labeled,
-        }
+        // The detached actions come first: the pane reads their ids.
+        let view = ((split_hidden, close_hidden), content, hidden);
+        with_refs(
+            view,
+            (
+                (root, tabs, surface_row, overview, cards, tree, pane),
+                pane_texts,
+                (pane_tree, pane_split, pane_close, empty, labeled),
+            ),
+        )
     })?;
+    let (
+        (root, tabs, surface_row, overview, cards, tree, pane),
+        [pane_tabs, pane_empty, pane_editor, pane_left, pane_right],
+        (pane_tree, pane_split, pane_close, empty, labeled),
+    ) = refs;
     reconcile_children(
         context,
-        tree.pane_tree.stable_id(),
-        &pane_tree_children(
-            state,
-            tree.pane_empty,
-            tree.pane_editor,
-            tree.pane_left,
-            tree.pane_right,
-        ),
+        pane_tree.stable_id(),
+        &pane_tree_children(state, pane_empty, pane_editor, pane_left, pane_right),
     )?;
-    Ok(tree)
+    Ok(SurfacesTree {
+        root,
+        tabs,
+        surface_row,
+        overview,
+        cards,
+        tree,
+        pane,
+        pane_tabs,
+        pane_tree,
+        pane_empty,
+        pane_editor,
+        pane_left,
+        pane_right,
+        pane_split,
+        pane_close,
+        _empty: empty,
+        labeled,
+    })
 }
 
 fn mount_feedback(
@@ -2042,182 +1936,181 @@ fn mount_feedback(
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<FeedbackTree, FrameworkError> {
     let progress_value = if state.loading { 72.0 } else { 0.0 };
-    context.build_detached(document_id, |ui| {
-        let progress = ui.parked(Progress::new(progress_value, 100.0));
-        let spinner = ui.parked(Spinner::new(if state.loading {
-            "处理中"
-        } else {
-            "已完成"
-        }));
-        let skeleton = ui.parked(Skeleton::fill_width(8.0));
-        let meter = ui.parked(LevelMeter::new(f32::from(state.slider) / 100.0));
-        let badge = ui.parked(StatusBadge::new(action_status(state), StatusTone::Info));
-        let validation = ui.parked(ValidationMessage::new(
-            "等待操作",
-            ValidationIntent::Warning,
-        ));
-        let toast = ui.parked(Toast::new(action_status(state), ToastTone::Info));
-        let dialog = ui.parked(fill_action_button(
-            if state.overlay.contains(&super::GalleryOverlay::Dialog) {
-                "关闭对话框"
-            } else {
-                "打开对话框"
-            },
-            ButtonKind::Primary,
-        ));
-        bind_event_ui(ui, dialog, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::ToggleDialog
-        });
-        let context_btn = ui.parked(fill_action_button("打开更多操作", ButtonKind::Subtle));
-        bind_event_ui(ui, context_btn, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::ToggleContextMenu
-        });
-        let image = ui.parked(fill_action_button("查看图片", ButtonKind::Subtle));
-        bind_event_ui(ui, image, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::ToggleImageViewer
-        });
-        let popover = ui.parked(
-            Popover::new()
-                .trigger("查看当前状态")
-                .open(state.popover_open),
-        );
-        bind_event_ui(
-            ui,
-            popover,
-            Arc::clone(pending),
-            |event: &PopoverToggled| {
-                if event.open {
-                    GalleryMessage::TogglePopover
+    let (_, refs) = context.mount_view_detached(document_id, || {
+        let root = entity_ref::<HostStack>();
+        let progress = entity_ref::<Progress>();
+        let spinner = entity_ref::<Spinner>();
+        let skeleton = entity_ref::<Skeleton>();
+        let meter = entity_ref::<LevelMeter>();
+        let badge = entity_ref::<StatusBadge>();
+        let validation = entity_ref::<ValidationMessage>();
+        let toast = entity_ref::<Toast>();
+        let actions: [EntityRef<Button>; 4] = std::array::from_fn(|_| entity_ref());
+        let [dialog, context_button, image, popover_action] = actions;
+        let popover = entity_ref::<Popover>();
+        let calendar = entity_ref::<CalendarHeatmap>();
+        let calendar_status = entity_ref::<Text>();
+        let action = entity_ref::<Text>();
+
+        let progress_panel = widget(panel(8.0, Some(LengthSpec::Px(160.0)), 1.0)).children((
+            widget(styled_text(
+                if state.loading {
+                    "处理中"
                 } else {
-                    GalleryMessage::ClosePopover
-                }
-            },
-        );
-        bind_event_ui(ui, popover, Arc::clone(pending), |event: &PopoverClosed| {
-            let _ = event;
-            GalleryMessage::ClosePopover
-        });
-        let popover_action = ui.parked(popover_action_button(state.popover_open));
-        bind_event_ui(
-            ui,
-            popover_action,
-            Arc::clone(pending),
-            |event: &Activate| {
-                let _ = event;
-                GalleryMessage::PrimaryAction
-            },
-        );
-        ui.nest(popover, |ui| ui.adopt(popover_action));
-        let calendar = ui.parked(CalendarHeatmap::new(gallery_calendar_data()));
-        let calendar_status = ui.parked(styled_text(
-            state
-                .calendar_active
-                .as_ref()
-                .map_or("移动指针查看日期".to_owned(), |cell| {
-                    cell.title.clone()
-                }),
-            SemanticColorRole::Muted,
-            10.0,
-            400,
-        ));
-        let action = ui.parked(styled_text(
-            action_status(state),
-            SemanticColorRole::Muted,
-            10.0,
-            400,
-        ));
-        let heading = ui.parked(styled_text(
-            "反馈",
-            SemanticColorRole::Text,
-            type_scale::SECTION,
-            type_scale::REGULAR,
-        ));
-        let progress_label = ui.parked(styled_text(
-            if state.loading {
+                    "已完成"
+                },
+                SemanticColorRole::Text,
+                13.0,
+                400,
+            )),
+            widget(Progress::new(progress_value, 100.0)).entity_ref(progress),
+            widget(Spinner::new(if state.loading {
                 "处理中"
             } else {
                 "已完成"
-            },
-            SemanticColorRole::Text,
-            13.0,
-            400,
+            }))
+            .entity_ref(spinner),
+            widget(Skeleton::fill_width(8.0)).entity_ref(skeleton),
+            widget(LevelMeter::new(f32::from(state.slider) / 100.0)).entity_ref(meter),
         ));
-        let progress_panel = panel(ui, 8.0, Some(LengthSpec::Px(160.0)), 1.0);
-        ui.nest(progress_panel, |ui| {
-            ui.adopt(progress_label);
-            ui.adopt(progress);
-            ui.adopt(spinner);
-            ui.adopt(skeleton);
-            ui.adopt(meter);
-        });
-        let row = ui.parked(HostStack::fill_row(10.0).align(nana_ui::runtime::AlignSpec::Start));
-        append_flex_child(ui, row, progress_panel);
-        let actions = ui.parked(
+        let action_panel = widget(
             HostStack::panel(8.0)
                 .width(LengthSpec::Px(140.0))
                 .max_width(LengthSpec::Px(140.0))
                 .grow(0.0)
                 .shrink(0.0),
-        );
-        ui.nest(actions, |ui| {
-            ui.adopt(dialog);
-            ui.adopt(context_btn);
-            ui.adopt(image);
-        });
-        ui.nest(row, |ui| ui.adopt(actions));
-        let popover_row = ui.parked(
-            HostStack::column(0.0)
-                .width(LengthSpec::Fill)
-                .padding_xy(0.0, 8.0)
-                .min_height(LengthSpec::Px(32.0))
-                .grow(0.0)
-                .shrink(0.0),
-        );
-        ui.nest(popover_row, |ui| ui.adopt(popover));
-        let calendar_title = ui.parked(styled_text(
-            "日历热力图",
-            SemanticColorRole::Muted,
-            12.0,
-            400,
+        )
+        .children((
+            widget(fill_action_button(
+                if state.overlay.contains(&super::GalleryOverlay::Dialog) {
+                    "关闭对话框"
+                } else {
+                    "打开对话框"
+                },
+                ButtonKind::Primary,
+            ))
+            .entity_ref(dialog)
+            .on(queue(pending, |_: &Activate| GalleryMessage::ToggleDialog)),
+            widget(fill_action_button("打开更多操作", ButtonKind::Subtle))
+                .entity_ref(context_button)
+                .on(queue(pending, |_: &Activate| {
+                    GalleryMessage::ToggleContextMenu
+                })),
+            widget(fill_action_button("查看图片", ButtonKind::Subtle))
+                .entity_ref(image)
+                .on(queue(pending, |_: &Activate| {
+                    GalleryMessage::ToggleImageViewer
+                })),
         ));
-        let calendar_panel = panel(ui, 6.0, None, 0.0);
-        ui.nest(calendar_panel, |ui| {
-            ui.adopt(calendar_title);
-            ui.adopt(calendar);
-            ui.adopt(calendar_status);
-        });
-        let root = ui.detached(HostStack::canvas());
-        ui.nest(root, |ui| {
-            ui.adopt(heading);
-            ui.adopt(row);
-            ui.adopt(popover_row);
-            ui.adopt(calendar_panel);
-            ui.adopt(badge);
-            ui.adopt(validation);
-            ui.adopt(toast);
-            ui.adopt(action);
-        });
-        FeedbackTree {
-            root,
-            progress,
-            spinner,
-            _skeleton: skeleton,
-            meter,
-            badge,
-            _validation: validation,
-            toast,
-            dialog,
-            context: context_btn,
-            _image: image,
-            popover,
-            popover_action,
-            calendar,
-            calendar_status,
-            action_status: action,
-        }
+        let popover_view = widget(
+            Popover::new()
+                .trigger("查看当前状态")
+                .open(state.popover_open),
+        )
+        .entity_ref(popover)
+        .on(queue(pending, |event: &PopoverToggled| {
+            if event.open {
+                GalleryMessage::TogglePopover
+            } else {
+                GalleryMessage::ClosePopover
+            }
+        }))
+        .on(queue(pending, |_: &PopoverClosed| {
+            GalleryMessage::ClosePopover
+        }))
+        .children(
+            widget(popover_action_button(state.popover_open))
+                .entity_ref(popover_action)
+                .on(queue(pending, |_: &Activate| GalleryMessage::PrimaryAction)),
+        );
+        let calendar_panel = widget(panel(6.0, None, 0.0)).children((
+            widget(styled_text(
+                "日历热力图",
+                SemanticColorRole::Muted,
+                12.0,
+                400,
+            )),
+            widget(CalendarHeatmap::new(gallery_calendar_data())).entity_ref(calendar),
+            widget(styled_text(
+                state
+                    .calendar_active
+                    .as_ref()
+                    .map_or("移动指针查看日期".to_owned(), |cell| {
+                        cell.title.clone()
+                    }),
+                SemanticColorRole::Muted,
+                10.0,
+                400,
+            ))
+            .entity_ref(calendar_status),
+        ));
+        let view = widget(HostStack::canvas()).entity_ref(root).children((
+            widget(styled_text(
+                "反馈",
+                SemanticColorRole::Text,
+                type_scale::SECTION,
+                type_scale::REGULAR,
+            )),
+            widget(HostStack::fill_row(10.0).align(nana_ui::runtime::AlignSpec::Start))
+                .children((flex_cell(progress_panel), action_panel)),
+            widget(
+                HostStack::column(0.0)
+                    .width(LengthSpec::Fill)
+                    .padding_xy(0.0, 8.0)
+                    .min_height(LengthSpec::Px(32.0))
+                    .grow(0.0)
+                    .shrink(0.0),
+            )
+            .children(popover_view),
+            calendar_panel,
+            widget(StatusBadge::new(action_status(state), StatusTone::Info)).entity_ref(badge),
+            widget(ValidationMessage::new(
+                "等待操作",
+                ValidationIntent::Warning,
+            ))
+            .entity_ref(validation),
+            widget(Toast::new(action_status(state), ToastTone::Info)).entity_ref(toast),
+            widget(styled_text(
+                action_status(state),
+                SemanticColorRole::Muted,
+                10.0,
+                400,
+            ))
+            .entity_ref(action),
+        ));
+        with_refs(
+            view,
+            (
+                (root, progress, spinner, skeleton, meter),
+                (badge, validation, toast),
+                actions,
+                (popover, calendar, calendar_status, action),
+            ),
+        )
+    })?;
+    let (
+        (root, progress, spinner, skeleton, meter),
+        (badge, validation, toast),
+        [dialog, context_button, image, popover_action],
+        (popover, calendar, calendar_status, action),
+    ) = refs;
+    Ok(FeedbackTree {
+        root,
+        progress,
+        spinner,
+        _skeleton: skeleton,
+        meter,
+        badge,
+        _validation: validation,
+        toast,
+        dialog,
+        context: context_button,
+        _image: image,
+        popover,
+        popover_action,
+        calendar,
+        calendar_status,
+        action_status: action,
     })
 }
 
@@ -2227,137 +2120,117 @@ fn mount_rich_text(
     state: &GalleryState,
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<RichTextMount, FrameworkError> {
-    let (root, markdown, link_status, drop, drop_hint, editor, terminal, diff) = context
-        .build_detached(document_id, |ui| {
-            let heading = ui.parked(styled_text(
+    let (_, refs) = context.mount_view_detached(document_id, || {
+        let stacks: [EntityRef<HostStack>; 2] = std::array::from_fn(|_| entity_ref());
+        let [root, drop] = stacks;
+        let markdown = entity_ref::<NativeMarkdown>();
+        let texts: [EntityRef<Text>; 2] = std::array::from_fn(|_| entity_ref());
+        let [link_status, drop_hint] = texts;
+        let editor = entity_ref::<TextArea>();
+        let terminal = entity_ref::<TerminalView>();
+        let diff = entity_ref::<DiffView>();
+
+        // #59: `vertical-rl` in columns — upright CJK with its vertical
+        // punctuation forms, sideways Latin and digits, wrapped against the
+        // box height and stacked from the right.
+        let vertical = {
+            let mut text = hugging_text(
+                "縦書き「春はあけぼの」。やうやう白くなりゆく山ぎは、NanaUI 2026年、少しあかりて。",
+                SemanticColorRole::Text,
+                16.0,
+                400,
+            );
+            let layout = Arc::make_mut(&mut text.style.layout);
+            layout.writing_mode = Some(nana_ui::runtime::WritingModeSpec::VerticalRl);
+            layout.height = Some(LengthSpec::Px(180.0));
+            text
+        };
+        // The same writing mode on an editor: its value, caret and
+        // selection are laid out and hit in the same columns.
+        let vertical_editor = {
+            let mut area =
+                TextArea::new("竖排编辑：「光标」沿列移动。\nABC 与 123 侧卧。").height(180.0);
+            let layout = Arc::make_mut(&mut area.style.layout);
+            layout.writing_mode = Some(nana_ui::runtime::WritingModeSpec::VerticalRl);
+            layout.width = Some(LengthSpec::Px(160.0));
+            area
+        };
+        // `direction: rtl` in a vertical mode starts the line at the
+        // bottom; CJK still reads down the column.
+        let vertical_rtl = {
+            let mut text = hugging_text("行首在底端", SemanticColorRole::Muted, 16.0, 400);
+            let layout = Arc::make_mut(&mut text.style.layout);
+            layout.writing_mode = Some(nana_ui::runtime::WritingModeSpec::VerticalRl);
+            layout.dir = Some(nana_ui::runtime::DirSpec::Rtl);
+            layout.height = Some(LengthSpec::Px(180.0));
+            text
+        };
+        let title =
+            |value: &'static str| widget(styled_text(value, SemanticColorRole::Text, 13.0, 600));
+        let view = widget(HostStack::canvas()).entity_ref(root).children((
+            widget(styled_text(
                 "原生富文本",
                 SemanticColorRole::Text,
                 20.0,
                 600,
-            ));
-            let hint = ui.parked(styled_text(
+            )),
+            widget(styled_text(
                 "CommonMark、数学公式与图表共享同一 Runtime Scene 渲染路径。",
                 SemanticColorRole::Muted,
                 12.0,
                 400,
-            ));
-            // #59: `vertical-rl` in columns — upright CJK with its vertical
-            // punctuation forms, sideways Latin and digits, wrapped against the
-            // box height and stacked from the right.
-            let vertical = ui.parked({
-                let mut text = hugging_text(
-                    "縦書き「春はあけぼの」。やうやう白くなりゆく山ぎは、NanaUI 2026年、少しあかりて。",
-                    SemanticColorRole::Text,
-                    16.0,
-                    400,
-                );
-                let layout = Arc::make_mut(&mut text.style.layout);
-                layout.writing_mode = Some(nana_ui::runtime::WritingModeSpec::VerticalRl);
-                layout.height = Some(LengthSpec::Px(180.0));
-                text
-            });
-            // The same writing mode on an editor: its value, caret and
-            // selection are laid out and hit in the same columns.
-            let vertical_editor = ui.parked({
-                let mut area = TextArea::new("竖排编辑：「光标」沿列移动。\nABC 与 123 侧卧。")
-                    .height(180.0);
-                let layout = Arc::make_mut(&mut area.style.layout);
-                layout.writing_mode = Some(nana_ui::runtime::WritingModeSpec::VerticalRl);
-                layout.width = Some(LengthSpec::Px(160.0));
-                area
-            });
-            // `direction: rtl` in a vertical mode starts the line at the
-            // bottom; CJK still reads down the column.
-            let vertical_rtl = ui.parked({
-                let mut text =
-                    hugging_text("行首在底端", SemanticColorRole::Muted, 16.0, 400);
-                let layout = Arc::make_mut(&mut text.style.layout);
-                layout.writing_mode = Some(nana_ui::runtime::WritingModeSpec::VerticalRl);
-                layout.dir = Some(nana_ui::runtime::DirSpec::Rtl);
-                layout.height = Some(LengthSpec::Px(180.0));
-                text
-            });
-            let vertical_row = ui.parked(HostStack::row(24.0));
-            ui.nest(vertical_row, |ui| {
-                ui.adopt(vertical);
-                ui.adopt(vertical_editor);
-                ui.adopt(vertical_rtl);
-            });
-            let markdown = ui.parked(state.markdown.clone());
-            let link_status = ui.parked(styled_text(
-                state
-                    .opened_markdown_link
-                    .as_ref()
-                    .map_or(String::new(), |link| format!("已选择链接：{link}")),
-                SemanticColorRole::Accent,
-                type_scale::HINT,
-                type_scale::REGULAR,
-            ));
-            let editor_title = ui.parked(styled_text(
-                "代码编辑器",
-                SemanticColorRole::Text,
-                13.0,
-                600,
-            ));
-            let editor = ui.parked(gallery_code_editor(state));
-            let terminal_title = ui.parked(styled_text("终端", SemanticColorRole::Text, 13.0, 600));
-            let terminal = ui.parked(gallery_terminal_view());
-            let drop_title = ui.parked(styled_text("拖入文件", SemanticColorRole::Text, 13.0, 600));
-            let drop = ui.parked(
-                HostStack::column(8.0)
-                    .padding(12.0)
-                    .background(SemanticColorRole::Subtle)
-                    .min_height(LengthSpec::Px(48.0)),
-            );
-            let drop_hint = ui.parked(gallery_drop_hint(state));
-            ui.nest(drop, |ui| {
-                ui.adopt(drop_hint);
-            });
-            let diff_title = ui.parked(styled_text("差异", SemanticColorRole::Text, 13.0, 600));
-            let diff = ui.parked(gallery_diff_view());
-            let root = ui.detached(HostStack::canvas());
-            ui.nest(root, |ui| {
-                ui.adopt(heading);
-                ui.adopt(hint);
-                ui.adopt(vertical_row);
-                ui.adopt(markdown);
-                ui.adopt(link_status);
-                ui.adopt(editor_title);
-                ui.adopt(editor);
-                ui.adopt(terminal_title);
-                ui.adopt(terminal);
-                ui.adopt(drop_title);
-                ui.adopt(drop);
-                ui.adopt(diff_title);
-                ui.adopt(diff);
-            });
+            )),
+            widget(HostStack::row(24.0)).children((
+                widget(vertical),
+                widget(vertical_editor),
+                widget(vertical_rtl),
+            )),
             (
-                root,
-                markdown,
-                link_status,
-                drop,
-                drop_hint,
-                editor,
-                terminal,
-                diff,
-            )
-        })?;
-    context.set_drop_target(drop, DropAccepts::files())?;
-    context.on(drop, {
-        let pending = Arc::clone(pending);
-        move |_, event: &FileDropEvent, _| {
-            let FileDropEvent::Dropped { paths, .. } = event else {
-                return;
-            };
-            let message = GalleryMessage::FilesDropped(paths.to_vec());
-            if let Ok(mut queue) = pending.lock() {
-                queue.push(message);
-            }
-        }
+                widget(state.markdown.clone()).entity_ref(markdown),
+                widget(styled_text(
+                    state
+                        .opened_markdown_link
+                        .as_ref()
+                        .map_or(String::new(), |link| format!("已选择链接：{link}")),
+                    SemanticColorRole::Accent,
+                    type_scale::HINT,
+                    type_scale::REGULAR,
+                ))
+                .entity_ref(link_status),
+                title("代码编辑器"),
+                widget(gallery_code_editor(state)).entity_ref(editor),
+                title("终端"),
+                widget(gallery_terminal_view()).entity_ref(terminal),
+                title("拖入文件"),
+                widget(
+                    HostStack::column(8.0)
+                        .padding(12.0)
+                        .background(SemanticColorRole::Subtle)
+                        .min_height(LengthSpec::Px(48.0)),
+                )
+                .entity_ref(drop)
+                .on({
+                    let pending = Arc::clone(pending);
+                    move |event: &FileDropEvent| {
+                        let FileDropEvent::Dropped { paths, .. } = event else {
+                            return;
+                        };
+                        let message = GalleryMessage::FilesDropped(paths.to_vec());
+                        if let Ok(mut queue) = pending.lock() {
+                            queue.push(message);
+                        }
+                    }
+                })
+                .children(widget(gallery_drop_hint(state)).entity_ref(drop_hint)),
+                title("差异"),
+                widget(gallery_diff_view()).entity_ref(diff),
+            ),
+        ));
+        with_refs(view, (stacks, markdown, texts, editor, terminal, diff))
     })?;
-    context.assemble_diff_view(diff)?;
+    let ([root, drop], markdown, [link_status, drop_hint], editor, terminal, diff) = refs;
+    context.set_drop_target(drop, DropAccepts::files())?;
     context.refresh_terminal_view(terminal)?;
-    context.assemble_markdown(markdown)?;
     Ok((
         root,
         markdown,
@@ -2422,66 +2295,62 @@ fn mount_graph(
     state: &GalleryState,
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<GraphMount, FrameworkError> {
-    context.build_detached(document_id, |ui| {
-        let title = ui.parked(hugging_text(
-            "节点图",
-            SemanticColorRole::Text,
-            type_scale::SECTION,
-            type_scale::REGULAR,
+    let (_, refs) = context.mount_view_detached(document_id, || {
+        let root = entity_ref::<HostStack>();
+        let graph = entity_ref::<GraphCanvas>();
+        let minimap = entity_ref::<GraphMinimap>();
+        let selection = entity_ref::<Text>();
+        let reset = entity_ref::<Button>();
+        let view = widget(HostStack::canvas()).entity_ref(root).children((
+            widget(HostStack::fill_row(10.0).align(nana_ui::runtime::AlignSpec::Center)).children(
+                (
+                    widget(hugging_text(
+                        "节点图",
+                        SemanticColorRole::Text,
+                        type_scale::SECTION,
+                        type_scale::REGULAR,
+                    )),
+                    widget(hugging_text(
+                        graph_selection_label(state),
+                        SemanticColorRole::Muted,
+                        type_scale::HINT,
+                        type_scale::REGULAR,
+                    ))
+                    .entity_ref(selection),
+                    widget(
+                        Button::new("重置视图")
+                            .kind(ButtonKind::Text)
+                            .size(ControlSize::Small),
+                    )
+                    .entity_ref(reset)
+                    .on(queue(pending, |_: &Activate| {
+                        GalleryMessage::ResetGraphViewport
+                    })),
+                ),
+            ),
+            widget(
+                GraphCanvas::new("gallery", state.graph.clone())
+                    .viewport(state.graph_viewport)
+                    .selection(state.graph_selection.clone()),
+            )
+            .entity_ref(graph)
+            .on(queue(pending, |event: &GraphCanvasEvent| {
+                GalleryMessage::Graph(event.clone())
+            })),
+            widget(
+                GraphMinimap::new(state.graph.clone())
+                    .canvas_size(GraphSize::new(900.0, 560.0))
+                    .viewport(state.graph_viewport)
+                    .style(graph_minimap_style()),
+            )
+            .entity_ref(minimap)
+            .on(queue(pending, |event: &GraphMinimapEvent| {
+                GalleryMessage::GraphMinimap(event.clone())
+            })),
         ));
-        let selection = ui.parked(hugging_text(
-            graph_selection_label(state),
-            SemanticColorRole::Muted,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let reset = ui.parked(
-            Button::new("重置视图")
-                .kind(ButtonKind::Text)
-                .size(ControlSize::Small),
-        );
-        bind_event_ui(ui, reset, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::ResetGraphViewport
-        });
-        let toolbar =
-            ui.parked(HostStack::fill_row(10.0).align(nana_ui::runtime::AlignSpec::Center));
-        ui.nest(toolbar, |ui| {
-            ui.adopt(title);
-            ui.adopt(selection);
-            ui.adopt(reset);
-        });
-        let graph = ui.parked(
-            GraphCanvas::new("gallery", state.graph.clone())
-                .viewport(state.graph_viewport)
-                .selection(state.graph_selection.clone()),
-        );
-        bind_event_ui(
-            ui,
-            graph,
-            Arc::clone(pending),
-            |event: &GraphCanvasEvent| GalleryMessage::Graph(event.clone()),
-        );
-        let minimap = ui.parked(
-            GraphMinimap::new(state.graph.clone())
-                .canvas_size(GraphSize::new(900.0, 560.0))
-                .viewport(state.graph_viewport)
-                .style(graph_minimap_style()),
-        );
-        bind_event_ui(
-            ui,
-            minimap,
-            Arc::clone(pending),
-            |event: &GraphMinimapEvent| GalleryMessage::GraphMinimap(event.clone()),
-        );
-        let root = ui.detached(HostStack::canvas());
-        ui.nest(root, |ui| {
-            ui.adopt(toolbar);
-            ui.adopt(graph);
-            ui.adopt(minimap);
-        });
-        (root, graph, minimap, selection, reset)
-    })
+        with_refs(view, (root, graph, minimap, selection, reset))
+    })?;
+    Ok(refs)
 }
 
 fn graph_minimap_style() -> NodeStyle {
@@ -2505,113 +2374,72 @@ fn mount_workspace(
     state: &GalleryState,
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<WorkspaceTree, FrameworkError> {
-    let mut panels = Vec::new();
-    let mut contents = std::collections::HashMap::new();
-    let tree = context.build_detached(document_id, |ui| {
-        for (id, title, hint) in DOCK_PANELS {
-            let heading = ui.parked(styled_text(
-                title,
-                SemanticColorRole::Text,
-                type_scale::META,
-                type_scale::REGULAR,
-            ));
-            let detail = ui.parked(styled_text(
-                hint,
-                SemanticColorRole::Muted,
-                type_scale::HINT,
-                type_scale::REGULAR,
-            ));
-            let panel = ui.detached(HostStack::fill_column(5.0).padding(10.0));
-            ui.nest(panel, |ui| {
-                ui.adopt(heading);
-                ui.adopt(detail);
-            });
-            contents.insert(id.to_owned(), panel.stable_id());
-            panels.push((id.to_owned(), panel));
-        }
-        let dock = ui.parked(runtime_dock_from_workspace(state, &contents));
-        ui.nest(dock, |ui| {
-            for (_, panel) in &panels {
-                ui.adopt(*panel);
-            }
-        });
+    let (_, refs) = context.mount_view_detached(document_id, || {
+        let root = entity_ref::<HostStack>();
+        let dock = entity_ref::<nana_ui::runtime::Dock>();
+        let panels: Vec<EntityRef<HostStack>> = DOCK_PANELS.iter().map(|_| entity_ref()).collect();
+        let buttons: [EntityRef<Button>; 3] = std::array::from_fn(|_| entity_ref());
+        let [lock, hide, reset] = buttons;
+        let status = entity_ref::<Text>();
+        let stacks: [EntityRef<HostStack>; 2] = std::array::from_fn(|_| entity_ref());
+        let [popup_frame, popup_body] = stacks;
 
         let locked = state.dock_locked;
         let hidden_assets = !state.dock_is_visible("gallery.assets");
-        let lock = ui.parked(
-            Button::new(if locked { "解锁 Dock" } else { "锁定 Dock" })
-                .kind(ButtonKind::Subtle)
-                .size(ControlSize::Small),
-        );
-        let hide = ui.parked(
-            Button::new(if hidden_assets {
-                "恢复 Assets"
-            } else {
-                "隐藏 Assets"
-            })
-            .kind(ButtonKind::Subtle)
-            .size(ControlSize::Small),
-        );
-        let reset = ui.parked(
-            Button::new("重置 Dock")
-                .kind(ButtonKind::Subtle)
-                .size(ControlSize::Small),
-        );
-        bind_event_ui(ui, reset, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::Dock(GalleryDock::Reset)
-        });
-        let status = ui.parked(workspace_status_text(dock_status(state)));
-        let popup_title = ui.parked(AppTitleBar::new("弹窗标题"));
-        let popup_heading = ui.parked(styled_text(
-            "独立弹窗内容",
-            SemanticColorRole::Text,
-            13.0,
-            400,
-        ));
-        let popup_hint = ui.parked(styled_text(
-            "快速创建并管理项目",
-            SemanticColorRole::Muted,
-            type_scale::HINT,
-            type_scale::REGULAR,
-        ));
-        let popup_body = ui.parked(HostStack::column(4.0).padding(12.0).grow(0.0).shrink(0.0));
-        ui.nest(popup_body, |ui| {
-            ui.adopt(popup_heading);
-            ui.adopt(popup_hint);
-        });
-        let popup = ui.parked(
-            AppShell::new()
-                .title_bar(popup_title.stable_id())
-                .body(popup_body.stable_id()),
-        );
-        ui.nest(popup, |ui| {
-            ui.adopt(popup_title);
-            ui.adopt(popup_body);
-        });
-        let tools = ui.parked(
+        let tool = |label: &'static str, button: EntityRef<Button>| {
+            widget(
+                Button::new(label)
+                    .kind(ButtonKind::Subtle)
+                    .size(ControlSize::Small),
+            )
+            .entity_ref(button)
+        };
+        let tools = widget(
             HostStack::fill_row(8.0)
                 .align(nana_ui::runtime::AlignSpec::Center)
                 .padding_xy(12.0, 8.0)
                 .background(SemanticColorRole::Surface)
                 .grow(0.0)
                 .shrink(0.0),
-        );
-        ui.nest(tools, |ui| {
-            ui.adopt(lock);
-            ui.adopt(hide);
-            ui.adopt(reset);
-            ui.adopt(status);
-        });
-        let dock_frame = ui.parked(
+        )
+        .children((
+            tool(if locked { "解锁 Dock" } else { "锁定 Dock" }, lock),
+            tool(
+                if hidden_assets {
+                    "恢复 Assets"
+                } else {
+                    "隐藏 Assets"
+                },
+                hide,
+            ),
+            tool("重置 Dock", reset).on(queue(pending, |_: &Activate| {
+                GalleryMessage::Dock(GalleryDock::Reset)
+            })),
+            widget(workspace_status_text(dock_status(state))).entity_ref(status),
+        ));
+        // Each panel is keyed with its dock item id: the dock binds it as
+        // that item's content.
+        let panel_views = DOCK_PANELS
+            .iter()
+            .zip(&panels)
+            .map(|((id, title, hint), panel)| dock_panel(id, title, hint, *panel))
+            .collect::<Vec<_>>();
+        let dock_frame = widget(
             HostStack::column(0.0)
                 .height(LengthSpec::Px(WORKSPACE_DOCK_HEIGHT))
                 .min_height(LengthSpec::Px(WORKSPACE_DOCK_HEIGHT))
                 .grow(0.0)
                 .shrink(0.0),
+        )
+        .children(
+            widget(runtime_dock_from_workspace(
+                state,
+                &std::collections::HashMap::new(),
+            ))
+            .entity_ref(dock)
+            .children(panel_views),
         );
-        ui.nest(dock_frame, |ui| ui.adopt(dock));
-        let popup_frame = ui.parked(
+        let frame_view = widget(
             HostStack::column(0.0)
                 .width(LengthSpec::Px(WORKSPACE_POPUP_WIDTH))
                 .height(LengthSpec::Px(WORKSPACE_POPUP_HEIGHT))
@@ -2619,32 +2447,136 @@ fn mount_workspace(
                 .background(SemanticColorRole::Surface)
                 .grow(0.0)
                 .shrink(0.0),
-        );
-        ui.nest(popup_frame, |ui| ui.adopt(popup));
-        let root = ui.detached(
+        )
+        .entity_ref(popup_frame);
+        // Detached: the popup shell below takes it as its body.
+        let body_view = widget(HostStack::column(4.0).padding(12.0).grow(0.0).shrink(0.0))
+            .entity_ref(popup_body)
+            .children((
+                widget(styled_text(
+                    "独立弹窗内容",
+                    SemanticColorRole::Text,
+                    13.0,
+                    400,
+                )),
+                widget(styled_text(
+                    "快速创建并管理项目",
+                    SemanticColorRole::Muted,
+                    type_scale::HINT,
+                    type_scale::REGULAR,
+                )),
+            ));
+        let view = widget(
             HostStack::fill_column(WORKSPACE_CANVAS_GAP)
                 .padding(WORKSPACE_CANVAS_PADDING)
                 .background(SemanticColorRole::Background)
                 .grow(0.0),
-        );
-        ui.nest(root, |ui| {
-            ui.adopt(tools);
-            ui.adopt(dock_frame);
-            ui.adopt(popup_frame);
-        });
-        WorkspaceTree {
-            root,
-            dock,
-            panels,
-            lock,
-            hide,
-            _reset: reset,
-            status,
-            _popup: popup,
-        }
+        )
+        .entity_ref(root)
+        .children((tools, dock_frame, frame_view));
+        with_refs(
+            (view, body_view),
+            (root, dock, panels, buttons, status, stacks),
+        )
     })?;
-    context.assemble_dock(tree.dock)?;
-    Ok(tree)
+    let (root, dock, panels, [lock, hide, reset], status, [popup_frame, popup_body]) = refs;
+    // The popup shell is not built by the view: a view assembles every
+    // `AppShell` and `AppTitleBar` it builds (title-bar columns, window
+    // controls) and the shell sizes its body to fill it. This popup keeps
+    // its title bar and body as plain children, the body at its own height.
+    let popup_title =
+        context.create_detached_component(document_id, AppTitleBar::new("弹窗标题"))?;
+    let popup = context.create_detached_component(
+        document_id,
+        AppShell::new()
+            .title_bar(popup_title.stable_id())
+            .body(popup_body.stable_id()),
+    )?;
+    context.append_child(popup, popup_title)?;
+    context.append_child(popup, popup_body)?;
+    context.reproject_component(popup_body)?;
+    context.append_child(popup_frame, popup)?;
+    Ok(WorkspaceTree {
+        root,
+        dock,
+        panels: DOCK_PANELS
+            .iter()
+            .map(|(id, _, _)| (*id).to_owned())
+            .zip(panels)
+            .collect(),
+        lock,
+        hide,
+        _reset: reset,
+        status,
+        _popup: popup,
+    })
+}
+
+/// One dock item's content, keyed with the item's id.
+fn dock_panel(
+    id: &str,
+    title: &str,
+    hint: &str,
+    panel: EntityRef<HostStack>,
+) -> impl IntoView + use<> {
+    widget(HostStack::fill_column(5.0).padding(10.0))
+        .key(id.to_owned())
+        .entity_ref(panel)
+        .children((
+            widget(styled_text(
+                title,
+                SemanticColorRole::Text,
+                type_scale::META,
+                type_scale::REGULAR,
+            )),
+            widget(styled_text(
+                hint,
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+                type_scale::REGULAR,
+            )),
+        ))
+}
+
+/// A region's slot around its content: a column headed by `title` and a
+/// button that collapses region `collapse`, then `body`.
+#[allow(clippy::too_many_arguments)]
+fn region_panel<B: IntoView>(
+    pending: &Arc<Mutex<Vec<GalleryMessage>>>,
+    (gap, padding_y): (f32, f32),
+    title: &'static str,
+    collapse: RegionId,
+    [slot, root]: [EntityRef<HostStack>; 2],
+    button: EntityRef<Button>,
+    body: B,
+) -> impl IntoView + use<B> {
+    let heading = widget(
+        HostStack::fill_row(8.0)
+            .align(nana_ui::runtime::AlignSpec::Center)
+            .grow(0.0),
+    )
+    .children((
+        widget(hugging_text(title, SemanticColorRole::Muted, 12.0, 700)),
+        widget(HostStack::spacer()),
+        widget(
+            Button::new("收起")
+                .kind(ButtonKind::Text)
+                .size(ControlSize::Small),
+        )
+        .entity_ref(button)
+        .on(queue(pending, move |_: &Activate| {
+            GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(collapse.clone()))
+        })),
+    ));
+    widget(HostStack::region_slot()).entity_ref(slot).children(
+        widget(
+            HostStack::fill_column(gap)
+                .padding_xy(12.0, padding_y)
+                .grow(0.0),
+        )
+        .entity_ref(root)
+        .children((heading, body)),
+    )
 }
 
 fn mount_inspector(
@@ -2653,63 +2585,49 @@ fn mount_inspector(
     state: &GalleryState,
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<InspectorTree, FrameworkError> {
-    context.build_detached(document_id, |ui| {
-        let collapse = ui.parked(
-            Button::new("收起")
-                .kind(ButtonKind::Text)
-                .size(ControlSize::Small),
+    let radius = state.appearance.standard_radius().round() as u8;
+    let (_, refs) = context.mount_view_detached(document_id, || {
+        let stacks: [EntityRef<HostStack>; 2] = std::array::from_fn(|_| entity_ref());
+        let collapse = entity_ref::<Button>();
+        let slider = entity_ref::<nana_ui::runtime::RangeField>();
+        let corners = entity_ref::<Switch>();
+        let body = (
+            widget(fill_range_field(
+                nana_ui::runtime::RangeField::new(f64::from(radius), 0.0, 24.0, 1.0)
+                    .label("标准圆角")
+                    .unit("px"),
+            ))
+            .entity_ref(slider)
+            .on(queue(pending, |event: &RangeInput| {
+                GalleryMessage::SetStandardRadius(event.value.round() as u8)
+            })),
+            widget(Switch::new(
+                "主区域圆角",
+                state.appearance.workspace_corners_enabled(),
+            ))
+            .entity_ref(corners)
+            .on(queue(pending, |event: &ToggleChanged| {
+                GalleryMessage::SetWorkspaceCorners(event.checked)
+            })),
         );
-        bind_event_ui(ui, collapse, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(RegionId::Inspector))
-        });
-        let radius = state.appearance.standard_radius().round() as u8;
-        let slider = ui.parked(fill_range_field(
-            nana_ui::runtime::RangeField::new(f64::from(radius), 0.0, 24.0, 1.0)
-                .label("标准圆角")
-                .unit("px"),
-        ));
-        bind_event_ui(ui, slider, Arc::clone(pending), |event: &RangeInput| {
-            GalleryMessage::SetStandardRadius(event.value.round() as u8)
-        });
-        let corners = ui.parked(Switch::new(
-            "主区域圆角",
-            state.appearance.workspace_corners_enabled(),
-        ));
-        bind_event_ui(ui, corners, Arc::clone(pending), |event: &ToggleChanged| {
-            GalleryMessage::SetWorkspaceCorners(event.checked)
-        });
-        let title = ui.parked(hugging_text("检查器", SemanticColorRole::Muted, 12.0, 700));
-        let heading_spacer = ui.parked(HostStack::spacer());
-        let heading = ui.parked(
-            HostStack::fill_row(8.0)
-                .align(nana_ui::runtime::AlignSpec::Center)
-                .grow(0.0),
+        let view = region_panel(
+            pending,
+            (10.0, 10.0),
+            "检查器",
+            RegionId::Inspector,
+            stacks,
+            collapse,
+            body,
         );
-        ui.nest(heading, |ui| {
-            ui.adopt(title);
-            ui.adopt(heading_spacer);
-            ui.adopt(collapse);
-        });
-        let root = ui.detached(
-            HostStack::fill_column(10.0)
-                .padding_xy(12.0, 10.0)
-                .grow(0.0),
-        );
-        ui.nest(root, |ui| {
-            ui.adopt(heading);
-            ui.adopt(slider);
-            ui.adopt(corners);
-        });
-        let slot = ui.detached(HostStack::region_slot());
-        ui.nest(slot, |ui| ui.adopt(root));
-        InspectorTree {
-            slot,
-            _root: root,
-            _collapse: collapse,
-            radius: slider,
-            corners,
-        }
+        with_refs(view, (stacks, collapse, slider, corners))
+    })?;
+    let ([slot, root], collapse, radius, corners) = refs;
+    Ok(InspectorTree {
+        slot,
+        _root: root,
+        _collapse: collapse,
+        radius,
+        corners,
     })
 }
 
@@ -2718,43 +2636,21 @@ fn mount_bottom(
     document_id: DocumentId,
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<(Entity<HostStack>, Entity<Button>), FrameworkError> {
-    context.build_detached(document_id, |ui| {
-        let collapse = ui.parked(
-            Button::new("收起")
-                .kind(ButtonKind::Text)
-                .size(ControlSize::Small),
-        );
-        bind_event_ui(ui, collapse, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(RegionId::Diagnostics))
-        });
-        let title = ui.parked(hugging_text(
+    let (_, ([slot, _], collapse)) = context.mount_view_detached(document_id, || {
+        let stacks: [EntityRef<HostStack>; 2] = std::array::from_fn(|_| entity_ref());
+        let collapse = entity_ref::<Button>();
+        let view = region_panel(
+            pending,
+            (8.0, 8.0),
             "底部面板",
-            SemanticColorRole::Muted,
-            12.0,
-            700,
-        ));
-        let heading_spacer = ui.parked(HostStack::spacer());
-        let heading = ui.parked(
-            HostStack::fill_row(8.0)
-                .align(nana_ui::runtime::AlignSpec::Center)
-                .grow(0.0),
+            RegionId::Diagnostics,
+            stacks,
+            collapse,
+            widget(StatusBadge::new("布局就绪", StatusTone::Success)),
         );
-        ui.nest(heading, |ui| {
-            ui.adopt(title);
-            ui.adopt(heading_spacer);
-            ui.adopt(collapse);
-        });
-        let status = ui.parked(StatusBadge::new("布局就绪", StatusTone::Success));
-        let root = ui.detached(HostStack::fill_column(8.0).padding_xy(12.0, 8.0).grow(0.0));
-        ui.nest(root, |ui| {
-            ui.adopt(heading);
-            ui.adopt(status);
-        });
-        let slot = ui.detached(HostStack::region_slot());
-        ui.nest(slot, |ui| ui.adopt(root));
-        (slot, collapse)
-    })
+        with_refs(view, (stacks, collapse))
+    })?;
+    Ok((slot, collapse))
 }
 
 fn mount_toolbar(
@@ -2762,34 +2658,34 @@ fn mount_toolbar(
     document_id: DocumentId,
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<(Entity<HostStack>, Entity<Button>), FrameworkError> {
-    context.build_detached(document_id, |ui| {
-        let reset = ui.parked(
-            Button::new("恢复默认")
-                .kind(ButtonKind::Text)
-                .size(ControlSize::Small),
+    let (_, refs) = context.mount_view_detached(document_id, || {
+        let slot = entity_ref::<HostStack>();
+        let reset = entity_ref::<Button>();
+        let view = widget(HostStack::region_slot()).entity_ref(slot).children(
+            widget(
+                HostStack::fill_row(8.0)
+                    .align(nana_ui::runtime::AlignSpec::Center)
+                    .height(LengthSpec::Fill)
+                    .padding_xy(10.0, 0.0)
+                    .grow(0.0),
+            )
+            .children((
+                widget(hugging_text("工作区", SemanticColorRole::Text, 13.0, 700)),
+                widget(HostStack::spacer()),
+                widget(
+                    Button::new("恢复默认")
+                        .kind(ButtonKind::Text)
+                        .size(ControlSize::Small),
+                )
+                .entity_ref(reset)
+                .on(queue(pending, |_: &Activate| {
+                    GalleryMessage::ResetWorkspaceLayout
+                })),
+            )),
         );
-        bind_event_ui(ui, reset, Arc::clone(pending), |event: &Activate| {
-            let _ = event;
-            GalleryMessage::ResetWorkspaceLayout
-        });
-        let title = ui.parked(hugging_text("工作区", SemanticColorRole::Text, 13.0, 700));
-        let spacer = ui.parked(HostStack::spacer());
-        let root = ui.detached(
-            HostStack::fill_row(8.0)
-                .align(nana_ui::runtime::AlignSpec::Center)
-                .height(LengthSpec::Fill)
-                .padding_xy(10.0, 0.0)
-                .grow(0.0),
-        );
-        ui.nest(root, |ui| {
-            ui.adopt(title);
-            ui.adopt(spacer);
-            ui.adopt(reset);
-        });
-        let slot = ui.detached(HostStack::region_slot());
-        ui.nest(slot, |ui| ui.adopt(root));
-        (slot, reset)
-    })
+        with_refs(view, (slot, reset))
+    })?;
+    Ok(refs)
 }
 
 fn sync_controls(
@@ -3073,23 +2969,16 @@ fn sync_inspector(
     });
 }
 
-fn append_flex_child<C: View>(
-    ui: &mut nana_ui::runtime::UiBuilder<'_>,
-    parent: Entity<HostStack>,
-    child: Entity<C>,
-) {
-    let cell = ui.parked(HostStack::flex_child());
-    ui.nest(cell, |ui| ui.adopt(child));
-    ui.nest(parent, |ui| ui.adopt(cell));
+/// An equal-width cell of a row around `child`.
+fn flex_cell<V: IntoView>(child: V) -> impl IntoView + use<V> {
+    widget(HostStack::flex_child()).children(child)
 }
 
-fn filling_panel(ui: &mut nana_ui::runtime::UiBuilder<'_>, gap: f32) -> Entity<HostStack> {
-    ui.parked(
-        HostStack::panel(gap)
-            .height(LengthSpec::Fill)
-            .min_height(LengthSpec::Px(0.0))
-            .grow(1.0),
-    )
+fn filling_panel(gap: f32) -> HostStack {
+    HostStack::panel(gap)
+        .height(LengthSpec::Fill)
+        .min_height(LengthSpec::Px(0.0))
+        .grow(1.0)
 }
 
 fn apply_equal_fill(layout: &mut nana_ui::runtime::LayoutStyle, height: f32) {
@@ -3224,11 +3113,16 @@ fn gallery_list_item(
     content: Entity<nana_ui::runtime::Text>,
     trailing: Entity<nana_ui::runtime::Text>,
 ) -> ListItem {
+    list_item_spec(label, size, selected, disabled)
+        .slots(list_item_slots(leading, content, trailing))
+}
+
+/// A list row without its slots, which a view gives it as children.
+fn list_item_spec(label: &str, size: ControlSize, selected: bool, disabled: bool) -> ListItem {
     let mut item = ListItem::new(label)
         .size(size)
         .selected(selected)
-        .disabled(disabled)
-        .slots(list_item_slots(leading, content, trailing));
+        .disabled(disabled);
     let layout = std::sync::Arc::make_mut(&mut item.style.layout);
     layout.width = Some(LengthSpec::Fill);
     layout.min_width = Some(LengthSpec::Px(0.0));
@@ -3239,19 +3133,14 @@ fn gallery_list_item(
     item
 }
 
-fn panel(
-    ui: &mut nana_ui::runtime::UiBuilder<'_>,
-    gap: f32,
-    height: Option<LengthSpec>,
-    grow: f32,
-) -> Entity<HostStack> {
+fn panel(gap: f32, height: Option<LengthSpec>, grow: f32) -> HostStack {
     let mut stack = HostStack::panel(gap)
         .grow(grow)
         .min_width(LengthSpec::Px(0.0));
     if let Some(height) = height {
         stack = stack.height(height);
     }
-    ui.parked(stack)
+    stack
 }
 
 fn loading_button(state: &GalleryState) -> Button {
@@ -3398,9 +3287,27 @@ fn pane_tree_node(
     left: Entity<nana_ui::runtime::Text>,
     right: Entity<nana_ui::runtime::Text>,
 ) -> PaneTreeNode {
-    if !state.pane_chrome_item_open {
+    pane_tree_node_for(
+        state.pane_chrome_item_open,
+        state.pane_chrome_split,
+        empty,
+        editor,
+        left,
+        right,
+    )
+}
+
+fn pane_tree_node_for(
+    item_open: bool,
+    split: bool,
+    empty: Entity<nana_ui::runtime::Text>,
+    editor: Entity<nana_ui::runtime::Text>,
+    left: Entity<nana_ui::runtime::Text>,
+    right: Entity<nana_ui::runtime::Text>,
+) -> PaneTreeNode {
+    if !item_open {
         PaneTreeNode::leaf_content("empty", empty.stable_id())
-    } else if state.pane_chrome_split {
+    } else if split {
         PaneTreeNode::split(
             "editor-split",
             nana_ui::SplitAxis::Horizontal,
@@ -3434,13 +3341,27 @@ fn pane_actions(
     split: StableNodeId,
     close: StableNodeId,
 ) -> Vec<PaneChromeAction> {
+    pane_actions_for(
+        state.pane_chrome_item_open,
+        state.pane_chrome_split,
+        split,
+        close,
+    )
+}
+
+fn pane_actions_for(
+    item_open: bool,
+    split_open: bool,
+    split: StableNodeId,
+    close: StableNodeId,
+) -> Vec<PaneChromeAction> {
     let mut actions = Vec::new();
-    if state.pane_chrome_item_open && !state.pane_chrome_split {
+    if item_open && !split_open {
         actions.push(
             PaneChromeAction::new(PaneChromeActionKind::SplitHorizontal, "左右分栏").target(split),
         );
     }
-    if state.pane_chrome_item_open {
+    if item_open {
         actions.push(
             PaneChromeAction::new(PaneChromeActionKind::CloseItem, "关闭 Item")
                 .icon(Icon::Close)

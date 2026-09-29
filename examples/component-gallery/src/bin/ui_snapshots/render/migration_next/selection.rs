@@ -24,23 +24,37 @@ pub(super) fn create_segmented_fixture(
             ("Preview", None, false),
         ],
     };
-    let (control, options) = document.context_mut().build(document_id, |ui| {
-        let control = ui.child(
-            "segmented",
-            RuntimeSegmentedControl::new()
-                .label("Editor mode")
-                .size(segmented_control_size(fixture.state)),
-        );
-        let mut options = Vec::with_capacity(specs.len());
-        for (label, icon, disabled) in specs {
-            let mut option = RuntimeSegmentedOption::new(*label).disabled(*disabled);
-            if let Some(icon) = icon {
-                option = option.icon(*icon);
-            }
-            options.push(ui.detached(option));
-        }
-        (control, options)
+    // The options are parked and registered by `set_segmented_options`
+    // below, as a host that owns their identities does; a view that nests
+    // them under the control would register them itself.
+    let (_, control) = document.context_mut().mount_view_root(document_id, || {
+        let control = entity_ref();
+        with_refs(
+            widget(
+                RuntimeSegmentedControl::new()
+                    .label("Editor mode")
+                    .size(segmented_control_size(fixture.state)),
+            )
+            .entity_ref(control),
+            control,
+        )
     })?;
+    let (_, options) = document
+        .context_mut()
+        .mount_view_detached(document_id, || {
+            let mut refs = Vec::with_capacity(specs.len());
+            let mut views = Vec::with_capacity(specs.len());
+            for (label, icon, disabled) in specs {
+                let mut option = RuntimeSegmentedOption::new(*label).disabled(*disabled);
+                if let Some(icon) = icon {
+                    option = option.icon(*icon);
+                }
+                let option_ref = entity_ref();
+                refs.push(option_ref);
+                views.push(widget(option).entity_ref(option_ref));
+            }
+            with_refs(views, refs)
+        })?;
     let selected = match fixture.state {
         "empty" | "all-disabled" | "no-selection" => None,
         "disabled-selected" => options.get(1).copied(),
@@ -72,14 +86,16 @@ pub(super) fn create_tabs_fixture(
     fixture: Fixture,
 ) -> Result<Entity<RuntimeTabs>, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let tabs = document.context_mut().build(document_id, |ui| {
-        ui.child(
-            "tabs",
-            RuntimeTabs::new("code").label("Editor mode").options([
+    let (_, tabs) = document.context_mut().mount_view_root(document_id, || {
+        let tabs = entity_ref();
+        with_refs(
+            widget(RuntimeTabs::new("code").label("Editor mode").options([
                 RuntimeTabOption::new("code", "Code"),
                 RuntimeTabOption::new("split", "Split").disabled(true),
                 RuntimeTabOption::new("preview", "Preview"),
-            ]),
+            ]))
+            .entity_ref(tabs),
+            tabs,
         )
     })?;
     if fixture.state == "focused"

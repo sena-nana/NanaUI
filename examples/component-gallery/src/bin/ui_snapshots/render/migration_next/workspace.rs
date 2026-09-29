@@ -7,151 +7,123 @@ pub(super) fn mount_runtime_sidebar_section(
     labels: &[&str],
     collapsible: bool,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
-    let document_id = document.document();
     let spec = RuntimeSidebarSection::new("资源")
         .count(3)
         .collapsible(collapsible)
         .expanded(expanded);
-    Ok(document.context_mut().build(document_id, |ui| {
-        let disclosure = collapsible.then(|| ui.parked(spec.disclosure_mark()));
-        let title = ui.parked(spec.title_label());
-        let count = ui.parked(spec.count_label());
-        let spec = spec
-            .title_slot(title.stable_id())
-            .count_slot(count.stable_id());
-        let spec = match &disclosure {
-            Some(disclosure) => spec.disclosure(disclosure.stable_id()),
-            None => spec,
-        };
-        let header = ui.parked(spec.header_item());
-        ui.nest(header, |ui| {
-            if let Some(disclosure) = disclosure {
-                ui.adopt(disclosure);
-            }
-            ui.adopt(title);
-            ui.adopt(count);
-        });
-        let body = ui.parked(RuntimeSidebarSection::body_port());
-        ui.nest(body, |ui| {
-            for (index, label) in labels.iter().enumerate() {
-                ui.child(format!("row-{index}"), RuntimeSidebarRow::new(*label));
-            }
-        });
-        let section = ui.child(
-            "section",
-            spec.header(header.stable_id()).body(body.stable_id()),
-        );
-        ui.nest(section, |ui| {
-            ui.adopt(header);
-            ui.adopt(body);
-        });
-        section.stable_id()
-    })?)
+    // The chrome is spelled out rather than left to the section's
+    // assembler, which would build the same nodes after the section instead
+    // of before it and renumber the recorded fixture.
+    mount_root(document, || {
+        let (disclosure, title, count) = (entity_ref(), entity_ref(), entity_ref());
+        let mut header = widget(spec.header_item());
+        if collapsible {
+            header = header.leading(widget(spec.disclosure_mark()).entity_ref(disclosure));
+        }
+        let header = header
+            .content(widget(spec.title_label()).entity_ref(title))
+            .trailing(widget(spec.count_label()).entity_ref(count));
+        let rows = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                widget(RuntimeSidebarRow::new(*label)).key(format!("row-{index}"))
+            })
+            .collect::<Vec<_>>();
+        let built = "the header is built before the section";
+        widget(spec.clone())
+            .child_slot(header, move |section, header| {
+                let section = section
+                    .title_slot(title.get().expect(built).stable_id())
+                    .count_slot(count.get().expect(built).stable_id())
+                    .header(header);
+                match disclosure.get() {
+                    Some(disclosure) => section.disclosure(disclosure.stable_id()),
+                    None => section,
+                }
+            })
+            .child_slot(
+                widget(RuntimeSidebarSection::body_port()).children(rows),
+                RuntimeSidebarSection::body,
+            )
+    })
+    .map_err(Into::into)
 }
 
 pub(super) fn mount_runtime_workspace(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
-    let document_id = document.document();
-    let workspace = document.context_mut().build(document_id, |ui| {
-        let nav = ui.parked(RuntimeText::new("Nav").style(slot_label_style()));
-        let files = ui.parked(RuntimeText::new("Files").style(slot_label_style()));
-        let toolbar = ui.parked(RuntimeText::new("Toolbar").style(slot_label_style()));
-        let primary = ui.parked(RuntimeText::new("Primary").style(slot_label_style()));
-        let inspector = ui.parked(RuntimeText::new("Inspector").style(slot_label_style()));
-        let diagnostics = ui.parked(RuntimeText::new("Diagnostics").style(slot_label_style()));
-        let workspace = ui.child(
-            "workspace",
-            RuntimeWorkspace::from_model(
-                &WorkspaceModel::new(),
-                [
-                    WorkspaceRegionSlot::new(RegionId::GlobalNavigation, nav.stable_id()),
-                    WorkspaceRegionSlot::new(RegionId::Resources, files.stable_id()),
-                    WorkspaceRegionSlot::new(RegionId::PrimaryToolbar, toolbar.stable_id()),
-                    WorkspaceRegionSlot::new(RegionId::Primary, primary.stable_id()),
-                    WorkspaceRegionSlot::new(RegionId::Inspector, inspector.stable_id()),
-                    WorkspaceRegionSlot::new(RegionId::Diagnostics, diagnostics.stable_id()),
-                ],
-            ),
-        );
-        ui.nest(workspace, |ui| {
-            ui.adopt(nav);
-            ui.adopt(files);
-            ui.adopt(toolbar);
-            ui.adopt(primary);
-            ui.adopt(inspector);
-            ui.adopt(diagnostics);
-        });
-        workspace
-    })?;
-    document.context_mut().assemble_workspace(workspace)?;
-    Ok(workspace.stable_id())
+    Ok(mount_root(document, || {
+        widget(RuntimeWorkspace::from_model(&WorkspaceModel::new(), []))
+            .region(RegionId::GlobalNavigation, slot_label("Nav"))
+            .region(RegionId::Resources, slot_label("Files"))
+            .region(RegionId::PrimaryToolbar, slot_label("Toolbar"))
+            .region(RegionId::Primary, slot_label("Primary"))
+            .region(RegionId::Inspector, slot_label("Inspector"))
+            .region(RegionId::Diagnostics, slot_label("Diagnostics"))
+    })?)
+}
+
+fn slot_label(value: &str) -> nana_ui::runtime::view::El<RuntimeText> {
+    widget(RuntimeText::new(value).style(slot_label_style()))
+}
+
+/// `dock` with `content` as the content of item `id`.
+fn bind_dock_content(mut dock: RuntimeDock, id: &str, content: StableNodeId) -> RuntimeDock {
+    dock.root.bind_content(id, content);
+    dock
 }
 
 pub(super) fn mount_runtime_dock(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
-    let document_id = document.document();
-    let dock = document.context_mut().build(document_id, |ui| {
-        let nav = ui.parked(RuntimeText::new("Nav").style(slot_label_style()));
-        let files = ui.parked(RuntimeText::new("Files").style(slot_label_style()));
-        let primary = ui.parked(RuntimeText::new("Primary").style(slot_label_style()));
-        let dock = ui.child(
-            "dock",
+    Ok(mount_root(document, || {
+        widget(
             RuntimeDock::new(RuntimeDockNode::split(
                 nana_ui::runtime::DockAxis::Horizontal,
                 0.35,
-                RuntimeDockNode::tabs(
-                    ["nav", "files"],
-                    "nav",
-                    [
-                        ("nav", Some(nav.stable_id())),
-                        ("files", Some(files.stable_id())),
-                    ],
-                ),
-                RuntimeDockNode::item("primary", Some(primary.stable_id())),
+                RuntimeDockNode::tabs(["nav", "files"], "nav", [("nav", None), ("files", None)]),
+                RuntimeDockNode::item("primary", None),
             ))
             .title("nav", "Nav")
             .title("files", "Files")
             .title("primary", "Primary"),
-        );
-        ui.nest(dock, |ui| {
-            ui.adopt(nav);
-            ui.adopt(files);
-            ui.adopt(primary);
-        });
-        dock
-    })?;
-    document.context_mut().assemble_dock(dock)?;
-    Ok(dock.stable_id())
+        )
+        .child_slot(slot_label("Nav"), |dock, id| {
+            bind_dock_content(dock, "nav", id)
+        })
+        .child_slot(slot_label("Files"), |dock, id| {
+            bind_dock_content(dock, "files", id)
+        })
+        .child_slot(slot_label("Primary"), |dock, id| {
+            bind_dock_content(dock, "primary", id)
+        })
+    })?)
 }
 
 pub(super) fn mount_runtime_split_pane(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let pane = document.context_mut().build(document_id, |ui| {
-        let first = ui.parked(RuntimeText::new("First").style(slot_label_style()));
-        let second = ui.parked(RuntimeText::new("Second").style(slot_label_style()));
-        let indicator = ui.parked(RuntimeText::new(""));
-        let handle = ui.parked(RuntimeText::new(""));
-        ui.nest(handle, |ui| ui.adopt(indicator));
-        let pane = ui.child(
-            "pane",
-            RuntimeSplitPane::from_model(
-                &SplitPaneModel::new(SplitAxis::Horizontal, 160.0, 80.0, 280.0),
-                first.stable_id(),
-                second.stable_id(),
-            )
-            .handle(handle.stable_id()),
-        );
-        ui.nest(pane, |ui| {
-            ui.adopt(first);
-            ui.adopt(handle);
-            ui.adopt(second);
-        });
-        pane
+    let [first, second, handle] = mount_parked(document, || {
+        (
+            slot_label("First"),
+            slot_label("Second"),
+            widget(RuntimeText::new("")).child_slot(widget(RuntimeText::new("")), keep),
+        )
     })?;
+    // Not a view: a view-built `SplitPane` assembles itself into slot
+    // shells, and this fixture shows the pane with its children direct.
+    let pane = document.context_mut().create_component(
+        document_id,
+        RuntimeSplitPane::from_model(
+            &SplitPaneModel::new(SplitAxis::Horizontal, 160.0, 80.0, 280.0),
+            first,
+            second,
+        )
+        .handle(handle),
+    )?;
+    insert_children(document, pane.stable_id(), &[first, handle, second])?;
     document.context_mut().reproject_component(pane)?;
     Ok(pane.stable_id())
 }
@@ -160,34 +132,39 @@ pub(super) fn mount_runtime_pane_chrome(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    Ok(document.context_mut().build(document_id, |ui| {
-        let header = ui.parked(RuntimeText::new(""));
-        let tabs = ui.parked(RuntimeText::new("editor.rs"));
-        let body = ui.parked(RuntimeText::new("Body"));
-        let close = ui.parked(RuntimeText::new("关闭"));
-        ui.nest(header, |ui| {
-            ui.adopt(tabs);
-            ui.adopt(close);
-        });
-        let chrome = ui.child(
-            "chrome",
-            RuntimePaneChrome::new()
-                .header(header.stable_id())
-                .tabs(tabs.stable_id())
-                .body(body.stable_id())
-                .actions([nana_ui::runtime::PaneChromeAction::new(
-                    nana_ui::runtime::PaneChromeActionKind::CloseItem,
-                    "关闭",
-                )
-                .target(close.stable_id())])
-                .active(true),
-        );
-        ui.nest(chrome, |ui| {
-            ui.adopt(header);
-            ui.adopt(body);
-        });
-        chrome.stable_id()
-    })?)
+    // One mount, so the chrome projects before any of its slots is in the
+    // world, and in the order the fixture's ids were recorded in: header,
+    // tabs, body, close, chrome. The body is built as a detached slot of
+    // the close action only to take its place in that order; it becomes the
+    // chrome's second child afterwards.
+    let (_, (chrome, header, body)) =
+        document.context_mut().mount_view_root(document_id, || {
+            let (chrome, header) = (entity_ref(), entity_ref::<RuntimeText>());
+            let (tabs, body, close) = (entity_ref::<RuntimeText>(), entity_ref(), entity_ref());
+            let header_view = widget(RuntimeText::new("")).entity_ref(header).children((
+                widget(RuntimeText::new("editor.rs")).entity_ref(tabs),
+                widget(RuntimeText::new("关闭"))
+                    .entity_ref(close)
+                    .slot(widget(RuntimeText::new("Body")).entity_ref(body), keep),
+            ));
+            let built = "the header slot is built before the chrome";
+            let view = widget(RuntimePaneChrome::new().active(true))
+                .entity_ref(chrome)
+                .child_slot(header_view, move |pane, header| {
+                    pane.header(header)
+                        .tabs(tabs.get().expect(built).stable_id())
+                        .body(body.get().expect(built).stable_id())
+                        .actions([nana_ui::runtime::PaneChromeAction::new(
+                            nana_ui::runtime::PaneChromeActionKind::CloseItem,
+                            "关闭",
+                        )
+                        .target(close.get().expect(built).stable_id())])
+                });
+            with_refs(view, (chrome, header, body))
+        })?;
+    let _ = header;
+    insert_children(document, chrome.stable_id(), &[body.stable_id()])?;
+    Ok(chrome.stable_id())
 }
 
 /// A pane leaf that can be seen.
@@ -211,39 +188,53 @@ fn pane_leaf_style() -> NodeStyle {
 pub(super) fn mount_runtime_pane_tree(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
-    let document_id = document.document();
-    Ok(document.context_mut().build(document_id, |ui| {
-        // The state is called "nested", so it nests: a 0.4 horizontal split
-        // whose right half is itself split down the middle. Both halves of
-        // that sentence used to be unobservable — `PaneTree` flattened the
-        // tree into one flex line, its ratio never applied, and leaves with no
-        // surface of their own drew nothing but two words.
-        let left = ui.parked(RuntimeText::new("left").style(pane_leaf_style()));
-        let top = ui.parked(RuntimeText::new("right top").style(pane_leaf_style()));
-        let bottom = ui.parked(RuntimeText::new("right bottom").style(pane_leaf_style()));
-        let tree = ui.child(
-            "tree",
-            RuntimePaneTree::new(RuntimePaneTreeNode::split(
-                "root",
-                SplitAxis::Horizontal,
-                0.4,
-                RuntimePaneTreeNode::leaf_content("left", left.stable_id()),
-                RuntimePaneTreeNode::split(
-                    "right",
-                    SplitAxis::Vertical,
-                    0.5,
-                    RuntimePaneTreeNode::leaf_content("right-top", top.stable_id()),
-                    RuntimePaneTreeNode::leaf_content("right-bottom", bottom.stable_id()),
-                ),
-            )),
-        );
-        ui.nest(tree, |ui| {
-            ui.adopt(left);
-            ui.adopt(top);
-            ui.adopt(bottom);
-        });
-        tree.stable_id()
+    // The state is called "nested", so it nests: a 0.4 horizontal split
+    // whose right half is itself split down the middle. Both halves of
+    // that sentence used to be unobservable — `PaneTree` flattened the
+    // tree into one flex line, its ratio never applied, and leaves with no
+    // surface of their own drew nothing but two words.
+    Ok(mount_root(document, || {
+        let leaf = |value: &str| widget(RuntimeText::new(value).style(pane_leaf_style()));
+        widget(RuntimePaneTree::new(RuntimePaneTreeNode::split(
+            "root",
+            SplitAxis::Horizontal,
+            0.4,
+            RuntimePaneTreeNode::leaf("left"),
+            RuntimePaneTreeNode::split(
+                "right",
+                SplitAxis::Vertical,
+                0.5,
+                RuntimePaneTreeNode::leaf("right-top"),
+                RuntimePaneTreeNode::leaf("right-bottom"),
+            ),
+        )))
+        .child_slot(leaf("left"), |tree, id| bind_pane(tree, "left", id))
+        .child_slot(leaf("right top"), |tree, id| {
+            bind_pane(tree, "right-top", id)
+        })
+        .child_slot(leaf("right bottom"), |tree, id| {
+            bind_pane(tree, "right-bottom", id)
+        })
     })?)
+}
+
+/// `tree` with `content` in leaf `pane`.
+fn bind_pane(mut tree: RuntimePaneTree, pane: &str, content: StableNodeId) -> RuntimePaneTree {
+    fn bind(node: &mut RuntimePaneTreeNode, pane: &str, content: StableNodeId) {
+        match node {
+            RuntimePaneTreeNode::Leaf {
+                pane_id,
+                content: slot,
+            } if pane_id.as_ref() == pane => *slot = Some(content),
+            RuntimePaneTreeNode::Leaf { .. } => {}
+            RuntimePaneTreeNode::Split { first, second, .. } => {
+                bind(first, pane, content);
+                bind(second, pane, content);
+            }
+        }
+    }
+    bind(&mut tree.root, pane, content);
+    tree
 }
 
 /// A title bar that looks the same on every OS.
@@ -264,6 +255,11 @@ pub(super) fn mount_runtime_app_shell(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
+    // Still the builder. The recorded fixture is an unassembled shell over an
+    // unassembled bar, whose projection ran in the same batch that created
+    // its slots and so never patched the body to fill. A view assembles
+    // both (the bar grows window controls), and building the slots first
+    // with `create_component` lets the shell's projection patch the body.
     Ok(document.context_mut().build(document_id, |ui| {
         let title = ui.parked(snapshot_title_bar("NanaUI"));
         let body = ui.parked(RuntimeText::new("Workspace"));
@@ -332,15 +328,19 @@ pub(super) fn mount_runtime_appearance_section(
     theme: ThemeMode,
 ) -> Result<nana_ui::runtime::Entity<RuntimeAppearanceSection>, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let section = document.context_mut().build_detached(document_id, |ui| {
-        ui.detached(RuntimeAppearanceSection::new(
-            theme,
-            AppearanceSettings::default(),
-        ))
-    })?;
-    document
+    let (_, section) = document
         .context_mut()
-        .assemble_appearance_section(section)?;
+        .mount_view_detached(document_id, || {
+            let section = entity_ref();
+            with_refs(
+                widget(RuntimeAppearanceSection::new(
+                    theme,
+                    AppearanceSettings::default(),
+                ))
+                .entity_ref(section),
+                section,
+            )
+        })?;
     Ok(section)
 }
 
@@ -348,31 +348,31 @@ pub(super) fn mount_runtime_about_section(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::Entity<RuntimeAboutSection>, Box<dyn std::error::Error>> {
     let document_id = document.document();
-    let section = document.context_mut().build_detached(document_id, |ui| {
-        ui.detached(RuntimeAboutSection::new(
-            RuntimeAboutMetadata::new("NanaUI Gallery", "0.1.0")
-                .description("Injected product metadata for the about card."),
-        ))
-    })?;
-    document.context_mut().assemble_about_section(section)?;
+    let (_, section) = document
+        .context_mut()
+        .mount_view_detached(document_id, || {
+            let section = entity_ref();
+            with_refs(
+                widget(RuntimeAboutSection::new(
+                    RuntimeAboutMetadata::new("NanaUI Gallery", "0.1.0")
+                        .description("Injected product metadata for the about card."),
+                ))
+                .entity_ref(section),
+                section,
+            )
+        })?;
     Ok(section)
 }
 
 pub(super) fn mount_runtime_settings_sidebar(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
-    let document_id = document.document();
-    let sidebar = document.context_mut().build(document_id, |ui| {
-        ui.child(
-            "sidebar",
-            RuntimeSettingsSidebar::new(
-                snapshot_settings_model().clone(),
-                snapshot_settings_state().clone(),
-            ),
-        )
-    })?;
-    document.context_mut().assemble_settings_sidebar(sidebar)?;
-    Ok(sidebar.stable_id())
+    Ok(mount_root(document, || {
+        widget(RuntimeSettingsSidebar::new(
+            snapshot_settings_model().clone(),
+            snapshot_settings_state().clone(),
+        ))
+    })?)
 }
 
 pub(super) fn mount_runtime_settings_page(
@@ -380,7 +380,6 @@ pub(super) fn mount_runtime_settings_page(
     theme: ThemeMode,
     fixture: Fixture,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
-    let document_id = document.document();
     let full_page = fixture.state == "settings-page-full";
     let content = if full_page {
         mount_runtime_about_section(document)?.stable_id()
@@ -392,54 +391,41 @@ pub(super) fn mount_runtime_settings_page(
     } else {
         snapshot_settings_state().clone()
     };
-    let page = document.context_mut().build(document_id, |ui| {
-        ui.child(
-            "page",
-            RuntimeSettingsPage::new(snapshot_settings_model().clone(), state).content(content),
-        )
-    })?;
-    document.context_mut().assemble_settings_page(page)?;
-    Ok(page.stable_id())
+    Ok(mount_root(document, || {
+        widget(RuntimeSettingsPage::new(snapshot_settings_model().clone(), state).content(content))
+    })?)
 }
 
 pub(super) fn mount_runtime_desktop_shell(
     document: &mut RuntimeDocument,
     theme: ThemeMode,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
-    let document_id = document.document();
     let model = snapshot_settings_model().clone();
     let state = snapshot_settings_state().clone();
-    let sidebar = document.context_mut().build_detached(document_id, |ui| {
-        ui.detached(RuntimeSettingsSidebar::new(model.clone(), state.clone()))
+    let [sidebar] = mount_parked(document, || {
+        widget(RuntimeSettingsSidebar::new(model.clone(), state.clone()))
     })?;
-    document.context_mut().assemble_settings_sidebar(sidebar)?;
     let content = mount_runtime_appearance_section(document, theme)?;
-    let page = document.context_mut().build_detached(document_id, |ui| {
-        ui.detached(RuntimeSettingsPage::new(model, state).content(content.stable_id()))
+    let [page] = mount_parked(document, || {
+        widget(RuntimeSettingsPage::new(model, state).content(content.stable_id()))
     })?;
-    document.context_mut().assemble_settings_page(page)?;
-    let shell = document.context_mut().build(document_id, |ui| {
+    Ok(mount_root(document, || {
         // Supply the bar instead of letting `DesktopShell` mint one from
         // `.title(..)`: the minted one takes its control mode from
         // `WindowChrome::platform_default()`, which drops three window buttons
         // and shifts the title 86px on macOS. See [`snapshot_title_bar`].
-        let title = ui.parked(snapshot_title_bar("NanaUI"));
-        let shell = ui.child(
-            "shell",
+        widget(
             RuntimeDesktopShell::from_model(WorkspaceModel::with_layout(
                 snapshot_desktop_workspace_layout(),
             ))
-            .title_bar(title.stable_id())
-            .navigation(sidebar.stable_id())
-            .primary(page.stable_id()),
-        );
-        ui.nest(shell, |ui| {
-            ui.adopt(title);
-        });
-        shell
-    })?;
-    document.context_mut().assemble_desktop_shell(shell)?;
-    Ok(shell.stable_id())
+            .navigation(sidebar)
+            .primary(page),
+        )
+        .child_slot(
+            widget(snapshot_title_bar("NanaUI")),
+            RuntimeDesktopShell::title_bar,
+        )
+    })?)
 }
 
 pub(super) fn mount_runtime_sidebar_frame(
@@ -453,28 +439,24 @@ pub(super) fn mount_runtime_sidebar_frame(
         &["外观", "工作区", "设置", "关于", "日志", "调试"],
         false,
     )?;
-    Ok(document.context_mut().build(document_id, |ui| {
-        let top = ui.parked(RuntimeSidebarRow::new("返回"));
-        let body = ui.parked(RuntimeSidebarFrame::vertical_body_scroll());
-        ui.nest(body, |ui| {
-            ui.adopt(Entity::<RuntimeSidebarSection>::from_stable_id(section));
-        });
-        let settings =
-            ui.parked(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true));
-        let footer = ui.parked(RuntimeSidebarFooter::new());
-        ui.nest(footer, |ui| ui.adopt(settings));
-        let frame = ui.child(
-            "frame",
-            RuntimeSidebarFrame::new()
-                .top(top.stable_id())
-                .body(body.stable_id())
-                .footer(footer.stable_id()),
-        );
-        ui.nest(frame, |ui| {
-            ui.adopt(top);
-            ui.adopt(body);
-            ui.adopt(footer);
-        });
-        frame.stable_id()
-    })?)
+    let (_, (frame, scroll)) = document.context_mut().mount_view_root(document_id, || {
+        let (frame, scroll) = (entity_ref(), entity_ref());
+        with_refs(
+            widget(RuntimeSidebarFrame::new())
+                .entity_ref(frame)
+                .top(widget(RuntimeSidebarRow::new("返回")))
+                .child_slot(
+                    widget(RuntimeSidebarFrame::vertical_body_scroll()).entity_ref(scroll),
+                    RuntimeSidebarFrame::body,
+                )
+                .footer(widget(RuntimeSidebarFooter::new()).child_slot(
+                    widget(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true)),
+                    keep,
+                )),
+            (frame, scroll),
+        )
+    })?;
+    // The section was mounted first, as the fixture's ids were recorded.
+    insert_children(document, scroll.stable_id(), &[section])?;
+    Ok(frame.stable_id())
 }

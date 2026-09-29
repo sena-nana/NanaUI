@@ -198,16 +198,27 @@ where
     context.on(entity, queue_gallery_message(pending, map))
 }
 
-pub(super) fn bind_event_ui<V, E>(
-    ui: &mut nana_ui::runtime::UiBuilder<'_>,
-    entity: Entity<V>,
-    pending: Arc<Mutex<Vec<GalleryMessage>>>,
+/// An element's event handler (`El::on`) that queues the gallery message
+/// `map` makes of each event.
+pub(super) fn queue<E>(
+    pending: &Arc<Mutex<Vec<GalleryMessage>>>,
     map: impl Fn(&E) -> GalleryMessage + Send + 'static,
-) where
-    V: View,
+) -> impl FnMut(&E) + Send + 'static
+where
     E: Send + 'static,
 {
-    ui.on(entity, queue_gallery_message(pending, map));
+    let pending = Arc::clone(pending);
+    move |event: &E| {
+        if let Ok(mut pending) = pending.lock() {
+            pending.push(map(event));
+        }
+    }
+}
+
+/// The write of a slot (`El::slot`) the composite does not place itself: the
+/// slot's node stays detached until something else places it.
+pub(super) fn keep_slot<C>(component: C, _: StableNodeId) -> C {
+    component
 }
 
 pub(super) fn take_pending(pending: &Arc<Mutex<Vec<GalleryMessage>>>) -> Vec<GalleryMessage> {

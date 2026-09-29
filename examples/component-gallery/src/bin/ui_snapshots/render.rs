@@ -4,16 +4,17 @@ use std::sync::Arc;
 use component_gallery::{
     GalleryContextMenuEvent, GalleryMessage, GallerySection, GalleryState, SurfaceView,
 };
+use nana_ui::runtime::view::{AnyView, IntoView, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     AppShell, AppTitleBar, AppTitleBarControls, Button as RuntimeButton, Card as RuntimeCard,
     Checkbox as RuntimeCheckbox, Dock as RuntimeDock, DockAxis, DockDropZone, DockNode, DocumentId,
-    Entity, IconButton as RuntimeIconButton, LayoutBox, LayoutViewport, List as RuntimeList,
+    IconButton as RuntimeIconButton, LayoutBox, LayoutViewport, List as RuntimeList,
     ListItem as RuntimeListItem, MutationQueue, NodeStyle, RangeField as RuntimeRangeField,
     RuntimeDocument, ScrollAxes, ScrollOffset, ScrollView as RuntimeScrollView,
     Switch as RuntimeSwitch, TabOption as RuntimeTabOption, Table as RuntimeTable,
     TableCell as RuntimeTableCell, TableRow as RuntimeTableRow, Tabs as RuntimeTabs,
     Text as RuntimeText, TextArea as RuntimeTextArea, TextInput as RuntimeTextInput,
-    TextVerticalAlignment, UiBuilder,
+    TextVerticalAlignment,
 };
 use nana_ui::{
     ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, LogicalRect, NanaTextShaper,
@@ -531,36 +532,41 @@ fn migration_runtime_document(
         layout.padding_bottom = Some(LengthSpec::Px(24.0));
         layout.gap = Some(LengthSpec::Px(12.0));
     }
-    let (title, input, button, checkbox) = document.context_mut().build(document_id, |ui| {
-        let root = ui.child("root", RuntimeList::new().style(root_style));
-        ui.nest(root, |ui| {
-            let title = ui.child(
-                "title",
-                RuntimeText::new("Migration fixture").style(NodeStyle {
-                    foreground: Some(SemanticColorRole::Text),
-                    layout: Arc::new(LayoutStyle {
-                        font_size: Some(20.0),
-                        font_weight: Some(400),
-                        width: Some(LengthSpec::Fill),
-                        height: Some(LengthSpec::Px(28.0)),
-                        ..LayoutStyle::default()
-                    }),
-                    text_vertical_alignment: TextVerticalAlignment::Center,
-                    ..NodeStyle::default()
-                }),
-            );
-            let input = ui.child(
-                "input",
-                RuntimeTextInput::new("release/issue-7").label("Branch"),
-            );
-            let button = ui.child(
-                "button",
-                RuntimeButton::new("Run build").kind(ButtonKind::Primary),
-            );
-            let checkbox = ui.child("checkbox", RuntimeCheckbox::new("Notifications", true));
-            (title, input, button, checkbox)
-        })
-    })?;
+    let (_, (title, input, button, checkbox)) =
+        document.context_mut().mount_view_root(document_id, || {
+            let refs = (entity_ref(), entity_ref(), entity_ref(), entity_ref());
+            let (title, input, button, checkbox) = refs;
+            with_refs(
+                widget(RuntimeList::new().style(root_style))
+                    .key("root")
+                    .children((
+                        widget(RuntimeText::new("Migration fixture").style(NodeStyle {
+                            foreground: Some(SemanticColorRole::Text),
+                            layout: Arc::new(LayoutStyle {
+                                font_size: Some(20.0),
+                                font_weight: Some(400),
+                                width: Some(LengthSpec::Fill),
+                                height: Some(LengthSpec::Px(28.0)),
+                                ..LayoutStyle::default()
+                            }),
+                            text_vertical_alignment: TextVerticalAlignment::Center,
+                            ..NodeStyle::default()
+                        }))
+                        .key("title")
+                        .entity_ref(title),
+                        widget(RuntimeTextInput::new("release/issue-7").label("Branch"))
+                            .key("input")
+                            .entity_ref(input),
+                        widget(RuntimeButton::new("Run build").kind(ButtonKind::Primary))
+                            .key("button")
+                            .entity_ref(button),
+                        widget(RuntimeCheckbox::new("Notifications", true))
+                            .key("checkbox")
+                            .entity_ref(checkbox),
+                    )),
+                refs,
+            )
+        })?;
     document.flush(
         LayoutViewport::new(MIGRATION_SIZE.width as f32, MIGRATION_SIZE.height as f32),
         &mut NanaTextShaper::default(),
@@ -650,27 +656,69 @@ fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn s
     let mut document = RuntimeDocument::new(document_id);
     document.context_mut().set_theme(theme)?;
     let slider_component = RuntimeRangeField::new(68.0, 0.0, 100.0, 1.0).label("Volume");
-    let (
-        title,
-        input,
-        button,
-        table,
-        checkbox,
-        toggle,
-        slider,
-        tabs,
-        activity,
-        activity_lines,
-        card,
-        add_source,
-        notes,
-        source_list,
-        source_items,
-        cells,
-    ) = document.context_mut().build(document_id, |ui| {
-        let title = ui.child(
-            "title",
-            RuntimeText::new("Build queue").style(NodeStyle {
+    let rows = [
+        ["Build", "Status", "Duration"],
+        ["#1042", "Succeeded", "1m 18s"],
+        ["#1041", "Succeeded", "1m 21s"],
+        ["#1040", "Failed", "42s"],
+    ];
+    let (_, refs) = document.context_mut().mount_view_root(document_id, || {
+        let (title, input, button, table) =
+            (entity_ref(), entity_ref(), entity_ref(), entity_ref());
+        let (checkbox, toggle, slider, tabs) =
+            (entity_ref(), entity_ref(), entity_ref(), entity_ref());
+        let (activity, card, add_source, notes) =
+            (entity_ref(), entity_ref(), entity_ref(), entity_ref());
+        let activity_lines: [_; 3] = std::array::from_fn(|_| entity_ref());
+        let source_list = entity_ref();
+        let source_items: [_; 3] = std::array::from_fn(|_| entity_ref());
+        let mut cells = Vec::new();
+        let mut row_views = Vec::new();
+        for (row_index, values) in rows.into_iter().enumerate() {
+            let mut cell_views = Vec::new();
+            for (column, value) in values.into_iter().enumerate() {
+                let style = NodeStyle {
+                    foreground: Some(if row_index == 0 {
+                        SemanticColorRole::Muted
+                    } else {
+                        SemanticColorRole::Text
+                    }),
+                    background: Some(if row_index == 0 {
+                        SemanticColorRole::Subtle
+                    } else {
+                        SemanticColorRole::Surface
+                    }),
+                    border: Some(SemanticColorRole::Border),
+                    layout: Arc::new(LayoutStyle {
+                        padding_left: Some(LengthSpec::Px(10.0)),
+                        padding_right: Some(LengthSpec::Px(10.0)),
+                        border_width: Some(1.0),
+                        font_weight: (row_index == 0).then_some(600),
+                        ..LayoutStyle::default()
+                    }),
+                    text_vertical_alignment: TextVerticalAlignment::Center,
+                    ..NodeStyle::default()
+                };
+                let cell = entity_ref::<RuntimeTableCell>();
+                cells.push(cell);
+                cell_views.push(
+                    widget(
+                        RuntimeTableCell::new(value)
+                            .column_header(row_index == 0)
+                            .style(style),
+                    )
+                    .key(format!("cell-{column}"))
+                    .entity_ref(cell),
+                );
+            }
+            row_views.push(
+                widget(RuntimeTableRow::new())
+                    .key(format!("row-{row_index}"))
+                    .children(cell_views),
+            );
+        }
+        let view = (
+            widget(RuntimeText::new("Build queue").style(NodeStyle {
                 foreground: Some(SemanticColorRole::Text),
                 layout: Arc::new(LayoutStyle {
                     font_size: Some(20.0),
@@ -678,134 +726,103 @@ fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn s
                     ..LayoutStyle::default()
                 }),
                 ..NodeStyle::default()
-            }),
-        );
-        let input = ui.child(
-            "input",
-            RuntimeTextInput::new("release/issue-7").label("Branch"),
-        );
-        let button = ui.child("button", RuntimeButton::new("Run build"));
-        let table = ui.child("table", RuntimeTable::new().label("Recent builds"));
-        let checkbox = ui.child("checkbox", RuntimeCheckbox::new("Notifications", true));
-        let toggle = ui.child("toggle", RuntimeSwitch::new("Auto build", true));
-        let slider = ui.child("slider", slider_component);
-        let tabs = ui.child(
-            "tabs",
-            RuntimeTabs::new("preview").label("Output").options([
+            }))
+            .key("title")
+            .entity_ref(title),
+            widget(RuntimeTextInput::new("release/issue-7").label("Branch"))
+                .key("input")
+                .entity_ref(input),
+            widget(RuntimeButton::new("Run build"))
+                .key("button")
+                .entity_ref(button),
+            widget(RuntimeTable::new().label("Recent builds"))
+                .key("table")
+                .entity_ref(table)
+                .children(row_views),
+            widget(RuntimeCheckbox::new("Notifications", true))
+                .key("checkbox")
+                .entity_ref(checkbox),
+            widget(RuntimeSwitch::new("Auto build", true))
+                .key("toggle")
+                .entity_ref(toggle),
+            widget(slider_component).key("slider").entity_ref(slider),
+            widget(RuntimeTabs::new("preview").label("Output").options([
                 RuntimeTabOption::new("preview", "Preview"),
                 RuntimeTabOption::new("program", "Program"),
-            ]),
-        );
-        let activity = ui.child(
-            "activity",
-            RuntimeScrollView::new(ScrollAxes::Vertical)
-                .label("Activity")
-                .style(NodeStyle {
-                    background: Some(SemanticColorRole::Surface),
-                    border: Some(SemanticColorRole::Border),
-                    layout: Arc::new(LayoutStyle {
-                        border_width: Some(1.0),
-                        border_radius: Some(6.0),
-                        ..LayoutStyle::default()
+            ]))
+            .key("tabs")
+            .entity_ref(tabs),
+            widget(
+                RuntimeScrollView::new(ScrollAxes::Vertical)
+                    .label("Activity")
+                    .style(NodeStyle {
+                        background: Some(SemanticColorRole::Surface),
+                        border: Some(SemanticColorRole::Border),
+                        layout: Arc::new(LayoutStyle {
+                            border_width: Some(1.0),
+                            border_radius: Some(6.0),
+                            ..LayoutStyle::default()
+                        }),
+                        ..NodeStyle::default()
                     }),
-                    ..NodeStyle::default()
-                }),
+            )
+            .key("activity")
+            .entity_ref(activity)
+            .children((
+                widget(RuntimeText::new("Queued #1043"))
+                    .key("queued")
+                    .entity_ref(activity_lines[0]),
+                widget(RuntimeText::new("Built #1042"))
+                    .key("built")
+                    .entity_ref(activity_lines[1]),
+                widget(RuntimeText::new("Published artifacts"))
+                    .key("published")
+                    .entity_ref(activity_lines[2]),
+            )),
+            widget(RuntimeCard::new().label("Source inspector"))
+                .key("card")
+                .entity_ref(card)
+                .children((
+                    widget(RuntimeIconButton::new(nana_ui::Icon::Add, "Add source"))
+                        .key("add-source")
+                        .entity_ref(add_source),
+                    widget(
+                        RuntimeTextArea::new("Camera follows Program.\nAudio monitoring enabled.")
+                            .label("Source notes"),
+                    )
+                    .key("notes")
+                    .entity_ref(notes),
+                    widget(RuntimeList::new().label("Scene sources"))
+                        .key("sources")
+                        .entity_ref(source_list)
+                        .children((
+                            widget(RuntimeListItem::new("Camera").selected(true))
+                                .key("camera")
+                                .entity_ref(source_items[0]),
+                            widget(RuntimeListItem::new("Live2D actor"))
+                                .key("actor")
+                                .entity_ref(source_items[1]),
+                            widget(RuntimeListItem::new("Lower third").disabled(true))
+                                .key("lower-third")
+                                .entity_ref(source_items[2]),
+                        )),
+                )),
         );
-        let activity_lines = ui.nest(activity, |ui| {
-            [
-                ui.child("queued", RuntimeText::new("Queued #1043")),
-                ui.child("built", RuntimeText::new("Built #1042")),
-                ui.child("published", RuntimeText::new("Published artifacts")),
-            ]
-        });
-        let card = ui.child("card", RuntimeCard::new().label("Source inspector"));
-        let (add_source, notes, source_list, source_items) = ui.nest(card, |ui| {
-            let add_source = ui.child(
-                "add-source",
-                RuntimeIconButton::new(nana_ui::Icon::Add, "Add source"),
-            );
-            let notes = ui.child(
-                "notes",
-                RuntimeTextArea::new("Camera follows Program.\nAudio monitoring enabled.")
-                    .label("Source notes"),
-            );
-            let source_list = ui.child("sources", RuntimeList::new().label("Scene sources"));
-            let source_items = ui.nest(source_list, |ui| {
-                [
-                    ui.child("camera", RuntimeListItem::new("Camera").selected(true)),
-                    ui.child("actor", RuntimeListItem::new("Live2D actor")),
-                    ui.child(
-                        "lower-third",
-                        RuntimeListItem::new("Lower third").disabled(true),
-                    ),
-                ]
-            });
-            (add_source, notes, source_list, source_items)
-        });
-        let rows = [
-            ["Build", "Status", "Duration"],
-            ["#1042", "Succeeded", "1m 18s"],
-            ["#1041", "Succeeded", "1m 21s"],
-            ["#1040", "Failed", "42s"],
-        ];
-        let mut cells = Vec::new();
-        ui.nest(table, |ui| {
-            for (row_index, values) in rows.into_iter().enumerate() {
-                let row = ui.child(format!("row-{row_index}"), RuntimeTableRow::new());
-                ui.nest(row, |ui| {
-                    for (column, value) in values.into_iter().enumerate() {
-                        let style = NodeStyle {
-                            foreground: Some(if row_index == 0 {
-                                SemanticColorRole::Muted
-                            } else {
-                                SemanticColorRole::Text
-                            }),
-                            background: Some(if row_index == 0 {
-                                SemanticColorRole::Subtle
-                            } else {
-                                SemanticColorRole::Surface
-                            }),
-                            border: Some(SemanticColorRole::Border),
-                            layout: Arc::new(LayoutStyle {
-                                padding_left: Some(LengthSpec::Px(10.0)),
-                                padding_right: Some(LengthSpec::Px(10.0)),
-                                border_width: Some(1.0),
-                                font_weight: (row_index == 0).then_some(600),
-                                ..LayoutStyle::default()
-                            }),
-                            text_vertical_alignment: TextVerticalAlignment::Center,
-                            ..NodeStyle::default()
-                        };
-                        let cell = ui.child(
-                            format!("cell-{column}"),
-                            RuntimeTableCell::new(value)
-                                .column_header(row_index == 0)
-                                .style(style),
-                        );
-                        cells.push(cell.stable_id());
-                    }
-                });
-            }
-        });
-        (
-            title,
-            input,
-            button,
-            table,
-            checkbox,
-            toggle,
-            slider,
-            tabs,
-            activity,
-            activity_lines,
-            card,
-            add_source,
-            notes,
-            source_list,
-            source_items,
-            cells,
+        with_refs(
+            view,
+            (
+                (title, input, button, table, checkbox, toggle, slider, tabs),
+                (activity, activity_lines, card, add_source, notes),
+                (source_list, source_items, cells),
+            ),
         )
     })?;
+    let (
+        (title, input, button, table, checkbox, toggle, slider, tabs),
+        (activity, activity_lines, card, add_source, notes),
+        (source_list, source_items, cells),
+    ) = refs;
+    let cells = cells.into_iter().map(|cell| cell.stable_id());
     document
         .context_mut()
         .scroll_to(activity, ScrollOffset { x: 0.0, y: 8.0 })?;
@@ -1059,42 +1076,34 @@ fn titlebar_document(
     let document_id = DocumentId::new(3).expect("titlebar document");
     let mut document = RuntimeDocument::new(document_id);
     document.context_mut().set_theme(theme)?;
-    let title = document.context_mut().build(document_id, |ui| {
-        let leading = ui.parked(labeled_text("NANA", SemanticColorRole::Accent, 12.0, 600));
-        let center = ui.parked(labeled_text(
+    let native = !chrome.uses_custom_controls();
+    document.context_mut().mount_view_root(document_id, || {
+        widget(
+            AppTitleBar::new("NanaUI")
+                .center_width(420.0)
+                .native_controls(native)
+                .show_window_controls(true),
+        )
+        .leading(widget(labeled_text(
+            "NANA",
+            SemanticColorRole::Accent,
+            12.0,
+            600,
+        )))
+        .center(widget(labeled_text(
             "LiliaCode › 恢复 Native 侧边栏交互与主界面布局",
             SemanticColorRole::Text,
             13.0,
             400,
-        ));
-        let trailing = ui.parked(labeled_text(
+        )))
+        .trailing(widget(labeled_text(
             "Gallery",
             SemanticColorRole::Muted,
             type_scale::HINT,
             type_scale::REGULAR,
-        ));
-        let native = !chrome.uses_custom_controls();
-        let controls = title_bar_controls(ui, native);
-        let title = ui.child(
-            "title",
-            AppTitleBar::new("NanaUI")
-                .leading(leading.stable_id())
-                .center(center.stable_id())
-                .trailing(trailing.stable_id())
-                .controls(controls.stable_id())
-                .center_width(420.0)
-                .native_controls(native)
-                .show_window_controls(true),
-        );
-        ui.nest(title, |ui| {
-            ui.adopt(leading);
-            ui.adopt(center);
-            ui.adopt(trailing);
-            ui.adopt(controls);
-        });
-        title
+        )))
+        .child_slot(title_bar_controls(native), AppTitleBar::controls)
     })?;
-    document.context_mut().assemble_app_title_bar(title)?;
     document.flush(
         LayoutViewport::new(900.0, 120.0),
         &mut NanaTextShaper::default(),
@@ -1139,33 +1148,19 @@ fn dock_window_document(
         .title("console", "控制台")
         .title("output", "输出")
         .title("editor", "Editor");
-    let (shell, dock) = document.context_mut().build(document_id, |ui| {
-        let dock = ui.parked(dock);
-        let native = !chrome.uses_custom_controls();
-        let controls = title_bar_controls(ui, native);
-        let title = ui.parked(
-            AppTitleBar::new("NanaUI Gallery")
-                .controls(controls.stable_id())
-                .native_controls(native)
-                .show_window_controls(true),
-        );
-        ui.nest(title, |ui| {
-            ui.adopt(controls);
-        });
-        let shell = ui.child(
-            "shell",
-            AppShell::new()
-                .title_bar(title.stable_id())
-                .body(dock.stable_id()),
-        );
-        ui.nest(shell, |ui| {
-            ui.adopt(title);
-            ui.adopt(dock);
-        });
-        (shell, dock)
+    let native = !chrome.uses_custom_controls();
+    document.context_mut().mount_view_root(document_id, || {
+        widget(AppShell::new())
+            .title_bar(
+                widget(
+                    AppTitleBar::new("NanaUI Gallery")
+                        .native_controls(native)
+                        .show_window_controls(true),
+                )
+                .child_slot(title_bar_controls(native), AppTitleBar::controls),
+            )
+            .body(widget(dock))
     })?;
-    document.context_mut().assemble_dock(dock)?;
-    document.context_mut().assemble_app_shell(shell)?;
     document.flush(
         LayoutViewport::new(size.width as f32, size.height as f32),
         &mut NanaTextShaper::default(),
@@ -1336,29 +1331,27 @@ fn labeled_text(
 /// Turning it off hides the placeholder, and with it the leading band the
 /// native buttons live in — the native fixture would then lay out exactly
 /// like the custom one, which is what these snapshots exist to tell apart.
-fn title_bar_controls(ui: &mut UiBuilder<'_>, native: bool) -> Entity<AppTitleBarControls> {
+fn title_bar_controls(native: bool) -> AnyView {
     if native {
         // The placeholder stands for buttons it does not own, so it stays
         // childless: `AppTitleBarControls` projects no children in this mode,
         // and any mounted here would just paint inside the band.
-        return ui.parked(AppTitleBarControls::new(false).native(true));
+        return widget(AppTitleBarControls::new(false).native(true)).into_any();
     }
-    let minimize = ui.parked(window_control(Icon::Minimize, "Minimize"));
-    let maximize = ui.parked(window_control(Icon::Maximize, "Maximize"));
-    let close = ui.parked(window_control(Icon::Close, "Close"));
-    let controls = ui.parked(
-        AppTitleBarControls::new(false)
-            .native(false)
-            .minimize(minimize.stable_id())
-            .maximize(maximize.stable_id())
-            .close(close.stable_id()),
-    );
-    ui.nest(controls, |ui| {
-        ui.adopt(minimize);
-        ui.adopt(maximize);
-        ui.adopt(close);
-    });
-    controls
+    widget(AppTitleBarControls::new(false).native(false))
+        .child_slot(
+            widget(window_control(Icon::Minimize, "Minimize")),
+            AppTitleBarControls::minimize,
+        )
+        .child_slot(
+            widget(window_control(Icon::Maximize, "Maximize")),
+            AppTitleBarControls::maximize,
+        )
+        .child_slot(
+            widget(window_control(Icon::Close, "Close")),
+            AppTitleBarControls::close,
+        )
+        .into_any()
 }
 
 fn window_control(icon: Icon, label: &'static str) -> RuntimeIconButton {

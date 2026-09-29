@@ -2,10 +2,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use component_gallery::{GalleryMessage, GallerySection, GalleryState};
+use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{
     ContextMenu, ContextMenuItem, DocumentId, Dropdown, DropdownOption, LayoutViewport, LengthSpec,
     List, ListItem, NodeStyle, RuntimeDocument, ScrollAxes, ScrollView, SearchDropdown,
-    SearchDropdownOption, Text, Workspace, WorkspaceRegionSlot,
+    SearchDropdownOption, Text, Workspace,
 };
 use nana_ui::{
     GpuContext, GpuRenderTarget, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages,
@@ -444,27 +445,25 @@ fn list_document(item_count: usize, selected: usize) -> RuntimeDocument {
         .expect("benchmark theme");
     document
         .context_mut()
-        .build(document_id, |ui| {
-            let root = ui.child("root", List::new().style(fill_column_style(14.0, 8.0)));
-            ui.nest(root, |ui| {
-                ui.child("title", Text::new(format!("{item_count} 个节点")));
-                let scroll = ui.child(
-                    "scroll",
-                    ScrollView::new(ScrollAxes::Vertical).style(fill_style()),
-                );
-                ui.nest(scroll, |ui| {
-                    let items = ui.child("items", List::new().style(fill_column_style(0.0, 4.0)));
-                    ui.nest(items, |ui| {
-                        for index in 0..item_count {
-                            ui.child(
-                                format!("item-{index}"),
-                                ListItem::new(format!("节点 {}", index + 1))
-                                    .selected(index == selected),
-                            );
-                        }
-                    });
-                });
-            });
+        .mount_view_root(document_id, || {
+            let items = (0..item_count)
+                .map(|index| {
+                    widget(ListItem::new(format!("节点 {}", index + 1)).selected(index == selected))
+                        .key(format!("item-{index}"))
+                })
+                .collect::<Vec<_>>();
+            widget(List::new().style(fill_column_style(14.0, 8.0)))
+                .key("root")
+                .children((
+                    widget(Text::new(format!("{item_count} 个节点"))).key("title"),
+                    widget(ScrollView::new(ScrollAxes::Vertical).style(fill_style()))
+                        .key("scroll")
+                        .children(
+                            widget(List::new().style(fill_column_style(0.0, 4.0)))
+                                .key("items")
+                                .children(items),
+                        ),
+                ))
         })
         .expect("list tree");
     document
@@ -598,29 +597,17 @@ fn workspace_document(state: &WorkspaceBenchmarkState) -> RuntimeDocument {
         .context_mut()
         .set_theme(ThemeMode::Dark)
         .expect("benchmark theme");
-    let workspace = document
+    document
         .context_mut()
-        .build(document_id, |ui| {
-            let mut slots = Vec::with_capacity(state.region_ids.len());
-            let mut contents = Vec::with_capacity(state.region_ids.len());
+        .mount_view_root(document_id, || {
+            let mut workspace = widget(Workspace::from_model(&state.model, []));
             for (index, id) in state.region_ids.iter().enumerate() {
-                let content = ui.parked(Text::new(format!("区域 {}", index + 1)));
-                slots.push(WorkspaceRegionSlot::new(id.clone(), content.stable_id()));
-                contents.push(content);
+                workspace =
+                    workspace.region(id.clone(), widget(Text::new(format!("区域 {}", index + 1))));
             }
-            let workspace = ui.child("workspace", Workspace::from_model(&state.model, slots));
-            ui.nest(workspace, |ui| {
-                for content in contents {
-                    ui.adopt(content);
-                }
-            });
             workspace
         })
         .expect("workspace");
-    document
-        .context_mut()
-        .assemble_workspace(workspace)
-        .expect("assemble workspace");
     document
 }
 

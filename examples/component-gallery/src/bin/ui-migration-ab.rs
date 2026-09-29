@@ -7,12 +7,13 @@
 use std::sync::{Arc, Mutex};
 
 use nana_ui::runtime::GraphCanvasEvent;
+use nana_ui::runtime::view::{El, IntoView, entity_ref, widget};
 use nana_ui::runtime::{
     AppShell, AppTitleBar, CalendarHeatmap as RuntimeCalendarHeatmap,
     CalendarHeatmapDatum as RuntimeCalendarHeatmapDatum, Dock, DockAxis, DockNode, DockPanel,
     DocumentId, Entity, FrameworkError, GraphCanvas as RuntimeGraphCanvas, PaneChrome,
     PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, SettingsPage, SplitPane,
-    Text as RuntimeText, Workspace, WorkspaceRegionSlot,
+    Text as RuntimeText, Workspace,
 };
 use nana_ui::{
     GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind,
@@ -294,227 +295,147 @@ fn remount(
     document.context_mut().set_theme(theme)?;
     let target = match case {
         Case::GraphCanvas => {
-            let canvas = document.context_mut().build(document_id, |ui| {
-                let canvas = ui.child(
-                    "graph",
+            let observed = Arc::clone(graph_events);
+            mount(document, || {
+                widget(
                     RuntimeGraphCanvas::new("ab", graph.clone())
                         .viewport(graph_viewport)
                         .selection(graph_selection.cloned()),
-                );
-                let observed = Arc::clone(graph_events);
-                ui.on(canvas, move |_canvas, event: &GraphCanvasEvent, _cx| {
+                )
+                .on(move |event: &GraphCanvasEvent| {
                     observed.lock().expect("graph events").push(event.clone());
-                });
-                canvas
-            })?;
-            canvas.stable_id()
+                })
+            })?
         }
-        Case::Workspace => {
-            let workspace = document.context_mut().build(document_id, |ui| {
-                let nav = ui.parked(runtime_slot_text("Nav"));
-                let files = ui.parked(runtime_slot_text("Files"));
-                let toolbar = ui.parked(runtime_slot_text("Toolbar"));
-                let primary = ui.parked(runtime_slot_text("Primary"));
-                let inspector = ui.parked(runtime_slot_text("Inspector"));
-                let diagnostics = ui.parked(runtime_slot_text("Diagnostics"));
-                let workspace = ui.child(
-                    "workspace",
-                    Workspace::from_model(
-                        &WorkspaceModel::new(),
-                        [
-                            WorkspaceRegionSlot::new(RegionId::GlobalNavigation, nav.stable_id()),
-                            WorkspaceRegionSlot::new(RegionId::Resources, files.stable_id()),
-                            WorkspaceRegionSlot::new(RegionId::PrimaryToolbar, toolbar.stable_id()),
-                            WorkspaceRegionSlot::new(RegionId::Primary, primary.stable_id()),
-                            WorkspaceRegionSlot::new(RegionId::Inspector, inspector.stable_id()),
-                            WorkspaceRegionSlot::new(
-                                RegionId::Diagnostics,
-                                diagnostics.stable_id(),
-                            ),
-                        ],
-                    ),
-                );
-                ui.nest(workspace, |ui| {
-                    ui.adopt(nav);
-                    ui.adopt(files);
-                    ui.adopt(toolbar);
-                    ui.adopt(primary);
-                    ui.adopt(inspector);
-                    ui.adopt(diagnostics);
-                });
-                workspace
-            })?;
-            document.context_mut().assemble_workspace(workspace)?;
-            workspace.stable_id()
-        }
-        Case::Dock => {
-            let dock = document.context_mut().build(document_id, |ui| {
-                let nav = ui.parked(runtime_slot_text("Nav"));
-                let files = ui.parked(runtime_slot_text("Files"));
-                let primary = ui.parked(runtime_slot_text("Primary"));
-                let dock = ui.child(
-                    "dock",
-                    Dock::new(DockNode::split(
-                        DockAxis::Horizontal,
-                        0.35,
-                        DockNode::tabs(
-                            ["nav", "files"],
-                            "nav",
-                            [
-                                ("nav", Some(nav.stable_id())),
-                                ("files", Some(files.stable_id())),
-                            ],
-                        ),
-                        DockNode::item("primary", Some(primary.stable_id())),
-                    ))
-                    .title("nav", "Nav")
-                    .title("files", "Files")
-                    .title("primary", "Primary"),
-                );
-                ui.nest(dock, |ui| {
-                    ui.adopt(nav);
-                    ui.adopt(files);
-                    ui.adopt(primary);
-                });
-                dock
-            })?;
-            document.context_mut().assemble_dock(dock)?;
-            dock.stable_id()
-        }
-        Case::DockPanel => {
-            let panel = document.context_mut().build(document_id, |ui| {
-                let body = ui.parked(RuntimeText::new("Inspector"));
-                let panel = ui.child(
-                    "panel",
-                    DockPanel::new().padding(10.0).content(body.stable_id()),
-                );
-                ui.nest(panel, |ui| ui.adopt(body));
-                panel
-            })?;
-            panel.stable_id()
-        }
-        Case::SplitPane => {
-            let pane = document.context_mut().build(document_id, |ui| {
-                let first = ui.parked(runtime_slot_text("First"));
-                let second = ui.parked(runtime_slot_text("Second"));
-                let pane = ui.child(
-                    "pane",
-                    SplitPane::from_model(
-                        &SplitPaneModel::new(SplitAxis::Horizontal, 180.0, 80.0, 320.0),
-                        first.stable_id(),
-                        second.stable_id(),
-                    ),
-                );
-                ui.nest(pane, |ui| {
-                    ui.adopt(first);
-                    ui.adopt(second);
-                });
-                pane
-            })?;
-            document.context_mut().assemble_split_pane(pane)?;
-            pane.stable_id()
-        }
-        Case::PaneChrome => {
-            let chrome = document.context_mut().build(document_id, |ui| {
-                let header = ui.parked(RuntimeText::new(""));
-                let tabs = ui.parked(RuntimeText::new("editor.rs"));
-                let body = ui.parked(RuntimeText::new("Body"));
-                let close = ui.parked(RuntimeText::new("关闭"));
-                ui.nest(header, |ui| {
-                    ui.adopt(tabs);
-                    ui.adopt(close);
-                });
-                let chrome = ui.child(
-                    "chrome",
-                    PaneChrome::new()
-                        .header(header.stable_id())
-                        .tabs(tabs.stable_id())
-                        .body(body.stable_id())
+        Case::Workspace => mount(document, || {
+            widget(Workspace::from_model(&WorkspaceModel::new(), []))
+                .region(RegionId::GlobalNavigation, slot_text("Nav"))
+                .region(RegionId::Resources, slot_text("Files"))
+                .region(RegionId::PrimaryToolbar, slot_text("Toolbar"))
+                .region(RegionId::Primary, slot_text("Primary"))
+                .region(RegionId::Inspector, slot_text("Inspector"))
+                .region(RegionId::Diagnostics, slot_text("Diagnostics"))
+        })?,
+        Case::Dock => mount(document, || {
+            // Panels are children keyed with their item id; the dock binds
+            // each to its item when it assembles.
+            widget(
+                Dock::new(DockNode::split(
+                    DockAxis::Horizontal,
+                    0.35,
+                    DockNode::tabs(["nav", "files"], "nav", [("nav", None), ("files", None)]),
+                    DockNode::item("primary", None),
+                ))
+                .title("nav", "Nav")
+                .title("files", "Files")
+                .title("primary", "Primary"),
+            )
+            .children((
+                slot_text("Nav").key("nav"),
+                slot_text("Files").key("files"),
+                slot_text("Primary").key("primary"),
+            ))
+        })?,
+        Case::DockPanel => mount(document, || {
+            widget(DockPanel::new().padding(10.0))
+                .child_slot(widget(RuntimeText::new("Inspector")), DockPanel::content)
+        })?,
+        Case::SplitPane => mount(document, || {
+            widget(SplitPane::new(&SplitPaneModel::new(
+                SplitAxis::Horizontal,
+                180.0,
+                80.0,
+                320.0,
+            )))
+            .first(slot_text("First"))
+            .second(slot_text("Second"))
+        })?,
+        Case::PaneChrome => mount(document, || {
+            let (tabs, close) = (entity_ref::<RuntimeText>(), entity_ref::<RuntimeText>());
+            let header = widget(RuntimeText::new("")).children((
+                widget(RuntimeText::new("editor.rs")).entity_ref(tabs),
+                widget(RuntimeText::new("关闭")).entity_ref(close),
+            ));
+            let built = "the header is built before the chrome";
+            widget(PaneChrome::new())
+                .child_slot(header, move |chrome, header| {
+                    chrome
+                        .header(header)
+                        .tabs(tabs.get().expect(built).stable_id())
                         .actions([
                             PaneChromeAction::new(PaneChromeActionKind::CloseItem, "关闭")
-                                .target(close.stable_id()),
-                        ]),
-                );
-                ui.nest(chrome, |ui| {
-                    ui.adopt(header);
-                    ui.adopt(body);
-                });
-                chrome
-            })?;
-            chrome.stable_id()
-        }
-        Case::PaneTree => {
-            let tree = document.context_mut().build(document_id, |ui| {
-                let left = ui.parked(runtime_slot_text("left"));
-                let right = ui.parked(runtime_slot_text("right"));
-                let tree = ui.child(
-                    "tree",
-                    PaneTree::new(PaneTreeNode::split(
-                        "root",
-                        SplitAxis::Horizontal,
-                        0.4,
-                        PaneTreeNode::leaf_content("left", left.stable_id()),
-                        PaneTreeNode::leaf_content("right", right.stable_id()),
-                    )),
-                );
-                ui.nest(tree, |ui| {
-                    ui.adopt(left);
-                    ui.adopt(right);
-                });
-                tree
-            })?;
-            tree.stable_id()
-        }
-        Case::AppShell => {
-            let shell = document.context_mut().build(document_id, |ui| {
-                let title = ui.parked(AppTitleBar::new("NanaUI"));
-                let body = ui.parked(RuntimeText::new("Workspace"));
-                let shell = ui.child(
-                    "shell",
-                    AppShell::new()
-                        .title_bar(title.stable_id())
-                        .body(body.stable_id()),
-                );
-                ui.nest(shell, |ui| {
-                    ui.adopt(title);
-                    ui.adopt(body);
-                });
-                shell
-            })?;
-            document.context_mut().assemble_app_shell(shell)?;
-            shell.stable_id()
-        }
+                                .target(close.get().expect(built).stable_id()),
+                        ])
+                })
+                .child_slot(widget(RuntimeText::new("Body")), PaneChrome::body)
+        })?,
+        Case::PaneTree => mount(document, || {
+            widget(PaneTree::new(PaneTreeNode::split(
+                "root",
+                SplitAxis::Horizontal,
+                0.4,
+                PaneTreeNode::leaf("left"),
+                PaneTreeNode::leaf("right"),
+            )))
+            .child_slot(slot_text("left"), |tree, id| bind_pane(tree, true, id))
+            .child_slot(slot_text("right"), |tree, id| bind_pane(tree, false, id))
+        })?,
+        Case::AppShell => mount(document, || {
+            widget(AppShell::new())
+                .title_bar(widget(AppTitleBar::new("NanaUI")))
+                .body(widget(RuntimeText::new("Workspace")))
+        })?,
+        // Not a view: a view-built title bar assembles itself, and this case
+        // shows the bar as a bare component, like the snapshot fixture.
         Case::AppTitleBar => document
             .context_mut()
-            .build(document_id, |ui| {
-                ui.child("title", AppTitleBar::new("NanaUI"))
-            })?
+            .create_component(document_id, AppTitleBar::new("NanaUI"))?
             .stable_id(),
         Case::SettingsPage => {
             let (model, state) = ab_settings();
-            let page = document.context_mut().build(document_id, |ui| {
-                let content = ui.parked(RuntimeText::new("Appearance content"));
-                let page = ui.child(
-                    "page",
-                    SettingsPage::new(model.clone(), state.clone()).content(content.stable_id()),
-                );
-                ui.nest(page, |ui| ui.adopt(content));
-                page
-            })?;
-            document.context_mut().assemble_settings_page(page)?;
-            page.stable_id()
-        }
-        Case::Calendar => document
-            .context_mut()
-            .build(document_id, |ui| {
-                ui.child(
-                    "calendar",
-                    RuntimeCalendarHeatmap::new(ab_calendar_data()).label("活动"),
-                )
+            mount(document, || {
+                widget(SettingsPage::new(model.clone(), state.clone()))
+                    .content(widget(RuntimeText::new("Appearance content")))
             })?
-            .stable_id(),
+        }
+        Case::Calendar => mount(document, || {
+            widget(RuntimeCalendarHeatmap::new(ab_calendar_data()).label("活动"))
+        })?,
     };
     Ok(Some(target))
+}
+
+/// Mount `view` as the document's root; its node.
+fn mount<V: IntoView>(
+    document: &mut RuntimeDocument,
+    view: impl FnOnce() -> V,
+) -> Result<nana_ui::runtime::StableNodeId, FrameworkError> {
+    let document_id = document.document();
+    let mounted = document.context_mut().mount_view_root(document_id, view)?;
+    Ok(mounted.roots()[0])
+}
+
+fn slot_text(value: &str) -> El<RuntimeText> {
+    widget(runtime_slot_text(value))
+}
+
+/// `tree`, a split of two leaves, with `content` in its first leaf or its
+/// second.
+fn bind_pane(mut tree: PaneTree, first: bool, content: nana_ui::runtime::StableNodeId) -> PaneTree {
+    if let PaneTreeNode::Split {
+        first: leaf_one,
+        second: leaf_two,
+        ..
+    } = &mut tree.root
+        && let PaneTreeNode::Leaf { content: slot, .. } = if first {
+            &mut **leaf_one
+        } else {
+            &mut **leaf_two
+        }
+    {
+        *slot = Some(content);
+    }
+    tree
 }
 
 fn runtime_slot_text(value: &str) -> RuntimeText {

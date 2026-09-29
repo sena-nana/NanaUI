@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 use nana_ui::WindowChromeEvent;
+use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     AboutSection, Activate, AppearanceSection, Button, DesktopShell, DocumentId, Entity,
     FrameworkError, IconButton, LayoutViewport, LengthSpec, OverlayHost, RuntimeDocument,
@@ -11,7 +12,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::theme::type_scale;
 use nana_ui::{
-    AppearanceEvent, ButtonKind, ControlSize, Icon, NanaTextShaper, RegionId, WorkspaceAction,
+    AppearanceEvent, ButtonKind, ControlSize, NanaTextShaper, RegionId, WorkspaceAction,
     WorkspaceModel,
 };
 use nana_ui_platform::InputPayload;
@@ -81,136 +82,138 @@ impl GallerySettingsRuntime {
             .layout()
             .region(&RegionId::Resources)
             .is_some_and(nana_ui::RegionState::collapsed_value);
+        let active = page_content_index(&state.settings);
         let (
-            sidebar,
-            appearance,
-            about,
-            workspace_card,
-            page,
-            sidebar_toggle,
-            search_button,
-            theme_button,
-            reset_workspace,
-            title_leading,
-            title_center,
-            title_trailing,
-            shell,
-        ) = context.build(document_id, |ui| {
-            let sidebar = ui.detached(SettingsSidebar::new(
-                state.settings_model.clone(),
-                state.settings.clone(),
-            ));
-            let appearance = ui.detached(
+            _,
+            (
+                shell,
+                (sidebar, page, appearance, about, workspace_card),
+                (sidebar_toggle, search_button, theme_button, reset_workspace),
+                (title_leading, title_center, title_trailing),
+            ),
+        ) = context.mount_view_root(document_id, || {
+            let shell = entity_ref::<DesktopShell>();
+            let sidebar = entity_ref::<SettingsSidebar>();
+            let page = entity_ref::<SettingsPage>();
+            let appearance = entity_ref::<AppearanceSection>();
+            let about = entity_ref::<AboutSection>();
+            let workspace_card = entity_ref::<SettingsCollapsibleCard>();
+            let [sidebar_toggle, search_button, theme_button] =
+                std::array::from_fn(|_| entity_ref::<IconButton>());
+            let reset_workspace = entity_ref::<Button>();
+            let (title_leading, title_trailing) = (entity_ref(), entity_ref());
+            let title_center = entity_ref();
+            // The page shows one section; the others stay detached until a
+            // tab change hands them to it.
+            let content = move |index: usize| {
+                move |page: SettingsPage, id: StableNodeId| {
+                    if index == active {
+                        page.content(id)
+                    } else {
+                        page
+                    }
+                }
+            };
+            let appearance_view = widget(
                 AppearanceSection::new(state.theme, state.appearance)
                     .platform_hint(nana_ui::hosted_platform_material_support().hint())
                     .available_materials(nana_ui::hosted_window_material_modes())
                     .material_status(state.material_outcome.status_label()),
-            );
-            let about = ui.detached(AboutSection::new(settings_view::gallery_about_metadata()));
-            let summary_title = ui.parked(styled_text(
-                settings_view::WORKSPACE_SETTINGS_TITLE,
-                SemanticColorRole::Text,
-                13.0,
-                400,
+            )
+            .entity_ref(appearance);
+            let summary = widget(HostStack::column(2.0)).children((
+                widget(styled_text(
+                    settings_view::WORKSPACE_SETTINGS_TITLE,
+                    SemanticColorRole::Text,
+                    13.0,
+                    400,
+                )),
+                widget(styled_text(
+                    settings_view::WORKSPACE_SETTINGS_HINT,
+                    SemanticColorRole::Muted,
+                    type_scale::HINT,
+                    400,
+                )),
             ));
-            let summary_hint = ui.parked(styled_text(
-                settings_view::WORKSPACE_SETTINGS_HINT,
-                SemanticColorRole::Muted,
-                type_scale::HINT,
-                400,
+            let details = widget(HostStack::column(10.0)).children((
+                widget(styled_text(
+                    settings_view::WORKSPACE_SETTINGS_DETAILS,
+                    SemanticColorRole::Muted,
+                    12.0,
+                    400,
+                )),
+                widget(workspace_reset_button()).entity_ref(reset_workspace),
             ));
-            let summary = ui.detached(HostStack::column(2.0));
-            ui.nest(summary, |ui| {
-                ui.adopt(summary_title);
-                ui.adopt(summary_hint);
-            });
-            let details_copy = ui.parked(styled_text(
-                settings_view::WORKSPACE_SETTINGS_DETAILS,
-                SemanticColorRole::Muted,
-                12.0,
-                400,
-            ));
-            let reset_workspace = ui.parked(workspace_reset_button());
-            let details = ui.detached(HostStack::column(10.0));
-            ui.nest(details, |ui| {
-                ui.adopt(details_copy);
-                ui.adopt(reset_workspace);
-            });
-            let workspace_card = ui.detached(
-                SettingsCollapsibleCard::new(state.workspace_settings_expanded)
-                    .summary(summary.stable_id())
-                    .details(details.stable_id()),
-            );
-            let page = ui.detached(
-                SettingsPage::new(state.settings_model.clone(), state.settings.clone()).content(
-                    page_content_id(
-                        &state.settings,
-                        appearance.stable_id(),
-                        workspace_card.stable_id(),
-                        about.stable_id(),
-                    ),
-                ),
-            );
-            let sidebar_toggle = ui.parked(sidebar_toggle_button(sidebar_collapsed));
-            let search_button = ui.parked(
-                IconButton::new(Icon::Search, "搜索命令")
-                    .size(ControlSize::Small)
-                    .kind(ButtonKind::Text),
-            );
-            let theme_button = ui.parked(theme_toggle_button(state.theme));
-            let context_label = ui.parked(hugging_text(
-                "设置",
-                SemanticColorRole::Muted,
-                type_scale::HINT,
-                type_scale::REGULAR,
-            ));
-            let title_center = ui.detached(hugging_text(
-                "NanaUI Gallery",
-                SemanticColorRole::Text,
-                13.0,
-                600,
-            ));
-            let title_leading = ui.detached(HostStack::leading_row(0.0));
-            ui.nest(title_leading, |ui| ui.adopt(sidebar_toggle));
-            let title_trailing = ui.detached(HostStack::row(6.0));
-            ui.nest(title_trailing, |ui| {
-                ui.adopt(context_label);
-                ui.adopt(search_button);
-                ui.adopt(theme_button);
-            });
-            let shell = ui.child(
-                "shell",
+            let card_view = widget(SettingsCollapsibleCard::new(
+                state.workspace_settings_expanded,
+            ))
+            .entity_ref(workspace_card)
+            .summary(summary)
+            .details(details);
+            let about_view = widget(AboutSection::new(settings_view::gallery_about_metadata()))
+                .entity_ref(about);
+            let view = widget(
                 DesktopShell::from_model(state.settings_workspace.model().clone())
-                    .title("NanaUI Gallery")
-                    .title_leading(title_leading.stable_id())
-                    .title_center(title_center.stable_id())
-                    .title_trailing(title_trailing.stable_id())
-                    .navigation(sidebar.stable_id())
-                    .primary(page.stable_id()),
+                    .title("NanaUI Gallery"),
+            )
+            .entity_ref(shell)
+            .title_leading(
+                widget(HostStack::leading_row(0.0))
+                    .entity_ref(title_leading)
+                    .children(
+                        widget(sidebar_toggle_button(sidebar_collapsed)).entity_ref(sidebar_toggle),
+                    ),
+            )
+            .title_center(
+                widget(hugging_text(
+                    "NanaUI Gallery",
+                    SemanticColorRole::Text,
+                    13.0,
+                    600,
+                ))
+                .entity_ref(title_center),
+            )
+            .title_trailing(
+                widget(HostStack::row(6.0))
+                    .entity_ref(title_trailing)
+                    .children((
+                        widget(hugging_text(
+                            "设置",
+                            SemanticColorRole::Muted,
+                            type_scale::HINT,
+                            type_scale::REGULAR,
+                        )),
+                        widget(search_command_button()).entity_ref(search_button),
+                        widget(theme_toggle_button(state.theme)).entity_ref(theme_button),
+                    )),
+            )
+            .navigation(
+                widget(SettingsSidebar::new(
+                    state.settings_model.clone(),
+                    state.settings.clone(),
+                ))
+                .entity_ref(sidebar),
+            )
+            .primary(
+                widget(SettingsPage::new(
+                    state.settings_model.clone(),
+                    state.settings.clone(),
+                ))
+                .entity_ref(page)
+                .slot(appearance_view, content(0))
+                .slot(card_view, content(1))
+                .slot(about_view, content(2)),
             );
-            (
-                sidebar,
-                appearance,
-                about,
-                workspace_card,
-                page,
-                sidebar_toggle,
-                search_button,
-                theme_button,
-                reset_workspace,
-                title_leading,
-                title_center,
-                title_trailing,
-                shell,
+            with_refs(
+                view,
+                (
+                    shell,
+                    (sidebar, page, appearance, about, workspace_card),
+                    (sidebar_toggle, search_button, theme_button, reset_workspace),
+                    (title_leading, title_center, title_trailing),
+                ),
             )
         })?;
-
-        context.assemble_settings_sidebar(sidebar)?;
-        context.assemble_appearance_section(appearance)?;
-        context.assemble_about_section(about)?;
-        context.assemble_settings_collapsible_card(workspace_card)?;
-        context.assemble_settings_page(page)?;
-        context.assemble_desktop_shell(shell)?;
 
         bind_event(
             context,
@@ -571,10 +574,15 @@ fn page_content_id(
     workspace: StableNodeId,
     about: StableNodeId,
 ) -> StableNodeId {
+    [appearance, workspace, about][page_content_index(settings)]
+}
+
+/// Which section the page shows: appearance, workspace or about.
+fn page_content_index(settings: &nana_ui::SettingsState) -> usize {
     match settings.active_tab().as_str() {
-        "workspace" => workspace,
-        "about" => about,
-        _ => appearance,
+        "workspace" => 1,
+        "about" => 2,
+        _ => 0,
     }
 }
 
