@@ -19,14 +19,14 @@ use super::prop::{IntoProp, PropSource};
 use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey};
 use crate::{AppContext, FrameworkError, MutationQueue, StableNodeId, Stack};
 
-struct Built {
-    scope: ScopeKey,
-    roots: Vec<StableNodeId>,
+pub(super) struct Built {
+    pub(super) scope: ScopeKey,
+    pub(super) roots: Vec<StableNodeId>,
 }
 
 /// Build `view` in a new child scope of `parent`, recording the scope as
 /// owned by the roots it produced.
-fn build_scoped(
+pub(super) fn build_scoped(
     vb: &mut ViewBuilder<'_, '_, '_>,
     parent: Option<ScopeKey>,
     view: impl FnOnce() -> AnyView,
@@ -45,7 +45,7 @@ fn build_scoped(
 /// Build detached subtrees for a container that already exists, in one
 /// commit, and hand their parts to the context. `build` records every scope
 /// it creates so a failed commit disposes them.
-fn build_detached_into<R>(
+pub(super) fn build_detached_into<R>(
     cx: &mut AppContext,
     container: StableNodeId,
     build: impl FnOnce(&mut ViewBuilder<'_, '_, '_>, &mut Vec<ScopeKey>) -> R,

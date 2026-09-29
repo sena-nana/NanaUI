@@ -731,3 +731,93 @@ fn on_mount_runs_once_the_nodes_are_in_the_tree() {
         "a rebuilt branch mounts again"
     );
 }
+
+#[derive(Clone)]
+struct VirtualRow {
+    id: u32,
+    title: String,
+}
+
+/// Rows built under the list, in order.
+fn virtual_rows(cx: &AppContext, scroll: StableNodeId) -> Vec<String> {
+    let list = children(cx, scroll)[0];
+    children(cx, list)
+        .into_iter()
+        .map(|slot| {
+            // placement container → row slot → the row's text
+            let row_slot = children(cx, slot)[0];
+            let text = children(cx, row_slot)[0];
+            text_of(cx, Entity::from_stable_id(text))
+        })
+        .collect()
+}
+
+#[test]
+fn each_virtual_builds_only_the_rows_in_view() {
+    let (mut cx, document, parent) = setup();
+    let items_flag = std::cell::Cell::new(None);
+    let before = reactive_stats();
+    let view = cx
+        .mount_view(parent, || {
+            let items = signal(
+                (0..10_000)
+                    .map(|id| VirtualRow {
+                        id,
+                        title: format!("行 {id}"),
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            items_flag.set(Some(items));
+            each_virtual(items, |row| row.id, 20.0, |row| text(row.title))
+                .overscan(0.0)
+                .scroll_view(crate::ScrollView::new(crate::ScrollAxes::Vertical).style({
+                    let mut style = crate::NodeStyle::default();
+                    std::sync::Arc::make_mut(&mut style.layout).height =
+                        Some(LengthSpec::Px(200.0));
+                    style
+                }))
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    // The first layout announces the viewport; the window follows it.
+    cx.layout_document(document, viewport).unwrap();
+    cx.flush_reactive().unwrap();
+    let rows = virtual_rows(&cx, scroll);
+    assert_eq!(rows.first().map(String::as_str), Some("行 0"));
+    assert!(
+        (10..=12).contains(&rows.len()),
+        "a 200 px viewport of 20 px rows: {} rows",
+        rows.len()
+    );
+    assert!(
+        reactive_stats().scopes - before.scopes < 20,
+        "only built rows own scopes"
+    );
+
+    cx.layout_document(document, viewport).unwrap();
+    cx.scroll_to(
+        Entity::from_stable_id(scroll),
+        crate::ScrollOffset { x: 0.0, y: 2_000.0 },
+    )
+    .unwrap();
+    cx.flush_reactive().unwrap();
+    let rows = virtual_rows(&cx, scroll);
+    assert!(rows.contains(&"行 100".to_owned()), "{rows:?}");
+    assert!(
+        !rows.contains(&"行 0".to_owned()),
+        "scrolled away: {rows:?}"
+    );
+
+    // A data change moves the window's rows with it.
+    items_flag.get().unwrap().update(|items| {
+        items.retain(|row| row.id % 2 == 0);
+    });
+    cx.flush_reactive().unwrap();
+    let rows = virtual_rows(&cx, scroll);
+    assert!(
+        rows.iter()
+            .all(|row| { row.trim_start_matches("行 ").parse::<u32>().unwrap() % 2 == 0 }),
+        "{rows:?}"
+    );
+}

@@ -190,6 +190,7 @@ impl ApplicationState for App {
 | flush | `AppContext::flush_reactive`。按轮执行：先跑 `watch_effect`，再跑 `each` / `when` 的结构更新，最后把这一轮所有需要改的节点各暂存一次、合进**一次** commit。输入路由在每个事件末尾调用它（所以 `InputRouteOutcome::invalidated_work` 会反映绑定的变化），`take_system_work` 在每帧开头调用它 |
 | 节点绑定 | 同一个节点的所有动态字段共用一个副作用。任何一个输入变了，先按字段逐个与保留的视图比较（`FieldWrite::differs`），全部相等就到此为止：不复制、不投影、不提交。只要有一个字段不同，才复制一份、写入、投影一次 |
 | `each` | 用 key 对照：保留的行不重建，节点 id 和控件的交互状态都不变；删掉的行回收作用域并销毁节点；新行在一次 detached build 里建好。重排只移动最长递增子序列之外的节点：插入或删除一行不移动任何已有节点，整体反转移动 n−1 个。一行里的字段变化应该用行内信号，这样不会触发列表重算 |
+| `each_virtual` | `each_virtual(items, key, 行高, row)`：行放在一个纵向 `ScrollView` 里，只建视口（加 overscan）盖到的行，底层是 Runtime 已有的保留式虚拟列表。滚走的行连同作用域一起回收，持有焦点或输入法组合的行保留。数据变化、滚动（`ScrollChanged`）和视口尺寸变化（`ScrollViewportChanged`，布局后发出）都会移动窗口。5 万行：挂载加布局加出窗口 2.4 ms，`each` 要 175 ms、每行常驻约 2.3 KB。行高固定 |
 | `when` | 条件变了才动：旧分支回收作用域并销毁，新分支建好后插入。`.visible(sig)` 则保留节点，只切 `layout.hidden`（对应 `v-show`） |
 | 回收 | 节点被销毁时（不管从哪条路径），`commit_mutations` 的清理段会回收它的绑定、结构副作用和锚定在它身上的作用域 |
 | 上下文 | `provide(value)` / `use_context::<T>()`：值挂在当前作用域上，下层作用域（包括之后才建出来的行和分支）沿父链读取，最近的提供者优先。只能在构建视图时读；事件处理器运行时不在任何作用域里 |

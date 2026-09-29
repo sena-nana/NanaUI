@@ -1585,6 +1585,14 @@ pub struct ScrollChanged {
     pub offset: crate::ScrollOffset,
 }
 
+/// A layout pass gave a `ScrollView` a viewport of a new size: the first
+/// layout, a window resize. Virtualized content widens or narrows its window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollViewportChanged {
+    pub width: f32,
+    pub height: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverlayChanged {
     pub active: Option<StableNodeId>,

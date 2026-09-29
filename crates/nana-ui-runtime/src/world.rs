@@ -559,6 +559,9 @@ pub struct UiWorld {
     /// Scroll containers whose offset that re-measure clamped, for the
     /// framework to announce. Drained by `take_scroll_reclamped`.
     scroll_reclamped: HashSet<StableNodeId>,
+    /// Scroll containers whose viewport size a re-measure changed since the
+    /// last [`Self::take_scroll_resized`].
+    scroll_resized: HashSet<StableNodeId>,
     /// Last recording of each custom-painted node, keyed by what the painter
     /// promised decides its output (Issue #217). Extraction reads through it,
     /// so an unchanged node is never re-recorded. Only painted nodes have an
@@ -763,6 +766,7 @@ impl UiWorld {
             scroll_layout_touched: false,
             scroll_requested: Vec::new(),
             scroll_reclamped: HashSet::new(),
+            scroll_resized: HashSet::new(),
             paint_recordings: RefCell::new(crate::NodeMap::default()),
             paint_text_engine: None,
             painter_overrides: crate::NodeMap::default(),

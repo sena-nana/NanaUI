@@ -355,8 +355,8 @@ pub use view_components::{
     HostedTextarea, IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots,
     NumberChanged, NumberInput, OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment,
     RangeChanged, RangeDragState, RangeField, RangeInput, ScrollAnchor, ScrollAxes, ScrollChanged,
-    ScrollView, ScrollbarDragState, SecondaryPress, Stack, Switch, Table, TableCell,
-    TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, TextSubmitted,
+    ScrollView, ScrollViewportChanged, ScrollbarDragState, SecondaryPress, Stack, Switch, Table,
+    TableCell, TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, TextSubmitted,
     ToggleChanged, Tooltip, UserScroll,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};

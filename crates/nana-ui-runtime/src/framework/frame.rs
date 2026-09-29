@@ -381,6 +381,18 @@ impl AppContext {
                 cx.emit(ScrollChanged { offset });
             })?;
         }
+        for id in self.world.take_scroll_resized() {
+            let Some(metrics) = self.world.scroll_metrics(id) else {
+                continue;
+            };
+            if !self.is_scroll_view(id) {
+                continue;
+            }
+            let (width, height) = (metrics.viewport_width, metrics.viewport_height);
+            self.update(Entity::<ScrollView>::from_stable_id(id), |_, cx| {
+                cx.emit(ScrollViewportChanged { width, height });
+            })?;
+        }
         let targets = if force_full {
             self.world
                 .document_order(document)

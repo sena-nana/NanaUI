@@ -2608,9 +2608,16 @@ impl UiWorld {
             } else {
                 None
             };
-            if self.nodes.scroll_metrics(id).copied() != metrics
-                && self.store_scroll_metrics(id, metrics)
-            {
+            let previous = self.nodes.scroll_metrics(id).copied();
+            if previous == metrics {
+                continue;
+            }
+            let viewport =
+                |m: Option<ScrollMetrics>| m.map(|m| (m.viewport_width, m.viewport_height));
+            if viewport(previous) != viewport(metrics) {
+                self.scroll_resized.insert(id);
+            }
+            if self.store_scroll_metrics(id, metrics) {
                 self.scroll_reclamped.insert(id);
             }
         }
@@ -2623,6 +2630,17 @@ impl UiWorld {
             self.scroll_containers.remove(&id);
         }
         self.scroll_restyled.push(id);
+    }
+
+    /// Scroll containers whose viewport size a re-measure changed since the
+    /// last call, still in the world.
+    pub(crate) fn take_scroll_resized(&mut self) -> Vec<StableNodeId> {
+        let mut ids = std::mem::take(&mut self.scroll_resized)
+            .into_iter()
+            .filter(|id| self.contains(*id))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
     }
 
     /// Scroll containers whose offset a re-measure clamped since the last

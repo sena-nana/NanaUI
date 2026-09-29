@@ -20,6 +20,7 @@
 //! input and before a frame, merging every changed node into one commit.
 
 mod controls;
+mod each_virtual;
 mod node;
 mod prop;
 pub(crate) mod reactive;
@@ -28,6 +29,7 @@ mod structural;
 pub(crate) mod trace;
 
 pub use controls::{StyledComponent, button, checkbox, column, row, slider, text, text_input};
+pub use each_virtual::{EachVirtual, each_virtual};
 pub use node::{
     AnyView, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef, ViewBuilder, keyed,
     node_ref, widget,
