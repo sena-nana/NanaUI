@@ -1791,6 +1791,42 @@ fn a_row_item_is_as_tall_as_its_content_at_its_used_width() {
     }
 }
 
+/// `height: auto` stretches in a row that stretches its items, as an
+/// unset height does; a content-sized keyword keeps the content's height.
+#[test]
+fn an_auto_cross_size_stretches_like_an_unset_one() {
+    let item = |id: &str, height| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(40.0)),
+            height,
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "row".into(),
+        style: LayoutStyle {
+            direction: Some(FlexDirection::Row),
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(80.0)),
+            align_items: AlignSpec::Stretch,
+            ..LayoutStyle::default()
+        },
+        children: vec![
+            item("unset", None),
+            item("auto", Some(LengthSpec::Auto)),
+            item("shrink", Some(LengthSpec::Shrink)),
+        ],
+        text: None,
+    };
+    let boxes = box_map(&tree, 200.0, 80.0);
+    assert_eq!(boxes["unset"].height, 80.0);
+    assert_eq!(boxes["auto"].height, 80.0);
+    assert_eq!(boxes["shrink"].height, 0.0);
+}
+
 #[test]
 fn display_contents_hoists_children_into_flex_row_gap() {
     let tree = StyleLayoutNode {

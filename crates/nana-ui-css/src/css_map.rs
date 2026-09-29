@@ -2622,12 +2622,12 @@ impl LayoutStyleCss for LayoutStyle {
                 self.white_space = WhiteSpaceSpec::Normal;
             }
             "word-break" => {
-                let kw = val.trim().to_ascii_lowercase();
-                self.word_break = match kw.as_str() {
-                    "break-all" => Some(nana_ui_core::WordBreakSpec::BreakAll),
-                    "normal" | "keep-all" => Some(nana_ui_core::WordBreakSpec::Normal),
-                    _ => self.word_break,
-                };
+                // `keep-all` has no CJK-specific breaking here: it is `normal`.
+                if val.trim().eq_ignore_ascii_case("keep-all") {
+                    self.word_break = Some(nana_ui_core::WordBreakSpec::Normal);
+                } else if let Some(spec) = parse_css_word_break(val) {
+                    self.word_break = Some(spec);
+                }
             }
             "overflow-wrap" | "word-wrap" => {
                 let kw = val.trim().to_ascii_lowercase();
@@ -6432,6 +6432,23 @@ mod tests {
         assert!(parse_css_font_feature_settings("\"toolongtag\" 1").is_none());
         assert!(parse_css_word_break("keep-all").is_none());
         assert!(parse_css_line_break("loose").is_none());
+    }
+
+    /// The deprecated `word-break: break-word` a stylesheet writes breaks
+    /// long words as the text engine's `BreakWord` does; `keep-all` is
+    /// `normal`.
+    #[test]
+    fn word_break_declarations_map_every_keyword_the_parser_knows() {
+        for (value, expected) in [
+            ("break-word", WordBreakSpec::BreakWord),
+            ("break-all", WordBreakSpec::BreakAll),
+            ("normal", WordBreakSpec::Normal),
+            ("keep-all", WordBreakSpec::Normal),
+        ] {
+            let mut layout = LayoutStyle::default();
+            layout.apply_css_property("word-break", value, None, None);
+            assert_eq!(layout.word_break, Some(expected), "{value}");
+        }
     }
 
     #[test]

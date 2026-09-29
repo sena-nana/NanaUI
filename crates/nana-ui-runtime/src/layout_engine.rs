@@ -1472,11 +1472,16 @@ fn fill_auto_height_from_aspect_ratio(
     }
 }
 
+/// Whether the item's cross size is its own, so `align-items: stretch`
+/// leaves it: any size it declares but `auto`, which stretches as unset
+/// does (CSS). A content-sized keyword (`Shrink`, `fit-content`) keeps the
+/// content's size.
 fn cross_axis_is_definite(style: &nana_ui_core::LayoutStyle, direction: FlexDirection) -> bool {
+    let declared = |spec: Option<LengthSpec>| spec.is_some_and(|spec| spec != LengthSpec::Auto);
     match direction {
         // Transferred block size from a definite used width + `aspect-ratio`.
-        FlexDirection::Row => style.height.is_some() || aspect_ratio_is_usable(style),
-        FlexDirection::Column => style.width.is_some(),
+        FlexDirection::Row => declared(style.height) || aspect_ratio_is_usable(style),
+        FlexDirection::Column => declared(style.width),
     }
 }
 
