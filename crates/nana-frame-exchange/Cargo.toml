@@ -23,4 +23,5 @@ nana-gpu.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]
+wgpu = { workspace = true, features = ["dx12", "gles", "metal", "vulkan"] }
 pollster.workspace = true

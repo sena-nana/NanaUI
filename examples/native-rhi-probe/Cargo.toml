@@ -9,7 +9,7 @@ publish = false
 pollster.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-wgpu.workspace = true
+wgpu = { workspace = true, features = ["dx12", "gles", "metal", "vulkan"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true

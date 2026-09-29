@@ -16,7 +16,7 @@ path = "src/main.rs"
 [features]
 default = ["engine-v8"]
 engine-v8 = ["dep:nana-js-v8", "nana-js-v8/engine"]
-windowed = ["engine-v8", "dep:nana-ui", "nana-ui/hosted", "nana-ui/bundled-fonts", "nana-ui/controls", "nana-ui-vue/scene-view", "nana-ui-vue/hosted"]
+windowed = ["engine-v8", "dep:nana-ui", "nana-ui/hosted", "nana-ui/wgpu-backends", "nana-ui/bundled-fonts", "nana-ui/controls", "nana-ui-vue/scene-view", "nana-ui-vue/hosted"]
 
 [dependencies]
 # Demo content is the bundled Vue probe fixture.

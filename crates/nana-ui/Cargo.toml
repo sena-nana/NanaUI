@@ -14,7 +14,12 @@ path = "src/lib.rs"
 
 [features]
 
-default = []
+default = ["wgpu-backends"]
+# Every WGPU backend the platform has (DX12/Vulkan/GLES on Windows, Metal on
+# Apple, Vulkan/GLES on Linux). Only takes effect with `gpu`. An application
+# that ships a narrower set turns default features off and enables the
+# backends it wants on its own `wgpu` dependency.
+wgpu-backends = ["wgpu?/dx12", "wgpu?/gles", "wgpu?/metal", "wgpu?/vulkan"]
 full = ["bundled-fonts", "components", "hosted", "syntax-highlighting"]
 bundled-fonts = ["nana-ui-core/bundled-fonts"]
 # Compatibility flags must gate real code: every entry here either maps to a

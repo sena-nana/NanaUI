@@ -7,7 +7,7 @@ publish = false
 description = "Views written as .vue files with Rust scripts, compiled by nana-ui-sfc in build.rs"
 
 [dependencies]
-nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "reactive-view"] }
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "reactive-view", "wgpu-backends"] }
 nana-ui-platform.workspace = true
 
 [build-dependencies]

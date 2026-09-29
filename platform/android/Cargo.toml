@@ -31,6 +31,7 @@ nana-ui = { path = "../../crates/nana-ui", default-features = false, features = 
     "accesskit-tree",
     # This host owns its surface and device, and records its own chrome.
     "wgpu-interop",
+    "wgpu-backends",
 ] }
 nana-ui-vue = { path = "../../crates/nana-ui-vue", default-features = false }
 nana-js-v8 = { workspace = true, optional = true }

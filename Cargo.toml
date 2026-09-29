@@ -74,7 +74,10 @@ url = "2.5"
 ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
 tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 # Keep a single WGPU major version across NanaUI.
-wgpu = "30.0.0"
+# Framework crates never pick graphics backends. `nana-ui` / `nana-ui-vue` turn
+# them all on through their default `wgpu-backends` feature; an application
+# that builds with `default-features = false` names its own backends on `wgpu`.
+wgpu = { version = "30.0.0", default-features = false, features = ["std", "parking_lot", "wgsl"] }
 # Hosted desktop windowing. winit 0.31-line git rev, not the iced-rs fork.
 # crates.io 0.31.0 stable is not required yet; pin exact sha (not floating master).
 # rwh_06 is always-on in 0.31; x11/wayland features are Linux-only optional backends.

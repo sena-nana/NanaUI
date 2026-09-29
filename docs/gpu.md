@@ -8,6 +8,16 @@ workload，没有 NanaUI RenderPlan、第二个真实 GPU-heavy consumer、prese
 device-loss A/B 证据；因此不能据此创建 `nana-hal` 或 native renderer。完整条件审计和
 重新开启条件见 [Issue #186 交付记录](consumer-upgrade-2026-09-25-issue186.md)。
 
+## WGPU 后端由应用选择
+
+框架 crate 不替应用决定编进哪些图形后端：workspace 的 `wgpu` 关闭默认特性，只留
+`std`、`parking_lot`、`wgsl`。`nana-ui` 与 `nana-ui-vue` 的默认特性 `wgpu-backends`
+打开平台上全部后端（Windows 为 DX12/Vulkan/GLES，Apple 为 Metal，Linux 为
+Vulkan/GLES），只在启用 `gpu` 时生效，因此按默认特性依赖的应用行为不变。只发行部分
+后端的应用用 `default-features = false`，在自己的 `wgpu` 依赖上按平台列出后端；
+`hosted_context` 只在编进来的后端里选择 adapter。框架自身的测试经 dev-dependency
+打开全部后端；示例和平台宿主作为应用，自己打开 `wgpu-backends`。
+
 ## 统一 GPU policy（Issue #184）
 
 `GpuContext::policy()` 按 `DeviceGeneration` 保存共享 pipeline registry 与工作计数。
