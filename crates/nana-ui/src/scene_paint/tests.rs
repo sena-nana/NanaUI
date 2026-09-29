@@ -680,10 +680,12 @@ fn graph_canvas_stroke_paints_capsule_coverage_on_gpu() {
         .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    // The 1.6px line is centred on a pixel boundary: each row it straddles
+    // is 0.8 covered.
     let midline = pixel(&pixels, 64, 32, 32);
     assert!(
-        is_red_slot(midline),
-        "horizontal capsule midline must ink, got {midline:?}"
+        (195..=213).contains(&midline[0]),
+        "horizontal capsule midline must ink 0.8 of the row, got {midline:?}"
     );
     let join = pixel(&pixels, 64, 56, 32);
     assert!(
@@ -701,6 +703,74 @@ fn graph_canvas_stroke_paints_capsule_coverage_on_gpu() {
         "covering-quad corners 4px off the 0.8px radius must be discarded, got {covering_corner:?}"
     );
     drop(texture);
+}
+
+#[test]
+#[cfg(feature = "graph-canvas")]
+fn a_thin_stroke_ramps_over_one_device_pixel_at_any_phase() {
+    // A 1.6px line (radius 0.8) on both parities of pixel row and between,
+    // and on a diagonal. A ramp taken from `dpdx` of the distance collapses
+    // where both sides of the centre line share a 2x2 quad, and a smoothstep
+    // one inks more than the line covers; every pixel near it must be the
+    // one device pixel linear ramp over its distance to the line.
+    let (device, queue) = test_device();
+    let (sin, cos) = 30f32.to_radians().sin_cos();
+    let lines = [
+        [[8.0, 32.0], [56.0, 32.0]],
+        [[8.0, 33.0], [56.0, 33.0]],
+        [[8.0, 32.25], [56.0, 32.25]],
+        [[8.0, 33.25], [56.0, 33.25]],
+        [[8.0, 32.5], [56.0, 32.5]],
+        [
+            [32.0 - 24.0 * cos, 32.0 - 24.0 * sin],
+            [32.0 + 24.0 * cos, 32.0 + 24.0 * sin],
+        ],
+    ];
+    for [a, b] in lines {
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [graph_canvas_stroke_node(
+                1,
+                vec![(vec![a, b], [1.0, 0.0, 0.0, 1.0])],
+                [0.0, 0.0, 0.0, 1.0],
+            )],
+            [],
+        );
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let [dx, dy] = [b[0] - a[0], b[1] - a[1]];
+        let length = dx.hypot(dy);
+        let [tx, ty] = [dx / length, dy / length];
+        for py in 0..64 {
+            for px in 0..64 {
+                let [vx, vy] = [px as f32 + 0.5 - a[0], py as f32 + 0.5 - a[1]];
+                let along = vx * tx + vy * ty;
+                // Away from the round ends, where the line is its side.
+                if along < 4.0 || along > length - 4.0 {
+                    continue;
+                }
+                let outside = (vx * ty - vy * tx).abs() - 0.8;
+                if outside.abs() > 1.2 {
+                    continue;
+                }
+                let expected = (0.5 - outside).clamp(0.0, 1.0) * 255.0;
+                let red = f32::from(pixel(&pixels, 64, px, py)[0]);
+                assert!(
+                    (red - expected).abs() <= 8.0,
+                    "line {a:?}-{b:?}: ({px},{py}) is {outside:+.3} px from its edge, \
+                     expected red {expected:.0}, got {red}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -1406,9 +1476,10 @@ fn graph_canvas_stroke_respects_ancestor_overflow_clip_on_gpu() {
         [64, 64],
         1.0,
     );
+    // A 1.6px line centred on a pixel boundary covers 0.8 of the row.
     let inside_stroke = pixel(&pixels, 64, 32, 32);
     assert!(
-        is_red_slot(inside_stroke),
+        (195..=213).contains(&inside_stroke[0]),
         "stroke inside the overflow clip must ink, got {inside_stroke:?}"
     );
     let inside_fill = pixel(&pixels, 64, 32, 26);

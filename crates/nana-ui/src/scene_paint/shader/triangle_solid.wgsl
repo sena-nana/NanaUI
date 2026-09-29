@@ -195,35 +195,43 @@ fn solid_vs_main(
     return out;
 }
 
-// Convex hull of discs (a, r0) and (b, r1). Nested: the larger disc is the shape.
-fn sd_variable_capsule(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r0: f32, r1: f32) -> f32 {
+fn radial(v: vec2<f32>) -> vec2<f32> {
+    let length_v = length(v);
+    return select(vec2<f32>(1.0, 0.0), v / length_v, length_v > 1e-8);
+}
+
+// Convex hull of discs (a, r0) and (b, r1). Nested: the larger disc is the
+// shape. The distance, and in `.yz` its unit gradient: the analytic normal,
+// whose sign flips across the centre line without its length changing.
+fn sd_variable_capsule(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r0: f32, r1: f32) -> vec3<f32> {
     let ba = b - a;
     let l = length(ba);
     if l < 1e-8 {
-        return length(p - a) - max(r0, r1);
+        return vec3<f32>(length(p - a) - max(r0, r1), radial(p - a));
     }
     let tangent = ba / l;
     let normal = vec2<f32>(-tangent.y, tangent.x);
     let pa = p - a;
     let along = dot(pa, tangent);
+    let side = select(-1.0, 1.0, dot(pa, normal) >= 0.0);
     let perp = abs(dot(pa, normal));
     let dr = r0 - r1;
     if abs(dr) >= l {
         if r0 > r1 {
-            return length(p - a) - r0;
+            return vec3<f32>(length(p - a) - r0, radial(p - a));
         }
-        return length(p - b) - r1;
+        return vec3<f32>(length(p - b) - r1, radial(p - b));
     }
     let sin_a = dr / l;
     let cos_a = sqrt(max(1.0 - sin_a * sin_a, 0.0));
     let k = along * cos_a - perp * sin_a;
     if k < 0.0 {
-        return length(p - a) - r0;
+        return vec3<f32>(length(p - a) - r0, radial(p - a));
     }
     if k > cos_a * l {
-        return length(p - b) - r1;
+        return vec3<f32>(length(p - b) - r1, radial(p - b));
     }
-    return along * sin_a + perp * cos_a - r0;
+    return vec3<f32>(along * sin_a + perp * cos_a - r0, tangent * sin_a + normal * (side * cos_a));
 }
 
 fn stroke_signed_distance(
@@ -234,23 +242,28 @@ fn stroke_signed_distance(
     r1: f32,
     cap0: f32,
     cap1: f32,
-) -> f32 {
-    var distance_to_path = sd_variable_capsule(p, p0, p1, r0, r1);
+) -> vec3<f32> {
+    var shape = sd_variable_capsule(p, p0, p1, r0, r1);
     if cap0 > 0.5 || cap1 > 0.5 {
         let ba = p1 - p0;
         let seg_len = max(length(ba), 1e-8);
-        let local_x = dot(p - p0, ba / seg_len);
-        if cap0 > 0.5 {
-            distance_to_path = max(distance_to_path, -local_x);
+        let tangent = ba / seg_len;
+        let local_x = dot(p - p0, tangent);
+        if cap0 > 0.5 && -local_x > shape.x {
+            shape = vec3<f32>(-local_x, -tangent);
         }
-        if cap1 > 0.5 {
-            distance_to_path = max(distance_to_path, local_x - seg_len);
+        if cap1 > 0.5 && local_x - seg_len > shape.x {
+            shape = vec3<f32>(local_x - seg_len, tangent);
         }
     }
-    return distance_to_path;
+    return shape;
 }
 
-// The distance to the stroke, and how much of this fragment the clip keeps.
+// The distance to the stroke in device px, and how much of this fragment the
+// clip keeps. The local distance goes to the screen across its own normal
+// through the affine's inverse, not by `dpdx` of the distance, whose finite
+// difference collapses across a thin stroke's centre line when both sides
+// fall in one 2x2 quad.
 fn stroke_clip_and_distance(input: SolidVertexOutput) -> vec2<f32> {
     let clip = clip_palette.items[input.clip_index];
     let cover = fragment_clip_coverage(
@@ -270,7 +283,7 @@ fn stroke_clip_and_distance(input: SolidVertexOutput) -> vec2<f32> {
         discard;
     }
     let local_p = world_to_local(input.affine_abcd, input.affine_ef, input.world_pos);
-    return vec2<f32>(stroke_signed_distance(
+    let shape = stroke_signed_distance(
         local_p,
         input.p0,
         input.p1,
@@ -278,7 +291,18 @@ fn stroke_clip_and_distance(input: SolidVertexOutput) -> vec2<f32> {
         input.radii_caps.y,
         input.radii_caps.z,
         input.radii_caps.w,
-    ), cover);
+    );
+    // Local px per device pixel along each screen axis: the inverse's columns
+    // over the viewport scale (world is logical px).
+    let abcd = input.affine_abcd;
+    let det = abcd.x * abcd.w - abcd.y * abcd.z;
+    let local_per_px = select(
+        vec4<f32>(1.0, 0.0, 0.0, 1.0),
+        vec4<f32>(abcd.w, -abcd.y, -abcd.z, abcd.x) / det,
+        abs(det) >= 1e-12,
+    ) / max(input.pixel_scale, 1e-4);
+    let per_pixel = length(vec2<f32>(dot(shape.yz, local_per_px.xy), dot(shape.yz, local_per_px.zw)));
+    return vec2<f32>(shape.x / max(per_pixel, 1e-6), cover);
 }
 
 // One fragment entry for every sample count: WebGPU evaluates the fragment
@@ -288,13 +312,8 @@ fn stroke_clip_and_distance(input: SolidVertexOutput) -> vec2<f32> {
 @fragment
 fn solid_fs_main(input: SolidVertexOutput) -> @location(0) vec4<f32> {
     let clipped = stroke_clip_and_distance(input);
-    let distance_to_path = clipped.x;
-    // Gradient length, not isotropic `fwidth`, so anisotropic ellipses AA evenly.
-    let pixel = max(
-        length(vec2<f32>(dpdx(distance_to_path), dpdy(distance_to_path))),
-        1e-5,
-    );
-    let alpha = (1.0 - smoothstep(-pixel * 0.5, pixel * 0.5, distance_to_path)) * clipped.y;
+    // A linear ramp over one device pixel, as every other edge.
+    let alpha = clamp(0.5 - clipped.x, 0.0, 1.0) * clipped.y;
     if alpha <= 0.0 {
         discard;
     }
