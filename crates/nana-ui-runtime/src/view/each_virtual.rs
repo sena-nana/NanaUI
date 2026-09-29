@@ -23,7 +23,8 @@ use nana_ui_core::VirtualListLayout;
 
 use super::node::{AnyView, IntoView, NodeRef, StructuralBinding, UNBUILT, ViewBuilder, widget};
 use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey, Signal};
-use super::structural::{build_detached_into, build_scoped};
+use super::structural::{build_detached_into, build_scoped, container};
+use super::style::{ContainerStyle, container_styles};
 use crate::{
     AppContext, Entity, FrameworkError, List, MutationQueue, ScrollAxes, ScrollChanged,
     ScrollLaidOut, ScrollView, ScrollViewportChanged, StableNodeId, Stack, VirtualListItems,
@@ -64,6 +65,7 @@ pub struct EachVirtual<T, K, S, KF, RF> {
     overscan: f32,
     container: Container,
     grid: Option<Grid>,
+    style: ContainerStyle,
     key: Option<Cow<'static, str>>,
     site: &'static Location<'static>,
     _types: PhantomData<fn(T) -> K>,
@@ -95,6 +97,7 @@ where
         overscan: row_height.max(1.0) * 4.0,
         container: Container::Own(Box::new(ScrollView::new(ScrollAxes::Vertical))),
         grid: None,
+        style: ContainerStyle::default(),
         key: None,
         site: Location::caller(),
         _types: PhantomData,
@@ -184,7 +187,15 @@ impl<T, K, S, KF, RF> EachVirtual<T, K, S, KF, RF> {
         self.key = Some(key.into());
         self
     }
+
+    /// Styles go on the list's box in its parent: its own `ScrollView`, or
+    /// the list itself with [`Self::within`].
+    fn container_style_mut(&mut self) -> &mut ContainerStyle {
+        &mut self.style
+    }
 }
+
+container_styles!([T, K, S, KF, RF] EachVirtual<T, K, S, KF, RF>);
 
 struct EachVirtualBinding<T, K, S, KF, RF> {
     items: S,
@@ -480,10 +491,10 @@ where
         std::sync::Arc::make_mut(&mut list.style.layout).width = Some(LengthSpec::Percent(100.0));
         let (scroll, list, within) = match self.container {
             Container::Own(scroll) => {
-                let scroll = vb.place(self.key, *scroll);
-                if scroll.stable_id() == UNBUILT {
+                let Some(scroll) = container(*scroll, self.key, self.style, self.site).place(vb)
+                else {
                     return;
-                }
+                };
                 let list = vb.ui.nest(scroll, |ui| ui.child("list", list));
                 vb.ui.on(scroll, move |_, _: &ScrollChanged, _| bump());
                 vb.ui
@@ -493,7 +504,12 @@ where
                 }
                 (Some(scroll), list, None)
             }
-            Container::Within(within) => (None, vb.place(self.key, list), Some(within)),
+            Container::Within(within) => {
+                let Some(list) = container(list, self.key, self.style, self.site).place(vb) else {
+                    return;
+                };
+                (None, list, Some(within))
+            }
         };
         let id = list.stable_id();
         if id == UNBUILT {

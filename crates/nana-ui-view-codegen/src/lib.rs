@@ -90,6 +90,7 @@ pub fn is_builtin(tag: &str) -> bool {
         "Column"
             | "Row"
             | "Widget"
+            | "Block"
             | "Virtual"
             | "Transition"
             | "TransitionGroup"
@@ -108,7 +109,7 @@ pub fn is_argument(tag: &str, attribute: &str) -> bool {
         || match tag {
             "Column" | "Row" => attribute == "gap",
             "Widget" => attribute == "of",
-            "Virtual" | "Transition" | "TransitionGroup" | "KeepAlive" | "Suspense"
+            "Block" | "Virtual" | "Transition" | "TransitionGroup" | "KeepAlive" | "Suspense"
             | "Teleport" => true,
             _ => control(tag).is_some_and(|control| {
                 control
@@ -489,6 +490,31 @@ fn loop_parts(element: &Element) -> syn::Result<(&Pat, &Expr, TokenStream)> {
     Ok((pattern, source, raw(&key.value, span)?))
 }
 
+/// Whether an attribute is a class the view's `<style>` compiled onto the
+/// element (`class`, `class:name`).
+fn is_class_directive(name: &AttrName) -> bool {
+    matches!(name, AttrName::Directive(directive, _)
+        if directive == "class" || directive == "class_when")
+}
+
+/// A block's compiled classes as calls on the structural view it builds:
+/// they style that view's container.
+fn container_classes(element: &Element) -> syn::Result<Vec<TokenStream>> {
+    element
+        .attrs
+        .iter()
+        .filter_map(|attr| match &attr.name {
+            AttrName::Directive(directive, span) if directive == "class" => {
+                Some(raw(&attr.value, *span).map(|value| quote_spanned!(*span=> .class(#value))))
+            }
+            AttrName::Directive(directive, span) if directive == "class_when" => Some(
+                raw(&attr.value, *span).map(|value| quote_spanned!(*span=> .class_when(#value))),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Children as one view: nothing, one view, or tuples of at most twelve.
 fn fragment(children: Vec<TokenStream>) -> TokenStream {
     match children.len() {
@@ -535,7 +561,7 @@ impl Gen<'_> {
                             break;
                         }
                     }
-                    out.push(self.chain(&chain, &[])?);
+                    out.push(self.chain(&chain, &[], &[])?);
                     continue;
                 }
                 Node::Element(element)
@@ -573,8 +599,14 @@ impl Gen<'_> {
 
     /// `v-if` / `v-else-if` / `v-else` → nested `when(..).otherwise(..)`,
     /// each with the `modifiers` of the blocks around the chain
-    /// (`.transition(..)`, `.keep_alive()`).
-    fn chain(&self, chain: &[&Element], modifiers: &[TokenStream]) -> syn::Result<TokenStream> {
+    /// (`.transition(..)`, `.keep_alive()`); the outermost `when`, whose
+    /// container holds the chain, also with the `container` styles.
+    fn chain(
+        &self,
+        chain: &[&Element],
+        modifiers: &[TokenStream],
+        container: &[TokenStream],
+    ) -> syn::Result<TokenStream> {
         let krate = self.krate;
         let (first, rest) = chain.split_first().expect("a chain has its v-if");
         let condition = first
@@ -588,11 +620,11 @@ impl Gen<'_> {
             let otherwise = if next.directive("else").is_some() {
                 self.element(next)?
             } else {
-                self.chain(rest, modifiers)?
+                self.chain(rest, modifiers, &[])?
             };
             out = quote!(#out.otherwise(move || #otherwise));
         }
-        Ok(quote!(#out #(#modifiers)*))
+        Ok(quote!(#out #(#modifiers)* #(#container)*))
     }
 
     /// One element, with `v-for` wrapping it in `each` when present.
@@ -686,7 +718,12 @@ impl Gen<'_> {
                 "`gap=` goes with `grid=` on `<Virtual>`",
             ));
         }
+        let classes = container_classes(element)?;
+        out = quote!(#out #(#classes)*);
         for attr in &element.attrs {
+            if is_class_directive(&attr.name) {
+                continue;
+            }
             let AttrName::Plain(name) = &attr.name else {
                 return Err(syn::Error::new(span, "`<Virtual>` takes attributes only"));
             };
@@ -717,7 +754,8 @@ impl Gen<'_> {
                         at,
                         format!(
                             "`<Virtual>` has no attribute `{other}`; it has `row-height`, \
-                             `measured`, `height`, `width`, `grow`, `overscan`, `scroll`, `key`"
+                             `measured`, `height`, `width`, `grow`, `overscan`, `scroll`, \
+                             `within`, `grid`, `gap`, `key`, `class`"
                         ),
                     ));
                 }
@@ -726,28 +764,55 @@ impl Gen<'_> {
         Ok(out)
     }
 
-    /// `<Transition>`, `<TransitionGroup>` or `<KeepAlive>` around a `v-if`
-    /// chain, one `v-for` element (not under `<KeepAlive>`), or another of
-    /// these blocks: the `when` / `each` inside with each block's method.
+    /// `<Block>`, `<Transition>`, `<TransitionGroup>` or `<KeepAlive>`
+    /// around a `v-if` chain, one `v-for` element (not under `<KeepAlive>`),
+    /// or another of these blocks: the `when` / `each` inside with each
+    /// block's method. A block's `class` and `class:name` style the
+    /// container the chain or the list is built in.
     fn block(
         &self,
         element: &Element,
         mut modifiers: Vec<TokenStream>,
+        mut container: Vec<TokenStream>,
         lists: bool,
     ) -> syn::Result<TokenStream> {
         let span = element.name.span();
         let tag = element.name.to_string();
+        container.extend(container_classes(element)?);
         let lists = match tag.as_str() {
-            "KeepAlive" => {
-                if let Some(attr) = element.attrs.first() {
+            "Block" => {
+                if let Some(attr) = element
+                    .attrs
+                    .iter()
+                    .find(|attr| !is_class_directive(&attr.name))
+                {
                     let at = match &attr.name {
                         AttrName::Plain(name) => name.span(),
                         _ => span,
                     };
                     return Err(syn::Error::new(
                         at,
-                        "`<KeepAlive>` takes no attributes; around a `v-if` chain it keeps \
-                         the branches not shown alive (use `dynamic(..).max(n)` for a limit)",
+                        "`<Block>` takes `class` and `class:name` only: they style the \
+                         container of the `v-if` chain or the `v-for` list it holds",
+                    ));
+                }
+                lists
+            }
+            "KeepAlive" => {
+                if let Some(attr) = element
+                    .attrs
+                    .iter()
+                    .find(|attr| !is_class_directive(&attr.name))
+                {
+                    let at = match &attr.name {
+                        AttrName::Plain(name) => name.span(),
+                        _ => span,
+                    };
+                    return Err(syn::Error::new(
+                        at,
+                        "`<KeepAlive>` takes no attributes but `class`; around a `v-if` chain \
+                         it keeps the branches not shown alive (use `dynamic(..).max(n)` for a \
+                         limit)",
                     ));
                 }
                 modifiers.push(quote!(.keep_alive()));
@@ -775,10 +840,10 @@ impl Gen<'_> {
                 if inner.module.is_empty()
                     && matches!(
                         inner.name.to_string().as_str(),
-                        "Transition" | "TransitionGroup" | "KeepAlive"
+                        "Block" | "Transition" | "TransitionGroup" | "KeepAlive"
                     ) =>
             {
-                self.block(inner, modifiers, lists)
+                self.block(inner, modifiers, container, lists)
             }
             [rows] if rows.directive("for").is_some() => {
                 if !lists {
@@ -787,17 +852,19 @@ impl Gen<'_> {
                         "`<KeepAlive>` holds a `v-if` chain: list rows are kept by their key",
                     ));
                 }
-                if rows.attrs.iter().any(|attr| {
-                    matches!(&attr.name, AttrName::Directive(directive, _)
-                        if directive.split('.').next() == Some("virtual"))
-                }) {
+                if !modifiers.is_empty()
+                    && rows.attrs.iter().any(|attr| {
+                        matches!(&attr.name, AttrName::Directive(directive, _)
+                            if directive.split('.').next() == Some("virtual"))
+                    })
+                {
                     return Err(syn::Error::new(
                         rows.name.span(),
                         "a virtual list does not animate its rows",
                     ));
                 }
                 let list = self.element(rows)?;
-                Ok(quote!(#list #(#modifiers)*))
+                Ok(quote!(#list #(#modifiers)* #(#container)*))
             }
             [first, ..] if first.directive("if").is_some() => {
                 for (index, link) in children.iter().enumerate().skip(1) {
@@ -811,7 +878,7 @@ impl Gen<'_> {
                         ));
                     }
                 }
-                self.chain(&children, &modifiers)
+                self.chain(&children, &modifiers, &container)
             }
             _ => Err(syn::Error::new(
                 span,
@@ -831,6 +898,9 @@ impl Gen<'_> {
         let mut moves = None;
         let mut given = None;
         for attr in &element.attrs {
+            if is_class_directive(&attr.name) {
+                continue;
+            }
             let AttrName::Plain(attribute) = &attr.name else {
                 return Err(syn::Error::new(
                     span,
@@ -984,8 +1054,8 @@ impl Gen<'_> {
                 )
             }
             ("Virtual", _) => return self.virtual_list(element),
-            ("Transition" | "TransitionGroup" | "KeepAlive", _) => {
-                return self.block(element, Vec::new(), true);
+            ("Block" | "Transition" | "TransitionGroup" | "KeepAlive", _) => {
+                return self.block(element, Vec::new(), Vec::new(), true);
             }
             ("Suspense", _) => return self.suspense(element),
             ("ErrorBoundary", _) => {

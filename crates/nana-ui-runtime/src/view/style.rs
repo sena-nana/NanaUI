@@ -339,28 +339,44 @@ impl<C: StyledComponent + ComponentView, K> El<C, K> {
     /// change.
     #[track_caller]
     pub fn class(self, class: Class) -> Self {
-        self.with_classes(class, |classes, index| classes.fixed.push(index))
+        self.class_at(class, Location::caller())
     }
 
     /// `class` while `condition` holds (Vue's `:class="{ done: … }"`).
     #[track_caller]
     pub fn class_when(self, class: Class, condition: impl IntoProp<bool>) -> Self {
-        let condition = condition.into_source();
-        self.with_classes(class, move |classes, index| {
+        self.class_when_at(class, condition.into_source(), Location::caller())
+    }
+
+    fn class_at(self, class: Class, at: &'static Location<'static>) -> Self {
+        self.with_classes(class, at, |classes, index| classes.fixed.push(index))
+    }
+
+    fn class_when_at(
+        self,
+        class: Class,
+        condition: PropSource<bool>,
+        at: &'static Location<'static>,
+    ) -> Self {
+        self.with_classes(class, at, move |classes, index| {
             if classes.conditional.len() < 64 {
                 classes.conditional.push((index, condition));
             }
         })
     }
 
-    #[track_caller]
-    fn with_classes(mut self, class: Class, add: impl FnOnce(&mut Classes<C>, u16)) -> Self {
+    fn with_classes(
+        mut self,
+        class: Class,
+        at: &'static Location<'static>,
+        add: impl FnOnce(&mut Classes<C>, u16),
+    ) -> Self {
         let classes = self.classes_mut().get_or_insert_with(|| Classes {
             sheet: class.sheet,
             fixed: Vec::new(),
             conditional: Vec::new(),
             apply: apply_site::<C>,
-            at: Location::caller(),
+            at,
         });
         assert!(
             std::ptr::eq(classes.sheet, class.sheet),
@@ -371,10 +387,9 @@ impl<C: StyledComponent + ComponentView, K> El<C, K> {
     }
 
     /// A compiled site over the element's layout as built, now (`css!`).
-    #[track_caller]
-    fn styles(mut self, site: &'static StyleSite) -> Self {
+    fn styles(mut self, site: &'static StyleSite, at: &'static Location<'static>) -> Self {
         let (component, bindings) = self.parts_mut();
-        apply_site(component, bindings, site, Vec::new(), Location::caller());
+        apply_site(component, bindings, site, Vec::new(), at);
         self
     }
 }
@@ -403,10 +418,99 @@ impl<C: StyledComponent + ComponentView, K> El<C, K> {
     /// before other layout props.
     #[track_caller]
     pub fn css(self, style: InlineStyle) -> Self {
+        self.css_at(style, Location::caller())
+    }
+
+    fn css_at(self, style: InlineStyle, at: &'static Location<'static>) -> Self {
         let styled = match style.site {
-            Some(site) => self.styles(site),
+            Some(site) => self.styles(site, at),
             None => self,
         };
         styled.animate(style.animate.iter().copied())
+    }
+}
+
+/// What [`El::class`], [`El::class_when`] and [`El::css`] give the
+/// container of a structural view (`each`, `when`, `dynamic`,
+/// `each_virtual`), kept until the view builds its container.
+#[derive(Default)]
+pub(crate) struct ContainerStyle(Vec<ContainerStyleOp>);
+
+enum ContainerStyleOp {
+    Class(Class, &'static Location<'static>),
+    ClassWhen(Class, PropSource<bool>, &'static Location<'static>),
+    Css(InlineStyle, &'static Location<'static>),
+}
+
+impl ContainerStyle {
+    /// `element` with these styles, in the order they were given.
+    pub(crate) fn apply<C: StyledComponent + ComponentView>(self, element: El<C>) -> El<C> {
+        self.0.into_iter().fold(element, |element, op| match op {
+            ContainerStyleOp::Class(class, at) => element.class_at(class, at),
+            ContainerStyleOp::ClassWhen(class, condition, at) => {
+                element.class_when_at(class, condition, at)
+            }
+            ContainerStyleOp::Css(style, at) => element.css_at(style, at),
+        })
+    }
+}
+
+/// `.class`, `.class_when` and `.css` on a structural view: they style the
+/// container its rows or branches are built in, as they style an element.
+macro_rules! container_styles {
+    ($([$($generics:tt)*] $view:ty),* $(,)?) => {$(
+        impl<$($generics)*> $view {
+            /// Give the container the rows or branches are built in `class`
+            /// of a stylesheet, as [`El::class`] gives an element one.
+            #[track_caller]
+            pub fn class(mut self, class: $crate::view::Class) -> Self {
+                self.container_style_mut().push_class(class, ::std::panic::Location::caller());
+                self
+            }
+
+            /// `class` on the container while `condition` holds.
+            #[track_caller]
+            pub fn class_when(
+                mut self,
+                class: $crate::view::Class,
+                condition: impl $crate::view::IntoProp<bool>,
+            ) -> Self {
+                self.container_style_mut().push_class_when(
+                    class,
+                    condition.into_source(),
+                    ::std::panic::Location::caller(),
+                );
+                self
+            }
+
+            /// A `css!` block on the container, as [`El::css`] on an
+            /// element.
+            #[track_caller]
+            pub fn css(mut self, style: $crate::view::InlineStyle) -> Self {
+                self.container_style_mut().push_css(style, ::std::panic::Location::caller());
+                self
+            }
+        }
+    )*};
+}
+pub(crate) use container_styles;
+
+impl ContainerStyle {
+    pub(crate) fn push_class(&mut self, class: Class, at: &'static Location<'static>) {
+        self.0.push(ContainerStyleOp::Class(class, at));
+    }
+
+    pub(crate) fn push_class_when(
+        &mut self,
+        class: Class,
+        condition: PropSource<bool>,
+        at: &'static Location<'static>,
+    ) {
+        self.0
+            .push(ContainerStyleOp::ClassWhen(class, condition, at));
+    }
+
+    pub(crate) fn push_css(&mut self, style: InlineStyle, at: &'static Location<'static>) {
+        self.0.push(ContainerStyleOp::Css(style, at));
     }
 }

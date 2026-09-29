@@ -684,6 +684,13 @@ impl<C: ComponentView, K> El<C, K> {
         self
     }
 
+    /// Where the element was declared, for traces: the structural view's
+    /// site for the container it builds.
+    pub(crate) fn declared_at(mut self, site: &'static Location<'static>) -> Self {
+        self.site = site;
+        self
+    }
+
     pub(crate) fn map_component(mut self, f: impl FnOnce(C) -> C) -> Self {
         self.component = f(self.component);
         self
@@ -824,8 +831,14 @@ impl<C: ComponentView, K> El<C, K> {
     }
 }
 
-impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
-    fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
+impl<C: ComponentView, K> El<C, K> {
+    /// Build this element's own node: its slots, classes, bindings and
+    /// events. Returns the entity, the slot roots to adopt as its children,
+    /// and the children to build under it; `None` when the build failed.
+    fn place_node(
+        self,
+        vb: &mut ViewBuilder<'_, '_, '_>,
+    ) -> Option<(Entity<C>, Vec<StableNodeId>, K)> {
         let El {
             mut component,
             key,
@@ -871,7 +884,7 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             if let Some(effect) = effect {
                 reactive::dispose_effect(effect);
             }
-            return;
+            return None;
         }
         if let Some(node_ref) = node_ref {
             node_ref.set(Some(id));
@@ -886,6 +899,31 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
         for install in events {
             install(vb.ui, entity);
         }
+        Some((entity, adopt, children))
+    }
+}
+
+impl<C: ComponentView> El<C> {
+    /// Build this element as the container of a structural view, which
+    /// builds the children under it itself: the node with its classes,
+    /// bindings and events, and no slots. `None` when the build failed.
+    pub(crate) fn place(self, vb: &mut ViewBuilder<'_, '_, '_>) -> Option<Entity<C>> {
+        debug_assert!(
+            self.slots.is_empty()
+                && C::BEHAVIOR.slot_assembler.is_none()
+                && C::BEHAVIOR.assembler.is_none(),
+            "a structural container takes no slots and assembles nothing"
+        );
+        self.place_node(vb).map(|(entity, _, ())| entity)
+    }
+}
+
+impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
+    fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
+        let Some((entity, adopt, children)) = self.place_node(vb) else {
+            return;
+        };
+        let id = entity.stable_id();
         vb.nest(entity, |vb| {
             for root in adopt {
                 vb.ui.adopt_as(root, TypeId::of::<AnyView>());

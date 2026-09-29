@@ -969,6 +969,107 @@ mod styles {
         assert_eq!(column.height, Some(LengthSpec::Auto));
     }
 
+    stylesheet! {
+        mod block_styles;
+        .strip { flex-direction: row; gap: 4px; width: auto; }
+        .quiet { opacity: 0.5; }
+    }
+
+    /// `class` on `<Block>` (and on the other blocks) styles the container
+    /// the list or the chain is built in, as `.class` on `each` / `when` /
+    /// `each_virtual` does; the rows and branches keep theirs.
+    #[test]
+    fn a_block_class_styles_the_container_of_a_list_or_a_chain() {
+        use nana_ui_runtime::view::{each, each_virtual, when};
+        let document = DocumentId::new(1).unwrap();
+        let mount = |template: bool| {
+            let mut cx = AppContext::new();
+            let flag = std::cell::Cell::new(None);
+            let view = cx
+                .mount_view_root(document, || {
+                    let items = signal(vec![1u32, 2, 3]);
+                    let open = signal(true);
+                    flag.set(Some(open));
+                    if template {
+                        view! {
+                            <style>
+                                .strip { flex-direction: row; gap: 4px; width: auto; }
+                                .quiet { opacity: 0.5; }
+                            </style>
+                            <Block class="strip">
+                                <Text v-for={n in items} key={*n} class="quiet">{n.to_string()}</Text>
+                            </Block>
+                            <Block class="strip" class:quiet={open}>
+                                <Text v-if={open}>"开"</Text>
+                                <Text v-else>"关"</Text>
+                            </Block>
+                            <Virtual row_height=20 height=100 class="quiet">
+                                <Text v-for={n in items} key={*n}>{n.to_string()}</Text>
+                            </Virtual>
+                        }
+                        .into_any()
+                    } else {
+                        (
+                            each(items, |n| *n, |n| text(n.to_string()).class(block_styles::quiet))
+                                .class(block_styles::strip),
+                            when(open, || text("开"))
+                                .otherwise(|| text("关"))
+                                .class(block_styles::strip)
+                                .class_when(block_styles::quiet, open),
+                            each_virtual(items, |n| *n, 20.0, |n| text(n.to_string()))
+                                .height(100.0)
+                                .class(block_styles::quiet),
+                        )
+                            .into_any()
+                    }
+                })
+                .unwrap();
+            (cx, view, flag.get().unwrap())
+        };
+        let (mut template, t, t_open) = mount(true);
+        let (mut rust, r, r_open) = mount(false);
+        let layouts = |cx: &AppContext, roots: &[nana_ui_runtime::StableNodeId]| {
+            roots
+                .iter()
+                .map(|root| {
+                    let rows = cx.world().node(*root).unwrap().children.to_vec();
+                    (
+                        layout_of(cx, *root),
+                        rows.iter()
+                            .map(|row| layout_of(cx, *row))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = layouts(&template, t.roots());
+        assert_eq!(before, layouts(&rust, r.roots()));
+        let (list, rows) = &before[0];
+        assert_eq!(list.direction, Some(nana_ui_core::FlexDirection::Row));
+        assert_eq!(list.gap, Some(LengthSpec::Px(4.0)));
+        assert_eq!(list.width, Some(LengthSpec::Auto));
+        assert!(rows.iter().all(|row| row.opacity == Some(0.5)), "{rows:?}");
+        assert_eq!(before[1].0.opacity, Some(0.5));
+        assert_eq!(
+            before[1].1[0].opacity, None,
+            "the branch keeps its own style"
+        );
+        assert_eq!(
+            before[2].0.opacity,
+            Some(0.5),
+            "the virtual list's scroll area"
+        );
+        assert_eq!(before[2].0.height, Some(LengthSpec::Px(100.0)));
+        t_open.set(false);
+        r_open.set(false);
+        template.flush_reactive().unwrap();
+        rust.flush_reactive().unwrap();
+        let after = layouts(&template, t.roots());
+        assert_eq!(after, layouts(&rust, r.roots()));
+        assert_eq!(after[1].0.opacity, None);
+        assert_eq!(after[1].0.direction, Some(nana_ui_core::FlexDirection::Row));
+    }
+
     /// The space in `.panel .open` is a descendant combinator, which L3
     /// views do not compile; without it `.panel.open` is a compound that
     /// applies. Quoted values are spliced bare.

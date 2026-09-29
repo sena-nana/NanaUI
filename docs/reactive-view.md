@@ -136,6 +136,7 @@ column()
 - **检查**：每条警告都落在它说的那段 CSS 上：不支持的选择器和 at-rule 落在选择器上，Style Model 没有对应字段的声明落在那条声明上，没有规则用到的类落在元素的 `class` 属性上。`view!` 里是那个 token（编辑器里的波浪线就在那里），`.vue` 里是文件的行列。
 - `.vue` 的 `<style>` 是原样的 CSS 文本，不受上面的词法限制；两种写法编译出同样的补丁。
 
+- **结构块的容器**：`each`、`when`、`dynamic`、`each_virtual` 的行或分支建在一个容器里（`each` / `when` / `dynamic` 是一列 `Stack::column(0)`，`each_virtual` 是它的 `ScrollView`，`.within(..)` 时是列表本身）。这个容器和元素一样接受 `.class(..)`、`.class_when(..)`、`.css(..)`：`each(items, key, row).class(s::strip)`，样式合成在容器建出来时的布局上，条件类照常是绑定。模板里写在包住它的块上：`<Block class="strip">` 包住一个 `v-for` 元素或一条 `v-if` 链，只做这一件事；`<Virtual>`、`<Transition>`、`<TransitionGroup>`、`<KeepAlive>` 上的 `class` / `class:名字` 同样落在它们包住的列表或链的容器上。`v-for` / `v-if` 元素自己的 `class` 仍然给每一行、每个分支。链（`v-if` / `v-else-if` / `v-else`）只有最外层的容器带这些类。
 - **写法**：`class="a b"` 是固定的类；`class:名字="条件"` 是条件为真时才有的类（Rust 表达式写不出 Vue 的 `{ active: x }` 对象语法，所以用 Svelte 的写法）。函数 API 用 `.css(css! { padding: 12px; opacity: 0.8 })` 给单个元素写一段声明，写法规则和 `<style>` 相同。
 - **编译**：`.a` 和 `.a.b` 这样的类选择器，按 `!important`、特异性、源码顺序排好级联。每条规则的补丁是它的声明写了的 Style Model 字段和写入的值（按字段路径，如 `align_items`、`paint.outline.width`），以 JSON 数据嵌进程序。哪些字段被写了由 `nana-ui-css` 的 `written_layout` 给出：声明分别施加到默认布局和一份每个字段都不取默认值的见证布局上，任一边改动了、且见证那边落到和默认那边同一个值的字段就是被写了的；所以写回默认值（`align-items: flex-start`、`position: static`）也在补丁里，而新值取决于原值的字段（`direction` 改变后按原有逻辑边距重新推出的物理边距）不算。补丁按字段整体替换，枚举和 `Option` 不和元素原来的值逐键合并；`var()` 按样式表自己的自定义属性在构建时求值。样式表成为一张按级联顺序排好的"需要哪些类 → 补丁"的表。
 - **运行时**：不解析 CSS，`nana-ui-runtime` 里也没有 CSS 代码。一个元素第一次以某组"固定类 + 条件类"出现时，样式表从表里挑出这组类可能命中的规则（比较的是类的编号），之后同一组类直接复用。再按"基础布局 + 当前生效的条件类"合成一次，结果是一份共享的布局，同一组类的所有实例（包括 `v-for` 的每一行）都只拿它的引用。条件类的条件是普通绑定，变化时换一份合成结果。
@@ -248,6 +249,7 @@ fn todos() -> impl IntoView {
 | `on:RangeChanged={\|e: &RangeChanged\| …}` | `.on::<RangeChanged>(…)`；写成 `\|组件, 事件, cx\|` 三个参数时是 `.on_cx::<…>(…)` |
 | `v-if` / `v-else-if` / `v-else`（兄弟节点） | `when(…).otherwise(…)`，`v-else-if` 嵌套在 `otherwise` 里；手写也可以 `cond.then_show(…)` |
 | `v-for={pat in items} key={…}` | `each(items, move \|item\| { let pat = item; key }, move \|pat\| 元素)`；手写也可以 `items.each(key, row)` |
+| `<Block class="a">` 包住 `v-for` 元素或 `v-if` 链 | `each(..).class(s::a)` / `when(..).class(s::a)`：类给结构块的容器 |
 | `v-show={x}`、`v-model={sig}`、`key="x"` | `.visible(x)`、`.model(sig)`、`.key("x")` |
 | `<style>…</style>`、`class="a"`、`class:a={c}` | `stylesheet! { mod s; … }`、`.class(s::a)`、`.class_when(s::a, c)` |
 | `<template #navigation>…</template>`（具名 slot） | `.navigation(…)`：元素上同名的方法，`#title-trailing` 是 `.title_trailing(…)`；`#default` 就是普通子节点 |
@@ -447,7 +449,7 @@ fn page() -> impl IntoView {
 
 除了脚本逻辑（JS 要改成 Rust），模板、响应式和样式表都可以逐行对上；样式表在 L3 里构建时编译，写法见"样式表"。和 Vue 模板仍有三处不同：
 
-- `each` 和 `when` 各自带一个容器 `Stack`，而 Vue 的 `v-for` / `v-if` 直接生成兄弟节点。
+- `each` 和 `when` 各自带一个容器 `Stack`，而 Vue 的 `v-for` / `v-if` 直接生成兄弟节点。容器用类排版（`<Block class>` / `.class(..)`），不用再包一层有尺寸的盒子。没有做成 `display: contents` 那样的透传：Runtime 里 `contents` 的子节点会让父容器离开布局缓存，整列行每次都要重新测量，长列表付不起；容器也是 `each` 行增删、`when` 分支切换时重排子节点的地方。
 - 表达式里的 `.get()` / `.with()` 省不掉，因为 Rust 稳定版不能给信号实现 `Fn`。只有单独出现的信号可以省，例如 `"{count}"`、`disabled={busy}`。
 - 组件函数不是惰性的，只在挂载、行、分支这三个作用域边界上才划分归属。
 

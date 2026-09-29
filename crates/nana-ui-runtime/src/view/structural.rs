@@ -14,11 +14,13 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::panic::Location;
 
-use super::node::{AnyView, IntoView, StructuralBinding, UNBUILT, ViewBuilder, ViewState};
+use super::controls::StyledComponent;
+use super::node::{AnyView, El, IntoView, StructuralBinding, ViewBuilder, ViewState, widget};
 use super::prop::{IntoProp, PropSource};
 use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey};
+use super::style::{ContainerStyle, container_styles};
 use super::transition::Transition;
-use crate::{AppContext, FrameworkError, MutationQueue, StableNodeId, Stack};
+use crate::{AppContext, ComponentView, FrameworkError, MutationQueue, StableNodeId, Stack};
 
 pub(super) struct Built {
     pub(super) scope: ScopeKey,
@@ -159,6 +161,7 @@ pub struct Each<T, K, S, KF, RF> {
     row_fn: RF,
     transition: Option<Transition>,
     container: Stack,
+    style: ContainerStyle,
     key: Option<Cow<'static, str>>,
     site: &'static Location<'static>,
     _types: PhantomData<fn(T) -> K>,
@@ -181,6 +184,7 @@ where
         row_fn: row,
         transition: None,
         container: Stack::column(0.0),
+        style: ContainerStyle::default(),
         key: None,
         site: Location::caller(),
         _types: PhantomData,
@@ -212,6 +216,32 @@ impl<T, K, S, KF, RF> Each<T, K, S, KF, RF> {
         self.key = Some(key.into());
         self
     }
+
+    fn container_style_mut(&mut self) -> &mut ContainerStyle {
+        &mut self.style
+    }
+}
+
+container_styles!(
+    [T, K, S, KF, RF] Each<T, K, S, KF, RF>,
+    [] When,
+    [K: 'static] Dynamic<K>,
+);
+
+/// The container of a structural view: `container` as an element with the
+/// view's key and styles, declared where the view is.
+pub(crate) fn container<C: StyledComponent + ComponentView>(
+    container: C,
+    key: Option<Cow<'static, str>>,
+    style: ContainerStyle,
+    site: &'static Location<'static>,
+) -> El<C> {
+    let element = widget(container).declared_at(site);
+    let element = match key {
+        Some(key) => element.key(key),
+        None => element,
+    };
+    style.apply(element)
 }
 
 struct EachBinding<T, K, S, KF, RF> {
@@ -277,11 +307,11 @@ where
     V: IntoView,
 {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        let container = vb.place(self.key, self.container);
-        let id = container.stable_id();
-        if id == UNBUILT {
+        let Some(container) = container(self.container, self.key, self.style, self.site).place(vb)
+        else {
             return;
-        }
+        };
+        let id = container.stable_id();
         let effect =
             reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, self.site);
         let mut binding = EachBinding {
@@ -447,6 +477,7 @@ struct SwitchOptions {
     /// Keep at most this many branches that are not shown, alive.
     keep_alive: Option<usize>,
     key: Option<Cow<'static, str>>,
+    style: ContainerStyle,
 }
 
 impl When {
@@ -475,6 +506,10 @@ impl When {
     pub fn keep_alive(mut self) -> Self {
         self.options.keep_alive = Some(1);
         self
+    }
+
+    fn container_style_mut(&mut self) -> &mut ContainerStyle {
+        &mut self.options.style
     }
 }
 
@@ -586,6 +621,10 @@ impl<K> Dynamic<K> {
         self.options.key = Some(key.into());
         self
     }
+
+    fn container_style_mut(&mut self) -> &mut ContainerStyle {
+        &mut self.options.style
+    }
 }
 
 impl<K: Clone + PartialEq + Send + 'static> IntoView for Dynamic<K> {
@@ -608,18 +647,23 @@ fn build_switch<K: Clone + PartialEq + Send + 'static>(
     options: SwitchOptions,
     site: &'static Location<'static>,
 ) {
-    let container = vb.place(options.key, Stack::column(0.0));
-    let id = container.stable_id();
-    if id == UNBUILT {
+    let SwitchOptions {
+        transition,
+        keep_alive,
+        key: node_key,
+        style,
+    } = options;
+    let Some(container) = container(Stack::column(0.0), node_key, style, site).place(vb) else {
         return;
-    }
+    };
+    let id = container.stable_id();
     let effect = reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, site);
     let shown = reactive::run_tracked(effect, &key);
     let mut binding = SwitchBinding {
         key,
         render,
-        transition: options.transition,
-        keep_alive: options.keep_alive,
+        transition,
+        keep_alive,
         scope: reactive::current_scope(),
         shown,
         branch: None,
