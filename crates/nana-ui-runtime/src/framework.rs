@@ -64,10 +64,10 @@ use crate::{
     ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollMetrics, ScrollOffset, ScrollView,
     ScrollViewportChanged, SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl,
     SegmentedOption, SegmentedSelectionRequested, Select, SettingsCollapsibleCard,
-    SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId, Switch, Table, TableCell,
-    TableRow, Tabs, TextArea, TextChanged, TextClamped, TextInput, TextInputState, TextPresenter,
-    TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad,
-    XYPadDragState, XYPadEvent,
+    SidebarFooterButton, SidebarRow, SidebarSection, SizeChanged, StableNodeId, Switch, Table,
+    TableCell, TableRow, Tabs, TextArea, TextChanged, TextClamped, TextInput, TextInputState,
+    TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError,
+    Workspace, XYPad, XYPadDragState, XYPadEvent,
     component_registry::{
         ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
         RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
@@ -1031,6 +1031,8 @@ pub struct AppContext {
     laid_out_notices: HashSet<StableNodeId, crate::BuildIdHasher>,
     /// Texts listening for [`TextClamped`], with the answer last sent.
     clamp_watchers: HashMap<StableNodeId, Option<bool>, crate::BuildIdHasher>,
+    /// Nodes listening for [`SizeChanged`], with the size last sent.
+    size_watchers: HashMap<StableNodeId, events::SizeWatch, crate::BuildIdHasher>,
     /// Router hooks installed by the types created so far.
     type_hooks: TypeHooks,
     assembled:
@@ -1386,6 +1388,7 @@ impl AppContext {
             behaviors: HashMap::default(),
             laid_out_notices: HashSet::default(),
             clamp_watchers: HashMap::default(),
+            size_watchers: HashMap::default(),
             type_hooks: TypeHooks::default(),
             assembled: HashMap::default(),
             assembled_parent: HashMap::default(),

@@ -158,6 +158,19 @@ column().children((
 ))
 ```
 
+## 容器尺寸
+
+要按容器实际拿到的宽度选排法（放得下两栏就并排，否则上下叠），监听它的 `SizeChanged { width, height }`：布局提交后，节点的盒子**尺寸变了**时发出（第一次布局、窗口缩放、兄弟长高挤小了它），只发给监听它的节点，尺寸没变的布局不发。和 `ScrollViewportChanged` 一样在布局之后到达，信号的变化在下一帧生效；不需要每帧去读布局盒。
+
+```rust
+let wide = signal(false);
+column()
+    .on(move |e: &SizeChanged| wide.set(e.width >= 720.0))
+    .children(dynamic(wide, |wide| if *wide { two_columns() } else { stacked() }))
+```
+
+只需要换行、放得下就并排的排法，优先用 `flex-wrap` 加 `flex-basis`（见[布局](layout.md)），不必经过信号。
+
 ## 进出场与移动动画
 
 `when(..)` 和 `each(..)`（包括 `Store` 的 `keyed(..).each`）可以加 `.transition(t)`，对应 Vue 的 `<Transition>` 和 `<TransitionGroup>`：

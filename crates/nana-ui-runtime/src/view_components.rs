@@ -1648,6 +1648,16 @@ pub struct TextClamped {
     pub clamped: bool,
 }
 
+/// A node's laid-out box changed size: its first layout, a window resize, a
+/// sibling that grew. Sent after the layout pass, only when the size changed,
+/// and only to nodes that listen for it — the width a container was actually
+/// given, for picking a two-column or a stacked arrangement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SizeChanged {
+    pub width: f32,
+    pub height: f32,
+}
+
 /// A layout pass gave a `ScrollView` a viewport of a new size: the first
 /// layout, a window resize. Virtualized content widens or narrows its window.
 #[derive(Debug, Clone, Copy, PartialEq)]

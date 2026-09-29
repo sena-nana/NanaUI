@@ -351,6 +351,7 @@ impl AppContext {
             }
             completed(2);
             self.apply_document_scroll_retention(document, force_full)?;
+            self.announce_size_changes(document)?;
             self.play_pending_flips(document);
             completed(3);
             Ok(report)

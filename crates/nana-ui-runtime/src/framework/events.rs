@@ -2,6 +2,22 @@
 
 use super::*;
 
+/// A node listening for [`SizeChanged`]: the size it was last told, and how
+/// to tell it, since the watch outlives the handler's typed call site.
+#[derive(Clone, Copy)]
+pub(crate) struct SizeWatch {
+    sent: Option<(f32, f32)>,
+    emit: fn(&mut AppContext, StableNodeId, SizeChanged) -> Result<(), FrameworkError>,
+}
+
+fn emit_size<V: View>(
+    cx: &mut AppContext,
+    id: StableNodeId,
+    event: SizeChanged,
+) -> Result<(), FrameworkError> {
+    cx.update(Entity::<V>::from_stable_id(id), |_, cx| cx.emit(event))
+}
+
 impl AppContext {
     pub(super) fn remove_event_handlers_for(&mut self, removed: &HashSet<StableNodeId>) -> usize {
         // An editor's undo journal dies with the editor.
@@ -9,6 +25,7 @@ impl AppContext {
             self.text_histories.forget(*id);
             self.key_handlers.remove(id);
             self.clamp_watchers.remove(id);
+            self.size_watchers.remove(id);
         }
         let affected = removed
             .iter()
@@ -127,6 +144,7 @@ impl AppContext {
         };
         self.index_event_handler((entity.id, TypeId::of::<E>()), entity.id);
         self.watch_clamp::<E>(entity.id);
+        self.watch_size::<V, E>(entity.id);
         self.event_handlers
             .entry((entity.id, TypeId::of::<E>()))
             .or_default()
@@ -143,6 +161,46 @@ impl AppContext {
         if TypeId::of::<E>() == TypeId::of::<TextClamped>() {
             self.clamp_watchers.entry(text).or_insert(None);
         }
+    }
+
+    /// A handler for [`SizeChanged`] makes its node announce its size.
+    fn watch_size<V: View, E: 'static>(&mut self, node: StableNodeId) {
+        if TypeId::of::<E>() == TypeId::of::<SizeChanged>() {
+            self.size_watchers.entry(node).or_insert(SizeWatch {
+                sent: None,
+                emit: emit_size::<V>,
+            });
+        }
+    }
+
+    /// Send [`SizeChanged`] to each listening node of `document` whose box
+    /// the layout pass that just committed gave a new size.
+    pub(super) fn announce_size_changes(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<(), FrameworkError> {
+        if self.size_watchers.is_empty() {
+            return Ok(());
+        }
+        let changed = self
+            .size_watchers
+            .iter()
+            .filter_map(|(&id, watch)| {
+                if self.world.document_of(id) != Some(document) || !self.world.is_mounted(id) {
+                    return None;
+                }
+                let bounds = self.world.layout_box(id)?;
+                let size = (bounds.width, bounds.height);
+                (watch.sent != Some(size)).then_some((id, size, watch.emit))
+            })
+            .collect::<Vec<_>>();
+        for (id, (width, height), emit) in changed {
+            if let Some(watch) = self.size_watchers.get_mut(&id) {
+                watch.sent = Some((width, height));
+            }
+            emit(self, id, SizeChanged { width, height })?;
+        }
+        Ok(())
     }
 
     /// Send [`TextClamped`] to each listening text whose clamp changed with
@@ -244,6 +302,7 @@ impl AppContext {
         };
         self.index_event_handler((source.id, TypeId::of::<E>()), observer.id);
         self.watch_clamp::<E>(source.id);
+        self.watch_size::<S, E>(source.id);
         self.event_handlers
             .entry((source.id, TypeId::of::<E>()))
             .or_default()

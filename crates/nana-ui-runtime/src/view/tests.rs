@@ -3419,3 +3419,45 @@ fn a_page_scrolled_past_its_list_stays_put_when_its_items_change() {
     settle(&mut cx, document, viewport);
     assert_eq!(cx.world().scroll_offset(page).unwrap().y, bottom);
 }
+
+/// A container that listens for `SizeChanged` hears the size layout gave it,
+/// once per change: its first layout and each resize, not every pass.
+#[test]
+fn a_listening_container_hears_the_size_layout_gave_it() {
+    use std::sync::{Arc, Mutex};
+    let (mut cx, document, parent) = setup();
+    let sizes = Arc::new(Mutex::new(Vec::new()));
+    let heard = Arc::clone(&sizes);
+    let width = std::cell::Cell::new(None);
+    let bound = &width;
+    cx.mount_view(parent, move || {
+        let two_columns = signal(false);
+        bound.set(Some(two_columns));
+        column()
+            .on(move |event: &crate::SizeChanged| {
+                heard.lock().unwrap().push((event.width, event.height));
+                two_columns.set(event.width >= 360.0);
+            })
+            .children(
+                widget(Stack::column(0.0).with_layout(|layout| {
+                    layout.height = Some(LengthSpec::Px(40.0));
+                })),
+            )
+    })
+    .unwrap();
+    let two_columns = width.get().unwrap();
+    cx.layout_document(document, LayoutViewport::new(400.0, 300.0))
+        .unwrap();
+    assert_eq!(*sizes.lock().unwrap(), [(400.0, 40.0)]);
+    cx.flush_reactive().unwrap();
+    assert!(two_columns.get_untracked());
+    // The same size again: nothing to hear.
+    cx.layout_document(document, LayoutViewport::new(400.0, 300.0))
+        .unwrap();
+    assert_eq!(sizes.lock().unwrap().len(), 1);
+    cx.layout_document(document, LayoutViewport::new(320.0, 300.0))
+        .unwrap();
+    assert_eq!(*sizes.lock().unwrap(), [(400.0, 40.0), (320.0, 40.0)]);
+    cx.flush_reactive().unwrap();
+    assert!(!two_columns.get_untracked());
+}
