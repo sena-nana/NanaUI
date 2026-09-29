@@ -31,7 +31,7 @@ const ROW_COPY_GAP: f32 = nana_ui_core::space::XXS;
 /// Rows the framework assembles (appearance, about) put their control under
 /// the copy below this width: beside a segmented picker, a narrower row
 /// leaves the label and hint a column a few characters wide.
-const ASSEMBLED_ROW_STACK_BELOW: f32 = 280.0;
+pub(crate) const ASSEMBLED_ROW_STACK_BELOW: f32 = 280.0;
 
 /// Non-interactive chrome wrapping an application-owned control child.
 #[derive(Debug, Clone, PartialEq)]
@@ -208,6 +208,11 @@ impl SettingsRow {
 }
 
 impl ComponentView for SettingsRow {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(AppContext::assemble_settings_row),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -1737,6 +1742,76 @@ impl AppContext {
         mount_settings_row(
             self, document, &mut slot, label, hint, false, true, true, control,
         )
+    }
+
+    /// Give a row its label, hint and copy nodes and put its children in
+    /// order: the copy (label over hint), then the control. What the label
+    /// and hint say is the row's own `label` / `hint`; its projection writes
+    /// them. The view layer runs this after it builds a row
+    /// (`TypeBehavior::slot_assembler`); a row made with
+    /// [`Self::mount_settings_leaf_row`] is already assembled. Returns whether
+    /// anything changed.
+    pub fn assemble_settings_row(
+        &mut self,
+        row: Entity<SettingsRow>,
+    ) -> Result<bool, FrameworkError> {
+        let document = document_of(self, row.stable_id())?;
+        let snapshot = self.read(row, |row| {
+            (
+                row.label.clone(),
+                row.hint.clone(),
+                row.control,
+                row.label_slot,
+                row.hint_slot,
+                row.copy_slot,
+            )
+        })?;
+        let (label, hint, control, label_slot, hint_slot, copy_slot) = snapshot;
+        let live = |context: &Self, slot: Option<StableNodeId>| {
+            slot.filter(|id| context.world().contains(*id))
+        };
+        let mut created = false;
+        let label_slot = match live(self, label_slot) {
+            Some(id) => id,
+            None => {
+                created = true;
+                self.create_detached_component(document, row_label_text(&label))?
+                    .stable_id()
+            }
+        };
+        let hint_slot = match live(self, hint_slot) {
+            Some(id) => id,
+            None => {
+                created = true;
+                self.create_detached_component(
+                    document,
+                    row_hint_text(hint.as_deref().unwrap_or(""), hint.is_none()),
+                )?
+                .stable_id()
+            }
+        };
+        let copy_slot = match live(self, copy_slot) {
+            Some(id) => id,
+            None => {
+                created = true;
+                self.create_detached_component(document, SettingsRowCopy { stacked: false })?
+                    .stable_id()
+            }
+        };
+        if created {
+            self.update_component(row, |row, _| {
+                row.label_slot = Some(label_slot);
+                row.hint_slot = Some(hint_slot);
+                row.copy_slot = Some(copy_slot);
+            })?;
+        }
+        let copy = Entity::<SettingsRowCopy>::from_stable_id(copy_slot);
+        let mut changed = reconcile_children(self, copy, &[label_slot, hint_slot])?;
+        let children: Vec<_> = std::iter::once(copy_slot)
+            .chain(live(self, control))
+            .collect();
+        changed |= reconcile_children(self, row, &children)?;
+        Ok(created || changed)
     }
 
     /// Mount or refresh the appearance row/control contract from the
