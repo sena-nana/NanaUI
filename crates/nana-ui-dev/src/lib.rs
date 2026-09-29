@@ -38,6 +38,8 @@ pub use restart::{DevHandoff, HANDOFF_ENV, RebuildCommand, RebuildOutcome, relau
 pub use watch::DevWatcher;
 #[cfg(feature = "vue")]
 pub use wiring::watch_and_reload;
+#[cfg(feature = "templates")]
+pub use wiring::{TemplateText, watch_templates};
 pub use wiring::{request_relaunch, restored_handoff, run_with_restart, watch_and_rebuild};
 
 use nana_js_engine::RuntimeArtifact;
@@ -58,6 +60,9 @@ pub enum ReloadRequest {
     /// Replace one keyed stylesheet in place. No node is created or destroyed,
     /// so node ids, focus, scroll offsets and in-flight animations all survive.
     Css { path: PathBuf },
+    /// A `.vue` view under a directory registered with
+    /// [`DevConfig::templates`] changed.
+    Template { path: PathBuf },
 }
 
 /// Outcome of a rebuild, handed to a running L3 program.

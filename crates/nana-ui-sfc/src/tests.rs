@@ -634,3 +634,44 @@ let name = signal(String::new());
     );
     assert_eq!(out.warnings.len(), 3, "{warnings}");
 }
+
+#[test]
+fn hot_mode_moves_static_text_into_a_table_and_hashes_the_rest() {
+    let view = r#"<script setup lang="rust">
+let count = signal(0u32);
+</script>
+<template>
+  <Column>
+    <Text>标题</Text>
+    <Button @activate="count.update(|c| *c += 1)">加一</Button>
+    <Text>计数 {{ count }}</Text>
+  </Column>
+</template>"#;
+    let hot = Compiler::new("::nana_ui_runtime").hot(true);
+    let out = hot
+        .compile(&[("views/Page.vue".into(), view.into())])
+        .unwrap();
+    let code = squash(&out.code);
+    assert!(
+        code.contains(&squash(
+            "const __NANA_HOT: &[&str] = &[\"标题\", \"加一\"];"
+        )),
+        "{code}"
+    );
+    assert!(
+        code.contains(&squash("__hot_text(\"Page\", 1usize, __NANA_HOT[1usize])")),
+        "{code}"
+    );
+
+    let shape =
+        |file: &str, text: &str| hot.hot_views(&[(file.into(), text.into())]).unwrap()[0].clone();
+    let first = shape("views/Page.vue", view);
+    assert_eq!(first.literals, ["标题", "加一"]);
+    let moved = shape("/elsewhere/views/Page.vue", view);
+    assert_eq!(moved.shape, first.shape, "the directory does not matter");
+    let retitled = shape("views/Page.vue", &view.replace("标题", "新标题"));
+    assert_eq!(retitled.shape, first.shape);
+    assert_eq!(retitled.literals, ["新标题", "加一"]);
+    let rewired = shape("views/Page.vue", &view.replace("*c += 1", "*c += 2"));
+    assert_ne!(rewired.shape, first.shape, "code changed");
+}

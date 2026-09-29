@@ -2656,6 +2656,7 @@ dependencies = [
  "nana-ui-platform",
  "nana-ui-runtime",
  "nana-ui-scene",
+ "nana-ui-sfc",
  "nana-ui-vue",
  "notify",
  "serde",

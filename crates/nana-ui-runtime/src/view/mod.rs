@@ -22,6 +22,7 @@
 mod controls;
 mod each_virtual;
 mod error;
+mod hot;
 mod node;
 mod prop;
 pub(crate) mod reactive;
@@ -41,6 +42,9 @@ pub use controls::{
 pub(crate) use controls::{edit_control, inspect_control};
 pub use each_virtual::{EachVirtual, each_virtual};
 pub use error::{ErrorBoundary, error_boundary, report_error};
+#[doc(hidden)]
+pub use hot::{__hot_register, __hot_text};
+pub use hot::{HotReloadError, apply_hot_literals};
 pub use node::{
     AnyView, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef, ViewBuilder, keyed,
     node_ref, widget,

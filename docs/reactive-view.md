@@ -192,6 +192,8 @@ pub mod views {
 - `<style>` 不支持：CSS 子集属于 Vue 路径。模板里仍然要遵守 Rust 的所有权规则，例如同一个值既要传给组件又要被事件闭包使用时，得写 `todo.clone()`。
 - 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`，rustc 的报错会指向可读的代码。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出，带文件、行、列。
 
+开发期热重载：构建脚本写 `Compiler::new(..).hot(debug)`，只改 `.vue` 里的静态文字时，`nana-ui-dev` 的 `watch_templates` 把新文字送进正在运行的窗口，不重建；改了别的就照常重建。见 `docs/hot-reload.md`。
+
 ### 编译器能看到什么
 
 编译器能看到整个组件，所以知道哪些名字是信号、每个信号怎么被使用。依赖分析在脚本和模板上扫描 token：

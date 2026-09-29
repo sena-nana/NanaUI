@@ -74,16 +74,37 @@ impl Debouncer {
 /// [`DevConfig::css`]. Anything else — a script, an asset, an unregistered
 /// stylesheet — means the artifact bytes may have changed, and the whole batch
 /// collapses to a single [`ReloadRequest::Full`].
+#[cfg(test)]
 pub(crate) fn classify(paths: &[PathBuf], css: &BTreeSet<PathBuf>) -> Vec<ReloadRequest> {
+    classify_with(paths, css, &[])
+}
+
+/// [`classify`], with `.vue` files under `templates` taking the template
+/// path.
+pub(crate) fn classify_with(
+    paths: &[PathBuf],
+    css: &BTreeSet<PathBuf>,
+    templates: &[PathBuf],
+) -> Vec<ReloadRequest> {
+    let template = |path: &PathBuf| {
+        path.extension().is_some_and(|ext| ext == "vue")
+            && templates.iter().any(|dir| path.starts_with(dir))
+    };
     if paths.is_empty() {
         return Vec::new();
     }
-    if paths.iter().any(|path| !css.contains(path)) {
+    if paths
+        .iter()
+        .any(|path| !css.contains(path) && !template(path))
+    {
         return vec![ReloadRequest::Full];
     }
     paths
         .iter()
-        .map(|path| ReloadRequest::Css { path: path.clone() })
+        .map(|path| match template(path) {
+            true => ReloadRequest::Template { path: path.clone() },
+            false => ReloadRequest::Css { path: path.clone() },
+        })
         .collect()
 }
 
@@ -131,6 +152,11 @@ impl DevWatcher {
             .map(|root| canonical_or_given(root))
             .collect();
 
+        let templates: Vec<PathBuf> = config
+            .template_dirs()
+            .iter()
+            .map(|dir| canonical_or_given(dir))
+            .collect();
         let quiet = config.quiet();
         let debouncer = Arc::new(Mutex::new(Debouncer::new(quiet)));
         let wakeup = Arc::new(Condvar::new());
@@ -223,7 +249,7 @@ impl DevWatcher {
                                 .clone()
                         })
                         .collect();
-                    let batch = classify(&settled, &css);
+                    let batch = classify_with(&settled, &css, &templates);
                     if !batch.is_empty() {
                         on_batch(batch);
                     }
@@ -328,6 +354,27 @@ mod tests {
                 &css
             ),
             [ReloadRequest::Full]
+        );
+    }
+
+    #[test]
+    fn views_under_a_template_dir_take_the_template_path() {
+        let css = BTreeSet::new();
+        let templates = [PathBuf::from("views")];
+        assert_eq!(
+            classify_with(&[PathBuf::from("views/App.vue")], &css, &templates),
+            [ReloadRequest::Template {
+                path: PathBuf::from("views/App.vue")
+            }]
+        );
+        assert_eq!(
+            classify_with(
+                &[PathBuf::from("views/App.vue"), PathBuf::from("src/main.rs")],
+                &css,
+                &templates
+            ),
+            [ReloadRequest::Full],
+            "a Rust change still rebuilds"
         );
     }
 

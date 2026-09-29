@@ -81,6 +81,64 @@ pub struct Output {
 
 pub struct Compiler {
     runtime: TokenStream,
+    hot: bool,
+}
+
+/// One view's hot-reloadable state: the hash of everything but its static
+/// text, and that text in template order (see [`Compiler::hot`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotView {
+    /// The view's name, the key the running application knows it by.
+    pub name: String,
+    pub shape: u64,
+    pub literals: Vec<String>,
+}
+
+/// A compiled view: its item, report section, warnings, and in hot mode its
+/// shape and static text.
+type CompiledView = (TokenStream, String, Vec<String>, Option<(u64, Vec<String>)>);
+
+/// FNV-1a: stable across builds and processes, which the shape needs.
+fn stable_hash(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// Replace every text node that is only static text with a read of the
+/// view's literal table, collecting the text in template order.
+fn hot_literals(nodes: &mut [Node], runtime: &TokenStream, name: &str, out: &mut Vec<String>) {
+    for node in nodes {
+        match node {
+            Node::Element(element) => {
+                hot_literals(&mut element.children, runtime, name, out);
+                for attr in &mut element.attrs {
+                    if let AttrValue::View(slot) = &mut attr.value {
+                        hot_literals(slot, runtime, name, out);
+                    }
+                }
+            }
+            Node::Mixed(parts, _)
+                if parts
+                    .iter()
+                    .all(|part| matches!(part, TextPart::Literal(_))) =>
+            {
+                let text: String = parts
+                    .iter()
+                    .map(|part| match part {
+                        TextPart::Literal(text) => text.as_str(),
+                        TextPart::Expr(_) => "",
+                    })
+                    .collect();
+                let index = out.len();
+                out.push(text);
+                *node = Node::Verbatim(quote! {
+                    move || #runtime::view::__hot_text(#name, #index, __NANA_HOT[#index])
+                });
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Compiler {
@@ -89,7 +147,49 @@ impl Compiler {
     pub fn new(runtime: &str) -> Self {
         Self {
             runtime: runtime.parse().expect("runtime path tokenizes"),
+            hot: false,
         }
+    }
+
+    /// Development builds: static text reads a per-view table the running
+    /// application can replace, so editing text in a `.vue` file shows
+    /// without a rebuild (`nana-ui-dev`'s `watch_templates`). Each view
+    /// carries a shape hash of everything else; a change there still needs
+    /// a rebuild. Costs a tracked read per text node.
+    pub fn hot(mut self, hot: bool) -> Self {
+        self.hot = hot;
+        self
+    }
+
+    /// Hot mode's view of `sources`: each view's shape and static text, as
+    /// [`Self::compile`] embeds them. Compile the same batch the binary was
+    /// built from, so shapes match.
+    pub fn hot_views(&self, sources: &[(String, String)]) -> Result<Vec<HotView>, Error> {
+        let components = sources
+            .iter()
+            .map(|(file, text)| parse::component(file, text).map(|c| (file.as_str(), c)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let known: HashMap<String, Vec<PatType>> = components
+            .iter()
+            .map(|(_, c)| (c.name.clone(), c.props.clone()))
+            .collect();
+        let hot = Self {
+            runtime: self.runtime.clone(),
+            hot: true,
+        };
+        components
+            .into_iter()
+            .map(|(file, component)| {
+                let name = component.name.clone();
+                let (_, _, _, state) = hot.component(file, component, &known)?;
+                let (shape, literals) = state.expect("hot mode records the state");
+                Ok(HotView {
+                    name,
+                    shape,
+                    literals,
+                })
+            })
+            .collect()
     }
 
     /// Compile `(file name, source)` pairs as one batch: views may use each
@@ -107,7 +207,7 @@ impl Compiler {
         let mut report = String::new();
         let mut warnings = Vec::new();
         for (file, component) in components {
-            let (item, section, found) = self.component(file, component, &known)?;
+            let (item, section, found, _) = self.component(file, component, &known)?;
             items.push(item);
             report.push_str(&section);
             warnings.extend(found.into_iter().map(|w| format!("{file}: {w}")));
@@ -164,13 +264,17 @@ impl Compiler {
         file: &str,
         component: Component,
         known: &HashMap<String, Vec<PatType>>,
-    ) -> Result<(TokenStream, String, Vec<String>), Error> {
+    ) -> Result<CompiledView, Error> {
         let Component {
             name,
             props,
             script,
             mut template,
         } = component;
+        let mut literals = Vec::new();
+        if self.hot {
+            hot_literals(&mut template, &self.runtime, &name, &mut literals);
+        }
         let mut analysis = Analysis::new(&props, &script);
         analysis.scan_script(&script);
         count(&mut template, &mut analysis);
@@ -215,16 +319,40 @@ impl Compiler {
             })
             .collect();
         let function = nana_ui_view_codegen::function_ident(&name, Span::call_site());
+        let (hot, state) = if self.hot {
+            // Everything the view is, but its text: equal shapes differ in
+            // text only.
+            // Sites name the file as the batch did; hash its name alone, so
+            // a watcher reading the directory by another path agrees.
+            let file_name = Path::new(file)
+                .file_name()
+                .map_or(file.into(), |name| name.to_string_lossy());
+            let shape = stable_hash(
+                &quote! {
+                    fn #function(#(#props),*) { #(#script)* #body }
+                }
+                .to_string()
+                .replace(file, &file_name),
+            );
+            let hot = quote! {
+                const __NANA_HOT: &[&str] = &[#(#literals),*];
+                #runtime::view::__hot_register(#name, #shape);
+            };
+            (hot, Some((shape, literals)))
+        } else {
+            (TokenStream::new(), None)
+        };
         let item = quote! {
             #[allow(unused_imports, unused_variables, clippy::all)]
             pub fn #function(#(#props),*) -> impl #runtime::view::IntoView {
                 use #runtime::view::*;
+                #hot
                 #(#script)*
                 #body
             }
         };
         let section = report(file, &name, &analysis, &rows);
-        Ok((item, section, warnings))
+        Ok((item, section, warnings, state))
     }
 }
 

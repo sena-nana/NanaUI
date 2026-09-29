@@ -124,3 +124,67 @@ fn folding_saves_the_effects_constants_would_have_needed() {
     let by_hand = effects_of(|| counter_by_hand().into_any());
     assert_eq!((compiled, by_hand), (1, 2));
 }
+
+/// A debug build compiles its views in hot mode: static text swaps in the
+/// running tree when the view's shape is unchanged, and a change beyond
+/// the text is refused.
+#[test]
+fn static_text_is_swapped_in_the_running_tree() {
+    let mut files: Vec<_> = std::fs::read_dir("views")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "vue"))
+        .collect();
+    files.sort();
+    let sources: Vec<(String, String)> = files
+        .iter()
+        .map(|path| {
+            (
+                path.display().to_string(),
+                std::fs::read_to_string(path).unwrap(),
+            )
+        })
+        .collect();
+    let compiler = nana_ui_sfc::Compiler::new("::nana_ui::runtime");
+    let hot = compiler.hot_views(&sources).unwrap();
+    let list = hot.iter().find(|view| view.name == "TodoList").unwrap();
+    let at = list
+        .literals
+        .iter()
+        .position(|text| text == "添加")
+        .unwrap();
+
+    let mut cx = AppContext::typed();
+    let document = DocumentId::new(1).unwrap();
+    let page = cx.mount_view_root(document, views::app).unwrap().roots()[0];
+    let add = cx
+        .resolve_assembly_entity::<Button>(page, "todo-section/todos/add")
+        .unwrap();
+    let mut literals = list.literals.clone();
+    literals[at] = "新增".into();
+    nana_ui::runtime::view::apply_hot_literals("TodoList", list.shape, literals).unwrap();
+    cx.flush_reactive().unwrap();
+    assert_eq!(cx.read(add, |b| b.label.clone()).unwrap(), "新增");
+
+    // Editing more than text changes the shape.
+    let edited: Vec<(String, String)> = sources
+        .iter()
+        .map(|(file, text)| {
+            (
+                file.clone(),
+                text.replace("key=\"add\"", "key=\"add\" :disabled=\"true\""),
+            )
+        })
+        .collect();
+    let changed = compiler.hot_views(&edited).unwrap();
+    let shape = changed
+        .iter()
+        .find(|view| view.name == "TodoList")
+        .unwrap()
+        .shape;
+    assert_ne!(shape, list.shape);
+    assert!(matches!(
+        nana_ui::runtime::view::apply_hot_literals("TodoList", shape, list.literals.clone()),
+        Err(nana_ui::runtime::view::HotReloadError::ShapeChanged(_))
+    ));
+}

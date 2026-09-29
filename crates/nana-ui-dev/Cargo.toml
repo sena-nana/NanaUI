@@ -22,6 +22,9 @@ vue = ["dep:nana-ui-vue"]
 # verified without opening one. Off by default: an L3 project that only wants
 # the restart loop should not build an offscreen WGPU stack to get it.
 headless = ["dep:nana-ui-devtools"]
+# Hot text for `.vue` views compiled in hot mode (`watch_templates`): a save
+# that changes only static text reaches the running window without a rebuild.
+templates = ["dep:nana-ui-sfc", "nana-ui/reactive-view"]
 
 [dependencies]
 nana-js-engine.workspace = true
@@ -38,6 +41,7 @@ nana-ui-vue = { workspace = true, optional = true, features = ["dev-reload", "ho
 # `runtime-agent` is the Vue-free tier: offscreen pixels and the JSON protocol,
 # no V8. CI asserts that stays true.
 nana-ui-devtools = { workspace = true, optional = true, features = ["runtime-agent"] }
+nana-ui-sfc = { workspace = true, optional = true }
 
 [dev-dependencies]
 nana-ui-platform.workspace = true

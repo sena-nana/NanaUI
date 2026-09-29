@@ -21,6 +21,7 @@ pub struct DevConfig {
     jail: PathBuf,
     watch: Vec<PathBuf>,
     css: Vec<PathBuf>,
+    templates: Vec<PathBuf>,
     quiet_period: Duration,
 }
 
@@ -42,6 +43,7 @@ impl DevConfig {
             jail: root.clone(),
             watch: vec![root],
             css: Vec::new(),
+            templates: Vec::new(),
             quiet_period: DEFAULT_QUIET_PERIOD,
         }
     }
@@ -56,6 +58,7 @@ impl DevConfig {
             jail: root.clone(),
             watch: vec![root],
             css: Vec::new(),
+            templates: Vec::new(),
             quiet_period: DEFAULT_QUIET_PERIOD,
         }
     }
@@ -99,6 +102,25 @@ impl DevConfig {
 
     pub fn css_paths(&self) -> &[PathBuf] {
         &self.css
+    }
+
+    /// Treat `.vue` files under `dir` as views compiled in hot mode: their
+    /// changes arrive as [`crate::ReloadRequest::Template`], not a full
+    /// reload. `dir` is watched too.
+    #[must_use]
+    pub fn templates(mut self, dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        if !self.watch.contains(&dir) {
+            self.watch.push(dir.clone());
+        }
+        if !self.templates.contains(&dir) {
+            self.templates.push(dir);
+        }
+        self
+    }
+
+    pub fn template_dirs(&self) -> &[PathBuf] {
+        &self.templates
     }
 
     pub const fn quiet(&self) -> Duration {

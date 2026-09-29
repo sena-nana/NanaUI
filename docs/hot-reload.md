@@ -109,6 +109,29 @@ Message::Dev(DevSignal::BuildFailed(diagnostics)) => { eprintln!("{diagnostics}"
 
 `cargo build` 跑在监听线程上，不阻塞事件循环。构建成功后进程交接几何与一段**框架不解释**的状态串，然后 re-exec（Unix 用 `exec`，Windows 用 spawn + 退出）。
 
+### `.vue` 视图的文字：不重启
+
+用 `.vue` 方言写的视图，改的只是静态文字时不必重启。构建脚本在 debug 下打开热模式，dev 入口改用 `watch_templates`（`nana-ui-dev` 的 `templates` feature）：
+
+```rust
+// build.rs
+let debug = std::env::var("PROFILE").as_deref() == Ok("debug");
+nana_ui_sfc::Compiler::new("::nana_ui::runtime").hot(debug).build("views")?;
+
+// RuntimeProgram::initialize —— 和构建脚本用同一个 runtime 路径
+let watcher = nana_ui_dev::watch_templates(
+    &DevConfig::new_rust("src"), "views", "::nana_ui::runtime",
+    RebuildCommand::cargo_package("my-app"), context,
+)?;
+
+// RuntimeProgram::update
+Message::Text(text) => { let _ = text.apply(); RuntimeProgramUpdate::default() }
+```
+
+- 热模式下，视图里只有静态文字的文本节点（包括按钮这类控件的文字）读一张每个视图一份的表；其余部分算一个**形状哈希**，编进二进制。代价是每个这样的文本节点多一次被追踪的读取，只在 debug 构建里。
+- 监听线程在每次保存后重新编译 `views` 目录：每个视图的形状都没变，就把变了文字的视图作为 `TemplateText` 派发，`apply()` 换掉所有已挂载实例的文字，下一帧就显示，节点、焦点、滚动和状态都不动；有视图的形状变了（改了结构、绑定、脚本，或者文字跨了行），或者改的不是 `.vue` 文件，就照常重建重启。
+- 形状只按文件名计，监听时读目录的路径和构建脚本不同也能对上。带插值的文字（`计数 {{ n }}`）和属性值不在表里，改它们要重建。
+
 ### 让重启不丢状态
 
 状态串框架不解释，但不必手写 JSON 往返：`DevHandoff::with_state(&T)` 存，`state_as::<T>()` 取，`T` 是你自己的 `Serialize + Deserialize`。
@@ -178,7 +201,7 @@ Rust 侧其实没问题：`register_host_api` 是替换而非追加，event brid
 - **`dlclose` 在关键平台不可靠。** macOS 不会卸载含 Objective-C 元数据或 TLS 的镜像，本仓库两样都有。
 - **静态量会重复。** dylib 若重新链接 `wgpu` 或 `v8` 就会出现两套 `Instance` / 两个 V8 platform。
 
-所以 L3 的诚实答案是重启，并且要说清楚代价的构成：这一秒几秒里**链接占大头**，窗口和 GPU 重建只有 0.4–1.5 s。真实量级见开头那张实测表——macOS 上应用一行 1.5 s、改 Runtime 后 3.6 s；Windows 的链接更慢，给 dev profile 配 `lld` 在那里收益最大。
+所以 L3 的诚实答案是重启（`.vue` 视图只改文字时例外，见上文），并且要说清楚代价的构成：这一秒几秒里**链接占大头**，窗口和 GPU 重建只有 0.4–1.5 s。真实量级见开头那张实测表——macOS 上应用一行 1.5 s、改 Runtime 后 3.6 s；Windows 的链接更慢，给 dev profile 配 `lld` 在那里收益最大。
 
 改 `nana-ui-runtime`（12.7 万行）会连带重编 `nana-ui-scene` / `nana-ui`，比改应用贵一倍多，但仍在个位数秒。热重载帮你**基于**框架开发，不帮你开发框架本身。
 

@@ -158,16 +158,149 @@ where
                 ReloadRequest::Css { path } => crate::read_within_jail(&path, &jail)
                     .ok()
                     .map(|(key, css)| DevReload::Stylesheet { key, css }),
-                ReloadRequest::Full => artifact.as_ref().and_then(|path| {
-                    crate::read_within_jail(path, &jail)
-                        .ok()
-                        .map(|(name, source)| DevReload::Artifact { name, source })
-                }),
+                ReloadRequest::Full | ReloadRequest::Template { .. } => {
+                    artifact.as_ref().and_then(|path| {
+                        crate::read_within_jail(path, &jail)
+                            .ok()
+                            .map(|(name, source)| DevReload::Artifact { name, source })
+                    })
+                }
             };
             if let Some(reload) = reload {
                 context.dispatch(Message::from(reload));
             }
         }
+    })
+}
+
+/// New static text for one hot `.vue` view, read on the watcher thread and
+/// applied on the UI thread: convert it into the program's message and call
+/// [`Self::apply`] in `update`.
+#[cfg(feature = "templates")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateText {
+    pub view: String,
+    pub shape: u64,
+    pub text: Vec<String>,
+}
+
+#[cfg(feature = "templates")]
+impl TemplateText {
+    /// Swap the text of every mounted instance of the view; the next frame
+    /// shows it.
+    pub fn apply(self) -> Result<(), nana_ui::runtime::view::HotReloadError> {
+        nana_ui::runtime::view::apply_hot_literals(&self.view, self.shape, self.text)
+    }
+}
+
+/// Watch `.vue` views compiled in hot mode (`Compiler::hot`) in `views`,
+/// plus the rest of `config`: a save that changes only a view's static text
+/// dispatches [`TemplateText`] for it, without a rebuild; anything else
+/// rebuilds like [`watch_and_rebuild`]. `runtime` is the path the build
+/// script passed to `Compiler::new`, so shapes match the binary's.
+#[cfg(feature = "templates")]
+pub fn watch_templates<Message>(
+    config: &DevConfig,
+    views: impl Into<std::path::PathBuf>,
+    runtime: &str,
+    rebuild: RebuildCommand,
+    context: &RuntimeProgramContext<Message>,
+) -> Result<DevWatcher, notify::Error>
+where
+    Message: Send + 'static + From<DevSignal> + From<TemplateText>,
+{
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    let views = views.into();
+    let config = config.clone().templates(views.clone());
+    // The compiler holds token streams, which stay on one thread: make one
+    // per batch on the watcher thread.
+    let runtime = runtime.to_owned();
+    // Named as the build script names them: a relative directory read in
+    // order, so the sites the shapes hash are the same.
+    let read = {
+        let views = views.clone();
+        move || -> Result<Vec<(String, String)>, String> {
+            let mut files: Vec<_> = std::fs::read_dir(&views)
+                .map_err(|error| error.to_string())?
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().is_some_and(|ext| ext == "vue"))
+                .collect();
+            files.sort();
+            files
+                .into_iter()
+                .map(|path| {
+                    std::fs::read_to_string(&path)
+                        .map(|text| (path.display().to_string(), text))
+                        .map_err(|error| error.to_string())
+                })
+                .collect()
+        }
+    };
+    let state =
+        move |sources: &[(String, String)]| -> Result<HashMap<String, (u64, Vec<String>)>, String> {
+            Ok(nana_ui_sfc::Compiler::new(&runtime)
+                .hot_views(sources)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|view| (view.name, (view.shape, view.literals)))
+                .collect())
+        };
+    let built = Mutex::new(
+        read()
+            .and_then(|sources| state(&sources))
+            .unwrap_or_default(),
+    );
+    let context = context.clone();
+    DevWatcher::spawn(&config, move |batch| {
+        let rebuild_now = |context: &RuntimeProgramContext<Message>| {
+            let signal = match rebuild.run() {
+                RebuildOutcome::Rebuilt => DevSignal::Rebuilt,
+                RebuildOutcome::Failed(diagnostics) => DevSignal::BuildFailed(diagnostics),
+            };
+            context.dispatch(Message::from(signal));
+        };
+        if batch
+            .iter()
+            .any(|request| !matches!(request, crate::ReloadRequest::Template { .. }))
+        {
+            return rebuild_now(&context);
+        }
+        let now = match read().and_then(|sources| state(&sources)) {
+            Ok(now) => now,
+            Err(error) => {
+                return context.dispatch(Message::from(DevSignal::BuildFailed(error)));
+            }
+        };
+        let mut built = built
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let same_views = now.len() == built.len()
+            && now.iter().all(|(view, (shape, _))| {
+                built
+                    .get(view)
+                    .is_some_and(|(built_shape, _)| built_shape == shape)
+            });
+        if !same_views {
+            // The binary no longer matches: rebuild, and compare with that.
+            *built = now;
+            drop(built);
+            return rebuild_now(&context);
+        }
+        for (view, (shape, text)) in &now {
+            if built
+                .get(view)
+                .is_some_and(|(_, built_text)| built_text != text)
+            {
+                context.dispatch(Message::from(TemplateText {
+                    view: view.clone(),
+                    shape: *shape,
+                    text: text.clone(),
+                }));
+            }
+        }
+        *built = now;
     })
 }
 

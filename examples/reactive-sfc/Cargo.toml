@@ -12,3 +12,6 @@ nana-ui-platform.workspace = true
 
 [build-dependencies]
 nana-ui-sfc = { path = "../../crates/nana-ui-sfc" }
+
+[dev-dependencies]
+nana-ui-sfc = { path = "../../crates/nana-ui-sfc" }
