@@ -2777,3 +2777,223 @@ fn a_scroll_area_told_to_follow_its_end_goes_there() {
     assert!(max > 0.0);
     assert_eq!(cx.world().scroll_offset(scroll).unwrap().y, max);
 }
+
+#[test]
+fn a_form_field_control_and_a_modal_close_action_mount_as_their_setters_place_them() {
+    use crate::{Dialog, FormField, ModalSlots};
+    let (mut cx, document, _) = setup();
+    let field = cx
+        .create_component(document, FormField::new("邮箱"))
+        .unwrap();
+    let input = cx
+        .create_detached_component(document, TextInput::new(""))
+        .unwrap();
+    cx.set_form_field_control(field, Some(input.stable_id()))
+        .unwrap();
+    let dialog = cx
+        .create_component(document, Dialog::new("重命名"))
+        .unwrap();
+    let body = cx
+        .create_detached_component(document, Text::new("正文"))
+        .unwrap();
+    let close = cx
+        .create_detached_component(document, Button::new("关闭"))
+        .unwrap();
+    cx.set_modal_slots(
+        dialog,
+        ModalSlots {
+            body: Some(body.stable_id()),
+            close_action: Some(close.stable_id()),
+            ..ModalSlots::default()
+        },
+    )
+    .unwrap();
+
+    let views = cx
+        .mount_view_root(document, || {
+            (
+                widget(FormField::new("邮箱")).control(text_input()),
+                widget(Dialog::new("重命名"))
+                    .body(text("正文"))
+                    .close_action(button("关闭")),
+            )
+        })
+        .unwrap();
+    assert_eq!(shape(&cx, views.roots()[0]), shape(&cx, field.stable_id()));
+    assert_eq!(shape(&cx, views.roots()[1]), shape(&cx, dialog.stable_id()));
+    let viewed = Entity::<FormField>::from_stable_id(views.roots()[0]);
+    assert_eq!(
+        cx.read(viewed, |field| field.control).unwrap(),
+        Some(children(&cx, viewed.stable_id())[0])
+    );
+}
+
+#[test]
+fn a_confirm_dialog_places_the_actions_it_is_given_and_makes_the_rest() {
+    use crate::{ConfirmDialog, ConfirmSlots};
+    let (mut cx, document, _) = setup();
+    let by_hand = cx
+        .create_component(document, ConfirmDialog::new("删除？", "不能撤销"))
+        .unwrap();
+    let parts = [
+        cx.create_detached_component(document, Text::new("详情"))
+            .unwrap()
+            .stable_id(),
+        cx.create_detached_component(document, Button::new("关闭"))
+            .unwrap()
+            .stable_id(),
+        cx.create_detached_component(document, Button::new("算了"))
+            .unwrap()
+            .stable_id(),
+        cx.create_detached_component(document, Button::new("稍后"))
+            .unwrap()
+            .stable_id(),
+        cx.create_detached_component(document, Button::new("删掉"))
+            .unwrap()
+            .stable_id(),
+    ];
+    cx.set_confirm_slots(
+        by_hand,
+        ConfirmSlots {
+            body: Some(parts[0]),
+            close_action: Some(parts[1]),
+            cancel: parts[2],
+            secondary: Some(parts[3]),
+            confirm: parts[4],
+        },
+    )
+    .unwrap();
+
+    let (view, (given, partly)) = cx
+        .mount_view_root(document, || {
+            let (given, partly) = (entity_ref::<ConfirmDialog>(), entity_ref::<ConfirmDialog>());
+            with_refs(
+                (
+                    widget(ConfirmDialog::new("删除？", "不能撤销"))
+                        .entity_ref(given)
+                        .body(text("详情"))
+                        .close_action(button("关闭"))
+                        .cancel(button("算了"))
+                        .secondary(button("稍后"))
+                        .confirm(button("删掉")),
+                    widget(
+                        ConfirmDialog::new("删除？", "不能撤销")
+                            .confirm_label("删除")
+                            .cancel_label("保留"),
+                    )
+                    .entity_ref(partly)
+                    .cancel(button("算了")),
+                ),
+                (given, partly),
+            )
+        })
+        .unwrap();
+    assert_eq!(shape(&cx, view.roots()[0]), shape(&cx, by_hand.stable_id()));
+    // Only the missing confirm action is made, from the label.
+    let labels = children(&cx, partly.stable_id())
+        .into_iter()
+        .map(|id| {
+            cx.read(Entity::<Button>::from_stable_id(id), |button| {
+                button.label.clone()
+            })
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(labels, ["算了", "删除"]);
+    // Reassembly refreshes what it made and leaves the given buttons alone.
+    cx.set_confirm_state(given, true, false).unwrap();
+    cx.assemble_confirm_dialog(given).unwrap();
+    cx.assemble_confirm_dialog(partly).unwrap();
+    let cancel = children(&cx, given.stable_id())
+        .into_iter()
+        .find(|id| {
+            cx.read(Entity::<Button>::from_stable_id(*id), |b| b.label == "算了")
+                .unwrap_or(false)
+        })
+        .unwrap();
+    assert!(
+        !cx.read(Entity::<Button>::from_stable_id(cancel), |b| b.disabled)
+            .unwrap()
+    );
+}
+
+#[test]
+fn a_pane_chrome_lays_out_its_tabs_actions_and_body() {
+    use crate::{PaneChrome, PaneChromeAction, PaneChromeActionKind};
+    let (mut cx, document, _) = setup();
+    let split_shown = signal(true);
+    let (view, (chrome, tabs, split, close, body)) = cx
+        .mount_view_root(document, || {
+            let refs = (
+                entity_ref::<PaneChrome>(),
+                entity_ref::<Text>(),
+                entity_ref::<Button>(),
+                entity_ref::<Button>(),
+                entity_ref::<Text>(),
+            );
+            let (chrome, tabs, split, close, body) = refs;
+            let view = widget(PaneChrome::new())
+                .entity_ref(chrome)
+                .tabs(text("main.rs").entity_ref(tabs))
+                .action(
+                    PaneChromeAction::new(PaneChromeActionKind::SplitHorizontal, "分栏"),
+                    button("分栏").entity_ref(split),
+                )
+                .action(
+                    PaneChromeAction::new(PaneChromeActionKind::CloseItem, "关闭")
+                        .icon(nana_ui_core::Icon::Close),
+                    button("关闭").entity_ref(close),
+                )
+                .body(text("编辑器").entity_ref(body))
+                .bind(move |chrome: &mut PaneChrome| {
+                    if !split_shown.get() {
+                        chrome
+                            .actions
+                            .retain(|action| action.kind != PaneChromeActionKind::SplitHorizontal);
+                    }
+                });
+            with_refs(view, refs)
+        })
+        .unwrap();
+    let chrome_id = chrome.stable_id();
+    assert_eq!(view.roots(), [chrome_id]);
+    let [header, body_id] = children(&cx, chrome_id)[..] else {
+        panic!("{}", shape(&cx, chrome_id));
+    };
+    assert_eq!(body_id, body.stable_id());
+    assert_eq!(
+        children(&cx, header),
+        [tabs.stable_id(), split.stable_id(), close.stable_id()]
+    );
+    assert_eq!(cx.read(chrome, |c| c.header).unwrap(), Some(header));
+
+    // An action a binding drops leaves the row; its control stays alive.
+    split_shown.set(false);
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, header), [tabs.stable_id(), close.stable_id()]);
+    assert!(cx.world().contains(split.stable_id()));
+    assert_eq!(children(&cx, chrome_id)[0], header);
+}
+
+#[test]
+fn a_pane_chrome_leaves_the_children_of_a_header_it_is_given() {
+    use crate::PaneChrome;
+    let (mut cx, document, _) = setup();
+    let view = cx
+        .mount_view_root(document, || {
+            widget(PaneChrome::new())
+                .header(row().children((text("甲"), text("乙"))))
+                .tabs(text("另建"))
+                .body(text("正文"))
+        })
+        .unwrap();
+    let chrome = view.roots()[0];
+    let [header, _] = children(&cx, chrome)[..] else {
+        panic!("{}", shape(&cx, chrome));
+    };
+    let texts = children(&cx, header)
+        .into_iter()
+        .map(|id| cx.world().text(id).unwrap_or("").to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(texts, ["甲", "乙"]);
+}

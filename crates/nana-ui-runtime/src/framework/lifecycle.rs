@@ -224,14 +224,16 @@ impl AppContext {
         Ok(true)
     }
 
-    /// Builds the cancel and confirm actions of a [`ConfirmDialog`] and wires
-    /// them to [`ConfirmIntent`], so the common case needs no slot plumbing.
+    /// Builds the cancel and confirm actions of a [`ConfirmDialog`] and places
+    /// its slots, so the common case needs no slot plumbing.
     ///
-    /// Idempotent: it creates the buttons on the first call and refreshes their
-    /// labels and disabled state afterwards. Returns whether it created them.
-    /// A dialog that needs a secondary action, a close affordance or a custom
-    /// body still assembles its own slots with [`Self::set_confirm_slots`];
-    /// this helper leaves an already-populated dialog alone.
+    /// Slots given to the dialog before (a view's `.body`, `.close_action`,
+    /// `.cancel`, `.secondary`, `.confirm`, or the matching builder methods)
+    /// are placed as they are; a missing cancel or confirm action is made from
+    /// [`crate::ConfirmDialog::cancel_label`] / `confirm_label`. Idempotent:
+    /// afterwards it refreshes the label and disabled state of the buttons it
+    /// made, never of ones it was given. Returns whether it placed the slots.
+    /// A dialog populated with [`Self::set_confirm_slots`] keeps those slots.
     pub fn assemble_confirm_dialog(
         &mut self,
         dialog: Entity<crate::ConfirmDialog>,
@@ -241,7 +243,7 @@ impl AppContext {
             .node(dialog.id)
             .ok_or(FrameworkError::MissingView(dialog.id))?
             .document;
-        let (confirm_label, cancel_label, danger, busy, existing) =
+        let (confirm_label, cancel_label, danger, busy, existing, requested) =
             self.read(dialog, |dialog| {
                 (
                     Arc::clone(&dialog.confirm_label),
@@ -249,53 +251,65 @@ impl AppContext {
                     dialog.danger,
                     dialog.busy,
                     dialog.confirm_slots().cloned(),
+                    dialog.requested_slots().clone(),
                 )
             })?;
 
         if let Some(slots) = existing
             .filter(|slots| self.world.contains(slots.cancel) && self.world.contains(slots.confirm))
         {
-            self.update_component(
-                Entity::<crate::Button>::from_stable_id(slots.cancel),
-                |button, _| {
-                    button.label = cancel_label.to_string();
-                    button.disabled = busy;
-                },
-            )?;
-            self.update_component(
-                Entity::<crate::Button>::from_stable_id(slots.confirm),
-                |button, _| {
-                    button.label = confirm_label.to_string();
-                    button.disabled = busy;
-                },
-            )?;
+            let made = [
+                (requested.cancel.is_none(), slots.cancel, &cancel_label),
+                (requested.confirm.is_none(), slots.confirm, &confirm_label),
+            ];
+            for (made, button, label) in made {
+                if made {
+                    self.update_component(
+                        Entity::<crate::Button>::from_stable_id(button),
+                        |button, _| {
+                            button.label = label.to_string();
+                            button.disabled = busy;
+                        },
+                    )?;
+                }
+            }
             return Ok(false);
         }
 
-        let cancel = self.create_detached_component(
-            document,
-            crate::Button::new(cancel_label.as_ref())
-                .kind(nana_ui_core::ButtonKind::Ghost)
-                .disabled(busy),
-        )?;
-        let confirm = self.create_detached_component(
-            document,
-            crate::Button::new(confirm_label.as_ref())
-                .kind(if danger {
-                    nana_ui_core::ButtonKind::Danger
-                } else {
-                    nana_ui_core::ButtonKind::Primary
-                })
-                .disabled(busy),
-        )?;
+        let cancel = match requested.cancel {
+            Some(cancel) => cancel,
+            None => self
+                .create_detached_component(
+                    document,
+                    crate::Button::new(cancel_label.as_ref())
+                        .kind(nana_ui_core::ButtonKind::Ghost)
+                        .disabled(busy),
+                )?
+                .stable_id(),
+        };
+        let confirm = match requested.confirm {
+            Some(confirm) => confirm,
+            None => self
+                .create_detached_component(
+                    document,
+                    crate::Button::new(confirm_label.as_ref())
+                        .kind(if danger {
+                            nana_ui_core::ButtonKind::Danger
+                        } else {
+                            nana_ui_core::ButtonKind::Primary
+                        })
+                        .disabled(busy),
+                )?
+                .stable_id(),
+        };
         self.set_confirm_slots(
             dialog,
             crate::ConfirmSlots {
-                body: None,
-                close_action: None,
-                cancel: cancel.stable_id(),
-                secondary: None,
-                confirm: confirm.stable_id(),
+                body: requested.body,
+                close_action: requested.close_action,
+                cancel,
+                secondary: requested.secondary,
+                confirm,
             },
         )?;
         Ok(true)

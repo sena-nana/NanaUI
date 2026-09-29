@@ -147,23 +147,16 @@ pub(super) fn mount_runtime_pane_chrome(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     Ok(mount_root(document, || {
-        let (tabs, close) = (entity_ref::<RuntimeText>(), entity_ref::<RuntimeText>());
-        let header = widget(RuntimeText::new("")).children((
-            widget(RuntimeText::new("editor.rs")).entity_ref(tabs),
-            widget(RuntimeText::new("关闭")).entity_ref(close),
-        ));
-        let built = "the header slot is built before the chrome";
         widget(RuntimePaneChrome::new().active(true))
-            .child_slot(header, move |pane, header| {
-                pane.header(header)
-                    .tabs(tabs.get().expect(built).stable_id())
-                    .actions([nana_ui::runtime::PaneChromeAction::new(
-                        nana_ui::runtime::PaneChromeActionKind::CloseItem,
-                        "关闭",
-                    )
-                    .target(close.get().expect(built).stable_id())])
-            })
-            .child_slot(widget(RuntimeText::new("Body")), RuntimePaneChrome::body)
+            .tabs(widget(RuntimeText::new("editor.rs")))
+            .action(
+                nana_ui::runtime::PaneChromeAction::new(
+                    nana_ui::runtime::PaneChromeActionKind::CloseItem,
+                    "关闭",
+                ),
+                widget(RuntimeText::new("关闭")),
+            )
+            .body(widget(RuntimeText::new("Body")))
     })?)
 }
 

@@ -8,8 +8,8 @@ use nana_ui_core::{
 use crate::split_pane::split_direction;
 use crate::view_components::{IconButton, project_common};
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, MutationQueue,
-    NodeKind, NodeStyle, StableNodeId, TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FrameworkError,
+    InteractionState, MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent, UiWorld,
 };
 
 const fn chrome_height(metrics: nana_ui_core::ThemeMetrics) -> f32 {
@@ -267,6 +267,11 @@ impl Default for PaneChrome {
 }
 
 impl ComponentView for PaneChrome {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(AppContext::assemble_pane_chrome),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -1043,5 +1048,86 @@ mod tests {
             .unwrap();
         assert_eq!(context.world().text(action), Some("Close this pane"));
         assert!(context.world().standard_visual(action).is_none());
+    }
+}
+
+/// The header row a [`PaneChrome`] makes when it is given none; the chrome
+/// projects its style ([`PaneChrome::header`] names it once made).
+#[derive(Debug, Clone, PartialEq, Default)]
+struct PaneChromeHeader;
+
+impl ComponentView for PaneChromeHeader {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "pane-chrome-header".into(),
+        }
+    }
+
+    fn project(&self, _: StableNodeId, _: &UiWorld, _: &mut MutationQueue) {}
+}
+
+impl AppContext {
+    /// Put a pane chrome's slots in place: the header row first, then the
+    /// body. A header the chrome made holds the tabs and then each action's
+    /// control, in order; one the application gave keeps its own children.
+    /// Controls of actions no longer listed leave the row but stay alive.
+    /// The view layer runs this after it builds a chrome and after a binding
+    /// changes it (`TypeBehavior::slot_assembler`). Returns whether anything
+    /// changed.
+    pub fn assemble_pane_chrome(
+        &mut self,
+        chrome: Entity<PaneChrome>,
+    ) -> Result<bool, FrameworkError> {
+        let document = self
+            .world()
+            .node(chrome.stable_id())
+            .ok_or(FrameworkError::MissingView(chrome.stable_id()))?
+            .document;
+        let (header, tabs, body, targets) = self.read(chrome, |chrome| {
+            (
+                chrome.header,
+                chrome.tabs,
+                chrome.body,
+                chrome
+                    .actions
+                    .iter()
+                    .filter_map(|action| action.target)
+                    .collect::<Vec<_>>(),
+            )
+        })?;
+        let present =
+            |cx: &Self, id: Option<StableNodeId>| id.filter(|id| cx.world().contains(*id));
+        let made = |cx: &Self, id: StableNodeId| {
+            cx.read(Entity::<PaneChromeHeader>::from_stable_id(id), |_| ())
+                .is_ok()
+        };
+        let mut changed = false;
+        let header = match present(self, header) {
+            Some(header) if !made(self, header) => header,
+            given => {
+                let header = match given {
+                    Some(header) => header,
+                    None => {
+                        let header = self
+                            .create_detached_component(document, PaneChromeHeader)?
+                            .stable_id();
+                        self.update_component(chrome, |chrome, _| chrome.header = Some(header))?;
+                        changed = true;
+                        header
+                    }
+                };
+                let row = present(self, tabs)
+                    .into_iter()
+                    .chain(targets.into_iter().filter(|id| self.world().contains(*id)))
+                    .collect::<Vec<_>>();
+                changed |= self.reconcile_children(header, &row)?;
+                header
+            }
+        };
+        let order = std::iter::once(header)
+            .chain(present(self, body))
+            .collect::<Vec<_>>();
+        changed |= self.reconcile_children(chrome.stable_id(), &order)?;
+        Ok(changed)
     }
 }

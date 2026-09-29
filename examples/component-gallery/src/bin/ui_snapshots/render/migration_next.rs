@@ -23,7 +23,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nana_ui::runtime::view::{IntoView, detached, entity_ref, settings_row, widget, with_refs};
+use nana_ui::runtime::view::{IntoView, entity_ref, settings_row, widget, with_refs};
 use nana_ui::runtime::{
     AboutMetadata as RuntimeAboutMetadata, AboutSection as RuntimeAboutSection,
     AccessibilityAction, AccessibilityActionRequest, ActionMenu as RuntimeActionMenu,
@@ -33,7 +33,7 @@ use nana_ui::runtime::{
     Avatar as RuntimeAvatar, Button as RuntimeButton, CalendarHeatmap as RuntimeCalendarHeatmap,
     CalendarHeatmapDatum as RuntimeCalendarDatum, Card as RuntimeCard, Checkbox as RuntimeCheckbox,
     Chip as RuntimeChip, CommandPalette as RuntimeCommandPalette,
-    ConfirmDialog as RuntimeConfirmDialog, ConfirmSlots, ContextMenu as RuntimeContextMenu,
+    ConfirmDialog as RuntimeConfirmDialog, ContextMenu as RuntimeContextMenu,
     ContextMenuItem as RuntimeContextMenuItem, DesktopShell as RuntimeDesktopShell,
     Dialog as RuntimeDialog, Dock as RuntimeDock, DockNode as RuntimeDockNode,
     DockPanel as RuntimeDockPanel, DocumentId, DonutChart as RuntimeDonutChart,
@@ -47,7 +47,7 @@ use nana_ui::runtime::{
     InteractiveCard as RuntimeInteractiveCard, KeyCaptureLayer as RuntimeKeyCaptureLayer,
     KeymapLayer as RuntimeKeymapLayer, LabeledValue as RuntimeLabeledValue, LayoutViewport,
     LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
-    MarkdownBlock, MarkdownBlockKind, MarkdownSpan, ModalSlots, MountState, MutationQueue,
+    MarkdownBlock, MarkdownBlockKind, MarkdownSpan, MountState, MutationQueue,
     NativeMarkdown as RuntimeNativeMarkdown, NodeStyle, OverlayHost as RuntimeOverlayHost,
     PaneChrome as RuntimePaneChrome, PaneTree as RuntimePaneTree,
     PaneTreeNode as RuntimePaneTreeNode, Panel as RuntimePanel, Popover as RuntimePopover,
@@ -1074,30 +1074,11 @@ fn runtime_fixture(
                 .create_component(document_id, meter)?
                 .stable_id()
         }
-        Component::FormField => {
-            let (_, (control, field)) =
-                document.context_mut().mount_view_root(document_id, || {
-                    let (control, field) = (entity_ref::<RuntimeTextInput>(), entity_ref());
-                    with_refs(
-                        (
-                            detached(
-                                widget(
-                                    RuntimeTextInput::new("name@studio.local")
-                                        .placeholder("name@studio.local"),
-                                )
-                                .entity_ref(control),
-                            ),
-                            widget(RuntimeFormField::new("Email").error("Required"))
-                                .entity_ref(field),
-                        ),
-                        (control, field),
-                    )
-                })?;
-            document
-                .context_mut()
-                .set_form_field_control(field, Some(control.stable_id()))?;
-            field.stable_id()
-        }
+        Component::FormField => mount_root(&mut document, || {
+            widget(RuntimeFormField::new("Email").error("Required")).control(widget(
+                RuntimeTextInput::new("name@studio.local").placeholder("name@studio.local"),
+            ))
+        })?,
         Component::InteractiveCard => mount_root(&mut document, || {
             widget(
                 RuntimeInteractiveCard::new()
@@ -1117,125 +1098,55 @@ fn runtime_fixture(
                 .create_component(document_id, component)?
                 .stable_id()
         }
-        Component::Dialog => {
-            let (_, (body, close, dialog)) =
-                document.context_mut().mount_view_root(document_id, || {
-                    let (body, close) = (
-                        entity_ref::<RuntimeText>(),
-                        entity_ref::<RuntimeIconButton>(),
-                    );
-                    let dialog = entity_ref();
-                    with_refs(
-                        (
-                            detached(widget(RuntimeText::new("Camera A")).entity_ref(body)),
-                            detached(
-                                widget(RuntimeIconButton::new(Icon::Close, "Close"))
-                                    .entity_ref(close),
-                            ),
-                            widget(
-                                RuntimeDialog::new("Rename scene")
-                                    .description("This updates the workspace label.")
-                                    .size(DialogSize::Default),
-                            )
-                            .entity_ref(dialog),
-                        ),
-                        (body, close, dialog),
-                    )
-                })?;
-            document.context_mut().set_modal_slots(
-                dialog,
-                ModalSlots {
-                    body: Some(body.stable_id()),
-                    close_action: Some(close.stable_id()),
-                    ..ModalSlots::default()
-                },
-            )?;
-            dialog.stable_id()
-        }
+        Component::Dialog => mount_root(&mut document, || {
+            widget(
+                RuntimeDialog::new("Rename scene")
+                    .description("This updates the workspace label.")
+                    .size(DialogSize::Default),
+            )
+            .body(widget(RuntimeText::new("Camera A")))
+            .close_action(widget(RuntimeIconButton::new(Icon::Close, "Close")))
+        })?,
         Component::ConfirmDialog => {
             let mut confirm = RuntimeConfirmDialog::new("Delete take", "This cannot be undone.");
             confirm.danger = fixture.state == "danger";
             confirm.busy = fixture.state == "busy";
-            let buttons = document
-                .context_mut()
-                .mount_view_detached(document_id, || {
-                    (
-                        widget(RuntimeButton::new("取消")),
-                        widget(
-                            RuntimeButton::new(if fixture.state == "busy" {
-                                "处理中"
-                            } else {
-                                "确认"
-                            })
-                            .kind(if fixture.state == "danger" {
-                                nana_ui::ButtonKind::Danger
-                            } else {
-                                nana_ui::ButtonKind::Primary
-                            })
-                            .loading(fixture.state == "busy"),
-                        ),
-                        (fixture.state != "busy")
-                            .then(|| widget(RuntimeIconButton::new(Icon::Close, "Close"))),
-                    )
-                })?;
-            let buttons = buttons.roots();
-            let (cancel, accept, close) = (buttons[0], buttons[1], buttons.get(2).copied());
-            // Not a view: a view-built `ConfirmDialog` assembles itself,
-            // minting its own cancel/confirm pair (or relabelling these to
-            // its defaults), and the fixture pins its own labels and busy
-            // state. `set_confirm_slots` below places the buttons instead.
-            let confirm = document
-                .context_mut()
-                .create_component(document_id, confirm)?;
-            document.context_mut().set_confirm_slots(
-                confirm,
-                ConfirmSlots {
-                    body: None,
-                    close_action: close,
-                    cancel,
-                    secondary: None,
-                    confirm: accept,
-                },
-            )?;
-            confirm.stable_id()
+            mount_root(&mut document, || {
+                let dialog = widget(confirm)
+                    .cancel(widget(RuntimeButton::new("取消")))
+                    .confirm(widget(
+                        RuntimeButton::new(if fixture.state == "busy" {
+                            "处理中"
+                        } else {
+                            "确认"
+                        })
+                        .kind(if fixture.state == "danger" {
+                            nana_ui::ButtonKind::Danger
+                        } else {
+                            nana_ui::ButtonKind::Primary
+                        })
+                        .loading(fixture.state == "busy"),
+                    ));
+                if fixture.state == "busy" {
+                    dialog.into_any()
+                } else {
+                    dialog
+                        .close_action(widget(RuntimeIconButton::new(Icon::Close, "Close")))
+                        .into_any()
+                }
+            })?
         }
-        Component::Drawer => {
-            let (_, (body, close, drawer)) =
-                document.context_mut().mount_view_root(document_id, || {
-                    let (body, close) = (
-                        entity_ref::<RuntimeText>(),
-                        entity_ref::<RuntimeIconButton>(),
-                    );
-                    let drawer = entity_ref();
-                    with_refs(
-                        (
-                            detached(widget(RuntimeText::new("Properties")).entity_ref(body)),
-                            detached(
-                                widget(RuntimeIconButton::new(Icon::Close, "Close"))
-                                    .entity_ref(close),
-                            ),
-                            widget(RuntimeDrawer::new("Inspector").side(
-                                if fixture.state == "left" {
-                                    DrawerSide::Left
-                                } else {
-                                    DrawerSide::Right
-                                },
-                            ))
-                            .entity_ref(drawer),
-                        ),
-                        (body, close, drawer),
-                    )
-                })?;
-            document.context_mut().set_modal_slots(
-                drawer,
-                ModalSlots {
-                    body: Some(body.stable_id()),
-                    close_action: Some(close.stable_id()),
-                    ..ModalSlots::default()
-                },
-            )?;
-            drawer.stable_id()
-        }
+        Component::Drawer => mount_root(&mut document, || {
+            widget(
+                RuntimeDrawer::new("Inspector").side(if fixture.state == "left" {
+                    DrawerSide::Left
+                } else {
+                    DrawerSide::Right
+                }),
+            )
+            .body(widget(RuntimeText::new("Properties")))
+            .close_action(widget(RuntimeIconButton::new(Icon::Close, "Close")))
+        })?,
         Component::Toast => document
             .context_mut()
             .create_component(

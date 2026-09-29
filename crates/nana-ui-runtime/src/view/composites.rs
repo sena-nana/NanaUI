@@ -1,4 +1,5 @@
-//! Named slots of modal surfaces and the media transport bar, as views:
+//! Named slots of modal surfaces, the confirm dialog, the form field and
+//! the media transport bar, as views:
 //!
 //! ```ignore
 //! widget(Dialog::new("投币"))
@@ -13,7 +14,7 @@
 //! `each` there.
 
 use super::{El, IntoView};
-use crate::{Dialog, Drawer, MediaTransportBar, ModalSurface};
+use crate::{ConfirmDialog, Dialog, Drawer, FormField, MediaTransportBar, ModalSurface};
 
 macro_rules! modal_slots {
     ($($surface:ty),*) => {$(
@@ -33,11 +34,55 @@ macro_rules! modal_slots {
                     modal
                 })
             }
+
+            /// The affordance that dismisses the surface, beside its title.
+            pub fn close_action(self, view: impl IntoView) -> Self {
+                self.slot(view, |mut modal: $surface, id| {
+                    modal.slots_mut().close_action = Some(id);
+                    modal
+                })
+            }
         }
     )*};
 }
 
 modal_slots!(Dialog, Drawer);
+
+impl<K> El<ConfirmDialog, K> {
+    /// Content between the message and the actions.
+    pub fn body(self, view: impl IntoView) -> Self {
+        self.slot(view, ConfirmDialog::body)
+    }
+
+    /// The affordance that dismisses the dialog, beside its title.
+    pub fn close_action(self, view: impl IntoView) -> Self {
+        self.slot(view, ConfirmDialog::close_action)
+    }
+
+    /// The dismissing action, in place of the button the dialog makes from
+    /// [`ConfirmDialog::cancel_label`]. The dialog leaves its label alone.
+    pub fn cancel(self, view: impl IntoView) -> Self {
+        self.slot(view, ConfirmDialog::cancel)
+    }
+
+    /// A third action between cancel and confirm.
+    pub fn secondary(self, view: impl IntoView) -> Self {
+        self.slot(view, ConfirmDialog::secondary)
+    }
+
+    /// The confirming action, in place of the button the dialog makes from
+    /// [`ConfirmDialog::confirm_label`]. The dialog leaves its label alone.
+    pub fn confirm(self, view: impl IntoView) -> Self {
+        self.slot(view, ConfirmDialog::confirm)
+    }
+}
+
+impl<K> El<FormField, K> {
+    /// The field's control, under its label and over its message.
+    pub fn control(self, view: impl IntoView) -> Self {
+        self.child_slot(view, FormField::control_child)
+    }
+}
 
 impl<K> El<MediaTransportBar, K> {
     /// Controls after play: next, skip.

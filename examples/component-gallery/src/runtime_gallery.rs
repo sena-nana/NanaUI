@@ -1740,27 +1740,6 @@ fn mount_surfaces(
         .on(queue(pending, |_: &Activate| {
             GalleryMessage::PaneChrome(PaneChromeActionKind::CloseItem)
         }));
-        // An action the header does not show stays detached: its node is
-        // still what the pane's action targets once it shows.
-        let (split_shown, split_hidden) = if item_open && !split {
-            (Some(split_view), None)
-        } else {
-            (None, Some(split_view))
-        };
-        let (close_shown, close_hidden) = if item_open {
-            (Some(close_view), None)
-        } else {
-            (None, Some(close_view))
-        };
-        let header = widget(HostStack::fill_row(6.0)).children((
-            pane_text(
-                if item_open { "main.rs" } else { "空窗格" },
-                SemanticColorRole::Text,
-                pane_tabs,
-            ),
-            split_shown,
-            close_shown,
-        ));
         // The pane tree's leaves are detached; `reconcile_children` below
         // places the ones its layout shows. They are built first, so the
         // tree's root can name them.
@@ -1791,21 +1770,25 @@ fn mount_surfaces(
                     );
                 }),
         );
+        // Both actions are the pane's; which ones its header shows is
+        // `actions`, set from the state once mounted and on every sync.
         let pane_view = widget(PaneChrome::new())
             .entity_ref(pane)
-            .child_slot(header, move |chrome: PaneChrome, header| {
-                let built = "the pane header is built before the pane";
-                chrome
-                    .header(header)
-                    .tabs(pane_tabs.get().expect(built).stable_id())
-                    .actions(pane_actions_for(
-                        item_open,
-                        split,
-                        pane_split.get().expect(built).stable_id(),
-                        pane_close.get().expect(built).stable_id(),
-                    ))
-            })
-            .child_slot(pane_tree_view, PaneChrome::body);
+            .tabs(pane_text(
+                if item_open { "main.rs" } else { "空窗格" },
+                SemanticColorRole::Text,
+                pane_tabs,
+            ))
+            .action(
+                PaneChromeAction::new(PaneChromeActionKind::SplitHorizontal, "左右分栏"),
+                split_view,
+            )
+            .action(
+                PaneChromeAction::new(PaneChromeActionKind::CloseItem, "关闭 Item")
+                    .icon(Icon::Close),
+                close_view,
+            )
+            .body(pane_tree_view);
 
         let section_text = |value: &'static str, color, size| {
             widget(styled_text(value, color, size, type_scale::REGULAR))
@@ -1886,8 +1869,7 @@ fn mount_surfaces(
             ))
             .entity_ref(labeled),
         ));
-        // The detached actions come first: the pane reads their ids.
-        let view = ((split_hidden, close_hidden), content, hidden);
+        let view = (content, hidden);
         with_refs(
             view,
             (
@@ -1907,6 +1889,10 @@ fn mount_surfaces(
         pane_tree.stable_id(),
         &pane_tree_children(state, pane_empty, pane_editor, pane_left, pane_right),
     )?;
+    context.update_component(pane, |chrome, _| {
+        chrome.actions = pane_actions(state, pane_split.stable_id(), pane_close.stable_id());
+    })?;
+    context.assemble_pane_chrome(pane)?;
     Ok(SurfacesTree {
         root,
         tabs,
@@ -2836,6 +2822,7 @@ fn sync_surfaces(
             tree.pane_close.stable_id(),
         );
     });
+    let _ = context.assemble_pane_chrome(tree.pane);
     let _ = context.update_component(tree.labeled, |value, _| {
         *value = LabeledValue::new("当前卡片", format!("{}", state.selected_surface_card));
     });

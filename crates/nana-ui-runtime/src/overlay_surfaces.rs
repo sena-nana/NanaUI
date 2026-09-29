@@ -108,7 +108,20 @@ pub struct ConfirmDialog {
     behavior: ModalBehavior,
     slots: ModalSlots,
     confirm_slots: Option<ConfirmSlots>,
+    /// Slots given before the first assembly (a view's `.body`, `.cancel`…);
+    /// [`AppContext::assemble_confirm_dialog`] makes the buttons missing here.
+    requested: RequestedConfirmSlots,
     pub style: NodeStyle,
+}
+
+/// What a dialog was given before its first assembly.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RequestedConfirmSlots {
+    pub body: Option<StableNodeId>,
+    pub close_action: Option<StableNodeId>,
+    pub cancel: Option<StableNodeId>,
+    pub secondary: Option<StableNodeId>,
+    pub confirm: Option<StableNodeId>,
 }
 
 impl ConfirmDialog {
@@ -149,6 +162,7 @@ impl ConfirmDialog {
             behavior: ModalBehavior::default(),
             slots: ModalSlots::default(),
             confirm_slots: None,
+            requested: RequestedConfirmSlots::default(),
             style: modal_root_style(),
         }
     }
@@ -165,6 +179,42 @@ impl ConfirmDialog {
 
     pub fn behavior(&self) -> ModalBehavior {
         self.behavior
+    }
+
+    /// Content between the message and the actions, placed on assembly.
+    pub fn body(mut self, body: StableNodeId) -> Self {
+        self.requested.body = Some(body);
+        self
+    }
+
+    /// The dismissing affordance beside the title, placed on assembly.
+    pub fn close_action(mut self, close: StableNodeId) -> Self {
+        self.requested.close_action = Some(close);
+        self
+    }
+
+    /// The dismissing action; assembly makes one from
+    /// [`Self::cancel_label`] when none is given.
+    pub fn cancel(mut self, cancel: StableNodeId) -> Self {
+        self.requested.cancel = Some(cancel);
+        self
+    }
+
+    /// A third action between cancel and confirm, placed on assembly.
+    pub fn secondary(mut self, secondary: StableNodeId) -> Self {
+        self.requested.secondary = Some(secondary);
+        self
+    }
+
+    /// The confirming action; assembly makes one from
+    /// [`Self::confirm_label`] when none is given.
+    pub fn confirm(mut self, confirm: StableNodeId) -> Self {
+        self.requested.confirm = Some(confirm);
+        self
+    }
+
+    pub(crate) fn requested_slots(&self) -> &RequestedConfirmSlots {
+        &self.requested
     }
 
     pub fn confirm_slots(&self) -> Option<&ConfirmSlots> {
