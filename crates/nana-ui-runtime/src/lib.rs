@@ -316,7 +316,7 @@ pub use schedule::SystemWork;
 pub use search_dropdown::{SearchDropdown, SearchDropdownEvent, SearchDropdownOption};
 pub use select::{Select, SelectChanged, SelectOption};
 pub use selection::{
-    RovingFocusIntent, RovingFocusPolicy, SegmentedControl, SegmentedOption,
+    RovingFocusIntent, RovingFocusPolicy, SegmentedControl, SegmentedOption, SegmentedOptionChosen,
     SegmentedSelectionRequested, SelectionChrome, SelectionOrientation,
 };
 pub use settings::{

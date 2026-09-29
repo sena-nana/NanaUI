@@ -189,7 +189,7 @@ mod tests {
         viewed
             .mount_view(view_root.stable_id(), || {
                 settings_row("Mipmap")
-                    .hint(Some(Arc::<str>::from("远处贴图")))
+                    .hint("远处贴图")
                     .first_in_group(true)
                     .last_in_group(true)
                     .control(switch(""))

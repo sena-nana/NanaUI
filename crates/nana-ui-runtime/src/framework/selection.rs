@@ -425,6 +425,52 @@ impl AppContext {
     }
 
     /// Publish controlled selection without replacing the option identities.
+    /// Register a control's option children as its options, the one whose
+    /// `selected` flag is set as its selection. The view layer runs this
+    /// after it builds a control and after a binding changes the control or
+    /// one of its options (`TypeBehavior::slot_assembler`), so a view states
+    /// options and selection as data; a hidden option stays a child, and a
+    /// view disables it too. Returns whether anything changed.
+    pub fn assemble_segmented_control(
+        &mut self,
+        control: Entity<SegmentedControl>,
+    ) -> Result<bool, FrameworkError> {
+        let children = self
+            .world
+            .node(control.id)
+            .ok_or(FrameworkError::MissingView(control.id))?
+            .children
+            .clone();
+        let mut options = Vec::with_capacity(children.len());
+        let mut selected = None;
+        for id in children {
+            let option = Entity::<SegmentedOption>::from_stable_id(id);
+            let Ok(flag) = self.read(option, |option| option.selected) else {
+                continue;
+            };
+            if flag && selected.is_none() {
+                selected = Some(option);
+            }
+            options.push(option);
+        }
+        self.set_segmented_options_inner(control, options, selected)
+    }
+
+    /// [`Self::assemble_segmented_control`] for the control `option` sits in.
+    pub fn assemble_segmented_option(
+        &mut self,
+        option: Entity<SegmentedOption>,
+    ) -> Result<bool, FrameworkError> {
+        let Some(parent) = self.world.node(option.id).and_then(|node| node.parent) else {
+            return Ok(false);
+        };
+        let control = Entity::<SegmentedControl>::from_stable_id(parent);
+        if self.read(control, |_| ()).is_err() {
+            return Ok(false);
+        }
+        self.assemble_segmented_control(control)
+    }
+
     pub fn set_segmented_selection(
         &mut self,
         control: Entity<SegmentedControl>,
@@ -588,6 +634,7 @@ impl AppContext {
             // An application that wants to veto or redirect the choice writes
             // the selection it wants back with `set_segmented_selection`.
             self.set_segmented_selection(control, Some(requested))?;
+            self.update_component(requested, |_, cx| cx.emit(crate::SegmentedOptionChosen))?;
         }
         Ok(committed)
     }

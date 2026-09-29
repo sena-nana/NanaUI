@@ -208,6 +208,11 @@ impl Default for SegmentedControl {
 }
 
 impl ComponentView for SegmentedControl {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(crate::AppContext::assemble_segmented_control),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -492,6 +497,7 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
 impl ComponentView for SegmentedOption {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::activate_segmented_option),
+        slot_assembler: Some(crate::AppContext::assemble_segmented_option),
         ..crate::TypeBehavior::NONE
     };
 
@@ -603,6 +609,11 @@ impl ComponentView for SegmentedOption {
 pub struct SegmentedSelectionRequested {
     pub option: StableNodeId,
 }
+
+/// Emitted on the option the user chose, after [`SegmentedSelectionRequested`]
+/// on its control, so each option can carry its own handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentedOptionChosen;
 
 #[cfg(test)]
 mod tests {

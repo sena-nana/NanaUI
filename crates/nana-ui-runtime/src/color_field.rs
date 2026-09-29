@@ -154,6 +154,7 @@ impl ColorField {
 impl ComponentView for ColorField {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(crate::AppContext::assemble_color_field),
+        slot_assembler: Some(crate::AppContext::assemble_color_field),
         ..crate::TypeBehavior::NONE
     };
 
@@ -695,5 +696,30 @@ mod tests {
         }
         let value = context.read(field, |field| field.value).unwrap();
         assert!(value[2] > 0.5, "a complete hex still commits: {value:?}");
+    }
+
+    /// A field built by a view gets its swatch and hex field without the
+    /// view assembling it.
+    #[cfg(feature = "reactive-view")]
+    #[test]
+    fn a_view_field_assembles_itself() {
+        use crate::view::widget;
+        let document = crate::DocumentId::new(1).unwrap();
+        let mut context = AppContext::new();
+        let root = context
+            .create_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        context
+            .mount_view(root.stable_id(), || {
+                widget(ColorField::new([0.2, 0.4, 0.8, 1.0]))
+            })
+            .unwrap();
+        let field = context.world().node(root.stable_id()).unwrap().children[0];
+        let (swatch, hex) = context
+            .read(Entity::<ColorField>::from_stable_id(field), |field| {
+                (field.swatch, field.hex)
+            })
+            .unwrap();
+        assert!(swatch.is_some() && hex.is_some());
     }
 }

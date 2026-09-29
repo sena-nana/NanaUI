@@ -27,6 +27,7 @@ mod node;
 mod prop;
 pub(crate) mod reactive;
 mod resource;
+mod selection;
 mod settings;
 mod shell;
 mod store;
@@ -64,6 +65,7 @@ pub use reactive::{
     on_mount, provide, reactive_stats, signal, untrack, use_context, watch_effect,
 };
 pub use resource::{Resource, Suspense, resource, suspense};
+pub use selection::{segmented, segmented_option};
 pub use settings::settings_row;
 pub use store::{
     Item, KeyedList, Store, StoreList, StorePath, Subfield, store, store_with_history,

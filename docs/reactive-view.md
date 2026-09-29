@@ -139,7 +139,8 @@ widget(DesktopShell::from_model(model).title("Gallery"))
 - slot 必须恰好有一个根节点，否则挂载失败，返回 `InvalidInput`，这次什么也不提交。slot 和组件在同一次提交里建好，slot 里创建的信号归同一个挂载作用域，卸载时一起回收。
 - **装配**：需要装配的控件在 `TypeBehavior::slot_assembler` 里登记自己的 `assemble_*`。视图层在建好这类节点之后，以及绑定改了它之后，自动运行装配，所以视图里不写 `assemble_desktop_shell`。builder 仍然由调用方自己调用 `assemble_*`：在每次写入时都装配会弄脏空闲的 world，见 `TypeBehavior::assembler`。
 - slot 的节点在视图的整个生命周期里不换：里面的内容要变，就在 slot 里用 `when` / `each` / `dynamic`；区域显示还是隐藏，由 `WorkspaceModel` 决定。
-- 目前登记了装配的有 `DesktopShell`、`AppTitleBar` 和 `SettingsRow`；带具名 slot 方法的是前两个（`view/shell.rs`）和设置行的 `.control(view)`（`view/settings.rs`）。其他组合控件可以先用通用的 `.slot` / `.child_slot`，并自己调用 `assemble_*`。
+- 目前登记了装配的有 `DesktopShell`、`AppTitleBar`、`SettingsRow`、`SegmentedControl`（及其 `SegmentedOption`）和 `ColorField`；带具名 slot 方法的是前两个（`view/shell.rs`）和设置行的 `.control(view)`（`view/settings.rs`）。其他组合控件可以先用通用的 `.slot` / `.child_slot`，并自己调用 `assemble_*`。
+- **分段选择**：`segmented().children((segmented_option("面捕").selected(..).on_select(..), …))`（`view/selection.rs`）。选项就是控件的子节点，`label`、`disabled`、`selected` 可绑定；控件按子节点和 `selected` 标记登记选项与选中项（`assemble_segmented_control`），任一选项的绑定变了也会重新登记。用户选中一项时，控件先发 `SegmentedSelectionRequested`，再在那一项上发 `SegmentedOptionChosen`，`.on_select` 听的是后者。要隐藏的选项仍留作子节点，同时把它禁用。
 - **设置行**：`settings_row(label).hint(..).divided(..).control(switch(""))`。行自己建标签和说明（`assemble_settings_row`），结构和 `mount_settings_leaf_row` 建出的行逐节点相同；`label`、`hint`、`divided`、`stacked`、`first_in_group`、`last_in_group` 都可绑定，`.visible(..)` 控制显隐。分组里哪一行是首行、末行，由应用按自己的数据算好再绑定。
 
 ## `view!` 模板
