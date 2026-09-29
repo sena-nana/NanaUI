@@ -3320,6 +3320,123 @@ fn a_rounded_clip_edge_stays_one_device_pixel_under_an_anisotropic_transform() {
 }
 
 #[test]
+fn rectangle_and_polygon_clip_edges_stay_one_device_pixel_under_a_transform() {
+    // Under `rotate(20deg) scale(1.3, 0.8)`: a rectangular `overflow: hidden`
+    // parent clipping a larger quad or texture, a `clip-path: polygon()`
+    // parent clipping a larger quad, and a quad clipped by its own polygon.
+    // Every edge is the clip's, compared with a one device pixel ramp over
+    // its exact distance.
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let view = solid_texture_view(&device, &queue, format, 64, 64, wgpu::Color::GREEN);
+    let registry = register_host_texture("fill", &view, 64, 64);
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let (sin, cos) = 20f32.to_radians().sin_cos();
+    let [a, b, c, d] = [cos * 1.3, sin * 1.3, -sin * 0.8, cos * 0.8];
+    let transform = Some(PaintTransform {
+        a,
+        b,
+        c,
+        d,
+        ..PaintTransform::default()
+    });
+    let on_screen = |points: &[[f32; 2]]| -> Vec<[f32; 2]> {
+        points
+            .iter()
+            .map(|[x, y]| {
+                let [u, v] = [x - 32.0, y - 32.0];
+                [32.0 + a * u + c * v, 32.0 + b * u + d * v]
+            })
+            .collect()
+    };
+    let square = on_screen(&[[16.0, 16.0], [48.0, 16.0], [48.0, 48.0], [16.0, 48.0]]);
+    let triangle = on_screen(&[[16.0, 16.0], [48.0, 16.0], [32.0, 48.0]]);
+    let mut rectangle = extracted_div(
+        1,
+        &[2],
+        16.0,
+        16.0,
+        32.0,
+        32.0,
+        nana_ui_core::LayoutStyle {
+            overflow_x: OverflowSpec::Hidden,
+            overflow_y: OverflowSpec::Hidden,
+            ..nana_ui_core::LayoutStyle::default()
+        },
+        None,
+    );
+    Arc::make_mut(&mut rectangle.source_style.layout).transform = transform;
+    let mut polygon = clip_path_polygon_parent(1, &[2], 16.0, 16.0, 32.0, 32.0);
+    Arc::make_mut(&mut polygon.source_style.layout).transform = transform;
+    let mut own = clip_path_polygon_parent(1, &[], 16.0, 16.0, 32.0, 32.0);
+    own.style = Arc::new(ComputedStyle {
+        background: Some(green),
+        ..ComputedStyle::default()
+    });
+    let layout = Arc::make_mut(&mut own.source_style.layout);
+    layout.background = Some(green);
+    layout.transform = transform;
+    let quad_child = colored_quad_child(2, 1, 8.0, 8.0, 48.0, 48.0, green);
+    let texture_child = host_texture_child(2, 1, 8.0, 8.0, 48.0, 48.0, "fill");
+    type Case<'a> = (&'a str, Vec<ExtractedNode>, &'a [[f32; 2]]);
+    let cases: [Case; 4] = [
+        (
+            "rectangle clip, quad",
+            vec![rectangle.clone(), quad_child.clone()],
+            &square,
+        ),
+        (
+            "rectangle clip, texture",
+            vec![rectangle, texture_child],
+            &square,
+        ),
+        ("polygon clip, quad", vec![polygon, quad_child], &triangle),
+        ("own polygon", vec![own], &triangle),
+    ];
+    for (label, nodes, corners) in cases {
+        let mut scene = UiScene::new();
+        scene.apply_delta(nodes, []);
+        let (target, target_view) = test_copy_target(&device, format, 64, 64);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        SceneWgpuPainter::for_test(format)
+            .paint_encoder(
+                &scene,
+                &mut encoder,
+                &target_view,
+                ScenePaintViewport {
+                    logical_size: [64.0, 64.0],
+                    physical_size: [64, 64],
+                    scale_factor: 1.0,
+                    scene_origin: [0.0, 0.0],
+                    target_origin: [0.0, 0.0],
+                    clear_color: [0.0, 0.0, 0.0, 1.0],
+                    clear: true,
+                },
+                Some(&registry),
+                None,
+            )
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &target, 64, 64);
+        for py in 0..64 {
+            for px in 0..64 {
+                let outside = convex_polygon_distance([px as f32 + 0.5, py as f32 + 0.5], corners);
+                if outside.abs() > 1.2 {
+                    continue;
+                }
+                let expected = (0.5 - outside).clamp(0.0, 1.0) * 255.0;
+                let green = f32::from(pixel(&pixels, 64, px, py)[1]);
+                assert!(
+                    (green - expected).abs() <= 8.0,
+                    "{label}: ({px},{py}) is {outside:+.3} px from the edge, \
+                     expected green {expected:.0}, got {green}"
+                );
+            }
+        }
+    }
+    drop(view);
+}
+
+#[test]
 fn child_host_texture_is_antialiased_by_its_parents_rounded_clip() {
     // A host texture takes the frame off MSAA: the clip's own ramp is the
     // only thing that can smooth this edge.
@@ -3618,19 +3735,20 @@ fn rounded_host_texture_edge_stays_one_device_pixel_under_scale_and_fractional_d
     drop(view);
 }
 
-/// Signed device px from `p` to the convex quadrilateral `corners`: the
-/// exact distance a one device pixel ramp is measured against.
-fn quadrilateral_distance(p: [f32; 2], corners: &[[f32; 2]; 4]) -> f32 {
+/// Signed device px from `p` to the convex polygon `corners`: the exact
+/// distance a one device pixel ramp is measured against.
+fn convex_polygon_distance(p: [f32; 2], corners: &[[f32; 2]]) -> f32 {
+    let n = corners.len();
     let (mut outside, mut inside, mut nearest_side) = (f32::INFINITY, true, f32::INFINITY);
-    let orientation = (0..4)
+    let orientation = (0..n)
         .map(|i| {
-            let [a, b] = [corners[i], corners[(i + 1) % 4]];
+            let [a, b] = [corners[i], corners[(i + 1) % n]];
             a[0] * b[1] - b[0] * a[1]
         })
         .sum::<f32>()
         .signum();
-    for i in 0..4 {
-        let [a, b] = [corners[i], corners[(i + 1) % 4]];
+    for i in 0..n {
+        let [a, b] = [corners[i], corners[(i + 1) % n]];
         let side = [b[0] - a[0], b[1] - a[1]];
         let to_p = [p[0] - a[0], p[1] - a[1]];
         let length = side[0].hypot(side[1]);
@@ -3856,7 +3974,7 @@ fn square_edges_stay_one_device_pixel_under_any_affine_transform() {
             for py in 0..side {
                 for px in 0..side {
                     let center = [px as f32 + 0.5, py as f32 + 0.5];
-                    let outside = quadrilateral_distance(center, &corners);
+                    let outside = convex_polygon_distance(center, &corners);
                     if outside.abs() > 1.5 {
                         continue;
                     }
@@ -10943,7 +11061,7 @@ fn a_gradient_colours_text_across_its_glyphs() {
 }
 
 #[test]
-fn a_curved_clip_cuts_an_image_exactly_and_an_image_can_fill_a_path() {
+fn a_curved_clip_cuts_an_image_along_its_curve_and_an_image_can_fill_a_path() {
     let url = green_svg_url();
     let pixels = paint_one_painter(
         PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
@@ -10991,9 +11109,9 @@ fn a_curved_clip_cuts_an_image_exactly_and_an_image_can_fill_a_path() {
     let at = |x, y| pixel(&pixels, 130, x, y);
     assert!(is_green_slot(at(30, 30)), "disc centre: {:?}", at(30, 30));
     assert_eq!(at(3, 3)[1], 0, "outside the disc: {:?}", at(3, 3));
-    // Inside the bounding box, outside the circle — the bounding-box
-    // approximation would have painted it.
-    assert_eq!(at(8, 8)[1], 0, "{:?}", at(8, 8));
+    // Inside the bounding box, 0.4px outside the circle: at most its edge's
+    // ramp, where the bounding-box approximation would have painted it.
+    assert!(at(8, 8)[1] < 40, "{:?}", at(8, 8));
     assert!(is_green_slot(at(100, 45)), "triangle: {:?}", at(100, 45));
     assert_eq!(at(75, 10)[1], 0, "beside the triangle: {:?}", at(75, 10));
 }

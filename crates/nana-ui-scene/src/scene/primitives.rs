@@ -94,6 +94,8 @@ impl UiScene {
         let style = node.source_style.layout.as_ref();
         let overflow = overflow_clip_region(style, bounds, transform);
         let clip_path = clip_path_region(style, bounds, transform);
+        // The clip-path closes both chains below: the painter drops it from
+        // a quad that tests its own polygon in its shader.
         let clips: Arc<[ClipRegion]> = {
             let mut chain = parent_clips.to_vec();
             chain.extend(overflow.clone());

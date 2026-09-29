@@ -930,13 +930,43 @@ impl SceneWgpuPainter {
                 let Some(scissor) = physical_scissor(clip, scale, dest_physical) else {
                     continue;
                 };
-                let frag_clip = fragment_clip(&primitive.clips, origin);
+                // A quad tests its own `clip-path: polygon()` in its shader,
+                // against its fill's edge; it closes the quad's chain, and
+                // dest-wrapping it as well would ramp that edge twice.
+                let own_polygon = match &primitive.kind {
+                    ScenePrimitiveKind::Quad { surface, .. } => surface.polygon_clip.as_ref(),
+                    _ => None,
+                };
+                debug_assert!(
+                    own_polygon.is_none_or(|points| {
+                        primitive
+                            .clips
+                            .last()
+                            .and_then(|clip| clip.polygon_clip.as_ref())
+                            == Some(points)
+                    }),
+                    "a quad's own clip-path closes its clip chain"
+                );
+                let clips = match primitive.clips.split_last() {
+                    Some((_, outer)) if own_polygon.is_some() => outer,
+                    _ => &primitive.clips[..],
+                };
+                let frag_clip = fragment_clip(clips, origin);
+                // Quads, icons and host textures test no polygon or ellipse:
+                // an innermost one dest-wraps them with its rectangle
+                // (`clip_dests_for`), which must not ramp in their own shader
+                // as well, or an edge the two share would fade twice.
+                let vertex_clip = if frag_clip.polygon_count > 0 {
+                    FragmentClip::PASS
+                } else {
+                    frag_clip
+                };
                 let (affine, persp) =
                     paint_transform(encode_transform.0, encode_transform.1, origin);
                 let bounds = local_rect(primitive.bounds);
                 // Wrapping drains and re-inserts this primitive's commands
                 // behind a `PushGroup`, so no batch may span the edit.
-                let clip_dests = clip_dests_for(&primitive.kind, &primitive.clips, origin);
+                let clip_dests = clip_dests_for(&primitive.kind, clips, origin);
                 if !clip_dests.is_empty() {
                     batching.close_all();
                 }
@@ -966,7 +996,7 @@ impl SceneWgpuPainter {
                             &mut self.url_cache,
                             bounds,
                             clip,
-                            frag_clip,
+                            vertex_clip,
                             affine,
                             persp,
                             *background,
@@ -1045,7 +1075,7 @@ impl SceneWgpuPainter {
                                 &mut self.url_cache,
                                 item_bounds,
                                 clip,
-                                frag_clip,
+                                vertex_clip,
                                 affine,
                                 persp,
                                 *background,
@@ -1239,7 +1269,7 @@ impl SceneWgpuPainter {
                                 &mut self.url_cache,
                                 item_bounds,
                                 clip,
-                                frag_clip,
+                                vertex_clip,
                                 affine,
                                 persp,
                                 Some(*color),
@@ -1274,7 +1304,7 @@ impl SceneWgpuPainter {
                             *icon,
                             color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                             opacity,
-                            frag_clip,
+                            vertex_clip,
                             Some(&gpu_work),
                         ) {
                             push_icon(
@@ -1304,7 +1334,7 @@ impl SceneWgpuPainter {
                                 *icon,
                                 color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
                                 opacity,
-                                frag_clip,
+                                vertex_clip,
                                 Some(&gpu_work),
                             ) {
                                 push_icon(
@@ -1469,7 +1499,7 @@ impl SceneWgpuPainter {
                                 opacity,
                                 *corner_radius,
                                 bounds,
-                                frag_clip,
+                                vertex_clip,
                                 dest_physical,
                                 scale,
                                 mask.clone(),

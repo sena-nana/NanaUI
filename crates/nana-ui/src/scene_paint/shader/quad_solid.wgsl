@@ -182,8 +182,27 @@ fn solid_fs_main(
     let paint = paint_buffer.items[input.instance_index];
     let local_uv = (input.local_pos - input.pos) / max(input.scale, vec2(0.0001));
 
-    if ((paint.flags & PAINT_POLYGON) != 0u) && !point_in_polygon(local_uv, paint) {
-        discard;
+
+    // The box's own `clip-path: polygon()` (which is not dest-wrapped for
+    // it), ramped over one device pixel: `local_uv` moves `local_d* / scale`
+    // per device pixel.
+    var polygon_cover = 1.0;
+    if ((paint.flags & PAINT_POLYGON) != 0u) {
+        let scale = max(input.scale, vec2(0.0001));
+        let edge = polygon_edge_distance(
+            local_uv,
+            paint.polygon_count,
+            paint.poly0,
+            paint.poly1,
+            paint.poly2,
+            paint.poly3,
+            local_dx / scale,
+            local_dy / scale,
+        );
+        polygon_cover = clamp(0.5 - select(edge, -edge, point_in_polygon(local_uv, paint)), 0.0, 1.0);
+        if polygon_cover <= 0.0 {
+            discard;
+        }
     }
 
     var mixed_color: vec4<f32> = compose_quad_fill(input.color, local_uv, paint);
@@ -290,7 +309,9 @@ fn solid_fs_main(
         quad_alpha = cover;
     }
 
-    let quad_color = mixed_color * quad_alpha;
+    // Where the polygon runs along a side of the box, the nearer of the two
+    // edges rules, not both ramps at once.
+    let quad_color = mixed_color * min(quad_alpha, polygon_cover);
 
     // The sample is the curve's, overshoot included; what the quad can show
     // is an opacity, as the CPU compositor clamps it too.
@@ -326,7 +347,8 @@ fn solid_fs_main(
             blur <= 0.0,
         );
         let under = select(1.0 - quad_alpha, fill_alpha, inset);
-        return mix(quad_color, input.shadow_color, under * shadow_alpha) * fade;
+        // `clip-path` clips the shadow too.
+        return mix(quad_color, input.shadow_color, under * shadow_alpha * polygon_cover) * fade;
     } else {
         return quad_color * fade;
     }

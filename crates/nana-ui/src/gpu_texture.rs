@@ -175,15 +175,10 @@ fn overflow_clip_local(world: vec2<f32>) -> vec2<f32> {
 // An ancestor overflow clip's coverage, ramped as `fragment_clip_coverage`.
 fn overflow_clip_coverage(world: vec2<f32>) -> f32 {
     let local = overflow_clip_local(world);
-    let radius = layer.clip_inv_ef.z;
-    if (radius <= 0.0) {
-        let inside = all(local >= layer.clip_rect.xy) && all(local <= layer.clip_rect.xy + layer.clip_rect.zw);
-        return select(0.0, 1.0, inside);
-    }
-    // A rounded edge ramps out past the clip's rectangle, so no binary test
-    // of the rectangle cuts it (as `color.wgsl`).
+    // Rounded or not, the clip's edge ramps over one device pixel (as
+    // `color.wgsl`).
     let half = layer.clip_rect.zw * 0.5;
-    let corner = min(radius, min(half.x, half.y));
+    let corner = min(max(layer.clip_inv_ef.z, 0.0), min(half.x, half.y));
     // `world` is logical px: it moves `1 / scale` per device pixel, and the
     // inverse's columns take that to clip-local space (as `color.wgsl`).
     let scale = max(layer.source.y, 0.0001);

@@ -10,16 +10,6 @@ fn clip_apply_affine(abcd: vec4<f32>, ef: vec2<f32>, p: vec2<f32>) -> vec2<f32> 
     );
 }
 
-fn inside_transformed_rect(
-    world: vec2<f32>,
-    rect: vec4<f32>,
-    inv_abcd: vec4<f32>,
-    inv_ef: vec2<f32>
-) -> bool {
-    let local = clip_apply_affine(inv_abcd, inv_ef, world);
-    return all(local >= rect.xy) && all(local <= rect.xy + rect.zw);
-}
-
 fn clip_polygon_point(index: u32, poly0: vec4<f32>, poly1: vec4<f32>, poly2: vec4<f32>, poly3: vec4<f32>) -> vec2<f32> {
     switch index {
         case 0u: { return poly0.xy; }
@@ -59,10 +49,38 @@ fn point_in_clip_polygon(local: vec2<f32>, count: u32, poly0: vec4<f32>, poly1: 
     return winding != 0;
 }
 
-// How much of this fragment the clip keeps, 0 (discard) to 1. Rounded and
-// elliptical edges ramp over one device pixel like the quad's own edge;
-// rectangle and polygon edges stay binary. `pixels_per_world` is the scale
-// factor for logical `world`, 1 for a clip `for_physical_pixels`.
+// Device px from `p` to the nearest side of the polygon in `poly0..3` (two
+// points per vec4), each side taken to the screen through the Jacobian whose
+// columns `dx`/`dy` are `p`'s screen derivatives: exact under any affine map.
+// Unsigned: the caller's own fill rule says which side is inside.
+fn polygon_edge_distance(
+    p: vec2<f32>,
+    count: u32,
+    poly0: vec4<f32>,
+    poly1: vec4<f32>,
+    poly2: vec4<f32>,
+    poly3: vec4<f32>,
+    dx: vec2<f32>,
+    dy: vec2<f32>,
+) -> f32 {
+    // `J⁻¹` up to its determinant, which the distance divides out at the end.
+    let adjugate = mat2x2(vec2(dy.y, -dx.y), vec2(-dy.x, dx.x));
+    var nearest = 3.0e38;
+    for (var i: u32 = 0u; i < count; i = i + 1u) {
+        let a = clip_polygon_point(i, poly0, poly1, poly2, poly3);
+        let b = clip_polygon_point((i + 1u) % count, poly0, poly1, poly2, poly3);
+        let side = adjugate * (b - a);
+        let to_p = adjugate * (p - a);
+        let t = clamp(dot(to_p, side) / max(dot(side, side), 1.0e-30), 0.0, 1.0);
+        nearest = min(nearest, length(to_p - side * t));
+    }
+    return nearest / max(abs(dx.x * dy.y - dx.y * dy.x), 1.0e-12);
+}
+
+// How much of this fragment the clip keeps, 0 (discard) to 1. Every edge,
+// rectangle, rounded, elliptical or polygonal, ramps over one device pixel
+// like the quad's own edge. `pixels_per_world` is the scale factor for
+// logical `world`, 1 for a clip `for_physical_pixels`.
 fn fragment_clip_coverage(
     world: vec2<f32>,
     rect: vec4<f32>,
@@ -76,6 +94,10 @@ fn fragment_clip_coverage(
     poly3: vec4<f32>,
     pixels_per_world: f32,
 ) -> f32 {
+    // `FragmentClip::PASS`, what most unclipped fragments carry, keeps all.
+    if (polygon_count == 0u && corner_radius <= 0.0 && all(rect.zw >= vec2(1.0e7))) {
+        return 1.0;
+    }
     let local = clip_apply_affine(inv_abcd, inv_ef, world);
     let rel = local - rect.xy;
     // Clip-local px per device pixel along each screen axis: world moves
@@ -84,9 +106,6 @@ fn fragment_clip_coverage(
     // callers could not take here.
     let dx = inv_abcd.xy / pixels_per_world;
     let dy = inv_abcd.zw / pixels_per_world;
-    // A rounded or elliptical edge lies inside the clip's rectangle and ramps
-    // out past it, so the rectangle's binary test would cut the ramp's outer
-    // half where the curve meets a side.
     if (polygon_count == 1u) {
         // First order: the ellipse's implicit function over its screen gradient.
         let half = max(rect.zw * 0.5, vec2(0.0001));
@@ -98,18 +117,13 @@ fn fragment_clip_coverage(
     }
     let half = rect.zw * 0.5;
     let radius = min(corner_radius, min(half.x, half.y));
-    if (radius <= 0.0) || (polygon_count >= 3u) {
-        if !inside_transformed_rect(world, rect, inv_abcd, inv_ef) {
-            return 0.0;
-        }
-        if (polygon_count >= 3u) && !point_in_clip_polygon(rel, polygon_count, poly0, poly1, poly2, poly3) {
-            return 0.0;
-        }
-        if (radius <= 0.0) {
-            return 1.0;
-        }
+    var cover = clamp(0.5 - rounded_box_distance(rel - half, half, vec4(radius), dx, dy), 0.0, 1.0);
+    if (polygon_count >= 3u) {
+        let edge = polygon_edge_distance(rel, polygon_count, poly0, poly1, poly2, poly3, dx, dy);
+        let inside = point_in_clip_polygon(rel, polygon_count, poly0, poly1, poly2, poly3);
+        cover = min(cover, clamp(0.5 - select(edge, -edge, inside), 0.0, 1.0));
     }
-    return clamp(0.5 - rounded_box_distance(rel - half, half, vec4(radius), dx, dy), 0.0, 1.0);
+    return cover;
 }
 
 fn unpack_color(data: vec2<u32>) -> vec4<f32> {
