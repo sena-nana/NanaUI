@@ -599,6 +599,48 @@ impl AppContext {
         })
     }
 
+    /// A press released on a popover: its trigger toggles it; the open
+    /// surface around its items, which takes the pointer above the page so
+    /// the press does not fall through, does nothing.
+    pub(crate) fn activate_popover_at(
+        &mut self,
+        entity: Entity<Popover>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self.world.hanging_surface_contains(entity.id, x, y) {
+            return Ok(false);
+        }
+        self.toggle_popover(entity)
+    }
+
+    /// [`Self::activate_popover_at`] for an [`ActionMenu`].
+    pub(crate) fn activate_action_menu_at(
+        &mut self,
+        entity: Entity<ActionMenu>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self.world.hanging_surface_contains(entity.id, x, y) {
+            return Ok(false);
+        }
+        self.toggle_action_menu(entity)
+    }
+
+    /// A press released on a hover card activates its trigger, not the open
+    /// card's surface around its content.
+    pub(crate) fn activate_hover_card_at(
+        &mut self,
+        entity: Entity<HoverCard>,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        if self.world.hanging_surface_contains(entity.id, x, y) {
+            return Ok(false);
+        }
+        self.activate_hover_card(entity)
+    }
+
     /// A popover that closed around the focus (on one of its items) gives it
     /// back to its trigger, which stays on screen, instead of leaving it on a
     /// hidden item. Runs after each write, so it holds however the popover

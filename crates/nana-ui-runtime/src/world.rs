@@ -684,6 +684,10 @@ pub struct UiWorld {
     /// Nodes with an authored `z-index`, or an open triggered menu overlay
     /// whose children inject z-index. Stacking walks skip when this is zero.
     z_index_nodes: usize,
+    /// Live open triggered menus (Popover, ActionMenu, HoverCard). Their
+    /// surfaces take the pointer at the content's level, above the page, so
+    /// hit testing looks them up here instead of walking the tree.
+    triggered_overlays: HashSet<StableNodeId, BuildIdHasher>,
     /// Live nodes whose box resolves against the viewport (`position: fixed`,
     /// `vw` / `vh`). A resize dirties this set together with document roots
     /// instead of discarding the retained layout cache.
@@ -841,6 +845,7 @@ impl UiWorld {
             confirm_modals: 0,
             clip_visuals: 0,
             z_index_nodes: 0,
+            triggered_overlays: HashSet::default(),
             viewport_basis_nodes: 0,
             viewport_basis: HashMap::default(),
             document_viewports: HashMap::default(),
@@ -2165,6 +2170,7 @@ impl UiWorld {
             clip: is_clip_visual(visual),
             z_index: record.is_some_and(|record| record.style.layout.z_index.is_some())
                 || is_triggered_menu_overlay(visual),
+            triggered: is_triggered_menu_overlay(visual),
             viewport: record.is_some_and(|record| record.layout_depends_on_viewport),
         }
     }
@@ -2193,6 +2199,15 @@ impl UiWorld {
                 if ids.is_empty() {
                     self.viewport_basis.remove(&document);
                 }
+            }
+        }
+        if let Some(id) = id
+            && previous.triggered != next.triggered
+        {
+            if next.triggered {
+                self.triggered_overlays.insert(id);
+            } else {
+                self.triggered_overlays.remove(&id);
             }
         }
         if let Some(id) = id {
@@ -2959,6 +2974,8 @@ struct PresenceFlags {
     confirm: bool,
     clip: bool,
     z_index: bool,
+    /// An open triggered menu, whose surface hangs above the page.
+    triggered: bool,
     /// Style resolves against the viewport (`position: fixed`, `vw` / `vh`).
     viewport: bool,
 }
@@ -2968,6 +2985,7 @@ impl PresenceFlags {
         confirm: false,
         clip: false,
         z_index: false,
+        triggered: false,
         viewport: false,
     };
 }

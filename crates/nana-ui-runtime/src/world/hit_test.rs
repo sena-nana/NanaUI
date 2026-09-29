@@ -1033,6 +1033,13 @@ impl UiWorld {
         key: &mut HitPaintKey,
     ) {
         key.clear();
+        if self.triggered_overlays.contains(&target) && self.hanging_surface_contains(target, x, y)
+        {
+            // The surface is a root-level layer at its content's level, below
+            // every item of that content (each has a longer path there).
+            key.groups.push((crate::popover::MENU_OVERLAY_Z_INDEX, 0));
+            return;
+        }
         let shift = index.inherited_shift(target);
         let has_overlay = self
             .document_of(target)
@@ -1242,7 +1249,10 @@ impl UiWorld {
         let Some(forest) = self.collect_hit_candidates(document, x, y, &mut candidates) else {
             return candidates;
         };
-        if forest.viewport_hit_at(x, y) || self.has_compositor_transform_overlay_for(document) {
+        if forest.viewport_hit_at(x, y)
+            || self.has_compositor_transform_overlay_for(document)
+            || self.hanging_surfaces_at(document, x, y).next().is_some()
+        {
             candidates.sort_by_cached_key(|id| {
                 let mut key = HitPaintKey::default();
                 self.hit_paint_key(forest, *id, x, y, &mut key);
@@ -1274,8 +1284,36 @@ impl UiWorld {
                 false
             });
         }
+        // An open menu's surface is not in its trigger's branch of the
+        // index: it hangs above the page, out of the trigger's clips.
+        for id in self.hanging_surfaces_at(document, x, y) {
+            if !candidates.contains(&id) {
+                candidates.push(id);
+            }
+        }
         candidates.retain(|id| !self.motion_blocks_input(*id));
         Some(forest)
+    }
+
+    /// Open triggered menus (Popover, ActionMenu, HoverCard) of `document`
+    /// whose surface is at `(x, y)`. The surface paints in the root stacking
+    /// context at its content's level, so it takes the pointer there too:
+    /// over the page, under its own items.
+    fn hanging_surfaces_at(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+    ) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.triggered_overlays.iter().copied().filter(move |id| {
+            self.document_of(*id) == Some(document)
+                && self.record(*id).interaction.pointer_events
+                && self.hanging_surface_contains(*id, x, y)
+        })
+    }
+
+    pub(crate) fn hanging_surface_contains(&self, id: StableNodeId, x: f32, y: f32) -> bool {
+        crate::popover::hanging_surface(self, id).is_some_and(|surface| surface.contains(x, y))
     }
 
     /// Hit-test queries answered since the world was created: one per
@@ -1299,6 +1337,7 @@ impl UiWorld {
                 .hit_test_index
                 .get(&document)
                 .is_some_and(|index| index.viewport_hit_at(x, y))
+            || self.hanging_surfaces_at(document, x, y).next().is_some()
         {
             return self.topmost_candidate(document, x, y);
         }
@@ -1333,7 +1372,10 @@ impl UiWorld {
             current,
         } = &mut *scratch;
         let forest = self.collect_hit_candidates(document, x, y, candidates)?;
-        if !forest.viewport_hit_at(x, y) && !self.has_compositor_transform_overlay_for(document) {
+        if !forest.viewport_hit_at(x, y)
+            && !self.has_compositor_transform_overlay_for(document)
+            && self.hanging_surfaces_at(document, x, y).next().is_none()
+        {
             return candidates.first().copied();
         }
         let mut top = None;

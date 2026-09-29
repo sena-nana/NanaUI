@@ -2210,6 +2210,89 @@ fn press_inside_the_popover_leaves_it_open() {
     assert!(context.read(menu, |menu| menu.popover.open).unwrap());
 }
 
+/// A press on the open surface around a menu's items, where the surface
+/// hangs out of a clipping pane over a later, higher sibling: the menu keeps
+/// it (it stays open, it is not toggled shut) and the sibling under the
+/// surface never sees it.
+#[test]
+fn a_press_on_the_hanging_surface_stays_in_the_menu() {
+    use nana_ui_core::{LengthSpec, PositionSpec};
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let row = context
+        .create_component(document, crate::Stack::fill_row(0.0))
+        .unwrap();
+    let pane = context
+        .create_component(
+            document,
+            crate::Stack::column(0.0).with_layout(|layout| {
+                layout.width = Some(LengthSpec::Px(200.0));
+                layout.height = Some(LengthSpec::Px(480.0));
+                layout.overflow_x = OverflowSpec::Hidden;
+                layout.overflow_y = OverflowSpec::Hidden;
+                layout.position = PositionSpec::Relative;
+                layout.z_index = Some(1);
+            }),
+        )
+        .unwrap();
+    let underlay = context
+        .create_component(
+            document,
+            Button::new("Underlay").layout(Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(440.0)),
+                height: Some(LengthSpec::Px(480.0)),
+                position: PositionSpec::Relative,
+                z_index: Some(2),
+                ..LayoutStyle::default()
+            })),
+        )
+        .unwrap();
+    let menu = context
+        .create_component(document, ActionMenu::new().trigger("更多").width(280.0))
+        .unwrap();
+    let item = context
+        .create_component(document, ActionMenuItem::new("稍后再看"))
+        .unwrap();
+    context.append_child(menu, item).unwrap();
+    context.append_child(pane, menu).unwrap();
+    context.append_child(row, pane).unwrap();
+    context.append_child(row, underlay).unwrap();
+    let activations = Arc::new(Mutex::new(0));
+    let observed = Arc::clone(&activations);
+    context
+        .on(underlay, move |_button, _event: &Activate, _cx| {
+            *observed.lock().unwrap() += 1;
+        })
+        .unwrap();
+    let viewport = crate::LayoutViewport::new(640.0, 480.0);
+    context.layout_document(document, viewport).unwrap();
+    context
+        .update_component(menu, |menu, _| menu.popover.open = true)
+        .unwrap();
+    context.layout_document(document, viewport).unwrap();
+    context.rebuild_hit_test(document);
+
+    let item_box = context.world().layout_box(item.stable_id()).unwrap();
+    let Some(ComponentGeometry::MenuSurface { surface, .. }) =
+        context.world().component_geometry(menu.stable_id())
+    else {
+        panic!("the open menu's geometry");
+    };
+    let (x, y) = (
+        (item_box.x + item_box.width + surface.x + surface.width) / 2.0,
+        item_box.y + item_box.height / 2.0,
+    );
+    assert!(x > 200.0, "the press lands over the underlay: {surface:?}");
+    let mut adapter = TestInput::default();
+    for phase in [PointerPhase::Down, PointerPhase::Up] {
+        adapter
+            .dispatch(&mut context, document, &pointer(phase, x, y))
+            .unwrap();
+    }
+    assert!(context.read(menu, |menu| menu.popover.open).unwrap());
+    assert_eq!(*activations.lock().unwrap(), 0);
+}
+
 #[test]
 fn escape_closes_focused_field_options_without_committing() {
     use crate::{

@@ -179,8 +179,9 @@ fn is_triggered_overlay_surface(id: PrimitiveId) -> bool {
 }
 
 /// A triggered surface's paint-order key: its own `(z_index, document_order)`
-/// at the root, so it sits under the menu content (later in document order)
-/// and over its trigger, whatever groups the trigger is inside.
+/// at the root, where `z_index` is the menu content's level, so it sits under
+/// the content (later in document order) and over its trigger and the rest
+/// of the page, whatever groups the trigger is inside.
 fn triggered_overlay_surface_key(primitive: &ScenePrimitive) -> Option<SceneOrderKey> {
     is_triggered_overlay_surface(primitive.id).then(|| {
         SceneOrderKey::at(

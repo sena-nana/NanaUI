@@ -292,7 +292,10 @@ pub use pane::{
 pub use pane_section::PaneSection;
 pub use path_field::{BrowseRequested, PathField};
 pub use placeholders::{LevelMeter, Skeleton};
-pub use popover::{ActionMenu, Popover, PopoverClosed, PopoverToggled, resolve_popover_origin};
+pub use popover::{
+    ActionMenu, MENU_OVERLAY_Z_INDEX, Popover, PopoverClosed, PopoverToggled,
+    resolve_popover_origin,
+};
 pub use presentation::{
     HIGHLIGHT_PRESENTER, HighlightRequest, TextPresentation, TextPresenter, TextSpan,
 };

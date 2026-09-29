@@ -27,7 +27,10 @@ pub(crate) const MENU_MIN_WIDTH: f32 = 120.0;
 pub(crate) const MENU_ITEM_GAP: f32 = nana_ui_core::space::XXS;
 /// Indentation per tree level, shared by `TreeView` and sidebar tree rows.
 pub(crate) const TREE_DEPTH_STEP: f32 = nana_ui_core::space::XL;
-pub(crate) const MENU_OVERLAY_Z_INDEX: i32 = 1_000;
+/// The `z-index` an open Popover, ActionMenu or HoverCard stacks at: its
+/// content is viewport-fixed at this level in the root stacking context, and
+/// its surface paints and takes the pointer there too, above the page.
+pub const MENU_OVERLAY_Z_INDEX: i32 = 1_000;
 /// The trigger is a real button, so it matches the compact control height
 /// rather than hugging its glyphs.
 #[cfg(test)]
@@ -159,6 +162,7 @@ impl Default for Popover {
 impl crate::ComponentView for Popover {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::toggle_popover),
+        activate_at: Some(crate::AppContext::activate_popover_at),
         lifecycle: Some(crate::AppContext::settle_popover),
         ..crate::TypeBehavior::NONE
     };
@@ -247,6 +251,7 @@ impl Default for ActionMenu {
 impl crate::ComponentView for ActionMenu {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::toggle_action_menu),
+        activate_at: Some(crate::AppContext::activate_action_menu_at),
         lifecycle: Some(crate::AppContext::settle_action_menu),
         ..crate::TypeBehavior::NONE
     };
@@ -374,6 +379,30 @@ pub(crate) fn project_menu_surface(
             ..AccessibilityState::default()
         },
     );
+}
+
+/// The surface an open triggered menu (Popover, ActionMenu, HoverCard) hangs
+/// above the page, in viewport coordinates: its items' box and padding.
+/// `None` while closed, and for a menu with no trigger, whose surface is its
+/// own in-flow box.
+pub(crate) fn hanging_surface(world: &UiWorld, id: StableNodeId) -> Option<LayoutBox> {
+    let crate::StandardVisual::MenuSurface {
+        open: true,
+        overlay: Some(overlay),
+        trigger,
+        trigger_icon,
+        trigger_image,
+        ..
+    } = world.standard_visual_ref(id)?
+    else {
+        return None;
+    };
+    let has_trigger = trigger.is_some()
+        || trigger_icon.is_some()
+        || trigger_image.is_some()
+        || overlay.trigger_content.is_some();
+    let surface = overlay_surface_from_items(world, id, Some(overlay));
+    (has_trigger && surface.width > 0.0 && surface.height > 0.0).then_some(surface)
 }
 
 pub(crate) fn overlay_surface_from_items(

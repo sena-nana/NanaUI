@@ -242,6 +242,7 @@ impl Default for HoverCard {
 impl ComponentView for HoverCard {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::activate_hover_card),
+        activate_at: Some(crate::AppContext::activate_hover_card_at),
         ..crate::TypeBehavior::NONE
     };
 

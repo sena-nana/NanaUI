@@ -312,16 +312,18 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 // A triggered surface wraps content Runtime lays out
                 // viewport-fixed above the page. It is painted the same way:
                 // untransformed, uncut by the trigger's clips, and in the root
-                // stacking context above the trigger itself. A context menu's
-                // surface is its own node's box and stays with it.
-                let (slot, transform, clips) = if trigger_surface.is_some() {
+                // stacking context at the content's own level, above the
+                // trigger and whatever the page stacks after it. A context
+                // menu's surface is its own node's box and stays with it.
+                let (slot, transform, clips, z_index) = if trigger_surface.is_some() {
                     (
                         TRIGGERED_OVERLAY_SURFACE_SLOT,
                         AffineTransform::IDENTITY,
                         Arc::from([]),
+                        nana_ui_runtime::MENU_OVERLAY_Z_INDEX,
                     )
                 } else {
-                    (0, transform, Arc::clone(parent_clips))
+                    (0, transform, Arc::clone(parent_clips), node.z_index)
                 };
                 emit(ScenePrimitive {
                     id: PrimitiveId { node: id, slot },
@@ -330,7 +332,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     transform,
                     clips,
                     opacity,
-                    z_index: node.z_index,
+                    z_index,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
                         background: Some(*background),

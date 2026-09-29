@@ -711,6 +711,228 @@ mod tests {
         }
     }
 
+    /// An open Popover or ActionMenu whose trigger sits in a clipping,
+    /// stacked pane: its surface paints over a later, higher sibling (not
+    /// only its content), and the pointer on the surface — on an item or on
+    /// the padding around the items — stays in the menu instead of reaching
+    /// the sibling under it.
+    fn open_menu_paints_and_hits_above_the_later_page(
+        placement: nana_ui_runtime::PopoverPlacement,
+        mount: impl FnOnce(
+            &mut AppContext,
+            DocumentId,
+            StableNodeId,
+            nana_ui_runtime::PopoverPlacement,
+        ) -> (StableNodeId, StableNodeId),
+        open: impl FnOnce(&mut AppContext, StableNodeId),
+    ) {
+        use nana_ui_core::{OverflowSpec, PositionSpec, SemanticColorRole};
+        use nana_ui_runtime::{MeasureTextShaper, Stack};
+        let id = DocumentId::new(94).unwrap();
+        let mut document = RuntimeDocument::new(id);
+        let cx = document.context_mut();
+        let row = cx.create_component(id, Stack::fill_row(0.0)).unwrap();
+        let pane = cx
+            .create_component(
+                id,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(200.0));
+                    layout.height = Some(LengthSpec::Px(480.0));
+                    layout.overflow_x = OverflowSpec::Hidden;
+                    layout.overflow_y = OverflowSpec::Hidden;
+                    layout.position = PositionSpec::Relative;
+                    layout.z_index = Some(1);
+                }),
+            )
+            .unwrap();
+        let spacer = cx
+            .create_component(
+                id,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.height = Some(LengthSpec::Px(220.0));
+                }),
+            )
+            .unwrap();
+        let cover = cx
+            .create_component(
+                id,
+                Stack::column(0.0)
+                    .surface(SemanticColorRole::Surface)
+                    .with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Px(440.0));
+                        layout.height = Some(LengthSpec::Px(480.0));
+                        layout.position = PositionSpec::Relative;
+                        layout.z_index = Some(2);
+                    }),
+            )
+            .unwrap();
+        cx.append_child(row, pane).unwrap();
+        cx.append_child(row, cover).unwrap();
+        cx.append_child(pane, spacer).unwrap();
+        let (menu, item) = mount(cx, id, pane.stable_id(), placement);
+        let viewport = LayoutViewport::new(640.0, 480.0);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+        open(document.context_mut(), menu);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+
+        let world = document.context().world();
+        let trigger = world.layout_box(menu).unwrap();
+        let item_box = world.layout_box(item).unwrap();
+        match placement {
+            nana_ui_runtime::PopoverPlacement::Top => assert!(
+                item_box.y + item_box.height <= trigger.y,
+                "opens above: trigger={trigger:?} item={item_box:?}"
+            ),
+            _ => assert!(
+                item_box.y >= trigger.y + trigger.height,
+                "opens below: trigger={trigger:?} item={item_box:?}"
+            ),
+        }
+        let order: Vec<_> = document.scene().primitives().collect();
+        let surface_at = order
+            .iter()
+            .position(|p| {
+                p.id.node == menu && p.id.slot == crate::scene::TRIGGERED_OVERLAY_SURFACE_SLOT
+            })
+            .expect("the open surface paints");
+        let surface = order[surface_at].bounds;
+        assert!(
+            surface.x + surface.width > 200.0,
+            "the surface reaches over the later sibling: {surface:?}"
+        );
+        let cover_last = order
+            .iter()
+            .rposition(|p| p.node == cover.stable_id())
+            .expect("cover paint");
+        let item_first = order
+            .iter()
+            .position(|p| p.node == item)
+            .expect("item paint");
+        assert!(
+            cover_last < surface_at && surface_at < item_first,
+            "cover {cover_last} < surface {surface_at} < item {item_first}"
+        );
+
+        let cx = document.context();
+        let on_item = (
+            item_box.x + item_box.width - 4.0,
+            item_box.y + item_box.height / 2.0,
+        );
+        assert!(on_item.0 > 200.0, "the item reaches over the sibling");
+        let hit = cx.pointer_target(id, on_item.0, on_item.1).unwrap();
+        assert!(
+            cx.world().is_descendant_or_self(hit, item),
+            "the item takes the pointer over the later sibling, not {hit:?}"
+        );
+        // The padding strip between the item and the surface's right edge.
+        let on_padding = (
+            (item_box.x + item_box.width + surface.x + surface.width) / 2.0,
+            item_box.y + item_box.height / 2.0,
+        );
+        assert!(
+            on_padding.0 > item_box.x + item_box.width && on_padding.0 < surface.x + surface.width
+        );
+        assert_eq!(
+            cx.pointer_target(id, on_padding.0, on_padding.1),
+            Some(menu),
+            "the surface, not the sibling under it, takes the pointer"
+        );
+    }
+
+    fn mount_favourites_popover(
+        cx: &mut AppContext,
+        _: DocumentId,
+        pane: StableNodeId,
+        placement: nana_ui_runtime::PopoverPlacement,
+    ) -> (StableNodeId, StableNodeId) {
+        use nana_ui_runtime::view::{button, row, text};
+        use nana_ui_runtime::{Popover, PopoverAlignment};
+        let (_, (popover, item)) = cx
+            .mount_view(pane, || {
+                let popover = entity_ref::<Popover>();
+                let item = entity_ref::<Button>();
+                let view = widget(
+                    Popover::new()
+                        .trigger("收藏")
+                        .width(280.0)
+                        .placement(placement)
+                        .alignment(PopoverAlignment::Start),
+                )
+                .entity_ref(popover)
+                .trigger(row().children(text("1800")))
+                .children(button("加入收藏夹").entity_ref(item));
+                with_refs(view, (popover, item))
+            })
+            .unwrap();
+        (popover.stable_id(), item.stable_id())
+    }
+
+    fn open_popover(cx: &mut AppContext, popover: StableNodeId) {
+        cx.update_component(
+            nana_ui_runtime::Entity::<nana_ui_runtime::Popover>::from_stable_id(popover),
+            |popover, _| popover.open = true,
+        )
+        .unwrap();
+    }
+
+    fn mount_more_menu(
+        cx: &mut AppContext,
+        id: DocumentId,
+        pane: StableNodeId,
+        placement: nana_ui_runtime::PopoverPlacement,
+    ) -> (StableNodeId, StableNodeId) {
+        use nana_ui_core::Icon;
+        use nana_ui_runtime::{ActionMenu, ActionMenuItem, Entity, Stack};
+        let menu = cx
+            .create_component(
+                id,
+                ActionMenu::new()
+                    .trigger_icon(Icon::Add, "更多")
+                    .width(280.0)
+                    .placement(placement),
+            )
+            .unwrap();
+        let item = cx
+            .create_component(id, ActionMenuItem::new("稍后再看"))
+            .unwrap();
+        cx.append_child(menu, item).unwrap();
+        cx.append_child(Entity::<Stack>::from_stable_id(pane), menu)
+            .unwrap();
+        (menu.stable_id(), item.stable_id())
+    }
+
+    fn open_action_menu(cx: &mut AppContext, menu: StableNodeId) {
+        cx.update_component(
+            nana_ui_runtime::Entity::<nana_ui_runtime::ActionMenu>::from_stable_id(menu),
+            |menu, _| menu.popover.open = true,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn an_open_popover_paints_and_hits_above_the_later_page() {
+        use nana_ui_runtime::PopoverPlacement::{Bottom, Top};
+        for placement in [Bottom, Top] {
+            open_menu_paints_and_hits_above_the_later_page(
+                placement,
+                mount_favourites_popover,
+                open_popover,
+            );
+        }
+    }
+
+    #[test]
+    fn an_open_action_menu_paints_and_hits_above_the_later_page() {
+        use nana_ui_runtime::PopoverPlacement::{Bottom, Top};
+        for placement in [Bottom, Top] {
+            open_menu_paints_and_hits_above_the_later_page(
+                placement,
+                mount_more_menu,
+                open_action_menu,
+            );
+        }
+    }
+
     /// A dialog whose body grows after it opened (content that arrived
     /// later) clips and hit-tests at the height it grew to: the content
     /// below the old foot is drawn and can be pressed.
