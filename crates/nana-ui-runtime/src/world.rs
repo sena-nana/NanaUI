@@ -240,6 +240,19 @@ fn menu_surface_open(visual: Option<&StandardVisual>) -> Option<bool> {
     }
 }
 
+/// Whether a menu surface with `visual` hides its child `child`: a closed
+/// surface hides its items, never the content that draws its trigger.
+pub(crate) fn closed_menu_hides(visual: Option<&StandardVisual>, child: StableNodeId) -> bool {
+    match visual {
+        Some(StandardVisual::MenuSurface {
+            open: false,
+            overlay,
+            ..
+        }) => overlay.and_then(|overlay| overlay.trigger_content) != Some(child),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct HitEntry {
     id: StableNodeId,
@@ -2027,7 +2040,7 @@ impl UiWorld {
                 open: true,
                 overlay: Some(overlay),
                 ..
-            } => Some(*overlay),
+            } if overlay.trigger_content != Some(id) => Some(*overlay),
             _ => None,
         }
     }
@@ -2657,7 +2670,7 @@ impl UiWorld {
         if !self.nodes.contains(parent) {
             return true;
         };
-        menu_surface_open(self.nodes.visual(parent)) != Some(false)
+        !closed_menu_hides(self.nodes.visual(parent), id)
     }
 
     /// Whether a live retained root currently belongs to this document.

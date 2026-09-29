@@ -44,12 +44,23 @@ pub struct PopoverToggled {
 pub struct PopoverClosed;
 
 /// In-flow trigger with an optional surface painted below it.
+///
+/// The trigger is the popover's own node: it takes the press, the focus and
+/// Enter / Space, and the surface hangs off it. It shows a label
+/// ([`Popover::trigger`]), a glyph ([`Popover::trigger_icon`]), or content of
+/// the application's ([`Popover::trigger_content`], a view's `.trigger(..)`
+/// slot): a row the trigger lays out inside its chrome — an icon, a label and
+/// a count — while the popover stays the control.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Popover {
     /// Text trigger label, or the accessible name when [`Popover::trigger_icon`]
-    /// switches the trigger to a glyph.
+    /// or [`Popover::trigger_content`] draws the trigger instead.
     pub trigger: Arc<str>,
     pub trigger_icon: Option<Icon>,
+    /// A child that draws the trigger. It stays shown while the surface is
+    /// closed and is not one of the surface's items; it is display only (the
+    /// press goes to the popover), so it holds no control of its own.
+    pub trigger_content: Option<StableNodeId>,
     pub open: bool,
     pub placement: PopoverPlacement,
     pub alignment: PopoverAlignment,
@@ -65,6 +76,7 @@ impl Popover {
         Self {
             trigger: Arc::from(""),
             trigger_icon: None,
+            trigger_content: None,
             open: false,
             placement: PopoverPlacement::Bottom,
             alignment: PopoverAlignment::Center,
@@ -86,6 +98,14 @@ impl Popover {
     pub fn trigger_icon(mut self, icon: Icon, label: impl Into<Arc<str>>) -> Self {
         self.trigger = label.into();
         self.trigger_icon = Some(icon);
+        self
+    }
+
+    /// Draw the trigger with the child `content` (already a child of the
+    /// popover, or placed by a view's `.trigger(..)` slot); `trigger` stays
+    /// its accessible name.
+    pub fn trigger_content(mut self, content: StableNodeId) -> Self {
+        self.trigger_content = Some(content);
         self
     }
 
@@ -139,6 +159,7 @@ impl Default for Popover {
 impl crate::ComponentView for Popover {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::toggle_popover),
+        lifecycle: Some(crate::AppContext::settle_popover),
         ..crate::TypeBehavior::NONE
     };
 
@@ -162,6 +183,7 @@ impl crate::ComponentView for Popover {
             MenuSurfaceKind::Popover,
             Some(Arc::clone(&self.trigger)).filter(|value| !value.is_empty()),
             self.trigger_icon,
+            self.trigger_content,
             self.open,
             self.width,
             self.padding,
@@ -225,6 +247,7 @@ impl Default for ActionMenu {
 impl crate::ComponentView for ActionMenu {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::toggle_action_menu),
+        lifecycle: Some(crate::AppContext::settle_action_menu),
         ..crate::TypeBehavior::NONE
     };
 
@@ -248,6 +271,7 @@ impl crate::ComponentView for ActionMenu {
             MenuSurfaceKind::ActionMenu,
             Some(Arc::clone(&self.popover.trigger)).filter(|value| !value.is_empty()),
             self.popover.trigger_icon,
+            self.popover.trigger_content,
             self.popover.open,
             self.popover.width,
             self.popover.padding,
@@ -266,6 +290,7 @@ pub(crate) fn project_menu_surface(
     kind: MenuSurfaceKind,
     trigger: Option<Arc<str>>,
     trigger_icon: Option<Icon>,
+    trigger_content: Option<StableNodeId>,
     open: bool,
     width: f32,
     padding: f32,
@@ -275,13 +300,16 @@ pub(crate) fn project_menu_surface(
     label: &str,
 ) {
     let open = world.project_menu_presence(id, open, mutations);
-    let has_trigger = trigger.is_some() || trigger_icon.is_some();
+    // A child that draws the trigger only counts while it is one.
+    let trigger_content = trigger_content.filter(|content| world.parent_id(*content) == Some(id));
+    let has_trigger = trigger.is_some() || trigger_icon.is_some() || trigger_content.is_some();
     let has_chrome = open || has_trigger;
     if has_chrome {
         let visual = StandardVisual::MenuSurface {
             kind,
             open,
-            trigger: trigger.clone(),
+            // The label is the accessible name only while content draws it.
+            trigger: trigger.clone().filter(|_| trigger_content.is_none()),
             trigger_icon,
             trigger_image: None,
             gap,
@@ -291,6 +319,7 @@ pub(crate) fn project_menu_surface(
                 width: width.max(MENU_MIN_WIDTH),
                 padding,
                 gap,
+                trigger_content,
             }),
             query: None,
             rows: Arc::from([]),
@@ -306,7 +335,7 @@ pub(crate) fn project_menu_surface(
     // surface can size itself to the text instead of a fixed box. Icon
     // triggers keep their label as the accessible name only; the square chrome
     // comes from the style instead of text measurement.
-    let trigger_text = if trigger_icon.is_some() {
+    let trigger_text = if trigger_icon.is_some() || trigger_content.is_some() {
         ""
     } else {
         trigger.as_deref().unwrap_or("")
@@ -319,13 +348,17 @@ pub(crate) fn project_menu_surface(
             },
         );
     }
-    let style = triggered_menu_style(
-        trigger_icon.is_some(),
-        trigger.as_deref(),
-        open,
-        width,
-        padding,
-    );
+    let style = if trigger_content.is_some() {
+        trigger_content_style()
+    } else {
+        triggered_menu_style(
+            trigger_icon.is_some(),
+            trigger.as_deref(),
+            open,
+            width,
+            padding,
+        )
+    };
     project_common(
         id,
         world,
@@ -352,6 +385,9 @@ pub(crate) fn overlay_surface_from_items(
         return LayoutBox::default();
     };
     let children = world.node(id).map(|node| node.children).unwrap_or_default();
+    let children = children
+        .into_iter()
+        .filter(|child| overlay.trigger_content != Some(*child));
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_x = f32::MIN;
@@ -455,6 +491,16 @@ pub(crate) fn trigger_button_style() -> NodeStyle {
     style
 }
 
+/// A trigger drawn by a child shares the text trigger's chrome and lays the
+/// child out inside it, centred on the cross axis.
+pub(crate) fn trigger_content_style() -> NodeStyle {
+    let mut style = trigger_button_style();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.direction = Some(FlexDirection::Row);
+    layout.align_items = nana_ui_core::AlignSpec::Center;
+    style
+}
+
 /// Icon triggers share the text trigger's chrome but take a square min box, so
 /// the glyph centers geometrically instead of riding text metrics.
 pub(crate) fn trigger_icon_button_style() -> NodeStyle {
@@ -542,13 +588,15 @@ pub(crate) fn menu_surface_geometry(
     trigger: Option<&Arc<str>>,
     trigger_icon: Option<Icon>,
     trigger_image: Option<&Arc<str>>,
+    trigger_content: bool,
     style: &crate::ComputedStyle,
     palette: &SemanticPalette,
     metrics: nana_ui_core::ThemeMetrics,
     surface: LayoutBox,
 ) -> ComponentGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
-    let has_trigger = trigger.is_some() || trigger_icon.is_some() || trigger_image.is_some();
+    let has_trigger =
+        trigger.is_some() || trigger_icon.is_some() || trigger_image.is_some() || trigger_content;
     let trigger_h = if has_trigger { bounds.height } else { 0.0 };
     // In icon and image modes the trigger text is only the accessible name, so
     // no text region is emitted and the chrome owns the visuals.

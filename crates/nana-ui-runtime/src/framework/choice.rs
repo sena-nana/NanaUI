@@ -599,6 +599,49 @@ impl AppContext {
         })
     }
 
+    /// A popover that closed around the focus (on one of its items) gives it
+    /// back to its trigger, which stays on screen, instead of leaving it on a
+    /// hidden item. Runs after each write, so it holds however the popover
+    /// closed: its trigger, Escape, a press elsewhere, or the application.
+    pub(crate) fn return_focus_to_popover_trigger(
+        &mut self,
+        id: StableNodeId,
+        open: bool,
+    ) -> Result<(), FrameworkError> {
+        if open {
+            return Ok(());
+        }
+        let Some(document) = self.world.document_of(id) else {
+            return Ok(());
+        };
+        let Some(focused) = self.world.focused(document) else {
+            return Ok(());
+        };
+        if focused != id
+            && self.world.is_descendant_or_self(focused, id)
+            && self
+                .world
+                .interaction(id)
+                .is_some_and(|interaction| interaction.focusable)
+        {
+            self.focus_node(document, id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn settle_popover(&mut self, entity: Entity<Popover>) -> Result<(), FrameworkError> {
+        let open = self.read(entity, |popover| popover.open)?;
+        self.return_focus_to_popover_trigger(entity.stable_id(), open)
+    }
+
+    pub(crate) fn settle_action_menu(
+        &mut self,
+        entity: Entity<ActionMenu>,
+    ) -> Result<(), FrameworkError> {
+        let open = self.read(entity, |menu| menu.popover.open)?;
+        self.return_focus_to_popover_trigger(entity.stable_id(), open)
+    }
+
     pub fn toggle_action_menu(
         &mut self,
         entity: Entity<ActionMenu>,

@@ -8007,6 +8007,7 @@ fn open_menu_overlay_visual() -> StandardVisual {
             width: 240.0,
             padding: 0.0,
             gap: 6.0,
+            trigger_content: None,
         }),
         query: None,
         rows: Arc::from([]),

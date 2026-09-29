@@ -15,7 +15,8 @@
 
 use super::{El, EntityRef, IntoView};
 use crate::{
-    ConfirmDialog, Dialog, Drawer, FormField, MediaTransportBar, ModalInitialFocus, ModalSurface,
+    ActionMenu, ConfirmDialog, Dialog, Drawer, FormField, MediaTransportBar, ModalInitialFocus,
+    ModalSurface, Popover,
 };
 
 macro_rules! modal_focus {
@@ -120,5 +121,26 @@ impl<K> El<MediaTransportBar, K> {
     /// The second row under the seek bar; it collapses while empty.
     pub fn secondary(self, view: impl IntoView) -> Self {
         self.slot(view, MediaTransportBar::secondary_content)
+    }
+}
+
+impl<K> El<Popover, K> {
+    /// What the trigger shows — an icon, a label and a count — in place of
+    /// the popover's text label, which stays its accessible name. The
+    /// popover remains the control: the press, focus, Enter / Space and the
+    /// anchor are its, so the content holds nothing pressable of its own.
+    /// Its `.children(..)` are the surface's items.
+    pub fn trigger(self, view: impl IntoView) -> Self {
+        self.child_slot(view, Popover::trigger_content)
+    }
+}
+
+impl<K> El<ActionMenu, K> {
+    /// What the trigger shows, as [`El::<Popover>::trigger`].
+    pub fn trigger(self, view: impl IntoView) -> Self {
+        self.child_slot(view, |mut menu: ActionMenu, id| {
+            menu.popover.trigger_content = Some(id);
+            menu
+        })
     }
 }

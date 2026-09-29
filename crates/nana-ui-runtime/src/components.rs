@@ -1084,6 +1084,10 @@ pub struct TriggeredMenuOverlay {
     pub width: f32,
     pub padding: f32,
     pub gap: f32,
+    /// The child that draws the trigger ([`crate::Popover::trigger_content`]):
+    /// it stays in flow inside the trigger, shown while the surface is
+    /// closed, and is not one of the items the surface places.
+    pub trigger_content: Option<StableNodeId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

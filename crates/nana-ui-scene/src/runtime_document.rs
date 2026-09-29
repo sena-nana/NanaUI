@@ -839,6 +839,47 @@ mod tests {
         );
     }
 
+    /// A popover's trigger content paints with the trigger while the surface
+    /// is closed; its items do not until it opens.
+    #[test]
+    fn a_popover_trigger_content_paints_while_the_items_wait() {
+        use nana_ui_runtime::view::{button, entity_ref, row, text, widget, with_refs};
+        use nana_ui_runtime::{MeasureTextShaper, Popover, Stack};
+        let id = DocumentId::new(93).unwrap();
+        let mut document = RuntimeDocument::new(id);
+        let root = document
+            .context_mut()
+            .create_component(id, Stack::column(0.0))
+            .unwrap();
+        let (_, (popover, mark, item)) = document
+            .context_mut()
+            .mount_view(root.stable_id(), || {
+                let popover = entity_ref::<Popover>();
+                let mark = entity_ref::<nana_ui_runtime::Text>();
+                let item = entity_ref::<nana_ui_runtime::Button>();
+                let view = widget(Popover::new().trigger("收藏"))
+                    .entity_ref(popover)
+                    .trigger(row().children(text("1800").entity_ref(mark)))
+                    .children(button("加入收藏夹").entity_ref(item));
+                with_refs(view, (popover, mark, item))
+            })
+            .unwrap();
+        let viewport = LayoutViewport::new(640.0, 480.0);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+        let painted = |document: &RuntimeDocument, node: nana_ui_runtime::StableNodeId| {
+            document.scene().primitives().any(|p| p.node == node)
+        };
+        assert!(painted(&document, mark.stable_id()));
+        assert!(!painted(&document, item.stable_id()));
+        document
+            .context_mut()
+            .update_component(popover, |popover, _| popover.open = true)
+            .unwrap();
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+        assert!(painted(&document, mark.stable_id()));
+        assert!(painted(&document, item.stable_id()));
+    }
+
     #[test]
     fn closed_modal_live_presence_retires_scene_and_reopening_projects_updates() {
         use nana_ui_runtime::{

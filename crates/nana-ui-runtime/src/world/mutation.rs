@@ -963,13 +963,9 @@ impl<'a> ValidationPlan<'a> {
             visibility = visibility.or_else(|| layout.and_then(|layout| layout.paint.visibility));
             if layout.is_some_and(|layout| layout.omits_box())
                 || !self.overlay_branch_active(id)?
-                || self
-                    .node(id)?
-                    .parent
-                    .and_then(|parent| self.source.standard_visual(parent))
-                    .is_some_and(|visual| {
-                        matches!(visual, StandardVisual::MenuSurface { open: false, .. })
-                    })
+                || self.node(id)?.parent.is_some_and(|parent| {
+                    super::closed_menu_hides(self.source.standard_visual_ref(parent), id)
+                })
             {
                 return Ok(false);
             }

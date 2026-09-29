@@ -3438,11 +3438,9 @@ fn a_listening_container_hears_the_size_layout_gave_it() {
                 heard.lock().unwrap().push((event.width, event.height));
                 two_columns.set(event.width >= 360.0);
             })
-            .children(
-                widget(Stack::column(0.0).with_layout(|layout| {
-                    layout.height = Some(LengthSpec::Px(40.0));
-                })),
-            )
+            .children(widget(Stack::column(0.0).with_layout(|layout| {
+                layout.height = Some(LengthSpec::Px(40.0));
+            })))
     })
     .unwrap();
     let two_columns = width.get().unwrap();

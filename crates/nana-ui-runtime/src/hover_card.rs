@@ -289,6 +289,7 @@ impl ComponentView for HoverCard {
                 width: self.width.max(crate::popover::MENU_MIN_WIDTH),
                 padding: 0.0,
                 gap: self.gap,
+                trigger_content: None,
             }),
             query: None,
             rows: Arc::from([]),

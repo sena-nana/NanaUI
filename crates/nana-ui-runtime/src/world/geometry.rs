@@ -2315,8 +2315,11 @@ impl UiWorld {
                 overlay,
                 ..
             } => {
-                let has_trigger =
-                    trigger.is_some() || trigger_icon.is_some() || trigger_image.is_some();
+                let trigger_content = overlay.and_then(|overlay| overlay.trigger_content);
+                let has_trigger = trigger.is_some()
+                    || trigger_icon.is_some()
+                    || trigger_image.is_some()
+                    || trigger_content.is_some();
                 let surface = if has_trigger {
                     crate::popover::overlay_surface_from_items(self, id, overlay.as_ref())
                 } else {
@@ -2327,6 +2330,7 @@ impl UiWorld {
                     trigger.as_ref(),
                     *trigger_icon,
                     trigger_image.as_ref(),
+                    trigger_content.is_some(),
                     style,
                     &self.style_model.palette,
                     self.style_model.metrics,
