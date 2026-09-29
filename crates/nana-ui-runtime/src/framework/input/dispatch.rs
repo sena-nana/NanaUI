@@ -287,23 +287,11 @@ impl AppContext {
                 // A press a blocking overlay swallowed reaches nothing
                 // underneath, not even a handle within slop of it.
                 let reachable = !(overlay.prevent_default && target.is_none());
-                let split_handle = reachable
-                    .then(|| self.split_handle_near_hit(document, *x, *y, target))
-                    .flatten();
-                let dock_handle = reachable
-                    .then(|| {
-                        hooked!(self, dock, |h| (h.handle_near_hit)(
-                            self, document, *x, *y, target
-                        ))
-                    })
-                    .flatten();
-                let workspace_handle = reachable
-                    .then(|| {
-                        hooked!(self, workspace, |h| (h.handle_near_hit)(
-                            self, document, *x, *y, target
-                        ))
-                    })
-                    .flatten();
+                let [split_handle, dock_handle, workspace_handle] = if reachable {
+                    self.reachable_handle_near(document, *x, *y, target)
+                } else {
+                    [None; 3]
+                };
                 let dock_source = target
                     .filter(|id| hooked!(self, dock, |h| (h.is_item_source)(self, *id)))
                     .or_else(|| {

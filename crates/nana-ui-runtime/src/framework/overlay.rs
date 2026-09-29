@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use nana_ui_core::DialogCloseTrigger;
 
 use super::{AppContext, Entity, FrameworkError};
+use crate::framework::hooked;
 use crate::{
     CommandPalette, ComponentView, ConfirmDialog, Dialog, DocumentId, Drawer, IconButton,
     ModalInitialFocus, ModalSurface, MutationQueue, RangeField, ScrollOffset, StableNodeId,
@@ -94,6 +95,48 @@ impl AppContext {
         self.active_runtime_overlays(document)
             .into_iter()
             .any(|overlay| overlay.kind.blocks_pointer())
+    }
+
+    /// Whether an open blocking overlay (a modal dialog, a drawer) covers
+    /// `node`: `node` is outside it. Such a node takes no press, not even
+    /// one that reaches it through a resize handle's slop.
+    pub(crate) fn covered_by_blocking_overlay(
+        &self,
+        document: DocumentId,
+        node: StableNodeId,
+    ) -> bool {
+        self.active_runtime_overlays(document)
+            .into_iter()
+            .any(|overlay| {
+                overlay.kind.blocks_pointer()
+                    && !self.world.is_descendant_or_self(node, overlay.root)
+            })
+    }
+
+    /// The resize handle within slop of `(x, y)` — a split pane's, a dock's
+    /// or a workspace region's — that a press or the cursor there reaches.
+    /// A handle under an open modal is not reachable: the modal's surface
+    /// takes the press, whatever lies within slop of it underneath.
+    pub(crate) fn reachable_handle_near(
+        &self,
+        document: DocumentId,
+        x: f32,
+        y: f32,
+        target: Option<StableNodeId>,
+    ) -> [Option<StableNodeId>; 3] {
+        let reachable = |handle: StableNodeId| !self.covered_by_blocking_overlay(document, handle);
+        [
+            self.split_handle_near_hit(document, x, y, target)
+                .filter(|handle| reachable(*handle)),
+            hooked!(self, dock, |h| (h.handle_near_hit)(
+                self, document, x, y, target
+            ))
+            .filter(|handle| reachable(*handle)),
+            hooked!(self, workspace, |h| (h.handle_near_hit)(
+                self, document, x, y, target
+            ))
+            .filter(|handle| reachable(*handle)),
+        ]
     }
 
     pub fn route_overlay_pointer(

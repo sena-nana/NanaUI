@@ -3,7 +3,6 @@
 //! derived from the world after an event, compared with what the host was
 //! last told through a cheap key, and sent only when it differs.
 
-use crate::framework::hooked;
 use std::time::Duration;
 
 use nana_ui_core::{CursorSpec, LogicalRect};
@@ -90,18 +89,8 @@ impl AppContext {
             return;
         };
         let handle = if state.effects.probe_due(throttle) {
-            let handle = self
-                .split_handle_near_hit(document, x, y, target)
-                .or_else(|| {
-                    hooked!(self, dock, |h| (h.handle_near_hit)(
-                        self, document, x, y, target
-                    ))
-                })
-                .or_else(|| {
-                    hooked!(self, workspace, |h| (h.handle_near_hit)(
-                        self, document, x, y, target
-                    ))
-                });
+            let [split, dock, workspace] = self.reachable_handle_near(document, x, y, target);
+            let handle = split.or(dock).or(workspace);
             if let Some(state) = self.input.sources.get_mut(&source) {
                 state.effects.handle = handle;
             }
