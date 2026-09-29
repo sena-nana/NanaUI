@@ -215,12 +215,6 @@ where
     }
 }
 
-/// The write of a slot (`El::slot`) the composite does not place itself: the
-/// slot's node stays detached until something else places it.
-pub(super) fn keep_slot<C>(component: C, _: StableNodeId) -> C {
-    component
-}
-
 pub(super) fn take_pending(pending: &Arc<Mutex<Vec<GalleryMessage>>>) -> Vec<GalleryMessage> {
     pending
         .lock()

@@ -308,7 +308,7 @@ impl AppContext {
                 rx::dispose_scope(old);
             }
         }
-        for (id, type_id) in parts.assemble.into_iter().rev() {
+        for (id, type_id) in parts.assemble {
             self.run_built_assembler(id, type_id)?;
         }
         Ok(())

@@ -217,7 +217,8 @@ pub(crate) struct ViewParts {
     pub(crate) anchors: Vec<(StableNodeId, ScopeKey)>,
     pub(crate) implicit: Vec<(StableNodeId, Box<[super::Implicit]>)>,
     /// Composites to assemble once built (their `slot_assembler`, or their
-    /// `assembler`, which otherwise runs only after a write), in build order.
+    /// `assembler`, which otherwise runs only after a write), each after
+    /// its slots and its children.
     pub(crate) assemble: Vec<(StableNodeId, TypeId)>,
 }
 
@@ -318,7 +319,7 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
     }
 
     /// Build `view` without placing its roots, for a slot.
-    fn build_slot(&mut self, view: AnyView) -> Vec<StableNodeId> {
+    fn build_slot(&mut self, view: impl IntoView) -> Vec<StableNodeId> {
         let pending = self.st.pending_key.take();
         self.st.levels.push(Level {
             detached: true,
@@ -533,6 +534,24 @@ impl Children {
     pub fn add(&mut self, view: impl IntoView) -> &mut Self {
         self.0.push(view.into_any());
         self
+    }
+}
+
+/// A view built where it is written but placed nowhere: its roots stay
+/// parked, for something else to place later (a composite that takes the
+/// node by id, `reconcile_children`, a later `append_child`). Get their ids
+/// with [`EntityRef`]s. Nodes nothing places stay parked until the document
+/// goes, and unmounting the view does not remove them.
+pub fn detached<V: IntoView>(view: V) -> Detached<V> {
+    Detached(view)
+}
+
+/// See [`detached`].
+pub struct Detached<V>(V);
+
+impl<V: IntoView> IntoView for Detached<V> {
+    fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
+        vb.build_slot(self.0);
     }
 }
 
@@ -854,9 +873,6 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             }
             return;
         }
-        if C::BEHAVIOR.slot_assembler.is_some() || C::BEHAVIOR.assembler.is_some() {
-            vb.st.parts.assemble.push((id, TypeId::of::<C>()));
-        }
         if let Some(node_ref) = node_ref {
             node_ref.set(Some(id));
         }
@@ -876,5 +892,11 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             }
             children.build(vb)
         });
+        // After its children, whose entries went in above, and after its
+        // slots, built before it: a composite assembles once everything it
+        // takes is assembled, so its own patches to that content stand.
+        if C::BEHAVIOR.slot_assembler.is_some() || C::BEHAVIOR.assembler.is_some() {
+            vb.st.parts.assemble.push((id, TypeId::of::<C>()));
+        }
     }
 }

@@ -19,6 +19,7 @@
 
 - **警告落在具体位置。** `view!`、`css!`、`stylesheet!` 的警告（样式、无障碍）以前都标在整个宏调用上，现在标在它说的那个 token 上：选择器、声明、元素、`class` 属性。数量没变；用 `#[allow(deprecated)]` 压警告的地方仍然有效。
 - **模板的样式走 `Sheet`。** `<style>` 编译成一张 `view::Sheet`，`class` / `class:x` 展开成 `.class` / `.class_when`，和手写 Rust 是同一条路径。每种"固定类 + 条件类"组合在第一次出现时挑一次规则，之后复用；得到的布局和以前相同。一个元素上的类必须来自同一张表。
+- **组合控件在它收的内容之后装配。** 一个视图里，放进 slot 的组合控件（例如 `DesktopShell` 的 `.primary(widget(SettingsPage…))`）先装配，收它的控件后装配，所以外层对内容的补丁（主区域的圆角等）不再被内容自己的装配覆盖。子节点仍在父节点之前装配。
 - **类覆盖元素上已有的布局。** `.class` 的规则施加在元素建好时的布局上（包括 `.css(..)` 写的），冲突时类里的声明生效。
 
 ## 新增
@@ -27,5 +28,6 @@
 - `El::with(|c| …)` 和 `Children`：用普通 Rust 语句加子节点。
 - 和手写代码配合：`entity_ref::<C>()` / `El::entity_ref` / `EntityRef::get`（类型化句柄）、`El::on_cx`（处理器拿到组件和 `ViewContext`，模板里是三个参数的 `on:E={…}`）、`AppContext::mount_view_detached`、`MountedView::root`、`with_refs`（挂载闭包返回 `with_refs(视图, 句柄)`，挂载返回 `(MountedView, 解析好的句柄)`）。`ListItem` / `SidebarRow` 的 `.leading` / `.content` / `.trailing`。
 - `stylesheet!`、`Class`、`Sheet`、`El::class`、`El::class_when`。
+- `detached(view)`：在视图里建出节点但不放进任何地方，配 `entity_ref` / `with_refs` 拿到 id，交给 `set_modal_slots` 这类按 id 收内容的接口。和其他根放在同一个 tuple 里，一次挂载、一次 commit。
 - `view!` 的具名 slot：`<template #navigation>…</template>` 展开成元素上的 `.navigation(view)`，`#title-trailing` 是 `.title_trailing(…)`，`#default` 是普通子节点。`<Suspense>` 的 `#fallback` 在 `view!` 里也能写了。
 - 组合控件在视图里自己装配：`DesktopShell`、`AppTitleBar`、`SettingsRow`、`SegmentedControl`、`SidebarSection`、`AppShell`、`Workspace`、`Dock`、`SplitPane`（新增无内容的 `SplitPane::new(&model)`，内容用 `.first` / `.second`）、`PaneSection`（`.header` / `.tabs` / `.body`）、`GraphCanvas`、`DatePicker`、`NativeMarkdown`、`ConfirmDialog`、设置页的 `AppearanceSection` / `AboutSection` / `SettingsSidebar` / `SettingsCollapsibleCard`（`.summary` / `.details` / `.accessory`）/ `SettingsPage`（`.content`）登记了 `TypeBehavior::slot_assembler`（`SidebarSection` 自己建表头和 body，见 `AppContext::assemble_sidebar_section`；`SidebarFrame` 有 `.top` / `.body` / `.footer`；`AppShell` 有 `.title_bar` / `.body` / `.overlay`，`Workspace` 有 `.region(id, view)`；Dock 的面板是 key 等于面板 id 的子节点，见 `AppContext::assemble_dock_panels`）；`Chip`、`ColorField`、`PathField`、`FileTab`、`DiffView`、`MediaTransportBar` 在视图建好时运行自己的装配。视图里不再调用 `assemble_*`。

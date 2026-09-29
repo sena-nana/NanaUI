@@ -1874,6 +1874,36 @@ fn a_slot_must_have_one_root() {
 }
 
 #[test]
+fn a_composite_in_a_slot_assembles_before_the_composite_that_takes_it() {
+    use crate::SettingsPage;
+    use nana_ui_core::{RadiusTier, SettingsModel, SettingsState, SettingsTab};
+    let (mut cx, document, _) = setup();
+    let model = SettingsModel::new("appearance", [SettingsTab::new("appearance", "外观")]).unwrap();
+    let state = SettingsState::new(&model);
+    let (_, page) = cx
+        .mount_view_root(document, || {
+            let page = entity_ref::<SettingsPage>();
+            let shell = widget(crate::DesktopShell::new())
+                .navigation(text("导航"))
+                .primary(
+                    widget(SettingsPage::new(model, state))
+                        .entity_ref(page)
+                        .content(text("页面")),
+                );
+            with_refs(shell, page)
+        })
+        .unwrap();
+    // The shell rounds the content of its primary region. Were the page
+    // assembled after the shell, its projection would take that back.
+    assert_eq!(
+        cx.world()
+            .node_style(page.stable_id())
+            .and_then(|style| style.radius),
+        Some(RadiusTier::Lg)
+    );
+}
+
+#[test]
 fn unmounting_a_shell_view_removes_its_slots_and_chrome() {
     let (mut cx, document, _) = setup();
     let before = cx.world().len();
@@ -2421,4 +2451,32 @@ fn list_item_slots_in_a_view_are_the_slots_set_by_hand() {
         .unwrap();
     assert_eq!(slots.leading, Some(children(&cx, viewed)[0]));
     assert_eq!(slots.trailing, Some(children(&cx, viewed)[1]));
+}
+
+#[test]
+fn a_detached_view_is_built_and_placed_nowhere_until_something_places_it() {
+    let (mut cx, document, _) = setup();
+    let (view, (column_ref, spare)) = cx
+        .mount_view_root(document, || {
+            let column_ref = entity_ref::<Stack>();
+            let spare = entity_ref::<Text>();
+            let view = column()
+                .entity_ref(column_ref)
+                .children((text("在树里"), detached(text("备用").entity_ref(spare))));
+            with_refs(view, (column_ref, spare))
+        })
+        .unwrap();
+    assert_eq!(view.roots(), [column_ref.stable_id()]);
+    assert_eq!(children(&cx, column_ref.stable_id()).len(), 1);
+    assert!(cx.world().contains(spare.stable_id()));
+    assert!(cx.world().node(spare.stable_id()).unwrap().parent.is_none());
+    assert!(
+        !cx.world()
+            .document_order(document)
+            .contains(&spare.stable_id())
+    );
+
+    cx.append_child(column_ref, spare).unwrap();
+    assert_eq!(children(&cx, column_ref.stable_id())[1], spare.stable_id());
+    assert_eq!(text_of(&cx, spare), "备用");
 }

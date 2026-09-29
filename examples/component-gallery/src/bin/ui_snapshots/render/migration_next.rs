@@ -23,7 +23,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nana_ui::runtime::view::{IntoView, entity_ref, widget, with_refs};
+use nana_ui::runtime::view::{IntoView, detached, entity_ref, settings_row, widget, with_refs};
 use nana_ui::runtime::{
     AboutMetadata as RuntimeAboutMetadata, AboutSection as RuntimeAboutSection,
     AccessibilityAction, AccessibilityActionRequest, ActionMenu as RuntimeActionMenu,
@@ -907,9 +907,7 @@ fn runtime_fixture(
             } else {
                 "Build status: ready"
             });
-            mount_root(&mut document, || {
-                widget(component).child_slot(widget(body), keep)
-            })?
+            mount_root(&mut document, || widget(component).children(widget(body)))?
         }
         Component::ListItem => {
             let mut component = RuntimeListItem::new(if fixture.state == "auto-height" {
@@ -1077,19 +1075,27 @@ fn runtime_fixture(
                 .stable_id()
         }
         Component::FormField => {
-            let [control] = mount_parked(&mut document, || {
-                widget(RuntimeTextInput::new("name@studio.local").placeholder("name@studio.local"))
-            })?;
-            let (_, field) = document.context_mut().mount_view_root(document_id, || {
-                let field = entity_ref();
-                with_refs(
-                    widget(RuntimeFormField::new("Email").error("Required")).entity_ref(field),
-                    field,
-                )
-            })?;
+            let (_, (control, field)) =
+                document.context_mut().mount_view_root(document_id, || {
+                    let (control, field) = (entity_ref::<RuntimeTextInput>(), entity_ref());
+                    with_refs(
+                        (
+                            detached(
+                                widget(
+                                    RuntimeTextInput::new("name@studio.local")
+                                        .placeholder("name@studio.local"),
+                                )
+                                .entity_ref(control),
+                            ),
+                            widget(RuntimeFormField::new("Email").error("Required"))
+                                .entity_ref(field),
+                        ),
+                        (control, field),
+                    )
+                })?;
             document
                 .context_mut()
-                .set_form_field_control(field, Some(control))?;
+                .set_form_field_control(field, Some(control.stable_id()))?;
             field.stable_id()
         }
         Component::InteractiveCard => mount_root(&mut document, || {
@@ -1101,7 +1107,7 @@ fn runtime_fixture(
                     ))
                     .disabled(fixture.state == "disabled"),
             )
-            .child_slot(widget(RuntimeText::new("Interactive surface")), keep)
+            .children(widget(RuntimeText::new("Interactive surface")))
         })?,
         Component::Tooltip => {
             let component = RuntimeIconButton::new(Icon::Add, "Add source")
@@ -1112,29 +1118,35 @@ fn runtime_fixture(
                 .stable_id()
         }
         Component::Dialog => {
-            let [body, close] = mount_parked(&mut document, || {
-                (
-                    widget(RuntimeText::new("Camera A")),
-                    widget(RuntimeIconButton::new(Icon::Close, "Close")),
-                )
-            })?;
-            let (_, dialog) = document.context_mut().mount_view_root(document_id, || {
-                let dialog = entity_ref();
-                with_refs(
-                    widget(
-                        RuntimeDialog::new("Rename scene")
-                            .description("This updates the workspace label.")
-                            .size(DialogSize::Default),
+            let (_, (body, close, dialog)) =
+                document.context_mut().mount_view_root(document_id, || {
+                    let (body, close) = (
+                        entity_ref::<RuntimeText>(),
+                        entity_ref::<RuntimeIconButton>(),
+                    );
+                    let dialog = entity_ref();
+                    with_refs(
+                        (
+                            detached(widget(RuntimeText::new("Camera A")).entity_ref(body)),
+                            detached(
+                                widget(RuntimeIconButton::new(Icon::Close, "Close"))
+                                    .entity_ref(close),
+                            ),
+                            widget(
+                                RuntimeDialog::new("Rename scene")
+                                    .description("This updates the workspace label.")
+                                    .size(DialogSize::Default),
+                            )
+                            .entity_ref(dialog),
+                        ),
+                        (body, close, dialog),
                     )
-                    .entity_ref(dialog),
-                    dialog,
-                )
-            })?;
+                })?;
             document.context_mut().set_modal_slots(
                 dialog,
                 ModalSlots {
-                    body: Some(body),
-                    close_action: Some(close),
+                    body: Some(body.stable_id()),
+                    close_action: Some(close.stable_id()),
                     ..ModalSlots::default()
                 },
             )?;
@@ -1188,31 +1200,37 @@ fn runtime_fixture(
             confirm.stable_id()
         }
         Component::Drawer => {
-            let [body, close] = mount_parked(&mut document, || {
-                (
-                    widget(RuntimeText::new("Properties")),
-                    widget(RuntimeIconButton::new(Icon::Close, "Close")),
-                )
-            })?;
-            let (_, drawer) = document.context_mut().mount_view_root(document_id, || {
-                let drawer = entity_ref();
-                with_refs(
-                    widget(
-                        RuntimeDrawer::new("Inspector").side(if fixture.state == "left" {
-                            DrawerSide::Left
-                        } else {
-                            DrawerSide::Right
-                        }),
+            let (_, (body, close, drawer)) =
+                document.context_mut().mount_view_root(document_id, || {
+                    let (body, close) = (
+                        entity_ref::<RuntimeText>(),
+                        entity_ref::<RuntimeIconButton>(),
+                    );
+                    let drawer = entity_ref();
+                    with_refs(
+                        (
+                            detached(widget(RuntimeText::new("Properties")).entity_ref(body)),
+                            detached(
+                                widget(RuntimeIconButton::new(Icon::Close, "Close"))
+                                    .entity_ref(close),
+                            ),
+                            widget(RuntimeDrawer::new("Inspector").side(
+                                if fixture.state == "left" {
+                                    DrawerSide::Left
+                                } else {
+                                    DrawerSide::Right
+                                },
+                            ))
+                            .entity_ref(drawer),
+                        ),
+                        (body, close, drawer),
                     )
-                    .entity_ref(drawer),
-                    drawer,
-                )
-            })?;
+                })?;
             document.context_mut().set_modal_slots(
                 drawer,
                 ModalSlots {
-                    body: Some(body),
-                    close_action: Some(close),
+                    body: Some(body.stable_id()),
+                    close_action: Some(close.stable_id()),
                     ..ModalSlots::default()
                 },
             )?;
@@ -1273,7 +1291,7 @@ fn runtime_fixture(
             .stable_id(),
         Component::Popover => mount_root(&mut document, || {
             widget(RuntimePopover::new().trigger("Details").open(true))
-                .child_slot(widget(RuntimeText::new("Inspector content")), keep)
+                .children(widget(RuntimeText::new("Inspector content")))
         })?,
         Component::ActionMenu => mount_root(&mut document, || {
             with_menu_items(widget(
@@ -1312,15 +1330,10 @@ fn runtime_fixture(
             true,
         )?,
         Component::SidebarFooter => mount_root(&mut document, || {
-            widget(RuntimeSidebarFooter::new())
-                .child_slot(
-                    widget(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true)),
-                    keep,
-                )
-                .child_slot(
-                    widget(RuntimeSidebarFooterButton::new("搜索", Icon::Search)),
-                    keep,
-                )
+            widget(RuntimeSidebarFooter::new()).children((
+                widget(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true)),
+                widget(RuntimeSidebarFooterButton::new("搜索", Icon::Search)),
+            ))
         })?,
         Component::AppearanceSection => {
             let mut appearance = AppearanceSettings::default();
@@ -1456,18 +1469,15 @@ fn runtime_fixture(
                     Icon::Workspace,
                 )))
         })?,
-        Component::Settings => {
-            let [control] = mount_parked(&mut document, || widget(RuntimeText::new("暗色")))?;
-            let row = document.context_mut().mount_settings_leaf_row(
-                document_id,
-                "主题",
-                Some("选择应用配色，立即生效"),
-                control,
-            )?;
-            let card = mount_root(&mut document, || widget(RuntimeSettingsCard::new("外观")))?;
-            insert_children(&mut document, card, &[row.stable_id()])?;
-            card
-        }
+        Component::Settings => mount_root(&mut document, || {
+            widget(RuntimeSettingsCard::new("外观")).children(
+                settings_row("主题")
+                    .hint(Some("选择应用配色，立即生效"))
+                    .first_in_group(true)
+                    .last_in_group(true)
+                    .control(widget(RuntimeText::new("暗色"))),
+            )
+        })?,
         Component::SettingsSidebar => mount_runtime_settings_sidebar(&mut document)?,
         Component::SettingsPage => mount_runtime_settings_page(&mut document, theme, fixture)?,
         Component::Workspace => mount_runtime_workspace(&mut document)?,
@@ -1489,8 +1499,7 @@ fn runtime_fixture(
             }
             mount_root(&mut document, || {
                 let body = widget(RuntimeList::new().style(body_style))
-                    .child_slot(widget(RuntimeText::new("Inspector")), keep)
-                    .child_slot(widget(hint), keep);
+                    .children((widget(RuntimeText::new("Inspector")), widget(hint)));
                 widget(RuntimeDockPanel::new().padding(10.0))
                     .child_slot(body, RuntimeDockPanel::content)
             })?
@@ -1622,14 +1631,6 @@ fn runtime_fixture(
     })
 }
 
-/// The write of a [`child_slot`](nana_ui::runtime::view::El::child_slot)
-/// whose parent does not record the child's id: the slot only builds the
-/// child before its parent, which is the order these fixtures' node ids
-/// were recorded in.
-fn keep<C>(component: C, _: StableNodeId) -> C {
-    component
-}
-
 /// Mount `view`, one element, as a document root; its node.
 fn mount_root<V: IntoView>(
     document: &mut RuntimeDocument,
@@ -1640,46 +1641,14 @@ fn mount_root<V: IntoView>(
     Ok(mounted.roots()[0])
 }
 
-/// Mount `view` parked, for what a composite or a `set_*_slots` call places
-/// afterwards; its roots, in order.
-fn mount_parked<const N: usize, V: IntoView>(
-    document: &mut RuntimeDocument,
-    view: impl FnOnce() -> V,
-) -> Result<[StableNodeId; N], nana_ui::runtime::FrameworkError> {
-    let document_id = document.document();
-    let mounted = document
-        .context_mut()
-        .mount_view_detached(document_id, view)?;
-    mounted
-        .roots()
-        .try_into()
-        .map_err(|_| nana_ui::runtime::FrameworkError::InvalidInput)
-}
-
-/// Move nodes an earlier mount built under `parent`, in order, in one
-/// commit: a view places only the nodes it builds.
-fn insert_children(
-    document: &mut RuntimeDocument,
-    parent: StableNodeId,
-    children: &[StableNodeId],
-) -> Result<(), nana_ui::runtime::FrameworkError> {
-    let mut mutations = MutationQueue::new();
-    for child in children {
-        mutations.insert(parent, *child, None);
-    }
-    document.context_mut().commit_mutations(mutations)?;
-    Ok(())
-}
-
 /// A menu's two items, as its own children.
 fn with_menu_items<C: nana_ui::runtime::ComponentView>(
     menu: nana_ui::runtime::view::El<C>,
-) -> nana_ui::runtime::view::El<C> {
-    menu.child_slot(widget(RuntimeActionMenuItem::new("Rename")), keep)
-        .child_slot(
-            widget(RuntimeActionMenuItem::new("Delete").danger(true)),
-            keep,
-        )
+) -> impl IntoView + use<C> {
+    menu.children((
+        widget(RuntimeActionMenuItem::new("Rename")),
+        widget(RuntimeActionMenuItem::new("Delete").danger(true)),
+    ))
 }
 
 fn slot_label_style() -> NodeStyle {

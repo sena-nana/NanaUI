@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use nana_ui::runtime::view::{IntoView, entity_ref, widget, with_refs};
+use nana_ui::runtime::view::{IntoView, detached, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     AlignSpec, CommandPalette, ConfirmDialog, ConfirmIntent, ConfirmSlots, ContextMenu,
     ContextMenuEvent as RuntimeContextMenuEvent, ContextMenuItem as RuntimeContextMenuItem,
@@ -15,8 +15,8 @@ use nana_ui::{ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint};
 use nana_ui_platform::{InputPayload, PointerInput, PointerPhase};
 
 use super::runtime_host::{
-    HostStack, RuntimeSceneInput, ScriptedInput, bind_event, event_point, hugging_text, keep_slot,
-    queue, runtime_input_event, styled_text, take_pending,
+    HostStack, RuntimeSceneInput, ScriptedInput, bind_event, event_point, hugging_text, queue,
+    runtime_input_event, styled_text, take_pending,
 };
 use super::{
     ContextAction, DialogCloseTrigger, GalleryContextMenuEvent, GalleryMessage, GalleryOverlay,
@@ -110,29 +110,33 @@ impl GalleryOverlaysRuntime {
                     let overlay = entity_ref::<ConfirmDialog>();
                     let body = entity_ref::<Text>();
                     let close = entity_ref::<IconButton>();
-                    let view =
+                    // Body and close action are built first and handed to the
+                    // dialog by `set_confirm_slots` below.
+                    let dialog =
                         widget(
                             ConfirmDialog::new(DIALOG_TITLE, DIALOG_DESCRIPTION)
                                 .cancel_label("取消")
                                 .confirm_label("确认"),
                         )
                         .entity_ref(overlay)
-                        .slot(widget(dialog_body_text()).entity_ref(body), keep_slot)
-                        .slot(
-                            widget(
-                                IconButton::new(Icon::Close, "关闭")
-                                    .size(ControlSize::Small)
-                                    .kind(ButtonKind::Text),
-                            )
-                            .entity_ref(close),
-                            keep_slot,
-                        )
                         .on(queue(pending, |intent: &ConfirmIntent| match intent {
                             ConfirmIntent::Confirm { .. } => GalleryMessage::ConfirmDialog,
                             ConfirmIntent::Cancel | ConfirmIntent::Secondary => {
                                 GalleryMessage::RequestDialogClose(DialogCloseTrigger::CloseButton)
                             }
                         }));
+                    let view = (
+                        detached(widget(dialog_body_text()).entity_ref(body)),
+                        detached(
+                            widget(
+                                IconButton::new(Icon::Close, "关闭")
+                                    .size(ControlSize::Small)
+                                    .kind(ButtonKind::Text),
+                            )
+                            .entity_ref(close),
+                        ),
+                        dialog,
+                    );
                     with_refs(view, (overlay, body, close))
                 })?;
                 let actions = context

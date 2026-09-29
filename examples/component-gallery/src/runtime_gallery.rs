@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use nana_ui::runtime::view::{EntityRef, IntoView, entity_ref, widget, with_refs};
+use nana_ui::runtime::view::{EntityRef, IntoView, detached, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     Activate, AppShell, AppTitleBar, Avatar, Button, CalendarHeatmap, CalendarHeatmapDatum,
     CalendarHeatmapEvent, Card, Checkbox, Chip, DesktopShell, DiffHunk, DiffLine, DiffView,
@@ -28,7 +28,7 @@ use nana_ui_platform::InputPayload;
 use super::runtime_host::{
     DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, ScriptedInput,
     apply_title_bar_maximized, apply_workspace_corners, bind_event, event_point, hugging_text,
-    keep_slot, labeled_text, node_is_or_under, queue, reconcile_children, runtime_input_event,
+    labeled_text, node_is_or_under, queue, reconcile_children, runtime_input_event,
     search_command_button, sidebar_toggle_button, styled_text, take_pending, theme_toggle_button,
 };
 use super::{
@@ -1762,24 +1762,24 @@ fn mount_surfaces(
             close_shown,
         ));
         // The pane tree's leaves are detached; `reconcile_children` below
-        // places the ones its layout shows.
-        let pane_tree_view = widget(PaneTree::new(PaneTreeNode::leaf("empty")))
-            .entity_ref(pane_tree)
-            .slot(
-                pane_text("Item 已关闭", SemanticColorRole::Muted, pane_empty),
-                keep_slot,
-            )
-            .slot(
-                pane_text("编辑器内容", SemanticColorRole::Text, pane_editor),
-                keep_slot,
-            )
-            .slot(
-                pane_text("左侧编辑器", SemanticColorRole::Text, pane_left),
-                keep_slot,
-            )
-            .slot(
-                pane_text("右侧编辑器", SemanticColorRole::Text, pane_right),
-                move |mut tree: PaneTree, _| {
+        // places the ones its layout shows. They are built first, so the
+        // tree's root can name them.
+        let pane_tree_view = (
+            detached(pane_text(
+                "Item 已关闭",
+                SemanticColorRole::Muted,
+                pane_empty,
+            )),
+            detached(pane_text(
+                "编辑器内容",
+                SemanticColorRole::Text,
+                pane_editor,
+            )),
+            detached(pane_text("左侧编辑器", SemanticColorRole::Text, pane_left)),
+            detached(pane_text("右侧编辑器", SemanticColorRole::Text, pane_right)),
+            widget(PaneTree::new(PaneTreeNode::leaf("empty")))
+                .entity_ref(pane_tree)
+                .bind(move |tree: &mut PaneTree| {
                     let built = "the pane tree's leaves are built before it";
                     tree.root = pane_tree_node_for(
                         item_open,
@@ -1789,9 +1789,8 @@ fn mount_surfaces(
                         pane_left.get().expect(built),
                         pane_right.get().expect(built),
                     );
-                    tree
-                },
-            );
+                }),
+        );
         let pane_view = widget(PaneChrome::new())
             .entity_ref(pane)
             .child_slot(header, move |chrome: PaneChrome, header| {
@@ -2381,8 +2380,7 @@ fn mount_workspace(
         let buttons: [EntityRef<Button>; 3] = std::array::from_fn(|_| entity_ref());
         let [lock, hide, reset] = buttons;
         let status = entity_ref::<Text>();
-        let stacks: [EntityRef<HostStack>; 2] = std::array::from_fn(|_| entity_ref());
-        let [popup_frame, popup_body] = stacks;
+        let popup = entity_ref::<AppShell>();
 
         let locked = state.dock_locked;
         let hidden_assets = !state.dock_is_visible("gallery.assets");
@@ -2439,19 +2437,7 @@ fn mount_workspace(
             .entity_ref(dock)
             .children(panel_views),
         );
-        let frame_view = widget(
-            HostStack::column(0.0)
-                .width(LengthSpec::Px(WORKSPACE_POPUP_WIDTH))
-                .height(LengthSpec::Px(WORKSPACE_POPUP_HEIGHT))
-                .min_height(LengthSpec::Px(WORKSPACE_POPUP_HEIGHT))
-                .background(SemanticColorRole::Surface)
-                .grow(0.0)
-                .shrink(0.0),
-        )
-        .entity_ref(popup_frame);
-        // Detached: the popup shell below takes it as its body.
         let body_view = widget(HostStack::column(4.0).padding(12.0).grow(0.0).shrink(0.0))
-            .entity_ref(popup_body)
             .children((
                 widget(styled_text(
                     "独立弹窗内容",
@@ -2466,6 +2452,21 @@ fn mount_workspace(
                     type_scale::REGULAR,
                 )),
             ));
+        let frame_view = widget(
+            HostStack::column(0.0)
+                .width(LengthSpec::Px(WORKSPACE_POPUP_WIDTH))
+                .height(LengthSpec::Px(WORKSPACE_POPUP_HEIGHT))
+                .min_height(LengthSpec::Px(WORKSPACE_POPUP_HEIGHT))
+                .background(SemanticColorRole::Surface)
+                .grow(0.0)
+                .shrink(0.0),
+        )
+        .children(
+            widget(AppShell::new())
+                .entity_ref(popup)
+                .title_bar(widget(AppTitleBar::new("弹窗标题")))
+                .body(body_view),
+        );
         let view = widget(
             HostStack::fill_column(WORKSPACE_CANVAS_GAP)
                 .padding(WORKSPACE_CANVAS_PADDING)
@@ -2474,28 +2475,9 @@ fn mount_workspace(
         )
         .entity_ref(root)
         .children((tools, dock_frame, frame_view));
-        with_refs(
-            (view, body_view),
-            (root, dock, panels, buttons, status, stacks),
-        )
+        with_refs(view, (root, dock, panels, buttons, status, popup))
     })?;
-    let (root, dock, panels, [lock, hide, reset], status, [popup_frame, popup_body]) = refs;
-    // The popup shell is not built by the view: a view assembles every
-    // `AppShell` and `AppTitleBar` it builds (title-bar columns, window
-    // controls) and the shell sizes its body to fill it. This popup keeps
-    // its title bar and body as plain children, the body at its own height.
-    let popup_title =
-        context.create_detached_component(document_id, AppTitleBar::new("弹窗标题"))?;
-    let popup = context.create_detached_component(
-        document_id,
-        AppShell::new()
-            .title_bar(popup_title.stable_id())
-            .body(popup_body.stable_id()),
-    )?;
-    context.append_child(popup, popup_title)?;
-    context.append_child(popup, popup_body)?;
-    context.reproject_component(popup_body)?;
-    context.append_child(popup_frame, popup)?;
+    let (root, dock, panels, [lock, hide, reset], status, popup) = refs;
     Ok(WorkspaceTree {
         root,
         dock,

@@ -4,84 +4,90 @@ state: stacked
   target: 20.00,20.00 520.00x240.00
   a11y: role=Generic disabled=false checked=None selected=None mixed=false
   quad #2/0 20.00,20.00 520.00x36.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #2/2 20.00,20.00 520.00x36.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #3/2 20.00,56.00 520.00x15.60 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #12/2 210.00,20.00 140.00x36.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #8/0 446.00,24.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #8/3 454.00,32.00 12.00x12.00 opacity=1.00 icon=Icon("minus") color=#5a616eff
+  quad #9/0 476.00,24.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #9/3 484.00,32.00 12.00x12.00 opacity=1.00 icon=Icon("square") color=#5a616eff
+  quad #10/0 506.00,24.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #10/3 514.00,32.00 12.00x12.00 opacity=1.00 icon=Icon("x") color=#5a616eff
+  text #3/2 20.00,56.00 520.00x204.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: desktop-settings
   target: 20.00,20.00 520.00x320.00
   a11y: role=Generic disabled=false checked=None selected=None mixed=false
-  quad #61/0 20.00,20.00 520.00x36.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #73/2 210.00,20.00 140.00x36.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #69/0 446.00,24.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  icon #69/3 454.00,32.00 12.00x12.00 opacity=1.00 icon=Icon("minus") color=#5a616eff
-  quad #70/0 476.00,24.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  icon #70/3 484.00,32.00 12.00x12.00 opacity=1.00 icon=Icon("square") color=#5a616eff
-  quad #71/0 506.00,24.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  icon #71/3 514.00,32.00 12.00x12.00 opacity=1.00 icon=Icon("x") color=#5a616eff
-  quad #63/0 20.00,56.00 520.00x284.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #51/0 20.00,20.00 520.00x36.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #70/2 210.00,20.00 140.00x36.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #66/0 446.00,24.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #66/3 454.00,32.00 12.00x12.00 opacity=1.00 icon=Icon("minus") color=#5a616eff
+  quad #67/0 476.00,24.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #67/3 484.00,32.00 12.00x12.00 opacity=1.00 icon=Icon("square") color=#5a616eff
+  quad #68/0 506.00,24.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #68/3 514.00,32.00 12.00x12.00 opacity=1.00 icon=Icon("x") color=#5a616eff
+  quad #71/0 20.00,56.00 520.00x284.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   quad #74/0 20.00,56.00 220.00x284.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  quad #4/0 32.00,66.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #4/2 58.00,66.00 166.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  icon #3/3 40.00,74.00 12.00x12.00 opacity=1.00 icon=Icon("arrow-left") color=#1a1a1fff
-  quad #7/0 32.00,106.00 200.00x28.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #7/2 58.00,106.00 166.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  icon #6/3 40.00,114.00 12.00x12.00 opacity=1.00 icon=Icon("sun") color=#1a1a1fff
-  quad #9/0 32.00,136.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #9/2 58.00,136.00 166.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  icon #8/3 40.00,144.00 12.00x12.00 opacity=1.00 icon=Icon("info-circle") color=#5a616eff
-  quad #57/0 241.00,56.00 299.00x284.00 opacity=1.00 bg=#ffffffff border=none border_width=0.00 radius=14.00/14.00/14.00/14.00 shadow=none
-  text #58/2 265.00,76.00 251.00x21.60 opacity=1.00 color=#1a1a1fff size=18.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #10/0 265.00,113.60 251.00x740.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
-  quad #17/0 281.00,127.60 219.00x84.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #14/2 281.00,131.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #15/2 281.00,146.60 219.00x16.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #11/0 281.00,168.60 142.00x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  quad #12/0 284.00,171.60 67.00x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
-  text #12/2 313.00,171.60 26.00x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  icon #12/3 296.00,178.10 13.00x13.00 opacity=1.00 icon=Icon("moon") color=#5a616eff
-  quad #13/0 353.00,171.60 67.00x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
-  text #13/2 382.00,171.60 26.00x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  icon #13/3 365.00,178.10 13.00x13.00 opacity=1.00 icon=Icon("sun") color=#1a1a1fff
-  quad #24/0 281.00,211.60 219.00x106.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #21/2 281.00,221.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #22/2 281.00,236.60 219.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #18/0 281.00,274.60 108.00x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  quad #19/0 284.00,277.60 50.00x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
-  text #19/2 296.00,277.60 26.00x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #20/0 336.00,277.60 50.00x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
-  text #20/2 348.00,277.60 26.00x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #31/0 281.00,317.60 219.00x106.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #28/2 281.00,327.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #29/2 281.00,342.60 219.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #25/0 281.00,380.60 147.00x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  quad #26/0 284.00,383.60 63.00x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
-  text #26/2 296.00,383.60 39.00x26.00 opacity=1.00 color=#9ca3afff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #27/0 349.00,383.60 76.00x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
-  text #27/2 361.00,383.60 52.00x26.00 opacity=1.00 color=#9ca3afff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #36/0 281.00,423.60 219.00x106.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #33/2 281.00,433.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #34/2 281.00,448.60 219.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #32/0 281.00,486.60 30.00x32.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #32/2 281.00,486.60 0.00x32.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #32/4 281.00,494.60 30.00x16.00 opacity=1.00 bg=#4991d78c border=#4991d78c border_width=1.00 radius=8.00/8.00/8.00/8.00 shadow=none
-  quad #32/5 298.00,497.60 10.00x10.00 opacity=1.00 bg=#ffffff8c border=none border_width=0.00 radius=5.00/5.00/5.00/5.00 shadow=none
-  quad #41/0 281.00,529.60 219.00x87.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #38/2 281.00,539.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #39/2 281.00,554.60 219.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #37/2 281.00,592.60 219.00x13.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #46/0 281.00,616.60 219.00x72.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #43/2 281.00,626.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #42/0 281.00,645.60 219.00x32.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #42/2 291.00,645.60 161.00x32.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #42/4 460.00,653.60 30.00x16.00 opacity=1.00 bg=#4991d7ff border=#4991d7ff border_width=1.00 radius=8.00/8.00/8.00/8.00 shadow=none
-  quad #42/5 477.00,656.60 10.00x10.00 opacity=1.00 bg=#ffffffff border=none border_width=0.00 radius=5.00/5.00/5.00/5.00 shadow=none
-  quad #51/0 281.00,688.60 219.00x72.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #48/2 281.00,698.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #47/3 297.50,731.60 86.00x4.00 opacity=1.00 bg=#cbcfd5ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
-  quad #47/4 297.50,731.60 8.60x4.00 opacity=1.00 bg=#4991d7ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
-  quad #47/5 299.60,727.10 13.00x13.00 opacity=1.00 bg=#4991d7ff border=#cbcfd5ff border_width=1.00 radius=6.50/6.50/6.50/6.50 shadow=none
-  text #47/6 398.00,717.60 60.00x32.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #47/7 458.00,717.60 32.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=inherit line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #53/2 281.00,770.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #54/2 281.00,785.60 219.00x16.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #52/0 281.00,807.60 219.00x28.00 opacity=1.00 bg=#f7f8faff border=#eef0f3ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #52/2 366.50,808.60 48.00x26.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #54/0 32.00,66.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #54/2 58.00,66.00 166.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  icon #53/3 40.00,74.00 12.00x12.00 opacity=1.00 icon=Icon("arrow-left") color=#1a1a1fff
+  quad #57/0 32.00,106.00 200.00x28.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #57/2 58.00,106.00 166.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  icon #56/3 40.00,114.00 12.00x12.00 opacity=1.00 icon=Icon("sun") color=#1a1a1fff
+  quad #59/0 32.00,136.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #59/2 58.00,136.00 166.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  icon #58/3 40.00,144.00 12.00x12.00 opacity=1.00 icon=Icon("info-circle") color=#5a616eff
+  quad #50/0 241.00,56.00 299.00x284.00 opacity=1.00 bg=#ffffffff border=none border_width=0.00 radius=14.00/14.00/14.00/14.00 shadow=none
+  text #60/2 265.00,76.00 251.00x21.60 opacity=1.00 color=#1a1a1fff size=18.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/0 265.00,113.60 251.00x740.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #9/0 281.00,127.60 219.00x84.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #6/2 281.00,131.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #7/2 281.00,146.60 219.00x16.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #3/0 281.00,168.60 142.00x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #4/0 284.00,171.60 67.00x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
+  text #4/2 313.00,171.60 26.00x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  icon #4/3 296.00,178.10 13.00x13.00 opacity=1.00 icon=Icon("moon") color=#5a616eff
+  quad #5/0 353.00,171.60 67.00x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
+  text #5/2 382.00,171.60 26.00x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  icon #5/3 365.00,178.10 13.00x13.00 opacity=1.00 icon=Icon("sun") color=#1a1a1fff
+  quad #16/0 281.00,211.60 219.00x106.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #13/2 281.00,221.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #14/2 281.00,236.60 219.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #10/0 281.00,274.60 108.00x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #11/0 284.00,277.60 50.00x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
+  text #11/2 296.00,277.60 26.00x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #12/0 336.00,277.60 50.00x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
+  text #12/2 348.00,277.60 26.00x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #23/0 281.00,317.60 219.00x106.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #20/2 281.00,327.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #21/2 281.00,342.60 219.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #17/0 281.00,380.60 147.00x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #18/0 284.00,383.60 63.00x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
+  text #18/2 296.00,383.60 39.00x26.00 opacity=1.00 color=#9ca3afff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #19/0 349.00,383.60 76.00x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=3.00/3.00/3.00/3.00 shadow=none
+  text #19/2 361.00,383.60 52.00x26.00 opacity=1.00 color=#9ca3afff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #28/0 281.00,423.60 219.00x106.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #25/2 281.00,433.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #26/2 281.00,448.60 219.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #24/0 281.00,486.60 30.00x32.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #24/2 281.00,486.60 0.00x32.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #24/4 281.00,494.60 30.00x16.00 opacity=1.00 bg=#4991d78c border=#4991d78c border_width=1.00 radius=8.00/8.00/8.00/8.00 shadow=none
+  quad #24/5 298.00,497.60 10.00x10.00 opacity=1.00 bg=#ffffff8c border=none border_width=0.00 radius=5.00/5.00/5.00/5.00 shadow=none
+  quad #33/0 281.00,529.60 219.00x87.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #30/2 281.00,539.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #31/2 281.00,554.60 219.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #29/2 281.00,592.60 219.00x13.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #38/0 281.00,616.60 219.00x72.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #35/2 281.00,626.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #34/0 281.00,645.60 219.00x32.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #34/2 291.00,645.60 161.00x32.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #34/4 460.00,653.60 30.00x16.00 opacity=1.00 bg=#4991d7ff border=#4991d7ff border_width=1.00 radius=8.00/8.00/8.00/8.00 shadow=none
+  quad #34/5 477.00,656.60 10.00x10.00 opacity=1.00 bg=#ffffffff border=none border_width=0.00 radius=5.00/5.00/5.00/5.00 shadow=none
+  quad #43/0 281.00,688.60 219.00x72.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #40/2 281.00,698.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #39/3 297.50,731.60 86.00x4.00 opacity=1.00 bg=#cbcfd5ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
+  quad #39/4 297.50,731.60 8.60x4.00 opacity=1.00 bg=#4991d7ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
+  quad #39/5 299.60,727.10 13.00x13.00 opacity=1.00 bg=#4991d7ff border=#cbcfd5ff border_width=1.00 radius=6.50/6.50/6.50/6.50 shadow=none
+  text #39/6 398.00,717.60 60.00x32.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #39/7 458.00,717.60 32.00x32.00 opacity=1.00 color=#5a616eff size=12.00 weight=inherit line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #45/2 281.00,770.60 219.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #46/2 281.00,785.60 219.00x16.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #44/0 281.00,807.60 219.00x28.00 opacity=1.00 bg=#f7f8faff border=#eef0f3ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #44/2 366.50,808.60 48.00x26.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
