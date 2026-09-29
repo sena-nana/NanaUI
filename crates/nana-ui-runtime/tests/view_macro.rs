@@ -1097,6 +1097,54 @@ mod styles {
         assert_eq!(after[1].0.direction, Some(nana_ui_core::FlexDirection::Row));
     }
 
+    stylesheet! {
+        mod teleport_styles;
+        .fill { height: 100%; flex-grow: 1; }
+    }
+
+    /// `class` on `<Teleport>` and `.class` / `.css` on `teleport` style the
+    /// anchor its content is built in, which it stays in without a target.
+    #[test]
+    fn a_teleport_class_styles_its_anchor() {
+        use nana_ui_runtime::view::{node_ref, teleport};
+        let document = DocumentId::new(1).unwrap();
+        let mount = |spelling: u8| {
+            let mut cx = AppContext::new();
+            let view = cx
+                .mount_view_root(document, || {
+                    let nowhere = node_ref();
+                    match spelling {
+                        0 => view! {
+                            <style>.fill { height: 100%; flex-grow: 1; }</style>
+                            <Teleport to={nowhere} class="fill"><Text>"浮层"</Text></Teleport>
+                        }
+                        .into_any(),
+                        1 => teleport(nowhere, text("浮层"))
+                            .class(teleport_styles::fill)
+                            .into_any(),
+                        _ => teleport(nowhere, text("浮层"))
+                            .css(css! { height: 100%; flex-grow: 1; })
+                            .into_any(),
+                    }
+                })
+                .unwrap();
+            (cx, view)
+        };
+        let anchors = (0..3)
+            .map(|spelling| {
+                let (cx, view) = mount(spelling);
+                let anchor = view.roots()[0];
+                assert_eq!(cx.world().node(anchor).unwrap().children.len(), 1);
+                layout_of(&cx, anchor)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(anchors[0], anchors[1]);
+        assert_eq!(anchors[0].height, Some(LengthSpec::Fill));
+        assert_eq!(anchors[0].flex_grow, Some(1.0));
+        assert_eq!(anchors[2].height, Some(LengthSpec::Fill));
+        assert_eq!(anchors[2].flex_grow, Some(1.0));
+    }
+
     /// The space in `.panel .open` is a descendant combinator, which L3
     /// views do not compile; without it `.panel.open` is a compound that
     /// applies. Quoted values are spliced bare.

@@ -503,8 +503,9 @@ fn easing_tokens(easing: Easing, runtime: &TokenStream) -> TokenStream {
 
 /// Blocks that build no node of their own to style. The others (`Block`,
 /// `Virtual`, `Transition`, `TransitionGroup`, `KeepAlive`) style the
-/// container of the list or chain they hold.
-const BLOCKS: &[&str] = &["Suspense", "Teleport", "ErrorBoundary"];
+/// container of the list or chain they hold, and `Teleport` the anchor its
+/// content is built in.
+const BLOCKS: &[&str] = &["Suspense", "ErrorBoundary"];
 
 /// A sheet's rules and transitions as the runtime's `view::Sheet`: patch
 /// statics, then the sheet, both in cascade order. `classes` numbers every

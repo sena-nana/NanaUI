@@ -15,13 +15,20 @@
 //! its parent in the tree is the target (`place_assembled`), so layout,
 //! paint, hit testing, focus order and accessibility follow the target.
 //! While the target is `None` (or gone) the content stays in place.
+//!
+//! The anchor — the node the content is built in, and stays in while it has
+//! no target — takes `.class`, `.class_when` and `.css` like the container of
+//! any structural view, so it can fill its place (`height: 100%`) or keep out
+//! of it.
 
 use std::borrow::Cow;
 use std::panic::Location;
 
-use super::node::{IntoView, StructuralBinding, UNBUILT, ViewBuilder};
+use super::node::{IntoView, StructuralBinding, ViewBuilder};
 use super::prop::{IntoProp, PropSource};
 use super::reactive::{self, EffectKey, EffectTarget, on_mount};
+use super::structural::container;
+use super::style::{ContainerStyle, container_styles};
 use crate::{AppContext, FrameworkError, StableNodeId, Stack};
 
 /// See [`teleport`].
@@ -29,6 +36,7 @@ pub struct Teleport<V> {
     to: PropSource<Option<StableNodeId>>,
     content: V,
     key: Option<Cow<'static, str>>,
+    style: ContainerStyle,
     site: &'static Location<'static>,
 }
 
@@ -40,6 +48,7 @@ pub fn teleport<V: IntoView>(to: impl IntoProp<Option<StableNodeId>>, content: V
         to: to.into_source(),
         content,
         key: None,
+        style: ContainerStyle::default(),
         site: Location::caller(),
     }
 }
@@ -49,7 +58,13 @@ impl<V> Teleport<V> {
         self.key = Some(key.into());
         self
     }
+
+    fn container_style_mut(&mut self) -> &mut ContainerStyle {
+        &mut self.style
+    }
 }
+
+container_styles!([V] Teleport<V>);
 
 /// Put `roots` under `to` when it exists, else back under `anchor`.
 fn place(
@@ -88,11 +103,11 @@ impl StructuralBinding for TeleportBinding {
 
 impl<V: IntoView> IntoView for Teleport<V> {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        let anchor = vb.place(self.key, Stack::column(0.0));
-        let id = anchor.stable_id();
-        if id == UNBUILT {
+        let Some(anchor) = container(Stack::column(0.0), self.key, self.style, self.site).place(vb)
+        else {
             return;
-        }
+        };
+        let id = anchor.stable_id();
         let mut roots = Vec::new();
         let content = self.content;
         vb.nest(anchor, |vb| roots = vb.build_collect(content));

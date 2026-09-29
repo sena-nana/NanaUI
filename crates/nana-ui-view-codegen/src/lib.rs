@@ -1091,11 +1091,14 @@ impl Gen<'_> {
                     match &attr.name {
                         AttrName::Plain(name) if name == "to" => to = Some(prop(&attr.value)),
                         AttrName::Plain(name) if name == "key" => {}
+                        // They style the anchor the content is built in.
+                        name if is_class_directive(name) => {}
                         _ => {
                             return Err(syn::Error::new(
                                 span,
-                                "`<Teleport>` takes `to={node}`: a node ref, a node id or \
-                                 an expression choosing one",
+                                "`<Teleport>` takes `to={node}` (a node ref, a node id or an \
+                                 expression choosing one), and `class` / `class:name` for the \
+                                 anchor the content is built in",
                             ));
                         }
                     }
