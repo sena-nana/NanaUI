@@ -376,7 +376,13 @@ impl VisibilityIndex {
                         .flatten()
                 })
             };
-            let mut parent = scroll_parent(id.node);
+            // A triggered menu surface is viewport-fixed like its content:
+            // no ancestor's scroll or transform reaches it.
+            let mut parent = if super::is_triggered_overlay_surface(id) {
+                None
+            } else {
+                scroll_parent(id.node)
+            };
             while let Some(id) = parent {
                 let ranges = index.descendants.entry(id).or_default();
                 if let Some(last) = ranges.last_mut().filter(|range| range.end == offset) {

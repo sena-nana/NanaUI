@@ -1153,6 +1153,7 @@ pub(super) fn place_node_scoped(
     }
     if let Some(overlay) = triggered_menu_overlay(nodes.world, id) {
         place_triggered_menu_items(
+            id,
             overlay,
             LayoutBox {
                 x: origin.x,
@@ -1304,6 +1305,7 @@ fn triggered_menu_overlay(
 
 #[allow(clippy::too_many_arguments)]
 fn place_triggered_menu_items(
+    id: StableNodeId,
     overlay: crate::TriggeredMenuOverlay,
     trigger: LayoutBox,
     items: &[StableNodeId],
@@ -1342,6 +1344,13 @@ fn place_triggered_menu_items(
         width: viewport.width,
         height: viewport.height,
     };
+    // The items are viewport-fixed, so they hang off where the trigger shows:
+    // its box through the scroll offsets and transforms above it, not the
+    // unscrolled layout box.
+    let trigger = nodes
+        .world
+        .project_input_bounds(id, trigger)
+        .unwrap_or(trigger);
     let (origin_x, origin_y) = crate::popover::resolve_popover_origin(
         trigger,
         overlay.width,

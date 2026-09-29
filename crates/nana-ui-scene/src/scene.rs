@@ -165,6 +165,31 @@ const TEXT_DIAGNOSTIC_LABELS: u32 = 3;
 const TEXT_ATOM_ICONS: u32 = 4;
 const TEXT_ATOM_LABELS: u32 = 5;
 
+/// The surface of an open triggered menu (Popover, ActionMenu, HoverCard).
+/// It is the trigger's primitive, but it wraps content Runtime lays out
+/// viewport-fixed above the page, so it paints the way that content does: in
+/// the root stacking context, untransformed, and cut by none of the trigger's
+/// clips. It keeps no projection of the trigger's to rebase on either, so a
+/// scroll under the trigger leaves it where its content is.
+const TRIGGERED_OVERLAY_SURFACE: u32 = 0xFFFF_FFE0;
+pub(super) const TRIGGERED_OVERLAY_SURFACE_SLOT: u64 = (TRIGGERED_OVERLAY_SURFACE as u64) << 32;
+
+fn is_triggered_overlay_surface(id: PrimitiveId) -> bool {
+    id.slot == TRIGGERED_OVERLAY_SURFACE_SLOT
+}
+
+/// A triggered surface's paint-order key: its own `(z_index, document_order)`
+/// at the root, so it sits under the menu content (later in document order)
+/// and over its trigger, whatever groups the trigger is inside.
+fn triggered_overlay_surface_key(primitive: &ScenePrimitive) -> Option<SceneOrderKey> {
+    is_triggered_overlay_surface(primitive.id).then(|| {
+        SceneOrderKey::at(
+            Arc::from([(primitive.z_index, primitive.document_order)]),
+            primitive,
+        )
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QuadSurfacePaint {
     pub background_image: Option<BackgroundImage>,
@@ -1079,6 +1104,9 @@ impl UiScene {
             .values()
             .map(|held| {
                 let primitive = &held.primitive;
+                if let Some(key) = triggered_overlay_surface_key(primitive) {
+                    return key;
+                }
                 if !self.custom_paint.is_empty() && has_custom_paint(&self.nodes, primitive.node) {
                     return order_key(&self.nodes, &self.node_order, primitive);
                 }
@@ -1540,6 +1568,9 @@ impl UiScene {
     /// document order in it are the node's — so while the rebuild pass runs it
     /// is computed once per node and every primitive shares that `Arc`.
     fn scene_order_key(&self, primitive: &ScenePrimitive) -> SceneOrderKey {
+        if let Some(key) = triggered_overlay_surface_key(primitive) {
+            return key;
+        }
         if let Ok(mut scratch) = self.rebuild_scratch.lock()
             && scratch.active
         {
@@ -2300,6 +2331,9 @@ fn order_key(
     node_order: &NodeMap<usize>,
     primitive: &ScenePrimitive,
 ) -> SceneOrderKey {
+    if let Some(key) = triggered_overlay_surface_key(primitive) {
+        return key;
+    }
     let prefix: GroupPrefix = group_prefix(nodes, node_order, primitive.node).into();
     SceneOrderKey::at(order_stack(nodes, &prefix, primitive), primitive)
 }

@@ -1419,10 +1419,16 @@ impl UiWorld {
                 overlay: Some(overlay),
                 ..
             } if self.record(parent).hierarchy.children.first().copied() == Some(id) => {
-                overlay_connector_box(
-                    self.record(parent).layout,
-                    crate::popover::overlay_surface_from_items(self, parent, Some(overlay)),
-                )
+                {
+                    // The card is viewport-fixed; the trigger is wherever the
+                    // scroll offsets above it put its layout box.
+                    let trigger = self.record(parent).layout;
+                    overlay_connector_box(
+                        self.project_input_bounds(parent, trigger)
+                            .unwrap_or(trigger),
+                        crate::popover::overlay_surface_from_items(self, parent, Some(overlay)),
+                    )
+                }
             }
             _ => None,
         }

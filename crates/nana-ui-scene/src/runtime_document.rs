@@ -593,6 +593,124 @@ mod tests {
         assert!(!idle.cursor_changed);
     }
 
+    /// An open HoverCard inside a clipping, stacked pane: its surface and
+    /// content paint over the trigger and over a later, higher sibling, and
+    /// the pane's clip does not cut the part of the card that hangs out of it.
+    #[test]
+    fn open_hover_card_paints_above_its_trigger_and_the_page_uncut() {
+        use nana_ui_core::{Icon, OverflowSpec, PositionSpec, SemanticColorRole};
+        use nana_ui_runtime::{
+            Button, HoverCard, MeasureTextShaper, PopoverAlignment, PopoverPlacement, Stack,
+        };
+        let id = DocumentId::new(92).unwrap();
+        let mut document = RuntimeDocument::new(id);
+        let cx = document.context_mut();
+        let row = cx.create_component(id, Stack::fill_row(0.0)).unwrap();
+        let pane = cx
+            .create_component(
+                id,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(200.0));
+                    layout.height = Some(LengthSpec::Px(400.0));
+                    layout.overflow_x = OverflowSpec::Hidden;
+                    layout.overflow_y = OverflowSpec::Hidden;
+                    layout.position = PositionSpec::Relative;
+                    layout.z_index = Some(1);
+                }),
+            )
+            .unwrap();
+        let cover = cx
+            .create_component(
+                id,
+                Stack::column(0.0)
+                    .surface(SemanticColorRole::Surface)
+                    .with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Px(400.0));
+                        layout.height = Some(LengthSpec::Px(400.0));
+                        layout.position = PositionSpec::Relative;
+                        layout.z_index = Some(2);
+                    }),
+            )
+            .unwrap();
+        let card = cx
+            .create_component(
+                id,
+                HoverCard::new()
+                    .trigger_icon(Icon::Add, "账号")
+                    .trigger_size(28.0)
+                    .width(280.0)
+                    .placement(PopoverPlacement::Bottom)
+                    .alignment(PopoverAlignment::Start)
+                    .open_delay(0),
+            )
+            .unwrap();
+        let button = cx.create_component(id, Button::new("进入空间")).unwrap();
+        cx.append_child(card, button).unwrap();
+        cx.append_child(pane, card).unwrap();
+        cx.append_child(row, pane).unwrap();
+        cx.append_child(row, cover).unwrap();
+        let viewport = LayoutViewport::new(640.0, 480.0);
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+        document
+            .context_mut()
+            .set_pointer_hover_at(id, 1, Some(card.stable_id()), Duration::ZERO)
+            .unwrap();
+        document
+            .context_mut()
+            .advance_animations(Duration::from_millis(400));
+        document.flush(viewport, &mut MeasureTextShaper).unwrap();
+
+        let button_box = document
+            .context()
+            .world()
+            .layout_box(button.stable_id())
+            .unwrap();
+        assert!(
+            button_box.x + button_box.width > 200.0,
+            "the card reaches past the pane: {button_box:?}"
+        );
+        let order: Vec<_> = document.scene().primitives().collect();
+        let position = |pick: &dyn Fn(&crate::ScenePrimitive) -> bool| {
+            order
+                .iter()
+                .position(|primitive| pick(primitive))
+                .expect("primitive in the scene")
+        };
+        let surface_at = position(&|p| {
+            p.id.node == card.stable_id()
+                && p.id.slot == crate::scene::TRIGGERED_OVERLAY_SURFACE_SLOT
+        });
+        let surface = order[surface_at];
+        assert!(
+            surface.clips.is_empty(),
+            "the pane does not cut the surface"
+        );
+        let trigger_last = order
+            .iter()
+            .rposition(|p| p.node == card.stable_id() && p.id.slot != surface.id.slot)
+            .expect("trigger paint");
+        let cover_last = order
+            .iter()
+            .rposition(|p| p.node == cover.stable_id())
+            .expect("cover paint");
+        let button_first = position(&|p| p.node == button.stable_id());
+        assert!(
+            trigger_last < surface_at && cover_last < surface_at && surface_at < button_first,
+            "trigger {trigger_last}, cover {cover_last} < surface {surface_at} < content {button_first}"
+        );
+        for primitive in order.iter().filter(|p| p.node == button.stable_id()) {
+            assert!(
+                primitive
+                    .clips
+                    .iter()
+                    .all(|clip| clip.bounds.x <= button_box.x
+                        && clip.bounds.x + clip.bounds.width >= button_box.x + button_box.width),
+                "the pane's clip does not cut the card content: {:?}",
+                primitive.clips
+            );
+        }
+    }
+
     #[test]
     fn closed_modal_live_presence_retires_scene_and_reopening_projects_updates() {
         use nana_ui_runtime::{

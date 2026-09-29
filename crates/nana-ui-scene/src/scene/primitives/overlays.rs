@@ -309,12 +309,26 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
             if surface.height > 1.0 && surface.width > 1.0 {
+                // A triggered surface wraps content Runtime lays out
+                // viewport-fixed above the page. It is painted the same way:
+                // untransformed, uncut by the trigger's clips, and in the root
+                // stacking context above the trigger itself. A context menu's
+                // surface is its own node's box and stays with it.
+                let (slot, transform, clips) = if trigger_surface.is_some() {
+                    (
+                        TRIGGERED_OVERLAY_SURFACE_SLOT,
+                        AffineTransform::IDENTITY,
+                        Arc::from([]),
+                    )
+                } else {
+                    (0, transform, Arc::clone(parent_clips))
+                };
                 emit(ScenePrimitive {
-                    id: PrimitiveId { node: id, slot: 0 },
+                    id: PrimitiveId { node: id, slot },
                     node: id,
                     bounds: scene_rect(*surface),
                     transform,
-                    clips: Arc::clone(parent_clips),
+                    clips,
                     opacity,
                     z_index: node.z_index,
                     document_order: node_order,

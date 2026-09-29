@@ -340,7 +340,10 @@ impl UiWorld {
         self.presentation_input_bounds(self.focused(document)?)
     }
 
-    pub(super) fn project_input_bounds(
+    /// Where `bounds`, in `id`'s layout coordinates, sits in the viewport:
+    /// through the scroll offsets and transforms above `id`, up to its nearest
+    /// viewport-fixed ancestor. Layout anchors fixed surfaces on this.
+    pub(crate) fn project_input_bounds(
         &self,
         id: StableNodeId,
         bounds: LayoutBox,

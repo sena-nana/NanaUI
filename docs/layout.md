@@ -22,7 +22,7 @@ Rust 第一路径用控件自己的布局，不写 CSS；排行与列、边框�
 
 **定位。** `relative`、脱流的 `absolute`、相对窗口的 `fixed`、文档流内的 `sticky`（滚动投影之后才贴住，不写回 Runtime `LayoutBox`）。`fixed` 只适合普通节点贴在视口上；产品浮层仍走控件，不要自己用 `fixed` 搭对话框。脱流盒子的高度没写（也没同时写 `top` 和 `bottom`）时按内容算，它里面按高度填满（`Fill`、百分比高度）的子项没有确定的高度可依，按内容处理，不再取包含块的高度：包含块的高度由这些盒子撑出来时（按内容量高的虚拟列表行），那样会每一趟布局都长高一截、帧永远稳定不下来。
 
-**层叠上下文子集。** Scene 按 `(z_index, document_order)` 排序，并把隔离组当成一层：`opacity` 介于 0 和 1 的组、`isolation: isolate`、以及 `position` 非 static 且写了 `z-index`。高 z 子项不会画到组外的后出现兄弟之上。**例外：** `position: fixed` 的表面（Popover / ActionMenu / HoverCard 的弹出层）画在根层叠上下文，不被父级隔离组裁进卡片里。重叠处的命中排序用同一条前缀切断，否则后面的兄弟卡会抢走菜单点击。不要靠应用给整张卡抬 `z_index`。不是完整 CSS Appendix E（负 z 分层、float/inline 层、transform 单独成层等未全做）。命中仍走树结构，组内 z 只在兄弟间比。
+**层叠上下文子集。** Scene 按 `(z_index, document_order)` 排序，并把隔离组当成一层：`opacity` 介于 0 和 1 的组、`isolation: isolate`、以及 `position` 非 static 且写了 `z-index`。高 z 子项不会画到组外的后出现兄弟之上。**例外：** `position: fixed` 的表面（Popover / ActionMenu / HoverCard 的弹出层）画在根层叠上下文，不被父级隔离组裁进卡片里。弹出层的内容由 Runtime 定成 viewport-fixed，抽取给 Scene 时也按这份样式走，所以祖先的 overflow 裁剪、滚动与变换都不作用于它；卡面（触发节点画的那块底）同样不带触发器的变换与裁剪，排在触发器自身的绘制之上、弹出内容之下。重叠处的命中排序用同一条前缀切断，否则后面的兄弟卡会抢走菜单点击。不要靠应用给整张卡抬 `z_index`。不是完整 CSS Appendix E（负 z 分层、float/inline 层、transform 单独成层等未全做）。命中仍走树结构，组内 z 只在兄弟间比。
 
 **`display: contents`。** 子节点提升到父级格式化上下文；该节点自己没有盒子。
 

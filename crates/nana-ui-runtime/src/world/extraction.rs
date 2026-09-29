@@ -152,6 +152,10 @@ impl UiWorld {
         // on write. Resolving it here instead meant an `Arc::make_mut` copy of
         // a 4.8 KB `LayoutStyle` per control per frame.
         source_style.layout = self.motion_layout(id, &resolved_layout);
+        // Open menu content is viewport-fixed for layout and hit testing; the
+        // Scene must paint it so too, or the trigger's clips and stacking
+        // groups cut the card that was laid out above them.
+        self.triggered_overlay_layout(id, &mut source_style.layout);
         // Scene receives the layout-resolved padding; it must not resolve %
         // against the painted node's own width. Authored world style stays intact.
         let padding = self.used_layout_padding(id);

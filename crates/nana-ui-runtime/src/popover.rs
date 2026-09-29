@@ -616,6 +616,14 @@ pub(crate) fn menu_surface_geometry(
     }
 }
 
+/// Where an anchored surface of `surface_width` × `surface_height` opens
+/// against `trigger` inside `viewport`.
+///
+/// The surface takes the requested side unless it would overflow the viewport
+/// there while the opposite side has room for it; then it flips, as a
+/// tooltip does. Whatever side it lands on, it is then clamped into the
+/// viewport along both axes, so a surface with room on neither side overlaps
+/// its trigger rather than leaving the window.
 pub fn resolve_popover_origin(
     trigger: LayoutBox,
     surface_width: f32,
@@ -625,6 +633,36 @@ pub fn resolve_popover_origin(
     alignment: PopoverAlignment,
     gap: f32,
 ) -> (f32, f32) {
+    let fits_before = |start: f32, extent: f32, origin: f32| origin - gap - extent >= start;
+    let fits_after = |end: f32, extent: f32, origin: f32| origin + gap + extent <= end;
+    let (right, bottom) = (viewport.x + viewport.width, viewport.y + viewport.height);
+    let placement = match placement {
+        PopoverPlacement::Bottom
+            if !fits_after(bottom, surface_height, trigger.y + trigger.height)
+                && fits_before(viewport.y, surface_height, trigger.y) =>
+        {
+            PopoverPlacement::Top
+        }
+        PopoverPlacement::Top
+            if !fits_before(viewport.y, surface_height, trigger.y)
+                && fits_after(bottom, surface_height, trigger.y + trigger.height) =>
+        {
+            PopoverPlacement::Bottom
+        }
+        PopoverPlacement::Right
+            if !fits_after(right, surface_width, trigger.x + trigger.width)
+                && fits_before(viewport.x, surface_width, trigger.x) =>
+        {
+            PopoverPlacement::Left
+        }
+        PopoverPlacement::Left
+            if !fits_before(viewport.x, surface_width, trigger.x)
+                && fits_after(right, surface_width, trigger.x + trigger.width) =>
+        {
+            PopoverPlacement::Right
+        }
+        placement => placement,
+    };
     let mut x = match placement {
         PopoverPlacement::Top | PopoverPlacement::Bottom => match alignment {
             PopoverAlignment::Start => trigger.x,
@@ -643,8 +681,8 @@ pub fn resolve_popover_origin(
             PopoverAlignment::End => trigger.y + trigger.height - surface_height,
         },
     };
-    let max_x = (viewport.x + viewport.width - surface_width).max(viewport.x);
-    let max_y = (viewport.y + viewport.height - surface_height).max(viewport.y);
+    let max_x = (right - surface_width).max(viewport.x);
+    let max_y = (bottom - surface_height).max(viewport.y);
     x = x.clamp(viewport.x, max_x);
     y = y.clamp(viewport.y, max_y);
     (x, y)
@@ -963,49 +1001,52 @@ mod tests {
     }
 
     #[test]
-    fn popover_origin_clamps_to_the_viewport() {
-        let trigger = LayoutBox {
-            x: 90.0,
-            y: 80.0,
-            width: 20.0,
-            height: 20.0,
-        };
+    fn popover_origin_flips_to_the_side_with_room_then_clamps() {
         let viewport = LayoutBox {
             x: 0.0,
             y: 0.0,
             width: 120.0,
             height: 120.0,
         };
-        assert_eq!(
+        let origin = |trigger, placement| {
             resolve_popover_origin(
                 trigger,
                 80.0,
                 60.0,
                 viewport,
-                PopoverPlacement::Bottom,
+                placement,
                 PopoverAlignment::Center,
                 6.0,
-            ),
-            (40.0, 60.0)
-        );
+            )
+        };
+        // No room below the trigger, room above: it opens upward, and the
+        // cross axis clamps into the viewport.
+        let low = LayoutBox {
+            x: 90.0,
+            y: 80.0,
+            width: 20.0,
+            height: 20.0,
+        };
+        assert_eq!(origin(low, PopoverPlacement::Bottom), (40.0, 14.0));
+        // No room to the left, room to the right: it opens rightward.
         let tight = LayoutBox {
             x: 4.0,
             y: 4.0,
             width: 20.0,
             height: 20.0,
         };
-        assert_eq!(
-            resolve_popover_origin(
-                tight,
-                80.0,
-                60.0,
-                viewport,
-                PopoverPlacement::Left,
-                PopoverAlignment::Center,
-                6.0,
-            ),
-            (0.0, 0.0)
-        );
+        assert_eq!(origin(tight, PopoverPlacement::Left), (30.0, 0.0));
+        // Room on the requested side: no flip.
+        assert_eq!(origin(tight, PopoverPlacement::Bottom), (0.0, 30.0));
+        // Room on neither side: it keeps the requested side and is clamped
+        // over the trigger rather than leaving the viewport.
+        let middle = LayoutBox {
+            x: 50.0,
+            y: 50.0,
+            width: 20.0,
+            height: 20.0,
+        };
+        assert_eq!(origin(middle, PopoverPlacement::Bottom), (20.0, 60.0));
     }
 
     /// An open menu's items leave the host row: the trigger keeps the closed

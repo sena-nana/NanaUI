@@ -1996,14 +1996,28 @@ impl UiWorld {
             Arc::make_mut(&mut style).resolve_logical_box_edges_in(writing);
         }
         if let Some(overlay) = self.parent_triggered_overlay(id) {
-            let layout = Arc::make_mut(&mut style);
-            layout.position = PositionSpec::Fixed;
-            layout.width = Some(LengthSpec::Px(
-                (overlay.width - overlay.padding * 2.0).max(0.0),
-            ));
-            layout.z_index = Some(crate::popover::MENU_OVERLAY_Z_INDEX);
+            apply_triggered_overlay(Arc::make_mut(&mut style), overlay);
         }
         style
+    }
+
+    /// The content of an open triggered menu (Popover, ActionMenu,
+    /// HoverCard) as layout, hit testing and paint all see it: a
+    /// viewport-fixed surface above the page. Extraction reads the resolved
+    /// style, so it folds this in the same way `effective_layout_style` does.
+    pub(super) fn triggered_overlay_layout(
+        &self,
+        id: StableNodeId,
+        layout: &mut Arc<nana_ui_core::LayoutStyle>,
+    ) {
+        // Open triggered menus count among the z-index nodes; with none of
+        // those there is no overlay content to find.
+        if self.z_index_nodes == 0 {
+            return;
+        }
+        if let Some(overlay) = self.parent_triggered_overlay(id) {
+            apply_triggered_overlay(Arc::make_mut(layout), overlay);
+        }
     }
 
     fn parent_triggered_overlay(&self, id: StableNodeId) -> Option<crate::TriggeredMenuOverlay> {
@@ -2971,6 +2985,17 @@ fn is_clip_visual(visual: Option<&StandardVisual>) -> bool {
         visual,
         Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
     )
+}
+
+fn apply_triggered_overlay(
+    layout: &mut nana_ui_core::LayoutStyle,
+    overlay: crate::TriggeredMenuOverlay,
+) {
+    layout.position = PositionSpec::Fixed;
+    layout.width = Some(LengthSpec::Px(
+        (overlay.width - overlay.padding * 2.0).max(0.0),
+    ));
+    layout.z_index = Some(crate::popover::MENU_OVERLAY_Z_INDEX);
 }
 
 fn is_triggered_menu_overlay(visual: Option<&StandardVisual>) -> bool {

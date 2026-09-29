@@ -57,6 +57,19 @@ impl UiScene {
         super::visibility::transform(self.node_bounds(id)?, transform)
     }
 
+    /// [`Self::node_projection`] of the primitive's node, except for a
+    /// triggered menu surface: it is viewport-fixed like the content it wraps,
+    /// so nothing its trigger inherits moves or cuts it.
+    fn primitive_projection(&self, primitive: &ScenePrimitive) -> Option<NodeProjection> {
+        if super::is_triggered_overlay_surface(primitive.id) {
+            return self
+                .nodes
+                .contains_key(&primitive.node)
+                .then_some(NodeProjection::Retained);
+        }
+        self.node_projection(primitive.node)
+    }
+
     /// How a retained primitive's own transform and clips relate to the current
     /// frame. `None` when the node behind them is gone, which is the one case
     /// [`Self::draw_primitive`] reports as a missing draw.
@@ -112,7 +125,7 @@ impl UiScene {
     pub fn draw_primitive(&self, id: PrimitiveId) -> Option<SceneDraw<'_>> {
         let (primitive, revision) = self.primitive_at(id)?;
         let paint_opacity = self.compositor_paint_opacity(primitive.node, primitive.opacity);
-        match self.node_projection(primitive.node)? {
+        match self.primitive_projection(primitive)? {
             NodeProjection::Retained => Some(SceneDraw {
                 primitive,
                 transform: primitive.transform,
@@ -158,7 +171,7 @@ impl UiScene {
     /// on a frame that rebuilds the index that was the whole scene's worth of
     /// work thrown away.
     pub(super) fn draw_transform(&self, primitive: &ScenePrimitive) -> Option<AffineTransform> {
-        Some(match self.node_projection(primitive.node)? {
+        Some(match self.primitive_projection(primitive)? {
             NodeProjection::Retained => primitive.transform,
             NodeProjection::Rebased { attributes, .. } => {
                 attributes.delta.then(primitive.transform)

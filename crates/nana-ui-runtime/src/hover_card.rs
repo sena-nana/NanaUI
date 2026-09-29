@@ -822,6 +822,141 @@ mod tests {
         assert!(context.read(card, |card| card.open).unwrap());
     }
 
+    fn open_card(context: &mut AppContext, card: crate::Entity<HoverCard>) {
+        hover_at(context, document(), Some(card.stable_id()), 0);
+        tick(context, 400);
+        relayout(context);
+        context.rebuild_hit_test(document());
+    }
+
+    /// A trigger with no room below it for a Bottom card opens the card
+    /// above it instead of clamping it back over the trigger.
+    #[test]
+    fn a_card_without_room_below_opens_above_its_trigger() {
+        let mut context = AppContext::new();
+        let root = context
+            .create_component(document(), crate::Stack::column(0.0))
+            .unwrap();
+        let spacer = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).with_layout(|layout| {
+                    layout.height = Some(LengthSpec::Px(500.0));
+                }),
+            )
+            .unwrap();
+        let card = context
+            .create_component(
+                document(),
+                HoverCard::new()
+                    .trigger_icon(Icon::Add, "账号")
+                    .trigger_size(28.0)
+                    .placement(PopoverPlacement::Bottom)
+                    .alignment(PopoverAlignment::Start)
+                    .open_delay(0),
+            )
+            .unwrap();
+        let body = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).with_layout(|layout| {
+                    layout.height = Some(LengthSpec::Px(200.0));
+                }),
+            )
+            .unwrap();
+        context.append_child(card, body).unwrap();
+        context.append_child(root, spacer).unwrap();
+        context.append_child(root, card).unwrap();
+        relayout(&mut context);
+        open_card(&mut context, card);
+        let trigger = context.world().layout_box(card.stable_id()).unwrap();
+        let content = context.world().layout_box(body.stable_id()).unwrap();
+        assert!(
+            content.y + content.height <= trigger.y && content.y >= 0.0,
+            "the card opens above the trigger, inside the viewport: trigger={trigger:?} content={content:?}"
+        );
+        assert_eq!(content.x, trigger.x, "start alignment keeps the left edges");
+    }
+
+    /// The card is viewport-fixed, so it hangs off the trigger where the
+    /// page's scroll shows it, and the pointer reaches it there.
+    #[test]
+    fn a_scrolled_trigger_anchors_the_card_where_it_shows() {
+        let mut context = AppContext::new();
+        let page = context
+            .create_component(
+                document(),
+                crate::ScrollView::new(crate::ScrollAxes::Vertical).style(
+                    crate::Stack::column(0.0)
+                        .width(LengthSpec::Fill)
+                        .height(LengthSpec::Px(400.0))
+                        .node_style(),
+                ),
+            )
+            .unwrap();
+        let column = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).width(LengthSpec::Fill),
+            )
+            .unwrap();
+        let spacer = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).height(LengthSpec::Px(700.0)),
+            )
+            .unwrap();
+        let tail = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).height(LengthSpec::Px(700.0)),
+            )
+            .unwrap();
+        let card = context
+            .create_component(
+                document(),
+                HoverCard::new()
+                    .trigger_icon(Icon::Add, "账号")
+                    .trigger_size(28.0)
+                    .placement(PopoverPlacement::Bottom)
+                    .alignment(PopoverAlignment::Start)
+                    .open_delay(0),
+            )
+            .unwrap();
+        let button = context
+            .create_component(document(), crate::Button::new("进入空间"))
+            .unwrap();
+        context.append_child(card, button).unwrap();
+        context.append_child(page, column).unwrap();
+        context.append_child(column, spacer).unwrap();
+        context.append_child(column, card).unwrap();
+        context.append_child(column, tail).unwrap();
+        relayout(&mut context);
+        context
+            .scroll_to(page, crate::ScrollOffset { x: 0.0, y: 600.0 })
+            .unwrap();
+        relayout(&mut context);
+        open_card(&mut context, card);
+        let shown = context
+            .world()
+            .presentation_input_bounds(card.stable_id())
+            .unwrap();
+        assert!((shown.y - 100.0).abs() < 0.5, "trigger shows at {shown:?}");
+        let content = context.world().layout_box(button.stable_id()).unwrap();
+        assert!(
+            content.y >= shown.y + shown.height && content.y < shown.y + shown.height + 16.0,
+            "the card hangs just below the shown trigger: shown={shown:?} content={content:?}"
+        );
+        assert_eq!(
+            context.pointer_target(
+                document(),
+                content.x + content.width / 2.0,
+                content.y + content.height / 2.0
+            ),
+            Some(button.stable_id())
+        );
+    }
+
     #[test]
     fn activating_the_trigger_emits_activate() {
         let (mut context, card, _) = card_with_button();

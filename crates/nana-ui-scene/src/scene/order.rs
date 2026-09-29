@@ -16,6 +16,9 @@ impl UiScene {
             .values()
             .map(|held| {
                 let primitive = &held.primitive;
+                if let Some(key) = triggered_overlay_surface_key(primitive) {
+                    return key;
+                }
                 if !self.custom_paint.is_empty() && has_custom_paint(&self.nodes, primitive.node) {
                     let prefix = painted_prefixes.entry(primitive.node).or_insert_with(|| {
                         group_prefix(&self.nodes, &self.node_order, primitive.node).into()
