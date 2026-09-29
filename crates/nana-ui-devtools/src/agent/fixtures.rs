@@ -9,6 +9,7 @@
 //! They are not demo code: the protocol tests drive these same fixtures, so
 //! they cannot rot without a test going red.
 
+use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{
     Activate, Button, Card, Checkbox, Dialog, DocumentId, LengthSpec, List, NodeStyle, RangeField,
     RuntimeDocument, ScrollAxes, ScrollView, Stack, Switch, Text, TextInput,
@@ -64,21 +65,23 @@ pub fn build(name: &str) -> Option<RuntimeDocument> {
 
 fn counter(document: &mut RuntimeDocument, id: DocumentId) {
     let mut total = 0u32;
+    // The fixture has to actually count: a button whose click changes
+    // nothing would teach `diff` and `screenshot` the wrong lesson. The
+    // count lives on the button's own label, so no cross-entity event
+    // plumbing is invented here.
+    let increment = widget(Button::new("Increment 0")).key("increment").on_cx(
+        move |button: &mut Button, _: &Activate, _| {
+            total += 1;
+            button.label = format!("Increment {total}");
+        },
+    );
     document
         .context_mut()
-        .build(id, |ui| {
-            ui.with("root", Stack::column(8.0), |ui| {
-                ui.child("caption", Text::new("press the button"));
-                let increment = ui.child("increment", Button::new("Increment 0"));
-                // The fixture has to actually count: a button whose click
-                // changes nothing would teach `diff` and `screenshot` the wrong
-                // lesson. The count lives on the button's own label, so no
-                // cross-entity event plumbing is invented here.
-                ui.on(increment, move |button: &mut Button, _: &Activate, _| {
-                    total += 1;
-                    button.label = format!("Increment {total}");
-                });
-            })
+        .mount_view_root(id, || {
+            widget(Stack::column(8.0)).key("root").children((
+                widget(Text::new("press the button")).key("caption"),
+                increment,
+            ))
         })
         .expect("counter fixture");
 }
@@ -86,13 +89,13 @@ fn counter(document: &mut RuntimeDocument, id: DocumentId) {
 fn form_controls(document: &mut RuntimeDocument, id: DocumentId) {
     document
         .context_mut()
-        .build(id, |ui| {
-            ui.with("root", Stack::column(12.0), |ui| {
-                ui.child("notifications", Switch::new("Notifications", true));
-                ui.child("archive", Checkbox::new("Archive", false));
-                ui.child("title", TextInput::new("draft"));
-                ui.child("volume", RangeField::new(4.0, 0.0, 10.0, 1.0));
-            })
+        .mount_view_root(id, || {
+            widget(Stack::column(12.0)).key("root").children((
+                widget(Switch::new("Notifications", true)).key("notifications"),
+                widget(Checkbox::new("Archive", false)).key("archive"),
+                widget(TextInput::new("draft")).key("title"),
+                widget(RangeField::new(4.0, 0.0, 10.0, 1.0)).key("volume"),
+            ))
         })
         .expect("form fixture");
 }
@@ -106,19 +109,13 @@ fn scroll_list(document: &mut RuntimeDocument, id: DocumentId) {
     }
     document
         .context_mut()
-        .build(id, |ui| {
-            let scroll = ui.child(
-                "scroll",
-                ScrollView::new(ScrollAxes::Vertical).style(viewport),
-            );
-            ui.nest(scroll, |ui| {
-                let list = ui.child("list", List::new());
-                ui.nest(list, |ui| {
-                    for row in 0..40 {
-                        ui.child(format!("row-{row}"), Button::new(format!("row-{row}")));
-                    }
-                });
-            });
+        .mount_view_root(id, || {
+            let rows = (0..40)
+                .map(|row| widget(Button::new(format!("row-{row}"))).key(format!("row-{row}")))
+                .collect::<Vec<_>>();
+            widget(ScrollView::new(ScrollAxes::Vertical).style(viewport))
+                .key("scroll")
+                .children(widget(List::new()).key("list").children(rows))
         })
         .expect("scroll fixture");
 }
@@ -134,22 +131,22 @@ fn occlusion(document: &mut RuntimeDocument, id: DocumentId) {
         layout.height = Some(LengthSpec::Px(120.0));
         style
     };
+    let mut label = Text::new("covered");
+    label.style.layout = Arc::new(LayoutStyle {
+        position: PositionSpec::Absolute,
+        offset_left: Some(LengthSpec::Px(0.0)),
+        offset_top: Some(LengthSpec::Px(0.0)),
+        width: Some(LengthSpec::Px(320.0)),
+        height: Some(LengthSpec::Px(120.0)),
+        ..Default::default()
+    });
     document
         .context_mut()
-        .build(id, |ui| {
-            ui.with("root", Stack::column(0.0), |ui| {
-                let mut label = Text::new("covered");
-                label.style.layout = Arc::new(LayoutStyle {
-                    position: PositionSpec::Absolute,
-                    offset_left: Some(LengthSpec::Px(0.0)),
-                    offset_top: Some(LengthSpec::Px(0.0)),
-                    width: Some(LengthSpec::Px(320.0)),
-                    height: Some(LengthSpec::Px(120.0)),
-                    ..Default::default()
-                });
-                ui.child("covered", label);
-                ui.child("cover", Card::new().style(cover()));
-            })
+        .mount_view_root(id, || {
+            widget(Stack::column(0.0)).key("root").children((
+                widget(label).key("covered"),
+                widget(Card::new().style(cover())).key("cover"),
+            ))
         })
         .expect("occlusion fixture");
 }
@@ -157,14 +154,13 @@ fn occlusion(document: &mut RuntimeDocument, id: DocumentId) {
 fn dialog(document: &mut RuntimeDocument, id: DocumentId) {
     document
         .context_mut()
-        .build(id, |ui| {
-            ui.with("root", Stack::column(8.0), |ui| {
-                ui.child("background", Text::new("behind the dialog"));
-                let dialog = ui.child("dialog", Dialog::new("Confirm"));
-                ui.nest(dialog, |ui| {
-                    ui.child("confirm", Button::new("Confirm"));
-                });
-            })
+        .mount_view_root(id, || {
+            widget(Stack::column(8.0)).key("root").children((
+                widget(Text::new("behind the dialog")).key("background"),
+                widget(Dialog::new("Confirm"))
+                    .key("dialog")
+                    .children(widget(Button::new("Confirm")).key("confirm")),
+            ))
         })
         .expect("dialog fixture");
 }

@@ -4,6 +4,7 @@
 use nana_ui_core::ControlSize;
 use std::sync::Arc;
 
+use nana_ui_runtime::view::{entity_ref, widget, with_refs};
 use nana_ui_runtime::{
     ComponentView, DocumentId, LayoutViewport, ReorderItem, ReorderList, SidebarRow,
     SidebarRowState, SidebarSection, StableNodeId, TextContent, TextMetrics, TextShaper,
@@ -38,30 +39,30 @@ fn row(label: &'static str, depth: u16, state: SidebarRowState) -> SidebarRow {
 fn live_sidebar_rows_paint_their_label_exactly_once() {
     let document = DocumentId::new(1).unwrap();
     let mut runtime = RuntimeDocument::new(document);
-    let list = runtime
+    let (_, list) = runtime
         .context_mut()
-        .build(document, |ui| {
-            ui.child("projects-body", SidebarSection::body_port());
-            let list = ui.child(
-                "projects-reorder",
-                ReorderList::new([
-                    ReorderItem::new("p-lilia", "LiliaCode")
-                        .draggable(false)
-                        .drop_target(true)
-                        .selected(true),
-                    ReorderItem::new("p-empty", "还没有对话"),
-                ])
-                .size(ControlSize::Medium)
-                .spacing(1.0)
-                .tree_drop(true)
-                .live_rows(true)
-                .label("项目"),
+        .mount_view_root(document, || {
+            let list = entity_ref::<ReorderList>();
+            let reorder = ReorderList::new([
+                ReorderItem::new("p-lilia", "LiliaCode")
+                    .draggable(false)
+                    .drop_target(true)
+                    .selected(true),
+                ReorderItem::new("p-empty", "还没有对话"),
+            ])
+            .size(ControlSize::Medium)
+            .spacing(1.0)
+            .tree_drop(true)
+            .live_rows(true)
+            .label("项目");
+            let view = (
+                widget(SidebarSection::body_port()),
+                widget(reorder).entity_ref(list).children((
+                    widget(row("LiliaCode", 0, SidebarRowState::Active)),
+                    widget(row("还没有对话", 1, SidebarRowState::Idle)),
+                )),
             );
-            ui.nest(list, |ui| {
-                ui.child("row-lilia", row("LiliaCode", 0, SidebarRowState::Active));
-                ui.child("row-empty", row("还没有对话", 1, SidebarRowState::Idle));
-            });
-            list
+            with_refs(view, list)
         })
         .unwrap();
 
@@ -101,24 +102,20 @@ fn stale_rows_projected_before_children_attach_never_paint() {
     let mut runtime = RuntimeDocument::new(document);
     runtime
         .context_mut()
-        .build(document, |ui| {
-            ui.child("projects-body", SidebarSection::body_port());
-            let list = ui.child(
-                "projects-reorder",
-                ReorderList::new([ReorderItem::new("p-lilia", "LiliaCode")
-                    .draggable(false)
-                    .drop_target(true)
-                    .selected(true)])
-                .size(ControlSize::Medium)
-                .spacing(1.0)
-                .tree_drop(true)
-                .live_rows(true)
-                .label("项目"),
-            );
-            ui.nest(list, |ui| {
-                ui.child("row-lilia", row("LiliaCode", 0, SidebarRowState::Active));
-            });
-            list
+        .mount_view_root(document, || {
+            let reorder = ReorderList::new([ReorderItem::new("p-lilia", "LiliaCode")
+                .draggable(false)
+                .drop_target(true)
+                .selected(true)])
+            .size(ControlSize::Medium)
+            .spacing(1.0)
+            .tree_drop(true)
+            .live_rows(true)
+            .label("项目");
+            (
+                widget(SidebarSection::body_port()),
+                widget(reorder).children(widget(row("LiliaCode", 0, SidebarRowState::Active))),
+            )
         })
         .unwrap();
 
@@ -141,7 +138,7 @@ fn stale_rows_projected_before_children_attach_never_paint() {
     );
 }
 
-// 保持 ComponentView 在编译期可用（child 需要其 bound），避免未使用告警。
+// 保持 ComponentView 在编译期可用（widget 需要其 bound），避免未使用告警。
 const _: fn() = || {
     fn assert_view<V: ComponentView>() {}
     assert_view::<SidebarRow>();
@@ -151,31 +148,31 @@ const _: fn() = || {
 fn relabeled_and_reflowed_rows_never_keep_stale_label_primitives() {
     let document = DocumentId::new(2).unwrap();
     let mut runtime = RuntimeDocument::new(document);
-    let (list, rows) = runtime
+    let (_, (list, rows)) = runtime
         .context_mut()
-        .build(document, |ui| {
-            ui.child("projects-body", SidebarSection::body_port());
-            let list = ui.child(
-                "projects-reorder",
-                ReorderList::new([
-                    ReorderItem::new("p-lilia", "占位项目名")
-                        .draggable(false)
-                        .drop_target(true)
-                        .selected(true),
-                    ReorderItem::new("p-empty", "占位空行"),
-                ])
-                .size(ControlSize::Medium)
-                .spacing(1.0)
-                .tree_drop(true)
-                .live_rows(true)
-                .label("项目"),
+        .mount_view_root(document, || {
+            let list = entity_ref::<ReorderList>();
+            let rows = (entity_ref::<SidebarRow>(), entity_ref::<SidebarRow>());
+            let reorder = ReorderList::new([
+                ReorderItem::new("p-lilia", "占位项目名")
+                    .draggable(false)
+                    .drop_target(true)
+                    .selected(true),
+                ReorderItem::new("p-empty", "占位空行"),
+            ])
+            .size(ControlSize::Medium)
+            .spacing(1.0)
+            .tree_drop(true)
+            .live_rows(true)
+            .label("项目");
+            let view = (
+                widget(SidebarSection::body_port()),
+                widget(reorder).entity_ref(list).children((
+                    widget(row("占位项目名", 0, SidebarRowState::Active)).entity_ref(rows.0),
+                    widget(row("占位空行", 1, SidebarRowState::Idle)).entity_ref(rows.1),
+                )),
             );
-            let rows = ui.nest(list, |ui| {
-                let row_a = ui.child("row-lilia", row("占位项目名", 0, SidebarRowState::Active));
-                let row_b = ui.child("row-empty", row("占位空行", 1, SidebarRowState::Idle));
-                (row_a, row_b)
-            });
-            (list, rows)
+            with_refs(view, (list, rows))
         })
         .unwrap();
 
@@ -247,14 +244,15 @@ fn declared_live_rows_never_project_self_painted_rows() {
     let mut runtime = RuntimeDocument::new(document);
     let list = runtime
         .context_mut()
-        .build(document, |ui| {
-            ui.child(
-                "projects-reorder",
+        .mount_view_root(document, || {
+            widget(
                 ReorderList::new([ReorderItem::new("p-lilia", "LiliaCode")])
                     .size(ControlSize::Medium)
                     .live_rows(true),
             )
         })
+        .unwrap()
+        .root::<ReorderList>()
         .unwrap();
 
     let mut shaper = TestShaper;
@@ -279,18 +277,14 @@ fn self_painted_mode_with_attached_children_still_paints_the_label_once() {
     let mut runtime = RuntimeDocument::new(document);
     runtime
         .context_mut()
-        .build(document, |ui| {
-            ui.child("projects-body", SidebarSection::body_port());
-            let list = ui.child(
-                "projects-reorder",
-                ReorderList::new([ReorderItem::new("p-lilia", "LiliaCode")])
-                    .size(ControlSize::Medium)
-                    .spacing(1.0),
-            );
-            ui.nest(list, |ui| {
-                ui.child("row-lilia", row("LiliaCode", 0, SidebarRowState::Active));
-            });
-            list
+        .mount_view_root(document, || {
+            let reorder = ReorderList::new([ReorderItem::new("p-lilia", "LiliaCode")])
+                .size(ControlSize::Medium)
+                .spacing(1.0);
+            (
+                widget(SidebarSection::body_port()),
+                widget(reorder).children(widget(row("LiliaCode", 0, SidebarRowState::Active))),
+            )
         })
         .unwrap();
 

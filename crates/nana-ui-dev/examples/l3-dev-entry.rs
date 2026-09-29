@@ -28,6 +28,7 @@ use nana_ui::{
 };
 use nana_ui_dev::{DevConfig, DevHandoff, DevSignal, DevWatcher, RebuildCommand};
 use nana_ui_platform::WindowId;
+use nana_ui_runtime::view::widget;
 use nana_ui_runtime::{Button, DocumentId, Stack, Text};
 use nana_ui_scene::{DocumentAccessError, RuntimeDocument};
 
@@ -64,7 +65,7 @@ struct Session {
 /// Keeping this a free function over `&Session` is the whole trick behind
 /// headless verification: the same tree the window shows is the tree the Agent
 /// screenshots, so a PNG is evidence about the real application rather than
-/// about a fixture that resembles it. The `child` keys double as the Agent's
+/// about a fixture that resembles it. The element keys double as the Agent's
 /// `agent_path` selectors (`page`, `open`).
 fn build_document(session: &Session) -> RuntimeDocument {
     let id = DocumentId::new(1).expect("document id");
@@ -76,11 +77,11 @@ fn build_document(session: &Session) -> RuntimeDocument {
     };
     document
         .context_mut()
-        .build(id, |ui| {
-            ui.with("root", Stack::column(8.0), |ui| {
-                ui.child("page", Text::new(page));
-                ui.child("open", Button::new("Open"));
-            })
+        .mount_view_root(id, || {
+            widget(Stack::column(8.0)).key("root").children((
+                widget(Text::new(page)).key("page"),
+                widget(Button::new("Open")).key("open"),
+            ))
         })
         .expect("root");
     document

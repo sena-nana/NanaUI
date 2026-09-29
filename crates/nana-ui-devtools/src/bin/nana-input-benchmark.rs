@@ -27,6 +27,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
+use nana_ui::runtime::view::{IntoView, widget};
 use nana_ui::runtime::{
     DocumentId, LengthSpec, NodeStyle, RangeField, RuntimeDocument, ScrollAxes, ScrollView, Stack,
     Text,
@@ -179,28 +180,19 @@ fn rows_document(scrolled: bool) -> RuntimeDocument {
     }
     document
         .context_mut()
-        .build(id, |ui| {
-            let rows = |ui: &mut nana_ui::runtime::UiBuilder<'_>| {
-                for row in 0..ROWS {
-                    ui.child(
-                        format!("row-{row}"),
-                        Text::new(format!("Row {row}")).style(row_style.clone()),
-                    );
-                }
-            };
+        .mount_view_root(id, || {
+            let rows = (0..ROWS)
+                .map(|row| widget(Text::new(format!("Row {row}")).style(row_style.clone())))
+                .collect::<Vec<_>>();
+            let column = widget(Stack::column(0.0)).children(rows);
             if scrolled {
                 let mut viewport = ScrollView::new(ScrollAxes::Vertical);
                 let layout = Arc::make_mut(&mut viewport.style.layout);
                 layout.width = Some(LengthSpec::Px(WIDTH as f32));
                 layout.height = Some(LengthSpec::Px(HEIGHT as f32));
-                let viewport = ui.child("viewport", viewport);
-                ui.nest(viewport, |ui| {
-                    let column = ui.child("column", Stack::column(0.0));
-                    ui.nest(column, rows);
-                });
+                widget(viewport).children(column).into_any()
             } else {
-                let column = ui.child("column", Stack::column(0.0));
-                ui.nest(column, rows);
+                column.into_any()
             }
         })
         .expect("rows document");
@@ -212,11 +204,11 @@ fn range_document() -> RuntimeDocument {
     let mut document = RuntimeDocument::new(id);
     document
         .context_mut()
-        .build(id, |ui| {
+        .mount_view_root(id, || {
             let mut range = RangeField::new(0.5, 0.0, 1.0, 0.01);
             let layout = Arc::make_mut(&mut range.style.layout);
             layout.width = Some(LengthSpec::Px(400.0));
-            ui.child("range", range);
+            widget(range)
         })
         .expect("range document");
     document

@@ -7,6 +7,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     Activate, Button, DocumentId, Entity, FrameworkError, GpuTextureView, List, RuntimeDocument,
     Text,
@@ -182,26 +183,27 @@ impl DemoProgram {
     ) -> Result<Self, FrameworkError> {
         let document_id = DocumentId::new(1).expect("hosted gpu document");
         let mut document = RuntimeDocument::new(document_id);
-        let (version, theme_button) = document.context_mut().build(document_id, |ui| {
-            ui.with("root", List::new().label("Hosted GPU"), |ui| {
-                ui.child("title", Text::new("NANA 实时预览"));
-                let theme_button = ui.child(
-                    "theme",
-                    Button::new(panel.theme_label()).kind(ButtonKind::Text),
-                );
-                ui.child("preview", GpuTextureView::new(PREVIEW_SLOT));
-                let version = ui.child("version", Text::new(panel.version_label()));
-                let refresh =
-                    ui.child("refresh", Button::new("刷新预览").kind(ButtonKind::Primary));
-                ui.on(refresh, move |_button, _event: &Activate, cx| {
-                    cx.dispatch_program(Message::Refresh);
-                });
-                ui.on(theme_button, move |_button, _event: &Activate, cx| {
-                    cx.dispatch_program(Message::ToggleTheme);
-                });
-                (version, theme_button)
-            })
-        })?;
+        let (_, (version, theme_button)) =
+            document.context_mut().mount_view_root(document_id, || {
+                let version = entity_ref::<Text>();
+                let theme_button = entity_ref::<Button>();
+                let root = widget(List::new().label("Hosted GPU")).children((
+                    widget(Text::new("NANA 实时预览")),
+                    widget(Button::new(panel.theme_label()).kind(ButtonKind::Text))
+                        .entity_ref(theme_button)
+                        .on_cx(move |_button, _event: &Activate, cx| {
+                            cx.dispatch_program(Message::ToggleTheme);
+                        }),
+                    widget(GpuTextureView::new(PREVIEW_SLOT)),
+                    widget(Text::new(panel.version_label())).entity_ref(version),
+                    widget(Button::new("刷新预览").kind(ButtonKind::Primary)).on_cx(
+                        move |_button, _event: &Activate, cx| {
+                            cx.dispatch_program(Message::Refresh);
+                        },
+                    ),
+                ));
+                with_refs(root, (version, theme_button))
+            })?;
 
         let textures = HostTextureRegistry::new();
         let binding = FrameBinding::new(

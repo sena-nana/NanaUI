@@ -242,26 +242,20 @@ mod tests {
         use nana_ui_runtime::{DocumentId, LayoutViewport, MeasureTextShaper, Stack};
         let document_id = DocumentId::new(1).unwrap();
         let mut document = nana_ui_scene::RuntimeDocument::new(document_id);
+        use nana_ui_runtime::view::widget;
         document
             .context_mut()
-            .build(document_id, |ui| {
-                ui.with(
-                    "root",
-                    Stack::column(0.0).with_layout(|layout| {
-                        layout.padding = Some(LengthSpec::Px(inset));
-                    }),
-                    |ui| {
-                        ui.child(
-                            "card",
-                            Stack::column(0.0).with_layout(|layout| {
-                                layout.width = Some(LengthSpec::Px(card[0]));
-                                layout.height = Some(LengthSpec::Px(card[1]));
-                                layout.background = Some([1.0, 1.0, 1.0, 1.0]);
-                                layout.border_radius = Some(12.0);
-                            }),
-                        );
-                    },
-                );
+            .mount_view_root(document_id, || {
+                let root = Stack::column(0.0).with_layout(|layout| {
+                    layout.padding = Some(LengthSpec::Px(inset));
+                });
+                let card = Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(card[0]));
+                    layout.height = Some(LengthSpec::Px(card[1]));
+                    layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+                    layout.border_radius = Some(12.0);
+                });
+                widget(root).children(widget(card))
             })
             .unwrap();
         document

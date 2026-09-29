@@ -3,6 +3,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{Activate, Button, DocumentId, FrameworkError, List, RuntimeDocument, Text};
 use nana_ui::{
     RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
@@ -53,15 +54,14 @@ impl Smoke {
         let document_id = DocumentId::new(id.0 + 1).expect("window document");
         let mut document = RuntimeDocument::new(document_id);
         let pending = Arc::clone(open);
-        document.context_mut().build(document_id, |ui| {
-            ui.with("root", List::new().label("Window chrome"), |ui| {
-                ui.child("title", Text::new("NANA NanaUI Window"));
-                ui.child("body", Text::new(format!("窗口 {number}")));
-                let button = ui.child("open", Button::new("新建窗口"));
-                ui.on(button, move |_button, _event: &Activate, _cx| {
+        document.context_mut().mount_view_root(document_id, || {
+            widget(List::new().label("Window chrome")).children((
+                widget(Text::new("NANA NanaUI Window")),
+                widget(Text::new(format!("窗口 {number}"))),
+                widget(Button::new("新建窗口")).on(move |_: &Activate| {
                     pending.store(true, Ordering::SeqCst);
-                });
-            });
+                }),
+            ))
         })?;
         Ok(SmokeWindow { document })
     }

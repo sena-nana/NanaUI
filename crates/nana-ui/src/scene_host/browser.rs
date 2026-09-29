@@ -442,19 +442,22 @@ mod tests {
         };
         let id = DocumentId::new(1).unwrap();
         let mut document = nana_ui_scene::RuntimeDocument::new(id);
-        let (browser, overlay) = document
+        use nana_ui_runtime::view::{entity_ref, widget, with_refs};
+        let (_, (browser, overlay)) = document
             .context_mut()
-            .build(id, |ui| {
-                ui.with("root", Stack::fill_column(0.0), |ui| {
-                    let browser = ui.child("browser", BrowserView::new("page"));
-                    let overlay = ui.child(
-                        "overlay",
+            .mount_view_root(id, || {
+                let browser = entity_ref::<BrowserView>();
+                let overlay = entity_ref::<Stack>();
+                let root = widget(Stack::fill_column(0.0)).children((
+                    widget(BrowserView::new("page")).entity_ref(browser),
+                    widget(
                         Stack::row(0.0)
                             .height(LengthSpec::Px(20.0))
                             .surface(SemanticColorRole::Surface),
-                    );
-                    (browser, overlay)
-                })
+                    )
+                    .entity_ref(overlay),
+                ));
+                with_refs(root, (browser, overlay))
             })
             .unwrap();
         document

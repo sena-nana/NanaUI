@@ -1,6 +1,7 @@
 //! Native two-window acceptance probe. Commands on stdin: lock, unlock, forward, forward-off,
 //! taskbar-show, taskbar-hide, hide, show, close, quit.
 //! Run through the Scene host; inspect output plus native pointer/compositor behavior.
+use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{DocumentId, FrameworkError, RuntimeDocument, Stack, Text};
 use nana_ui::{
     DocumentAccessError, MaterialEffect, RoutedInput, RuntimeProgram, RuntimeProgramContext,
@@ -53,41 +54,33 @@ impl RuntimeProgram for Probe {
         let mut primary = RuntimeDocument::new(primary_id);
         primary
             .context_mut()
-            .build(primary_id, |ui| {
-                ui.child(
-                    "native-composition-reference",
-                    Stack::fill_column(0.0).with_layout(|layout| {
-                        layout.background = Some([0.0, 1.0, 0.0, 1.0]);
-                    }),
-                );
+            .mount_view_root(primary_id, || {
+                // The native-composition reference: a plain green fill.
+                widget(Stack::fill_column(0.0).with_layout(|layout| {
+                    layout.background = Some([0.0, 1.0, 0.0, 1.0]);
+                }))
             })
             .unwrap();
         let id = DocumentId::new(2).unwrap();
         let mut overlay = RuntimeDocument::new(id);
         overlay
             .context_mut()
-            .build(id, |ui| {
-                ui.with(
-                    "overlay-root",
-                    Stack::fill_column(0.0).align(nana_ui_core::AlignSpec::Start),
-                    |ui| {
-                        ui.with(
-                            "opaque-hit",
-                            Stack::column(8.0)
-                                .width(LengthSpec::Px(OPAQUE_HIT.2))
-                                .height(LengthSpec::Px(OPAQUE_HIT.3))
-                                .hittable()
-                                .with_layout(|layout| {
-                                    layout.margin_left = Some(LengthSpec::Px(OPAQUE_HIT.0));
-                                    layout.margin_top = Some(LengthSpec::Px(OPAQUE_HIT.1));
-                                    layout.background = Some([0.85, 0.15, 0.2, 1.0]);
-                                }),
-                            |ui| {
-                                ui.child("contrast", Text::new("Native overlay pointer target"));
-                            },
-                        );
-                    },
-                );
+            .mount_view_root(id, || {
+                widget(Stack::fill_column(0.0).align(nana_ui_core::AlignSpec::Start)).children(
+                    // The opaque hit target.
+                    widget(
+                        Stack::column(8.0)
+                            .width(LengthSpec::Px(OPAQUE_HIT.2))
+                            .height(LengthSpec::Px(OPAQUE_HIT.3))
+                            .hittable()
+                            .with_layout(|layout| {
+                                layout.margin_left = Some(LengthSpec::Px(OPAQUE_HIT.0));
+                                layout.margin_top = Some(LengthSpec::Px(OPAQUE_HIT.1));
+                                layout.background = Some([0.85, 0.15, 0.2, 1.0]);
+                            }),
+                    )
+                    .children(widget(Text::new("Native overlay pointer target"))),
+                )
             })
             .unwrap();
         let context = context.clone();

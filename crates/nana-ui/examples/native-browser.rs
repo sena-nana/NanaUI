@@ -1,4 +1,5 @@
 //! Run with `--features hosted,bundled-fonts`. An optional URL opens in the content pane.
+use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     Activate, BrowserView, Button, DocumentId, Entity, RuntimeDocument, Stack, Text,
 };
@@ -47,39 +48,41 @@ impl RuntimeProgram for BrowserExample {
             .context_mut()
             .set_theme(ThemeMode::Light)
             .map_err(|error| error.to_string())?;
-        let (view, status) = document
+        let (_, (view, status)) = document
             .context_mut()
-            .build(id, |ui| {
-                ui.with("root", Stack::fill_column(8.0).padding(12.0), |ui| {
-                    ui.with("toolbar", Stack::bar(8.0), |ui| {
-                        for (label, command) in [
-                            (
-                                "示例页",
-                                Message::Command(BrowserCommand::Navigate(first_url.clone())),
-                            ),
-                            (
-                                "说明页",
-                                Message::Command(BrowserCommand::Navigate(second_url.clone())),
-                            ),
-                            ("后退", Message::Command(BrowserCommand::Back)),
-                            ("前进", Message::Command(BrowserCommand::Forward)),
-                            ("重新加载", Message::Command(BrowserCommand::Reload)),
-                            ("停止", Message::Command(BrowserCommand::Stop)),
-                            ("显示／隐藏", Message::Toggle),
-                            ("聚焦网页", Message::Command(BrowserCommand::Focus)),
-                            ("截图", Message::Command(BrowserCommand::Capture)),
-                            ("截图并关闭", Message::CaptureAndClose),
-                        ] {
-                            let button = ui.child(label, Button::new(label));
-                            ui.on(button, move |_, _: &Activate, cx| {
-                                cx.dispatch_program(command.clone())
-                            });
-                        }
-                    });
-                    let status = ui.child("status", Text::new("正在打开"));
-                    let view = ui.child("browser", BrowserView::new("main"));
-                    (view, status)
-                })
+            .mount_view_root(id, || {
+                let status = entity_ref::<Text>();
+                let view = entity_ref::<BrowserView>();
+                let toolbar = widget(Stack::bar(8.0)).with(|toolbar| {
+                    for (label, command) in [
+                        (
+                            "示例页",
+                            Message::Command(BrowserCommand::Navigate(first_url.clone())),
+                        ),
+                        (
+                            "说明页",
+                            Message::Command(BrowserCommand::Navigate(second_url.clone())),
+                        ),
+                        ("后退", Message::Command(BrowserCommand::Back)),
+                        ("前进", Message::Command(BrowserCommand::Forward)),
+                        ("重新加载", Message::Command(BrowserCommand::Reload)),
+                        ("停止", Message::Command(BrowserCommand::Stop)),
+                        ("显示／隐藏", Message::Toggle),
+                        ("聚焦网页", Message::Command(BrowserCommand::Focus)),
+                        ("截图", Message::Command(BrowserCommand::Capture)),
+                        ("截图并关闭", Message::CaptureAndClose),
+                    ] {
+                        toolbar.add(widget(Button::new(label)).on_cx(
+                            move |_, _: &Activate, cx| cx.dispatch_program(command.clone()),
+                        ));
+                    }
+                });
+                let root = widget(Stack::fill_column(8.0).padding(12.0)).children((
+                    toolbar,
+                    widget(Text::new("正在打开")).entity_ref(status),
+                    widget(BrowserView::new("main")).entity_ref(view),
+                ));
+                with_refs(root, (view, status))
             })
             .map_err(|error| error.to_string())?;
         let url = std::env::args().nth(1).unwrap_or(first_url);

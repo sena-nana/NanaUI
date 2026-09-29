@@ -28,6 +28,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{Entity, FrameworkError, List, Text};
 use nana_ui::{
     ApplicationState, ApplicationWindow, NanaApplication, RuntimeApplication,
@@ -209,13 +210,21 @@ impl ApplicationState for Demo {
         context: &RuntimeProgramContext<Message>,
     ) -> Result<(), FrameworkError> {
         let document = window.document.document();
-        let screen = window.document.context_mut().build(document, |ui| {
-            ui.with("loading", List::new(), |ui| Screen {
-                title: ui.child("title", Text::new("正在加载")),
-                detail: ui.child("detail", Text::new("0%")),
-            })
-        })?;
-        self.screens.insert(context.window_id(), screen);
+        let (_, (title, detail)) =
+            window
+                .document
+                .context_mut()
+                .mount_view_root(document, || {
+                    let title = entity_ref::<Text>();
+                    let detail = entity_ref::<Text>();
+                    let loading = widget(List::new()).children((
+                        widget(Text::new("正在加载")).entity_ref(title),
+                        widget(Text::new("0%")).entity_ref(detail),
+                    ));
+                    with_refs(loading, (title, detail))
+                })?;
+        self.screens
+            .insert(context.window_id(), Screen { title, detail });
         Ok(())
     }
 

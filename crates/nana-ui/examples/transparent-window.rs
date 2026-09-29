@@ -2,6 +2,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     Activate, Button, DocumentId, Entity, FrameworkError, List, RuntimeDocument, Text,
 };
@@ -36,27 +37,26 @@ impl TransparentWindow {
         let mut document = RuntimeDocument::new(document_id);
         let pending_theme = Arc::clone(&toggle_theme);
         let pending_panel = Arc::clone(&toggle_panel);
-        let (theme_button, panel_button, status) =
-            document.context_mut().build(document_id, |ui| {
-                ui.with("root", List::new().label("Transparent window"), |ui| {
-                    ui.child("title", Text::new("NANA 透明窗口预览"));
-                    let theme_button = ui.child(
-                        "theme",
-                        Button::new(theme_label(theme)).kind(ButtonKind::Text),
-                    );
-                    let status = ui.child("status", Text::new(status_copy(panel_visible)));
-                    let panel_button = ui.child(
-                        "panel",
-                        Button::new(panel_label(panel_visible)).kind(ButtonKind::Primary),
-                    );
-                    ui.on(theme_button, move |_button, _event: &Activate, _cx| {
-                        pending_theme.store(true, Ordering::SeqCst);
-                    });
-                    ui.on(panel_button, move |_button, _event: &Activate, _cx| {
-                        pending_panel.store(true, Ordering::SeqCst);
-                    });
-                    (theme_button, panel_button, status)
-                })
+        let (_, (theme_button, panel_button, status)) =
+            document.context_mut().mount_view_root(document_id, || {
+                let theme_button = entity_ref::<Button>();
+                let panel_button = entity_ref::<Button>();
+                let status = entity_ref::<Text>();
+                let root = widget(List::new().label("Transparent window")).children((
+                    widget(Text::new("NANA 透明窗口预览")),
+                    widget(Button::new(theme_label(theme)).kind(ButtonKind::Text))
+                        .entity_ref(theme_button)
+                        .on(move |_: &Activate| {
+                            pending_theme.store(true, Ordering::SeqCst);
+                        }),
+                    widget(Text::new(status_copy(panel_visible))).entity_ref(status),
+                    widget(Button::new(panel_label(panel_visible)).kind(ButtonKind::Primary))
+                        .entity_ref(panel_button)
+                        .on(move |_: &Activate| {
+                            pending_panel.store(true, Ordering::SeqCst);
+                        }),
+                ));
+                with_refs(root, (theme_button, panel_button, status))
             })?;
 
         Ok(Self {

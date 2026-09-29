@@ -12,6 +12,7 @@
 //! one tree.
 #[cfg(target_os = "windows")]
 mod windows_probe {
+    use nana_ui::runtime::view::widget;
     use nana_ui::runtime::{DocumentId, NativeContent, RuntimeDocument, Stack, Text};
     use nana_ui::{
         DocumentAccessError, GpuBackendPolicy, HostedSurfaceMode, NativeContentRegion,
@@ -273,10 +274,9 @@ mod windows_probe {
         let mut document = RuntimeDocument::new(document_id);
         document
             .context_mut()
-            .build(document_id, |ui| {
-                ui.with("root", Stack::fill_column(12.0).padding(16.0), |ui| {
-                    ui.child("heading", Text::new("Plain window, native surface"));
-                });
+            .mount_view_root(document_id, || {
+                widget(Stack::fill_column(12.0).padding(16.0))
+                    .children(widget(Text::new("Plain window, native surface")))
             })
             .unwrap();
         document
@@ -287,18 +287,12 @@ mod windows_probe {
         let mut document = RuntimeDocument::new(document_id);
         document
             .context_mut()
-            .build(document_id, |ui| {
-                ui.with("root", Stack::fill_column(12.0).padding(16.0), |ui| {
-                    ui.child(
-                        "heading",
-                        Text::new("DirectComposition native-content probe"),
-                    );
-                    ui.child("native", NativeContent::new("probe-native"));
-                    ui.child(
-                        "footer",
-                        Text::new("NanaUI controls remain on the UI surface"),
-                    );
-                });
+            .mount_view_root(document_id, || {
+                widget(Stack::fill_column(12.0).padding(16.0)).children((
+                    widget(Text::new("DirectComposition native-content probe")),
+                    widget(NativeContent::new("probe-native")),
+                    widget(Text::new("NanaUI controls remain on the UI surface")),
+                ))
             })
             .unwrap();
         document

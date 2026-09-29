@@ -539,19 +539,22 @@ const fn button_mask(button: i16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nana_ui::runtime::view::{entity_ref, widget, with_refs};
     use nana_ui::runtime::{Button, DocumentId, List, Text};
 
     #[test]
     fn runtime_session_click_node_and_optional_preview() {
         let document_id = DocumentId::new(1).expect("document");
         let mut document = RuntimeDocument::new(document_id);
-        let button = document
+        let (_, button) = document
             .context_mut()
-            .build(document_id, |ui| {
-                ui.with("root", List::new().label("Agent"), |ui| {
-                    ui.child("label", Text::new("idle"));
-                    ui.child("go", Button::new("Go"))
-                })
+            .mount_view_root(document_id, || {
+                let button = entity_ref::<Button>();
+                let root = widget(List::new().label("Agent")).key("root").children((
+                    widget(Text::new("idle")).key("label"),
+                    widget(Button::new("Go")).key("go").entity_ref(button),
+                ));
+                with_refs(root, button)
             })
             .expect("root");
         let mut session = RuntimeAgentSession::new(document, 240, 160).expect("runtime session");
@@ -599,7 +602,7 @@ mod tests {
         let mut document = RuntimeDocument::new(document_id);
         document
             .context_mut()
-            .build(document_id, |ui| ui.child("label", Text::new("static")))
+            .mount_view_root(document_id, || widget(Text::new("static")).key("label"))
             .expect("root");
         let mut session = RuntimeAgentSession::new(document, 240, 160).expect("session");
         let _ = session.flush().expect("initial mount");
@@ -624,14 +627,14 @@ mod tests {
         let mut document = RuntimeDocument::new(document_id);
         let stack = document
             .context_mut()
-            .build(document_id, |ui| {
-                let stack = ui.child("chrome", Stack::column(8.0));
-                ui.nest(stack, |ui| {
-                    ui.child("label", Text::new("Output"));
-                    ui.child("go", Button::new("Go"));
-                });
-                stack
+            .mount_view_root(document_id, || {
+                widget(Stack::column(8.0)).key("chrome").children((
+                    widget(Text::new("Output")).key("label"),
+                    widget(Button::new("Go")).key("go"),
+                ))
             })
+            .ok()
+            .and_then(|view| view.root::<Stack>())
             .expect("root");
         let mut session = RuntimeAgentSession::new(document, 240, 160).expect("session");
         session
@@ -668,15 +671,15 @@ mod tests {
         let mut document = RuntimeDocument::new(document_id);
         let view = document
             .context_mut()
-            .build(document_id, |ui| {
-                ui.child(
-                    "view",
-                    GpuView::new(1).palette(GpuViewPalette {
-                        background: [1.0, 0.0, 0.0, 1.0],
-                        accent: [1.0, 0.0, 0.0, 1.0],
-                    }),
-                )
+            .mount_view_root(document_id, || {
+                widget(GpuView::new(1).palette(GpuViewPalette {
+                    background: [1.0, 0.0, 0.0, 1.0],
+                    accent: [1.0, 0.0, 0.0, 1.0],
+                }))
+                .key("view")
             })
+            .ok()
+            .and_then(|view| view.root::<GpuView>())
             .expect("gpu view");
         let mut session = RuntimeAgentSession::new(document, WIDTH, HEIGHT).expect("session");
 
@@ -749,29 +752,29 @@ mod tests {
         }
         let scroll = document
             .context_mut()
-            .build(document_id, |ui| {
-                let scroll = ui.child(
-                    "scroll",
-                    ScrollView::new(ScrollAxes::Vertical)
-                        .scrollbars(ScrollbarVisibility::Always)
-                        .style(viewport),
-                );
-                ui.nest(scroll, |ui| {
-                    for index in 0..8 {
+            .mount_view_root(document_id, || {
+                let rows = (0..8)
+                    .map(|index| {
                         let mut row = NodeStyle::default();
                         {
                             let layout = std::sync::Arc::make_mut(&mut row.layout);
                             layout.width = Some(LengthSpec::Fill);
                             layout.height = Some(LengthSpec::Px(40.0));
                         }
-                        ui.child(
-                            format!("row-{index}"),
-                            Text::new(format!("Row {index}")).style(row),
-                        );
-                    }
-                });
-                scroll
+                        widget(Text::new(format!("Row {index}")).style(row))
+                            .key(format!("row-{index}"))
+                    })
+                    .collect::<Vec<_>>();
+                widget(
+                    ScrollView::new(ScrollAxes::Vertical)
+                        .scrollbars(ScrollbarVisibility::Always)
+                        .style(viewport),
+                )
+                .key("scroll")
+                .children(rows)
             })
+            .ok()
+            .and_then(|view| view.root::<ScrollView>())
             .expect("scroll view");
         let mut session = RuntimeAgentSession::new(document, WIDTH, HEIGHT).expect("session");
 
@@ -852,19 +855,32 @@ mod tests {
             layout.gap = Some(LengthSpec::Px(12.0));
             layout.padding = Some(LengthSpec::Px(16.0));
         }
-        let (radios, first, second, divider) = document
+        let (_, (radios, first, second, divider)) = document
             .context_mut()
-            .build(document_id, |ui| {
-                ui.with("root", Card::new().style(column), |ui| {
-                    let radios = ui.child("radios", SegmentedControl::radio_group());
-                    let (first, second) = ui.nest(radios, |ui| {
-                        let first = ui.child("auto", SegmentedOption::new("Automatic"));
-                        let second = ui.child("manual", SegmentedOption::new("Manual"));
-                        (first, second)
-                    });
-                    let divider = ui.child("divider", Divider::horizontal());
-                    (radios, first, second, divider)
-                })
+            .mount_view_root(document_id, || {
+                let refs = (
+                    entity_ref::<SegmentedControl>(),
+                    entity_ref::<SegmentedOption>(),
+                    entity_ref::<SegmentedOption>(),
+                    entity_ref::<Divider>(),
+                );
+                let root = widget(Card::new().style(column)).key("root").children((
+                    widget(SegmentedControl::radio_group())
+                        .key("radios")
+                        .entity_ref(refs.0)
+                        .children((
+                            widget(SegmentedOption::new("Automatic"))
+                                .key("auto")
+                                .entity_ref(refs.1),
+                            widget(SegmentedOption::new("Manual"))
+                                .key("manual")
+                                .entity_ref(refs.2),
+                        )),
+                    widget(Divider::horizontal())
+                        .key("divider")
+                        .entity_ref(refs.3),
+                ));
+                with_refs(root, refs)
             })
             .expect("root");
         document

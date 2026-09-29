@@ -18,6 +18,7 @@ use std::cell::Cell;
 
 use nana_ui_core::{LengthSpec, OverflowSpec};
 use nana_ui_input::{InputPayload, PointerInput, PointerPhase};
+use nana_ui_runtime::view::widget;
 use nana_ui_runtime::{
     AppContext, DocumentId, HeadlessInput, LayoutViewport, MeasureTextShaper, MutationQueue,
     StableNodeId, Stack, Text,
@@ -76,7 +77,7 @@ fn column(scrolled: bool) -> (AppContext, DocumentId) {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     context
-        .build(document, |ui| {
+        .mount_view_root(document, || {
             let mut root = Stack::column(0.0);
             if scrolled {
                 root = root.with_layout(|layout| {
@@ -85,22 +86,16 @@ fn column(scrolled: bool) -> (AppContext, DocumentId) {
                     layout.overflow_y = OverflowSpec::Scroll;
                 });
             }
-            ui.with("root", root, |ui| {
-                for row in 0..ROWS {
-                    // A hittable row, so every move lands on a node and
-                    // hover changes as the pointer crosses rows.
-                    ui.with(
-                        format!("row-{row}"),
-                        Stack::row(0.0).hittable().with_layout(|layout| {
-                            layout.width = Some(LengthSpec::Px(WIDTH));
-                            layout.height = Some(LengthSpec::Px(ROW_HEIGHT));
-                        }),
-                        |ui| {
-                            ui.child("label", Text::new(format!("Row {row}")));
-                        },
-                    );
-                }
+            let rows = (0..ROWS).map(|row| {
+                // A hittable row, so every move lands on a node and hover
+                // changes as the pointer crosses rows.
+                let row_stack = Stack::row(0.0).hittable().with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(WIDTH));
+                    layout.height = Some(LengthSpec::Px(ROW_HEIGHT));
+                });
+                widget(row_stack).children(widget(Text::new(format!("Row {row}"))))
             });
+            widget(root).children(rows.collect::<Vec<_>>())
         })
         .unwrap();
     let nodes = context.world().document_order(document);

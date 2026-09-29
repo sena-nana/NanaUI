@@ -8,6 +8,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
+use nana_ui_runtime::view::{column, widget};
 use nana_ui_runtime::{AppContext, Button, ComponentView, DocumentId, Stack, Text, TextInput};
 
 struct Counting;
@@ -46,25 +47,17 @@ unsafe impl GlobalAlloc for Counting {
 static GLOBAL: Counting = Counting;
 
 /// Live bytes per node after building `n` nodes from `make`.
-fn live_per_node<C: ComponentView>(n: usize, make: impl Fn(usize) -> C) -> f64 {
+fn live_per_node<C: ComponentView>(n: usize, make: impl Fn(usize) -> C + Copy + 'static) -> f64 {
     let document = DocumentId::new(1).unwrap();
     let mut cx = AppContext::new();
     // Grow the context's tables and the process-wide defaults first.
-    cx.build(document, |ui| {
-        ui.column(0.0, |ui| {
-            for i in 0..8 {
-                ui.child(format!("warm{i}"), make(i));
-            }
-        })
+    cx.mount_view_root(document, || {
+        column().children((0..8).map(|i| widget(make(i))).collect::<Vec<_>>())
     })
     .unwrap();
     let before = LIVE.with(Cell::get);
-    cx.build(document, |ui| {
-        ui.column(0.0, |ui| {
-            for i in 0..n {
-                ui.child(format!("n{i}"), make(i));
-            }
-        })
+    cx.mount_view_root(document, || {
+        column().children((0..n).map(|i| widget(make(i))).collect::<Vec<_>>())
     })
     .unwrap();
     let per_node = (LIVE.with(Cell::get) - before) as f64 / n as f64;

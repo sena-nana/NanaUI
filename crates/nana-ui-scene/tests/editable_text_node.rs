@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily, font_blob};
 use nana_text::{NativeTextEngine, SharedTextEngine, TextWorkCounters};
+use nana_ui_runtime::view::{entity_ref, widget, with_refs};
 use nana_ui_runtime::{
     DocumentId, Entity, LayoutBox, LayoutViewport, NanaTextEngineShaper, TextAffinity, TextArea,
     TextCaretIntent, TextSelection,
@@ -48,7 +49,9 @@ impl Fixture {
         let mut runtime = RuntimeDocument::new(document);
         let area = runtime
             .context_mut()
-            .build(document, |ui| ui.child("editor", TextArea::new(text)))
+            .mount_view_root(document, || widget(TextArea::new(text)))
+            .unwrap()
+            .root::<TextArea>()
             .unwrap();
         let engine = engine();
         let shaper = NanaTextEngineShaper::new(Arc::clone(&engine));
@@ -343,13 +346,15 @@ fn a_click_resolves_through_the_retained_geometry() {
 fn focus_moving_away_mid_composition_stops_drawing_the_preedit() {
     let document = DocumentId::new(DOCUMENT).unwrap();
     let mut runtime = RuntimeDocument::new(document);
-    let (first, second) = runtime
+    let (_, (first, second)) = runtime
         .context_mut()
-        .build(document, |ui| {
-            (
-                ui.child("first", TextArea::new("first")),
-                ui.child("second", TextArea::new("second")),
-            )
+        .mount_view_root(document, || {
+            let refs = (entity_ref::<TextArea>(), entity_ref::<TextArea>());
+            let view = (
+                widget(TextArea::new("first")).entity_ref(refs.0),
+                widget(TextArea::new("second")).entity_ref(refs.1),
+            );
+            with_refs(view, refs)
         })
         .unwrap();
     let mut shaper = NanaTextEngineShaper::new(engine());
@@ -613,20 +618,23 @@ fn a_right_arrow_at_a_wrap_steps_onto_the_next_line_rather_than_past_a_character
 fn more_editors_than_the_geometry_cache_holds_still_lay_nothing_out() {
     let document = DocumentId::new(DOCUMENT).unwrap();
     let mut runtime = RuntimeDocument::new(document);
-    let first = runtime
+    let (_, first) = runtime
         .context_mut()
-        .build(document, |ui| {
-            let mut first = None;
-            for index in 0..40 {
-                let child = ui.child(
-                    format!("editor{index}"),
-                    nana_ui_runtime::TextInput::new(format!("field value {index}")),
-                );
-                if index == 0 {
-                    first = Some(child);
-                }
-            }
-            first.expect("the first field")
+        .mount_view_root(document, || {
+            let first = entity_ref::<nana_ui_runtime::TextInput>();
+            let fields: Vec<_> = (0..40)
+                .map(|index| {
+                    let field = widget(nana_ui_runtime::TextInput::new(format!(
+                        "field value {index}"
+                    )));
+                    if index == 0 {
+                        field.entity_ref(first)
+                    } else {
+                        field
+                    }
+                })
+                .collect();
+            with_refs(fields, first)
         })
         .unwrap();
     let engine = engine();
@@ -678,9 +686,11 @@ fn a_right_arrow_crosses_a_collapsed_fold_summary_on_the_geometry_path() {
     let fold = nana_ui_runtime::TextCodeFold::new(7, 28);
     let area = runtime
         .context_mut()
-        .build(document, |ui| {
-            ui.child("editor", TextArea::new(value).code_folds(Arc::from([fold])))
+        .mount_view_root(document, || {
+            widget(TextArea::new(value).code_folds(Arc::from([fold])))
         })
+        .unwrap()
+        .root::<TextArea>()
         .unwrap();
     let node = area.stable_id();
     let mut shaper = NanaTextEngineShaper::new(engine());

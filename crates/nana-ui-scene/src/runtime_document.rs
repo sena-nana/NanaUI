@@ -362,6 +362,7 @@ mod tests {
 
     use nana_ui_core::motion::{AnimatableProperty, Easing, MotionTo, MotionValue};
     use nana_ui_core::{CursorSpec, LayoutStyle, LengthSpec};
+    use nana_ui_runtime::view::{entity_ref, widget, with_refs};
     use nana_ui_runtime::{
         AnimationId, AnimationSpec, Button, ComputedStyle, MotionEvaluatorBackend, MutationQueue,
         NodeKind, NodeStyle, StableNodeId, TextContent, TextMetrics,
@@ -956,15 +957,16 @@ mod tests {
         let mut runtime = RuntimeDocument::new(document);
         let area = runtime
             .context_mut()
-            .build(document, |ui| {
-                ui.child(
-                    "editor",
+            .mount_view_root(document, || {
+                widget(
                     TextArea::new("@fragment\nfn fs_main() {\n  return x;\n}\n")
                         .highlight("wgsl")
                         .line_numbers(true)
                         .code_editor(true),
                 )
             })
+            .unwrap()
+            .root::<TextArea>()
             .unwrap();
         assert!(
             runtime
@@ -1031,7 +1033,9 @@ mod tests {
         let mut runtime = RuntimeDocument::new(document);
         let button = runtime
             .context_mut()
-            .build(document, |ui| ui.child("build", Button::new("Build")))
+            .mount_view_root(document, || widget(Button::new("Build")))
+            .unwrap()
+            .root::<Button>()
             .unwrap();
         struct TestShaper;
         impl nana_ui_runtime::TextShaper for TestShaper {
@@ -1171,12 +1175,11 @@ mod tests {
         };
         let button = runtime
             .context_mut()
-            .build(document, |ui| {
-                ui.child(
-                    "build",
-                    Button::new("Build").layout(Arc::new(half_viewport)),
-                )
+            .mount_view_root(document, || {
+                widget(Button::new("Build").layout(Arc::new(half_viewport)))
             })
+            .unwrap()
+            .root::<Button>()
             .unwrap();
         runtime
             .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
@@ -1245,9 +1248,11 @@ mod tests {
         };
         let button = runtime
             .context_mut()
-            .build(document, |ui| {
-                ui.child("overlay", Button::new("Go").layout(Arc::new(overlay)))
+            .mount_view_root(document, || {
+                widget(Button::new("Go").layout(Arc::new(overlay)))
             })
+            .unwrap()
+            .root::<Button>()
             .unwrap();
         runtime
             .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
@@ -1309,27 +1314,28 @@ mod tests {
 
         let document = DocumentId::new(1).unwrap();
         let mut runtime = RuntimeDocument::new(document);
-        let (primary, _first, second, shell) = runtime
+        // Shell regions are slots the shell places when it assembles;
+        // `second` waits parked for the set_desktop_slots swap two flushes
+        // from now.
+        let (_, (primary, shell)) = runtime
             .context_mut()
-            .build(document, |ui| {
-                // Shell regions: the ids go into the DesktopShell spec and
-                // assemble_desktop_shell places them; `second` waits even longer,
-                // for the set_desktop_slots swap two flushes from now.
-                let navigation = ui.detached(SidebarFrame::new());
-                let primary = ui.detached(Text::new("stage"));
-                let first = ui.detached(Text::new("inspector-a"));
-                let second = ui.detached(Text::new("inspector-b"));
-                let shell = ui.child(
-                    "shell",
-                    DesktopShell::new()
-                        .navigation(navigation.stable_id())
-                        .primary(primary.stable_id())
-                        .inspector(first.stable_id()),
-                );
-                (primary, first, second, shell)
+            .mount_view_root(document, || {
+                let primary = entity_ref::<Text>();
+                let shell = entity_ref::<DesktopShell>();
+                let view = widget(DesktopShell::new())
+                    .entity_ref(shell)
+                    .navigation(widget(SidebarFrame::new()))
+                    .primary(widget(Text::new("stage")).entity_ref(primary))
+                    .inspector(widget(Text::new("inspector-a")));
+                with_refs(view, (primary, shell))
             })
             .unwrap();
-        runtime.context_mut().assemble_desktop_shell(shell).unwrap();
+        let second = runtime
+            .context_mut()
+            .mount_view_detached(document, || widget(Text::new("inspector-b")))
+            .unwrap()
+            .root::<Text>()
+            .unwrap();
         runtime
             .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
             .unwrap();
@@ -1379,9 +1385,9 @@ mod tests {
         let mut runtime = RuntimeDocument::new(document);
         let empty = runtime
             .context_mut()
-            .build(document, |ui| {
-                ui.child("empty", EmptyState::new("Nothing here yet"))
-            })
+            .mount_view_root(document, || widget(EmptyState::new("Nothing here yet")))
+            .unwrap()
+            .root::<EmptyState>()
             .unwrap();
         runtime
             .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
@@ -1454,24 +1460,18 @@ mod tests {
 
         let document = DocumentId::new(1).unwrap();
         let mut runtime = RuntimeDocument::new(document);
-        let (inspector, shell) = runtime
+        // Shell regions are slots the shell places when it assembles.
+        let (_, inspector) = runtime
             .context_mut()
-            .build(document, |ui| {
-                // Shell regions, placed by assemble_desktop_shell after this build.
-                let navigation = ui.detached(SidebarFrame::new());
-                let primary = ui.detached(Text::new("stage"));
-                let inspector = ui.detached(Text::new("inspector"));
-                let shell = ui.child(
-                    "shell",
-                    DesktopShell::new()
-                        .navigation(navigation.stable_id())
-                        .primary(primary.stable_id())
-                        .inspector(inspector.stable_id()),
-                );
-                (inspector, shell)
+            .mount_view_root(document, || {
+                let inspector = entity_ref::<Text>();
+                let view = widget(DesktopShell::new())
+                    .navigation(widget(SidebarFrame::new()))
+                    .primary(widget(Text::new("stage")))
+                    .inspector(widget(Text::new("inspector")).entity_ref(inspector));
+                with_refs(view, inspector)
             })
             .unwrap();
-        runtime.context_mut().assemble_desktop_shell(shell).unwrap();
 
         let first = runtime
             .flush(LayoutViewport::new(1280.0, 720.0), &mut TestShaper)
@@ -1594,7 +1594,7 @@ mod tests {
         let mut runtime = RuntimeDocument::new(document);
         runtime
             .context_mut()
-            .build(document, |ui| ui.child("retry", Button::new("Retry")))
+            .mount_view_root(document, || widget(Button::new("Retry")))
             .unwrap();
 
         struct RetryShaper(bool);

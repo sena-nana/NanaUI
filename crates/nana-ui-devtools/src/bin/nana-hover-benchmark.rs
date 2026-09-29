@@ -51,6 +51,7 @@ use std::time::{Duration, Instant};
 
 use nana_js_engine::RuntimeArtifact;
 use nana_js_v8::V8Engine;
+use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{DocumentId, LengthSpec, NodeStyle, RuntimeDocument, Stack, Text};
 use nana_ui_devtools::agent::RuntimeAgentSession;
 use nana_ui_vue::{PointerEventKind, PointerInput, VueHost};
@@ -444,16 +445,12 @@ fn hover_document(rows: usize) -> RuntimeDocument {
     }
     document
         .context_mut()
-        .build(id, |ui| {
-            let column = ui.child("column", Stack::column(0.0));
-            ui.nest(column, |ui| {
-                for row in 0..rows {
-                    ui.child(
-                        format!("row-{row}"),
-                        Text::new(format!("Row {row}")).style(row_style.clone()),
-                    );
-                }
-            });
+        .mount_view_root(id, || {
+            widget(Stack::column(0.0)).children(
+                (0..rows)
+                    .map(|row| widget(Text::new(format!("Row {row}")).style(row_style.clone())))
+                    .collect::<Vec<_>>(),
+            )
         })
         .expect("hover document");
     document

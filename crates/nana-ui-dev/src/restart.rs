@@ -3,7 +3,7 @@
 //! # Why a restart and not a hot swap
 //!
 //! Rust code cannot be swapped into a live process here, and the reason is not
-//! effort. `TypeId` is the tree reconciliation key -- `UiBuilder::child`
+//! effort. `TypeId` is the tree reconciliation key -- keyed assembly
 //! compares `TypeId::of::<C>()` and `AppContext::remove_view` downcasts on it --
 //! and `TypeId` is not stable across compilations. A freshly compiled dynamic
 //! library produces different ids for the same types, so every keyed child would

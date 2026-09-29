@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nana_ui_core::ButtonKind;
+use nana_ui_runtime::view::{AnyView, EntityRef, IntoView, column, entity_ref, widget, with_refs};
 use nana_ui_runtime::{
     Button, DocumentId, Entity, FrameStage, LayoutViewport, List, ListItem, ListItemSlots,
     MeasureTextShaper, Stack, StageStatus, Switch, Text, Thumbnail,
@@ -96,61 +97,69 @@ fn has_picture(parked: bool, row: usize) -> bool {
 fn build(rows: usize, filler: usize, parked: bool, append: bool) -> Card {
     let document = DocumentId::new(DOCUMENT).unwrap();
     let mut runtime = RuntimeDocument::new(document);
-    let built = runtime
+    /// A row's refs: item, thumbnail, trailing stack, switch, buttons.
+    type RowRefs = (
+        EntityRef<ListItem>,
+        EntityRef<Thumbnail>,
+        EntityRef<Stack>,
+        EntityRef<Switch>,
+        [EntityRef<Button>; 2],
+    );
+    fn nest(depth: usize, rows: usize, filler: usize, refs: &mut Vec<RowRefs>) -> AnyView {
+        if depth > 0 {
+            return column()
+                .children(nest(depth - 1, rows, filler, refs))
+                .into_any();
+        }
+        let fillers = (0..filler)
+            .map(|index| widget(Text::new(format!("filler {index}"))))
+            .collect::<Vec<_>>();
+        let items = (0..rows)
+            .map(|index| {
+                let row: RowRefs = (
+                    entity_ref(),
+                    entity_ref(),
+                    entity_ref(),
+                    entity_ref(),
+                    [entity_ref(), entity_ref()],
+                );
+                refs.push(row);
+                widget(ListItem::new(format!("Motion {index}")))
+                    .entity_ref(row.0)
+                    .children((
+                        widget(Thumbnail::new(format!("slot-{index}"))).entity_ref(row.1),
+                        widget(Stack::row(4.0)).entity_ref(row.2).children((
+                            widget(Switch::new("", false)).entity_ref(row.3),
+                            widget(Button::new("收藏")).entity_ref(row.4[0]),
+                            widget(Button::new("按键")).entity_ref(row.4[1]),
+                        )),
+                    ))
+            })
+            .collect::<Vec<_>>();
+        (
+            column().children(fillers),
+            widget(List::new()).children(items),
+        )
+            .into_any()
+    }
+    let (_, built) = runtime
         .context_mut()
-        .build(document, |ui| {
-            fn nest(
-                ui: &mut nana_ui_runtime::UiBuilder<'_>,
-                depth: usize,
-                rows: usize,
-                filler: usize,
-            ) -> Vec<Row> {
-                if depth > 0 {
-                    return ui.column(0.0, |ui| nest(ui, depth - 1, rows, filler));
-                }
-                ui.column(0.0, |ui| {
-                    for index in 0..filler {
-                        ui.child(
-                            format!("filler-{index}"),
-                            Text::new(format!("filler {index}")),
-                        );
-                    }
-                });
-                let list = ui.child("list", List::new());
-                ui.nest(list, |ui| {
-                    (0..rows)
-                        .map(|index| {
-                            let item = ui.child(
-                                format!("row-{index}"),
-                                ListItem::new(format!("Motion {index}")),
-                            );
-                            ui.nest(item, |ui| {
-                                let thumb =
-                                    ui.child("thumb", Thumbnail::new(format!("slot-{index}")));
-                                let trail = ui.child("trail", Stack::row(4.0));
-                                let (switch, buttons) = ui.nest(trail, |ui| {
-                                    let switch = ui.child("switch", Switch::new("", false));
-                                    let buttons = [
-                                        ui.child("favorite", Button::new("收藏")),
-                                        ui.child("bind", Button::new("按键")),
-                                    ];
-                                    (switch, buttons)
-                                });
-                                Row {
-                                    item,
-                                    thumb,
-                                    trail,
-                                    switch,
-                                    buttons,
-                                }
-                            })
-                        })
-                        .collect()
-                })
-            }
-            nest(ui, DEPTH, rows, filler)
+        .mount_view_root(document, || {
+            let mut refs = Vec::with_capacity(rows);
+            let view = nest(DEPTH, rows, filler, &mut refs);
+            with_refs(view, refs)
         })
         .unwrap();
+    let built = built
+        .into_iter()
+        .map(|(item, thumb, trail, switch, buttons)| Row {
+            item,
+            thumb,
+            trail,
+            switch,
+            buttons,
+        })
+        .collect();
     let mut card = Card {
         runtime,
         rows: built,

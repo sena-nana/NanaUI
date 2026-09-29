@@ -1,4 +1,5 @@
 #![cfg(feature = "runtime-agent")]
+use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{DocumentId, NodeStyle, RuntimeDocument, Stack, Text};
 use nana_ui_core::{LayoutStyle, LengthSpec, PositionSpec, SemanticColorRole};
 use nana_ui_devtools::agent::RuntimeAgentSession;
@@ -10,33 +11,30 @@ fn covered_text_pixels(text: &str) -> Vec<u8> {
     let id = document.document();
     document
         .context_mut()
-        .build(id, |ui| {
-            let root = ui.detached(
+        .mount_view_root(id, || {
+            let layout = Arc::new(LayoutStyle {
+                position: PositionSpec::Absolute,
+                offset_left: Some(LengthSpec::Px(0.0)),
+                offset_top: Some(LengthSpec::Px(0.0)),
+                width: Some(LengthSpec::Px(256.0)),
+                height: Some(LengthSpec::Px(128.0)),
+                ..Default::default()
+            });
+            let mut label = Text::new(text);
+            label.style.layout = layout.clone();
+            let cover = Stack::column(0.0).style(NodeStyle {
+                layout,
+                background: Some(SemanticColorRole::Accent),
+                ..Default::default()
+            });
+            // A document root, so it paints: the text must be what is
+            // hidden, not the whole tree.
+            widget(
                 Stack::column(0.0)
                     .width(LengthSpec::Px(256.0))
                     .height(LengthSpec::Px(128.0)),
-            );
-            ui.nest(root, |ui| {
-                let layout = Arc::new(LayoutStyle {
-                    position: PositionSpec::Absolute,
-                    offset_left: Some(LengthSpec::Px(0.0)),
-                    offset_top: Some(LengthSpec::Px(0.0)),
-                    width: Some(LengthSpec::Px(256.0)),
-                    height: Some(LengthSpec::Px(128.0)),
-                    ..Default::default()
-                });
-                let mut label = Text::new(text);
-                label.style.layout = layout.clone();
-                ui.child("under", label);
-                ui.child(
-                    "opaque-cover",
-                    Stack::column(0.0).style(NodeStyle {
-                        layout,
-                        background: Some(SemanticColorRole::Accent),
-                        ..Default::default()
-                    }),
-                );
-            });
+            )
+            .children((widget(label), widget(cover)))
         })
         .unwrap();
     RuntimeAgentSession::new(document, 256, 128)

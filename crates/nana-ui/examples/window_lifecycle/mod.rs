@@ -1,4 +1,5 @@
 //! Native lifecycle acceptance; ordinary application code has no winit dependency.
+use nana_ui::runtime::view::{IntoView, widget};
 use nana_ui::runtime::{List, Text};
 use nana_ui::{
     ApplicationState, ApplicationWindow, DisplayId, FullscreenMode, FullscreenRequest,
@@ -394,23 +395,19 @@ impl ApplicationState for App {
         window
             .document
             .context_mut()
-            .build(document, |ui| match tag {
-                Some(CHARACTER) => {
-                    ui.with("root", List::new().label("Character"), |ui| {
-                        ui.child("name", Text::new(format!("Character {id}")));
-                        ui.child("model", Text::new("Model"));
-                    });
-                }
-                Some(TRACKING) => {
-                    ui.with("root", List::new().label("Tracking"), |ui| {
-                        ui.child("source", Text::new(format!("Tracking {id}")));
-                    });
-                }
-                _ => {
-                    ui.with("root", List::new(), |ui| {
-                        ui.child("title", Text::new(format!("Window {id}")));
-                    });
-                }
+            .mount_view_root(document, || match tag {
+                Some(CHARACTER) => widget(List::new().label("Character"))
+                    .children((
+                        widget(Text::new(format!("Character {id}"))),
+                        widget(Text::new("Model")),
+                    ))
+                    .into_any(),
+                Some(TRACKING) => widget(List::new().label("Tracking"))
+                    .children(widget(Text::new(format!("Tracking {id}"))))
+                    .into_any(),
+                _ => widget(List::new())
+                    .children(widget(Text::new(format!("Window {id}"))))
+                    .into_any(),
             })
             .map_err(|error| error.to_string())?;
         Ok(())

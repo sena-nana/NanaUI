@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 
+use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     Activate, Button, DocumentId, Entity, FrameworkError, GpuView, GpuViewMode, GpuViewPalette,
     List, RuntimeDocument, Text,
@@ -48,39 +49,41 @@ impl GpuViewDemo {
     fn mount(theme: ThemeMode, revision: u32) -> Result<Self, FrameworkError> {
         let document_id = DocumentId::new(1).expect("gpu view document");
         let mut document = RuntimeDocument::new(document_id);
-        let (preview, thumbnail, version, theme_button) =
-            document.context_mut().build(document_id, |ui| {
-                ui.with("root", List::new().label("GPU View"), |ui| {
-                    ui.child("title", Text::new("NANA 实时预览"));
-                    let theme_button = ui.child(
-                        "theme",
-                        Button::new(theme_label(theme)).kind(ButtonKind::Text),
-                    );
-                    let preview = ui.child(
-                        "preview",
+        let (_, (preview, thumbnail, version, theme_button)) =
+            document.context_mut().mount_view_root(document_id, || {
+                let preview = entity_ref::<GpuView>();
+                let thumbnail = entity_ref::<GpuView>();
+                let version = entity_ref::<Text>();
+                let theme_button = entity_ref::<Button>();
+                let root = widget(List::new().label("GPU View")).children((
+                    widget(Text::new("NANA 实时预览")),
+                    widget(Button::new(theme_label(theme)).kind(ButtonKind::Text))
+                        .entity_ref(theme_button)
+                        .on_cx(move |_button, _event: &Activate, cx| {
+                            cx.dispatch_program(Message::ToggleTheme);
+                        }),
+                    widget(
                         GpuView::new(1)
                             .mode(GpuViewMode::Standalone)
                             .palette(Self::palette(theme, true))
                             .seed(revision as f32),
-                    );
-                    let version = ui.child("version", Text::new(format!("版本 {}", revision + 1)));
-                    let thumbnail = ui.child(
-                        "thumbnail",
+                    )
+                    .entity_ref(preview),
+                    widget(Text::new(format!("版本 {}", revision + 1))).entity_ref(version),
+                    widget(
                         GpuView::new(2)
                             .mode(GpuViewMode::Inline)
                             .palette(Self::palette(theme, false))
                             .seed((revision.saturating_add(2)) as f32),
-                    );
-                    let refresh =
-                        ui.child("refresh", Button::new("刷新预览").kind(ButtonKind::Primary));
-                    ui.on(refresh, move |_button, _event: &Activate, cx| {
-                        cx.dispatch_program(Message::Refresh);
-                    });
-                    ui.on(theme_button, move |_button, _event: &Activate, cx| {
-                        cx.dispatch_program(Message::ToggleTheme);
-                    });
-                    (preview, thumbnail, version, theme_button)
-                })
+                    )
+                    .entity_ref(thumbnail),
+                    widget(Button::new("刷新预览").kind(ButtonKind::Primary)).on_cx(
+                        move |_button, _event: &Activate, cx| {
+                            cx.dispatch_program(Message::Refresh);
+                        },
+                    ),
+                ));
+                with_refs(root, (preview, thumbnail, version, theme_button))
             })?;
 
         Ok(Self {

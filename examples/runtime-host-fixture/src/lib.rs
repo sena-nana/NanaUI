@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     AccessibilityActionRequest, Activate, Button, Dock, DockAxis, DockNode, DockWorkspaceEvent,
     DocumentId, Entity, FrameworkError, GpuTextureView, List, RuntimeDocument, Text, TextInput,
@@ -57,41 +58,50 @@ impl Fixture {
 
         let pending_open_handler = Arc::clone(&pending_open);
         let pending_float_handler = Arc::clone(&pending_float);
-        let (dock, name, open_tool, float_preview, preview) =
-            document.context_mut().build(document_id, |ui| {
-                let editor = ui.parked(List::new().label("Editor"));
-                let (name, open_tool, float_preview) = ui.nest(editor, |ui| {
-                    let name = ui.child("name", TextInput::new("NanaUI").label("Name"));
-                    let open_tool = ui.child("open", Button::new("Open tool"));
-                    let float_preview = ui.child("float", Button::new("Float preview"));
-                    ui.on(open_tool, move |_button, _event: &Activate, _cx| {
-                        pending_open_handler.store(true, Ordering::SeqCst);
-                    });
-                    ui.on(float_preview, move |_button, _event: &Activate, _cx| {
-                        pending_float_handler.store(true, Ordering::SeqCst);
-                    });
-                    (name, open_tool, float_preview)
-                });
-                let preview = ui.parked(GpuTextureView::new(PREVIEW_SLOT));
-                let dock = ui.child(
-                    "dock",
+        // Dock panels are the dock's children keyed with their pane ids; the
+        // dock binds and assembles them itself once the view is built.
+        let (_, (dock, name, open_tool, float_preview, preview)) =
+            document.context_mut().mount_view_root(document_id, || {
+                let dock = entity_ref::<Dock>();
+                let name = entity_ref::<TextInput>();
+                let open_tool = entity_ref::<Button>();
+                let float_preview = entity_ref::<Button>();
+                let preview = entity_ref::<GpuTextureView>();
+                let editor = widget(List::new().label("Editor"))
+                    .key(EDITOR_PANE)
+                    .children((
+                        widget(TextInput::new("NanaUI").label("Name")).entity_ref(name),
+                        widget(Button::new("Open tool")).entity_ref(open_tool).on(
+                            move |_: &Activate| {
+                                pending_open_handler.store(true, Ordering::SeqCst);
+                            },
+                        ),
+                        widget(Button::new("Float preview"))
+                            .entity_ref(float_preview)
+                            .on(move |_: &Activate| {
+                                pending_float_handler.store(true, Ordering::SeqCst);
+                            }),
+                    ));
+                let root = widget(
                     Dock::new(DockNode::split(
                         DockAxis::Horizontal,
                         0.46,
-                        DockNode::item(EDITOR_PANE, Some(editor.stable_id())),
-                        DockNode::item(PREVIEW_PANE, Some(preview.stable_id())),
+                        DockNode::item(EDITOR_PANE, None),
+                        DockNode::item(PREVIEW_PANE, None),
                     ))
                     .title(EDITOR_PANE, "Editor")
                     .title(PREVIEW_PANE, "Preview")
                     .primary(EDITOR_PANE),
-                );
-                ui.nest(dock, |ui| {
-                    ui.adopt(editor);
-                    ui.adopt(preview);
-                });
-                (dock, name, open_tool, float_preview, preview)
+                )
+                .entity_ref(dock)
+                .children((
+                    editor,
+                    widget(GpuTextureView::new(PREVIEW_SLOT))
+                        .key(PREVIEW_PANE)
+                        .entity_ref(preview),
+                ));
+                with_refs(root, (dock, name, open_tool, float_preview, preview))
             })?;
-        document.context_mut().assemble_dock(dock)?;
         document
             .context_mut()
             .focus_node(document_id, name.stable_id())?;
@@ -382,29 +392,25 @@ impl RuntimeProgram for Fixture {
 
 fn tool_document(document_id: DocumentId) -> Result<RuntimeDocument, FrameworkError> {
     let mut document = RuntimeDocument::new(document_id);
-    document.context_mut().build(document_id, |ui| {
-        ui.with("notes", List::new().label("Notes"), |ui| {
-            ui.child("label", Text::new("Scratch pad"));
-            ui.child("done", Button::new("Done"));
-        });
+    document.context_mut().mount_view_root(document_id, || {
+        widget(List::new().label("Notes")).children((
+            widget(Text::new("Scratch pad")),
+            widget(Button::new("Done")),
+        ))
     })?;
     Ok(document)
 }
 
 fn floating_preview_document(document_id: DocumentId) -> Result<RuntimeDocument, FrameworkError> {
     let mut document = RuntimeDocument::new(document_id);
-    let dock = document.context_mut().build(document_id, |ui| {
-        let preview = ui.parked(GpuTextureView::new(PREVIEW_SLOT));
-        let dock = ui.child(
-            "dock",
-            Dock::new(DockNode::item(PREVIEW_PANE, Some(preview.stable_id())))
+    document.context_mut().mount_view_root(document_id, || {
+        widget(
+            Dock::new(DockNode::item(PREVIEW_PANE, None))
                 .title(PREVIEW_PANE, "Preview")
                 .primary(PREVIEW_PANE),
-        );
-        ui.nest(dock, |ui| ui.adopt(preview));
-        dock
+        )
+        .children(widget(GpuTextureView::new(PREVIEW_SLOT)).key(PREVIEW_PANE))
     })?;
-    document.context_mut().assemble_dock(dock)?;
     Ok(document)
 }
 

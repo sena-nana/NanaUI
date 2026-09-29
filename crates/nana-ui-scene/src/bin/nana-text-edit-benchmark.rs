@@ -46,6 +46,7 @@ use std::time::{Duration, Instant};
 
 use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily, font_blob};
 use nana_text::{EditableText, NativeTextEngine, TextWorkCounters};
+use nana_ui_runtime::view::widget;
 use nana_ui_runtime::{
     DocumentId, Entity, FrameStage, LayoutViewport, NanaTextEngineShaper, StageStatus, TextArea,
     TextCaretIntent,
@@ -326,7 +327,9 @@ impl Fixture {
         let mut runtime = RuntimeDocument::new(document);
         let area = runtime
             .context_mut()
-            .build(document, |ui| ui.child("editor", TextArea::new(text)))
+            .mount_view_root(document, || widget(TextArea::new(text)))
+            .ok()
+            .and_then(|view| view.root::<TextArea>())
             .expect("the editor mounts");
         let shaper = NanaTextEngineShaper::new(engine());
         let mut fixture = Self {

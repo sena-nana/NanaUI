@@ -12,6 +12,7 @@ use nana_text::{NativeTextEngine, SharedTextEngine, TextWorkCounters};
 use nana_ui_core::{
     FlexDirection, FontFeatureSetting, LayoutStyle, LengthSpec, PaintTransform, SemanticColorRole,
 };
+use nana_ui_runtime::view::widget;
 use nana_ui_runtime::{
     AnimatableProperty, AnimationId, AnimationSpec, Button, DocumentId, Easing, EmptyState,
     LayoutViewport, MeasureTextShaper, MotionTo, MotionValue, MutationQueue, NanaTextEngineShaper,
@@ -955,13 +956,12 @@ fn component_text_measured_in_the_same_pass_goes_through_the_same_engine() {
     let mut runtime = RuntimeDocument::new(document);
     runtime
         .context_mut()
-        .build(document, |ui| {
-            ui.child(
-                "empty",
-                EmptyState::new("Nothing here").message("Add a file"),
-            );
-            ui.child("input", TextInput::new("editable text"));
-            ui.child("button", Button::new("Save"));
+        .mount_view_root(document, || {
+            (
+                widget(EmptyState::new("Nothing here").message("Add a file")),
+                widget(TextInput::new("editable text")),
+                widget(Button::new("Save")),
+            )
         })
         .unwrap();
     let shared = engine();
@@ -1307,9 +1307,7 @@ fn a_language_change_remeasures_component_text_through_the_engine_host() {
     let mut runtime = RuntimeDocument::new(document);
     runtime
         .context_mut()
-        .build(document, |ui| {
-            ui.child("empty", EmptyState::new("Nothing here"));
-        })
+        .mount_view_root(document, || widget(EmptyState::new("Nothing here")))
         .unwrap();
     let shared = engine();
     let mut shaper = NanaTextEngineShaper::new(Arc::clone(&shared));
