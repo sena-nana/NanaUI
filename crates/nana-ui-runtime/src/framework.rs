@@ -66,9 +66,9 @@ use crate::{
     ScrollViewportChanged, SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl,
     SegmentedOption, SegmentedSelectionRequested, Select, SettingsCollapsibleCard,
     SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId, Switch, Table, TableCell,
-    TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState, TextPresenter, TextSelection,
-    ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
-    XYPadEvent,
+    TableRow, Tabs, TextArea, TextChanged, TextClamped, TextInput, TextInputState, TextPresenter,
+    TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad,
+    XYPadDragState, XYPadEvent,
     component_registry::{
         ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
         RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
@@ -1037,6 +1037,8 @@ pub struct AppContext {
     behaviors: HashMap<TypeId, hooks::ErasedBehavior>,
     /// ScrollViews to send [`ScrollLaidOut`] after the next layout pass.
     laid_out_notices: HashSet<StableNodeId>,
+    /// Texts listening for [`TextClamped`], with the answer last sent.
+    clamp_watchers: HashMap<StableNodeId, Option<bool>>,
     /// Router hooks installed by the types created so far.
     type_hooks: TypeHooks,
     assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
@@ -1390,6 +1392,7 @@ impl AppContext {
             reprojectors: HashMap::new(),
             behaviors: HashMap::new(),
             laid_out_notices: HashSet::new(),
+            clamp_watchers: HashMap::new(),
             type_hooks: TypeHooks::default(),
             assembled: HashMap::new(),
             assembled_parent: HashMap::new(),

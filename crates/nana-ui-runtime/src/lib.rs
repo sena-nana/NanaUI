@@ -354,8 +354,8 @@ pub use view_components::{
     NumberChanged, NumberInput, OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment,
     RangeChanged, RangeDragState, RangeField, RangeInput, ScrollAnchor, ScrollAxes, ScrollChanged,
     ScrollLaidOut, ScrollView, ScrollViewportChanged, ScrollbarDragState, SecondaryPress, Stack,
-    Switch, Table, TableCell, TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput,
-    TextSubmitted, ToggleChanged, Tooltip, UserScroll,
+    Switch, Table, TableCell, TableCellFocused, TableRow, Text, TextArea, TextChanged, TextClamped,
+    TextInput, TextSubmitted, ToggleChanged, Tooltip, UserScroll,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{
