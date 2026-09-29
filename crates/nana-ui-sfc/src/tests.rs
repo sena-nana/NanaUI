@@ -675,3 +675,58 @@ let count = signal(0u32);
     let rewired = shape("views/Page.vue", &view.replace("*c += 1", "*c += 2"));
     assert_ne!(rewired.shape, first.shape, "code changed");
 }
+
+#[test]
+fn a_style_block_compiles_into_patches_matched_per_element() {
+    let out = compile(&[(
+        "Card.vue",
+        r#"<script setup lang="rust">
+let done = signal(false);
+</script>
+<template>
+  <Column class="card" class:done="done">
+    <Text class="title">标题</Text>
+    <Button class="ghost" @activate="done.set(true)">完成</Button>
+  </Column>
+</template>
+<style scoped>
+.card { padding: 12px; opacity: 1; transition: opacity 150ms linear; }
+.card.done { opacity: 0.5; }
+.title { opacity: 0.9 !important; }
+.title { opacity: 0.2; }
+.card:hover { opacity: 0.7; }
+.card > .title { padding: 2px; }
+.card { frobnicate: 3; }
+</style>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(code.contains("StylePatch::new("), "{code}");
+    assert!(code.contains(r#"\"padding\""#), "{code}");
+    assert!(
+        code.contains(&squash(
+            ".styles(&__NANA_STYLE_1, ::std::vec![::nana_ui_runtime::view::IntoProp::<bool>::into_source(done)])"
+        )),
+        "the column's class condition binds the signal: {code}"
+    );
+    // `.title`: the later normal rule, then the important one on top.
+    assert!(
+        code.contains(&squash(
+            "StyleSite::new(&[(0u64, &__NANA_PATCH_0), (0u64, &__NANA_PATCH_1)])"
+        )),
+        "{code}"
+    );
+    assert!(code.contains("AnimatableProperty::Opacity"), "{code}");
+    assert!(code.contains("Easing::Linear"), "{code}");
+    // `.card.done` needs bit 0; `.title`'s important rule comes last.
+    assert!(code.contains("(1u64,&__NANA_PATCH_"), "{code}");
+    let warnings = out.warnings.join("\n");
+    assert!(warnings.contains(":hover"), "{warnings}");
+    assert!(warnings.contains("class selectors"), "{warnings}");
+    assert!(warnings.contains("frobnicate"), "{warnings}");
+    assert!(
+        warnings.contains("no rule in `<style>` uses class `ghost`"),
+        "{warnings}"
+    );
+    assert!(!code.contains("frobnicate"), "{code}");
+}

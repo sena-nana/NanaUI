@@ -7,7 +7,7 @@
 //! supplies the crate path.
 
 use nana_ui_view_codegen::{Attr, AttrName, AttrValue, Element, Node};
-use proc_macro2::{TokenStream, TokenTree};
+use proc_macro2::{Span, TokenStream, TokenTree};
 use quote::quote;
 use syn::ext::IdentExt;
 use syn::parse::{ParseStream, Parser};
@@ -31,23 +31,92 @@ pub fn derive_store(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 mod store;
 
+/// `css!("padding: 12px; transition: opacity 150ms")`: one declaration
+/// block compiled with the CSS engine now, for `El::css`. Use it through
+/// `nana_ui_runtime::css!`, which supplies the crate path.
+#[proc_macro]
+pub fn css(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let parsed = (|input: ParseStream| -> syn::Result<(TokenStream, LitStr)> {
+        let mut krate = quote!(::nana_ui_runtime);
+        if input.peek(Token![crate]) && input.peek2(Token![=]) {
+            input.parse::<Token![crate]>()?;
+            input.parse::<Token![=]>()?;
+            let mut path = TokenStream::new();
+            while !input.peek(Token![;]) {
+                path.extend([input.parse::<TokenTree>()?]);
+            }
+            input.parse::<Token![;]>()?;
+            krate = path;
+        }
+        Ok((krate, input.parse()?))
+    })
+    .parse2(input.into());
+    match parsed {
+        Ok((krate, declarations)) => {
+            let (tokens, warnings) =
+                nana_ui_view_codegen::compile_inline(&declarations.value(), &krate);
+            let warnings = warnings
+                .into_iter()
+                .map(|message| nana_ui_view_codegen::Warning {
+                    span: declarations.span(),
+                    message,
+                })
+                .collect::<Vec<_>>();
+            if warnings.is_empty() {
+                tokens
+            } else {
+                with_warnings("css!", tokens, warnings)
+            }
+        }
+        Err(error) => error.to_compile_error(),
+    }
+    .into()
+}
+
 fn expand_tokens(input: TokenStream) -> TokenStream {
-    let expanded = parse_template.parse2(input).and_then(|template| {
-        nana_ui_view_codegen::expand_checked(&template.krate, &template.nodes)
+    let expanded = parse_template.parse2(input).and_then(|mut template| {
+        let styles = template.style.as_ref().map(|style| {
+            nana_ui_view_codegen::compile_styles(
+                &style.value(),
+                &mut template.nodes,
+                &template.krate,
+            )
+        });
+        let (tokens, mut warnings) =
+            nana_ui_view_codegen::expand_checked(&template.krate, &template.nodes)?;
+        let Some(styles) = styles else {
+            return Ok((tokens, warnings));
+        };
+        let span = template
+            .style
+            .as_ref()
+            .map_or_else(Span::call_site, LitStr::span);
+        warnings.extend(
+            styles
+                .warnings
+                .into_iter()
+                .map(|message| nana_ui_view_codegen::Warning { span, message }),
+        );
+        let items = styles.items;
+        Ok((quote! {{ #(#items)* #tokens }}, warnings))
     });
     match expanded {
         Ok((tokens, warnings)) if warnings.is_empty() => tokens,
-        Ok((tokens, warnings)) => with_warnings(tokens, warnings),
+        Ok((tokens, warnings)) => with_warnings("view!", tokens, warnings),
         Err(error) => error.to_compile_error(),
     }
 }
 
 /// Stable proc macros cannot warn, so each warning is the use of a
 /// deprecated constant whose note is the message, at the element's span.
-fn with_warnings(tokens: TokenStream, warnings: Vec<nana_ui_view_codegen::Warning>) -> TokenStream {
+fn with_warnings(
+    macro_name: &str,
+    tokens: TokenStream,
+    warnings: Vec<nana_ui_view_codegen::Warning>,
+) -> TokenStream {
     let uses = warnings.into_iter().enumerate().map(|(index, warning)| {
         let name = quote::format_ident!("__nana_view_warning_{index}");
-        let note = format!("view!: {}", warning.message);
+        let note = format!("{macro_name}: {}", warning.message);
         let used = quote::quote_spanned!(warning.span=> #name);
         quote! {
             #[deprecated(note = #note)]
@@ -64,6 +133,8 @@ fn with_warnings(tokens: TokenStream, warnings: Vec<nana_ui_view_codegen::Warnin
 
 struct Template {
     krate: TokenStream,
+    /// `style = "…";`: CSS for the template's `class` attributes.
+    style: Option<LitStr>,
     nodes: Vec<Node>,
 }
 
@@ -79,11 +150,22 @@ fn parse_template(input: ParseStream) -> syn::Result<Template> {
         input.parse::<Token![;]>()?;
         krate = path;
     }
+    let mut style = None;
+    if input.peek(Ident) && input.peek2(Token![=]) && input.fork().parse::<Ident>()? == "style" {
+        input.parse::<Ident>()?;
+        input.parse::<Token![=]>()?;
+        style = Some(input.parse::<LitStr>()?);
+        input.parse::<Token![;]>()?;
+    }
     let mut nodes = Vec::new();
     while !input.is_empty() {
         nodes.push(parse_node(input)?);
     }
-    Ok(Template { krate, nodes })
+    Ok(Template {
+        krate,
+        style,
+        nodes,
+    })
 }
 
 fn parse_node(input: ParseStream) -> syn::Result<Node> {
@@ -157,6 +239,11 @@ fn parse_attr(input: ParseStream) -> syn::Result<Attr> {
         if first == "on" && input.peek(Token![:]) && !input.peek(Token![::]) {
             input.parse::<Token![:]>()?;
             AttrName::On(input.parse()?)
+        } else if first == "class" && input.peek(Token![:]) && !input.peek(Token![::]) {
+            // `class:active={condition}`: the class while it holds.
+            input.parse::<Token![:]>()?;
+            let class = Ident::parse_any(input)?;
+            AttrName::Directive(format!("class:{class}"), first.span())
         } else if first == "v" && input.peek(Token![-]) {
             input.parse::<Token![-]>()?;
             let mut directive = Ident::parse_any(input)?.to_string();

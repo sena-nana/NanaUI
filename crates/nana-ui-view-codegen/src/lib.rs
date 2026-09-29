@@ -3,6 +3,10 @@
 //! `nana-ui-runtime` (`column`, `text`, `each`, `when`, …). Nothing here adds
 //! a runtime concept; the output is the call chain a person would write.
 
+mod style;
+
+pub use style::{CompiledStyles, compile_inline, compile_styles};
+
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
@@ -1042,6 +1046,16 @@ impl Gen<'_> {
                         }
                         let signal = raw(&attr.value, *span)?;
                         out = quote_spanned!(*span=> #out.model(#signal));
+                    }
+                    // Written by the `.vue` compiler from `class` and the
+                    // view's `<style>`: compiled rules, then transitions.
+                    "styles" => {
+                        let value = raw(&attr.value, *span)?;
+                        out = quote_spanned!(*span=> #out.styles(#value));
+                    }
+                    "animate" => {
+                        let value = raw(&attr.value, *span)?;
+                        out = quote_spanned!(*span=> #out.animate(#value));
                     }
                     "if" | "else-if" | "else" | "for" => {}
                     virtual_rows if virtual_rows.split('.').next() == Some("virtual") => {

@@ -543,3 +543,46 @@ mod suspense_block {
         assert_eq!(fallback, 0, "resolved on the first poll");
     }
 }
+
+mod styles {
+    use nana_ui_runtime::view::{IntoView, signal, text, widget};
+    use nana_ui_runtime::{AppContext, DocumentId, LengthSpec, Stack, css, view};
+
+    fn layout_of(cx: &AppContext, id: nana_ui_runtime::StableNodeId) -> nana_ui_core::LayoutStyle {
+        (*cx.world().node_style(id).unwrap().layout).clone()
+    }
+
+    #[test]
+    fn a_template_style_and_css_compile_at_build_time() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let parent = cx
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let flag = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let open = signal(false);
+                flag.set(Some(open));
+                view! {
+                    style = ".panel { padding: 6px; } .panel.open { opacity: 0.5; }";
+                    <Column class="panel" class:open={open}>
+                        {widget(Stack::row(0.0)).css(css!("margin: 3px; opacity: 0.25")).into_any()}
+                        <Text>"x"</Text>
+                    </Column>
+                }
+            })
+            .unwrap();
+        let panel = view.roots()[0];
+        assert_eq!(layout_of(&cx, panel).padding, Some(LengthSpec::Px(6.0)));
+        assert_eq!(layout_of(&cx, panel).opacity, None);
+        flag.get().unwrap().set(true);
+        cx.flush_reactive().unwrap();
+        assert_eq!(layout_of(&cx, panel).opacity, Some(0.5));
+        let inline = cx.world().node(panel).unwrap().children[0];
+        assert_eq!(layout_of(&cx, inline).margin, Some(LengthSpec::Px(3.0)));
+        assert_eq!(layout_of(&cx, inline).opacity, Some(0.25));
+        let _ = text("");
+    }
+}

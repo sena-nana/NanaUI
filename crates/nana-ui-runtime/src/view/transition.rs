@@ -86,6 +86,30 @@ impl Presence {
     }
 }
 
+/// One property that animates when a binding changes it (CSS
+/// `transition: opacity 200ms ease`). See [`super::El::animate`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Implicit {
+    pub property: crate::AnimatableProperty,
+    pub duration: Duration,
+    pub easing: Easing,
+}
+
+impl Implicit {
+    pub const fn new(property: crate::AnimatableProperty, duration: Duration) -> Self {
+        Self {
+            property,
+            duration,
+            easing: Easing::EaseOutCubic,
+        }
+    }
+
+    pub const fn ease(mut self, easing: Easing) -> Self {
+        self.easing = easing;
+        self
+    }
+}
+
 /// How rows and branches enter, leave and move. See the module docs.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Transition {

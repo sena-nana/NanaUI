@@ -105,6 +105,12 @@ GPU_BACKEND_PACKAGES = {
 }
 
 
+# The CSS engine runs in the Vue adapter and in the view compilers; the
+# product path below them carries Style Model data, never CSS parsing.
+CSS_FREE_PACKAGES = {"nana-ui-core", "nana-ui-runtime", "nana-ui-scene", "nana-ui"}
+CSS_ENGINE_PACKAGES = {"nana-ui-css"}
+
+
 def metadata(manifest: Path) -> dict[str, object]:
     result = subprocess.run(
         [
@@ -144,24 +150,32 @@ def check_dependency_graph(data: dict) -> list[str]:
         failures.append(f"multiple WGPU major versions: {sorted(wgpu_majors)}")
     for root in workspace:
         name = packages[root]["name"]
-        pending = [(d, [name]) for d in graph.get(root, [])]
+        pending = [(d, [name], False) for d in graph.get(root, [])]
         seen = set()
         forbidden = ICED_PACKAGES | GPUI_PACKAGES
         if name in BACKEND_NEUTRAL_PACKAGES:
             forbidden |= GPU_BACKEND_PACKAGES
+        if name in CSS_FREE_PACKAGES:
+            forbidden |= CSS_ENGINE_PACKAGES
         forbid_legacy_text = name not in REFERENCE_ONLY_PACKAGES
         while pending:
-            dependency, path = pending.pop()
-            if dependency in seen:
+            dependency, path, build_time = pending.pop()
+            if (dependency, build_time) in seen:
                 continue
-            seen.add(dependency)
+            seen.add((dependency, build_time))
             package = packages[dependency]
             path = path + [package["name"]]
-            if package["name"].replace("_", "-") in forbidden:
+            # What a proc macro depends on runs in the compiler, not in the
+            # product: CSS compiled by `view!` never links the engine.
+            build_time = build_time or any(
+                "proc-macro" in target["kind"] for target in package["targets"]
+            )
+            crate = package["name"].replace("_", "-")
+            if crate in forbidden and not (build_time and crate in CSS_ENGINE_PACKAGES):
                 failures.append("forbidden product dependency: " + " -> ".join(path))
             elif forbid_legacy_text and is_legacy_text_package(package["name"]):
                 failures.append("replaced text engine in the product graph: " + " -> ".join(path))
-            pending.extend((child, path) for child in graph.get(dependency, []))
+            pending.extend((child, path, build_time) for child in graph.get(dependency, []))
     return failures
 
 
@@ -535,6 +549,7 @@ def main() -> int:
     print(
         f"Engine boundary: OK (Iced/GPUI trees removed; the pinned upstream winit; "
         f"backend-neutral: {neutral}; text-engine-neutral: {text_neutral}; "
+        f"CSS-free: {', '.join(sorted(CSS_FREE_PACKAGES))}; "
         f"GPU contract without public wgpu: {gpu_contract})"
     )
     return 0

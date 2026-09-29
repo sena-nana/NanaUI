@@ -214,6 +214,7 @@ pub(crate) struct ViewParts {
     pub(crate) structural: Vec<(StableNodeId, EffectKey, Box<dyn StructuralBinding>)>,
     /// Scopes disposed when the node leaves the world.
     pub(crate) anchors: Vec<(StableNodeId, ScopeKey)>,
+    pub(crate) implicit: Vec<(StableNodeId, Box<[super::Implicit]>)>,
 }
 
 #[derive(Default)]
@@ -410,6 +411,9 @@ pub struct El<C: ComponentView, K = ()> {
     node_ref: Option<NodeRef>,
     bindings: NodeBindings<C>,
     events: Vec<EventInstall<C>>,
+    /// Properties that animate to their new value when a binding changes
+    /// them (CSS `transition`).
+    implicit: Vec<super::Implicit>,
     children: K,
     site: &'static Location<'static>,
 }
@@ -424,6 +428,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         node_ref: None,
         bindings: NodeBindings::default(),
         events: Vec::new(),
+        implicit: Vec::new(),
         children: (),
         site: Location::caller(),
     }
@@ -442,6 +447,10 @@ impl<C: ComponentView, K> El<C, K> {
     pub fn node_ref(mut self, node_ref: NodeRef) -> Self {
         self.node_ref = Some(node_ref);
         self
+    }
+
+    pub(crate) fn component_ref(&self) -> &C {
+        &self.component
     }
 
     /// Drive one field through a [`FieldWrite`].
@@ -481,9 +490,18 @@ impl<C: ComponentView, K> El<C, K> {
             node_ref: self.node_ref,
             bindings: self.bindings,
             events: self.events,
+            implicit: self.implicit,
             children,
             site: self.site,
         }
+    }
+
+    /// When a binding changes one of these properties, play from the value
+    /// shown to the new one instead of jumping (CSS `transition`). Runs on
+    /// the compositor track; the logical style takes the new value at once.
+    pub fn animate(mut self, implicit: impl IntoIterator<Item = super::Implicit>) -> Self {
+        self.implicit.extend(implicit);
+        self
     }
 }
 
@@ -495,6 +513,7 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             node_ref,
             mut bindings,
             events,
+            implicit,
             children,
             site,
         } = self;
@@ -522,6 +541,9 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
         if let Some(effect) = effect {
             reactive::set_effect_target(effect, EffectTarget::Node(id));
             vb.st.parts.nodes.push((id, effect, Box::new(bindings)));
+        }
+        if !implicit.is_empty() {
+            vb.st.parts.implicit.push((id, implicit.into_boxed_slice()));
         }
         for install in events {
             install(vb.ui, entity);

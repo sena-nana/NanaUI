@@ -104,7 +104,7 @@ CPU/Layout 动画走 `next_animation_deadline`；`UiScene::compositor_needs_tick
 
 ## Vue 是输入，不是另一套窗口
 
-Rust 控件、Vue 的 HTML 1:1 控件 / `nana-*` 组件、以及有限的 HTML/CSS 子集，写的是**同一套样式模型**（token + 语义 + 布局），进**同一棵** `UiWorld`。
+Rust 控件、Vue 的 HTML 1:1 控件 / `nana-*` 组件、以及有限的 HTML/CSS 子集，写的是**同一套样式模型**（token + 语义 + 布局），进**同一棵** `UiWorld`。CSS 只有一个引擎 `nana-ui-css`：Vue 路径在运行时用它，L3 视图的 `<style>` / `css!` 在构建时用它，编译成 Style Model 数据。
 
 ```text
 Rust  build / create_component ──┐

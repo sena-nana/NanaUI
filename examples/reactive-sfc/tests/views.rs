@@ -188,3 +188,74 @@ fn static_text_is_swapped_in_the_running_tree() {
         Err(nana_ui::runtime::view::HotReloadError::ShapeChanged(_))
     ));
 }
+
+/// `<style>` compiled at build time: static classes, a conditional class,
+/// and a transition that animates the change.
+#[test]
+fn view_styles_apply_and_follow_their_classes() {
+    use std::time::Duration;
+    let start = Duration::from_secs(5);
+    let mut cx = AppContext::typed();
+    let document = DocumentId::new(1).unwrap();
+    cx.advance_animations(start);
+    let page = cx.mount_view_root(document, views::app).unwrap().roots()[0];
+    let todos = cx
+        .resolve_assembly_path(page, "todo-section/todos")
+        .unwrap();
+    let opacity = |cx: &AppContext| {
+        cx.world()
+            .node_style(todos)
+            .and_then(|style| style.layout.opacity)
+    };
+    assert_eq!(
+        opacity(&cx),
+        Some(0.6),
+        "`.todos.empty` while there is none"
+    );
+
+    let draft = cx
+        .resolve_assembly_entity::<TextInput>(page, "todo-section/todos/draft")
+        .unwrap();
+    cx.update_component(draft, |field, cx| {
+        field.state.replace_value("样式");
+        cx.emit(TextChanged {
+            value: field.state.value.clone(),
+            selection: field.state.selection,
+        });
+    })
+    .unwrap();
+    cx.flush_reactive().unwrap();
+    let add = cx
+        .resolve_assembly_entity::<Button>(page, "todo-section/todos/add")
+        .unwrap();
+    cx.activate_button(add).unwrap();
+    cx.flush_reactive().unwrap();
+    assert_eq!(opacity(&cx), Some(1.0), "no longer empty");
+    let shown = |at: u64| match cx.world().presentation_motion_value(
+        todos,
+        nana_ui::runtime::AnimatableProperty::Opacity,
+        start + Duration::from_millis(at),
+    ) {
+        Some(nana_ui::runtime::MotionValue::Scalar(value)) => value,
+        other => panic!("{other:?}"),
+    };
+    let halfway = shown(60);
+    assert!(
+        halfway > 0.6 && halfway < 1.0,
+        "the change animates: {halfway}"
+    );
+    assert_eq!(shown(200), 1.0);
+
+    // TodoItem.vue's rows take `.item`, their titles `.title`.
+    let row = children(&cx, children(&cx, todos)[2])[0];
+    let layout = &cx.world().node_style(row).unwrap().layout;
+    assert_eq!(
+        layout.padding_left,
+        Some(nana_ui::runtime::LengthSpec::Px(8.0))
+    );
+    let title = children(&cx, row)[0];
+    assert_eq!(
+        cx.world().node_style(title).unwrap().layout.flex_grow,
+        Some(1.0)
+    );
+}

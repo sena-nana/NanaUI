@@ -24,7 +24,7 @@ let add = move || {
 </script>
 
 <template>
-  <Column :gap="8">
+  <Column class="todos" class:empty="list.with(Vec::is_empty)" :gap="8">
     <TextInput key="draft" ref="draft_input" label="新任务" placeholder="新任务" v-model="draft" />
     <Button key="add" :disabled="draft.with(|d| d.trim().is_empty())" @activate="add">添加</Button>
     <TodoItem
@@ -37,3 +37,9 @@ let add = move || {
     <Text v-else>共 {{ list.with(Vec::len) }} 项</Text>
   </Column>
 </template>
+
+<style scoped>
+/* An empty list stays in the background; the first task brings it up. */
+.todos { opacity: 1; transition: opacity 120ms ease-out; }
+.todos.empty { opacity: 0.6; }
+</style>

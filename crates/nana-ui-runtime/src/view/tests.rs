@@ -1684,3 +1684,82 @@ fn a_store_with_history_undoes_one_handler_at_a_time() {
     cx.flush_reactive().unwrap();
     assert!(!board.can_redo());
 }
+
+static CARD: StylePatch = StylePatch::new(r#"{"opacity":0.8,"padding":{"Px":12.0}}"#);
+static DIM: StylePatch = StylePatch::new(r#"{"opacity":0.4}"#);
+static CARD_SITE: StyleSite = StyleSite::new(&[(0, &CARD), (1, &DIM)]);
+
+#[test]
+fn compiled_styles_compose_once_per_class_set_and_follow_conditional_classes() {
+    let (mut cx, _, parent) = setup();
+    let dim = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let dimmed = signal(false);
+            dim.set(Some(dimmed));
+            column(
+                0.0,
+                (0..3)
+                    .map(|_| {
+                        widget(Stack::column(0.0)).styles(&CARD_SITE, vec![dimmed.into_source()])
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap();
+    let rows = children(&cx, view.roots()[0]);
+    let layout = |cx: &AppContext, row: StableNodeId| {
+        cx.read(Entity::<Stack>::from_stable_id(row), |stack| {
+            std::sync::Arc::clone(&stack.style_ref().layout)
+        })
+        .unwrap()
+    };
+    let first = layout(&cx, rows[0]);
+    assert_eq!(first.opacity, Some(0.8));
+    assert_eq!(first.padding, Some(LengthSpec::Px(12.0)));
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &layout(&cx, rows[2])),
+        "every instance holds the one composed layout"
+    );
+
+    dim.get().unwrap().set(true);
+    cx.flush_reactive().unwrap();
+    let dimmed = layout(&cx, rows[1]);
+    assert_eq!(dimmed.opacity, Some(0.4), "the later rule wins");
+    assert_eq!(dimmed.padding, Some(LengthSpec::Px(12.0)));
+}
+
+#[test]
+fn an_implicit_transition_plays_from_the_shown_value_to_the_new_one() {
+    use std::time::Duration;
+    let (mut cx, _, parent) = setup();
+    let start = Duration::from_secs(10);
+    cx.advance_animations(start);
+    let dim = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let dimmed = signal(false);
+            dim.set(Some(dimmed));
+            widget(Stack::column(0.0))
+                .styles(&CARD_SITE, vec![dimmed.into_source()])
+                .animate([Implicit::new(
+                    crate::AnimatableProperty::Opacity,
+                    Duration::from_millis(200),
+                )])
+        })
+        .unwrap();
+    let node = view.roots()[0];
+    dim.get().unwrap().set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        opacity_at(&cx, node, start),
+        0.8,
+        "starts from what was shown"
+    );
+    let halfway = opacity_at(&cx, node, start + Duration::from_millis(100));
+    assert!(halfway < 0.8 && halfway > 0.4, "{halfway}");
+    assert_eq!(
+        opacity_at(&cx, node, start + Duration::from_millis(300)),
+        0.4
+    );
+}

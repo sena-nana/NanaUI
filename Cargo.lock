@@ -2770,9 +2770,12 @@ dependencies = [
 name = "nana-ui-view-codegen"
 version = "0.1.0"
 dependencies = [
+ "nana-ui-core",
+ "nana-ui-css",
  "nana-ui-view-schema",
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn 2.0.119",
 ]
 

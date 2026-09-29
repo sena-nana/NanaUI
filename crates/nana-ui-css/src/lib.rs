@@ -10,6 +10,10 @@
 //!
 //! CSS parsing stays out of `nana-ui-core`, `nana-ui-runtime`,
 //! `nana-ui-scene` and `nana-ui`.
+// Carried over with the code from nana-ui-vue.
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::type_complexity)]
 
 pub mod css_at_rule;
 pub mod css_cascade;

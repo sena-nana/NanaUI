@@ -270,6 +270,7 @@ impl Compiler {
             props,
             script,
             mut template,
+            style,
         } = component;
         let mut literals = Vec::new();
         if self.hot {
@@ -293,6 +294,16 @@ impl Compiler {
         }
         analysis.fold();
         analysis.finish();
+        // Classes against the view's `<style>`, after the analysis has seen
+        // their conditions and before bindings are rewritten.
+        let nana_ui_view_codegen::CompiledStyles {
+            items: style_items,
+            warnings: style_warnings,
+        } = nana_ui_view_codegen::compile_styles(
+            style.as_deref().unwrap_or_default(),
+            &mut template,
+            &self.runtime,
+        );
         let mut rows = Vec::new();
         let mut rewrite = Rewrite {
             file,
@@ -305,6 +316,7 @@ impl Compiler {
         let (body, lints) = nana_ui_view_codegen::expand_checked(&self.runtime, &template)
             .map_err(|error| parse::syn_error(file, error))?;
         let mut warnings = analysis.warnings.clone();
+        warnings.extend(style_warnings);
         warnings.extend(lints.into_iter().map(|lint| {
             let start = lint.span.start();
             format!("{}:{}: {}", start.line, start.column + 1, lint.message)
@@ -329,7 +341,7 @@ impl Compiler {
                 .map_or(file.into(), |name| name.to_string_lossy());
             let shape = stable_hash(
                 &quote! {
-                    fn #function(#(#props),*) { #(#script)* #body }
+                    fn #function(#(#props),*) { #(#style_items)* #(#script)* #body }
                 }
                 .to_string()
                 .replace(file, &file_name),
@@ -346,6 +358,7 @@ impl Compiler {
             #[allow(unused_imports, unused_variables, clippy::all)]
             pub fn #function(#(#props),*) -> impl #runtime::view::IntoView {
                 use #runtime::view::*;
+                #(#style_items)*
                 #hot
                 #(#script)*
                 #body

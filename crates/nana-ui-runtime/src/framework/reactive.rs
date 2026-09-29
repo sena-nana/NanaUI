@@ -33,6 +33,8 @@ pub(crate) struct ReactiveHost {
     leaving: HashMap<StableNodeId, Leaving>,
     /// Rows to slide from where they were once layout has placed them.
     flips: Vec<PendingFlip>,
+    /// Properties of a node that animate when its bindings change them.
+    implicit: HashMap<StableNodeId, Box<[crate::view::Implicit]>>,
 }
 
 struct Leaving {
@@ -59,6 +61,7 @@ impl Default for ReactiveHost {
             flushing: false,
             leaving: HashMap::new(),
             flips: Vec::new(),
+            implicit: HashMap::new(),
         }
     }
 }
@@ -256,6 +259,11 @@ impl AppContext {
                 rx::dispose_effect(old.effect);
             }
         }
+        for (id, implicit) in parts.implicit {
+            if self.world.contains(id) {
+                self.reactive.implicit.insert(id, implicit);
+            }
+        }
         for (id, scope) in parts.anchors {
             if let Some(old) = self.reactive.anchors.insert(id, scope)
                 && old != scope
@@ -409,11 +417,32 @@ impl AppContext {
             }
         }
         let mut commits = 0;
+        // What animated nodes show now, and hold logically, before the
+        // commit moves their logical values.
+        let now = self.component_lifecycle.now;
+        let mut before = Vec::new();
+        for (node, _) in &staged {
+            let Some(implicit) = self.reactive.implicit.get(node) else {
+                continue;
+            };
+            for implicit in implicit.iter() {
+                let Some(logical) = self.world.logical_motion_value(*node, implicit.property)
+                else {
+                    continue;
+                };
+                let shown = self
+                    .world
+                    .presentation_motion_value(*node, implicit.property, now)
+                    .unwrap_or(logical);
+                before.push((*node, *implicit, logical, shown));
+            }
+        }
         if !mutations.is_empty() {
             self.commit_mutations(mutations)?;
             commits = 1;
             nana_diagnostics::metric!(nana_diagnostics::framework::runtime::REACTIVE_COMMITS);
         }
+        self.play_implicit(before, now)?;
         let patched = staged.len() as u64;
         if patched > 0 {
             nana_diagnostics::metric!(
@@ -446,11 +475,13 @@ impl AppContext {
             && host.structural.is_empty()
             && host.anchors.is_empty()
             && host.leaving.is_empty()
+            && host.implicit.is_empty()
         {
             return;
         }
         for id in removed {
             host.leaving.remove(id);
+            host.implicit.remove(id);
             if let Some(entry) = host.nodes.remove(id) {
                 rx::dispose_effect(entry.effect);
             }
@@ -663,6 +694,46 @@ impl AppContext {
             duration,
             easing,
         });
+    }
+
+    /// Animate each property whose logical value the commit changed, from
+    /// what was shown to the new value.
+    fn play_implicit(
+        &mut self,
+        before: Vec<(
+            StableNodeId,
+            crate::view::Implicit,
+            MotionValue,
+            MotionValue,
+        )>,
+        now: Duration,
+    ) -> Result<(), FrameworkError> {
+        if before.is_empty() {
+            return Ok(());
+        }
+        let mut mutations = MutationQueue::new();
+        for (node, implicit, logical, shown) in before {
+            let Some(next) = self.world.logical_motion_value(node, implicit.property) else {
+                continue;
+            };
+            if next == logical || implicit.duration.is_zero() {
+                continue;
+            }
+            mutations.start_animation(crate::motion_api::presence_spec(
+                node,
+                implicit.property,
+                shown,
+                next,
+                now,
+                implicit.duration,
+                implicit.easing,
+                AnimationFillMode::None,
+            ));
+        }
+        if mutations.is_empty() {
+            return Ok(());
+        }
+        self.commit_mutations(mutations).map(|_| ())
     }
 
     /// Where `node` is now, for [`Self::flip_after_layout`].

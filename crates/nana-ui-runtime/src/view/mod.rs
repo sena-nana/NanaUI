@@ -29,6 +29,7 @@ pub(crate) mod reactive;
 mod resource;
 mod store;
 mod structural;
+mod style;
 mod task;
 mod teleport;
 #[cfg(feature = "reactive-trace")]
@@ -67,13 +68,16 @@ pub use store::{
 #[doc(hidden)]
 pub use store::{Paths, StoreKey};
 pub use structural::{Dynamic, Each, When, dynamic, each, when};
+#[doc(hidden)]
+pub use style::ComposedLayout;
+pub use style::{InlineStyle, StylePatch, StyleSite};
 pub use task::{
     Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,
 };
 pub use teleport::{Teleport, teleport};
 #[cfg(feature = "reactive-trace")]
 pub use trace::{Cause, WhyUpdated};
-pub use transition::{Presence, Transition};
+pub use transition::{Implicit, Presence, Transition};
 
 /// Text with `format!` interpolation that re-evaluates when a signal it
 /// names changes: `text!("{count} items")`.
@@ -84,11 +88,27 @@ macro_rules! text {
     };
 }
 
+#[cfg(feature = "view-macro")]
+pub use crate::css;
 pub use crate::text;
 
 #[cfg(feature = "view-macro")]
 #[doc(hidden)]
 pub use nana_ui_view_macros::view as __view;
+
+/// One CSS declaration block compiled at build time, for [`El::css`]
+/// (feature `view-macro`): `.css(css!("padding: 12px; opacity: 0.8"))`.
+#[cfg(feature = "view-macro")]
+#[macro_export]
+macro_rules! css {
+    ($($declarations:tt)*) => {
+        $crate::view::__css!(crate = $crate; $($declarations)*)
+    };
+}
+
+#[cfg(feature = "view-macro")]
+#[doc(hidden)]
+pub use nana_ui_view_macros::css as __css;
 
 /// `#[derive(Store)]` (feature `view-macro`): field accessors for a struct
 /// kept in a [`Store`], as a `<Name>StoreFields` trait.

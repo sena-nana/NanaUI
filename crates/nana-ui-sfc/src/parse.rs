@@ -24,6 +24,8 @@ pub struct Component {
     pub props: Vec<PatType>,
     pub script: Vec<Stmt>,
     pub template: Vec<Node>,
+    /// The `<style>` block's CSS, compiled against this view's elements.
+    pub style: Option<String>,
 }
 
 struct Source<'a> {
@@ -179,13 +181,17 @@ fn block<'t>(src: &Source<'t>, tag: &str) -> Result<Option<(&'t str, usize, usiz
 
 pub fn component(file: &str, text: &str) -> Result<Component, Error> {
     let src = Source::new(file, text);
-    if let Some(start) = text.find("<style") {
-        return Err(src.error(
-            start,
-            "`<style>` is not supported: the CSS subset belongs to the Vue path; style views \
-             with Style Model values",
-        ));
-    }
+    // A view's style is always its own (`scoped` or not): it is matched
+    // against this template only, at build time.
+    let style = match block(&src, "style")? {
+        Some((attrs, start, end)) => {
+            if attrs.contains("lang=") && !attrs.contains("lang=\"css\"") {
+                return Err(src.error(start, "`<style>` takes plain CSS (`lang=\"css\"`)"));
+            }
+            Some(src.text[start..end].to_owned())
+        }
+        None => None,
+    };
     let (props, script) = match block(&src, "script")? {
         Some((attrs, start, end)) => {
             if !attrs.contains("setup") || !attrs.contains("lang=\"rust\"") {
@@ -211,6 +217,7 @@ pub fn component(file: &str, text: &str) -> Result<Component, Error> {
         props,
         script,
         template,
+        style,
     })
 }
 
@@ -414,6 +421,12 @@ impl Template<'_, '_> {
             };
             let span = ident_at("v", pos, file)?.span();
             (AttrName::Directive(directive.to_owned(), span), value)
+        } else if let Some(class) = raw.strip_prefix("class:") {
+            // `class:active="condition"`: the class while the condition holds.
+            (
+                AttrName::Directive(format!("class:{class}"), ident_at("v", pos, file)?.span()),
+                expr(&value)?,
+            )
         } else if let Some(slot) = raw.strip_prefix('#') {
             // `#name` is `v-slot:name`.
             (
@@ -580,13 +593,10 @@ let open = signal(false);
             .err()
             .expect("an error");
         assert!(error.message.contains("`</B>` closes `<A>`"), "{error}");
-        let error = parse("<template></template><style>a {}</style>")
+        let error = parse("<template></template><style lang=\"scss\">a {}</style>")
             .err()
             .expect("an error");
-        assert!(
-            error.message.contains("`<style>` is not supported"),
-            "{error}"
-        );
+        assert!(error.message.contains("plain CSS"), "{error}");
         let error = parse("<script lang=\"rust\">let a = 1;</script><template></template>")
             .err()
             .expect("an error");

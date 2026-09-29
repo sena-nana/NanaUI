@@ -84,6 +84,27 @@ suspense(
 - `suspense(fallback, content)`：`content` 立刻构建但隐藏，直到在它里面创建的所有 `resource` 都完成了第一次加载，期间显示 `fallback`；之后的重新加载不再切回 `fallback`。模板里写 `<Suspense fallback={..}>`，`.vue` 里用 `<template #fallback>`。
 - 宿主接线：`nana-ui` 的窗口宿主在启动时调用 `set_task_wake`，并在处理宿主工作时轮询任务、给有待应用绑定的窗口请求重绘。没有宿主（测试、嵌入）时自己调用 `poll_tasks()`。
 
+## 样式表
+
+样式表就是 CSS，用的是 Vue 路径同一个 CSS 子集（[布局](layout.md)），由同一个引擎 `nana-ui-css` 处理。区别在于什么时候做：Vue 路径在运行时解析和级联，L3 视图在**构建时**解析和匹配，运行时只拿到结果。
+
+```vue
+<template>
+  <Column class="todos" class:empty="list.with(Vec::is_empty)" :gap="8">…</Column>
+</template>
+<style scoped>
+.todos { opacity: 1; transition: opacity 120ms ease-out; }
+.todos.empty { opacity: 0.6; }
+</style>
+```
+
+- **写法**：`class="a b"` 是固定的类；`class:名字="条件"` 是条件为真时才有的类（Rust 表达式写不出 Vue 的 `{ active: x }` 对象语法，所以用 Svelte 的写法）。`view!` 里写 `style = "…";` 放在模板最前面，属性写法相同；函数 API 用 `.css(css!("padding: 12px; opacity: 0.8"))` 给单个元素写一段声明。
+- **编译**：`.a` 和 `.a.b` 这样的类选择器，按 `!important`、特异性、源码顺序排好级联。每条规则用 `nana-ui-css` 把声明施加到一份默认布局上，改动了的 Style Model 字段就是这条规则的补丁，以 JSON 数据嵌进程序；`var()` 按样式表自己的自定义属性在构建时求值。每个元素得到一张"补丁 + 需要哪些条件类"的表。
+- **运行时**：不解析 CSS，不匹配选择器，`nana-ui-runtime` 里也没有 CSS 代码。每个模板位置按"基础布局 + 当前生效的条件类"合成一次，结果是一份共享的布局，之后同一位置的所有实例（包括 `v-for` 的每一行）都只拿它的引用。条件类的条件是普通绑定，变化时换一份合成结果。
+- **`transition`**：编成隐式动画（`El::animate`）。绑定改变了 `opacity`、`transform`、`width`、`height` 或 `background` 时，在合成器轨道上从当前显示的值播到新值，逻辑样式直接取新值。只认元素固定类上的 `transition`。
+- **不编译、会报警告的**：其他选择器（标签、id、组合器、属性）、`:hover` / `:focus` / `:active`、`@media`、`@keyframes` 和 `animation`、`@font-face`、伪元素、Style Model 里没有对应字段的声明、元素上没有规则用到的类、绑定式的 `:class`。
+- **已知取舍**：补丁只记录"和默认值不同"的字段，所以把属性写回默认值（例如 `position: static`）不会覆盖元素原来的非默认值；颜色在构建时按亮色主题求值，跟随主题切换的颜色请用组件自带的语义色。
+
 ## 进出场与移动动画
 
 `when(..)` 和 `each(..)`（包括 `Store` 的 `keyed(..).each`）可以加 `.transition(t)`，对应 Vue 的 `<Transition>` 和 `<TransitionGroup>`：
@@ -189,7 +210,7 @@ pub mod views {
 - 具名插槽：子组件声明 `header: impl IntoView` 这样的视图参数，模板里用 `<slot name="header"/>` 放置（`<slot/>` 放 `children`）；父组件写 `<template #header>…</template>`，`#default` 等于其余子节点。插槽内容是按值传入的视图，只能放一次，也没有后备内容。
 - `ref="name"` 把元素的节点 id 写进脚本里的 `let name = node_ref();`；`on_mount(move |cx| …)` 在视图进树之后执行，可以拿它聚焦、读布局。
 - 组件上的 `key` 落在组件的第一个根节点上（`keyed`）。不在这一批里的标签，按 `view!` 的规则调用同名的 Rust 函数。
-- `<style>` 不支持：CSS 子集属于 Vue 路径。模板里仍然要遵守 Rust 的所有权规则，例如同一个值既要传给组件又要被事件闭包使用时，得写 `todo.clone()`。
+- `<style>`（写不写 `scoped` 都一样，总是只作用于本组件）在构建时编译，见下文"样式表"。模板里仍然要遵守 Rust 的所有权规则，例如同一个值既要传给组件又要被事件闭包使用时，得写 `todo.clone()`。
 - 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`，rustc 的报错会指向可读的代码。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出，带文件、行、列。
 
 开发期热重载：构建脚本写 `Compiler::new(..).hot(debug)`，只改 `.vue` 里的静态文字时，`nana-ui-dev` 的 `watch_templates` 把新文字送进正在运行的窗口，不重建；改了别的就照常重建。见 `docs/hot-reload.md`。
@@ -279,6 +300,7 @@ impl ApplicationState for App {
 | `v-show` | `.visible(sig)` |
 | `onErrorCaptured` / `<ErrorBoundary>` | `error_boundary(fallback, content)`，视图返回 `Result`；模板里 `<ErrorBoundary :fallback>` |
 | `<Teleport to>` | `teleport(to, content)`；模板里 `<Teleport :to>` |
+| `<style scoped>`、`:class` | `<style>` 在构建时编译；`class="a"`、`class:a="条件"`；函数 API 用 `.css(css!(…))` |
 | `<KeepAlive>` / `<component :is>` | `when(..).keep_alive()` / `dynamic(key, render).keep_alive().max(n)`；模板里 `<KeepAlive>` |
 | `<Transition>` / `<TransitionGroup>` | `when(..).transition(t)` / `each(..).transition(t.moves(..))`；模板里同名标签 |
 | `v-for` + `:key` | `each(items, key, row)` |
@@ -330,7 +352,7 @@ fn page() -> impl IntoView {
 }
 ```
 
-除了样式（Vue 用 CSS 子集，L3 用 Style Model）和脚本逻辑（JS 要改成 Rust），模板和响应式部分可以逐行对上。和 Vue 模板仍有三处不同：
+除了脚本逻辑（JS 要改成 Rust），模板、响应式和样式表都可以逐行对上；样式表在 L3 里构建时编译，写法见"样式表"。和 Vue 模板仍有三处不同：
 
 - `each` 和 `when` 各自带一个容器 `Stack`，而 Vue 的 `v-for` / `v-if` 直接生成兄弟节点。
 - 表达式里的 `.get()` / `.with()` 省不掉，因为 Rust 稳定版不能给信号实现 `Fn`。只有单独出现的信号可以省，例如 `"{count}"`、`disabled={busy}`。
