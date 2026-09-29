@@ -558,3 +558,27 @@ let tab = signal(0u32);
         "{list}"
     );
 }
+
+#[test]
+fn teleport_moves_its_children_under_the_node_it_names() {
+    let out = compile(&[(
+        "Dialog.vue",
+        r#"<script setup lang="rust">
+let layer = node_ref();
+</script>
+<template>
+  <Column>
+    <Column ref="layer" />
+    <Teleport :to="layer"><Text>浮层</Text></Teleport>
+  </Column>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(
+        code.contains(&squash(
+            "::nana_ui_runtime::view::teleport(layer, ::nana_ui_runtime::view::text(\"浮层\"))"
+        )),
+        "{code}"
+    );
+}

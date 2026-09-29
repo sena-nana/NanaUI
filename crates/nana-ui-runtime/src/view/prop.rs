@@ -251,4 +251,6 @@ const_props! {
     Option<Arc<str>> => Option<Arc<str>>, |v| v;
     Option<&'static str> => Option<Arc<str>>, |v| v.map(Arc::from);
     Vec<crate::SelectOption> => Vec<crate::SelectOption>, |v| v;
+    crate::StableNodeId => Option<crate::StableNodeId>, |v| Some(v);
+    Option<crate::StableNodeId> => Option<crate::StableNodeId>, |v| v;
 }

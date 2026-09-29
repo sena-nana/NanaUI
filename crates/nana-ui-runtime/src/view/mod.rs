@@ -28,6 +28,7 @@ mod resource;
 mod store;
 mod structural;
 mod task;
+mod teleport;
 #[cfg(feature = "reactive-trace")]
 pub(crate) mod trace;
 mod transition;
@@ -59,6 +60,7 @@ pub use structural::{Dynamic, Each, When, dynamic, each, when};
 pub use task::{
     Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,
 };
+pub use teleport::{Teleport, teleport};
 #[cfg(feature = "reactive-trace")]
 pub use trace::{Cause, WhyUpdated};
 pub use transition::{Presence, Transition};

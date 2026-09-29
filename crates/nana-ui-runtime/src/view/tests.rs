@@ -1475,3 +1475,53 @@ fn dynamic_keeps_at_most_max_views_alive() {
     assert_eq!(children(&cx, container)[0], second);
     assert_eq!(text_of(&cx, Entity::from_stable_id(second)), "页 1");
 }
+
+#[test]
+fn teleported_content_lives_under_the_target_and_dies_with_its_declaration() {
+    let (mut cx, _, parent) = setup();
+    let handles = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let layer = node_ref();
+            let shown = signal(true);
+            let target = signal(true);
+            handles.set(Some((layer, shown, target)));
+            column(
+                0.0,
+                (
+                    widget(Stack::column(0.0)).node_ref(layer).key("layer"),
+                    when(shown, move || {
+                        teleport(
+                            move || target.get().then(|| layer.get()).flatten(),
+                            text("浮层"),
+                        )
+                    }),
+                ),
+            )
+        })
+        .unwrap();
+    let (layer, shown, target) = handles.get().unwrap();
+    let layer = layer.get_untracked().unwrap();
+    let root = view.roots()[0];
+    let content = children(&cx, layer);
+    assert_eq!(content.len(), 1, "placed under the layer at mount");
+    assert_eq!(text_of(&cx, Entity::from_stable_id(content[0])), "浮层");
+
+    target.set(false);
+    cx.flush_reactive().unwrap();
+    assert!(children(&cx, layer).is_empty(), "back in place");
+    let block = children(&cx, root)[1];
+    let anchor = children(&cx, block)[0];
+    assert_eq!(children(&cx, anchor), content);
+
+    target.set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, layer), content);
+    shown.set(false);
+    cx.flush_reactive().unwrap();
+    assert!(
+        !cx.world().contains(content[0]),
+        "gone with where it was declared"
+    );
+    assert!(children(&cx, layer).is_empty());
+}

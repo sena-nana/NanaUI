@@ -76,7 +76,8 @@ pub fn control(tag: &str) -> Option<&'static Control> {
 }
 
 /// Whether `tag` is built in: a control, `Column`, `Row`, `Widget`,
-/// `Virtual`, `Transition`, `TransitionGroup`, `KeepAlive` or `Suspense`.
+/// `Virtual`, `Transition`, `TransitionGroup`, `KeepAlive`, `Suspense` or
+/// `Teleport`.
 pub fn is_builtin(tag: &str) -> bool {
     matches!(
         tag,
@@ -88,6 +89,7 @@ pub fn is_builtin(tag: &str) -> bool {
             | "TransitionGroup"
             | "KeepAlive"
             | "Suspense"
+            | "Teleport"
     ) || control(tag).is_some()
 }
 
@@ -99,7 +101,8 @@ pub fn is_argument(tag: &str, attribute: &str) -> bool {
         || match tag {
             "Column" | "Row" => attribute == "gap",
             "Widget" => attribute == "of",
-            "Virtual" | "Transition" | "TransitionGroup" | "KeepAlive" | "Suspense" => true,
+            "Virtual" | "Transition" | "TransitionGroup" | "KeepAlive" | "Suspense"
+            | "Teleport" => true,
             _ => control(tag).is_some_and(|control| {
                 control
                     .arguments
@@ -845,6 +848,30 @@ impl Gen<'_> {
                 return self.block(element, Vec::new(), true);
             }
             ("Suspense", _) => return self.suspense(element),
+            ("Teleport", _) => {
+                let krate = self.krate;
+                let mut to = None;
+                for attr in &element.attrs {
+                    match &attr.name {
+                        AttrName::Plain(name) if name == "to" => to = Some(prop(&attr.value)),
+                        AttrName::Plain(name) if name == "key" => {}
+                        _ => {
+                            return Err(syn::Error::new(
+                                span,
+                                "`<Teleport>` takes `to={node}`: a node ref, a node id or \
+                                 an expression choosing one",
+                            ));
+                        }
+                    }
+                }
+                let to =
+                    to.ok_or_else(|| syn::Error::new(span, "`<Teleport>` needs `to={node}`"))?;
+                let body = self.nodes(children)?;
+                (
+                    quote_spanned!(span=> #krate::view::teleport(#to, #body)),
+                    vec!["to"],
+                )
+            }
             ("Widget", _) => {
                 let component = element
                     .plain("of")
