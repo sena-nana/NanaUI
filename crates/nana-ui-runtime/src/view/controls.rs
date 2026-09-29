@@ -17,9 +17,9 @@ use crate::{
     TextSubmitted, Thumbnail, ToggleChanged,
 };
 use crate::{
-    Breadcrumb, Dialog, Drawer, FormField, GpuView, IconGlyph, InteractiveCard, LabeledValue,
-    LevelMeter, List, MediaTransportBar, Panel, SettingsCard, SidebarRow, Skeleton, StatusBar,
-    Tabs, Toolbar, Tooltip, ValidationMessage, Video,
+    AppTitleBar, Breadcrumb, Dialog, Drawer, FormField, GpuView, IconGlyph, InteractiveCard,
+    LabeledValue, LevelMeter, List, MediaTransportBar, Panel, SettingsCard, SidebarRow, Skeleton,
+    StatusBar, Tabs, Toolbar, Tooltip, ValidationMessage, Video,
 };
 use nana_ui_core::{Icon, RadiusTier, SemanticColorRole, StatusTone};
 
@@ -143,7 +143,8 @@ styled!(
     MediaTransportBar,
     Dialog,
     Drawer,
-    LevelMeter
+    LevelMeter,
+    AppTitleBar
 );
 
 /// Expands the control table of `nana-ui-view-schema`: per control, one

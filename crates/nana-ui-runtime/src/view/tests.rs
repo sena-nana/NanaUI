@@ -3459,3 +3459,34 @@ fn a_listening_container_hears_the_size_layout_gave_it() {
     cx.flush_reactive().unwrap();
     assert!(!two_columns.get_untracked());
 }
+
+/// A title bar is shown and hidden from a view like any styled element (a
+/// fullscreen player hides the window's bar).
+#[test]
+fn a_title_bar_shows_and_hides_from_a_view() {
+    let (mut cx, document, parent) = setup();
+    let flag = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let shown = signal(true);
+            flag.set(Some(shown));
+            column().children((
+                widget(crate::AppTitleBar::new("Nana").native_controls(false))
+                    .visible(shown)
+                    .key("bar"),
+                widget(Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(40.0))))
+                    .key("page"),
+            ))
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    let page = cx.resolve_assembly_path(root, "page").unwrap();
+    let viewport = LayoutViewport::new(800.0, 400.0);
+    cx.layout_document(document, viewport).unwrap();
+    let below_bar = cx.world().layout_box(page).unwrap().y;
+    assert!(below_bar > 0.0);
+    flag.get().unwrap().set(false);
+    cx.flush_reactive().unwrap();
+    cx.layout_document(document, viewport).unwrap();
+    assert_eq!(cx.world().layout_box(page).unwrap().y, 0.0);
+}
