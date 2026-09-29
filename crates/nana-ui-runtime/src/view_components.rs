@@ -3220,6 +3220,10 @@ impl Dialog {
         self
     }
 
+    pub(crate) fn set_initial_focus(&mut self, initial_focus: crate::ModalInitialFocus) {
+        self.initial_focus = initial_focus;
+    }
+
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
         self

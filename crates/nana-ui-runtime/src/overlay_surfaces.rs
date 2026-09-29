@@ -177,6 +177,10 @@ impl ConfirmDialog {
         self
     }
 
+    pub(crate) fn set_initial_focus(&mut self, initial_focus: ModalInitialFocus) {
+        self.behavior.initial_focus = initial_focus;
+    }
+
     pub fn behavior(&self) -> ModalBehavior {
         self.behavior
     }
@@ -319,6 +323,10 @@ impl Drawer {
     pub fn initial_focus(mut self, initial_focus: ModalInitialFocus) -> Self {
         self.behavior.initial_focus = initial_focus;
         self
+    }
+
+    pub(crate) fn set_initial_focus(&mut self, initial_focus: ModalInitialFocus) {
+        self.behavior.initial_focus = initial_focus;
     }
 
     pub fn behavior(&self) -> ModalBehavior {

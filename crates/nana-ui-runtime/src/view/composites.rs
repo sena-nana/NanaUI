@@ -13,8 +13,30 @@
 //! node stays for the view's life; what changes inside it is a `when` /
 //! `each` there.
 
-use super::{El, IntoView};
-use crate::{ConfirmDialog, Dialog, Drawer, FormField, MediaTransportBar, ModalSurface};
+use super::{El, EntityRef, IntoView};
+use crate::{
+    ConfirmDialog, Dialog, Drawer, FormField, MediaTransportBar, ModalInitialFocus, ModalSurface,
+};
+
+macro_rules! modal_focus {
+    ($($surface:ty),*) => {$(
+        impl<K> El<$surface, K> {
+            /// Focus `target` when the surface opens: a control in one of its
+            /// slots, such as the button given to `.confirm`. Slots are built
+            /// before the surface, so their refs are resolved here; a target
+            /// that is not built yet leaves the surface's default focus.
+            pub fn initial_focus_on<T: crate::View>(self, target: EntityRef<T>) -> Self {
+                self.bind(move |modal: &mut $surface| {
+                    if let Some(target) = target.get() {
+                        modal.set_initial_focus(ModalInitialFocus::Target(target.stable_id()));
+                    }
+                })
+            }
+        }
+    )*};
+}
+
+modal_focus!(Dialog, Drawer, ConfirmDialog);
 
 macro_rules! modal_slots {
     ($($surface:ty),*) => {$(

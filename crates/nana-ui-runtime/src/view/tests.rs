@@ -2997,3 +2997,26 @@ fn a_pane_chrome_leaves_the_children_of_a_header_it_is_given() {
         .collect::<Vec<_>>();
     assert_eq!(texts, ["甲", "乙"]);
 }
+
+#[test]
+fn a_modal_focuses_a_control_it_was_given_in_a_slot() {
+    use crate::{ConfirmDialog, ModalInitialFocus};
+    let (mut cx, document, _) = setup();
+    let (_, (dialog, accept)) = cx
+        .mount_view_root(document, || {
+            let (dialog, accept) = (entity_ref::<ConfirmDialog>(), entity_ref::<Button>());
+            with_refs(
+                widget(ConfirmDialog::new("场景已停止", "要退出吗？"))
+                    .entity_ref(dialog)
+                    .confirm(button("退出").entity_ref(accept))
+                    .initial_focus_on(accept),
+                (dialog, accept),
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        cx.read(dialog, |dialog| dialog.behavior().initial_focus)
+            .unwrap(),
+        ModalInitialFocus::Target(accept.stable_id())
+    );
+}
