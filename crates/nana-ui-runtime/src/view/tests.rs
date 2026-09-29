@@ -3369,3 +3369,53 @@ fn a_modal_focuses_a_control_it_was_given_in_a_slot() {
         ModalInitialFocus::Target(accept.stable_id())
     );
 }
+
+#[test]
+fn a_page_scrolled_past_its_list_stays_put_when_its_items_change() {
+    let (mut cx, document, parent) = setup();
+    let items = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let page = node_ref();
+            let list = signal(virtual_items(100));
+            items.set(Some(list));
+            widget(
+                crate::ScrollView::new(crate::ScrollAxes::Vertical).with_layout(|l| {
+                    l.height = Some(LengthSpec::Px(300.0));
+                }),
+            )
+            .node_ref(page)
+            .children(
+                column().key("content").children((
+                    each_virtual(list, |row| row.id, 20.0, |row| text(row.title))
+                        .within(page)
+                        .overscan(0.0)
+                        .key("rows"),
+                    // Content after the list: the page scrolls past the list's end.
+                    widget(
+                        Stack::column(0.0).with_layout(|l| l.height = Some(LengthSpec::Px(120.0))),
+                    ),
+                )),
+            )
+        })
+        .unwrap();
+    let page = view.roots()[0];
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    settle(&mut cx, document, viewport);
+    cx.scroll_to(
+        Entity::from_stable_id(page),
+        crate::ScrollOffset {
+            x: 0.0,
+            y: 1_000_000.0,
+        },
+    )
+    .unwrap();
+    settle(&mut cx, document, viewport);
+    let bottom = cx.world().scroll_offset(page).unwrap().y;
+
+    // Two rows far above swap places: the list is as long as before and the
+    // page scrolled past its end stays where it is.
+    items.get().unwrap().update(|list| list.swap(0, 1));
+    settle(&mut cx, document, viewport);
+    assert_eq!(cx.world().scroll_offset(page).unwrap().y, bottom);
+}

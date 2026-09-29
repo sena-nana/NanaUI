@@ -373,7 +373,6 @@ impl<K: Eq + Hash + Clone> Geometry<K> {
     /// The list's offset a request scrolls to; `None` for one that does
     /// not move it (or whose item is gone).
     fn target(&self, request: &Request<K>) -> Option<f32> {
-        let max = (self.layout.total_extent() - self.extent).max(0.0);
         let target = match request {
             Request::Reveal(key, align) => self.layout.offset_for_index(
                 self.unit_of(key)?,
@@ -381,10 +380,13 @@ impl<K: Eq + Hash + Clone> Geometry<K> {
                 self.extent,
                 *align,
             )?,
+            // A reading position is a point in the list; the ScrollView
+            // clamps it to how far its content scrolls, which for a list
+            // within a page includes whatever follows the list.
             Request::At(key, inset) | Request::Keep(key, inset) => {
                 let at = self.unit_of(key)?;
                 (self.layout.extent(0..at) + inset.min(self.layout.extent(at..at + 1)))
-                    .clamp(0.0, max)
+                    .clamp(0.0, self.layout.total_extent())
             }
         };
         match request {
