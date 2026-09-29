@@ -424,7 +424,6 @@ impl AppContext {
         Ok(true)
     }
 
-    /// Publish controlled selection without replacing the option identities.
     /// Register a control's option children as its options, the one whose
     /// `selected` flag is set as its selection. The view layer runs this
     /// after it builds a control and after a binding changes the control or
@@ -471,6 +470,7 @@ impl AppContext {
         self.assemble_segmented_control(control)
     }
 
+    /// Publish controlled selection without replacing the option identities.
     pub fn set_segmented_selection(
         &mut self,
         control: Entity<SegmentedControl>,
