@@ -94,7 +94,7 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 ### ImageViewer
 
-`ImageViewer` 是整窗的大图浮层（`nana.image-viewer`）。它自己画遮罩、表面、舞台与说明行；图片由应用给（`HostTexture` / `CustomRender` 由查看器画在舞台里并按舞台裁剪，`Child` 是应用自己的子节点）。遮罩是主题的 `EffectTokens::media_scrim`：浅色主题下也是深色，图片总是放在深色上看；表面与说明行仍随主题。查看器的**操作是真控件**：关闭钮是 `assemble_image_viewer` 建的 `IconButton` 子节点，可焦点、有无障碍名（`close_label`，默认「关闭」）、有悬停与按下态，激活时查看器发 `ImageViewerEvent::Close`。这些控件总排在查看器所有其他子节点之后，所以 `Child` 内容铺满整个画面也盖不住它们，命中也先落在它们上面；内容晚于控件放进来时（子节点变化）查看器会重新装配，把控件挪回末尾。它是叶子复合件：视图建好时与每次写入后自动装配；`create_component` 手工建的查看器自己调一次 `assemble_image_viewer`。`ImageViewer::geometry(..).close` 仍给出关闭钮的位置，供应用给自己的内容留边。
+`ImageViewer` 是整窗的大图浮层（`nana.image-viewer`）。它自己画遮罩、表面、舞台与说明行；图片由应用给（`HostTexture` / `CustomRender` 由查看器画在舞台里并按舞台裁剪，`Child` 是应用自己的子节点）。遮罩是主题的 `EffectTokens::media_scrim`：浅色主题下也是深色，图片总是放在深色上看；表面与说明行仍随主题。内置值是黑 0.99 而不是 CSS 里常写的 0.9：画家在线性光里合成，黑色 α 留下背后 `1 - α` 的线性亮度，0.99 在白底上约 `#1a1a1a`（CSS 的 0.9 那么深），0.9 则是中灰 `#595959`。自定义主题写这个值时按同样的算法取。查看器的**操作是真控件**：关闭钮是 `assemble_image_viewer` 建的 `IconButton` 子节点，可焦点、有无障碍名（`close_label`，默认「关闭」）、有悬停与按下态，激活时查看器发 `ImageViewerEvent::Close`。这些控件总排在查看器所有其他子节点之后，所以 `Child` 内容铺满整个画面也盖不住它们，命中也先落在它们上面；内容晚于控件放进来时（子节点变化）查看器会重新装配，把控件挪回末尾。它是叶子复合件：视图建好时与每次写入后自动装配；`create_component` 手工建的查看器自己调一次 `assemble_image_viewer`。`ImageViewer::geometry(..).close` 仍给出关闭钮的位置，供应用给自己的内容留边。
 
 图集：`gallery: Option<ImageViewerPosition>`（`.gallery(index, count)`，`index` 从 0 起）告诉查看器当前图在应用图集里的位置。多于一张时，舞台底部居中出现一块表面，上面是「上一张」「下一张」两个图标按钮（`previous_label` / `next_label`）和位置「3 / 9」，查看器的无障碍值也是这个位置；到头的那一侧按钮禁用。按钮激活，以及焦点在查看器或它的控件上时按 ← / →，查看器发 `ImageViewerEvent::Previous` / `Next`；到头时方向键不消费。**换图由应用做**：收到事件后换内容，并把新位置写回 `gallery`（缩放与平移也由应用决定是否复位）。只有一张或没有 `gallery` 时不显示导航。Vue 的 `nana-image-viewer` 只做投影，不建控件，关闭由宿主负责。
 

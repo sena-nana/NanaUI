@@ -177,3 +177,71 @@ fn image_viewer_scene_receives_intrinsic_dimensions_from_retained_projection() {
     assert!((image.bounds.width / image.bounds.height - 4.0).abs() < 0.001);
     assert!(image.bounds.width <= 800.0 && image.bounds.height <= 600.0);
 }
+
+/// sRGB to linear light, the space the painter blends in.
+fn linear(u: f32) -> f32 {
+    if u < 0.04045 {
+        u / 12.92
+    } else {
+        ((u + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Linear light back to sRGB, what the window shows.
+fn encode(u: f32) -> f32 {
+    if u <= 0.003_130_8 {
+        u * 12.92
+    } else {
+        1.055 * u.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// The scrim behind an open viewer shows near-black over the page in both
+/// themes, as the painter composites it: in linear light, over the theme's
+/// page background.
+#[test]
+fn the_viewer_scrim_shows_near_black_over_the_page_in_both_themes() {
+    use nana_ui_core::ThemeMode;
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        let document = DocumentId::new(771).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        runtime.context_mut().set_theme(mode).unwrap();
+        let viewer = runtime
+            .context_mut()
+            .create_component(document, ImageViewer::new(ImageViewerContent::None))
+            .unwrap();
+        runtime.context_mut().assemble_image_viewer(viewer).unwrap();
+        runtime
+            .flush(LayoutViewport::new(800.0, 600.0), &mut MeasureTextShaper)
+            .unwrap();
+        let page = runtime
+            .context()
+            .world()
+            .theme()
+            .palette()
+            .background
+            .as_rgba_array();
+        let scrim = runtime
+            .scene()
+            .primitives()
+            .find(|primitive| primitive.node == viewer.stable_id() && primitive.id.slot == 10)
+            .expect("the scrim paints");
+        let ScenePrimitiveKind::Quad {
+            background: Some([r, g, b, alpha]),
+            ..
+        } = scrim.kind
+        else {
+            panic!("the scrim is a filled quad: {:?}", scrim.kind);
+        };
+        let alpha = alpha * scrim.opacity;
+        let shown = [r, g, b]
+            .iter()
+            .zip(&page[..3])
+            .map(|(scrim, page)| encode(linear(*scrim) * alpha + linear(*page) * (1.0 - alpha)))
+            .fold(0.0f32, f32::max);
+        assert!(
+            shown < 0.15,
+            "{mode:?}: the scrim shows as {shown:.3} over the page, not near-black"
+        );
+    }
+}

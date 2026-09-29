@@ -634,7 +634,12 @@ pub struct EffectTokens {
 }
 
 /// The media scrim both built-in modes use.
-const MEDIA_SCRIM: SemanticColor = SemanticColor::rgba(0.0, 0.0, 0.0, 0.9);
+///
+/// The painter composites in linear light, where black at alpha `a` leaves
+/// `1 - a` of what is behind it. 0.99 leaves 1%: about `#1a1a1a` over a
+/// white page, what CSS's `rgba(0, 0, 0, .9)` shows. 0.9 would leave 10%,
+/// which over a light page is a mid grey (`#595959`), not a scrim.
+const MEDIA_SCRIM: SemanticColor = SemanticColor::rgba(0.0, 0.0, 0.0, 0.99);
 
 impl EffectTokens {
     /// Lilia `--shadow-surface` dark: `0 10px 30px -24px rgba(0,0,0,.62)`.
