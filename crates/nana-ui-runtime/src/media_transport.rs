@@ -67,6 +67,14 @@ pub enum MediaTransportEvent {
     /// Live volume in `0..=100`, including drag previews.
     Volume(f64),
     Fullscreen,
+    /// The bar's settings menu or volume popover opened. An open menu holds
+    /// the bar visible: sync the overlay
+    /// ([`AppContext::sync_overlay_visibility`]) so the hold starts now.
+    MenuOpened,
+    /// That menu closed, however it closed (its trigger, Escape, a press
+    /// elsewhere, the menu hidden). Sync the overlay again: the idle timer
+    /// restarts from here, where nothing else would wake the host.
+    MenuClosed,
 }
 
 /// How much chrome the bar spends on its controls.
@@ -818,6 +826,8 @@ impl AppContext {
             self.observe(fullscreen, bar, |_, _: &Activate, cx| {
                 cx.emit(MediaTransportEvent::Fullscreen);
             })?;
+            self.observe(volume_menu, bar, report_menu)?;
+            self.observe(settings, bar, report_menu)?;
 
             self.update_component(bar, |bar, _| {
                 bar.slots = MediaTransportSlots {
@@ -1055,10 +1065,11 @@ impl AppContext {
         if !chrome.settings
             && let Some(settings) = slots.settings
         {
-            // A hidden menu must not stay open where nobody can reach it.
+            // A hidden menu must not stay open where nobody can reach it. It
+            // closes as a press elsewhere would, so the bar reports it.
             let settings = Entity::<ActionMenu>::from_stable_id(settings);
             if self.read(settings, |menu| menu.popover.open)? {
-                self.update_component(settings, |menu, _| menu.popover.open = false)?;
+                self.toggle_action_menu(settings)?;
             }
         }
         // Nor may focus stay on a hidden control: it would keep the overlay
@@ -1094,6 +1105,19 @@ impl AppContext {
             })
             .unwrap_or(false)
     }
+}
+
+/// The bar's own menus opening and closing, as the bar's events.
+fn report_menu(
+    _: &mut MediaTransportBar,
+    event: &crate::PopoverToggled,
+    cx: &mut crate::ViewContext<'_, MediaTransportBar>,
+) {
+    cx.emit(if event.open {
+        MediaTransportEvent::MenuOpened
+    } else {
+        MediaTransportEvent::MenuClosed
+    });
 }
 
 /// Writes an icon button's glyph, label (and tooltip), and optionally its
@@ -2182,6 +2206,58 @@ mod tests {
         cx.flush_reactive().unwrap();
         assert!(!hidden(&cx), "available again, and revealed");
         assert!(cx.read(bar, MediaTransportBar::shown).unwrap());
+    }
+
+    /// The bar reports its own menus opening and closing, however they
+    /// close, so a host re-syncs the idle hide without listening on nodes
+    /// the bar built; after the close the sync restarts the idle timer.
+    #[test]
+    fn the_bar_reports_its_menus_opening_and_closing() {
+        use std::time::Instant;
+        let mut cx = AppContext::new();
+        let bar = cx
+            .create_component(document(), MediaTransportBar::new())
+            .unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        let events = StdArc::new(Mutex::new(Vec::new()));
+        let seen = StdArc::clone(&events);
+        cx.on(bar, move |_, event: &MediaTransportEvent, _| {
+            seen.lock().unwrap().push(*event);
+        })
+        .unwrap();
+        let take = || std::mem::take(&mut *events.lock().unwrap());
+        let (settings, volume) = cx
+            .read(bar, |bar| {
+                (bar.settings().unwrap(), bar.volume_menu().unwrap())
+            })
+            .unwrap();
+
+        cx.toggle_action_menu(settings).unwrap();
+        assert_eq!(take(), [MediaTransportEvent::MenuOpened]);
+        let now = Instant::now();
+        assert_eq!(cx.sync_overlay_visibility(bar, now, true).unwrap(), None);
+        assert!(cx.dismiss_popovers_on_escape().unwrap());
+        assert_eq!(take(), [MediaTransportEvent::MenuClosed]);
+        assert_eq!(
+            cx.sync_overlay_visibility(bar, now, true).unwrap(),
+            Some(now + crate::OVERLAY_IDLE),
+            "the close restarts the idle timer"
+        );
+
+        cx.toggle_popover(volume).unwrap();
+        assert_eq!(take(), [MediaTransportEvent::MenuOpened]);
+        assert!(cx.dismiss_popovers_outside(None).unwrap());
+        assert_eq!(take(), [MediaTransportEvent::MenuClosed]);
+
+        cx.toggle_action_menu(settings).unwrap();
+        take();
+        cx.update_component(bar, |bar, _| bar.show_settings = Some(false))
+            .unwrap();
+        assert_eq!(
+            take(),
+            [MediaTransportEvent::MenuClosed],
+            "hiding the open settings menu closes it"
+        );
     }
     #[test]
     fn assemble_is_idempotent() {
