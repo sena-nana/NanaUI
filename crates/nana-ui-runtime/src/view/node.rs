@@ -215,8 +215,8 @@ pub(crate) struct ViewParts {
     /// Scopes disposed when the node leaves the world.
     pub(crate) anchors: Vec<(StableNodeId, ScopeKey)>,
     pub(crate) implicit: Vec<(StableNodeId, Box<[super::Implicit]>)>,
-    /// Composites whose slots are placed by their `slot_assembler`, in build
-    /// order.
+    /// Composites to assemble once built (their `slot_assembler`, or their
+    /// `assembler`, which otherwise runs only after a write), in build order.
     pub(crate) assemble: Vec<(StableNodeId, TypeId)>,
 }
 
@@ -627,7 +627,7 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             }
             return;
         }
-        if C::BEHAVIOR.slot_assembler.is_some() {
+        if C::BEHAVIOR.slot_assembler.is_some() || C::BEHAVIOR.assembler.is_some() {
             vb.st.parts.assemble.push((id, TypeId::of::<C>()));
         }
         if let Some(node_ref) = node_ref {

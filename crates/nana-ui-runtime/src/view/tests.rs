@@ -1900,3 +1900,17 @@ fn unmounting_a_shell_view_removes_its_slots_and_chrome() {
     view.unmount(&mut cx).unwrap();
     assert_eq!(cx.world().len(), before);
 }
+
+#[test]
+fn a_leaf_composite_a_view_builds_is_assembled() {
+    let (mut cx, _, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            widget(crate::Chip::new("附件").dismissible(true))
+        })
+        .unwrap();
+    let chip = Entity::<crate::Chip>::from_stable_id(view.roots()[0]);
+    let close = cx.read(chip, |chip| chip.close).unwrap();
+    assert!(close.is_some());
+    assert_eq!(children(&cx, chip.stable_id()).len(), 1);
+}

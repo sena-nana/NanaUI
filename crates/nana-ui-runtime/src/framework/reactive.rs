@@ -279,7 +279,7 @@ impl AppContext {
             }
         }
         for (id, type_id) in parts.assemble.into_iter().rev() {
-            self.run_slot_assembler(id, type_id)?;
+            self.run_built_assembler(id, type_id)?;
         }
         Ok(())
     }

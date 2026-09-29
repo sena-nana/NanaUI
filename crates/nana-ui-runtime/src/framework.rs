@@ -3154,6 +3154,19 @@ impl AppContext {
         self.run_assembler(id, assembler)
     }
 
+    /// What assembles a composite a view just built: its slot assembler, or
+    /// the assembler that otherwise runs only after a write.
+    #[cfg(feature = "reactive-view")]
+    pub(crate) fn run_built_assembler(
+        &mut self,
+        id: StableNodeId,
+        type_id: TypeId,
+    ) -> Result<(), FrameworkError> {
+        let behavior = self.behaviors.get(&type_id);
+        let assembler = behavior.and_then(|b| b.slot_assembler.or(b.assembler));
+        self.run_assembler(id, assembler)
+    }
+
     fn run_assembler(
         &mut self,
         id: StableNodeId,

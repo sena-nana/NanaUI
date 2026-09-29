@@ -154,7 +154,6 @@ impl ColorField {
 impl ComponentView for ColorField {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         assembler: Some(crate::AppContext::assemble_color_field),
-        slot_assembler: Some(crate::AppContext::assemble_color_field),
         ..crate::TypeBehavior::NONE
     };
 
