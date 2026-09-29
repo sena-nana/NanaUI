@@ -582,7 +582,7 @@ mod store_derive {
 mod transition_block {
     use std::time::Duration;
 
-    use nana_ui_runtime::view::{Transition, each, signal, text, when};
+    use nana_ui_runtime::view::signal;
     use nana_ui_runtime::{AppContext, DocumentId, Stack, view};
 
     #[test]
@@ -624,15 +624,6 @@ mod transition_block {
         );
         cx.advance_animations(Duration::from_secs(2));
         assert_eq!(cx.world().node(block).unwrap().children.len(), 1);
-        // The function API it stands for compiles to the same calls.
-        let _ = || {
-            when(signal(true), || text("开"))
-                .otherwise(|| text("关"))
-                .transition(Transition::fade(Duration::from_millis(200)));
-            each(signal(vec![1u32]), |n| *n, |n| text(n.to_string())).transition(
-                Transition::fade(Duration::from_millis(150)).moves(Duration::from_millis(200)),
-            );
-        };
     }
 }
 
@@ -809,5 +800,222 @@ mod styles {
         cx.flush_reactive().unwrap();
         assert_eq!(layout_of(&cx, panel).padding, Some(LengthSpec::Px(2.0)));
         assert_eq!(layout_of(&cx, panel).opacity, None);
+    }
+}
+
+/// Each block written as a template and in Rust mounts the same tree and
+/// changes it the same way.
+mod blocks_mirror {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use nana_ui_runtime::view::{
+        AnyView, EachExt, IntoView, NodeRef, Signal, Transition, WhenExt, column, each_virtual,
+        error_boundary, node_ref, signal, suspense, teleport, text, widget,
+    };
+    use nana_ui_runtime::{AppContext, DocumentId, Stack, view};
+
+    use super::dump;
+
+    /// `make` creates the signals inside the mount; `poke` changes them.
+    fn mirror<S: Copy + 'static>(
+        make: impl Fn() -> S,
+        template: impl Fn(S) -> AnyView,
+        rust: impl Fn(S) -> AnyView,
+        poke: impl Fn(S),
+    ) {
+        let run = |form: &dyn Fn(S) -> AnyView| {
+            let mut cx = AppContext::new();
+            cx.advance_animations(Duration::from_secs(1));
+            let document = DocumentId::new(1).unwrap();
+            let state = std::cell::Cell::new(None);
+            let view = cx
+                .mount_view_root(document, || {
+                    let s = make();
+                    state.set(Some(s));
+                    form(s)
+                })
+                .unwrap();
+            let root = view.roots()[0];
+            let before = dump(&cx, root);
+            poke(state.get().unwrap());
+            cx.flush_reactive().unwrap();
+            (before, dump(&cx, root))
+        };
+        let (template_before, template_after) = run(&template);
+        let (rust_before, rust_after) = run(&rust);
+        assert_eq!(template_before, rust_before);
+        assert_eq!(template_after, rust_after);
+    }
+
+    #[test]
+    fn transitions() {
+        mirror(
+            || (signal(true), signal(vec![1u32, 2])),
+            |(open, items): (Signal<bool>, Signal<Vec<u32>>)| {
+                view! {
+                    <Column>
+                        <Transition name="slide-up" duration=200>
+                            <Text v-if={open}>"开"</Text>
+                            <Text v-else>"关"</Text>
+                        </Transition>
+                        <TransitionGroup move=200>
+                            <Text v-for={n in items} key={*n}>{n.to_string()}</Text>
+                        </TransitionGroup>
+                    </Column>
+                }
+                .into_any()
+            },
+            |(open, items)| {
+                let ms = Duration::from_millis;
+                column()
+                    .children((
+                        open.then_show(|| text("开"))
+                            .otherwise(|| text("关"))
+                            .transition(Transition::slide(0.0, 12.0, ms(200))),
+                        items
+                            .each(|n| *n, |n| text(n.to_string()))
+                            .transition(Transition::fade(ms(150)).moves(ms(200))),
+                    ))
+                    .into_any()
+            },
+            |(open, items)| {
+                open.set(false);
+                items.update(|list| list.insert(0, 3));
+            },
+        );
+    }
+
+    #[test]
+    fn keep_alive() {
+        mirror(
+            || signal(true),
+            |a: Signal<bool>| {
+                view! {
+                    <Column>
+                        <KeepAlive>
+                            <Text v-if={a}>"甲"</Text>
+                            <Text v-else>"乙"</Text>
+                        </KeepAlive>
+                    </Column>
+                }
+                .into_any()
+            },
+            |a| {
+                column()
+                    .children(
+                        a.then_show(|| text("甲"))
+                            .otherwise(|| text("乙"))
+                            .keep_alive(),
+                    )
+                    .into_any()
+            },
+            |a| a.set(false),
+        );
+    }
+
+    #[test]
+    fn suspense_with_a_fallback_slot() {
+        mirror(
+            || signal(0u32),
+            |n: Signal<u32>| {
+                view! {
+                    <Column>
+                        <Suspense>
+                            <template #fallback><Text>"加载中"</Text></template>
+                            <Text>"第 {n} 次"</Text>
+                        </Suspense>
+                    </Column>
+                }
+                .into_any()
+            },
+            |n| {
+                column()
+                    .children(suspense(
+                        || text("加载中"),
+                        move || nana_ui_runtime::text!("第 {n} 次"),
+                    ))
+                    .into_any()
+            },
+            |n| n.set(1),
+        );
+    }
+
+    #[test]
+    fn teleport_to_a_node_of_the_view() {
+        mirror(
+            || (node_ref(), signal(0u32)),
+            |(target, n): (NodeRef, Signal<u32>)| {
+                view! {
+                    <Column>
+                        {widget(Stack::column(0.0)).node_ref(target)}
+                        <Teleport to={target}><Text>"浮层 {n}"</Text></Teleport>
+                    </Column>
+                }
+                .into_any()
+            },
+            |(target, n)| {
+                column()
+                    .children((
+                        widget(Stack::column(0.0)).node_ref(target),
+                        teleport(target, nana_ui_runtime::text!("浮层 {n}")),
+                    ))
+                    .into_any()
+            },
+            |(_, n)| n.set(1),
+        );
+    }
+
+    #[test]
+    fn error_boundary_and_its_fallback() {
+        mirror(
+            || signal(0u32),
+            |n: Signal<u32>| {
+                view! {
+                    <Column>
+                        <ErrorBoundary fallback={|errors: Vec<Arc<str>>| text(errors.len().to_string())}>
+                            <Text>"正常 {n}"</Text>
+                        </ErrorBoundary>
+                    </Column>
+                }
+                .into_any()
+            },
+            |n| {
+                column()
+                    .children(error_boundary(
+                        |errors: Vec<Arc<str>>| text(errors.len().to_string()),
+                        move || nana_ui_runtime::text!("正常 {n}"),
+                    ))
+                    .into_any()
+            },
+            |n| n.set(1),
+        );
+    }
+
+    #[test]
+    fn virtual_rows() {
+        mirror(
+            || signal((0..50u32).collect::<Vec<_>>()),
+            |rows: Signal<Vec<u32>>| {
+                view! {
+                    <Column>
+                        <Virtual row_height=20 height=200 measured>
+                            <Text v-for={n in rows} key={*n}>"行 {n}"</Text>
+                        </Virtual>
+                    </Column>
+                }
+                .into_any()
+            },
+            |rows| {
+                column()
+                    .children(
+                        each_virtual(rows, |n| *n, 20.0, |n| nana_ui_runtime::text!("行 {n}"))
+                            .measured()
+                            .height(200.0),
+                    )
+                    .into_any()
+            },
+            |rows| rows.update(|list| list.insert(0, 99)),
+        );
     }
 }

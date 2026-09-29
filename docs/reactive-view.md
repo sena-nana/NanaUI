@@ -4,7 +4,7 @@
 
 **状态：不稳定。** 稳定前不进入公开合同。开关：`nana-ui` 的 `reactive-view`；模板宏 `view!`、`css!`、`stylesheet!` 另加 `view-macro`；追踪另加 `reactive-trace`。示例：`crates/nana-ui/examples/reactive-counter.rs`（用 `view!` 写），`examples/reactive-sfc`（用 `.vue` 文件写）。
 
-**两种一级写法，一条路径。** `view!` 模板和 Rust 函数写法都是正式写法，能力对齐：`view!` 展开出来就是 Rust 写法的那些调用（`column().gap(8)`、`.class(..)`、`each(..)`……），两者没有各自的实现。每个模板构造都有同名的 Rust 方法，对应表见 [`view!` 与 Rust 写法](#view-与-rust-写法)。`tests/view_macro.rs` 把同一个页面分别写成模板、tuple 子节点和 `.with` 块三种形式，挂载后逐节点相同，信号变化后也相同；样式同样一份写成 `<style>`、一份写成 `stylesheet!`，布局相同。模板贴近 Vue，适合成段的界面；Rust 写法是普通 Rust，能写 `for` / `if`，有完整的补全和类型检查，类名写错是编译错误。`.vue` 文件属于[高级用法](#高级用法vue-方言)。
+**两种一级写法，一条路径。** `view!` 模板和 Rust 函数写法都是正式写法，能力对齐：`view!` 展开出来就是 Rust 写法的那些调用（`column().gap(8)`、`.class(..)`、`each(..)`……），两者没有各自的实现。每个模板构造都有同名的 Rust 方法，对应表见 [`view!` 与 Rust 写法](#view-与-rust-写法)。`tests/view_macro.rs` 把同一个页面分别写成模板、tuple 子节点和 `.with` 块三种形式，挂载后逐节点相同，信号变化后也相同；Transition、KeepAlive、Suspense、Teleport、ErrorBoundary、虚拟列表和具名 slot 各有一组同样的对照；样式同样一份写成 `<style>`、一份写成 `stylesheet!`，布局相同。模板贴近 Vue，适合成段的界面；Rust 写法是普通 Rust，能写 `for` / `if`，有完整的补全和类型检查，类名写错是编译错误。`.vue` 文件属于[高级用法](#高级用法vue-方言)。
 
 ## 写法
 
