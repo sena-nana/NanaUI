@@ -711,6 +711,134 @@ mod tests {
         }
     }
 
+    /// A dialog whose body grows after it opened (content that arrived
+    /// later) clips and hit-tests at the height it grew to: the content
+    /// below the old foot is drawn and can be pressed.
+    #[test]
+    fn an_open_dialog_whose_body_grows_clips_and_hits_its_new_height() {
+        use nana_ui_runtime::{
+            Button, DesktopShell, Dialog, Entity, MeasureTextShaper, ModalSlots, OverlayHost,
+            Stack, Text,
+        };
+        let id = DocumentId::new(92).unwrap();
+        let mut document = RuntimeDocument::new(id);
+        let page = document
+            .context_mut()
+            .create_detached_component(id, Stack::fill_column(0.0))
+            .unwrap();
+        let dialog = document
+            .context_mut()
+            .create_detached_component(id, Dialog::new("Queue"))
+            .unwrap();
+        let body = document
+            .context_mut()
+            .create_detached_component(id, Stack::column(8.0))
+            .unwrap();
+        let loading = document
+            .context_mut()
+            .create_detached_component(id, Text::new("Loading"))
+            .unwrap();
+        document.context_mut().append_child(body, loading).unwrap();
+        document
+            .context_mut()
+            .set_modal_slots(
+                dialog,
+                ModalSlots {
+                    body: Some(body.stable_id()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let shell = document
+            .context_mut()
+            .create_component(id, DesktopShell::new().primary(page.stable_id()))
+            .unwrap();
+        document
+            .context_mut()
+            .update_component(shell, |shell, _| shell.overlays.push(dialog.stable_id()))
+            .unwrap();
+        document
+            .context_mut()
+            .assemble_desktop_shell(shell)
+            .unwrap();
+        let host = Entity::<OverlayHost>::from_stable_id(
+            document
+                .context()
+                .read(shell, |shell| shell.overlay.unwrap())
+                .unwrap(),
+        );
+        let viewport = LayoutViewport::new(640.0, 480.0);
+        let mut clock = std::time::Duration::ZERO;
+        let mut settle = |document: &mut RuntimeDocument| {
+            document.flush(viewport, &mut MeasureTextShaper).unwrap();
+            clock += std::time::Duration::from_secs(1);
+            document.context_mut().advance_animations(clock);
+            document.flush(viewport, &mut MeasureTextShaper).unwrap();
+        };
+        document
+            .context_mut()
+            .activate_overlay(host, dialog)
+            .unwrap();
+        settle(&mut document);
+
+        // The content arrives: a block, then a button under it.
+        let block = document
+            .context_mut()
+            .create_detached_component(
+                id,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.height = Some(LengthSpec::Px(160.0));
+                }),
+            )
+            .unwrap();
+        let action = document
+            .context_mut()
+            .create_detached_component(id, Button::new("Retry"))
+            .unwrap();
+        document.context_mut().append_child(body, block).unwrap();
+        document.context_mut().append_child(body, action).unwrap();
+        settle(&mut document);
+
+        let world = document.context().world();
+        let button = world.layout_box(action.stable_id()).unwrap();
+        let (x, y) = (
+            button.x + button.width / 2.0,
+            button.y + button.height / 2.0,
+        );
+        assert_eq!(
+            world.hit_test(id, x, y),
+            Some(action.stable_id()),
+            "the button under the grown body takes the press"
+        );
+        let painted = document
+            .scene()
+            .primitives()
+            .filter(|primitive| primitive.node == action.stable_id())
+            .collect::<Vec<_>>();
+        assert!(!painted.is_empty());
+        for primitive in painted {
+            assert!(
+                primitive
+                    .clips
+                    .iter()
+                    .all(|clip| clip.bounds.y + clip.bounds.height >= button.y + button.height),
+                "no clip cuts the button off at the old height: {:?}",
+                primitive.clips
+            );
+        }
+        // The panel itself is drawn at the height it grew to.
+        let panel = document
+            .scene()
+            .primitives()
+            .find(|primitive| primitive.node == dialog.stable_id() && primitive.id.slot == 11)
+            .expect("the dialog paints its surface");
+        assert!(
+            panel.bounds.y + panel.bounds.height >= button.y + button.height,
+            "panel {:?} ends above the button {button:?}",
+            panel.bounds
+        );
+    }
+
     #[test]
     fn closed_modal_live_presence_retires_scene_and_reopening_projects_updates() {
         use nana_ui_runtime::{

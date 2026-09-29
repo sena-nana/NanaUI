@@ -1564,7 +1564,24 @@ impl UiWorld {
                 // one that changed size is a new container for it.
                 let resized = record.layout.width.to_bits() != layout.width.to_bits()
                     || record.layout.height.to_bits() != layout.height.to_bits();
+                let moved = record.layout.x.to_bits() != layout.x.to_bits()
+                    || record.layout.y.to_bits() != layout.y.to_bits();
                 record.layout = *layout;
+                // A modal frame sizes its surface to its body slot's box: when
+                // that box changes, the frame's clip, hit area and paint change
+                // with it although the frame's own box did not.
+                if (resized || moved)
+                    && let Some(parent) = self.parent_id(*id)
+                    && matches!(
+                        self.nodes.visual(parent),
+                        Some(StandardVisual::ModalFrame { slots, .. }) if slots.body == Some(*id)
+                    )
+                {
+                    self.mark(
+                        parent,
+                        DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    );
+                }
                 if resized {
                     self.nodes
                         .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
