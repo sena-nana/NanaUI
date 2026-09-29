@@ -18,6 +18,19 @@ pub fn view(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand_tokens(input.into()).into()
 }
 
+/// `#[derive(Store)]` on a struct with named fields: a `<Name>StoreFields`
+/// trait giving every path to the struct inside a store an accessor per
+/// field. Import the trait where the accessors are used.
+#[proc_macro_derive(Store)]
+pub fn derive_store(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    syn::parse2::<syn::DeriveInput>(input.into())
+        .and_then(|input| store::expand(&input, &store::runtime_path()))
+        .unwrap_or_else(|error| error.to_compile_error())
+        .into()
+}
+
+mod store;
+
 fn expand_tokens(input: TokenStream) -> TokenStream {
     let expanded = parse_template
         .parse2(input)

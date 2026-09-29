@@ -39,6 +39,32 @@ let view = cx.mount_view(parent, counter)?;                    // 或 mount_view
 - `each` 里 key 重复时，只保留第一个，后面的重复项跳过。
 - 在视图构造阶段直接 `count.get()` 读出来的值是常量，不会跟着变。要跟着变，就传信号本身或者传闭包。这和 Vue `setup` 里读 `.value` 的规则一样。
 
+## Store：按字段追踪的嵌套状态
+
+`Signal<App>` 里任何一处变了，读它的地方全部重跑。`store(value)` 把值放在一处，但每条路径各自追踪：
+
+```rust
+#[derive(Clone, Store)]            // Store 派生在 view-macro feature 下
+struct Todo { id: u64, title: String, done: bool }
+#[derive(Store)]
+struct App { todos: Vec<Todo>, filter: String }
+
+let app = store(App { todos, filter: String::new() });
+let todos = app.todos().keyed(|t| t.id);            // 列表按 key 定位行
+todos.each(|t| row(4.0, (text(t.title()), checkbox("").checked(t.done()))));
+
+todos.at(&7).done().set(true);     // 只有第 7 行的复选框更新
+app.todos().push(todo);            // 列表加一行，已有的行一个都不重读
+app.filter().set("done".into());   // 只影响读 filter 的地方
+```
+
+- `#[derive(Store)]` 生成 `<Name>StoreFields` trait，每个字段一个访问器，返回 `Subfield`；用到访问器的地方要导入这个 trait。只支持具名字段、不带泛型的结构体。
+- 路径句柄（`Store`、`Subfield`、`Item`）和信号一样是 `Copy` 的 id，可以直接当属性值：`text(t.title())`、`.checked(t.done())`。读写方法 `get` / `with` / `try_with` / `set` / `update` 来自 `StorePath` trait。
+- 每条路径有两个触发器，都在第一次被追踪读取时才创建，没被读过的路径不占任何信号。读值（`get` / `with`）追踪 deep；遍历列表（`keyed(..).each` / `items()`、`len()`）只追踪 shallow。写一条路径触发它自己和它下面已存在路径的两个触发器，以及它上面各路径的 deep。
+- 列表自己的 `push`、`insert`、`retain`、`swap`、`sort_by_key` 不改任何一项的内容，所以只触发列表本身和上层的 deep，不触发各行。整体 `set` / `update` 列表会触发所有行，行内绑定重跑后按字段比较，值没变就到此为止。
+- 行按 key 的 64 位哈希定位，重排后仍指向同一项；同一列表里两个 key 的哈希不能相同。行被删掉后，它的触发器在下一次按 key 查找时释放；对已删除行的 `get` 会 panic，`try_with` 返回 `None`。
+- `.vue` 里 `let x = store(…)` 和 `Store` / `Subfield` / `Item` 类型的 prop 被当作 store：用到它的绑定一律在运行时追踪，不会被折叠成常量；单独写这个名字（例如 `:checked="done"`，`done` 是一个 `Subfield` prop）则直接绑定。
+
 ## `view!` 模板
 
 `view-macro` feature 提供 `view!`（`nana_ui::runtime::view!`）。它是 Vue 模板写法的对应，展开结果就是上面那些函数调用，不增加任何运行时概念。宏在独立的 proc-macro crate `nana-ui-view-macros` 里，不开 feature 就不参与编译。
@@ -189,7 +215,7 @@ impl ApplicationState for App {
 | 等值截断 | 写入只把直接读者标脏，更下游标"待查"。待查的 computed 或副作用先把它依赖的 computed 更新一遍，只有其中某个算出了**不同的值**才重跑（`computed` 要求 `T: PartialEq`）。所以 `computed(\|\| n.get() % 2)` 在 1 → 3 时，读它的绑定一个都不跑 |
 | flush | `AppContext::flush_reactive`。按轮执行：先跑 `watch_effect`，再跑 `each` / `when` 的结构更新，最后把这一轮所有需要改的节点各暂存一次、合进**一次** commit。输入路由在每个事件末尾调用它（所以 `InputRouteOutcome::invalidated_work` 会反映绑定的变化），`take_system_work` 在每帧开头调用它 |
 | 节点绑定 | 同一个节点的所有动态字段共用一个副作用。任何一个输入变了，先按字段逐个与保留的视图比较（`FieldWrite::differs`），全部相等就到此为止：不复制、不投影、不提交。只要有一个字段不同，才复制一份、写入、投影一次 |
-| `each` | 用 key 对照：保留的行不重建，节点 id 和控件的交互状态都不变；删掉的行回收作用域并销毁节点；新行在一次 detached build 里建好。重排只移动最长递增子序列之外的节点：插入或删除一行不移动任何已有节点，整体反转移动 n−1 个。一行里的字段变化应该用行内信号，这样不会触发列表重算 |
+| `each` | 用 key 对照：保留的行不重建，节点 id 和控件的交互状态都不变；删掉的行回收作用域并销毁节点；新行在一次 detached build 里建好。重排只移动最长递增子序列之外的节点：插入或删除一行不移动任何已有节点，整体反转移动 n−1 个。一行里的字段变化应该用行内信号或 `Store`，这样不会触发列表重算 |
 | `each_virtual` | `each_virtual(items, key, 行高, row)`：行放在一个纵向 `ScrollView` 里，只建视口（加 overscan）盖到的行，底层是 Runtime 已有的保留式虚拟列表。滚走的行连同作用域一起回收，持有焦点或输入法组合的行保留。数据变化、滚动（`ScrollChanged`）和视口尺寸变化（`ScrollViewportChanged`，布局后发出）都会移动窗口。5 万行：挂载加布局加出窗口 2.4 ms，`each` 要 175 ms、每行常驻约 2.3 KB。行高默认固定；`.measured()` 让行按内容量高，给定的行高只作估计：新行出现后，下一次布局（`ScrollLaidOut`）量出真实高度并重新放置，视口顶部那一行保持不动。模板里写 `v-for` 加 `v-virtual="行高"`，按内容量高写 `v-virtual.measured`；要定滚动区域的尺寸，把 `v-for` 元素包进 `<Virtual row-height="24" height="400" measured>`（另有 `width`、`grow`、`overscan`，`:scroll` 传入一个自己配置的 `ScrollView`）。函数 API 对应 `.height()`、`.width()`、`.grow()`、`.scroll_view()` |
 | `when` | 条件变了才动：旧分支回收作用域并销毁，新分支建好后插入。`.visible(sig)` 则保留节点，只切 `layout.hidden`（对应 `v-show`） |
 | 回收 | 节点被销毁时（不管从哪条路径），`commit_mutations` 的清理段会回收它的绑定、结构副作用和锚定在它身上的作用域 |
@@ -203,6 +229,7 @@ impl ApplicationState for App {
 | --- | --- |
 | `ref(0)` | `signal(0)`（`ref` 是 Rust 关键字） |
 | `computed(() => …)` | `computed(move \|\| …)` |
+| `reactive({ … })` | `store(value)` + `#[derive(Store)]`，按字段追踪 |
 | `watchEffect` | `watch_effect(move \|\| …)` |
 | `{{ x }}`、`:label="x"` | `text!("{x}")`、`.label(x)`，或者 `.bind(move \|c\| …)` |
 | `@click` | `.on_activate(move \|\| …)`，其他事件用 `.on(move \|e: &E\| …)` |

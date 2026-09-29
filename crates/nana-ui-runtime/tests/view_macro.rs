@@ -380,3 +380,71 @@ fn a_virtual_element_in_a_template_sizes_its_scroll_area() {
         .unwrap();
     assert_eq!(cx.world().layout_box(scroll).unwrap().height, 200.0);
 }
+
+mod store_derive {
+    use nana_ui_runtime::view::{Store, StoreList, StorePath, reactive_stats, store, text};
+    use nana_ui_runtime::{AppContext, DocumentId, Entity, Stack, Text};
+
+    #[derive(Clone, Store)]
+    struct Todo {
+        id: u64,
+        title: String,
+    }
+
+    #[derive(Store)]
+    struct App {
+        todos: Vec<Todo>,
+        heading: String,
+    }
+
+    #[test]
+    fn derived_accessors_track_each_field() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let parent = cx
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let app = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let state = store(App {
+                    todos: vec![
+                        Todo {
+                            id: 1,
+                            title: "一".into(),
+                        },
+                        Todo {
+                            id: 2,
+                            title: "二".into(),
+                        },
+                    ],
+                    heading: "标题".into(),
+                });
+                app.set(Some(state));
+                state
+                    .todos()
+                    .keyed(|todo| todo.id)
+                    .each(|todo| text(todo.title()))
+            })
+            .unwrap();
+        let app = app.get().unwrap();
+        let list = view.roots()[0];
+
+        let before = reactive_stats();
+        app.heading().set("新标题".into());
+        app.todos()
+            .keyed(|todo| todo.id)
+            .at(&2)
+            .title()
+            .set("贰".into());
+        cx.flush_reactive().unwrap();
+        let after = reactive_stats();
+        assert_eq!(after.effects_run - before.effects_run, 1);
+        let rows = cx.world().node(list).unwrap().children.to_vec();
+        let second: Entity<Text> = Entity::from_stable_id(rows[1]);
+        assert_eq!(cx.read(second, |text| text.value.clone()).unwrap(), "贰");
+        assert_eq!(app.heading().get_untracked(), "新标题");
+        assert_eq!(app.todos().len(), 2);
+    }
+}

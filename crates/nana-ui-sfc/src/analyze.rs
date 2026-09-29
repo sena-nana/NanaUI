@@ -34,6 +34,10 @@ pub enum Kind {
     Computed,
     /// A `Signal` / `Computed` handed in as a prop: never folded.
     Prop,
+    /// A store or a path into one (`store(…)`, a `Store` / `Subfield` /
+    /// `Item` prop). What it reads depends on the path, so a binding that
+    /// uses it is tracked at run time; passed alone it binds directly.
+    Store,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -224,14 +228,21 @@ fn is_watch(stmt: &Stmt) -> bool {
     call_name(expr).is_some_and(|(name, _)| name == "watch_effect")
 }
 
-fn is_reactive_type(ty: &Type) -> bool {
-    match ty {
-        Type::Path(path) => path
-            .path
-            .segments
-            .last()
-            .is_some_and(|segment| segment.ident == "Signal" || segment.ident == "Computed"),
-        _ => false,
+/// The kind of a prop of type `ty`, if it is reactive.
+fn reactive_kind(ty: &Type) -> Option<Kind> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    let last = path.path.segments.last()?;
+    if last.ident == "Signal" || last.ident == "Computed" {
+        Some(Kind::Prop)
+    } else if ["Store", "Subfield", "Item", "KeyedList"]
+        .iter()
+        .any(|name| last.ident == name)
+    {
+        Some(Kind::Store)
+    } else {
+        None
     }
 }
 
@@ -278,9 +289,9 @@ impl Analysis {
         let mut tracked = Vec::new();
         for prop in props {
             if let Pat::Ident(pat) = &*prop.pat
-                && is_reactive_type(&prop.ty)
+                && let Some(kind) = reactive_kind(&prop.ty)
             {
-                tracked.push(Tracked::new(&pat.ident, Kind::Prop, None));
+                tracked.push(Tracked::new(&pat.ident, kind, None));
             }
         }
         for (index, stmt) in script.iter().enumerate() {
@@ -296,6 +307,7 @@ impl Analysis {
             let kind = match call_name(&init.expr) {
                 Some((name, _)) if name == "signal" => Kind::Signal,
                 Some((name, _)) if name == "computed" => Kind::Computed,
+                Some((name, _)) if name == "store" => Kind::Store,
                 _ => continue,
             };
             tracked.push(Tracked::new(&pat.ident, kind, Some(index)));
@@ -408,6 +420,12 @@ impl Analysis {
         }
     }
 
+    fn is_store(&self, name: &str) -> bool {
+        self.index
+            .get(name)
+            .is_some_and(|&i| self.tracked[i].kind == Kind::Store)
+    }
+
     /// How a binding value reads signals (second pass, after folding).
     pub fn classify(&self, expr: &Expr) -> Class {
         match expr {
@@ -425,7 +443,12 @@ impl Analysis {
     }
 
     fn class_of(&self, found: &Scan) -> Class {
-        if !found.pure || found.uses.iter().any(|(_, used)| *used != Use::Read) {
+        if !found.pure
+            || found
+                .uses
+                .iter()
+                .any(|(name, used)| *used != Use::Read || self.is_store(name))
+        {
             return Class::Dynamic;
         }
         let mut deps: Vec<String> = Vec::new();
@@ -444,6 +467,7 @@ impl Analysis {
         for expr in exprs {
             let names = match self.classify(expr) {
                 Class::Value => continue,
+                Class::Direct(name) if self.is_store(&name) => return Class::Dynamic,
                 Class::Direct(name) => vec![name],
                 Class::Static(names) => names,
                 Class::Dynamic => return Class::Dynamic,
@@ -478,7 +502,7 @@ impl Analysis {
                                     .is_some_and(|&j| self.tracked[j].folded)
                             })
                     }
-                    Kind::Prop => false,
+                    Kind::Prop | Kind::Store => false,
                 };
                 if foldable {
                     self.tracked[i].folded = true;

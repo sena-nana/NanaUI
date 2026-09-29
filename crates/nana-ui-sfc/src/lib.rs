@@ -567,6 +567,7 @@ fn report(file: &str, name: &str, analysis: &Analysis, rows: &[Row]) -> String {
                 Kind::Signal => "signal",
                 Kind::Computed => "computed",
                 Kind::Prop => "prop",
+                Kind::Store => "store",
             };
             let result = if tracked.folded {
                 "折叠为常量"

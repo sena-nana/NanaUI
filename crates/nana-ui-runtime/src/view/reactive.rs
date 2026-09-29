@@ -965,6 +965,69 @@ pub(crate) fn current_scope() -> Option<ScopeKey> {
     with_rt(|rt| rt.current_scope)
 }
 
+/// A cell holding `value`, owned by the current scope like a signal, for
+/// state kept behind its own read API (a store).
+pub(crate) fn new_cell(value: Rc<dyn Any>, created: &'static Location<'static>) -> SignalKey {
+    with_rt(|rt| rt.new_signal(value, None, created))
+}
+
+/// A valueless signal owned by `scope`, only tracked and notified: a
+/// store's per-path trigger, created on first read.
+pub(crate) fn new_trigger(
+    scope: Option<ScopeKey>,
+    created: &'static Location<'static>,
+) -> SignalKey {
+    with_rt(|rt| {
+        let current = std::mem::replace(&mut rt.current_scope, scope);
+        let key = rt.new_signal(Rc::new(()), None, created);
+        rt.current_scope = current;
+        key
+    })
+}
+
+/// Whether a read now would be recorded for an effect or computed.
+pub(crate) fn tracking() -> bool {
+    with_rt(|rt| {
+        rt.tracking
+            .last()
+            .is_some_and(|frame| frame.observer.is_some())
+    })
+}
+
+/// Record a read of `key` for the innermost tracking frame.
+pub(crate) fn track_key(key: SignalKey) {
+    with_rt(|rt| rt.track(key));
+}
+
+/// Notify each key as if written at `at`.
+pub(crate) fn notify_keys(keys: &[SignalKey], at: &'static Location<'static>) {
+    with_rt(|rt| {
+        for key in keys {
+            rt.notify(*key, at);
+        }
+    });
+}
+
+/// Dispose signals before their owning scope is, dropping them from its
+/// list.
+pub(crate) fn release_signals(scope: Option<ScopeKey>, keys: &[SignalKey]) {
+    if keys.is_empty() {
+        return;
+    }
+    let mut released = Released::default();
+    with_rt(|rt| {
+        for key in keys {
+            rt.remove_signal(*key, &mut released);
+        }
+        if let Some(scope) = scope
+            && let Some(node) = rt.scope_mut(scope)
+        {
+            node.signals.retain(|key| !keys.contains(key));
+        }
+    });
+    released.run();
+}
+
 pub(crate) fn with_scope<R>(scope: ScopeKey, f: impl FnOnce() -> R) -> R {
     let previous = with_rt(|rt| rt.current_scope.replace(scope));
     let result = f();

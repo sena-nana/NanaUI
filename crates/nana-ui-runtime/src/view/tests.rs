@@ -975,3 +975,169 @@ fn a_measured_virtual_list_places_rows_at_their_laid_out_heights() {
         list(&cx)
     );
 }
+
+#[derive(Clone, PartialEq, Debug)]
+struct Task {
+    id: u64,
+    title: String,
+    done: bool,
+}
+
+struct Board {
+    tasks: Vec<Task>,
+}
+
+/// What `#[derive(Store)]` writes for `Task` and `Board`.
+trait TaskFields: StorePath<Value = Task> {
+    fn title(self) -> Subfield<Self, String> {
+        Subfield::__new(self, 1, |task| &task.title, |task| &mut task.title)
+    }
+    fn done(self) -> Subfield<Self, bool> {
+        Subfield::__new(self, 2, |task| &task.done, |task| &mut task.done)
+    }
+}
+impl<P: StorePath<Value = Task>> TaskFields for P {}
+
+trait BoardFields: StorePath<Value = Board> {
+    fn tasks(self) -> Subfield<Self, Vec<Task>> {
+        Subfield::__new(self, 0, |board| &board.tasks, |board| &mut board.tasks)
+    }
+}
+impl<P: StorePath<Value = Board>> BoardFields for P {}
+
+fn task(id: u64) -> Task {
+    Task {
+        id,
+        title: format!("任务 {id}"),
+        done: false,
+    }
+}
+
+fn mount_board(cx: &mut AppContext, parent: StableNodeId, n: u64) -> (Store<Board>, StableNodeId) {
+    let board = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let state = store(Board {
+                tasks: (1..=n).map(task).collect(),
+            });
+            board.set(Some(state));
+            state.tasks().keyed(|task| task.id).each(|task| {
+                row(
+                    4.0,
+                    (
+                        text(task.title()).key("title"),
+                        checkbox("").checked(task.done()).key("done"),
+                    ),
+                )
+            })
+        })
+        .unwrap();
+    (board.get().unwrap(), view.roots()[0])
+}
+
+#[test]
+fn a_store_field_write_reaches_only_the_binding_that_read_it() {
+    let (mut cx, _, parent) = setup();
+    let (board, list) = mount_board(&mut cx, parent, 200);
+    let before = reactive_stats();
+    board.tasks().keyed(|task| task.id).at(&57).done().set(true);
+    cx.flush_reactive().unwrap();
+    let delta = delta(before);
+    assert_eq!(delta.effects_run, 1, "only row 57's checkbox binding ran");
+    assert_eq!(delta.nodes_patched, 1);
+    let row = children(&cx, list)[56];
+    let done: Entity<Checkbox> = node(&cx, row, "done");
+    assert!(cx.read(done, |checkbox| checkbox.checked).unwrap());
+}
+
+#[test]
+fn store_list_operations_move_rows_without_rereading_them() {
+    let (mut cx, _, parent) = setup();
+    let (board, list) = mount_board(&mut cx, parent, 3);
+    let tasks = board.tasks();
+    let initial = children(&cx, list);
+
+    let before = reactive_stats();
+    tasks.push(task(4));
+    cx.flush_reactive().unwrap();
+    let pushed = delta(before);
+    assert_eq!(
+        pushed.effects_run, 3,
+        "the list and the new row's two bindings ran; no existing row did"
+    );
+    assert_eq!(pushed.nodes_patched, 0);
+    let after_push = children(&cx, list);
+    assert_eq!(&after_push[..3], &initial[..]);
+    assert_eq!(after_push.len(), 4);
+
+    // Reverse by key: the same rows, reordered, still reading their items.
+    tasks.sort_by_key(|task| std::cmp::Reverse(task.id));
+    cx.flush_reactive().unwrap();
+    let reversed = children(&cx, list);
+    assert_eq!(
+        reversed,
+        after_push.iter().rev().copied().collect::<Vec<_>>()
+    );
+    tasks
+        .keyed(|task| task.id)
+        .at(&1)
+        .title()
+        .set("第一".into());
+    cx.flush_reactive().unwrap();
+    let title: Entity<Text> = node(&cx, reversed[3], "title");
+    assert_eq!(text_of(&cx, title), "第一");
+
+    tasks.retain(|task| task.id != 2);
+    cx.flush_reactive().unwrap();
+    let kept = children(&cx, list);
+    assert_eq!(kept.len(), 3);
+    assert!(!cx.world().contains(reversed[2]), "task 2's row is gone");
+}
+
+#[test]
+fn whole_value_readers_follow_writes_below_them() {
+    let (mut cx, _, _) = setup();
+    let board = store(Board {
+        tasks: (1..=3).map(task).collect(),
+    });
+    let done = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = done.clone();
+    let _watch = watch_effect(move || {
+        seen.set(
+            board
+                .tasks()
+                .with(|tasks| tasks.iter().filter(|task| task.done).count()),
+        );
+    });
+    board.tasks().keyed(|task| task.id).at(&2).done().set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(done.get(), 1);
+}
+
+#[test]
+fn a_store_creates_triggers_only_for_paths_read_and_drops_those_of_removed_rows() {
+    let before = reactive_stats();
+    let board = store(Board {
+        tasks: (1..=1000).map(task).collect(),
+    });
+    assert_eq!(delta(before).signals, 1, "one cell, no trigger yet");
+
+    let tasks = board.tasks().keyed(|task| task.id);
+    let scope = reactive::create_scope(None);
+    reactive::with_scope(scope, || {
+        let _watch = watch_effect(move || {
+            tasks.at(&5).done().get();
+        });
+    });
+    // The read path's deep trigger only.
+    assert_eq!(delta(before).signals, 2);
+    board.tasks().retain(|task| task.id != 5);
+    assert!(tasks.at(&6).try_with(|_| ()).is_some());
+    assert!(tasks.at(&5).try_with(|_| ()).is_none());
+    reactive::dispose_scope(scope);
+    assert_eq!(
+        delta(before).signals,
+        1,
+        "the removed row's trigger is released; untracked reads make none"
+    );
+}

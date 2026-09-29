@@ -410,3 +410,29 @@ let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
     .expect("an error");
     assert!(empty.message.contains("needs `v-for`"), "{empty}");
 }
+
+#[test]
+fn bindings_through_a_store_are_tracked_at_run_time() {
+    let out = compile(&[(
+        "Board.vue",
+        r#"<script setup lang="rust">
+let board = store(Board { tasks: Vec::new(), title: String::new() });
+</script>
+<template>
+  <Column>
+    <Text>{{ board.title().get() }}</Text>
+    <Text>{{ board.tasks().len() }} 项</Text>
+    <Text :value="board.title()" />
+  </Column>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(!code.contains("constant("), "a store never folds: {code}");
+    assert!(
+        !code.contains("Fixed("),
+        "no store read is written once: {code}"
+    );
+    assert!(!code.contains("__checked("), "{code}");
+    assert!(out.report.contains("| `board` | store |"), "{}", out.report);
+}

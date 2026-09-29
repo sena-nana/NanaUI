@@ -24,6 +24,7 @@ mod each_virtual;
 mod node;
 mod prop;
 pub(crate) mod reactive;
+mod store;
 mod structural;
 #[cfg(feature = "reactive-trace")]
 pub(crate) mod trace;
@@ -47,6 +48,9 @@ pub use reactive::{
     Computed, Const, Effect, ReactiveStats, Readable, Signal, computed, constant, on_cleanup,
     on_mount, provide, reactive_stats, signal, untrack, use_context, watch_effect,
 };
+pub use store::{Item, KeyedList, Store, StoreList, StorePath, Subfield, store};
+#[doc(hidden)]
+pub use store::{Paths, StoreKey};
 pub use structural::{Each, When, each, when};
 #[cfg(feature = "reactive-trace")]
 pub use trace::{Cause, WhyUpdated};
@@ -65,6 +69,11 @@ pub use crate::text;
 #[cfg(feature = "view-macro")]
 #[doc(hidden)]
 pub use nana_ui_view_macros::view as __view;
+
+/// `#[derive(Store)]` (feature `view-macro`): field accessors for a struct
+/// kept in a [`Store`], as a `<Name>StoreFields` trait.
+#[cfg(feature = "view-macro")]
+pub use nana_ui_view_macros::Store;
 
 /// A Vue-shaped template over this module (feature `view-macro`):
 ///
