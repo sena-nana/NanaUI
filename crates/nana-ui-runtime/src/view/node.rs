@@ -658,7 +658,11 @@ pub struct El<C: ComponentView, K = ()> {
     implicit: Vec<super::Implicit>,
     slots: Vec<Slot<C>>,
     classes: Option<super::style::Classes<C>>,
-    children: K,
+    /// Boxed, so an element is the same size whatever it holds: a static
+    /// tree is a value, and holding its children inline made each
+    /// element as large as its subtree (a settings page, some 70 KB),
+    /// copied by every builder method and every frame that builds it.
+    children: Box<K>,
     site: &'static Location<'static>,
 }
 
@@ -675,7 +679,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         implicit: Vec::new(),
         slots: Vec::new(),
         classes: None,
-        children: (),
+        children: Box::new(()),
         site: Location::caller(),
     }
 }
@@ -794,7 +798,7 @@ impl<C: ComponentView, K> El<C, K> {
             implicit: self.implicit,
             slots: self.slots,
             classes: self.classes,
-            children,
+            children: Box::new(children),
             site: self.site,
         }
     }
@@ -912,7 +916,7 @@ impl<C: ComponentView, K> El<C, K> {
         for install in events {
             install(vb.ui, entity);
         }
-        Some((entity, adopt, children))
+        Some((entity, adopt, *children))
     }
 }
 
