@@ -25,4 +25,4 @@
 - `El::with(|c| …)` 和 `Children`：用普通 Rust 语句加子节点。
 - `stylesheet!`、`Class`、`Sheet`、`El::class`、`El::class_when`。
 - `view!` 的具名 slot：`<template #navigation>…</template>` 展开成元素上的 `.navigation(view)`，`#title-trailing` 是 `.title_trailing(…)`，`#default` 是普通子节点。`<Suspense>` 的 `#fallback` 在 `view!` 里也能写了。
-- 组合控件在视图里自己装配：`DesktopShell`、`AppTitleBar`、`SettingsRow`、`SegmentedControl` 登记了 `TypeBehavior::slot_assembler`；`Chip`、`ColorField`、`PathField`、`FileTab`、`DiffView`、`MediaTransportBar` 在视图建好时运行自己的装配。视图里不再调用 `assemble_*`。
+- 组合控件在视图里自己装配：`DesktopShell`、`AppTitleBar`、`SettingsRow`、`SegmentedControl`、`SidebarSection` 登记了 `TypeBehavior::slot_assembler`（`SidebarSection` 自己建表头和 body，见 `AppContext::assemble_sidebar_section`；`SidebarFrame` 有 `.top` / `.body` / `.footer`）；`Chip`、`ColorField`、`PathField`、`FileTab`、`DiffView`、`MediaTransportBar` 在视图建好时运行自己的装配。视图里不再调用 `assemble_*`。

@@ -30,6 +30,7 @@ mod resource;
 mod selection;
 mod settings;
 mod shell;
+mod sidebar;
 mod store;
 mod structural;
 mod style;

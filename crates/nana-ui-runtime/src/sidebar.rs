@@ -6,9 +6,9 @@ use nana_ui_core::{
 };
 
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, InteractionStyle,
-    MutationQueue, NodeKind, NodeStyle, OverlayHostState, SemanticPaint, StableNodeId,
-    StandardVisual, TextContent, TooltipVisual, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, Entity, FrameworkError,
+    InteractionState, InteractionStyle, MutationQueue, NodeKind, NodeStyle, OverlayHostState,
+    SemanticPaint, StableNodeId, StandardVisual, TextContent, TooltipVisual, UiWorld,
     view_components::{
         IconButton, List, ListItem, ListItemSlots, ScrollAxes, ScrollView, Text, project_common,
     },
@@ -1227,6 +1227,7 @@ fn body_port_style(expansion: f32, empty_text: Option<&str>, content_height: f32
 impl ComponentView for SidebarSection {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         activation: Some(crate::AppContext::activate_sidebar_section),
+        slot_assembler: Some(AppContext::assemble_sidebar_section),
         ..crate::TypeBehavior::NONE
     };
 
@@ -1531,6 +1532,119 @@ impl ComponentView for SidebarFooterButton {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+impl AppContext {
+    /// Give a section the chrome it has not been given and put its content
+    /// in place: a header item holding the disclosure (when collapsible),
+    /// the title, the count (when set) and the application's `tools`; a body
+    /// port; and every other child of the section moved into the body, after
+    /// the rows already there. The section's projection then keeps them all
+    /// current. The view layer runs this after it builds a section and after
+    /// a binding changes one (`TypeBehavior::slot_assembler`), so a view
+    /// states only the section, its rows and its tools; a section built by
+    /// hand with its own chrome needs no call. Returns whether anything
+    /// changed.
+    pub fn assemble_sidebar_section(
+        &mut self,
+        section: Entity<SidebarSection>,
+    ) -> Result<bool, FrameworkError> {
+        let id = section.stable_id();
+        let document = self
+            .world()
+            .node(id)
+            .ok_or(FrameworkError::MissingView(id))?
+            .document;
+        let spec = self.read(section, Clone::clone)?;
+        let live =
+            |cx: &Self, slot: Option<StableNodeId>| slot.filter(|id| cx.world().contains(*id));
+        let mut created = false;
+        let title = match live(self, spec.title_slot) {
+            Some(title) => title,
+            None => {
+                created = true;
+                self.create_detached_component(document, spec.title_label())?
+                    .stable_id()
+            }
+        };
+        let count = match live(self, spec.count_slot) {
+            Some(count) => Some(count),
+            None if spec.count.is_some() => {
+                created = true;
+                Some(
+                    self.create_detached_component(document, spec.count_label())?
+                        .stable_id(),
+                )
+            }
+            None => None,
+        };
+        let disclosure = match live(self, spec.disclosure) {
+            Some(disclosure) => Some(disclosure),
+            None if spec.collapsible => {
+                created = true;
+                Some(
+                    self.create_detached_component(document, spec.disclosure_mark())?
+                        .stable_id(),
+                )
+            }
+            None => None,
+        };
+        let header = match live(self, spec.header) {
+            Some(header) => header,
+            None => {
+                created = true;
+                let mut chrome = spec.clone().title_slot(title);
+                chrome.count_slot = count;
+                chrome.disclosure = disclosure;
+                self.create_detached_component(document, chrome.header_item())?
+                    .stable_id()
+            }
+        };
+        let body = match live(self, spec.body) {
+            Some(body) => body,
+            None => {
+                created = true;
+                self.create_detached_component(document, SidebarSection::body_port())?
+                    .stable_id()
+            }
+        };
+        if created {
+            self.update_component(section, |section, _| {
+                section.title_slot = Some(title);
+                section.count_slot = count;
+                section.disclosure = disclosure;
+                section.header = Some(header);
+                section.body = Some(body);
+            })?;
+        }
+        let mut changed = created;
+        let chrome: Vec<StableNodeId> = disclosure
+            .into_iter()
+            .chain([title])
+            .chain(count)
+            .chain(live(self, spec.tools))
+            .collect();
+        changed |= self.reconcile_children(header, &chrome)?;
+        let content: Vec<StableNodeId> = self
+            .world()
+            .node(id)
+            .map(|node| node.children)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|child| *child != header && *child != body)
+            .collect();
+        if !content.is_empty() {
+            let mut rows = self
+                .world()
+                .node(body)
+                .map(|node| node.children)
+                .unwrap_or_default();
+            rows.extend(content);
+            changed |= self.reconcile_children(body, &rows)?;
+        }
+        changed |= self.reconcile_children(id, &[header, body])?;
+        Ok(changed)
     }
 }
 

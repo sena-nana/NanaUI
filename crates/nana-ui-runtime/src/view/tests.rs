@@ -1896,3 +1896,120 @@ fn a_leaf_composite_a_view_builds_is_assembled() {
     assert!(close.is_some());
     assert_eq!(children(&cx, chip.stable_id()).len(), 1);
 }
+
+/// A section built by hand with all its chrome, rows in its body.
+fn hand_built_section(cx: &mut AppContext, document: DocumentId) -> StableNodeId {
+    use crate::SidebarSection;
+    cx.build(document, |ui| {
+        let mut spec = SidebarSection::new("资源").count(2).collapsible(true);
+        let disclosure = ui.parked(spec.disclosure_mark());
+        spec = spec.disclosure(disclosure.stable_id());
+        let title = ui.parked(spec.title_label());
+        spec = spec.title_slot(title.stable_id());
+        let count = ui.parked(spec.count_label());
+        spec = spec.count_slot(count.stable_id());
+        let header = ui.parked(spec.header_item());
+        ui.nest(header, |ui| {
+            ui.adopt(disclosure);
+            ui.adopt(title);
+            ui.adopt(count);
+        });
+        let body = ui.parked(SidebarSection::body_port());
+        ui.nest(body, |ui| {
+            ui.child("a", Text::new("行一"));
+            ui.child("b", Text::new("行二"));
+        });
+        let section = ui.child(
+            "section",
+            spec.header(header.stable_id()).body(body.stable_id()),
+        );
+        ui.nest(section, |ui| {
+            ui.adopt(header);
+            ui.adopt(body);
+        });
+        section.stable_id()
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_view_section_builds_the_chrome_a_hand_built_one_has() {
+    let (mut cx, document, _) = setup();
+    let built = hand_built_section(&mut cx, document);
+    let view = cx
+        .mount_view_root(document, || {
+            widget(
+                crate::SidebarSection::new("资源")
+                    .count(2)
+                    .collapsible(true),
+            )
+            .children((text("行一"), text("行二")))
+        })
+        .unwrap();
+    assert_eq!(shape(&cx, view.roots()[0]), shape(&cx, built));
+    assert!(shape(&cx, built).contains("行二"));
+}
+
+#[test]
+fn a_section_keeps_its_chrome_and_takes_rows_that_come_later() {
+    let (mut cx, document, _) = setup();
+    let state = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view_root(document, || {
+            let count = signal(1usize);
+            let rows = signal(vec![1u32]);
+            state.set(Some((count, rows)));
+            widget(crate::SidebarSection::new("资源").count(1))
+                .bind(move |section| section.count = Some(count.get()))
+                .tools(text("工具"))
+                .children(rows.each(|r| *r, |r| text(format!("行 {r}"))))
+        })
+        .unwrap();
+    let section = Entity::<crate::SidebarSection>::from_stable_id(view.roots()[0]);
+    let (header, body) = cx
+        .read(section, |s| (s.header.unwrap(), s.body.unwrap()))
+        .unwrap();
+    assert_eq!(children(&cx, section.stable_id()), vec![header, body]);
+    let header_texts: Vec<_> = children(&cx, header)
+        .into_iter()
+        .map(|id| cx.world().text(id).unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(header_texts, ["资源", "1", "工具"]);
+    let nodes = cx.world().len();
+
+    let (count, rows) = state.get().unwrap();
+    count.set(2);
+    rows.update(|list| list.push(2));
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, section.stable_id()), vec![header, body]);
+    let count_label = children(&cx, header)[1];
+    assert_eq!(cx.world().text(count_label), Some("2"));
+    assert!(shape(&cx, body).contains("行 2"), "{}", shape(&cx, body));
+    assert_eq!(cx.world().len(), nodes + 1, "one new row, no new chrome");
+}
+
+#[test]
+fn a_frame_takes_its_top_body_and_footer_in_order() {
+    let (mut cx, document, _) = setup();
+    let view = cx
+        .mount_view_root(document, || {
+            widget(crate::SidebarFrame::new())
+                .top(text("顶部"))
+                .body(text("内容"))
+                .footer(text("底部"))
+        })
+        .unwrap();
+    let frame = Entity::<crate::SidebarFrame>::from_stable_id(view.roots()[0]);
+    let (top, body, footer) = cx
+        .read(frame, |f| {
+            (f.top.unwrap(), f.body.unwrap(), f.footer.unwrap())
+        })
+        .unwrap();
+    assert_eq!(children(&cx, frame.stable_id()), vec![top, body, footer]);
+    assert!(
+        cx.read(Entity::<crate::ScrollView>::from_stable_id(body), |_| ())
+            .is_ok(),
+        "the body is the frame's scrollport"
+    );
+    assert_eq!(cx.world().text(children(&cx, body)[0]), Some("内容"));
+}
