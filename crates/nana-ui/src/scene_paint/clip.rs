@@ -457,6 +457,31 @@ pub(super) fn local_rect_clip(
     }
 }
 
+/// `clips` without the quad's own polygon, which its shader tests against
+/// its fill's edge and a clip would ramp a second time. A styled quad's chain
+/// closes with that `clip-path`, its points taken relative to their own
+/// bounding box; a quad given a polygon by its component (a donut chart's
+/// segment) has none there, and its chain stays whole.
+pub(super) fn without_own_polygon<'a>(
+    clips: &'a [nana_ui_scene::ClipRegion],
+    bounds: SceneRect,
+    transform: nana_ui_scene::AffineTransform,
+    own: &[[f32; 2]],
+) -> &'a [nana_ui_scene::ClipRegion] {
+    let Some((last, outer)) = clips.split_last() else {
+        return clips;
+    };
+    let is_own = last.transform == transform
+        && last.polygon_clip.as_ref().is_some_and(|points| {
+            points.len() == own.len()
+                && points.iter().zip(own).all(|(p, q)| {
+                    (last.bounds.x + p[0] - bounds.x - q[0]).abs() <= 1.0e-3
+                        && (last.bounds.y + p[1] - bounds.y - q[1]).abs() <= 1.0e-3
+                })
+        });
+    if is_own { outer } else { clips }
+}
+
 /// Innermost rotated clip for Quad/Mesh/Text/HostTexture vertex attrs.
 /// Extra outers are [`extra_fragment_clips`] and dest-composited.
 pub(super) fn fragment_clip(
@@ -1312,6 +1337,45 @@ mod tests {
             "single AABB reject must drop points outside the rect"
         );
         assert!(!point_in_fragment_clip(56.0, 32.0, clip));
+    }
+
+    #[test]
+    fn only_a_quad_s_own_clip_path_leaves_its_chain() {
+        let rect = |x, y, width, height| SceneRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let quad = rect(10.0, 20.0, 100.0, 80.0);
+        let own = [[20.0, 10.0], [90.0, 40.0], [30.0, 70.0]];
+        let parent = ClipRegion {
+            corner_radius: 8.0,
+            ..ClipRegion::axis_aligned(rect(0.0, 0.0, 60.0, 60.0), AffineTransform::IDENTITY)
+        };
+        // As `clip_path_region` resolves it: relative to its bounding box.
+        let clip_path = ClipRegion {
+            polygon_clip: Some(vec![[0.0, 0.0], [70.0, 30.0], [10.0, 60.0]]),
+            ..ClipRegion::axis_aligned(rect(30.0, 30.0, 70.0, 60.0), AffineTransform::IDENTITY)
+        };
+        let styled = [parent.clone(), clip_path.clone()];
+        assert_eq!(
+            without_own_polygon(&styled, quad, AffineTransform::IDENTITY, &own),
+            &styled[..1]
+        );
+        // A donut chart's segment: its polygon is its own, not its chain's.
+        let segment = [clip_path.clone(), parent];
+        assert_eq!(
+            without_own_polygon(&segment, quad, AffineTransform::IDENTITY, &own),
+            &segment[..]
+        );
+        assert!(without_own_polygon(&[], quad, AffineTransform::IDENTITY, &own).is_empty());
+        let moved = AffineTransform([1.0, 0.0, 0.0, 1.0, 5.0, 0.0], [0.0, 0.0]);
+        assert_eq!(
+            without_own_polygon(&styled, quad, moved, &own),
+            &styled[..],
+            "another space's polygon"
+        );
     }
 
     #[test]

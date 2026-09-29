@@ -930,25 +930,16 @@ impl SceneWgpuPainter {
                 let Some(scissor) = physical_scissor(clip, scale, dest_physical) else {
                     continue;
                 };
-                // A quad tests its own `clip-path: polygon()` in its shader,
-                // against its fill's edge; it closes the quad's chain, and
-                // dest-wrapping it as well would ramp that edge twice.
-                let own_polygon = match &primitive.kind {
-                    ScenePrimitiveKind::Quad { surface, .. } => surface.polygon_clip.as_ref(),
-                    _ => None,
-                };
-                debug_assert!(
-                    own_polygon.is_none_or(|points| {
-                        primitive
-                            .clips
-                            .last()
-                            .and_then(|clip| clip.polygon_clip.as_ref())
-                            == Some(points)
-                    }),
-                    "a quad's own clip-path closes its clip chain"
-                );
-                let clips = match primitive.clips.split_last() {
-                    Some((_, outer)) if own_polygon.is_some() => outer,
+                let clips = match &primitive.kind {
+                    ScenePrimitiveKind::Quad { surface, .. } => match &surface.polygon_clip {
+                        Some(own) => clip::without_own_polygon(
+                            &primitive.clips,
+                            primitive.bounds,
+                            primitive.transform,
+                            own,
+                        ),
+                        None => &primitive.clips[..],
+                    },
                     _ => &primitive.clips[..],
                 };
                 let frag_clip = fragment_clip(clips, origin);
