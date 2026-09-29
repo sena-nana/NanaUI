@@ -263,17 +263,18 @@ fn page() -> impl IntoView {
 
 ## 成本
 
-测量命令：`cargo run --release -p nana-ui-runtime --features benchmark,reactive-view --bin nana-reactive-benchmark`。每种写法交替跑 15 轮，读最小值；测的是写法层加 commit，不含布局和绘制。2026-09-28 本机，负载 4–5。
+测量命令：`cargo run --release -p nana-ui-runtime --features benchmark,reactive-view --bin nana-reactive-benchmark`。每种写法交替跑 15 轮，读最小值；测的是写法层加 commit，不含布局和绘制。2026-09-29 本机，负载 3–4。挂载比 9 月 28 日快了 3–7 倍：一层里的子节点不再是平方级构建，相等的布局共用一份分配。
 
 | 场景 | 旧写法 | 新写法 |
 | --- | --- | --- |
-| 挂载 1,000 个文本 | `build` 5.13 ms | 常量 5.27 ms / 每个都绑定信号 5.41 ms |
-| 挂载 5,000 个文本 | `build` 71.0 ms | 常量 72.3 ms / 全部绑定 72.9 ms |
-| 5,000 个里改 1 个 | `update_component` 0.41 µs | `set` + flush 0.55 µs |
-| 5,000 个里改 100 个 | 逐个 `update_component` 46.2 µs | 100 个信号一次 flush 43.9 µs / 1 个信号绑 100 个节点 40.9 µs |
-| 2,000 行里插入再删除 1 行 | 整段 `mount` 重写 7.89 ms | `each` 0.160 ms |
-| 2,000 行里改 1 行的字段 | 手写 `update_component` 0.40 µs / 整段 `mount` 重写 6.09 ms | 行内信号 0.54 µs |
-| 100 个按钮的绑定重跑但值不变 | — | 6.83 µs |
+| 挂载 1,000 个文本 | `build` 1.97 ms | 常量 2.09 ms / 每个都绑定信号 2.21 ms |
+| 挂载 5,000 个文本 | `build` 10.4 ms | 常量 11.1 ms / 全部绑定 11.8 ms |
+| 挂载 1,000 行（行容器加按钮） | `build` 5.00 ms | 5.41 ms |
+| 5,000 个里改 1 个 | `update_component` 0.43 µs | `set` + flush 0.60 µs |
+| 5,000 个里改 100 个 | 逐个 `update_component` 46.8 µs | 100 个信号一次 flush 43.6 µs / 1 个信号绑 100 个节点 37.5 µs |
+| 2,000 行里插入再删除 1 行 | 整段 `mount` 重写 8.14 ms | `each` 0.057 ms |
+| 2,000 行里改 1 行的字段 | 手写 `update_component` 0.42 µs / 整段 `mount` 重写 6.30 ms | 行内信号 0.59 µs |
+| 100 个按钮的绑定重跑但值不变 | — | 7.25 µs |
 
 单点更新比手写 `update_component` 多出约 0.15 µs，这是信号簿记的成本；一次改很多节点时只 commit 一次，反而更快。
 
