@@ -629,6 +629,10 @@ struct PlannedChild {
     /// Intrinsic size measured BEFORE flex distribution: the pure input the
     /// rest of the container's placement is a function of.
     intrinsic: Size,
+    /// The main size the line gave this child when it differs from the
+    /// intrinsic one, and the child measured at it: its cross size is then
+    /// the line's input, and an edit can change it while the intrinsic stays.
+    at_main: Option<(f32, Size)>,
     origin: Point,
     size: Size,
     /// Main-axis cursor before this child, i.e. the prefix sum of every
@@ -807,6 +811,10 @@ struct MeasuredChild {
     /// contributing without its own style changing -- which the style compare
     /// above catches.
     intrinsic: Option<Size>,
+    /// The main size the line gave this child when it differs from the
+    /// measured one, and the child measured at it (its cross size is the
+    /// container's input then).
+    at_main: Option<(f32, Size)>,
 }
 
 /// A container's own intrinsic measurement, cached across passes.

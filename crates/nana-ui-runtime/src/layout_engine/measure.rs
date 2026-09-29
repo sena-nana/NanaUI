@@ -142,13 +142,111 @@ pub(super) fn intrinsic_size_scoped(
     cache: &mut IntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Size, UiWorldError> {
+    measure_node(
+        id,
+        None,
+        available,
+        parent_direction,
+        viewport,
+        parent_font_px,
+        nodes,
+        cache,
+        scope,
+    )
+}
+
+/// A flex item measured at the main size its line gave it (`main`, border
+/// box, along `direction`): its hypothetical cross size with the used main
+/// size (CSS flexbox §9.4). A `Fill` column that shrank beside a fixed one
+/// is as tall as its content at its used width, not at the width it was
+/// first measured with. `available` is the container's content box, what
+/// the item's percentages resolve against.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn intrinsic_size_at_main(
+    id: StableNodeId,
+    main: f32,
+    direction: FlexDirection,
+    available: Size,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut IntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Size, UiWorldError> {
+    let Some(style) = nodes.style(id) else {
+        return Ok(Size::default());
+    };
+    let mut forced = (*style).clone();
+    // Border box, so the chrome is inside `main` whatever the item's
+    // `box-sizing`; the cross axis is not definite (the caller checks), so
+    // `box-sizing` changes nothing there.
+    forced.box_sizing = BoxSizing::BorderBox;
+    let main = Some(LengthSpec::Px(main.max(0.0)));
+    match direction {
+        FlexDirection::Row => forced.width = main,
+        FlexDirection::Column => forced.height = main,
+    }
+    measure_node(
+        id,
+        Some(Arc::new(forced)),
+        available,
+        Some(direction),
+        viewport,
+        parent_font_px,
+        nodes,
+        cache,
+        scope,
+    )
+}
+
+/// Whether a flex item's cross size is its content's at its main size, so
+/// a line that gives it another main size than it was measured with must
+/// measure it again ([`intrinsic_size_at_main`]).
+pub(super) fn cross_follows_used_main(
+    style: &nana_ui_core::LayoutStyle,
+    direction: FlexDirection,
+    measured: Size,
+    used: Size,
+) -> bool {
+    let cross = match direction {
+        FlexDirection::Row => style.height,
+        FlexDirection::Column => style.width,
+    };
+    let content_sized =
+        cross.is_none_or(|spec| spec == LengthSpec::Auto || spec.is_content_sized());
+    // A row item with an aspect ratio of its own takes its height from its
+    // used width after placement (`fill_auto_height_from_aspect_ratio`).
+    let transferred = direction == FlexDirection::Row && aspect_ratio_is_usable(style);
+    content_sized
+        && !transferred
+        && (main_extent(measured, direction) - main_extent(used, direction)).abs() > 0.01
+}
+
+/// [`intrinsic_size_scoped`], or with `forced` for the node's own style (a
+/// flex item at its used main size): a forced measurement is not cached or
+/// planned, since neither is keyed by it; its descendants are measured as
+/// usual.
+#[allow(clippy::too_many_arguments)]
+fn measure_node(
+    id: StableNodeId,
+    forced: Option<Arc<nana_ui_core::LayoutStyle>>,
+    available: Size,
+    parent_direction: Option<FlexDirection>,
+    viewport: LayoutViewport,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut IntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Size, UiWorldError> {
     let cache_key = (id, available.width.to_bits(), available.height.to_bits());
-    if let Some(size) = cache.get(&cache_key) {
+    let unforced = forced.is_none();
+    if unforced && let Some(size) = cache.get(&cache_key) {
         return Ok(*size);
     }
     // A subtree outside the affected closure has no change inside it, so its
     // intrinsic size under the same constraints is unchanged.
-    if let Some(scope) = scope
+    if unforced
+        && let Some(scope) = scope
         && !scope.affected.contains(&id)
         && let Some(size) = scope
             .retained
@@ -162,7 +260,7 @@ pub(super) fn intrinsic_size_scoped(
     let Some(node) = nodes.get(id)? else {
         return Ok(Size::default());
     };
-    let style_arc = node.style.clone();
+    let style_arc = forced.unwrap_or_else(|| node.style.clone());
     let child_ids = node.children.clone();
     let text_metrics = node.text_metrics;
     let (writing, containing_writing) = (node.writing, node.containing_writing);
@@ -256,14 +354,17 @@ pub(super) fn intrinsic_size_scoped(
             0.0,
             0.0,
         );
-        cache.insert(cache_key, size);
+        if unforced {
+            cache.insert(cache_key, size);
+        }
         return Ok(size);
     }
 
     // The container is content-sized on at least one axis, so it owes a look at
     // its children. Everything it needs from them may still be unchanged; see
     // [`MeasurePlan`].
-    if let Some(scope) = scope
+    if unforced
+        && let Some(scope) = scope
         && let Some(plan) = scope
             .retained
             .measure_plans
@@ -367,6 +468,9 @@ pub(super) fn intrinsic_size_scoped(
             })
             .unwrap_or_default()
     };
+    // Items measured again at the main size their line gave them:
+    // `(child, used main, size)`, re-checked by a measure plan.
+    let mut hypothetical: Vec<(StableNodeId, f32, Size)> = Vec::new();
     let children = if uses_2d_grid(style, &flow_children, nodes) {
         let grid = layout_grid_2d(
             style,
@@ -424,15 +528,66 @@ pub(super) fn intrinsic_size_scoped(
             nodes,
         )
     } else {
+        // With a definite main size the line hands out free space (or takes
+        // back overflow), and an item's cross size is its content's at the
+        // main size it ends up with, as placement lays it out.
+        let definite_main = match direction {
+            FlexDirection::Row => spec_width.is_some(),
+            FlexDirection::Column => spec_height.is_some(),
+        };
+        let mut used_sizes = child_sizes.clone();
+        if definite_main {
+            distribute_flex_main(
+                &flow_children,
+                &mut used_sizes,
+                direction,
+                content_available,
+                child_edge_base,
+                gap,
+                viewport,
+                child_font_px,
+                nodes,
+            );
+            for (index, child) in flow_children.iter().enumerate() {
+                let Some(child_style) = nodes.style(*child) else {
+                    continue;
+                };
+                if !cross_follows_used_main(
+                    &child_style,
+                    direction,
+                    child_sizes[index],
+                    used_sizes[index],
+                ) {
+                    continue;
+                }
+                let at_main = intrinsic_size_at_main(
+                    *child,
+                    main_extent(used_sizes[index], direction),
+                    direction,
+                    content_available,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    cache,
+                    scope,
+                )?;
+                set_cross_extent(
+                    &mut used_sizes[index],
+                    direction,
+                    cross_extent(at_main, direction),
+                );
+                hypothetical.push((*child, main_extent(used_sizes[index], direction), at_main));
+            }
+        }
         let gaps = gap * flow_children.len().saturating_sub(1) as f32;
         let mut main = gaps;
         let mut cross = 0.0f32;
-        for (child, size) in flow_children.iter().zip(&child_sizes) {
+        for ((child, size), used) in flow_children.iter().zip(&child_sizes).zip(&used_sizes) {
             let margin = child_margin(*child, nodes);
             main += main_extent(*size, direction)
                 + main_start_margin(margin, direction)
                 + main_end_margin(margin, direction);
-            cross = cross.max(cross_extent(*size, direction) + cross_margin(margin, direction));
+            cross = cross.max(cross_extent(*used, direction) + cross_margin(margin, direction));
         }
         match direction {
             FlexDirection::Row => Size::new(main.max(0.0), cross),
@@ -550,7 +705,7 @@ pub(super) fn intrinsic_size_scoped(
     // (css-parity, `layout_style_tree`, Vue `measure_layout`) throws the map
     // away entirely, and `force_full` has just cleared the retained cache, so
     // in both cases the plans would be built for nobody.
-    if scope.is_some() {
+    if unforced && scope.is_some() {
         // Only the plain in-flow path is cacheable, for the same reasons the
         // placement plan is narrow. The grid-track path is excluded on top of
         // that because `auto_track_contributions` measures children against
@@ -579,6 +734,10 @@ pub(super) fn intrinsic_size_scoped(
                         child,
                         style: nodes.style(child),
                         intrinsic,
+                        at_main: hypothetical
+                            .iter()
+                            .find(|(item, _, _)| *item == child)
+                            .map(|(_, main, size)| (*main, *size)),
                     }
                 })
                 .collect();
@@ -606,7 +765,9 @@ pub(super) fn intrinsic_size_scoped(
             None => slots.clear(),
         }
     }
-    cache.insert(cache_key, size);
+    if unforced {
+        cache.insert(cache_key, size);
+    }
     Ok(size)
 }
 
@@ -654,6 +815,24 @@ fn measure_plan_children_unchanged(
                 entry.child,
                 plan.child_available,
                 Some(plan.child_direction),
+                viewport,
+                child_font_px,
+                nodes,
+                cache,
+                Some(scope),
+            )?;
+            if measured != cached {
+                return Ok(false);
+            }
+        }
+        // An item the line gave another main size is as tall as its content
+        // at that size, which can change while its measurement above did not.
+        if let Some((main, cached)) = entry.at_main {
+            let measured = intrinsic_size_at_main(
+                entry.child,
+                main,
+                plan.child_direction,
+                plan.child_available,
                 viewport,
                 child_font_px,
                 nodes,

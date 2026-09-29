@@ -60,10 +60,15 @@ fn check_plan_children(
     let mut first_changed: Option<usize> = None;
     for index in plan.affected_entries(scope) {
         let index = index as usize;
-        let (child, cached_style, cached_intrinsic) = {
+        let (child, cached_style, cached_intrinsic, at_main) = {
             let entries = plan.entries.borrow();
             let entry = &entries[index];
-            (entry.child, Arc::clone(&entry.style), entry.intrinsic)
+            (
+                entry.child,
+                Arc::clone(&entry.style),
+                entry.intrinsic,
+                entry.at_main,
+            )
         };
         let Some(current) = nodes.style(child) else {
             return Ok(PlanCheck::ChangedFrom(
@@ -88,7 +93,23 @@ fn check_plan_children(
             intrinsic,
             Some(scope),
         )?;
-        if style_moved || measured != cached_intrinsic {
+        let at_main_moved = match at_main {
+            Some((main, cached)) => {
+                intrinsic_size_at_main(
+                    child,
+                    main,
+                    plan.main_direction,
+                    plan.child_available,
+                    viewport,
+                    plan.child_font_px,
+                    nodes,
+                    intrinsic,
+                    Some(scope),
+                )? != cached
+            }
+            None => false,
+        };
+        if style_moved || measured != cached_intrinsic || at_main_moved {
             first_changed = Some(first_changed.map_or(index, |current| current.min(index)));
         }
     }
@@ -267,6 +288,8 @@ fn replay_sequential_suffix(
             child,
             style: style_arc,
             intrinsic: child_intrinsic,
+            // Nothing redistributes main sizes on the sequential path.
+            at_main: None,
             origin: child_origin,
             size: child_size,
             cursor_before,
@@ -685,6 +708,8 @@ pub(super) fn place_node_scoped(
         }
         let mut packed: Vec<(Vec<StableNodeId>, Vec<Size>, f32, f32, f32, f32, bool)> =
             Vec::with_capacity(line_slots.len());
+        // Items measured again at the main size their line gave them.
+        let mut hypothetical: HashMap<StableNodeId, (f32, Size)> = HashMap::new();
         for slot in &line_slots {
             let line_flow: Vec<StableNodeId> =
                 slot.indices.iter().map(|&index| flow[index]).collect();
@@ -733,6 +758,40 @@ pub(super) fn place_node_scoped(
                     child_font_px,
                     nodes,
                 );
+            }
+            // An item the line gave another main size than it was measured
+            // with is as tall (wide, in a column) as its content at that size.
+            for (slot_index, child) in line_flow.iter().enumerate() {
+                let measured = child_sizes[slot.indices[slot_index]];
+                let Some(child_style) = nodes.style(*child) else {
+                    continue;
+                };
+                if !cross_follows_used_main(
+                    &child_style,
+                    direction,
+                    measured,
+                    line_sizes[slot_index],
+                ) {
+                    continue;
+                }
+                let main = main_extent(line_sizes[slot_index], direction);
+                let at_main = intrinsic_size_at_main(
+                    *child,
+                    main,
+                    direction,
+                    content,
+                    viewport,
+                    child_font_px,
+                    nodes,
+                    intrinsic,
+                    scope,
+                )?;
+                set_cross_extent(
+                    &mut line_sizes[slot_index],
+                    direction,
+                    cross_extent(at_main, direction),
+                );
+                hypothetical.insert(*child, (main, at_main));
             }
             let line_cross = line_flow
                 .iter()
@@ -976,6 +1035,7 @@ pub(super) fn place_node_scoped(
                         child,
                         style: Arc::clone(&child_style_arc),
                         intrinsic: child_intrinsic,
+                        at_main: hypothetical.get(&child).copied(),
                         origin: child_origin,
                         size: child_size,
                         cursor_before: cursor,

@@ -1715,6 +1715,82 @@ fn align_content_center_and_space_between_on_wrapped_row() {
     assert!((between["i2"].y - 120.0).abs() < 0.01);
 }
 
+/// A row item is as tall as its content at the width the row gives it, not
+/// at the width it was first measured with: a `Fill` column beside a fixed
+/// side column holds a 16:9 box, whose height follows the column's used
+/// width (CSS flexbox: the hypothetical cross size uses the used main size).
+#[test]
+fn a_row_item_is_as_tall_as_its_content_at_its_used_width() {
+    let column = |grow: f32| StyleLayoutNode {
+        id: "primary".into(),
+        style: LayoutStyle {
+            direction: Some(FlexDirection::Column),
+            width: Some(LengthSpec::Fill),
+            height: Some(LengthSpec::Shrink),
+            min_width: Some(LengthSpec::Px(0.0)),
+            flex_grow: Some(grow),
+            flex_shrink: Some(1.0),
+            align_items: AlignSpec::Stretch,
+            ..LayoutStyle::default()
+        },
+        children: vec![
+            StyleLayoutNode {
+                id: "video".into(),
+                style: LayoutStyle {
+                    width: Some(LengthSpec::Fill),
+                    aspect_ratio: Some(16.0 / 9.0),
+                    ..LayoutStyle::default()
+                },
+                children: Vec::new(),
+                text: None,
+            },
+            px_box("title", 100.0, 20.0),
+        ],
+        text: None,
+    };
+    for grow in [1.0, 0.0] {
+        let tree = StyleLayoutNode {
+            id: "row".into(),
+            style: LayoutStyle {
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::Px(1152.0)),
+                gap: Some(LengthSpec::Px(16.0)),
+                align_items: AlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+            children: vec![column(grow), {
+                let mut side = px_box("side", 402.0, 260.0);
+                side.style.flex_shrink = Some(0.0);
+                side
+            }],
+            text: None,
+        };
+        let boxes = box_map(&tree, 1280.0, 800.0);
+        let used = 1152.0 - 16.0 - 402.0;
+        assert!(
+            (boxes["primary"].width - used).abs() < 0.01,
+            "{:?}",
+            boxes["primary"]
+        );
+        let video = used * 9.0 / 16.0;
+        assert!(
+            (boxes["video"].height - video).abs() < 0.01,
+            "{:?}",
+            boxes["video"]
+        );
+        assert!(
+            (boxes["primary"].height - (video + 20.0)).abs() < 0.01,
+            "grow {grow}: the column hugs its content at its used width, got {:?}",
+            boxes["primary"]
+        );
+        assert!(
+            (boxes["row"].height - (video + 20.0)).abs() < 0.01,
+            "grow {grow}: and so does the row, got {:?}",
+            boxes["row"]
+        );
+    }
+}
+
 #[test]
 fn display_contents_hoists_children_into_flex_row_gap() {
     let tree = StyleLayoutNode {
@@ -5191,6 +5267,76 @@ fn hugging_container_world(
     }
     world.commit(queue).unwrap();
     (world, document)
+}
+
+/// A row item measured again at the width its line gave it is re-checked at
+/// that width by the cached plans: here an edit inside the item changes its
+/// height only at its used width (its two boxes stop wrapping there), not
+/// at the width it was first measured with.
+#[test]
+fn a_cached_row_rechecks_an_item_at_its_used_width() {
+    let viewport = LayoutViewport::new(1280.0, 800.0);
+    let row = LayoutStyle {
+        direction: Some(FlexDirection::Row),
+        width: Some(LengthSpec::Px(1152.0)),
+        gap: Some(LengthSpec::Px(16.0)),
+        align_items: AlignSpec::Start,
+        ..LayoutStyle::default()
+    };
+    let primary = LayoutStyle {
+        direction: Some(FlexDirection::Row),
+        flex_wrap: FlexWrap::Wrap,
+        width: Some(LengthSpec::Fill),
+        min_width: Some(LengthSpec::Px(0.0)),
+        flex_grow: Some(1.0),
+        flex_shrink: Some(1.0),
+        align_items: AlignSpec::Start,
+        ..LayoutStyle::default()
+    };
+    let block = |width| LayoutStyle {
+        width: Some(LengthSpec::Px(width)),
+        height: Some(LengthSpec::Px(50.0)),
+        ..LayoutStyle::default()
+    };
+    let side = LayoutStyle {
+        width: Some(LengthSpec::Px(402.0)),
+        height: Some(LengthSpec::Px(20.0)),
+        flex_shrink: Some(0.0),
+        ..LayoutStyle::default()
+    };
+    let (mut world, document) = hugging_container_world(
+        &[
+            (3, primary, vec![(10, block(400.0)), (11, block(400.0))]),
+            (4, side, vec![]),
+        ],
+        row,
+    );
+    let mut retained = RetainedLayoutCache::default();
+    let emitted = RuntimeLayoutEngine
+        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &emitted);
+    let _ = world.take_system_work();
+    prime_measure_plans(&mut world, document, viewport, &mut retained, id(4));
+    assert_eq!(retained.documents[&document].boxes[&id(3)].height, 100.0);
+
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        id(11),
+        NodeStyle {
+            layout: Arc::new(block(300.0)),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    scoped_step_matches_full(
+        &mut world,
+        document,
+        viewport,
+        &mut retained,
+        "an item's content stops wrapping at its used width",
+    );
+    assert_eq!(retained.documents[&document].boxes[&id(3)].height, 50.0);
 }
 
 /// `MeasurePlan` records the flow direction its container handed each child as
