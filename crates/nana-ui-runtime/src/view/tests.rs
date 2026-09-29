@@ -1763,3 +1763,140 @@ fn an_implicit_transition_plays_from_the_shown_value_to_the_new_one() {
         0.4
     );
 }
+
+/// Kind, text and children of `id`, recursively: what two ways of building
+/// the same tree must agree on.
+fn shape(cx: &AppContext, id: StableNodeId) -> String {
+    let node = cx.world().node(id).unwrap();
+    let children: Vec<_> = node.children.iter().map(|&c| shape(cx, c)).collect();
+    format!(
+        "{:?}{:?}[{}]",
+        node.kind,
+        cx.world().text(id).unwrap_or(""),
+        children.join(",")
+    )
+}
+
+fn shell_view() -> impl IntoView {
+    widget(crate::DesktopShell::new().title("T"))
+        .title_leading(text("L"))
+        .title_trailing(row(6.0, (text("A"), text("B"))))
+        .navigation(text("nav"))
+        .primary(text("page"))
+}
+
+#[test]
+fn slots_build_the_shell_the_builder_and_its_assembler_build() {
+    let (mut cx, document, _) = setup();
+    let built = cx
+        .build(document, |ui| {
+            let leading = ui.detached(Text::new("L"));
+            let trailing = ui.detached(Stack::row(6.0));
+            ui.nest(trailing, |ui| {
+                ui.child("a", Text::new("A"));
+                ui.child("b", Text::new("B"));
+            });
+            let navigation = ui.detached(Text::new("nav"));
+            let primary = ui.detached(Text::new("page"));
+            ui.child(
+                "shell",
+                crate::DesktopShell::new()
+                    .title("T")
+                    .title_leading(leading.stable_id())
+                    .title_trailing(trailing.stable_id())
+                    .navigation(navigation.stable_id())
+                    .primary(primary.stable_id()),
+            )
+        })
+        .unwrap();
+    cx.assemble_desktop_shell(built).unwrap();
+
+    let view = cx.mount_view_root(document, shell_view).unwrap();
+    assert_eq!(shape(&cx, view.roots()[0]), shape(&cx, built.stable_id()));
+    assert!(shape(&cx, built.stable_id()).contains("\"nav\""));
+}
+
+#[test]
+fn a_binding_that_changes_the_shell_assembles_it_again() {
+    use nana_ui_core::{RegionId, WorkspaceModel, WorkspaceMutation};
+    let model = |size: f32| {
+        let mut model = WorkspaceModel::new();
+        model.update(
+            WorkspaceMutation::SetRegionSize(RegionId::Resources, size),
+            std::time::Duration::ZERO,
+        );
+        model
+    };
+    let (mut cx, document, _) = setup();
+    let size = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view_root(document, || {
+            let width = signal(240.0f32);
+            size.set(Some(width));
+            widget(crate::DesktopShell::new())
+                .bind(move |shell| shell.model = model(width.get()))
+                .navigation(text("nav"))
+        })
+        .unwrap();
+    let shell = Entity::<crate::DesktopShell>::from_stable_id(view.roots()[0]);
+    let workspace_model = |cx: &AppContext| {
+        let workspace = cx.read(shell, |shell| shell.workspace).unwrap().unwrap();
+        cx.read(Entity::<crate::Workspace>::from_stable_id(workspace), |w| {
+            w.model.clone()
+        })
+        .unwrap()
+    };
+    assert_eq!(workspace_model(&cx), model(240.0));
+
+    size.get().unwrap().set(320.0);
+    cx.flush_reactive().unwrap();
+    assert_ne!(model(240.0), model(320.0));
+    assert_eq!(workspace_model(&cx), model(320.0));
+}
+
+#[test]
+fn a_child_slot_comes_before_the_children_and_names_itself_to_its_parent() {
+    let (mut cx, _, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            widget(crate::SidebarFrame::new())
+                .child_slot(text("footer"), crate::SidebarFrame::footer)
+                .children(text("body"))
+        })
+        .unwrap();
+    let frame = view.roots()[0];
+    let kids = children(&cx, frame);
+    assert_eq!(kids.len(), 2);
+    assert_eq!(cx.world().text(kids[0]), Some("footer"));
+    assert_eq!(cx.world().text(kids[1]), Some("body"));
+    let footer = cx
+        .read(Entity::<crate::SidebarFrame>::from_stable_id(frame), |f| {
+            f.footer
+        })
+        .unwrap();
+    assert_eq!(footer, Some(kids[0]));
+    assert_eq!(children(&cx, parent), vec![frame]);
+}
+
+#[test]
+fn a_slot_must_have_one_root() {
+    let (mut cx, document, _) = setup();
+    let before = cx.world().len();
+    let error = cx
+        .mount_view_root(document, || {
+            widget(crate::DesktopShell::new()).primary((text("a"), text("b")))
+        })
+        .err();
+    assert_eq!(error, Some(crate::FrameworkError::InvalidInput));
+    assert_eq!(cx.world().len(), before);
+}
+
+#[test]
+fn unmounting_a_shell_view_removes_its_slots_and_chrome() {
+    let (mut cx, document, _) = setup();
+    let before = cx.world().len();
+    let view = cx.mount_view_root(document, shell_view).unwrap();
+    assert!(cx.world().len() > before + 5);
+    view.unmount(&mut cx).unwrap();
+    assert_eq!(cx.world().len(), before);
+}

@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+use nana_ui::runtime::view::{node_ref, widget};
 use nana_ui::runtime::{
     Activate, AppShell, AppTitleBar, Avatar, Button, CalendarHeatmap, CalendarHeatmapDatum,
     CalendarHeatmapEvent, Card, Checkbox, Chip, DesktopShell, DiffHunk, DiffLine, DiffView,
@@ -297,7 +298,48 @@ impl GalleryRuntime {
             graph_root,
             &workspace,
         );
-        let (
+        let refs = std::cell::Cell::new(None);
+        let view = context.mount_view_root(document_id, || {
+            let [toggle, search, theme, leading, center, trailing, label] =
+                std::array::from_fn(|_| node_ref());
+            refs.set(Some([
+                toggle, search, theme, leading, center, trailing, label,
+            ]));
+            let muted = hugging_text(
+                section_label(state.section),
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+                type_scale::REGULAR,
+            );
+            let title = hugging_text(
+                "NanaUI Gallery",
+                SemanticColorRole::Text,
+                type_scale::BODY,
+                type_scale::SEMIBOLD,
+            );
+            widget(
+                DesktopShell::from_model(state.workspace.model().clone())
+                    .title("NanaUI Gallery")
+                    .navigation(sidebar.stable_id())
+                    .primary(primary)
+                    .inspector(inspector.slot.stable_id())
+                    .bottom(bottom.stable_id())
+                    .region(RegionId::PrimaryToolbar, toolbar.stable_id()),
+            )
+            .title_leading(
+                widget(HostStack::leading_row(0.0))
+                    .node_ref(leading)
+                    .children(widget(sidebar_toggle_button(sidebar_collapsed)).node_ref(toggle)),
+            )
+            .title_center(widget(title).node_ref(center))
+            .title_trailing(widget(HostStack::row(6.0)).node_ref(trailing).children((
+                widget(muted).node_ref(label),
+                widget(search_command_button()).node_ref(search),
+                widget(theme_toggle_button(state.theme)).node_ref(theme),
+            )))
+        })?;
+        let shell = Entity::from_stable_id(view.roots()[0]);
+        let [
             sidebar_toggle,
             search_button,
             theme_button,
@@ -305,56 +347,21 @@ impl GalleryRuntime {
             title_center,
             title_trailing,
             context_label,
-            shell,
-        ) = context.build(document_id, |ui| {
-            let sidebar_toggle = ui.parked(sidebar_toggle_button(sidebar_collapsed));
-            let title_leading = ui.detached(HostStack::leading_row(0.0));
-            ui.nest(title_leading, |ui| ui.adopt(sidebar_toggle));
-            let search_button = ui.parked(search_command_button());
-            let theme_button = ui.parked(theme_toggle_button(state.theme));
-            let context_label = ui.parked(hugging_text(
-                section_label(state.section),
-                SemanticColorRole::Muted,
-                type_scale::HINT,
-                type_scale::REGULAR,
-            ));
-            let title_center = ui.detached(hugging_text(
-                "NanaUI Gallery",
-                SemanticColorRole::Text,
-                type_scale::BODY,
-                type_scale::SEMIBOLD,
-            ));
-            let title_trailing = ui.detached(HostStack::row(6.0));
-            ui.nest(title_trailing, |ui| {
-                ui.adopt(context_label);
-                ui.adopt(search_button);
-                ui.adopt(theme_button);
-            });
-            let shell = ui.child(
-                "shell",
-                DesktopShell::from_model(state.workspace.model().clone())
-                    .title("NanaUI Gallery")
-                    .title_leading(title_leading.stable_id())
-                    .title_center(title_center.stable_id())
-                    .title_trailing(title_trailing.stable_id())
-                    .navigation(sidebar.stable_id())
-                    .primary(primary)
-                    .inspector(inspector.slot.stable_id())
-                    .bottom(bottom.stable_id())
-                    .region(RegionId::PrimaryToolbar, toolbar.stable_id()),
-            );
-            (
-                sidebar_toggle,
-                search_button,
-                theme_button,
-                title_leading,
-                title_center,
-                title_trailing,
-                context_label,
-                shell,
-            )
-        })?;
-        context.assemble_desktop_shell(shell)?;
+        ] = refs
+            .get()
+            .expect("the shell view ran")
+            .map(|built| built.get().expect("the shell view built every node"));
+        let (sidebar_toggle, search_button, theme_button) = (
+            Entity::from_stable_id(sidebar_toggle),
+            Entity::from_stable_id(search_button),
+            Entity::from_stable_id(theme_button),
+        );
+        let (title_leading, title_center, title_trailing, context_label) = (
+            Entity::from_stable_id(title_leading),
+            Entity::from_stable_id(title_center),
+            Entity::from_stable_id(title_trailing),
+            Entity::from_stable_id(context_label),
+        );
         context.assemble_dock(workspace.dock)?;
 
         bind_event(

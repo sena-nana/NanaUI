@@ -88,13 +88,11 @@ impl StructuralBinding for TeleportBinding {
 
 impl<V: IntoView> IntoView for Teleport<V> {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        let key = vb.key_or_auto(self.key);
-        let anchor = vb.ui.child(key, Stack::column(0.0));
+        let anchor = vb.place(self.key, Stack::column(0.0));
         let id = anchor.stable_id();
         if id == UNBUILT {
             return;
         }
-        vb.push_root(id);
         let mut roots = Vec::new();
         let content = self.content;
         vb.nest(anchor, |vb| roots = vb.build_collect(content));

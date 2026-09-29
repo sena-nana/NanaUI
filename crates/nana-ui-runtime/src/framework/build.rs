@@ -143,7 +143,11 @@ impl<'a> UiBuilder<'a> {
         self.stack.last_mut().expect("builder always has a level")
     }
 
-    fn fail<C: View>(&mut self, error: FrameworkError) -> Entity<C> {
+    pub(crate) fn failed(&self) -> bool {
+        self.error.is_some()
+    }
+
+    pub(crate) fn fail<C: View>(&mut self, error: FrameworkError) -> Entity<C> {
         if self.error.is_none() {
             self.error = Some(error);
         }
@@ -321,27 +325,26 @@ impl<'a> UiBuilder<'a> {
 
     /// Insert an existing node under the current parent.
     pub fn adopt<C: View>(&mut self, child: Entity<C>) {
-        if self.error.is_some() || child.id == DUMMY_NODE {
+        self.adopt_as(child.id, TypeId::of::<C>());
+    }
+
+    pub(crate) fn adopt_as(&mut self, child: StableNodeId, type_id: TypeId) {
+        if self.error.is_some() || child == DUMMY_NODE {
             return;
         }
         let Some(parent) = self.current().parent else {
-            self.fail::<C>(FrameworkError::InvalidInput);
+            self.fail::<Stack>(FrameworkError::InvalidInput);
             return;
         };
-        self.unplaced.retain(|(id, _)| *id != child.id);
+        self.unplaced.retain(|(id, _)| *id != child);
         let key = self.auto_key("adopt");
         self.current_mut().seen_keys.insert(key.clone());
         self.current_mut().seen.push(key.clone());
-        self.queue.insert(parent, child.id, None);
-        self.appended.entry(parent).or_default().push(child.id);
-        self.adopted.insert(child.id);
-        self.slots(parent).insert(
-            key,
-            AssembledChild {
-                id: child.id,
-                type_id: TypeId::of::<C>(),
-            },
-        );
+        self.queue.insert(parent, child, None);
+        self.appended.entry(parent).or_default().push(child);
+        self.adopted.insert(child);
+        self.slots(parent)
+            .insert(key, AssembledChild { id: child, type_id });
     }
 
     /// Temporarily set `parent` as the current insertion parent.

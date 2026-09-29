@@ -328,6 +328,11 @@ impl AppTitleBar {
 }
 
 impl ComponentView for AppTitleBar {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(AppContext::assemble_app_title_bar),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
@@ -941,6 +946,11 @@ impl Default for DesktopShell {
 }
 
 impl ComponentView for DesktopShell {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        slot_assembler: Some(AppContext::assemble_desktop_shell),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),

@@ -265,13 +265,11 @@ where
     V: IntoView,
 {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        let key = vb.key_or_auto(self.key);
-        let scroll = vb.ui.child(key, self.scroll);
+        let scroll = vb.place(self.key, self.scroll);
         let id = scroll.stable_id();
         if id == UNBUILT {
             return;
         }
-        vb.push_root(id);
         let list = vb.ui.nest(scroll, |ui| ui.child("list", List::new()));
         let moved = super::signal(0u64);
         vb.ui.on(scroll, move |_, _: &ScrollChanged, _| {

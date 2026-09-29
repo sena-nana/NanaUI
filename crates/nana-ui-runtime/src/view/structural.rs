@@ -65,7 +65,7 @@ pub(super) fn build_detached_into<R>(
     });
     match result {
         Ok((built, parts)) => {
-            cx.install_view_parts(parts);
+            cx.install_view_parts(parts)?;
             Ok(built)
         }
         Err(error) => {
@@ -277,13 +277,11 @@ where
     V: IntoView,
 {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        let key = vb.key_or_auto(self.key);
-        let container = vb.ui.child(key, self.container);
+        let container = vb.place(self.key, self.container);
         let id = container.stable_id();
         if id == UNBUILT {
             return;
         }
-        vb.push_root(id);
         let effect =
             reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, self.site);
         let mut binding = EachBinding {
@@ -581,13 +579,11 @@ fn build_switch<K: Clone + PartialEq + Send + 'static>(
     options: SwitchOptions,
     site: &'static Location<'static>,
 ) {
-    let node_key = vb.key_or_auto(options.key);
-    let container = vb.ui.child(node_key, Stack::column(0.0));
+    let container = vb.place(options.key, Stack::column(0.0));
     let id = container.stable_id();
     if id == UNBUILT {
         return;
     }
-    vb.push_root(id);
     let effect = reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, site);
     let shown = reactive::run_tracked(effect, &key);
     let mut binding = SwitchBinding {

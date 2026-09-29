@@ -27,6 +27,7 @@ mod node;
 mod prop;
 pub(crate) mod reactive;
 mod resource;
+mod shell;
 mod store;
 mod structural;
 mod style;

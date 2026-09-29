@@ -224,7 +224,12 @@ impl AppContext {
                 return Err(error);
             }
         }
-        self.install_view_parts(parts);
+        if let Err(error) = self.install_view_parts(parts) {
+            // The tree stands; what failed is placing its slots.
+            let mounted = MountedView { roots, scope };
+            mounted.unmount(self)?;
+            return Err(error);
+        }
         for root in &roots {
             self.reactive.anchors.insert(*root, scope);
         }
@@ -236,7 +241,9 @@ impl AppContext {
         self.reactive.tag
     }
 
-    pub(crate) fn install_view_parts(&mut self, parts: ViewParts) {
+    /// Take over what a build left and assemble the slots of the composites
+    /// it built, innermost first.
+    pub(crate) fn install_view_parts(&mut self, parts: ViewParts) -> Result<(), FrameworkError> {
         for (id, effect, patch) in parts.nodes {
             if !self.world.contains(id) {
                 rx::dispose_effect(effect);
@@ -271,6 +278,10 @@ impl AppContext {
                 rx::dispose_scope(old);
             }
         }
+        for (id, type_id) in parts.assemble.into_iter().rev() {
+            self.run_slot_assembler(id, type_id)?;
+        }
+        Ok(())
     }
 
     /// Whether a signal write left bindings of this context to apply.
@@ -464,6 +475,7 @@ impl AppContext {
             }
             outcome = outcome.and(self.sync_component_lifecycle(node));
             outcome = outcome.and(self.run_component_assembler(node, type_id));
+            outcome = outcome.and(self.run_slot_assembler(node, type_id));
         }
         outcome.map(|()| (patched, commits))
     }

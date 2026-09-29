@@ -66,6 +66,11 @@ pub struct TypeBehavior<C: View> {
     /// slots, and assembling on every write would break "an idle projection
     /// does not dirty the world". Callers run their `assemble_*` instead.
     pub assembler: Option<EntityFn<C>>,
+    /// Assembler of a composite that places application-owned slots (a
+    /// shell's regions). The view layer runs it after it builds such a node
+    /// and after a binding changes one, so a view never calls `assemble_*`;
+    /// other writes leave it to the caller, as for [`Self::assembler`].
+    pub slot_assembler: Option<EntityFn<C>>,
     /// Activation at a point inside inner geometry: an open list's option,
     /// a tree row.
     pub activate_at: Option<fn(&mut AppContext, Entity<C>, f32, f32) -> Handled>,
@@ -85,6 +90,7 @@ impl<C: View> TypeBehavior<C> {
     pub const NONE: Self = Self {
         activation: None,
         assembler: None,
+        slot_assembler: None,
         activate_at: None,
         close_options: None,
         lifecycle: None,
@@ -97,6 +103,8 @@ impl<C: View> TypeBehavior<C> {
 #[derive(Clone, Copy)]
 pub(crate) struct ErasedBehavior {
     pub(crate) assembler: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
+    #[cfg(feature = "reactive-view")]
+    pub(crate) slot_assembler: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
     pub(crate) activate_at: Option<fn(&mut AppContext, StableNodeId, f32, f32) -> Handled>,
     pub(crate) close_options: Option<fn(&mut AppContext, StableNodeId) -> Handled>,
     pub(crate) lifecycle: Option<fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>>,
@@ -110,6 +118,12 @@ impl ErasedBehavior {
             assembler: behavior.assembler.map(|_| {
                 (|cx: &mut AppContext, node| {
                     (C::BEHAVIOR.assembler.unwrap())(cx, Entity::from_stable_id(node))
+                }) as _
+            }),
+            #[cfg(feature = "reactive-view")]
+            slot_assembler: behavior.slot_assembler.map(|_| {
+                (|cx: &mut AppContext, node| {
+                    (C::BEHAVIOR.slot_assembler.unwrap())(cx, Entity::from_stable_id(node))
                 }) as _
             }),
             activate_at: behavior.activate_at.map(|_| {

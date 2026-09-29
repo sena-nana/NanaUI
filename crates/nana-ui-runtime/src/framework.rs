@@ -3139,7 +3139,27 @@ impl AppContext {
         id: StableNodeId,
         type_id: TypeId,
     ) -> Result<(), FrameworkError> {
-        let Some(assembler) = self.behaviors.get(&type_id).and_then(|b| b.assembler) else {
+        let assembler = self.behaviors.get(&type_id).and_then(|b| b.assembler);
+        self.run_assembler(id, assembler)
+    }
+
+    /// [`TypeBehavior::slot_assembler`], for the view layer.
+    #[cfg(feature = "reactive-view")]
+    pub(crate) fn run_slot_assembler(
+        &mut self,
+        id: StableNodeId,
+        type_id: TypeId,
+    ) -> Result<(), FrameworkError> {
+        let assembler = self.behaviors.get(&type_id).and_then(|b| b.slot_assembler);
+        self.run_assembler(id, assembler)
+    }
+
+    fn run_assembler(
+        &mut self,
+        id: StableNodeId,
+        assembler: Option<fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>>,
+    ) -> Result<(), FrameworkError> {
+        let Some(assembler) = assembler else {
             return Ok(());
         };
         if !self.world.contains(id) || !self.assembling.insert(id) {

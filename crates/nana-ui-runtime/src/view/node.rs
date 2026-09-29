@@ -1,7 +1,7 @@
 //! Elements, fragments, and the builder that lowers them into one retained
 //! commit.
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::borrow::Cow;
 use std::panic::Location;
 
@@ -215,12 +215,17 @@ pub(crate) struct ViewParts {
     /// Scopes disposed when the node leaves the world.
     pub(crate) anchors: Vec<(StableNodeId, ScopeKey)>,
     pub(crate) implicit: Vec<(StableNodeId, Box<[super::Implicit]>)>,
+    /// Composites whose slots are placed by their `slot_assembler`, in build
+    /// order.
+    pub(crate) assemble: Vec<(StableNodeId, TypeId)>,
 }
 
 #[derive(Default)]
 struct Level {
     next_auto: usize,
     roots: Vec<StableNodeId>,
+    /// A slot's level: its roots are left for the composite to place.
+    detached: bool,
 }
 
 pub(crate) struct ViewState {
@@ -271,8 +276,23 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
         }
     }
 
-    pub(crate) fn push_root(&mut self, id: StableNodeId) {
-        self.level().roots.push(id);
+    /// Create `component` as a root of this level: keyed under the current
+    /// parent, or, in a slot, detached for the composite that places it.
+    pub(crate) fn place<C: ComponentView>(
+        &mut self,
+        key: Option<Cow<'static, str>>,
+        component: C,
+    ) -> Entity<C> {
+        let key = self.key_or_auto(key);
+        let entity = if self.level().detached {
+            self.ui.detached(component)
+        } else {
+            self.ui.child(key, component)
+        };
+        if entity.stable_id() != UNBUILT {
+            self.level().roots.push(entity.stable_id());
+        }
+        entity
     }
 
     pub(crate) fn nest<P: View>(
@@ -294,6 +314,19 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
         let start = self.level().roots.len();
         view.build(self);
         self.level().roots[start..].to_vec()
+    }
+
+    /// Build `view` without placing its roots, for a slot.
+    fn build_slot(&mut self, view: AnyView) -> Vec<StableNodeId> {
+        let pending = self.st.pending_key.take();
+        self.st.levels.push(Level {
+            detached: true,
+            ..Level::default()
+        });
+        view.build(self);
+        let roots = self.st.levels.pop().map(|level| level.roots);
+        self.st.pending_key = pending;
+        roots.unwrap_or_default()
     }
 }
 
@@ -394,6 +427,13 @@ impl<V: IntoView> IntoView for Keyed<V> {
 
 type EventInstall<C> = Box<dyn FnOnce(&mut UiBuilder<'_>, Entity<C>)>;
 
+/// A view handed to a component by the id of its root ([`El::slot`]).
+struct Slot<C> {
+    view: AnyView,
+    write: Box<dyn FnOnce(C, StableNodeId) -> C>,
+    child: bool,
+}
+
 /// The node an element was built as ([`El::node_ref`]); `None` until then.
 pub type NodeRef = Signal<Option<StableNodeId>>;
 
@@ -414,6 +454,7 @@ pub struct El<C: ComponentView, K = ()> {
     /// Properties that animate to their new value when a binding changes
     /// them (CSS `transition`).
     implicit: Vec<super::Implicit>,
+    slots: Vec<Slot<C>>,
     children: K,
     site: &'static Location<'static>,
 }
@@ -429,6 +470,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         bindings: NodeBindings::default(),
         events: Vec::new(),
         implicit: Vec::new(),
+        slots: Vec::new(),
         children: (),
         site: Location::caller(),
     }
@@ -491,9 +533,44 @@ impl<C: ComponentView, K> El<C, K> {
             bindings: self.bindings,
             events: self.events,
             implicit: self.implicit,
+            slots: self.slots,
             children,
             site: self.site,
         }
+    }
+
+    /// Hand `view` to the component by the id of its one root, for a slot
+    /// the component places itself (a shell region): `view` is built
+    /// first, `write` gives the component its id, and the component's
+    /// `slot_assembler` places it once the tree commits. See
+    /// [`Self::child_slot`] for a slot that is a child of this node.
+    pub fn slot<V: IntoView>(
+        mut self,
+        view: V,
+        write: impl FnOnce(C, StableNodeId) -> C + 'static,
+    ) -> Self {
+        self.slots.push(Slot {
+            view: view.into_any(),
+            write: Box::new(write),
+            child: false,
+        });
+        self
+    }
+
+    /// Like [`Self::slot`], for a slot that is this node's own child (a
+    /// section's header, a list item's leading icon): its root is inserted
+    /// here, in slot order, before [`Self::children`].
+    pub fn child_slot<V: IntoView>(
+        mut self,
+        view: V,
+        write: impl FnOnce(C, StableNodeId) -> C + 'static,
+    ) -> Self {
+        self.slots.push(Slot {
+            view: view.into_any(),
+            write: Box::new(write),
+            child: true,
+        });
+        self
     }
 
     /// When a binding changes one of these properties, play from the value
@@ -514,10 +591,26 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             mut bindings,
             events,
             implicit,
+            slots,
             children,
             site,
         } = self;
-        let key = vb.key_or_auto(key);
+        let mut adopt = Vec::new();
+        for slot in slots {
+            match vb.build_slot(slot.view)[..] {
+                [root] => {
+                    component = (slot.write)(component, root);
+                    if slot.child {
+                        adopt.push(root);
+                    }
+                }
+                // A failed build already recorded its error.
+                [] if vb.ui.failed() => {}
+                _ => {
+                    vb.ui.fail::<C>(FrameworkError::InvalidInput);
+                }
+            }
+        }
         // The first run is the initial value: evaluate under the node's own
         // effect so what it reads becomes its dependencies.
         let effect = (!bindings.is_empty()).then(|| {
@@ -526,7 +619,7 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             reactive::run_tracked(effect, || bindings.apply(&mut component));
             effect
         });
-        let entity = vb.ui.child(key, component);
+        let entity = vb.place(key, component);
         let id = entity.stable_id();
         if id == UNBUILT {
             if let Some(effect) = effect {
@@ -534,7 +627,9 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
             }
             return;
         }
-        vb.push_root(id);
+        if C::BEHAVIOR.slot_assembler.is_some() {
+            vb.st.parts.assemble.push((id, TypeId::of::<C>()));
+        }
         if let Some(node_ref) = node_ref {
             node_ref.set(Some(id));
         }
@@ -548,6 +643,11 @@ impl<C: ComponentView, K: IntoView> IntoView for El<C, K> {
         for install in events {
             install(vb.ui, entity);
         }
-        vb.nest(entity, |vb| children.build(vb));
+        vb.nest(entity, |vb| {
+            for root in adopt {
+                vb.ui.adopt_as(root, TypeId::of::<AnyView>());
+            }
+            children.build(vb)
+        });
     }
 }

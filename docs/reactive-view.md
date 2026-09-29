@@ -123,6 +123,24 @@ each(items, |t| t.id, row).transition(Transition::slide(0.0, 12.0, ms(180)).move
 - 虚拟列表（`each_virtual`）不支持：滚出视口的行本来就要立刻回收。
 - 模板：`<Transition name="fade" duration="150">` 包住一条 `v-if` / `v-else-if` / `v-else` 链，`<TransitionGroup duration="150" move="200">` 包住一个 `v-for` 元素（两个标签可以互换）。`name` 可选 `fade`、`slide-up`、`slide-down`、`slide-left`、`slide-right`、`scale`，默认 `fade`；时长单位是毫秒；`:transition="值"` 直接传一个 `Transition`。
 
+## 组合控件的 slot
+
+`DesktopShell`、`SidebarSection` 这类组合控件按节点 id 接收应用内容。视图用 slot 把一段视图交给它们，不用先建节点再拿 id：
+
+```rust
+widget(DesktopShell::from_model(model).title("Gallery"))
+    .title_trailing(row(6.0, (search, theme)))   // 具名 slot，底下是 .slot(..)
+    .navigation(sidebar())
+    .primary(page())
+```
+
+- **`.slot(view, |c, id| c.xxx(id))`**：slot 由控件自己放置（shell 的区域、标题栏的三列）。先建 slot 视图，不插到任何地方，再把根节点 id 写进组件，最后建组件本身。
+- **`.child_slot(view, write)`**：slot 是本节点自己的子节点（section 的 header、list item 的图标），按 slot 的声明顺序插在 `.children(..)` 前面。
+- slot 必须恰好有一个根节点，否则挂载失败，返回 `InvalidInput`，这次什么也不提交。slot 和组件在同一次提交里建好，slot 里创建的信号归同一个挂载作用域，卸载时一起回收。
+- **装配**：需要装配的控件在 `TypeBehavior::slot_assembler` 里登记自己的 `assemble_*`。视图层在建好这类节点之后，以及绑定改了它之后，自动运行装配，所以视图里不写 `assemble_desktop_shell`。builder 仍然由调用方自己调用 `assemble_*`：在每次写入时都装配会弄脏空闲的 world，见 `TypeBehavior::assembler`。
+- slot 的节点在视图的整个生命周期里不换：里面的内容要变，就在 slot 里用 `when` / `each` / `dynamic`；区域显示还是隐藏，由 `WorkspaceModel` 决定。
+- 目前登记了装配的有 `DesktopShell` 和 `AppTitleBar`，带具名 slot 方法的也是这两个（`view/shell.rs`）。其他组合控件可以先用通用的 `.slot` / `.child_slot`，并自己调用 `assemble_*`。
+
 ## `view!` 模板
 
 `view-macro` feature 提供 `view!`（`nana_ui::runtime::view!`）。它是 Vue 模板写法的对应，展开结果就是上面那些函数调用，不增加任何运行时概念。宏在独立的 proc-macro crate `nana-ui-view-macros` 里，不开 feature 就不参与编译。
