@@ -146,6 +146,10 @@ pub fn expand_checked(
     Ok((tokens, generator.warnings.into_inner()))
 }
 
+/// Theme roles every element may bind (`El::foreground` and the rest):
+/// colours a stylesheet cannot give, since it is compiled for one theme.
+pub const STYLE_ROLES: &[&str] = &["foreground", "background", "border", "radius"];
+
 /// Controls whose accessible name is their `label` field and that have no
 /// other text to fall back on.
 const NAMED_BY_LABEL: &[&str] = &["TextInput", "TextArea", "NumberInput", "Slider", "Progress"];
@@ -1040,6 +1044,12 @@ impl Gen<'_> {
                 for &(name, kind) in control.arguments {
                     args.push(match kind {
                         "text" => self.string_child(element, name)?,
+                        "expr" => {
+                            let attr = element.plain(name).ok_or_else(|| {
+                                syn::Error::new(span, format!("`<{tag}>` needs `{name}=`"))
+                            })?;
+                            raw(&attr.value, span)?
+                        }
                         _ => {
                             let attr = element.plain(name).ok_or_else(|| {
                                 syn::Error::new(span, format!("`<{tag}>` needs `{name}=`"))
@@ -1084,6 +1094,12 @@ impl Gen<'_> {
                             value => raw(value, name.span())?,
                         };
                         out = quote!(#out.node_ref(#node_ref));
+                        continue;
+                    }
+                    if STYLE_ROLES.contains(&text.as_str()) {
+                        let value = prop(&attr.value);
+                        let setter = Ident::new(&text, name.span());
+                        out = quote!(#out.#setter(#value));
                         continue;
                     }
                     let value = match control.and_then(|control| control.field(&text)) {

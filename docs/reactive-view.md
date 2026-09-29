@@ -141,6 +141,7 @@ column()
 - **运行时**：不解析 CSS，`nana-ui-runtime` 里也没有 CSS 代码。一个元素第一次以某组"固定类 + 条件类"出现时，样式表从表里挑出这组类可能命中的规则（比较的是类的编号），之后同一组类直接复用。再按"基础布局 + 当前生效的条件类"合成一次，结果是一份共享的布局，同一组类的所有实例（包括 `v-for` 的每一行）都只拿它的引用。条件类的条件是普通绑定，变化时换一份合成结果。
 - **`transition`**：编成隐式动画（`El::animate`）。绑定改变了 `opacity`、`transform`、`width`、`height` 或 `background` 时，在合成器轨道上从当前显示的值播到新值，逻辑样式直接取新值。只认元素固定类上的 `transition`。
 - **不编译、会报警告的**：其他选择器（标签、id、组合器、属性）、`:hover` / `:focus` / `:active`、`@media`、`@keyframes` 和 `animation`、`@font-face`、伪元素、Style Model 里没有对应字段的声明、元素上没有规则用到的类、绑定式的 `:class`。
+- **主题色**：样式表的颜色在构建时按亮色主题求值，所以随主题变化的颜色写成语义角色：每个元素都有 `.foreground(..)`、`.background(..)`、`.border(..)`（`SemanticColorRole`）和 `.radius(..)`（`RadiusTier`），可绑定；模板里是同名属性，例如 `<Text foreground={SemanticColorRole::Muted}>`。
 - **已知取舍**：补丁只记录"和默认值不同"的字段，所以把属性写回默认值（例如 `position: static`）不会覆盖元素原来的非默认值；颜色在构建时按亮色主题求值，跟随主题切换的颜色请用组件自带的语义色。
 
 ## 进出场与移动动画
@@ -552,7 +553,7 @@ fn page() -> impl IntoView {
 - 字段真的改变时，仍然会复制整个组件、完整投影一遍，再由 world 按字段比对标脏。只投影改动字段需要每个控件把投影按字段拆开，目前没做。
 - `.bind(|c| …)` 看不出改了哪个字段，所以每次都按"有改动"处理，走复制路径。
 - 闭包绑定每个各自装箱一次；只有 `view!` 能看到的整段模板，才有机会把同一节点的闭包合成一个。
-- 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`，外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
+- 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`、`Thumbnail`、`Avatar`、`Texture`（`GpuTextureView`）、`IconButton`、`Chip`、`StatusBadge`、`EmptyState`（`#action` slot），外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
 
 **无障碍检查**：编译模板时，读屏器无法命名的控件会得到一条警告，不会编译失败。规则两条：`Button`、`Checkbox`、`Switch`、`ListItem` 没有文字（空的子节点或空的 `label`）；`TextInput`、`TextArea`、`NumberInput`、`Slider`、`Progress` 没写 `label`（它们的无障碍名字只来自 `label`，占位文字不算）。`.vue` 的警告经 `cargo:warning` 带行列打印；`view!` 在稳定版上没有警告接口，警告以"使用了已弃用常量"的形式出现在宏调用处，说明写在弃用提示里。
 

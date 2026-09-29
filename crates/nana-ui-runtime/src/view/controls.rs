@@ -5,15 +5,18 @@
 use std::any::Any;
 use std::sync::Arc;
 
+use super::node::IntoView;
 use super::node::{El, widget};
 use super::prop::{FieldWrite, IntoProp};
 use super::reactive::Signal;
 use crate::{
-    Activate, AppContext, Button, Checkbox, Divider, Entity, ListItem, NodeStyle, NumberChanged,
-    NumberInput, Progress, RangeChanged, RangeField, RangeInput, Select, SelectChanged,
-    SelectOption, Spinner, StableNodeId, Stack, Switch, Text, TextArea, TextChanged, TextInput,
-    TextSubmitted, ToggleChanged,
+    Activate, AppContext, Avatar, Button, Card, Checkbox, Chip, Divider, EmptyState, Entity,
+    GpuTextureView, IconButton, ListItem, NodeStyle, NumberChanged, NumberInput, Progress,
+    RangeChanged, RangeField, RangeInput, ScrollView, Select, SelectChanged, SelectOption, Spinner,
+    StableNodeId, Stack, StatusBadge, Switch, Text, TextArea, TextChanged, TextInput,
+    TextSubmitted, Thumbnail, ToggleChanged,
 };
+use nana_ui_core::{Icon, RadiusTier, SemanticColorRole, StatusTone};
 
 /// Components whose [`NodeStyle`] the view layer may write (visibility).
 pub trait StyledComponent {
@@ -51,6 +54,43 @@ impl<C: StyledComponent> FieldWrite<C, bool> for Visible {
     }
 }
 
+/// Semantic roles of [`NodeStyle`], resolved against the installed theme
+/// when painted, so they follow a theme switch; a stylesheet's colours are
+/// fixed when it is compiled.
+macro_rules! style_roles {
+    ($($writer:ident: $field:ident: $ty:ty, $doc:literal;)*) => {$(
+        #[doc(hidden)]
+        pub struct $writer;
+
+        impl<C: StyledComponent> FieldWrite<C, $ty> for $writer {
+            const FIELD: &'static str = concat!("style.", stringify!($field));
+
+            fn write(target: &mut C, value: $ty) {
+                target.node_style_mut().$field = value;
+            }
+
+            fn differs(target: &C, value: &$ty) -> bool {
+                target.node_style().$field != *value
+            }
+        }
+
+        impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
+            #[doc = $doc]
+            #[track_caller]
+            pub fn $field(self, value: impl IntoProp<$ty>) -> Self {
+                self.prop::<$ty, $writer>(value)
+            }
+        }
+    )*};
+}
+
+style_roles! {
+    Foreground: foreground: Option<SemanticColorRole>, "Text and glyph colour by theme role.";
+    Background: background: Option<SemanticColorRole>, "Fill by theme role.";
+    Border: border: Option<SemanticColorRole>, "Border colour by theme role; the width is the layout's.";
+    Radius: radius: Option<RadiusTier>, "Corner radius by theme step.";
+}
+
 impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
     /// Keep the node but take it out of layout, paint and hit testing
     /// (`v-show`). Use [`super::when`] to drop the subtree instead (`v-if`).
@@ -59,6 +99,23 @@ impl<C: StyledComponent + crate::ComponentView, K> El<C, K> {
         self.prop::<bool, Visible>(visible)
     }
 }
+
+/// Components outside the control table whose style views may still write.
+macro_rules! styled {
+    ($($component:ident),*) => {$(
+        impl StyledComponent for $component {
+            fn node_style(&self) -> &NodeStyle {
+                &self.style
+            }
+
+            fn node_style_mut(&mut self) -> &mut NodeStyle {
+                &mut self.style
+            }
+        }
+    )*};
+}
+
+styled!(Card, ScrollView);
 
 /// Expands the control table of `nana-ui-view-schema`: per control, one
 /// [`FieldWrite`] and `El` setter per field, `model` and event methods, and
@@ -270,6 +327,55 @@ pub fn divider() -> El<Divider> {
     widget(Divider::horizontal())
 }
 
+/// A host-texture image at its aspect ratio; bind `.resource(..)` and move
+/// `.generation(..)` when the host fills the slot.
+#[track_caller]
+pub fn thumbnail() -> El<Thumbnail> {
+    widget(Thumbnail::new(""))
+}
+
+/// A round host-texture image `size` pixels across.
+#[track_caller]
+pub fn avatar(size: f32) -> El<Avatar> {
+    widget(Avatar::new("")).size(size)
+}
+
+/// A host texture filling its box: video frames, previews.
+#[track_caller]
+pub fn texture() -> El<GpuTextureView> {
+    widget(GpuTextureView::new(""))
+}
+
+/// A glyph button; `label` is its accessible name and tooltip.
+#[track_caller]
+pub fn icon_button(icon: Icon, label: impl IntoProp<Arc<str>>) -> El<IconButton> {
+    widget(IconButton::new(icon, "")).label(label)
+}
+
+#[track_caller]
+pub fn chip(label: impl IntoProp<Arc<str>>) -> El<Chip> {
+    widget(Chip::new("")).label(label)
+}
+
+/// Short status text in its tone; bind `.tone(..)`.
+#[track_caller]
+pub fn status_badge(label: impl IntoProp<Arc<str>>) -> El<StatusBadge> {
+    widget(StatusBadge::new("", StatusTone::Neutral)).label(label)
+}
+
+/// A title with an optional message, icon and [`El::action`].
+#[track_caller]
+pub fn empty_state(title: impl IntoProp<Arc<str>>) -> El<EmptyState> {
+    widget(EmptyState::new("")).title(title)
+}
+
+impl<K> El<EmptyState, K> {
+    /// The one action under the message, such as a retry button.
+    pub fn action(self, view: impl IntoView) -> Self {
+        self.child_slot(view, |empty, id| empty.action_child(id))
+    }
+}
+
 /// A field value written as text by devtools and parsed back.
 trait FieldText: Sized {
     fn parse(text: &str) -> Result<Self, String>;
@@ -309,6 +415,34 @@ impl FieldText for f64 {
             .map_err(|_| format!("`{text}` is not a number"))
     }
 }
+
+impl FieldText for f32 {
+    fn parse(text: &str) -> Result<Self, String> {
+        text.trim()
+            .parse()
+            .map_err(|_| format!("`{text}` is not a number"))
+    }
+}
+
+impl FieldText for u64 {
+    fn parse(text: &str) -> Result<Self, String> {
+        text.trim()
+            .parse()
+            .map_err(|_| format!("`{text}` is not a whole number"))
+    }
+}
+
+macro_rules! edited_in_code {
+    ($($ty:ty),*) => {$(
+        impl FieldText for $ty {
+            fn parse(_: &str) -> Result<Self, String> {
+                Err(concat!("`", stringify!($ty), "` is edited in code, not as text").into())
+            }
+        }
+    )*};
+}
+
+edited_in_code!(Icon, Option<Icon>, StatusTone);
 
 impl FieldText for Vec<SelectOption> {
     fn parse(_: &str) -> Result<Self, String> {

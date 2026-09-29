@@ -41,8 +41,9 @@ pub(crate) mod trace;
 mod transition;
 
 pub use controls::{
-    Px, StyledComponent, button, checkbox, column, divider, list_item, number_input, progress, row,
-    select, slider, spinner, switch, text, text_area, text_input,
+    Px, StyledComponent, avatar, button, checkbox, chip, column, divider, empty_state, icon_button,
+    list_item, number_input, progress, row, select, slider, spinner, status_badge, switch, text,
+    text_area, text_input, texture, thumbnail,
 };
 pub(crate) use controls::{edit_control, inspect_control};
 pub use each_virtual::{EachVirtual, each_virtual};

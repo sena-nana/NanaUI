@@ -21,8 +21,9 @@
 //! ```
 //!
 //! An argument's kind is `text` (a string: the attribute, or the element's
-//! one text child) or `f32` / `f64` (a number attribute, literals typed). A
-//! `text` argument is also the field of the same name.
+//! one text child), `f32` / `f64` (a number attribute, literals typed) or
+//! `expr` (any Rust expression, such as an icon). A `text` argument is also
+//! the field of the same name.
 
 /// Call `$callback!` with the control table; see the crate docs.
 #[macro_export]
@@ -110,6 +111,51 @@ macro_rules! for_each_control {
                 label: Arc<str> = set,
             };
             Divider => divider() for Divider {};
+            Thumbnail => thumbnail() for Thumbnail {
+                resource: Arc<str> = set,
+                generation: u64 = set,
+                version: u64 = set,
+                aspect: f32 = set,
+                label: Arc<str> = set,
+            };
+            Avatar => avatar(size: f32) for Avatar {
+                resource: Arc<str> = set,
+                generation: u64 = set,
+                version: u64 = set,
+                size: f32 = set,
+                label: Arc<str> = set,
+            };
+            Texture => texture() for GpuTextureView {
+                resource: Arc<str> = set,
+                generation: u64 = set,
+                version: u64 = set,
+                opacity: f32 = set,
+                corner_radius: f32 = set,
+            };
+            IconButton => icon_button(icon: expr, label: text) for IconButton {
+                icon: Icon = set,
+                label: Arc<str> = set,
+                selected: bool = set,
+                disabled: bool = set,
+            }
+            on { on_activate: Activate };
+            Chip => chip(label: text) for Chip {
+                label: Arc<str> = set,
+                selected: bool = set,
+                disabled: bool = set,
+            }
+            on { on_activate: Activate };
+            StatusBadge => status_badge(label: text) for StatusBadge {
+                label: Arc<str> = set,
+                tone: StatusTone = set,
+                compact: bool = set,
+            };
+            EmptyState => empty_state(title: text) for EmptyState {
+                title: Arc<str> = set,
+                message: Option<Arc<str>> = set,
+                icon: Option<Icon> = set,
+                compact: bool = set,
+            };
         }
     };
 }

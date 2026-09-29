@@ -546,6 +546,86 @@ fn a_virtual_grid_in_a_template_scrolls_with_its_page() {
     assert!((4..=5).contains(&rows), "{rows} grid rows built");
 }
 
+#[test]
+fn media_controls_and_theme_roles_bind_from_a_template() {
+    use nana_ui_runtime::view::{Signal, signal};
+    use nana_ui_runtime::{EmptyState, Icon, IconButton, SemanticColorRole, Thumbnail};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let state = std::cell::Cell::new(None);
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            let cover: Signal<std::sync::Arc<str>> = signal("".into());
+            let liked = signal(false);
+            let likes = signal(0u32);
+            state.set(Some((cover, liked, likes)));
+            view! {
+                <Column background={SemanticColorRole::Subtle} key="card">
+                    <Thumbnail resource={cover} aspect=1.5 key="cover" />
+                    <IconButton icon={Icon::Add} selected={liked} key="like"
+                        @activate={likes.update(|n| *n += 1)}>"点赞"</IconButton>
+                    <Text foreground={liked.get().then_some(SemanticColorRole::Accent)} key="count">
+                        "{likes}"
+                    </Text>
+                    <EmptyState key="empty" message="稍后再试">
+                        "加载失败"
+                        <template #action><Button key="retry">"重试"</Button></template>
+                    </EmptyState>
+                </Column>
+            }
+        })
+        .unwrap();
+    let card = mounted.roots()[0];
+    let at = |cx: &AppContext, path: &str| cx.resolve_assembly_path(card, path).unwrap();
+    let (cover, liked, likes) = state.get().unwrap();
+
+    cover.set("cover:1".into());
+    liked.set(true);
+    cx.flush_reactive().unwrap();
+    let thumbnail = Entity::<Thumbnail>::from_stable_id(at(&cx, "cover"));
+    assert_eq!(
+        cx.read(thumbnail, |t| (t.resource.clone(), t.aspect))
+            .unwrap(),
+        ("cover:1".into(), 1.5)
+    );
+    let like = Entity::<IconButton>::from_stable_id(at(&cx, "like"));
+    assert!(cx.read(like, |b| b.selected).unwrap());
+    assert_eq!(
+        cx.read(Entity::<Text>::from_stable_id(at(&cx, "count")), |t| t
+            .style
+            .foreground)
+            .unwrap(),
+        Some(SemanticColorRole::Accent)
+    );
+    assert_eq!(
+        cx.read(Entity::<Stack>::from_stable_id(card), |s| {
+            nana_ui_runtime::view::StyledComponent::node_style(s).background
+        })
+        .unwrap(),
+        Some(SemanticColorRole::Subtle)
+    );
+
+    cx.activate_node(like.stable_id()).unwrap();
+    cx.flush_reactive().unwrap();
+    assert_eq!(likes.get_untracked(), 1);
+
+    let empty = Entity::<EmptyState>::from_stable_id(at(&cx, "empty"));
+    let action = cx
+        .read(empty, |e| e.action)
+        .unwrap()
+        .expect("the action slot");
+    assert_eq!(
+        cx.world().node(action).unwrap().parent,
+        Some(empty.stable_id())
+    );
+    assert_eq!(
+        cx.read(empty, |e| (e.title.clone(), e.message.clone()))
+            .unwrap(),
+        ("加载失败".into(), Some("稍后再试".into()))
+    );
+}
+
 mod store_derive {
     use nana_ui_runtime::view::{Store, StoreList, StorePath, reactive_stats, store, text};
     use nana_ui_runtime::{AppContext, DocumentId, Entity, Stack, Text};
