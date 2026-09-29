@@ -276,6 +276,7 @@ impl AppContext {
     /// [`Self::take_system_work`] call this; call it yourself after writing
     /// signals outside both.
     pub fn flush_reactive(&mut self) -> Result<(), FrameworkError> {
+        rx::advance_epoch();
         if self.reactive.flushing || !rx::has_pending(self.reactive.tag) {
             return Ok(());
         }

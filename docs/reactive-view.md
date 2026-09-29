@@ -63,6 +63,7 @@ app.filter().set("done".into());   // 只影响读 filter 的地方
 - 每条路径有两个触发器，都在第一次被追踪读取时才创建，没被读过的路径不占任何信号。读值（`get` / `with`）追踪 deep；遍历列表（`keyed(..).each` / `items()`、`len()`）只追踪 shallow。写一条路径触发它自己和它下面已存在路径的两个触发器，以及它上面各路径的 deep。
 - 列表自己的 `push`、`insert`、`retain`、`swap`、`sort_by_key` 不改任何一项的内容，所以只触发列表本身和上层的 deep，不触发各行。整体 `set` / `update` 列表会触发所有行，行内绑定重跑后按字段比较，值没变就到此为止。
 - 行按 key 的 64 位哈希定位，重排后仍指向同一项；同一列表里两个 key 的哈希不能相同。行被删掉后，它的触发器在下一次按 key 查找时释放；对已删除行的 `get` 会 panic，`try_with` 返回 `None`。
+- **时间旅行**：`store_with_history(value, 上限)` 记住之前的值，`undo()` / `redo()` / `travel(±n)` 前后移动，`can_undo()` / `can_redo()` / `steps()`（每一步写在哪一行）是被追踪的，可以直接绑到按钮上。一次事件处理（两次 flush 之间）里的所有写入算一步；开始一步时复制整个值（要求 `T: Clone`，成本和值的大小成正比）。撤销和重做通过整值写回，所以只有值真的变了的绑定会更新，行按 key 保留；撤销之后再写入，就丢掉可以重做的步骤。
 - `.vue` 里 `let x = store(…)` 和 `Store` / `Subfield` / `Item` 类型的 prop 被当作 store：用到它的绑定一律在运行时追踪，不会被折叠成常量；单独写这个名字（例如 `:checked="done"`，`done` 是一个 `Subfield` prop）则直接绑定。
 
 ## 异步：任务、`resource` 与 `suspense`

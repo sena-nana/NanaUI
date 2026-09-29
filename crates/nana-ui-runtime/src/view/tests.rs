@@ -983,6 +983,7 @@ struct Task {
     done: bool,
 }
 
+#[derive(Clone)]
 struct Board {
     tasks: Vec<Task>,
 }
@@ -1622,4 +1623,64 @@ fn a_control_can_be_inspected_and_edited_field_by_field() {
         cx.set_field(parent, "label", "x").is_err(),
         "a stack is not a control"
     );
+}
+
+#[test]
+fn a_store_with_history_undoes_one_handler_at_a_time() {
+    let (mut cx, _, parent) = setup();
+    let board = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let state = store_with_history(
+                Board {
+                    tasks: (1..=2).map(task).collect(),
+                },
+                10,
+            );
+            board.set(Some(state));
+            state
+                .tasks()
+                .keyed(|task| task.id)
+                .each(|task| text(task.title()))
+        })
+        .unwrap();
+    let board = board.get().unwrap();
+    let list = view.roots()[0];
+    let tasks = board.tasks().keyed(|task| task.id);
+    let title =
+        |cx: &AppContext, row: usize| text_of(cx, Entity::from_stable_id(children(cx, list)[row]));
+    assert!(!board.can_undo());
+
+    // One handler: two writes, one step.
+    tasks.at(&1).title().set("甲".into());
+    tasks.at(&2).title().set("乙".into());
+    cx.flush_reactive().unwrap();
+    board.tasks().push(task(3));
+    cx.flush_reactive().unwrap();
+    assert_eq!(board.steps().len(), 2);
+    assert_eq!(children(&cx, list).len(), 3);
+
+    assert!(board.undo());
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, list).len(), 2, "the push is undone");
+    assert_eq!((title(&cx, 0), title(&cx, 1)), ("甲".into(), "乙".into()));
+    assert!(board.undo());
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        title(&cx, 0),
+        "任务 1",
+        "both writes of the first step undone"
+    );
+    assert!(!board.undo());
+    assert!(board.can_redo());
+
+    assert_eq!(board.travel(2), 2);
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, list).len(), 3);
+    // A new write after undoing drops what could be redone.
+    board.undo();
+    cx.flush_reactive().unwrap();
+    tasks.at(&1).done().set(true);
+    cx.flush_reactive().unwrap();
+    assert!(!board.can_redo());
 }

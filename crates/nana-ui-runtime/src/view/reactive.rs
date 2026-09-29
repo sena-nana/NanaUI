@@ -1028,6 +1028,19 @@ pub(crate) fn release_signals(scope: Option<ScopeKey>, keys: &[SignalKey]) {
     released.run();
 }
 
+thread_local! {
+    static EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Advances at every flush entry: writes between two flushes share an epoch.
+pub(crate) fn advance_epoch() {
+    EPOCH.with(|epoch| epoch.set(epoch.get() + 1));
+}
+
+pub(crate) fn epoch() -> u64 {
+    EPOCH.with(std::cell::Cell::get)
+}
+
 /// Run `f` owned by no scope: what it creates lives until released.
 pub(crate) fn without_scope<R>(f: impl FnOnce() -> R) -> R {
     let previous = with_rt(|rt| rt.current_scope.take());

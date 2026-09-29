@@ -57,7 +57,9 @@ pub use reactive::{
     on_mount, provide, reactive_stats, signal, untrack, use_context, watch_effect,
 };
 pub use resource::{Resource, Suspense, resource, suspense};
-pub use store::{Item, KeyedList, Store, StoreList, StorePath, Subfield, store};
+pub use store::{
+    Item, KeyedList, Store, StoreList, StorePath, Subfield, store, store_with_history,
+};
 #[doc(hidden)]
 pub use store::{Paths, StoreKey};
 pub use structural::{Dynamic, Each, When, dynamic, each, when};

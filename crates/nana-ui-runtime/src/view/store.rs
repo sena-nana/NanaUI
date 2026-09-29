@@ -29,6 +29,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{BuildHasher, BuildHasherDefault, Hash};
 use std::marker::PhantomData;
@@ -39,7 +40,7 @@ use hashbrown::HashMap;
 
 use super::node::IntoView;
 use super::prop::{FieldWrite, IntoProp, PropSource};
-use super::reactive::{self, Readable, ScopeKey, SignalKey};
+use super::reactive::{self, Readable, ScopeKey, Signal, SignalKey};
 use super::structural::{Each, each};
 use super::{EachVirtual, NodeBindings, each_virtual};
 
@@ -93,7 +94,10 @@ impl Paths {
                 ..PathNode::default()
             },
         );
-        if let Some(parent) = self.nodes.get_mut(&parent) {
+        // The root is linked under itself: it has no parent.
+        if path != parent
+            && let Some(parent) = self.nodes.get_mut(&parent)
+        {
             parent.children.push(path);
         }
     }
@@ -199,6 +203,37 @@ impl Paths {
 struct StoreCell<T> {
     value: RefCell<T>,
     paths: RefCell<Paths>,
+    history: RefCell<Option<History<T>>>,
+}
+
+/// Snapshots of a store's value for undo and redo.
+struct History<T> {
+    past: VecDeque<(T, &'static Location<'static>)>,
+    future: Vec<(T, &'static Location<'static>)>,
+    limit: usize,
+    clone: fn(&T) -> T,
+    /// The flush epoch the newest step was taken in: writes until the next
+    /// flush (one event handler, one task poll) join that step.
+    epoch: Option<u64>,
+    /// Bumped whenever the steps change, for `can_undo` / `can_redo`.
+    version: Signal<u64>,
+}
+
+impl<T> History<T> {
+    /// A copy of `value` when the next write starts a new step.
+    fn snapshot(&self, value: &T) -> Option<T> {
+        (self.epoch != Some(reactive::epoch())).then(|| (self.clone)(value))
+    }
+
+    fn push(&mut self, before: T, at: &'static Location<'static>) {
+        self.epoch = Some(reactive::epoch());
+        self.past.push_back((before, at));
+        if self.past.len() > self.limit {
+            self.past.pop_front();
+        }
+        self.future.clear();
+        self.version.update(|version| *version += 1);
+    }
 }
 
 /// A path into a store: the store itself, a field of a path, or the item of
@@ -271,14 +306,14 @@ pub trait StorePath: Copy + Send + 'static {
     /// it and the whole-value readers above it.
     #[track_caller]
     fn set(&self, value: Self::Value) {
-        write(self, Location::caller(), true, |slot| *slot = value);
+        write(self, Location::caller(), true, true, |slot| *slot = value);
     }
 
     /// Mutate in place and notify as [`Self::set`]. Does nothing once a list
     /// item on the path is gone. `f` must not read this store.
     #[track_caller]
     fn update(&self, f: impl FnOnce(&mut Self::Value)) {
-        write(self, Location::caller(), true, f);
+        write(self, Location::caller(), true, true, f);
     }
 }
 
@@ -326,16 +361,27 @@ fn read<P: StorePath, R>(
 }
 
 /// Write through `path` and fire its triggers; `below`: see [`Paths::fired`].
+/// `record`: a store with history takes a snapshot first (undo and redo
+/// write without one).
 fn write<P: StorePath>(
     path: &P,
     at: &'static Location<'static>,
     below: bool,
+    record: bool,
     f: impl FnOnce(&mut P::Value),
 ) {
     let cell = cell::<P::Root>(path.store(), at);
     let cell = cell
         .downcast_ref::<StoreCell<P::Root>>()
         .expect("a store path writes its own store");
+    let snapshot = match record {
+        true => cell
+            .history
+            .borrow()
+            .as_ref()
+            .and_then(|history| history.snapshot(&cell.value.borrow())),
+        false => None,
+    };
     let written = {
         let mut value = cell.value.borrow_mut();
         let mut paths = cell.paths.borrow_mut();
@@ -360,6 +406,12 @@ fn write<P: StorePath>(
     };
     reactive::release_signals(scope, &released);
     reactive::notify_keys(&fired, at);
+    if written
+        && let Some(before) = snapshot
+        && let Some(history) = cell.history.borrow_mut().as_mut()
+    {
+        history.push(before, at);
+    }
 }
 
 /// Nested state whose fields are tracked one by one. See the module docs.
@@ -386,10 +438,123 @@ pub fn store<T: 'static>(value: T) -> Store<T> {
             nodes: HashMap::new(),
             released: Vec::new(),
         }),
+        history: RefCell::new(None),
     });
     Store {
         key: reactive::new_cell(cell, Location::caller()),
         _type: PhantomData,
+    }
+}
+
+/// [`store`] that remembers up to `limit` earlier values for
+/// [`Store::undo`] and [`Store::redo`] (time travel). Every write that
+/// starts a step copies the whole value first: the writes one event handler
+/// makes are one step.
+#[track_caller]
+pub fn store_with_history<T: Clone + 'static>(value: T, limit: usize) -> Store<T> {
+    let store = store(value);
+    let version = super::reactive::signal(0u64);
+    let cell = cell::<T>(StoreKey(store.key), Location::caller());
+    let cell = cell
+        .downcast_ref::<StoreCell<T>>()
+        .expect("a store reads its own cell");
+    *cell.history.borrow_mut() = Some(History {
+        past: VecDeque::new(),
+        future: Vec::new(),
+        limit: limit.max(1),
+        clone: T::clone,
+        epoch: None,
+        version,
+    });
+    store
+}
+
+impl<T: 'static> Store<T> {
+    fn history<R>(&self, f: impl FnOnce(&StoreCell<T>, Option<&mut History<T>>) -> R) -> R {
+        let cell = cell::<T>(StoreKey(self.key), Location::caller());
+        let cell = cell
+            .downcast_ref::<StoreCell<T>>()
+            .expect("a store reads its own cell");
+        let mut history = cell.history.borrow_mut();
+        f(cell, history.as_mut())
+    }
+
+    /// Go back one step. `false` when there is none (or no history).
+    #[track_caller]
+    pub fn undo(&self) -> bool {
+        self.step(true, Location::caller())
+    }
+
+    /// Go forward one step undone before. `false` when there is none.
+    #[track_caller]
+    pub fn redo(&self) -> bool {
+        self.step(false, Location::caller())
+    }
+
+    /// Undo (`steps < 0`) or redo as many steps as there are, up to `steps`.
+    #[track_caller]
+    pub fn travel(&self, steps: isize) -> usize {
+        let at = Location::caller();
+        (0..steps.unsigned_abs())
+            .take_while(|_| self.step(steps < 0, at))
+            .count()
+    }
+
+    fn step(&self, back: bool, at: &'static Location<'static>) -> bool {
+        let target = self.history(|cell, history| {
+            let history = history?;
+            let (value, written_at) = match back {
+                true => history.past.pop_back()?,
+                false => history.future.pop()?,
+            };
+            let current = (history.clone)(&cell.value.borrow());
+            match back {
+                true => history.future.push((current, written_at)),
+                false => history.past.push_back((current, written_at)),
+            }
+            // The next write starts a step of its own.
+            history.epoch = None;
+            history.version.update(|version| *version += 1);
+            Some(value)
+        });
+        match target {
+            Some(value) => {
+                write(self, at, true, false, |slot| *slot = value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether [`Self::undo`] has a step. Tracked.
+    pub fn can_undo(&self) -> bool {
+        self.history(|_, history| {
+            history.is_some_and(|history| {
+                history.version.get();
+                !history.past.is_empty()
+            })
+        })
+    }
+
+    /// Whether [`Self::redo`] has a step. Tracked.
+    pub fn can_redo(&self) -> bool {
+        self.history(|_, history| {
+            history.is_some_and(|history| {
+                history.version.get();
+                !history.future.is_empty()
+            })
+        })
+    }
+
+    /// Where each step that can be undone was written, oldest first.
+    /// Tracked.
+    pub fn steps(&self) -> Vec<&'static Location<'static>> {
+        self.history(|_, history| {
+            history.map_or_else(Vec::new, |history| {
+                history.version.get();
+                history.past.iter().map(|(_, at)| *at).collect()
+            })
+        })
     }
 }
 
@@ -678,24 +843,28 @@ pub trait StoreList<T: 'static>: StorePath<Value = Vec<T>> {
 
     #[track_caller]
     fn push(&self, item: T) {
-        write(self, Location::caller(), false, |items| items.push(item));
+        write(self, Location::caller(), false, true, |items| {
+            items.push(item)
+        });
     }
 
     #[track_caller]
     fn insert(&self, at: usize, item: T) {
-        write(self, Location::caller(), false, |items| {
+        write(self, Location::caller(), false, true, |items| {
             items.insert(at.min(items.len()), item);
         });
     }
 
     #[track_caller]
     fn retain(&self, keep: impl FnMut(&T) -> bool) {
-        write(self, Location::caller(), false, |items| items.retain(keep));
+        write(self, Location::caller(), false, true, |items| {
+            items.retain(keep)
+        });
     }
 
     #[track_caller]
     fn swap(&self, a: usize, b: usize) {
-        write(self, Location::caller(), false, |items| {
+        write(self, Location::caller(), false, true, |items| {
             if a < items.len() && b < items.len() {
                 items.swap(a, b);
             }
@@ -704,7 +873,7 @@ pub trait StoreList<T: 'static>: StorePath<Value = Vec<T>> {
 
     #[track_caller]
     fn sort_by_key<K: Ord>(&self, key: impl FnMut(&T) -> K) {
-        write(self, Location::caller(), false, |items| {
+        write(self, Location::caller(), false, true, |items| {
             items.sort_by_key(key)
         });
     }
