@@ -1042,6 +1042,10 @@ pub struct SettingsPage {
     /// Insets of the internal scrolling body; None uses the standard page frame.
     pub content_padding: Option<PaddingSpec>,
     pub content_gap: Option<f32>,
+    /// Font size of the page title; `None` is the settings title size.
+    pub title_size: Option<f32>,
+    /// Font weight of the page title; `None` is semibold.
+    pub title_weight: Option<u16>,
     pub assembly: Option<SettingsPageAssembly>,
 }
 
@@ -1061,8 +1065,23 @@ impl SettingsPage {
             content: None,
             content_padding: None,
             content_gap: None,
+            title_size: None,
+            title_weight: None,
             assembly: None,
         }
+    }
+
+    /// The page title's font size, kept through every assembly (a tab
+    /// switch re-assembles the page).
+    pub fn title_size(mut self, size: f32) -> Self {
+        self.title_size = Some(size.max(1.0));
+        self
+    }
+
+    /// The page title's font weight, kept through every assembly.
+    pub fn title_weight(mut self, weight: u16) -> Self {
+        self.title_weight = Some(weight.clamp(1, 1000));
+        self
     }
 
     pub fn content_padding(mut self, padding: PaddingSpec) -> Self {
@@ -1279,12 +1298,12 @@ fn settings_sidebar_body() -> ScrollView {
     scroll
 }
 
-fn page_title_text(label: &str) -> Text {
+fn page_title_text(label: &str, size: Option<f32>, weight: Option<u16>) -> Text {
     styled_text(
         label,
         SemanticColorRole::Text,
-        SETTINGS_PAGE_TITLE_SIZE,
-        SETTINGS_PAGE_TITLE_WEIGHT,
+        size.unwrap_or(SETTINGS_PAGE_TITLE_SIZE),
+        weight.unwrap_or(SETTINGS_PAGE_TITLE_WEIGHT),
     )
 }
 
@@ -2474,16 +2493,18 @@ impl AppContext {
         page: Entity<SettingsPage>,
     ) -> Result<bool, FrameworkError> {
         let document = document_of(self, page.stable_id())?;
-        let (model, state, content, padding, gap, mut assembly) = self.read(page, |page| {
-            (
-                page.model.clone(),
-                page.state.clone(),
-                page.content,
-                page.content_padding,
-                page.content_gap,
-                page.assembly.clone().unwrap_or_default(),
-            )
-        })?;
+        let (model, state, content, padding, gap, title_font, mut assembly) =
+            self.read(page, |page| {
+                (
+                    page.model.clone(),
+                    page.state.clone(),
+                    page.content,
+                    page.content_padding,
+                    page.content_gap,
+                    (page.title_size, page.title_weight),
+                    page.assembly.clone().unwrap_or_default(),
+                )
+            })?;
         let tab = state.active_view(&model);
         let full_page = tab.full_page_value();
         let show_header = !full_page && !model.hide_header_value();
@@ -2493,7 +2514,7 @@ impl AppContext {
                 self,
                 document,
                 &mut assembly.title,
-                page_title_text(tab.label()),
+                page_title_text(tab.label(), title_font.0, title_font.1),
             )?;
         }
 
@@ -3711,6 +3732,39 @@ mod tests {
                 .background,
             Some(SemanticColorRole::Background)
         );
+    }
+
+    #[test]
+    fn settings_page_title_keeps_the_style_it_was_given_across_tab_switches() {
+        let mut context = AppContext::new();
+        let model = settings_model([
+            nana_ui_core::SettingsTab::new("appearance", "外观"),
+            nana_ui_core::SettingsTab::new("about", "关于"),
+        ]);
+        let state = SettingsState::new(&model);
+        let page = context
+            .create_component(
+                document(),
+                SettingsPage::new(model.clone(), state)
+                    .title_size(26.0)
+                    .title_weight(700),
+            )
+            .unwrap();
+        context.assemble_settings_page(page).unwrap();
+        context
+            .update_component(page, |page, _| {
+                page.state
+                    .select(&model, &nana_ui_core::SettingsTabId::from("about"));
+            })
+            .unwrap();
+        context.assemble_settings_page(page).unwrap();
+        let title = context
+            .read(page, |page| page.assembly.clone().unwrap().title.unwrap())
+            .unwrap();
+        assert_eq!(context.world().text(title), Some("关于"));
+        let title_style = context.world().node_style(title).unwrap();
+        assert_eq!(title_style.layout.font_size, Some(26.0));
+        assert_eq!(title_style.layout.font_weight, Some(700));
     }
 
     #[test]

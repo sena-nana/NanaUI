@@ -97,6 +97,7 @@ Card 的可选标题与其正文子节点分别绘制。可以直接挂载独立
 - `Stack::padding(v)` / `padding_xy(x, y)`、`Card::padding(v)` / `padding_xy(x, y)` 覆盖四边，包括此前的逻辑边声明；后调用者生效，`padding(0.0)` 可明确贴边。
 - 原始 `LayoutStyle` 仍是声明式：分边覆盖统一 padding。Card 未声明的边回落默认值，显式零保留；`.style(NodeStyle)` 替换用户声明，但不再隐式取消卡片默认内边距。默认值只存在于投影，删除覆盖可恢复默认。
 - `SettingsPage::content_padding(PaddingSpec)` 和 `content_gap(f32)` 只控制内部滚动 body。省略时用标准值；移除覆盖可将对应公开字段恢复为 `None`。full-page Tab 直接承载业务内容，不创建滚动 body，这两个设置也不作用于该模式。
+- `SettingsPage::title_size(f32)` 和 `title_weight(u16)` 定页标题的字号和字重（默认 18 / 600）。页标题在每次装配时按 tab label 重建，切 tab、视图里的绑定改动都会重新装配，所以要换标题样式就设这两个字段，不要去改标题节点的样式。
 
 四类组合（挂载仍通过 `ui.nest` / `append_child`）：
 
