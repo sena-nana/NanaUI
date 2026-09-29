@@ -1,13 +1,16 @@
 use std::sync::Arc;
 
-use nana_ui_core::{ControlSize, OverflowSpec, PaintTransform, SemanticColorRole, ThemeMetrics};
+use nana_ui_core::{
+    ButtonKind, ControlSize, Icon, LengthSpec, OverflowSpec, PaintTransform, PositionSpec,
+    SemanticColorRole, ThemeMetrics,
+};
 
 use crate::overlay_surfaces::modal_root_style;
-use crate::view_components::project_common;
+use crate::view_components::{Activate, IconButton, project_common};
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, HOST_TEXTURE_RENDERER,
-    InteractionState, LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual,
-    TextContent, UiWorld,
+    AccessibilityRole, AccessibilityState, AppContext, ComponentView, CustomRenderNode, Entity,
+    FrameworkError, HOST_TEXTURE_RENDERER, InteractionState, LayoutBox, MutationQueue, NodeKind,
+    NodeStyle, StableNodeId, StandardVisual, TextContent, UiWorld,
 };
 
 /// Zoom scale step and clamp for the viewer surface.
@@ -153,7 +156,25 @@ impl ImageViewerGeometry {
     }
 }
 
+/// The controls a viewer assembles as its own children
+/// ([`AppContext::assemble_image_viewer`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ImageViewerControls {
+    pub(crate) close: Option<StableNodeId>,
+}
+
+impl ImageViewerControls {
+    fn ids(self) -> impl Iterator<Item = StableNodeId> {
+        [self.close].into_iter().flatten()
+    }
+}
+
 /// Full-window overlay viewer. Application owns decode and HostTexture/content.
+///
+/// Its controls are real controls — focusable, named, with hover and press
+/// states — that the viewer assembles after its content, so a
+/// [`ImageViewerContent::Child`] that covers the whole stage never covers
+/// them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageViewer {
     pub name: Option<Arc<str>>,
@@ -163,7 +184,10 @@ pub struct ImageViewer {
     pub zoom: f32,
     pub offset: ImageViewerOffset,
     pub dragging: Option<ImageViewerDrag>,
+    /// Accessible name of the close control.
+    pub close_label: Arc<str>,
     pub style: NodeStyle,
+    pub(crate) controls: ImageViewerControls,
 }
 
 impl ImageViewer {
@@ -176,7 +200,9 @@ impl ImageViewer {
             zoom: ZOOM_MIN,
             offset: ImageViewerOffset::ZERO,
             dragging: None,
+            close_label: Arc::from("关闭"),
             style: overlay_style(),
+            controls: ImageViewerControls::default(),
         }
     }
 
@@ -192,6 +218,11 @@ impl ImageViewer {
 
     pub fn metadata(mut self, metadata: impl Into<Arc<str>>) -> Self {
         self.metadata = Some(metadata.into());
+        self
+    }
+
+    pub fn close_label(mut self, label: impl Into<Arc<str>>) -> Self {
+        self.close_label = label.into();
         self
     }
 
@@ -385,11 +416,22 @@ impl Default for ImageViewer {
 }
 
 impl ComponentView for ImageViewer {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        assembler: Some(AppContext::assemble_image_viewer),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn share_layouts(
         &mut self,
         share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
     ) {
         share(&mut self.style.layout);
+    }
+
+    /// Content placed after the controls would cover them; a change to the
+    /// children assembles again, which moves the controls back to the end.
+    fn wants_child_reproject() -> bool {
+        true
     }
 
     fn node_kind(&self) -> NodeKind {
@@ -444,7 +486,83 @@ impl ComponentView for ImageViewer {
     }
 }
 
-impl crate::AppContext {
+/// The close control, in the corner of the surface that
+/// [`ImageViewerGeometry::close`] names.
+fn close_control(label: Arc<str>) -> IconButton {
+    let mut button = IconButton::new(Icon::Close, label)
+        .kind(ButtonKind::Subtle)
+        .size(ControlSize::Small);
+    let layout = Arc::make_mut(&mut button.style.layout);
+    layout.position = PositionSpec::Absolute;
+    layout.offset_top = Some(LengthSpec::Px(SURFACE_PAD_TOP + CLOSE_INSET));
+    layout.offset_right = Some(LengthSpec::Px(SURFACE_PAD_RIGHT + CLOSE_INSET));
+    button
+}
+
+impl AppContext {
+    /// Builds (or refreshes) the controls of an [`ImageViewer`]: the close
+    /// button, placed where [`ImageViewerGeometry::close`] is and kept after
+    /// every other child, so the content never paints or hit-tests above it.
+    ///
+    /// Runs after each write to the viewer and when a view builds one; a
+    /// viewer made with `create_component` calls it once itself. Idempotent,
+    /// and writes nothing when the controls are already current. Returns
+    /// whether it created them.
+    pub fn assemble_image_viewer(
+        &mut self,
+        viewer: Entity<ImageViewer>,
+    ) -> Result<bool, FrameworkError> {
+        let document = self
+            .world()
+            .node(viewer.stable_id())
+            .ok_or(FrameworkError::MissingView(viewer.stable_id()))?
+            .document;
+        let (controls, close_label) = self.read(viewer, |viewer| {
+            (viewer.controls, Arc::clone(&viewer.close_label))
+        })?;
+        let existing = controls
+            .close
+            .filter(|id| self.world().contains(*id))
+            .map(Entity::<IconButton>::from_stable_id);
+        let created = existing.is_none();
+        let close = match existing {
+            Some(close) => close,
+            None => {
+                let close = self
+                    .create_detached_component(document, close_control(Arc::clone(&close_label)))?;
+                self.observe(
+                    close,
+                    viewer,
+                    |viewer: &mut ImageViewer, _: &Activate, cx| {
+                        viewer.dragging = None;
+                        cx.emit(ImageViewerEvent::Close);
+                    },
+                )?;
+                let id = close.stable_id();
+                self.update_component(viewer, |viewer, _| viewer.controls.close = Some(id))?;
+                close
+            }
+        };
+        if !created && self.read(close, |button| button.label != close_label)? {
+            self.update_component(close, |button, _| button.label = close_label)?;
+        }
+        // Content placed after the controls would cover them: move the
+        // controls back to the end, in their order.
+        let controls = self.read(viewer, |viewer| viewer.controls)?;
+        let children = self
+            .world()
+            .node(viewer.stable_id())
+            .map(|node| node.children)
+            .unwrap_or_default();
+        let wanted = controls.ids().collect::<Vec<_>>();
+        if !children.ends_with(&wanted) {
+            for id in wanted {
+                self.append_child(viewer, Entity::<IconButton>::from_stable_id(id))?;
+            }
+        }
+        Ok(created)
+    }
+
     pub fn image_viewer_pointer_down(
         &mut self,
         viewer: crate::Entity<ImageViewer>,
@@ -893,6 +1011,13 @@ mod tests {
         ));
     }
 
+    fn close_control(context: &AppContext, viewer: crate::Entity<ImageViewer>) -> StableNodeId {
+        context
+            .read(viewer, |viewer| viewer.controls.close)
+            .unwrap()
+            .expect("the viewer assembles its close control")
+    }
+
     #[test]
     fn an_installed_compact_height_reaches_the_close_control() {
         let mut context = AppContext::new();
@@ -900,21 +1025,23 @@ mod tests {
         let viewer = context
             .create_component(document, ImageViewer::new(ImageViewerContent::None))
             .unwrap();
-        context
-            .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
-            .unwrap();
-        let close_size =
-            |context: &AppContext| match context.world().extract_nodes(&[viewer.stable_id()])[0]
-                .component_geometry
-                .as_deref()
-            {
-                Some(crate::ComponentGeometry::ImageViewer { close, .. }) => {
-                    (close.width, close.height)
-                }
-                other => panic!("image viewer geometry, got {other:?}"),
-            };
+        context.assemble_image_viewer(viewer).unwrap();
+        let close = close_control(&context, viewer);
+        let viewport = crate::LayoutViewport::new(400.0, 300.0);
+        let close_box = |context: &mut AppContext| {
+            context.layout_document(document, viewport).unwrap();
+            let bounds = context.world().layout_box(viewer.stable_id()).unwrap();
+            let expected = context
+                .read(viewer, |view| {
+                    view.geometry(bounds, context.world().theme_metrics()).close
+                })
+                .unwrap();
+            (context.world().layout_box(close).unwrap(), expected)
+        };
         let default = nana_ui_core::UI_METRICS.compact_control_height;
-        assert_eq!(close_size(&context), (default, default));
+        let (actual, expected) = close_box(&mut context);
+        assert_eq!(actual, expected);
+        assert_eq!((actual.width, actual.height), (default, default));
         let mut metrics = nana_ui_core::UI_METRICS;
         metrics.compact_control_height = 36.0;
         assert!(
@@ -927,7 +1054,73 @@ mod tests {
                 )
                 .unwrap()
         );
-        assert_eq!(close_size(&context), (36.0, 36.0));
+        let (actual, expected) = close_box(&mut context);
+        assert_eq!(actual, expected);
+        assert_eq!((actual.width, actual.height), (36.0, 36.0));
+    }
+
+    /// A child that covers the whole viewer is under its close control: the
+    /// control is hit, named, and closes the viewer.
+    #[test]
+    fn child_content_never_covers_the_close_control() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        // A hittable child as large as the viewer: an image the application
+        // lets the user press.
+        let mut picture = crate::Button::new("picture");
+        {
+            let layout = Arc::make_mut(&mut picture.style.layout);
+            layout.position = PositionSpec::Absolute;
+            layout.offset_left = Some(LengthSpec::Px(0.0));
+            layout.offset_top = Some(LengthSpec::Px(0.0));
+            layout.width = Some(LengthSpec::Percent(100.0));
+            layout.height = Some(LengthSpec::Percent(100.0));
+        }
+        let cover = context
+            .create_detached_component(document, picture)
+            .unwrap();
+        let viewer = context
+            .create_component(
+                document,
+                ImageViewer::new(ImageViewerContent::child(cover.stable_id())),
+            )
+            .unwrap();
+        context.assemble_image_viewer(viewer).unwrap();
+        // Content that arrives after the viewer assembled its controls.
+        context.append_child(viewer, cover).unwrap();
+        let close = close_control(&context, viewer);
+        assert_eq!(
+            context.world().node(viewer.stable_id()).unwrap().children,
+            [cover.stable_id(), close]
+        );
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+        let control = context.world().layout_box(close).unwrap();
+        let (x, y) = (
+            control.x + control.width / 2.0,
+            control.y + control.height / 2.0,
+        );
+        assert_eq!(context.world().hit_test(document, x, y), Some(close));
+        assert_eq!(
+            context
+                .world()
+                .accessibility(close)
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("关闭")
+        );
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&events);
+        context
+            .on(viewer, move |_viewer, event: &ImageViewerEvent, _cx| {
+                observed.lock().unwrap().push(*event);
+            })
+            .unwrap();
+        assert!(context.activate_node(close).unwrap());
+        assert_eq!(*events.lock().unwrap(), [ImageViewerEvent::Close]);
     }
 
     #[test]

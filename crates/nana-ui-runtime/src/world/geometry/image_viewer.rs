@@ -32,7 +32,6 @@ pub(in crate::world) fn image_viewer_geometry(
         scrim: geometry.scrim,
         surface: geometry.surface,
         stage: geometry.stage,
-        close: geometry.close,
         name: name
             .zip(geometry.name)
             .map(|(text, region)| crate::ComponentTextRegion {

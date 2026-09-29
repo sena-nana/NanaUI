@@ -92,6 +92,10 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 相对 `Button`：Button 是动作，没有 token 的 `selected` / `dismissible`。相对 `StatusBadge`：Badge 只展示，不激活、不关闭。
 
+### ImageViewer
+
+`ImageViewer` 是整窗的大图浮层（`nana.image-viewer`）。它自己画遮罩、表面、舞台与说明行；图片由应用给（`HostTexture` / `CustomRender` 由查看器画在舞台里并按舞台裁剪，`Child` 是应用自己的子节点）。查看器的**操作是真控件**：关闭钮是 `assemble_image_viewer` 建的 `IconButton` 子节点，可焦点、有无障碍名（`close_label`，默认「关闭」）、有悬停与按下态，激活时查看器发 `ImageViewerEvent::Close`。这些控件总排在查看器所有其他子节点之后，所以 `Child` 内容铺满整个画面也盖不住它们，命中也先落在它们上面；内容晚于控件放进来时（子节点变化）查看器会重新装配，把控件挪回末尾。它是叶子复合件：视图建好时与每次写入后自动装配；`create_component` 手工建的查看器自己调一次 `assemble_image_viewer`。`ImageViewer::geometry(..).close` 仍给出关闭钮的位置，供应用给自己的内容留边。Vue 的 `nana-image-viewer` 只做投影，不建控件，关闭由宿主负责。
+
 ### Avatar
 
 `Avatar` 是圆形 Cover-fit `HostTexture` 槽（`nana.avatar` / `<nana-avatar>`，采样 `nana.host-texture`），默认不参与命中、不可焦点。空 `resource`、宿主清空、加载失败都走 Subtle 占位，**不**自绘产品字母。加载失败由宿主把 `resource` 清成空；不改缺槽拒绝帧的 GPU 合同。有 `label` 时 AccessKit 为 Image 且有名；无名则为 Image 无 name。无点击事件。与 `Thumbnail` 的区分见 rustdoc（Cover、圆形、固定边长）。

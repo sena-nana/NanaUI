@@ -789,13 +789,14 @@ fn runtime_fixture(
                 RuntimeSelectableRichText::new([RichSpan::plain("See "), RichSpan::plain("docs")]),
             )?
             .stable_id(),
-        Component::ImageViewer => document
-            .context_mut()
-            .create_component(
+        Component::ImageViewer => {
+            let viewer = document.context_mut().create_component(
                 document_id,
                 RuntimeImageViewer::new(ImageViewerContent::None).name("Preview"),
-            )?
-            .stable_id(),
+            )?;
+            document.context_mut().assemble_image_viewer(viewer)?;
+            viewer.stable_id()
+        }
         Component::GraphMinimap => document
             .context_mut()
             .create_component(

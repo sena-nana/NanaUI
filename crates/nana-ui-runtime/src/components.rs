@@ -1586,11 +1586,12 @@ pub enum ComponentGeometry {
         indicator_fill: [f32; 4],
         indicator_border: [f32; 4],
     },
+    /// The viewer's painted chrome. Its controls are child nodes
+    /// ([`crate::AppContext::assemble_image_viewer`]), not part of this.
     ImageViewer {
         scrim: LayoutBox,
         surface: LayoutBox,
         stage: LayoutBox,
-        close: LayoutBox,
         name: Option<ComponentTextRegion>,
         metadata: Option<ComponentTextRegion>,
         content: LayoutBox,

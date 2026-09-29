@@ -14,7 +14,6 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             surface,
             stage,
             content,
-            close,
             name,
             metadata,
             scrim_color,
@@ -72,35 +71,6 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     },
                 });
             }
-            emit(visual_quad(
-                &context,
-                14,
-                scene_rect(*close),
-                VisualQuadStyle {
-                    background: None,
-                    border_color: None,
-                    border_width: 0.0,
-                    corner_radius: corner_radii(node.chrome_radii.sm),
-                },
-            ));
-            emit(component_text_primitive(
-                id,
-                17,
-                &ComponentTextRegion {
-                    bounds: *close,
-                    content: nana_ui_runtime::TextValue::from("×"),
-                    color: node.style.color,
-                    font_size: 15.0,
-                    font_weight: None,
-                },
-                TextHorizontalAlignment::Center,
-                false,
-                node,
-                transform,
-                clips.clone(),
-                opacity,
-                node_order,
-            ));
             if let Some(name) = name {
                 emit(component_text_primitive(
                     id,

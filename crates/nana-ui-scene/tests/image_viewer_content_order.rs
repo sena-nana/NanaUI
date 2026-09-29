@@ -19,6 +19,7 @@ fn image_viewer_texture_is_above_backdrop_and_below_controls_with_stage_clipping
                 .metadata("PNG"),
         )
         .unwrap();
+    runtime.context_mut().assemble_image_viewer(viewer).unwrap();
     let viewport = LayoutViewport::new(800.0, 600.0);
     runtime.flush(viewport, &mut MeasureTextShaper).unwrap();
     for zoom in [1.0, 2.0] {
@@ -92,13 +93,37 @@ fn image_viewer_texture_is_above_backdrop_and_below_controls_with_stage_clipping
                 .iter()
                 .all(|(background, _)| *background < index)
         );
-        let controls = primitives
+        let captions = primitives
             .iter()
             .enumerate()
             .filter(|(_, primitive)| matches!(primitive.kind, ScenePrimitiveKind::Text { .. }))
             .collect::<Vec<_>>();
-        assert!(controls.len() >= 3);
-        assert!(controls.iter().all(|(control, _)| *control > index));
+        assert_eq!(captions.len(), 2);
+        assert!(captions.iter().all(|(caption, _)| *caption > index));
+        // The close control is a child the viewer keeps after its content:
+        // everything it paints comes after the image.
+        let close = runtime
+            .context()
+            .world()
+            .node(viewer.stable_id())
+            .unwrap()
+            .children
+            .last()
+            .copied()
+            .expect("the viewer assembles its close control");
+        let scene = runtime.scene().primitives().collect::<Vec<_>>();
+        let image_at = scene
+            .iter()
+            .position(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
+            .unwrap();
+        let close_at = scene
+            .iter()
+            .enumerate()
+            .filter(|(_, primitive)| primitive.node == close)
+            .map(|(at, _)| at)
+            .collect::<Vec<_>>();
+        assert!(!close_at.is_empty());
+        assert!(close_at.iter().all(|at| *at > image_at));
     }
     runtime
         .context_mut()

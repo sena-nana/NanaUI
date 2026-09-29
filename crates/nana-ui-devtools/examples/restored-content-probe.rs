@@ -166,6 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .name("120 × 72 intrinsic texture")
                     .metadata("Native size • zoom and pan"),
             )?;
+            document.context_mut().assemble_image_viewer(viewer)?;
             let mut session = RuntimeAgentSession::new_scaled(document, width, height, scale)?;
             capture(
                 &mut gpu,
