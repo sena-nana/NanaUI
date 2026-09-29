@@ -2648,6 +2648,7 @@ name = "nana-ui-css"
 version = "0.1.0"
 dependencies = [
  "nana-ui-core",
+ "serde_json",
 ]
 
 [[package]]

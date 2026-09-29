@@ -6,8 +6,9 @@
 //! `.card.active`) are matched against each element's `class="…"` and
 //! `class:name="condition"` here, in cascade order (`!important`,
 //! specificity, source order). Each rule becomes a patch: the Style Model
-//! fields its declarations set, found by applying them with `nana-ui-css`
-//! to a default layout. The running view receives the patches and which
+//! fields its declarations write and their values, as `nana-ui-css`
+//! reports them ([`written_layout`]), including a field written with the
+//! value the default layout has. The running view receives the patches and which
 //! conditional classes each needs; it parses no CSS and matches no
 //! selector. `transition` becomes the element's implicit animations.
 //!
@@ -21,14 +22,14 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use crate::{Attr, AttrName, AttrValue, Element, Node};
-use nana_ui_core::{Easing, LayoutStyle};
+use nana_ui_core::Easing;
 use nana_ui_css::css_motion::{
     css_list_at, easing_from_css_keyword, first_timing_token, parse_css_time_token,
     parse_transition_shorthand, split_css_comma_list,
 };
 use nana_ui_css::{
     CompoundSelector, DeclarationEntry, LayoutStyleCss, MotionDeclarations, Selector, Specificity,
-    collect_document_custom_properties_from_rules, parse_stylesheet_full,
+    collect_document_custom_properties_from_rules, parse_stylesheet_full, written_layout,
 };
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
@@ -97,27 +98,6 @@ fn rank(important: bool, specificity: Specificity, order: u32) -> Rank {
         ),
         order,
     )
-}
-
-/// The fields of `value` that differ from `default`, recursively.
-fn diff(value: &Value, default: &Value) -> Option<Value> {
-    match (value, default) {
-        (Value::Object(value), Value::Object(default)) => {
-            let changed: Map<String, Value> = value
-                .iter()
-                .filter_map(|(key, field)| {
-                    let base = default.get(key).unwrap_or(&Value::Null);
-                    diff(field, base).map(|field| (key.clone(), field))
-                })
-                .collect();
-            (!changed.is_empty()).then_some(Value::Object(changed))
-        }
-        (value, default) => (value != default).then(|| value.clone()),
-    }
-}
-
-fn layout_json(layout: &LayoutStyle) -> Value {
-    serde_json::to_value(layout).expect("a layout serializes")
 }
 
 /// The CSS properties an implicit animation can follow, as
@@ -192,17 +172,22 @@ fn sheet_vars(sheet: &nana_ui_css::ParsedStylesheet) -> BTreeMap<String, String>
     collect_document_custom_properties_from_rules(&sheet.static_rules, "light")
 }
 
-/// Whether `entry` alone sets no field of the Style Model.
-fn inert(entry: &DeclarationEntry, default: &Value) -> bool {
-    let mut alone = LayoutStyle::default();
-    alone.apply_css_property(&entry.property, &entry.value, None, None);
-    layout_json(&alone) == *default
+/// The Style Model fields `entries` write, as a patch: the value of each,
+/// keyed by its dotted path. A field written with the value the default
+/// layout has is still in it, so the patch resets what an element was
+/// built with.
+fn patch(entries: &[&DeclarationEntry]) -> Map<String, Value> {
+    written_layout(|layout| {
+        for entry in entries {
+            layout.apply_css_property(&entry.property, &entry.value, None, None);
+        }
+    })
+    .patch()
 }
 
 pub(crate) fn parse(css: &str) -> Sheet {
     let (sheet, _) = parse_stylesheet_full(css, 0);
     let vars = sheet_vars(&sheet);
-    let default = layout_json(&LayoutStyle::default());
     let mut rules = Vec::new();
     for rule in &sheet.static_rules {
         let (normal, important): (Vec<&DeclarationEntry>, Vec<&DeclarationEntry>) = rule
@@ -214,16 +199,11 @@ pub(crate) fn parse(css: &str) -> Sheet {
             if entries.is_empty() {
                 continue;
             }
-            let layout = nana_ui_css::css_map::with_active_css_vars(&vars, || {
-                let mut layout = LayoutStyle::default();
-                for entry in &entries {
-                    layout.apply_css_property(&entry.property, &entry.value, None, None);
-                }
-                layout
-            });
-            let Some(patch) = diff(&layout_json(&layout), &default) else {
+            let patch = nana_ui_css::css_map::with_active_css_vars(&vars, || patch(&entries));
+            if patch.is_empty() {
                 continue;
-            };
+            }
+            let patch = Value::Object(patch);
             for selector in &rule.selectors {
                 if let Some(classes) = class_selector(selector) {
                     rules.push(Rule {
@@ -405,7 +385,6 @@ fn property_of(text: &str) -> String {
 /// Each block's warnings, found by parsing it alone and pointed at its
 /// prelude or the declaration they are about.
 fn check(css: &str, vars: &BTreeMap<String, String>) -> Vec<StyleWarning> {
-    let default = layout_json(&LayoutStyle::default());
     let mut warnings = Vec::new();
     for block in outline(css) {
         let (sheet, _) = parse_stylesheet_full(&css[block.range.clone()], 0);
@@ -471,7 +450,7 @@ fn check(css: &str, vars: &BTreeMap<String, String>) -> Vec<StyleWarning> {
             }
             nana_ui_css::css_map::with_active_css_vars(vars, || {
                 for entry in entries {
-                    if inert(entry, &default) {
+                    if patch(&[entry]).is_empty() {
                         let property = entry.property.to_ascii_lowercase();
                         warn(
                             declaration(Some(entry.index), &|p| p == property),

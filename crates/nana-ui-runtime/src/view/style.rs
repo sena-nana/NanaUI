@@ -28,8 +28,11 @@ use super::prop::{FieldWrite, IntoProp, PropSource};
 use super::transition::Implicit;
 use crate::ComponentView;
 
-/// The Style Model fields one rule's declarations set, as the JSON of
-/// those fields: produced by the build, read once.
+/// The Style Model fields one rule's declarations write, as a JSON object
+/// from each field's dotted path (`align_items`, `paint.outline.width`) to
+/// its value: produced by the build, read once. A field written with the
+/// value the default layout has is in it too, so a class can reset what
+/// the element was built with.
 pub struct StylePatch {
     json: &'static str,
     value: OnceLock<Value>,
@@ -270,26 +273,31 @@ fn apply_site<C: StyledComponent + ComponentView>(
 fn apply<'a>(base: &LayoutStyle, patches: impl Iterator<Item = &'a Value>) -> LayoutStyle {
     let mut value = serde_json::to_value(base).expect("a layout serializes");
     for patch in patches {
-        merge(&mut value, patch);
+        let Value::Object(fields) = patch else {
+            continue;
+        };
+        for (path, field) in fields {
+            *field_mut(&mut value, path) = field.clone();
+        }
     }
     serde_json::from_value(value).expect("a patched layout deserializes")
 }
 
-/// Objects merge key by key; anything else is replaced.
-fn merge(into: &mut Value, patch: &Value) {
-    match (into, patch) {
-        (Value::Object(into), Value::Object(patch)) => {
-            for (key, value) in patch {
-                match into.get_mut(key) {
-                    Some(slot) => merge(slot, value),
-                    None => {
-                        into.insert(key.clone(), value.clone());
-                    }
-                }
-            }
+/// The field a patch key names: a dotted path through the Style Model's
+/// structs (`paint.outline.width`). The field itself, an enum or an
+/// `Option` included, is replaced whole: merging a `{"Px": 12}` into a
+/// `{"Percent": 50}` would be neither.
+fn field_mut<'a>(layout: &'a mut Value, path: &str) -> &'a mut Value {
+    path.split('.').fold(layout, |value, key| {
+        if !value.is_object() {
+            *value = Value::Object(Default::default());
         }
-        (into, patch) => *into = patch.clone(),
-    }
+        value
+            .as_object_mut()
+            .expect("made an object above")
+            .entry(key)
+            .or_insert(Value::Null)
+    })
 }
 
 /// Writes a composed layout, keeping what `.visible` decided.

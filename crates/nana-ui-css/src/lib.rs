@@ -23,6 +23,7 @@ pub mod css_map;
 pub mod css_motion;
 pub mod css_paint;
 pub mod css_paint_transform;
+pub mod css_written;
 pub mod shell_contract;
 pub mod style;
 
@@ -67,4 +68,5 @@ pub use css_map::{
     parse_grid_track_list_result, parse_inset_length, resolve_grid_column_widths,
     resolve_grid_track_sizes, resolve_paint_color,
 };
+pub use css_written::{WrittenLayout, written_layout};
 pub use style::{is_non_token_css_color, map_css_color_for_tokens, parse_css_color};

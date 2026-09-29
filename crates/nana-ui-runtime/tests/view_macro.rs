@@ -939,6 +939,36 @@ mod styles {
         let _ = text("");
     }
 
+    stylesheet! {
+        mod reset_styles;
+        .reset { align-items: flex-start; height: auto; width: 50%; }
+    }
+
+    /// A declaration writing the value the default layout has still
+    /// writes it: a row is built centered and a column hugs its content,
+    /// and a class resets both. A length of another kind replaces the
+    /// built one whole.
+    #[test]
+    fn a_class_writes_a_default_value_over_what_the_element_was_built_with() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let view = cx
+            .mount_view_root(document, || {
+                (
+                    widget(Stack::row(0.0).width(LengthSpec::Px(100.0))).class(reset_styles::reset),
+                    column().class(reset_styles::reset),
+                )
+            })
+            .unwrap();
+        let (row, column) = (view.roots()[0], view.roots()[1]);
+        let row = layout_of(&cx, row);
+        assert_eq!(row.align_items, nana_ui_core::AlignSpec::Start);
+        assert_eq!(row.width, Some(LengthSpec::Percent(50.0)));
+        let column = layout_of(&cx, column);
+        assert_eq!(column.align_items, nana_ui_core::AlignSpec::Start);
+        assert_eq!(column.height, Some(LengthSpec::Auto));
+    }
+
     /// The space in `.panel .open` is a descendant combinator, which L3
     /// views do not compile; without it `.panel.open` is a compound that
     /// applies. Quoted values are spliced bare.
