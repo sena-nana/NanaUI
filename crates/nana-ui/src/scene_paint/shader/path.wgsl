@@ -26,7 +26,8 @@ var<storage, read> gradient_palette: GradientPalette;
 struct PathVertexInput {
     // Logical scene px after the primitive's affine.
     @location(0) position: vec2<f32>,
-    // Logical px this vertex moves per physical px of AA fringe.
+    // Logical px this vertex moves per physical px of AA fringe; it moves half
+    // of it, the fringe centred on the outline.
     @location(1) extrude: vec2<f32>,
     @location(2) coverage: f32,
     @location(3) clip_index: u32,
@@ -48,12 +49,15 @@ struct PathVertexOutput {
     @location(5) @interpolate(flat) gradient: u32,
     // `globals.viewport_scale`: the uniform is bound to the vertex stage only.
     @location(6) @interpolate(flat) pixel_scale: f32,
+    // 1 on an AA fringe or the interior it bounds, 0 on a shadow's band.
+    @location(7) fringe: f32,
 }
 
 @vertex
 fn path_vs_main(input: PathVertexInput) -> PathVertexOutput {
     var out: PathVertexOutput;
-    let world = input.position + input.extrude / max(globals.viewport_scale, 1e-4);
+    let world = input.position + input.extrude * 0.5 / max(globals.viewport_scale, 1e-4);
+    out.fringe = select(0.0, 1.0, any(input.extrude != vec2<f32>(0.0)));
     out.position = globals.transform * vec4<f32>(world, 0.0, 1.0);
     out.world_pos = world;
     out.color = input.color;
@@ -136,8 +140,32 @@ fn gradient_color(index: u32, p: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(linear * srgb.a, srgb.a);
 }
 
+// The pass's sample count, and a 4× pass's sample positions relative to the
+// pixel centre: the standard pattern WebGPU fixes.
+override PATH_SAMPLES: u32 = 1u;
+const PATH_SAMPLE_OFFSETS = array<vec2<f32>, 4>(
+    vec2<f32>(-0.125, -0.375),
+    vec2<f32>(0.375, -0.125),
+    vec2<f32>(-0.375, 0.125),
+    vec2<f32>(0.125, 0.375),
+);
+
+// An AA fringe ramps linearly over its one device pixel, as every other edge;
+// across a shadow band of ±2σ, smoothstep shapes the ramp into a close fit of
+// the Gaussian edge.
+fn path_alpha(coverage: f32, fringe: bool) -> f32 {
+    let linear = clamp(coverage, 0.0, 1.0);
+    return select(smoothstep(0.0, 1.0, linear), linear, fringe);
+}
+
 @fragment
-fn path_fs_main(input: PathVertexOutput) -> @location(0) vec4<f32> {
+fn path_fs_main(
+    input: PathVertexOutput,
+    @builtin(sample_mask) samples: u32,
+) -> @location(0) vec4<f32> {
+    // Coverage is linear across a triangle; its screen gradient, taken while
+    // every invocation of the quad still runs, reaches any sample from here.
+    let ramp = vec2<f32>(dpdx(input.coverage), dpdy(input.coverage));
     let clip = clip_palette.items[input.clip_index];
     let clip_cover = fragment_clip_coverage(
         input.world_pos,
@@ -155,9 +183,25 @@ fn path_fs_main(input: PathVertexOutput) -> @location(0) vec4<f32> {
     if clip_cover <= 0.0 {
         discard;
     }
-    // A linear ramp shaped by smoothstep: a one-pixel AA fringe, or across a
-    // shadow band of ±2σ, a close fit of the Gaussian edge.
-    let alpha = smoothstep(0.0, 1.0, clamp(input.coverage, 0.0, 1.0)) * clip_cover;
+    let fringe = input.fringe > 0.5;
+    var coverage = path_alpha(input.coverage, fringe);
+    if PATH_SAMPLES == 4u {
+        // A fringe's inner and outer rings are geometry edges inside its
+        // ramp, where the samples this triangle leaves to its neighbour get
+        // the interior's 1 or nothing. Those are the ramp's own values there,
+        // so the ramp averaged over the samples it covers makes the pixel
+        // resolve to the ramp averaged over all four, without shading each.
+        var sum = 0.0;
+        var covered = 0.0;
+        for (var i = 0u; i < 4u; i = i + 1u) {
+            if (samples & (1u << i)) != 0u {
+                sum += path_alpha(input.coverage + dot(ramp, PATH_SAMPLE_OFFSETS[i]), fringe);
+                covered += 1.0;
+            }
+        }
+        coverage = sum / max(covered, 1.0);
+    }
+    let alpha = coverage * clip_cover;
     if alpha <= 0.0 {
         discard;
     }

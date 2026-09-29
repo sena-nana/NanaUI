@@ -11269,6 +11269,97 @@ fn an_inset_shadow_darkens_inside_the_edge() {
 }
 
 #[test]
+fn path_fills_and_strokes_ramp_over_one_device_pixel_centred_on_their_edge() {
+    // A fringe laid one pixel outside the outline, as it once was, puts the
+    // ramp's midpoint half a pixel out and makes every shape half a pixel
+    // fatter a side: a 1px stroke reads nearly 2px wide. Centred, each pixel
+    // near a filled ellipse's, a filled triangle's or a 1px stroke's edge is
+    // the one device pixel linear ramp over its distance to it, taken at
+    // each of the frame's four MSAA samples (WebGPU's standard positions).
+    // (A circle or rectangle would be drawn as a quad.)
+    let paint =
+        |draw: fn(&mut nana_ui_runtime::PaintContext<'_>)| paint_one_painter(PaintFn(draw), 64, 64);
+    let ellipse = paint(|cx| {
+        let mut path = nana_ui_runtime::PaintPath::new();
+        path.ellipse(LayoutBox {
+            x: 12.3,
+            y: 20.6,
+            width: 40.0,
+            height: 24.0,
+        });
+        cx.fill_path(&path, [1.0, 1.0, 1.0, 1.0]);
+    });
+    let triangle = paint(|cx| {
+        let mut path = nana_ui_runtime::PaintPath::new();
+        path.move_to(8.3, 56.6)
+            .line_to(30.1, 6.2)
+            .line_to(57.7, 50.4)
+            .close();
+        cx.fill_path(&path, [1.0, 1.0, 1.0, 1.0]);
+    });
+    let stroke = paint(|cx| {
+        let mut path = nana_ui_runtime::PaintPath::new();
+        path.move_to(8.0, 20.3).line_to(56.0, 20.3);
+        cx.stroke_path(
+            &path,
+            nana_ui_runtime::StrokeStyle::new(1.0),
+            [1.0, 1.0, 1.0, 1.0],
+        );
+    });
+    // First order to the ellipse: its implicit function over its gradient.
+    let ellipse_edge = |x: f32, y: f32| {
+        let n = [(x - 32.3) / 20.0, (y - 32.6) / 12.0];
+        let length = n[0].hypot(n[1]);
+        (length - 1.0) * length / (n[0] / 20.0).hypot(n[1] / 12.0)
+    };
+    let corners = [[8.3, 56.6], [30.1, 6.2], [57.7, 50.4]];
+    let triangle_edge = |x: f32, y: f32| convex_polygon_distance([x, y], &corners);
+    let stroke_edge = |_: f32, y: f32| (y - 20.3).abs() - 0.5;
+    // Near a corner the fringe's miter join is its own approximation, and
+    // the stroke ends in caps.
+    let everywhere = |_: f32, _: f32| true;
+    let off_corners = |x: f32, y: f32| corners.iter().all(|c| (x - c[0]).hypot(y - c[1]) >= 10.0);
+    let off_ends = |x: f32, _: f32| (12.0..52.0).contains(&x);
+    type Edge<'a> = &'a dyn Fn(f32, f32) -> f32;
+    type Keep<'a> = &'a dyn Fn(f32, f32) -> bool;
+    let cases: [(&str, &[u8], Edge, Keep); 3] = [
+        ("filled ellipse", &ellipse, &ellipse_edge, &everywhere),
+        ("filled triangle", &triangle, &triangle_edge, &off_corners),
+        ("1px stroke", &stroke, &stroke_edge, &off_ends),
+    ];
+    const SAMPLES: [[f32; 2]; 4] = [
+        [0.375, 0.125],
+        [0.875, 0.375],
+        [0.125, 0.625],
+        [0.625, 0.875],
+    ];
+    for (label, pixels, edge, keep) in cases {
+        for py in 0..64 {
+            for px in 0..64 {
+                let [x, y] = [px as f32 + 0.5, py as f32 + 0.5];
+                let outside = edge(x, y);
+                if outside.abs() > 1.2 || !keep(x, y) {
+                    continue;
+                }
+                let expected = SAMPLES
+                    .iter()
+                    .map(|[sx, sy]| (0.5 - edge(px as f32 + sx, py as f32 + sy)).clamp(0.0, 1.0))
+                    .sum::<f32>()
+                    * 255.0
+                    / 4.0;
+                let green = f32::from(pixel(pixels, 64, px, py)[1]);
+                // A curve is flattened to within 0.05px of itself: 13 of 255.
+                assert!(
+                    (green - expected).abs() <= 14.0,
+                    "{label}: ({px},{py}) is {outside:+.3} px from the edge, \
+                     expected green {expected:.0}, got {green}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_reading_blend_copies_and_composites_only_where_its_group_drew() {
     use nana_ui_runtime::BlendMode;
     let pixels = paint_one_painter(
@@ -11303,11 +11394,11 @@ fn a_reading_blend_copies_and_composites_only_where_its_group_drew() {
     // Difference with white inverts the orange: (0, 0.5, 1).
     let inverted = at(20, 20);
     assert!(inverted[0] < 5 && inverted[2] > 250, "{inverted:?}");
-    // The rim (the fringe runs one pixel outside the outline) blends by
-    // coverage, and just past it nothing moved.
-    let rim = at(9, 20);
+    // The rim (the fringe is centred on the outline, at x = 10.3 here)
+    // blends by coverage, and just past it nothing moved.
+    let rim = at(10, 20);
     assert!(rim[0] < orange[0] && rim[0] > inverted[0], "{rim:?}");
-    for p in [(8, 20), (20, 8), (31, 20), (20, 31), (50, 20)] {
+    for p in [(9, 20), (20, 8), (31, 20), (20, 31), (50, 20)] {
         assert_eq!(at(p.0, p.1), orange, "{p:?}");
     }
     // exclusion(orange, blue) = (1, 0.5, 1); the layer's difference with

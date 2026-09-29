@@ -27,6 +27,7 @@ use lyon_tessellation::path::iterator::PathIterator;
 use lyon_tessellation::path::{Path as LyonPath, PathEvent};
 use lyon_tessellation::{
     BuffersBuilder, FillOptions, FillRule as LyonFill, FillTessellator, FillVertex, VertexBuffers,
+    VertexSource,
 };
 use nana_ui_runtime::{
     AFFINE_IDENTITY, Affine, BlendMode, FillRule, ImageFit, LineCap, LineJoin, PaintOp, PaintPath,
@@ -51,8 +52,8 @@ const MITER_LIMIT: f32 = 4.0;
 pub struct PathMesh {
     pub vertices: Vec<PathVertex>,
     pub indices: Vec<u32>,
-    /// Local bounds of every vertex, before the AA fringe (which reaches one
-    /// physical px further out).
+    /// Local bounds of every vertex, before the AA fringe (which reaches half
+    /// a physical px further out).
     pub bounds: SceneRect,
     /// Colour every fragment from this gradient, evaluated at the vertex's
     /// [`PathVertex::paint_pos`]; the vertex colour then only tints it
@@ -64,14 +65,14 @@ pub struct PathMesh {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PathVertex {
     pub position: [f32; 2],
-    /// Where this vertex moves for one physical pixel of anti-aliasing fringe,
-    /// in local units per physical px. Zero for every vertex that does not
-    /// sit on the outside of a fringe.
+    /// The miter along which this vertex moves half a physical pixel, onto its
+    /// anti-aliasing fringe's outer ring (outward) or inner ring (inward).
+    /// Zero for every vertex off a fringe.
     pub extrude: [f32; 2],
-    /// Linear coverage in `0..=1`. The painter shapes it with a smoothstep,
-    /// which turns a linear ramp across `±2σ` into a close fit of a Gaussian
-    /// edge — the same ramp serves the one-pixel AA fringe and a blurred
-    /// shadow band.
+    /// Linear coverage in `0..=1`. Across an AA fringe (a non-zero
+    /// [`PathVertex::extrude`]) the painter keeps it linear, as every other
+    /// edge ramps; across a blurred shadow's band of `±2σ` it shapes it with a
+    /// smoothstep, a close fit of a Gaussian edge.
     pub coverage: f32,
     /// Straight (not premultiplied) RGBA.
     pub color: [f32; 4],
@@ -1513,7 +1514,10 @@ fn rounded_shapes(rect: SceneRect, radii: [f32; 4], t: Affine) -> Shapes {
 }
 
 fn triangulate(shapes: &Shapes) -> Vec<[[f32; 2]; 3]> {
-    let Some((vertices, indices)) = tessellate(shapes.iter().flatten()) else {
+    let Some(Tessellation {
+        vertices, indices, ..
+    }) = tessellate(shapes.iter().flatten())
+    else {
         return Vec::new();
     };
     indices
@@ -1534,13 +1538,26 @@ fn triangulate(shapes: &Shapes) -> Vec<[[f32; 2]; 3]> {
         .collect()
 }
 
+struct Tessellation {
+    vertices: Vec<[f32; 2]>,
+    indices: Vec<u32>,
+    /// Per vertex, the `[contour, point]` of the outline it is, or `None` for
+    /// one the tessellator added where contours cross.
+    outline: Vec<Option<[usize; 2]>>,
+}
+
 /// Interior triangles of a set of closed contours, even-odd.
-fn tessellate<'a>(
-    contours: impl Iterator<Item = &'a Contour>,
-) -> Option<(Vec<[f32; 2]>, Vec<u32>)> {
+fn tessellate<'a>(contours: impl Iterator<Item = &'a Contour>) -> Option<Tessellation> {
     let mut builder = LyonPath::builder();
-    let mut any = false;
-    for contour in contours {
+    // Indexed by the endpoint lyon assigned each outline point.
+    let mut endpoints = Vec::new();
+    let mut record = |id: lyon_tessellation::path::EndpointId, at: [usize; 2]| {
+        if endpoints.len() <= id.to_usize() {
+            endpoints.resize(id.to_usize() + 1, None);
+        }
+        endpoints[id.to_usize()] = Some(at);
+    };
+    for (index, contour) in contours.enumerate() {
         let mut points = contour.iter();
         let Some(first) = points.next() else {
             continue;
@@ -1548,31 +1565,47 @@ fn tessellate<'a>(
         if contour.len() < 3 {
             continue;
         }
-        builder.begin(lyon_point([first[0] as f32, first[1] as f32]));
-        for p in points {
-            builder.line_to(lyon_point([p[0] as f32, p[1] as f32]));
+        record(
+            builder.begin(lyon_point([first[0] as f32, first[1] as f32])),
+            [index, 0],
+        );
+        for (point, p) in points.enumerate() {
+            record(
+                builder.line_to(lyon_point([p[0] as f32, p[1] as f32])),
+                [index, point + 1],
+            );
         }
         builder.end(true);
-        any = true;
     }
-    if !any {
+    if endpoints.is_empty() {
         return None;
     }
     let path = builder.build();
-    let mut buffers: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
+    let mut buffers: VertexBuffers<([f32; 2], Option<[usize; 2]>), u32> = VertexBuffers::new();
     FillTessellator::new()
-        .tessellate_path(
+        .tessellate_with_ids(
+            path.id_iter(),
             &path,
+            None,
             &FillOptions::tolerance(TOLERANCE).with_fill_rule(LyonFill::EvenOdd),
             &mut BuffersBuilder::new(&mut buffers, |vertex: FillVertex| {
-                vertex.position().to_array()
+                let outline = vertex.sources().find_map(|source| match source {
+                    VertexSource::Endpoint { id } => endpoints.get(id.to_usize()).copied()?,
+                    VertexSource::Edge { .. } => None,
+                });
+                (vertex.position().to_array(), outline)
             }),
         )
         .ok()?;
     if buffers.indices.is_empty() {
         return None;
     }
-    Some((buffers.vertices, buffers.indices))
+    let (vertices, outline) = buffers.vertices.into_iter().unzip();
+    Some(Tessellation {
+        vertices,
+        indices: buffers.indices,
+        outline,
+    })
 }
 
 fn cross(a: [f32; 2], b: [f32; 2], c: [f32; 2]) -> f32 {
@@ -1706,32 +1739,56 @@ impl MeshBuilder {
         index
     }
 
-    /// Solid interior plus a one-physical-pixel fringe outside every edge.
+    /// Solid interior plus a one-physical-pixel fringe centred on every edge,
+    /// as every other edge ramps: its inner ring, where the interior ends, half
+    /// a pixel inside the outline and its outer ring half a pixel outside. An
+    /// `extrude` of a miter puts a vertex half a physical pixel along it.
     fn fill(&mut self, shapes: &Shapes, color: [f32; 4]) {
         if color[3] <= 0.0 {
             return;
         }
         for shape in shapes {
-            let Some((vertices, indices)) = tessellate(shape.iter()) else {
+            let Some(Tessellation {
+                vertices,
+                indices,
+                outline,
+            }) = tessellate(shape.iter())
+            else {
                 continue;
             };
+            let sign = shape_outward_sign(shape);
+            let rings: Vec<_> = shape
+                .iter()
+                .map(|contour| {
+                    let points: Vec<[f32; 2]> =
+                        contour.iter().map(|p| [p[0] as f32, p[1] as f32]).collect();
+                    let miters = if points.len() < 3 {
+                        Vec::new()
+                    } else {
+                        miters(&points, sign)
+                    };
+                    (points, miters)
+                })
+                .collect();
+            // The interior's outline vertices move in with the inner ring, so
+            // the two meet without overlapping; a vertex the tessellator added
+            // where contours cross stays put.
             let base = self.vertices.len() as u32;
-            for position in vertices {
-                self.vertex(position, [0.0, 0.0], 1.0, color);
+            for (position, outline) in vertices.into_iter().zip(outline) {
+                let extrude = outline
+                    .and_then(|[contour, point]| rings[contour].1.get(point))
+                    .map_or([0.0, 0.0], |miter| [-miter[0], -miter[1]]);
+                self.vertex(position, extrude, 1.0, color);
             }
             self.indices
                 .extend(indices.iter().map(|index| base + index));
-            let sign = shape_outward_sign(shape);
-            for contour in shape {
-                let points: Vec<[f32; 2]> =
-                    contour.iter().map(|p| [p[0] as f32, p[1] as f32]).collect();
-                if points.len() < 3 {
+            for (points, miters) in &rings {
+                if miters.is_empty() {
                     continue;
                 }
-                let miters = miters(&points, sign);
                 self.band(
-                    &points,
-                    |i| (points[i], [0.0, 0.0]),
+                    points,
+                    |i| (points[i], [-miters[i][0], -miters[i][1]]),
                     |i| (points[i], miters[i]),
                     color,
                 );
@@ -1887,7 +1944,10 @@ impl MeshBuilder {
                     color,
                 );
             }
-            if let Some((vertices, indices)) = tessellate(inner_rings.iter()) {
+            if let Some(Tessellation {
+                vertices, indices, ..
+            }) = tessellate(inner_rings.iter())
+            {
                 let base = self.vertices.len() as u32;
                 for position in vertices {
                     self.vertex(position, [0.0, 0.0], 1.0, color);
@@ -1947,7 +2007,10 @@ impl MeshBuilder {
             let grown = reach.simplify_shape(OverlayFill::NonZero);
             let beyond = shapes.overlay(&grown, OverlayRule::Difference, OverlayFill::NonZero);
             for shape in &beyond {
-                if let Some((vertices, indices)) = tessellate(shape.iter()) {
+                if let Some(Tessellation {
+                    vertices, indices, ..
+                }) = tessellate(shape.iter())
+                {
                     let base = self.vertices.len() as u32;
                     for position in vertices {
                         self.vertex(position, [0.0, 0.0], 1.0, shadow.color);
@@ -2212,6 +2275,34 @@ mod tests {
                     (coverage - expected).abs() < 0.05,
                     "{label} d={d}: coverage {coverage}, expected {expected}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn every_outline_vertex_of_a_fill_moves_in_with_its_inner_ring() {
+        // A frame whose points f32 cannot hold exactly, around a hole.
+        let shapes: Shapes = vec![vec![
+            vec![[0.1, 0.1], [40.3, 0.7], [41.9, 30.1], [0.3, 29.7]],
+            vec![[10.1, 10.3], [20.7, 20.9], [30.3, 10.1]],
+        ]]
+        .simplify_shape(OverlayFill::EvenOdd);
+        let mut mesh = MeshBuilder::default();
+        mesh.fill(&shapes, [1.0; 4]);
+        let solid: Vec<_> = mesh
+            .vertices
+            .iter()
+            .filter(|vertex| vertex.coverage == 1.0)
+            .collect();
+        for vertex in &solid {
+            assert_ne!(
+                vertex.extrude,
+                [0.0, 0.0],
+                "{:?} stays put",
+                vertex.position
+            );
+            for other in solid.iter().filter(|o| o.position == vertex.position) {
+                assert_eq!(other.extrude, vertex.extrude, "{:?}", vertex.position);
             }
         }
     }

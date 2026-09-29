@@ -1256,7 +1256,10 @@ fn create_path_pipeline(
                 blend: Some(blend),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[("PATH_SAMPLES", f64::from(sample_count))],
+                ..Default::default()
+            },
         }),
         // Tessellated triangles come in either winding.
         primitive: wgpu::PrimitiveState {
