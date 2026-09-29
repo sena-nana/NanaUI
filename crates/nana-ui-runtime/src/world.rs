@@ -540,17 +540,17 @@ pub struct UiWorld {
     input: input::WorldInputState,
     nodes: NodeStore,
     retired: RetiredIds,
-    dirty_entities: HashSet<StableNodeId>,
+    dirty_entities: HashSet<StableNodeId, BuildIdHasher>,
     /// Monotonic, non-consuming invalidation epoch. Input routing uses this
     /// to report whether dispatch scheduled work without scanning or draining
     /// the retained work queues.
     pending_work_revision: u64,
-    hit_test_index: HashMap<DocumentId, HitIndex>,
+    hit_test_index: HashMap<DocumentId, HitIndex, BuildIdHasher>,
     /// Scroll deltas awaiting the in-place hit-index patch (see
     /// `UiMutation::SetScrollOffset`). Drained by the frame driver.
     scroll_hit_updates: Vec<(StableNodeId, [f32; 2])>,
     /// Input changes that cannot be represented by scroll translation alone.
-    non_scroll_hit_dirty: HashSet<StableNodeId>,
+    non_scroll_hit_dirty: HashSet<StableNodeId, BuildIdHasher>,
     scroll_content_bounds: RefCell<scroll_bounds::ContentBoundsIndex>,
     /// Every node styled `overflow: auto | scroll` (what a `ScrollView`
     /// projects too). Despawned ids are dropped when a commit re-measures.
@@ -564,10 +564,10 @@ pub struct UiWorld {
     scroll_requested: Vec<(StableNodeId, ScrollOffset)>,
     /// Scroll containers whose offset that re-measure clamped, for the
     /// framework to announce. Drained by `take_scroll_reclamped`.
-    scroll_reclamped: HashSet<StableNodeId>,
+    scroll_reclamped: HashSet<StableNodeId, BuildIdHasher>,
     /// Scroll containers whose viewport size a re-measure changed since the
     /// last [`Self::take_scroll_resized`].
-    scroll_resized: HashSet<StableNodeId>,
+    scroll_resized: HashSet<StableNodeId, BuildIdHasher>,
     /// Last recording of each custom-painted node, keyed by what the painter
     /// promised decides its output (Issue #217). Extraction reads through it,
     /// so an unchanged node is never re-recorded. Only painted nodes have an
@@ -585,7 +585,7 @@ pub struct UiWorld {
     animations: HashMap<AnimationId, ActiveAnimation>,
     /// Running width / height / padding / margin tracks by target, in start
     /// order: what a node's layout overlay reads instead of every animation.
-    layout_length_tracks: HashMap<StableNodeId, Vec<AnimationId>>,
+    layout_length_tracks: HashMap<StableNodeId, Vec<AnimationId>, BuildIdHasher>,
     pub(crate) animation_now: Duration,
     presentation: nana_ui_core::motion::PresentationStore,
     /// Input / a11y / focus queries increment this. Idle `advance_animations`
@@ -597,15 +597,15 @@ pub struct UiWorld {
     /// Last `advance_animations` attribution (mutations / layout / style /
     /// extract). Track classification is recomputed live.
     last_motion_frame: MotionWorkCounters,
-    compositor_layer_requests: HashSet<StableNodeId>,
+    compositor_layer_requests: HashSet<StableNodeId, BuildIdHasher>,
     motion_descriptors: nana_ui_core::motion::MotionDescriptorStore,
     /// Mutation-scoped Finished/Cancelled not yet observed. A later successful
     /// commit closes this batch so park-cancel does not leak onto an idle
     /// `advance_animations`. Deadline completions still go out on that wake.
     pending_animation_events: Vec<crate::AnimationEvent>,
-    surface_motion: HashMap<StableNodeId, motion::SurfaceMotion>,
-    closing_surfaces: HashSet<StableNodeId>,
-    hover_transitions: HashMap<StableNodeId, style::HoverTransition>,
+    surface_motion: HashMap<StableNodeId, motion::SurfaceMotion, BuildIdHasher>,
+    closing_surfaces: HashSet<StableNodeId, BuildIdHasher>,
+    hover_transitions: HashMap<StableNodeId, style::HoverTransition, BuildIdHasher>,
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
     /// The installed design system. This is the authority; `style_model` below
     /// is its hot slice, cached so per-node resolution does not chase an `Arc`
@@ -675,38 +675,38 @@ pub struct UiWorld {
     /// `vw` / `vh`). A resize dirties this set together with document roots
     /// instead of discarding the retained layout cache.
     viewport_basis_nodes: usize,
-    viewport_basis: HashMap<DocumentId, HashSet<StableNodeId>>,
+    viewport_basis: HashMap<DocumentId, HashSet<StableNodeId>, BuildIdHasher>,
     /// Nodes that accept a drop, and what they accept. A sparse index rather
     /// than a field on every node: almost no tree has drop targets.
-    drop_targets: HashMap<StableNodeId, nana_ui_core::DropAccepts>,
+    drop_targets: HashMap<StableNodeId, nana_ui_core::DropAccepts, BuildIdHasher>,
     /// Innermost file-drop hover target, if any. Scene paints overlay chrome.
     drop_hover: Option<(StableNodeId, nana_ui_core::DropEffect)>,
     /// Document-level text selection (not a second TextInput). One range per document.
-    document_text_selections: HashMap<DocumentId, crate::DocumentTextSelection>,
+    document_text_selections: HashMap<DocumentId, crate::DocumentTextSelection, BuildIdHasher>,
     /// Viewport each document was last laid out against.
     ///
     /// Geometry projection runs on `&UiWorld` with no window context, but
     /// overlay surfaces that the framework places itself (the `Select` menu)
     /// have to fold back inside the window near its edges. Layout is the one
     /// place that already knows the viewport, so it records it here.
-    document_viewports: HashMap<DocumentId, crate::LayoutViewport>,
+    document_viewports: HashMap<DocumentId, crate::LayoutViewport, BuildIdHasher>,
     /// Last applied presence flags per entity, so park/remove/despawn can
     /// decrement without double-counting.
-    presence_flags: HashMap<StableNodeId, PresenceFlags>,
+    presence_flags: HashMap<StableNodeId, PresenceFlags, BuildIdHasher>,
     /// Subtree roots detached by Remove or Park. Mounted document/scene roots
     /// are created with no parent and are not in this set.
-    detached: HashSet<StableNodeId>,
+    detached: HashSet<StableNodeId, BuildIdHasher>,
     /// The `detached` roots that are still `Mounted` (a `Detach`, not a
     /// park). A parked root's whole subtree is `Parked`, so `is_mounted`
     /// already answers presence under it; only these need an ancestor walk.
-    detached_mounted: HashSet<StableNodeId>,
+    detached_mounted: HashSet<StableNodeId, BuildIdHasher>,
     /// Live roots per document: `parent.is_none()` and [`Self::presence_live`].
-    live_document_roots: HashMap<DocumentId, BTreeSet<StableNodeId>>,
+    live_document_roots: HashMap<DocumentId, BTreeSet<StableNodeId>, BuildIdHasher>,
     /// Nodes carrying an `OverlayHostState` component. Overlay bookkeeping walks
     /// this index instead of every entity, so clearing references from a removed
     /// node costs the host count rather than the world size.
-    overlay_host_nodes: HashSet<StableNodeId>,
-    overlay_hosts_by_document: HashMap<DocumentId, HashSet<StableNodeId>>,
+    overlay_host_nodes: HashSet<StableNodeId, BuildIdHasher>,
+    overlay_hosts_by_document: HashMap<DocumentId, HashSet<StableNodeId>, BuildIdHasher>,
     /// Live nodes grouped by the component that created them.
     ///
     /// Several per-pointer-event paths need "every X in this document" -- the
@@ -720,7 +720,7 @@ pub struct UiWorld {
     /// through `SetComponentType`, including the semantic-binding path that
     /// never touches `stamp_component_type`.
     nodes_by_component: HashMap<ComponentTypeId, HashSet<StableNodeId>>,
-    overlay_dependents: HashMap<StableNodeId, HashSet<StableNodeId>>,
+    overlay_dependents: HashMap<StableNodeId, HashSet<StableNodeId>, BuildIdHasher>,
     /// Nodes visited by mutation validation since the last drain, summed over
     /// every commit the next frame will consume. Validation must scale with the
     /// batch, not the retained world; this is the sentinel for that invariant.
@@ -761,36 +761,36 @@ impl UiWorld {
             input: input::WorldInputState::default(),
             nodes: NodeStore::new(),
             retired: RetiredIds::default(),
-            dirty_entities: HashSet::new(),
+            dirty_entities: HashSet::default(),
             pending_work_revision: 0,
-            hit_test_index: HashMap::new(),
+            hit_test_index: HashMap::default(),
             scroll_hit_updates: Vec::new(),
-            non_scroll_hit_dirty: HashSet::new(),
+            non_scroll_hit_dirty: HashSet::default(),
             scroll_content_bounds: RefCell::new(scroll_bounds::ContentBoundsIndex::default()),
             scroll_containers: NodeSet::default(),
             scroll_restyled: Vec::new(),
             scroll_layout_touched: false,
             scroll_requested: Vec::new(),
-            scroll_reclamped: HashSet::new(),
-            scroll_resized: HashSet::new(),
+            scroll_reclamped: HashSet::default(),
+            scroll_resized: HashSet::default(),
             paint_recordings: RefCell::new(crate::NodeMap::default()),
             paint_text_engine: None,
             painter_overrides: crate::NodeMap::default(),
             pending_render_removals: Vec::new(),
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
-            layout_length_tracks: HashMap::new(),
+            layout_length_tracks: HashMap::default(),
             animation_now: Duration::ZERO,
             presentation: nana_ui_core::motion::PresentationStore::new(),
             presentation_query_samples: Cell::new(0),
             presentation_samples_at_advance: Cell::new(0),
             last_motion_frame: MotionWorkCounters::default(),
-            compositor_layer_requests: HashSet::new(),
+            compositor_layer_requests: HashSet::default(),
             motion_descriptors: nana_ui_core::motion::MotionDescriptorStore::new(),
             pending_animation_events: Vec::new(),
-            surface_motion: HashMap::new(),
-            closing_surfaces: HashSet::new(),
-            hover_transitions: HashMap::new(),
+            surface_motion: HashMap::default(),
+            closing_surfaces: HashSet::default(),
+            hover_transitions: HashMap::default(),
             animation_deadlines: BTreeSet::new(),
             theme: nana_ui_core::builtin_theme_arc(ThemeMode::default()),
             style_model: StyleModelRef::default(),
@@ -823,19 +823,19 @@ impl UiWorld {
             clip_visuals: 0,
             z_index_nodes: 0,
             viewport_basis_nodes: 0,
-            viewport_basis: HashMap::new(),
-            document_viewports: HashMap::new(),
-            drop_targets: HashMap::new(),
+            viewport_basis: HashMap::default(),
+            document_viewports: HashMap::default(),
+            drop_targets: HashMap::default(),
             drop_hover: None,
-            document_text_selections: HashMap::new(),
-            presence_flags: HashMap::new(),
-            detached: HashSet::new(),
-            detached_mounted: HashSet::new(),
-            live_document_roots: HashMap::new(),
-            overlay_host_nodes: HashSet::new(),
-            overlay_hosts_by_document: HashMap::new(),
+            document_text_selections: HashMap::default(),
+            presence_flags: HashMap::default(),
+            detached: HashSet::default(),
+            detached_mounted: HashSet::default(),
+            live_document_roots: HashMap::default(),
+            overlay_host_nodes: HashSet::default(),
+            overlay_hosts_by_document: HashMap::default(),
             nodes_by_component: HashMap::new(),
-            overlay_dependents: HashMap::new(),
+            overlay_dependents: HashMap::default(),
             validation_nodes_scanned: 0,
             palette_epoch: 1,
             structural_change_parents: Vec::new(),
@@ -1742,6 +1742,12 @@ impl UiWorld {
         self.nodes.visual(id).cloned()
     }
 
+    /// [`Self::standard_visual`] without the copy, for projections that
+    /// compare before they write.
+    pub(crate) fn standard_visual_ref(&self, id: StableNodeId) -> Option<&StandardVisual> {
+        self.nodes.visual(id)
+    }
+
     pub fn component_geometry(&self, id: StableNodeId) -> Option<crate::ComponentGeometry> {
         let visual = self.nodes.visual(id)?;
         let style = self.nodes.get(id)?.resolved.0.as_ref();
@@ -2078,13 +2084,18 @@ impl UiWorld {
 
     fn presence_flags_of(&self, id: StableNodeId) -> PresenceFlags {
         let visual = self.nodes.visual(id);
-        let style = self.nodes.get(id).map(|n| &n.style);
+        let record = self.nodes.get(id);
+        debug_assert!(
+            record.is_none_or(|record| record.layout_depends_on_viewport
+                == record.style.layout.depends_on_viewport()),
+            "{id:?}'s cached viewport dependency went stale"
+        );
         PresenceFlags {
             confirm: is_confirm_modal(visual),
             clip: is_clip_visual(visual),
-            z_index: style.is_some_and(|style| style.layout.z_index.is_some())
+            z_index: record.is_some_and(|record| record.style.layout.z_index.is_some())
                 || is_triggered_menu_overlay(visual),
-            viewport: style.is_some_and(|style| style.layout.depends_on_viewport()),
+            viewport: record.is_some_and(|record| record.layout_depends_on_viewport),
         }
     }
 

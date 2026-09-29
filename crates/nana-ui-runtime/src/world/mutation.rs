@@ -156,6 +156,13 @@ impl<'a> ValidationPlan<'a> {
     }
 
     fn overlay_referencing(&mut self, target: StableNodeId) -> Vec<StableNodeId> {
+        // Almost no node is an overlay's focus target: answer without
+        // building the set.
+        if !self.source.overlay_dependents.contains_key(&target)
+            && !self.overlay_dependents.contains_key(&target)
+        {
+            return Vec::new();
+        }
         let mut hosts = self
             .source
             .overlay_dependents
@@ -163,7 +170,7 @@ impl<'a> ValidationPlan<'a> {
             .into_iter()
             .flatten()
             .copied()
-            .collect::<HashSet<_>>();
+            .collect::<NodeSet>();
         hosts.extend(
             self.overlay_dependents
                 .get(&target)
@@ -212,6 +219,12 @@ impl<'a> ValidationPlan<'a> {
     }
 
     pub(super) fn validate(&mut self, mutations: &[UiMutation]) -> Result<(), UiWorldError> {
+        // Staged accessibility is read only to check overlay hosts; with none
+        // in the world or in this batch, skip copying it.
+        let overlays = !self.source.overlay_host_nodes.is_empty()
+            || mutations
+                .iter()
+                .any(|mutation| matches!(mutation, UiMutation::SetOverlayHost { .. }));
         for mutation in mutations {
             match mutation {
                 UiMutation::Insert { child: id, .. }
@@ -352,7 +365,9 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::SetAccessibility { id, accessibility } => {
                     self.require_exists(*id)?;
-                    self.accessibility.insert(*id, accessibility.clone());
+                    if overlays {
+                        self.accessibility.insert(*id, accessibility.clone());
+                    }
                 }
                 UiMutation::SetSurfaceOpen { id, open, .. } => {
                     self.require_exists(*id)?;

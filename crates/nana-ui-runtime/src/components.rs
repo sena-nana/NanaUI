@@ -1649,7 +1649,7 @@ impl InteractionStyle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct NodeStyle {
     pub layout: Arc<LayoutStyle>,
     pub foreground: Option<SemanticColorRole>,
@@ -1713,6 +1713,47 @@ pub struct NodeStyle {
 impl Default for NodeStyle {
     fn default() -> Self {
         Self::visible()
+    }
+}
+
+/// Field by field, with the layout compared by pointer first: a projection
+/// usually hands back the very `Arc` the world holds, and `Arc`'s own
+/// equality only takes that shortcut for `Eq` contents, which a layout of
+/// floats is not.
+impl PartialEq for NodeStyle {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            layout,
+            foreground,
+            background,
+            border,
+            radius,
+            corner_radii,
+            control_height,
+            control_padding_x,
+            control_padding_y,
+            surface_padding,
+            square,
+            interaction,
+            text_horizontal_alignment,
+            text_vertical_alignment,
+            painter,
+        } = self;
+        foreground == &other.foreground
+            && background == &other.background
+            && border == &other.border
+            && radius == &other.radius
+            && corner_radii == &other.corner_radii
+            && control_height == &other.control_height
+            && control_padding_x == &other.control_padding_x
+            && control_padding_y == &other.control_padding_y
+            && surface_padding == &other.surface_padding
+            && square == &other.square
+            && text_horizontal_alignment == &other.text_horizontal_alignment
+            && text_vertical_alignment == &other.text_vertical_alignment
+            && interaction == &other.interaction
+            && painter == &other.painter
+            && (Arc::ptr_eq(layout, &other.layout) || **layout == *other.layout)
     }
 }
 

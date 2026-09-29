@@ -428,11 +428,13 @@ impl ComponentView for Text {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let text = TextContent {
-            value: self.value.clone().into(),
-        };
-        if world.text(id) != Some(text.value.as_str()) {
-            mutations.set_text(id, text);
+        if world.text(id) != Some(self.value.as_str()) {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: self.value.clone().into(),
+                },
+            );
         }
         project_common(
             id,
@@ -646,33 +648,69 @@ impl ComponentView for Button {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let text = TextContent {
-            value: self.label.clone().into(),
-        };
-        if world.text(id) != Some(text.value.as_str()) {
-            mutations.set_text(id, text);
+        // The label goes to the text, the visual and the accessible name.
+        // Compare each against the world first and copy the label once,
+        // only if one of them changed.
+        let mut shared = None;
+        if world.text(id) != Some(self.label.as_str()) {
+            let label = shared_label(&mut shared, &self.label);
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: label.into(),
+                },
+            );
         }
-        let visual = StandardVisual::Button {
-            label: Arc::from(self.label.as_str()),
-            icon: self.icon,
-            trailing_icon: self.trailing_icon,
-            icon_size: self
-                .icon_size
-                .filter(|size| size.is_finite() && *size >= 0.0)
-                .unwrap_or(self.size.icon_size()),
-            icon_gap: if self.icon_gap.is_finite() {
-                self.icon_gap.max(0.0)
-            } else {
-                6.0
-            },
-            kind: self.kind,
-            size: self.size,
-            loading: self.loading,
-            loading_phase: self.loading_phase,
-            invalid: self.invalid,
+        let icon_size = self
+            .icon_size
+            .filter(|size| size.is_finite() && *size >= 0.0)
+            .unwrap_or(self.size.icon_size());
+        let icon_gap = if self.icon_gap.is_finite() {
+            self.icon_gap.max(0.0)
+        } else {
+            6.0
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
-            mutations.set_standard_visual(id, Some(visual));
+        let visual_current = matches!(
+            world.standard_visual_ref(id),
+            Some(StandardVisual::Button {
+                label,
+                icon,
+                trailing_icon,
+                icon_size: current_size,
+                icon_gap: current_gap,
+                kind,
+                size,
+                loading,
+                loading_phase,
+                invalid,
+            }) if **label == *self.label
+                && *icon == self.icon
+                && *trailing_icon == self.trailing_icon
+                && *current_size == icon_size
+                && *current_gap == icon_gap
+                && *kind == self.kind
+                && *size == self.size
+                && *loading == self.loading
+                && *loading_phase == self.loading_phase
+                && *invalid == self.invalid
+        );
+        if !visual_current {
+            let label = shared_label(&mut shared, &self.label);
+            mutations.set_standard_visual(
+                id,
+                Some(StandardVisual::Button {
+                    label,
+                    icon: self.icon,
+                    trailing_icon: self.trailing_icon,
+                    icon_size,
+                    icon_gap,
+                    kind: self.kind,
+                    size: self.size,
+                    loading: self.loading,
+                    loading_phase: self.loading_phase,
+                    invalid: self.invalid,
+                }),
+            );
         }
         let mut effective_style = self.style.clone();
         let recipe = world.theme().recipes().button();
@@ -698,6 +736,12 @@ impl ComponentView for Button {
             effective_style.interaction.pressed.border = border;
             effective_style.interaction.focused.border = border;
         }
+        // The accessible name reuses the world's copy while it still reads
+        // the same, so an unchanged button allocates nothing here.
+        let label = match world.accessibility(id).and_then(|a11y| a11y.label.as_ref()) {
+            Some(current) if **current == *self.label => Arc::clone(current),
+            _ => shared_label(&mut shared, &self.label),
+        };
         project_common(
             id,
             world,
@@ -709,7 +753,7 @@ impl ComponentView for Button {
             },
             AccessibilityState {
                 role: AccessibilityRole::Button,
-                label: Some(Arc::from(self.label.as_str())),
+                label: Some(label),
                 disabled: self.disabled || self.loading,
                 busy: self.loading,
                 invalid: self.invalid,
@@ -717,6 +761,11 @@ impl ComponentView for Button {
             },
         );
     }
+}
+
+/// `text` as an `Arc<str>`, copied at most once per projection.
+fn shared_label(shared: &mut Option<Arc<str>>, text: &str) -> Arc<str> {
+    Arc::clone(shared.get_or_insert_with(|| Arc::from(text)))
 }
 
 /// Compact action whose visible glyph is independent from its accessible name.

@@ -22,19 +22,19 @@ struct StructuralEntry {
 
 pub(crate) struct ReactiveHost {
     tag: u64,
-    nodes: HashMap<StableNodeId, NodeEntry>,
-    structural: HashMap<StableNodeId, StructuralEntry>,
-    anchors: HashMap<StableNodeId, ScopeKey>,
+    nodes: HashMap<StableNodeId, NodeEntry, crate::BuildIdHasher>,
+    structural: HashMap<StableNodeId, StructuralEntry, crate::BuildIdHasher>,
+    anchors: HashMap<StableNodeId, ScopeKey, crate::BuildIdHasher>,
     queue: Vec<(EffectKey, EffectTarget)>,
     patches: Vec<(StableNodeId, EffectKey)>,
     flushing: bool,
     /// Removed rows and branches playing their leave, despawned when it
     /// ends.
-    leaving: HashMap<StableNodeId, Leaving>,
+    leaving: HashMap<StableNodeId, Leaving, crate::BuildIdHasher>,
     /// Rows to slide from where they were once layout has placed them.
     flips: Vec<PendingFlip>,
     /// Properties of a node that animate when its bindings change them.
-    implicit: HashMap<StableNodeId, Box<[crate::view::Implicit]>>,
+    implicit: HashMap<StableNodeId, Box<[crate::view::Implicit]>, crate::BuildIdHasher>,
 }
 
 struct Leaving {
@@ -53,15 +53,15 @@ impl Default for ReactiveHost {
     fn default() -> Self {
         Self {
             tag: rx::next_context_tag(),
-            nodes: HashMap::new(),
-            structural: HashMap::new(),
-            anchors: HashMap::new(),
+            nodes: HashMap::default(),
+            structural: HashMap::default(),
+            anchors: HashMap::default(),
             queue: Vec::new(),
             patches: Vec::new(),
             flushing: false,
-            leaving: HashMap::new(),
+            leaving: HashMap::default(),
             flips: Vec::new(),
-            implicit: HashMap::new(),
+            implicit: HashMap::default(),
         }
     }
 }

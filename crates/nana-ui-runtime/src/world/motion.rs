@@ -489,6 +489,11 @@ impl UiWorld {
         // reads has to follow. A node with no design intent keeps sharing the
         // same `Arc`, so an animation that touches no tier costs nothing.
         self.refresh_resolved_layout(sample.target);
+        // A pixel length can only take a viewport dependency away.
+        let record = self.record_mut(sample.target);
+        if record.layout_depends_on_viewport {
+            record.layout_depends_on_viewport = record.style.layout.depends_on_viewport();
+        }
         if sample.property != crate::AnimatableProperty::Margin {
             // Written straight onto the authored style, not through
             // `SetStyle`: the content box, and whether its height is definite,

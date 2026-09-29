@@ -94,6 +94,10 @@ pub(crate) struct NodeRecord {
     /// projection diffs against.
     pub resolved_layout: Arc<nana_ui_core::LayoutStyle>,
     pub resolved: ResolvedStyle,
+    /// Whether [`Self::style`]'s layout reads the viewport, kept with it so
+    /// presence bookkeeping after a visual or text write does not rescan
+    /// the layout's lengths.
+    pub layout_depends_on_viewport: bool,
     /// The writing mode, direction and text orientation this node inherits:
     /// its parent's computed values, as last resolved. Kept beside the
     /// record, not only inside the parent's `ComputedStyle`, so layout reads a
@@ -123,6 +127,7 @@ impl NodeRecord {
             style: NodeStyle::default(),
             resolved_layout: NodeStyle::default().layout,
             resolved: ResolvedStyle::interned_default(),
+            layout_depends_on_viewport: false,
             inherited_writing: nana_ui_core::WritingContext::default(),
             inherited_orientation: nana_ui_core::TextOrientationSpec::Mixed,
             text: TextContent::default(),

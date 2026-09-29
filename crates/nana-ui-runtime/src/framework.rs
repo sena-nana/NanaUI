@@ -587,22 +587,22 @@ struct HoverCardLifecycle {
 #[derive(Default)]
 struct ComponentLifecycle {
     now: Duration,
-    text_area_resizes: HashMap<(DocumentId, u64), StableNodeId>,
+    text_area_resizes: HashMap<(DocumentId, u64), StableNodeId, crate::BuildIdHasher>,
     #[cfg(feature = "rich-text")]
-    rich_text_presses: HashMap<(DocumentId, u64), StableNodeId>,
-    pointer_positions: HashMap<(DocumentId, u64), (f32, f32)>,
-    tooltips: HashMap<StableNodeId, TooltipLifecycle>,
+    rich_text_presses: HashMap<(DocumentId, u64), StableNodeId, crate::BuildIdHasher>,
+    pointer_positions: HashMap<(DocumentId, u64), (f32, f32), crate::BuildIdHasher>,
+    tooltips: HashMap<StableNodeId, TooltipLifecycle, crate::BuildIdHasher>,
     #[cfg(feature = "charts")]
-    chart_tooltips: HashMap<StableNodeId, StableNodeId>,
-    hover_cards: HashMap<StableNodeId, HoverCardLifecycle>,
-    loading: HashMap<StableNodeId, LoadingComponent>,
-    overlay_pointer_sequences: HashSet<(DocumentId, u64)>,
-    overlay_outside_presses: HashMap<(DocumentId, u64), (StableNodeId, u64)>,
-    overlay_activation_tokens: HashMap<StableNodeId, u64>,
+    chart_tooltips: HashMap<StableNodeId, StableNodeId, crate::BuildIdHasher>,
+    hover_cards: HashMap<StableNodeId, HoverCardLifecycle, crate::BuildIdHasher>,
+    loading: HashMap<StableNodeId, LoadingComponent, crate::BuildIdHasher>,
+    overlay_pointer_sequences: HashSet<(DocumentId, u64), crate::BuildIdHasher>,
+    overlay_outside_presses: HashMap<(DocumentId, u64), (StableNodeId, u64), crate::BuildIdHasher>,
+    overlay_activation_tokens: HashMap<StableNodeId, u64, crate::BuildIdHasher>,
     next_overlay_activation_token: u64,
-    split_hover_probe_last: HashMap<DocumentId, Duration>,
+    split_hover_probe_last: HashMap<DocumentId, Duration, crate::BuildIdHasher>,
     /// Per `PaneTree`, the boxes it owns, addressed by its own split / pane id.
-    pane_tree_slots: HashMap<StableNodeId, HashMap<Arc<str>, StableNodeId>>,
+    pane_tree_slots: HashMap<StableNodeId, HashMap<Arc<str>, StableNodeId>, crate::BuildIdHasher>,
 }
 
 impl ComponentLifecycle {
@@ -993,57 +993,59 @@ pub enum BuiltinComponents {
 /// Owns typed view state while [`UiWorld`] remains the retained UI authority.
 pub struct AppContext {
     world: UiWorld,
-    views: HashMap<StableNodeId, Box<dyn Any + Send>>,
+    views: HashMap<StableNodeId, Box<dyn Any + Send>, crate::BuildIdHasher>,
     /// Opt-in reproject entry points keyed by node, registered from
     /// [`ComponentView::wants_child_reproject`] when a component view is
     /// stamped. The stored function reprojects through the typed
     /// `update_component` pipeline.
-    child_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
+    child_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
     /// Opt-in reproject when installed metrics change, registered from
     /// [`ComponentView::wants_metrics_reproject`].
-    metrics_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
+    metrics_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
     /// Opt-in reproject when the installed component recipes change,
     /// registered from [`ComponentView::wants_recipe_reproject`].
-    recipe_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
+    recipe_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
     /// Opt-in reproject when the host's text backend changes, registered from
     /// [`ComponentView::wants_text_backend_reproject`].
-    text_backend_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
+    text_backend_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
     /// Nodes queued for one child-structure reproject; deduplicated per drain.
     pending_child_reprojects: Vec<StableNodeId>,
     /// Guards reentrant drains while a reproject commits its own mutations.
     draining_child_reprojects: bool,
-    event_handlers: HashMap<(StableNodeId, TypeId), Vec<EventHandler>>,
-    key_handlers: HashMap<StableNodeId, keyboard::KeyHandler>,
-    event_dependencies: HashMap<StableNodeId, HashSet<(StableNodeId, TypeId)>>,
+    event_handlers: HashMap<(StableNodeId, TypeId), Vec<EventHandler>, crate::BuildIdHasher>,
+    key_handlers: HashMap<StableNodeId, keyboard::KeyHandler, crate::BuildIdHasher>,
+    event_dependencies:
+        HashMap<StableNodeId, HashSet<(StableNodeId, TypeId)>, crate::BuildIdHasher>,
     actions: HashMap<ActionId, RegisteredAction>,
     extensions: HashSet<String>,
     components: ComponentRegistry,
-    activations: HashMap<TypeId, ActivationFn>,
-    secondary_presses: HashMap<TypeId, SecondaryPressFn>,
-    file_drops: HashMap<TypeId, FileDropFn>,
+    activations: HashMap<TypeId, ActivationFn, crate::BuildIdHasher>,
+    secondary_presses: HashMap<TypeId, SecondaryPressFn, crate::BuildIdHasher>,
+    file_drops: HashMap<TypeId, FileDropFn, crate::BuildIdHasher>,
     /// [`reproject_erased`] per component type created through this context.
-    reprojectors: HashMap<TypeId, ReprojectFn>,
+    reprojectors: HashMap<TypeId, ReprojectFn, crate::BuildIdHasher>,
     /// [`ComponentView::BEHAVIOR`] per component type created through this
     /// context.
-    behaviors: HashMap<TypeId, hooks::ErasedBehavior>,
+    behaviors: HashMap<TypeId, hooks::ErasedBehavior, crate::BuildIdHasher>,
     /// ScrollViews to send [`ScrollLaidOut`] after the next layout pass.
-    laid_out_notices: HashSet<StableNodeId>,
+    laid_out_notices: HashSet<StableNodeId, crate::BuildIdHasher>,
     /// Texts listening for [`TextClamped`], with the answer last sent.
-    clamp_watchers: HashMap<StableNodeId, Option<bool>>,
+    clamp_watchers: HashMap<StableNodeId, Option<bool>, crate::BuildIdHasher>,
     /// Router hooks installed by the types created so far.
     type_hooks: TypeHooks,
-    assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
+    assembled:
+        HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>, crate::BuildIdHasher>,
     /// Reverse of `assembled`: a keyed child's declared parent and key. The
     /// declared parent is identity; the world parent is placement, and the
     /// two differ only for nodes in `placed_assembled`.
-    assembled_parent: HashMap<StableNodeId, (StableNodeId, String)>,
+    assembled_parent: HashMap<StableNodeId, (StableNodeId, String), crate::BuildIdHasher>,
     /// Keyed children [`Self::place_assembled`] moved out from under their
     /// declared parent. Reassembling that parent leaves them where they are;
     /// despawning it despawns them.
-    placed_assembled: HashSet<StableNodeId>,
+    placed_assembled: HashSet<StableNodeId, crate::BuildIdHasher>,
     /// Components whose assembler is running, so the `update_component` calls
     /// an assembler makes do not re-enter it.
-    assembling: HashSet<StableNodeId>,
+    assembling: HashSet<StableNodeId, crate::BuildIdHasher>,
     component_lifecycle: ComponentLifecycle,
     next_id: u64,
     frame_profiler: FrameProfiler,
@@ -1364,31 +1366,31 @@ impl AppContext {
     fn with_builtins(world: UiWorld, builtins: &impl UiExtension) -> Self {
         let mut context = Self {
             world,
-            views: HashMap::new(),
-            child_reproject_views: HashMap::new(),
-            metrics_reproject_views: HashMap::new(),
-            recipe_reproject_views: HashMap::new(),
-            text_backend_reproject_views: HashMap::new(),
+            views: HashMap::default(),
+            child_reproject_views: HashMap::default(),
+            metrics_reproject_views: HashMap::default(),
+            recipe_reproject_views: HashMap::default(),
+            text_backend_reproject_views: HashMap::default(),
             pending_child_reprojects: Vec::new(),
             draining_child_reprojects: false,
-            event_handlers: HashMap::new(),
-            key_handlers: HashMap::new(),
-            event_dependencies: HashMap::new(),
+            event_handlers: HashMap::default(),
+            key_handlers: HashMap::default(),
+            event_dependencies: HashMap::default(),
             actions: HashMap::new(),
             extensions: HashSet::new(),
             components: ComponentRegistry::default(),
-            activations: HashMap::new(),
-            secondary_presses: HashMap::new(),
-            file_drops: HashMap::new(),
-            reprojectors: HashMap::new(),
-            behaviors: HashMap::new(),
-            laid_out_notices: HashSet::new(),
-            clamp_watchers: HashMap::new(),
+            activations: HashMap::default(),
+            secondary_presses: HashMap::default(),
+            file_drops: HashMap::default(),
+            reprojectors: HashMap::default(),
+            behaviors: HashMap::default(),
+            laid_out_notices: HashSet::default(),
+            clamp_watchers: HashMap::default(),
             type_hooks: TypeHooks::default(),
-            assembled: HashMap::new(),
-            assembled_parent: HashMap::new(),
-            placed_assembled: HashSet::new(),
-            assembling: HashSet::new(),
+            assembled: HashMap::default(),
+            assembled_parent: HashMap::default(),
+            placed_assembled: HashSet::default(),
+            assembling: HashSet::default(),
             component_lifecycle: ComponentLifecycle::default(),
             next_id: 1,
             frame_profiler: FrameProfiler::new(),

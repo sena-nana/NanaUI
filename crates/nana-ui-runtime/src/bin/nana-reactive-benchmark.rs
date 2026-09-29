@@ -455,6 +455,77 @@ fn rerun_unchanged(n: usize) {
     );
 }
 
+/// Styled controls whose bound field really changes: the path that copies
+/// and projects the whole component.
+fn button_labels(n: usize) {
+    const OPS: usize = 200;
+    let scenario = format!("relabel {n} buttons");
+    let mut raw_cx = AppContext::new();
+    let root = raw_cx
+        .create_component(document(), Stack::column(0.0))
+        .unwrap();
+    let buttons = (0..n)
+        .map(|i| {
+            let button = raw_cx
+                .create_detached_component(
+                    document(),
+                    nana_ui_runtime::Button::new(format!("按钮 {i}")),
+                )
+                .unwrap();
+            raw_cx.append_child(root, button).unwrap();
+            button
+        })
+        .collect::<Vec<_>>();
+    let mut tick = 0u64;
+    let mut run_raw = || {
+        timed(|| {
+            for _ in 0..OPS {
+                tick += 1;
+                for button in &buttons {
+                    let label = format!("v{tick}");
+                    raw_cx
+                        .update_component(*button, |button, _| button.label = label)
+                        .unwrap();
+                }
+            }
+        }) / OPS as u32
+    };
+    let mut view_cx = AppContext::new();
+    let mut labels = Vec::new();
+    view_cx
+        .mount_view_root(document(), || {
+            column().children(
+                (0..n)
+                    .map(|i| {
+                        let label = signal(format!("按钮 {i}"));
+                        labels.push(label);
+                        button(label)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap();
+    let mut tick_view = 0u64;
+    let mut run_view = || {
+        timed(|| {
+            for _ in 0..OPS {
+                tick_view += 1;
+                for label in &labels {
+                    label.set(format!("v{tick_view}"));
+                }
+                view_cx.flush_reactive().unwrap();
+            }
+        }) / OPS as u32
+    };
+    interleave(
+        &scenario,
+        &mut [
+            (Series::new("update_component"), &mut run_raw),
+            (Series::new("set + flush"), &mut run_view),
+        ],
+    );
+}
+
 fn load() -> String {
     std::process::Command::new("uptime")
         .output()
@@ -463,6 +534,20 @@ fn load() -> String {
 }
 
 fn main() {
+    // `NANA_BENCH=relabel` runs one scenario, for a profiler to sample.
+    // `NANA_BENCH=updates` runs only the update scenarios, for A/B runs.
+    match std::env::var("NANA_BENCH").as_deref() {
+        Ok("relabel") => loop {
+            button_labels(100);
+        },
+        Ok("updates") => {
+            updates(5_000, 1);
+            updates(5_000, 100);
+            button_labels(100);
+            return;
+        }
+        _ => {}
+    }
     println!("load before: {}", load());
     mount(1_000);
     mount(5_000);
@@ -471,5 +556,6 @@ fn main() {
     updates(5_000, 100);
     list(2_000);
     rerun_unchanged(100);
+    button_labels(100);
     println!("load after:  {}", load());
 }

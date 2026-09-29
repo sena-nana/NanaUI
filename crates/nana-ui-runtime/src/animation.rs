@@ -72,7 +72,7 @@ pub mod component_animation_kinds {
 /// identically numbered nodes never replace each other. Returns `None` in the
 /// negligible case of a zero hash, which [`AnimationId`] rejects.
 pub fn component_animation_id(kind_tag: u64, target: StableNodeId) -> Option<AnimationId> {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut hasher = crate::IdHasher::default();
     hasher.write_u64(kind_tag);
     hasher.write_u64(target.get());
     AnimationId::new(hasher.finish())

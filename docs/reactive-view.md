@@ -451,20 +451,29 @@ fn page() -> impl IntoView {
 
 ## 成本
 
-测量命令：`cargo run --release -p nana-ui-runtime --features benchmark --bin nana-reactive-benchmark`。每种写法交替跑 15 轮，读最小值；测的是写法层加 commit，不含布局和绘制。对照组是不用视图时的写法：`create_detached_component` + `append_child` 一次建一个节点（每次调用 commit 一次），`update_component` 改字段，列表用 keyed `mount` 整段重写。2026-09-29 夜本机，负载 4–5。
+测量命令：`cargo run --release -p nana-ui-runtime --features benchmark --bin nana-reactive-benchmark`（`NANA_BENCH=updates` 只跑更新场景）。每种写法交替跑 15 轮，读最小值；测的是写法层加 commit，不含布局和绘制。对照组是不用视图时的写法：`create_detached_component` + `append_child` 一次建一个节点（每次调用 commit 一次），`update_component` 改字段，列表用 keyed `mount` 整段重写。2026-09-30 凌晨本机，负载约 4。
 
 | 场景 | 命令式 | 视图 |
 | --- | --- | --- |
-| 挂载 1,000 个文本 | 1.85 ms | 常量 1.53 ms / 每个都绑定信号 1.65 ms |
-| 挂载 5,000 个文本 | 9.37 ms | 常量 8.56 ms / 全部绑定 9.29 ms |
-| 挂载 1,000 行（行容器加按钮） | 5.27 ms | 4.45 ms |
-| 5,000 个里改 1 个 | `update_component` 0.42 µs | `set` + flush 0.61 µs |
-| 5,000 个里改 100 个 | 逐个 `update_component` 44.9 µs | 100 个信号一次 flush 44.9 µs / 1 个信号绑 100 个节点 39.7 µs |
-| 2,000 行里插入再删除 1 行 | 整段 `mount` 重写 7.99 ms | `each` 0.057 ms |
-| 2,000 行里改 1 行的字段 | `update_component` 0.41 µs / 整段 `mount` 重写 6.41 ms | 行内信号 0.60 µs |
-| 100 个按钮的绑定重跑但值不变 | — | 8.67 µs |
+| 挂载 1,000 个文本 | 1.49 ms | 常量 1.30 ms / 每个都绑定信号 1.41 ms |
+| 挂载 5,000 个文本 | 7.72 ms | 常量 7.30 ms / 全部绑定 7.96 ms |
+| 挂载 1,000 行（行容器加按钮） | 4.44 ms | 3.82 ms |
+| 5,000 个里改 1 个 | `update_component` 0.30 µs | `set` + flush 0.44 µs |
+| 5,000 个里改 100 个 | 逐个 `update_component` 30.5 µs | 100 个信号一次 flush 29.9 µs / 1 个信号绑 100 个节点 23.9 µs |
+| 100 个按钮换 label | 逐个 `update_component` 37.7 µs | 38.8 µs |
+| 2,000 行里插入再删除 1 行 | 整段 `mount` 重写 7.56 ms | `each` 0.057 ms |
+| 2,000 行里改 1 行的字段 | `update_component` 0.26 µs / 整段 `mount` 重写 6.12 ms | 行内信号 0.39 µs |
+| 100 个按钮的绑定重跑但值不变 | — | 5.09 µs |
 
 挂载时视图比逐个建节点快一成多：整棵树一次 commit，逐个建是每个节点一次。
+
+一次字段更新的成本在两条路上是共用的：复制组件、投影、commit。2026-09-30 按采样逐项压了这条公共路径（两份二进制交替各跑 4 轮读最小值，改 100 个按钮 64.9 → 38.8 µs，改 100 个文本 44.8 → 29.9 µs，挂载快 12–16%）：
+
+- 投影比较样式时先比布局的指针：`Arc` 的相等只有内容是 `Eq` 时才先比指针，浮点数的 `LayoutStyle` 不是，所以原来每次都逐字段比整份布局。
+- `AppContext` 和 `UiWorld` 里按节点、类型、文档做键的表换成 `IdHasher`，组件动画 id 也是；原来是 SipHash。
+- 节点记录保存"布局是否依赖视口"，写 visual 或文字之后不再重扫布局的几十个长度（debug 构建里每次读都重算比对）。
+- commit 校验：节点不是任何浮层的焦点目标时不建集合；没有浮层宿主时不暂存无障碍状态。
+- `Button`、`Text`、`Chip` 的投影先和 world 比，变了才复制文字；`Button` 的文字、visual、无障碍名共用一份 `Arc<str>`。
 
 大列表的整体操作（5,000 行，每行一个行容器、一个文本、一个按钮；前后二进制交替各跑 4 次、每次 10 轮取最小值）：
 
@@ -488,7 +497,7 @@ fn page() -> impl IntoView {
 - **静态文字改成 `Cow<'static, str>`**：一个文本节点常驻 1,804 B，空 `Stack` 是 1,778 B，文字本身只占约 26 B，不值得改所有控件的 API。
 - 控件注册清单也不需要单独生成：`BuiltinComponents::Typed` 已经按实际用到的类型注册。
 
-单点更新比手写 `update_component` 多出约 0.2 µs，这是信号簿记的成本；一次改很多节点时只 commit 一次，反而更快。
+单点更新比手写 `update_component` 多出约 0.15 µs，这是信号簿记的成本；一次改很多节点时只 commit 一次，反而更快。
 
 第二阶段两项优化各自做了 A/B（前后二进制交替各跑 3 次，读最小值）：
 
@@ -566,7 +575,7 @@ fn page() -> impl IntoView {
 
 ## 已知限制
 
-- 字段真的改变时，仍然会复制整个组件、完整投影一遍，再由 world 按字段比对标脏。只投影改动字段需要每个控件把投影按字段拆开，目前没做。
+- 字段真的改变时，仍然会复制整个组件、完整投影一遍，再由 world 按字段比对标脏。采样显示投影里真正贵的是没变字段的比较和复制，已经在公共路径和 `Button`、`Text`、`Chip` 上去掉；其余控件的投影仍然先复制再比较，按需逐个改（写法见 `Button::project`）。
 - `.bind(|c| …)` 看不出改了哪个字段，所以每次都按"有改动"处理，走复制路径。
 - 闭包绑定每个各自装箱一次；只有 `view!` 能看到的整段模板，才有机会把同一节点的闭包合成一个。
 - 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`、`Thumbnail`、`Avatar`、`Texture`（`GpuTextureView`）、`IconButton`、`Chip`、`StatusBadge`、`EmptyState`（`#action` slot），外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。

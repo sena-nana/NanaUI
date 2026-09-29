@@ -143,11 +143,13 @@ impl ComponentView for Chip {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let text = TextContent {
-            value: self.label.to_string().into(),
-        };
-        if world.text(id) != Some(text.value.as_str()) {
-            mutations.set_text(id, text);
+        if world.text(id) != Some(&*self.label) {
+            mutations.set_text(
+                id,
+                TextContent {
+                    value: Arc::clone(&self.label).into(),
+                },
+            );
         }
         let visual = StandardVisual::Button {
             icon: None,

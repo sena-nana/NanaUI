@@ -328,9 +328,11 @@ impl UiWorld {
             self.record_resolved_layout_copy();
             self.layouts.intern(&mut resolved);
         }
+        let depends_on_viewport = style.layout.depends_on_viewport();
         let record = self.record_mut(id);
         record.style = style;
         record.resolved_layout = resolved;
+        record.layout_depends_on_viewport = depends_on_viewport;
     }
 
     /// Re-resolve one node's layout after its authored layout was mutated in
