@@ -795,6 +795,10 @@ pub struct DesktopShell {
     pub title_trailing: Option<StableNodeId>,
     pub title_center_width: Option<f32>,
     pub title_window_controls: Option<bool>,
+    /// Whether the workspace rounds the corners of its main region
+    /// ([`crate::Workspace::workspace_corners`]); the shell hands it to the
+    /// workspace it assembles. On by default.
+    pub workspace_corners: bool,
     pub model: WorkspaceModel,
     pub style: NodeStyle,
 }
@@ -821,6 +825,7 @@ impl DesktopShell {
             title_trailing: None,
             title_center_width: None,
             title_window_controls: None,
+            workspace_corners: true,
             model: WorkspaceModel::new(),
             style: NodeStyle::default(),
         }
@@ -875,6 +880,13 @@ impl DesktopShell {
     /// inert set of buttons.
     pub fn title_window_controls(mut self, show: bool) -> Self {
         self.title_window_controls = Some(show);
+        self
+    }
+
+    /// Round the corners of the workspace's main region, or square them
+    /// (the Appearance "workspace corners" setting).
+    pub fn workspace_corners(mut self, rounded: bool) -> Self {
+        self.workspace_corners = rounded;
         self
     }
 
@@ -1278,9 +1290,11 @@ impl AppContext {
 
         let workspace = Entity::<Workspace>::from_stable_id(workspace_id);
         let slots_changed = self.read(workspace, |workspace| workspace.slots != slots)?;
+        let corners = assembled.workspace_corners;
         self.update_component(workspace, |workspace, _| {
             workspace.refresh_from_model(&assembled.model);
             workspace.slots = slots;
+            workspace.workspace_corners = corners;
         })?;
         changed |= self.assemble_workspace(workspace)?;
         changed |= reconcile_ids(self, overlay_id, &assembled.overlays)?;
@@ -3479,6 +3493,39 @@ mod tests {
             context.world().layout_box(center_slot).unwrap().width,
             420.0
         );
+    }
+
+    /// The shell carries the workspace-corners setting and hands it to the
+    /// workspace it builds, on the first assembly and on later ones.
+    #[test]
+    fn desktop_shell_hands_its_corner_setting_to_its_workspace() {
+        let mut context = AppContext::new();
+        let primary = context
+            .create_detached_component(document(), Text::new("workspace"))
+            .unwrap();
+        let shell = assemble_shell(
+            &mut context,
+            DesktopShell::new()
+                .primary(primary.stable_id())
+                .workspace_corners(false),
+        );
+        let workspace = Entity::<Workspace>::from_stable_id(
+            context
+                .read(shell, |shell| shell.workspace)
+                .unwrap()
+                .unwrap(),
+        );
+        let rounded = |context: &AppContext| {
+            context
+                .read(workspace, |workspace| workspace.workspace_corners)
+                .unwrap()
+        };
+        assert!(!rounded(&context));
+        context
+            .update_component(shell, |shell, _| shell.workspace_corners = true)
+            .unwrap();
+        context.assemble_desktop_shell(shell).unwrap();
+        assert!(rounded(&context));
     }
 
     #[test]

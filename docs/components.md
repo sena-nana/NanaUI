@@ -55,7 +55,7 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 `dismiss_overlay` 先关闭交互并恢复焦点，再保留菜单/对话框绘制到退出动画结束。宿主通过 `OverlayClosing { root }` 同步业务打开状态，通过 `OverlayChanged { active: None }` 处理最终释放；排队的关闭通知应在下一次投影前消费，并核对浮层身份，避免覆盖快速重开。退出期间保留父子关系和 `DesktopShell.overlays` 中的节点；直接 `remove_view` 会立即释放并跳过退出动画。
 
-**壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Toolbar`、`StatusBar`、`MediaTransportBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
+**壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Toolbar`、`StatusBar`、`MediaTransportBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。主区域圆不圆角（外观设置里的「工作区圆角」）写在 `DesktopShell::workspace_corners` 上，壳装配时交给它建的 `Workspace`；不要去改框架建的 `Workspace` 节点，下一次装配会用壳上的值盖掉。
 
 `SettingsRow::stack_below(480.0)` 可选开启按**该行实际布局宽度**的响应式排列：小于阈值时标签与控件上下排列，等于或大于时同行。默认未开启，`stacked(true)` 始终上下排列；无效阈值视为未开启。控件节点不重建，容器调整宽度由 Runtime 布局回流处理，应用不需要每帧扫描行。Vue 对应 `NanaSettingsRow` 的 `stackBelow` 属性。
 
