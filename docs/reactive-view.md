@@ -65,6 +65,24 @@ app.filter().set("done".into());   // 只影响读 filter 的地方
 - 行按 key 的 64 位哈希定位，重排后仍指向同一项；同一列表里两个 key 的哈希不能相同。行被删掉后，它的触发器在下一次按 key 查找时释放；对已删除行的 `get` 会 panic，`try_with` 返回 `None`。
 - `.vue` 里 `let x = store(…)` 和 `Store` / `Subfield` / `Item` 类型的 prop 被当作 store：用到它的绑定一律在运行时追踪，不会被折叠成常量；单独写这个名字（例如 `:checked="done"`，`done` 是一个 `Subfield` prop）则直接绑定。
 
+## 异步：任务、`resource` 与 `suspense`
+
+信号只能在创建它的线程上用，所以要写信号的异步代码也跑在 UI 线程上：
+
+```rust
+let user = resource(move || id.get(), |id| spawn_blocking(move || load_user(id)));
+suspense(
+    || text("加载中…"),
+    move || text(move || user.with(|u| u.map_or(String::new(), |u| u.name.clone()))),
+)
+```
+
+- `spawn_local(future)`：在 UI 线程的执行器上运行一个 future（不要求 `Send`，可以直接读写信号）。它的 waker 在任何线程上被唤醒，都会通过宿主的唤醒钩子把事件循环叫起来，在 UI 线程上 `poll_tasks()`；每帧开头（`take_system_work`）也会轮询一次。构建视图时创建的任务归这个视图的作用域，视图卸载时一起丢弃。返回的 `Task` 可以 `abort()`。
+- `spawn_blocking(f)`：把阻塞工作放到新线程上，返回它结果的 future。
+- `resource(source, fetch)`：`source` 像副作用一样被追踪，每次变化都调用 `fetch(source)` 并丢弃上一次还没完成的 fetch。`get()` / `with()` 读最近一次结果（第一次完成前是 `None`，重新加载期间保留旧值），`loading()` 表示是否在加载，`refetch()` 用当前来源重新加载，`set(v)` 直接改值（乐观更新）。
+- `suspense(fallback, content)`：`content` 立刻构建但隐藏，直到在它里面创建的所有 `resource` 都完成了第一次加载，期间显示 `fallback`；之后的重新加载不再切回 `fallback`。模板里写 `<Suspense fallback={..}>`，`.vue` 里用 `<template #fallback>`。
+- 宿主接线：`nana-ui` 的窗口宿主在启动时调用 `set_task_wake`，并在处理宿主工作时轮询任务、给有待应用绑定的窗口请求重绘。没有宿主（测试、嵌入）时自己调用 `poll_tasks()`。
+
 ## 进出场与移动动画
 
 `when(..)` 和 `each(..)`（包括 `Store` 的 `keyed(..).each`）可以加 `.transition(t)`，对应 Vue 的 `<Transition>` 和 `<TransitionGroup>`：
@@ -263,6 +281,7 @@ impl ApplicationState for App {
 | `onMounted` | `on_mount(move \|cx\| …)` |
 | `provide` / `inject` | `provide(value)` / `use_context::<T>()` |
 | `onUnmounted` | `on_cleanup` |
+| 异步 `setup` + `<Suspense>` | `resource(source, fetch)` + `suspense(fallback, content)`；模板里 `<Suspense>` |
 | `defineProps` | `defineProps!(name: Type, …)`（`.vue`） |
 | `defineEmits` + `emit('done')` | 回调 prop `on_done: impl Fn() + …`，父组件写 `@done="…"`（`.vue`） |
 

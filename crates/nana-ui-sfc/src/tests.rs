@@ -489,3 +489,34 @@ let items: Signal<Vec<u32>> = signal(vec![1, 2]);
         assert!(error.message.contains(message), "{template}: {error}");
     }
 }
+
+#[test]
+fn suspense_takes_its_fallback_from_a_named_template() {
+    let out = compile(&[(
+        "Profile.vue",
+        r#"<script setup lang="rust">
+let id = signal(1u32);
+</script>
+<template>
+  <Suspense>
+    <template #fallback><Text>加载中</Text></template>
+    <Text>{{ id }}</Text>
+  </Suspense>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(
+        code.contains(&squash(
+            "::nana_ui_runtime::view::suspense(move || ::nana_ui_runtime::view::text(\"加载中\"), move ||"
+        )),
+        "{code}"
+    );
+    let missing = compile(&[(
+        "Bad.vue",
+        "<template>\n<Suspense><Text>x</Text></Suspense>\n</template>",
+    )])
+    .err()
+    .expect("an error");
+    assert!(missing.message.contains("needs a fallback"), "{missing}");
+}

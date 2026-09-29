@@ -76,11 +76,11 @@ pub fn control(tag: &str) -> Option<&'static Control> {
 }
 
 /// Whether `tag` is built in: a control, `Column`, `Row`, `Widget`,
-/// `Virtual`, `Transition` or `TransitionGroup`.
+/// `Virtual`, `Transition`, `TransitionGroup` or `Suspense`.
 pub fn is_builtin(tag: &str) -> bool {
     matches!(
         tag,
-        "Column" | "Row" | "Widget" | "Virtual" | "Transition" | "TransitionGroup"
+        "Column" | "Row" | "Widget" | "Virtual" | "Transition" | "TransitionGroup" | "Suspense"
     ) || control(tag).is_some()
 }
 
@@ -92,7 +92,7 @@ pub fn is_argument(tag: &str, attribute: &str) -> bool {
         || match tag {
             "Column" | "Row" => attribute == "gap",
             "Widget" => attribute == "of",
-            "Virtual" | "Transition" | "TransitionGroup" => true,
+            "Virtual" | "Transition" | "TransitionGroup" | "Suspense" => true,
             _ => control(tag).is_some_and(|control| {
                 control
                     .arguments
@@ -387,15 +387,19 @@ struct Gen<'a> {
 
 impl Gen<'_> {
     fn nodes(&self, nodes: &[Node]) -> syn::Result<TokenStream> {
+        self.node_list(&nodes.iter().collect::<Vec<_>>())
+    }
+
+    fn node_list(&self, nodes: &[&Node]) -> syn::Result<TokenStream> {
         let mut out = Vec::new();
         let mut index = 0;
         while index < nodes.len() {
-            match &nodes[index] {
+            match nodes[index] {
                 Node::Element(element) if element.directive("if").is_some() => {
                     // Collect the v-else-if / v-else siblings of this chain.
                     let mut chain = vec![element];
                     index += 1;
-                    while let Some(Node::Element(next)) = nodes.get(index) {
+                    while let Some(Node::Element(next)) = nodes.get(index).copied() {
                         let last = next.directive("else").is_some();
                         if !last && next.directive("else-if").is_none() {
                             break;
@@ -711,6 +715,62 @@ impl Gen<'_> {
         }
     }
 
+    /// `<Suspense fallback={view}>content</Suspense>`; in a `.vue` file the
+    /// fallback is `<template #fallback>`.
+    fn suspense(&self, element: &Element) -> syn::Result<TokenStream> {
+        let krate = self.krate;
+        let span = element.name.span();
+        let mut fallback = None;
+        for attr in &element.attrs {
+            match &attr.name {
+                AttrName::Plain(name) if name == "fallback" => {
+                    fallback = Some(match &attr.value {
+                        AttrValue::View(nodes) => self.nodes(nodes)?,
+                        value => raw(value, name.span())?,
+                    });
+                }
+                AttrName::Plain(name) => {
+                    return Err(syn::Error::new(
+                        name.span(),
+                        format!("`<Suspense>` has no attribute `{name}`; it has `fallback`"),
+                    ));
+                }
+                _ => return Err(syn::Error::new(span, "`<Suspense>` takes `fallback` only")),
+            }
+        }
+        let mut content = Vec::new();
+        for node in &element.children {
+            match node {
+                Node::Element(slot) if slot.name == "template" => {
+                    let named = slot.attrs.iter().find_map(|attr| match &attr.name {
+                        AttrName::Directive(directive, _) => directive.strip_prefix("slot:"),
+                        _ => None,
+                    });
+                    match named {
+                        Some("fallback") if fallback.is_none() => {
+                            fallback = Some(self.nodes(&slot.children)?);
+                        }
+                        Some("default") => content.extend(slot.children.iter()),
+                        _ => {
+                            return Err(syn::Error::new(
+                                slot.name.span(),
+                                "`<Suspense>` takes `<template #fallback>` and its content",
+                            ));
+                        }
+                    }
+                }
+                other => content.push(other),
+            }
+        }
+        let fallback = fallback.ok_or_else(|| {
+            syn::Error::new(span, "`<Suspense>` needs a fallback to show while loading")
+        })?;
+        let content = self.node_list(&content)?;
+        Ok(quote_spanned! {span=>
+            #krate::view::suspense(move || #fallback, move || #content)
+        })
+    }
+
     /// The element itself: constructor, fields, directives, handlers.
     fn single(&self, element: &Element) -> syn::Result<TokenStream> {
         let krate = self.krate;
@@ -733,6 +793,7 @@ impl Gen<'_> {
             }
             ("Virtual", _) => return self.virtual_list(element),
             ("Transition" | "TransitionGroup", _) => return self.transition_block(element),
+            ("Suspense", _) => return self.suspense(element),
             ("Widget", _) => {
                 let component = element
                     .plain("of")

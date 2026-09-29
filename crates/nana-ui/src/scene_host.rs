@@ -1107,6 +1107,12 @@ fn complete_startup<Program: RuntimeProgram>(
         .handle
         .set_wake(Some(Arc::new(move || startup_wake.wake())));
     let tasks = spawn_task_workers(message_tx.clone(), Arc::clone(&host_work));
+    // A view's future woken on a worker thread is polled on this thread.
+    #[cfg(feature = "reactive-view")]
+    {
+        let task_wake = Arc::clone(&host_work);
+        nana_ui_runtime::view::set_task_wake(move || task_wake.wake());
+    }
     let geometry = window_geometry(window.as_ref());
     let reduced_motion = nana_window::system_reduced_motion().unwrap_or(false);
     let context = program_context(
@@ -1432,6 +1438,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // view in this window reads; its bindings apply at the next frame, so
         // that frame must be asked for.
         #[cfg(feature = "reactive-view")]
+        self.request_reactive_redraws(painting);
+    }
+
+    /// Ask for a frame of every window (but `painting`) with bindings to
+    /// apply.
+    #[cfg(feature = "reactive-view")]
+    fn request_reactive_redraws(&mut self, painting: Option<WindowId>) {
         for id in self.known_window_ids() {
             if painting != Some(id)
                 && self

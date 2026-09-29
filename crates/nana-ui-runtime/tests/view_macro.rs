@@ -505,3 +505,36 @@ mod transition_block {
         };
     }
 }
+
+mod suspense_block {
+    use nana_ui_runtime::view::{poll_tasks, resource, text};
+    use nana_ui_runtime::{AppContext, DocumentId, Stack, view};
+
+    #[test]
+    fn a_suspense_element_shows_content_once_it_resolves() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let parent = cx
+            .create_component(document, Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        let view = cx
+            .mount_view(parent, || {
+                view! {
+                    <Suspense fallback={text("加载中")}>
+                        {{
+                            let data = resource(|| (), |()| std::future::ready(7u32));
+                            text(move || format!("{:?}", data.get()))
+                        }}
+                    </Suspense>
+                }
+            })
+            .unwrap();
+        poll_tasks();
+        cx.take_system_work();
+        let root = view.roots()[0];
+        let children = cx.world().node(root).unwrap().children.to_vec();
+        let fallback = cx.world().node(children[1]).unwrap().children.len();
+        assert_eq!(fallback, 0, "resolved on the first poll");
+    }
+}

@@ -24,8 +24,10 @@ mod each_virtual;
 mod node;
 mod prop;
 pub(crate) mod reactive;
+mod resource;
 mod store;
 mod structural;
+mod task;
 #[cfg(feature = "reactive-trace")]
 pub(crate) mod trace;
 mod transition;
@@ -49,10 +51,14 @@ pub use reactive::{
     Computed, Const, Effect, ReactiveStats, Readable, Signal, computed, constant, on_cleanup,
     on_mount, provide, reactive_stats, signal, untrack, use_context, watch_effect,
 };
+pub use resource::{Resource, Suspense, resource, suspense};
 pub use store::{Item, KeyedList, Store, StoreList, StorePath, Subfield, store};
 #[doc(hidden)]
 pub use store::{Paths, StoreKey};
 pub use structural::{Each, When, each, when};
+pub use task::{
+    Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,
+};
 #[cfg(feature = "reactive-trace")]
 pub use trace::{Cause, WhyUpdated};
 pub use transition::{Presence, Transition};

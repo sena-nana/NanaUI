@@ -1276,3 +1276,127 @@ fn a_transitioned_list_keeps_removed_rows_in_place_and_slides_the_rest() {
     let moved = translate_y_at(&cx, rows[0], ended);
     assert!(moved < -0.5, "row 1 slides down from above: {moved}");
 }
+
+/// Wait for a worker thread's waker to reach this thread's executor.
+fn until_woken() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !has_woken_tasks() {
+        assert!(std::time::Instant::now() < deadline, "no task was woken");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn a_resource_loads_off_thread_and_refetches_when_its_source_changes() {
+    let (mut cx, _, parent) = setup();
+    let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = wakes.clone();
+    set_task_wake(move || {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    let (send, receive) = std::sync::mpsc::channel::<String>();
+    let receive = std::sync::Arc::new(std::sync::Mutex::new(receive));
+    let handles = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let id = signal(1u32);
+            let user = resource(
+                move || id.get(),
+                move |id| {
+                    let receive = receive.clone();
+                    spawn_blocking(move || {
+                        format!("{id}:{}", receive.lock().unwrap().recv().unwrap())
+                    })
+                },
+            );
+            handles.set(Some((id, user)));
+            text(move || user.get().unwrap_or_else(|| "…".into())).key("name")
+        })
+        .unwrap();
+    let (id, user) = handles.get().unwrap();
+    let label = Entity::<Text>::from_stable_id(view.roots()[0]);
+    cx.take_system_work();
+    assert!(user.loading());
+    assert_eq!(text_of(&cx, label), "…");
+
+    send.send("甲".into()).unwrap();
+    until_woken();
+    assert!(
+        wakes.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "the host was woken"
+    );
+    cx.take_system_work();
+    assert_eq!(text_of(&cx, label), "1:甲");
+    assert!(!user.loading());
+
+    // A new source replaces the fetch; the old value stays until it lands.
+    id.set(2);
+    cx.flush_reactive().unwrap();
+    cx.take_system_work();
+    assert!(user.loading());
+    assert_eq!(text_of(&cx, label), "1:甲");
+    send.send("乙".into()).unwrap();
+    until_woken();
+    cx.take_system_work();
+    assert_eq!(text_of(&cx, label), "2:乙");
+
+    let before = task_count();
+    user.refetch();
+    cx.flush_reactive().unwrap();
+    assert_eq!(task_count(), before + 1);
+    view.unmount(&mut cx).unwrap();
+    assert_eq!(task_count(), before, "the fetch is dropped with the view");
+    send.send("丙".into()).unwrap();
+}
+
+#[test]
+fn suspense_shows_its_fallback_until_the_resources_inside_resolve() {
+    let (mut cx, _, parent) = setup();
+    let gate = std::rc::Rc::new(std::cell::RefCell::new(None::<std::task::Waker>));
+    let open = std::rc::Rc::new(std::cell::Cell::new(false));
+    let (gate_in, open_in) = (gate.clone(), open.clone());
+    let view = cx
+        .mount_view(parent, move || {
+            suspense(
+                || text("加载中").key("fallback"),
+                move || {
+                    let data = resource(
+                        || (),
+                        move |()| {
+                            let (gate, open) = (gate_in.clone(), open_in.clone());
+                            std::future::poll_fn(move |cx| {
+                                if open.get() {
+                                    std::task::Poll::Ready(42u32)
+                                } else {
+                                    *gate.borrow_mut() = Some(cx.waker().clone());
+                                    std::task::Poll::Pending
+                                }
+                            })
+                        },
+                    );
+                    text(move || format!("{:?}", data.get())).key("content")
+                },
+            )
+        })
+        .unwrap();
+    cx.take_system_work();
+    let root = view.roots()[0];
+    let [wrapper, block] = children(&cx, root)[..] else {
+        panic!("content wrapper and fallback block");
+    };
+    let hidden = |cx: &AppContext| {
+        cx.world()
+            .node_style(wrapper)
+            .is_some_and(|style| style.layout.hidden)
+    };
+    assert!(hidden(&cx), "content is built but hidden");
+    assert_eq!(children(&cx, block).len(), 1, "fallback shown");
+
+    open.set(true);
+    gate.borrow_mut().take().unwrap().wake();
+    cx.take_system_work();
+    assert!(!hidden(&cx));
+    assert!(children(&cx, block).is_empty(), "fallback gone");
+    let content = children(&cx, wrapper)[0];
+    assert_eq!(text_of(&cx, Entity::from_stable_id(content)), "Some(42)");
+}

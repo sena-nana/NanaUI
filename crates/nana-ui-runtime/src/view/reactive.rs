@@ -1028,6 +1028,14 @@ pub(crate) fn release_signals(scope: Option<ScopeKey>, keys: &[SignalKey]) {
     released.run();
 }
 
+/// Run `f` owned by no scope: what it creates lives until released.
+pub(crate) fn without_scope<R>(f: impl FnOnce() -> R) -> R {
+    let previous = with_rt(|rt| rt.current_scope.take());
+    let result = f();
+    with_rt(|rt| rt.current_scope = previous);
+    result
+}
+
 pub(crate) fn with_scope<R>(scope: ScopeKey, f: impl FnOnce() -> R) -> R {
     let previous = with_rt(|rt| rt.current_scope.replace(scope));
     let result = f();
