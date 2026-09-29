@@ -630,6 +630,11 @@ impl Progress {
 }
 
 impl ComponentView for Progress {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::cancel_progress),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "progress".into(),

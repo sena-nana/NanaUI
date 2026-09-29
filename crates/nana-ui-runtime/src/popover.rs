@@ -137,6 +137,11 @@ impl Default for Popover {
 }
 
 impl crate::ComponentView for Popover {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::toggle_popover),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "popover".into(),
@@ -218,6 +223,11 @@ impl Default for ActionMenu {
 }
 
 impl crate::ComponentView for ActionMenu {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::toggle_action_menu),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "action-menu".into(),

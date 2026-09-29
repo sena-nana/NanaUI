@@ -382,6 +382,12 @@ impl Default for Tabs {
 }
 
 impl ComponentView for Tabs {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_tabs),
+        lifecycle: Some(crate::AppContext::sync_tabs_options),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "tabs".into() }
     }

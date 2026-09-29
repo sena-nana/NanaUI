@@ -483,6 +483,11 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
 }
 
 impl ComponentView for SegmentedOption {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_segmented_option),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: match self.chrome {

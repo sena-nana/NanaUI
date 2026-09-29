@@ -384,6 +384,11 @@ fn bar_style() -> NodeStyle {
 }
 
 impl ComponentView for MediaTransportBar {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        assembler: Some(crate::AppContext::assemble_media_transport_bar),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "media-transport-bar".into(),
@@ -1098,6 +1103,10 @@ mod tests {
     /// an empty toolbar: no play button, no seek range, no time readout.
     #[test]
     fn a_bar_bound_from_markup_assembles_its_controls() {
+        // Tag-based binding needs `BuiltinComponents::Full`.
+        if crate::framework::typed_builtins_under_test() {
+            return;
+        }
         let mut cx = AppContext::new();
         let document = document();
         let id = StableNodeId::new(42).unwrap();
@@ -1904,6 +1913,10 @@ mod tests {
 
     #[test]
     fn rebinding_markup_keeps_one_chrome_and_the_host_state() {
+        // Tag-based binding needs `BuiltinComponents::Full`.
+        if crate::framework::typed_builtins_under_test() {
+            return;
+        }
         let mut cx = AppContext::new();
         let id = StableNodeId::new(42).unwrap();
         let mut queue = crate::MutationQueue::new();

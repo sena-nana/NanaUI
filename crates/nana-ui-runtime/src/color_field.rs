@@ -152,6 +152,11 @@ impl ColorField {
 }
 
 impl ComponentView for ColorField {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        assembler: Some(crate::AppContext::assemble_color_field),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn reconcile(&mut self, mut next: Self) {
         // The open picker and the HSV cursor track the drag in progress; the
         // committed value is the application's.

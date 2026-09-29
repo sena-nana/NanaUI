@@ -102,6 +102,12 @@ impl TreeView {
 }
 
 impl ComponentView for TreeView {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activate_at: Some(crate::AppContext::activate_tree_at),
+        hooks: Some(|hooks| hooks.tree = Some(&TREE_HOOKS)),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "tree".into() }
     }
@@ -303,6 +309,12 @@ pub(crate) fn tree_disclosure_at(rows: &[TreeRowGeometry], x: f32, y: f32) -> Op
             .is_some_and(|disclosure| disclosure.contains(x, y))
     })
 }
+
+/// The router reaches this picker's keyboard only once one exists.
+pub(crate) static TREE_HOOKS: crate::framework::NavigateHooks<crate::TreeNavigation> =
+    crate::framework::NavigateHooks {
+        navigate: crate::AppContext::navigate_focused_tree,
+    };
 
 #[cfg(test)]
 mod tests {

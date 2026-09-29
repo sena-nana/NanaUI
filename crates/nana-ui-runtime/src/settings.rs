@@ -508,6 +508,11 @@ impl SettingsCollapsibleCard {
 }
 
 impl ComponentView for SettingsCollapsibleCard {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_settings_collapsible_card),
+        ..crate::TypeBehavior::NONE
+    };
+
     /// Lays out and hides the summary and detail slots the application provides.
     const ALWAYS_REPROJECT: bool = true;
 

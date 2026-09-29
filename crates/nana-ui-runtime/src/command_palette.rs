@@ -216,6 +216,12 @@ impl CommandPalette {
 }
 
 impl ComponentView for CommandPalette {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activate_at: Some(crate::AppContext::activate_command_palette_at),
+        hooks: Some(|hooks| hooks.command_palette = Some(&COMMAND_PALETTE_HOOKS)),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "command-palette".into(),
@@ -458,6 +464,13 @@ fn item_matches(item: &CommandPaletteItem, query: &str) -> bool {
             .as_ref()
             .is_some_and(|category| query_matches(category, query))
 }
+
+/// The router reaches this picker's keyboard only once one exists.
+pub(crate) static COMMAND_PALETTE_HOOKS: crate::framework::NavigateHooks<
+    nana_ui_core::ActionPickerNavigation,
+> = crate::framework::NavigateHooks {
+    navigate: crate::AppContext::navigate_focused_command_palette,
+};
 
 #[cfg(test)]
 mod tests {

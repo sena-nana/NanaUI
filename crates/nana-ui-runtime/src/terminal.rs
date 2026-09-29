@@ -233,6 +233,11 @@ impl TerminalView {
 }
 
 impl ComponentView for TerminalView {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        lifecycle: Some(crate::framework::lifecycle_hooks::terminal),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "terminal".into(),

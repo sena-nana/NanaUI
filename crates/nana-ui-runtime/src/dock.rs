@@ -1491,6 +1491,11 @@ impl Dock {
 }
 
 impl ComponentView for Dock {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        hooks: Some(|hooks| hooks.dock = Some(&DOCK_HOOKS)),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "dock".into() }
     }
@@ -3621,6 +3626,21 @@ fn reconcile_ids(
 ) -> Result<bool, FrameworkError> {
     context.reconcile_children(parent, ordered)
 }
+
+/// The router reaches dock handles and drags only once a dock exists.
+pub(crate) static DOCK_HOOKS: crate::framework::DockHooks = crate::framework::DockHooks {
+    handle_near_hit: AppContext::dock_handle_near_hit,
+    tab_strip_near_hit: AppContext::dock_tab_strip_near_hit,
+    is_handle: AppContext::is_dock_handle,
+    is_item_source: AppContext::is_dock_item_source,
+    begin_split: AppContext::begin_dock_split_resize,
+    update_split: AppContext::update_dock_split_resize,
+    end_split: AppContext::end_dock_split_resize,
+    begin_item: AppContext::begin_dock_item_drag,
+    update_item: AppContext::update_dock_item_drag,
+    end_item: AppContext::end_dock_item_drag,
+    adjust_focused_split: AppContext::adjust_focused_dock_split,
+};
 
 #[cfg(test)]
 mod tests {

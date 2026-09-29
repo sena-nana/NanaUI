@@ -414,7 +414,7 @@ impl AppContext {
             return;
         }
         for (target, button) in closed_tooltips {
-            self.views.insert(target, Box::new(button));
+            self.install_view(target, button);
             if let Some(lifecycle) = self.component_lifecycle.tooltips.get_mut(&target) {
                 lifecycle.show_at = None;
                 lifecycle.open = false;

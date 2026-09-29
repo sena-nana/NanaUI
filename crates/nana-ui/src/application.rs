@@ -21,10 +21,31 @@ pub struct ApplicationWindow {
 
 impl ApplicationWindow {
     pub fn new() -> Self {
+        Self::with_document(RuntimeDocument::new(Self::DOCUMENT))
+    }
+
+    /// A window whose built-in components are created from their Rust types
+    /// only ([`nana_ui_runtime::BuiltinComponents::Typed`]).
+    pub fn typed() -> Self {
+        Self::with_document(RuntimeDocument::typed(Self::DOCUMENT))
+    }
+
+    // Each window owns an independent UiWorld. Document identities are local
+    // to that world; WindowId handles host routing.
+    const DOCUMENT: nana_ui_runtime::DocumentId = nana_ui_runtime::DocumentId::new(1).unwrap();
+
+    /// `S::BUILTINS` is a constant in each instance, so the mode not chosen
+    /// is not linked.
+    fn for_state<S: ApplicationState>() -> Self {
+        match S::BUILTINS {
+            nana_ui_runtime::BuiltinComponents::Full => Self::new(),
+            nana_ui_runtime::BuiltinComponents::Typed => Self::typed(),
+        }
+    }
+
+    fn with_document(document: RuntimeDocument) -> Self {
         Self {
-            // Each window owns an independent UiWorld. Document identities
-            // are local to that world; WindowId handles host routing.
-            document: RuntimeDocument::new(nana_ui_runtime::DocumentId::new(1).unwrap()),
+            document,
             textures: HostTextureRegistry::new(),
             renderers: None,
             producers: None,
@@ -43,6 +64,11 @@ impl Default for ApplicationWindow {
 pub trait ApplicationState: Sized + 'static {
     type Message: Send + 'static;
     type Error: std::fmt::Display;
+    /// The built-in component machinery each window installs. `Typed` suits
+    /// an application that creates components from Rust types only (`build`,
+    /// `mount`, declarative views): the components it never creates are not
+    /// linked. Tag-based binding (`bind_semantic`) then refuses built-ins.
+    const BUILTINS: nana_ui_runtime::BuiltinComponents = nana_ui_runtime::BuiltinComponents::Full;
     /// The `UiReady` point of startup (see [`crate::startup`]): the host can
     /// draw an ordinary document now. Create the state the first screen needs
     /// and start the rest as tasks; [`Self::build`] follows immediately.
@@ -126,7 +152,7 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
         let mut state = State::initialize(context)?;
-        let mut window = ApplicationWindow::new();
+        let mut window = ApplicationWindow::for_state::<State>();
         state.build(&mut window, context)?;
         Ok((
             Self {
@@ -211,7 +237,7 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         id: WindowId,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(), String> {
-        let mut window = ApplicationWindow::new();
+        let mut window = ApplicationWindow::for_state::<State>();
         self.state
             .build(&mut window, context)
             .map_err(|error| error.to_string())?;

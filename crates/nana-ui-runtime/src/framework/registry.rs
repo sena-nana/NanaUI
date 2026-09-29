@@ -78,6 +78,13 @@ impl AppContext {
             return Err(FrameworkError::ViewType(binding.id));
         }
         if let Some(component) = binding.retained {
+            let register = self
+                .components
+                .get_by_rust(component.as_ref().type_id())
+                .and_then(|entry| entry.register);
+            if let Some(register) = register {
+                register(self);
+            }
             self.views.insert(binding.id, component);
             self.sync_component_lifecycle(binding.id)?;
             if let Some(finish) = binding.finish {
@@ -130,42 +137,6 @@ impl AppContext {
         Ok(())
     }
 
-    pub(super) fn register_builtin_activations(&mut self) {
-        self.bind_activation::<Button>(Self::activate_button);
-        self.bind_activation::<Chip>(Self::activate_chip);
-        self.bind_activation::<IconButton>(Self::activate_icon_button);
-        self.bind_activation::<ListItem>(Self::activate_list_item);
-        self.bind_activation::<crate::HoverCard>(Self::activate_hover_card);
-        self.bind_activation::<SidebarRow>(Self::activate_sidebar_row);
-        self.bind_activation::<FileTab>(Self::activate_file_tab);
-        self.bind_activation::<BreadcrumbSegment>(Self::activate_breadcrumb_segment);
-        self.bind_activation::<SidebarFooterButton>(Self::activate_sidebar_footer_button);
-        self.bind_activation::<SidebarSection>(Self::activate_sidebar_section);
-        self.bind_activation::<SettingsCollapsibleCard>(Self::activate_settings_collapsible_card);
-        self.bind_activation::<Tabs>(Self::activate_tabs);
-        self.bind_activation::<ActionMenuItem>(Self::activate_action_menu_item);
-        self.bind_activation::<Select>(Self::toggle_select);
-        self.bind_activation::<Dropdown>(Self::toggle_dropdown);
-        self.bind_activation::<SearchDropdown>(Self::toggle_search_dropdown);
-        self.bind_activation::<Popover>(Self::toggle_popover);
-        self.bind_activation::<ActionMenu>(Self::toggle_action_menu);
-        self.bind_activation::<ContextMenu>(Self::dismiss_context_menu);
-        self.bind_activation::<Checkbox>(Self::toggle_checkbox);
-        self.bind_activation::<Switch>(Self::toggle_switch);
-        self.bind_activation::<Progress>(Self::cancel_progress);
-        self.bind_activation::<SegmentedOption>(Self::activate_segmented_option);
-    }
-
-    pub(super) fn bind_activation<C: View>(
-        &mut self,
-        handler: fn(&mut Self, Entity<C>) -> Result<bool, FrameworkError>,
-    ) {
-        self.activations.insert(
-            TypeId::of::<C>(),
-            Arc::new(move |context, id| handler(context, Entity::from_stable_id(id))),
-        );
-    }
-
     pub fn register_presenter(
         &mut self,
         presenter: Box<dyn TextPresenter>,
@@ -173,6 +144,37 @@ impl AppContext {
         self.world
             .register_presenter(presenter)
             .map_err(FrameworkError::from)
+    }
+
+    /// What a component type brings once, whichever path created its first
+    /// node: reprojection and its [`ComponentView::BEHAVIOR`]. Every path
+    /// that creates a component goes through this (via
+    /// [`Self::stamp_component_type`] or [`Self::install_view`]), or the
+    /// type's first node misses its behavior.
+    pub(crate) fn register_view_type<C: ComponentView>(&mut self) {
+        let type_id = TypeId::of::<C>();
+        if self.behaviors.contains_key(&type_id) {
+            return;
+        }
+        self.reprojectors
+            .entry(type_id)
+            .or_insert(super::reproject_erased::<C>);
+        self.behaviors
+            .insert(type_id, super::hooks::ErasedBehavior::of::<C>());
+        if let Some(install) = C::BEHAVIOR.hooks {
+            install(&mut self.type_hooks);
+        }
+        if let Some(activate) = C::BEHAVIOR.activation {
+            self.activations.entry(type_id).or_insert_with(|| {
+                Arc::new(move |context, id| activate(context, Entity::from_stable_id(id)))
+            });
+        }
+    }
+
+    /// Install the view of a node a composite created itself.
+    pub(super) fn install_view<C: ComponentView>(&mut self, id: StableNodeId, view: C) {
+        self.register_view_type::<C>();
+        self.views.insert(id, Box::new(view));
     }
 
     pub(super) fn stamp_component_type<C: ComponentView>(
@@ -183,9 +185,8 @@ impl AppContext {
         if let Some(entry) = self.components.get_by_rust(TypeId::of::<C>()) {
             queue.set_component_type(id, Some(entry.id.clone()));
         }
-        self.reprojectors
-            .entry(TypeId::of::<C>())
-            .or_insert(super::reproject_erased::<C>);
+        self.register_view_type::<C>();
+
         if C::wants_child_reproject() {
             self.child_reproject_views
                 .insert(id, super::reproject_typed::<C>);

@@ -207,13 +207,15 @@ pub use form_surfaces::{FormField, InteractiveCard};
 #[cfg(feature = "reactive-view")]
 pub use framework::MountedView;
 pub use framework::{
-    ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, Entity,
-    ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError, InputCounters,
-    InputRouteError, InputRouteOutcome, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
-    RoutedEvent, RuntimeOverlayKind, Subscription, Task, TextDeleteKind, TextEditOrigin,
-    TextFindScope, UiBuilder, UiExtension, View, ViewContext, VirtualListItems, VirtualTableItems,
-    VirtualTreeItems,
+    ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, BuiltinComponents,
+    Entity, ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError,
+    InputCounters, InputRouteError, InputRouteOutcome, OverlayKey, OverlayPointerDecision,
+    OverlayPointerPhase, RoutedEvent, RuntimeOverlayKind, Subscription, Task, TextDeleteKind,
+    TextEditOrigin, TextFindScope, UiBuilder, UiExtension, View, ViewContext, VirtualListItems,
+    VirtualTableItems, VirtualTreeItems,
 };
+#[doc(hidden)]
+pub use framework::{TypeBehavior, TypeHooks};
 pub use glyph_cache::GlyphCache;
 pub use gpu_slots::{
     GPU_TEXTURE_VIEW_RENDERER, GPU_VIEW_RENDERER, GpuTextureView, GpuView, GpuViewMode,

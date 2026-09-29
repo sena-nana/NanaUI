@@ -115,6 +115,12 @@ impl FileTab {
 }
 
 impl ComponentView for FileTab {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_file_tab),
+        assembler: Some(crate::AppContext::assemble_file_tab),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "file-tab".into(),

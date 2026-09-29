@@ -354,6 +354,23 @@ impl Dropdown {
 }
 
 impl ComponentView for Dropdown {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::toggle_dropdown),
+        activate_at: Some(crate::AppContext::activate_dropdown_at),
+        close_options: Some(|context, entity| {
+            context.update_component(entity, |dropdown, cx| {
+                if let Some(event) = dropdown.close() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            })
+        }),
+        hooks: Some(|hooks| hooks.dropdown = Some(&DROPDOWN_HOOKS)),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn reconcile(&mut self, mut next: Self) {
         // Selection and options are the application's; the open menu and its
         // keyboard highlight belong to the interaction in flight, and survive a
@@ -470,6 +487,12 @@ fn multiple_label(values: &[Arc<str>], options: &[DropdownOption]) -> String {
         [first, second, rest @ ..] => format!("{first}, {second} +{}", rest.len()),
     }
 }
+
+/// The router reaches this list's keyboard only once one exists.
+pub(crate) static DROPDOWN_HOOKS: crate::framework::ChoiceHooks = crate::framework::ChoiceHooks {
+    adjust: crate::AppContext::adjust_focused_dropdown,
+    commit: crate::AppContext::commit_focused_dropdown,
+};
 
 #[cfg(test)]
 mod tests {

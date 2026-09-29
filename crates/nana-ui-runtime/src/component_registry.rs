@@ -203,6 +203,9 @@ pub(crate) struct RegisteredComponentType {
     /// Type-erased `AppContext::reproject_component`, for views a host bound
     /// through this registry rather than created through the context.
     pub(crate) reproject: Option<crate::framework::ReprojectFn>,
+    /// Installs the type's hooks (activation, assembler) for a view bound
+    /// through this registry. `None` for identity-only entries.
+    pub(crate) register: Option<fn(&mut crate::AppContext)>,
 }
 
 /// Types that builtins and plugins register through the same ABI.
@@ -391,6 +394,7 @@ pub(crate) fn registerable_entry<C: RegisterableComponent>()
             binder: bind_registerable::<C>(),
             reads_child_derived_spec: C::READS_CHILD_DERIVED_SPEC,
             reproject: Some(crate::framework::reproject_erased::<C>),
+            register: Some(crate::AppContext::register_view_type::<C>),
         },
         normalized_tags(C::TAGS),
     ))
@@ -407,6 +411,35 @@ pub(crate) fn tag_entry(
             binder: Arc::new(|_| Ok(ComponentBindKind::Layout)),
             reads_child_derived_spec: true,
             reproject: None,
+            register: None,
+        },
+        normalized_tags(tags),
+    ))
+}
+
+/// The binder of a type registered for identity only: it cannot be built
+/// from a tag and attributes.
+fn unbound() -> Binder {
+    Arc::new(|_| Err(FrameworkError::InvalidComponentType))
+}
+
+/// A type's identity without its semantic binder or reprojector: nodes
+/// created from the Rust type are stamped with its id and tags resolve to
+/// it, but no code that builds it from a tag is referenced, so a binary that
+/// never creates it links none of it. A layout alias has no `rust_type`.
+pub(crate) fn identity_entry<C: RegisterableComponent>(
+    type_id: &'static str,
+    rust_type: Option<TypeId>,
+    tags: &'static [&'static str],
+) -> Result<(RegisteredComponentType, Vec<String>), FrameworkError> {
+    Ok((
+        RegisteredComponentType {
+            id: ComponentTypeId::new(type_id)?,
+            rust_type,
+            binder: unbound(),
+            reads_child_derived_spec: C::READS_CHILD_DERIVED_SPEC,
+            reproject: None,
+            register: None,
         },
         normalized_tags(tags),
     ))
@@ -424,6 +457,7 @@ pub(crate) fn alias_entry<C: RegisterableComponent>(
             binder: bind_registerable::<C>(),
             reads_child_derived_spec: C::READS_CHILD_DERIVED_SPEC,
             reproject: None,
+            register: None,
         },
         normalized_tags(tags),
     ))

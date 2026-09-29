@@ -575,6 +575,11 @@ impl SidebarRow {
 }
 
 impl ComponentView for SidebarRow {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_sidebar_row),
+        ..crate::TypeBehavior::NONE
+    };
+
     /// Patches the layout of the tools slot, which another component owns.
     const ALWAYS_REPROJECT: bool = true;
 
@@ -1206,6 +1211,11 @@ fn body_port_style(expansion: f32, empty_text: Option<&str>, content_height: f32
 }
 
 impl ComponentView for SidebarSection {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_sidebar_section),
+        ..crate::TypeBehavior::NONE
+    };
+
     /// Writes text, visual and style onto its body port, a `List` with its own projection.
     const ALWAYS_REPROJECT: bool = true;
 
@@ -1441,6 +1451,11 @@ fn footer_button_style(size: ControlSize, selected: bool) -> NodeStyle {
 }
 
 impl ComponentView for SidebarFooterButton {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_sidebar_footer_button),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "sidebar-footer-button".into(),

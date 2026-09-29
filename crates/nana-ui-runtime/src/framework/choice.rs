@@ -444,23 +444,8 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Result<bool, FrameworkError> {
-        if let Some(entity) = self.view_entity::<Select>(id) {
-            return self.activate_select_at(entity, x, y);
-        }
-        if let Some(entity) = self.view_entity::<Dropdown>(id) {
-            return self.activate_dropdown_at(entity, x, y);
-        }
-        if let Some(entity) = self.view_entity::<SearchDropdown>(id) {
-            return self.activate_search_dropdown_at(entity, x, y);
-        }
-        if let Some(entity) = self.view_entity::<CommandPalette>(id) {
-            return self.activate_command_palette_at(entity, x, y);
-        }
-        if let Some(entity) = self.view_entity::<ContextMenu>(id) {
-            return self.activate_context_menu_at(entity, x, y);
-        }
-        if let Some(entity) = self.view_entity::<TreeView>(id) {
-            return self.activate_tree_at(entity, x, y);
+        if let Some(activate) = self.behavior(id).and_then(|b| b.activate_at) {
+            return activate(self, id, x, y);
         }
         self.activate_node(id)
     }
@@ -518,36 +503,10 @@ impl AppContext {
         let Some(target) = self.world().focused(document) else {
             return Ok(false);
         };
-        if let Some(entity) = self.view_entity::<Select>(target) {
-            return self.update_component(entity, |select, _| {
-                if !select.opened {
-                    return false;
-                }
-                select.close();
-                true
-            });
+        match self.behavior(target).and_then(|b| b.close_options) {
+            Some(close) => close(self, target),
+            None => Ok(false),
         }
-        if let Some(entity) = self.view_entity::<Dropdown>(target) {
-            return self.update_component(entity, |dropdown, cx| {
-                if let Some(event) = dropdown.close() {
-                    cx.emit(event);
-                    true
-                } else {
-                    false
-                }
-            });
-        }
-        if let Some(entity) = self.view_entity::<SearchDropdown>(target) {
-            return self.update_component(entity, |dropdown, cx| {
-                if let Some(event) = dropdown.close() {
-                    cx.emit(event);
-                    true
-                } else {
-                    false
-                }
-            });
-        }
-        Ok(false)
     }
 
     pub fn dismiss_detached_menus(
@@ -559,33 +518,8 @@ impl AppContext {
             if Some(id) == keep {
                 continue;
             }
-            if let Some(entity) = self.view_entity::<Select>(id) {
-                self.update_component(entity, |select, _| {
-                    if select.opened {
-                        select.close();
-                        true
-                    } else {
-                        false
-                    }
-                })?;
-            } else if let Some(entity) = self.view_entity::<Dropdown>(id) {
-                self.update_component(entity, |dropdown, cx| {
-                    if let Some(event) = dropdown.close() {
-                        cx.emit(event);
-                        true
-                    } else {
-                        false
-                    }
-                })?;
-            } else if let Some(entity) = self.view_entity::<SearchDropdown>(id) {
-                self.update_component(entity, |dropdown, cx| {
-                    if let Some(event) = dropdown.close() {
-                        cx.emit(event);
-                        true
-                    } else {
-                        false
-                    }
-                })?;
+            if let Some(close) = self.behavior(id).and_then(|b| b.close_options) {
+                close(self, id)?;
             }
         }
         Ok(())

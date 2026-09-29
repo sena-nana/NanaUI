@@ -9274,3 +9274,108 @@ fn closing_a_search_dropdown_leaves_its_label_as_the_node_text() {
 
     assert_eq!(context.world().text(search.stable_id()), Some("Alpha"));
 }
+
+/// `BuiltinComponents::Typed` installs identities up front and each type's
+/// hooks when its first node is created, from any creation path.
+#[test]
+fn a_typed_context_installs_hooks_with_the_types_it_creates() {
+    let mut context = AppContext::typed();
+    let document = DocumentId::new(1).unwrap();
+
+    // A button built from its type: stamped, and activatable.
+    let button = context
+        .create_component(document, Button::new("保存"))
+        .unwrap();
+    assert_eq!(
+        context
+            .world()
+            .component_type(button.stable_id())
+            .map(|id| id.as_str()),
+        Some("nana.button")
+    );
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::clone(&hits);
+    context
+        .on(button, move |_, _: &Activate, _| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+        .unwrap();
+    assert!(context.activate_node(button.stable_id()).unwrap());
+    assert_eq!(hits.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+    // A composite's own children (tab options) get their activation too.
+    let tabs = context
+        .create_component(
+            document,
+            Tabs::new("code").options([
+                crate::TabOption::new("code", "代码"),
+                crate::TabOption::new("docs", "文档"),
+            ]),
+        )
+        .unwrap();
+    let options = context
+        .world()
+        .node(tabs.stable_id())
+        .unwrap()
+        .children
+        .to_vec();
+    assert!(!options.is_empty());
+    assert!(context.activate_node(*options.last().unwrap()).unwrap());
+    assert_eq!(
+        context
+            .read(tabs, |tabs| tabs.selected.clone())
+            .unwrap()
+            .as_deref(),
+        Some("docs")
+    );
+
+    // A self-assembling composite still assembles on write.
+    let chip = context
+        .create_component(document, Chip::new("附件"))
+        .unwrap();
+    assert!(context.read(chip, |chip| chip.close).unwrap().is_none());
+    context
+        .update_component(chip, |chip, _| chip.dismissible = true)
+        .unwrap();
+    assert!(context.read(chip, |chip| chip.close).unwrap().is_some());
+}
+
+#[test]
+fn a_typed_context_refuses_to_build_a_builtin_from_a_tag() {
+    let mut context = AppContext::typed();
+    let document = DocumentId::new(1).unwrap();
+    let id = StableNodeId::new(42).unwrap();
+    let mut create = MutationQueue::new();
+    create.create(
+        id,
+        document,
+        NodeKind::Element {
+            tag: "button".into(),
+        },
+    );
+    context.commit_mutations(create).unwrap();
+    let type_id = context.resolve_component_tag("button").unwrap().clone();
+    let layout = Arc::new(nana_ui_core::LayoutStyle::default());
+    let spec = crate::SemanticSpec::from_parts(&type_id, &layout);
+    let mut mutations = MutationQueue::new();
+    assert!(matches!(
+        context.prepare_semantic_binding(id, &spec, &mut mutations),
+        Err(FrameworkError::InvalidComponentType)
+    ));
+    // The full context builds it (`from_world` is full under every test mode).
+    let mut full = AppContext::from_world(crate::UiWorld::new());
+    let mut create = MutationQueue::new();
+    create.create(
+        id,
+        document,
+        NodeKind::Element {
+            tag: "button".into(),
+        },
+    );
+    full.commit_mutations(create).unwrap();
+    let mut mutations = MutationQueue::new();
+    assert!(
+        full.prepare_semantic_binding(id, &spec, &mut mutations)
+            .is_ok()
+    );
+}

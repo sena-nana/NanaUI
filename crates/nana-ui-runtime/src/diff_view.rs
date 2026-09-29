@@ -141,6 +141,11 @@ impl DiffView {
 }
 
 impl ComponentView for DiffView {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        assembler: Some(crate::AppContext::assemble_diff_view),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "diff".into() }
     }

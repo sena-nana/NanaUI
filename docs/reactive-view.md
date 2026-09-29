@@ -81,6 +81,34 @@ fn todos() -> impl IntoView {
 
 在宏里能静态区分的只有三类：常量（字面量）、直接值或信号（路径、字段）、闭包（其他表达式）。"静态依赖"那一类需要知道哪个标识符是信号，只有能看到整段脚本的 `.vue` 方言编译器（第三阶段）才能做到。
 
+## 控件级摇树：`BuiltinComponents::Typed`
+
+`AppContext::new()` 会注册全部 91 个内置控件，每条注册都带着"从标签和属性构造这个控件"的绑定器和重投影函数，所以不管程序用没用到，全部控件的代码都会被链接进来。只从 Rust 类型创建控件的程序（`build`、`mount`、声明式视图、`.vue`）用不到这些绑定器，可以改用精简模式：
+
+```rust
+impl ApplicationState for App {
+    const BUILTINS: BuiltinComponents = BuiltinComponents::Typed;
+    // …
+}
+// 不经过宿主时：AppContext::typed()、RuntimeDocument::typed(document)
+```
+
+- 内置控件只注册**标识**（类型名、标签、TypeId）。节点照常带上组件类型标记，按标签也能解析出类型名。
+- 每个类型的行为写在 `ComponentView::BEHAVIOR`（`TypeBehavior`：激活、组装器、在某一点上激活、关闭弹出的选项、写入后的维护、输入路由钩子 `TypeHooks`），在该类型第一个节点被创建时安装。所有创建路径都经过这一步（`stamp_component_type`、复合控件的 `install_view`、按标签绑定的 `finish_semantic_binding`），程序没创建过的类型，这些代码一处都不被引用。输入路由经 `hooked!` 调用子系统，钩子没装时的结果和文档里没有这种节点时一样。
+- 模式必须在编译期确定：`ApplicationState::BUILTINS` 是关联常量，宿主按常量选择，另一个分支在 release 里被删掉；在运行时二选一会把两种模式都链接进来。
+- 精简模式下，按标签构造内置控件（`bind_semantic`，也就是 Vue 路径）返回 `FrameworkError::InvalidComponentType`。Vue 宿主继续用完整模式。
+
+实测（release、strip 之后）：
+
+| 程序 | 完整 | 精简 | 省下 |
+| --- | --- | --- | --- |
+| 最小无头程序（一列文字和一个按钮） | 5.40 MB | 2.28 MB | 3.12 MB（-58%） |
+| 托管窗口应用 `examples/reactive-sfc` | 35.48 MB | 33.42 MB | 2.06 MB（-5.8%） |
+
+托管应用的体积主要来自 GPU、文字和内置字体，控件只是其中一小部分。
+
+验证：`NANA_TEST_TYPED_BUILTINS=1 cargo test -p nana-ui-runtime` 让本 crate 单元测试里的 `AppContext::new()` 返回精简上下文（只存在于 `cfg(test)`），需要按标签构造的测试会跳过。创建路径漏装行为时，对应的测试在这个模式下失败。
+
 ## 语义
 
 | 环节 | 行为 |

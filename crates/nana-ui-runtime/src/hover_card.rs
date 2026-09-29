@@ -240,6 +240,11 @@ impl Default for HoverCard {
 }
 
 impl ComponentView for HoverCard {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_hover_card),
+        ..crate::TypeBehavior::NONE
+    };
+
     /// `open` is framework-owned (hover lifecycle); app-driven updates must
     /// not snap it shut while the pointer rests on the card.
     fn reconcile(&mut self, next: Self) {

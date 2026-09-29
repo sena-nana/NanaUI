@@ -418,7 +418,7 @@ impl AppContext {
         next_control.project(control.id, &self.world, &mut mutations);
         self.commit_mutations(mutations)?;
         for (id, option) in staged_options {
-            self.views.insert(id, Box::new(option));
+            self.install_view(id, option);
         }
         self.views.insert(control.id, Box::new(next_control));
         Ok(true)
@@ -458,7 +458,7 @@ impl AppContext {
         next_control.project(control.id, &self.world, &mut mutations);
         self.commit_mutations(mutations)?;
         for (id, option) in staged_options {
-            self.views.insert(id, Box::new(option));
+            self.install_view(id, option);
         }
         self.views.insert(control.id, Box::new(next_control));
         Ok(true)
@@ -799,7 +799,7 @@ impl AppContext {
         })
     }
 
-    pub(super) fn sync_tabs_options(&mut self, entity: Entity<Tabs>) -> Result<(), FrameworkError> {
+    pub(crate) fn sync_tabs_options(&mut self, entity: Entity<Tabs>) -> Result<(), FrameworkError> {
         let tabs = self.read(entity, Clone::clone)?;
         let node = self
             .world
@@ -906,10 +906,10 @@ impl AppContext {
         }
         self.remove_event_handlers_for(&removed);
         for (id, option) in created {
-            self.views.insert(id, Box::new(option));
+            self.install_view(id, option);
         }
         for (id, option) in staged_options {
-            self.views.insert(id, Box::new(option));
+            self.install_view(id, option);
         }
         if let Some(tabs) = self
             .views

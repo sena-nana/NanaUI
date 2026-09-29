@@ -515,6 +515,12 @@ impl Default for Workspace {
 }
 
 impl ComponentView for Workspace {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        lifecycle: Some(crate::framework::lifecycle_hooks::workspace),
+        hooks: Some(|hooks| hooks.workspace = Some(&WORKSPACE_HOOKS)),
+        ..crate::TypeBehavior::NONE
+    };
+
     /// Writes region styles onto the content nodes the application puts in its regions.
     const ALWAYS_REPROJECT: bool = true;
 
@@ -1208,6 +1214,16 @@ fn reconcile_children(
 ) {
     crate::framework::reconcile_child_order(parent, desired, world, mutations);
 }
+
+/// The router reaches workspace resize handles only once a workspace exists.
+pub(crate) static WORKSPACE_HOOKS: crate::framework::WorkspaceHooks =
+    crate::framework::WorkspaceHooks {
+        handle_near_hit: AppContext::workspace_handle_near_hit,
+        is_resize_handle: AppContext::is_workspace_resize_handle,
+        begin_resize: AppContext::begin_workspace_resize,
+        update_resize: AppContext::update_workspace_resize,
+        end_resize: AppContext::end_workspace_resize,
+    };
 
 #[cfg(test)]
 mod tests {

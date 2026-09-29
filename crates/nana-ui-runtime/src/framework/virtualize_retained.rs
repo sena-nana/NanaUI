@@ -247,10 +247,10 @@ impl AppContext {
         }
         self.views.insert(list.id, Box::new(content));
         for (id, component) in staged_items {
-            self.views.insert(id, Box::new(component));
+            self.install_view(id, component);
         }
         for (id, container) in staged_containers {
-            self.views.insert(id, Box::new(container));
+            self.install_view(id, container);
         }
         items.entities = next_entities;
         items.containers = next_containers;
@@ -873,10 +873,10 @@ impl AppContext {
         }
         self.world.commit(mutations)?;
         for (id, row) in staged_rows {
-            self.views.insert(id, Box::new(row));
+            self.install_view(id, row);
         }
         for (id, cell) in staged_cells {
-            self.views.insert(id, Box::new(cell));
+            self.install_view(id, cell);
         }
         Ok(())
     }

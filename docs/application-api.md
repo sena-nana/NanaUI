@@ -126,6 +126,8 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 `crates/nana-ui/examples/application-counter.rs`。
 下列低层合同仍用于 Vue 和自行管理窗口/文档的嵌入式宿主。
 
+只从 Rust 类型创建控件（`build` / `mount` / 声明式视图 / `.vue`）的应用，可以设 `const BUILTINS: BuiltinComponents = BuiltinComponents::Typed;`：内置控件只注册标识，程序没创建过的控件不会被链接进来。Vue 等按标签构造控件的宿主保持默认的 `Full`。详见 [声明式视图](reactive-view.md#控件级摇树builtincomponentstyped)。
+
 `ApplicationWindow::demand` 与低层 `RuntimeProgram::frame_demand` 使用同一
 `FrameDemand`：默认 `OnDemand`，单次截止时间 `At(Instant)`，持续刷新
 `Continuous(NonZeroU32)`。120 代表请求 120Hz，不是显示器刷新率保证。

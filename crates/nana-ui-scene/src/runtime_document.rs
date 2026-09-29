@@ -40,8 +40,18 @@ impl RuntimeFrameUpdate {
 
 impl RuntimeDocument {
     pub fn new(document: DocumentId) -> Self {
+        Self::with_context(document, AppContext::new())
+    }
+
+    /// A document whose built-in components are created from their Rust
+    /// types only; see [`nana_ui_runtime::BuiltinComponents::Typed`].
+    pub fn typed(document: DocumentId) -> Self {
+        Self::with_context(document, AppContext::typed())
+    }
+
+    fn with_context(document: DocumentId, context: AppContext) -> Self {
         Self {
-            context: AppContext::new(),
+            context,
             document,
             scene: Arc::new(UiScene::new()),
             viewport: None,

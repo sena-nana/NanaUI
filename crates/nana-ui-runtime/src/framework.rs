@@ -28,10 +28,14 @@ mod input;
 pub use input::{
     HeadlessInput, InputBindError, InputCounters, InputRouteError, InputRouteOutcome, RoutedEvent,
 };
+mod hooks;
 mod keyboard;
 mod lifecycle;
 mod modal;
 mod registry;
+pub(crate) use hooks::{ChoiceHooks, DockHooks, NavigateHooks, WorkspaceHooks, hooked};
+pub use hooks::{TypeBehavior, TypeHooks};
+pub(crate) use lifecycle::lifecycle_hooks;
 mod scroll;
 mod selection;
 pub use selection::FormValidity;
@@ -69,19 +73,18 @@ use nana_ui_core::{
 use crate::Dialog;
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
-    AnimationFrame, BreadcrumbSegment, Button, Checkbox, Chip, CodeEditing, CommandPalette,
-    ComponentView, ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent,
-    FileTab, FormField, FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton,
-    LabeledValue, List, ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState,
-    MutationQueue, NodeKind, NumberChanged, NumberInput, OverlayChanged, OverlayHost, Popover,
-    PopoverClosed, PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged,
-    RangeField, RangeInput, RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics,
-    ScrollOffset, ScrollView, SearchDropdown, SearchDropdownEvent, SecondaryPress,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
-    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId, Switch,
-    Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState,
-    TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError,
-    Workspace, XYPad, XYPadDragState, XYPadEvent,
+    AnimationFrame, Button, Checkbox, Chip, CodeEditing, CommandPalette, ComponentView,
+    ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent, FormField,
+    FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton, LabeledValue, List, ListItem,
+    ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
+    NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
+    ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RangeInput, RovingFocusIntent,
+    ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown,
+    SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
+    SidebarSection, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged,
+    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
+    UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
     component_registry::{
         ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
         RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
@@ -112,6 +115,13 @@ pub use text_edit::{TextDeleteKind, TextFindScope};
 pub use text_history::TextEditOrigin;
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
+
+/// Whether this test run makes [`AppContext::new`] typed; tests that need
+/// tag-based binding skip themselves when it does.
+#[cfg(test)]
+pub(crate) fn typed_builtins_under_test() -> bool {
+    std::env::var_os("NANA_TEST_TYPED_BUILTINS").is_some()
+}
 /// Joins assembly keys into a path ([`AppContext::assembly_path`]). Keys may
 /// not contain it, so every keyed node stays reachable by path.
 pub const ASSEMBLY_PATH_SEPARATOR: &str = "/";
@@ -725,6 +735,18 @@ impl ExtensionRegistrar {
         let (entry, tags) = alias_entry::<C>(type_id, tags)?;
         self.components.insert_with_tags(entry, tags)
     }
+
+    /// Register an identity only (see [`BuiltinComponents::Typed`]).
+    pub(crate) fn register_identity<C: RegisterableComponent>(
+        &mut self,
+        type_id: &'static str,
+        rust_type: Option<TypeId>,
+        tags: &'static [&'static str],
+    ) -> Result<(), FrameworkError> {
+        let (entry, tags) =
+            crate::component_registry::identity_entry::<C>(type_id, rust_type, tags)?;
+        self.components.insert_with_tags(entry, tags)
+    }
 }
 
 pub struct ViewContext<'a, V: View> {
@@ -977,6 +999,20 @@ impl From<UiWorldError> for FrameworkError {
     }
 }
 
+/// How much of the built-in component machinery a context installs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BuiltinComponents {
+    /// Every built-in component can also be built from a tag and attributes
+    /// (`bind_semantic`, the Vue path). Links every built-in component.
+    #[default]
+    Full,
+    /// Built-in components are created from their Rust types only (`build`,
+    /// `mount`, declarative views). Their ids still stamp nodes and resolve
+    /// by tag, but nothing that builds one from a tag is linked, so a program
+    /// links only the components it creates.
+    Typed,
+}
+
 /// Owns typed view state while [`UiWorld`] remains the retained UI authority.
 pub struct AppContext {
     world: UiWorld,
@@ -1010,6 +1046,11 @@ pub struct AppContext {
     file_drops: HashMap<TypeId, FileDropFn>,
     /// [`reproject_erased`] per component type created through this context.
     reprojectors: HashMap<TypeId, ReprojectFn>,
+    /// [`ComponentView::BEHAVIOR`] per component type created through this
+    /// context.
+    behaviors: HashMap<TypeId, hooks::ErasedBehavior>,
+    /// Router hooks installed by the types created so far.
+    type_hooks: TypeHooks,
     assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
     /// Reverse of `assembled`: a keyed child's declared parent and key. The
     /// declared parent is identity; the world parent is placement, and the
@@ -1310,6 +1351,13 @@ impl Default for AppContext {
 
 impl AppContext {
     pub fn new() -> Self {
+        // `NANA_TEST_TYPED_BUILTINS=1 cargo test -p nana-ui-runtime` runs this
+        // crate's suite on typed contexts: a type hook a creation path forgot
+        // to install fails the test that needs it.
+        #[cfg(test)]
+        if typed_builtins_under_test() {
+            return Self::typed();
+        }
         Self::from_world(UiWorld::new())
     }
 
@@ -1320,6 +1368,20 @@ impl AppContext {
     /// skips live or retired IDs; do not treat allocated chrome IDs as host
     /// tree identities.
     pub fn from_world(world: UiWorld) -> Self {
+        Self::with_builtins(world, &crate::builtin_components::NanaBuiltinComponents)
+    }
+
+    /// A context whose built-in components are created from their Rust types
+    /// only ([`BuiltinComponents::Typed`]). Call this directly: choosing
+    /// between it and [`Self::new`] at run time links both.
+    pub fn typed() -> Self {
+        Self::with_builtins(
+            UiWorld::new(),
+            &crate::builtin_components::NanaBuiltinIdentities,
+        )
+    }
+
+    fn with_builtins(world: UiWorld, builtins: &impl UiExtension) -> Self {
         let mut context = Self {
             world,
             views: HashMap::new(),
@@ -1339,6 +1401,8 @@ impl AppContext {
             secondary_presses: HashMap::new(),
             file_drops: HashMap::new(),
             reprojectors: HashMap::new(),
+            behaviors: HashMap::new(),
+            type_hooks: TypeHooks::default(),
             assembled: HashMap::new(),
             assembled_parent: HashMap::new(),
             placed_assembled: HashSet::new(),
@@ -1362,9 +1426,8 @@ impl AppContext {
             reactive: reactive::ReactiveHost::default(),
         };
         context
-            .install(&crate::builtin_components::NanaBuiltinComponents)
+            .install(builtins)
             .expect("builtin component registry");
-        context.register_builtin_activations();
         #[cfg(feature = "syntax-highlighting")]
         {
             context
@@ -3067,7 +3130,7 @@ impl AppContext {
         id: StableNodeId,
         type_id: TypeId,
     ) -> Result<(), FrameworkError> {
-        let Some(assembler) = component_assembler(type_id) else {
+        let Some(assembler) = self.behaviors.get(&type_id).and_then(|b| b.assembler) else {
             return Ok(());
         };
         if !self.world.contains(id) || !self.assembling.insert(id) {
@@ -3441,39 +3504,4 @@ pub(super) fn is_menu_surface(type_id: TypeId) -> bool {
 /// mounted node, so a remount has to project them again.
 pub(super) fn reprojects_on_mount(type_id: TypeId) -> bool {
     type_id == TypeId::of::<TextArea>() || is_menu_surface(type_id)
-}
-
-/// Assembler for a composite component type, if it has one.
-///
-/// One table so [`AppContext::update_component`] and the explicit
-/// `assemble_*` entry points cannot disagree about which types self-assemble.
-pub(super) fn component_assembler(
-    type_id: TypeId,
-) -> Option<fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>> {
-    macro_rules! assemblers {
-        ($($ty:path => $method:ident),* $(,)?) => {
-            $(
-                if type_id == TypeId::of::<$ty>() {
-                    return Some(|cx, id| cx.$method(Entity::<$ty>::from_stable_id(id)));
-                }
-            )*
-        };
-    }
-    // Leaf composites only: their children follow purely from their own props,
-    // so assembling on write is cheap and cannot surprise the caller.
-    //
-    // Shell / Workspace / Dock / SplitPane / PaneSection are deliberately absent.
-    // Their assemblers reconcile application-owned slots and are not free, so
-    // running them from every write breaks the "an idle projection does not
-    // dirty the world" contract the dirty-frame path depends on. Those stay
-    // explicit; call the matching `assemble_*` after wiring slots.
-    assemblers! {
-        crate::Chip => assemble_chip,
-        crate::ColorField => assemble_color_field,
-        crate::PathField => assemble_path_field,
-        crate::FileTab => assemble_file_tab,
-        crate::DiffView => assemble_diff_view,
-        crate::MediaTransportBar => assemble_media_transport_bar,
-    }
-    None
 }

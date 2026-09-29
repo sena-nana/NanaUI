@@ -111,6 +111,11 @@ impl PathField {
 }
 
 impl ComponentView for PathField {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        assembler: Some(crate::AppContext::assemble_path_field),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "path-field".into(),

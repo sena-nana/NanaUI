@@ -124,6 +124,11 @@ fn segment_style() -> NodeStyle {
 }
 
 impl ComponentView for BreadcrumbSegment {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_breadcrumb_segment),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "breadcrumb-segment".into(),

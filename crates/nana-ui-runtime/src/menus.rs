@@ -120,6 +120,11 @@ impl ActionMenuItem {
 }
 
 impl crate::ComponentView for ActionMenuItem {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_action_menu_item),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "action-menu-item".into(),
@@ -554,6 +559,12 @@ impl ContextMenu {
 }
 
 impl crate::ComponentView for ContextMenu {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::dismiss_context_menu),
+        activate_at: Some(crate::AppContext::activate_context_menu_at),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "context-menu".into(),

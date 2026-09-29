@@ -287,6 +287,22 @@ impl Select {
 }
 
 impl crate::ComponentView for Select {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::toggle_select),
+        activate_at: Some(crate::AppContext::activate_select_at),
+        close_options: Some(|context, entity| {
+            context.update_component(entity, |select, _| {
+                if !select.opened {
+                    return false;
+                }
+                select.close();
+                true
+            })
+        }),
+        hooks: Some(|hooks| hooks.select = Some(&SELECT_HOOKS)),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn reconcile(&mut self, mut next: Self) {
         // Value/options are application state; the open menu and its keyboard
         // highlight belong to the current interaction while those props agree.
@@ -607,6 +623,12 @@ pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
         ..NodeStyle::default()
     }
 }
+
+/// The router reaches this list's keyboard only once one exists.
+pub(crate) static SELECT_HOOKS: crate::framework::ChoiceHooks = crate::framework::ChoiceHooks {
+    adjust: crate::AppContext::adjust_focused_select,
+    commit: crate::AppContext::commit_focused_select,
+};
 
 #[cfg(test)]
 mod tests {

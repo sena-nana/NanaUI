@@ -578,7 +578,7 @@ impl AppContext {
         }
         self.world.commit(mutations)?;
         for (slot, view) in created {
-            self.views.insert(slot, Box::new(view));
+            self.install_view(slot, view);
         }
         for entry in &plan {
             let slot = slots[&entry.key];
@@ -603,25 +603,8 @@ impl AppContext {
         &mut self,
         id: StableNodeId,
     ) -> Result<(), FrameworkError> {
-        if self.views.get(&id).is_some_and(|view| view.is::<Tabs>()) {
-            self.sync_tabs_options(Entity::from_stable_id(id))?;
-        }
-        if self
-            .views
-            .get(&id)
-            .is_some_and(|view| view.is::<crate::TerminalView>())
-        {
-            self.refresh_terminal_view(Entity::from_stable_id(id))?;
-            if let Some(bounds) = self.world.layout_box(id) {
-                self.resize_terminal_view(Entity::from_stable_id(id), bounds.width, bounds.height)?;
-            }
-        }
-        if self
-            .views
-            .get(&id)
-            .is_some_and(|view| view.is::<crate::PaneTree>())
-        {
-            self.sync_pane_tree(id)?;
+        if let Some(sync) = self.behavior(id).and_then(|b| b.lifecycle) {
+            sync(self, id)?;
         }
         self.sync_hover_card_focus(id);
         self.sync_sidebar_section_body_port(id);
@@ -646,7 +629,7 @@ impl AppContext {
                 mutations.insert(id, overlay, None);
                 mutations.set_overlay_host(id, crate::OverlayHostState::default());
                 self.world.commit(mutations)?;
-                self.views.insert(overlay, Box::new(tooltip));
+                self.install_view(overlay, tooltip);
                 self.component_lifecycle.tooltips.insert(
                     id,
                     TooltipLifecycle {
@@ -725,38 +708,6 @@ impl AppContext {
             }
         }
 
-        if self
-            .views
-            .get(&id)
-            .is_some_and(|view| view.is::<Workspace>())
-        {
-            let origin = self
-                .views
-                .get(&id)
-                .and_then(|view| view.downcast_ref::<Workspace>())
-                .and_then(|workspace| workspace.model.transition_origin());
-            if let Some(origin) = origin {
-                if self.world.is_mounted(id)
-                    && let Some(spec) = crate::workspace_animation(id, origin)
-                {
-                    let restart = self
-                        .world
-                        .animation_timing_start(spec.id)
-                        .is_none_or(|start| start != origin);
-                    if restart {
-                        let mut mutations = MutationQueue::new();
-                        mutations.start_animation(spec);
-                        self.world.commit(mutations)?;
-                    }
-                }
-            } else if let Some(spec) = crate::workspace_animation(id, Duration::ZERO)
-                && self.world.animation_is_active(spec.id)
-            {
-                let mut mutations = MutationQueue::new();
-                mutations.stop_animation(spec.id);
-                self.world.commit(mutations)?;
-            }
-        }
         Ok(())
     }
 
@@ -1408,6 +1359,65 @@ impl AppContext {
         self.update_component(Entity::<Tooltip>::from_stable_id(overlay), |tooltip, _| {
             tooltip.style = style;
         })?;
+        Ok(())
+    }
+}
+
+/// The per-type upkeep [`crate::ComponentView::lifecycle`] names, as free
+/// functions so each type links only its own.
+pub(crate) mod lifecycle_hooks {
+    use super::*;
+
+    pub(crate) fn terminal(
+        context: &mut AppContext,
+        entity: Entity<crate::TerminalView>,
+    ) -> Result<(), FrameworkError> {
+        context.refresh_terminal_view(entity)?;
+        if let Some(bounds) = context.world.layout_box(entity.stable_id()) {
+            context.resize_terminal_view(entity, bounds.width, bounds.height)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn pane_tree(
+        context: &mut AppContext,
+        entity: Entity<crate::PaneTree>,
+    ) -> Result<(), FrameworkError> {
+        context.sync_pane_tree(entity.stable_id())
+    }
+
+    /// Start or stop the workspace transition animation to match the model.
+    pub(crate) fn workspace(
+        context: &mut AppContext,
+        entity: Entity<Workspace>,
+    ) -> Result<(), FrameworkError> {
+        let id = entity.stable_id();
+        let origin = context
+            .views
+            .get(&id)
+            .and_then(|view| view.downcast_ref::<Workspace>())
+            .and_then(|workspace| workspace.model.transition_origin());
+        if let Some(origin) = origin {
+            if context.world.is_mounted(id)
+                && let Some(spec) = crate::workspace_animation(id, origin)
+            {
+                let restart = context
+                    .world
+                    .animation_timing_start(spec.id)
+                    .is_none_or(|start| start != origin);
+                if restart {
+                    let mut mutations = MutationQueue::new();
+                    mutations.start_animation(spec);
+                    context.world.commit(mutations)?;
+                }
+            }
+        } else if let Some(spec) = crate::workspace_animation(id, Duration::ZERO)
+            && context.world.animation_is_active(spec.id)
+        {
+            let mut mutations = MutationQueue::new();
+            mutations.stop_animation(spec.id);
+            context.world.commit(mutations)?;
+        }
         Ok(())
     }
 }

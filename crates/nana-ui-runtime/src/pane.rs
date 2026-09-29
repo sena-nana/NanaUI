@@ -635,6 +635,11 @@ impl PaneTree {
 }
 
 impl ComponentView for PaneTree {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        lifecycle: Some(crate::framework::lifecycle_hooks::pane_tree),
+        ..crate::TypeBehavior::NONE
+    };
+
     /// Makes the content nodes it hosts fill their slot; their own projection overwrites that.
     const ALWAYS_REPROJECT: bool = true;
 

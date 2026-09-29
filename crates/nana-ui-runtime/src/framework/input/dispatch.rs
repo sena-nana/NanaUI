@@ -3,6 +3,7 @@
 //! event: pointer and wheel through one shared hit, keys and committed text
 //! through one key chain, composition into the focused editor.
 
+use crate::framework::hooked;
 use std::time::Duration;
 
 use nana_ui_core::TableNavigation;
@@ -205,9 +206,28 @@ impl AppContext {
                             self.update_reorder_list_pointer(document, *pointer_id, *x, *y,)
                         )?
                         || self.update_split_resize(document, *pointer_id, *x, *y)?
-                        || self.update_dock_split_resize(document, *pointer_id, *x, *y)?
-                        || self.update_workspace_resize(document, *pointer_id, *x, *y, now)?
-                        || self.update_dock_item_drag(document, *pointer_id, *x, *y)?
+                        || hooked!(self, dock, |h| (h.update_split)(
+                            self,
+                            document,
+                            *pointer_id,
+                            *x,
+                            *y
+                        ))?
+                        || hooked!(self, workspace, |h| (h.update_resize)(
+                            self,
+                            document,
+                            *pointer_id,
+                            *x,
+                            *y,
+                            now
+                        ))?
+                        || hooked!(self, dock, |h| (h.update_item)(
+                            self,
+                            document,
+                            *pointer_id,
+                            *x,
+                            *y
+                        ))?
                         || target
                             .map(|_target| {
                                 optional_input!(
@@ -271,16 +291,28 @@ impl AppContext {
                     .then(|| self.split_handle_near_hit(document, *x, *y, target))
                     .flatten();
                 let dock_handle = reachable
-                    .then(|| self.dock_handle_near_hit(document, *x, *y, target))
+                    .then(|| {
+                        hooked!(self, dock, |h| (h.handle_near_hit)(
+                            self, document, *x, *y, target
+                        ))
+                    })
                     .flatten();
                 let workspace_handle = reachable
-                    .then(|| self.workspace_handle_near_hit(document, *x, *y, target))
+                    .then(|| {
+                        hooked!(self, workspace, |h| (h.handle_near_hit)(
+                            self, document, *x, *y, target
+                        ))
+                    })
                     .flatten();
                 let dock_source = target
-                    .filter(|id| self.is_dock_item_source(*id))
+                    .filter(|id| hooked!(self, dock, |h| (h.is_item_source)(self, *id)))
                     .or_else(|| {
                         reachable
-                            .then(|| self.dock_tab_strip_near_hit(document, *x, *y, target))
+                            .then(|| {
+                                hooked!(self, dock, |h| (h.tab_strip_near_hit)(
+                                    self, document, *x, *y, target
+                                ))
+                            })
                             .flatten()
                     });
                 let hit = dock_handle.or(split_handle).or(workspace_handle).or(target);
@@ -361,15 +393,39 @@ impl AppContext {
                             self.begin_reorder_list_pointer(document, *pointer_id, target, *x, *y,)
                         )?
                     {
-                    } else if self.is_dock_handle(target) && *button == 0 {
-                        self.begin_dock_split_resize(document, *pointer_id, target, *x, *y)?;
+                    } else if hooked!(self, dock, |h| (h.is_handle)(self, target)) && *button == 0 {
+                        hooked!(self, dock, |h| (h.begin_split)(
+                            self,
+                            document,
+                            *pointer_id,
+                            target,
+                            *x,
+                            *y
+                        ))?;
                     } else if self.is_split_handle(target) && *button == 0 {
                         self.begin_split_resize(document, *pointer_id, target, *x, *y)?;
-                    } else if self.is_workspace_resize_handle(target) && *button == 0 {
-                        self.begin_workspace_resize(document, *pointer_id, target, *x, *y, now)?;
+                    } else if hooked!(self, workspace, |h| (h.is_resize_handle)(self, target))
+                        && *button == 0
+                    {
+                        hooked!(self, workspace, |h| (h.begin_resize)(
+                            self,
+                            document,
+                            *pointer_id,
+                            target,
+                            *x,
+                            *y,
+                            now
+                        ))?;
                     } else if *button == 0 {
                         if let Some(source) = dock_source {
-                            self.begin_dock_item_drag(document, *pointer_id, source, *x, *y)?;
+                            hooked!(self, dock, |h| (h.begin_item)(
+                                self,
+                                document,
+                                *pointer_id,
+                                source,
+                                *x,
+                                *y
+                            ))?;
                         } else {
                             self.press_pointer(document, *pointer_id, target)?;
                             if !*activation_click && self.press_number_stepper(target, *x, *y)? {
@@ -434,9 +490,26 @@ impl AppContext {
                         self.end_reorder_list_pointer(document, *pointer_id, *x, *y, false,)
                     )?
                     || self.end_split_resize(document, *pointer_id, false)?
-                    || self.end_dock_split_resize(document, *pointer_id, false)?
-                    || self.end_workspace_resize(document, *pointer_id, now)?
-                    || self.end_dock_item_drag(document, *pointer_id, *x, *y, false)?
+                    || hooked!(self, dock, |h| (h.end_split)(
+                        self,
+                        document,
+                        *pointer_id,
+                        false
+                    ))?
+                    || hooked!(self, workspace, |h| (h.end_resize)(
+                        self,
+                        document,
+                        *pointer_id,
+                        now
+                    ))?
+                    || hooked!(self, dock, |h| (h.end_item)(
+                        self,
+                        document,
+                        *pointer_id,
+                        *x,
+                        *y,
+                        false
+                    ))?
                 {
                     self.release_pointer(document, *pointer_id);
                     return Ok(CONSUMED);
@@ -483,9 +556,26 @@ impl AppContext {
                     self.end_reorder_list_pointer(document, *pointer_id, *x, *y, true,)
                 )?;
                 let split = self.end_split_resize(document, *pointer_id, true)?;
-                let dock_split = self.end_dock_split_resize(document, *pointer_id, true)?;
-                let workspace = self.end_workspace_resize(document, *pointer_id, now)?;
-                let dock_item = self.end_dock_item_drag(document, *pointer_id, *x, *y, true)?;
+                let dock_split = hooked!(self, dock, |h| (h.end_split)(
+                    self,
+                    document,
+                    *pointer_id,
+                    true
+                ))?;
+                let workspace = hooked!(self, workspace, |h| (h.end_resize)(
+                    self,
+                    document,
+                    *pointer_id,
+                    now
+                ))?;
+                let dock_item = hooked!(self, dock, |h| (h.end_item)(
+                    self,
+                    document,
+                    *pointer_id,
+                    *x,
+                    *y,
+                    true
+                ))?;
                 let pressed = self.release_pointer(document, *pointer_id).is_some();
                 self.set_pointer_hover_at(document, *pointer_id, None, now)?;
                 let calendar =
@@ -850,7 +940,9 @@ impl AppContext {
         };
         if let Some(direction) = split_direction
             && (self.adjust_focused_split(document, direction)?
-                || self.adjust_focused_dock_split(document, direction)?)
+                || hooked!(self, dock, |h| (h.adjust_focused_split)(
+                    self, document, direction
+                ))?)
         {
             return Ok(true);
         }
@@ -870,7 +962,9 @@ impl AppContext {
             _ => None,
         };
         if let Some(navigation) = palette_nav
-            && self.navigate_focused_command_palette(document, navigation)?
+            && hooked!(self, command_palette, |h| (h.navigate)(
+                self, document, navigation
+            ))?
         {
             return Ok(true);
         }
@@ -880,18 +974,19 @@ impl AppContext {
             _ => None,
         };
         if let Some(delta) = select_delta
-            && (self.adjust_focused_select(document, delta)?
-                || self.adjust_focused_dropdown(document, delta)?
-                || self.adjust_focused_search_dropdown(document, delta)?)
+            && (hooked!(self, select, |h| (h.adjust)(self, document, delta))?
+                || hooked!(self, dropdown, |h| (h.adjust)(self, document, delta))?
+                || hooked!(self, search_dropdown, |h| (h.adjust)(self, document, delta))?)
         {
             return Ok(true);
         }
         if matches!(key, " " | "Space" | "Enter")
-            && (self.commit_focused_select(document)? || self.commit_focused_dropdown(document)?)
+            && (hooked!(self, select, |h| (h.commit)(self, document))?
+                || hooked!(self, dropdown, |h| (h.commit)(self, document))?)
         {
             return Ok(true);
         }
-        if key == "Enter" && self.commit_focused_search_dropdown(document)? {
+        if key == "Enter" && hooked!(self, search_dropdown, |h| (h.commit)(self, document))? {
             return Ok(true);
         }
         let tree_nav = match key {
@@ -906,7 +1001,7 @@ impl AppContext {
             _ => None,
         };
         if let Some(navigation) = tree_nav
-            && self.navigate_focused_tree(document, navigation)?
+            && hooked!(self, tree, |h| (h.navigate)(self, document, navigation))?
         {
             return Ok(true);
         }

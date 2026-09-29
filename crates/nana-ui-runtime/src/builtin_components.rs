@@ -59,106 +59,151 @@ impl UiExtension for NanaBuiltinComponents {
     }
 
     fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
-        registrar.register_component::<Stack>()?;
-        registrar.register_component_alias::<Stack>("nana.column", &["column"])?;
-        registrar.register_component_alias::<Stack>("nana.row", &["row"])?;
-        registrar.register_component_alias::<Stack>("nana.box", &["box"])?;
-        registrar.register_component_alias::<Stack>("nana.drop-target", &["drop-target"])?;
-        registrar.register_component::<Text>()?;
-        registrar.register_component::<Button>()?;
-        registrar.register_component::<IconButton>()?;
-        registrar.register_component::<IconGlyph>()?;
-        registrar.register_component::<Checkbox>()?;
-        registrar.register_component::<Divider>()?;
-        registrar.register_component::<NumberInput>()?;
-        registrar.register_component::<Switch>()?;
-        registrar.register_component::<Card>()?;
-        registrar.register_component::<ListItem>()?;
-        registrar.register_component::<Thumbnail>()?;
-        registrar.register_component::<Chip>()?;
-        registrar.register_component::<crate::DatePicker>()?;
-        registrar.register_component::<crate::Toolbar>()?;
-        registrar.register_component::<crate::StatusBar>()?;
-        registrar.register_component::<crate::MediaTransportBar>()?;
-        registrar.register_component::<Avatar>()?;
-        registrar.register_component::<TextInput>()?;
-        registrar.register_component::<TextArea>()?;
-        registrar.register_component::<crate::TerminalView>()?;
-        registrar.register_component::<DiffView>()?;
-        registrar.register_component::<crate::NativeContent>()?;
-        registrar.register_component::<crate::BrowserView>()?;
-        registrar.register_component::<HostedTextarea>()?;
-        registrar.register_component::<RangeField>()?;
-        registrar.register_component::<Progress>()?;
-        registrar.register_component::<Spinner>()?;
-        registrar.register_component::<StatusBadge>()?;
-        registrar.register_component::<ValidationMessage>()?;
-        registrar.register_component::<EmptyState>()?;
-        registrar.register_component::<LabeledValue>()?;
-        registrar.register_component::<Dialog>()?;
-        registrar.register_component::<ConfirmDialog>()?;
-        registrar.register_component::<Select>()?;
-        registrar.register_component::<Tabs>()?;
-        registrar.register_component::<SegmentedControl>()?;
-        registrar.register_component::<Dropdown>()?;
-        registrar.register_component::<SearchDropdown>()?;
-        registrar.register_component::<Drawer>()?;
-        registrar.register_component::<crate::Panel>()?;
-        registrar.register_component::<Popover>()?;
-        registrar.register_component::<ContextMenu>()?;
-        registrar.register_component::<Toast>()?;
-        registrar.register_component::<ActionMenu>()?;
-        registrar.register_component::<ActionMenuItem>()?;
-        registrar.register_component::<Tooltip>()?;
-        registrar.register_component::<XYPad>()?;
-        registrar.register_component::<ColorField>()?;
-        registrar.register_component::<PathField>()?;
-        registrar.register_component::<QrCode>()?;
-        registrar.register_component::<FormField>()?;
-        registrar.register_component::<InteractiveCard>()?;
-        registrar.register_component::<Skeleton>()?;
-        registrar.register_component::<LevelMeter>()?;
-        registrar.register_component::<CommandPalette>()?;
-        registrar.register_component::<TreeView>()?;
-        #[cfg(feature = "calendar")]
-        registrar.register_component::<CalendarHeatmap<()>>()?;
-        #[cfg(feature = "image-viewer")]
-        registrar.register_component::<ImageViewer>()?;
-        #[cfg(feature = "rich-text")]
-        registrar.register_component::<NativeMarkdown>()?;
-        #[cfg(feature = "graph-canvas")]
-        registrar.register_component::<GraphCanvas>()?;
-        registrar.register_component::<Workspace>()?;
-        registrar.register_component::<Dock>()?;
-        registrar.register_component::<SplitPane>()?;
-        registrar.register_component::<AppShell>()?;
-        registrar.register_component::<SidebarFrame>()?;
-        registrar.register_component::<SidebarRow>()?;
-        registrar.register_component::<SettingsRow>()?;
-        registrar.register_component::<SettingsCard>()?;
-        registrar.register_component::<SettingsPage>()?;
-        registrar.register_component::<SettingsCollapsibleCard>()?;
-        registrar.register_component::<List>()?;
-        registrar.register_component::<ScrollView>()?;
-        registrar.register_component::<Table>()?;
-        registrar.register_component::<TableRow>()?;
-        registrar.register_component::<TableCell>()?;
-        #[cfg(feature = "controls")]
-        registrar.register_component::<ReorderList>()?;
-        #[cfg(feature = "charts")]
-        registrar.register_component::<TimeSeriesChart>()?;
-        #[cfg(feature = "charts")]
-        registrar.register_component::<DonutChart>()?;
-        registrar.register_component::<DesktopShell>()?;
-        registrar.register_component::<AppTitleBar>()?;
-        registrar.register_component::<PaneChrome>()?;
-        registrar.register_component::<SidebarSection>()?;
-        registrar.register_component::<SidebarFooter>()?;
-        registrar.register_component::<GpuTextureView>()?;
-        registrar.register_component::<GpuView>()?;
-        registrar.register_component::<Video>()?;
-        Ok(())
+        install_builtins::<true>(registrar)
     }
+}
+
+/// The built-in components' identities only, for
+/// [`crate::BuiltinComponents::Typed`].
+pub(crate) struct NanaBuiltinIdentities;
+
+impl UiExtension for NanaBuiltinIdentities {
+    fn name(&self) -> &'static str {
+        "nana.builtin"
+    }
+
+    fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
+        install_builtins::<false>(registrar)
+    }
+}
+
+/// One list for both modes. `BIND` is a constant, so the identity-only
+/// instance never mentions a binder and the linker drops every component the
+/// program does not create.
+fn component<C: RegisterableComponent, const BIND: bool>(
+    registrar: &mut ExtensionRegistrar,
+) -> Result<(), FrameworkError> {
+    if BIND {
+        registrar.register_component::<C>()
+    } else {
+        registrar.register_identity::<C>(C::TYPE_ID, Some(std::any::TypeId::of::<C>()), C::TAGS)
+    }
+}
+
+fn alias<C: RegisterableComponent, const BIND: bool>(
+    registrar: &mut ExtensionRegistrar,
+    type_id: &'static str,
+    tags: &'static [&'static str],
+) -> Result<(), FrameworkError> {
+    if BIND {
+        registrar.register_component_alias::<C>(type_id, tags)
+    } else {
+        registrar.register_identity::<C>(type_id, None, tags)
+    }
+}
+
+fn install_builtins<const BIND: bool>(
+    registrar: &mut ExtensionRegistrar,
+) -> Result<(), FrameworkError> {
+    component::<Stack, BIND>(registrar)?;
+    alias::<Stack, BIND>(registrar, "nana.column", &["column"])?;
+    alias::<Stack, BIND>(registrar, "nana.row", &["row"])?;
+    alias::<Stack, BIND>(registrar, "nana.box", &["box"])?;
+    alias::<Stack, BIND>(registrar, "nana.drop-target", &["drop-target"])?;
+    component::<Text, BIND>(registrar)?;
+    component::<Button, BIND>(registrar)?;
+    component::<IconButton, BIND>(registrar)?;
+    component::<IconGlyph, BIND>(registrar)?;
+    component::<Checkbox, BIND>(registrar)?;
+    component::<Divider, BIND>(registrar)?;
+    component::<NumberInput, BIND>(registrar)?;
+    component::<Switch, BIND>(registrar)?;
+    component::<Card, BIND>(registrar)?;
+    component::<ListItem, BIND>(registrar)?;
+    component::<Thumbnail, BIND>(registrar)?;
+    component::<Chip, BIND>(registrar)?;
+    component::<crate::DatePicker, BIND>(registrar)?;
+    component::<crate::Toolbar, BIND>(registrar)?;
+    component::<crate::StatusBar, BIND>(registrar)?;
+    component::<crate::MediaTransportBar, BIND>(registrar)?;
+    component::<Avatar, BIND>(registrar)?;
+    component::<TextInput, BIND>(registrar)?;
+    component::<TextArea, BIND>(registrar)?;
+    component::<crate::TerminalView, BIND>(registrar)?;
+    component::<DiffView, BIND>(registrar)?;
+    component::<crate::NativeContent, BIND>(registrar)?;
+    component::<crate::BrowserView, BIND>(registrar)?;
+    component::<HostedTextarea, BIND>(registrar)?;
+    component::<RangeField, BIND>(registrar)?;
+    component::<Progress, BIND>(registrar)?;
+    component::<Spinner, BIND>(registrar)?;
+    component::<StatusBadge, BIND>(registrar)?;
+    component::<ValidationMessage, BIND>(registrar)?;
+    component::<EmptyState, BIND>(registrar)?;
+    component::<LabeledValue, BIND>(registrar)?;
+    component::<Dialog, BIND>(registrar)?;
+    component::<ConfirmDialog, BIND>(registrar)?;
+    component::<Select, BIND>(registrar)?;
+    component::<Tabs, BIND>(registrar)?;
+    component::<SegmentedControl, BIND>(registrar)?;
+    component::<Dropdown, BIND>(registrar)?;
+    component::<SearchDropdown, BIND>(registrar)?;
+    component::<Drawer, BIND>(registrar)?;
+    component::<crate::Panel, BIND>(registrar)?;
+    component::<Popover, BIND>(registrar)?;
+    component::<ContextMenu, BIND>(registrar)?;
+    component::<Toast, BIND>(registrar)?;
+    component::<ActionMenu, BIND>(registrar)?;
+    component::<ActionMenuItem, BIND>(registrar)?;
+    component::<Tooltip, BIND>(registrar)?;
+    component::<XYPad, BIND>(registrar)?;
+    component::<ColorField, BIND>(registrar)?;
+    component::<PathField, BIND>(registrar)?;
+    component::<QrCode, BIND>(registrar)?;
+    component::<FormField, BIND>(registrar)?;
+    component::<InteractiveCard, BIND>(registrar)?;
+    component::<Skeleton, BIND>(registrar)?;
+    component::<LevelMeter, BIND>(registrar)?;
+    component::<CommandPalette, BIND>(registrar)?;
+    component::<TreeView, BIND>(registrar)?;
+    #[cfg(feature = "calendar")]
+    component::<CalendarHeatmap<()>, BIND>(registrar)?;
+    #[cfg(feature = "image-viewer")]
+    component::<ImageViewer, BIND>(registrar)?;
+    #[cfg(feature = "rich-text")]
+    component::<NativeMarkdown, BIND>(registrar)?;
+    #[cfg(feature = "graph-canvas")]
+    component::<GraphCanvas, BIND>(registrar)?;
+    component::<Workspace, BIND>(registrar)?;
+    component::<Dock, BIND>(registrar)?;
+    component::<SplitPane, BIND>(registrar)?;
+    component::<AppShell, BIND>(registrar)?;
+    component::<SidebarFrame, BIND>(registrar)?;
+    component::<SidebarRow, BIND>(registrar)?;
+    component::<SettingsRow, BIND>(registrar)?;
+    component::<SettingsCard, BIND>(registrar)?;
+    component::<SettingsPage, BIND>(registrar)?;
+    component::<SettingsCollapsibleCard, BIND>(registrar)?;
+    component::<List, BIND>(registrar)?;
+    component::<ScrollView, BIND>(registrar)?;
+    component::<Table, BIND>(registrar)?;
+    component::<TableRow, BIND>(registrar)?;
+    component::<TableCell, BIND>(registrar)?;
+    #[cfg(feature = "controls")]
+    component::<ReorderList, BIND>(registrar)?;
+    #[cfg(feature = "charts")]
+    component::<TimeSeriesChart, BIND>(registrar)?;
+    #[cfg(feature = "charts")]
+    component::<DonutChart, BIND>(registrar)?;
+    component::<DesktopShell, BIND>(registrar)?;
+    component::<AppTitleBar, BIND>(registrar)?;
+    component::<PaneChrome, BIND>(registrar)?;
+    component::<SidebarSection, BIND>(registrar)?;
+    component::<SidebarFooter, BIND>(registrar)?;
+    component::<GpuTextureView, BIND>(registrar)?;
+    component::<GpuView, BIND>(registrar)?;
+    component::<Video, BIND>(registrar)?;
+    Ok(())
 }
 
 impl RegisterableComponent for Stack {

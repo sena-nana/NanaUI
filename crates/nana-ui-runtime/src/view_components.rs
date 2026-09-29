@@ -227,6 +227,11 @@ fn project_text_field(
 ///
 /// [`update_component`]: crate::AppContext::update_component
 pub trait ComponentView: Clone + PartialEq + Send + 'static {
+    /// What this built-in type brings with its first node; see
+    /// [`crate::TypeBehavior`].
+    #[doc(hidden)]
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior::NONE;
+
     /// Apply declarative properties to a retained component. Stateful controls
     /// override this to preserve interaction state; explicit `update_component`
     /// remains available when the caller intends to replace that state.
@@ -598,6 +603,11 @@ impl Button {
 }
 
 impl ComponentView for Button {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_button),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "button".into(),
@@ -824,6 +834,11 @@ impl IconButton {
 }
 
 impl ComponentView for IconButton {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_icon_button),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "icon-button".into(),
@@ -1369,6 +1384,11 @@ impl ListItem {
 }
 
 impl ComponentView for ListItem {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_list_item),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "list-item".into(),
@@ -3302,6 +3322,11 @@ impl Checkbox {
 }
 
 impl ComponentView for Checkbox {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::toggle_checkbox),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "checkbox".into(),
@@ -3560,6 +3585,11 @@ impl Switch {
 }
 
 impl ComponentView for Switch {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::toggle_switch),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "switch".into(),

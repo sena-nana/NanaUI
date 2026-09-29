@@ -311,6 +311,23 @@ impl SearchDropdown {
 }
 
 impl ComponentView for SearchDropdown {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::toggle_search_dropdown),
+        activate_at: Some(crate::AppContext::activate_search_dropdown_at),
+        close_options: Some(|context, entity| {
+            context.update_component(entity, |dropdown, cx| {
+                if let Some(event) = dropdown.close() {
+                    cx.emit(event);
+                    true
+                } else {
+                    false
+                }
+            })
+        }),
+        hooks: Some(|hooks| hooks.search_dropdown = Some(&SEARCH_DROPDOWN_HOOKS)),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn reconcile(&mut self, mut next: Self) {
         // The filter field's text state is the user's typing, not application
         // props: a refresh must not reset the caret mid-query.
@@ -455,6 +472,13 @@ fn option_matches(option: &SearchDropdownOption, query: &str) -> bool {
             .as_ref()
             .is_some_and(|hint| query_matches(hint, query))
 }
+
+/// The router reaches this list's keyboard only once one exists.
+pub(crate) static SEARCH_DROPDOWN_HOOKS: crate::framework::ChoiceHooks =
+    crate::framework::ChoiceHooks {
+        adjust: crate::AppContext::adjust_focused_search_dropdown,
+        commit: crate::AppContext::commit_focused_search_dropdown,
+    };
 
 #[cfg(test)]
 mod tests {

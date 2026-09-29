@@ -223,7 +223,7 @@ impl AppContext {
             self.views.remove(id);
         }
         for (_, entity, component) in staged {
-            self.views.insert(entity.id, Box::new(component));
+            self.install_view(entity.id, component);
         }
         items.entities = next_entities;
         let window = plan.window.clone();
@@ -640,10 +640,10 @@ impl AppContext {
             self.views.remove(id);
         }
         for (entity, component) in staged_rows {
-            self.views.insert(entity.id, Box::new(component));
+            self.install_view(entity.id, component);
         }
         for (entity, component) in staged_cells {
-            self.views.insert(entity.id, Box::new(component));
+            self.install_view(entity.id, component);
         }
         for (entity, component) in positioned_rows {
             self.views.insert(entity.id, Box::new(component));

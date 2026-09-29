@@ -125,6 +125,12 @@ impl Chip {
 }
 
 impl ComponentView for Chip {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        activation: Some(crate::AppContext::activate_chip),
+        assembler: Some(crate::AppContext::assemble_chip),
+        ..crate::TypeBehavior::NONE
+    };
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "chip".into() }
     }
