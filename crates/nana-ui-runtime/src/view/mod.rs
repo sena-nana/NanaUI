@@ -18,6 +18,7 @@
 //! read the signal; the owning [`crate::AppContext`] flushes them after
 //! input and before a frame, merging every changed node into one commit.
 
+mod composites;
 mod controls;
 mod each_virtual;
 mod error;
@@ -41,8 +42,9 @@ pub(crate) mod trace;
 mod transition;
 
 pub use controls::{
-    Px, StyledComponent, button, checkbox, column, divider, list_item, number_input, progress, row,
-    select, slider, spinner, switch, text, text_area, text_input,
+    Px, StyledComponent, avatar, button, checkbox, chip, column, divider, empty_state, icon_button,
+    list_item, number_input, progress, row, select, slider, spinner, status_badge, switch, text,
+    text_area, text_input, texture, thumbnail,
 };
 pub(crate) use controls::{edit_control, inspect_control};
 pub use each_virtual::{EachVirtual, each_virtual};

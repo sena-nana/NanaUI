@@ -511,6 +511,178 @@ fn a_virtual_element_in_a_template_sizes_its_scroll_area() {
     assert_eq!(cx.world().layout_box(scroll).unwrap().height, 200.0);
 }
 
+#[test]
+fn a_virtual_grid_in_a_template_scrolls_with_its_page() {
+    use nana_ui_runtime::view::node_ref;
+    use nana_ui_runtime::{ScrollAxes, ScrollView};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            let rows: Signal<Vec<u32>> = signal((0..10_000).collect());
+            let page = node_ref();
+            let scroll = ScrollView::new(ScrollAxes::Vertical)
+                .with_layout(|l| l.height = Some(nana_ui_runtime::LengthSpec::Px(200.0)));
+            view! {
+                <Widget of={scroll} ref={page}>
+                    <Virtual row_height=40 within={page} grid=100 gap=10 overscan=0 key="rows">
+                        <Text v-for={n in rows} key={*n}>"格 {n}"</Text>
+                    </Virtual>
+                </Widget>
+            }
+        })
+        .unwrap();
+    let page = mounted.roots()[0];
+    for _ in 0..4 {
+        cx.layout_document(document, nana_ui_runtime::LayoutViewport::new(320.0, 600.0))
+            .unwrap();
+        cx.flush_reactive().unwrap();
+    }
+    let list = cx.resolve_assembly_path(page, "rows").unwrap();
+    assert_eq!(cx.world().node(list).unwrap().parent, Some(page));
+    let rows = cx.world().node(list).unwrap().children.len();
+    // 50 px grid rows (40 and the gap) in the page's 200 px viewport.
+    assert!((4..=5).contains(&rows), "{rows} grid rows built");
+}
+
+#[test]
+fn media_controls_and_theme_roles_bind_from_a_template() {
+    use nana_ui_runtime::view::{Signal, signal};
+    use nana_ui_runtime::{EmptyState, Icon, IconButton, SemanticColorRole, Thumbnail};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let state = std::cell::Cell::new(None);
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            let cover: Signal<std::sync::Arc<str>> = signal("".into());
+            let liked = signal(false);
+            let likes = signal(0u32);
+            state.set(Some((cover, liked, likes)));
+            view! {
+                <Column background={SemanticColorRole::Subtle} key="card">
+                    <Thumbnail resource={cover} aspect=1.5 key="cover" />
+                    <IconButton icon={Icon::Add} selected={liked} key="like"
+                        @activate={likes.update(|n| *n += 1)}>"点赞"</IconButton>
+                    <Text foreground={liked.get().then_some(SemanticColorRole::Accent)} key="count">
+                        "{likes}"
+                    </Text>
+                    <EmptyState key="empty" message="稍后再试">
+                        "加载失败"
+                        <template #action><Button key="retry">"重试"</Button></template>
+                    </EmptyState>
+                </Column>
+            }
+        })
+        .unwrap();
+    let card = mounted.roots()[0];
+    let at = |cx: &AppContext, path: &str| cx.resolve_assembly_path(card, path).unwrap();
+    let (cover, liked, likes) = state.get().unwrap();
+
+    cover.set("cover:1".into());
+    liked.set(true);
+    cx.flush_reactive().unwrap();
+    let thumbnail = Entity::<Thumbnail>::from_stable_id(at(&cx, "cover"));
+    assert_eq!(
+        cx.read(thumbnail, |t| (t.resource.clone(), t.aspect))
+            .unwrap(),
+        ("cover:1".into(), 1.5)
+    );
+    let like = Entity::<IconButton>::from_stable_id(at(&cx, "like"));
+    assert!(cx.read(like, |b| b.selected).unwrap());
+    assert_eq!(
+        cx.read(Entity::<Text>::from_stable_id(at(&cx, "count")), |t| t
+            .style
+            .foreground)
+            .unwrap(),
+        Some(SemanticColorRole::Accent)
+    );
+    assert_eq!(
+        cx.read(Entity::<Stack>::from_stable_id(card), |s| {
+            nana_ui_runtime::view::StyledComponent::node_style(s).background
+        })
+        .unwrap(),
+        Some(SemanticColorRole::Subtle)
+    );
+
+    cx.activate_node(like.stable_id()).unwrap();
+    cx.flush_reactive().unwrap();
+    assert_eq!(likes.get_untracked(), 1);
+
+    let empty = Entity::<EmptyState>::from_stable_id(at(&cx, "empty"));
+    let action = cx
+        .read(empty, |e| e.action)
+        .unwrap()
+        .expect("the action slot");
+    assert_eq!(
+        cx.world().node(action).unwrap().parent,
+        Some(empty.stable_id())
+    );
+    assert_eq!(
+        cx.read(empty, |e| (e.title.clone(), e.message.clone()))
+            .unwrap(),
+        ("加载失败".into(), Some("稍后再试".into()))
+    );
+}
+
+#[test]
+fn rows_dialogs_and_the_transport_bar_place_their_slots() {
+    use nana_ui_runtime::{Dialog, ListItem, MediaTransportBar};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            view! {
+                <Column>
+                    <ListItem label="视频" key="row">
+                        <template #leading><Text key="cover">"封面"</Text></template>
+                        <template #content><Text key="title">"标题"</Text></template>
+                        <template #trailing><Button key="more">"更多"</Button></template>
+                    </ListItem>
+                    <Widget of={Dialog::new("投币")} key="dialog">
+                        <template #body><Text key="body">"投几枚？"</Text></template>
+                        <template #footer><Button key="confirm">"确认"</Button></template>
+                    </Widget>
+                    <Widget of={MediaTransportBar::new()} key="bar">
+                        <template #leading><Button key="next">"下一P"</Button></template>
+                        <template #secondary><Text key="danmaku">"弹幕"</Text></template>
+                    </Widget>
+                </Column>
+            }
+        })
+        .unwrap();
+    cx.flush_reactive().unwrap();
+    let root = mounted.roots()[0];
+    let world = |cx: &AppContext, id| cx.world().node(id).unwrap().clone();
+    let named = |cx: &AppContext, path: &str| cx.resolve_assembly_path(root, path).unwrap();
+
+    let row = Entity::<ListItem>::from_stable_id(named(&cx, "row"));
+    let children = world(&cx, row.stable_id()).children;
+    assert_eq!(children.len(), 3, "leading, content and trailing, in order");
+    assert_eq!(cx.world().text(children[1]), Some("标题"));
+
+    let dialog = named(&cx, "dialog");
+    let placed = world(&cx, dialog).children;
+    assert_eq!(placed.len(), 2, "body and footer");
+    assert_eq!(cx.world().text(placed[0]), Some("投几枚？"));
+
+    let bar = Entity::<MediaTransportBar>::from_stable_id(named(&cx, "bar"));
+    let (leading, secondary) = cx
+        .read(bar, |bar| {
+            (bar.leading().unwrap(), bar.secondary().unwrap())
+        })
+        .unwrap();
+    let next = world(&cx, leading.stable_id()).children;
+    assert_eq!(next.len(), 1, "the application's control sits after play");
+    let row = world(&cx, secondary.stable_id()).children;
+    assert!(
+        row.iter().any(|id| cx.world().text(*id) == Some("弹幕")),
+        "the second row holds the application's content"
+    );
+}
+
 mod store_derive {
     use nana_ui_runtime::view::{Store, StoreList, StorePath, reactive_stats, store, text};
     use nana_ui_runtime::{AppContext, DocumentId, Entity, Stack, Text};

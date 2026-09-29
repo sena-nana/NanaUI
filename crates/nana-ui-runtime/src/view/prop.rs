@@ -255,4 +255,12 @@ const_props! {
     Vec<crate::SelectOption> => Vec<crate::SelectOption>, |v| v;
     crate::StableNodeId => Option<crate::StableNodeId>, |v| Some(v);
     Option<crate::StableNodeId> => Option<crate::StableNodeId>, |v| v;
+    nana_ui_core::SemanticColorRole => Option<nana_ui_core::SemanticColorRole>, |v| Some(v);
+    Option<nana_ui_core::SemanticColorRole> => Option<nana_ui_core::SemanticColorRole>, |v| v;
+    nana_ui_core::RadiusTier => Option<nana_ui_core::RadiusTier>, |v| Some(v);
+    Option<nana_ui_core::RadiusTier> => Option<nana_ui_core::RadiusTier>, |v| v;
+    nana_ui_core::Icon => nana_ui_core::Icon, |v| v;
+    nana_ui_core::Icon => Option<nana_ui_core::Icon>, |v| Some(v);
+    Option<nana_ui_core::Icon> => Option<nana_ui_core::Icon>, |v| v;
+    nana_ui_core::StatusTone => nana_ui_core::StatusTone, |v| v;
 }

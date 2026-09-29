@@ -146,6 +146,10 @@ pub fn expand_checked(
     Ok((tokens, generator.warnings.into_inner()))
 }
 
+/// Theme roles every element may bind (`El::foreground` and the rest):
+/// colours a stylesheet cannot give, since it is compiled for one theme.
+pub const STYLE_ROLES: &[&str] = &["foreground", "background", "border", "radius"];
+
 /// Controls whose accessible name is their `label` field and that have no
 /// other text to fall back on.
 const NAMED_BY_LABEL: &[&str] = &["TextInput", "TextArea", "NumberInput", "Slider", "Progress"];
@@ -664,13 +668,27 @@ impl Gen<'_> {
             )
         })?;
         let mut out = self.virtual_rows(rows, number(&height.value, "f32", span)?)?;
+        if let Some(grid) = element.plain("grid") {
+            let at = span;
+            let min_width = number(&grid.value, "f32", at)?;
+            let gap = match element.plain("gap") {
+                Some(gap) => number(&gap.value, "f32", at)?,
+                None => quote!(0_f32),
+            };
+            out = quote!(#out.grid(#min_width, #gap));
+        } else if element.plain("gap").is_some() {
+            return Err(syn::Error::new(
+                span,
+                "`gap=` goes with `grid=` on `<Virtual>`",
+            ));
+        }
         for attr in &element.attrs {
             let AttrName::Plain(name) = &attr.name else {
                 return Err(syn::Error::new(span, "`<Virtual>` takes attributes only"));
             };
             let at = name.span();
             out = match name.to_string().as_str() {
-                "row_height" => out,
+                "row_height" | "grid" | "gap" => out,
                 "measured" => quote!(#out.measured()),
                 "grow" => quote!(#out.grow()),
                 method @ ("height" | "width" | "overscan") => {
@@ -681,6 +699,10 @@ impl Gen<'_> {
                 "scroll" => {
                     let scroll = raw(&attr.value, at)?;
                     quote!(#out.scroll_view(#scroll))
+                }
+                "within" => {
+                    let within = raw(&attr.value, at)?;
+                    quote!(#out.within(#within))
                 }
                 "key" => {
                     let key = raw(&attr.value, at)?;
@@ -1022,6 +1044,12 @@ impl Gen<'_> {
                 for &(name, kind) in control.arguments {
                     args.push(match kind {
                         "text" => self.string_child(element, name)?,
+                        "expr" => {
+                            let attr = element.plain(name).ok_or_else(|| {
+                                syn::Error::new(span, format!("`<{tag}>` needs `{name}=`"))
+                            })?;
+                            raw(&attr.value, span)?
+                        }
                         _ => {
                             let attr = element.plain(name).ok_or_else(|| {
                                 syn::Error::new(span, format!("`<{tag}>` needs `{name}=`"))
@@ -1066,6 +1094,12 @@ impl Gen<'_> {
                             value => raw(value, name.span())?,
                         };
                         out = quote!(#out.node_ref(#node_ref));
+                        continue;
+                    }
+                    if STYLE_ROLES.contains(&text.as_str()) {
+                        let value = prop(&attr.value);
+                        let setter = Ident::new(&text, name.span());
+                        out = quote!(#out.#setter(#value));
                         continue;
                     }
                     let value = match control.and_then(|control| control.field(&text)) {
