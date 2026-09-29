@@ -3510,6 +3510,78 @@ fn rectangle_and_polygon_clip_edges_stay_one_device_pixel_under_a_transform() {
     drop(view);
 }
 
+#[cfg(feature = "charts")]
+#[test]
+fn a_donut_slice_is_one_solid_colour_across_its_whole_sweep() {
+    // A clip edge ramps over one device pixel, so a slice cut into wedges
+    // painted edge to edge leaves each side of a cut about half its colour:
+    // over each other, a seam at three quarters. Off the box's pixel grid,
+    // a cut along an axis shows as well as a diagonal one.
+    use nana_ui_runtime::{DonutChart, DonutSlice};
+    let chart = DonutChart::new([5.0, 3.0, 2.0].map(|value| DonutSlice {
+        value,
+        color: SemanticColorRole::Accent,
+    }));
+    let bounds = LayoutBox {
+        x: 4.3,
+        y: 6.7,
+        width: 116.0,
+        height: 116.0,
+    };
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let entity = context.create_component(document, chart.clone()).unwrap();
+    let mut layout = MutationQueue::new();
+    write_box(
+        &mut layout,
+        entity.stable_id(),
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+    );
+    context.commit_mutations(layout).unwrap();
+    let scene = commit_scene(&mut context);
+    let pixels = paint_scene_rgba(
+        &device,
+        &queue,
+        &mut painter,
+        &scene,
+        [128.0, 128.0],
+        [128, 128],
+        1.0,
+    );
+    let mut solid: [Option<[u8; 4]>; 3] = [None; 3];
+    let mut checked = [0; 3];
+    for py in 0..128 {
+        for px in 0..128 {
+            let [x, y] = [px as f32 + 0.5, py as f32 + 0.5];
+            // At least 1.4 px inside its slice: clear of the gaps between
+            // slices and of the ring's own edges.
+            let Some(slice) = chart.slice_at(bounds, x, y) else {
+                continue;
+            };
+            let inside = (0..8).all(|step| {
+                let angle = step as f32 * std::f32::consts::FRAC_PI_4;
+                chart.slice_at(bounds, x + 1.5 * angle.cos(), y + 1.5 * angle.sin()) == Some(slice)
+            });
+            if !inside {
+                continue;
+            }
+            let got = pixel(&pixels, 128, px, py);
+            let colour = *solid[slice].get_or_insert(got);
+            assert!(
+                got.iter().zip(colour).all(|(a, b)| a.abs_diff(b) <= 2),
+                "slice {slice}: ({px},{py}) is {got:?}, the rest of it {colour:?}"
+            );
+            checked[slice] += 1;
+        }
+    }
+    assert!(checked.iter().all(|&count| count > 300), "{checked:?}");
+}
+
 #[test]
 fn child_host_texture_is_antialiased_by_its_parents_rounded_clip() {
     // A host texture takes the frame off MSAA: the clip's own ramp is the

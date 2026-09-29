@@ -177,7 +177,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         corner_radius: corner_radii(circle.width / 2.0),
                     },
                 );
-                if let ScenePrimitiveKind::Quad { surface, .. } = &mut primitive.kind {
+                // A slice that closes the ring has no polygon to cut it by.
+                if let ScenePrimitiveKind::Quad { surface, .. } = &mut primitive.kind
+                    && !polygon.is_empty()
+                {
                     surface.polygon_clip = Some(polygon.clone());
                 }
                 emit(primitive);

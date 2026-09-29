@@ -76,8 +76,11 @@ impl DonutChart {
         (width, arcs)
     }
 
-    /// Circular border quads partitioned by convex, non-overlapping wedges.
-    /// Unlike flat-capped polylines this has no interior joins or alpha overdraw.
+    /// One circular border quad per slice, cut to it by one wedge polygon.
+    /// Unlike flat-capped polylines this has no interior joins or alpha
+    /// overdraw, and unlike wedges cut edge to edge, no seam: a clip edge
+    /// ramps over a pixel, and two ramps laid over each other leave a quarter
+    /// of the colour out. A slice that closes the ring has no polygon.
     #[allow(clippy::type_complexity)]
     pub(crate) fn ring_regions(
         &self,
@@ -97,25 +100,25 @@ impl DonutChart {
                 width: outer * 2.0,
                 height: outer * 2.0,
             };
-            let parts = ((sector.end - sector.start) / std::f64::consts::FRAC_PI_2)
-                .ceil()
-                .max(1.0) as usize;
-            let point = |angle: f64| {
-                [
-                    outer + outer * 2.0 * angle.cos() as f32,
-                    outer + outer * 2.0 * angle.sin() as f32,
-                ]
+            let sweep = sector.end - sector.start;
+            // The centre, then points twice the ring's radius out at most a
+            // quarter turn apart, whose chords clear the ring: at most six
+            // points, within the eight a quad's polygon holds.
+            let polygon = if sweep >= std::f64::consts::TAU - 1e-9 {
+                Vec::new()
+            } else {
+                let parts = (sweep / std::f64::consts::FRAC_PI_2).ceil().max(1.0) as usize;
+                std::iter::once([outer, outer])
+                    .chain((0..=parts).map(|part| {
+                        let angle = sector.start + sweep * part as f64 / parts as f64;
+                        [
+                            outer + outer * 2.0 * angle.cos() as f32,
+                            outer + outer * 2.0 * angle.sin() as f32,
+                        ]
+                    }))
+                    .collect()
             };
-            for part in 0..parts {
-                let angle = |part: usize| {
-                    sector.start + (sector.end - sector.start) * part as f64 / parts as f64
-                };
-                regions.push((
-                    circle,
-                    vec![[outer, outer], point(angle(part)), point(angle(part + 1))],
-                    self.slices[sector.index].color,
-                ));
-            }
+            regions.push((circle, polygon, self.slices[sector.index].color));
         }
         (width, regions)
     }
@@ -309,5 +312,27 @@ mod tests {
         chart.slices.clear();
         assert!(chart.arcs(bounds).1.is_empty());
         assert!(chart.tooltip(0).is_none());
+    }
+
+    #[test]
+    fn each_slice_is_one_region_cut_by_one_polygon_and_a_whole_ring_by_none() {
+        let bounds = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let slice = |value| DonutSlice {
+            value,
+            color: SemanticColorRole::Accent,
+        };
+        // 350°, 10°: the first wedge needs four chords, six points.
+        let chart = DonutChart::new([slice(35.0), slice(1.0)]);
+        let (_, regions) = chart.ring_regions(bounds);
+        let points: Vec<_> = regions.iter().map(|region| region.1.len()).collect();
+        assert_eq!(points, [6, 3]);
+        let (_, regions) = DonutChart::new([slice(1.0)]).ring_regions(bounds);
+        assert_eq!(regions.len(), 1);
+        assert!(regions[0].1.is_empty(), "{:?}", regions[0].1);
     }
 }
