@@ -345,3 +345,34 @@ fn a_clamped_paragraph_reports_the_lines_it_dropped() {
     assert_eq!(cx.text_truncated(long), Some(true));
     assert_eq!(cx.text_truncated(short), Some(false));
 }
+
+/// A listening clamped text says whether it cut lines once shaping knows,
+/// and again only when that changes.
+#[test]
+fn a_clamped_text_announces_when_its_clamp_changes() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = cx.create_component(doc, Stack::column(8.0)).unwrap();
+    let mut text = Text::new("one two three four five six seven eight nine ten eleven twelve");
+    let style = std::sync::Arc::make_mut(&mut text.style.layout);
+    style.width = Some(nana_ui_core::LengthSpec::Px(80.0));
+    style.line_clamp = Some(2);
+    let long = cx.create_component(doc, text).unwrap();
+    cx.append_child(root, long).unwrap();
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&heard);
+    cx.on(long, move |_, event: &TextClamped, _| {
+        sink.lock().unwrap().push(event.clamped)
+    })
+    .unwrap();
+    settle(&mut cx, doc, &[root.stable_id(), long.stable_id()]);
+    assert_eq!(*heard.lock().unwrap(), [true]);
+
+    settle(&mut cx, doc, &[root.stable_id(), long.stable_id()]);
+    assert_eq!(*heard.lock().unwrap(), [true], "no news, no event");
+
+    cx.update_component(long, |text, _| text.value = "one".into())
+        .unwrap();
+    settle(&mut cx, doc, &[root.stable_id(), long.stable_id()]);
+    assert_eq!(*heard.lock().unwrap(), [true, false]);
+}

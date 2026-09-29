@@ -1590,6 +1590,15 @@ pub struct ScrollChanged {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollLaidOut;
 
+/// A `Text` with a line clamp now shows all of its lines (`false`) or cut
+/// some (`true`): a "more" control appears only while the text is clamped.
+/// Sent after text shaping, when the answer changes, and only to texts that
+/// listen for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextClamped {
+    pub clamped: bool,
+}
+
 /// A layout pass gave a `ScrollView` a viewport of a new size: the first
 /// layout, a window resize. Virtualized content widens or narrows its window.
 #[derive(Debug, Clone, Copy, PartialEq)]

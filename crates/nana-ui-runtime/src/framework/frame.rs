@@ -116,6 +116,8 @@ impl AppContext {
         self.record_stage(FrameStage::TextShape, started);
         result?;
         self.reproject_text_backend_views()?;
+        // Clamps are announced from the layout-aware passes: before layout
+        // a text has no width to clamp against.
         Ok(())
     }
 
@@ -131,7 +133,9 @@ impl AppContext {
             .map_err(FrameworkError::from);
         self.record_stage(FrameStage::TextShape, started);
         let reshaped = result?;
-        Ok(self.reproject_text_backend_views()? || reshaped)
+        let reprojected = self.reproject_text_backend_views()?;
+        self.announce_text_clamps()?;
+        Ok(reprojected || reshaped)
     }
 
     /// [`Self::shape_text_for_layout`] restricted to `ids` (the last layout
@@ -148,7 +152,9 @@ impl AppContext {
             .map_err(FrameworkError::from);
         self.record_stage(FrameStage::TextShape, started);
         let reshaped = result?;
-        Ok(self.reproject_text_backend_views()? || reshaped)
+        let reprojected = self.reproject_text_backend_views()?;
+        self.announce_text_clamps()?;
+        Ok(reprojected || reshaped)
     }
 
     /// Compute and atomically publish canonical Runtime layout for one window.

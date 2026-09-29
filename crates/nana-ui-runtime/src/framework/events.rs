@@ -8,6 +8,7 @@ impl AppContext {
         for id in removed {
             self.text_histories.forget(*id);
             self.key_handlers.remove(id);
+            self.clamp_watchers.remove(id);
         }
         let affected = removed
             .iter()
@@ -89,6 +90,7 @@ impl AppContext {
             cx.reassemble
         };
         self.index_event_handler((entity.id, TypeId::of::<E>()), entity.id);
+        self.watch_clamp::<E>(entity.id);
         self.event_handlers
             .entry((entity.id, TypeId::of::<E>()))
             .or_default()
@@ -97,6 +99,40 @@ impl AppContext {
                 observer: entity.id,
                 callback: Box::new(erased),
             });
+        Ok(())
+    }
+
+    /// A handler for [`TextClamped`] makes its text announce its clamp.
+    fn watch_clamp<E: 'static>(&mut self, text: StableNodeId) {
+        if TypeId::of::<E>() == TypeId::of::<TextClamped>() {
+            self.clamp_watchers.entry(text).or_insert(None);
+        }
+    }
+
+    /// Send [`TextClamped`] to each listening text whose clamp changed with
+    /// the shaping that just ran.
+    pub(super) fn announce_text_clamps(&mut self) -> Result<(), FrameworkError> {
+        if self.clamp_watchers.is_empty() {
+            return Ok(());
+        }
+        let changed = self
+            .clamp_watchers
+            .iter()
+            .filter_map(|(id, sent)| {
+                let clamped = self.world.text_layout(*id).map(|(_, layout)| {
+                    layout
+                        .overflow
+                        .contains(nana_text::OverflowFlags::TRUNCATED_LINES)
+                })?;
+                (*sent != Some(clamped)).then_some((*id, clamped))
+            })
+            .collect::<Vec<_>>();
+        for (id, clamped) in changed {
+            self.clamp_watchers.insert(id, Some(clamped));
+            self.update(Entity::<crate::Text>::from_stable_id(id), |_, cx| {
+                cx.emit(TextClamped { clamped });
+            })?;
+        }
         Ok(())
     }
 
@@ -171,6 +207,7 @@ impl AppContext {
             cx.reassemble
         };
         self.index_event_handler((source.id, TypeId::of::<E>()), observer.id);
+        self.watch_clamp::<E>(source.id);
         self.event_handlers
             .entry((source.id, TypeId::of::<E>()))
             .or_default()

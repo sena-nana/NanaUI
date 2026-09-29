@@ -144,6 +144,18 @@ column()
 - **主题色**：样式表的颜色在构建时按亮色主题求值，所以随主题变化的颜色写成语义角色：每个元素都有 `.foreground(..)`、`.background(..)`、`.border(..)`（`SemanticColorRole`）和 `.radius(..)`（`RadiusTier`），可绑定；模板里是同名属性，例如 `<Text foreground={SemanticColorRole::Muted}>`。
 - **已知取舍**：补丁只记录"和默认值不同"的字段，所以把属性写回默认值（例如 `position: static`）不会覆盖元素原来的非默认值；颜色在构建时按亮色主题求值，跟随主题切换的颜色请用组件自带的语义色。
 
+## 截断提示
+
+有行数上限（`line-clamp`）的 `Text` 在排版之后知道自己是不是截掉了行。监听 `TextClamped` 的文本会在这件事变化时收到 `TextClamped { clamped }`（只在布局后的排版里判断，之前的测量没有宽度可截），"展开"按钮据此只在真有下文时出现：
+
+```rust
+let clamped = signal(false);
+column().children((
+    text(body).class(s::body).on(move |e: &TextClamped| clamped.set(e.clamped)),
+    button("展开").visible(clamped),
+))
+```
+
 ## 进出场与移动动画
 
 `when(..)` 和 `each(..)`（包括 `Store` 的 `keyed(..).each`）可以加 `.transition(t)`，对应 Vue 的 `<Transition>` 和 `<TransitionGroup>`：
