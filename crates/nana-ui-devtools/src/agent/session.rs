@@ -13,8 +13,8 @@ use std::path::Path;
 use super::AccessibilityDumpNode;
 use super::pixels;
 use super::protocol::{
-    A11yFilter, AgentCommand, AgentReply, DiagnosticDump, GpuDump, HitDump, KeyStroke, PixelStats,
-    PointerGesture, SceneProbeDump, SemanticDumpWidget, SessionInfo, Target, ThemeName,
+    A11yFilter, AgentCommand, AgentReply, DiagnosticDump, GpuDump, HitDump, InspectDump, KeyStroke,
+    PixelStats, PointerGesture, SceneProbeDump, SemanticDumpWidget, SessionInfo, Target, ThemeName,
 };
 use crate::agent::AgentError;
 use crate::offscreen::{self, Size};
@@ -84,6 +84,21 @@ pub trait AgentSession {
     /// Empty for a session that records none.
     fn diagnostics(&self) -> Vec<DiagnosticDump> {
         Vec::new()
+    }
+
+    /// A node as the declarative view layer sees it. Only a Runtime session
+    /// built with `reactive-view` has one.
+    fn inspect(&self, _node: u64) -> Result<InspectDump, AgentError> {
+        Err(AgentError(
+            "this session has no view inspector (build it with `reactive-view`)".into(),
+        ))
+    }
+
+    /// Write one field of a built-in control from text.
+    fn set_field(&mut self, _node: u64, _field: &str, _value: &str) -> Result<(), AgentError> {
+        Err(AgentError(
+            "this session has no view inspector (build it with `reactive-view`)".into(),
+        ))
     }
 
     /// Vue overrides this to consult the semantic snapshot, which can carry a
@@ -350,6 +365,27 @@ pub trait AgentSession {
             }
             AgentCommand::Type { text } => match self.type_text(&text) {
                 Ok(()) => AgentReply::ok(),
+                Err(error) => AgentReply::err(error.0),
+            },
+            AgentCommand::Inspect { target } => match self.resolve(&target) {
+                Ok(node) => match self.inspect(node) {
+                    Ok(inspect) => AgentReply::ok().with_target(node).with_inspect(inspect),
+                    Err(error) => AgentReply::err(error.0),
+                },
+                Err(error) => AgentReply::err(error.0),
+            },
+            AgentCommand::SetField {
+                target,
+                field,
+                value,
+            } => match self.resolve(&target) {
+                Ok(node) => match self.set_field(node, &field, &value) {
+                    Ok(()) => match self.inspect(node) {
+                        Ok(inspect) => AgentReply::ok().with_target(node).with_inspect(inspect),
+                        Err(error) => AgentReply::err(error.0),
+                    },
+                    Err(error) => AgentReply::err(error.0),
+                },
                 Err(error) => AgentReply::err(error.0),
             },
             AgentCommand::SetValue { target, value } => match self.resolve(&target) {

@@ -372,3 +372,75 @@ fn a_click_changes_the_frame_and_the_reply_reports_it() {
         "the click must change the painted frame: {reply}"
     );
 }
+
+/// The view inspector: a bound control's fields, where its bindings were
+/// declared and why it last changed, and editing a field from text.
+#[cfg(feature = "reactive-trace")]
+#[test]
+fn inspect_names_the_writes_behind_a_node_and_set_field_edits_it() {
+    use nana_ui::runtime::view::{button, signal};
+    use nana_ui_devtools::agent::{AgentCommand, AgentSession, Target};
+
+    let busy = std::cell::Cell::new(None);
+    let mut session = session_with(|document, id| {
+        let cx = document.context_mut();
+        let parent = cx
+            .create_component(id, nana_ui::runtime::Stack::column(0.0))
+            .unwrap()
+            .stable_id();
+        cx.mount_view(parent, || {
+            let loading = signal(false);
+            busy.set(Some(loading));
+            button("保存").loading(loading)
+        })
+        .unwrap();
+    });
+    session.flush().expect("flush");
+    busy.get().unwrap().set(true);
+    session.flush().expect("flush");
+    let target = Target {
+        role: Some("button".into()),
+        label: Some("保存".into()),
+        ..Target::default()
+    };
+    let reply = session.execute(AgentCommand::Inspect {
+        target: target.clone(),
+    });
+    let inspect = reply.inspect.expect("an inspection");
+    assert_eq!(inspect.control.as_deref(), Some("Button"));
+    let loading = inspect
+        .fields
+        .iter()
+        .find(|field| field.name == "loading")
+        .unwrap();
+    assert_eq!(loading.value, "true");
+    assert!(
+        loading
+            .bound_at
+            .as_deref()
+            .unwrap()
+            .contains("agent_protocol.rs")
+    );
+    assert!(
+        inspect
+            .causes
+            .iter()
+            .any(|cause| cause.written_at.contains("agent_protocol.rs")),
+        "{inspect:?}"
+    );
+
+    let reply = session.execute(AgentCommand::SetField {
+        target,
+        field: "label".into(),
+        value: "另存".into(),
+    });
+    assert!(reply.ok, "{reply:?}");
+    let label = reply
+        .inspect
+        .unwrap()
+        .fields
+        .into_iter()
+        .find(|field| field.name == "label")
+        .unwrap();
+    assert_eq!(label.value, "\"另存\"");
+}

@@ -184,6 +184,29 @@ pub(crate) trait StructuralBinding: Send {
     ) -> Result<(), FrameworkError>;
 }
 
+/// A node as the view layer sees it, for devtools: the built-in control it
+/// is and each bindable field with its value, where the element was
+/// declared and where each bound field's binding was.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Inspection {
+    pub node: StableNodeId,
+    /// The control table's tag (`"Button"`); `None` for other components.
+    pub control: Option<&'static str>,
+    pub fields: Vec<InspectedField>,
+    /// Where the element was declared, for a node with bindings.
+    pub element: Option<&'static Location<'static>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InspectedField {
+    pub name: &'static str,
+    /// `Debug` of the value.
+    pub value: String,
+    /// Where the binding that drives it was declared; an edit is replaced
+    /// the next time that binding runs.
+    pub bound_at: Option<&'static Location<'static>>,
+}
+
 /// What a build leaves for the [`AppContext`] to own once it commits.
 #[derive(Default)]
 pub(crate) struct ViewParts {

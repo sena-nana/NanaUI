@@ -366,6 +366,8 @@ fn page() -> impl IntoView {
 
 - `cx.view_bindings(node)` 返回元素的声明位置，以及每个绑定字段和它的声明位置。一直可用。
 - 开 `reactive-trace` 后，`cx.why_updated(node)` 返回这个节点最近一次被改的原因：哪次 `set` / `update` 在哪一行写了哪个信号（信号在哪一行创建）。记录只包含 id 和 `&'static Location`，写进每个线程预先分配好的环形缓冲；记录时不分配、不格式化、不做 I/O。
+- `cx.inspect(node)` 返回节点在视图层里的样子：它是控件表里的哪个控件、每个可绑定字段的当前值（`Debug` 文本），以及驱动该字段的绑定声明在哪一行。`cx.set_field(node, 字段, 文本)` 按绑定的方式写一个字段（字符串原样、数字和 `true` / `false` 解析、空文本清空可选字段）；被绑定的字段下次绑定运行时会回到绑定的值。读写函数都由控件表生成，新加的控件自动支持。
+- devtools：`nana-ui-devtools` 的运行时会话开 `reactive-view` 后支持 `{"cmd":"inspect", …目标}` 和 `{"cmd":"set_field", …目标, "field":"label", "value":"另存"}`，回复里的 `inspect` 带控件、字段、绑定位置；再开 `reactive-trace`，还带 `causes`：最近一次改动它的信号写在哪一行、信号在哪一行创建。
 - 诊断：`runtime.reactive.*` 这组 metric（flush 次数、信号写入、执行的副作用数、改动的节点数、commit 次数、flush 耗时），以及两个 fault：
   - `runtime.reactive.did_not_settle`：副作用互相触发超过 64 轮时报出，剩下的队列会被丢弃；
   - `runtime.reactive.disposed_access`：作用域回收之后又读写了其中的信号时报出，同时 panic。

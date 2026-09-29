@@ -208,6 +208,42 @@ pub struct GpuDump {
 /// `nana-js-engine` carries no serde derives, so the wire shape is defined here
 /// rather than by adding a serialization surface to an engine crate for a
 /// dev-only consumer.
+/// A node as the declarative view layer sees it (`inspect`): the built-in
+/// control and each bindable field, where its bindings were declared, and,
+/// with `reactive-trace`, the signal writes that last patched it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InspectDump {
+    /// The control table's tag, `"Button"`; absent for other components.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<String>,
+    /// `file:line:column` of the element, for a node with bindings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element: Option<String>,
+    pub fields: Vec<FieldDump>,
+    /// Why the node last changed, newest cause first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub causes: Vec<CauseDump>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FieldDump {
+    pub name: String,
+    /// `Debug` of the value.
+    pub value: String,
+    /// Where the binding driving the field was declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CauseDump {
+    /// Where the signal was written.
+    pub written_at: String,
+    /// Where the signal was created, while it exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_created: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DiagnosticDump {
     pub sequence: u64,
@@ -262,6 +298,12 @@ pub enum AgentCommand {
     },
     Gpu,
     Info,
+    /// A node's control fields, binding sites and, with `reactive-trace`,
+    /// why it last changed.
+    Inspect {
+        #[serde(flatten)]
+        target: Target,
+    },
     /// JS exceptions, Vue errors, render errors and device loss recorded since
     /// the session started. A blank screenshot is most often an exception, and
     /// without this the Agent cannot see one.
@@ -308,6 +350,13 @@ pub enum AgentCommand {
     SetValue {
         #[serde(flatten)]
         target: Target,
+        value: String,
+    },
+    /// Write one field of a built-in control as its binding would.
+    SetField {
+        #[serde(flatten)]
+        target: Target,
+        field: String,
         value: String,
     },
 
@@ -361,6 +410,7 @@ impl AgentCommand {
             Self::Diff { .. } => "diff",
             Self::Gpu => "gpu",
             Self::Info => "info",
+            Self::Inspect { .. } => "inspect",
             Self::Diagnostics => "diagnostics",
             Self::Click { .. } => "click",
             Self::Hover { .. } => "hover",
@@ -368,6 +418,7 @@ impl AgentCommand {
             Self::Key { .. } => "key",
             Self::Type { .. } => "type",
             Self::SetValue { .. } => "set_value",
+            Self::SetField { .. } => "set_field",
             Self::Viewport { .. } => "viewport",
             Self::Theme { .. } => "theme",
             Self::Clear { .. } => "clear",
@@ -417,6 +468,8 @@ pub struct AgentReply {
     pub info: Option<SessionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Vec<DiagnosticDump>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspect: Option<InspectDump>,
     /// Set when a filter truncated the dump.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
@@ -495,6 +548,11 @@ impl AgentReply {
 
     pub fn with_diagnostics(mut self, diagnostics: Vec<DiagnosticDump>) -> Self {
         self.diagnostics = Some(diagnostics);
+        self
+    }
+
+    pub fn with_inspect(mut self, inspect: InspectDump) -> Self {
+        self.inspect = Some(inspect);
         self
     }
 

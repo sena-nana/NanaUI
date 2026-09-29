@@ -473,6 +473,55 @@ impl AppContext {
         })
     }
 
+    pub(crate) fn view_is<C: 'static>(&self, node: StableNodeId) -> bool {
+        self.views.get(&node).is_some_and(|view| view.is::<C>())
+    }
+
+    /// `node` as the view layer sees it: its control's fields and values
+    /// and where its bindings were declared. `None` for a node that does not
+    /// exist.
+    pub fn inspect(&self, node: StableNodeId) -> Option<crate::view::Inspection> {
+        if !self.world.contains(node) {
+            return None;
+        }
+        let bindings = self.view_bindings(node);
+        let bound = |name: &str| {
+            bindings.as_ref().and_then(|info| {
+                info.fields
+                    .iter()
+                    .find(|(field, _)| field.rsplit('.').next() == Some(name))
+                    .map(|(_, at)| *at)
+            })
+        };
+        let (control, fields) = self
+            .views
+            .get(&node)
+            .and_then(|view| crate::view::inspect_control(&**view))
+            .map_or((None, Vec::new()), |(tag, fields)| (Some(tag), fields));
+        Some(crate::view::Inspection {
+            node,
+            control,
+            fields: fields
+                .into_iter()
+                .map(|(name, value)| crate::view::InspectedField {
+                    name,
+                    value,
+                    bound_at: bound(name),
+                })
+                .collect(),
+            element: bindings.as_ref().map(|info| info.element),
+        })
+    }
+
+    /// Set `field` of the built-in control at `node` from text, the way its
+    /// binding would (devtools editing). Strings are taken as they are,
+    /// numbers and `true` / `false` parsed; empty text clears an optional
+    /// field. A bound field returns to its binding's value when that runs.
+    pub fn set_field(&mut self, node: StableNodeId, field: &str, text: &str) -> Result<(), String> {
+        crate::view::edit_control(self, node, field, text)
+            .unwrap_or_else(|| Err(format!("node {} is not a built-in control", node.get())))
+    }
+
     /// Why `node` was last patched: its element, its bound fields, and the
     /// signal writes that queued it. `None` when the trace holds no patch of
     /// it (it has no bindings, never changed, or the ring moved on).

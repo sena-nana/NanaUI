@@ -416,6 +416,57 @@ impl AgentSession for RuntimeAgentSession {
         Self::type_text(self, text)
     }
 
+    #[cfg(feature = "reactive-view")]
+    fn inspect(&self, node: u64) -> Result<super::protocol::InspectDump, AgentError> {
+        use super::protocol::{CauseDump, FieldDump, InspectDump};
+        let target =
+            StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
+        let context = self.document.context();
+        let inspection = context
+            .inspect(target)
+            .ok_or_else(|| AgentError(format!("node {node} does not exist")))?;
+        #[cfg(feature = "reactive-trace")]
+        let causes = context
+            .why_updated(target)
+            .map(|why| {
+                why.causes
+                    .iter()
+                    .map(|cause| CauseDump {
+                        written_at: cause.written_at.to_string(),
+                        signal_created: cause.signal_created.map(|at| at.to_string()),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        #[cfg(not(feature = "reactive-trace"))]
+        let causes: Vec<CauseDump> = Vec::new();
+        Ok(InspectDump {
+            control: inspection.control.map(str::to_owned),
+            element: inspection.element.map(|at| at.to_string()),
+            fields: inspection
+                .fields
+                .into_iter()
+                .map(|field| FieldDump {
+                    name: field.name.to_owned(),
+                    value: field.value,
+                    bound_at: field.bound_at.map(|at| at.to_string()),
+                })
+                .collect(),
+            causes,
+        })
+    }
+
+    #[cfg(feature = "reactive-view")]
+    fn set_field(&mut self, node: u64, field: &str, value: &str) -> Result<(), AgentError> {
+        let target =
+            StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
+        self.document
+            .context_mut()
+            .set_field(target, field, value)
+            .map_err(AgentError)?;
+        Self::flush(self).map(drop)
+    }
+
     fn set_value(&mut self, node: u64, value: &str) -> Result<bool, AgentError> {
         let target =
             StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;

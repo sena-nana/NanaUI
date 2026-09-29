@@ -2,15 +2,17 @@
 //! fields, `model` and event methods expanded from the control table in
 //! `nana-ui-view-schema`.
 
+use std::any::Any;
 use std::sync::Arc;
 
 use super::node::{El, IntoView, widget};
 use super::prop::{FieldWrite, IntoProp};
 use super::reactive::Signal;
 use crate::{
-    Activate, Button, Checkbox, Divider, ListItem, NodeStyle, NumberChanged, NumberInput, Progress,
-    RangeChanged, RangeField, RangeInput, Select, SelectChanged, SelectOption, Spinner, Stack,
-    Switch, Text, TextArea, TextChanged, TextInput, TextSubmitted, ToggleChanged,
+    Activate, AppContext, Button, Checkbox, Divider, Entity, ListItem, NodeStyle, NumberChanged,
+    NumberInput, Progress, RangeChanged, RangeField, RangeInput, Select, SelectChanged,
+    SelectOption, Spinner, StableNodeId, Stack, Switch, Text, TextArea, TextChanged, TextInput,
+    TextSubmitted, ToggleChanged,
 };
 
 /// Components whose [`NodeStyle`] the view layer may write (visibility).
@@ -240,4 +242,122 @@ pub fn spinner() -> El<Spinner> {
 #[track_caller]
 pub fn divider() -> El<Divider> {
     widget(Divider::horizontal())
+}
+
+/// A field value written as text by devtools and parsed back.
+trait FieldText: Sized {
+    fn parse(text: &str) -> Result<Self, String>;
+}
+
+impl FieldText for String {
+    fn parse(text: &str) -> Result<Self, String> {
+        Ok(text.to_owned())
+    }
+}
+
+impl FieldText for Arc<str> {
+    fn parse(text: &str) -> Result<Self, String> {
+        Ok(Arc::from(text))
+    }
+}
+
+impl FieldText for Option<Arc<str>> {
+    /// Empty text is `None`.
+    fn parse(text: &str) -> Result<Self, String> {
+        Ok((!text.is_empty()).then(|| Arc::from(text)))
+    }
+}
+
+impl FieldText for bool {
+    fn parse(text: &str) -> Result<Self, String> {
+        text.trim()
+            .parse()
+            .map_err(|_| format!("`{text}` is not `true` or `false`"))
+    }
+}
+
+impl FieldText for f64 {
+    fn parse(text: &str) -> Result<Self, String> {
+        text.trim()
+            .parse()
+            .map_err(|_| format!("`{text}` is not a number"))
+    }
+}
+
+impl FieldText for Vec<SelectOption> {
+    fn parse(_: &str) -> Result<Self, String> {
+        Err("options are edited in code, not as text".into())
+    }
+}
+
+/// Every bindable field of a built-in control, as text: the control table's
+/// tag and `(field, value)` pairs, `None` for anything else.
+pub(crate) fn inspect_control(
+    view: &dyn Any,
+) -> Option<(&'static str, Vec<(&'static str, String)>)> {
+    macro_rules! inspectors {
+        ($(
+            $tag:ident => $function:ident ($($argument:ident: $kind:ident),*) for $component:ident {
+                $($field:ident: $ty:ty = $write:ident),* $(,)?
+            }
+            $(on { $($on:ident: $on_event:ident),* $(,)? })?
+            $(with { $($with:ident: $with_event:ident),* $(,)? })?
+            $(model $model:ident: $model_ty:ty => $model_event:ident |$event:ident| $from_event:expr)?
+            ;
+        )*) => {$(
+            if let Some(control) = view.downcast_ref::<$component>() {
+                let _ = control;
+                return Some((
+                    stringify!($tag),
+                    vec![$((
+                        stringify!($field),
+                        format!("{:?}", inspectors!(@read $write control, $field)),
+                    )),*],
+                ));
+            }
+        )*};
+        (@read set $control:ident, $field:ident) => { &$control.$field };
+        (@read text_state $control:ident, $field:ident) => { &$control.state.value };
+        (@read assign $control:ident, $field:ident) => { $control.$field() };
+    }
+    nana_ui_view_schema::for_each_control!(inspectors);
+    None
+}
+
+/// Write `field` of the built-in control at `node` from `text`, as its
+/// binding would. `None` when the node is not a built-in control.
+pub(crate) fn edit_control(
+    cx: &mut AppContext,
+    node: StableNodeId,
+    field: &str,
+    text: &str,
+) -> Option<Result<(), String>> {
+    macro_rules! editors {
+        ($(
+            $tag:ident => $function:ident ($($argument:ident: $kind:ident),*) for $component:ident {
+                $($field:ident: $ty:ty = $write:ident),* $(,)?
+            }
+            $(on { $($on:ident: $on_event:ident),* $(,)? })?
+            $(with { $($with:ident: $with_event:ident),* $(,)? })?
+            $(model $model:ident: $model_ty:ty => $model_event:ident |$event:ident| $from_event:expr)?
+            ;
+        )*) => {$(
+            if cx.view_is::<$component>(node) {
+                return Some(match field {
+                    $(stringify!($field) => <$ty as FieldText>::parse(text).and_then(|value| {
+                        cx.update_component(Entity::<$component>::from_stable_id(node), |control, _| {
+                            <$function::$field as FieldWrite<$component, $ty>>::write(control, value)
+                        })
+                        .map_err(|error| error.to_string())
+                    }),)*
+                    other => Err(format!(
+                        "`<{}>` has no field `{other}`",
+                        stringify!($tag)
+                    )),
+                });
+            }
+        )*};
+    }
+    nana_ui_view_schema::for_each_control!(editors);
+    None
 }

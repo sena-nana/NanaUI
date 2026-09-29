@@ -38,12 +38,14 @@ pub use controls::{
     StyledComponent, button, checkbox, column, divider, list_item, number_input, progress, row,
     select, slider, spinner, switch, text, text_area, text_input,
 };
+pub(crate) use controls::{edit_control, inspect_control};
 pub use each_virtual::{EachVirtual, each_virtual};
 pub use error::{ErrorBoundary, error_boundary, report_error};
 pub use node::{
     AnyView, El, IntoView, Keyed, NodeBindingInfo, NodeBindings, NodeRef, ViewBuilder, keyed,
     node_ref, widget,
 };
+pub use node::{InspectedField, Inspection};
 pub(crate) use node::{NodePatch, StructuralBinding, ViewParts, ViewState};
 #[doc(hidden)]
 pub use prop::Fixed;

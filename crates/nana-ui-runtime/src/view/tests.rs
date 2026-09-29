@@ -1574,3 +1574,52 @@ fn an_error_boundary_shows_its_fallback_while_a_view_inside_failed() {
     assert!(!hidden(&cx), "the failed branch was dropped with its error");
     assert!(children(&cx, fallback).is_empty());
 }
+
+#[test]
+fn a_control_can_be_inspected_and_edited_field_by_field() {
+    let (mut cx, _, parent) = setup();
+    let view = cx
+        .mount_view(parent, || {
+            let busy = signal(false);
+            button("保存").disabled(busy).key("save")
+        })
+        .unwrap();
+    let save = view.roots()[0];
+    let inspection = cx.inspect(save).unwrap();
+    assert_eq!(inspection.control, Some("Button"));
+    assert!(inspection.element.is_some(), "it has bindings");
+    let field = |inspection: &Inspection, name: &str| {
+        inspection
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .cloned()
+            .unwrap()
+    };
+    let label = field(&inspection, "label");
+    assert_eq!(label.value, "\"保存\"");
+    assert!(label.bound_at.is_none(), "a constant");
+    assert!(field(&inspection, "disabled").bound_at.is_some());
+
+    cx.set_field(save, "label", "另存").unwrap();
+    cx.set_field(save, "loading", "true").unwrap();
+    let edited: Entity<Button> = Entity::from_stable_id(save);
+    assert_eq!(
+        cx.read(edited, |b| (b.label.clone(), b.loading)).unwrap(),
+        ("另存".to_owned(), true)
+    );
+    assert!(
+        cx.set_field(save, "loading", "也许")
+            .unwrap_err()
+            .contains("not `true`")
+    );
+    assert!(
+        cx.set_field(save, "colour", "x")
+            .unwrap_err()
+            .contains("no field `colour`")
+    );
+    assert!(
+        cx.set_field(parent, "label", "x").is_err(),
+        "a stack is not a control"
+    );
+}
