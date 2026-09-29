@@ -1,7 +1,10 @@
 //! Runtime animation sampling and presentation overlay lifecycle.
 
 use super::*;
-use crate::{AnimationEvent, AnimationEventKind, MotionInterrupt, retarget_track};
+use crate::{
+    AnimationDirection, AnimationEvent, AnimationEventKind, AnimationFillMode, MotionInterrupt,
+    retarget_track,
+};
 use nana_ui_core::motion::MotionTargetId;
 use std::collections::HashSet;
 
@@ -405,11 +408,14 @@ impl UiWorld {
             .animations
             .get(&spec.id)
             .and_then(|active| active.spec.to_motion_track())
+            // A run that has ended but not been reaped yet is not in flight:
+            // what it presents now is found below.
+            && let sample = crate::evaluate_track(&previous, now)
+            && !sample.finished
         {
             // Only the starting state carries over; timing and curve stay the
             // new run's own, so a zero-length transition does not inherit the
-            // old duration.
-            let sample = crate::evaluate_track(&previous, now);
+            // old duration. An in-flight value does not freeze for the delay.
             spec.from = sample.value;
             spec.velocity = sample.velocity;
             spec.timing.start = now;
@@ -423,9 +429,25 @@ impl UiWorld {
             && !value.is_absent()
         {
             spec.from = value;
-            spec.velocity = sample.velocity;
             spec.timing.start = now;
-            spec.timing.delay = Duration::ZERO;
+            if sample.finished && !spec.timing.delay.is_zero() && fills_back_to_from(&spec) {
+                // A finished run's forwards hold: nothing is moving, so as
+                // with a logical start value the run keeps its own delay.
+                // It replaces the hold when it shares its id, so it fills
+                // backwards: the held value, where it starts, shows until then.
+                spec.velocity = value.zero_velocity();
+                spec.playback.fill_mode = match spec.playback.fill_mode {
+                    AnimationFillMode::None | AnimationFillMode::Backwards => {
+                        AnimationFillMode::Backwards
+                    }
+                    AnimationFillMode::Forwards | AnimationFillMode::Both => {
+                        AnimationFillMode::Both
+                    }
+                };
+            } else {
+                spec.velocity = sample.velocity;
+                spec.timing.delay = Duration::ZERO;
+            }
             return spec;
         }
         if spec.from == rest
@@ -572,6 +594,16 @@ impl UiWorld {
             .flatten()
             .filter_map(|id| self.animations.get(id))
     }
+}
+
+/// Whether filling `spec` backwards shows its `from`: its first iteration
+/// plays forwards from it to one value.
+fn fills_back_to_from(spec: &AnimationSpec) -> bool {
+    matches!(spec.to, crate::MotionTo::Value(_))
+        && matches!(
+            spec.playback.direction,
+            AnimationDirection::Normal | AnimationDirection::Alternate
+        )
 }
 
 fn apply_track_to_spec(spec: &mut AnimationSpec, track: &nana_ui_core::motion::MotionTrack) {

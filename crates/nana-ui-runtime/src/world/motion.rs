@@ -1019,6 +1019,79 @@ mod tests {
         assert_eq!(alpha(&cx, id), 0.0);
     }
 
+    fn fade_after(cx: &mut AppContext, id: StableNodeId, now_ms: u64, to: f32, timing: [u64; 2]) {
+        let [duration_ms, delay_ms] = timing;
+        let mut queue = MutationQueue::new();
+        queue
+            .node(id, Duration::from_millis(now_ms))
+            .transition()
+            .opacity(to)
+            .duration(Duration::from_millis(duration_ms))
+            .delay(Duration::from_millis(delay_ms))
+            .ease(crate::Easing::Linear)
+            .start();
+        cx.commit_mutations(queue).unwrap();
+    }
+
+    /// A transition that starts from a finished run's hold keeps its delay:
+    /// nothing is moving, so the held value shows until the run starts from
+    /// it. A stagger of reveals from a hidden hold must not all play at once.
+    #[test]
+    fn an_l3_transition_from_a_settled_hold_keeps_its_delay() {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let button = cx.create_component(doc, Button::new("Stagger")).unwrap();
+        let id = button.stable_id();
+        tick(&mut cx, 0);
+
+        fade_after(&mut cx, id, 0, 0.0, [0, 0]);
+        tick(&mut cx, 10);
+        assert_eq!(alpha(&cx, id), 0.0);
+        assert_eq!(cx.next_animation_deadline(), None, "the hide has ended");
+
+        fade_after(&mut cx, id, 100, 1.0, [100, 70]);
+        tick(&mut cx, 130);
+        assert_eq!(alpha(&cx, id), 0.0, "still in the delay, on the hold");
+        tick(&mut cx, 169);
+        assert_eq!(alpha(&cx, id), 0.0, "still in the delay, on the hold");
+        tick(&mut cx, 220);
+        assert!((alpha(&cx, id) - 0.5).abs() < 1e-4, "{}", alpha(&cx, id));
+        tick(&mut cx, 270);
+        assert_eq!(alpha(&cx, id), 1.0);
+
+        // Hidden and revealed in one frame: the zero-length hide has ended
+        // though no frame has reaped it yet, so it is a hold too.
+        fade_after(&mut cx, id, 300, 0.0, [0, 0]);
+        fade_after(&mut cx, id, 300, 1.0, [100, 70]);
+        tick(&mut cx, 330);
+        assert_eq!(alpha(&cx, id), 0.0, "still in the delay, on the hold");
+        tick(&mut cx, 420);
+        assert!((alpha(&cx, id) - 0.5).abs() < 1e-4, "{}", alpha(&cx, id));
+        tick(&mut cx, 470);
+        assert_eq!(alpha(&cx, id), 1.0);
+    }
+
+    /// A transition that retargets one in flight carries on from where it is
+    /// at once: its delay would freeze a moving value.
+    #[test]
+    fn an_l3_transition_retargeting_one_in_flight_drops_its_delay() {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let button = cx.create_component(doc, Button::new("Turn")).unwrap();
+        let id = button.stable_id();
+        tick(&mut cx, 0);
+
+        fade_after(&mut cx, id, 0, 0.0, [100, 0]);
+        tick(&mut cx, 50);
+        assert!((alpha(&cx, id) - 0.5).abs() < 1e-4);
+
+        fade_after(&mut cx, id, 50, 1.0, [100, 70]);
+        tick(&mut cx, 100);
+        assert!((alpha(&cx, id) - 0.75).abs() < 1e-4, "{}", alpha(&cx, id));
+        tick(&mut cx, 150);
+        assert_eq!(alpha(&cx, id), 1.0);
+    }
+
     /// A sequence that touches one property twice compiles to two tracks. Both
     /// have to install: keying the animation on `(node, property)` alone lets
     /// the second overwrite the first in the same batch, so the opening stage
