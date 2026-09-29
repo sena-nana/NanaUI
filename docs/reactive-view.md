@@ -2,7 +2,7 @@
 
 `reactive-view` feature 下的 `nana_ui::runtime::view`：视图写成一个表达式，动态部分是信号或闭包，树只建一次，之后每个绑定只更新它写的那个节点字段。不整树 render，不做 diff。它和 `build` / `mount` 写同一棵 `UiWorld`、同一张 assembly key 表，最后落到的还是 `create` / `insert` / `project` / `commit`。
 
-**状态：不稳定。** 稳定前不进入公开合同。开关：`nana-ui` 的 `reactive-view`；模板宏 `view!` 另加 `view-macro`；追踪另加 `reactive-trace`。示例：`crates/nana-ui/examples/reactive-counter.rs`（用 `view!` 写）。
+**状态：不稳定。** 稳定前不进入公开合同。开关：`nana-ui` 的 `reactive-view`；模板宏 `view!` 另加 `view-macro`；追踪另加 `reactive-trace`。`.vue` 方言由 `nana-ui-sfc` 在 `build.rs` 里编译。示例：`crates/nana-ui/examples/reactive-counter.rs`（用 `view!` 写），`examples/reactive-sfc`（用 `.vue` 文件写）。
 
 ## 写法
 
@@ -79,7 +79,76 @@ fn todos() -> impl IntoView {
 
 多于 12 个子节点时，宏会嵌套成多层 tuple。写错的地方会被准确指出，例如：未闭合的标签、`</Row>` 关了 `<Column>`、`v-else` 前面没有 `v-if`、`v-for` 没写 `key`、未知指令、`v-if` 和 `v-for` 写在同一个元素上。`tests/view_macro.rs` 把同一个页面用模板和手写函数调用各写一遍，挂载后的保留树逐节点相同，改完信号 flush 之后也相同。
 
-在宏里能静态区分的只有三类：常量（字面量）、直接值或信号（路径、字段）、闭包（其他表达式）。"静态依赖"那一类需要知道哪个标识符是信号，只有能看到整段脚本的 `.vue` 方言编译器（第三阶段）才能做到。
+在宏里能静态区分的只有三类：常量（字面量）、直接值或信号（路径、字段）、闭包（其他表达式）。"静态依赖"那一类需要知道哪个标识符是信号，只有能看到整段脚本的 [`.vue` 方言](#vue-方言)编译器才能做到。
+
+## `.vue` 方言
+
+视图也可以写成 `.vue` 文件：模板是 Vue 语法，`<script setup lang="rust">` 里写 Rust。`nana-ui-sfc` 在构建期把它们编译成普通的 Rust 函数，模板部分和 `view!` 共用 `nana-ui-view-codegen` 这一个代码生成器。
+
+```vue
+<!-- views/TodoList.vue -->
+<script setup lang="rust">
+let draft = signal(String::new());
+let list: Signal<Vec<Todo>> = signal(Vec::new());
+let add = move || { /* … */ };
+</script>
+
+<template>
+  <Column :gap="8">
+    <TextInput placeholder="新任务" v-model="draft" />
+    <Button :disabled="draft.with(|d| d.trim().is_empty())" @activate="add">添加</Button>
+    <TodoItem v-for="todo in list" :key="todo.id" :todo="todo.clone()"
+              @remove="list.update(|l| l.retain(|t| t.id != todo.id))" />
+    <Text v-if="list.with(Vec::is_empty)">还没有任务</Text>
+    <Text v-else>共 {{ list.with(Vec::len) }} 项</Text>
+  </Column>
+</template>
+```
+
+```rust
+// build.rs
+fn main() {
+    if let Err(error) = nana_ui_sfc::Compiler::new("::nana_ui::runtime").build("views") {
+        panic!("{error}"); // views/TodoList.vue:20:34: …
+    }
+}
+
+// src/lib.rs
+pub mod views {
+    use crate::model::Todo;
+    include!(concat!(env!("OUT_DIR"), "/nana_views.rs"));
+}
+```
+
+- `TodoList.vue` 编译成 `pub fn todo_list(…) -> impl IntoView`。`defineProps!(todo: Todo, on_remove: impl Fn() + Send + 'static)` 声明参数。
+- 属性写法和 Vue 一致：`name="x"` 是字符串，`:name="表达式"` 是 Rust 表达式，`{{ 表达式 }}` 用 `Display` 插值。
+- 同一批编译的组件之间按 prop 名匹配参数，不按书写顺序：`@remove` 对应 `on_remove` 回调，子节点对应最后一个名为 `children` 的 prop。缺少的参数、多余的参数都是编译错误。
+- 组件上的 `key` 落在组件的第一个根节点上（`keyed`）。不在这一批里的标签，按 `view!` 的规则调用同名的 Rust 函数。
+- `<style>` 不支持：CSS 子集属于 Vue 路径。模板里仍然要遵守 Rust 的所有权规则，例如同一个值既要传给组件又要被事件闭包使用时，得写 `todo.clone()`。
+- 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`，rustc 的报错会指向可读的代码。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出，带文件、行、列。
+
+### 编译器能看到什么
+
+编译器能看到整个组件，所以知道哪些名字是信号、每个信号怎么被使用。依赖分析在脚本和模板上扫描 token：
+
+- 调用 `get` / `with` 算读，`set` / `update` 算写，其他任何用法（作为参数传出、被闭包按值取走、调用别的方法）都算"传出"；
+- 看不见内部的调用（自由函数、`format!` 之外的宏、在不认识的接收者上调用 `get`）会让这个表达式变成"动态"。
+
+扫描看不到变量遮蔽，所以所有不确定的情况都往"不优化"那边算。
+
+| 分析结果 | 编译器怎么做 |
+| --- | --- |
+| 信号从未被写入、也没有传出 | 折叠成 `constant(…)`：`Copy` 句柄和读取 API 都不变，但读取不建立依赖，作为属性时只写一次 |
+| computed 只读折叠后的常量 | 也折叠：`constant((f)())`，只计算一次；可以连锁折叠 |
+| 绑定只读常量或普通值 | 包成 `Fixed(值)`，建节点时写一次，不创建副作用 |
+| 绑定通过编译器看得见的代码只读若干信号（静态依赖） | 包成 `__checked(位置, [依赖…], 闭包)`：debug 构建里每次执行都核对"实际读到的信号 ⊆ 声明的依赖"，不一致就报 `runtime.reactive.static_deps_mismatch` fault，并计入 `ReactiveStats::static_deps_mismatches`；release 构建里原样返回闭包 |
+| 其他 | 动态：运行时追踪 |
+| computed 之间成环 | 编译错误 |
+| 信号有写入但没人读 / `watch_effect` 写了自己读的信号 | 通过 `cargo:warning` 报警告 |
+
+每个组件的信号（读、写、传出、是否折叠）和每个绑定的位置、分类、依赖，都写进 `$OUT_DIR/nana_views.deps.md`。
+
+静态依赖目前**只在 debug 里校验，不用来跳过运行时追踪**：一次"值没变"的节点重跑总共约 70 ns，依赖追踪只是其中一部分；release 的正确性不押在 token 扫描上。`examples/reactive-sfc` 的测试断言校验失败数为 0。
 
 ## 控件级摇树：`BuiltinComponents::Typed`
 
@@ -141,6 +210,8 @@ impl ApplicationState for App {
 | slot | `impl IntoView` 参数 |
 | `provide` / `inject` | `provide(value)` / `use_context::<T>()` |
 | `onUnmounted` | `on_cleanup` |
+| `defineProps` | `defineProps!(name: Type, …)`（`.vue`） |
+| `defineEmits` + `emit('done')` | 回调 prop `on_done: impl Fn() + …`，父组件写 `@done="…"`（`.vue`） |
 
 同一个界面的两种写法：
 

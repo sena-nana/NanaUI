@@ -110,6 +110,16 @@ pub mod runtime {
         Severity::Error,
         &[],
     );
+    /// Fault (debug builds): a binding the `.vue` compiler declared static
+    /// read a signal outside its declared dependencies. The message names
+    /// the template site.
+    pub static REACTIVE_STATIC_DEPS_MISMATCH: EventDescriptor = EventDescriptor::new(
+        D,
+        3,
+        "runtime.reactive.static_deps_mismatch",
+        Severity::Error,
+        &[],
+    );
 }
 
 pub mod layout {

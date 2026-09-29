@@ -37,6 +37,7 @@ fn delta(before: ReactiveStats) -> ReactiveStats {
         flushes: now.flushes - before.flushes,
         nodes_patched: now.nodes_patched - before.nodes_patched,
         commits: now.commits - before.commits,
+        static_deps_mismatches: now.static_deps_mismatches - before.static_deps_mismatches,
     }
 }
 
@@ -603,4 +604,85 @@ fn provided_values_reach_rows_and_branches_built_later() {
         None,
         "outside any scope nothing is provided"
     );
+}
+
+#[test]
+fn a_constant_prop_is_written_once_and_binds_nothing() {
+    let (mut cx, _, parent) = setup();
+    let before = reactive_stats();
+    let view = cx
+        .mount_view(parent, || {
+            let title = constant(String::from("标题"));
+            column(0.0, (text(title), text!("副 {title}")))
+        })
+        .unwrap();
+    let delta = delta(before);
+    assert_eq!(delta.signals, 1, "the constant's cell");
+    assert_eq!(
+        delta.effects, 1,
+        "only the interpolation closure, which reads no dependency"
+    );
+    let root = view.roots()[0];
+    let kids = children(&cx, root);
+    assert_eq!(text_of(&cx, Entity::from_stable_id(kids[0])), "标题");
+    assert_eq!(text_of(&cx, Entity::from_stable_id(kids[1])), "副 标题");
+    view.unmount(&mut cx).unwrap();
+    assert_eq!(reactive_stats().signals - before.signals, 0);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_checked_binding_reports_reads_outside_its_declared_dependencies() {
+    let (mut cx, _, parent) = setup();
+    let signals = std::cell::Cell::new(None);
+    cx.mount_view(parent, || {
+        let declared = signal(1);
+        let hidden = signal(2);
+        let doubled = computed(move || declared.get() * 2);
+        signals.set(Some((declared, hidden)));
+        column(
+            0.0,
+            (
+                text(__checked("ok", [declared.dep()], move || {
+                    declared.get().to_string()
+                })),
+                text(__checked("wrong", [declared.dep()], move || {
+                    (declared.get() + hidden.get()).to_string()
+                })),
+                // Recomputing `doubled` reads `declared` in its own frame.
+                text(__checked("computed", [doubled.dep()], move || {
+                    doubled.get().to_string()
+                })),
+            ),
+        )
+    })
+    .unwrap();
+    let before = reactive_stats();
+    let (declared, _) = signals.get().unwrap();
+    declared.set(5);
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        reactive_stats().static_deps_mismatches - before.static_deps_mismatches,
+        1,
+        "only the binding that read `hidden` is reported"
+    );
+}
+
+#[test]
+fn a_component_key_names_its_root_over_the_root_s_own() {
+    let (mut cx, _, parent) = setup();
+    let item = |label: &'static str| text(label).key("inner");
+    let view = cx
+        .mount_view(parent, move || {
+            column(
+                0.0,
+                (keyed("a", item("A")), keyed("b", item("B")), text("C")),
+            )
+        })
+        .unwrap();
+    let root = view.roots()[0];
+    assert_eq!(text_of(&cx, node(&cx, root, "a")), "A");
+    assert_eq!(text_of(&cx, node(&cx, root, "b")), "B");
+    assert_eq!(children(&cx, root).len(), 3);
+    assert!(cx.resolve_assembly_path(root, "inner").is_none());
 }

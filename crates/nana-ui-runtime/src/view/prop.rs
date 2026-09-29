@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::marker::PhantomData;
 
 use super::node::{DirectBinding, DynBinding, DynProp, NodeBindings};
-use super::reactive::{Computed, Signal};
+use super::reactive::{Computed, Const, Signal};
 
 /// Writes one field of `C`. The view layer generates these per bindable
 /// field; applications write their own for [`super::El::prop`].
@@ -120,6 +120,42 @@ impl<T: Clone + 'static> IntoProp<T> for Computed<T> {
 
     fn into_source(self) -> PropSource<T> {
         PropSource::Computed(self)
+    }
+}
+
+impl<T: Clone + 'static> IntoProp<T> for Const<T> {
+    fn bind_field<C: 'static, W: FieldWrite<C, T> + 'static>(
+        self,
+        target: &mut C,
+        bindings: &mut NodeBindings<C>,
+        site: &'static Location<'static>,
+    ) {
+        Fixed(self.get()).bind_field::<C, W>(target, bindings, site);
+    }
+
+    fn into_source(self) -> PropSource<T> {
+        Fixed(self.get()).into_source()
+    }
+}
+
+/// A value of any type used as a constant prop. The `.vue` compiler wraps
+/// expressions it proved read no signal in it, so they are written once
+/// instead of becoming a binding.
+#[doc(hidden)]
+pub struct Fixed<T>(pub T);
+
+impl<T: 'static> IntoProp<T> for Fixed<T> {
+    fn bind_field<C: 'static, W: FieldWrite<C, T> + 'static>(
+        self,
+        target: &mut C,
+        _: &mut NodeBindings<C>,
+        _: &'static Location<'static>,
+    ) {
+        W::write(target, self.0);
+    }
+
+    fn into_source(self) -> PropSource<T> {
+        PropSource::Const(self.0)
     }
 }
 

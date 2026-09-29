@@ -203,6 +203,8 @@ pub(crate) struct ViewState {
     pub(crate) tag: u64,
     levels: Vec<Level>,
     pub(crate) parts: ViewParts,
+    /// A [`keyed`] key waiting for the next unkeyed root at this level.
+    pending_key: Option<Cow<'static, str>>,
 }
 
 impl ViewState {
@@ -211,6 +213,7 @@ impl ViewState {
             tag,
             levels: vec![Level::default()],
             parts: ViewParts::default(),
+            pending_key: None,
         }
     }
 }
@@ -236,8 +239,9 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
         format!("#v{index}")
     }
 
+    /// A component's key ([`keyed`]) names its root over the root's own.
     pub(crate) fn key_or_auto(&mut self, key: Option<Cow<'static, str>>) -> String {
-        match key {
+        match self.st.pending_key.take().or(key) {
             Some(key) => key.into_owned(),
             None => self.auto_key(),
         }
@@ -252,10 +256,13 @@ impl<'a> ViewBuilder<'_, 'a, '_> {
         parent: Entity<P>,
         f: impl FnOnce(&mut ViewBuilder<'_, 'a, '_>),
     ) {
+        // A pending key names a root at this level, never a child.
+        let pending = self.st.pending_key.take();
         self.st.levels.push(Level::default());
         let st = &mut *self.st;
         self.ui.nest(parent, |ui| f(&mut ViewBuilder { ui, st }));
         self.st.levels.pop();
+        self.st.pending_key = pending;
     }
 
     /// Build `view` at the current level and return the roots it added.
@@ -337,6 +344,29 @@ tuple_views!(A, B, C, D, E, F, G, H, I);
 tuple_views!(A, B, C, D, E, F, G, H, I, J);
 tuple_views!(A, B, C, D, E, F, G, H, I, J, K);
 tuple_views!(A, B, C, D, E, F, G, H, I, J, K, L);
+
+/// A view whose first root takes `key`: a key on a component, as Vue puts
+/// it on the component's root element.
+pub struct Keyed<V> {
+    key: Cow<'static, str>,
+    view: V,
+}
+
+/// Name the first root `view` builds among its siblings.
+pub fn keyed<V: IntoView>(key: impl Into<Cow<'static, str>>, view: V) -> Keyed<V> {
+    Keyed {
+        key: key.into(),
+        view,
+    }
+}
+
+impl<V: IntoView> IntoView for Keyed<V> {
+    fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
+        vb.st.pending_key = Some(self.key);
+        self.view.build(vb);
+        vb.st.pending_key = None;
+    }
+}
 
 type EventInstall<C> = Box<dyn FnOnce(&mut UiBuilder<'_>, Entity<C>)>;
 

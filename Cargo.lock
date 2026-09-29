@@ -2747,9 +2747,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-ui-sfc"
+version = "0.1.0"
+dependencies = [
+ "nana-ui-view-codegen",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "nana-ui-view-codegen"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "nana-ui-view-macros"
 version = "0.1.0"
 dependencies = [
+ "nana-ui-view-codegen",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -3845,6 +3866,15 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
+]
+
+[[package]]
+name = "reactive-sfc"
+version = "0.1.0"
+dependencies = [
+ "nana-ui",
+ "nana-ui-platform",
+ "nana-ui-sfc",
 ]
 
 [[package]]

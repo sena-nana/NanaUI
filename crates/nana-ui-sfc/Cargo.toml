@@ -1,0 +1,15 @@
+[package]
+name = "nana-ui-sfc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Compiles .vue view files with Rust scripts into nana-ui-runtime declarative views, from a build script"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+nana-ui-view-codegen = { path = "../nana-ui-view-codegen" }
+prettyplease = "0.2"
+# Spans of parsed text carry line and column, so errors point into the file.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+syn = { version = "2", features = ["full"] }

@@ -1,0 +1,14 @@
+[package]
+name = "reactive-sfc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Views written as .vue files with Rust scripts, compiled by nana-ui-sfc in build.rs"
+
+[dependencies]
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "reactive-view"] }
+nana-ui-platform.workspace = true
+
+[build-dependencies]
+nana-ui-sfc = { path = "../../crates/nana-ui-sfc" }

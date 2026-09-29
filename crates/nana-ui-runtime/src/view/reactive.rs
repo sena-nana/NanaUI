@@ -170,6 +170,9 @@ pub struct ReactiveStats {
     pub flushes: u64,
     pub nodes_patched: u64,
     pub commits: u64,
+    /// Debug builds: evaluations of compiler-declared bindings that read an
+    /// undeclared signal.
+    pub static_deps_mismatches: u64,
 }
 
 struct Runtime {
@@ -178,6 +181,10 @@ struct Runtime {
     effects: Arena<EffectNode>,
     scopes: Arena<ScopeNode>,
     tracking: Vec<Frame>,
+    /// Every read of [`capture_reads`]' own frame (a computed it
+    /// recomputes reads in a frame of its own), duplicates included.
+    #[cfg(debug_assertions)]
+    captures: Vec<(usize, Vec<SignalKey>)>,
     pool: Vec<Vec<SignalKey>>,
     pending: Vec<EffectKey>,
     notify_stack: Vec<Observer>,
@@ -203,6 +210,8 @@ impl Runtime {
             effects: Arena::new(),
             scopes: Arena::new(),
             tracking: Vec::new(),
+            #[cfg(debug_assertions)]
+            captures: Vec::new(),
             pool: Vec::new(),
             pending: Vec::new(),
             notify_stack: Vec::new(),
@@ -265,6 +274,12 @@ impl Runtime {
     }
 
     fn track(&mut self, key: SignalKey) {
+        #[cfg(debug_assertions)]
+        if let Some((depth, capture)) = self.captures.last_mut()
+            && *depth == self.tracking.len()
+        {
+            capture.push(key);
+        }
         if let Some(frame) = self.tracking.last_mut()
             && frame.observer.is_some()
             && !frame.reads.contains(&key)
@@ -832,6 +847,122 @@ pub(crate) fn with_trace<R>(f: impl FnOnce(&mut super::trace::Ring) -> R) -> R {
     with_rt(|rt| f(&mut rt.trace))
 }
 
+/// Run `f` and return every signal it read itself.
+#[cfg(debug_assertions)]
+fn capture_reads<R>(f: impl FnOnce() -> R) -> (R, Vec<SignalKey>) {
+    with_rt(|rt| rt.captures.push((rt.tracking.len(), Vec::new())));
+    let result = f();
+    let reads = with_rt(|rt| rt.captures.pop()).map_or_else(Vec::new, |(_, reads)| reads);
+    (result, reads)
+}
+
+/// Identity of a signal or computed, for the dependencies the `.vue`
+/// compiler declares.
+#[doc(hidden)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Dep(SignalKey);
+
+/// A binding the `.vue` compiler proved reads only `declared`. In debug
+/// builds every evaluation checks that claim and reports a
+/// `runtime.reactive.static_deps_mismatch` fault naming `site` when the
+/// closure read anything else; release builds return `f` unchanged.
+#[doc(hidden)]
+pub fn __checked<T, const N: usize>(
+    site: &'static str,
+    declared: [Dep; N],
+    f: impl Fn() -> T + Send + 'static,
+) -> impl Fn() -> T + Send + 'static {
+    #[cfg(debug_assertions)]
+    {
+        move || {
+            let (value, reads) = capture_reads(&f);
+            if let Some(&undeclared) = reads.iter().find(|read| !declared.contains(&Dep(**read))) {
+                with_rt(|rt| rt.stats.static_deps_mismatches += 1);
+                let created = created_at(undeclared).map(|at| at.to_string());
+                nana_diagnostics::fault!(
+                    nana_diagnostics::framework::runtime::REACTIVE_STATIC_DEPS_MISMATCH;
+                    "{site} read the signal created at {created:?}, which the compiler did not declare"
+                );
+            }
+            value
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (site, declared);
+        f
+    }
+}
+
+/// A value the `.vue` compiler proved is never written and never handed
+/// out. It keeps a signal's read API and `Copy` handle, but reads record no
+/// dependency, and as a prop it is written once like a literal.
+pub struct Const<T: 'static> {
+    key: SignalKey,
+    _type: PhantomData<fn() -> T>,
+}
+
+impl<T> Clone for Const<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Const<T> {}
+
+/// Create a [`Const`] owned by the current scope.
+#[track_caller]
+pub fn constant<T: 'static>(value: T) -> Const<T> {
+    let created = Location::caller();
+    let key = with_rt(|rt| rt.new_signal(Rc::new(RefCell::new(value)), None, created));
+    Const {
+        key,
+        _type: PhantomData,
+    }
+}
+
+impl<T: 'static> Const<T> {
+    #[track_caller]
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        self.with(T::clone)
+    }
+
+    #[track_caller]
+    pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        let cell = read_cell(self.key, Location::caller(), false);
+        let cell = cell
+            .downcast_ref::<RefCell<T>>()
+            .expect("constant cell holds its own type");
+        f(&cell.borrow())
+    }
+
+    #[track_caller]
+    pub fn get_untracked(&self) -> T
+    where
+        T: Clone,
+    {
+        self.get()
+    }
+
+    #[track_caller]
+    pub fn with_untracked<R>(&self, f: impl FnOnce(&T) -> R) -> R {
+        self.with(f)
+    }
+
+    pub fn map<U>(self, f: impl Fn(&T) -> U + Send + 'static) -> impl Fn() -> U + Send + 'static {
+        move || self.with(&f)
+    }
+}
+
+impl<T: fmt::Display + 'static> fmt::Display for Const<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.with(|value| value.fmt(formatter))
+    }
+}
+
 /// Something a binding can read under tracking.
 pub trait Readable<T: 'static>: Copy + Send + 'static {
     #[track_caller]
@@ -915,6 +1046,11 @@ impl<T: 'static> Signal<T> {
         with_rt(|rt| rt.notify(self.key, at));
     }
 
+    #[doc(hidden)]
+    pub fn dep(&self) -> Dep {
+        Dep(self.key)
+    }
+
     /// Where this signal was created. `None` once its scope is disposed.
     pub fn defined_at(&self) -> Option<&'static Location<'static>> {
         created_at(self.key)
@@ -980,6 +1116,11 @@ impl<T: 'static> Computed<T> {
 }
 
 impl<T: 'static> Computed<T> {
+    #[doc(hidden)]
+    pub fn dep(&self) -> Dep {
+        Dep(self.key)
+    }
+
     /// Where this computed was created. `None` once its scope is disposed.
     pub fn defined_at(&self) -> Option<&'static Location<'static>> {
         created_at(self.key)
