@@ -16,6 +16,11 @@ use crate::{
     StableNodeId, Stack, StatusBadge, Switch, Text, TextArea, TextChanged, TextInput,
     TextSubmitted, Thumbnail, ToggleChanged,
 };
+use crate::{
+    Breadcrumb, Dialog, Drawer, FormField, GpuView, IconGlyph, InteractiveCard, LabeledValue,
+    LevelMeter, List, MediaTransportBar, Panel, SettingsCard, SidebarRow, Skeleton, StatusBar,
+    Tabs, Toolbar, Tooltip, ValidationMessage, Video,
+};
 use nana_ui_core::{Icon, RadiusTier, SemanticColorRole, StatusTone};
 
 /// Components whose [`NodeStyle`] the view layer may write (visibility).
@@ -115,7 +120,31 @@ macro_rules! styled {
     )*};
 }
 
-styled!(Card, ScrollView);
+styled!(
+    Card,
+    ScrollView,
+    ValidationMessage,
+    Skeleton,
+    Tooltip,
+    Panel,
+    List,
+    Toolbar,
+    Tabs,
+    InteractiveCard,
+    SettingsCard,
+    LabeledValue,
+    FormField,
+    Breadcrumb,
+    StatusBar,
+    IconGlyph,
+    GpuView,
+    Video,
+    SidebarRow,
+    MediaTransportBar,
+    Dialog,
+    Drawer,
+    LevelMeter
+);
 
 /// Expands the control table of `nana-ui-view-schema`: per control, one
 /// [`FieldWrite`] and `El` setter per field, `model` and event methods, and
