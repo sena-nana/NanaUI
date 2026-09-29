@@ -204,12 +204,13 @@ pub use feedback::{
 pub use file_tab::{FileTab, FileTabEvent};
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::MountedView;
+pub(crate) use framework::UiBuilder;
 pub use framework::{
     ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, BuiltinComponents,
     Entity, ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError,
     InputCounters, InputRouteError, InputRouteOutcome, OverlayKey, OverlayPointerDecision,
     OverlayPointerPhase, RoutedEvent, RuntimeOverlayKind, Subscription, Task, TextDeleteKind,
-    TextEditOrigin, TextFindScope, UiBuilder, UiExtension, View, ViewContext, VirtualListItems,
+    TextEditOrigin, TextFindScope, UiExtension, View, ViewContext, VirtualListItems,
     VirtualTableItems, VirtualTreeItems,
 };
 #[doc(hidden)]

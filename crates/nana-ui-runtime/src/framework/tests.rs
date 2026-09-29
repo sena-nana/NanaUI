@@ -349,13 +349,15 @@ fn build_commits_nested_tree_once_and_installs_handlers() {
     let before = context.world().generation();
     let start = context
         .build(document, |ui| {
-            ui.column(12.0, |ui| {
+            let column = ui.child("column", Stack::column(12.0));
+            ui.nest(column, |ui| {
                 ui.child("title", Text::new("你好"));
                 let start = ui.child("start", Button::new("开始"));
                 ui.on(start, |_, _: &Activate, cx| {
                     cx.dispatch_program("start");
                 });
-                ui.row(8.0, |ui| {
+                let row = ui.child("row", Stack::row(8.0));
+                ui.nest(row, |ui| {
                     ui.child("open", Button::new("打开"));
                     ui.child("float", Button::new("浮窗"));
                 });
@@ -461,12 +463,11 @@ fn keyed_page(
 ) -> (StableNodeId, StableNodeId, StableNodeId) {
     context
         .build_child(parent, |ui| {
-            ui.with("page", Stack::column(0.0), |ui| {
-                let page = ui.child("marker", Stack::column(0.0));
-                let _ = page;
-                ui.with("pane", Stack::column(0.0), |ui| {
-                    ui.child("slot", Stack::column(0.0)).stable_id()
-                })
+            let page = ui.child("page", Stack::column(0.0));
+            ui.nest(page, |ui| {
+                ui.child("marker", Stack::column(0.0));
+                let pane = ui.child("pane", Stack::column(0.0));
+                ui.nest(pane, |ui| ui.child("slot", Stack::column(0.0)).stable_id())
             })
         })
         .unwrap();
@@ -513,7 +514,8 @@ fn resolve_assembly_entity_checks_the_path_and_the_component_type() {
         .unwrap();
     context
         .build_child(parent, |ui| {
-            ui.with("page", Stack::column(0.0), |ui| {
+            let page = ui.child("page", Stack::column(0.0));
+            ui.nest(page, |ui| {
                 ui.child("title", Text::new("标题"));
             });
         })
@@ -660,7 +662,8 @@ fn build_rejects_duplicate_keys_without_committing() {
     let before = context.world().generation();
     let error = context
         .build(document, |ui| {
-            ui.column(8.0, |ui| {
+            let column = ui.child("column", Stack::column(8.0));
+            ui.nest(column, |ui| {
                 ui.child("save", Button::new("Save"));
                 ui.child("save", Button::new("Saved"));
             });
@@ -677,54 +680,13 @@ fn build_rejects_duplicate_keys_without_committing() {
 }
 
 #[test]
-fn parked_nodes_must_be_adopted_before_commit() {
-    let mut context = AppContext::new();
-    let document = DocumentId::new(1).unwrap();
-    // A parked node nobody places would render nothing and leave no other
-    // trace, so the build fails instead of committing the orphan.
-    let orphaned = context.build(document, |ui| {
-        let hint = ui.parked(Text::new("hint"));
-        ui.child("root", Stack::column(8.0));
-        // `on` is not placement: a handler on a node outside the tree is
-        // exactly the shape that used to fail silently.
-        ui.on(hint, |_, _: &Activate, _| {});
-    });
-    assert!(matches!(orphaned, Err(FrameworkError::UnplacedNode(..))));
-
-    // Adopting it discharges the obligation.
-    let adopted = context.build(document, |ui| {
-        let hint = ui.parked(Text::new("hint"));
-        let root = ui.child("root", Stack::column(8.0));
-        ui.nest(root, |ui| ui.adopt(hint));
-        (root, hint)
-    });
-    let (root, hint) = adopted.expect("adopted parked node commits");
-    assert_eq!(
-        context.world().node(root.stable_id()).unwrap().children,
-        vec![hint.stable_id()]
-    );
-
-    // `detached` is the opt-out for placement this build cannot see, so it
-    // commits while staying out of the tree.
-    let deferred = context
-        .build(document, |ui| ui.detached(Text::new("slot")))
-        .expect("detached node commits unplaced");
-    assert!(context.world().contains(deferred.stable_id()));
-    assert_ne!(
-        context.world().mount_state(deferred.stable_id()),
-        Some(crate::MountState::Mounted)
-    );
-}
-
-#[test]
 fn build_detached_parks_roots_until_inserted() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let (root, child) = context
         .build_detached(document, |ui| {
-            let child = ui.parked(Text::new("parked"));
             let root = ui.child("root", Stack::column(8.0));
-            ui.nest(root, |ui| ui.adopt(child));
+            let child = ui.nest(root, |ui| ui.child("child", Text::new("parked")));
             (root, child)
         })
         .unwrap();

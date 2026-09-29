@@ -1,6 +1,8 @@
-//! Declarative view layer against the imperative L3 path it lowers to.
+//! Declarative view layer against the raw imperative path: nodes made one
+//! at a time with `create_detached_component` / `append_child` (one commit
+//! each) and patched with `update_component`, and keyed `mount` for lists.
 //!
-//! Every scenario runs both variants interleaved, alternating which goes
+//! Every scenario runs its variants interleaved, alternating which goes
 //! first each round, and reports the minimum and median per operation. The
 //! numbers cover the authoring layer and its commits, not layout or paint.
 //!
@@ -67,18 +69,10 @@ fn timed(f: impl FnOnce()) -> Duration {
 
 fn mount(n: usize) {
     let scenario = format!("mount {n} text nodes");
-    let mut old = || {
+    let mut raw = || {
         let mut cx = AppContext::new();
         timed(|| {
-            cx.build(document(), |ui| {
-                ui.column(0.0, |ui| {
-                    for i in 0..n {
-                        ui.child(format!("t{i}"), Text::new(format!("行 {i}")));
-                    }
-                })
-            })
-            .unwrap();
-            black_box(&cx);
+            black_box(raw_texts(&mut cx, n));
         })
     };
     let mut constant = || {
@@ -110,7 +104,7 @@ fn mount(n: usize) {
     interleave(
         &scenario,
         &mut [
-            (Series::new("build (old)"), &mut old),
+            (Series::new("create + append"), &mut raw),
             (Series::new("mount_view constant"), &mut constant),
             (Series::new("mount_view bound"), &mut bound),
         ],
@@ -120,21 +114,23 @@ fn mount(n: usize) {
 /// Styled controls: every row holds its own layouts, unlike plain texts.
 fn mount_controls(n: usize) {
     let scenario = format!("mount {n} button rows");
-    let mut old = || {
+    let mut raw = || {
         let mut cx = AppContext::new();
         timed(|| {
-            cx.build(document(), |ui| {
-                ui.column(0.0, |ui| {
-                    for i in 0..n {
-                        ui.child(format!("r{i}"), Stack::row(8.0));
-                        ui.child(
-                            format!("b{i}"),
-                            nana_ui_runtime::Button::new(format!("按钮 {i}")),
-                        );
-                    }
-                })
-            })
-            .unwrap();
+            let root = cx.create_component(document(), Stack::column(0.0)).unwrap();
+            for i in 0..n {
+                let strip = cx
+                    .create_detached_component(document(), Stack::row(8.0))
+                    .unwrap();
+                cx.append_child(root, strip).unwrap();
+                let button = cx
+                    .create_detached_component(
+                        document(),
+                        nana_ui_runtime::Button::new(format!("按钮 {i}")),
+                    )
+                    .unwrap();
+                cx.append_child(root, button).unwrap();
+            }
             black_box(&cx);
         })
     };
@@ -156,24 +152,30 @@ fn mount_controls(n: usize) {
     interleave(
         &scenario,
         &mut [
-            (Series::new("build (old)"), &mut old),
+            (Series::new("create + append"), &mut raw),
             (Series::new("mount_view"), &mut new),
         ],
     );
 }
 
-/// `n` texts built with `build`, for the imperative variant.
+/// A column of `n` texts, one node and one commit at a time.
+fn raw_texts(cx: &mut AppContext, n: usize) -> Vec<Entity<Text>> {
+    let root = cx.create_component(document(), Stack::column(0.0)).unwrap();
+    (0..n)
+        .map(|i| {
+            let text = cx
+                .create_detached_component(document(), Text::new(format!("行 {i}")))
+                .unwrap();
+            cx.append_child(root, text).unwrap();
+            text
+        })
+        .collect()
+}
+
+/// `n` texts made imperatively, for the `update_component` variant.
 fn old_tree(n: usize) -> (AppContext, Vec<Entity<Text>>) {
     let mut cx = AppContext::new();
-    let texts = cx
-        .build(document(), |ui| {
-            ui.column(0.0, |ui| {
-                (0..n)
-                    .map(|i| ui.child(format!("t{i}"), Text::new(format!("行 {i}"))))
-                    .collect()
-            })
-        })
-        .unwrap();
+    let texts = raw_texts(&mut cx, n);
     (cx, texts)
 }
 
@@ -236,7 +238,7 @@ fn updates(n: usize, per_op: usize) {
         interleave(
             &scenario,
             &mut [
-                (Series::new("update_component (old)"), &mut run_old),
+                (Series::new("update_component"), &mut run_old),
                 (Series::new("set + flush"), &mut run_each),
             ],
         );
@@ -257,7 +259,7 @@ fn updates(n: usize, per_op: usize) {
         interleave(
             &scenario,
             &mut [
-                (Series::new("update_component (old)"), &mut run_old),
+                (Series::new("update_component"), &mut run_old),
                 (Series::new("N signals, 1 flush"), &mut run_each),
                 (Series::new("1 signal, N nodes"), &mut run_subset),
             ],
@@ -273,7 +275,7 @@ struct Row {
 
 fn list(n: usize) {
     const OPS: usize = 20;
-    // Old: the list is a keyed `mount` rewritten on every change.
+    // Imperative: the list is a keyed `mount` rewritten on every change.
     let mut old_cx = AppContext::new();
     let old_container = old_cx
         .create_component(document(), Stack::column(0.0))
@@ -343,7 +345,7 @@ fn list(n: usize) {
     interleave(
         &scenario,
         &mut [
-            (Series::new("mount rewrite (old)"), &mut run_old),
+            (Series::new("mount rewrite"), &mut run_old),
             (Series::new("each"), &mut run_new),
         ],
     );
@@ -409,8 +411,8 @@ fn list(n: usize) {
     interleave(
         &scenario,
         &mut [
-            (Series::new("update_component (old)"), &mut run_targeted),
-            (Series::new("mount rewrite (old)"), &mut run_remount),
+            (Series::new("update_component"), &mut run_targeted),
+            (Series::new("mount rewrite"), &mut run_remount),
             (Series::new("row signal"), &mut run_row_signal),
         ],
     );

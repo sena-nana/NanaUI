@@ -13,10 +13,6 @@ const DUMMY_NODE: StableNodeId = match StableNodeId::new(u64::MAX) {
     None => panic!("u64::MAX is a valid stable id"),
 };
 
-/// Where a parked node was built, so the commit error can point at the call
-/// site instead of only naming an id the reader has no way to look up.
-type UnplacedOrigin = (&'static str, &'static std::panic::Location<'static>);
-
 struct Level {
     parent: Option<StableNodeId>,
     /// Keys used at this level, in order.
@@ -27,7 +23,7 @@ struct Level {
 }
 
 /// Nested tree builder that commits one mutation batch, then installs handlers.
-pub struct UiBuilder<'a> {
+pub(crate) struct UiBuilder<'a> {
     context: &'a mut AppContext,
     document: DocumentId,
     stack: Vec<Level>,
@@ -44,12 +40,6 @@ pub struct UiBuilder<'a> {
     appended: HashMap<StableNodeId, Vec<StableNodeId>>,
     /// Nodes [`UiBuilder::adopt`] moved in this build.
     adopted: HashSet<StableNodeId>,
-    /// Nodes this build parked that have not yet been given a placement story.
-    /// [`UiBuilder::adopt`] discharges one by inserting it here;
-    /// [`UiBuilder::place_later`] discharges one by declaring that a parent spec
-    /// or a later assemble step inserts it. Anything still owing at commit is
-    /// an orphan that would never render, so commit fails instead.
-    unplaced: Vec<(StableNodeId, UnplacedOrigin)>,
     lifecycle: Vec<StableNodeId>,
     park_roots: bool,
     error: Option<FrameworkError>,
@@ -62,7 +52,7 @@ impl AppContext {
     /// [`UiBuilder::on`] are installed after that commit. This is initial
     /// construction (and first attach); later add/remove of children still uses
     /// [`Self::mount`]. Do not call this from a click handler to rebuild a page.
-    pub fn build<R>(
+    pub(crate) fn build<R>(
         &mut self,
         document: DocumentId,
         build: impl FnOnce(&mut UiBuilder<'_>) -> R,
@@ -74,7 +64,7 @@ impl AppContext {
     ///
     /// Use this for subtrees that a later assemble step (shell, dock, overlay)
     /// will attach. Nested children still insert in the same commit.
-    pub fn build_detached<R>(
+    pub(crate) fn build_detached<R>(
         &mut self,
         document: DocumentId,
         build: impl FnOnce(&mut UiBuilder<'_>) -> R,
@@ -86,7 +76,8 @@ impl AppContext {
     ///
     /// Keys share the table used by [`Self::mount`], so a later `mount` on the
     /// same parent reuses identities.
-    pub fn build_child<P: View, R>(
+    #[cfg(test)]
+    pub(crate) fn build_child<P: View, R>(
         &mut self,
         parent: Entity<P>,
         build: impl FnOnce(&mut UiBuilder<'_>) -> R,
@@ -126,7 +117,6 @@ impl<'a> UiBuilder<'a> {
             pending_forget: HashSet::new(),
             appended: HashMap::new(),
             adopted: HashSet::new(),
-            unplaced: Vec::new(),
             lifecycle: Vec::new(),
             park_roots,
             error: None,
@@ -170,16 +160,6 @@ impl<'a> UiBuilder<'a> {
         self.pending_views.insert(id, Box::new(component));
         self.lifecycle.push(id);
         Entity::from_stable_id(id)
-    }
-
-    fn nest_child<C: ComponentView, R>(
-        &mut self,
-        key: impl Into<String>,
-        component: C,
-        children: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        let entity = self.child(key, component);
-        self.nest(entity, children)
     }
 
     fn slots(&mut self, parent: StableNodeId) -> &mut HashMap<String, AssembledChild> {
@@ -275,43 +255,8 @@ impl<'a> UiBuilder<'a> {
         }));
     }
 
-    /// Create a node that is parked instead of inserted under the current parent.
-    ///
-    /// Parking exists for parents that need a child's id before the child can
-    /// live under them (slots, shell regions): build the child first, hand its
-    /// id to the parent spec, and let the parent place it. A parked node still
-    /// accepts [`Self::nest`] and [`Self::on`] — parking is about placement,
-    /// not about being childless. To insert a child right here, use
-    /// [`Self::child`].
-    ///
-    /// Every parked node owes an [`Self::adopt`] before this build commits;
-    /// commit fails with [`FrameworkError::UnplacedNode`] otherwise, because a
-    /// node that is never placed never renders and leaves no other trace. When
-    /// placement genuinely belongs to a later step, say so with
-    /// [`Self::detached`] instead of parking and never adopting.
-    #[must_use = "parked nodes are not in the tree; adopt it or build it with \
-                  detached, or it never renders"]
-    #[track_caller]
-    pub fn parked<C: ComponentView>(&mut self, component: C) -> Entity<C> {
-        let origin = (std::any::type_name::<C>(), std::panic::Location::caller());
-        if self.error.is_some() {
-            return Entity::from_stable_id(DUMMY_NODE);
-        }
-        let entity = self.spawn(component);
-        self.queue.park_subtree(entity.id);
-        self.unplaced.push((entity.id, origin));
-        entity
-    }
-
-    /// Like [`Self::parked`], but for a node this build deliberately leaves for
-    /// someone else to place.
-    ///
-    /// Use it when the builder cannot see the placement: the id goes into a
-    /// parent spec that a later assemble step resolves (shell regions, settings
-    /// pages), or the host swaps the node into a slot some frames from now.
-    /// Because that promise is unverifiable, the name is the record of it —
-    /// reach for [`Self::parked`] whenever this build does the placing, so the
-    /// obligation is actually checked.
+    /// A node this build leaves for someone else to place: a slot's content,
+    /// whose id goes into the component that takes it.
     #[must_use = "detached nodes are not in the tree; hand the id to whatever \
                   places it, or it never renders"]
     pub fn detached<C: ComponentView>(&mut self, component: C) -> Entity<C> {
@@ -323,11 +268,6 @@ impl<'a> UiBuilder<'a> {
         entity
     }
 
-    /// Insert an existing node under the current parent.
-    pub fn adopt<C: View>(&mut self, child: Entity<C>) {
-        self.adopt_as(child.id, TypeId::of::<C>());
-    }
-
     pub(crate) fn adopt_as(&mut self, child: StableNodeId, type_id: TypeId) {
         if self.error.is_some() || child == DUMMY_NODE {
             return;
@@ -336,7 +276,6 @@ impl<'a> UiBuilder<'a> {
             self.fail::<Stack>(FrameworkError::InvalidInput);
             return;
         };
-        self.unplaced.retain(|(id, _)| *id != child);
         let key = self.auto_key("adopt");
         self.current_mut().seen_keys.insert(key.clone());
         self.current_mut().seen.push(key.clone());
@@ -366,27 +305,6 @@ impl<'a> UiBuilder<'a> {
         self.finish_level();
         self.stack.pop();
         result
-    }
-
-    /// Keyed container: create/reuse `component`, then nest children. Returns
-    /// the nested closure's value.
-    pub fn with<C: ComponentView, R>(
-        &mut self,
-        key: impl Into<String>,
-        component: C,
-        children: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        self.nest_child(key, component, children)
-    }
-
-    pub fn column<R>(&mut self, gap: f32, children: impl FnOnce(&mut Self) -> R) -> R {
-        let key = self.auto_key("column");
-        self.nest_child(key, Stack::column(gap), children)
-    }
-
-    pub fn row<R>(&mut self, gap: f32, children: impl FnOnce(&mut Self) -> R) -> R {
-        let key = self.auto_key("row");
-        self.nest_child(key, Stack::row(gap), children)
     }
 
     fn queue_despawn(&mut self, root: StableNodeId) {
@@ -481,16 +399,6 @@ impl<'a> UiBuilder<'a> {
         self.finish_level();
         if let Some(error) = self.error.take() {
             return Err(error);
-        }
-        // Nodes despawned during this build are gone, not orphaned.
-        let forgotten = self.pending_forget.clone();
-        if let Some((id, (component, origin))) = self
-            .unplaced
-            .iter()
-            .find(|(id, _)| !forgotten.contains(id))
-            .copied()
-        {
-            return Err(FrameworkError::UnplacedNode(id, component, origin));
         }
         let queue = self.queue;
         let pending_views = self.pending_views;

@@ -97,9 +97,9 @@ cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,w
 
 ```rust
 // 树上：和 Button 一样占布局
-let preview = cx.build(document_id, |ui| {
-    ui.child("preview", GpuTextureView::new("preview"))
-})?;
+let preview = cx
+    .mount_view_root(document_id, || widget(GpuTextureView::new("preview")))?
+    .root::<GpuTextureView>();
 
 // initialize / rebuild_gpu：在宿主设备上建纹理，登记 slot
 let gpu = context.gpu();

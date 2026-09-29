@@ -37,7 +37,6 @@ use std::{
     hash::Hash,
     marker::PhantomData,
     ops::Range,
-    panic::Location,
     pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
@@ -84,7 +83,7 @@ pub(crate) mod text_edit;
 mod text_history;
 pub use assemble::AssemblyScope;
 pub(crate) use assemble::reconcile_child_order;
-pub use build::UiBuilder;
+pub(crate) use build::UiBuilder;
 pub(crate) use overlay::overlay_kind_for_role;
 pub use overlay::{
     ActiveRuntimeOverlay, OverlayKey, OverlayPointerDecision, OverlayPointerPhase,
@@ -851,7 +850,6 @@ pub enum FrameworkError {
         key: String,
     },
     DuplicateActivation,
-    UnplacedNode(StableNodeId, &'static str, &'static Location<'static>),
 }
 
 impl fmt::Display for FrameworkError {
@@ -958,13 +956,6 @@ impl fmt::Display for FrameworkError {
             Self::FrameDidNotSettle => {
                 formatter.write_str("runtime frame did not settle within the bounded pass limit")
             }
-            Self::UnplacedNode(id, component, origin) => write!(
-                formatter,
-                "{component} view {} parked at {origin} and never adopted; adopt \
-                 it, or build it with `detached` if something after this build \
-                 places it",
-                id.get()
-            ),
             Self::DuplicateAssemblyKey { parent, key } => write!(
                 formatter,
                 "assembly key `{key}` is duplicated under view {}",

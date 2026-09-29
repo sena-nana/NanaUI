@@ -1,6 +1,6 @@
 # 声明式视图
 
-`nana_ui::runtime::view`：视图写成一个表达式，动态部分是信号或闭包，树只建一次，之后每个绑定只更新它写的那个节点字段。不整树 render，不做 diff。它和 `build` / `mount` 写同一棵 `UiWorld`、同一张 assembly key 表，最后落到的还是 `create` / `insert` / `project` / `commit`。
+`nana_ui::runtime::view`：视图写成一个表达式，动态部分是信号或闭包，树只建一次，之后每个绑定只更新它写的那个节点字段。不整树 render，不做 diff。它和命令式的 `create_component` / `mount` 写同一棵 `UiWorld`、同一张 assembly key 表，最后落到的还是 `create` / `insert` / `project` / `commit`。
 
 **开关**：视图层默认编译进来，不需要 feature；模板宏 `view!`、`css!`、`stylesheet!` 在 `view-macro` 后面（独立的 proc-macro crate，不用就不参与编译）；因果追踪在 `reactive-trace` 后面。示例：`crates/nana-ui/examples/reactive-counter.rs`（用 `view!` 写），`examples/reactive-sfc`（用 `.vue` 文件写）。
 
@@ -200,7 +200,8 @@ view! {
 - **`.slot(view, |c, id| c.xxx(id))`**：slot 由控件自己放置（shell 的区域、标题栏的三列）。先建 slot 视图，不插到任何地方，再把根节点 id 写进组件，最后建组件本身。
 - **`.child_slot(view, write)`**：slot 是本节点自己的子节点（section 的 header、list item 的图标），按 slot 的声明顺序插在 `.children(..)` 前面。
 - slot 必须恰好有一个根节点，否则挂载失败，返回 `InvalidInput`，这次什么也不提交。slot 和组件在同一次提交里建好，slot 里创建的信号归同一个挂载作用域，卸载时一起回收。
-- **装配**：需要装配的控件在 `TypeBehavior::slot_assembler` 里登记自己的 `assemble_*`。视图层在建好这类节点之后，以及绑定改了它之后，自动运行装配，所以视图里不写 `assemble_desktop_shell`。builder 仍然由调用方自己调用 `assemble_*`：在每次写入时都装配会弄脏空闲的 world，见 `TypeBehavior::assembler`。只由自身属性决定子节点的叶子组合控件（`Chip`、`ColorField`、`PathField`、`FileTab`、`DiffView`、`MediaTransportBar`）登记的是 `TypeBehavior::assembler`：它本来就在每次写入后运行，视图层在建好这类节点时也运行一次，所以它们不必再登记 `slot_assembler`。
+- **装配**：需要装配的控件在 `TypeBehavior::slot_assembler` 里登记自己的 `assemble_*`。视图层在建好这类节点之后，以及绑定改了它之后，自动运行装配，所以视图里不写 `assemble_desktop_shell`。用 `create_component` 手工建的组合控件仍然由调用方自己调用 `assemble_*`：在每次写入时都装配会弄脏空闲的 world，见 `TypeBehavior::assembler`。一个视图里，组合控件在它的 slot 和子节点都装配完之后才装配，所以它对内容的补丁（例如 `DesktopShell` 给主区域内容的圆角）不会被内容自己的装配覆盖。只由自身属性决定子节点的叶子组合控件（`Chip`、`ColorField`、`PathField`、`FileTab`、`DiffView`、`MediaTransportBar`）登记的是 `TypeBehavior::assembler`：它本来就在每次写入后运行，视图层在建好这类节点时也运行一次，所以它们不必再登记 `slot_assembler`。
+- **`detached(view)`**：建出节点但不放进任何地方，用 `entity_ref` / `with_refs` 拿到 id，交给按 id 收内容的接口（`set_modal_slots`、`set_form_field_control`）。和其他根写在同一个 tuple 里，一次挂载、一次提交：`with_refs((detached(body.entity_ref(b)), widget(dialog).entity_ref(d)), (b, d))`。
 - slot 的节点在视图的整个生命周期里不换：里面的内容要变，就在 slot 里用 `when` / `each` / `dynamic`；区域显示还是隐藏，由 `WorkspaceModel` 决定。
 - 目前登记了装配的有 `DesktopShell`、`AppShell`、`AppTitleBar`、`Workspace`、`Dock`、`SplitPane`、`PaneSection`、`GraphCanvas`、`DatePicker`、`NativeMarkdown`、`ConfirmDialog`、`SettingsRow`、`SegmentedControl`（及其 `SegmentedOption`）、`SidebarSection`，以及设置页的 `AppearanceSection`、`AboutSection`、`SettingsSidebar`、`SettingsCollapsibleCard`（`.summary` / `.details` / `.accessory`）和 `SettingsPage`（`.content`）；叶子组合控件（`Chip`、`ColorField` 等）的 `assembler` 在视图建好时也会运行。具名 slot 方法：`SplitPane` 的 `.first` / `.second`、`PaneSection` 的 `.header` / `.tabs` / `.body`（`view/panes.rs`）；`DesktopShell` 的各区域、`AppShell` 的 `.title_bar` / `.body` / `.overlay`、`Workspace` 的 `.region(id, view)`、`AppTitleBar` 的 `.leading` / `.center` / `.trailing`（`view/shell.rs`）；`SidebarSection` 的 `.tools`、`SidebarFrame` 的 `.top` / `.body` / `.footer`（`view/sidebar.rs`）；设置行的 `.control`（`view/settings.rs`）；`ListItem` 与 `SidebarRow` 的 `.leading` / `.content` / `.trailing`（作为它们自己的子节点，按这个顺序写）；模态面板 `Dialog`、`Drawer` 的 `.body` / `.footer`，以及 `MediaTransportBar` 的 `.leading` / `.trailing` / `.secondary`：把应用的控件放进它自己的按钮组和第二行（`view/composites.rs`）。其他组合控件可以先用通用的 `.slot` / `.child_slot`，并自己调用 `assemble_*`。
 - **Dock 面板**：面板按布局里的 id 对应，数量由数据决定，所以不用具名 slot，而是用子节点的 key：`widget(Dock::new(layout)).children((files().key("files"), preview().key("preview")))`，模板里写 `<Widget of={dock}><FilesPanel key="files"/>…</Widget>`。装配时每个面板 id 找同名 key 的子节点作为内容；布局被绑定换掉后按 key 重新对应，面板节点不重建。key 对不上任何面板的子节点会被挂起。
@@ -359,7 +360,7 @@ impl ApplicationState for App {
 
 | 环节 | 行为 |
 | --- | --- |
-| 挂载 | 整棵声明树在一次 `build_detached` 里建完；挂到父节点下再多一次插入 commit。根节点无 key 插入，不影响父节点自己的 keyed 子节点 |
+| 挂载 | 整棵声明树在一次 commit 里建完；挂到父节点下再多一次插入 commit。根节点无 key 插入，不影响父节点自己的 keyed 子节点 |
 | 写信号 | `set` / `update` 只把订阅它的副作用排进队列，不碰树；`computed` 只标脏，下次被读时才重算 |
 | 等值截断 | 写入只把直接读者标脏，更下游标"待查"。待查的 computed 或副作用先把它依赖的 computed 更新一遍，只有其中某个算出了**不同的值**才重跑（`computed` 要求 `T: PartialEq`）。所以 `computed(\|\| n.get() % 2)` 在 1 → 3 时，读它的绑定一个都不跑 |
 | flush | `AppContext::flush_reactive`。按轮执行：先跑 `watch_effect`，再跑 `each` / `when` 的结构更新，最后把这一轮所有需要改的节点各暂存一次、合进**一次** commit。输入路由在每个事件末尾调用它（所以 `InputRouteOutcome::invalidated_work` 会反映绑定的变化），`take_system_work` 在每帧开头调用它 |
@@ -449,18 +450,20 @@ fn page() -> impl IntoView {
 
 ## 成本
 
-测量命令：`cargo run --release -p nana-ui-runtime --features benchmark --bin nana-reactive-benchmark`。每种写法交替跑 15 轮，读最小值；测的是写法层加 commit，不含布局和绘制。2026-09-29 下午本机，负载 5–6。
+测量命令：`cargo run --release -p nana-ui-runtime --features benchmark --bin nana-reactive-benchmark`。每种写法交替跑 15 轮，读最小值；测的是写法层加 commit，不含布局和绘制。对照组是不用视图时的写法：`create_detached_component` + `append_child` 一次建一个节点（每次调用 commit 一次），`update_component` 改字段，列表用 keyed `mount` 整段重写。2026-09-29 夜本机，负载 4–5。
 
-| 场景 | 旧写法 | 新写法 |
+| 场景 | 命令式 | 视图 |
 | --- | --- | --- |
-| 挂载 1,000 个文本 | `build` 1.36 ms | 常量 1.49 ms / 每个都绑定信号 1.62 ms |
-| 挂载 5,000 个文本 | `build` 7.68 ms | 常量 8.41 ms / 全部绑定 9.43 ms |
-| 挂载 1,000 行（行容器加按钮） | `build` 3.87 ms | 4.33 ms |
-| 5,000 个里改 1 个 | `update_component` 0.42 µs | `set` + flush 0.62 µs |
-| 5,000 个里改 100 个 | 逐个 `update_component` 44.9 µs | 100 个信号一次 flush 43.7 µs / 1 个信号绑 100 个节点 38.5 µs |
-| 2,000 行里插入再删除 1 行 | 整段 `mount` 重写 8.31 ms | `each` 0.058 ms |
-| 2,000 行里改 1 行的字段 | 手写 `update_component` 0.41 µs / 整段 `mount` 重写 6.59 ms | 行内信号 0.59 µs |
-| 100 个按钮的绑定重跑但值不变 | — | 7.41 µs |
+| 挂载 1,000 个文本 | 1.85 ms | 常量 1.53 ms / 每个都绑定信号 1.65 ms |
+| 挂载 5,000 个文本 | 9.37 ms | 常量 8.56 ms / 全部绑定 9.29 ms |
+| 挂载 1,000 行（行容器加按钮） | 5.27 ms | 4.45 ms |
+| 5,000 个里改 1 个 | `update_component` 0.42 µs | `set` + flush 0.61 µs |
+| 5,000 个里改 100 个 | 逐个 `update_component` 44.9 µs | 100 个信号一次 flush 44.9 µs / 1 个信号绑 100 个节点 39.7 µs |
+| 2,000 行里插入再删除 1 行 | 整段 `mount` 重写 7.99 ms | `each` 0.057 ms |
+| 2,000 行里改 1 行的字段 | `update_component` 0.41 µs / 整段 `mount` 重写 6.41 ms | 行内信号 0.60 µs |
+| 100 个按钮的绑定重跑但值不变 | — | 8.67 µs |
+
+挂载时视图比逐个建节点快一成多：整棵树一次 commit，逐个建是每个节点一次。
 
 大列表的整体操作（5,000 行，每行一个行容器、一个文本、一个按钮；前后二进制交替各跑 4 次、每次 10 轮取最小值）：
 
@@ -484,7 +487,7 @@ fn page() -> impl IntoView {
 - **静态文字改成 `Cow<'static, str>`**：一个文本节点常驻 1,804 B，空 `Stack` 是 1,778 B，文字本身只占约 26 B，不值得改所有控件的 API。
 - 控件注册清单也不需要单独生成：`BuiltinComponents::Typed` 已经按实际用到的类型注册。
 
-单点更新比手写 `update_component` 多出约 0.15 µs，这是信号簿记的成本；一次改很多节点时只 commit 一次，反而更快。
+单点更新比手写 `update_component` 多出约 0.2 µs，这是信号簿记的成本；一次改很多节点时只 commit 一次，反而更快。
 
 第二阶段两项优化各自做了 A/B（前后二进制交替各跑 3 次，读最小值）：
 

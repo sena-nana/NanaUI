@@ -33,7 +33,8 @@ Gallery 是控件目录，不是你的产品骨架。最小宿主对照 `example
 ```rust
 use std::convert::Infallible;
 
-use nana_ui::runtime::{Activate, Button, DocumentId, RuntimeDocument, Text};
+use nana_ui::runtime::view::{button, column, text};
+use nana_ui::runtime::{Activate, DocumentId, RuntimeDocument};
 use nana_ui::{
     RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor, ThemeMode,
     run_runtime,
@@ -50,14 +51,13 @@ impl App {
         let mut document = RuntimeDocument::new(document_id);
         let cx = document.context_mut();
 
-        cx.build(document_id, |ui| {
-            ui.column(12.0, |ui| {
-                ui.child("title", Text::new("你好"));
-                let start = ui.child("start", Button::new("开始"));
-                ui.on(start, move |_button, _event: &Activate, _cx| {
+        cx.mount_view_root(document_id, || {
+            column().gap(12).children((
+                text("你好"),
+                button("开始").on_cx(|_button, _event: &Activate, _cx| {
                     // 改你自己的状态。需要开窗或换 GPU 时：cx.dispatch_program(msg)
-                });
-            });
+                }),
+            ))
         })
         .unwrap();
 
@@ -139,4 +139,4 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
 - 把视口挂上树：[实时画面](gpu.md)
 - 标题栏与系统模糊：[窗口](window.md)
 - 深色 / 浅色与尺寸：[视觉](look.md)
-- 组成式建树（`build` / `mount` / 何时不该重建）：[L3 组成式建树](l3-authoring.md)
+- 用 Rust 建界面（挂载视图、句柄、何时不该重建）：[L3：用 Rust 建界面](l3-authoring.md)；视图的完整说明见 [声明式视图](reactive-view.md)

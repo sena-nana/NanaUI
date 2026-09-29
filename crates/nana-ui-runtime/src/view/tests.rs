@@ -1930,36 +1930,41 @@ fn a_leaf_composite_a_view_builds_is_assembled() {
 /// A section built by hand with all its chrome, rows in its body.
 fn hand_built_section(cx: &mut AppContext, document: DocumentId) -> StableNodeId {
     use crate::SidebarSection;
-    cx.build(document, |ui| {
-        let mut spec = SidebarSection::new("资源").count(2).collapsible(true);
-        let disclosure = ui.parked(spec.disclosure_mark());
-        spec = spec.disclosure(disclosure.stable_id());
-        let title = ui.parked(spec.title_label());
-        spec = spec.title_slot(title.stable_id());
-        let count = ui.parked(spec.count_label());
-        spec = spec.count_slot(count.stable_id());
-        let header = ui.parked(spec.header_item());
-        ui.nest(header, |ui| {
-            ui.adopt(disclosure);
-            ui.adopt(title);
-            ui.adopt(count);
-        });
-        let body = ui.parked(SidebarSection::body_port());
-        ui.nest(body, |ui| {
-            ui.child("a", Text::new("行一"));
-            ui.child("b", Text::new("行二"));
-        });
-        let section = ui.child(
-            "section",
-            spec.header(header.stable_id()).body(body.stable_id()),
-        );
-        ui.nest(section, |ui| {
-            ui.adopt(header);
-            ui.adopt(body);
-        });
-        section.stable_id()
-    })
-    .unwrap()
+    let mut spec = SidebarSection::new("资源").count(2).collapsible(true);
+    let disclosure = cx
+        .create_detached_component(document, spec.disclosure_mark())
+        .unwrap();
+    let title = cx
+        .create_detached_component(document, spec.title_label())
+        .unwrap();
+    let count = cx
+        .create_detached_component(document, spec.count_label())
+        .unwrap();
+    let header = cx
+        .create_detached_component(document, spec.header_item())
+        .unwrap();
+    cx.append_child(header, disclosure).unwrap();
+    cx.append_child(header, title).unwrap();
+    cx.append_child(header, count).unwrap();
+    let body = cx
+        .create_detached_component(document, SidebarSection::body_port())
+        .unwrap();
+    for row in ["行一", "行二"] {
+        let row = cx
+            .create_detached_component(document, Text::new(row))
+            .unwrap();
+        cx.append_child(body, row).unwrap();
+    }
+    spec = spec
+        .disclosure(disclosure.stable_id())
+        .title_slot(title.stable_id())
+        .count_slot(count.stable_id())
+        .header(header.stable_id())
+        .body(body.stable_id());
+    let section = cx.create_component(document, spec).unwrap();
+    cx.append_child(section, header).unwrap();
+    cx.append_child(section, body).unwrap();
+    section.stable_id()
 }
 
 #[test]

@@ -72,3 +72,4 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 - [编辑器存储统一到 EditSession、共享文本值；GPU 后端合同隔离（2026-09-24）](consumer-upgrade-2026-09-24.md)
 - [Composition 移除，并入 builder / assembly key（2026-09-28）](consumer-upgrade-2026-09-28-composition-removed.md)
 - [声明式视图：两种一级写法、token 样式表、具名 slot（2026-09-29）](consumer-upgrade-2026-09-29-view-spelling.md)
+- [builder 转为内部：界面用视图建（2026-09-29）](consumer-upgrade-2026-09-29-builder-internal.md)

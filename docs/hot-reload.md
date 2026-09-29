@@ -195,7 +195,7 @@ Rust 侧其实没问题：`register_host_api` 是替换而非追加，event brid
 
 不是难，是有几条在不重构框架的前提下无解：
 
-- **`TypeId` 是树协调键，且跨编译不稳定。** `UiBuilder::child` 比较 `TypeId::of::<C>()`，`remove_view` 按它 downcast。重新编译的 dylib 对同一个类型给出不同 id，于是每个 keyed child 都失配、整棵树照样重建，而 `remove_view` 直接失败。这一条单独就足以否掉"保住树、只换代码"。
+- **`TypeId` 是树协调键，且跨编译不稳定。** keyed 装配比较 `TypeId::of::<C>()`，`remove_view` 按它 downcast。重新编译的 dylib 对同一个类型给出不同 id，于是每个 keyed child 都失配、整棵树照样重建，而 `remove_view` 直接失败。这一条单独就足以否掉"保住树、只换代码"。
 - **`RuntimeProgram` 不是 object-safe**（`with_document` 是泛型方法，进不了 vtable），跨 FFI 要手写一套 C-ABI 影子层 —— 正是 `AGENTS.md` 禁止的第二套实例化 ABI。
 - **事件处理闭包是指向 dylib 的代码指针，而宿主持有它们。** 要安全卸载就得先拆完整棵树，那 dylib 相比重建没带来任何东西。
 - **`dlclose` 在关键平台不可靠。** macOS 不会卸载含 Objective-C 元数据或 TLS 的镜像，本仓库两样都有。

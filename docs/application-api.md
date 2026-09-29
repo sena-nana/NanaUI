@@ -172,18 +172,17 @@ Vue 输入按语义变化和已挂载节点消费的 Canvas／HostTexture 版本
 
 ```text
 RuntimeDocument::new(DocumentId)
-AppContext::build(document, |ui| {
-    ui.column(12.0, |ui| {
-        let save = ui.child("save", Button::new("…"));
-        ui.on(save, |_, Activate, cx| { cx.dispatch_program_all(Msg); });
-    })
+mount_view_root(document, || {
+    column().gap(12).children(
+        button("…").on_cx(|_, _: &Activate, cx| cx.dispatch_program_all(Msg)),
+    )
 })
 mount { scope.child("key", …) }          // 动态区增删
 update_component(entity, |view, _| { … }) // 改单个字段
 set_component(entity, Button::new(…))     // 整体换 props，保留交互态
 ```
 
-`build` 是初次整页（一次 commit）。`mount` 是 keyed 子树协调，不是第二套渲染器。点击 handler 不要再 `build` 一遍。Vue 不得用 `create_component` / `build` 分配 ID，它绑定自己已有的节点。细则见 [L3 组成式建树](l3-authoring.md)。
+挂载视图是初次整页（一次 commit），之后靠绑定定点更新。`mount` 是 keyed 子树协调，不是第二套渲染器。点击 handler 不要重新挂载一遍。Vue 不得用 `create_component` / `mount_view*` 分配 ID，它绑定自己已有的节点。细则见 [L3：用 Rust 建界面](l3-authoring.md)。
 
 从应用状态整体重建一个组件时用 `set_component`，不要在 `update_component` 里写
 `*view = 新的()`：后者连运行时拥有的交互态一起覆盖，表现为刷新一下菜单就收起、

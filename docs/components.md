@@ -3,12 +3,12 @@
 用现成控件往树上挂，不要每个按钮自己画。Rust 入口是 `nana_ui::runtime`。
 
 ```rust
-let button = cx.build(document_id, |ui| {
-    let button = ui.child("save", Button::new("保存"));
-    ui.on(button, move |_button, _event: &Activate, _cx| {
+let (_, save) = cx.mount_view_root(document_id, || {
+    let save = entity_ref::<Button>();
+    let view = button("保存").entity_ref(save).on(|_: &Activate| {
         // 应用自己的保存逻辑
     });
-    button
+    with_refs(view, save)
 })?;
 ```
 

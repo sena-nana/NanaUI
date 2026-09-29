@@ -14,6 +14,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use nana_ui::runtime::view::{entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     AccessibilityActionRequest, Activate, Button, DocumentId, Entity, FrameworkError,
     LayoutViewport, List, NodeStyle, RuntimeDocument, Switch, Text, TextChanged, TextInput,
@@ -109,30 +110,37 @@ impl SlotRuntime {
             .context_mut()
             .bind_input_source(SLOT_SOURCE, EndpointGeneration(1), document_id)
             .expect("a fresh slot document binds its source");
-        let (button, field) = document.context_mut().build(document_id, |ui| {
-            ui.with("column", column_host(), |ui| {
-                ui.with("row", row_strip(), |ui| {
-                    ui.child("icon", Text::new(SLOT_ICON_GLYPH));
-                    ui.child("caption", Text::new(SLOT_TEXT_LABEL));
-                    let field = ui.child("field", slot_text_input());
-                    let switch = ui.child("switch", Switch::new(SLOT_SWITCH_LABEL, false));
-                    let button = ui.child("button", Button::new(SLOT_BUTTON_LABEL));
-                    ui.on(button, move |button, _event: &Activate, _cx| {
+        let (_, (button, field)) = document.context_mut().mount_view_root(document_id, || {
+            let (button, field) = (entity_ref(), entity_ref());
+            let strip = widget(row_strip()).key("row").children((
+                widget(Text::new(SLOT_ICON_GLYPH)).key("icon"),
+                widget(Text::new(SLOT_TEXT_LABEL)).key("caption"),
+                widget(slot_text_input())
+                    .key("field")
+                    .entity_ref(field)
+                    .on_cx(move |field: &mut TextInput, event: &TextChanged, _cx| {
+                        field.state.replace_value(event.value.clone());
+                        lock_state(&inputs).input_value = event.value.to_string();
+                    }),
+                widget(Switch::new(SLOT_SWITCH_LABEL, false))
+                    .key("switch")
+                    .on_cx(move |switch: &mut Switch, event: &ToggleChanged, _cx| {
+                        switch.checked = event.checked;
+                        lock_state(&toggles).switch_on = event.checked;
+                    }),
+                widget(Button::new(SLOT_BUTTON_LABEL))
+                    .key("button")
+                    .entity_ref(button)
+                    .on_cx(move |button: &mut Button, _event: &Activate, _cx| {
                         let mut slot = lock_state(&presses);
                         slot.press_count = slot.press_count.saturating_add(1);
                         button.label = format!("{SLOT_BUTTON_LABEL} · {}", slot.press_count);
-                    });
-                    ui.on(switch, move |switch, event: &ToggleChanged, _cx| {
-                        switch.checked = event.checked;
-                        lock_state(&toggles).switch_on = event.checked;
-                    });
-                    ui.on(field, move |field, event: &TextChanged, _cx| {
-                        field.state.replace_value(event.value.clone());
-                        lock_state(&inputs).input_value = event.value.to_string();
-                    });
-                    (button, field)
-                })
-            })
+                    }),
+            ));
+            with_refs(
+                widget(column_host()).key("column").children(strip),
+                (button, field),
+            )
         })?;
 
         let mut runtime = Self {
