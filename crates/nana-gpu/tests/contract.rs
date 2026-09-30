@@ -6,7 +6,7 @@ use std::sync::{
     mpsc,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nana_gpu::__framework;
 use nana_gpu::{
@@ -723,6 +723,26 @@ fn a_full_pipeline_blocks_on_the_oldest_frame_and_unsubmitted_slots_never_deadlo
         gpu.policy().stats().frame_slot_stalls,
         before.frame_slot_stalls + 1
     );
+}
+
+#[test]
+fn try_begin_frame_returns_immediately_while_recordings_hold_every_slot() {
+    let gpu = context();
+    let held: Vec<_> = (0..3).map(|_| gpu.try_begin_frame("held")).collect();
+    assert!(held.iter().all(Option::is_some));
+    let before = gpu.policy().stats();
+    let started = Instant::now();
+    assert!(gpu.try_begin_frame("window").is_none());
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "a full pipeline must not wait for GPU completion"
+    );
+    assert_eq!(
+        gpu.policy().stats().frame_slot_waits,
+        before.frame_slot_waits
+    );
+    drop(held);
+    assert!(gpu.try_begin_frame("window").is_some());
 }
 
 #[test]
