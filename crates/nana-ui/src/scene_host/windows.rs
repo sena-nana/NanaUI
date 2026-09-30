@@ -236,13 +236,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .record_shadow(crate::window_shadow::outcome(intent, applied));
     }
 
-    /// Follow the window's visible body with its shadow companion. The scene
-    /// projection is checked because a compositor tick can move the body
-    /// without a resize. A tick that leaves the derived body where it was
-    /// only refreshes that check: the companion is not repositioned. Moving
-    /// it anyway (a pointer halo does this on every sample) reorders the
-    /// companion against a composition window, and DWM then shows that
-    /// window empty for a frame.
+    /// After a present: follow the window's visible body with its shadow
+    /// companion. Derives the body only when the scene's projection, the
+    /// window's size or its visibility changed; a static window does nothing.
     pub(super) fn sync_shadow_body(&mut self, id: WindowId, scene: &nana_ui_scene::UiScene) {
         let held = self.startup_presentation_held(id);
         let Some(host) = self.window_contexts.get_mut(&id) else {
@@ -261,14 +257,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         let shape = crate::window_shadow::derive_visual_shape(scene, [size.0, size.1]);
-        if let Some(body) = host.shadow_body.as_mut()
-            && body.shape == shape
-            && body.size == size
-            && body.visible == visible
-        {
-            body.revision = revision;
-            return;
-        }
         host.shadow_body = Some(super::ShadowBody {
             revision,
             size,

@@ -24,7 +24,7 @@ renderer 不直接调用 `queue.write_buffer` / `write_texture`。`GpuWorkSink` 
 
 ### 帧槽
 
-`FrameContext` 在录制时占用 slot。discard 立即归还。submit 记录其 `SubmissionIndex`。完成回调归还。槽满时 `begin_frame()` 对最早已提交的帧做一次有界阻塞等待（`gpu.frame_slot_waits`）。不再忙等。若全部槽都被从未提交的录制占用（同一线程持有全部槽），等待永远不会结束。新帧不占槽，直接开始，并报告 `gpu.frame_slots_exhausted`。`try_begin_frame()` 在槽满时立即返回 `None`。FrameExchange 使用该路径返回 `PoolFull`。窗口呈现也用它，并且只在拿到槽之后才 `get_current_texture`：透明交换链的当前缓冲被取走后，窗口线程再去 `poll(Wait)` 会让整窗没有可合成的画面。槽满则跳过这一帧，已呈现的缓冲留在屏幕上。
+`FrameContext` 在录制时占用 slot。discard 立即归还。submit 记录其 `SubmissionIndex`。完成回调归还。槽满时 `begin_frame()` 对最早已提交的帧做一次有界阻塞等待（`gpu.frame_slot_waits`）。不再忙等。若全部槽都被从未提交的录制占用（同一线程持有全部槽），等待永远不会结束。新帧不占槽，直接开始，并报告 `gpu.frame_slots_exhausted`。`try_begin_frame()` 在槽满时立即返回 `None`。FrameExchange 使用该路径返回 `PoolFull`。
 
 ### 缓存与资源
 
@@ -179,7 +179,7 @@ fn window_frame_presented(..) -> RuntimeProgramUpdate {
 - **提交守卫。** 窗口缩放时 `Surface::configure` 会等 GPU 空闲。同时从别的线程提交会让它 `GpuWaitTimeout`。`copy_from`、`FrameContext::submit`、`GpuContext::write_texture` 自己持提交守卫。生产端自己的 `queue.submit` / `write_buffer` / `write_texture`（wgpu-interop）要持 `gpu.wgpu().lock_submission()`。并在 `poll(Wait)`、sleep 或 surface 操作前放下。
 - **容量。** 一个窗口需要 3 个 slot：在途复制、正在显示、已替换但未 present。每多一个绑定同一交换的窗口加 2 个。
 - **Lease 顺序。** `prepare` 换帧后，旧帧留到 `presented` 才释放。两次 present 之间最多换一次。lease 归还后，生产端要等 UI 那次提交完成才复用该 slot。隐藏 tick 只 prepare 不 present。所以最多换一次就停住。生产端随后看到 `PoolFull`。
-- **Epoch 与接受策略。** `E` 是应用自己的代次（视口、场景……）。`set_epoch` 立刻不再把旧帧交给后来的 `latest`，旧 epoch 的在途复制不会发布。窗口已经显示的那一帧会留到新 epoch 的帧发布：提前改绑 1×1 透明占位，会把透明窗口整张呈现成空的。`accept` 明确拒绝当前帧、交换已关闭、或没有 inbox 时才改绑占位。`prepare` 在没有待取帧或待取帧被接受时确认唤醒。所以 `set_epoch` 的唤醒先到、替换帧后发布，也会再叫醒窗口。被拒绝的帧不确认唤醒。所以隐藏窗口不会每帧被叫醒。策略变化时由应用请求重绘。
+- **Epoch 与接受策略。** `E` 是应用自己的代次（视口、场景……）。`set_epoch` 立刻隐藏旧帧。旧 epoch 的在途复制不会发布。`accept` 是窗口的策略（可见、未过期）。`prepare` 在没有待取帧或待取帧被接受时确认唤醒。所以 `set_epoch` 的唤醒先到、替换帧后发布，也会再叫醒窗口。被拒绝的帧不确认唤醒。所以隐藏窗口不会每帧被叫醒。策略变化时由应用请求重绘。
 - **唤醒。** `notify` 在生产线程调用。只负责调度窗口：`drop(window.request_redraw())` 或 `context.dispatch(..)`。不要在里面等。
 - **设备重建。** `rebuild_gpu` 后用新 `GpuContext` 重建 exchange 和 binding。`DeviceGeneration` 不同的 inbox 不会被绑定。binding 只收一个 `GpuContext`。设备和代次不可能对不上。已发出的 lease 继续有效。最后一个持有者释放后，旧设备在后台线程销毁。
 - **诊断。** `FrameExchange::stats()` 给出 submitted / published / superseded / pool_full / stale_epoch 与占用高水位。读取不在帧路径上分配。

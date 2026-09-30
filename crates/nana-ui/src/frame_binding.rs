@@ -23,9 +23,7 @@ static NEXT_TEXTURE_ID: AtomicU64 = AtomicU64::new(1 << 63);
 /// Call [`Self::prepare`] from `prepare_window_frame` and [`Self::presented`]
 /// from `window_frame_presented` of the window that samples the slot. The slot
 /// always holds a binding: a 1×1 transparent placeholder is shown while no
-/// usable frame exists, so scene validation never loses the slot. A live
-/// exchange that has moved epoch but not yet published the next frame keeps
-/// the picture already showing; the placeholder would present an empty window.
+/// usable frame exists, so scene validation never loses the slot.
 pub struct FrameBinding<E = u64> {
     device_generation: DeviceGeneration,
     slot: TextureSlot,
@@ -108,9 +106,9 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
         }
         let inbox = inbox.filter(|inbox| inbox.device_generation() == self.device_generation);
         // A new epoch retires the bound frame and publishes its replacement in
-        // the same breath. The replacement is looked for first. Until it
-        // exists the picture already on screen stays: the 1x1 placeholder is
-        // transparent, and presenting it clears a composition window.
+        // the same breath. The replacement is looked for first: unbinding on
+        // `stale` alone would show the 1x1 placeholder for the frame in
+        // between, which the window presents as a flash of nothing.
         let stale = self
             .current
             .as_deref()
@@ -134,14 +132,6 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
             return true;
         }
         if stale {
-            // `set_epoch` hides the inbox frame before the next copy is
-            // published. Keep sampling the lease already held. An explicit
-            // reject, a dead exchange, or a missing inbox still clears.
-            if self.current.as_deref().is_some_and(|frame| {
-                inbox.is_some_and(|inbox| inbox.awaits_replacement(&frame.token()))
-            }) {
-                return false;
-            }
             self.retired = self.current.take();
             self.bind_placeholder();
             self.awaiting_present = true;
@@ -293,8 +283,8 @@ mod tests {
     }
 
     /// The window reacts to the epoch's wake before the replacement frame
-    /// exists. It keeps the picture already showing, and the replacement still
-    /// wakes it so the swap does not wait for an unrelated redraw.
+    /// exists. That replacement must still wake it, or the stage stays on the
+    /// placeholder until something unrelated redraws the window.
     #[test]
     fn a_frame_published_after_an_empty_epoch_wake_still_wakes_the_window() {
         let gpu = crate::test_gpu::context();
@@ -325,11 +315,9 @@ mod tests {
         exchange.set_epoch(1);
         assert_eq!(wakes.load(Ordering::Acquire), 2, "dropping the frame wakes");
         assert!(
-            !binding.prepare(Some(&inbox), all),
-            "the last picture stays until the new epoch publishes"
+            binding.prepare(Some(&inbox), all),
+            "the stale frame unbinds"
         );
-        let registry_size = registry.get("stall").expect("the slot stays registered");
-        assert_eq!((registry_size.width, registry_size.height), (4, 4));
         binding.presented(Some(&inbox), all);
 
         publish_frame(&gpu, &mut exchange, &source(&gpu, 8), 1);
@@ -338,9 +326,6 @@ mod tests {
             3,
             "the replacement frame must wake the window"
         );
-        assert!(binding.prepare(Some(&inbox), all));
-        let replaced = registry.get("stall").expect("the slot stays registered");
-        assert_eq!((replaced.width, replaced.height), (8, 4));
     }
 
     #[test]

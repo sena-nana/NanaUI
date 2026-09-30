@@ -5,14 +5,6 @@ use super::*;
 use crate::SceneGpuRendererRegistry;
 use crate::hosted_context::SurfaceFrame;
 
-/// A frame slot for one window present, or nothing when every slot is busy.
-///
-/// Callers acquire the swapchain only after this returns. [`GpuContext::begin_frame`]
-/// would wait here, and a transparent window goes blank while its drawable is held.
-fn reserve_scene_host_frame(gpu: &nana_gpu::GpuContext) -> Option<nana_gpu::FrameContext> {
-    gpu.try_begin_frame("NanaUI scene host frame")
-}
-
 impl<Program: RuntimeProgram> WindowManager<Program> {
     /// `true` when prepare ran (encode may have been skipped). `false` on abort.
     pub(super) fn tick_hidden_gpu(
@@ -184,29 +176,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.rearm_frame_demand(id);
             return;
         }
-        // The transparent swapchain has nothing else to composite once its
-        // drawable is taken. Reserve a slot first; a full pipeline leaves that
-        // drawable on screen instead of blocking this thread in poll(Wait).
-        let Some(mut recording) = reserve_scene_host_frame(self.graphics.gpu()) else {
-            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_SKIPPED);
-            self.rearm_frame_demand(id);
-            return;
-        };
         let frame = match self.acquire_frame(id) {
             Ok(SurfaceFrame::Ready(frame)) => frame,
             Ok(SurfaceFrame::Retry) => {
-                drop(recording);
                 self.request_redraw(id);
                 return;
             }
             Ok(SurfaceFrame::Skipped) => {
-                drop(recording);
                 nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_SKIPPED);
                 self.rearm_frame_demand(id);
                 return;
             }
             Err(error) => {
-                drop(recording);
                 self.rearm_frame_demand(id);
                 self.suspend_surface(id, error);
                 return;
@@ -225,6 +206,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // nothing may still reference the texture the surface is asked to
         // abandon (DX12), and dropping it rolls the painter's retained writes
         // back.
+        let mut recording = self.graphics.gpu().begin_frame("NanaUI scene host frame");
         let prepared = if let Some(producers) = self.program.scene_resource_producers(id) {
             match producers.encode_scene(scene.as_ref(), &mut recording) {
                 Ok(prepared) => Some(prepared),
@@ -762,52 +744,5 @@ mod surface_recovery_tests {
         assert_eq!(failed_deadline, None);
         assert_eq!(healthy_surface, 20);
         assert_eq!(healthy_deadline, None);
-    }
-}
-
-#[cfg(test)]
-mod present_order_tests {
-    /// `redraw` must reserve a slot before `acquire_frame`. A full pipeline
-    /// returns first, so `get_current_texture` never runs while this thread
-    /// would otherwise wait.
-    #[test]
-    fn redraw_reserves_a_frame_before_acquiring_the_swapchain() {
-        let source = include_str!("present.rs");
-        let start = source.find("pub(super) fn redraw").expect("redraw");
-        let body = &source[start..];
-        let end = body[1..]
-            .find("\n    fn ")
-            .map(|index| index + 1)
-            .unwrap_or(body.len());
-        let body = &body[..end];
-        let reserve = body
-            .find("reserve_scene_host_frame")
-            .expect("redraw reserves a frame slot");
-        let acquire = body
-            .find("self.acquire_frame(id)")
-            .expect("redraw acquires the swapchain");
-        assert!(
-            reserve < acquire,
-            "the drawable stays untouched until a frame slot is free"
-        );
-        let before_acquire = &body[..acquire];
-        assert!(
-            before_acquire.contains("rearm_frame_demand"),
-            "a full pipeline skips the frame without taking the drawable"
-        );
-        assert!(
-            !before_acquire.contains("begin_frame("),
-            "the window thread must not wait on a frame slot before the drawable is taken"
-        );
-        let mut search = body;
-        while let Some(index) = search.find("discard_frame(") {
-            let prior = &search[..index];
-            let drop_at = prior.rfind("drop(recording)");
-            assert!(
-                drop_at.is_some(),
-                "recording is dropped before the surface texture it may target"
-            );
-            search = &search[index + "discard_frame(".len()..];
-        }
     }
 }
