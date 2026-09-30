@@ -1,5 +1,7 @@
 # 声明式视图
 
+学习路径在 [视图写法](../guide/essentials/view.md)、[响应式](../guide/essentials/reactivity.md) 和 [从 Vue 过来](../guide/from-vue.md)。这篇是合同。
+
 `nana_ui::runtime::view` 让你把视图写成一个表达式。动态部分是信号或闭包。树只建一次。之后每个绑定只更新它写的那个节点字段。不整树 render。不做 diff。它和命令式的 `create_component` / `mount` 写同一棵 `UiWorld`、同一张 assembly key 表。最后落到的还是 `create` / `insert` / `project` / `commit`。
 
 **开关。** 视图层默认编译进来。不需要 feature。模板宏 `view!`、`css!`、`stylesheet!` 在 `view-macro` 后面。那是独立的 proc-macro crate。不用就不参与编译。因果追踪在 `reactive-trace` 后面。示例：`crates/nana-ui/examples/reactive-counter.rs`（用 `view!` 写）。`examples/reactive-sfc`（用 `.vue` 文件写）。

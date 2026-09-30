@@ -1,4 +1,4 @@
-# 主题与样式 — Phase 0 审计基线与 Phase 1 ThemeDefinition
+# 主题审计记录
 
 这篇覆盖 Theme 改造（[#100](https://github.com/sena-nana/NanaUI/issues/100)）的前两阶段。
 

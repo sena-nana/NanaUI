@@ -58,7 +58,7 @@ scene_gpu_renderers / scene_resource_producers
 
 `update` 保持便宜。把页面内容填进树，放在 `bind_window`，也就是 present 之后。
 
-完整程序见 [开始](start.md)。
+完整程序见 [创建应用](../guide/essentials/application.md)。
 
 ## 一帧
 

@@ -1,6 +1,6 @@
 # 架构
 
-这篇给改 NanaUI 的人。你写应用，请看 [框架如何运行](how-it-works.md) 和 [开始](start.md)。
+这篇给改 NanaUI 的人。你写应用，请看 [框架如何运行](how-it-works.md) 和 [快速开始](../guide/quick-start.md)。
 
 工作区、窗口、GPU、控件的消费合同分别在 [工作区](workspace.md)、[窗口](window.md)、[实时画面](gpu.md)、[控件](components.md)。
 

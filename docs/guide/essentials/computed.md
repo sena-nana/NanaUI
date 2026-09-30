@@ -51,25 +51,7 @@ fn summary() -> impl IntoView {
 在构造视图时直接 `label.get()`，写进节点的是当时的字符串，之后不再跟着变。把 `label` 本身传给 `text`，或者传闭包。
 :::
 
-## watch_effect
-
-要在依赖变化时做一件事，而不是派生一个值，用 `watch_effect`。它马上跑一遍，记下读到的信号；这些信号以后变了，在下一次任意上下文的 flush 里再跑。返回值是 `Effect`，不是单独的 `Watch` 类型。
-
-```rust
-use nana_ui::runtime::view::{signal, watch_effect};
-
-let count = signal(0u64);
-let echoed = signal(String::new());
-let effect = watch_effect(move || {
-    echoed.set(count.get().to_string());
-});
-```
-
-这个副作用读 `count`，写的是另一个信号 `echoed`。它写在挂载闭包、某一行或某个分支里时，归那个作用域，作用域回收就停。想提前停，调用 `effect.dispose()`。回收作用域也会停掉它。
-
-副作用互相触发，超过 64 轮还不停，会报 `runtime.reactive.did_not_settle`，剩下的队列被丢掉。不要在 `watch_effect` 里写它自己读的那个信号。
-
-`watch_effect` 的闭包是 `FnMut`，可以改自己捕获的状态。它不接收旧值和新值，你要比较就自己留一份。
+要在依赖变化时做一件事，而不是派生一个值，用 [侦听](watch.md) 里的 `watch_effect`。
 
 ## 和绑定的关系
 
@@ -80,6 +62,10 @@ let effect = watch_effect(move || {
 ## 接下来
 
 <div class="next-steps">
+  <a class="next-step" href="/guide/essentials/watch">
+    <p class="next-step-link">侦听</p>
+    <p class="next-step-caption">依赖变化时跑一段副作用。</p>
+  </a>
   <a class="next-step" href="/guide/essentials/class-and-style">
     <p class="next-step-link">类与样式</p>
     <p class="next-step-caption">类名、构建时样式表，以及跟着主题走的表面。</p>

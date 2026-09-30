@@ -1,6 +1,6 @@
 # 应用 API
 
-这篇给你查入口。你第一次写应用，先看 [开始](start.md) 和 [框架如何运行](how-it-works.md)。签名以 rustdoc 为准。这篇不复制每一份类型。
+这篇给你查入口。你第一次写应用，先看 [快速开始](../guide/quick-start.md) 和 [框架如何运行](how-it-works.md)。签名以 rustdoc 为准。这篇不复制每一份类型。
 
 ## 你该依赖什么
 

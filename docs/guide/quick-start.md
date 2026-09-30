@@ -1,6 +1,6 @@
 # 快速开始
 
-这篇带你写出第一扇窗口。先看过 [介绍](introduction.md) 会更容易跟上。
+这篇带你写出第一段界面。能打开的整段程序在 [创建应用](essentials/application.md)。先看过 [介绍](introduction.md) 会更容易跟上。
 
 ::: tip 预备知识
 需要 Rust 1.98+。这个仓库目前用 path 或 git 引用，还没有发布到 crates.io。
@@ -60,103 +60,9 @@ column().gap(12).children((
 
 要点击时开窗或更换纹理，用 `.on_cx(|_button, _event: &Activate, cx| cx.dispatch_program(msg))`。模板里把 `on:Activate={…}` 写成三个参数的闭包，展开的就是这一个方法。那条消息在 `update` 里处理。
 
-## 接上窗口
+把这段视图放进窗口，需要一棵 `RuntimeDocument` 和一份 `RuntimeProgram`。能编译运行的整段在 [创建应用](essentials/application.md#整段程序)。
 
-窗口外壳和你用哪种写法无关。把上一节的视图放进 `mount_view_root` 的闭包。下面这段用函数写法，点击走 `on_cx`。
-
-```rust
-use std::convert::Infallible;
-
-use nana_ui::runtime::view::{button, column, text};
-use nana_ui::runtime::{Activate, DocumentId, RuntimeDocument};
-use nana_ui::{
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode, WindowDescriptor,
-    run_runtime,
-};
-use nana_ui_platform::{WindowEvent, WindowId};
-
-struct App {
-    document: RuntimeDocument,
-}
-
-impl App {
-    fn mount() -> Self {
-        let document_id = DocumentId::new(1).expect("document id");
-        let mut document = RuntimeDocument::new(document_id);
-        let cx = document.context_mut();
-
-        cx.mount_view_root(document_id, || {
-            column().gap(12).children((
-                text("你好"),
-                button("开始").on_cx(|_button, _event: &Activate, _cx| {
-                    // 改你自己的状态。开窗或换 GPU：cx.dispatch_program(msg)
-                }),
-            ))
-        })
-        .unwrap();
-
-        Self { document }
-    }
-}
-
-impl RuntimeProgram for App {
-    type Message = ();
-    type Error = Infallible;
-
-    fn initialize(
-        _context: &RuntimeProgramContext<Self::Message>,
-    ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
-        Ok((Self::mount(), Vec::new()))
-    }
-
-    fn with_document<R>(
-        &self,
-        id: WindowId,
-        f: impl FnOnce(&RuntimeDocument) -> R,
-    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
-        Ok((id == WindowId::PRIMARY).then(|| f(&self.document)))
-    }
-
-    fn with_document_mut<R>(
-        &mut self,
-        id: WindowId,
-        f: impl FnOnce(&mut RuntimeDocument) -> R,
-    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
-        Ok((id == WindowId::PRIMARY).then(|| f(&mut self.document)))
-    }
-
-    fn update(
-        &mut self,
-        _message: Self::Message,
-        _context: &RuntimeProgramContext<Self::Message>,
-    ) -> RuntimeProgramUpdate {
-        RuntimeProgramUpdate::default()
-    }
-
-    fn theme_mode(&self) -> ThemeMode {
-        ThemeMode::Dark
-    }
-
-    fn window_event(
-        &mut self,
-        event: WindowEvent,
-        _context: &RuntimeProgramContext<Self::Message>,
-    ) -> RuntimeProgramUpdate {
-        match event {
-            WindowEvent::CloseRequested { .. } => RuntimeProgramUpdate::exit(),
-            _ => RuntimeProgramUpdate::default(),
-        }
-    }
-}
-
-fn main() -> Result<(), nana_ui::HostedRunError> {
-    run_runtime::<App>(WindowDescriptor::new("NanaUI"))
-}
-```
-
-打开 `bundled-fonts` 之后，宿主会注册 Noto Sans SC，并把它设为界面的默认字体。关掉这个 feature，就回落到系统字体。
-
-控件从 `nana_ui::runtime` 引入。
+打开 `bundled-fonts` 之后，宿主会注册 Noto Sans SC，并把它设为界面的默认字体。关掉这个 feature，就回落到系统字体。控件从 `nana_ui::runtime` 引入。
 
 ## 状态放在哪里
 
@@ -173,6 +79,10 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
 ## 接下来
 
 <div class="next-steps">
+  <a class="next-step" href="/guide/essentials/application">
+    <p class="next-step-link">创建应用</p>
+    <p class="next-step-caption">把上面的视图放进能打开的窗口。</p>
+  </a>
   <a class="next-step" href="/guide/essentials/view">
     <p class="next-step-link">视图写法</p>
     <p class="next-step-caption">同一个界面，两种写法怎么展开。</p>

@@ -38,7 +38,7 @@ pipeline 与 resource layout registry 是按 `DeviceGeneration` 的 `StampedCach
 
 着色器、预览视口、离屏纹理和按钮一样，是树上的一块内容。有位置。会被裁切。点得到。不是盖在界面上的一层。也不是抠出来的洞。
 
-先把一扇普通窗口跑通。见 [开始](start.md)。再把画面挂上去。心智模型见 [框架如何运行](how-it-works.md)。
+先把一扇普通窗口跑通。见 [创建应用](../guide/essentials/application.md)。再把画面挂上去。心智模型见 [框架如何运行](how-it-works.md)。
 
 第一次接入：把画面画到可采样纹理，树上挂 `GpuTextureView`。Vue 用 `NanaGpu` / `<nana-gpu>`。Live2D 多层、预览视口都是这条。
 

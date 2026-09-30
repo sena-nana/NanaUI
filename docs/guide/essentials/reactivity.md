@@ -57,124 +57,22 @@ fn counter() -> impl IntoView {
 
 信号在挂载闭包、`each` 的一行或 `when` 的一个分支里创建，就归那个作用域。作用域回收时一起丢掉。在这些作用域之外创建的信号没有归属，会留到线程结束。列表里每一行要用的信号，写在行视图里。
 
-## 按字段追踪
+## 嵌套状态
 
-`Signal<App>` 里任何一处变了，读过它的地方都要重跑。嵌套状态用 `store`。值还是一份，但每条路径分开追踪。`#[derive(Store)]` 在 `view-macro` 后面，只支持具名字段、不带泛型的结构体。它生成 `AppStoreFields` 这样的 trait，用到字段访问器时要导入这个 trait。
+`Signal<App>` 里任何一处变了，读过它的地方都要重跑。嵌套状态用 `store`，每条路径分开追踪。写法在 [Store](../scaling/store.md)。
 
-```rust
-use nana_ui::runtime::view::{Store, store};
-
-#[derive(Clone, Store)]
-struct Todo {
-    id: u64,
-    title: String,
-    done: bool,
-}
-
-#[derive(Store)]
-struct App {
-    todos: Vec<Todo>,
-    filter: String,
-}
-
-let app = store(App {
-    todos: Vec::new(),
-    filter: String::new(),
-});
-let todos = app.todos().keyed(|todo| todo.id);
-```
-
-:::api
-
-```rust view
-use nana_ui::runtime::view;
-
-todos.each(|todo| view! {
-    <Row gap=4>
-        <Text>{todo.title()}</Text>
-        <Checkbox checked={todo.done()}></Checkbox>
-    </Row>
-});
-```
-
-```rust rust
-use nana_ui::runtime::view::{checkbox, row, text};
-
-todos.each(|todo| {
-    row().gap(4).children((
-        text(todo.title()),
-        checkbox("").checked(todo.done()),
-    ))
-});
-```
-
-:::
-
-`keyed` 的参数是函数指针 `fn(&T) -> K`，不能捕获环境。路径句柄和信号一样是 `Copy` 的 id，可以直接当属性。读写来自 `StorePath`：`get`、`with`、`try_with`、`set`、`update`。
-
-`todos.at(&7).done().set(true)` 只更新读了这一格的绑定。`app.todos().push(todo)` 给列表加一行，已有行的内容不会被重读。对已经删掉的行 `get` 会 panic，`try_with` 返回 `None`。同一列表里两个 key 的 64 位哈希不能相同。
-
-`store_with_history(value, 上限)` 才有 `undo` 和 `redo`。时间旅行的步进规则见 [声明式视图](../../reference/reactive-view.md)。
-
-## provide 与 use_context
-
-`provide(value)` 把一个值挂在当前作用域上。下层作用域，包括之后才建出来的行和分支，用 `use_context::<T>()` 沿父链读取，最近的提供者优先。同一个作用域里再 `provide` 同一个类型，会换掉上一个。`T` 必须是 `Clone + 'static`。
-
-:::api
-
-```rust view
-use nana_ui::runtime::view;
-use nana_ui::runtime::view::{use_context, IntoView, provide, signal};
-
-fn page() -> impl IntoView {
-    let user = signal(String::from("你"));
-    provide(user);
-    view! {
-        <Column gap=8>
-            {greeting()}
-        </Column>
-    }
-}
-
-fn greeting() -> impl IntoView {
-    let user = use_context::<nana_ui::runtime::view::Signal<String>>().expect("page provides user");
-    view! {
-        <Text>"你好，{user}"</Text>
-    }
-}
-```
-
-```rust rust
-use nana_ui::runtime::view::{use_context, IntoView, column, provide, signal, text};
-
-fn page() -> impl IntoView {
-    let user = signal(String::from("你"));
-    provide(user);
-    column().gap(8).children(greeting())
-}
-
-fn greeting() -> impl IntoView {
-    let user = use_context::<nana_ui::runtime::view::Signal<String>>().expect("page provides user");
-    text!("你好，{user}")
-}
-```
-
-:::
-
-只能在构建视图时读。事件处理器运行时不在任何作用域里，`use_context` 得到 `None`。
-
-::: warning
-在作用域之外调用 `provide` 什么也不做。事件处理里调用 `use_context` 也读不到。把信号放进 `provide`，子视图拿到的仍是那一个 `Signal`。
-:::
-
-从信号派生、以及会重复运行的 `watch_effect`，写在下一章。
+把一个值传给下层视图，用 [依赖提供](../components/provide.md)。从信号派生用 [计算值](computed.md)。依赖变化时做一件事，用 [侦听](watch.md)。
 
 ## 接下来
 
 <div class="next-steps">
   <a class="next-step" href="/guide/essentials/computed">
     <p class="next-step-link">计算值</p>
-    <p class="next-step-caption">用 computed 派生，用 watch_effect 做副作用。</p>
+    <p class="next-step-caption">用 computed 从信号派生一个值。</p>
+  </a>
+  <a class="next-step" href="/guide/essentials/watch">
+    <p class="next-step-link">侦听</p>
+    <p class="next-step-caption">依赖变化时做一件事。</p>
   </a>
   <a class="next-step" href="/reference/reactive-view">
     <p class="next-step-link">声明式视图</p>

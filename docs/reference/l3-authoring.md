@@ -1,12 +1,14 @@
 # L3：用 Rust 建界面
 
+第一扇窗口在 [快速开始](../guide/quick-start.md)，完整宿主在 [创建应用](../guide/essentials/application.md)。这篇是挂载、key 和更新的合同。
+
 Rust 应用用 [声明式视图](reactive-view.md) 建界面。视图是一个表达式。挂载时一次 commit 进保留的 `UiWorld`。之后只有绑定改过的那个字段会更新。
 
 写成 `view!` 模板，或写成 Rust 函数调用，都可以。两者展开成同一套调用。
 
 底层仍是 `create_component`、`append_child` 和 `on`。不要把挂载当成每帧 `Render`。
 
-第一扇窗口见 [开始](start.md)。开发期改完代码怎么最快看到界面，以及为什么 Rust 层做不到进程内热替换，见 [热重载](hot-reload.md)。
+开发期改完代码怎么最快看到界面，以及为什么 Rust 层做不到进程内热替换，见 [热重载](hot-reload.md)。步骤也写在指南的 [热重载](../guide/scaling/hot-reload.md)。
 
 ## 写法
 

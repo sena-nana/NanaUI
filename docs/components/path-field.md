@@ -1,28 +1,14 @@
 # PathField
 
-`PathField` 是路径文本加一个浏览按钮。
+`PathField` 是路径文本加一个浏览按钮。它是叶子复合件：写入属性时 `assemble_path_field` 自己建出 `TextInput` 和 `IconButton`，不用再记一次装配。控件够不到父窗口，所以浏览不会打开系统对话框。
 
-它是叶子复合件：写入属性时 `assemble_path_field` 自己建出 `TextInput` 和 `IconButton`，不用再记一次装配。
+控件表里没有 `<PathField>`。
 
-控件够不到父窗口，所以浏览不会打开系统对话框。
-
-按钮激活时，只要字段没禁用，就发 `BrowseRequested`。
-
-你再去开系统对话框，拿到路径后写回 `value`。
+## 基本用法
 
 `PathField::new(value)` 接收当前路径。
 
 默认无障碍名是「路径」，用 `.label` 替换。
-
-`.placeholder`、`.size`、`.disabled`、`.invalid` 写在字段上，装配时同步到里面的输入框；禁用同时禁用浏览按钮。
-
-输入框发出的 `TextChanged` 会写进 `value`，并原样再发出去。
-
-子节点 `input` 和 `browse` 由装配填写。
-
-你不要自己往这两个槽里塞控件。
-
-控件表里没有 `<PathField>`。
 
 :::api
 
@@ -56,16 +42,63 @@ widget(
 
 字段只负责把路径显示出来，并在文本改动时更新 `value`。
 
-无效时边框用危险色，无障碍状态标 `invalid`。
+## 浏览
+
+按钮激活时，只要字段没禁用，就发 `BrowseRequested`。
+
+你再去开系统对话框，拿到路径后写回 `value`。
 
 浏览按钮是装配出来的 `IconButton`，图标是文件夹，可访问名是「浏览」。
 
 禁用字段时，输入框和这个按钮一起禁用，按钮不再发 `BrowseRequested`。
 
-`input` 和 `browse` 两个子节点由 `assemble_path_field` 填写。
+## 同步
+
+`.placeholder`、`.size`、`.disabled`、`.invalid` 写在字段上，装配时同步到里面的输入框；禁用同时禁用浏览按钮。
+
+输入框发出的 `TextChanged` 会写进 `value`，并原样再发出去。
 
 你改 `value`、`placeholder` 或 `label` 时，这次写入会自己重建它们。
 
 默认无障碍名是「路径」。
 
-[总览](index.md) · [控件合同](../reference/components.md)
+## 无效
+
+无效时边框用危险色，无障碍状态标 `invalid`。
+
+## 子节点
+
+子节点 `input` 和 `browse` 由装配填写。
+
+你不要自己往这两个槽里塞控件。
+
+`input` 和 `browse` 两个子节点由 `assemble_path_field` 填写。
+
+## 属性
+
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `value` | — | `PathField::new(value)` 接收当前路径。文本改动时更新。输入框的 `TextChanged` 会写进来并原样再发出去 |
+| `.label` | — | 替换默认无障碍名「路径」 |
+| `.placeholder` | — | 写在字段上，装配时同步到里面的输入框 |
+| `.size` | — | 写在字段上，装配时同步到里面的输入框 |
+| `.disabled` | — | 同步到输入框，同时禁用浏览按钮。禁用时按钮不再发 `BrowseRequested` |
+| `.invalid` | — | 无效时边框用危险色，无障碍状态标 `invalid` |
+
+## 事件
+
+| 事件 | 载荷 | 说明 |
+| --- | --- | --- |
+| `BrowseRequested` | — | 按钮激活时，只要字段没禁用就发。打开对话框、把路径写回 `value`，都是你的事 |
+| `TextChanged` | — | 输入框发出的会写进 `value`，并原样再发出去 |
+
+## 插槽
+
+| 插槽 | 说明 |
+| --- | --- |
+| `input` | 由 `assemble_path_field` 填写。你不要自己往这个槽里塞控件 |
+| `browse` | 由 `assemble_path_field` 填写成 `IconButton`，图标是文件夹，可访问名是「浏览」。不要自己塞控件 |
+
+## 参见
+
+[总览](index.md) · [控件](../reference/components.md)

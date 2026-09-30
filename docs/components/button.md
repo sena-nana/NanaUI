@@ -1,8 +1,10 @@
 # Button
 
-`button(label)` 创建一个按钮。这个标签既是构造参数，也是可访问名称。模板里的标签是 `<Button>`。子文本和 `label` 都会写成这一个字段。
+按下后发出 `Activate`。标签既是构造参数，也是可访问名称。要的是一枚图标时，用 [IconButton](icon-button.md)。
 
-字段有三个：`label: String`、`disabled: bool`、`loading: bool`。事件是 `on_activate`，类型为 `Activate`。处理器不接收参数。
+模板里的标签是 `<Button>`。子文本和 `label` 都会写成这一个字段。
+
+## 基本用法
 
 下面是一个保存按钮。
 
@@ -24,8 +26,35 @@ button("保存").disabled(pending).on_activate(save)
 
 :::
 
-`disabled` 和 `loading` 可以是常量、信号或闭包。
-
 `@activate={save}` 在 `save` 已经是函数时，会直接把函数传进去。写成一段表达式时，展开成 `.on_activate(move || { … })`。
 
+## 禁用与加载
+
+`disabled` 和 `loading` 可以是常量、信号或闭包。
+
+## 要改控件或发给程序
+
 需要 `ViewContext` 时，用 `.on_cx(|_button, _event: &Activate, cx| …)`。模板里写成三个参数的 `on:Activate={…}`。
+
+## 属性
+
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `label` | `String` | 构造参数，也是可访问名称。子文本写入同一字段 |
+| `disabled` | `bool` | 常量、信号或闭包 |
+| `loading` | `bool` | 常量、信号或闭包 |
+
+## 事件
+
+| 事件 | 载荷 | 说明 |
+| --- | --- | --- |
+| `on_activate`，模板 `@activate` | 不接收参数 | 类型是 `Activate`。函数原样传入；表达式包成 `move \|\| { … }` |
+| `.on_cx`，模板里三个参数的 `on:Activate` | `&Activate` 和 `ViewContext` | 要改控件，或 `cx.dispatch_program` |
+
+## 插槽
+
+没有具名插槽。子文本写入 `label`。
+
+## 参见
+
+[总览](index.md) · [控件](../reference/components.md)

@@ -49,7 +49,11 @@ Vue 和 JS 也是一等入口，和 Rust 写同一棵 `UiWorld`。`.vue` 文件�
 <div class="next-steps">
   <a class="next-step" href="/guide/quick-start">
     <p class="next-step-link">快速开始</p>
-    <p class="next-step-caption">写出第一扇窗口。</p>
+    <p class="next-step-caption">写出第一段界面。</p>
+  </a>
+  <a class="next-step" href="/guide/from-vue">
+    <p class="next-step-link">从 Vue 过来</p>
+    <p class="next-step-caption">对照 ref、v-if、v-model 在这里怎么写。</p>
   </a>
   <a class="next-step" href="/guide/essentials/view">
     <p class="next-step-link">视图写法</p>

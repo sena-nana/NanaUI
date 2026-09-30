@@ -1,6 +1,6 @@
 # 创建应用
 
-一扇窗口背后是三件事：你持有一棵 `RuntimeDocument`，实现 `RuntimeProgram`，然后把它交给 `run_runtime`。能跑起来的整段程序在 [快速开始](../quick-start.md)。这一章只说明这几处各自做什么。
+一扇窗口背后是三件事：你持有一棵 `RuntimeDocument`，实现 `RuntimeProgram`，然后把它交给 `run_runtime`。依赖和第一段界面在 [快速开始](../quick-start.md)。这一章说明这几处各自做什么，并给出能打开的整段程序。
 
 桌面入口要打开 `hosted`。不打开就没有 `run_runtime`。依赖怎么写，见快速开始。
 
@@ -42,7 +42,7 @@ fn with_document<R>(
 }
 ```
 
-返回 `Ok(None)` 表示这扇窗口没有文档。闭包里拿到的引用不能带出闭包。改文档用 `with_document_mut`，签名一样，只是交出 `&mut RuntimeDocument`。快速开始里只有主窗口，所以用 `WindowId::PRIMARY` 对上那一棵。多窗口时按 id 交出你自己保存的那一棵。
+返回 `Ok(None)` 表示这扇窗口没有文档。闭包里拿到的引用不能带出闭包。改文档用 `with_document_mut`，签名一样，只是交出 `&mut RuntimeDocument`。下面的整段程序只有主窗口，所以用 `WindowId::PRIMARY` 对上那一棵。多窗口时按 id 交出你自己保存的那一棵。
 
 ## RuntimeProgram
 
@@ -92,6 +92,100 @@ fn theme_mode(&self) -> nana_ui::ThemeMode {
 点击处理里不要把整页再 `mount_view_root` 一遍。树在挂载时建一次，之后改信号或改那一个控件。
 :::
 
+## 整段程序
+
+窗口外壳和你用哪种写法无关。下面用函数写法，点击走 `on_cx`。界面本身就是快速开始里的那一列。
+
+```rust
+use std::convert::Infallible;
+
+use nana_ui::runtime::view::{button, column, text};
+use nana_ui::runtime::{Activate, DocumentId, RuntimeDocument};
+use nana_ui::{
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode, WindowDescriptor,
+    run_runtime,
+};
+use nana_ui_platform::{WindowEvent, WindowId};
+
+struct App {
+    document: RuntimeDocument,
+}
+
+impl App {
+    fn mount() -> Self {
+        let document_id = DocumentId::new(1).expect("document id");
+        let mut document = RuntimeDocument::new(document_id);
+        let cx = document.context_mut();
+
+        cx.mount_view_root(document_id, || {
+            column().gap(12).children((
+                text("你好"),
+                button("开始").on_cx(|_button, _event: &Activate, _cx| {
+                    // 改你自己的状态。开窗或换 GPU：cx.dispatch_program(msg)
+                }),
+            ))
+        })
+        .unwrap();
+
+        Self { document }
+    }
+}
+
+impl RuntimeProgram for App {
+    type Message = ();
+    type Error = Infallible;
+
+    fn initialize(
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
+        Ok((Self::mount(), Vec::new()))
+    }
+
+    fn with_document<R>(
+        &self,
+        id: WindowId,
+        f: impl FnOnce(&RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        Ok((id == WindowId::PRIMARY).then(|| f(&self.document)))
+    }
+
+    fn with_document_mut<R>(
+        &mut self,
+        id: WindowId,
+        f: impl FnOnce(&mut RuntimeDocument) -> R,
+    ) -> Result<Option<R>, nana_ui::DocumentAccessError> {
+        Ok((id == WindowId::PRIMARY).then(|| f(&mut self.document)))
+    }
+
+    fn update(
+        &mut self,
+        _message: Self::Message,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
+    fn theme_mode(&self) -> ThemeMode {
+        ThemeMode::Dark
+    }
+
+    fn window_event(
+        &mut self,
+        event: WindowEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        match event {
+            WindowEvent::CloseRequested { .. } => RuntimeProgramUpdate::exit(),
+            _ => RuntimeProgramUpdate::default(),
+        }
+    }
+}
+
+fn main() -> Result<(), nana_ui::HostedRunError> {
+    run_runtime::<App>(WindowDescriptor::new("NanaUI"))
+}
+```
+
 ## 接下来
 
 <div class="next-steps">
@@ -99,8 +193,8 @@ fn theme_mode(&self) -> nana_ui::ThemeMode {
     <p class="next-step-link">视图写法</p>
     <p class="next-step-caption">同一个界面，两种写法怎么展开。</p>
   </a>
-  <a class="next-step" href="/guide/quick-start">
-    <p class="next-step-link">快速开始</p>
-    <p class="next-step-caption">把这些方法接成能打开的第一扇窗口。</p>
+  <a class="next-step" href="/guide/examples">
+    <p class="next-step-link">示例</p>
+    <p class="next-step-caption">Gallery、计数器、待办和实时画面。</p>
   </a>
 </div>

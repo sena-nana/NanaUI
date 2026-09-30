@@ -1,8 +1,10 @@
 # ListItem
 
-`list_item(label)` 创建一行列表项。`label` 既是构造参数，也是可读的主文本。模板里的标签是 `<ListItem>`。子文本和 `label` 都写成这一个字段。
+`list_item(label)` 创建一行列表项。`label` 既是构造参数，也是可读的主文本。
 
-字段是 `label: String`、`detail: String`、`selected: bool`、`disabled: bool`。事件是 `on_activate`，类型为 `Activate`。处理器不接收参数。没有 `model`。选中不由控件自己翻。
+模板里的标签是 `<ListItem>`。子文本和 `label` 都写成这一个字段。
+
+## 基本用法
 
 :::api
 
@@ -24,18 +26,56 @@ list_item("设置").detail("外观").selected(current).on_activate(open)
 
 `@activate={open}` 在 `open` 已经是函数时，直接把函数传进去。写成一段表达式时，展开成 `.on_activate(move || { … })`。`disabled` 为真时不发 `Activate`。
 
+## 行尾
+
 `detail` 非空、又没有 content 槽时，画在行尾：右对齐、小字号、muted，不改变行高。过长的主文本截断省略，不折行撑破行高。
 
-三个槽是这一行自己的子节点，顺序是 leading、content、trailing。`.leading(…)` 放在标签前，`.content(…)` 代替标签，`.trailing(…)` 放在标签后。模板里写成 `<template #leading>`、`#content`、`#trailing`。挂了 content 之后，`detail` 不再占行尾。
+`detail` 空字符串表示不画行尾补充。它不增加行高。
+
+## 选中
 
 `selected` 由应用写。激活只报告点了这一行，不改选中。无障碍角色是 ListItem，`selected` 映射选中，`disabled` 映射禁用。
 
+## 要改控件
+
 `@activate={open}` 已经在上面的例子里。函数不接收参数。需要 `ViewContext` 时用 `.on_cx(|_item, _event: &Activate, cx| …)`，模板里写成三个参数的 `on:Activate={…}`。
+
+## 跟着数据
 
 要跟着数据变的一整列，用 `each`，见 [视图写法](../guide/essentials/view.md)。个数写死的几行放进 `column().children((…))`。行高、间距、`auto_height` 和 `pill_bleed` 在组件 `ListItem` 上，不在字段表里。
 
 槽是这一行自己的子节点。根上写了 `key` 的，可以用装配路径再找到。没写 key 的按位置命名。
 
-`detail` 空字符串表示不画行尾补充。它不增加行高。
+## 属性
 
-[总览](index.md) 和 [控件合同](../reference/components.md)
+字段是 `label: String`、`detail: String`、`selected: bool`、`disabled: bool`。没有 `model`。选中不由控件自己翻。
+
+| 属性 | 类型 | 说明 |
+| --- | --- | --- |
+| `label` | `String` | 构造参数，也是可读的主文本。子文本写入同一字段 |
+| `detail` | `String` | 空字符串表示不画行尾补充，不增加行高。非空、又没有 content 槽时画在行尾 |
+| `selected` | `bool` | 由应用写。选中不由控件自己翻。无障碍映射选中 |
+| `disabled` | `bool` | 为真时不发 `Activate`。无障碍映射禁用 |
+
+## 事件
+
+事件是 `on_activate`，类型为 `Activate`。处理器不接收参数。
+
+| 事件 | 载荷 | 说明 |
+| --- | --- | --- |
+| `on_activate`，模板 `@activate` | 不接收参数 | 类型是 `Activate`。函数直接传入；表达式包成 `.on_activate(move \|\| { … })`。`disabled` 为真时不发 |
+| `.on_cx`，模板里三个参数的 `on:Activate` | `&Activate` 和 `ViewContext` | 需要 `ViewContext` 时 |
+
+## 插槽
+
+三个槽是这一行自己的子节点，顺序是 leading、content、trailing。`.leading(…)` 放在标签前，`.content(…)` 代替标签，`.trailing(…)` 放在标签后。模板里写成 `<template #leading>`、`#content`、`#trailing`。挂了 content 之后，`detail` 不再占行尾。
+
+| 插槽 | 说明 |
+| --- | --- |
+| `#leading` / `.leading` | 放在标签前 |
+| `#content` / `.content` | 代替标签。挂了之后，`detail` 不再占行尾 |
+| `#trailing` / `.trailing` | 放在标签后 |
+
+## 参见
+
+[总览](index.md) · [控件](../reference/components.md)

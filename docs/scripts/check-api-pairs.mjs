@@ -21,7 +21,7 @@ const rustFence = /^```rust rust[ \t]*$/gm;
 let failed = false;
 
 for (const file of markdownFiles(root)) {
-  const text = fs.readFileSync(file, "utf8");
+  const text = fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
   const blocks = [...text.matchAll(blockPattern)];
   let rest = text;
   for (const block of blocks) rest = rest.replace(block[0], "");
