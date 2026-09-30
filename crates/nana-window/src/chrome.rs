@@ -265,44 +265,79 @@ pub fn set_present_transaction<W: HasWindowHandle + ?Sized>(window: &W, enabled:
     }
 }
 
+/// Tags the window's Metal layer as sRGB so WindowServer color-matches the
+/// drawable the way Preview matches an sRGB image.
+///
+/// wgpu 30 writes `CAMetalLayer.colorspace = nil` for `SurfaceColorSpace::Srgb`
+/// on every configure, and a nil tag opts out of display matching. Call this
+/// after each configure. The stored bytes stay sRGB; the tag is only the
+/// ColorSync source profile. Returns whether a CAMetalLayer was found and tagged.
+pub fn set_srgb_colorspace<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        set_metal_srgb_colorspace(window)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        false
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn set_metal_present_transaction<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> bool {
+    let Some(metal) = metal_layer(window) else {
+        return false;
+    };
+    metal.setPresentsWithTransaction(enabled);
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn set_metal_srgb_colorspace<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
+
+    let Some(metal) = metal_layer(window) else {
+        return false;
+    };
+    // SAFETY: `kCGColorSpaceSRGB` is a process-lifetime Core Graphics constant.
+    let name = unsafe { kCGColorSpaceSRGB };
+    let Some(space) = CGColorSpace::with_name(Some(name)) else {
+        return false;
+    };
+    metal.setColorspace(Some(&space));
+    true
+}
+
+/// The view's CAMetalLayer, or the one raw-window-metal added as a sublayer.
+#[cfg(target_os = "macos")]
+fn metal_layer<W: HasWindowHandle + ?Sized>(
+    window: &W,
+) -> Option<objc2::rc::Retained<objc2_quartz_core::CAMetalLayer>> {
     use objc2_app_kit::NSView;
     use objc2_quartz_core::CAMetalLayer;
     use raw_window_handle::RawWindowHandle;
 
-    let Ok(handle) = window.window_handle() else {
-        return false;
-    };
+    let handle = window.window_handle().ok()?;
     let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
-        return false;
+        return None;
     };
     // SAFETY: the AppKit handle's ns_view is a live NSView owned by this window.
     let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
-    let Some(layer) = view.layer() else {
-        return false;
-    };
+    let layer = view.layer()?;
     // raw-window-metal, which wgpu creates its surface through, leaves the
     // view's own layer in place and adds the CAMetalLayer as a sublayer of it;
     // only a view that already had a Metal layer is used as is.
-    let metal = match layer.downcast::<CAMetalLayer>() {
-        Ok(metal) => metal,
+    match layer.downcast::<CAMetalLayer>() {
+        Ok(metal) => Some(metal),
         Err(layer) => {
             // SAFETY: `sublayers` is read on the main thread that owns the view.
-            let Some(sublayers) = (unsafe { layer.sublayers() }) else {
-                return false;
-            };
-            let Some(metal) = sublayers
+            let sublayers = unsafe { layer.sublayers() }?;
+            sublayers
                 .iter()
                 .find_map(|sublayer| sublayer.downcast::<CAMetalLayer>().ok())
-            else {
-                return false;
-            };
-            metal
         }
-    };
-    metal.setPresentsWithTransaction(enabled);
-    true
+    }
 }
 
 /// Captures a window frame so later pointer moves can resize origin and size

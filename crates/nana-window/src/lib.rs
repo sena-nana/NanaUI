@@ -32,6 +32,7 @@ pub use chrome::set_frameless_styles;
 pub use chrome::set_native_window_controls_visible;
 pub use chrome::set_non_client_rendering;
 pub use chrome::set_present_transaction;
+pub use chrome::set_srgb_colorspace;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::{FrameGrab, LiveFrameMove};
 pub use chrome::{FrameResizeEdge, NonClientRenderingStrategy};

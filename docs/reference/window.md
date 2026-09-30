@@ -101,6 +101,8 @@ DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.r
 
 合成目标（DirectComposition visual）只有 Windows 有。macOS 与 Linux 的普通窗口 surface 本身就由系统合成（macOS 是 `CAMetalLayer`）。没有第二条路可要。所以这两档在那里都直接由普通窗口满足、不算降级、也不会因此拒绝开窗。透明客户区能不能成立。照常由 surface 协商出的 alpha 模式决定（`Opaque` 时 `Transparent` 降为 `Solid` 并上报）。
 
+macOS 在每次 surface `configure` 之后把这层 `CAMetalLayer.colorspace` 标成 `kCGColorSpaceSRGB`。wgpu 30 对 `SurfaceColorSpace::Srgb` 会把这个属性写成 nil，nil 表示跳过显示匹配，drawable 里的 sRGB 字节直接送给显示器。标成 sRGB 之后，WindowServer 按显示器配置转换这些字节，和预览打开同一张 sRGB 图走同一条匹配。纹理里的字节保持 sRGB；这个标记只声明它们的源配置。HDR 表面不走这条标记。
+
 一个窗口要合成不代表所有窗口都要。#215 的 shadow companion 因此可以单独用 `Composition`。不动应用其它窗口。共享同一个 GPU device 混用两种 target 是正常的。
 
 #### 可用性在开窗之前判定，窗口本身是临时的

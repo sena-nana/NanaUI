@@ -27,7 +27,7 @@ objc2-foundation = { workspace = true, default-features = false, features = [
     "objc2-core-foundation",
 ] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["CFCGTypes"] }
-objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGColor", "CGPath"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["CGColor", "CGColorSpace", "CGPath"] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["CAAnimation", "CALayer", "CAShapeLayer", "CAMediaTiming", "CAMediaTimingFunction", "CAMetalLayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
