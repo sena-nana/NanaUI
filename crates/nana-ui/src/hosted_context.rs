@@ -298,7 +298,6 @@ impl HostedGpuSurface {
         let _gate = __framework::lock_reconfigure(gpu);
         self.surface
             .configure(__framework::device(gpu), &self.configuration);
-        tag_configured_colorspace(self.window.as_ref(), self.configuration.color_space);
         self.needs_target_commit = true;
         self.needs_reconfigure = false;
     }
@@ -801,18 +800,6 @@ impl HostedGpuShared {
     }
 }
 
-/// wgpu 30 clears `CAMetalLayer.colorspace` while configuring an sRGB surface,
-/// and the window itself may still be in the display profile. Tag both again
-/// so WindowServer matches those sRGB bytes to the display.
-fn tag_configured_colorspace(
-    window: &dyn winit::window::Window,
-    color_space: wgpu::SurfaceColorSpace,
-) {
-    if color_space == wgpu::SurfaceColorSpace::Srgb {
-        let _ = nana_window::set_srgb_colorspace(window);
-    }
-}
-
 fn configure_surface(
     window: Arc<dyn winit::window::Window>,
     surface: wgpu::Surface<'static>,
@@ -836,7 +823,6 @@ fn configure_surface(
     };
     let _gate = __framework::lock_reconfigure(gpu);
     surface.configure(__framework::device(gpu), &configuration);
-    tag_configured_colorspace(window.as_ref(), configuration.color_space);
     target.commit()?;
     Ok(HostedGpuSurface {
         window,
