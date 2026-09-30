@@ -208,11 +208,15 @@ impl UiWorld {
         if !motion.open {
             self.closing_surfaces.remove(&sample.target);
         }
-        self.mark_subtree(
-            sample.target,
-            DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT,
-        );
-        self.account_animation_dirty(DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT);
+        // Closing drops the items out of the menu branch without writing
+        // `hidden` on them. Their last boxes would keep the hanging surface
+        // painted. Layout has to run again so those boxes go to zero.
+        let mut dirty = DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT;
+        if !motion.open {
+            dirty |= DirtyMask::LAYOUT;
+        }
+        self.mark_subtree(sample.target, dirty);
+        self.account_animation_dirty(dirty);
     }
 
     pub(super) fn motion_layout(

@@ -423,6 +423,12 @@ pub(crate) fn overlay_surface_from_items(
     let mut max_y = f32::MIN;
     let mut any = false;
     for child in children {
+        // A closed branch leaves the items' last boxes behind until layout
+        // writes zeros. Those boxes are not on screen; counting them paints
+        // the card after it has already closed.
+        if !world.is_overlay_reachable(child) {
+            continue;
+        }
         let Some(child_box) = world.layout_box(child) else {
             continue;
         };
@@ -771,9 +777,55 @@ mod tests {
     use crate::DocumentId;
     use crate::LayoutViewport;
     use crate::framework::AppContext;
+    use std::time::Duration;
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
+    }
+
+    /// The card is the union of its items' boxes. Once the close motion has
+    /// finished, that union is empty: the items have left the branch, and a
+    /// leftover box must not keep the surface painted on the trigger.
+    #[test]
+    fn a_closed_menu_drops_its_hanging_surface() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ActionMenu::new().trigger_icon(crate::Icon::Settings, "播放设置"),
+            )
+            .unwrap();
+        let item = context
+            .create_component(document(), crate::ActionMenuItem::new("剧场"))
+            .unwrap();
+        context.append_child(menu, item).unwrap();
+        let viewport = LayoutViewport::new(480.0, 800.0);
+        let layout = |context: &mut AppContext| {
+            context.layout_document(document(), viewport).unwrap();
+        };
+        layout(&mut context);
+        context.toggle_action_menu(menu).unwrap();
+        layout(&mut context);
+        let open_surface = match context.world().component_geometry(menu.stable_id()) {
+            Some(crate::ComponentGeometry::MenuSurface { surface, .. }) => surface,
+            other => panic!("open menu geometry: {other:?}"),
+        };
+        assert!(
+            open_surface.width > 1.0 && open_surface.height > 1.0,
+            "{open_surface:?}"
+        );
+        context.toggle_action_menu(menu).unwrap();
+        context.advance_animations(Duration::from_millis(400));
+        layout(&mut context);
+        let closed_surface = match context.world().component_geometry(menu.stable_id()) {
+            Some(crate::ComponentGeometry::MenuSurface { surface, .. }) => surface,
+            other => panic!("closed menu geometry: {other:?}"),
+        };
+        assert!(
+            closed_surface.width <= 1.0 && closed_surface.height <= 1.0,
+            "card still painted: {closed_surface:?}"
+        );
+        assert!(!context.read(menu, |menu| menu.popover.open).unwrap());
     }
 
     #[test]
