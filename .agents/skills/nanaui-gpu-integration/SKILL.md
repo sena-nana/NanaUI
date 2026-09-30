@@ -5,7 +5,7 @@ description: Maintain NanaUI's host-owned GPU and frame integration. Use when ch
 
 # NanaUI Host GPU Integration
 
-Read [`docs/gpu.md`](../../../docs/gpu.md) and the crate boundaries in [`docs/architecture.md`](../../../docs/architecture.md) before editing the rendering boundary.
+Read [`docs/reference/gpu.md`](../../../docs/reference/gpu.md) and the crate boundaries in [`docs/reference/architecture.md`](../../../docs/reference/architecture.md) before editing the rendering boundary.
 
 ## Contract
 

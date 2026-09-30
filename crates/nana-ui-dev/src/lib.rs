@@ -7,7 +7,7 @@
 //! application itself for Rust L3.
 //!
 //! What each tier can actually reach, and why Rust code cannot be swapped into
-//! a live process, is in `docs/hot-reload.md`; [`restart`] carries the short
+//! a live process, is in `docs/reference/hot-reload.md`; [`restart`] carries the short
 //! version at the point it matters.
 //!
 //! # This crate cannot ship

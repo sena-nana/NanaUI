@@ -117,7 +117,7 @@ impl KeyProvider for NoKeys {
 
 /// A fixed table of keys, for applications that ship their key in the
 /// binary and for tests. Shipping a key in the binary only stops casual
-/// extraction; see `docs/packaging.md`.
+/// extraction; see `docs/reference/packaging.md`.
 #[derive(Debug, Default, Clone)]
 pub struct StaticKeys(BTreeMap<(KeyId, u32), ContentKey>);
 

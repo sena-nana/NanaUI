@@ -3271,7 +3271,7 @@ fn writing_mode_vertical_flex_row_uses_inline_axis() {
 #[test]
 fn rtl_row_flex_reverses_item_order_and_flips_justify() {
     // Characterisation: this already worked before RTL grid support, but no
-    // test held it and `docs/layout.md` claimed the opposite. Lock it down so
+    // test held it and `docs/reference/layout.md` claimed the opposite. Lock it down so
     // the contract is readable from the layout layer, not just the CSS mapping.
     let item = |id: &str| StyleLayoutNode {
         id: id.into(),

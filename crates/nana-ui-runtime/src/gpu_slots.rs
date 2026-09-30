@@ -196,7 +196,7 @@ impl GpuView {
 ///
 /// Not a page loader. Runtime [`crate::BrowserView`] is the separate native
 /// browser exception: it anchors host-owned content to the retained tree and
-/// is not a `GpuTextureView` alias. See `docs/window.md` and `docs/gpu.md`.
+/// is not a `GpuTextureView` alias. See `docs/reference/window.md` and `docs/reference/gpu.md`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuTextureView {
     pub resource: Arc<str>,

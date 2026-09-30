@@ -1,0 +1,565 @@
+# 窗口
+
+你在 Windows 上看到的自绘窗口按钮，用的是 NanaUI 图标按钮外观：28×28、控件圆角、垂直居中。按钮间距 2px。按钮组左右各留 6px。普通按钮使用常规悬停/按下颜色。关闭按钮使用危险色。按钮的实际区域处理窗口操作。周围留白不扩展为系统式整块按钮。macOS 原生红黄绿按钮保持平台行为。
+
+NanaUI 给你画的是桌面窗口。标题栏、图标、系统材质、多窗口都按桌面软件来。不按浏览器来。
+
+## WindowShadow（Issue #215）
+
+`WindowDescriptor::shadow` 是平台无关的桌面阴影语义。默认 `WindowShadow::Auto`。它只描述顶层窗口装饰。不会给客户区增加 padding。也不改变 `WindowId`、输入、IME、无障碍或 capture 的坐标。`None` 显式关闭。`Custom` 可选择 `WindowShape` 或显式高成本的 `ContentAlpha`。
+
+WindowShadow 与 UiScene 的 `DropShadow` 是两条 authority：前者由 Window/Platform 层决定。后者属于 framebuffer 内的视觉效果。输入、拖拽和缩放区域不会被当作阴影形状来源。
+
+谁来画阴影由一处决定（`nana_ui::window_shadow` 的 intent → `nana_window::shadow::WindowShadowState` 应用 → 结果写回 `ResolvedWindowPresentation::shadow()`）：
+
+| 请求 | 不透明 / 材质窗口 | 透明窗口 |
+| --- | --- | --- |
+| `Auto` | 平台自己的窗口阴影（`Native`） | companion，跟随窗口的可见主体 |
+| `Custom(WindowShape)` | companion（平台阴影不接受自定义样式） | companion |
+| `Custom(ContentAlpha)` | `ContentAlphaUnavailable` | 同左 |
+| `None` | 关闭 | 关闭 |
+
+- **可见主体**：窗口画出的第一个大面积（≥ 视口 1/4）填充背景 quad。透明窗口的根卡片。及其圆角。找不到时是整个客户区。只在 scene 的 projection revision、窗口尺寸或可见性变化后重新计算。静止窗口每帧零工作。输入、拖拽、缩放区域从不参与。
+- **companion** 是平台私有、不可命中、不激活、不进任务栏的辅助窗口。始终在主窗口正下方。主窗口的 frame、客户区、`WindowId`、原生句柄都不变。companion 不是 NanaUI 窗口。不收事件。移动只移动它（macOS 由 window server 带着子窗口移动。零工作）。缩放只更新几何。样式或缩放比变化才重新栅格化（`WindowShadowWork` 分别计数）。
+  - macOS：无边框子窗口 `orderedBelow` 主窗口。一个 `CALayer` 的 `shadowPath` 为主体圆角矩形。用偶奇规则的 `CAShapeLayer` 遮掉主体内部。半透明卡片不会透出自己的阴影。阴影由 render server 绘制。
+  - Windows：`WS_POPUP` + `WS_EX_TOOLWINDOW | NOACTIVATE | NOREDIRECTIONBITMAP | LAYERED | TRANSPARENT`。`WM_NCHITTEST` 返回 `HTTRANSPARENT`。DirectComposition 九宫格（CPU 只栅格化一块圆角阴影 tile。边缘由缩放变换拉伸）。主窗口子类在 `WM_WINDOWPOSCHANGED` 里把它放到主窗口正下方。最小化 / 最大化 / 隐藏时隐藏。随主窗口销毁。
+  - 有 DWM 边框的 Windows 窗口用 DWM 阴影（观察到 `DWMWA_NCRENDERING_ENABLED` 才报 `Native`）。对这种窗口请求 `None` 报 `Native` + `DisableUnsupported`。不偷改边框策略。无边框的 `Auto` 窗口没有 DWM 阴影。由默认 companion 代替。
+  - Linux 等：`Unsupported` / `CompositorManaged`。明确告诉应用这里没有可观察的阴影。
+- `WindowCommand::SetShadow { id, shadow }` 在窗口打开后更换阴影。应用读 `presentation().shadow()` 得到实际结果。窗口显示前是 `Pending`。
+- 透明窗口默认得到阴影：卡片自己画了 UiScene `DropShadow` 的应用应设 `WindowShadow::None`。否则会有两层阴影。点击穿透的覆盖层也应设 `None`。
+
+**验证状态**：macOS 已在真窗口上确认 companion 的几何与层级（主体 + 21pt 边距、`orderedBelow`、静止帧不再更新）。可见渲染待显示器唤醒时目视确认。Windows 只做了 `x86_64-pc-windows-gnu` 交叉编译与 clippy。DComp 九宫格、`LAYERED` + `NOREDIRECTIONBITMAP` 的组合与跨进程点击穿透**未经 Windows 真机验证**。
+
+`run_runtime(WindowDescriptor::new("标题"))` 会创建主窗口、唯一 GPU 上下文。并开始事件循环。`WindowDescriptor` 就是 `nana_ui_platform::WindowDescriptor`。
+
+## 标题栏
+
+默认自绘标题栏：左侧内容、中间标题、右侧窗口按钮。空白处拖动窗口。按钮先吃到指针。不会被拖走。
+
+叠加在舞台上的标题栏仍使用 `AppTitleBar`。通过 `leading / center / trailing / controls` 布局槽承载文字和操作。并调用 `assemble_app_title_bar`。`transparent(true)` 仅移除栏背景。保留内容与命中。不需要开启整窗透明。`drag_enabled(false)` 禁止栏内空白与文字启动拖窗。并在后续输入时取消已按下但未完成的手势。隐藏或卸载标题栏也会取消。默认分别为 `false`、`true`。全屏保留业务入口时设置 `drag_enabled(false)` 和 `show_window_controls(false)`。不要另外添加顶边坐标拖动逻辑。语义入口支持 `transparent` 和 `drag-enabled`。标题为空且没有 center 内容时不保留中间占位。右侧按内容宽度保留空间。左侧使用剩余宽度并可收缩。有标题或 center 时保持左右对称布局。放不下时按这个次序让位：中间列先挪开（右侧内容比均分宽度宽时。中间列向左让出。宽度不变）。再收窄（内容省略。可收到零）。右侧列（应用的按钮与窗口按钮）永远保有它内容的宽度。所以窗口按钮不会被裁掉。左侧列在中间列之前被挤窄。
+
+系统窗口按钮是标题栏的 `controls` 组件 `AppTitleBarControls`。布局由组件节点决定。两平台对外一致：
+
+- macOS（`native_controls`）：透明标题栏 + full-size content。NanaUI 画 36px 标题栏。`controls` 是 leading 列首位 78px 宽的空占位。红黄绿仍是系统原生按钮（悬停图标、绿键菜单、失焦变灰与无障碍不变）。宿主在每帧布局后把原生按钮簇居中到占位的布局盒。并在显隐命令、原生样式改写与全屏模式切换后立即重放。所以标题栏平移或内缩（例如避开窗口圆角）时红黄绿随之移动。移动作用在按钮所在的整个系统标题栏视图上：按钮自身的 frame 被 AppKit 的约束覆盖设了不生效。而只移动按钮分组会让它越出父视图边界。画得出来但收不到点击。淡入淡出或隐藏期间（`alphaValue < 1` 或 `isHidden`）不移动。此时按钮正被 AppKit 动着。读到的位置会把整簇带偏。恢复显示时以满透明度重新落位。占位接收指针。其上不会启动拖窗。占位不限于标题栏的 controls 槽：`AppTitleBarControls` 是普通组件。挂在窗口文档的任何位置都能决定该窗口原生按钮的落点（一个窗口一组按钮。按文档顺序取第一个）。位置只要在窗口内即可。按钮自身尺寸与间距不变。创建窗口时 `prepare_client_chrome` 先按标题栏高度垂直居中。布局出来后以占位为准。
+- Windows / Linux：关掉系统 decorations。由 `AppTitleBarControls` 画最小化、最大化、关闭。放在 trailing 列末位、贴标题栏右缘。
+
+按指针显现 chrome 的应用用 `WindowCommand::SetNativeWindowControlsVisible { id, visible, duration }` 让原生窗口按钮随 chrome 淡入淡出：macOS 以 `duration` 渐变红黄绿透明度。隐藏在渐变结束后移出绘制与命中。中途收到显示则从当前值接管。宿主记住隐藏状态。全屏切换等改写原生样式后重新隐藏。Windows / Linux 的按钮是 `AppTitleBar` 控件。命令为空操作。由应用随标题栏一起显隐。淡出只改透明度。占位布局保持不动。`show_window_controls(false)` 才会隐藏占位并让出左侧空间。
+
+自绘 chrome 可拖窗口客户区最外 8px 缩放（四边与四角）。系统 caption、最大化、全屏、`resizable: false` 交给平台边框或禁用。不叠第二套命中。
+
+没有自绘标题栏的窗口设 `WindowDescriptor::system_caption(true)`。避免 Windows 无框窗口失去关闭按钮。
+
+关闭 / 最小化 / 最大化是窗口动作。控件发出语义（`WindowChromeAction`）。Scene host 去执行。关闭与系统关闭一样只向程序发 `CloseRequested`。由程序决定是否关闭。普通控件拿不到窗口句柄。L1 CSS `-webkit-app-region` / `app-region` 不是拖拽合同：任意盒写 `drag` 也不会变成 caption。
+
+`WindowChromeState` 绑在明确的 `WindowId` 上。单窗口可用默认入口（只认收到的第一扇窗）。多窗口在等待 `WindowService::create_window` 获得 handle 后。用其 `id()` 调用 `for_window` 各建一份。关窗后不会自动接管别的窗口。
+
+### Windows 客户端绘制标题栏契约
+
+Windows 上的 chrome 由两组输入决定。读的时候要连着读：**descriptor 决定 HWND 怎么建。实时材质决定 DWM 画什么**。
+
+`WindowDescriptor::transparent` 是终身合同而不是当前状态：`window_surface_effect` 对它为真的窗口无条件返回 `Transparent`。材质再也切不回实色。想给用户留「实色背景」开关的宿主必须让它保持 `false`。由 `RuntimeProgram::window_material_mode_for` 报实时材质。chrome 跟着 effective 材质走（`ResolvedWindowPresentation::chrome`）。
+
+#### 创建时（只看 descriptor，实现见 `windows_scene_chrome`）
+
+| 设置 | winit `decorations` | `WS_EX_NOREDIRECTIONBITMAP` | 初始圆角 |
+| --- | --- | --- | --- |
+| `system_caption: true` | 开（系统标题栏与缩放） | 仅这扇窗口走合成时开 | 系统默认 |
+| `system_caption: false` 且 `transparent: false` | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | 仅这扇窗口走合成时开 | 圆角 |
+| `system_caption: false` 且 `transparent: true` | 关 | 仅这扇窗口走合成时开 | 不圆角 |
+
+`undecorated_shadow` 恒为 `false`：winit 那条路会把客户区顶边内缩 1px。标题栏盖不住。
+
+### 呈现路径：普通窗口 vs DirectComposition
+
+窗口的 alpha 从哪来。取决于 surface 谈成了什么。而这由**呈现路径**决定。不由材质决定。实测三种组合：
+
+| 路径 | 后端 | 协商到的 alpha mode | 透明从哪来 |
+| --- | --- | --- | --- |
+| HWND swapchain | Vulkan | `PreMultiplied` | swapchain 自带 |
+| HWND swapchain | DX12 | **`Opaque`** | 只能靠 `DwmExtendFrameIntoClientArea` 那张玻璃 |
+| DirectComposition visual | DX12 | `PreMultiplied` | swapchain 自带 |
+
+DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.rs`）。所以**普通路径上的窗口透明其实隐式依赖 Vulkan**。
+
+不是 `Opaque` 的表面。最后一步按合成器的读法存像素。DWM 和 Core Animation 都把 8 位表面当作预乘的 `enc(颜色) × α`。在编码空间里混合。Metal 的 `PostMultiplied` 也一样。内部仍在线性光里混合。只有把整帧拷上表面的那次 blit 改存 `enc(颜色) × α`（`AlphaEncoding::Gamma`）。否则半透明像素会被显示得过亮。羽化、阴影、抗锯齿边缘叠在桌面上会出现硬边和色阶。不透明像素两种存法字节相同。离屏快照默认 `Linear`。
+
+#### 两个维度：进程后端 vs 每窗口 target
+
+这是两个问题。别混成一个：
+
+| 维度 | 归谁 | 谁决定 |
+| --- | --- | --- |
+| GPU backend / adapter / device | **进程**，所有窗口共用一份 | `RuntimeProgram::gpu_backend_policy()` |
+| surface target（普通窗口 surface vs 合成 visual） | **每扇窗口** | `WindowDescriptor::surface` |
+
+`GpuBackendPolicy::COMPOSITION_CAPABLE` 只是把合成路径**变得可用**（Windows 上把后端收窄到 DX12。因为 DirectComposition visual 是 DX12 的 surface target）。它不把任何窗口放上那条路。这个收窄跟第一扇窗口要不要合成**无关**：否则先开一扇普通 Settings 窗就会悄悄让整个进程失去合成能力。后面的主窗再也拿不到。窗口自己用 `WindowSurfacePreference` 要：
+
+- `Auto`（默认）：进程要了合成能力、且这扇窗口要透明客户区。才走合成。否则普通窗口 surface。所以主窗透明时走合成。同一进程的 Settings / Dialog / Popup / 浮动面板仍是普通窗口。
+- `NativeWindow`：永远普通窗口 surface。
+- `Composition`：明确要合成 visual。拿不到时降级并上报。而不是开不出窗口。
+- `RequireComposition`：合成 visual 或者不开。**只有**这一档会让合成不可用变成启动/开窗失败。给那些内容在普通路径上就是错的宿主用。其它所有窗口都该用 `Composition`。降级并上报、应用继续活着。
+
+合成目标（DirectComposition visual）只有 Windows 有。macOS 与 Linux 的普通窗口 surface 本身就由系统合成（macOS 是 `CAMetalLayer`）。没有第二条路可要。所以这两档在那里都直接由普通窗口满足、不算降级、也不会因此拒绝开窗。透明客户区能不能成立。照常由 surface 协商出的 alpha 模式决定（`Opaque` 时 `Transparent` 降为 `Solid` 并上报）。
+
+一个窗口要合成不代表所有窗口都要。#215 的 shadow companion 因此可以单独用 `Composition`。不动应用其它窗口。共享同一个 GPU device 混用两种 target 是正常的。
+
+#### 可用性在开窗之前判定，窗口本身是临时的
+
+`WS_EX_NOREDIRECTIONBITMAP` 是创建时的标志：winit 从自己的 `NO_BACK_BUFFER` 推导它。`apply_diff` 会整体覆写 `GWL_EXSTYLE`。事后设不住。所以「这台机器能不能合成」必须在第一扇窗口之前答完。`GpuBootstrap` 做这件事：独立进程建一个 DX12-only instance 枚举适配器（无 surface。`WGPU_BACKEND` 仍然优先）。**并把这个 instance 留给正式的 device 请求复用**。探测和选设备是同一份 bootstrap。不重复初始化 DX12。也不会互相矛盾。嵌入式宿主的 device 已经存在。没有收窄余地。也不建 instance。只有宿主本来就是 DX12 时才可能走合成。
+
+但「有 DX12 适配器」只证明后端在。真正的合成路径还要过：composition device → `CreateTargetForHwnd` → `CreateVisual` → wgpu `CompositionVisual` surface → `PreMultiplied` 协商。这些全在 HWND 已经按 `WS_EX_NOREDIRECTIONBITMAP` 创建**之后**。所以合成窗口是**临时的**：任一步失败就释放它的 composition 对象、丢掉窗口（winit 投递销毁消息）。再建一扇普通窗口顶上。绝不拿那个 HWND 当普通 HWND surface 用。理由很具体。没有重定向位图就没有东西给 `DwmExtendFrameIntoClientArea` 混合。而那是 DX12 HWND swapchain 唯一的逐像素 alpha 来源。留下来的话这扇窗口在两条路上都永远不可能透明。窗口是隐藏创建的。屏幕上从没出现过。
+
+设备换了（device loss 恢复）之后。「这个进程还能不能合成」按新设备的后端重新判定。不沿用旧答案：新设备可能落在别的后端上。而窗口是按这个答案创建的。
+
+这条回退**每扇窗口都走**。不只第一扇：合成 target 在哪里被要求。它在那里就是临时的。辅助窗口的合成失败同样是丢掉那个 HWND、改用普通窗口重开。而不是 `OpenFailed`。同时把进程的可用性收成不可用。这扇窗口建不出来的东西。下一扇也建不出来。没必要让每扇窗口都先赔一个注定失败的 HWND。
+
+普通路径是最后一条。它失败才是真正的启动失败。合成失败不会让应用起不来。除非这扇窗口声明了 `RequireComposition`。结果对上层可见：`ResolvedWindowPresentation::requested_target()` / `surface_target()` / `target_fallback()`（`SurfaceTargetFallback::{BackendUnavailable, TargetUnavailable}`）。从 `RuntimeProgramContext::presentation()` 读。验收探针用 `NANA_FORCE_COMPOSITION_FAILURE=1` 人为让合成那一步失败。走一遍这条回退。
+
+`WS_EX_NOREDIRECTIONBITMAP` 归呈现路径、不归材质：DirectComposition 把 visual 画在重定向位图**之上**。合成窗口必须没有那张位图。否则底下的不透明表面会透出来。普通路径的窗口则一律保留它。它的 swapchain 很可能正在往里呈现。实测 NRB + HWND + `Opaque` 这个组合在创建、稳态出帧、`ResizeBuffers`、零尺寸往返四项上都正常。所以保留它不是妥协。
+
+玻璃（`DwmExtendFrameIntoClientArea`）只铺给**还有重定向位图**的透明窗：DX12 的 HWND swapchain 只谈得到 `Opaque`。逐像素 alpha 全靠这张玻璃。合成窗创建时就带 `WS_EX_NOREDIRECTIONBITMAP`。像素来自已经谈成 `PreMultiplied` 的 DirectComposition visual。再铺玻璃只会让 DWM 去混合一张不存在的表面。从 Mica / Acrylic 切过来时还要把先前铺上的玻璃收回（margin `0`）。材质层读 HWND 上那个创建时的 ex-style 位。不另开一条 API。Mica / Acrylic 本身就是 DWM 的 frame。仍无条件 `ExtendFrame(-1)`。
+
+### 一份 presentation，一个 chrome 权威
+
+`ResolvedWindowPresentation` 是每扇窗口「在呈现什么」的**唯一**权威。`crates/nana-ui/src/presentation.rs`：
+
+```text
+requested_material   业务请求。只决定去问平台和 surface 要什么。
+effective_material   surface 协商完之后真正拿到的，带 MaterialFallback。
+alpha_mode           surface 的答案。
+surface_target       这扇窗口实际走的呈现路径（+ requested_target / target_fallback）。
+chrome               由 effective 推出来的原生 chrome 策略。system_caption 窗口为 None。
+```
+
+`chrome` 是在 `resolve` 里跟 `effective` 一起定下来的：拿不到 effective material 而不同时拿到对应 chrome 是做不到的事。所以「渲染认为 `Solid`、native chrome 认为 `Transparent`」这个状态不可表示。
+
+具体到那个 bug：`Transparent` 请求 + DX12 HWND surface → 协商到 `Opaque` → effective 降级为 `Solid(NativeMaterialUnavailable)` → chrome 同时变成不透明策略。并且把这次请求已经铺上的 DWM 玻璃收回（`needs_material_reset()`）。之后每一次 maximize / minimize / DPI 变化 / style restore 都从 `host.presentation.chrome()` 重放。没有第二处从 requested 重新推导。所以回不到透明 chrome。
+
+窗口以隐藏状态创建。surface 答完之后 chrome 才写。写完才显示。所以用户看不到中间状态。
+
+#### 运行时（看 effective `MaterialEffect`，实现见 `NativeChromePolicy` / `apply_native_chrome`）
+
+| effective 材质 | frame 样式位 | 圆角 | `DWMWA_BORDER_COLOR` | `DWMWA_NCRENDERING_POLICY` |
+| --- | --- | --- | --- | --- |
+| `Solid` | 保留 | `DWMWCP_ROUND` | `COLOR_DEFAULT` | `ENABLED` |
+| `Mica` / `Acrylic` / `Vibrancy` | 保留 | `DWMWCP_ROUND` | `COLOR_DEFAULT` | `ENABLED` |
+| `Transparent`（`StripFrameStyles`） | **剥掉** `WS_CAPTION \| WS_THICKFRAME \| WS_SYSMENU` | `DWMWCP_DONOTROUND` | `COLOR_NONE` | `ENABLED` |
+| `Transparent`（`SuppressNonClientRendering`） | 保留 | `DWMWCP_DONOTROUND` | `COLOR_NONE` | **`DISABLED`** |
+| `system_caption: true` | 宿主一概不碰 | | | |
+
+判据是「effective 材质是不是 `Transparent`」而不是 `wants_transparent_surface()`：Mica 和 Acrylic 也让后者为真。但它们的背景**就是** DWM 的非客户区渲染。圆角和描边要留着。
+
+### 非客户区抑制策略：两条路，默认由实测定
+
+透明客户区要让 DWM 别在下面画非客户区。有两条路。代价不同（`NonClientRenderingStrategy`）：
+
+- `StripFrameStyles`（**当前默认**）：摘掉 frame 样式位。已实测有效。代价是换掉 Aero Snap（Win+方向键、拖到屏幕边缘分屏）、Windows 11 最大化按钮的 Snap Layouts 悬停菜单、Alt+Space 系统菜单、系统最大化/最小化动画。自绘的 8px 缩放（`LiveFrameResize`）、自绘拖窗（`LiveFrameMove` / `WM_NCLBUTTONDOWN`）和自绘三大键都不依赖它们。
+- `SuppressNonClientRendering`：保留 frame 样式位。改用 `DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED`。成立的话上面那些系统能力全部留住。这是通用 GUI framework 更想要的默认。
+
+**哪条对是实测结论。不是推导结论。** `DwmSetWindowAttribute` 不管有没有达到预期效果都回 `S_OK`。所以代码里没有「检测到失效就回退」这种分支。它是一个带记录默认值的开关。第一轮验收里 `DWMWA_NCRENDERING_POLICY` 没生效过。但当时主窗**还没走合成路径**。那个结论不能直接搬到现在。
+
+真机对照（Windows。同一台机器跑两遍）：
+
+```bash
+cargo run --release -p nana-ui --features "hosted bundled-fonts wgpu-interop" --example native-content-probe -- --hold
+NANA_WINDOWS_NC_STRATEGY=suppress cargo run --release -p nana-ui --features "hosted bundled-fonts wgpu-interop" --example native-content-probe -- --hold
+```
+
+两次都读 `PRESENTATION` / `PRESENTATION_TARGET` / `NC_STRATEGY` 三行确认这一遍真的在测目标策略。然后逐项记录：透明客户区有没有透出 caption / 三大键 / 投影、Aero Snap、Snap Layouts 悬停、Alt+Space、任务栏与 Aero Peek、最大化 / 最小化动画、resize、DPI 切换、maximize / restore 往返。只有 `suppress` 在「透明正确性」上失败。才保留 `StripFrameStyles` 作为默认。反之把默认改成 `suppress`。并把这张表写回这一节。
+
+#### winit 会把 frame 样式位写回来
+
+winit 的无边框窗口并不去掉 frame 样式位。`to_window_styles()` 对非 POPUP 顶层窗口无条件写 `WS_CAPTION | WS_SYSMENU | WS_BORDER`。再按 resizable 等加 `WS_SIZEBOX | WS_MAXIMIZEBOX | WS_MINIMIZEBOX`（`MARKER_DECORATIONS` 只对 `WS_CHILD` 剥 caption）。靠 `WM_NCCALCSIZE` 把客户区铺满窗口矩形。DWM 因此一直在为这个 HWND 渲染非客户区。画在客户区**下面**：不透明客户区盖住了它。透明客户区把它透出来。这就是透明窗上冒出系统三大键和投影的来源。
+
+`apply_diff` 在任何 `WindowFlags` 变化时整体覆写 `GWL_STYLE`。**包括在它自己的 WndProc 里**（`WM_DPICHANGED` 且尺寸变化时）。那条路径宿主看不见。所以剥样式位不能靠每次宿主调用之后重放。只能挡在消息上：`install_style_guard` 挂一个 `WM_STYLECHANGING` 子类。
+
+**这个子类不独占消息链。** NanaUI 是挂在别人窗口上的 framework：原生扩展、无障碍 shim、嵌入宿主都可能在同一个 HWND 上有自己的子类。所以守卫**先** `DefSubclassProc` 把消息往下传。**再**把 mask 里的位从 `styleNew` 抹掉。放在转发之后。才是排在它下面的所有环节（winit 的 proc 就在那儿）之上的最终一票。装在它之后的子类会先于它跑、并在它之后拿回控制权。仍可能把位写回去。这是 Win32 子类顺序的固有性质。也是不独占消息的代价。下一次 style 写入时重新装守卫会再次生效。不透明窗口用空 mask 让它变成透传。不必卸载。`WM_NCDESTROY` 时自己 `RemoveWindowSubclass`。同一个 `(window, proc, id)` 三元组重复 `SetWindowSubclass` 是原地换 mask。不会叠出第二个子类。宿主每次 chrome 重放都装一次。链子始终只有一节。`crates/nana-window/src/chrome.rs` 里有一个真实 HWND 的 fixture 验证另一个子类仍然收到 `WM_STYLECHANGING`、而 NanaUI 的 invariant 仍是最后一票。
+
+`arm_frameless_guard` 只装守卫、不写样式。因而不发任何窗口消息。`can_create_surfaces` 里可以调。显示窗口本身就是一次 `apply_diff`：它重写整条样式（被守卫抹掉 frame 位）并紧接着发自己的 `SetWindowPos(SWP_FRAMECHANGED)`。所以窗口从第一帧起就没有 frame。宿主不必在 surface 回调里自己发帧变更。`allow_caption_change` 只决定「现在能不能直接写样式」。不决定要不要剥。
+
+### 原生改动分三类，move 只是 move
+
+只有真会让 winit 重写 `GWL_STYLE` / `GWL_EXSTYLE` 的路径才做 chrome reconciliation。规则是 winit 的：`apply_diff` 只在 `WindowFlags` 某一位变化时整体覆写样式。位置和尺寸不是 flag。是 `SetWindowPos`。
+
+| 入口 | 做什么 | 典型调用 |
+| --- | --- | --- |
+| `mutate_window_geometry` | 只改窗口矩形。不动 chrome、不重绘 | `Move`、`SetBounds`、`Size` / `MinSize` / `MaxSize` |
+| `mutate_window_visibility` | `WS_VISIBLE` 会变，重放 chrome；帧由调用方决定 | `Visible`、`focus_window` 的置顶显示 |
+| `mutate_native_style` | 某个 window flag 变了，重放 chrome 并请求一帧 | maximize、minimize、fullscreen、window level、resizable、`set_cursor_hittest` |
+
+所以持续拖动窗口不重绘、不重写 DWM 圆角与描边、不重装 style guard。`LiveFrameMove` 本来就直接 `SetWindowPos` 不经过这三个入口。`CompositionWork::native_chrome_writes` 计数宿主重放 chrome 的次数。真机探针用它证明 move-only 一次都不加（`NATIVE_MOVE_ONLY_PASS`）。**每一条**写 chrome 的路径都要计数。包括外观变化那条直接走 `apply_resolved_presentation` 的。漏计一条就是给静止期闸开了个洞。窗口每帧重写 frame 样式而合同读到 0。
+
+### DirectComposition 是 retained compositor
+
+DComp tree 不跟着 GPU 帧率提交。三道闸。从便宜到贵（`NativeContentMirror`。`crates/nana-ui/src/native_content.rs`）：
+
+1. scene 的 `projection_revision()`（`instance` + `attribute_epoch`。scene 自己为缓存维护的那一对）和 viewport 都没动 → 直接用上一帧的答案。不扫 node。
+2. scene 里没有 native-content 节点 → 根本不跑 `native_content_regions()`。
+3. 算出来的 regions 和后端上次拿到的一样 → 不交给后端。tree 不脏。这一帧的 commit 什么都不做。
+
+`IDCompositionDevice::Commit` 只在 tree 真有暂存改动时发生：`create_native_visual`、`set_geometry`、`set_visible`、`remove`、以及 visual 析构都只**暂存**（`touch()`）。由宿主一次性发布。所以 Live2D / 视频 / 粒子那种 120 FPS HostTexture 在 UI 与 native visual 几何静止时。静止之后的**增量**是 0。 不是「接近 0」。合同判的就是 `eq 0`。
+
+反过来说：后端自己改 visual（`set_visible` 等）会把 tree 标脏。下一帧照常 commit。静止期为 0 说的是「没有东西变」。不是「变了也不发」。
+
+计数器走 `RuntimeProgramContext::composition_work()`：
+
+```text
+commits                             平台合成器事务数
+tree_mutations                      暂存的 visual tree 改动
+native_content.region_rebuilds      走过 scene 的 region 提取次数
+native_content.regions_considered   这些提取产出的 region 数
+native_content.regions_changed      真正交给后端的 region 数
+native_chrome_writes                宿主重写原生 chrome 的次数
+```
+
+`native-content-probe` 开四扇窗口覆盖这几条验收：两扇合成窗（主窗 + 辅助窗）、一扇普通不透明窗（同一个 GPU device 上混用两种 target）、一扇**被钉在普通路径上的透明窗**（DX12 的 HWND surface 只谈得到 `Opaque`。所以它必须回落成 `Solid` 并拿到不透明 chrome。这条断言在它出的**每一帧**都跑。所以中途的 maximize、restore、DPI 变化都盖得住）。然后在几何静止后连跑 120 帧断言计数器一动不动（`NATIVE_STEADY_STATE`）。再做 move-only 检查。最后把这段静止期的**增量**写成 `target/performance/windows-composition-steady.json`。
+
+这份报告接 Performance Contract：`perf/scenarios/windows-composition-steady.json` 用和其它场景同一套规则引擎把六个计数器全部判 `eq 0`。
+
+```bash
+python3 perf/contract.py --self-test
+python3 perf/contract.py --evaluate-invariants target/performance/windows-composition-steady.json
+```
+
+`--self-test` 里的 `windows_composition_tests` 验证这条闸真的会拦：对静止窗口全绿。对六个计数器中任意一个变成 1 都必须红。缺 `composition_work` 时必须是 not-evaluable 而不是绿。真实数字只有 Windows + DX12 真机能产出。这不是 Issue #8 §8.1 目录里的 id。也不是 weekly DoD 闸。跑不到合成 target 的机器**不要**写这份报告。宁可没有也不要一份全零的假报告。
+
+### Commit 权威只有一个
+
+```text
+RuntimeProgram / native backend  →  只能 mutate composition tree / native visual
+Scene Host                       →  唯一负责 transaction Commit
+```
+
+`native_content_frame` 收到的是 `WindowsCompositionTree`。上面**没有** `commit`。`commit` 在宿主持有的 `WindowsComposition` 上。双方同时提交因此不可表示。
+
+反过来。`native_content_frame` **不是**后端唯一能动 visual 的地方。它只在 scene 的 region 变了时才被回调。后端自己有理由改一个 visual（引擎出了新帧、应用把某层藏了）时。直接改它手上那个 `WindowsNativeVisual` 就行：改动会把 tree 标脏。下一帧的 commit 自然把它发出去。等这个回调等的是一次可能永远不来的几何变化。确实需要手动提交的高级宿主（自己驱动 GPU context、不跑 Scene host）直接拿 `WindowsComposition`。这是显式的高级 API。不是默认回调顺手能做的事。`native-content-probe --surface-lifecycle` 就是这种宿主。
+
+自定义标题栏按钮宽高均为 `WINDOW_CONTROL_WIDTH`。在高 `TITLE_BAR_HEIGHT` 的 controls 槽内垂直居中。按钮组两侧保留 `WINDOW_CONTROL_PADDING`。
+
+命中顺序（逻辑像素。已含当前 `scale_factor`）：
+
+1. 自绘窗口按钮（AccessKit 名称 `Minimize`、`Maximize`/`Restore`、`Close`）优先。不启动拖拽。客户区最外 8px 缩放区域与实际按钮相交时同样让位。按钮之外的边角继续支持窗口缩放。
+2. 标题栏空白处发出 `WindowChromeAction::Drag`：macOS 在按下时即交给 AppKit。且 `currentEvent` 必须仍是左键按下或拖动。否则不拖。其他平台按下后移动超过 4px 才发出。Scene host 调用 `nana_window::drag_custom_title_bar`。非 macOS 失败再 `winit::drag_window`。原生拖窗接管按键释放。拖动开始后 host 立即补发一次 `PointerPhase::Cancel`。结束按键掩码、Runtime 按压/捕获、标题栏手势与程序侧手势。`WindowService::begin_drag` 同样适用。
+3. 无系统 caption、可缩放、未最大化、非全屏时。客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`（macOS `setFrame`、Windows `SetWindowPos`）。不进入系统嵌套 size-move 循环。系统 caption 窗口不叠第二套缩放命中。
+
+`WindowCommand::Drag` 是「用当前在飞的手势移动这扇窗」的唯一信号：标题栏拖动和消费应用自定的手势（例如整窗中键拖动）发的是同一个。host 按按下的键分派。默认主键走上面的原生拖窗。设置 `WindowDescriptor::host_managed_drag = true` 的窗口也把主键交给 `LiveFrameMove`。因此不会进入 Windows 的嵌套移动循环。宿主事件循环可以继续驱动其他窗口。其他键仍走 `LiveFrameMove`（macOS `setFrameOrigin`、Windows `SetWindowPos`）。因为平台拖窗只认主键。AppKit 直接拒绝。Win32 的 caption 移动循环只有主键释放才收尾。窗口会粘在光标上。host 自管的移动在该键释放、新的主键按下、Esc（还原原位）或失焦时结束。结束时补发一次 `PointerPhase::Cancel`。全屏窗口不移动。最大化窗口先还原。还原后的窗口放回光标下、光标在宽度上的比例和到顶边的距离与按下时一致（与系统拖窗相同。不会跳回它原来的还原位置）。期间指针事件在到达文档前被吃掉。移动本身不改 drawable 因而不重绘。原生模式保留系统贴边等平台拖动能力。host-managed 模式只保留 NanaUI 的持续事件循环与指针跟随。该路径只在 macOS 与 Windows 上存在。其他平台仍回落原生拖窗。Vue 用 `Nana.windows.create({ hostManagedDrag: true })` 打开同样的选项。
+
+窗口光标还会消费 L1 CSS `cursor` 的常用关键字：`default`、`pointer`、`text`、`move`、`grab`、`grabbing`、`not-allowed`、`crosshair`、`help`、`wait`、`progress`、`zoom-in`、`zoom-out`、`none`。该属性按 CSS 继承。未知关键字和 `url()` 光标 fail-closed。`WindowCursor` 程序化入口与上述关键字对齐。并多一个 `Automatic` 以恢复 Runtime/CSS 选择。光标优先级低于窗口边框缩放和分割/停靠/工作区 resize 手柄。高于未声明 cursor 时 TextInput 的 I 型光标。`none` 只隐藏系统光标。不加载自定义图片。
+
+### 实时缩放
+
+客户区拖动边框时。指针移动直接改窗口矩形。事件循环继续跑。`SurfaceResized` 同步几何并请求下一帧。画帧时若物理尺寸或 present 策略变了才 `surface.configure`。同尺寸跳过。Windows 系统边框缩放仍可能走 `WM_ENTERSIZEMOVE`。稳态帧使用 `Mailbox`（没有则 `Immediate`。再回 `AutoVsync`）。避免混合刷新下 FIFO 跟主屏合成钟。`LiveSizeMove` 保持同一 present 模式并把 frame latency 提到 2。透明窗口走同一条路径。
+
+DPI 与多显示器：指针、拖拽与缩放都用逻辑坐标。物理像素只用于 Surface。窗口位置由宿主记录。创建前按当前显示器工作区 clamp（原屏断开则主屏居中）。带 `parent` 的辅助窗（模态与非模态）在 Windows 上以 `with_owner_window` 绑定父 HWND：保持在父窗之上、随父窗最小化。且没有独立任务栏按钮。
+
+IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（hint / purpose、caret 盒、非密码的 surrounding text）。之后 caret、purpose 或 surrounding 变化走 `Update`。能力集变了先 `Disable` 再 `Enable`。失焦 `Disable`。候选框相对 caret。不相对系统非客户区。AccessKit 增量更新与视觉几何同一套 layout box。composition 期间不得出现悬空 `parent_and_index`。
+
+透明 Alpha（`settings.transparent`）强制 `MaterialEffect::Transparent`。不会改试 Mica / Acrylic。失败只能回不透明实色。并带 `MaterialFallback`。真机入口：`vue-hosted-acceptance --chrome-probe`、`--input-probe`、`--hybrid --windows`。以及 `nana-ui` 的 `transparent-window` 示例。
+
+## 菜单栏
+
+原生应用菜单栏是**唯一画不进界面树**的桌面 chrome：macOS 上它属于应用而不是窗口。住在系统菜单条里。所以它在 `nana-window`。用一份平台中立的模型描述（`MenuBar` / `Menu` / `MenuEntry` / `MenuShortcut`。模型本身在 `nana-ui-core`。纯数据）。
+
+应用**声明**菜单。宿主**安装**它：调用 `window.set_menu_bar(bar)`。普通控件拿不到窗口句柄。而 Windows 的菜单属于窗口。所以安装必须由持有窗口的 Scene host 做。和 `SetIcon` 同一条路。
+
+选中项通过 `take_menu_activations()` 回来：每帧 drain 一次。拿到的是 `MenuEntry::Item` 的 `id`。**框架只报告用户选了哪一项。这个 id 是什么意思仍由应用决定**。与 `SecondaryPress` 同一原则。参照 `examples/component-gallery`：菜单 id 被映射成和界面操作完全相同的业务消息。
+
+平台支持不对等。`menu_bar_support()` 如实上报。不假装：
+
+| 平台 | 结果 | 说明 |
+| --- | --- | --- |
+| macOS | `System` | 系统菜单条。第一个菜单落在应用菜单位置，放应用级命令。无需窗口，也可直接用 `install_application_menu_bar` |
+| Windows | `InWindow` | 窗口内的 `HMENU`。选中经 `WM_COMMAND`，由 `SetWindowSubclass` 挂的钩子取回 |
+| 其它 | `Unavailable` | 什么都不装。把这些命令放进界面里 |
+
+`installed_menu_bar()` 读回平台实际持有的菜单（macOS）。供宿主自检。`crates/nana-window/examples/menu-probe.rs` 就是用它做真机验收的。
+
+菜单是整体替换：再调一次 `SetMenuBar` 换掉整条。没有增量条目 API。重建一个菜单很便宜。而跨三个平台做 diff 不便宜。
+
+## 文件对话框
+
+系统文件对话框需要父窗口句柄。macOS 挂成 sheet,Windows 需要 owner HWND。而句柄只在宿主层。所以对话框和菜单栏走同一条路:模型在 `nana-ui-core`(`FileDialogRequest` / `FileDialogResult` / `FileFilter`),应用通过 `WindowHandle::open_file_dialog` 请求。由宿主执行。控件仍然拿不到句柄:`PathField` 只发 `BrowseRequested`,由应用翻译成一个请求。
+
+结果是**异步**的：宿主通过 `WindowEvent::FileDialogCompleted { id, result }` 回流并主动唤醒事件循环。`id` 是窗口身份。`result.id` 是应用的 `u64` 请求身份。应用保存请求对应的业务对象和编辑基线。再消费结果。没有全局结果队列。也无需每帧轮询。
+
+每个窗口只能有一个活动对话框。拒绝通过独立 `WindowEvent::FileDialogRejected { id, request_id, error }` 回流。第二个不同身份的请求收到 `FileDialogError::Busy`。不会覆盖第一个请求。重复活动身份收到 `DuplicateRequest`。消费方保留原 pending。不把拒绝当作该活动请求完成。窗口关闭时活动请求收到 `WindowClosed`。宿主为每次打开分配内部 token。关闭后晚到的回调（包括窗口或请求 ID 重用）不会完成新请求。每个接受的请求只完成一次。宿主同时持有原生会话句柄。关闭时结束 macOS sheet、关闭 Windows worker 的 picker 或取消 portal/zenity。保留父句柄的 worker 不会留下可见孤儿窗口。
+
+**取消不是错误**：`result.error` 为 `None` 且 `paths` 为空。可观察的平台/线程错误通过 `FileDialogError::Platform` 返回。不支持的目标返回 `Unavailable`。Windows 上用户关闭对话框是 `HRESULT_FROM_WIN32(ERROR_CANCELLED)`。其它 HRESULT 是 `Platform`。两者不混用。`PickFolders` 和 `OpenFiles` 返回多个路径。其余返回单路径或取消。过滤器、初始目录和保存文件名保留在请求中。不存在或不可访问的初始目录会被跳过。对话框落在系统默认位置。不把这种情况当成取消。
+
+| 平台 | 执行方式 |
+| --- | --- |
+| macOS | 主线程 `NSOpenPanel` / `NSSavePanel` sheet，回调完成；支持文件、多个文件、目录、多个目录和保存 |
+| Windows | 独立工作线程上的 `IFileOpenDialog` / `IFileSaveDialog`，父窗口为 owner HWND；`FOS_PICKFOLDERS` 选择目录；不阻塞宿主渲染 |
+| Linux | 独立 portal 工作线程，带父窗口标识；响应在打开前订阅并按实际返回的 request path 关联，兼容旧 portal；不可用时沿用可取消并回收子进程的 zenity fallback |
+| 其它 | 返回 `Unavailable`，不静默悬挂 |
+
+Linux portal 返回 URI 数组。可保留路径中的换行。zenity fallback 多选采用换行分隔的 CLI 输出。文件名本身包含换行时无法无歧义拆分。单选只剥离一个协议结尾换行。保留实际文件名。该 fallback 多选边界不能作为任意路径支持通过的依据。
+
+`describe_configured_dialog(&request)` 读回平台实际配置（标题、起始目录、扩展名）。不呈现对话框。`crates/nana-window/examples/file-dialog-probe.rs` 检查这部分配置。macOS 从 AppKit panel 读回三项。Windows 起始目录来自 `GetFolder`。`IFileDialog` 没有 GetTitle / GetFileTypes。标题是 `SetTitle` 成功后的回显。目录选择不应用过滤器（因此扩展名为空）。也不应用预填文件名。真实交互使用 `crates/nana-ui/examples/hosted-file-dialog-probe.rs`：在应用窗口内覆盖五种选择、重复与忙碌拒绝、取消、窗口退出。并观察对话框打开时持续 `window_frame_presented`。配置检查和交叉编译不能代替各平台原生交互验收。
+
+## 图标
+
+任务栏、exe、Dock 上的图标是应用身份。不是界面里的 `Icon` 字形。
+
+- Rust：`register_application_icon`。或 `WindowDescriptor::icon` / `WindowHandle::set_icon`
+- 未设置时用默认几何标记。不要把它当品牌
+- Windows exe 可在 `build.rs` 里 `nana_app_icon::embed_windows()`
+- macOS Dock：`nana_window::set_application_icon_png`。`.app` 由 `nana-packager` 生成（见[打包与分发](packaging.md)）
+
+## 打包
+
+发布产物用 `dist` 档。不是 `release`。更不是 `debug`：
+
+```bash
+cargo build -p component-gallery --bin component-gallery --profile dist
+cargo run -p nana-packager -- macos-app --exe target/dist/component-gallery --name NanaUI --identifier dev.nanaui.gallery --out target/dist
+```
+
+`dist` = `release` + `lto = "fat"` + `codegen-units = 1` + `strip = "symbols"` +
+`panic = "abort"`。`release` 保持原样。CI 和 benchmark 继续快速迭代。
+
+`macos-app` 只生成一个裸 `.app`。用来取代原来的 `nana-package-app`。完整的产品包（资源包、manifest、Steam/安装包布局、最终产物校验）用 `nana-packager package`。见[打包与分发](packaging.md)。两者默认都会再跑一次 `strip -x`（`--no-strip` 可关掉）。可执行文件里有溢出检查的 panic 文本时会警告（debug 构建一定有。个别目标的 release 构建也可能有）。并记入 manifest 的 `debug_assertions_suspected`。曾经有一个 108 MB 的 `.app` 就是误打了 debug 构建。其中 55 MB 是符号表。
+
+用 `scripts/report-artifact-size.py <artifact>` 逐段核对体积：它会数出二进制里内嵌了几份字体。发现 debug 构建时也会报警。
+
+## 材质
+
+通过 `RuntimeProgram::window_material_mode` 申请**一种**系统效果。Appearance 设置在宿主提供时可选 Mica / Acrylic / Vibrancy。失败回实色。并给出原因。不会改试另一种。
+
+| 平台 | 可申请 | 失败时 |
+| --- | --- | --- |
+| macOS 10.10+ | 指定的 Vibrancy / UnderWindowBackground | 不透明主题背景 |
+| Windows 11 | 指定的 Mica **或** Acrylic | 不透明主题背景 |
+| Windows 10 1809+ | 指定的 Acrylic | 不透明主题背景 |
+| Linux | 无系统模糊 API | 不透明主题背景 |
+
+`Translucent` 只开窗口透明。不等于模糊。透明窗口和系统模糊是两件事。
+
+透明（`Transparent`）窗口在 macOS 上关掉系统阴影。切回实色时恢复。AppKit 按窗口 alpha 生成阴影。透明窗口里画了什么（角色轮廓、羽化光晕）它就沿着描一圈。还会和应用自己给卡片画的阴影叠成两层。Windows 上透明窗口本来也没有系统阴影。边缘由应用自己画。Vibrancy 铺满整窗。阴影照常保留。
+
+当前 macOS 在 GPU 窗口上申请 Vibrancy 可能拿不到系统效果（金属层会盖住系统材质）。Windows 的透明客户区和 Mica / Acrylic 以真机为准。编译通过不等于那台机器上看起来对。对照 `crates/nana-ui/examples/transparent-window.rs`。
+
+原生材质由 `nana-window` 执行：`apply_system_material` / `apply_hosted_system_material`。`run_runtime` 会给主窗口和每个工具窗口分别应用、刷新和清理。主题或材质切换会先清掉旧效果再按当前请求重试。设备恢复后按当前请求重新应用。native 成功时。侧栏/主区/标题栏的覆盖色来自 Runtime Style Model（`ThemeTokens::with_backdrop`）。不是整窗清屏。
+
+## 多窗口
+
+普通应用通过 `context.windows()` 创建窗口。通过 `context.window()` 控制当前窗口。`WindowHandle` 可克隆并发送给工作线程。不持有原生窗口。所有操作排队回到窗口线程。尺寸和位置使用逻辑坐标。
+
+```rust
+// 工作线程；在异步代码中也可以用 .await。
+let window = service.create_window(WindowDescriptor {
+    title: "Notes".into(),
+    initial_size: (480.0, 320.0),
+    minimum_size: (240.0, 120.0),
+    system_caption: true,
+    ..Default::default()
+}).wait()?;
+window.set_title("Preview").wait()?;
+window.set_size((640.0, 480.0)).wait()?;
+window.close().wait()?;
+```
+
+`WindowDescriptor` 的字段全部公开。并且会随平台能力继续增加（`shadow`、`host_managed_drag` 都是这样加进来的）。构造时总是以 `..Default::default()` 或 `WindowDescriptor::new(...)` 的 builder 收尾。逐字段写满的结构体字面量在下一次加字段时就会编译失败。
+
+创建结果仅在隐藏原生窗口、Surface、输入状态和应用文档初始化成功后完成。失败会回滚。不发送 `Ready`。主窗口配置了 Early Splash 时是例外：窗口带着 Logo 先显示。设备和程序在其后就绪。失败时撤下 Logo 并关窗。见 [两阶段启动](startup.md)。`ApplicationState::build` 为每个窗口构建独立文档。自定义 `RuntimeProgram` 在 `initialize_window` 中完成构建。在 `discard_window` 中撤销失败的应用状态。成功后才注册并按 `WindowDescriptor::visible` 显示窗口。
+
+窗口 id 由服务分配。应用用 `WindowDescriptor::tag` 声明这扇窗口是哪种文档。不要靠创建请求的顺序去对应 id。标识对宿主不透明。从 `RuntimeProgramContext::window_tag()` 读回：`initialize_window` / `ApplicationState::build` 构建文档时。以及之后该窗口的每个回调（包括 `Ready`）都能读到。窗口关闭后为 `None`。按 id 持有的状态在 `window_closed` / `discard_window` 里清理。
+
+```rust
+let character = service
+    .create_window(WindowDescriptor::new("角色").tag("character"))
+    .wait()?;
+
+fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramContext<Message>) -> Result<(), Error> {
+    match context.window_tag() {
+        Some("character") => build_character(window),
+        Some("tracking") => build_tracking(window),
+        _ => build_main(window),
+    }
+}
+```
+
+程序自选 `WindowId` + `WindowCommand::Open` 仍只是框架适配器（Vue、Dock）的通道。普通应用不需要它来区分窗口种类。
+
+操作返回 `WindowRequest<T>`。支持 `.await`、工作线程 `.wait()` 和窗口线程非阻塞的 `try_take()`。在窗口线程调用 `.wait()` 返回 `HostThreadWait`。不阻塞事件循环。待处理窗口请求最多 1024 个。队列满时立即返回 `QueueFull`。调用方可等待已提交请求完成后重试。关闭后的 handle 返回 `WindowClosed`。宿主释放后返回 `HostStopped`。身份及世代检查防止旧请求作用于重新创建的窗口。
+
+主窗口与附加窗口共用注册表和 Device/Queue。每个窗口独立持有 Surface、输入、IME、文档和渲染目标。同一纹理格式的窗口共用一个 Scene painter。各文档的 compositor motion 描述符按 `MotionDescriptorStore::source` 与结构 epoch 识别。切换绘制窗口时重新上传。不会读到另一窗口的动画。默认关闭一扇窗口只释放该窗口及其原生子窗口。standalone 最后一扇窗口关闭后退出。应用仍可显式返回 `RuntimeProgramUpdate::exit()` 关闭整个应用。
+
+`ApplicationState::window_event` 和 `RuntimeProgram::window_event` 接收框架窗口事件。指针、键盘输入通过 `RuntimeProgram::input_event` 的 `RoutedInput` 接收。附带命中与处理结果。同一输入不重复派发。缩放变化通过带新 `scale_factor` 的 `Resized` 通知。
+
+### 指针在场
+
+`WindowEvent::PointerPresenceChanged { id, inside }` 报告悬停指针（鼠标、笔）是否在该窗口客户区内。只在变化时发送。供按指针显现 chrome 的应用使用。不需要轮询光标。输入流里的离开仍归一化为 `PointerPhase::Cancel`。与手势取消无法区分。所以不要用它推断在场。
+
+- 触摸接触不报告在场。
+- 宿主发起原生拖窗（标题栏拖动、`WindowHandle::begin_drag`）时。平台移动循环产生的离开被扣下。直到平台再次报告该指针。拖动被屏幕边缘挡住后指针离开窗口的情形。要等指针回到窗口再离开才会报告。
+- host 自管的窗口移动（`LiveFrameMove`）期间不报告在场变化：窗口跟着指针走。每次越过自己原来的边界都是窗口离开指针。不是指针离开窗口。
+- 指针被捕获时。客户区外的移动不会把状态改回在场。
+- `WindowHandle::set_visible(false)` 隐藏窗口时报告一次离开。窗口被最小化或完全遮挡（平台报告 occluded）时同样报告一次离开。平台未必会发出这次离开。被遮挡期间 Forward 穿透不采样该窗口。重新露出后等平台再次报告指针才回到在场。
+- Forward 穿透由宿主采样全局指针。在场随采样结果更新。采样不可用的平台（Wayland）报告为不在场。
+- 有模态子窗口时父窗口仍报告在场。指针事件本身继续交给模态链处理。
+
+### 减少动态效果
+
+`RuntimeProgramContext::reduced_motion()` 返回系统是否要求减少动态效果。窗口创建时读取。用户在运行中切换时。宿主向每扇窗口发送 `WindowEvent::ReducedMotionChanged { id, reduced }`。之后的回调上下文读到新值。应用据此选择过渡时长或关闭位移。NanaUI 不替应用改写已声明的动画。
+
+- Windows：读取「在 Windows 中显示动画」（`SPI_GETCLIENTAREAANIMATION`。关闭即减少动态效果）。宿主窗口子类收到 `WM_SETTINGCHANGE`（`SPI_SETCLIENTAREAANIMATION`）后在下一次 `about_to_wait` 重新读取。只在值变化时发送事件。不轮询。
+- macOS：读取「减少动态效果」（`NSWorkspace.accessibilityDisplayShouldReduceMotion`）。只在创建时读取。运行中切换不发送事件。
+- Linux：暂不上报。恒为 `false`。不发送事件。
+
+### 显示器与全屏
+
+`WindowService::displays()`（嵌入式宿主用 `EmbeddedRuntime::displays(event_loop)`）在窗口线程枚举当前连接的显示器。返回 `DisplayInfo`：id、名称、物理位置/尺寸、缩放、刷新率、是否主屏。Wayland 不上报主屏。`DisplayInfo::logical_bounds()` 把物理矩形换算成 `WindowDescriptor::initial_position` 使用的全局逻辑坐标。没有位置或尺寸时返回 `None`。
+
+`DisplayId` 是本次进程里的显示器身份。跨次枚举相等。它是否在拔插后仍然指向同一块屏。取决于平台：
+
+| 平台 | 拔掉再插回 |
+| --- | --- |
+| macOS | `MonitorHandle::id()` 跨重连稳定 |
+| Windows / Linux | 不跨重连；重连后当作新显示器 |
+
+没有显示器拓扑事件：winit 不提供连接/断开通知。拔屏后下一次 `displays()` 不再列出它。已经全屏在该屏上的窗口按平台落到剩余显示器。指定一块已经不存在的屏：显式 `set_fullscreen(Some(FullscreenRequest { display: Some(id), .. }))` 返回 `WindowError::InvalidParameter`。窗口状态不变。描述符上的 `WindowDescriptor::fullscreen` 则退回窗口模式（尽力而为。创建本身仍成功）。
+
+全屏只有无边框覆盖当前视频模式。没有独占全屏（不会改显示器分辨率。避免和其他 Surface、采集工具抢显示模式）。
+
+```rust
+#[derive(Default)]
+pub struct FullscreenRequest {
+    pub mode: FullscreenMode,       // Borderless（默认）或 Simple
+    pub display: Option<DisplayId>, // None = 窗口当前所在屏
+}
+
+pub enum FullscreenMode {
+    Borderless, // 无边框，覆盖该屏当前视频模式
+    Simple,     // macOS 不切 Space；其他平台等同 Borderless
+}
+```
+
+`WindowHandle::set_fullscreen(None)` 退出全屏。`Simple` 只在 macOS 上报为 `WindowModeState::fullscreen = Some(Simple)`。从 macOS 原生全屏切到 Simple 时。宿主先退出原生全屏。等 `fullscreen()` 读到 `None` 再应用 Simple。
+
+有效状态通过 `WindowEvent::ModeChanged { id, mode }` 上报。`mode` 含实际全屏模式、窗口层级和当前显示器。时机：
+
+- 每个窗口 `Ready` 之后必发一次。作为初始状态
+- 每次全屏或层级请求之后
+- `Resized` / `Moved` / `ScaleFactorChanged` / `Occluded` / `RedrawRequested` 之后。如果观察结果变了
+
+只在与上次交付不同时发送。层级是宿主上次应用的值：平台不会回报应用外的置顶变化。macOS 原生全屏动画期间读到的是目标状态。X11 下窗管自己改的全屏/置顶观察不到。`RedrawRequested` 和 `Occluded` 用来补齐异步 Borderless 完成之后的观察。
+
+描述符全屏在窗口可见之后才应用（窗口先以隐藏状态创建并完成文档初始化）。不要用描述符表达“这块屏必须存在”。那是显式请求的合同。
+
+`window-service-lifecycle` / `embedded-window-lifecycle` 覆盖枚举非空、指定屏全屏后收到 `ModeChanged`、置顶、`set_skip_taskbar` 的平台结果（Windows 成功。其他平台 `Unsupported`）、退出全屏、非法 `DisplayId`、描述符全屏。macOS 绿色按钮、第二块屏、拔屏。以及 Windows 多屏。需要人工核对。
+
+### 嵌入已有宿主
+
+`platform_host::EmbeddedRuntime` 接收宿主 `ActiveEventLoop`、proxy 和 `HostedGpuShared`。从不创建或退出宿主事件循环。宿主转发 `window_event`、`wake` 和 `about_to_wait`。`HostedGpuShared::from_device` 接入已有 Instance/Adapter/Device/Queue。不申请第二个 Device。
+
+宿主在窗口线程回调中可用 `create_window(event_loop, descriptor)` 同步创建窗口。结果与 `WindowService::create_window` 相同。但不经过请求队列。整个进程只有一个事件循环：standalone 下再次调用 `run_runtime` 返回 `HostedRunError::EventLoop`（winit `RecreationAttempt`）。已有事件循环的宿主应改用 `EmbeddedRuntime`。
+
+设备恢复仍归 embedded 宿主负责：宿主收到外部 Device 丢失通知后。先在窗口线程调用 `notify_device_lost()`。再转发其他窗口事件。通过 `needs_gpu_replacement()` 检查挂起状态。重建宿主设备后调用 `replace_gpu()`。替换总是切换到新 Device：每个存活窗口的 Surface 原地重绑。先释放旧交换链再配置新的。DXGI 规定一个 HWND 只能有一个交换链。无法在保留旧 Surface 作回退的同时试建新的。而设备丢失后旧 Surface 本来也无法呈现。切换后调用应用 GPU 重建回调。重绑失败的窗口按下文 Surface 故障恢复单独重试。只有所有窗口都重绑失败时才返回第一个错误供宿主上报。但切换已经发生。
+
+`WindowHandle::with_native_handle` 将回调调度到窗口线程。仅借用回调期间有效的 raw handle。不能保存原始指针供回调结束后使用。也不会取得 `winit::Window` 所有权。
+
+`window.effects().set_material()` 返回实际 `MaterialOutcome`。穿透通过 `set_mouse_passthrough()` 控制。`window.capture().set_protected()` 请求 macOS/Windows 的原生捕获保护。其他后端返回 `Unsupported`。这不是对所有捕获方式的保证。
+
+完整示例：`window-service-lifecycle` 无需导入 winit。`embedded-window-lifecycle` 展示高级宿主适配。两个示例都自动验证三窗口真实呈现、按 `tag` 构建的两种附加窗口文档、跨线程控制、主窗关闭、失败回滚、子窗释放与再次创建。
+
+### 从旧接口迁移
+
+- `RuntimeWindowSettings` / `WindowSettings` 统一改为 `WindowDescriptor`。显式结构体初始化需添加 `visible` 或使用默认值。
+- `WindowDescriptor` 新增 `tag`。显式结构体初始化补 `tag: None` 或使用 `..Default::default()`。
+- `WindowDescriptor` 新增 `restoration_scope`。显式结构体初始化补 `RestorationPath::root()`。多 profile / workspace / window 应传入各自稳定的 scope path。或使用 `..Default::default()`。
+- 普通应用用 `WindowService` / `WindowHandle` 替代自行分配窗口 ID 和提交 `WindowCommand`。
+- `WindowCommand` 从平台 crate 根导出移入 `nana_ui_platform::host`。仅供 Vue、Dock、chrome 等框架适配器使用。适配器提交的批次仍在宿主 commit 时进入同一个 WindowManager。
+- 主窗口不再具有隐式退出特权。需要“关主窗退出”的产品应显式返回退出更新。
+- `WindowCommand::SetFullscreen` 的参数从 `bool` 改为 `Option<FullscreenRequest>`：`None` 退出全屏。`Some` 进入。删除 `SetSimpleFullscreen`。macOS 不切 Space 的全屏改为 `FullscreenRequest { mode: FullscreenMode::Simple, display: None }`。`WindowHandle::set_simple_fullscreen` 一并删除。
+- `WindowLevel` 从 `nana_ui::window_service` 下沉到 `nana_ui_platform`。`nana_ui` 再导出。全屏和置顶的有效值走 `WindowEvent::ModeChanged`。不要自己记一份请求镜像。
+- LiliaBilibili `app/presentation.rs` 仍按 `SetFullscreen { fullscreen: bool }` 编译。下次升级 pin 时改为 `fullscreen: on.then(FullscreenRequest::default)`。并在 `WindowEvent` match 中处理 `ModeChanged`。
+
+窗口几何可以交给框架：`WindowDescriptor::persist_key("main")` 会在创建前从版本化 `ViewStateStore` 恢复位置 / 尺寸 / 最大化。并在移动、缩放后异步合并写回。全屏、最小化。以及 Win32 最小化常见的 `-32000` 原点都不写。目录由宿主选择：`app_data_dir("YourApp")` 得到平台数据目录。再 `FileStore::open` 注入 `run_runtime_with_store`（落成 `local-storage.bin`）。不注入则全程内存。进程退出即丢。Dock 布局进入 `ViewStateStore`。Appearance 进入独立 Settings namespace。旧 `nana.dock.*`、`nana.appearance.*` 只做一次迁移。JS `localStorage` 与 `Nana.storage` 无法访问这些 framework namespace。
+
+### 独立透明工具窗
+
+`WindowDescriptor::focus_on_show = false` 让显示不抢占前台焦点：首次显示和之后 `set_visible(true)` 再次显示都适用。macOS 以 `orderFront` 显示而不成为 key window（winit 的显示会调用 `makeKeyAndOrderFront`）。Windows 与其他平台仍走 winit 显示路径。默认 `true` 保持原行为。工具层可组合 `transparent = true`、`always_on_top = true` 与非模态 `WindowRole::Tool`。属于某个主窗的工具窗设置 `parent`。在 Windows 上由父窗 own。点击父窗不会把工具窗压到后面。不需要 `DesktopShell` 才能使用边缘缩放。
+
+`WindowService::create_window` 在完整就绪并发送 `WindowEvent::Ready` 后完成凭据。创建失败通过凭据返回错误。窗口若在处理 `Ready` 时被应用关闭。凭据返回 `WindowClosed`。服务从 `1 << 63` 起分配窗口 ID。并跳过仍存活的程序自选 ID（例如 Dock 浮动窗口的哈希 ID）。Vue 等宿主批次适配器另通过 `OpenFailed { id, error }` 通知失败。撤销创建中状态。`SetMousePassthrough { id, enabled }` 关闭整窗原生命中测试（Windows `WS_EX_TRANSPARENT`）。overlay 收不到指针。也无法按命中自己收回。`SetMousePassthroughForward { id, enabled }` 是宿主持有的 Forward 模式：OS 穿透保持开启。宿主在窗口线程采样全局指针（Windows `GetCursorPos`、macOS `mouseLocationOutsideOfEventStream`、Linux X11 `XQueryPointer`。Wayland 当前采不到则无法自动收回）。换算为 overlay 逻辑坐标后走现有 `pointer_target`。命中 `pointer-events` 非 `none` 的不透明/可交互内容时 `set_cursor_hittest(true)` 收回。离开该区域或窗口后再穿透。采样到的 Move 仍可喂 overlay hover/光标。按下必须在收回之后才由本窗接收。底层窗口在穿透期间可点。控件拿不到 HWND。`WindowHandle::set_mouse_passthrough_mode` 对应 `MousePassthroughMode::{Off, Passthrough, Forward}`。每次命中测试变化都回报 `MousePassthroughChanged { id, enabled, result }`（`enabled` 为当前 OS 穿透是否开启。未知窗口也回报失败）。应用收到成功确认后才显示锁定状态。并保留另一窗口的解除穿透入口。异形窗 / per-pixel alpha OS 形状不是这条合同。
+
+`RuntimeProgram::window_material_mode_for(id)` 与 `appearance_backdrop_opacity_for(id)` 默认调用现有全局方法。允许主窗和透明工具窗分别配置。宿主在创建、外观变化、Surface 恢复时都按目标窗口调用。背景透明不改变前景文字的不透明度。纯透明窗口的内容背景由应用 Runtime 节点绘制。
+
+`WindowDescriptor::constrain_to_work_area = true` 用于完整恢复工具窗：部分出屏的位置也会校正。尺寸超出屏幕时会缩小。Windows 使用扣除任务栏的原生工作区。其他平台当前回退显示器边界。默认 `false` 保留原有“与任意屏幕有交集即保留位置”的行为。
+
+`WindowDescriptor::skip_taskbar = true` 让窗口不出现在任务栏。默认 `false`。主窗照常显示。运行中用 `WindowCommand::SetSkipTaskbar { id, skip_taskbar }` 或 `WindowHandle::set_skip_taskbar` 切换。描述符里的设置在窗口首次显示前应用。结果在 `Ready` 之后回报。失败不撤销创建。每次请求（包括描述符应用和未知窗口）都回报 `WindowEvent::SkipTaskbarChanged { id, skip_taskbar, result }`：`skip_taskbar` 是当前实际状态。失败时保持原值。描述符结果送达前的显式请求会取代它。`WindowHandle` 请求返回同一结果。平台不支持为 `Unsupported`。系统拒绝为 `OperationFailed`。
+
+- Windows：宿主通过 `ITaskbarList` 删除或恢复任务栏按钮。每一步 HRESULT 失败都回报。每当 Explorer 放好按钮并发来 `TaskbarButtonCreated`（每次显示、Explorer 重启后）就再删除一次。不与系统创建按钮竞争。重复请求失败时保留已生效的隐藏。`skip_taskbar: false` 只恢复由这条合同隐藏过的按钮。不会给本来没有任务栏按钮的窗口（例如模态子窗）加按钮。不改 `WS_EX_TOOLWINDOW`。Alt+Tab 行为和标题栏样式不变。
+- macOS：返回 `Unsupported`。Dock 按应用显示图标。普通窗口没有逐窗 Dock 项。但窗口最小化后仍会进入 Dock。应用图标也始终在 Dock 里。隐藏应用 Dock 图标是应用级激活策略。不属于这条逐窗合同。
+- Linux：返回 `Unsupported`。
+
+原生验收探针（会短暂移动鼠标到探针自身窗口）：
+
+```powershell
+cargo build -p nana-ui --example desktop-overlay-probe --features hosted,bundled-fonts --locked
+python -m pip install -r scripts/requirements-desktop-overlay.txt
+python scripts/validate-desktop-overlay.py
+```
+
+探针验证主窗 Solid/Opaque 与工具窗 Transparent/PreMultiplied、首次不抢焦点、工具窗不在任务栏（UI Automation 比较任务栏按钮快照。不依赖窗口标题、按钮合并设置和系统语言。需要 `comtypes`。切换 `SetSkipTaskbar` 与隐藏后再显示都复核）、创建失败反馈、穿透开关反馈、实际鼠标 1→0→1 路由、Forward 在不透明命中区收回并收到后续 click、以及透明区域与关闭后的底层屏幕像素一致。结果写入 `target/desktop-overlay-native.json`。它不替代具体产品布局的视觉验收。Windows 是 Issue 必测平台。macOS 覆盖行为测试与文档。
+
+## Runtime 中的原生网页内容
+
+`runtime::BrowserView` 是保留树中的布局和可访问性节点。应用工具条、地址输入和
+业务状态仍由 Runtime 承载。开启 `hosted` 后。`RuntimeProgram::native_browser_requests`
+返回 `NativeBrowserRequest { id, node, policy, restore_url, visible, revision, command }`。宿主只为
+当前窗口文档中、`browser_id` 与请求 `id` 一致的 `BrowserView` 创建原生内容。
+同窗重复 `id`、跨文档节点和已销毁节点均不附着原生视图。
+
+`revision` 是应用单调递增的命令身份。相同版本重复投影不会再次后退、刷新或截图。
+已存在实例的 `command: None` 只同步状态。事件通过平台回调主动唤醒当前宿主。再经
+`native_browser_event(window, NativeBrowserEvent { id, node, revision, event }, context)`
+回流。事件保留产生它的命令版本。宿主再次核对窗口、当前请求和节点。迟到结果不会
+被重新标记为后来的请求。截图通过 `Captured(Vec<u8>)` 返回 PNG。失败通过
+`CaptureFailed`。截图过程中换页或隐藏会使原截图失效。
+
+当前 macOS 后端使用主线程 `WKWebView` 子视图。绑定父窗口。支持 HTTP(S) 导航、
+后退/前进、刷新/停止、聚焦和异步截图。`BrowserPolicy::allow_web` 默认关闭。
+`about:blank` 始终允许。启用后仍拒绝文件、脚本和带凭据的 URL。重定向与新窗口链接
+经过同一策略。新窗口链接留在同一浏览内容中。Windows/Linux 当前返回明确的不可用
+状态。不创建占位浏览器。此边界不影响它们已有的窗口、文件对话框与 NativeContent
+能力。
+
+已挂载节点的隐藏保留浏览历史。原生视图隐藏并释放焦点。park 或销毁节点、撤回请求、
+改变节点/策略或关闭父窗会移除原生视图。晚到回调被丢弃。节点再次挂载时创建新实例。
+只导航至当前 Navigate 命令的目标或 `restore_url`。不会重放后退、停止或截图。
+恢复页面后原生历史从新实例开始。应用应等待回流状态更新按钮。应用仍须在业务任务切换或
+关闭时撤销自己的截图意图。不能仅在完成时比较当前任务（切走再切回也是新意图）。
+
+原生子视图只支持有限平移和矩形裁剪。布局使用窗口逻辑坐标并跟随滚动。圆角裁剪、
+非平移变换、透明度/滤镜组。或随后绘制的重叠 Runtime 内容。会暂时隐藏网页。避免
+它遮住菜单和浮层。隐藏不缩小网页自身的布局尺寸。重复帧不会重新设置相同原生几何。
+原生网页内容不会出现在 Runtime 离屏截图中。用户截图须使用 `BrowserCommand::Capture`。
+
+可运行 `cargo run -p nana-ui --example native-browser --features hosted,bundled-fonts`。
+通过示例页、说明页、后退、隐藏和截图按钮验证真实父窗。设置
+`NANA_BROWSER_CAPTURE_OUTPUT=/tmp/nanaui-browser.png` 可保存网页 PNG。必须实际查看
+原生窗口与 PNG 后才能宣称平台视觉和交互通过。编译及离屏树检查不能替代 WebKit 验收。
+
+### Surface 故障恢复
+
+Surface 创建、验证或材质 alpha 配置失败只暂停对应窗口。并以两秒间隔在现有共享 GPU 上重试。其他窗口继续绘制。`HostFailure::SurfaceRecovery` 报告窗口身份与首次错误。恢复成功后重置该窗口材质缓存并重绘。失败不关闭应用文档。恢复期间材质操作返回 `OperationFailed`。失败的材质操作不会保存新的覆盖值或透明偏好。若原生配置已部分改变。后续 Surface 恢复会重新应用上一次成功的设置。只有 Device 丢失才启动全局 GPU 恢复。Device 丢失导致的 Surface 失败不会逐窗口报告 `SurfaceRecovery`。standalone 恢复依次尝试各存活窗口作为新 Device 的基准。某扇窗口无法重建不会阻塞其他窗口。embedded 的局部 Surface 故障不会要求宿主更换 Device。
+
+窗口拖动、边缘缩放与穿透控制保留底层错误分类：平台明确不支持时返回 `Unsupported`。操作被系统忽略或遇到其他 OS 错误时返回 `OperationFailed`。穿透事件与请求完成结果报告同一次操作的结果。
+
+同一父窗口已有模态子窗口时。重复创建模态子窗口会失败。可以在现有模态子窗口内创建嵌套模态。请求聚焦父窗口会沿模态链转发到最深层活动子窗口。关闭父窗口会递归清理整条子窗口链。清理过程中不会重新启用或聚焦正在关闭的 Windows 父窗口。
+
+`embedded-window-lifecycle --probe-device-loss` 在首帧前由宿主销毁外部 Device、通知管理器挂起并替换 GPU。然后执行相同的多窗口与焦点验收。它验证宿主通知/替换协议和恢复后的 present。不表示绘制中途恢复的性能数据。
+
+创建描述符的尺寸必须有限且为正。位置必须有限。模态窗口必须指定父窗口。`WindowService::create_window` 对这些错误直接完成为 `InvalidParameter`。不入队、不唤醒宿主。standalone/embedded 的初始窗口同样在分配原生资源前校验。并且不能指定父窗口。有父窗口的窗口通过服务创建。
+
+宿主直接销毁 `EmbeddedRuntime` 时。会先关闭请求队列并完成等待中的请求。再销毁应用状态。因此应用析构可以等待正在等待窗口请求的工作线程。未处理和后续请求均得到 `HostStopped`。`embedded-window-lifecycle --probe-host-stop` 覆盖这一退出顺序。
+
+隔离窗口（`Nana.windows.create({ isolation: "isolated" })`。见 [Vue](vue.md#多窗口与-javascript-隔离)）的脚本在 `initialize_window` 里、窗口显示之前于它自己的 JavaScript 上下文中执行。执行失败按创建失败回滚。打开方收到 `window-open-failed`。关闭时 `window-closed` 同时送到它自己的上下文和打开方的上下文。卸载完成后。若这是该上下文里最后一扇窗口。上下文与其私有 `localStorage` 随即销毁。
+
+Vue 主窗口也遵循独立关闭语义：原生关闭确认后释放对应文档、JS 定时器和监听器。其他 Vue 窗口及共享引擎继续存活。主窗口 DOM 操作在调用时解析存活文档。不会因引擎保留宿主操作而延长已关闭文档的生命周期。最后一个窗口的关闭通知仍会在引擎销毁前派发。材质和背景透明度按目标窗口读取。
+
+
+`vue-hosted-acceptance --window-lifecycle-probe` 使用实际 Vue 组件验证主窗口独立关闭：两个 Surface 首先 present。主窗口关闭后检查 Vue 卸载钩子、文档和 JS 上下文释放。再确认附加窗口继续 present。最后检查其关闭通知与缓存释放。探针会将附加窗口置前。避免启动时被主窗口完全遮挡而等待不到首帧。加 `--isolated` 时附加窗口以隔离模式打开：两个 Surface 仍在同一 GPU generation 上 present。并在主窗口关闭前核对隔离窗口自己的上下文执行了应用、读不到主上下文写入的 `localStorage`、定时器照常触发。
+
+Vue 窗口关闭时会卸载该窗口通过 `createApp().mount()` 或窗口 handle 挂载的应用。清理节点身份缓存、样式、动画、定时器及监听器。原生文档已先行销毁。因此同步卸载范围中的文档操作只完成 JS 侧清理。业务需要持久化数据时应在关闭请求阶段处理。普通存活窗口的卸载和宿主错误语义保持正常。

@@ -101,7 +101,7 @@ around 1–2% with the bbox hugging text runs; something structural shows up as 
 large fraction or a changed image size. Check the outliers individually and the
 tail statistically. The 2026-09-20 re-record did exactly this — median 1.29%,
 no size changes, four outliers inspected by eye — and the per-snapshot table is
-in `docs/performance-data/gallery-pixel-rerecord-2026-09-20/`.
+in `archive/docs-notes/performance-data/gallery-pixel-rerecord-2026-09-20/`.
 
 ## Two advisories the suite prints, and neither is a pixel failure
 

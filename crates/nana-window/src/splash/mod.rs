@@ -44,7 +44,7 @@ pub enum SplashLogoSource {
     Embedded(&'static [u8]),
     /// A `nana://res/` URL into the package's `early-splash` pack. The host
     /// reads it once, before the window is shown, from the one pack the
-    /// package manifest pins for it; see `docs/startup.md`.
+    /// package manifest pins for it; see `docs/reference/startup.md`.
     Packaged(&'static str),
 }
 

@@ -66,7 +66,7 @@ pub fn prepare_client_chrome<W: HasWindowHandle + ?Sized>(
 /// first acceptance round tested it on a window that was *not* presenting
 /// through DirectComposition. So this is a switch with a recorded default
 /// rather than a branch that detects its own failure — see
-/// `docs/window.md` for the comparison the default comes from.
+/// `docs/reference/window.md` for the comparison the default comes from.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NonClientRenderingStrategy {
     /// Remove the frame style bits. The measured default.

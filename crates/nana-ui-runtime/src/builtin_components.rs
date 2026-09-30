@@ -4167,7 +4167,7 @@ mod stack_direction_tests {
     /// `nana.row` is the exception, and it is not a spelling difference: the
     /// engine's default flow axis is the block axis, so a row that does not say
     /// so lays out as a column. Its write is owed. That it still fights the
-    /// cascade is the remaining half, recorded in `docs/runtime-dirty-frame.md`.
+    /// cascade is the remaining half, recorded in `archive/docs-notes/runtime-dirty-frame.md`.
     #[test]
     fn projecting_a_stack_does_not_rewrite_the_style_the_cascade_published() {
         // Sized by author CSS, no `direction` -- what the cascade produces.

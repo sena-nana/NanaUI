@@ -2,7 +2,7 @@
 
 NanaUI 的 Vue Custom Renderer。把 Vue 3 的一个子集写进同一棵原生树，不是 WebView。
 
-产品说明：[Vue](../../docs/vue.md)。新应用请从 Rust 的 [开始](../../docs/start.md) 写起。
+产品说明：[Vue](../../docs/reference/vue.md)。新应用请从 Rust 的 [快速开始](../../docs/guide/quick-start.md) 写起。
 
 ```js
 import { createApp } from "@nanaui/nanavue-runtime";

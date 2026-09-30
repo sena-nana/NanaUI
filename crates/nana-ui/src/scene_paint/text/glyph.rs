@@ -98,7 +98,7 @@ pub(super) enum GlyphRenderMode {
 /// makes the migration invisible is that a glyph lands in the same bin it
 /// used to. Derived from cosmic-text, Copyright (c) 2022 System76, MIT OR
 /// Apache-2.0 (<https://github.com/pop-os/cosmic-text>), the same licence pair
-/// NanaUI is under. See `docs/third-party.md`.
+/// NanaUI is under. See `docs/reference/third-party.md`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub(super) struct SubpixelBin(u8);
 

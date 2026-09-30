@@ -4,7 +4,7 @@
 //! contents (TOC). Each entry is split into fixed-size plaintext blocks; each
 //! block is compressed and sealed on its own, so a read touches only the
 //! blocks of one entry and a changed resource rewrites only its own extent
-//! plus the TOC. See [`format`] for the byte layout and `docs/packaging.md`
+//! plus the TOC. See [`format`] for the byte layout and `docs/reference/packaging.md`
 //! for why it is shaped this way (SteamPipe deltas).
 
 pub mod format;

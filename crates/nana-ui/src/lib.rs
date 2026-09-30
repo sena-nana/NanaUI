@@ -3,9 +3,9 @@
 //! Product retained/render contracts live in `nana-ui-runtime` and `nana-ui-scene`.
 //! New applications should use [`runtime`] (`AppContext`, `build`, `mount`,
 //! `ComponentView`, `register_component`). See
-//! [`docs/how-it-works.md`](../../../docs/how-it-works.md),
-//! [`docs/start.md`](../../../docs/start.md),
-//! [`docs/application-api.md`](../../../docs/application-api.md).
+//! [`docs/reference/how-it-works.md`](../../../docs/reference/how-it-works.md),
+//! [`docs/reference/start.md`](../../../docs/reference/start.md),
+//! [`docs/reference/application-api.md`](../../../docs/reference/application-api.md).
 //! Runtime owns the widget surface; the crate root exposes host adapters only.
 //! Vue + JS (`nana-ui-vue`, `nanavue-*`) map into the same model.
 //!

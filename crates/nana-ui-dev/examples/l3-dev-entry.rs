@@ -14,7 +14,7 @@
 //! - `--features headless` plus `--stdio` / `--screenshot` / `--a11y`: the same
 //!   tree in a headless Agent session, so "did that change land?" is answered by
 //!   a PNG and an a11y dump instead of by opening a window and looking. See
-//!   `docs/hot-reload.md`.
+//!   `docs/reference/hot-reload.md`.
 //!
 //! The release binary is a separate `main.rs` that calls `run_runtime` directly
 //! and never mentions this crate — which is what keeps `nana-ui-dev`'s

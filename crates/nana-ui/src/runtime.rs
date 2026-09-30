@@ -2,8 +2,8 @@
 //!
 //! Prefer this module over crate-root widget re-exports. New trees use
 //! `AppContext::build`. See
-//! [`docs/how-it-works.md`](../../../docs/how-it-works.md) and
-//! [`docs/application-api.md`](../../../docs/application-api.md).
+//! [`docs/reference/how-it-works.md`](../../../docs/reference/how-it-works.md) and
+//! [`docs/reference/application-api.md`](../../../docs/reference/application-api.md).
 //!
 //! Typed views and `register_component` live here. Scene types are also under
 //! [`host`]; frame counters under [`perf`]. [`internal`] is the same Runtime

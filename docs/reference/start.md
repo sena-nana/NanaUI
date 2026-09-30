@@ -1,0 +1,146 @@
+# 开始
+
+先看 [框架如何运行](how-it-works.md)。这篇把第一扇窗口写出来。
+
+## 依赖
+
+`nana-ui` 的默认 feature 是空的。不启用 `hosted`，就没有 `run_runtime`。不启用 `gpu`，就没有 painter。
+
+桌面应用最少要这些：
+
+```toml
+[dependencies]
+nana-ui = { path = "../NanaUI/crates/nana-ui", features = ["hosted", "bundled-fonts"] }
+```
+
+`hosted` 会带上 `gpu`、winit 和 AccessKit。更多控件族见 [应用 API](application-api.md) 的 feature 表。需要 Rust 1.98+。
+
+仓库本身用 path 或 git 消费。它尚未作为 crates.io 包发布。
+
+## 先看成品
+
+在仓库根目录：
+
+```bash
+cargo run -p component-gallery
+cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
+```
+
+Gallery 是控件目录。它不是你的产品骨架。
+
+最小宿主对照 `examples/runtime-host-fixture`。多窗口对照 `crates/nana-ui/examples/window-chrome-multi-window.rs`。
+
+## 第一扇窗口
+
+你的应用做三件事。建一棵 `RuntimeDocument`。实现 `RuntimeProgram`。调用 `run_runtime`。
+
+```rust
+use std::convert::Infallible;
+
+use nana_ui::runtime::view::{button, column, text};
+use nana_ui::runtime::{Activate, DocumentId, RuntimeDocument};
+use nana_ui::{
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor, ThemeMode,
+    run_runtime,
+};
+use nana_ui_platform::{WindowEvent, WindowId};
+
+struct App {
+    document: RuntimeDocument,
+}
+
+impl App {
+    fn mount() -> Self {
+        let document_id = DocumentId::new(1).expect("document id");
+        let mut document = RuntimeDocument::new(document_id);
+        let cx = document.context_mut();
+
+        cx.mount_view_root(document_id, || {
+            column().gap(12).children((
+                text("你好"),
+                button("开始").on_cx(|_button, _event: &Activate, _cx| {
+                    // 改你自己的状态。需要开窗或换 GPU 时：cx.dispatch_program(msg)
+                }),
+            ))
+        })
+        .unwrap();
+
+        Self { document }
+    }
+}
+
+impl RuntimeProgram for App {
+    type Message = ();
+    type Error = Infallible;
+
+    fn initialize(
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
+        Ok((Self::mount(), Vec::new()))
+    }
+
+    fn with_document<R>(&self, id: WindowId, f: impl FnOnce(&RuntimeDocument) -> R)
+        -> Result<Option<R>, nana_ui::DocumentAccessError>
+    {
+        Ok((id == WindowId::PRIMARY).then(|| f(&self.document)))
+    }
+
+    fn with_document_mut<R>(&mut self, id: WindowId, f: impl FnOnce(&mut RuntimeDocument) -> R)
+        -> Result<Option<R>, nana_ui::DocumentAccessError>
+    {
+        Ok((id == WindowId::PRIMARY).then(|| f(&mut self.document)))
+    }
+
+    fn update(
+        &mut self,
+        _message: Self::Message,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
+    fn theme_mode(&self) -> ThemeMode {
+        ThemeMode::Dark
+    }
+
+    fn window_event(
+        &mut self,
+        event: WindowEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        match event {
+            WindowEvent::CloseRequested { .. } => RuntimeProgramUpdate::exit(),
+            _ => RuntimeProgramUpdate::default(),
+        }
+    }
+}
+
+fn main() -> Result<(), nana_ui::HostedRunError> {
+    run_runtime::<App>(WindowDescriptor::new("NanaUI"))
+}
+```
+
+`bundled-fonts` 开启时，宿主会注册 Noto Sans SC，并设为界面默认字体。关掉则回落到系统字体。那不能当设计稿。
+
+控件只从 `nana_ui::runtime` 引入。crate 根不再提供同名控件的再导出。
+
+## 状态放哪
+
+| 东西 | 放哪 |
+| --- | --- |
+| 按钮是否 loading、输入框当前值 | 对应控件（`update_component`）或你的 view state |
+| 打开了哪个文档、登录态、设置值 | 应用自己的结构；通用键值就是 `localStorage` / `Nana.storage`（同一张表） |
+| 侧栏宽度、Region 折叠 | `WorkspaceModel`，见 [工作区](workspace.md) |
+| 窗口位置 / 尺寸 | `WindowDescriptor::persist_key`，见 [窗口](window.md) |
+| 这一帧的实时画面 | 你的 GPU 资源 + `HostTextureRegistry`，见 [实时画面](gpu.md) |
+
+`RuntimeProgram::Message` 是跨窗口、跨 GPU、跨持久化的宿主消息。它不是每个点击的总线。
+
+## 接下来
+
+- 拼控件、加一种自己的：[控件](components.md)
+- 桌面壳：[工作区](workspace.md)
+- 把视口挂上树：[实时画面](gpu.md)
+- 标题栏与系统模糊：[窗口](window.md)
+- 深色 / 浅色与尺寸：[视觉](look.md)
+- 用 Rust 建界面（挂载视图、句柄、何时不该重建）：[L3：用 Rust 建界面](l3-authoring.md)；视图的完整说明见 [声明式视图](reactive-view.md)

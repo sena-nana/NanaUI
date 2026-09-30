@@ -9,7 +9,7 @@ use nana_packager::secrets::SecretSources;
 use nana_packager::validate::{Status, ValidateOptions, validate};
 
 const USAGE: &str = "\
-nana-packager: package a Nana application (Issue #226, docs/packaging.md)
+nana-packager: package a Nana application (Issue #226, docs/reference/packaging.md)
 
 USAGE:
   nana-packager package --config nana-package.toml --exe PATH --out DIR

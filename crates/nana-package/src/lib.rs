@@ -11,7 +11,7 @@
 //!
 //! Everything here reads. Building packs, generating keys and signing is the
 //! build-side `nana-packager`, which never ships inside an application. See
-//! `docs/packaging.md` for the byte layouts and the security model.
+//! `docs/reference/packaging.md` for the byte layouts and the security model.
 
 pub mod hash;
 pub mod identity;

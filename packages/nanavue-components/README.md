@@ -2,7 +2,7 @@
 
 NanaUI 控件的 Vue 面。语义 props 进同一棵原生树，可与普通标签 / CSS 子集混用。
 
-系统说明：[Vue](../../docs/vue.md)、[控件](../../docs/components.md)。
+系统说明：[Vue](../../docs/reference/vue.md)、[控件](../../docs/reference/components.md)。
 
 ```js
 import {

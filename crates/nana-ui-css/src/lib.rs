@@ -1,6 +1,6 @@
 //! NanaUI's CSS subset, in one place.
 //!
-//! A stylesheet is ordinary CSS within the subset `docs/layout.md` lists:
+//! A stylesheet is ordinary CSS within the subset `docs/reference/layout.md` lists:
 //! selectors, the cascade, custom properties, `@media`, `@import`,
 //! `@font-face`, `@keyframes` and the interactive pseudo-classes, mapped onto
 //! the one Style Model ([`nana_ui_core::LayoutStyle`]). Two consumers share

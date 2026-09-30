@@ -14,7 +14,7 @@ application / Rust or Vue input
         -> nana-ui (SceneWgpuPainter)
 ```
 
-Read [`docs/architecture.md`](../../../docs/architecture.md), [`docs/how-it-works.md`](../../../docs/how-it-works.md), and the focused contract document before changing a boundary.
+Read [`docs/reference/architecture.md`](../../../docs/reference/architecture.md), [`docs/reference/how-it-works.md`](../../../docs/reference/how-it-works.md), and the focused contract document before changing a boundary.
 
 ## Ownership
 

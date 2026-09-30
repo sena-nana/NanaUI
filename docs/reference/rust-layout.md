@@ -1,0 +1,173 @@
+# 布局与样式（Rust 路径）
+
+这篇讲你在 Rust 里怎么排行和列，以及怎么写字段样式。
+
+Vue 兼容路径的 CSS 子集见 [布局](layout.md)。这篇只讲 Rust 路径。你不改 CSS。你直接构造 `NodeStyle`，或用现成的容器控件。
+
+## 先用 `Stack`，不要手写布局字段
+
+[`Stack`](../../crates/nana-ui-runtime/src/view_components.rs) 是 L3 的布局容器。预设覆盖常用的 flex。grid、position、overflow 和 paint 写同一份 [`LayoutStyle`](../../crates/nana-ui-core/src/box_layout.rs)，用 `with_layout` 或 `from_layout`。不要另造布局控件。
+
+常用入口仍是预设：
+
+```rust
+use nana_ui::runtime::{JustifySpec, SemanticColorRole, Stack};
+
+// 工具条：水平、随内容收缩、子项垂直居中；默认起点对齐，右对齐写 justify
+let toolbar = Stack::row(8.0).justify(JustifySpec::End);
+
+// 窄宽度下自动换行的操作区
+let actions = Stack::bar(8.0).wrap(true);
+
+// 主内容区：占满剩余高度
+let body = Stack::fill_column(12.0);
+
+// 带边框的卡片容器：一次写全背景、边框、圆角
+let card = Stack::column(7.0)
+    .padding(16.0)
+    .surface(SemanticColorRole::Surface)
+    .outline(SemanticColorRole::Border, 1.0)
+    .radius(16.0);
+```
+
+子节点在视图里写进容器。用 `column().children(..)`，或 `.with(|c| c.add(..))`。见 [L3：用 Rust 建界面](l3-authoring.md)。容器只负责排列。
+
+不要给 `Stack` 加子节点字段。动态区用 `mount`。
+
+| 预设 | 方向 | 尺寸 | 典型用途 |
+| --- | --- | --- | --- |
+| `Stack::row(gap)` | 水平 | 宽随内容 | 工具条、按钮组；默认起点对齐，`.justify(End)` 右对齐 |
+| `Stack::fill_row(gap)` | 水平 | 占满剩余宽 | 整行分段 |
+| `Stack::column(gap)` | 竖直 | 高随内容、宽占满 | 页面纵向结构 |
+| `Stack::fill_column(gap)` | 竖直 | 占满剩余高 | 主内容区 |
+| `Stack::bar(gap)` | 水平 | 占满整行不伸展 | 顶栏、底栏 |
+
+`column` 和 `fill_column` 的区别，是最常见的出错点。主区没伸展，底部输入区不贴底，几乎都是该用 `fill_column` 的地方写成了 `column`。
+
+需要 CSS 能表达的其余字段时，用 `with_layout` 写 `LayoutStyle`。Vue 的解析结果用 `Stack::from_layout` 承接。不要套用预设默认。
+
+Rust 预设容器默认不参与命中测试。`from_layout`（Vue 布局盒）默认可点。
+
+语义容器用 [`List`](components.md) 或 `Table`。列表和表格属于这一类。`Stack` 只管排版。
+
+## 样式：`NodeStyle` 与 builder
+
+控件接受 `.style(NodeStyle)`。颜色一律用 [`SemanticColorRole`](../../crates/nana-ui-core/src/semantics.rs) 语义角色。不要写裸色值。理由见 [视觉](look.md)。
+
+```rust
+use nana_ui::runtime::{NodeStyle, SemanticColorRole};
+
+let style = NodeStyle::default()
+    .surface(SemanticColorRole::Surface)   // 背景
+    .outline(SemanticColorRole::Border, 1.0) // 边框：颜色 + 宽度一次写全
+    .radius(8.0);
+```
+
+## 边框：颜色和宽度缺一不画
+
+底层把边框拆成两处。颜色在 `NodeStyle.border`（语义角色）或 `LayoutStyle.border_color`。宽度在 `LayoutStyle.border_width`。
+
+**任意一边缺省，边框就完全不绘制。** 编译期不会警告。运行期也不会警告。所以：
+
+- 永远用 `NodeStyle::outline(role, width)` 或 `Stack::outline(role, width)` 一次写全。不要分别设置 `border` 和 `border_width`。
+- 只想关掉边框时，写 `border_width: Some(0.0)`，并清掉 `border`，以及交互态（hover / focus）的边框角色。
+- `Card` 这类自带视觉的控件走另一条路。用 `kind(CardKind::Outlined)` 拿 1px 描边。不要手动叠加。你用 `.style(...)` 显式给出的背景、边框、圆角，优先于 `kind` 的默认值。
+
+Card 的可选标题，和它的正文子节点，分别绘制。你可以直接挂载独立的 `Text` 标题、说明和动作行。无标题卡片不会吞掉正文文字。
+
+长说明需要按内容区宽度测量。纵向布局应明确拉伸文本的横向尺寸，让换行高度参与后面动作行的位置计算。
+
+## 与网页 CSS 的默认值差异
+
+字段名对应 CSS。默认值是 fail-closed 的。你按 CSS initial 值去推断，会错：
+
+- 未写 `flex-shrink` 时按 **0** 处理。CSS 是 1。定宽行溢出时保留盒子，不会被压扁。需要收缩就显式 `shrink(1.0)`。
+- `align_items` 默认 `Start`。CSS flex 是 `stretch`。子项不会自动横向充满。`Stack` 预设已按用途选好。你自写 `LayoutStyle` 时要注意。
+- `direction` 缺省是 `Column`。不给样式的容器，子节点一个接一个竖排。要水平排列就用 `Stack::row`。不要指望默认。
+
+和 CSS 一致的一点：一行里的子项，按这一行分给它的主轴尺寸，去排它的内容。交叉轴尺寸也按这个尺寸量。
+
+行里一个 `Fill` 列在定宽侧栏旁边收窄了。它里面 16:9 的盒子，以及会换行的文字，按收窄后的宽度算高。这一列连同这一行都只和内容一样高。不会留着按整行宽度量出来的高度。这就是 CSS flexbox 里「用使用主轴尺寸求假想交叉尺寸」那一步。
+
+交叉轴尺寸写死时不重新量。`height` 是长度、百分比或 `Fill` 时都是这样。子项自己带 `aspect_ratio` 时也不重新量。
+
+## 浮层
+
+对话框、菜单、抽屉、气泡必须用 [控件](components.md) 里的浮层。那是 `Dialog`、`ActionMenu`、`Popover`、`Drawer`。锚定到触发控件的槽位。
+
+不要用绝对定位自己摆。也不要用 `fixed` 自己摆。
+
+框架内部的 `PositionSpec::Fixed` 以窗口视口为坐标基准。自身以及普通后代，不继承边界外的滚动、变换和裁剪。自身的变换、滚动和裁剪仍然生效。
+
+节点仍属于原来的 Runtime 树。结构上的透明度、叠放顺序、指针属性继承和 park 生命周期都保留。绘制和命中采用相同边界。
+
+切换定位方式时，尚未重新提取的后代也会更新投影。
+
+## 边距归属与覆盖
+
+| 容器 | 默认责任 |
+| --- | --- |
+| Shell / Workspace | 区域、分隔及窗口 chrome，不替业务内容添加页面留白 |
+| Stack | 排列和显式 gap，默认 padding 为零 |
+| Card / SettingsCard | 内部留白：左右 16、上下 14；不附带外部间距 |
+| SettingsPage | 滚动 body：上 20、右 24、下 24、左 24；标题与内容间 gap 为 16 |
+
+页面留白和卡片内部留白是两个不同边界。它们可以同时存在。框架不会根据嵌套层级自动清零。
+
+兄弟间距优先由父级 gap 负责。显式 margin 和 gap 相加，不自动折叠。
+
+页标题由 `SettingsPage` 的 tab label 负责。`AppearanceSection` 和 `AboutSection` 作为 page content 时，投影成无标题卡片。这样卡片 title 不会再加 24px 顶边，也不会和页标题重复。
+
+需要分区名时，才给 `SettingsCard` 设 title。
+
+- `Stack::padding(v)`、`padding_xy(x, y)`、`Card::padding(v)`、`padding_xy(x, y)` 覆盖四边，包括此前的逻辑边声明。后调用者生效。`padding(0.0)` 可以明确贴边。
+- 原始 `LayoutStyle` 仍是声明式的。分边覆盖统一 padding。Card 未声明的边回落默认值。显式零会保留。`.style(NodeStyle)` 替换你声明的样式，但不再隐式取消卡片的默认内边距。默认值只存在于投影。删掉覆盖，可以恢复默认。
+- `SettingsPage::content_padding(PaddingSpec)` 和 `content_gap(f32)` 只控制内部滚动 body。省略时用标准值。移除覆盖，可以把对应的公开字段恢复为 `None`。full-page Tab 直接承载业务内容，不创建滚动 body。这两个设置也不作用于该模式。
+- `SettingsPage::title_size(f32)` 和 `title_weight(u16)` 定页标题的字号和字重。默认是 18 和 600。页标题在每次装配时按 tab label 重建。切 tab，以及视图里的绑定改动，都会重新装配。所以要换标题样式，就设这两个字段。不要去改标题节点的样式。
+
+四类组合如下。挂载仍通过 `ui.nest` 或 `append_child`：
+
+```rust
+use nana_ui::runtime::{Card, Stack};
+use nana_ui_core::PaddingSpec;
+
+// 页面中放卡片：SettingsPage(content) → Stack → Card。
+let sections = Stack::column(16.0); // 多张卡片之间的间隔
+let card = Card::new();           // 卡片内部使用标准留白
+
+// 卡片内排列控件：Card → Stack → 控件，不再手写第二层 padding。
+let fields = Stack::column(8.0);
+
+// 贴边列表：页面或卡片谁负责该边界，就清零谁。
+let flush_card = Card::new().padding(0.0);
+let flush_page = page.content_padding(PaddingSpec::uniform(0.0));
+
+// 滚动到底：内容放进 SettingsPage.content；底部留白由 body 计算，
+// 不再添加末尾 Spacer，也不在页面外壳重复加 padding。
+```
+
+### 旧用法迁移
+
+原来依赖 `.padding_xy(...).padding(0)` 却没生效的布局，应直接保留你需要的最终 padding。
+
+原来借 Card 的 `.style(...)` 清零的地方，改为显式 `.padding(0.0)`。
+
+SettingsCard 不再默认附带 12px 底部 margin。多卡片页面使用父级 `Stack::column(gap)`。需要保留特定外边距时，显式声明。
+
+修复后的容器量测会计入子项 margin。百分比 padding 的四边都相对包含块宽度。Grid 项相对最终单元格。
+
+### 随主题解析的混色
+
+`SemanticColorMix::new(first_role, second_role, first_weight)` 对当前主题的两种语义色做预乘 alpha 的 sRGB 混合。
+
+权重表示第一种颜色的占比。精度是万分之一。超范围的有限值夹到 0–1。非有限值按零。
+
+`SemanticColorMix::alpha(role, alpha)` 只降低该颜色的 alpha。它不降低后代文字的不透明度。
+
+`NodeStyle::surface_mix(mix)` 和 `outline_mix(mix, width)` 设置基态混色。
+
+交互态的显式角色或混色会覆盖基态。主题切换会重新解析。原始 `LayoutStyle` 的显式颜色仍有最高优先级。
+
+`surface` 和 `surface_mix` 里，后调用者覆盖先前的对应基态。`outline` 和 `outline_mix` 也一样。
+
+`InteractionStyle::base` 提供基态的可选语义覆盖。随后依次合并 selected、hovered、pressed、focused、disabled。默认空值保持原有外观。

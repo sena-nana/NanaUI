@@ -366,7 +366,7 @@ impl Default for TypographyTokens {
 /// One step today. A 1px rule is a **stroke**, never a spacing step, which is
 /// why it is a category of its own rather than [`SpacingTokens::xxs`] wearing
 /// two hats. Focus-ring stroke and outset are still literals inside
-/// `nana-ui-scene`; see `docs/theme.md`.
+/// `nana-ui-scene`; see `docs/reference/theme.md`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BorderTokens {
     /// 1px rule: separators, control outlines, table grid lines.

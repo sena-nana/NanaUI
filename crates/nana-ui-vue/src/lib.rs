@@ -37,7 +37,7 @@
 //! Retained geometry lives in UiWorld/UiScene. `LayoutBoxStore` is a
 //! diagnostic layout snapshot after paint. `measure` is the pre-paint fallback +
 //! `nana-css-parity` harness. There is no separate synthetic layout branch. See
-//! [`docs/layout.md`](../../../docs/layout.md).
+//! [`docs/reference/layout.md`](../../../docs/reference/layout.md).
 //!
 //! This crate is the **L1/L2 adapter** (not the paint core):
 //! - `css_map` → Layout (`LayoutStyle`) — **neutral** declaration parse
@@ -61,9 +61,9 @@
 //!      └────────► nana-ui-web-api     ← L1 Web API 兼容（非 WebView）
 //! ```
 //!
-//! See [`docs/how-it-works.md`](../../../docs/how-it-works.md),
-//! [`docs/start.md`](../../../docs/start.md) and
-//! [`docs/vue.md`](../../../docs/vue.md).
+//! See [`docs/reference/how-it-works.md`](../../../docs/reference/how-it-works.md),
+//! [`docs/reference/start.md`](../../../docs/reference/start.md) and
+//! [`docs/reference/vue.md`](../../../docs/reference/vue.md).
 //!
 //! Unique retained authority is UiWorld/UiScene. Feature `scene-view` enables the
 //! nana-ui Scene-host adapter for that Scene, including Runtime Scene leaves.
@@ -78,7 +78,7 @@
 
 /// Benchmark-only phase timers for one `prepare_window_frame`.
 ///
-/// `docs/input-cost.md` attributes the Vue settle from a breakdown of
+/// `docs/reference/input-cost.md` attributes the Vue settle from a breakdown of
 /// `sync_semantics`. That breakdown does not cover the whole settle:
 /// `prepare_window_frame` also runs `resolve_layout`, which iterates to a fixed
 /// point. Guessing which half dominates is how the last two rounds went wrong,

@@ -5849,7 +5849,7 @@ mod tests {
     // rewrite `flex-direction` / `flex-reverse` / `justify-content`. The axis and
     // item-order flips happen in the layout engine — see the `rtl_*` tests in
     // `nana-ui-runtime`'s `layout_engine`. Reading this test as "rtl does not
-    // flip anything" is what let `docs/layout.md` claim that for months.
+    // flip anything" is what let `docs/reference/layout.md` claim that for months.
     fn direction_rtl_does_not_rewrite_flex_or_grid_style_fields() {
         let mut flex = LayoutStyle::default();
         flex.apply_css_text(

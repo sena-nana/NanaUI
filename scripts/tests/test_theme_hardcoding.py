@@ -177,7 +177,7 @@ impl Default for Helper {
         """
         baseline_path = (
             audit.REPO_ROOT
-            / "docs/performance-data/theme-phase1-2026-09-20/theme-hardcoding.json"
+            / "archive/docs-notes/performance-data/theme-phase1-2026-09-20/theme-hardcoding.json"
         )
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
         report = audit.scan()

@@ -1,0 +1,104 @@
+# 第三方代码与许可证（#99 §8）
+
+NanaUI 自己的代码是 **MIT 或 Apache-2.0**。见 [LICENSE-MIT](../../LICENSE-MIT) 和 [LICENSE-APACHE](../../LICENSE-APACHE)。
+
+这篇记的是文本栈换引擎之后，产品里到底还有谁的代码，哪些是照抄来的，以及那两个 fork 现在是什么状态。
+
+给要发布 NanaUI、或者要过法务的人看。你写应用的话，不需要看这篇。
+
+## 结论
+
+- release 依赖图里有 **586 个外部 crate**。图是全平台的 normal 边加上 build 边，命令见文末。全部是宽松许可证：MIT、Apache-2.0、BSD、ISC、Zlib、Unicode-3.0、0BSD、CC0、BSL-1.0、CDLA-Permissive-2.0，以及它们的组合。没有 copyleft-only 的边。两处 `MIT OR Apache-2.0 OR LGPL-2.1-or-later` 都可以取宽松的那一支。
+- `cryoglyph` 和 `cosmic-text` **都已不在 `Cargo.lock` 里**。不是「只剩 dev 依赖」。是一条边都没有。参照引擎已随之删除。见下。
+- 从被替换的引擎**照抄过一段代码**：`SubpixelBin::split`。已经就地署名。见「照抄了什么」。
+
+「别让它回来」由 `scripts/check-engine-boundary.py` 守着。CI 每次都会跑。任何工作区成员，在任何 feature 下，都不得有非 dev 边通向 `cosmic-text`、`cryoglyph` 或 `glyphon`。改了名的 fork 也算。只有 reference-only 的对照工具包可以例外。
+
+另有 #89 的一条源码规则：`nana-text/src` 里不得出现这三个标识符。
+
+## 文本栈依赖谁的代码
+
+`nana-text` 拥有生命周期、IR、缓存和编排。它**不重写标准重型算法**。下面这些就是那些算法的出处。版本以 `Cargo.lock` 为准：
+
+| crate | 版本 | 许可证 | 干什么 |
+| --- | --- | --- | --- |
+| `harfrust` | 0.12.0 | MIT | OpenType 整形（GSUB/GPOS）。只许出现在 `shaping/opentype.rs` |
+| `skrifa` | 0.44.0 | MIT OR Apache-2.0 | 轴、命名实例、彩色表、cmap。只许出现在 `font/face.rs` |
+| `read-fonts` | 0.41.0 | MIT OR Apache-2.0 | `skrifa` / `harfrust` 共用的字表读取 |
+| `fontdb` | 0.24.0 | MIT | 系统字体目录扫描与 name/OS2 元数据。只许出现在 `font/discovery.rs` |
+| `ttf-parser` | 0.25.1 | MIT OR Apache-2.0 | `fontdb` 的字表解析 |
+| `icu_properties` | 2.3.0 | Unicode-3.0 | script / Emoji_Presentation / Default_Ignorable。只许出现在 `font/unicode.rs` |
+| `unicode-bidi` | 0.3.18 | MIT OR Apache-2.0 | UBA。只许出现在 `shaping/bidi.rs` |
+| `unicode-linebreak` | 0.1.5 | Apache-2.0 | UAX #14 断行机会。只许出现在 `layout/breaks.rs` |
+| `unicode-segmentation` | 1.13.3 | MIT OR Apache-2.0 | 字素簇 / 词边界 |
+| `swash` | 0.2.10 | Apache-2.0 OR MIT | 字形轮廓缩放与栅格化。只在 `scene_paint/text/raster.rs` 后面 |
+| `zeno` | 0.3.3 | Apache-2.0 OR MIT | `swash` 的路径栅格化 |
+| `yazi` | 0.2.1 | Apache-2.0 OR MIT | `swash` 的 WOFF2 解压 |
+| `windows` | 0.62.2 | MIT OR Apache-2.0 | 仅 Windows：DirectWrite 栅格化 outline 字形与读系统 ClearType 设置，只在 `scene_paint/text/raster_dwrite.rs` 后面；彩色 / 位图 / 侧卧字形与失败时仍走 `swash` |
+| `etagere` | 0.2.15 | MIT/Apache-2.0 | glyph atlas 的矩形打包。只在 `scene_paint/text/atlas.rs` 后面 |
+
+「只许出现在某个文件」这一条由 `check-engine-boundary.py` 守着。所以这些 crate 的类型不可能泄进 `nana-text` 的公开 API。
+
+`fontdb` 在依赖图里有 **0.23.0 与 0.24.0 两份**。0.23 是 `ratex-svg` 经 `ratex-font-loader` 再经 `ratex-unicode-font` 拉进来的。那是 SVG 和数学公式渲染那条线，与文本栈无关。两者互不可见。
+
+## 那两个 fork 现在是什么状态
+
+### `cryoglyph`（GPU text renderer）
+
+**已从产品与 `Cargo.lock` 中完全移除。** `NanaRenderer::text`（`crates/nana-ui/src/scene_paint/text/`）自己实现了它原来的全部职责：glyph IR、栅格化边界、raster cache、GPU atlas、上传队列、text pipeline。
+
+fork 仓库按 #99 的说法归档，或留一条 reference branch 即可。本仓库不再引用它。
+
+它原来的许可证是 `MIT OR Apache-2.0 OR Zlib`。**本仓库没有从它照抄源码。**
+
+`atlas.rs` 是代际句柄、引用计数、多页和占位页的结构。它和 cryoglyph 的 `text_atlas.rs` 不同。
+
+`text_atlas.wgsl` 用的是 presentation 表、run 行和 mat4 投影。它和按实例打包字段再加 `screen_resolution` 的着色器不同。
+
+两边都有的 `srgb_to_linear`（0.04045、12.92、1.055、2.4）是 sRGB EOTF 的规范公式（IEC 61966-2-1）。不是谁的著作。
+
+共同的设计是 mask 和 color 两种 atlas 页，以及 per-instance content type。按 #97 的定位，这属于「迁移期的设计参考」。
+
+### `cosmic-text`（shaping / layout）
+
+**已完全移除。** dev 依赖也没了。
+
+参照引擎（`crates/nana-text/tests/reference/`）、拿它对 golden 的 `text_parity_corpus.rs`（含 `NANA_TEXT_BLESS` 重录路径），以及 `reference_engine_counters_*.rs`，一并删除。`src/` 一行未动。当初把它放进 `tests/`，就是为了这一刻。
+
+留下来的是 **golden**。`crates/nana-text/corpus/golden/TX-*.layout.json` 是 Phase 0 由参照引擎录下的答案。现在由两个拿**原生**引擎对着它们跑的用例守着。覆盖面没变。
+
+golden 因此是冻结的迁移证据。重录之前，你要先决定新基线代表什么。
+
+fork 曾是 `https://github.com/sena-nana/cosmic-text.git`，pin 在 `061c738ebc28789963f61e82b313717ac67ffd66`。那是上游 0.19.0，加上字体变体轴。
+
+上游是 `https://github.com/pop-os/cosmic-text`，Copyright (c) 2022 System76，MIT OR Apache-2.0。它的一段代码仍在本仓库里。见「照抄了什么」。
+
+## 照抄了什么
+
+两处，已经就地署名：
+
+- **`SubpixelBin::split`**（`crates/nana-ui/src/scene_paint/text/glyph.rs`）是 cosmic-text `SubpixelBin::new` 的移植。阈值、分支顺序、向整像素的进位都保持原样。这是**故意的**。迁移之所以看不出来，正是因为一个字形还落在它原来的那个亚像素桶里。Copyright (c) 2022 System76，MIT OR Apache-2.0，与 NanaUI 同一对许可证。保留署名即满足 MIT 的要求。
+
+- **DirectWrite 的灰度 / ClearType 覆盖率校正**：`GAMMA_INCORRECT_TARGET_RATIOS` 系数表，以及 `gamma_ratios` 的归一化（`crates/nana-ui/src/scene_paint/text/gamma.rs`），还有着色器里的 `enhance_contrast`、`apply_alpha_correction`、亮色字的对比度衰减（`crates/nana-ui/src/scene_paint/shader/text_atlas.wgsl` 的 `corrected_coverage`）。它们移植自 Windows Terminal AtlasEngine 的 `dwrite.cpp` 和 `dwrite.hlsl`（`https://github.com/microsoft/terminal`），Copyright (c) Microsoft Corporation，MIT。之后「gamma 空间结果变成线性混合所需覆盖率」那一步是本仓库自己的。背景取前景反色的假设，与 Skia `SkTMaskGamma_build_correcting_lut` 相同。那是思路，未照抄。
+
+另有两处是**行为兼容，不是照抄源码**。记在这里，免得以后被误认：
+
+- 合成斜体的 14° 斜切（`raster.rs` 的 `OBLIQUE_DEGREES`）与旧后端取同一个角度。这样，迁移前没有斜体的 face，迁移后也朝同一边倒。
+- mask 和 color 两种 atlas 页的划分，与 cryoglyph / glyphon 是同一个思路。实现是自己的。
+
+**范围声明**：上面是按「最可能被移植的地方」查的。查的是 `SubpixelBin`、atlas、着色器和栅格化入口。#97 的 renderer 不是逐行与 cryoglyph 对照过的。再发现移植片段时，按同样的方式就地署名，并补进这一节。
+
+## 怎么重跑这份审计
+
+```bash
+# 产品图里没有被替换的引擎、nana-text 源码里没有它们的标识符（CI 也跑这一条）
+python3 scripts/check-engine-boundary.py
+
+# release 依赖图里的外部 crate 与许可证（全平台，normal + build 边）
+cargo tree --edges normal,build --workspace --locked --target all --prefix none -f '{p}|{l}' \
+  | sed 's/ (\*)//' | sort -u | grep -v "(/"
+```
+
+`grep -v "(/"` 去掉的是工作区自己的 path crate。git 依赖（例如 `winit`）以 `(https://` 结尾，会留下来。
+
+你如果只看 `--edges normal`，或只看本机平台，数出来的会更少。那不是依赖变了。

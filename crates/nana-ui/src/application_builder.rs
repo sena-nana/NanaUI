@@ -125,7 +125,7 @@ impl NanaApplicationBuilder {
     /// [`Self::start`]: the package manifest is read (and its signature
     /// checked as `options` demands) and each pack opens on its first
     /// lookup. Starting with `NANA_PACKAGE_VALIDATE=1` turns startup into
-    /// the packager's self-check (`docs/packaging.md`).
+    /// the packager's self-check (`docs/reference/packaging.md`).
     #[cfg(feature = "packaged-resources")]
     pub fn resource_packs(
         mut self,

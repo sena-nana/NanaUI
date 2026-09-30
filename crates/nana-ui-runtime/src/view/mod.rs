@@ -1,4 +1,4 @@
-//! Declarative views over the retained tree; see `docs/reactive-view.md`.
+//! Declarative views over the retained tree; see `docs/reference/reactive-view.md`.
 //!
 //! A view is an expression built once. Its dynamic parts are signals or
 //! closures, and each binding updates exactly the node field it names:
@@ -175,7 +175,7 @@ pub use nana_ui_view_macros::Store;
 /// a literal is a constant, `{path}` is passed as is (a signal or a value),
 /// any other `{expression}` becomes `move || expression`. Unknown tags call
 /// the snake-cased function with the attribute values in order and the
-/// children last. See `docs/reactive-view.md`.
+/// children last. See `docs/reference/reactive-view.md`.
 #[cfg(feature = "view-macro")]
 #[macro_export]
 macro_rules! view {

@@ -4,7 +4,7 @@
 //! whose content changed. This models that with fixed, aligned 1 MiB chunks:
 //! a proxy, not SteamPipe itself (whose chunking may detect some shifted
 //! data). CI gates on these counts; real patch sizes need a steamcmd preview
-//! build (see `docs/packaging.md`).
+//! build (see `docs/reference/packaging.md`).
 
 use serde::Serialize;
 

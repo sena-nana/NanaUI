@@ -3,7 +3,7 @@
 //! Turns an already built executable, a resource tree and
 //! `nana-package.toml` into a distributable application: packs, platform
 //! layout, package manifest, Steam depot metadata, and a validation report.
-//! See `docs/packaging.md`.
+//! See `docs/reference/packaging.md`.
 
 pub mod cache;
 pub mod config;

@@ -5,7 +5,7 @@ description: Maintain NanaUI's reusable workspace shell and visual controls. Use
 
 # NanaUI Workspace UI
 
-Read [`docs/workspace.md`](../../../docs/workspace.md), [`docs/components.md`](../../../docs/components.md), [`docs/look.md`](../../../docs/look.md), and [`docs/how-it-works.md`](../../../docs/how-it-works.md). For crate ownership read [`docs/architecture.md`](../../../docs/architecture.md).
+Read [`docs/reference/workspace.md`](../../../docs/reference/workspace.md), [`docs/reference/components.md`](../../../docs/reference/components.md), [`docs/reference/look.md`](../../../docs/reference/look.md), and [`docs/reference/how-it-works.md`](../../../docs/reference/how-it-works.md). For crate ownership read [`docs/reference/architecture.md`](../../../docs/reference/architecture.md).
 
 ## Boundaries
 

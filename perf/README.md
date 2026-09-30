@@ -25,7 +25,7 @@ perf/
 Iced / GPUI 对照——那两个 runner 对 `GpuScene` 一律 unsupported，摆进跨框架表格只会
 重新引入本文件开头警告的不可比性。规模写在 `params.node_repeat`，runner 必须原样回显，
 否则 extractor 拒绝该报告。基线与判据见
-[`docs/gpu-node-scale.md`](../docs/gpu-node-scale.md)。
+[`archive/docs-notes/gpu-node-scale.md`](../archive/docs-notes/gpu-node-scale.md)。
 
 ## Windows 合成器静止期
 
@@ -37,7 +37,7 @@ Iced / GPUI 对照——那两个 runner 对 `GpuScene` 一律 unsupported，摆
 DX12 真机跑得出来，没有合成 target 的机器**不要**写报告——宁可没有，也不要一份全零的假报告。
 产出入口是 `cargo run -p nana-ui --features "hosted bundled-fonts wgpu-interop" --example native-content-probe`，
 它把静止期增量写到 `target/performance/windows-composition-steady.json`。判据与实现见
-[`docs/window.md`](../docs/window.md)。
+[`docs/reference/window.md`](../docs/reference/window.md)。
 
 ## Issue #98 保留期文本
 
@@ -78,7 +78,7 @@ cargo run --release --locked -p nana-ui --features gpu --bin nana-text-paint-ben
 每周的 macOS 任务现跑；重录 fixture 就是对每个 id 跑一次
 `cargo run --release --locked -p nana-ui --features gpu --bin nana-gpu-scene-benchmark -- --scenario perf/scenarios/<id>.json --output perf/fixtures/nana-<id>.json`。
 
-判据与前后数字见 [`docs/text-engine.md`](../docs/text-engine.md) 的「保留期文本」一节。
+判据与前后数字见 [`docs/reference/text-engine.md`](../docs/reference/text-engine.md) 的「保留期文本」一节。
 
 ## Issue #87 compositor motion
 
@@ -132,7 +132,7 @@ cargo build --release -p nana-ui-scene --features benchmark --bin nana-dirty-fra
 ./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 4000 --samples 150 --warmup 30
 ```
 
-基线数字与「每阶段重跑并贴回」的规则在 [文本引擎](../docs/text-engine.md#33-迁移基准)。
+基线数字与「每阶段重跑并贴回」的规则在 [文本引擎](../docs/reference/text-engine.md#33-迁移基准)。
 `nana-text` 自己的结构化 correctness 门禁是 `cargo test -p nana-text --all-targets`，
 与本目录的 work-counter 合同是两回事。
 
@@ -149,7 +149,7 @@ python3 perf/runners/nana/run.py --print-plan --scenario theme-palette-switch
 cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-theme-benchmark -- --output target/performance/issue101/theme.json
 python3 perf/runners/nana/run.py --scenario theme-palette-switch --from-report target/performance/issue101/theme.json
 # 不想重跑 benchmark 时，用归档的那份报告重放：
-python3 perf/runners/nana/run.py --scenario theme-density --from-report docs/performance-data/theme-audit-2026-09-19/theme-work-counters.json
+python3 perf/runners/nana/run.py --scenario theme-density --from-report archive/docs-notes/performance-data/theme-audit-2026-09-19/theme-work-counters.json
 ```
 
 这组没有单独的 `perf/fixtures/` 副本：归档报告只留一份（带日期、带机器），extractor 与门禁本身由
@@ -162,7 +162,7 @@ python3 perf/runners/nana/run.py --scenario theme-density --from-report docs/per
 会报上一帧的数字。
 
 这些数字是 **Phase 0 基线**，描述现状（包括 Issue #100 要收窄的地方），不是目标值。改动
-后重跑并贴回 [`docs/theme.md`](../docs/theme.md) 的「性能基线」一节。
+后重跑并贴回 [`docs/reference/theme.md`](../docs/reference/theme.md) 的「性能基线」一节。
 
 ## Vue vs Rust L3 输入成本
 
@@ -181,7 +181,7 @@ cargo build --release -p nana-ui-devtools --features agent-bin --bin nana-hover-
 `--shape window` 是真实窗口重绘的序列，`--shape headless` 是 Agent 会话的替身；只量后者
 会得出一条没有窗口会走的路径的结论。`--scroll` 驱动带滚动容器的同形状树。
 
-结果、成因和已落地的修复见 [`docs/input-cost.md`](../docs/input-cost.md)。这是目前唯一测过
+结果、成因和已落地的修复见 [`docs/reference/input-cost.md`](../docs/reference/input-cost.md)。这是目前唯一测过
 JS↔Rust 边界的基准：`nana-vue-runtime-benchmark` 不 import V8。
 
 ## Invoke

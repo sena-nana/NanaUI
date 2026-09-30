@@ -90,11 +90,11 @@ def main() -> int:
     gpu_slots = (
         ROOT / "crates/nana-ui-runtime/src/gpu_slots.rs"
     ).read_text(encoding="utf-8")
-    architecture = (ROOT / "docs/architecture.md").read_text(encoding="utf-8")
-    components = (ROOT / "docs/components.md").read_text(encoding="utf-8")
-    application_api = (ROOT / "docs/application-api.md").read_text(encoding="utf-8")
-    readme = (ROOT / "docs/README.md").read_text(encoding="utf-8")
-    vue = (ROOT / "docs/vue.md").read_text(encoding="utf-8")
+    architecture = (ROOT / "docs/reference/architecture.md").read_text(encoding="utf-8")
+    components = (ROOT / "docs/reference/components.md").read_text(encoding="utf-8")
+    application_api = (ROOT / "docs/reference/application-api.md").read_text(encoding="utf-8")
+    readme = (ROOT / "docs/index.md").read_text(encoding="utf-8")
+    vue = (ROOT / "docs/reference/vue.md").read_text(encoding="utf-8")
 
     if "pub use nana_ui_runtime::*" in nana_ui:
         fail("wildcard nana_ui_runtime re-export bypasses the compatibility surface")

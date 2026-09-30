@@ -1647,7 +1647,7 @@ impl MessageBridge {
     /// This still walks every node every frame. Pushing down only from the
     /// widgets whose content box may have moved would take the stage to
     /// ~0.0001 ms -- measured -- but nothing available can prove that the
-    /// seeding is complete; see `docs/runtime-dirty-frame.md`.
+    /// seeding is complete; see `archive/docs-notes/runtime-dirty-frame.md`.
     ///
     /// Sibling order does not matter here -- a node's containing block depends
     /// only on its parent's content box -- but parent-before-child does, so

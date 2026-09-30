@@ -2,7 +2,7 @@
 
 引擎探针：Vue Custom Renderer → Runtime / UiScene。用来验收 host op、语义桥和无头点击，**不是**应用模板。
 
-窗口化 Vue 应用对照 `examples/vue-hosted-acceptance`。产品说明见 [Vue](../../docs/vue.md)。
+窗口化 Vue 应用对照 `examples/vue-hosted-acceptance`。产品说明见 [Vue](../../docs/reference/vue.md)。
 
 ```bash
 # 无头 Counter

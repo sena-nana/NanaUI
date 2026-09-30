@@ -5,7 +5,7 @@ description: Maintain NanaUI's platform-owned native window boundary. Use when c
 
 # NanaUI Window and Platform Boundary
 
-Read [`docs/window.md`](../../../docs/window.md) and the platform contracts in [`docs/architecture.md`](../../../docs/architecture.md).
+Read [`docs/reference/window.md`](../../../docs/reference/window.md) and the platform contracts in [`docs/reference/architecture.md`](../../../docs/reference/architecture.md).
 
 - Keep raw window handles and platform APIs inside `nana-window` and `nana-ui-platform`. Ordinary controls consume public outcomes and commands only.
 - Clear an existing effect before reapplying it. Return the effect actually applied or an explicit fallback; never report a requested effect after failure.

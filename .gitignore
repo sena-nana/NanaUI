@@ -2,6 +2,9 @@ target/
 /tools/css-parity-webview/target/
 /target-android/
 /dist/
+docs/node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 .DS_Store
 __pycache__/
 /perf/reports/**

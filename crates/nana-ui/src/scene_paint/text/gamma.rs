@@ -21,7 +21,7 @@
 /// DirectWrite's alpha correction coefficients, one row per 0.1 of gamma from
 /// 1.0 to 2.2. Ported from Windows Terminal's AtlasEngine
 /// (`src/renderer/atlas/dwrite.cpp`), Copyright (c) Microsoft Corporation,
-/// MIT. See `docs/third-party.md`.
+/// MIT. See `docs/reference/third-party.md`.
 const GAMMA_INCORRECT_TARGET_RATIOS: [[f32; 4]; 13] = [
     [0.0000, 0.0000, 0.0000, 0.0000],
     [0.0166, -0.0807, 0.2227, -0.0751],

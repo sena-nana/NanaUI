@@ -1,6 +1,6 @@
 //! The size that decides where theme intent gets resolved.
 //!
-//! `docs/theme.md` §1.5 resolves sizing intent when a node's style is
+//! `docs/reference/theme.md` §1.5 resolves sizing intent when a node's style is
 //! *written*, not when it is read, and resolves colour the other way round.
 //! The only reason for the split is that a colour is 16 bytes and a
 //! `LayoutStyle` is three orders of magnitude larger: putting the box on the

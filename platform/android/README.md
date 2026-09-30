@@ -50,7 +50,7 @@ cargo test -p nana-android-host --lib --locked
 
 - `engine-v8` (default on host) — desktop smoke. Android ARM64 cross-check links
   V8 when `RUSTY_V8_ARCHIVE` is set (GitHub Actions `Package V8`); otherwise
-  `--no-default-features` (`docs/android.md`). The `android-arm64-cross` CI job
+  `--no-default-features` (`docs/reference/android.md`). The `android-arm64-cross` CI job
   is the V8 **stub** path and does not build GN.
 - **`AndroidShellStub`** sizes Primary viewport from the same `nana-ui-core` geometry as desktop
   `DesktopShell`. `VueHost` resolves layout in that viewport. Frame presentation is wgpu chrome
@@ -94,7 +94,7 @@ Requires SDK `build-tools`, `platforms;android-34`, and Gradle. Metadata under
 
 ## Device checklist
 
-See [`docs/android.md`](../../docs/android.md). Cross-compile is not CJK or
+See [`docs/reference/android.md`](../../docs/reference/android.md). Cross-compile is not CJK or
 TalkBack evidence.
 
 ```bash

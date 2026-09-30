@@ -48,7 +48,7 @@ UiScene          （与后端无关的绘制图）
 - **框架拥有：** 控件语义、布局、命中、焦点 / IME、无障碍增量、可选的窗口/Dock view-state 恢复，以及把树画进你的 Surface。
 - **窗口句柄** 不到达普通控件。系统材质走 `nana-window`；控件只发出「请关闭 / 最小化」这类语义。
 
-完整说明见 [框架如何运行](docs/how-it-works.md)。
+完整说明见 [框架如何运行](docs/reference/how-it-works.md)。
 
 ## 什么时候用
 
@@ -61,9 +61,9 @@ UiScene          （与后端无关的绘制图）
 Rust `nana_ui::runtime` 是默认作者面。Vue 是一等的 L1/L2 入口，不是过渡层——两者写同一棵 `UiWorld`，布局、文字、命中、绘制只有一份 Rust 实现，所以这个选择不影响绘制稳态。按**界面表面**切，不按团队语言偏好切：
 
 - **Rust L3**：应用壳、标题栏、Workspace / Dock、多窗口；持有 `Entity<V>`、GPU 槽或宿主纹理的地方；大规模虚拟列表 / 表格 / 树。
-- **Vue L1/L2**：已有 Web 界面的迁移；以及视觉迭代频繁的内容面（设置页、表单、面板）。Vue 改一行到看见约 200 ms，Rust 是重编译 + 重启（实测量级见 [开发期热重载](docs/hot-reload.md)）。
+- **Vue L1/L2**：已有 Web 界面的迁移；以及视觉迭代频繁的内容面（设置页、表单、面板）。Vue 改一行到看见约 200 ms，Rust 是重编译 + 重启（实测量级见 [开发期热重载](docs/reference/hot-reload.md)）。
 
-**指针密集不再是选型理由**：实测两条路的每个指针事件都是常数，不随树增长——Vue 约 0.062 ms，L3 约 0.0003 ms，绝对值都在 0.1 ms 以内。真正要避开的是写法——长列表里 hover 改动参与渲染的状态会重建整列。数据见 [输入成本](docs/input-cost.md)。
+**指针密集不再是选型理由**：实测两条路的每个指针事件都是常数，不随树增长——Vue 约 0.062 ms，L3 约 0.0003 ms，绝对值都在 0.1 ms 以内。真正要避开的是写法——长列表里 hover 改动参与渲染的状态会重建整列。数据见 [输入成本](docs/reference/input-cost.md)。
 
 两条路可以在一个产品里共存，但**不要在同一棵子树里混写**：原语支持，产品合同不支持。
 
@@ -84,7 +84,7 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 
 `nana-ui` 默认 feature 为空。要出窗口至少启用 `hosted`（含 gpu 与 winit）和 `bundled-fonts`。
 
-写第一扇窗口：[开始](docs/start.md)。文档索引：[docs/README.md](docs/README.md)。
+写第一扇窗口：[快速开始](docs/guide/quick-start.md)。文档索引：[docs/index.md](docs/index.md)。
 
 ## 许可
 

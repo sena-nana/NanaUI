@@ -1122,7 +1122,7 @@ mod tests {
                     );
                 } else {
                     // A cut single line asks layout for its whole line
-                    // (docs/text-engine.md); what it paints is the retained
+                    // (docs/reference/text-engine.md); what it paints is the retained
                     // layout, cut to the box.
                     assert!(
                         (metrics.width - natural.width).abs() < 0.5,

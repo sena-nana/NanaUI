@@ -2,7 +2,7 @@
 //! with the number of DIRTY nodes and, independently, with the number of TOTAL
 //! nodes in the document.
 //!
-//! `docs/input-cost.md` established that a Vue frame touching 2 widgets in a
+//! `docs/reference/input-cost.md` established that a Vue frame touching 2 widgets in a
 //! 2,000-node document spends 1.51 ms inside this flush, while an idle flush on
 //! the same tree is 0.0001 ms. One dirty-set size is not enough to say which
 //! system pipeline charges by total size, so this sweeps the grid and reports
