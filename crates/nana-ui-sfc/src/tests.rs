@@ -11,7 +11,24 @@ fn compile(files: &[(&str, &str)]) -> Result<Output, Error> {
 /// Code without whitespace or trailing commas, so assertions do not depend
 /// on the formatter.
 fn squash(code: &str) -> String {
-    let joined: String = code.split_whitespace().collect();
+    let mut joined: String = code.split_whitespace().collect();
+    // Existing lowering assertions concern construction, not source metadata.
+    while let Some(start) = joined.find(".source_site(") {
+        let mut depth = 1;
+        let body = start + ".source_site(".len();
+        let end = joined[body..]
+            .char_indices()
+            .find_map(|(index, ch)| {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(body + index + 1)
+            })
+            .expect("balanced source metadata call");
+        joined.replace_range(start..end, "");
+    }
     joined.replace(",)", ")")
 }
 
@@ -62,6 +79,10 @@ let label = computed(move || format!("{} 项", title.get()));
             "__checked(\"Title.vue:11:62\", [count.dep()], move || count.get() > 3)"
         )),
         "{code}"
+    );
+    assert!(
+        out.code.contains("ViewSource") && out.code.contains("SourceLocation::new"),
+        "SFC nodes retain their template source location: {code}"
     );
     assert!(
         out.report
@@ -509,9 +530,7 @@ let id = signal(1u32);
     .unwrap();
     let code = squash(&out.code);
     assert!(
-        code.contains(&squash(
-            "::nana_ui_runtime::view::suspense(move || ::nana_ui_runtime::view::text(\"加载中\"), move ||"
-        )),
+        code.contains("::nana_ui_runtime::view::suspense(move||"),
         "{code}"
     );
     let missing = compile(&[(

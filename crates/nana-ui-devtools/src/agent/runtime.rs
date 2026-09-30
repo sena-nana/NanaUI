@@ -441,14 +441,20 @@ impl AgentSession for RuntimeAgentSession {
         let causes: Vec<CauseDump> = Vec::new();
         Ok(InspectDump {
             control: inspection.control.map(str::to_owned),
-            element: inspection.element.map(|at| at.to_string()),
+            element: inspection
+                .source_element
+                .map(|at| at.to_string())
+                .or_else(|| inspection.element.map(|at| at.to_string())),
             fields: inspection
                 .fields
                 .into_iter()
                 .map(|field| FieldDump {
                     name: field.name.to_owned(),
                     value: field.value,
-                    bound_at: field.bound_at.map(|at| at.to_string()),
+                    bound_at: field
+                        .source_bound_at
+                        .map(|at| at.to_string())
+                        .or_else(|| field.bound_at.map(|at| at.to_string())),
                 })
                 .collect(),
             causes,

@@ -13,6 +13,7 @@ const MAX_ROUNDS: usize = 64;
 struct NodeEntry {
     effect: EffectKey,
     patch: Box<dyn NodePatch>,
+    source: Option<&'static crate::view::ViewSource>,
 }
 
 struct StructuralEntry {
@@ -274,12 +275,19 @@ impl AppContext {
     /// Take over what a build left and assemble the slots of the composites
     /// it built, innermost first.
     pub(crate) fn install_view_parts(&mut self, parts: ViewParts) -> Result<(), FrameworkError> {
-        for (id, effect, patch) in parts.nodes {
+        for (id, effect, patch, source) in parts.nodes {
             if !self.world.contains(id) {
                 rx::dispose_effect(effect);
                 continue;
             }
-            if let Some(old) = self.reactive.nodes.insert(id, NodeEntry { effect, patch }) {
+            if let Some(old) = self.reactive.nodes.insert(
+                id,
+                NodeEntry {
+                    effect,
+                    patch,
+                    source,
+                },
+            ) {
                 rx::dispose_effect(old.effect);
             }
         }
@@ -541,9 +549,26 @@ impl AppContext {
     /// without bindings.
     pub fn view_bindings(&self, node: StableNodeId) -> Option<crate::view::NodeBindingInfo> {
         let entry = self.reactive.nodes.get(&node)?;
+        let fields = entry.patch.fields();
+        let source_fields = entry.source.map_or_else(Vec::new, |source| {
+            fields
+                .iter()
+                .filter_map(|(field, _)| {
+                    source
+                        .fields
+                        .iter()
+                        .find(|(name, _)| {
+                            *name == *field || field.rsplit('.').next() == Some(*name)
+                        })
+                        .map(|(_, at)| (*field, *at))
+                })
+                .collect()
+        });
         Some(crate::view::NodeBindingInfo {
             element: rx::effect_site(entry.effect)?,
-            fields: entry.patch.fields(),
+            fields,
+            source: entry.source.map(|source| source.element),
+            source_fields,
         })
     }
 
@@ -567,6 +592,14 @@ impl AppContext {
                     .map(|(_, at)| *at)
             })
         };
+        let source_bound = |name: &str| {
+            bindings.as_ref().and_then(|info| {
+                info.source_fields
+                    .iter()
+                    .find(|(field, _)| field.rsplit('.').next() == Some(name))
+                    .map(|(_, at)| *at)
+            })
+        };
         let (control, fields) = self
             .views
             .get(&node)
@@ -581,9 +614,11 @@ impl AppContext {
                     name,
                     value,
                     bound_at: bound(name),
+                    source_bound_at: source_bound(name),
                 })
                 .collect(),
             element: bindings.as_ref().map(|info| info.element),
+            source_element: bindings.as_ref().and_then(|info| info.source),
         })
     }
 
@@ -607,6 +642,8 @@ impl AppContext {
             node,
             element: info.element,
             bindings: info.fields,
+            source_element: info.source,
+            source_bindings: info.source_fields,
             causes,
         })
     }

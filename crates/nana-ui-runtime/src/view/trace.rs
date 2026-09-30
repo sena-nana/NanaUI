@@ -7,6 +7,7 @@
 
 use std::panic::Location;
 
+use super::node::SourceLocation;
 use super::reactive::{EffectKey, SignalKey};
 use crate::StableNodeId;
 
@@ -162,5 +163,7 @@ pub struct WhyUpdated {
     pub element: &'static Location<'static>,
     /// Each bound field and where its binding was declared.
     pub bindings: Vec<(&'static str, &'static Location<'static>)>,
+    pub source_element: Option<SourceLocation>,
+    pub source_bindings: Vec<(&'static str, SourceLocation)>,
     pub causes: Vec<Cause>,
 }

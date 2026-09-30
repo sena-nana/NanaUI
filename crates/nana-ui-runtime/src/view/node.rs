@@ -129,6 +129,39 @@ pub struct NodeBindingInfo {
     pub element: &'static Location<'static>,
     /// `Component.field` and where its binding was declared.
     pub fields: Vec<(&'static str, &'static Location<'static>)>,
+    /// The `.vue` source location, when this node came from an SFC template.
+    pub source: Option<SourceLocation>,
+    /// The `.vue` source location for each bound field, when available.
+    pub source_fields: Vec<(&'static str, SourceLocation)>,
+}
+
+/// A source position carried explicitly by the `.vue` compiler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceLocation {
+    pub file: &'static str,
+    pub line: u32,
+    pub column: u32,
+}
+
+impl SourceLocation {
+    pub const fn new(file: &'static str, line: u32, column: u32) -> Self {
+        Self { file, line, column }
+    }
+}
+
+impl std::fmt::Display for SourceLocation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}:{}:{}", self.file, self.line, self.column)
+    }
+}
+
+/// Compiler-provided source metadata. Field names are the setter names;
+/// positions use one-based lines and columns. No source file is read at runtime.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ViewSource {
+    pub element: SourceLocation,
+    pub fields: &'static [(&'static str, SourceLocation)],
 }
 
 /// Type-erased node bindings, owned by the [`AppContext`].
@@ -196,6 +229,8 @@ pub struct Inspection {
     pub fields: Vec<InspectedField>,
     /// Where the element was declared, for a node with bindings.
     pub element: Option<&'static Location<'static>>,
+    /// Original source position, when supplied by a compiler.
+    pub source_element: Option<SourceLocation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -206,12 +241,18 @@ pub struct InspectedField {
     /// Where the binding that drives it was declared; an edit is replaced
     /// the next time that binding runs.
     pub bound_at: Option<&'static Location<'static>>,
+    pub source_bound_at: Option<SourceLocation>,
 }
 
 /// What a build leaves for the [`AppContext`] to own once it commits.
 #[derive(Default)]
 pub(crate) struct ViewParts {
-    pub(crate) nodes: Vec<(StableNodeId, EffectKey, Box<dyn NodePatch>)>,
+    pub(crate) nodes: Vec<(
+        StableNodeId,
+        EffectKey,
+        Box<dyn NodePatch>,
+        Option<&'static ViewSource>,
+    )>,
     pub(crate) structural: Vec<(StableNodeId, EffectKey, Box<dyn StructuralBinding>)>,
     /// Scopes disposed when the node leaves the world.
     pub(crate) anchors: Vec<(StableNodeId, ScopeKey)>,
@@ -692,6 +733,7 @@ pub struct El<C: ComponentView, K = ()> {
     /// copied by every builder method and every frame that builds it.
     children: Box<K>,
     site: &'static Location<'static>,
+    source: Option<&'static ViewSource>,
 }
 
 /// Any component as an element. Bind fields with [`El::bind`] or
@@ -709,6 +751,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         classes: None,
         children: Box::new(()),
         site: Location::caller(),
+        source: None,
     }
 }
 
@@ -733,6 +776,14 @@ impl<C: ComponentView, K> El<C, K> {
     /// site for the container it builds.
     pub(crate) fn declared_at(mut self, site: &'static Location<'static>) -> Self {
         self.site = site;
+        self
+    }
+
+    /// Attach the originating `.vue` template position to this node and its
+    /// bindings. This is emitted only by the SFC compiler.
+    #[doc(hidden)]
+    pub fn source_site(mut self, source: &'static ViewSource) -> Self {
+        self.source = Some(source);
         self
     }
 
@@ -831,6 +882,7 @@ impl<C: ComponentView, K> El<C, K> {
             classes: self.classes,
             children: Box::new(children),
             site: self.site,
+            source: self.source,
         }
     }
 
@@ -898,6 +950,7 @@ impl<C: ComponentView, K> El<C, K> {
             classes,
             children,
             site,
+            source,
         } = self;
         if let Some(classes) = classes {
             implicit.extend_from_slice(classes.apply(&mut component, &mut bindings));
@@ -939,7 +992,10 @@ impl<C: ComponentView, K> El<C, K> {
         }
         if let Some(effect) = effect {
             reactive::set_effect_target(effect, EffectTarget::Node(id));
-            vb.st.parts.nodes.push((id, effect, Box::new(bindings)));
+            vb.st
+                .parts
+                .nodes
+                .push((id, effect, Box::new(bindings), source));
         }
         if !implicit.is_empty() {
             vb.st.parts.implicit.push((id, implicit.into_boxed_slice()));

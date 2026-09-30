@@ -55,6 +55,27 @@ fn counter() -> impl IntoView {
 }
 
 #[test]
+fn sfc_source_site_is_exposed_without_changing_rust_locations() {
+    let (mut cx, _, parent) = setup();
+    let value = signal(String::from("a"));
+    static SOURCE: ViewSource = ViewSource {
+        element: SourceLocation::new("View.vue", 3, 5),
+        fields: &[("value", SourceLocation::new("View.vue", 3, 12))],
+    };
+    let view = cx
+        .mount_view(parent, || text(value).source_site(&SOURCE))
+        .unwrap();
+    let info = cx.view_bindings(view.roots()[0]).expect("binding info");
+    assert_eq!(info.source, Some(SourceLocation::new("View.vue", 3, 5)));
+    assert_eq!(
+        info.source_fields[0].1,
+        SourceLocation::new("View.vue", 3, 12)
+    );
+    assert_eq!(info.element.file(), file!());
+    assert_eq!(info.fields[0].1.file(), file!());
+}
+
+#[test]
 fn a_click_updates_exactly_the_bound_node_in_one_commit() {
     let (mut cx, _, parent) = setup();
     let view = cx.mount_view(parent, counter).unwrap();

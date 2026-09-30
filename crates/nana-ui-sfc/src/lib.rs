@@ -118,7 +118,7 @@ fn hot_literals(nodes: &mut [Node], runtime: &TokenStream, name: &str, out: &mut
                     }
                 }
             }
-            Node::Mixed(parts, _)
+            Node::Mixed(parts, span)
                 if parts
                     .iter()
                     .all(|part| matches!(part, TextPart::Literal(_))) =>
@@ -132,9 +132,12 @@ fn hot_literals(nodes: &mut [Node], runtime: &TokenStream, name: &str, out: &mut
                     .collect();
                 let index = out.len();
                 out.push(text);
-                *node = Node::Verbatim(quote! {
-                    move || #runtime::view::__hot_text(#name, #index, __NANA_HOT[#index])
-                });
+                *node = Node::Verbatim(
+                    quote! {
+                        move || #runtime::view::__hot_text(#name, #index, __NANA_HOT[#index])
+                    },
+                    *span,
+                );
             }
             _ => {}
         }
@@ -317,8 +320,9 @@ impl Compiler {
         // arguments now) become `.name(view)`, as in `view!`.
         nana_ui_view_codegen::lift_slots(&mut template)
             .map_err(|error| parse::syn_error(file, error))?;
-        let (body, lints) = nana_ui_view_codegen::expand_checked(&self.runtime, &template)
-            .map_err(|error| parse::syn_error(file, error))?;
+        let (body, lints) =
+            nana_ui_view_codegen::expand_checked_at(&self.runtime, &template, Some(file))
+                .map_err(|error| parse::syn_error(file, error))?;
         let mut warnings = analysis.warnings.clone();
         warnings.extend(style_warnings.into_iter().map(|warning| {
             let (line, column) = match warning.at {
@@ -466,7 +470,7 @@ fn count(nodes: &mut [Node], analysis: &mut Analysis) {
                 }
             }
             Node::Expr(expr) => analysis.scan_use(expr, &[Use::Escape]),
-            Node::Text(_) | Node::Verbatim(_) => {}
+            Node::Text(_) | Node::Verbatim(..) => {}
         }
     }
 }
@@ -491,6 +495,19 @@ fn site(file: &str, span: Span) -> String {
     format!("{}:{}:{}", file, start.line, start.column + 1)
 }
 
+fn text_span(node: &Node) -> Span {
+    let Node::Mixed(parts, span) = node else {
+        return Span::call_site();
+    };
+    parts
+        .iter()
+        .find_map(|part| match part {
+            TextPart::Expr(expr) => Some(expr.span()),
+            _ => None,
+        })
+        .unwrap_or(*span)
+}
+
 impl Rewrite<'_> {
     fn nodes(&mut self, nodes: &mut [Node]) -> Result<(), Error> {
         for node in nodes.iter_mut() {
@@ -498,7 +515,8 @@ impl Rewrite<'_> {
                 Node::Element(element) => self.element(element)?,
                 Node::Mixed(..) => {
                     if let Some(value) = self.text(node, "文本") {
-                        *node = Node::Verbatim(value);
+                        let span = text_span(node);
+                        *node = Node::Verbatim(value, span);
                     }
                 }
                 _ => {}
@@ -543,7 +561,8 @@ impl Rewrite<'_> {
             && let [child @ Node::Mixed(..)] = element.children.as_mut_slice()
         {
             if let Some(value) = self.text(child, &format!("<{name}> 文本")) {
-                *child = Node::Verbatim(value);
+                let span = text_span(child);
+                *child = Node::Verbatim(value, span);
             }
             return Ok(());
         }
@@ -704,7 +723,9 @@ impl Rewrite<'_> {
             return Err(error(format!("`{name}` has no prop `{extra}`")));
         }
         if wants_children && element.children.is_empty() {
-            element.children.push(Node::Verbatim(quote!(())));
+            element
+                .children
+                .push(Node::Verbatim(quote!(()), element.name.span()));
         }
         if !wants_children && !element.children.is_empty() {
             return Err(error(format!(

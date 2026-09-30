@@ -139,8 +139,20 @@ pub fn expand_checked(
     krate: &TokenStream,
     nodes: &[Node],
 ) -> syn::Result<(TokenStream, Vec<Warning>)> {
+    expand_checked_at(krate, nodes, None)
+}
+
+/// [`expand_checked`] with an optional source file for SFC-generated nodes.
+/// The source is metadata only; ordinary Rust/view! callers keep the
+/// `Location::caller()` path.
+pub fn expand_checked_at(
+    krate: &TokenStream,
+    nodes: &[Node],
+    source_file: Option<&str>,
+) -> syn::Result<(TokenStream, Vec<Warning>)> {
     let generator = Gen {
         krate,
+        source_file,
         warnings: std::cell::RefCell::new(Vec::new()),
     };
     let tokens = generator.nodes(nodes)?;
@@ -166,7 +178,7 @@ pub enum Node {
     Expr(Expr),
     /// Text whose value a front end already wrote as a prop (a constant, a
     /// closure, a checked binding).
-    Verbatim(TokenStream),
+    Verbatim(TokenStream, Span),
 }
 
 /// A piece of [`Node::Mixed`] text.
@@ -533,6 +545,7 @@ fn fragment(children: Vec<TokenStream>) -> TokenStream {
 
 struct Gen<'a> {
     krate: &'a TokenStream,
+    source_file: Option<&'a str>,
     warnings: std::cell::RefCell<Vec<Warning>>,
 }
 
@@ -593,8 +606,18 @@ impl Gen<'_> {
                 quote_spanned!(*span=> #krate::view::text(#value))
             }
             Node::Expr(expr) => quote!(#expr),
-            Node::Verbatim(value) => quote!(#krate::view::text(#value)),
+            Node::Verbatim(value, _) => quote!(#krate::view::text(#value)),
         })
+    }
+
+    fn source_site(&self, span: Span) -> Option<TokenStream> {
+        let file = self.source_file?;
+        let start = span.start();
+        let file = syn::LitStr::new(file, span);
+        let line = start.line as u32;
+        let column = (start.column + 1) as u32;
+        let krate = self.krate;
+        Some(quote_spanned!(span=> #krate::view::SourceLocation::new(#file, #line, #column)))
     }
 
     /// `v-if` / `v-else-if` / `v-else` → nested `when(..).otherwise(..)`,
@@ -1294,7 +1317,71 @@ impl Gen<'_> {
                 },
             }
         }
-        slot_calls(self, element, out)
+        let out = slot_calls(self, element, out)?;
+        if !matches!(tag.as_str(), "Column" | "Row" | "Widget") && control.is_none() {
+            return Ok(out);
+        }
+        let Some(source) = self.source_site(span) else {
+            return Ok(out);
+        };
+        let mut fields = Vec::new();
+        for attr in &element.attrs {
+            let (name, at) = match &attr.name {
+                AttrName::Plain(name)
+                    if control
+                        .is_some_and(|control| control.field(&name.to_string()).is_some()) =>
+                {
+                    (name.to_string(), name.span())
+                }
+                AttrName::Plain(_) => continue,
+                AttrName::Directive(name, at) => (
+                    match name.as_str() {
+                        "show" => "style.layout.hidden",
+                        "class" | "class_when" => "style.layout",
+                        "model" => match tag.as_str() {
+                            "Switch" | "Checkbox" => "checked",
+                            _ => "value",
+                        },
+                        _ => continue,
+                    }
+                    .to_owned(),
+                    *at,
+                ),
+                _ => continue,
+            };
+            let at = match &attr.value {
+                AttrValue::Expr(expr) => expr.span(),
+                _ => at,
+            };
+            let at = self.source_site(at).expect("source file is set");
+            fields.push(quote!((#name, #at)));
+        }
+        if let Some(control) = control {
+            for (name, kind) in control.arguments {
+                if *kind != "text" || element.plain(name).is_some() {
+                    continue;
+                }
+                let at = match element.children.as_slice() {
+                    [Node::Verbatim(_, at)] => *at,
+                    [Node::Mixed(parts, at)] => parts
+                        .iter()
+                        .find_map(|part| match part {
+                            TextPart::Expr(expr) => Some(expr.span()),
+                            _ => None,
+                        })
+                        .unwrap_or(*at),
+                    [Node::Text(_)] | _ => continue,
+                };
+                let at = self.source_site(at).expect("source file is set");
+                fields.push(quote!((#name, #at)));
+            }
+        }
+        if fields.is_empty() {
+            return Ok(out);
+        }
+        Ok(
+            quote!(#out.source_site(const { &#krate::view::ViewSource { element: #source, fields: &[#(#fields),*] } })),
+        )
     }
 
     /// `<TodoRow todo={t} />` → `todo_row(t)`; attribute values are the
@@ -1397,7 +1484,7 @@ impl Gen<'_> {
             [Node::Text(text)] => Ok(string_prop(text)),
             [Node::Mixed(parts, span)] => Ok(mixed_prop(parts, *span)),
             [Node::Expr(expr)] => Ok(prop(&AttrValue::Expr(expr.clone()))),
-            [Node::Verbatim(value)] => Ok(value.clone()),
+            [Node::Verbatim(value, _)] => Ok(value.clone()),
             _ => Err(syn::Error::new(
                 element.name.span(),
                 format!("`<{}>` takes one string or `{{expression}}`", element.name),

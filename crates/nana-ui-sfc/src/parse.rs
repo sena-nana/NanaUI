@@ -6,6 +6,7 @@
 use proc_macro2::Span;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::{Expr, Ident, Pat, PatType, Stmt, Token};
 
 use nana_ui_view_codegen::{Attr, AttrName, AttrValue, Element, Node, TextPart};
@@ -484,6 +485,7 @@ impl Template<'_, '_> {
     /// Text up to the next tag, with `{{ … }}` interpolation. Whitespace
     /// runs collapse to one space; whitespace-only text is dropped.
     fn text(&mut self) -> Result<Option<Node>, Error> {
+        let start = self.offset;
         let mut parts = Vec::new();
         let mut literal = String::new();
         while !self.rest().is_empty() && !self.rest().starts_with('<') {
@@ -528,7 +530,8 @@ impl Template<'_, '_> {
         if parts.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Node::Mixed(parts, Span::call_site())))
+        let span = expr_at("__nana_text", self.src.pos(start), self.src.file)?.span();
+        Ok(Some(Node::Mixed(parts, span)))
     }
 }
 

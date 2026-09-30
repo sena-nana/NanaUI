@@ -380,7 +380,6 @@ fn a_click_changes_the_frame_and_the_reply_reports_it() {
 fn inspect_names_the_writes_behind_a_node_and_set_field_edits_it() {
     use nana_ui::runtime::view::{button, signal};
     use nana_ui_devtools::agent::{AgentCommand, AgentSession, Target};
-
     let busy = std::cell::Cell::new(None);
     let mut session = session_with(|document, id| {
         let cx = document.context_mut();
@@ -443,4 +442,44 @@ fn inspect_names_the_writes_behind_a_node_and_set_field_edits_it() {
         .find(|field| field.name == "label")
         .unwrap();
     assert_eq!(label.value, "\"另存\"");
+}
+
+#[test]
+fn inspect_prefers_compiler_source_positions_without_changing_the_wire_shape() {
+    use nana_ui::runtime::view::{SourceLocation, ViewSource, button, signal};
+    use nana_ui_devtools::agent::{AgentCommand, AgentSession, Target};
+    static SOURCE: ViewSource = ViewSource {
+        element: SourceLocation::new("views/Page.vue", 8, 4),
+        fields: &[("loading", SourceLocation::new("views/Page.vue", 9, 12))],
+    };
+    let mut session = session_with(|document, id| {
+        document
+            .context_mut()
+            .mount_view_root(id, || {
+                button("Save").loading(signal(false)).source_site(&SOURCE)
+            })
+            .unwrap();
+    });
+    let reply = session.execute(AgentCommand::Inspect {
+        target: Target {
+            role: Some("button".into()),
+            label: Some("Save".into()),
+            ..Target::default()
+        },
+    });
+    let inspect = reply.inspect.unwrap();
+    assert_eq!(inspect.element.as_deref(), Some("views/Page.vue:8:4"));
+    assert_eq!(
+        inspect
+            .fields
+            .iter()
+            .find(|f| f.name == "loading")
+            .unwrap()
+            .bound_at
+            .as_deref(),
+        Some("views/Page.vue:9:12")
+    );
+    let json = serde_json::to_value(inspect).unwrap();
+    assert_eq!(json["element"], "views/Page.vue:8:4");
+    assert!(json.get("source_element").is_none());
 }

@@ -30,11 +30,24 @@ fn the_counter_and_the_todo_list_work_as_written() {
         .resolve_assembly_entity::<Button>(page, "counter/inc")
         .unwrap();
     assert_eq!(text_of(&cx, value), "计数 0（双倍 0）");
+    let info = cx.view_bindings(value).unwrap();
+    let source = info.source.unwrap();
+    assert!(source.file.ends_with("Counter.vue"));
+    assert_eq!((source.line, source.column), (10, 6));
+    let (_, binding) = info
+        .source_fields
+        .iter()
+        .find(|(field, _)| *field == "Text.value")
+        .unwrap();
+    assert_eq!((binding.line, binding.column), (10, 29));
+    assert_eq!(
+        info.element.file().rsplit(['/', '\\']).next(),
+        Some("nana_views.rs")
+    );
     assert_eq!(cx.read(inc, |b| b.label.clone()).unwrap(), "加 1");
     cx.activate_button(inc).unwrap();
     cx.flush_reactive().unwrap();
     assert_eq!(text_of(&cx, value), "计数 1（双倍 2）");
-
     // TodoList.vue: type, add, remove.
     let draft = cx
         .resolve_assembly_entity::<TextInput>(page, "todo-section/todos/draft")
