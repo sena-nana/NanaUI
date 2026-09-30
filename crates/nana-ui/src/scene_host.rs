@@ -213,7 +213,8 @@ struct WindowContext {
     /// The desktop shadow applied to this window (#215).
     shadow: nana_window::shadow::WindowShadowState,
     /// The visible body the shadow follows, with the scene projection and
-    /// size it was derived for; derived again only when either changes.
+    /// size it was derived for. A new projection re-derives the body; the
+    /// companion is moved only when that body, the size, or visibility changes.
     shadow_body: Option<ShadowBody>,
 }
 

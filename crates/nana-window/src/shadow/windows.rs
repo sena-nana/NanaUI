@@ -201,6 +201,29 @@ fn companion_class() -> Option<*const u16> {
 /// rounded rectangle of radius `radius`, `margin + radius` pixels each side of
 /// a one-pixel centre row and column. Pixels inside the body stay clear, so a
 /// translucent card does not show its own shadow through itself.
+/// The companion is already at `body` with this visibility, so another
+/// `SetWindowPos` would only reorder it.
+fn placement_already_shown(
+    size: (i32, i32),
+    held_size: (i32, i32),
+    body: &RECT,
+    held: RECT,
+    margin: i32,
+    held_margin: i32,
+    wanted: bool,
+    shown: bool,
+    visible: bool,
+) -> bool {
+    size == held_size
+        && body.left == held.left
+        && body.top == held.top
+        && body.right == held.right
+        && body.bottom == held.bottom
+        && margin == held_margin
+        && wanted == visible
+        && shown == visible
+}
+
 fn rasterize(style: ShadowStyle, margin: i32, radius: f64) -> (u32, Vec<u8>) {
     let corner = margin as f64 + radius;
     let size = (2.0 * corner) as u32 + 1;
@@ -393,6 +416,25 @@ impl Companion {
             body.right - body.left + 2 * margin,
             body.bottom - body.top + 2 * margin,
         );
+        // macOS drops this call when the frame is unchanged. Here it has to
+        // be the same: `SetWindowPos` reorders the companion under the owner,
+        // and doing that on a composition window makes DWM show the owner
+        // with no content for a frame.
+        if !restyled
+            && placement_already_shown(
+                size,
+                self.size,
+                &body,
+                placement.body.get(),
+                margin,
+                placement.margin.get(),
+                placement.wanted.get(),
+                placement.shown.get(),
+                visible,
+            )
+        {
+            return true;
+        }
         if restyled || size != self.size {
             if self.layout(size, style, scale).is_err() {
                 return false;
@@ -580,8 +622,72 @@ fn build_tree(companion: HWND) -> windows::core::Result<Tree> {
 
 #[cfg(test)]
 mod tests {
-    use super::{erfc, rasterize};
+    use super::{erfc, placement_already_shown, rasterize};
     use crate::shadow::ShadowStyle;
+    use windows_sys::Win32::Foundation::RECT;
+
+    #[test]
+    fn an_unchanged_companion_is_not_shown_again() {
+        let body = RECT {
+            left: 8,
+            top: 12,
+            right: 400,
+            bottom: 300,
+        };
+        assert!(placement_already_shown(
+            (420, 320),
+            (420, 320),
+            &body,
+            body,
+            16,
+            16,
+            true,
+            true,
+            true,
+        ));
+        assert!(
+            !placement_already_shown(
+                (420, 320),
+                (420, 320),
+                &body,
+                body,
+                16,
+                16,
+                true,
+                true,
+                false,
+            ),
+            "hiding still has to reach the window"
+        );
+        assert!(
+            !placement_already_shown(
+                (420, 320),
+                (420, 320),
+                &body,
+                RECT { right: 401, ..body },
+                16,
+                16,
+                true,
+                true,
+                true,
+            ),
+            "a moved body still has to reach the window"
+        );
+        assert!(
+            !placement_already_shown(
+                (420, 320),
+                (420, 320),
+                &body,
+                body,
+                16,
+                16,
+                true,
+                false,
+                true,
+            ),
+            "a minimized owner is shown again when it returns"
+        );
+    }
 
     #[test]
     fn the_tile_is_clear_inside_the_body_and_fades_outward() {
