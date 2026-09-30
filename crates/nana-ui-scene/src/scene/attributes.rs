@@ -29,6 +29,30 @@ impl std::ops::Deref for SceneDraw<'_> {
         self.primitive
     }
 }
+/// Whether two draws are the same transform for rebasing purposes.
+///
+/// Bitwise equality is the fast path. A chain recomputed after an epoch bump
+/// can still miss it by a fraction of a pixel at window scale; treating that
+/// as a real move feeds it through [`inverse`] and the visibility audit then
+/// aborts on the amplified bound. A few hundredths of a pixel is not a move a
+/// cull can act on. A degree of rotation, or a pixel of translation, still is.
+fn same_drawn_transform(current: AffineTransform, base: AffineTransform) -> bool {
+    if current == base {
+        return true;
+    }
+    let close = |a: f32, b: f32, tol: f32| a.is_finite() && b.is_finite() && (a - b).abs() <= tol;
+    current
+        .0
+        .iter()
+        .zip(base.0)
+        .take(4)
+        .all(|(a, b)| close(*a, b, 1e-4))
+        && close(current.0[4], base.0[4], 0.05)
+        && close(current.0[5], base.0[5], 0.05)
+        && close(current.1[0], base.1[0], 1e-5)
+        && close(current.1[1], base.1[1], 1e-5)
+}
+
 pub(super) fn inverse(transform: AffineTransform) -> Option<AffineTransform> {
     if transform.is_projective() {
         return None;
@@ -93,13 +117,15 @@ impl UiScene {
             let extracted = self.nodes.get(&node)?;
             let (parent, _, parent_clips, blocks_3d) = self.draw_ancestor_state(extracted);
             let current = parent.then(self.resolved_local_transform(extracted, blocks_3d));
-            // A node that did not move owes no rebasing, and saying so exactly
-            // is the point: `inverse` divides by the determinant, so for
-            // anything but a translation the round trip lands an ulp off the
-            // identity. Applied to every retained bound and clip below, that
-            // drift moves them — an epoch bump on its own, which a colour
-            // change on a parent is enough to cause, must not.
-            let delta = if current == base_transform {
+            // A node that did not move owes no rebasing. `inverse` divides by
+            // the determinant, so anything but a translation round-trips an
+            // ulp off the identity, and a base that was merely recomputed can
+            // already miss bitwise equality by a few hundredths of a pixel.
+            // At window scale that is more than the visibility audit's ULP
+            // budget (`960.0` against `959.9986`), and it moves every retained
+            // bound. An epoch bump on its own — a colour change on a parent
+            // is enough — must not.
+            let delta = if same_drawn_transform(current, base_transform) {
                 AffineTransform::IDENTITY
             } else {
                 inverse(base_transform)

@@ -9264,6 +9264,101 @@ fn a_colour_change_on_a_rotated_parent_does_not_move_its_descendants() {
     );
 }
 
+/// A recomputed transform can miss the stored base by a couple of hundred
+/// ULPs without the node having moved. At a window-sized translation, rebasing
+/// that through `inverse` moves a bound by more than the audit's 8 ULP budget
+/// and aborts a debug `cargo run` (`bounds bottom 960.0` against `959.9986`).
+/// A base that close is the same transform: the epoch bump must keep the
+/// retained bounds and the draw.
+#[test]
+fn a_colour_change_tolerates_a_few_ulps_of_base_transform_drift() {
+    let angle = 0.5f32;
+    let rotation = nana_ui_core::PaintTransform {
+        a: angle.cos(),
+        b: angle.sin(),
+        c: -angle.sin(),
+        d: angle.cos(),
+        ..nana_ui_core::PaintTransform::default()
+    };
+    let mut container = node(2, Some(1), &[3]);
+    container.layout = LayoutBox {
+        x: 40.0,
+        y: 80.0,
+        width: 1200.0,
+        height: 880.0,
+    };
+    container.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            transform: Some(rotation),
+            background: Some([0.0, 0.0, 1.0, 1.0]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut leaf = node(3, Some(2), &[]);
+    // The dock-sized box from the abort: bottom of a 960-tall window.
+    leaf.layout = LayoutBox {
+        x: 784.0,
+        y: 916.0,
+        width: 217.0,
+        height: 44.0,
+    };
+    leaf.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut scene = UiScene::new();
+    scene.apply_delta([node(1, None, &[2]), container.clone(), leaf], []);
+    let _ = scene.visible_operations(SceneRect {
+        x: 0.0,
+        y: 0.0,
+        width: 1400.0,
+        height: 960.0,
+    });
+    let recorded = scene.projections.get(&id(3)).copied().expect("leaf base");
+    assert!(
+        recorded.1.0[5].abs() > 1.0,
+        "the leaf translation has to be large enough for a few ULPs to matter"
+    );
+    // A couple of hundred ULPs here is a few thousandths of a pixel. The
+    // inverse rebase turns it into a bound the 8 ULP audit rejects.
+    let drifted = f32::from_bits(recorded.1.0[5].to_bits() + 200);
+    scene.projections.get_mut(&id(3)).expect("leaf base").1.0[5] = drifted;
+
+    let descendant = scene
+        .primitives()
+        .find(|primitive| primitive.node == id(3))
+        .expect("leaf primitive")
+        .id;
+    let before = scene.draw_primitive(descendant).expect("draw").transform;
+    container.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            transform: Some(rotation),
+            background: Some([0.0, 1.0, 0.0, 1.0]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    scene.apply_delta([container], []);
+    assert!(
+        scene.visibility.get().is_some(),
+        "the delta rebuilt the index, so nothing here tested the retained one"
+    );
+    assert_eq!(
+        scene.draw_primitive(descendant).expect("draw").transform,
+        before,
+        "rebasing a base that drifted by a few ULPs moved the descendant"
+    );
+    assert_eq!(
+        scene.projections.get(&id(3)).map(|entry| entry.1.0[5]),
+        Some(drifted),
+        "the colour change rebuilt the leaf and replaced the drifted base"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Issue #217: custom paint
 // ---------------------------------------------------------------------------
