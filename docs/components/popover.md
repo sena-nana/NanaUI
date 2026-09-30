@@ -12,6 +12,8 @@
 
 `.trigger_icon(icon, label)` 画成 28×28 的方形按钮，图标在按钮里居中，`label` 是可访问名。
 
+`.bare_trigger(true)` 去掉静止时的底色和描边。悬停、按下和打开时仍有一层洗色。不传则保持浅底加描边。`ActionMenu` 同样转发。
+
 裸符号不要塞进文本触发器。
 
 要「图标 + 文字 + 计数」，用视图的 `.trigger(view)`，对应 `Popover::trigger_content`。

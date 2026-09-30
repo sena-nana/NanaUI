@@ -72,6 +72,10 @@ pub struct Popover {
     pub padding: f32,
     pub close_on_escape: bool,
     pub close_on_outside: bool,
+    /// Resting trigger has no fill and no border. Hover, press and the open
+    /// state still wash the trigger so the hit target stays visible. Off by
+    /// default: a trigger keeps the raised menu-button chrome.
+    pub bare_trigger: bool,
 }
 
 impl Popover {
@@ -88,6 +92,7 @@ impl Popover {
             padding: POPOVER_PADDING,
             close_on_escape: true,
             close_on_outside: true,
+            bare_trigger: false,
         }
     }
 
@@ -151,6 +156,13 @@ impl Popover {
         self.close_on_outside = enabled;
         self
     }
+
+    /// Drop the trigger's resting fill and border. Hover, press and open still
+    /// wash it. The hanging surface is unchanged.
+    pub fn bare_trigger(mut self, bare: bool) -> Self {
+        self.bare_trigger = bare;
+        self
+    }
 }
 
 impl Default for Popover {
@@ -195,6 +207,7 @@ impl crate::ComponentView for Popover {
             self.placement,
             self.alignment,
             "popover",
+            self.bare_trigger,
         );
     }
 }
@@ -238,6 +251,11 @@ impl ActionMenu {
 
     pub fn width(mut self, width: f32) -> Self {
         self.popover = self.popover.width(width);
+        self
+    }
+
+    pub fn bare_trigger(mut self, bare: bool) -> Self {
+        self.popover = self.popover.bare_trigger(bare);
         self
     }
 }
@@ -284,6 +302,7 @@ impl crate::ComponentView for ActionMenu {
             self.popover.placement,
             self.popover.alignment,
             "action-menu",
+            self.popover.bare_trigger,
         );
     }
 }
@@ -303,6 +322,7 @@ pub(crate) fn project_menu_surface(
     placement: PopoverPlacement,
     alignment: PopoverAlignment,
     label: &str,
+    bare_trigger: bool,
 ) {
     let open = world.project_menu_presence(id, open, mutations);
     // A child that draws the trigger only counts while it is one.
@@ -363,6 +383,11 @@ pub(crate) fn project_menu_surface(
             width,
             padding,
         )
+    };
+    let style = if bare_trigger && has_trigger {
+        bare_trigger_style(style, open)
+    } else {
+        style
     };
     project_common(
         id,
@@ -543,6 +568,20 @@ pub(crate) fn trigger_icon_button_style() -> NodeStyle {
     style.square = Some(nana_ui_core::SquareSize::Control(
         nana_ui_core::ControlSize::Small,
     ));
+    style
+}
+
+/// Resting trigger without a fill or a border. Hover and press keep the wash
+/// already on `style`. While open, the same hover wash marks the anchor.
+fn bare_trigger_style(mut style: NodeStyle, open: bool) -> NodeStyle {
+    style.background = if open {
+        Some(SemanticColorRole::Hover)
+    } else {
+        None
+    };
+    style.border = None;
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.border_width = Some(0.0);
     style
 }
 
@@ -1028,6 +1067,118 @@ mod tests {
         );
         assert_eq!(open.background, Some(SemanticColorRole::Subtle));
         assert_eq!(open.layout.position, PositionSpec::Static);
+    }
+
+    /// A bare icon trigger is an empty glyph at rest. The wash appears only
+    /// while the pointer is on it, and again while the surface is open.
+    #[test]
+    fn bare_icon_trigger_rests_without_a_fill_and_washes_on_hover() {
+        let mut context = AppContext::new();
+        let popover = context
+            .create_component(
+                document(),
+                Popover::new()
+                    .trigger_icon(Icon::Add, "更多")
+                    .bare_trigger(true),
+            )
+            .unwrap();
+        let id = popover.stable_id();
+        let closed = context.world().node_style(id).unwrap();
+        assert_eq!(closed.background, None);
+        assert_eq!(closed.border, None);
+        assert_eq!(closed.layout.border_width, Some(0.0));
+        assert_eq!(
+            closed.interaction.hovered.background,
+            Some(SemanticColorRole::Hover)
+        );
+        assert_eq!(
+            closed.interaction.pressed.background,
+            Some(SemanticColorRole::Active)
+        );
+        let layout = &context.world().extract_nodes(&[id])[0].source_style.layout;
+        assert_eq!(layout.min_width, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
+        assert_eq!(layout.min_height, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
+
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        let geometry_id = StableNodeId::new(1).unwrap();
+        queue.create(
+            geometry_id,
+            document(),
+            NodeKind::Element {
+                tag: "popover".into(),
+            },
+        );
+        queue.write_layout(
+            geometry_id,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: TRIGGER_HEIGHT,
+                height: TRIGGER_HEIGHT,
+            },
+        );
+        queue.set_style(
+            geometry_id,
+            bare_trigger_style(trigger_icon_button_style(), false),
+        );
+        queue.set_standard_visual(
+            geometry_id,
+            Some(StandardVisual::MenuSurface {
+                kind: MenuSurfaceKind::Popover,
+                open: false,
+                trigger: None,
+                trigger_icon: Some(Icon::Add),
+                trigger_image: None,
+                gap: 0.0,
+                overlay: None,
+                query: None,
+                rows: Arc::from([]),
+                highlighted: None,
+            }),
+        );
+        world.commit(queue).unwrap();
+        world.resolve_styles(&[geometry_id]).unwrap();
+        let Some(ComponentGeometry::MenuSurface {
+            trigger_surface, ..
+        }) = world.component_geometry(geometry_id)
+        else {
+            panic!("expected menu surface geometry");
+        };
+        let chrome = trigger_surface.expect("trigger chrome");
+        assert!(
+            chrome.background.is_none(),
+            "a bare trigger has no resting fill"
+        );
+        assert!(chrome.border.is_none(), "a bare trigger has no border");
+
+        world
+            .set_pointer_hover(document(), 1, Some(geometry_id))
+            .unwrap();
+        world.advance_animations(nana_ui_core::motion::HOVER_COLOR);
+        world.resolve_styles(&[geometry_id]).unwrap();
+        let Some(ComponentGeometry::MenuSurface {
+            trigger_surface, ..
+        }) = world.component_geometry(geometry_id)
+        else {
+            panic!("expected menu surface geometry");
+        };
+        assert!(
+            trigger_surface
+                .expect("trigger chrome")
+                .background
+                .is_some(),
+            "hover washes the bare trigger"
+        );
+
+        context
+            .update_component(popover, |popover, _| {
+                popover.open = true;
+            })
+            .unwrap();
+        let open = context.world().node_style(id).unwrap();
+        assert_eq!(open.background, Some(SemanticColorRole::Hover));
+        assert_eq!(open.border, None);
     }
 
     #[test]
