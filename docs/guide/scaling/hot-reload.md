@@ -119,7 +119,7 @@ let watcher = nana_ui_dev::watch_templates(
 
 `localStorage` 和 `location` 会留着。`documentElement` 的 dataset 和内联 style 会清掉，主题在重载后重新注入。没有 Vue 组件级 HMR：求值的是一段扁平脚本。
 
-L3 没有默认的「重读数据文件」钩子。要在进程里换树，先 `AppContext::remove_view(root)` 再 `build`。连续两次 `build` 会叠出两棵树。重载不能发生在 JS 还在栈上的时候，会推迟到下一次 `update`。
+L3 没有默认的「重读数据文件」钩子。要在进程里换树，先 `AppContext::remove_view(root)` 再 `mount_view_root`。连续两次挂载会叠出两棵树。重载不能发生在 JS 还在栈上的时候，会推迟到下一次 `update`。
 
 无头看结果时，给 dev bin 加上 `headless`：
 

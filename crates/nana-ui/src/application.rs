@@ -65,8 +65,8 @@ pub trait ApplicationState: Sized + 'static {
     type Message: Send + 'static;
     type Error: std::fmt::Display;
     /// The built-in component machinery each window installs. `Typed` suits
-    /// an application that creates components from Rust types only (`build`,
-    /// `mount`, declarative views): the components it never creates are not
+    /// an application that creates components from Rust types only (`mount`,
+    /// declarative views, `.vue`): the components it never creates are not
     /// linked. Tag-based binding (`bind_semantic`) then refuses built-ins.
     const BUILTINS: nana_ui_runtime::BuiltinComponents = nana_ui_runtime::BuiltinComponents::Full;
     /// The `UiReady` point of startup (see [`crate::startup`]): the host can

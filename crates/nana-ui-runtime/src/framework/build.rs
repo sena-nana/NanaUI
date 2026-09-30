@@ -198,7 +198,11 @@ impl<'a> UiBuilder<'a> {
     }
 
     /// Create or reuse a keyed component under the current parent.
-    pub fn child<C: ComponentView>(&mut self, key: impl Into<String>, component: C) -> Entity<C> {
+    pub(crate) fn child<C: ComponentView>(
+        &mut self,
+        key: impl Into<String>,
+        component: C,
+    ) -> Entity<C> {
         if self.error.is_some() {
             return Entity::from_stable_id(DUMMY_NODE);
         }
@@ -250,7 +254,7 @@ impl<'a> UiBuilder<'a> {
     /// handler rather than appending a second copy that would fire twice.
     /// Registering several handlers for one node and event in a single build
     /// still keeps all of them — they take successive slots.
-    pub fn on<V, E>(
+    pub(crate) fn on<V, E>(
         &mut self,
         entity: Entity<V>,
         handler: impl FnMut(&mut V, &E, &mut ViewContext<'_, V>) + Send + 'static,
@@ -279,7 +283,7 @@ impl<'a> UiBuilder<'a> {
     /// whose id goes into the component that takes it.
     #[must_use = "detached nodes are not in the tree; hand the id to whatever \
                   places it, or it never renders"]
-    pub fn detached<C: ComponentView>(&mut self, component: C) -> Entity<C> {
+    pub(crate) fn detached<C: ComponentView>(&mut self, component: C) -> Entity<C> {
         if self.error.is_some() {
             return Entity::from_stable_id(DUMMY_NODE);
         }
@@ -320,7 +324,7 @@ impl<'a> UiBuilder<'a> {
     }
 
     /// Temporarily set `parent` as the current insertion parent.
-    pub fn nest<P: View, R>(
+    pub(crate) fn nest<P: View, R>(
         &mut self,
         parent: Entity<P>,
         children: impl FnOnce(&mut Self) -> R,

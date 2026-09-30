@@ -1,8 +1,8 @@
 //! Canonical application API.
 //!
 //! Prefer this module over crate-root widget re-exports. New trees use
-//! `AppContext::build`. See
-//! [`docs/reference/how-it-works.md`](../../../docs/reference/how-it-works.md) and
+//! `AppContext::mount_view_root` and `AppContext::mount_view`. See
+//! [`docs/reference/l3-authoring.md`](../../../docs/reference/l3-authoring.md) and
 //! [`docs/reference/application-api.md`](../../../docs/reference/application-api.md).
 //!
 //! Typed views and `register_component` live here. Scene types are also under
