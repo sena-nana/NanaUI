@@ -265,13 +265,16 @@ pub fn set_present_transaction<W: HasWindowHandle + ?Sized>(window: &W, enabled:
     }
 }
 
-/// Tags the window's Metal layer as sRGB so WindowServer color-matches the
-/// drawable the way Preview matches an sRGB image.
+/// Tags the window as sRGB so WindowServer color-matches its drawable the way
+/// Preview matches an sRGB image.
 ///
+/// The stored bytes stay sRGB. Two places otherwise skip that match on macOS:
 /// wgpu 30 writes `CAMetalLayer.colorspace = nil` for `SurfaceColorSpace::Srgb`
-/// on every configure, and a nil tag opts out of display matching. Call this
-/// after each configure. The stored bytes stay sRGB; the tag is only the
-/// ColorSync source profile. Returns whether a CAMetalLayer was found and tagged.
+/// on every configure, and a window left in the display profile treats those
+/// bytes as already converted. A nil layer tag opts out, and a non-opaque
+/// Metal sublayer does not get its own colorspace applied on the way into the
+/// window. Call this after each configure. HDR surfaces do not. Returns
+/// whether the window or its Metal layer was tagged.
 pub fn set_srgb_colorspace<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -295,6 +298,36 @@ fn set_metal_present_transaction<W: HasWindowHandle + ?Sized>(window: &W, enable
 
 #[cfg(target_os = "macos")]
 fn set_metal_srgb_colorspace<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    let window_tagged = tag_window_srgb(window);
+    let layer_tagged = tag_metal_layer_srgb(window);
+    window_tagged || layer_tagged
+}
+
+/// The window's buffer is what WindowServer matches to the display. Left
+/// unset, AppKit uses the screen profile and sRGB bytes are shown unchanged.
+#[cfg(target_os = "macos")]
+fn tag_window_srgb<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    use objc2_app_kit::NSColorSpace;
+    use objc2_foundation::NSObjectProtocol;
+
+    let Some(window) = appkit_window(window) else {
+        return false;
+    };
+    let srgb = NSColorSpace::sRGBColorSpace();
+    if let Some(current) = window.colorSpace()
+        && current.isEqual(Some(&*srgb))
+    {
+        return true;
+    }
+    // Replacing the profile rebuilds the window buffer. Skip that when the
+    // window is already sRGB; a move to another display can clear it, which
+    // is why configure calls this again.
+    window.setColorSpace(Some(&srgb));
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn tag_metal_layer_srgb<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 
     let Some(metal) = metal_layer(window) else {

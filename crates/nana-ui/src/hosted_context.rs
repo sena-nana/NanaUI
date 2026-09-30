@@ -801,8 +801,9 @@ impl HostedGpuShared {
     }
 }
 
-/// wgpu 30 clears `CAMetalLayer.colorspace` while configuring an sRGB surface.
-/// Tag the layer again so WindowServer matches those sRGB bytes to the display.
+/// wgpu 30 clears `CAMetalLayer.colorspace` while configuring an sRGB surface,
+/// and the window itself may still be in the display profile. Tag both again
+/// so WindowServer matches those sRGB bytes to the display.
 fn tag_configured_colorspace(
     window: &dyn winit::window::Window,
     color_space: wgpu::SurfaceColorSpace,
