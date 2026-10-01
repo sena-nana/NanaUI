@@ -40,7 +40,7 @@ widget(
 
 ## 密度
 
-`.density` 是 `MediaTransportDensity`：`Regular` 把时间读数放在进度上面，并可以开第二行；`Compact` 收成一行，设置和全屏默认隐藏；`Stacked` 的按钮和紧凑档一样，读数和进度单独占上面一整行。
+`.density` 是 `MediaTransportDensity`：`Regular` 把合并时间读数放在进度上面，并可以开第二行；`Compact` 收成一行，设置和全屏默认隐藏；`Stacked` 的按钮和紧凑档一样，当前时间、进度和总时长按顺序排在上面一整行，时间读数不会挤压进度范围。
 
 ## 位置
 
@@ -78,13 +78,15 @@ Overlay 沿父级底边绝对定位，只有铬接命中；Inline 参与父级�
 
 时间读数的格式是 `media_clock`：`m:ss` 或 `h:mm:ss`。
 
+`Stacked` 将当前时间和总时长分别放在进度范围两端；拖动时当前时间显示预览值。`Regular` 与 `Compact` 保留合并的 `当前 / 总时长` 读数。直播没有可用的端点总时长，因此仍只显示直播进度计量。
+
 直播用进度条上的计量，点播用可拖的范围；`seekable` 为假时范围还在，只是禁用。
 
 ## 属性
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `.density` | `MediaTransportDensity` | `Regular` 读数在进度上面，并可以开第二行；`Compact` 收成一行，设置和全屏默认隐藏；`Stacked` 的按钮和紧凑档一样，读数和进度单独占上面一整行。`new()` 默认常规密度 |
+| `.density` | `MediaTransportDensity` | `Regular` 合并读数在进度上面，并可以开第二行；`Compact` 收成一行，设置和全屏默认隐藏；`Stacked` 当前时间、进度和总时长在上面一整行。`new()` 默认常规密度 |
 | `.placement` | `MediaTransportPlacement` | `Overlay` 或 `Inline`。默认贴在父级底边 |
 | `.show_play` | — | `show_play(false)` 藏起播放钮，藏起的钮不占位、不能聚焦 |
 | `.show_settings` | — | 为 `None` 时跟随密度 |

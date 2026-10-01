@@ -87,8 +87,8 @@ pub enum MediaTransportDensity {
     /// One tight row with the readout beside the range. Settings and
     /// fullscreen are hidden unless shown explicitly; every slot still works.
     Compact,
-    /// Compact controls with the readout and range on a full-width line above
-    /// them, so a narrow surface (a mini player) keeps a usable seek track
+    /// Compact controls with current time, range, and total duration on a
+    /// full-width line above them, so a narrow surface keeps a usable seek track
     /// instead of squeezing it between the buttons.
     Stacked,
 }
@@ -149,6 +149,10 @@ pub struct MediaTransportSlots {
     pub play: Option<StableNodeId>,
     pub leading: Option<StableNodeId>,
     pub time: Option<StableNodeId>,
+    /// The total-duration endpoint readout used by [`MediaTransportDensity::Stacked`].
+    /// In other densities this node stays hidden and [`Self::time`] keeps the
+    /// historical combined readout.
+    pub time_duration: Option<StableNodeId>,
     pub seek: Option<StableNodeId>,
     pub live_progress: Option<StableNodeId>,
     pub trailing: Option<StableNodeId>,
@@ -343,6 +347,10 @@ impl MediaTransportBar {
 
     pub fn time(&self) -> Option<Entity<Text>> {
         self.slots.time.map(Entity::from_stable_id)
+    }
+
+    pub fn time_duration(&self) -> Option<Entity<Text>> {
+        self.slots.time_duration.map(Entity::from_stable_id)
     }
 
     pub fn seek(&self) -> Option<Entity<RangeField>> {
@@ -729,6 +737,13 @@ impl AppContext {
             }
             let live_progress = self.create_detached_component(document, live_progress)?;
             self.append_child(center, live_progress)?;
+            let mut time_duration = Text::new("")
+                .font_size(12.0)
+                .color(SemanticColorRole::Muted);
+            Arc::make_mut(&mut time_duration.style.layout).flex_shrink = Some(0.0);
+            Arc::make_mut(&mut time_duration.style.layout).hidden = true;
+            let time_duration = self.create_detached_component(document, time_duration)?;
+            self.append_child(center, time_duration)?;
             let right = self.create_detached_component(
                 document,
                 Stack::row(space::XS).with_layout(|layout| {
@@ -851,6 +866,7 @@ impl AppContext {
                     play: Some(play.stable_id()),
                     leading: Some(leading.stable_id()),
                     time: Some(time.stable_id()),
+                    time_duration: Some(time_duration.stable_id()),
                     seek: Some(seek.stable_id()),
                     live_progress: Some(live_progress.stable_id()),
                     trailing: Some(trailing.stable_id()),
@@ -932,19 +948,41 @@ impl AppContext {
                 .ok()
                 .flatten()
         });
+        let shown = scrub.map_or(position, |value| value.min(duration));
+        let stacked = snapshot.density == MediaTransportDensity::Stacked;
         if let Some(time) = slots.time {
             let time = Entity::<Text>::from_stable_id(time);
-            let shown = scrub.map_or(position, |value| value.min(duration));
-            // Compared without formatting: the shown second changes about
-            // once per second of the ticks that reach this line.
+            // Stacked keeps the current and total clocks at opposite ends of
+            // the progress range. Other densities retain the combined legacy
+            // readout beside the range.
             let current = self.read(time, |text| {
-                reads_time(&text.value, shown, duration)
-                    && text.style.layout.hidden == snapshot.live
+                (if stacked {
+                    reads_clock(&text.value, shown)
+                } else {
+                    reads_time(&text.value, shown, duration)
+                }) && text.style.layout.hidden == snapshot.live
             })?;
             if !current {
                 self.update_component(time, |text, _| {
-                    text.value = time_readout(shown, duration);
+                    text.value = if stacked {
+                        media_clock(shown)
+                    } else {
+                        time_readout(shown, duration)
+                    };
                     Arc::make_mut(&mut text.style.layout).hidden = snapshot.live;
+                })?;
+            }
+        }
+        if let Some(time_duration) = slots.time_duration {
+            let time_duration = Entity::<Text>::from_stable_id(time_duration);
+            let hidden = snapshot.live || !stacked;
+            let current = self.read(time_duration, |text| {
+                reads_clock(&text.value, duration) && text.style.layout.hidden == hidden
+            })?;
+            if !current {
+                self.update_component(time_duration, |text, _| {
+                    text.value = media_clock(duration);
+                    Arc::make_mut(&mut text.style.layout).hidden = hidden;
                 })?;
             }
         }
@@ -1199,6 +1237,17 @@ fn time_readout(position: f64, duration: f64) -> String {
 
 /// Whether `text` already reads [`time_readout`], checked without allocating.
 fn reads_time(text: &str, position: f64, duration: f64) -> bool {
+    reads_formatted(
+        text,
+        format_args!("{} / {}", Clock(position), Clock(duration)),
+    )
+}
+
+fn reads_clock(text: &str, seconds: f64) -> bool {
+    reads_formatted(text, format_args!("{}", Clock(seconds)))
+}
+
+fn reads_formatted(text: &str, expected: std::fmt::Arguments<'_>) -> bool {
     struct Prefix<'a>(Option<&'a str>);
     impl std::fmt::Write for Prefix<'_> {
         fn write_str(&mut self, piece: &str) -> std::fmt::Result {
@@ -1207,10 +1256,7 @@ fn reads_time(text: &str, position: f64, duration: f64) -> bool {
         }
     }
     let mut rest = Prefix(Some(text));
-    let _ = std::fmt::write(
-        &mut rest,
-        format_args!("{} / {}", Clock(position), Clock(duration)),
-    );
+    let _ = std::fmt::write(&mut rest, expected);
     rest.0 == Some("")
 }
 
@@ -1458,6 +1504,42 @@ mod tests {
         let generation = cx.world().generation();
         cx.sync_media_transport_bar(bar).unwrap();
         assert_eq!(cx.world().generation(), generation);
+    }
+
+    #[test]
+    fn stacked_clocks_follow_seek_and_density_without_reassembly() {
+        let mut cx = AppContext::new();
+        let bar = cx
+            .create_component(
+                document(),
+                MediaTransportBar::new().density(MediaTransportDensity::Stacked),
+            )
+            .unwrap();
+        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
+        sync_time(&mut cx, bar, 61.0, 3725.0);
+        let duration = slots.time_duration.unwrap();
+        assert_eq!(readout(&cx, &slots), "1:01");
+        assert_eq!(cx.world().text(duration).unwrap(), "1:02:05");
+        cx.set_range_value(Entity::from_stable_id(slots.seek.unwrap()), 90.0)
+            .unwrap();
+        assert_eq!(readout(&cx, &slots), "1:30");
+        cx.update_component(bar, |bar, _| bar.density = MediaTransportDensity::Compact)
+            .unwrap();
+        assert_eq!(readout(&cx, &slots), "1:30 / 1:02:05");
+        assert!(cx.world().node_style(duration).unwrap().layout.hidden);
+        cx.update_component(bar, |bar, _| bar.density = MediaTransportDensity::Stacked)
+            .unwrap();
+        assert_eq!(readout(&cx, &slots), "1:30");
+        assert!(!cx.world().node_style(duration).unwrap().layout.hidden);
+        cx.update_component(bar, |bar, _| bar.live = true).unwrap();
+        assert!(cx.world().node_style(duration).unwrap().layout.hidden);
+        assert!(
+            cx.world()
+                .node_style(slots.time.unwrap())
+                .unwrap()
+                .layout
+                .hidden
+        );
     }
 
     #[test]
@@ -1724,6 +1806,12 @@ mod tests {
             "the range sits above the buttons: seek={seek:?} play={play:?}"
         );
         assert!(time.x + time.width <= seek.x, "readout beside the range");
+        let duration = stage.frame(slots.time_duration.unwrap());
+        assert!(
+            seek.x + seek.width <= duration.x,
+            "total time follows the range"
+        );
+        assert!(!stage.hidden(slots.time_duration.unwrap()));
         assert!(
             seek.width > row.width * 0.6,
             "the range gets most of the line: seek={seek:?} row={row:?}"
