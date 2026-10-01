@@ -17,7 +17,7 @@ use crate::{HostTextureBinding, HostTextureRegistry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScenePaintError {
-    InvalidRenderGraph,
+    InvalidRenderGraph(String),
     CustomPrimitive(PrimitiveId),
     UnsupportedCustomRenderer(PrimitiveId),
     MissingCustomResource(PrimitiveId),
@@ -37,7 +37,9 @@ pub enum ScenePaintError {
 impl fmt::Display for ScenePaintError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidRenderGraph => formatter.write_str("scene render graph is invalid"),
+            Self::InvalidRenderGraph(reason) => {
+                write!(formatter, "scene render graph is invalid: {reason}")
+            }
             Self::CustomPrimitive(id) => write!(
                 formatter,
                 "scene primitive {}:{} requires a registered custom renderer",
@@ -97,7 +99,7 @@ impl HostTextureSceneResolver {
     ) -> Result<Self, ScenePaintError> {
         let graph = scene
             .frame_plan()
-            .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
+            .map_err(|error| ScenePaintError::InvalidRenderGraph(error.to_string()))?;
         let mut bindings = HashMap::new();
         for operation in graph.operations.iter() {
             let RenderOperation::InvokeCustom(id) = operation else {
@@ -158,7 +160,7 @@ pub(super) fn validate_scene(
 ) -> Result<ResolvedCustomNodes, ScenePaintError> {
     let plan = scene
         .frame_plan()
-        .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
+        .map_err(|error| ScenePaintError::InvalidRenderGraph(error.to_string()))?;
     let mut resolved = ResolvedCustomNodes {
         resources: Vec::with_capacity(plan.custom_nodes.len()),
         renderers: Vec::new(),

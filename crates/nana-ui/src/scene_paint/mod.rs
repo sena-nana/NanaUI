@@ -792,7 +792,7 @@ impl SceneWgpuPainter {
                     width: viewport.logical_size[0] + edge_padding * 2.0,
                     height: viewport.logical_size[1] + edge_padding * 2.0,
                 })
-                .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
+                .map_err(|error| ScenePaintError::InvalidRenderGraph(error.to_string()))?;
             for operation in operations.iter() {
                 let id = match operation {
                     RenderOperation::PrepareExternal(_) => continue,
