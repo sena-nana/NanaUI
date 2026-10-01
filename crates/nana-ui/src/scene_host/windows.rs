@@ -1,6 +1,7 @@
 //! Scene host windows coordination.
 
 use super::*;
+use nana_diagnostics::{framework::window as diagnostics_window, metric};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn uses_host_managed_drag(settings: &WindowDescriptor, button: i16) -> bool {
@@ -258,6 +259,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if host.shadow_body.is_some_and(|body| {
             body.revision == revision && body.size == size && body.visible == visible
         }) {
+            metric!(diagnostics_window::SHADOW_SYNC_SKIPPED);
             return;
         }
         let shape = crate::window_shadow::derive_visual_shape(scene, [size.0, size.1]);
@@ -267,6 +269,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             && body.visible == visible
         {
             body.revision = revision;
+            metric!(diagnostics_window::SHADOW_SYNC_SKIPPED);
             return;
         }
         host.shadow_body = Some(super::ShadowBody {
@@ -277,6 +280,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         });
         host.shadow
             .set_shape(window.as_ref(), crate::window_shadow::shape(shape), visible);
+        metric!(diagnostics_window::SHADOW_SYNC_APPLIED);
     }
     fn set_mouse_passthrough_mode(
         &mut self,

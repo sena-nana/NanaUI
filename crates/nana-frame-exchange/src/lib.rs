@@ -45,6 +45,12 @@ pub struct FrameToken<E = u64> {
 }
 
 impl<E: Copy> FrameToken<E> {
+    /// Stable id of the exchange that produced this frame. Useful for
+    /// correlating low-volume diagnostics across a model switch.
+    pub fn exchange_id(&self) -> u64 {
+        self.exchange
+    }
+
     /// Application epoch the frame was produced under.
     pub fn epoch(&self) -> E {
         self.epoch

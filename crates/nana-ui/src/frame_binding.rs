@@ -6,6 +6,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use nana_diagnostics::{event, framework::gpu, metric};
 use nana_frame_exchange::{FrameInbox, FrameLease, FrameToken};
 use nana_gpu::{
     DeviceGeneration, GpuContext, GpuTexture, GpuTextureDescriptor, GpuTextureFormat,
@@ -107,6 +108,11 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
             return false;
         }
         let inbox = inbox.filter(|inbox| inbox.device_generation() == self.device_generation);
+        if let (Some(inbox), Some(frame)) = (inbox, self.current.as_deref())
+            && inbox.awaits_replacement(&frame.token())
+        {
+            metric!(gpu::FRAME_BINDING_REPLACEMENT_GAPS);
+        }
         // A new epoch retires the bound frame and publishes its replacement in
         // the same breath. The replacement is looked for first. Until it
         // exists the picture already on screen stays: the 1x1 placeholder is
@@ -115,6 +121,13 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
             .current
             .as_deref()
             .is_some_and(|frame| !usable(inbox, &accept, frame));
+        if self
+            .current
+            .as_deref()
+            .is_some_and(|frame| !accept(&frame.token()))
+        {
+            metric!(gpu::FRAME_BINDING_REJECTIONS);
+        }
         // Acknowledging loads again, so a frame published since `latest` is
         // bound here instead of raising a wake of its own.
         if let Some(inbox) = inbox
@@ -125,18 +138,36 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
             && self.token() != Some(frame.token())
         {
             let (width, height) = frame.size();
+            let token = frame.token();
             self.texture.replace_texture(frame.texture());
             self.slot
                 .replace(self.texture.clone(), width, height, self.alpha);
             self.showing_placeholder = false;
             self.awaiting_present = true;
             self.retired = self.current.replace(frame);
+            metric!(gpu::FRAME_BINDING_REPLACEMENTS);
+            event!(
+                gpu::FRAME_BINDING_TRANSITION,
+                exchange = token.exchange_id(),
+                sequence = token.sequence(),
+                outcome = 1u64
+            );
             return true;
         }
         if stale {
+            let token = self.current.as_deref().map(FrameLease::token);
             self.retired = self.current.take();
             self.bind_placeholder();
             self.awaiting_present = true;
+            metric!(gpu::FRAME_BINDING_PLACEHOLDER_BINDS);
+            if let Some(token) = token {
+                event!(
+                    gpu::FRAME_BINDING_TRANSITION,
+                    exchange = token.exchange_id(),
+                    sequence = token.sequence(),
+                    outcome = 2u64
+                );
+            }
             return true;
         }
         false

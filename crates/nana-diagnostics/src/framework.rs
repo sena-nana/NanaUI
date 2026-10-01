@@ -243,6 +243,30 @@ pub mod gpu {
     pub static UPLOAD_RING_WAITS: Metric = Metric::counter(D, 24, "gpu.upload_ring_waits", "count");
     /// `begin_frame` calls that blocked on the oldest in-flight frame.
     pub static FRAME_SLOT_WAITS: Metric = Metric::counter(D, 25, "gpu.frame_slot_waits", "count");
+    /// Frame binding observed a live exchange epoch gap and retained the last
+    /// presented frame until its replacement was published.
+    pub static FRAME_BINDING_REPLACEMENT_GAPS: Metric =
+        Metric::counter(D, 30, "gpu.frame_binding.replacement_gaps", "count");
+    /// A frame binding had to show its transparent placeholder.
+    pub static FRAME_BINDING_PLACEHOLDER_BINDS: Metric =
+        Metric::counter(D, 31, "gpu.frame_binding.placeholder_binds", "count");
+    /// A frame binding completed a replacement swap.
+    pub static FRAME_BINDING_REPLACEMENTS: Metric =
+        Metric::counter(D, 32, "gpu.frame_binding.replacements", "count");
+    /// A frame was rejected by the binding's acceptance policy.
+    pub static FRAME_BINDING_REJECTIONS: Metric =
+        Metric::counter(D, 33, "gpu.frame_binding.rejections", "count");
+
+    /// A low-volume frame-binding transition. `outcome`: 1 replacement, 2
+    /// placeholder, 3 explicit rejection. `exchange` and `sequence` identify
+    /// the exchange and frame without exposing application epoch types.
+    pub static FRAME_BINDING_TRANSITION: EventDescriptor = EventDescriptor::new(
+        D,
+        20,
+        "gpu.frame_binding.transition",
+        Severity::Info,
+        &[F::u64("exchange"), F::u64("sequence"), F::u64("outcome")],
+    );
 
     pub static SURFACE_LOST_EVENT: EventDescriptor =
         EventDescriptor::new(D, 1, "gpu.surface_lost", Severity::Warn, &[]);
@@ -288,6 +312,13 @@ pub mod window {
     const D: Domain = Domain::WINDOW;
 
     pub static RESIZES: Metric = Metric::counter(D, 1, "window.resizes", "count");
+    /// Shadow-body projections whose geometry and visibility were unchanged,
+    /// so the native companion was intentionally left alone.
+    pub static SHADOW_SYNC_SKIPPED: Metric =
+        Metric::counter(D, 10, "window.shadow.sync_skipped", "count");
+    /// Shadow-body projections that reached the platform companion update.
+    pub static SHADOW_SYNC_APPLIED: Metric =
+        Metric::counter(D, 11, "window.shadow.sync_applied", "count");
 
     pub static OPENED: EventDescriptor = EventDescriptor::new(
         D,
