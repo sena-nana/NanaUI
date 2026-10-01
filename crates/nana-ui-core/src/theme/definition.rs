@@ -29,31 +29,35 @@ use super::tokens::{
     AccentRamp, BorderTokens, EffectTokens, MotionTokens, OpacityTokens, SpacingTokens,
     SurfaceTokens, TypographyTokens,
 };
-use super::{ThemeMetrics, ThemeMode, UI_METRICS};
+use super::{ThemeAppearance, ThemeMetrics, UI_METRICS};
 use crate::style_model::{SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Stable identity of a theme.
 ///
-/// A `&'static str` rather than an interned handle or a hash: a theme id is
-/// read by humans in diagnostics far more often than it is compared, and this
-/// phase does not load themes from files (that is a later phase's theme
-/// package, which is also where a non-static id starts to make sense).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ThemeId(&'static str);
+/// An owned-or-borrowed string: built-in IDs can stay static while application
+/// themes can register and persist IDs created at runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ThemeId(Cow<'static, str>);
 
 impl ThemeId {
     pub const fn new(name: &'static str) -> Self {
-        Self(name)
+        Self(Cow::Borrowed(name))
     }
 
-    pub const fn as_str(self) -> &'static str {
-        self.0
+    pub fn from_owned(name: impl Into<String>) -> Self {
+        Self(Cow::Owned(name.into()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_ref()
     }
 }
 
 impl std::fmt::Display for ThemeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
+        f.write_str(self.as_str())
     }
 }
 
@@ -130,7 +134,7 @@ impl std::fmt::Display for ThemeGeneration {
 }
 
 /// Who a compiled theme is. Copy, so a runtime handle can carry it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ThemeIdentity {
     pub id: ThemeId,
     pub schema: ThemeSchemaVersion,
@@ -156,9 +160,9 @@ pub struct FoundationTokens {
 }
 
 impl FoundationTokens {
-    pub const fn for_mode(mode: ThemeMode) -> Self {
+    pub const fn for_appearance(mode: ThemeAppearance) -> Self {
         Self {
-            accent: AccentRamp::for_mode(mode),
+            accent: AccentRamp::for_appearance(mode),
         }
     }
 }
@@ -185,14 +189,14 @@ pub struct DesignTokens {
 }
 
 impl DesignTokens {
-    pub const fn for_mode(mode: ThemeMode) -> Self {
+    pub const fn for_appearance(mode: ThemeAppearance) -> Self {
         Self {
-            foundation: FoundationTokens::for_mode(mode),
-            palette: SemanticPalette::for_mode(mode),
+            foundation: FoundationTokens::for_appearance(mode),
+            palette: SemanticPalette::for_appearance(mode),
             metrics: UI_METRICS,
             spacing: SpacingTokens::DEFAULT,
             border: BorderTokens::DEFAULT,
-            opacity: OpacityTokens::for_mode(mode),
+            opacity: OpacityTokens::for_appearance(mode),
             titlebar: None,
         }
     }
@@ -207,12 +211,14 @@ impl DesignTokens {
 }
 
 /// A NanaUI design system, in authoring form.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ThemeDefinition {
     pub id: ThemeId,
+    /// Human-readable label used by host-provided theme pickers.
+    pub display_name: Cow<'static, str>,
     pub schema: ThemeSchemaVersion,
     pub generation: ThemeGeneration,
-    pub mode: ThemeMode,
+    pub appearance: ThemeAppearance,
     pub tokens: DesignTokens,
     pub typography: TypographyTokens,
     pub motion: MotionTokens,
@@ -380,7 +386,7 @@ impl Check<'_> {
             return true;
         }
         self.fail(ThemeCompileError::NotFinite {
-            theme: self.theme,
+            theme: self.theme.clone(),
             token,
         });
         false
@@ -389,7 +395,7 @@ impl Check<'_> {
     fn length(&mut self, token: &'static str, value: f32) {
         if self.finite(token, value) && value < 0.0 {
             self.fail(ThemeCompileError::NegativeLength {
-                theme: self.theme,
+                theme: self.theme.clone(),
                 token,
                 value: thousandths(value),
             });
@@ -399,7 +405,7 @@ impl Check<'_> {
     fn alpha(&mut self, token: &'static str, value: f32) {
         if self.finite(token, value) && !(0.0..=1.0).contains(&value) {
             self.fail(ThemeCompileError::AlphaOutOfRange {
-                theme: self.theme,
+                theme: self.theme.clone(),
                 token,
                 value: thousandths(value),
             });
@@ -411,7 +417,7 @@ impl Check<'_> {
         for channel in [color.r, color.g, color.b] {
             if self.finite(token, channel) && !(0.0..=1.0).contains(&channel) {
                 self.fail(ThemeCompileError::AlphaOutOfRange {
-                    theme: self.theme,
+                    theme: self.theme.clone(),
                     token,
                     value: thousandths(channel),
                 });
@@ -422,7 +428,7 @@ impl Check<'_> {
     fn font_size(&mut self, token: &'static str, value: f32) {
         if self.finite(token, value) && !(1.0..=512.0).contains(&value) {
             self.fail(ThemeCompileError::FontSizeOutOfRange {
-                theme: self.theme,
+                theme: self.theme.clone(),
                 token,
                 value: thousandths(value),
             });
@@ -432,7 +438,7 @@ impl Check<'_> {
     fn font_weight(&mut self, token: &'static str, value: u16) {
         if !(1..=1000).contains(&value) {
             self.fail(ThemeCompileError::FontWeightOutOfRange {
-                theme: self.theme,
+                theme: self.theme.clone(),
                 token,
                 value,
             });
@@ -442,7 +448,7 @@ impl Check<'_> {
     fn duration(&mut self, token: &'static str, millis: u16) {
         if millis == 0 {
             self.fail(ThemeCompileError::ZeroDuration {
-                theme: self.theme,
+                theme: self.theme.clone(),
                 token,
             });
         }
@@ -454,6 +460,11 @@ impl ThemeDefinition {
     pub const fn bump(mut self) -> Self {
         self.generation = self.generation.next();
         self
+    }
+
+    pub const fn with_appearance(mut self, appearance: ThemeAppearance) -> Self {
+        self.appearance = appearance;
+        self.bump()
     }
 
     /// Replace the semantic palette.
@@ -495,9 +506,14 @@ impl ThemeDefinition {
 
     /// Give the definition its own identity. Use when deriving a theme from a
     /// built-in: a variant of NanaDark is not NanaDark.
-    pub const fn with_id(mut self, id: ThemeId) -> Self {
+    pub fn with_id(mut self, id: ThemeId) -> Self {
         self.id = id;
         self.generation = ThemeGeneration::FIRST;
+        self
+    }
+
+    pub fn with_display_name(mut self, display_name: impl Into<Cow<'static, str>>) -> Self {
+        self.display_name = display_name.into();
         self
     }
 
@@ -505,19 +521,21 @@ impl ThemeDefinition {
     pub fn compile(&self) -> Result<super::CompiledTheme, ThemeCompileError> {
         let mut error = None;
         let mut check = Check {
-            theme: self.id,
+            theme: self.id.clone(),
             error: &mut error,
         };
 
         if !self.schema.is_supported() {
             check.fail(ThemeCompileError::UnsupportedSchema {
-                theme: self.id,
+                theme: self.id.clone(),
                 found: self.schema,
                 supported: ThemeSchemaVersion::CURRENT,
             });
         }
         if self.generation.0 == 0 {
-            check.fail(ThemeCompileError::ZeroGeneration { theme: self.id });
+            check.fail(ThemeCompileError::ZeroGeneration {
+                theme: self.id.clone(),
+            });
         }
 
         let tokens = &self.tokens;
@@ -576,7 +594,7 @@ impl ThemeDefinition {
 
         let recipes = self.compile_recipes()?;
         let style_model = StyleModelRef::with_tokens(
-            self.mode,
+            self.appearance,
             tokens.metrics,
             tokens.palette,
             tokens.titlebar_color(),
@@ -584,10 +602,12 @@ impl ThemeDefinition {
         );
         Ok(super::CompiledTheme::new(
             ThemeIdentity {
-                id: self.id,
+                id: self.id.clone(),
                 schema: self.schema,
                 generation: self.generation,
             },
+            self.appearance,
+            self.display_name.clone(),
             style_model,
             tokens.spacing,
             tokens.border,
@@ -608,7 +628,7 @@ impl ThemeDefinition {
             let draft = self.components.draft(id);
             let Some(foreground) = draft.foreground else {
                 return Err(ThemeCompileError::MissingRecipe {
-                    theme: self.id,
+                    theme: self.id.clone(),
                     component: id,
                     slot: "foreground",
                 });
@@ -629,7 +649,7 @@ impl ThemeDefinition {
         for kind in BUTTON_KINDS {
             let draft = self.components.button.variants[button_index(kind)];
             let missing = |slot: &'static str| ThemeCompileError::MissingButtonSlot {
-                theme: self.id,
+                theme: self.id.clone(),
                 variant: button_kind_name(kind),
                 slot,
             };
@@ -650,7 +670,7 @@ impl ThemeDefinition {
                 .button
                 .invalid_border
                 .ok_or(ThemeCompileError::MissingButtonSlot {
-                    theme: self.id,
+                    theme: self.id.clone(),
                     variant: "*",
                     slot: "invalid_border",
                 })?;
@@ -658,7 +678,9 @@ impl ThemeDefinition {
         let status = self
             .components
             .status
-            .ok_or(ThemeCompileError::MissingStatusRecipe { theme: self.id })?;
+            .ok_or(ThemeCompileError::MissingStatusRecipe {
+                theme: self.id.clone(),
+            })?;
 
         Ok(CompiledRecipes::new(
             families,
@@ -931,30 +953,40 @@ const fn builtin_button_recipe() -> ButtonRecipeDraft {
 
 impl ThemeDefinition {
     /// The built-in dark theme.
-    pub const NANA_DARK: Self = Self::builtin(ThemeId::new("nana.dark"), ThemeMode::Dark);
+    pub const NANA_DARK: Self = Self::builtin(ThemeId::new("nana.dark"), ThemeAppearance::Dark);
     /// The built-in light theme.
-    pub const NANA_LIGHT: Self = Self::builtin(ThemeId::new("nana.light"), ThemeMode::Light);
+    pub const NANA_LIGHT: Self = Self::builtin(ThemeId::new("nana.light"), ThemeAppearance::Light);
 
-    const fn builtin(id: ThemeId, mode: ThemeMode) -> Self {
+    const fn builtin(id: ThemeId, mode: ThemeAppearance) -> Self {
         Self {
             id,
+            display_name: match mode {
+                ThemeAppearance::Light => Cow::Borrowed("浅色"),
+                ThemeAppearance::Dark => Cow::Borrowed("深色"),
+                ThemeAppearance::Custom => Cow::Borrowed("自定义"),
+            },
             schema: ThemeSchemaVersion::CURRENT,
             generation: ThemeGeneration::FIRST,
-            mode,
-            tokens: DesignTokens::for_mode(mode),
+            appearance: match mode {
+                ThemeAppearance::Light => ThemeAppearance::Light,
+                ThemeAppearance::Dark => ThemeAppearance::Dark,
+                ThemeAppearance::Custom => ThemeAppearance::Custom,
+            },
+            tokens: DesignTokens::for_appearance(mode),
             typography: TypographyTokens::DEFAULT,
             motion: MotionTokens::DEFAULT,
-            effects: EffectTokens::for_mode(mode),
+            effects: EffectTokens::for_appearance(mode),
             surfaces: SurfaceTokens::DEFAULT,
             components: builtin_registry(),
         }
     }
 
     /// The built-in definition for `mode`.
-    pub const fn for_mode(mode: ThemeMode) -> Self {
+    pub const fn for_appearance(mode: ThemeAppearance) -> Self {
         match mode {
-            ThemeMode::Dark => Self::NANA_DARK,
-            ThemeMode::Light => Self::NANA_LIGHT,
+            ThemeAppearance::Dark => Self::NANA_DARK,
+            ThemeAppearance::Light => Self::NANA_LIGHT,
+            ThemeAppearance::Custom => Self::NANA_DARK,
         }
     }
 }
@@ -979,6 +1011,22 @@ mod tests {
         }
     }
 
+    #[test]
+    fn custom_theme_compiles_with_custom_appearance_metadata() {
+        let definition = ThemeDefinition::NANA_LIGHT
+            .with_id(ThemeId::from_owned("user.sunset"))
+            .with_display_name("夕暮")
+            .with_appearance(ThemeAppearance::Custom);
+        let compiled = definition.compile().expect("custom theme compiles");
+        assert_eq!(compiled.identity().id.as_str(), "user.sunset");
+        assert_eq!(compiled.appearance(), ThemeAppearance::Custom);
+        assert_eq!(compiled.display_name(), "夕暮");
+        assert_eq!(
+            compiled.style_model().theme_appearance,
+            ThemeAppearance::Custom
+        );
+    }
+
     /// Issue #102 acceptance: NanaLight / NanaDark migrate **completely**, and
     /// the Gallery baseline sees no unexpected change.
     ///
@@ -994,16 +1042,16 @@ mod tests {
             (
                 ThemeDefinition::NANA_DARK,
                 SemanticPalette::dark(),
-                ThemeMode::Dark,
+                ThemeAppearance::Dark,
             ),
             (
                 ThemeDefinition::NANA_LIGHT,
                 SemanticPalette::light(),
-                ThemeMode::Light,
+                ThemeAppearance::Light,
             ),
         ] {
             let compiled = definition.compile().expect("compiles");
-            assert_eq!(compiled.mode(), mode);
+            assert_eq!(compiled.appearance(), mode);
             assert_eq!(compiled.palette(), palette, "{} palette", definition.id);
             assert_eq!(compiled.metrics(), UI_METRICS, "{} metrics", definition.id);
             assert_eq!(
@@ -1018,7 +1066,11 @@ mod tests {
             );
             assert_eq!(
                 compiled.shadow(ElevationRole::Surface).blur_radius,
-                if mode == ThemeMode::Dark { 30.0 } else { 26.0 }
+                if mode == ThemeAppearance::Dark {
+                    30.0
+                } else {
+                    26.0
+                }
             );
         }
     }
@@ -1046,10 +1098,11 @@ mod tests {
         let mut metrics = UI_METRICS;
         metrics.radius_md += 1.0;
         for changed in [
-            base.with_metrics(metrics),
-            base.with_palette(SemanticPalette::light()),
-            base.with_titlebar(Some(SemanticColor::rgb8(1, 2, 3))),
-            base.with_accent(AccentRamp::LIGHT),
+            base.clone().with_metrics(metrics),
+            base.clone().with_palette(SemanticPalette::light()),
+            base.clone()
+                .with_titlebar(Some(SemanticColor::rgb8(1, 2, 3))),
+            base.clone().with_accent(AccentRamp::LIGHT),
         ] {
             assert_eq!(
                 changed.generation,

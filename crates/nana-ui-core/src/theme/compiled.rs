@@ -28,8 +28,9 @@ use super::tokens::{
     BorderTokens, EffectTokens, ElevationRole, MotionRole, MotionTokens, ShadowToken,
     SpacingTokens, SurfaceTokens, TypographyTokens,
 };
-use super::{ChromeRadii, ThemeDefinition, ThemeMetrics, ThemeMode};
+use super::{ChromeRadii, ThemeAppearance, ThemeDefinition, ThemeId, ThemeMetrics};
 use crate::style_model::{SemanticPalette, StyleModelRef};
+use std::borrow::Cow;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -37,12 +38,14 @@ use std::time::Duration;
 ///
 /// Held behind an `Arc` by the runtime rather than copied: it is ~1 KB, and a
 /// `Copy` structure that size on a read path is exactly the mistake Issue #101
-/// §1.5 measured. The small, hot slice — mode, palette, metrics, chrome colour
+/// §1.5 measured. The small, hot slice — appearance, palette, metrics, chrome colour
 /// and state-layer alphas — stays available as [`Self::style_model`], which is
 /// the handle per-node style resolution already takes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledTheme {
     identity: ThemeIdentity,
+    appearance: ThemeAppearance,
+    display_name: Cow<'static, str>,
     style_model: StyleModelRef,
     spacing: SpacingTokens,
     border: BorderTokens,
@@ -57,6 +60,8 @@ impl CompiledTheme {
     #[allow(clippy::too_many_arguments)]
     pub(super) const fn new(
         identity: ThemeIdentity,
+        appearance: ThemeAppearance,
+        display_name: Cow<'static, str>,
         style_model: StyleModelRef,
         spacing: SpacingTokens,
         border: BorderTokens,
@@ -68,6 +73,8 @@ impl CompiledTheme {
     ) -> Self {
         Self {
             identity,
+            appearance,
+            display_name,
             style_model,
             spacing,
             border,
@@ -79,17 +86,30 @@ impl CompiledTheme {
         }
     }
 
-    pub const fn identity(&self) -> ThemeIdentity {
-        self.identity
+    pub fn identity(&self) -> ThemeIdentity {
+        self.identity.clone()
     }
 
-    /// The hot-path token slice: mode, metrics, palette, chrome, state layers.
+    pub fn id(&self) -> ThemeId {
+        self.identity.id.clone()
+    }
+
+    pub const fn appearance(&self) -> ThemeAppearance {
+        self.appearance
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.display_name.as_ref()
+    }
+
+    /// The hot-path token slice: appearance, metrics, palette, chrome, state layers.
     pub const fn style_model(&self) -> StyleModelRef {
         self.style_model
     }
 
-    pub const fn mode(&self) -> ThemeMode {
-        self.style_model.theme_mode
+    pub fn with_style_model(mut self, style_model: StyleModelRef) -> Self {
+        self.style_model = style_model;
+        self
     }
 
     pub const fn palette(&self) -> SemanticPalette {
@@ -170,10 +190,10 @@ static NANA_LIGHT: LazyLock<Arc<CompiledTheme>> = LazyLock::new(|| {
     )
 });
 
-fn builtin_slot(mode: ThemeMode) -> &'static Arc<CompiledTheme> {
+fn builtin_slot(mode: ThemeAppearance) -> &'static Arc<CompiledTheme> {
     match mode {
-        ThemeMode::Dark => &NANA_DARK,
-        ThemeMode::Light => &NANA_LIGHT,
+        ThemeAppearance::Dark | ThemeAppearance::Custom => &NANA_DARK,
+        ThemeAppearance::Light => &NANA_LIGHT,
     }
 }
 
@@ -182,19 +202,19 @@ fn builtin_slot(mode: ThemeMode) -> &'static Arc<CompiledTheme> {
 /// Compiled once per process. The `expect` is not optimism: both definitions
 /// are compiled by a unit test, so a change that would panic here fails the
 /// test suite first.
-pub fn builtin_theme(mode: ThemeMode) -> &'static CompiledTheme {
+pub fn builtin_theme(mode: ThemeAppearance) -> &'static CompiledTheme {
     builtin_slot(mode)
 }
 
 /// The same theme, shareable. Installing a built-in mode clones this handle
 /// rather than recompiling — the runtime holds its theme behind an `Arc`
 /// precisely so switching modes costs a refcount, not a rebuild.
-pub fn builtin_theme_arc(mode: ThemeMode) -> Arc<CompiledTheme> {
+pub fn builtin_theme_arc(mode: ThemeAppearance) -> Arc<CompiledTheme> {
     Arc::clone(builtin_slot(mode))
 }
 
 impl Default for CompiledTheme {
     fn default() -> Self {
-        builtin_theme(ThemeMode::default()).clone()
+        builtin_theme(ThemeAppearance::default()).clone()
     }
 }

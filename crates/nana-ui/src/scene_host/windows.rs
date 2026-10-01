@@ -929,7 +929,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         })
     }
     pub(super) fn sync_appearance(&mut self) {
-        self.last_theme = self.program.theme_mode();
+        self.last_theme = self.program.theme().appearance();
         if self.render_suspended {
             return;
         }
@@ -958,7 +958,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) -> Result<(), HostedGpuError> {
         let mode = self.program.window_material_mode_for(id);
         let desired = WindowAppearance {
-            theme: self.program.theme_mode(),
+            theme: self.program.theme().appearance(),
             material: material_override.unwrap_or(mode),
             opacity: AppearanceSettings::clamp_backdrop_opacity(
                 self.program.appearance_backdrop_opacity_for(id),
@@ -1991,7 +1991,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct WindowAppearance {
-    theme: crate::ThemeMode,
+    theme: crate::ThemeAppearance,
     material: nana_window::MaterialEffect,
     opacity: f32,
     /// The host's own window-surface colour, or `None` to follow the theme.
@@ -2034,7 +2034,7 @@ mod appearance_tests {
     #[test]
     fn unchanged_windows_do_not_reapply_native_material() {
         let original = WindowAppearance {
-            theme: crate::ThemeMode::Dark,
+            theme: crate::ThemeAppearance::Dark,
             material: nana_window::MaterialEffect::Solid,
             opacity: 1.0,
             background: None,
@@ -2074,14 +2074,14 @@ mod appearance_tests {
     #[test]
     fn theme_changes_and_device_replacement_invalidate_appearance() {
         let original = WindowAppearance {
-            theme: crate::ThemeMode::Dark,
+            theme: crate::ThemeAppearance::Dark,
             material: nana_window::MaterialEffect::Solid,
             opacity: 1.0,
             background: None,
         };
         let mut cached = Some(original);
         let light = WindowAppearance {
-            theme: crate::ThemeMode::Light,
+            theme: crate::ThemeAppearance::Light,
             ..original
         };
         let calls = std::cell::Cell::new(0);

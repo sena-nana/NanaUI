@@ -85,14 +85,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for viewport in [(760, 680, 1.0), (380, 720, 2.0)] {
         let (width, height, scale) = viewport;
         for (theme_name, theme) in [
-            ("light", nana_ui::ThemeMode::Light),
-            ("dark", nana_ui::ThemeMode::Dark),
+            ("light", nana_ui::ThemeAppearance::Light),
+            ("dark", nana_ui::ThemeAppearance::Dark),
         ] {
             let name = format!("{theme_name}-{width}x{height}-{scale}x");
             let id = DocumentId::new(91).unwrap();
             let mut document = RuntimeDocument::new(id);
             let cx = document.context_mut();
-            cx.set_theme(theme)?;
+            cx.set_preset_theme(theme)?;
             let root = cx.create_component(id, Stack::column(18.0).padding(24.0))?;
             let mut markdown = NativeMarkdown::from_source(
                 "# Markdown 图片与公式\n\n**Bold** *italic* ~~deleted~~ `code` [link](https://example.test)\n\n行内公式 $E=mc^2$ 与中文。\n\n$$\\frac{1}{\\sqrt{x^2+1}}$$\n\n```mermaid\nflowchart LR\nA[输入 Input] --> B[绘制 Scene]\n```\n\n![resolved preview](fixture.svg)",
@@ -158,7 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
 
             let mut document = RuntimeDocument::new(id);
-            document.context_mut().set_theme(theme)?;
+            document.context_mut().set_preset_theme(theme)?;
             let viewer = document.context_mut().create_component(
                 id,
                 ImageViewer::new(ImageViewerContent::host_texture("fixture"))
@@ -191,7 +191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // user bubble and following action as LiliaCode's conversation.
             let mut document = RuntimeDocument::new(id);
             let cx = document.context_mut();
-            cx.set_theme(theme)?;
+            cx.set_preset_theme(theme)?;
             let root = cx.create_component(id, Stack::fill_column(18.0).padding(24.0))?;
             let bubble = cx.create_detached_component(
                 id,

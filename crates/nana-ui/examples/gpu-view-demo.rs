@@ -7,7 +7,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ButtonKind, RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    ThemeMode, WindowDescriptor, run_runtime,
+    ThemeAppearance, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -18,7 +18,7 @@ enum Message {
 }
 
 struct GpuViewDemo {
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     revision: u32,
     document: RuntimeDocument,
     preview: Entity<GpuView>,
@@ -28,7 +28,7 @@ struct GpuViewDemo {
 }
 
 impl GpuViewDemo {
-    fn palette(theme: ThemeMode, accent_strong: bool) -> GpuViewPalette {
+    fn palette(theme: ThemeAppearance, accent_strong: bool) -> GpuViewPalette {
         let colors = theme.palette();
         let accent = if accent_strong {
             colors.accent_strong
@@ -46,7 +46,7 @@ impl GpuViewDemo {
         }
     }
 
-    fn mount(theme: ThemeMode, revision: u32) -> Result<Self, FrameworkError> {
+    fn mount(theme: ThemeAppearance, revision: u32) -> Result<Self, FrameworkError> {
         let document_id = DocumentId::new(1).expect("gpu view document");
         let mut document = RuntimeDocument::new(document_id);
         let (_, (preview, thumbnail, version, theme_button)) =
@@ -135,8 +135,8 @@ impl GpuViewDemo {
     }
 }
 
-fn theme_label(theme: ThemeMode) -> &'static str {
-    if theme == ThemeMode::Dark {
+fn theme_label(theme: ThemeAppearance) -> &'static str {
+    if theme == ThemeAppearance::Dark {
         "浅色"
     } else {
         "深色"
@@ -151,7 +151,7 @@ impl RuntimeProgram for GpuViewDemo {
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
         Ok((
-            Self::mount(ThemeMode::Dark, 0).expect("gpu view document"),
+            Self::mount(ThemeAppearance::Dark, 0).expect("gpu view document"),
             Vec::new(),
         ))
     }
@@ -187,8 +187,8 @@ impl RuntimeProgram for GpuViewDemo {
         Some(nana_ui::default_scene_gpu_renderers())
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        self.theme
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(self.theme)
     }
 
     fn window_event(

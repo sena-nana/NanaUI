@@ -7,7 +7,7 @@ use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{Activate, Button, DocumentId, FrameworkError, List, RuntimeDocument, Text};
 use nana_ui::{
     RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
-    ThemeMode, WindowDescriptor, run_runtime,
+    ThemeAppearance, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{WindowEvent, WindowId, WindowRole};
@@ -135,8 +135,8 @@ impl RuntimeProgram for Smoke {
         }
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        ThemeMode::Dark
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(ThemeAppearance::Dark)
     }
 
     fn window_event(

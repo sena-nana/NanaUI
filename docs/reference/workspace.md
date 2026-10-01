@@ -43,7 +43,9 @@ NanaUI 提供这些结构。每个格子里放什么，仍由你的应用决定�
 
 链接、路由和选中项由你的应用提供。NanaUI 不内置产品导航。
 
-`SettingsModel` 和 `SettingsState` 维护稳定 Tab，以及恢复规则。具体设置值仍由你的应用状态拥有，例如主题、账号和路径。
+`SettingsModel` 和 `SettingsState` 维护稳定 Tab，以及恢复规则。主题由应用拥有的
+`ThemeRegistry` 管理，设置页接收 `ThemeChoice` 列表并持久化 `ThemeId`；其他具体
+设置值仍由你的应用状态拥有，例如账号和路径。
 
 设置页用独立的 `WorkspaceController` 时，进入设置不会覆盖主工作区的尺寸和折叠。
 

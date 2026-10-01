@@ -77,9 +77,9 @@ use nana_ui::{
     ActionId, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId, ControlSize,
     GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind,
     GraphPortSide, GraphSize, Icon, NanaTextShaper, RegionId, RegionRole, RegionState,
-    SettingsModel, SettingsState, SettingsTab, SettingsTabId, SplitAxis, ThemeMode, TooltipConfig,
-    TooltipPlacement, WindowMaterialMode, WorkspaceLayout, XYPadValue, component_catalog,
-    component_ids,
+    SettingsModel, SettingsState, SettingsTab, SettingsTabId, SplitAxis, ThemeAppearance,
+    TooltipConfig, TooltipPlacement, WindowMaterialMode, WorkspaceLayout, XYPadValue,
+    component_catalog, component_ids,
 };
 use nana_ui_core::{
     ContentFit, DialogSize, DrawerSide, LengthSpec, SemanticColorRole, SplitPaneModel, StatusTone,
@@ -290,7 +290,7 @@ fn tooltip_fixture_config(state: &str) -> TooltipConfig {
 pub(super) fn generate_registered(
     snapshots: &mut super::offscreen::OffscreenSnapshots,
     recorder: &mut Recorder,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_fixture_registry().map_err(std::io::Error::other)?;
 
@@ -311,7 +311,7 @@ pub(super) fn generate_registered(
 /// with dark wants both columns in one diff.
 pub(super) fn generate_semantic(
     recorder: &mut Recorder,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_fixture_registry().map_err(std::io::Error::other)?;
     // The semantic baseline is checked on every OS, so text is measured with
@@ -325,8 +325,9 @@ pub(super) fn generate_semantic(
     }
 
     let theme_name = match theme {
-        ThemeMode::Dark => "dark",
-        ThemeMode::Light => "light",
+        ThemeAppearance::Dark => "dark",
+        ThemeAppearance::Light => "light",
+        ThemeAppearance::Custom => "custom",
     };
     // Keyed, not streamed: the registry groups a component's fixtures today,
     // but nothing enforces that, and a registry reorder must not silently
@@ -394,14 +395,15 @@ fn validate_fixture_registry() -> Result<(), String> {
 fn render_fixture(
     snapshots: &mut super::offscreen::OffscreenSnapshots,
     recorder: &mut Recorder,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     fixture: Fixture,
     gpu: &SnapshotGpu,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let size = fixture_size(fixture);
     let theme_name = match theme {
-        ThemeMode::Dark => "dark",
-        ThemeMode::Light => "light",
+        ThemeAppearance::Dark => "dark",
+        ThemeAppearance::Light => "light",
+        ThemeAppearance::Custom => "custom",
     };
     let key = format!(
         "component-migration/{}/{theme_name}/{}.png",
@@ -528,13 +530,13 @@ struct SegmentedFixture {
 }
 
 fn runtime_fixture(
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     fixture: Fixture,
     size: Size<u32>,
 ) -> Result<RuntimeEvidence, Box<dyn std::error::Error>> {
     let document_id = DocumentId::new(9).expect("migration fixture document id");
     let mut document = RuntimeDocument::new(document_id);
-    document.context_mut().set_theme(theme)?;
+    document.context_mut().set_preset_theme(theme)?;
     let mut root_style = NodeStyle::default();
     {
         let layout = Arc::make_mut(&mut root_style.layout);
@@ -1973,7 +1975,7 @@ fn keyboard_text(text: &str) -> Gesture {
 mod tests {
     use super::{generate_semantic, validate_fixture_registry};
     use crate::baseline::{Mode, Options, Recorder};
-    use nana_ui::ThemeMode;
+    use nana_ui::ThemeAppearance;
     use std::path::PathBuf;
 
     #[test]
@@ -1998,7 +2000,7 @@ mod tests {
             platform: "semantic".to_owned(),
             adapter: "none (semantic)".to_owned(),
         });
-        for theme in [ThemeMode::Dark, ThemeMode::Light] {
+        for theme in [ThemeAppearance::Dark, ThemeAppearance::Light] {
             generate_semantic(&mut recorder, theme).expect("semantic pass runs");
         }
         let report = recorder.finish().expect("finish");

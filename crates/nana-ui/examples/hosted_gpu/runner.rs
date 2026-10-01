@@ -15,7 +15,7 @@ use nana_ui::runtime::{
 use nana_ui::{
     ButtonKind, CopyOutcome, DEFAULT_CAPACITY, FrameBinding, FrameExchange, FrameExchangeStats,
     FrameInbox, GpuContext, HostTextureAlphaMode, HostTextureRegistry, HostedRunError, RoutedInput,
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode, WindowDescriptor,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeAppearance, WindowDescriptor,
     WindowHandle, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
@@ -305,8 +305,8 @@ impl RuntimeProgram for DemoProgram {
         self.startup.demand()
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        self.panel.theme_mode()
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(self.panel.preset_theme())
     }
 
     fn host_textures(&self, _id: WindowId) -> Option<HostTextureRegistry> {

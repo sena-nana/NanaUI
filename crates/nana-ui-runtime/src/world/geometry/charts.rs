@@ -5,10 +5,10 @@ use super::*;
 pub(in crate::world) fn time_series_geometry(
     bounds: LayoutBox,
     values: &[f64],
-    mode: ThemeMode,
+    palette: SemanticPalette,
 ) -> crate::ComponentGeometry {
     let chart = crate::TimeSeriesChart::new(values.iter().copied());
-    let paint = crate::time_series_paint(mode);
+    let paint = crate::time_series_paint(palette);
     let local = LayoutBox {
         x: 0.0,
         y: 0.0,
@@ -47,10 +47,10 @@ pub(in crate::world) fn timestamp_series_geometry(
     samples: &[(i64, Option<f64>)],
     unit: Option<&str>,
     time_labels: Option<&(Arc<str>, Arc<str>)>,
-    mode: ThemeMode,
+    palette: SemanticPalette,
 ) -> crate::ComponentGeometry {
     let chart = crate::TimeSeriesChart::from_samples(samples.iter().copied());
-    let paint = crate::time_series_paint(mode);
+    let paint = crate::time_series_paint(palette);
     // Reserve vertical space for the scale and endpoint labels.
     let plot = LayoutBox {
         x: bounds.x,
@@ -90,7 +90,7 @@ pub(in crate::world) fn timestamp_series_geometry(
             height: nana_ui_core::type_scale::LINE,
         },
         content: text.into(),
-        color: Some(mode.palette().muted.as_rgba_array()),
+        color: Some(palette.muted.as_rgba_array()),
         font_size: nana_ui_core::type_scale::HINT,
         font_weight: None,
     };
@@ -320,7 +320,7 @@ mod tests {
             ],
             Some("people"),
             Some(&(Arc::from("10:00"), Arc::from("11:00"))),
-            ThemeMode::Dark,
+            SemanticPalette::dark(),
         );
         let crate::ComponentGeometry::TimestampSeriesChart {
             area,

@@ -11,7 +11,8 @@ use nana_ui::runtime::{
 use nana_ui::{
     GpuContext, GpuRenderTarget, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages,
     NanaTextShaper, RegionId, RegionRole, RegionState, ScenePaintViewport, SceneWgpuPainter,
-    SettingsTabId, ThemeMode, WorkspaceAction, WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
+    SettingsTabId, ThemeAppearance, WorkspaceAction, WorkspaceLayout, WorkspaceModel,
+    WorkspaceMutation,
 };
 use nana_ui_platform::{
     InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase, WheelInput, WheelUnit,
@@ -318,7 +319,7 @@ fn paint_scene(
     layout_diff_ms: f64,
     event_update_ms: f64,
 ) -> Sample {
-    let background = ThemeMode::Dark.palette().background;
+    let background = ThemeAppearance::Dark.palette().background;
     let mut frame = render.gpu.begin_frame("nana-ui benchmark paint");
     let viewport = ScenePaintViewport {
         logical_size: [VIEWPORT_WIDTH as f32, VIEWPORT_HEIGHT as f32],
@@ -441,7 +442,7 @@ fn list_document(item_count: usize, selected: usize) -> RuntimeDocument {
     let mut document = RuntimeDocument::new(document_id);
     document
         .context_mut()
-        .set_theme(ThemeMode::Dark)
+        .set_preset_theme(ThemeAppearance::Dark)
         .expect("benchmark theme");
     document
         .context_mut()
@@ -474,7 +475,7 @@ fn dropdown_document(options: &[DropdownOption], selected: usize) -> RuntimeDocu
     let mut document = RuntimeDocument::new(document_id);
     document
         .context_mut()
-        .set_theme(ThemeMode::Dark)
+        .set_preset_theme(ThemeAppearance::Dark)
         .expect("benchmark theme");
     document
         .context_mut()
@@ -493,7 +494,7 @@ fn search_dropdown_document(options: &[SearchDropdownOption], selected: usize) -
     let mut document = RuntimeDocument::new(document_id);
     document
         .context_mut()
-        .set_theme(ThemeMode::Dark)
+        .set_preset_theme(ThemeAppearance::Dark)
         .expect("benchmark theme");
     document
         .context_mut()
@@ -513,7 +514,7 @@ fn context_menu_document(items: &[ContextMenuItem]) -> RuntimeDocument {
     let mut document = RuntimeDocument::new(document_id);
     document
         .context_mut()
-        .set_theme(ThemeMode::Dark)
+        .set_preset_theme(ThemeAppearance::Dark)
         .expect("benchmark theme");
     document
         .context_mut()
@@ -595,7 +596,7 @@ fn workspace_document(state: &WorkspaceBenchmarkState) -> RuntimeDocument {
     let mut document = RuntimeDocument::new(document_id);
     document
         .context_mut()
-        .set_theme(ThemeMode::Dark)
+        .set_preset_theme(ThemeAppearance::Dark)
         .expect("benchmark theme");
     document
         .context_mut()

@@ -662,7 +662,7 @@ mod tests {
         let dark = world.extract_nodes(&[id(1)])[0].text_spans[0].color;
 
         let mut queue = MutationQueue::new();
-        queue.set_theme(nana_ui_core::ThemeMode::Light);
+        queue.set_preset_theme(nana_ui_core::ThemeAppearance::Light);
         world.commit(queue).unwrap();
         let light = world.extract_nodes(&[id(1)])[0].text_spans[0].color;
         assert_ne!(dark, light);

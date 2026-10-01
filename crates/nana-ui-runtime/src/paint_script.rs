@@ -1618,7 +1618,7 @@ mod tests {
         let script = PaintScript::from_json_str(script).expect("a valid script");
         crate::custom_paint::record(
             &script,
-            nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeMode::Dark).as_ref(),
+            nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeAppearance::Dark).as_ref(),
             size,
             state,
             &|_, _, _| crate::TextSize::default(),

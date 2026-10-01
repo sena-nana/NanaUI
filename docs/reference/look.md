@@ -6,7 +6,9 @@ NanaUI 的默认外观是给桌面产品用的。它有深色和浅色，间距�
 
 深色和浅色只换颜色。尺寸不换。状态怎么分层也不换。
 
-你在 `RuntimeProgram::theme_mode` 里返回 `ThemeMode::Dark` 或 `Light`。
+宿主在 `RuntimeProgram::theme` 返回已注册的 `Arc<CompiledTheme>`。Light 和 Dark
+只是两个预制主题；应用可以用 `ThemeDefinition` 注册任意 `ThemeId`，组件只依赖
+语义 token，不依赖主题名称。
 
 ## 尺寸
 
@@ -34,7 +36,8 @@ NanaUI 的默认外观是给桌面产品用的。它有深色和浅色，间距�
 
 输入框聚焦时加一圈中性描边。底色不改。错误优先用危险色。
 
-不要用任意业务色去改框架 token。主题色走 `ThemeMode` 和 `AppearanceSettings`。
+不要用任意业务色去改框架 token。主题色走已安装主题的 `SemanticPalette`，
+外观设置只负责 policy overlay。
 
 卡片默认没有描边。需要抬起来时用阴影。选中卡片用柔和的选中底，不用强调色包边。
 
@@ -46,7 +49,8 @@ Vue CSS 的单层 `box-shadow`（outset 与 inset）和 `text-shadow`（仅 outs
 
 要整套换掉时，装一个 `ThemeDefinition`。换掉的不只是颜色和尺寸，还有排版、动效时长、阴影和组件配方。调用 `nana_ui::theme::install_theme_definition(&mut context, &definition)`。
 
-从内置的 `ThemeMode::Dark.definition()` 派生，只改你要改的那几档。别从头拼。缺一个槽位它就装不上。这是有意的。
+可以从 `ThemeDefinition::NANA_DARK` 或 `NANA_LIGHT` 派生，只改你要改的那几档，
+再交给宿主的 `ThemeRegistry` 注册。缺一个 recipe 槽位时主题不会安装。
 
 `nana_ui::theme` 把构成一份定义的 token 结构体都导出了。其中包括 `ThemeMetrics`、`SwitchMetrics`、`TypographyTokens`、`MotionTokens`、`EffectTokens`、`SpacingTokens`、`BorderTokens`、`OpacityTokens`、`SurfaceTokens`、`AccentRamp`、`ComponentThemeRegistry`，以及 `ButtonVariantDraft` 一类的 recipe draft，还有 `ThemeId`、`ThemeSchemaVersion`、`ThemeGeneration`。节点级命名尺寸要用的 `RadiusTier`、`ControlHeight`、`ControlPadding`、`SurfacePadding`、`SquareSize` 和 `SemanticColorMix` 也在这里。
 

@@ -3964,7 +3964,7 @@ fn an_installed_control_height_reaches_a_control_that_named_its_size() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4025,7 +4025,7 @@ fn an_installed_control_padding_reaches_a_control_that_named_its_inset() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4071,7 +4071,7 @@ fn an_installed_roomy_padding_is_no_longer_a_spacing_constant() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4108,7 +4108,7 @@ fn an_installed_panel_padding_reaches_a_card_that_named_the_surface() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4175,7 +4175,7 @@ fn an_installed_icon_button_size_reaches_the_square() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4208,7 +4208,7 @@ fn an_installed_field_padding_reaches_a_textarea_block_inset() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4242,7 +4242,7 @@ fn an_installed_control_height_reaches_a_sidebar_row() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4275,7 +4275,7 @@ fn an_installed_control_height_reaches_a_segmented_control() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4310,7 +4310,7 @@ fn an_installed_control_height_reaches_a_segmented_option() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4347,7 +4347,7 @@ fn an_installed_compact_height_reaches_a_dismissible_toast() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4394,7 +4394,7 @@ fn an_installed_compact_height_reaches_a_context_menu_search_field() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4431,7 +4431,7 @@ fn an_installed_compact_height_reaches_a_tree_view() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4467,7 +4467,7 @@ fn an_installed_compact_height_reaches_a_sidebar_footer_button() {
         metrics.compact_control_height = compact;
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4547,7 +4547,7 @@ fn an_installed_compact_height_reaches_a_settings_disclosure() {
         metrics.compact_control_height = compact;
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4612,7 +4612,7 @@ fn an_installed_compact_height_reaches_a_thumbnail() {
         metrics.radius_xs = radius;
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4692,7 +4692,7 @@ fn an_installed_radius_reaches_a_control_that_named_the_tier() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4776,7 +4776,7 @@ fn named_corner_steps_follow_an_installed_radius() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4830,7 +4830,7 @@ fn a_switch_with_no_label_is_its_track() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -4878,7 +4878,7 @@ fn an_installed_switch_track_reaches_the_switch() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -5027,7 +5027,7 @@ fn a_thicker_scrollbar_in_the_installed_theme_reaches_the_bar() {
     assert!(
         context
             .set_style_tokens(
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 metrics,
                 nana_ui_core::SemanticPalette::dark(),
                 nana_ui_core::SemanticPalette::dark().surface,
@@ -5438,7 +5438,7 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
         .unwrap();
     context.compat_world_mut().take_system_work();
 
-    assert!(context.set_theme(ThemeMode::Light).unwrap());
+    assert!(context.set_preset_theme(ThemeAppearance::Light).unwrap());
     let work = context.compat_world_mut().take_system_work();
     assert!(work.style.is_empty());
     assert!(work.layout.is_empty());
@@ -5518,7 +5518,7 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
     );
 
     let generation = context.world().generation();
-    assert!(!context.set_theme(ThemeMode::Light).unwrap());
+    assert!(!context.set_preset_theme(ThemeAppearance::Light).unwrap());
     assert_eq!(context.world().generation(), generation);
     let idle = context.compat_world_mut().take_system_work();
     assert!(
@@ -6500,7 +6500,7 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
         assert_eq!(
             elevation,
             (kind == nana_ui_core::CardKind::Raised).then_some(
-                crate::ComponentElevation::surface_shadow(nana_ui_core::ThemeMode::Dark)
+                crate::ComponentElevation::surface_shadow(nana_ui_core::ThemeAppearance::Dark)
             )
         );
         assert_eq!(

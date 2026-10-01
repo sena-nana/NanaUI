@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use nana_ui_core::{SemanticColor, ThemeMode};
+use nana_ui_core::{SemanticColor, SemanticPalette};
 
 use crate::view_components::project_common;
 use crate::{
@@ -201,8 +201,7 @@ impl TimeSeriesChart {
 }
 
 /// Sparkline colors: grid `border_soft` at 0.55, area accent at 0.16, line `accent_strong`.
-pub fn time_series_paint(mode: ThemeMode) -> TimeSeriesPaint {
-    let palette = mode.palette();
+pub fn time_series_paint(palette: SemanticPalette) -> TimeSeriesPaint {
     TimeSeriesPaint {
         grid: SemanticColor {
             a: 0.55,

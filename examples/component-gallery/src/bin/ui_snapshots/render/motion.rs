@@ -9,11 +9,11 @@ pub(super) fn generate(
     snapshots: &mut OffscreenSnapshots,
     recorder: &mut Recorder,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for theme in [ThemeMode::Dark, ThemeMode::Light] {
+    for theme in [ThemeAppearance::Dark, ThemeAppearance::Light] {
         let doc = DocumentId::new(1).unwrap();
         let mut document = RuntimeDocument::new(doc);
         let cx = document.context_mut();
-        cx.set_theme(theme)?;
+        cx.set_preset_theme(theme)?;
         let canvas = cx.create_component(doc, Stack::fill_column(0.0))?;
         let root = cx.create_component(
             doc,
@@ -71,7 +71,7 @@ pub(super) fn generate(
         let viewport = LayoutViewport::new(size.width as f32, size.height as f32);
         let mut shaper = NanaTextShaper::default();
         document.flush(viewport, &mut shaper)?;
-        let theme_name = if theme == ThemeMode::Dark {
+        let theme_name = if theme == ThemeAppearance::Dark {
             "dark"
         } else {
             "light"

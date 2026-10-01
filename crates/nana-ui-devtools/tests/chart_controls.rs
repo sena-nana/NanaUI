@@ -4,7 +4,7 @@ use nana_ui::runtime::{
     Button, DocumentId, DonutChart, DonutSlice, LengthSpec, NodeStyle, RuntimeDocument, Stack,
     Text, TimeSeriesChart, TimeSeriesLayer,
 };
-use nana_ui_core::{Icon, SemanticColorMix, SemanticColorRole as R, ThemeMode};
+use nana_ui_core::{Icon, SemanticColorMix, SemanticColorRole as R, ThemeAppearance};
 use nana_ui_devtools::{agent::RuntimeAgentSession, offscreen};
 use std::sync::Arc;
 
@@ -18,15 +18,15 @@ fn charts_and_icon_button_render_real_geometry_and_hover_in_both_themes() {
         std::fs::create_dir_all(path).unwrap();
     }
     for (name, theme, width, scale) in [
-        ("light-wide-1x", ThemeMode::Light, 560, 1.0),
-        ("dark-wide-1x", ThemeMode::Dark, 560, 1.0),
-        ("light-narrow-2x", ThemeMode::Light, 320, 2.0),
-        ("dark-narrow-2x", ThemeMode::Dark, 320, 2.0),
+        ("light-wide-1x", ThemeAppearance::Light, 560, 1.0),
+        ("dark-wide-1x", ThemeAppearance::Dark, 560, 1.0),
+        ("light-narrow-2x", ThemeAppearance::Light, 320, 2.0),
+        ("dark-narrow-2x", ThemeAppearance::Dark, 320, 2.0),
     ] {
         let id = DocumentId::new(1).unwrap();
         let mut document = RuntimeDocument::new(id);
         let cx = document.context_mut();
-        cx.set_theme(theme).unwrap();
+        cx.set_preset_theme(theme).unwrap();
         let root = cx
             .create_component(id, Stack::column(12.0).padding(16.0))
             .unwrap();

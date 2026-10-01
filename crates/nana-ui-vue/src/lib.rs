@@ -290,7 +290,7 @@ pub mod prelude {
     #[cfg(feature = "scene-view")]
     pub use crate::{NanaTextureHandle, NativeComponentRegistry};
     pub use nana_js_engine::HostApiRegistry;
-    pub use nana_ui_core::ThemeMode;
+    pub use nana_ui_core::{CompiledTheme, ThemeAppearance, ThemeId, ThemeRegistry};
     pub use nana_ui_web_api::{compose_runtime_artifact as compose_vue_artifact, shim_artifact};
 }
 
@@ -359,7 +359,7 @@ pub use multi_window::{
     VueRuntime, VueWindowCommand, VueWindowGeometry, VueWindowId, VueWindowIsolation,
     VueWindowOptions, VueWindowRole,
 };
-pub use nana_ui_core::ThemeMode;
+pub use nana_ui_core::{CompiledTheme, ThemeAppearance, ThemeId, ThemeRegistry};
 pub use nana_ui_web_api::{compose_runtime_artifact as compose_vue_artifact, shim_artifact};
 #[cfg(feature = "scene-view")]
 pub use native_component::{
@@ -437,7 +437,7 @@ fn hosted_material_support_key() -> &'static str {
 /// Build L3 [`nana_ui::ThemeTokens`] from Appearance + transparent-surface flag.
 #[cfg(feature = "scene-view")]
 pub fn theme_tokens_from_appearance(
-    theme: nana_ui::ThemeMode,
+    theme: nana_ui::ThemeAppearance,
     appearance: &nana_ui::AppearanceSettings,
     transparent_surface: bool,
 ) -> nana_ui::ThemeTokens {
@@ -459,7 +459,17 @@ pub fn theme_tokens_from_snapshot(
     snap: &SemanticSnapshot,
     transparent_surface: bool,
 ) -> nana_ui::ThemeTokens {
-    theme_tokens_from_appearance(snap.theme, &snap.appearance, transparent_surface)
+    nana_ui::ThemeTokens::new(
+        snap.theme_tokens.style_model().palette,
+        snap.theme_tokens.metrics(),
+    )
+    .with_workspace_corners(snap.appearance.workspace_corners_enabled())
+    .with_backdrop(
+        transparent_surface,
+        snap.appearance.backdrop_target(),
+        snap.appearance.backdrop_opacity(),
+        snap.appearance.titlebar_follows_sidebar(),
+    )
 }
 
 /// Host → JS window/document lifecycle events (shim EventTarget).
@@ -559,7 +569,7 @@ pub(crate) fn upsert_keyed(
 pub struct VueHost {
     input_projection: host::input_projection::State,
     callbacks: host::callbacks::State,
-    pub theme: ThemeMode,
+    pub theme: ThemeAppearance,
     document: Arc<Mutex<NanaTreeDocument>>,
     bridge: Arc<Mutex<MessageBridge>>,
     layout_boxes: Arc<LayoutBoxStore>,
@@ -687,12 +697,12 @@ impl VueHost {
         canvas: SharedCanvasRuntime,
         media: SharedMediaRuntime,
     ) -> Self {
-        let theme = ThemeMode::Light;
+        let theme = ThemeAppearance::Light;
         #[cfg_attr(not(feature = "scene-view"), allow(unused_mut))]
         let mut document =
             NanaTreeDocument::with_id(document_id, physical_width, physical_height, scale_factor);
         let mut bridge = MessageBridge::new();
-        bridge.set_theme(theme);
+        bridge.set_preset_theme(theme);
         // body/html must exist in the semantic forest so inserts into mountRoot
         // parent correctly (otherwise every top-level node stays an orphan root).
         bridge.ensure_document_roots(document.html_root().0, document.mount_root().0);
@@ -883,6 +893,20 @@ impl VueHost {
 
     pub fn mount_root(&self) -> NodeHandle {
         self.document.lock().expect("vue doc").mount_root()
+    }
+
+    /// The persisted identity of the installed theme.
+    pub fn theme_id(&self) -> nana_ui_core::ThemeId {
+        self.bridge.lock().expect("vue bridge").theme_id().clone()
+    }
+
+    /// The installed theme's system appearance hint.
+    pub fn theme_appearance(&self) -> nana_ui_core::ThemeAppearance {
+        self.bridge
+            .lock()
+            .expect("vue bridge")
+            .theme_tokens()
+            .appearance()
     }
 
     /// Snapshot of the semantic widget forest for Runtime/UiScene.

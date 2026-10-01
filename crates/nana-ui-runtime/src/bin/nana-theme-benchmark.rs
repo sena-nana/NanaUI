@@ -349,11 +349,14 @@ fn palette_switch_case() -> Case {
         "palette-switch",
         |context, index| {
             let mode = if index.is_multiple_of(2) {
-                nana_ui_core::ThemeMode::Light
+                nana_ui_core::ThemeAppearance::Light
             } else {
-                nana_ui_core::ThemeMode::Dark
+                nana_ui_core::ThemeAppearance::Dark
             };
-            assert!(context.set_theme(mode).unwrap(), "the mode must change");
+            assert!(
+                context.set_preset_theme(mode).unwrap(),
+                "the mode must change"
+            );
         },
     )
 }
@@ -372,7 +375,7 @@ fn accent_only_case() -> Case {
         assert!(
             context
                 .set_style_tokens(
-                    nana_ui_core::ThemeMode::Dark,
+                    nana_ui_core::ThemeAppearance::Dark,
                     nana_ui_core::UI_METRICS,
                     palette,
                     palette.surface,
@@ -395,7 +398,7 @@ fn density_case() -> Case {
         assert!(
             context
                 .set_style_tokens(
-                    nana_ui_core::ThemeMode::Dark,
+                    nana_ui_core::ThemeAppearance::Dark,
                     metrics,
                     nana_ui_core::SemanticPalette::dark(),
                     nana_ui_core::SemanticPalette::dark().surface,

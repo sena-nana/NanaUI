@@ -112,7 +112,7 @@ fn run_semantic(clicks: usize) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     host.bind_event_bridge(&mut *engine)
         .map_err(|e| e.to_string())?;
-    host.inject_theme(&mut *engine, nana_ui_vue::ThemeMode::Light)
+    host.inject_theme(&mut *engine, nana_ui_vue::ThemeAppearance::Light)
         .map_err(|e| e.to_string())?;
 
     let snap0 = host.semantic_snapshot();
@@ -141,8 +141,8 @@ fn run_semantic(clicks: usize) -> Result<String, String> {
     }
 
     let theme = match snap.theme {
-        nana_ui_vue::ThemeMode::Light => "light",
-        nana_ui_vue::ThemeMode::Dark => "dark",
+        nana_ui_vue::ThemeAppearance::Light => "light",
+        nana_ui_vue::ThemeAppearance::Dark => "dark",
     };
 
     Ok(format!(

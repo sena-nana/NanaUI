@@ -751,13 +751,7 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             Ok(HostValue::Object(
                 [
                     ("revision".into(), HostValue::Number(snap.revision as f64)),
-                    (
-                        "theme".into(),
-                        HostValue::string(match snap.theme {
-                            nana_ui_core::ThemeMode::Light => "light",
-                            nana_ui_core::ThemeMode::Dark => "dark",
-                        }),
-                    ),
+                    ("theme".into(), HostValue::string(snap.theme_id.as_str())),
                     (
                         "roots".into(),
                         HostValue::Array(
@@ -1042,13 +1036,12 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
                 web.set_document_dataset("theme", &theme);
             }
             lock_doc(&host.document)?.set_document_theme(&theme);
-            let mode = if theme.eq_ignore_ascii_case("dark") {
-                nana_ui_core::ThemeMode::Dark
-            } else {
-                nana_ui_core::ThemeMode::Light
-            };
             let mut bridge = lock_bridge(&host.bridge)?;
-            bridge.set_theme(mode);
+            match theme.as_str() {
+                "dark" => bridge.set_preset_theme(nana_ui_core::ThemeAppearance::Dark),
+                "light" => bridge.set_preset_theme(nana_ui_core::ThemeAppearance::Light),
+                _ => bridge.set_theme_id(nana_ui_core::ThemeId::from_owned(theme.clone())),
+            }
             let mut doc = lock_doc(&host.document)?;
             bridge.resolve_document_layout(&mut doc);
             Ok(HostValue::Null)

@@ -32,7 +32,7 @@ use nana_ui::settings::{
     AppearanceSettings, BackdropTarget, SettingsModel, SettingsState, SettingsTab, SettingsTabId,
     WindowMaterialMode,
 };
-use nana_ui::theme::{ThemeMode, ThemeTokens};
+use nana_ui::theme::{ThemeAppearance, ThemeTokens};
 use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
@@ -125,7 +125,7 @@ pub enum GalleryMessage {
     SplitPane(SplitPaneAction),
     Dock(GalleryDock),
     ToggleTheme,
-    SetTheme(ThemeMode),
+    SetTheme(ThemeAppearance),
     SetStandardRadius(u8),
     SetWorkspaceCorners(bool),
     SetWindowMaterial(WindowMaterialMode),
@@ -215,7 +215,7 @@ enum GalleryOverlay {
 
 #[derive(Debug)]
 pub struct GalleryState {
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     appearance: AppearanceSettings,
     /// Host adapter: Instant→Duration and pointer → `WorkspaceMutation`.
     /// Region state is `workspace.model()` (`WorkspaceModel`).
@@ -297,7 +297,7 @@ impl GalleryState {
         let settings_model = settings_model();
         let settings = SettingsState::new(&settings_model);
         let mut state = Self {
-            theme: ThemeMode::Dark,
+            theme: ThemeAppearance::Dark,
             appearance: AppearanceSettings::default(),
             workspace: WorkspaceController::with_layout(gallery_layout(false)),
             settings_workspace: WorkspaceController::with_layout(settings_layout()),
@@ -370,7 +370,7 @@ impl GalleryState {
         state
     }
 
-    pub fn theme_mode(&self) -> ThemeMode {
+    pub fn preset_theme(&self) -> ThemeAppearance {
         self.theme
     }
 
@@ -599,7 +599,7 @@ impl GalleryState {
             }
             GalleryMessage::ResetAppearance => {
                 // Match Lilia `resetAppearanceDefaults` / AppearanceEvent::Reset:
-                // appearance fields + ThemeMode::Light (not ThemeMode::default).
+                // appearance fields + ThemeAppearance::Light (not ThemeAppearance::default).
                 self.appearance.reset();
                 self.theme = AppearanceSettings::RESET_THEME;
                 self.persist_appearance();
@@ -1311,8 +1311,8 @@ impl RuntimeProgram for GalleryApp {
         self.apply_message(message)
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        self.state.theme_mode()
+    fn theme(&self) -> Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(self.state.preset_theme())
     }
 
     fn window_material_mode(&self) -> nana_ui::MaterialEffect {
@@ -1332,7 +1332,7 @@ impl RuntimeProgram for GalleryApp {
             self.state
                 .update(GalleryMessage::MaterialApplied(context.material()));
         }
-        let theme = self.theme_mode();
+        let theme = self.state.preset_theme();
         let tokens = self.state.theme_tokens();
         let _ = self.with_document_mut(id, |document| {
             nana_ui::install_theme_tokens(document.context_mut(), theme, tokens)
@@ -1845,7 +1845,13 @@ fn settings_model() -> SettingsModel {
 
 fn appearance_message(event: AppearanceEvent) -> GalleryMessage {
     match event {
-        AppearanceEvent::Theme(theme) => GalleryMessage::SetTheme(theme),
+        AppearanceEvent::Theme(theme) => {
+            GalleryMessage::SetTheme(if theme.as_str() == "nana.dark" {
+                ThemeAppearance::Dark
+            } else {
+                ThemeAppearance::Light
+            })
+        }
         AppearanceEvent::StandardRadius(radius) => GalleryMessage::SetStandardRadius(radius),
         AppearanceEvent::WorkspaceCorners(enabled) => GalleryMessage::SetWorkspaceCorners(enabled),
         AppearanceEvent::WindowMaterial(mode) => GalleryMessage::SetWindowMaterial(mode),

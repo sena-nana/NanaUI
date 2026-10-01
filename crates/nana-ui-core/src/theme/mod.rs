@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod compiled;
 pub mod definition;
 pub mod recipe;
+pub mod registry;
 pub mod tokens;
 
 pub use compiled::{CompiledTheme, builtin_theme, builtin_theme_arc};
@@ -14,6 +15,7 @@ pub use recipe::{
     ButtonRecipe, ButtonRecipeDraft, ButtonVariantDraft, ButtonVariantRecipe, CompiledRecipes,
     ComponentRecipe, ComponentRecipeDraft, ComponentRecipeId, ComponentThemeRegistry, StatusRecipe,
 };
+pub use registry::{ThemeChoice, ThemeRegistry, ThemeRegistryError, ThemeResolution};
 pub use tokens::{
     AccentRamp, BorderTokens, BorderWidth, EasingRole, EffectTokens, ElevationRole, LineRole,
     MotionRole, MotionTokens, OpacityTokens, ShadowToken, SpacingStep, SpacingTokens, StateLayer,
@@ -23,6 +25,34 @@ pub use tokens::{
 
 /// NanaUI's standard body and medium-control text size.
 pub const UI_BASE_TEXT_SIZE: f32 = tokens::TypographyTokens::DEFAULT.body;
+
+/// System colour-scheme metadata for a theme. It does not select tokens.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ThemeAppearance {
+    Light,
+    #[default]
+    Dark,
+    Custom,
+}
+
+impl ThemeAppearance {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Light => Self::Dark,
+            Self::Dark => Self::Light,
+            Self::Custom => Self::Custom,
+        }
+    }
+
+    pub fn metrics(self) -> ThemeMetrics {
+        let _ = self;
+        UI_METRICS
+    }
+
+    pub const fn palette(self) -> crate::SemanticPalette {
+        crate::SemanticPalette::for_appearance(self)
+    }
+}
 
 /// 1px rule. Not a [`space`] step.
 pub const HAIRLINE: f32 = tokens::BorderTokens::DEFAULT.hairline;
@@ -464,45 +494,15 @@ impl ThemeMetrics {
     }
 }
 
-/// The two application themes currently supported by the design system.
-///
-/// Part of the Style Model **Tokens** slice ([`crate::style_model`]).
-/// Palette RGBA values live on [`crate::SemanticPalette`]; `nana-ui::theme::Colors`
-/// is the paint adapter.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ThemeMode {
-    #[default]
-    Dark,
-    Light,
-}
-
-impl ThemeMode {
-    pub fn toggle(self) -> Self {
-        match self {
-            Self::Dark => Self::Light,
-            Self::Light => Self::Dark,
-        }
-    }
-
-    pub fn metrics(self) -> ThemeMetrics {
-        let _ = self;
-        UI_METRICS
-    }
-
-    pub const fn palette(self) -> crate::SemanticPalette {
-        crate::SemanticPalette::for_mode(self)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::ThemeMode;
+    use super::ThemeAppearance;
 
     #[test]
-    fn theme_mode_round_trips_for_host_persistence() {
-        let encoded = serde_json::to_string(&ThemeMode::Light).expect("theme serializes");
-        let restored: ThemeMode = serde_json::from_str(&encoded).expect("theme restores");
-        assert_eq!(restored, ThemeMode::Light);
+    fn theme_appearance_round_trips_for_host_persistence() {
+        let encoded = serde_json::to_string(&ThemeAppearance::Light).expect("theme serializes");
+        let restored: ThemeAppearance = serde_json::from_str(&encoded).expect("theme restores");
+        assert_eq!(restored, ThemeAppearance::Light);
     }
 
     /// Issue #101 §1.4 F2 recorded `motion_fast_ms` / `motion_standard_ms` as

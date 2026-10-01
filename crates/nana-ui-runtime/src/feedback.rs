@@ -976,7 +976,7 @@ mod tests {
         assert!(background[3] < foreground[3]);
         let dark_foreground = foreground;
         let mut theme = MutationQueue::new();
-        theme.set_theme(crate::ThemeMode::Light);
+        theme.set_preset_theme(crate::ThemeAppearance::Light);
         context.commit_mutations(theme).unwrap();
         let work = context.take_system_work();
         context
@@ -1095,7 +1095,9 @@ mod tests {
         assert!((action_bounds.y - (message.bounds.y + message.bounds.height) - 10.0).abs() < 0.01);
 
         let metrics = (title.bounds.height, message.bounds.height, action_bounds.y);
-        context.set_theme(crate::ThemeMode::Light).unwrap();
+        context
+            .set_preset_theme(crate::ThemeAppearance::Light)
+            .unwrap();
         let work = context.take_system_work();
         context
             .compat_world_mut()

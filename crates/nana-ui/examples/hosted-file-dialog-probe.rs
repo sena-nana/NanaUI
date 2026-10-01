@@ -35,7 +35,7 @@ impl RuntimeProgram for Probe {
         let id = DocumentId::new(1).unwrap();
         let mut document = RuntimeDocument::new(id);
         let cx = document.context_mut();
-        cx.set_theme(nana_ui::ThemeMode::Light)?;
+        cx.set_preset_theme(nana_ui::ThemeAppearance::Light)?;
         let root = cx.create_component(id, Stack::fill_column(16.0))?;
         let counter = cx.create_detached_component(id, Text::new("0"))?;
         cx.append_child(root, counter)?;
@@ -164,8 +164,8 @@ impl RuntimeProgram for Probe {
             ..Default::default()
         }
     }
-    fn theme_mode(&self) -> nana_ui::ThemeMode {
-        nana_ui::ThemeMode::Light
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(nana_ui::ThemeAppearance::Light)
     }
     fn window_event(
         &mut self,

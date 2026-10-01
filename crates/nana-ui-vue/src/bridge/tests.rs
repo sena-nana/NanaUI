@@ -439,10 +439,27 @@ fn props_from_map_parses_button() {
 fn theme_inject_bumps_revision() {
     let mut bridge = MessageBridge::new();
     let r0 = bridge.revision();
-    bridge.set_theme(ThemeMode::Dark);
-    assert_eq!(bridge.theme(), ThemeMode::Dark);
+    bridge.set_preset_theme(ThemeAppearance::Dark);
+    assert_eq!(bridge.theme_appearance(), ThemeAppearance::Dark);
     assert!(bridge.revision() > r0);
     assert_eq!(bridge.theme_label(), "dark");
+}
+
+#[test]
+fn custom_theme_id_survives_bridge_snapshot() {
+    let mut bridge = MessageBridge::new();
+    let theme = nana_ui_core::ThemeDefinition::NANA_LIGHT
+        .with_id(nana_ui_core::ThemeId::from_owned("user.sunset"))
+        .with_appearance(nana_ui_core::ThemeAppearance::Custom)
+        .compile()
+        .unwrap();
+    bridge.set_theme_tokens(std::sync::Arc::new(theme));
+    let snapshot = bridge.snapshot();
+    assert_eq!(snapshot.theme_id.as_str(), "user.sunset");
+    assert_eq!(
+        snapshot.theme_appearance,
+        nana_ui_core::ThemeAppearance::Custom
+    );
 }
 
 #[test]
@@ -623,15 +640,15 @@ fn document_appearance_syncs_backdrop_fields() {
 #[test]
 fn document_appearance_syncs_theme_from_dataset() {
     let mut bridge = MessageBridge::new();
-    assert_eq!(bridge.theme(), ThemeMode::Light);
+    assert_eq!(bridge.theme_appearance(), ThemeAppearance::Light);
     let mut dataset = BTreeMap::new();
     dataset.insert("theme".into(), "dark".into());
     bridge.apply_document_appearance(&dataset, &BTreeMap::new());
-    assert_eq!(bridge.theme(), ThemeMode::Dark);
-    assert_eq!(bridge.snapshot().theme, ThemeMode::Dark);
+    assert_eq!(bridge.theme_appearance(), ThemeAppearance::Dark);
+    assert_eq!(bridge.snapshot().theme_appearance, ThemeAppearance::Dark);
     dataset.insert("theme".into(), "light".into());
     bridge.apply_document_appearance(&dataset, &BTreeMap::new());
-    assert_eq!(bridge.theme(), ThemeMode::Light);
+    assert_eq!(bridge.theme_appearance(), ThemeAppearance::Light);
 }
 
 #[test]
@@ -658,7 +675,7 @@ fn theme_change_reapplies_var_bg_from_data_theme_rules() {
     assert_eq!(
         light_bg,
         Some([1.0, 1.0, 1.0, 1.0]),
-        "default ThemeMode::Light must resolve light --bg"
+        "default ThemeAppearance::Light must resolve light --bg"
     );
 
     let mut dataset = BTreeMap::new();
@@ -900,6 +917,7 @@ fn gap_prop_clears_row_and_column_gap_longhands() {
         assert_eq!(layout.row_gap, Some(LengthSpec::Px(8.0)));
         assert_eq!(layout.column_gap, Some(LengthSpec::Px(20.0)));
     }
+
     // Uniform `gap` prop must reset axis longhands (CSS shorthand cascade).
     bridge.patch_prop(1, "gap", &HostValue::string("12px"));
     let layout = &bridge.get(1).unwrap().props.layout;
@@ -919,6 +937,30 @@ fn gap_prop_clears_row_and_column_gap_longhands() {
     assert_eq!(layout.gap, Some(LengthSpec::Px(10.0)));
     assert!(layout.row_gap.is_none());
     assert!(layout.column_gap.is_none());
+}
+
+#[test]
+fn unknown_theme_id_without_registry_falls_back_to_light_tokens() {
+    let mut bridge = MessageBridge::new();
+    bridge.set_theme_id(ThemeId::new("missing.theme"));
+    assert_eq!(bridge.theme_id(), &ThemeId::new("nana.light"));
+    assert_eq!(
+        bridge.theme_tokens().appearance(),
+        nana_ui_core::ThemeAppearance::Light
+    );
+}
+
+#[test]
+fn installing_registry_resolves_the_current_theme_id() {
+    let mut bridge = MessageBridge::new();
+    bridge.set_theme_id(ThemeId::new("missing.theme"));
+    let registry = std::sync::Arc::new(nana_ui_core::ThemeRegistry::default());
+    bridge.set_theme_registry(registry);
+    assert_eq!(bridge.theme_id(), &ThemeId::new("nana.light"));
+    assert_eq!(
+        bridge.theme_tokens().appearance(),
+        nana_ui_core::ThemeAppearance::Light
+    );
 }
 
 #[test]
@@ -4038,7 +4080,7 @@ fn media_layer_and_has_drive_bridge_cascade() {
         Some(LengthSpec::Px(40.0))
     );
     assert!(bridge.get(1).expect("card").props.layout.height.is_none());
-    bridge.set_theme(ThemeMode::Dark);
+    bridge.set_preset_theme(ThemeAppearance::Dark);
     assert_eq!(
         bridge.get(1).expect("card").props.layout.height,
         Some(LengthSpec::Px(20.0))

@@ -2430,7 +2430,6 @@ impl UiWorld {
                 *max_level,
                 *active,
                 active_title.as_deref(),
-                self.style_model.theme_mode,
                 &self.style_model.palette,
                 self.chrome_text_measure(id),
             )),
@@ -2481,7 +2480,7 @@ impl UiWorld {
             StandardVisual::TimeSeriesChart { values } => Some(time_series_geometry(
                 bounds,
                 values,
-                self.style_model.theme_mode,
+                self.style_model.palette,
             )),
             #[cfg(feature = "charts")]
             StandardVisual::TimestampSeriesChart {
@@ -2493,7 +2492,7 @@ impl UiWorld {
                 samples,
                 unit.as_deref(),
                 time_labels.as_ref(),
-                self.style_model.theme_mode,
+                self.style_model.palette,
             )),
             #[cfg(feature = "controls")]
             StandardVisual::ReorderList {

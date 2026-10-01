@@ -28,13 +28,13 @@ fn hit_entry_transform(world: &UiWorld, document: DocumentId, id: StableNodeId) 
 /// `AppContext::set_style_tokens` does, so a world-level test can install one
 /// without going through the framework.
 fn test_theme(
-    mode: ThemeMode,
+    mode: ThemeAppearance,
     metrics: nana_ui_core::ThemeMetrics,
     palette: nana_ui_core::SemanticPalette,
     titlebar: nana_ui_core::SemanticColor,
 ) -> std::sync::Arc<nana_ui_core::CompiledTheme> {
     std::sync::Arc::new(
-        nana_ui_core::ThemeDefinition::for_mode(mode)
+        nana_ui_core::ThemeDefinition::for_appearance(mode)
             .with_metrics(metrics)
             .with_palette(palette)
             .with_titlebar(Some(titlebar))
@@ -8543,7 +8543,7 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
 
     world.begin_frame_counters();
     let mut theme = MutationQueue::new();
-    theme.set_theme(ThemeMode::Light);
+    theme.set_preset_theme(ThemeAppearance::Light);
     world.commit(theme).unwrap();
     let work = world.take_system_work();
     assert!(
@@ -8602,7 +8602,7 @@ fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
     world.begin_frame_counters();
     let mut tokens = MutationQueue::new();
     tokens.set_theme_tokens(test_theme(
-        ThemeMode::Dark,
+        ThemeAppearance::Dark,
         metrics,
         nana_ui_core::SemanticPalette::dark(),
         nana_ui_core::SemanticPalette::dark().surface,
@@ -8804,7 +8804,7 @@ fn set_theme_marks_render_not_style_when_only_palette_roles_change() {
     );
 
     let mut theme = MutationQueue::new();
-    theme.set_theme(ThemeMode::Light);
+    theme.set_preset_theme(ThemeAppearance::Light);
     world.commit(theme).unwrap();
     let work = world.take_system_work();
     assert!(work.style.is_empty());
@@ -8874,7 +8874,7 @@ fn style_tokens_drive_surface_background_and_titlebar_extract_alphas() {
     titlebar.a = 1.0;
     let mut tokens = MutationQueue::new();
     tokens.set_theme_tokens(test_theme(
-        ThemeMode::Dark,
+        ThemeAppearance::Dark,
         nana_ui_core::UI_METRICS,
         palette,
         titlebar,
@@ -8897,7 +8897,7 @@ fn style_tokens_drive_surface_background_and_titlebar_extract_alphas() {
     );
 
     let mut reset = MutationQueue::new();
-    reset.set_theme(ThemeMode::Dark);
+    reset.set_preset_theme(ThemeAppearance::Dark);
     world.commit(reset).unwrap();
     let restored = world.extract_nodes(&[node(1)])[0].style.background.unwrap()[3];
     assert!(
@@ -8973,7 +8973,7 @@ fn theme_change_refreshes_inherited_foreground_on_extract_only() {
     );
 
     let mut theme = MutationQueue::new();
-    theme.set_theme(ThemeMode::Light);
+    theme.set_preset_theme(ThemeAppearance::Light);
     world.commit(theme).unwrap();
     let work = world.take_system_work();
     assert!(work.style.is_empty());
@@ -11386,14 +11386,14 @@ fn a_fresh_world_caches_the_style_slice_of_the_theme_it_installed() {
     assert_eq!(world.style_model(), world.theme().style_model());
     assert_eq!(
         world.theme().identity(),
-        nana_ui_core::builtin_theme(ThemeMode::default()).identity()
+        nana_ui_core::builtin_theme(ThemeAppearance::default()).identity()
     );
 
     // And the comparison an install makes is the one that would catch a drift:
     // installing the same built-in twice must be a no-op.
     let mut world = world;
     let mut queue = MutationQueue::new();
-    queue.set_theme_tokens(nana_ui_core::builtin_theme_arc(ThemeMode::default()));
+    queue.set_theme_tokens(nana_ui_core::builtin_theme_arc(ThemeAppearance::default()));
     world.commit(queue).unwrap();
     assert!(
         world.take_system_work().style.is_empty(),

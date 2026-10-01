@@ -357,7 +357,7 @@ impl UiScene {
 
         let surface_generation = self.compositor.surface_generation;
         let mut changed = false;
-        let mut moved = false;
+        let mut needs_bounds_refresh = false;
 
         for node in candidates {
             let Some(extracted) = self.nodes.get(&node) else {
@@ -365,24 +365,9 @@ impl UiScene {
                 if self.compositor.layers.remove(&node).is_some() {
                     self.compositor.last_demoted = self.compositor.last_demoted.saturating_add(1);
                     changed = true;
-                    moved = true;
                 }
                 continue;
             };
-            // All a layer hands the visibility index: the transform
-            // `resolved_local_transform` presents for this node, and so for
-            // every descendant inheriting its projection. `None` is a node no
-            // layer speaks for, whose transform only an extraction can move —
-            // and none reaches this path. Read either side of the transition
-            // rather than inferred from its arms, which all reach it and can
-            // all leave it be.
-            let presented = |compositor: &CompositorRegistry| {
-                compositor
-                    .layer(node)
-                    .filter(|_| compositor.is_active(node))
-                    .map(|layer| transform_bits(layer.transform))
-            };
-            let before = presented(&self.compositor);
             let snapshot = layer_snapshot(extracted, store, now, descriptors);
             let eligible = snapshot.eligible || self.compositor.requested.contains(&node);
             let previous = self.compositor.phases.get(&node).cloned();
@@ -399,6 +384,7 @@ impl UiScene {
                         self.compositor.last_promoted =
                             self.compositor.last_promoted.saturating_add(1);
                         changed = true;
+                        needs_bounds_refresh = true;
                     } else {
                         self.compositor
                             .phases
@@ -416,6 +402,7 @@ impl UiScene {
                         self.compositor.last_promoted =
                             self.compositor.last_promoted.saturating_add(1);
                         changed = true;
+                        needs_bounds_refresh = true;
                     } else {
                         self.compositor
                             .phases
@@ -424,13 +411,14 @@ impl UiScene {
                 }
                 (true, Some(LayerPhase::Active) | Some(LayerPhase::PendingDemote { .. })) => {
                     if let Some(layer) = self.compositor.layers.get_mut(&node) {
-                        let visual_changed = layer.transform != snapshot.transform
-                            || layer.opacity != snapshot.opacity
+                        let projection_changed = layer.transform != snapshot.transform
                             || layer.kind != snapshot.kind
-                            || layer.bindings != snapshot.bindings
                             || layer.clip != snapshot.clip
                             || layer.effect != snapshot.effect
                             || layer.z_index != extracted.z_index;
+                        let visual_changed = projection_changed
+                            || layer.opacity != snapshot.opacity
+                            || layer.bindings != snapshot.bindings;
                         layer.transform = snapshot.transform;
                         layer.opacity = snapshot.opacity;
                         layer.kind = snapshot.kind;
@@ -439,6 +427,7 @@ impl UiScene {
                         layer.effect = snapshot.effect;
                         layer.z_index = extracted.z_index;
                         changed |= visual_changed;
+                        needs_bounds_refresh |= projection_changed;
                     } else {
                         let z_index = extracted.z_index;
                         self.compositor.layers.insert(
@@ -448,6 +437,7 @@ impl UiScene {
                         self.compositor.last_promoted =
                             self.compositor.last_promoted.saturating_add(1);
                         changed = true;
+                        needs_bounds_refresh = true;
                     }
                     self.compositor.phases.insert(node, LayerPhase::Active);
                 }
@@ -463,13 +453,13 @@ impl UiScene {
                         self.compositor.last_demoted =
                             self.compositor.last_demoted.saturating_add(1);
                         changed = true;
+                        needs_bounds_refresh = true;
                     }
                 }
                 (false, Some(LayerPhase::PendingPromote { .. }) | None) => {
                     self.compositor.phases.remove(&node);
                 }
             }
-            moved |= before != presented(&self.compositor);
         }
 
         let active_nodes: NodeSet = self.compositor.layers.keys().copied().collect();
@@ -483,7 +473,7 @@ impl UiScene {
                 // unchanged, so `before != presented` above does not detect
                 // this topology-only movement. Rebuild all retained bounds
                 // before the next visibility query.
-                moved = true;
+                needs_bounds_refresh = true;
             }
         }
 
@@ -491,16 +481,16 @@ impl UiScene {
             self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
             self.compositor.presentation_epoch = self.compositor.presentation_epoch.wrapping_add(1);
         }
-        // A layer that moved moved its retained descendants' projections
-        // with it — what an ancestor transform does in `apply_delta`, except
-        // that nothing here re-extracted, so there is no changed set to
-        // refresh from and the index would keep culling against where the
-        // subtree was when it was last derived. Re-derive from the plan it
-        // already holds; a plan is structural, and no layer is in one.
-        if moved && let Some(mut visibility) = self.visibility.take() {
+        // Opacity-only compositor frames keep the visibility index hot;
+        // projection or topology changes re-derive its retained bounds.
+        if (needs_bounds_refresh
+            || (self.compositor_projection_dirty && self.compositor_layer_count() != 0))
+            && let Some(mut visibility) = self.visibility.take()
+        {
             visibility.refresh_bounds(self);
             let _ = self.visibility.set(visibility);
         }
+        self.compositor_projection_dirty = false;
         #[cfg(debug_assertions)]
         self.audit_retained_projection();
     }
@@ -817,13 +807,6 @@ fn make_layer(
         surface_generation,
         z_index,
     }
-}
-
-/// A transform as the bits it is made of: the visibility index is audited
-/// against a fresh build bit for bit, and `==` calls `0.0` and `-0.0` the same
-/// transform though they do not always project a bound to the same bits.
-fn transform_bits(transform: AffineTransform) -> ([u32; 6], [u32; 2]) {
-    (transform.0.map(f32::to_bits), transform.1.map(f32::to_bits))
 }
 
 fn hold_elapsed(now: Duration, since: Duration, hold: Duration) -> bool {

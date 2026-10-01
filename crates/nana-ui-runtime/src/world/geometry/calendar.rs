@@ -11,7 +11,6 @@ pub(in crate::world) fn calendar_heatmap_geometry(
     max_level: u8,
     active: Option<usize>,
     active_title: Option<&str>,
-    mode: ThemeMode,
     palette: &SemanticPalette,
     measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> crate::ComponentGeometry {
@@ -28,7 +27,7 @@ pub(in crate::world) fn calendar_heatmap_geometry(
                 } else {
                     cell.level
                 };
-                crate::calendar_cell_fill(mode, level, max_level)
+                crate::calendar_cell_fill(*palette, level, max_level)
             };
             (
                 LayoutBox {

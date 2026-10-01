@@ -840,7 +840,13 @@ impl MessageBridge {
         let vars = self.inherited_css_vars_for(id);
         let fonts = self.font_context_for(id);
         let viewport = self.cascade.layout_viewport;
-        let dark = matches!(self.theme, ThemeMode::Dark);
+        // Media/color-scheme behavior follows the installed theme metadata.
+        // Custom themes must not be coerced into the dark preset merely
+        // because their token set is not one of the two legacy modes.
+        let dark = matches!(
+            self.theme_tokens.appearance(),
+            nana_ui_core::ThemeAppearance::Dark
+        );
         let run = || {
             if let Some((vw, vh)) = viewport {
                 crate::css_map::with_active_viewport(vw, vh, || {
@@ -1392,7 +1398,10 @@ impl MessageBridge {
         MediaEnvironment {
             width,
             height,
-            color_scheme_dark: matches!(self.theme, ThemeMode::Dark),
+            color_scheme_dark: matches!(
+                self.theme_tokens.appearance(),
+                nana_ui_core::ThemeAppearance::Dark
+            ),
         }
     }
 }

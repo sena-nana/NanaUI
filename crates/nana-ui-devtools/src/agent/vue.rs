@@ -5,7 +5,9 @@ use std::path::Path;
 
 use nana_js_engine::{JsEngine, RuntimeArtifact};
 use nana_ui::HostTextureRegistry;
-use nana_ui::runtime::{AccessibilityAction, AccessibilityActionRequest, StableNodeId, ThemeMode};
+use nana_ui::runtime::{
+    AccessibilityAction, AccessibilityActionRequest, StableNodeId, ThemeAppearance,
+};
 use nana_ui_core::SemanticColorRole;
 use nana_ui_platform::InputModifiers;
 use nana_ui_vue::{
@@ -402,15 +404,15 @@ impl<E: JsEngine> AgentSession for VueAgentSession<E> {
     /// does not take authority away from the application.
     fn set_theme(&mut self, mode: ThemeName) -> Result<(), AgentError> {
         let mode = match mode {
-            ThemeName::Light => ThemeMode::Light,
-            ThemeName::Dark => ThemeMode::Dark,
+            ThemeName::Light => ThemeAppearance::Light,
+            ThemeName::Dark => ThemeAppearance::Dark,
         };
         {
             let bridge = self.host.bridge();
             let mut guard = bridge
                 .lock()
                 .map_err(|_| AgentError("vue bridge poisoned".into()))?;
-            guard.set_theme(mode);
+            guard.set_preset_theme(mode);
         }
         self.pump()
     }

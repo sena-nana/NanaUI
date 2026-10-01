@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn context_menu_geometry_reserves_icon_box_and_keeps_iconless_rows() {
-        let palette = SemanticPalette::for_mode(nana_ui_core::ThemeMode::Dark);
+        let palette = SemanticPalette::for_appearance(nana_ui_core::ThemeAppearance::Dark);
         let rows = [
             SelectOptionData {
                 label: Arc::from("Add"),

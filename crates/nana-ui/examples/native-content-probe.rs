@@ -300,8 +300,8 @@ mod windows_probe {
     impl RuntimeProgram for Probe {
         type Message = Message;
         type Error = Infallible;
-        fn theme_mode(&self) -> nana_ui::ThemeMode {
-            nana_ui::ThemeMode::Dark
+        fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+            nana_ui::builtin_theme_arc(nana_ui::ThemeAppearance::Dark)
         }
         fn gpu_backend_policy() -> GpuBackendPolicy {
             GpuBackendPolicy::CompositionCapable

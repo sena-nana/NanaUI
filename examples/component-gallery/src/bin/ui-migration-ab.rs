@@ -19,7 +19,7 @@ use nana_ui::{
     GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind,
     GraphPortSide, GraphSelection, GraphSize, GraphViewport, RegionId, RoutedInput, RuntimeProgram,
     RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SettingsModel, SettingsState,
-    SettingsTab, SplitAxis, ThemeMode, WindowDescriptor, run_runtime_scene,
+    SettingsTab, SplitAxis, ThemeAppearance, WindowDescriptor, run_runtime_scene,
 };
 use nana_ui_core::{SplitPaneModel, WorkspaceModel};
 use nana_ui_platform::host::WindowCommand;
@@ -86,7 +86,7 @@ impl Case {
 }
 
 struct App {
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     case: Case,
     graph: GraphModel,
     graph_viewport: GraphViewport,
@@ -119,7 +119,7 @@ impl RuntimeProgram for App {
             .map(|bounds| GraphViewport::fit(bounds, GraphSize::new(1248.0, 680.0), 28.0))
             .unwrap_or_default();
         let mut app = Self {
-            theme: ThemeMode::Dark,
+            theme: ThemeAppearance::Dark,
             case: Case::GraphCanvas,
             graph,
             graph_viewport,
@@ -158,8 +158,8 @@ impl RuntimeProgram for App {
         RuntimeProgramUpdate::default()
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        self.theme
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(self.theme)
     }
 
     fn input_event(
@@ -186,8 +186,9 @@ impl RuntimeProgram for App {
             }
             "t" | "T" => {
                 self.theme = match self.theme {
-                    ThemeMode::Dark => ThemeMode::Light,
-                    ThemeMode::Light => ThemeMode::Dark,
+                    ThemeAppearance::Dark => ThemeAppearance::Light,
+                    ThemeAppearance::Light => ThemeAppearance::Dark,
+                    ThemeAppearance::Custom => ThemeAppearance::Light,
                 };
                 true
             }
@@ -224,8 +225,9 @@ impl RuntimeProgram for App {
 impl App {
     fn window_title(&self) -> String {
         let theme = match self.theme {
-            ThemeMode::Dark => "dark",
-            ThemeMode::Light => "light",
+            ThemeAppearance::Dark => "dark",
+            ThemeAppearance::Light => "light",
+            ThemeAppearance::Custom => "custom",
         };
         format!(
             "NanaUI Runtime migration A/B — {} ({theme})",
@@ -285,14 +287,14 @@ impl App {
 fn remount(
     document: &mut RuntimeDocument,
     case: Case,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     graph: &GraphModel,
     graph_viewport: GraphViewport,
     graph_selection: Option<&GraphSelection>,
     graph_events: &Arc<Mutex<Vec<GraphCanvasEvent>>>,
 ) -> Result<Option<nana_ui::runtime::StableNodeId>, FrameworkError> {
     let document_id = document.document();
-    document.context_mut().set_theme(theme)?;
+    document.context_mut().set_preset_theme(theme)?;
     let target = match case {
         Case::GraphCanvas => {
             let observed = Arc::clone(graph_events);

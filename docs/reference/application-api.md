@@ -146,7 +146,7 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 | `startup_changed` | 可选；启动阶段变化（请求、撤回、交接完成） |
 | `with_document` / `with_document_mut` | 按 `WindowId` 在访问闭包中交出 `RuntimeDocument` |
 | `update` | 宿主级消息；保持便宜 |
-| `theme_mode` | 深色 / 浅色 |
+| `theme` | 返回注册表解析后的 `Arc<CompiledTheme>`；Light/Dark 是预制主题，身份由 `ThemeId` 表示 |
 | `window_material_mode` | 可选；默认实色 |
 | `host_textures` | 默认；slot → `HostTexture` |
 | `prepare_window_frame` | flush 前准备纹理。窗口遮挡或最小化时 `FrameDemand` 到期仍会调用，包括 0 维；不 flush、不 present。producer encode 仅在尺寸可画时跑 |

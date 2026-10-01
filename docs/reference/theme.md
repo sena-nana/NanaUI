@@ -13,6 +13,20 @@ Phase 0 的章节保留成**当时**的审计记录。不回头重写。那份�
 
 你写应用。请看 [视觉](look.md) 和 [控件](components.md)。这篇是给要动 Theme 架构的人看的。
 
+## 主题注册与持久化
+
+`ThemeId` 是主题的稳定身份，使用拥有的字符串表示，因此应用可以在运行时
+注册自己的主题。`ThemeDefinition` 描述语义 palette、metrics、recipes、motion
+和 effects；宿主把它交给 `ThemeRegistry::register`，注册表会校验并编译它，
+随后通过 `AppContext::set_theme_definition` 或 `set_theme_tokens` 安装。
+
+`ThemeDefinition::NANA_LIGHT` 与 `ThemeDefinition::NANA_DARK` 是两个预制主题。
+`ThemeAppearance` 只是外观提示（`Light`、`Dark` 或 `Custom`），不是主题身份；
+自定义主题可以使用 `Custom`，不会被运行时回退成亮色或暗色 token。
+设置页应使用注册表提供的 `ThemeChoice` 列表，持久化只保存 `theme_id`。
+启动时如果保存的 ID 尚未注册，`ThemeRegistry::resolve` 会返回内置 Light，
+并通过 `fell_back_to_light` 保留可诊断的回退结果。
+
 ## 0. 一分钟结论
 
 | 问题 | 现状 |
@@ -44,10 +58,10 @@ Phase 0 的章节保留成**当时**的审计记录。不回头重写。那份�
                                 + with_backdrop 覆写 alpha）
                                           │
                               install_theme_tokens
-                              → AppContext::set_style_tokens
+                              → AppContext::set_theme_tokens
                                           ▼
-   L1 CSS 子集 ─┐                 StyleModelRef  ← ThemeMode
-   L2 Vue props ─┼──► Semantics ──►  · theme_mode
+   L1 CSS 子集 ─┐                 StyleModelRef  ← ThemeAppearance
+   L2 Vue props ─┼──► Semantics ──►  · theme_id / appearance
    L3 Rust API ─┘   (WidgetKind/     · metrics : ThemeMetrics
                      ButtonKind/     · palette : SemanticPalette
                      ControlSize/    · titlebar: SemanticColor
@@ -90,20 +104,20 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 
 | 类型 | 位置 | 是什么 | 归宿 |
 | --- | --- | --- | --- |
-| `ThemeMode` | [theme/mod.rs](../../crates/nana-ui-core/src/theme/mod.rs) | Dark / Light 二选一，可序列化 | **已演进**：§7 的 `ThemeDefinition.mode`，不再是主题的全部 |
+| `ThemeId` / `ThemeAppearance` | [theme/mod.rs](../../crates/nana-ui-core/src/theme/mod.rs) | 可持久化主题身份与 Light / Dark / Custom 外观提示 | 运行时主题身份；Light/Dark 是注册表内置预制主题 |
 | `SemanticPalette` | [style_model.rs](../../crates/nana-ui-core/src/style_model.rs) | 24 个语义色字段，dark/light 两份常量 | **保留**，直接作为 semantic color token 层，禁止复制第二份 |
 | `SemanticColorRole` | 同上 | 39 个角色：24 个对应字段，15 个在 `get()` 里派生（`WarningSoft*`、`DangerSoft*`、`Titlebar`、9 个代码 token 角色） | **保留**；派生规则是 recipe 的雏形，Phase 1 要把它显式化 |
 | `SemanticColorMix` | 同上 | 两个角色的 premultiplied 混合 / 单角色 alpha，权重用 basis points | **保留**，这是「状态层」的现有表达 |
 | `SemanticColor` | 同上 | 后端中立 RGBA 0..=1 | **保留** |
 | `ThemeMetrics` | [theme/mod.rs](../../crates/nana-ui-core/src/theme/mod.rs) | 非颜色 token：radius ×4、control height ×3、padding、icon size、panel padding、field/list padding，外加组合进来的 scrollbar。~~**motion ×2**~~ 已删（§7） | **已演进**：§7 的 `DesignTokens.metrics` 按值持有它本身 |
-| `UI_METRICS` | 同上 | `ThemeMetrics` 的 `const` 默认值 | **废弃为唯一权威**：现在是 `DesignTokens::for_mode` 的初值；仍有 62 处产品读取点，见 §1.5 |
+| `UI_METRICS` | 同上 | `ThemeMetrics` 的 `const` 默认值 | **废弃为唯一权威**：现在是 `DesignTokens::for_appearance` 的初值；仍有 62 处产品读取点，见 §1.5 |
 | `ScrollbarMetrics` / `SCROLLBAR_METRICS` | [scrollbar.rs](../../crates/nana-ui-core/src/scrollbar.rs) | 滚动条独有的 5 个几何 token（thickness 12 / thumb 6 / min length 24 / inset 2 / page 0.9） | **保留**：本轮已由 `ThemeMetrics.scrollbar` 组合持有（§1.5），不再是第三份 metrics |
 | `space` / `type_scale` | 同上 | 间距 10 档、字号 7 档（含 `HINT` 11 / `TITLE` 18）+ 字重 4 档，裸 `const` | **已演进**：§7 的 `SpacingTokens` / `TypographyTokens`；`const` 现在读它们的 `DEFAULT`，不再自己拿着数字 |
-| `StyleModelRef` | [style_model.rs](../../crates/nana-ui-core/src/style_model.rs) | mode + metrics + palette + titlebar 的只读视图，`color(role)` 是 token 读取入口 | **演进**为 compiled theme 的运行期句柄 |
+| `StyleModelRef` | [style_model.rs](../../crates/nana-ui-core/src/style_model.rs) | appearance + metrics + palette + titlebar 的只读视图，`color(role)` 是 token 读取入口 | 由已安装的 `CompiledTheme` 提供 |
 | `ControlSemantics` | 同上 | size + button/card kind + status 的组合 | **保留**，是 recipe 的 selector |
 | `ControlSize` / `ButtonKind` / `CardKind` / `StatusTone` / `ToastTone` / `ValidationIntent` | [semantics.rs](../../crates/nana-ui-core/src/semantics.rs) | 组件意图枚举 | **保留**，Component Recipe 的 variant 轴 |
 | `WidgetKind` | [bridge/semantic.rs](../../crates/nana-ui-vue/src/bridge/semantic.rs) | L1/L2 tag/class → 控件类型 | **保留**，仅 Vue 适配层 |
-| `ThemeTokens` / `ThemeModeExt` | [nana-ui/theme.rs](../../crates/nana-ui/src/theme.rs) | L3 宿主侧 adapter：直接装 `SemanticPalette` + `ThemeMetrics` + titlebar | **保留**（`Colors` 副本本轮已删，见 §1.5）；§7 起 `ThemeTokens` 是 `ThemeDefinition` 的颜色+尺寸投影，`with_backdrop` 按 `SurfaceTokens` 决定给哪个角色上 alpha |
+| `ThemeTokens` / `ThemeAppearanceExt` | [nana-ui/theme.rs](../../crates/nana-ui/src/theme.rs) | L3 宿主侧 adapter：直接装 `SemanticPalette` + `ThemeMetrics` + titlebar | **保留**（`Colors` 副本本轮已删，见 §1.5）；§7 起 `ThemeTokens` 是 `ThemeDefinition` 的颜色+尺寸投影，`with_backdrop` 按 `SurfaceTokens` 决定给哪个角色上 alpha |
 | `RadiusTier` | [theme.rs](../../crates/nana-ui-core/src/theme.rs) | 圆角档位意图（Xs/Sm/Md/Lg），由 `NodeStyle.radius` 携带、样式写入时对安装的 `ThemeMetrics` 解析 | **保留**：这是「组件说意图、主题给数值」在尺寸侧的第一个落点，其余 metrics 按同一形状推进 |
 | `ControlHeight` | [theme.rs](../../crates/nana-ui-core/src/theme.rs) | 控件高度意图：`Min(ControlSize)` / `Exact(ControlSize)`，由 `NodeStyle.control_height` 携带、样式写入时解析 | **保留**：`Min` / `Exact` 的区分以前藏在调用点写 `min_height` 还是 `height` 里，现在是被说出来的意图 |
 | `ControlPadding` | 同上 | 水平 inset 意图：`Compact` / `Standard` / `Roomy` / `Field` / `ListItem`，由 `NodeStyle.control_padding_x` 携带；多行 field 另用 `control_padding_y` | **保留**：不是 `ControlSize` 的包装——text field 与 list row 各有独立 metrics 字段 |
@@ -186,7 +200,7 @@ runtime crate 里 `const NAME: f32/u16/u64 = <数字>` 共 217 个（`ROW_HEIGHT
 
 ### 一份调色板，不是两份（F9 已解决）
 
-`nana_ui::theme::Colors` 删掉了。它有和 `SemanticPalette` 完全一样的 24 个字段和一对来回转换。`ThemeTokens` 现在直接装 `SemanticPalette`。`ThemeModeExt::colors()` 去掉（已有 `palette()`）。一种设计语言不需要两种拼写。第二种拼写正是两者开始漂移的地方。
+`nana_ui::theme::Colors` 删掉了。它有和 `SemanticPalette` 完全一样的 24 个字段和一对来回转换。`ThemeTokens` 现在直接装 `SemanticPalette`。`ThemeAppearanceExt::colors()` 去掉（已有 `palette()`）。一种设计语言不需要两种拼写。第二种拼写正是两者开始漂移的地方。
 
 消费方改动：`Colors` → `SemanticPalette`。`theme.colors()` → `theme.palette()`。`tokens.colors` → `tokens.palette`。
 
@@ -807,7 +821,7 @@ cargo run --release --locked -p nana-ui-runtime --features benchmark \
 | --- | --- |
 | ThemeScope / 子树 override | #102 明确非范围 |
 | 组件全量迁移到 recipe | #102 明确非范围。搬了 Button + family 前景表 + status tone 表，其余 11 个 family 的 recipe 只有前景一槽 |
-| Theme package / 文件格式加载 | 非范围。`ThemeId` 因此是 `&'static str`；要从文件装主题时它得先变 |
+| Theme package / 文件格式加载 | 非范围。本阶段由应用 API 注册主题；`ThemeId` 已支持拥有字符串，文件主题包格式另行设计 |
 | F3（解析点在 extract 不在保留期） | 未动。这是 #100 §6，要改的是 resolver 的形状，不是 token 的形状 |
 | F4（安装 = 全文档失效） | 未动。这是 #100 §7 的 dependency class |
 | typography / spacing 的调用点收敛 | 未做。合同建立了，但 `ControlSize::text_size()` 这类仍对 `type_scale` 常量解析——和 Phase 0 对 metrics 做的那一轮是同一形状的工作，只是换一个类别，留给 #107 |

@@ -1,6 +1,6 @@
 use nana_ui::{HeadlessInput, runtime::*};
 use nana_ui_core::{
-    SemanticColor, SemanticColorMix, SemanticColorRole as R, StyleModelRef, ThemeMode,
+    SemanticColor, SemanticColorMix, SemanticColorRole as R, StyleModelRef, ThemeAppearance,
 };
 use nana_ui_platform::{
     InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase, PointerType,
@@ -36,7 +36,7 @@ fn hover(x: f32, y: f32) -> InputPayload {
 
 #[test]
 fn semantic_mix_premultiplies_alpha_and_preserves_exact_historical_percentages() {
-    let mut model = StyleModelRef::new(ThemeMode::Light);
+    let mut model = StyleModelRef::new(ThemeAppearance::Light);
     model.palette.accent = SemanticColor::rgba(1.0, 0.0, 0.0, 0.25);
     model.palette.border = SemanticColor::rgba(0.0, 0.0, 1.0, 0.75);
     close(
@@ -51,7 +51,7 @@ fn semantic_mix_premultiplies_alpha_and_preserves_exact_historical_percentages()
             .as_rgba_array(),
         [1.0, 0.0, 0.0, 0.1],
     );
-    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+    for mode in [ThemeAppearance::Light, ThemeAppearance::Dark] {
         let model = StyleModelRef::new(mode);
         for (first, second, ratio) in [
             (R::Accent, R::Border, 0.50),
@@ -91,8 +91,11 @@ fn semantic_mix_theme_hover_disabled_and_raw_priority_share_the_normal_resolver(
         .unwrap();
     let id = button.stable_id();
     let mut input = HeadlessInput::bind(&mut cx, doc);
-    for (n, mode) in [ThemeMode::Light, ThemeMode::Dark].into_iter().enumerate() {
-        cx.set_theme(mode).unwrap();
+    for (n, mode) in [ThemeAppearance::Light, ThemeAppearance::Dark]
+        .into_iter()
+        .enumerate()
+    {
+        cx.set_preset_theme(mode).unwrap();
         cx.resolve_styles(&[id]).unwrap();
         cx.layout_document(doc, LayoutViewport::new(240.0, 120.0))
             .unwrap();

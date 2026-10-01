@@ -2317,7 +2317,9 @@ fn settings_composites_assemble_in_a_view_as_by_hand() {
         AboutMetadata, AboutSection, AppearanceSection, SettingsCollapsibleCard, SettingsPage,
         SettingsSidebar,
     };
-    use nana_ui_core::{AppearanceSettings, SettingsModel, SettingsState, SettingsTab, ThemeMode};
+    use nana_ui_core::{
+        AppearanceSettings, SettingsModel, SettingsState, SettingsTab, ThemeAppearance,
+    };
     let (mut cx, document, _) = setup();
     let model = SettingsModel::new("appearance", [SettingsTab::new("appearance", "外观")]).unwrap();
     let state = SettingsState::new(&model);
@@ -2326,7 +2328,7 @@ fn settings_composites_assemble_in_a_view_as_by_hand() {
     let appearance = cx
         .create_component(
             document,
-            AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default()),
+            AppearanceSection::new(ThemeAppearance::Dark, AppearanceSettings::default()),
         )
         .unwrap();
     cx.assemble_appearance_section(appearance).unwrap();
@@ -2366,7 +2368,7 @@ fn settings_composites_assemble_in_a_view_as_by_hand() {
         .mount_view_root(document, || {
             (
                 widget(AppearanceSection::new(
-                    ThemeMode::Dark,
+                    ThemeAppearance::Dark,
                     AppearanceSettings::default(),
                 )),
                 widget(AboutSection::new(metadata.clone())),

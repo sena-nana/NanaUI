@@ -7,7 +7,7 @@ use nana_ui_core::{
     AlignSpec, AppearanceEvent, AppearanceSettings, BackdropTarget, ButtonKind, CardKind,
     ControlSize, FlexDirection, FlexWrap, Icon, JustifySpec, LengthSpec, LineHeightSpec,
     OverflowSpec, PaddingSpec, SemanticColorRole, SettingsModel, SettingsState, SettingsTabId,
-    ThemeMode, WindowMaterialMode,
+    ThemeAppearance, ThemeChoice, ThemeId, WindowMaterialMode,
 };
 
 use crate::view_components::{
@@ -786,7 +786,8 @@ const DEFAULT_PLATFORM_HINT: &str = "可选择实色或透明背景；设备支�
 /// Host-owned appearance snapshot. Events stay [`AppearanceEvent`]; values stay outside NanaUI.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppearanceSection {
-    pub theme: ThemeMode,
+    pub theme_id: ThemeId,
+    pub theme_options: Vec<ThemeChoice>,
     pub appearance: AppearanceSettings,
     pub material_status: Option<Arc<str>>,
     pub platform_hint: Option<Arc<str>>,
@@ -802,6 +803,7 @@ pub struct AppearanceSectionAssembly {
     pub theme_control: Option<StableNodeId>,
     pub theme_dark: Option<StableNodeId>,
     pub theme_light: Option<StableNodeId>,
+    pub theme_options: Vec<StableNodeId>,
     pub material_row: Option<StableNodeId>,
     pub material_control: Option<StableNodeId>,
     pub material_solid: Option<StableNodeId>,
@@ -829,15 +831,39 @@ pub struct AppearanceSectionAssembly {
 }
 
 impl AppearanceSection {
-    pub fn new(theme: ThemeMode, appearance: AppearanceSettings) -> Self {
+    pub fn new(theme: ThemeAppearance, appearance: AppearanceSettings) -> Self {
+        let theme_id = match theme {
+            ThemeAppearance::Light => ThemeId::new("nana.light"),
+            ThemeAppearance::Dark => ThemeId::new("nana.dark"),
+            ThemeAppearance::Custom => ThemeId::new("nana.light"),
+        };
         Self {
-            theme,
+            theme_id,
+            theme_options: Vec::new(),
             appearance,
             material_status: None,
             platform_hint: None,
             available_materials: Vec::new(),
             assembly: None,
         }
+    }
+
+    pub fn from_theme_id(theme_id: ThemeId, appearance: AppearanceSettings) -> Self {
+        Self {
+            theme_id,
+            theme_options: Vec::new(),
+            appearance,
+            material_status: None,
+            platform_hint: None,
+            available_materials: Vec::new(),
+            assembly: None,
+        }
+    }
+
+    pub fn with_theme_options(mut self, selected: ThemeId, options: Vec<ThemeChoice>) -> Self {
+        self.theme_id = selected;
+        self.theme_options = options;
+        self
     }
 
     pub fn material_status(mut self, status: impl Into<Arc<str>>) -> Self {
@@ -1364,16 +1390,16 @@ fn ensure_settings_nav_row(
 
 /// Apply a host-owned appearance event. Theme is not stored on [`AppearanceSettings`].
 pub fn apply_appearance_event(
-    theme: &mut ThemeMode,
+    theme_id: &mut nana_ui_core::ThemeId,
     appearance: &mut AppearanceSettings,
     event: AppearanceEvent,
 ) -> bool {
     match event {
         AppearanceEvent::Theme(next) => {
-            if *theme == next {
+            if *theme_id == next {
                 return false;
             }
-            *theme = next;
+            *theme_id = next;
             true
         }
         AppearanceEvent::StandardRadius(radius) => {
@@ -1389,8 +1415,9 @@ pub fn apply_appearance_event(
             appearance.set_titlebar_follows_sidebar(enabled)
         }
         AppearanceEvent::Reset => {
-            let theme_changed = *theme != AppearanceSettings::RESET_THEME;
-            *theme = AppearanceSettings::RESET_THEME;
+            let reset = nana_ui_core::ThemeId::new("nana.light");
+            let theme_changed = *theme_id != reset;
+            *theme_id = reset;
             appearance.reset() || theme_changed
         }
     }
@@ -1733,6 +1760,47 @@ fn ensure_material_options(
     Ok(control)
 }
 
+fn ensure_theme_options(
+    context: &mut AppContext,
+    document: crate::DocumentId,
+    assembly: &mut AppearanceSectionAssembly,
+    offered: &[ThemeChoice],
+    selected: Option<&str>,
+) -> Result<
+    (
+        Vec<Entity<SegmentedOption>>,
+        Option<Entity<SegmentedOption>>,
+    ),
+    FrameworkError,
+> {
+    let mut options = Vec::with_capacity(offered.len());
+    let previous = std::mem::take(&mut assembly.theme_options);
+    for choice in offered {
+        let entity = if let Some(id) = assembly
+            .theme_options
+            .get(options.len())
+            .or_else(|| previous.get(options.len()))
+            .copied()
+        {
+            Entity::from_stable_id(id)
+        } else {
+            let entity = context
+                .create_detached_component(document, SegmentedOption::new(choice.label.as_ref()))?;
+            entity
+        };
+        assembly.theme_options.push(entity.stable_id());
+        options.push(entity);
+    }
+    let selected = selected.and_then(|id| {
+        offered
+            .iter()
+            .position(|choice| choice.id.as_str() == id)
+            .and_then(|index| options.get(index).copied())
+    });
+    let selected = selected.or_else(|| options.first().copied());
+    Ok((options, selected))
+}
+
 fn ensure_switch(
     context: &mut AppContext,
     document: crate::DocumentId,
@@ -1906,7 +1974,8 @@ impl AppContext {
         let document = document_of(self, section.stable_id())?;
         let snapshot = self.read(section, |section| {
             (
-                section.theme,
+                section.theme_id.clone(),
+                section.theme_options.clone(),
                 section.appearance,
                 section.material_status.clone(),
                 section.platform_hint.clone(),
@@ -1914,8 +1983,15 @@ impl AppContext {
                 section.assembly.clone().unwrap_or_default(),
             )
         })?;
-        let (theme, appearance, material_status, platform_hint, available_materials, mut assembly) =
-            snapshot;
+        let (
+            theme_id,
+            theme_options,
+            appearance,
+            material_status,
+            platform_hint,
+            available_materials,
+            mut assembly,
+        ) = snapshot;
         let (solid_mode, titlebar_follow_disabled) = appearance_mode(&appearance);
         let created_theme = assembly.theme_control.is_none();
         let created_material = assembly.material_control.is_none();
@@ -1925,21 +2001,45 @@ impl AppContext {
         let created_radius = assembly.radius_range.is_none();
         let created_reset = assembly.reset_button.is_none();
         let mut created_opacity_range = false;
-        let (theme_control, theme_dark, theme_light) = ensure_segmented_pair(
-            self,
-            document,
-            &mut assembly.theme_control,
-            &mut assembly.theme_dark,
-            &mut assembly.theme_light,
-            SegmentedOption::new("暗色").icon(Icon::Moon),
-            SegmentedOption::new("浅色").icon(Icon::Appearance),
-            matches!(theme, ThemeMode::Dark),
-            false,
-            false,
-        )?;
+        let (theme_control, theme_dark, theme_light): (
+            Entity<SegmentedControl>,
+            Option<Entity<SegmentedOption>>,
+            Option<Entity<SegmentedOption>>,
+        ) = if theme_options.is_empty() {
+            let (control, dark, light) = ensure_segmented_pair(
+                self,
+                document,
+                &mut assembly.theme_control,
+                &mut assembly.theme_dark,
+                &mut assembly.theme_light,
+                SegmentedOption::new("暗色").icon(Icon::Moon),
+                SegmentedOption::new("浅色").icon(Icon::Appearance),
+                theme_id.as_str() == "nana.dark",
+                false,
+                false,
+            )?;
+            (control, Some(dark), Some(light))
+        } else {
+            let control = if let Some(id) = assembly.theme_control {
+                Entity::from_stable_id(id)
+            } else {
+                let entity = self.create_detached_component(document, SegmentedControl::new())?;
+                assembly.theme_control = Some(entity.stable_id());
+                entity
+            };
+            let (options, selected) = ensure_theme_options(
+                self,
+                document,
+                &mut assembly,
+                &theme_options,
+                Some(theme_id.as_str()),
+            )?;
+            self.set_segmented_options(control, options, selected)?;
+            (control, None, None)
+        };
         assembly.theme_control = Some(theme_control.stable_id());
-        assembly.theme_dark = Some(theme_dark.stable_id());
-        assembly.theme_light = Some(theme_light.stable_id());
+        assembly.theme_dark = theme_dark.map(|entity| entity.stable_id());
+        assembly.theme_light = theme_light.map(|entity| entity.stable_id());
         let theme_row = mount_settings_row(
             self,
             document,
@@ -2167,17 +2267,40 @@ impl AppContext {
             reset_button.stable_id(),
         )?;
 
-        if created_theme {
-            let dark = theme_dark.stable_id();
-            let light = theme_light.stable_id();
+        if created_theme && !theme_options.is_empty() {
+            let option_ids = assembly.theme_options.clone();
+            let theme_ids: Vec<_> = theme_options
+                .iter()
+                .map(|choice| choice.id.clone())
+                .collect();
+            self.observe(
+                theme_control,
+                section,
+                move |_, event: &SegmentedSelectionRequested, cx| {
+                    let Some(index) = option_ids.iter().position(|id| *id == event.option) else {
+                        return;
+                    };
+                    if let Some(theme_id) = theme_ids.get(index) {
+                        cx.emit(AppearanceEvent::Theme(theme_id.clone()));
+                    }
+                },
+            )?;
+        } else if created_theme {
+            let (Some(dark), Some(light)) = (theme_dark, theme_light) else {
+                return Err(FrameworkError::InvalidComponentValue(
+                    theme_control.stable_id(),
+                ));
+            };
+            let dark = dark.stable_id();
+            let light = light.stable_id();
             self.observe(
                 theme_control,
                 section,
                 move |_, event: &SegmentedSelectionRequested, cx| {
                     let next = if event.option == dark {
-                        ThemeMode::Dark
+                        nana_ui_core::ThemeId::new("nana.dark")
                     } else if event.option == light {
-                        ThemeMode::Light
+                        nana_ui_core::ThemeId::new("nana.light")
                     } else {
                         return;
                     };
@@ -2981,14 +3104,14 @@ mod tests {
 
     #[test]
     fn appearance_events_stay_on_the_host_snapshot() {
-        let mut theme = ThemeMode::Dark;
+        let mut theme = nana_ui_core::ThemeId::new("nana.dark");
         let mut appearance = AppearanceSettings::default();
         assert!(apply_appearance_event(
             &mut theme,
             &mut appearance,
-            AppearanceEvent::Theme(ThemeMode::Light),
+            AppearanceEvent::Theme(nana_ui_core::ThemeId::new("nana.light")),
         ));
-        assert_eq!(theme, ThemeMode::Light);
+        assert_eq!(theme, nana_ui_core::ThemeId::new("nana.light"));
         assert!(apply_appearance_event(
             &mut theme,
             &mut appearance,
@@ -3009,14 +3132,14 @@ mod tests {
             &mut appearance,
             AppearanceEvent::Reset,
         ));
-        assert_eq!(theme, AppearanceSettings::RESET_THEME);
+        assert_eq!(theme, nana_ui_core::ThemeId::new("nana.light"));
         assert_eq!(appearance, AppearanceSettings::default());
 
         let mut context = AppContext::new();
         let section = context
             .create_component(
                 document(),
-                AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default())
+                AppearanceSection::new(ThemeAppearance::Dark, AppearanceSettings::default())
                     .platform_hint("选择窗口使用的透明材质或实色背景。"),
             )
             .unwrap();
@@ -3042,6 +3165,27 @@ mod tests {
                 .top,
             UI_METRICS.panel_padding_y
         );
+
+        let custom_id = nana_ui_core::ThemeId::from_owned("user.sunset");
+        let custom_section =
+            AppearanceSection::new(ThemeAppearance::Dark, AppearanceSettings::default())
+                .with_theme_options(
+                    custom_id.clone(),
+                    vec![
+                        nana_ui_core::ThemeChoice {
+                            id: nana_ui_core::ThemeId::new("nana.light"),
+                            label: "浅色".into(),
+                            appearance: nana_ui_core::ThemeAppearance::Light,
+                        },
+                        nana_ui_core::ThemeChoice {
+                            id: custom_id.clone(),
+                            label: "夕暮".into(),
+                            appearance: nana_ui_core::ThemeAppearance::Custom,
+                        },
+                    ],
+                );
+        assert_eq!(custom_section.theme_id, custom_id);
+        assert_eq!(custom_section.theme_options.len(), 2);
     }
 
     fn row_labels(context: &AppContext, section: Entity<AppearanceSection>) -> Vec<String> {
@@ -3093,7 +3237,7 @@ mod tests {
         let section = context
             .create_component(
                 document(),
-                AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default()),
+                AppearanceSection::new(ThemeAppearance::Dark, AppearanceSettings::default()),
             )
             .unwrap();
         assert!(context.assemble_appearance_section(section).unwrap());
@@ -3145,7 +3289,7 @@ mod tests {
         let sink = Arc::clone(&events);
         context
             .on(section, move |_, event: &AppearanceEvent, _| {
-                sink.lock().unwrap().push(*event);
+                sink.lock().unwrap().push(event.clone());
             })
             .unwrap();
         assert!(
@@ -3242,7 +3386,7 @@ mod tests {
         let section = context
             .create_component(
                 document(),
-                AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default())
+                AppearanceSection::new(ThemeAppearance::Dark, AppearanceSettings::default())
                     .available_materials(vec![
                         WindowMaterialMode::Mica,
                         WindowMaterialMode::Acrylic,
@@ -3270,7 +3414,7 @@ mod tests {
         let sink = Arc::clone(&events);
         context
             .on(section, move |_, event: &AppearanceEvent, _| {
-                sink.lock().unwrap().push(*event);
+                sink.lock().unwrap().push(event.clone());
             })
             .unwrap();
         assert!(
@@ -3972,7 +4116,7 @@ mod spacing_tests {
         let section = context
             .create_component(
                 document,
-                AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default()),
+                AppearanceSection::new(ThemeAppearance::Dark, AppearanceSettings::default()),
             )
             .unwrap();
         context.assemble_appearance_section(section).unwrap();
@@ -4016,7 +4160,7 @@ mod spacing_tests {
         let section = context
             .create_component(
                 document,
-                AppearanceSection::new(ThemeMode::Dark, AppearanceSettings::default()),
+                AppearanceSection::new(ThemeAppearance::Dark, AppearanceSettings::default()),
             )
             .unwrap();
         let page = context

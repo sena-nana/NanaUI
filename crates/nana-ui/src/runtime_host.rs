@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::Instant;
 
-use nana_ui_core::{SharedStore, memory_store};
+use nana_ui_core::{CompiledTheme, SharedStore, builtin_theme_arc, memory_store};
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
     CanonicalInputEvent, SystemAppearance, WindowEvent, WindowGeometry, WindowId,
@@ -22,7 +22,7 @@ use nana_ui_runtime::{
 use nana_ui_scene::{DocumentAccessError, RuntimeDocument};
 
 use crate::{
-    GpuContext, HostTextureRegistry, MaterialOutcome, SceneGpuRendererRegistry, ThemeMode,
+    GpuContext, HostTextureRegistry, MaterialOutcome, SceneGpuRendererRegistry, ThemeAppearance,
 };
 
 pub use nana_ui_platform::WindowDescriptor;
@@ -580,7 +580,11 @@ pub trait RuntimeProgram: Sized + 'static {
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate;
 
-    fn theme_mode(&self) -> ThemeMode;
+    /// Resolve the application's registry-selected theme for this host.
+    /// The default is the built-in dark preset.
+    fn theme(&self) -> Arc<CompiledTheme> {
+        builtin_theme_arc(ThemeAppearance::Dark)
+    }
 
     fn window_material_mode(&self) -> crate::MaterialEffect {
         crate::MaterialEffect::Solid
@@ -711,9 +715,13 @@ pub trait RuntimeProgram: Sized + 'static {
         id: WindowId,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(), String> {
-        self.with_document(id, |_| ())
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "window document was not initialized".to_string())
+        let theme = self.theme();
+        self.with_document_mut(id, |document| {
+            document.context_mut().set_theme_tokens(theme).map(|_| ())
+        })
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "window document was not initialized".to_string())?
+        .map_err(|error| error.to_string())
     }
 
     /// Roll back application state after an unsuccessful window creation.

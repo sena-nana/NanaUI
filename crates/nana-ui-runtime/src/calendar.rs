@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use nana_ui_core::{SemanticColor, ThemeMode};
+use nana_ui_core::{SemanticColor, SemanticPalette};
 
 use crate::view_components::project_common;
 use crate::{
@@ -474,8 +474,7 @@ pub fn build_calendar_heatmap_model<T: Clone>(
 }
 
 /// Heatmap fill: level 0 is `subtle`, otherwise accent mixed into subtle.
-pub fn calendar_cell_fill(mode: ThemeMode, level: u8, max_level: u8) -> SemanticColor {
-    let palette = mode.palette();
+pub fn calendar_cell_fill(palette: SemanticPalette, level: u8, max_level: u8) -> SemanticColor {
     if level == 0 {
         return palette.subtle;
     }

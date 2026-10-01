@@ -1088,7 +1088,7 @@ mod tests {
         assert!(
             context
                 .set_style_tokens(
-                    nana_ui_core::ThemeMode::Dark,
+                    nana_ui_core::ThemeAppearance::Dark,
                     metrics,
                     nana_ui_core::SemanticPalette::dark(),
                     nana_ui_core::SemanticPalette::dark().surface,

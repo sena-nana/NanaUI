@@ -251,7 +251,7 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::ParkSubtree { .. } => "ParkSubtree",
         UiMutation::DespawnSubtree { .. } => "DespawnSubtree",
         UiMutation::SetStyle { .. } => "SetStyle",
-        UiMutation::SetTheme { .. } => "SetTheme",
+        UiMutation::SetPresetTheme { .. } => "SetPresetTheme",
         UiMutation::SetThemeTokens { .. } => "SetThemeTokens",
         UiMutation::SetText { .. } => "SetText",
         UiMutation::WriteLayout { .. } => "WriteLayout",
@@ -1258,8 +1258,8 @@ impl NanaTreeDocument {
         let mut pending = PendingAssembly::default();
         let mut component_owned_layout = HashSet::new();
         let mut paint_errors = Vec::new();
-        if self.runtime.theme_mode() != snapshot.theme {
-            mutations.set_theme(snapshot.theme);
+        if self.runtime.theme() != snapshot.theme_tokens.as_ref() {
+            mutations.set_theme_tokens(snapshot.theme_tokens.clone());
         }
         #[cfg(not(feature = "benchmark"))]
         let projected = snapshot.projection_ids(full_pass);

@@ -12,8 +12,8 @@ use nana_ui::runtime::{
 };
 use nana_ui::theme::type_scale;
 use nana_ui::{
-    AppearanceEvent, ButtonKind, ControlSize, NanaTextShaper, RegionId, WorkspaceAction,
-    WorkspaceModel,
+    AppearanceEvent, ButtonKind, ControlSize, NanaTextShaper, RegionId, ThemeAppearance,
+    WorkspaceAction, WorkspaceModel,
 };
 use nana_ui_platform::InputPayload;
 
@@ -75,7 +75,7 @@ impl GallerySettingsRuntime {
             RuntimeDocument::new(DocumentId::new(SETTINGS_DOCUMENT).expect("settings document id"));
         let document_id = document.document();
         let context = document.context_mut();
-        let _ = context.set_theme(state.theme);
+        let _ = context.set_preset_theme(state.theme);
 
         let sidebar_collapsed = state
             .settings_workspace
@@ -234,7 +234,7 @@ impl GallerySettingsRuntime {
             context,
             appearance,
             Arc::clone(&pending),
-            |event: &AppearanceEvent| appearance_message(*event),
+            |event: &AppearanceEvent| appearance_message(event.clone()),
         )?;
         bind_event(
             context,
@@ -313,7 +313,7 @@ impl GallerySettingsRuntime {
 
     fn sync(&mut self, state: &GalleryState) {
         let context = self.document.context_mut();
-        let _ = context.set_theme(state.theme);
+        let _ = context.set_preset_theme(state.theme);
         let content = page_content_id(
             &state.settings,
             self.appearance.stable_id(),
@@ -330,7 +330,11 @@ impl GallerySettingsRuntime {
             page.content = Some(content);
         });
         let _ = context.update_component(self.appearance, |section, _| {
-            section.theme = state.theme;
+            section.theme_id = match state.theme {
+                ThemeAppearance::Dark => nana_ui::ThemeId::new("nana.dark"),
+                ThemeAppearance::Light => nana_ui::ThemeId::new("nana.light"),
+                ThemeAppearance::Custom => section.theme_id.clone(),
+            };
             section.appearance = state.appearance;
             section.platform_hint = Some(Arc::from(
                 nana_ui::hosted_platform_material_support().hint(),

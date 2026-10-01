@@ -590,6 +590,10 @@ pub struct UiScene {
     /// Asking afterwards meant snapshotting every touched node's primitive
     /// list and diffing it, which is a range scan and an allocation per node.
     structure_changed: bool,
+    /// An extraction changed retained geometry while compositor layers may
+    /// still be presenting the previous projection. The compositor pass
+    /// clears this after rebasing the visibility index for the current layer.
+    compositor_projection_dirty: bool,
     compositor: CompositorRegistry,
     /// Geometry built from each custom-painted node's recording, reused while
     /// the runtime hands back the same recording. Empty unless a node has a
@@ -628,6 +632,7 @@ impl Default for UiScene {
             ordered: BTreeSet::new(),
             build: next_primitive_revision(),
             structure_changed: false,
+            compositor_projection_dirty: false,
             compositor: CompositorRegistry::default(),
             custom_paint: NodeMap::default(),
             dest_group_candidates: 0,
@@ -661,6 +666,7 @@ impl Clone for UiScene {
             ordered: self.ordered.clone(),
             build: self.build,
             structure_changed: self.structure_changed,
+            compositor_projection_dirty: self.compositor_projection_dirty,
             compositor: self.compositor.clone(),
             custom_paint: self.custom_paint.clone(),
             dest_group_candidates: self.dest_group_candidates,
@@ -969,6 +975,8 @@ impl UiScene {
             && (hierarchy_changed || self.node_order.len() != self.nodes.len());
         let mut rebuilt_primitives = 0;
         if updated_nodes != 0 || removed_nodes != 0 {
+            self.compositor_projection_dirty =
+                self.compositor_layer_count() != 0 && scroll_translations.is_empty();
             if order_rebuilt {
                 self.rebuild_document_order();
                 for held in self.primitives.values_mut() {
@@ -1024,7 +1032,7 @@ impl UiScene {
                 self.visibility.take();
             }
             if let Some(mut visibility) = self.visibility.take() {
-                for (root, offset) in scroll_translations {
+                for &(root, offset) in &scroll_translations {
                     visibility.translate_subtree(root, offset);
                 }
                 if inherited_geometry_changed {

@@ -201,11 +201,11 @@ fn encode(u: f32) -> f32 {
 /// page background.
 #[test]
 fn the_viewer_scrim_shows_near_black_over_the_page_in_both_themes() {
-    use nana_ui_core::ThemeMode;
-    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+    use nana_ui_core::ThemeAppearance;
+    for mode in [ThemeAppearance::Light, ThemeAppearance::Dark] {
         let document = DocumentId::new(771).unwrap();
         let mut runtime = RuntimeDocument::new(document);
-        runtime.context_mut().set_theme(mode).unwrap();
+        runtime.context_mut().set_preset_theme(mode).unwrap();
         let viewer = runtime
             .context_mut()
             .create_component(document, ImageViewer::new(ImageViewerContent::None))

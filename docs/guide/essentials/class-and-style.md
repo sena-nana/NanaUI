@@ -67,7 +67,7 @@ Rust 词法写不出的值放进双引号，例如 `font-size: "1.5em"`。构建
 
 ## 跟着主题走的表面
 
-样式表里的颜色在构建时按亮色主题求值，切换 `ThemeMode` 不会重算它们。要跟着深色和浅色走，写语义角色。视图上每个元素都有 `.foreground`、`.background`、`.border` 和 `.radius`。前三个是 `SemanticColorRole`，圆角是 `RadiusTier`。都可以绑定。
+样式表里的颜色在构建时按亮色主题求值，切换已安装的 `ThemeId` 不会重算它们。要跟着主题走，写语义角色。视图上每个元素都有 `.foreground`、`.background`、`.border` 和 `.radius`。前三个是 `SemanticColorRole`，圆角是 `RadiusTier`。都可以绑定。
 
 :::api
 
@@ -97,7 +97,7 @@ column()
 
 `.border` 只写边框颜色。宽度在布局里。颜色和宽度缺一边，边框就不画。组件上一次写全用 `NodeStyle::outline(role, width)` 或 `Stack::outline(role, width)`，见 [布局（Rust）](../../reference/rust-layout.md)。
 
-`ThemeMode::Dark` 和 `Light` 只换颜色，不换尺寸。深浅由应用的 `theme_mode` 决定，见 [创建应用](application.md)。面板、悬停、文字的主次都用语义角色，不要用业务色去改框架 token。
+内置 `nana.light` 和 `nana.dark` 主题提供两套预制 token；应用也可以通过 `ThemeDefinition + ThemeRegistry` 注册自定义主题。当前选择持久化为 `ThemeId`，组件只依赖语义角色，不要依赖主题名称或外观提示。
 
 卡片的留白、`Stack` 的预设（`row`、`column`、`fill_column`）也在 Rust 布局那一篇。页面外沿和卡片内部是两道边，框架不会按嵌套自动清掉。
 

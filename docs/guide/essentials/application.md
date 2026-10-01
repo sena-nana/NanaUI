@@ -53,7 +53,7 @@ fn with_document<R>(
 | `initialize` | 宿主可以挂载、布局、派发和绘制时调用一次。返回 `(程序, 要马上送进 update 的消息)`。只建第一屏需要的状态。 |
 | `with_document` / `with_document_mut` | 按 `WindowId` 把 `RuntimeDocument` 交给宿主。 |
 | `update` | 处理一条 `Message`。保持便宜。 |
-| `theme_mode` | 这一帧用深色还是浅色。 |
+| `theme` | 返回当前已注册的 `Arc<CompiledTheme>`。 |
 | `window_event` | 窗口生命周期。默认实现见下文。 |
 
 `initialize` 收到 `&RuntimeProgramContext<Message>`。上面有 `window_id`、`dispatch` 这些宿主能力。原生窗口句柄不穿过这条边界。
@@ -72,19 +72,19 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
 
 `run_runtime` 打开 `WindowDescriptor` 描述的那扇窗口，创建 `App`，然后跑事件循环。它不设应用路径，也不开诊断。要目录和诊断，用 `NanaApplication::builder`，见 [应用 API](../../reference/application-api.md)。
 
-## theme_mode
+## theme
 
 ```rust
-fn theme_mode(&self) -> nana_ui::ThemeMode {
-    nana_ui::ThemeMode::Dark
+fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+    nana_ui::builtin_theme_arc(nana_ui::ThemeAppearance::Dark)
 }
 ```
 
-只有 `ThemeMode::Dark` 和 `ThemeMode::Light`。深色和浅色只换颜色，不换尺寸，也不换状态怎么分层。控件上要跟着主题走的颜色写语义角色，不要在样式里写死一份亮色，见 [类与样式](class-and-style.md)。
+Light 和 Dark 是两个预制主题；应用可以通过 `ThemeDefinition` 和 `ThemeRegistry` 注册自己的 `ThemeId`。控件上要跟着主题走的颜色写语义角色，不要在样式里写死一份亮色，见 [类与样式](class-and-style.md)。
 
 ## 不必亲手实现 trait 的时候
 
-普通 Rust 应用可以实现 `ApplicationState`，用 `RuntimeApplication<State>` 去实现 `RuntimeProgram`。`initialize` 之后它会调用你的 `build`，窗口上的 `ApplicationWindow.document` 就是那棵 `RuntimeDocument`。`with_document` 按 `WindowId` 从它的窗口表里取。`theme_mode` 默认是 `ThemeMode::Dark`。
+普通 Rust 应用可以实现 `ApplicationState`，用 `RuntimeApplication<State>` 去实现 `RuntimeProgram`。`initialize` 之后它会调用你的 `build`，窗口上的 `ApplicationWindow.document` 就是那棵 `RuntimeDocument`。`with_document` 按 `WindowId` 从它的窗口表里取。`theme` 默认返回内置 Dark。
 
 自己管理窗口和文档的宿主仍然直接写 `RuntimeProgram`。方法全表在 [应用 API](../../reference/application-api.md)。
 
@@ -102,7 +102,7 @@ use std::convert::Infallible;
 use nana_ui::runtime::view::{button, column, text};
 use nana_ui::runtime::{Activate, DocumentId, RuntimeDocument};
 use nana_ui::{
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode, WindowDescriptor,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeAppearance, WindowDescriptor,
     run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
@@ -165,8 +165,8 @@ impl RuntimeProgram for App {
         RuntimeProgramUpdate::default()
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        ThemeMode::Dark
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(ThemeAppearance::Dark)
     }
 
     fn window_event(

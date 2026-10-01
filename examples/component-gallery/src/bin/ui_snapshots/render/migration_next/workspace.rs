@@ -302,7 +302,7 @@ pub(super) fn snapshot_desktop_workspace_layout() -> WorkspaceLayout {
 
 pub(super) fn mount_runtime_appearance_section(
     document: &mut RuntimeDocument,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
 ) -> Result<nana_ui::runtime::Entity<RuntimeAppearanceSection>, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let (_, section) = document
@@ -354,7 +354,7 @@ pub(super) fn mount_runtime_settings_sidebar(
 
 pub(super) fn mount_runtime_settings_page(
     document: &mut RuntimeDocument,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     fixture: Fixture,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let full_page = fixture.state == "settings-page-full";
@@ -375,7 +375,7 @@ pub(super) fn mount_runtime_settings_page(
 
 pub(super) fn mount_runtime_desktop_shell(
     document: &mut RuntimeDocument,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let model = snapshot_settings_model().clone();
     let state = snapshot_settings_state().clone();

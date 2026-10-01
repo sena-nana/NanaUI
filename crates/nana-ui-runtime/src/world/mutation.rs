@@ -281,7 +281,7 @@ impl<'a> ValidationPlan<'a> {
                     }
                     self.styles.insert(*id, style.clone());
                 }
-                UiMutation::SetTheme { .. } | UiMutation::SetThemeTokens { .. } => {}
+                UiMutation::SetPresetTheme { .. } | UiMutation::SetThemeTokens { .. } => {}
                 UiMutation::SetText { id, .. } => {
                     self.require_exists(*id)?;
                 }
@@ -1528,7 +1528,7 @@ impl UiWorld {
                     self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
                 }
             }
-            UiMutation::SetTheme { mode } => {
+            UiMutation::SetPresetTheme { mode } => {
                 self.apply_compiled_theme(nana_ui_core::builtin_theme_arc(*mode));
             }
             UiMutation::SetThemeTokens { theme } => {

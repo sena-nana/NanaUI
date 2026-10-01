@@ -18,7 +18,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, LogicalRect, NanaTextShaper,
-    SettingsTabId, ThemeMode, WindowChrome, WorkspaceAction,
+    SettingsTabId, ThemeAppearance, WindowChrome, WorkspaceAction,
 };
 use nana_ui_core::{LayoutStyle, LengthSpec, SemanticColorRole, type_scale};
 use nana_ui_platform::{InputPayload, PointerInput, PointerPhase};
@@ -46,7 +46,7 @@ const MIGRATION_SIZE: Size<u32> = Size::new(520, 220);
 /// answer different questions and only one of them needs an adapter. Keeping
 /// them apart is what lets the semantic baseline be verified anywhere.
 pub fn generate_semantic(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Error>> {
-    for theme in [ThemeMode::Dark, ThemeMode::Light] {
+    for theme in [ThemeAppearance::Dark, ThemeAppearance::Light] {
         migration_next::generate_semantic(&mut recorder, theme)?;
     }
     recorder.finish()
@@ -61,19 +61,19 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         &mut snapshots,
         &mut recorder,
         "runtime-scene-dark.png",
-        ThemeMode::Dark,
+        ThemeAppearance::Dark,
     )?;
     runtime_scene_snapshot(
         &mut snapshots,
         &mut recorder,
         "runtime-scene-light.png",
-        ThemeMode::Light,
+        ThemeAppearance::Light,
     )?;
     titlebar_snapshot(
         &mut snapshots,
         &mut recorder,
         "titlebar-custom-dark.png",
-        ThemeMode::Dark,
+        ThemeAppearance::Dark,
         WindowChrome::custom(),
         Some(LogicalPoint::new(880.0, 18.0)),
     )?;
@@ -81,7 +81,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         &mut snapshots,
         &mut recorder,
         "titlebar-custom-light.png",
-        ThemeMode::Light,
+        ThemeAppearance::Light,
         WindowChrome::custom(),
         None,
     )?;
@@ -89,7 +89,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         &mut snapshots,
         &mut recorder,
         "titlebar-native-leading-dark.png",
-        ThemeMode::Dark,
+        ThemeAppearance::Dark,
         WindowChrome::native_leading(78.0),
         None,
     )?;
@@ -97,7 +97,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         &mut snapshots,
         &mut recorder,
         "dock-window-custom-dark.png",
-        ThemeMode::Dark,
+        ThemeAppearance::Dark,
         WindowChrome::custom(),
         DockNode::item("navigation", None),
     )?;
@@ -105,16 +105,19 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         &mut snapshots,
         &mut recorder,
         "dock-window-native-leading-light.png",
-        ThemeMode::Light,
+        ThemeAppearance::Light,
         WindowChrome::native_leading(78.0),
         DockNode::item("navigation", None),
     )?;
-    component_migration_snapshots(&mut snapshots, &mut recorder, ThemeMode::Dark)?;
-    for theme in [ThemeMode::Dark, ThemeMode::Light] {
+    component_migration_snapshots(&mut snapshots, &mut recorder, ThemeAppearance::Dark)?;
+    for theme in [ThemeAppearance::Dark, ThemeAppearance::Light] {
         migration_next::generate_registered(&mut snapshots, &mut recorder, theme)?;
     }
 
-    for (suffix, theme) in [("dark", ThemeMode::Dark), ("light", ThemeMode::Light)] {
+    for (suffix, theme) in [
+        ("dark", ThemeAppearance::Dark),
+        ("light", ThemeAppearance::Light),
+    ] {
         dock_window_snapshot(
             &mut snapshots,
             &mut recorder,
@@ -186,7 +189,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
     )?;
 
     let mut controls_light = GalleryState::new();
-    controls_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    controls_light.update(GalleryMessage::SetTheme(ThemeAppearance::Light));
     gallery_snapshot(
         &mut snapshots,
         &mut recorder,
@@ -233,7 +236,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
     )?;
 
     let mut surfaces_light = GalleryState::new();
-    surfaces_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    surfaces_light.update(GalleryMessage::SetTheme(ThemeAppearance::Light));
     surfaces_light.update(GalleryMessage::SelectSection(GallerySection::Surfaces));
     gallery_snapshot(
         &mut snapshots,
@@ -297,7 +300,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         "gallery-rich-text-dark.png",
         &mut rich_text,
     )?;
-    rich_text.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    rich_text.update(GalleryMessage::SetTheme(ThemeAppearance::Light));
     gallery_snapshot(
         &mut snapshots,
         &mut recorder,
@@ -331,7 +334,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         "gallery-context-menu-dark.png",
         &mut context_menu,
     )?;
-    context_menu.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    context_menu.update(GalleryMessage::SetTheme(ThemeAppearance::Light));
     gallery_snapshot(
         &mut snapshots,
         &mut recorder,
@@ -361,7 +364,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         width: GALLERY_SIZE.width as f32,
         height: GALLERY_SIZE.height as f32,
     }));
-    context_menu_search_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    context_menu_search_light.update(GalleryMessage::SetTheme(ThemeAppearance::Light));
     context_menu_search_light.update(GalleryMessage::SelectSection(GallerySection::Feedback));
     context_menu_search_light.update(GalleryMessage::ToggleContextMenu);
     context_menu_search_light.update(GalleryMessage::ContextMenu(
@@ -387,7 +390,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
     )?;
 
     let mut command_palette_light = GalleryState::new();
-    command_palette_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    command_palette_light.update(GalleryMessage::SetTheme(ThemeAppearance::Light));
     command_palette_light.update(GalleryMessage::ToggleCommandPalette);
     gallery_snapshot(
         &mut snapshots,
@@ -433,7 +436,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
     // keeps the coverage it was really providing, under its real name.
     let mut workspace_light = GalleryState::new();
     workspace_light.update(GalleryMessage::SelectSection(GallerySection::Workspace));
-    workspace_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    workspace_light.update(GalleryMessage::SetTheme(ThemeAppearance::Light));
     gallery_snapshot(
         &mut snapshots,
         &mut recorder,
@@ -464,7 +467,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         &mut settings,
     )?;
 
-    settings.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    settings.update(GalleryMessage::SetTheme(ThemeAppearance::Light));
     gallery_snapshot(
         &mut snapshots,
         &mut recorder,
@@ -472,7 +475,7 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         &mut settings,
     )?;
 
-    settings.update(GalleryMessage::SetTheme(ThemeMode::Dark));
+    settings.update(GalleryMessage::SetTheme(ThemeAppearance::Dark));
     settings.update(GalleryMessage::SelectSettingsTab(SettingsTabId::from(
         "workspace",
     )));
@@ -505,7 +508,7 @@ struct MigrationLayoutMessage {
 fn component_migration_snapshots(
     snapshots: &mut OffscreenSnapshots,
     recorder: &mut Recorder,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (runtime_document, runtime_layout) = migration_runtime_document(theme)?;
     let clear = clear_color(theme);
@@ -516,11 +519,11 @@ fn component_migration_snapshots(
 }
 
 fn migration_runtime_document(
-    theme: ThemeMode,
+    theme: ThemeAppearance,
 ) -> Result<(RuntimeDocument, Vec<MigrationLayoutMessage>), Box<dyn std::error::Error>> {
     let document_id = DocumentId::new(2).expect("migration fixture document ID is non-zero");
     let mut document = RuntimeDocument::new(document_id);
-    document.context_mut().set_theme(theme)?;
+    document.context_mut().set_preset_theme(theme)?;
     let mut root_style = NodeStyle::default();
     {
         let layout = Arc::make_mut(&mut root_style.layout);
@@ -642,7 +645,7 @@ fn runtime_scene_snapshot(
     snapshots: &mut OffscreenSnapshots,
     recorder: &mut Recorder,
     name: &str,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let size = Size::new(900, 500);
     let document = runtime_scene_document(theme)?;
@@ -651,10 +654,12 @@ fn runtime_scene_snapshot(
     recorder.record(name, size, &pixels, clear)
 }
 
-fn runtime_scene_document(theme: ThemeMode) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
+fn runtime_scene_document(
+    theme: ThemeAppearance,
+) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
     let document_id = DocumentId::new(1).expect("snapshot document ID is non-zero");
     let mut document = RuntimeDocument::new(document_id);
-    document.context_mut().set_theme(theme)?;
+    document.context_mut().set_preset_theme(theme)?;
     let slider_component = RuntimeRangeField::new(68.0, 0.0, 100.0, 1.0).label("Volume");
     let rows = [
         ["Build", "Status", "Duration"],
@@ -1055,7 +1060,7 @@ fn titlebar_snapshot(
     snapshots: &mut OffscreenSnapshots,
     recorder: &mut Recorder,
     name: &str,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     chrome: WindowChrome,
     hover: Option<LogicalPoint>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1070,12 +1075,12 @@ fn titlebar_snapshot(
 }
 
 fn titlebar_document(
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     chrome: WindowChrome,
 ) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
     let document_id = DocumentId::new(3).expect("titlebar document");
     let mut document = RuntimeDocument::new(document_id);
-    document.context_mut().set_theme(theme)?;
+    document.context_mut().set_preset_theme(theme)?;
     let native = !chrome.uses_custom_controls();
     document.context_mut().mount_view_root(document_id, || {
         widget(
@@ -1115,7 +1120,7 @@ fn dock_window_snapshot(
     snapshots: &mut OffscreenSnapshots,
     recorder: &mut Recorder,
     name: &str,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     chrome: WindowChrome,
     root: DockNode,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1134,14 +1139,14 @@ fn dock_window_snapshot(
 }
 
 fn dock_window_document(
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     chrome: WindowChrome,
     root: DockNode,
     size: Size<u32>,
 ) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
     let document_id = DocumentId::new(4).expect("dock window document");
     let mut document = RuntimeDocument::new(document_id);
-    document.context_mut().set_theme(theme)?;
+    document.context_mut().set_preset_theme(theme)?;
     // Tab chrome only: pane text overlaps titles at this fixture size.
     let dock = RuntimeDock::new(root)
         .title("navigation", "导航")
@@ -1172,7 +1177,7 @@ fn dock_drag_window_snapshot(
     snapshots: &mut OffscreenSnapshots,
     recorder: &mut Recorder,
     name: &str,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     chrome: WindowChrome,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
@@ -1186,7 +1191,7 @@ fn dock_preview_snapshot(
     snapshots: &mut OffscreenSnapshots,
     recorder: &mut Recorder,
     name: &str,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     zone: DockDropZone,
     outside: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1198,14 +1203,14 @@ fn dock_preview_snapshot(
 }
 
 fn dock_preview_document(
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     zone: DockDropZone,
     outside: bool,
     size: Size<u32>,
 ) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
     let document_id = DocumentId::new(5).expect("dock preview document");
     let mut document = RuntimeDocument::new(document_id);
-    document.context_mut().set_theme(theme)?;
+    document.context_mut().set_preset_theme(theme)?;
     let drop = if outside {
         None
     } else {
@@ -1249,7 +1254,7 @@ fn gallery_snapshot(
     state: &mut GalleryState,
 ) -> Result<(), Box<dyn std::error::Error>> {
     state.flush_snapshot_scene();
-    let clear = clear_color(state.theme_mode());
+    let clear = clear_color(state.preset_theme());
     let pixels = paint_gallery(snapshots, state, GALLERY_SIZE)?;
     recorder.record(name, GALLERY_SIZE, &pixels, clear)
 }
@@ -1272,8 +1277,8 @@ fn paint_gallery(
     state: &GalleryState,
     size: Size<u32>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let clear = clear_color(state.theme_mode());
-    let colors = state.theme_mode().palette();
+    let clear = clear_color(state.preset_theme());
+    let colors = state.preset_theme().palette();
     let gpu = gpu::create_snapshot_gpu(&snapshots.gpu, colors.background, colors.accent_strong);
     // The Gallery's ready thumbnail is a demo HostTexture slot. Snapshot hosts
     // must populate it just like the standalone GPU fixtures.
@@ -1302,7 +1307,7 @@ fn paint_gallery(
 
 /// sRGB on purpose: `OffscreenSnapshots` converts it to linear itself, and
 /// `Recorder::record` compares it against sRGB pixels.
-fn clear_color(theme: ThemeMode) -> [f32; 4] {
+fn clear_color(theme: ThemeAppearance) -> [f32; 4] {
     let color = theme.palette().background;
     [color.r, color.g, color.b, 1.0]
 }

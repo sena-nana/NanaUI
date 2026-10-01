@@ -2,11 +2,13 @@
 //! `RuntimeProgram` directly; application business state stays in `State`.
 use crate::{
     FrameDemand, HostTextureRegistry, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    SceneGpuRendererRegistry, SceneResourceProducerRegistry, ThemeMode,
+    SceneGpuRendererRegistry, SceneResourceProducerRegistry, ThemeAppearance,
 };
+use nana_ui_core::{CompiledTheme, builtin_theme_arc};
 use nana_ui_platform::{WindowEvent, WindowId};
 use nana_ui_scene::{DocumentAccessError, RuntimeDocument};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct ApplicationWindow {
     pub document: RuntimeDocument,
@@ -95,8 +97,8 @@ pub trait ApplicationState: Sized + 'static {
     ) -> RuntimeProgramUpdate {
         RuntimeProgramUpdate::default()
     }
-    fn theme_mode(&self) -> ThemeMode {
-        ThemeMode::Dark
+    fn theme(&self) -> Arc<CompiledTheme> {
+        builtin_theme_arc(ThemeAppearance::Dark)
     }
     /// Release application-owned state keyed by a window that has closed.
     fn window_closed(&mut self, _id: WindowId) {}
@@ -154,6 +156,10 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         let mut state = State::initialize(context)?;
         let mut window = ApplicationWindow::for_state::<State>();
         state.build(&mut window, context)?;
+        let _ = window
+            .document
+            .context_mut()
+            .set_theme_tokens(state.theme());
         Ok((
             Self {
                 state,
@@ -186,8 +192,8 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
     ) -> RuntimeProgramUpdate {
         self.state.update(message, &mut self.windows, context)
     }
-    fn theme_mode(&self) -> ThemeMode {
-        self.state.theme_mode()
+    fn theme(&self) -> Arc<CompiledTheme> {
+        self.state.theme()
     }
     fn frame_demand(&self, id: WindowId) -> FrameDemand {
         self.windows
@@ -241,6 +247,10 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         self.state
             .build(&mut window, context)
             .map_err(|error| error.to_string())?;
+        let _ = window
+            .document
+            .context_mut()
+            .set_theme_tokens(self.state.theme());
         self.windows.insert(id, window);
         Ok(())
     }

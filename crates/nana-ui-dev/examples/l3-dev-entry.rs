@@ -24,7 +24,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use nana_ui::{
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode, WindowDescriptor,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeAppearance, WindowDescriptor,
 };
 use nana_ui_dev::{DevConfig, DevHandoff, DevSignal, DevWatcher, RebuildCommand};
 use nana_ui_platform::WindowId;
@@ -180,8 +180,8 @@ impl RuntimeProgram for DemoProgram {
         }
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        ThemeMode::Dark
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(ThemeAppearance::Dark)
     }
 }
 

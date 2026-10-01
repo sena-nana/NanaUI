@@ -45,7 +45,7 @@ use std::{
 use futures_core::Stream;
 use nana_ui_core::{
     ActionId, ActionPickerNavigation, CommandPaletteEvent, ContextPredicate, KeyContext,
-    LengthSpec, ThemeMode, TooltipConfig, TooltipPlacement, VirtualListLayout,
+    LengthSpec, ThemeAppearance, TooltipConfig, TooltipPlacement, VirtualListLayout,
     VirtualListMaterializationError, VirtualListMaterializer, VirtualListWindow,
     VirtualTableLayout, VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout,
     WorkspaceMutation,
@@ -1915,7 +1915,7 @@ impl AppContext {
     ///
     /// Resets palette alphas. Hosts that apply window backdrop follow with
     /// [`Self::set_style_tokens`].
-    pub fn set_theme(&mut self, mode: ThemeMode) -> Result<bool, FrameworkError> {
+    pub fn set_preset_theme(&mut self, mode: ThemeAppearance) -> Result<bool, FrameworkError> {
         self.install_theme(nana_ui_core::builtin_theme_arc(mode))
     }
 
@@ -1951,12 +1951,12 @@ impl AppContext {
     /// built-in definition for `mode`. It validates like any other install.
     pub fn set_style_tokens(
         &mut self,
-        mode: ThemeMode,
+        mode: ThemeAppearance,
         metrics: nana_ui_core::ThemeMetrics,
         palette: nana_ui_core::SemanticPalette,
         titlebar: nana_ui_core::SemanticColor,
     ) -> Result<bool, FrameworkError> {
-        let definition = nana_ui_core::ThemeDefinition::for_mode(mode)
+        let definition = nana_ui_core::ThemeDefinition::for_appearance(mode)
             .with_metrics(metrics)
             .with_palette(palette)
             .with_titlebar(Some(titlebar));

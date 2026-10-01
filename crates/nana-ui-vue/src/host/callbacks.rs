@@ -127,12 +127,13 @@ impl VueHost {
     pub fn inject_theme<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
-        theme: ThemeMode,
+        theme: ThemeAppearance,
     ) -> Result<(), JsEngineError> {
         self.theme = theme;
         let label = match theme {
-            ThemeMode::Light => "light",
-            ThemeMode::Dark => "dark",
+            ThemeAppearance::Light => "light",
+            ThemeAppearance::Dark => "dark",
+            ThemeAppearance::Custom => "custom",
         };
         // Same store `sync_appearance_shared` reads — must not lag behind bridge.
         if let Ok(mut web) = self.web_api.lock() {
@@ -145,7 +146,43 @@ impl VueHost {
         }
         {
             let mut bridge = self.bridge.lock().expect("vue bridge");
-            bridge.set_theme(theme);
+            bridge.set_preset_theme(theme);
+        }
+        if let Some(apply) = self.callbacks.apply_theme {
+            let args = match self.callbacks.event_window_id {
+                Some(window_id) => vec![
+                    HostValue::Number(window_id as f64),
+                    HostValue::string(label),
+                ],
+                None => vec![HostValue::string(label)],
+            };
+            engine.invoke(apply, &args)?;
+            engine.run_microtasks()?;
+        }
+        Ok(())
+    }
+
+    /// Install an application-resolved compiled theme. This is the primary
+    /// host path for custom themes; the preset `inject_theme` helper remains
+    /// only for callers that explicitly choose one of NanaUI's built-ins.
+    pub fn inject_compiled_theme<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        theme: std::sync::Arc<nana_ui_core::CompiledTheme>,
+    ) -> Result<(), JsEngineError> {
+        self.theme = theme.appearance();
+        let label = theme.id().as_str().to_owned();
+        if let Ok(mut web) = self.web_api.lock() {
+            web.set_document_dataset("theme", label.clone());
+            web.set_document_dataset("materialSupport", hosted_material_support_key());
+        }
+        {
+            let mut doc = self.document.lock().expect("vue doc");
+            doc.set_document_theme(&label);
+        }
+        {
+            let mut bridge = self.bridge.lock().expect("vue bridge");
+            bridge.set_theme_tokens(theme);
         }
         if let Some(apply) = self.callbacks.apply_theme {
             let args = match self.callbacks.event_window_id {

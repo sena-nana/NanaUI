@@ -137,8 +137,8 @@ pub use semantics::{
     WindowChrome, WindowChromeAction, WindowControlMode, XYPadEvent, XYPadValue,
 };
 pub use settings::{
-    AppearanceEvent, AppearanceSettings, BackdropTarget, SettingsError, SettingsModel,
-    SettingsState, SettingsTab, SettingsTabId, WindowMaterialMode,
+    AppearanceEvent, AppearancePreference, AppearanceSettings, BackdropTarget, SettingsError,
+    SettingsModel, SettingsState, SettingsTab, SettingsTabId, ThemePreference, WindowMaterialMode,
 };
 pub use split_pane::{SplitAxis, SplitPaneModel, SplitPaneMutation};
 pub use style_model::{
@@ -156,10 +156,11 @@ pub use theme::{
     DesignTokens, EasingRole, EffectTokens, ElevationRole, FoundationTokens, HAIRLINE, LineRole,
     MotionRole, MotionTokens, OpacityTokens, RadiusTier, SWITCH_METRICS, ShadowToken, SpacingStep,
     SpacingTokens, SquareSize, StateLayer, StatusRecipe, SurfaceMaterial, SurfacePadding,
-    SurfaceRole, SurfaceSpec, SurfaceTokens, SwitchMetrics, TextWeight, ThemeCompileError,
-    ThemeDefinition, ThemeGeneration, ThemeId, ThemeIdentity, ThemeMetrics, ThemeMode,
-    ThemeSchemaVersion, TypeRole, TypographyTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme,
-    builtin_theme_arc, space, type_scale,
+    SurfaceRole, SurfaceSpec, SurfaceTokens, SwitchMetrics, TextWeight, ThemeAppearance,
+    ThemeChoice, ThemeCompileError, ThemeDefinition, ThemeGeneration, ThemeId, ThemeIdentity,
+    ThemeMetrics, ThemeRegistry, ThemeRegistryError, ThemeResolution, ThemeSchemaVersion, TypeRole,
+    TypographyTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme, builtin_theme_arc, space,
+    type_scale,
 };
 pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
 pub use typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};

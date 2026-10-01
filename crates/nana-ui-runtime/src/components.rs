@@ -1247,9 +1247,9 @@ impl ComponentElevation {
     /// now [`ElevationRole::Surface`](nana_ui_core::ElevationRole) on the
     /// theme; callers holding a world should ask it via
     /// `world.theme().shadow(..)` so an installed theme can move the ramp.
-    pub fn surface_shadow(theme_mode: nana_ui_core::ThemeMode) -> Self {
+    pub fn surface_shadow(theme_mode: nana_ui_core::ThemeAppearance) -> Self {
         Self::from_shadow(
-            nana_ui_core::EffectTokens::for_mode(theme_mode)
+            nana_ui_core::EffectTokens::for_appearance(theme_mode)
                 .shadow(nana_ui_core::ElevationRole::Surface),
         )
     }

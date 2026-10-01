@@ -81,7 +81,7 @@ impl GalleryOverlaysRuntime {
     ) -> Result<Self, FrameworkError> {
         let document_id = document.document();
         let context = document.context_mut();
-        let _ = context.set_theme(state.theme);
+        let _ = context.set_preset_theme(state.theme);
         let mut palette = None;
         let mut dialog = None;
         let mut image = None;
@@ -291,7 +291,7 @@ impl GalleryOverlaysRuntime {
 
     fn sync(&mut self, document: &mut RuntimeDocument, state: &GalleryState) {
         let context = document.context_mut();
-        let _ = context.set_theme(state.theme);
+        let _ = context.set_preset_theme(state.theme);
         match self.kind {
             GalleryOverlay::CommandPalette => {
                 if let Some(palette) = self.palette {

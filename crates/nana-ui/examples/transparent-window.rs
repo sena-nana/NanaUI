@@ -8,7 +8,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ButtonKind, RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    ThemeMode, WindowDescriptor, run_runtime,
+    ThemeAppearance, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -19,7 +19,7 @@ enum Message {
 }
 
 struct TransparentWindow {
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     panel_visible: bool,
     document: RuntimeDocument,
     status: Entity<Text>,
@@ -30,7 +30,7 @@ struct TransparentWindow {
 }
 
 impl TransparentWindow {
-    fn mount(theme: ThemeMode, panel_visible: bool) -> Result<Self, FrameworkError> {
+    fn mount(theme: ThemeAppearance, panel_visible: bool) -> Result<Self, FrameworkError> {
         let toggle_theme = Arc::new(AtomicBool::new(false));
         let toggle_panel = Arc::new(AtomicBool::new(false));
         let document_id = DocumentId::new(1).expect("transparent window document");
@@ -99,8 +99,8 @@ impl TransparentWindow {
     }
 }
 
-fn theme_label(theme: ThemeMode) -> &'static str {
-    if theme == ThemeMode::Dark {
+fn theme_label(theme: ThemeAppearance) -> &'static str {
+    if theme == ThemeAppearance::Dark {
         "浅色"
     } else {
         "深色"
@@ -131,7 +131,7 @@ impl RuntimeProgram for TransparentWindow {
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
         Ok((
-            Self::mount(ThemeMode::Dark, true).expect("transparent window document"),
+            Self::mount(ThemeAppearance::Dark, true).expect("transparent window document"),
             Vec::new(),
         ))
     }
@@ -163,8 +163,8 @@ impl RuntimeProgram for TransparentWindow {
         RuntimeProgramUpdate::redraw_all()
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        self.theme
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(self.theme)
     }
 
     fn window_event(

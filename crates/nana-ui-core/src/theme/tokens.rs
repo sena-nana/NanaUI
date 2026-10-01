@@ -112,10 +112,10 @@ impl AccentRamp {
         }
     }
 
-    pub const fn for_mode(mode: super::ThemeMode) -> Self {
+    pub const fn for_appearance(mode: super::ThemeAppearance) -> Self {
         match mode {
-            super::ThemeMode::Dark => Self::DARK,
-            super::ThemeMode::Light => Self::LIGHT,
+            super::ThemeAppearance::Dark | super::ThemeAppearance::Custom => Self::DARK,
+            super::ThemeAppearance::Light => Self::LIGHT,
         }
     }
 
@@ -449,10 +449,10 @@ impl OpacityTokens {
         }
     }
 
-    pub const fn for_mode(mode: super::ThemeMode) -> Self {
+    pub const fn for_appearance(mode: super::ThemeAppearance) -> Self {
         match mode {
-            super::ThemeMode::Dark => Self::DARK,
-            super::ThemeMode::Light => Self::LIGHT,
+            super::ThemeAppearance::Dark | super::ThemeAppearance::Custom => Self::DARK,
+            super::ThemeAppearance::Light => Self::LIGHT,
         }
     }
 
@@ -691,10 +691,10 @@ impl EffectTokens {
         }
     }
 
-    pub const fn for_mode(mode: super::ThemeMode) -> Self {
+    pub const fn for_appearance(mode: super::ThemeAppearance) -> Self {
         match mode {
-            super::ThemeMode::Dark => Self::DARK,
-            super::ThemeMode::Light => Self::LIGHT,
+            super::ThemeAppearance::Dark | super::ThemeAppearance::Custom => Self::DARK,
+            super::ThemeAppearance::Light => Self::LIGHT,
         }
     }
 }

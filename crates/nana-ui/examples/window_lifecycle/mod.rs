@@ -261,21 +261,21 @@ impl ApplicationState for App {
                     .set_fullscreen(on(display))
                     .wait()
                     .map_err(|e| e.to_string())?;
-                wait_for_mode(&modes_rx, second.id(), |mode| {
+                wait_for_appearance(&modes_rx, second.id(), |mode| {
                     mode.fullscreen.is_some() && mode.display.is_none_or(|shown| shown == display)
                 })?;
                 second
                     .set_window_level(WindowLevel::AlwaysOnTop)
                     .wait()
                     .map_err(|e| e.to_string())?;
-                wait_for_mode(&modes_rx, second.id(), |mode| {
+                wait_for_appearance(&modes_rx, second.id(), |mode| {
                     mode.level == WindowLevel::AlwaysOnTop
                 })?;
                 second
                     .set_fullscreen(None)
                     .wait()
                     .map_err(|e| e.to_string())?;
-                wait_for_mode(&modes_rx, second.id(), |mode| mode.fullscreen.is_none())?;
+                wait_for_appearance(&modes_rx, second.id(), |mode| mode.fullscreen.is_none())?;
                 second
                     .set_window_level(WindowLevel::Normal)
                     .wait()
@@ -300,7 +300,7 @@ impl ApplicationState for App {
                     .create_window(opens_fullscreen)
                     .wait()
                     .map_err(|e| e.to_string())?;
-                wait_for_mode(&modes_rx, opened.id(), |mode| mode.fullscreen.is_some())?;
+                wait_for_appearance(&modes_rx, opened.id(), |mode| mode.fullscreen.is_some())?;
                 opened.close().wait().map_err(|e| e.to_string())?;
                 second
                     .set_visible(false)
@@ -494,7 +494,7 @@ pub fn verify() {
     );
 }
 
-fn wait_for_mode(
+fn wait_for_appearance(
     rx: &mpsc::Receiver<(WindowId, WindowModeState)>,
     expected: WindowId,
     reached: impl Fn(&WindowModeState) -> bool,

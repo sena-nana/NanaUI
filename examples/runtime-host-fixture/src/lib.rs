@@ -13,7 +13,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     HostTexture, HostTextureAlphaMode, HostTextureRegistry, RoutedInput, RuntimeProgram,
-    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, ThemeMode, WindowDescriptor,
+    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, ThemeAppearance, WindowDescriptor,
     dock_workspace_window_id, run_runtime, runtime_dock_window_update,
 };
 use nana_ui_platform::host::WindowCommand;
@@ -325,8 +325,8 @@ impl RuntimeProgram for Fixture {
         RuntimeProgramUpdate::default()
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        ThemeMode::Dark
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(ThemeAppearance::Dark)
     }
 
     fn host_textures(&self, _id: WindowId) -> Option<HostTextureRegistry> {

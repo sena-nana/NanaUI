@@ -2290,7 +2290,7 @@ fn document_element_set_theme_rebuilds_bg_before_snapshot() {
         assert_eq!(
             light_bg,
             Some([1.0, 1.0, 1.0, 1.0]),
-            "default ThemeMode::Light must resolve light --bg"
+            "default ThemeAppearance::Light must resolve light --bg"
         );
     }
 
@@ -2309,7 +2309,7 @@ fn document_element_set_theme_rebuilds_bg_before_snapshot() {
     {
         let bridge_arc = host.bridge();
         let bridge = bridge_arc.lock().expect("bridge");
-        assert_eq!(bridge.theme(), ThemeMode::Dark);
+        assert_eq!(bridge.theme_appearance(), ThemeAppearance::Dark);
         let dark_bg = bridge.get(1).expect("widget").props.layout.background;
         assert_eq!(
             dark_bg,
@@ -2319,7 +2319,7 @@ fn document_element_set_theme_rebuilds_bg_before_snapshot() {
     }
 
     let snap = host.semantic_snapshot();
-    assert_eq!(snap.theme, ThemeMode::Dark);
+    assert_eq!(snap.theme_appearance, ThemeAppearance::Dark);
 }
 
 #[test]
@@ -2369,7 +2369,7 @@ fn set_document_theme_survives_appearance_sync() {
     {
         let bridge_arc = host.bridge();
         let bridge = bridge_arc.lock().expect("bridge");
-        assert_eq!(bridge.theme(), ThemeMode::Dark);
+        assert_eq!(bridge.theme_appearance(), ThemeAppearance::Dark);
         let dark_bg = bridge.get(1).expect("widget").props.layout.background;
         assert_eq!(
             dark_bg,
@@ -2380,12 +2380,12 @@ fn set_document_theme_survives_appearance_sync() {
 
     // Snapshot / appearance sync must not revert to the prior web-api theme.
     let snap = host.semantic_snapshot();
-    assert_eq!(snap.theme, ThemeMode::Dark);
+    assert_eq!(snap.theme_appearance, ThemeAppearance::Dark);
     let _ = host.appearance();
     {
         let bridge_arc = host.bridge();
         let bridge = bridge_arc.lock().expect("bridge");
-        assert_eq!(bridge.theme(), ThemeMode::Dark);
+        assert_eq!(bridge.theme_appearance(), ThemeAppearance::Dark);
         let dark_bg = bridge.get(1).expect("widget").props.layout.background;
         assert_eq!(
             dark_bg,

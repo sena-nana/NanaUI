@@ -1,4 +1,4 @@
-use nana_ui::{SemanticPalette, ThemeMode};
+use nana_ui::{SemanticPalette, ThemeAppearance};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Message {
@@ -8,7 +8,7 @@ pub enum Message {
 
 #[derive(Debug, Default)]
 pub struct DemoPanel {
-    theme: ThemeMode,
+    theme: ThemeAppearance,
     revision: u32,
 }
 
@@ -32,12 +32,12 @@ impl DemoPanel {
         self.revision
     }
 
-    pub fn theme_mode(&self) -> ThemeMode {
+    pub fn preset_theme(&self) -> ThemeAppearance {
         self.theme
     }
 
     pub fn theme_label(&self) -> &'static str {
-        if self.theme == ThemeMode::Dark {
+        if self.theme == ThemeAppearance::Dark {
             "浅色"
         } else {
             "深色"

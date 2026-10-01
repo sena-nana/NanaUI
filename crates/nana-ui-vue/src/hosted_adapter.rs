@@ -10,8 +10,7 @@ use std::time::Instant;
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
     GpuContext, HostTextureRegistry, RoutedInput, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, ThemeMode, WindowDescriptor, install_theme_tokens,
-    window_material_effect,
+    RuntimeProgramUpdate, RuntimeRedraw, ThemeAppearance, WindowDescriptor, window_material_effect,
 };
 use nana_ui_platform::{CanonicalInputEvent, InputPayload, WindowEvent, WindowGeometry, WindowId};
 use nana_ui_runtime::FrameworkError;
@@ -134,7 +133,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         self.vue.components()
     }
 
-    pub fn inject_theme(&mut self, theme: ThemeMode) -> Result<(), JsEngineError> {
+    pub fn inject_theme(&mut self, theme: ThemeAppearance) -> Result<(), JsEngineError> {
         let host = self.require_host(VueWindowId::PRIMARY)?;
         host.lock()
             .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
@@ -172,7 +171,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         make_engine: &(dyn Fn() -> E + Send + Sync),
         previous: Option<&RuntimeArtifact>,
         geometry: Option<&nana_ui_platform::WindowGeometry>,
-        theme: ThemeMode,
+        theme: ThemeAppearance,
     ) -> Result<Vec<nana_ui_platform::host::WindowCommand>, JsEngineError> {
         // The artifact mounts into the primary document. Without it a reload has
         // nowhere to mount, so leave the surviving windows and their content alone.
@@ -835,7 +834,8 @@ fn hosted_text_position(value: &str, byte_offset: usize) -> Option<HostedTextPos
 pub struct VueRuntimeProgram<E: JsEngine> {
     runtime: VueHostedRuntime<E>,
     documents: HashMap<WindowId, Arc<SharedRuntimeDocument>>,
-    theme: ThemeMode,
+    theme: ThemeAppearance,
+    compiled_theme: Arc<nana_ui::CompiledTheme>,
     /// `Nana.startup`, when this program was bootstrapped by the host.
     startup: Option<crate::startup::StartupBridge>,
     #[cfg(feature = "dev-reload")]
@@ -946,11 +946,12 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
                 .vue
                 .record_platform_geometry(VueWindowId::PRIMARY, &geometry)?;
         }
-        let _ = runtime.inject_theme(ThemeMode::Light);
+        let _ = runtime.inject_theme(ThemeAppearance::Light);
         let mut program = Self {
             runtime,
             documents: HashMap::new(),
-            theme: ThemeMode::Light,
+            theme: ThemeAppearance::Light,
+            compiled_theme: nana_ui::builtin_theme_arc(ThemeAppearance::Light),
             startup: None,
             #[cfg(feature = "dev-reload")]
             dev: None,
@@ -963,7 +964,8 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
         let mut program = Self {
             runtime,
             documents: HashMap::new(),
-            theme: ThemeMode::Light,
+            theme: ThemeAppearance::Light,
+            compiled_theme: nana_ui::builtin_theme_arc(ThemeAppearance::Light),
             startup: None,
             #[cfg(feature = "dev-reload")]
             dev: None,
@@ -1217,8 +1219,8 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
         }
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        self.theme
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        self.compiled_theme.clone()
     }
 
     fn window_material_mode(&self) -> nana_ui::MaterialEffect {
@@ -1275,12 +1277,24 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
             .host(VueWindowId(id.0))
             .and_then(|host| host.lock().ok().map(|guard| guard.appearance()));
         let transparent_surface = context.material().wants_transparent_surface();
-        let theme = self.theme;
+        let theme = self.theme();
         if let (Some(appearance), Some(document)) = (appearance, self.documents.get(&id)) {
-            let tokens = theme_tokens_from_appearance(theme, &appearance, transparent_surface);
-            if let Err(error) = document.with_document_mut(|document| {
-                install_theme_tokens(document.context_mut(), theme, tokens)
-            }) {
+            let tokens = nana_ui::ThemeTokens::new(theme.style_model().palette, theme.metrics())
+                .with_workspace_corners(appearance.workspace_corners_enabled())
+                .with_backdrop(
+                    transparent_surface,
+                    appearance.backdrop_target(),
+                    appearance.backdrop_opacity(),
+                    appearance.titlebar_follows_sidebar(),
+                );
+            let mut style_model = theme.style_model();
+            style_model.metrics = tokens.metrics;
+            style_model.palette = tokens.palette;
+            style_model.titlebar = tokens.titlebar;
+            let theme = Arc::new(theme.as_ref().clone().with_style_model(style_model));
+            if let Err(error) = document
+                .with_document_mut(|document| document.context_mut().set_theme_tokens(theme))
+            {
                 let failure = nana_ui::HostFailure::DocumentAccess {
                     window: id,
                     error: error.to_string(),
@@ -1629,7 +1643,13 @@ mod tests {
         let replace_engine = || -> InputEngine { panic!("reload tore down the surviving runtime") };
         assert!(
             runtime
-                .dev_reload(&artifact, &replace_engine, None, None, ThemeMode::Light)
+                .dev_reload(
+                    &artifact,
+                    &replace_engine,
+                    None,
+                    None,
+                    ThemeAppearance::Light
+                )
                 .is_err()
         );
         assert_eq!(runtime.vue.window_ids(), survivors);
@@ -1831,7 +1851,10 @@ mod tests {
             let mut host = host.lock().unwrap();
             host.callbacks.fire_event = Some(nana_js_engine::JsFunctionId(1));
             let bridge = host.bridge();
-            bridge.lock().unwrap().set_theme(ThemeMode::Light);
+            bridge
+                .lock()
+                .unwrap()
+                .set_preset_theme(ThemeAppearance::Light);
             bridges.push(bridge);
         }
         let mut runtime = VueHostedRuntime {
@@ -1864,7 +1887,10 @@ mod tests {
         );
         let changed = bridges[1].clone();
         runtime.engine.on_event = Some(Box::new(move || {
-            changed.lock().unwrap().set_theme(ThemeMode::Dark)
+            changed
+                .lock()
+                .unwrap()
+                .set_preset_theme(ThemeAppearance::Dark)
         }));
         assert_eq!(
             runtime
@@ -1876,7 +1902,10 @@ mod tests {
         let changed = [bridges[0].clone(), bridges[2].clone()];
         runtime.engine.on_event = Some(Box::new(move || {
             for bridge in changed {
-                bridge.lock().unwrap().set_theme(ThemeMode::Dark);
+                bridge
+                    .lock()
+                    .unwrap()
+                    .set_preset_theme(ThemeAppearance::Dark);
             }
         }));
         assert_eq!(

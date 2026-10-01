@@ -13,7 +13,7 @@ use nana_js_engine::{
     JsDiagnosticLevel, JsDiagnosticSink, JsEngine, JsEngineError, JsException, JsRealmId,
     RuntimeArtifact,
 };
-use nana_ui_core::ThemeMode;
+use nana_ui_core::ThemeAppearance;
 
 use crate::{
     DocumentId, NodeHandle, SemanticSnapshot, VueHost, WindowLifecycleEvent, compose_vue_artifact,
@@ -1924,7 +1924,7 @@ impl VueRuntime {
         &self,
         engine: &mut E,
         id: VueWindowId,
-        theme: ThemeMode,
+        theme: ThemeAppearance,
     ) -> Result<(), JsEngineError> {
         let host = self
             .host(id)

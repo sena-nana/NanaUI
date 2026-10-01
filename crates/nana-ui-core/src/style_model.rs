@@ -12,7 +12,7 @@
 //!
 //! | Part | Meaning | Lives today |
 //! |------|---------|-------------|
-//! | **Tokens** | Theme spacing / radius / control metrics; semantic palette roles | [`ThemeMetrics`](crate::ThemeMetrics), [`ThemeMode`](crate::ThemeMode), [`SemanticPalette`] |
+//! | **Tokens** | Theme spacing / radius / control metrics; semantic palette roles | [`ThemeMetrics`](crate::ThemeMetrics), [`ThemeAppearance`](crate::ThemeAppearance), [`SemanticPalette`] |
 //! | **Semantics** | Widget kind + control intent (`ButtonKind`, `ControlSize`, …) | [`crate::semantics`] |
 //! | **Layout** | Flex/gap/padding/size intent | Workspace regions: [`crate::layout`]; box flex: [`crate::LayoutStyle`] / [`crate::LengthSpec`] / [`crate::ParentBox`]（CSS parse 在 `nana-ui-vue::css_map`） |
 //!
@@ -49,7 +49,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::semantics::{ButtonKind, CardKind, ControlSize, StatusTone};
 use crate::theme::tokens::{AccentRamp, OpacityTokens, StateLayer};
-use crate::theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS};
+use crate::theme::{ThemeAppearance, ThemeMetrics, UI_BASE_TEXT_SIZE, UI_METRICS};
 
 /// Backend-neutral RGBA in 0..=1.
 ///
@@ -414,10 +414,11 @@ impl SemanticPalette {
         }
     }
 
-    pub const fn for_mode(mode: ThemeMode) -> Self {
+    pub const fn for_appearance(mode: ThemeAppearance) -> Self {
         match mode {
-            ThemeMode::Dark => Self::dark(),
-            ThemeMode::Light => Self::light(),
+            ThemeAppearance::Dark => Self::dark(),
+            ThemeAppearance::Light => Self::light(),
+            ThemeAppearance::Custom => Self::dark(),
         }
     }
 
@@ -568,7 +569,7 @@ impl SemanticPalette {
 /// Index of Style Model pieces that already live in this crate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StyleModelRef {
-    pub theme_mode: ThemeMode,
+    pub theme_appearance: ThemeAppearance,
     pub metrics: ThemeMetrics,
     pub palette: SemanticPalette,
     pub titlebar: SemanticColor,
@@ -579,26 +580,30 @@ pub struct StyleModelRef {
 }
 
 impl StyleModelRef {
-    pub const fn new(theme_mode: ThemeMode) -> Self {
-        let palette = SemanticPalette::for_mode(theme_mode);
+    pub const fn new(theme_mode: ThemeAppearance) -> Self {
+        let palette = SemanticPalette::for_appearance(theme_mode);
         Self {
-            theme_mode,
+            theme_appearance: match theme_mode {
+                ThemeAppearance::Light => ThemeAppearance::Light,
+                ThemeAppearance::Dark => ThemeAppearance::Dark,
+                ThemeAppearance::Custom => ThemeAppearance::Custom,
+            },
             metrics: UI_METRICS,
             titlebar: palette.surface,
             palette,
-            opacity: OpacityTokens::for_mode(theme_mode),
+            opacity: OpacityTokens::for_appearance(theme_mode),
         }
     }
 
     pub const fn with_tokens(
-        theme_mode: ThemeMode,
+        theme_appearance: ThemeAppearance,
         metrics: ThemeMetrics,
         palette: SemanticPalette,
         titlebar: SemanticColor,
         opacity: OpacityTokens,
     ) -> Self {
         Self {
-            theme_mode,
+            theme_appearance,
             metrics,
             palette,
             titlebar,
@@ -621,7 +626,7 @@ impl StyleModelRef {
 
 impl Default for StyleModelRef {
     fn default() -> Self {
-        Self::new(ThemeMode::default())
+        Self::new(ThemeAppearance::default())
     }
 }
 
@@ -648,7 +653,7 @@ impl Default for ControlSemantics {
 #[cfg(test)]
 mod tests {
     use super::{OpacityTokens, SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef};
-    use crate::theme::ThemeMode;
+    use crate::theme::ThemeAppearance;
 
     /// `Highlight` is opt-in: a built-in theme that never names it must look
     /// exactly as it did before the role existed, so it resolves to the accent
@@ -656,9 +661,9 @@ mod tests {
     /// names reach it.
     #[test]
     fn highlight_defaults_to_the_accent_pair_and_round_trips() {
-        for mode in [ThemeMode::Light, ThemeMode::Dark] {
-            let palette = SemanticPalette::for_mode(mode);
-            let opacity = OpacityTokens::for_mode(mode);
+        for mode in [ThemeAppearance::Light, ThemeAppearance::Dark] {
+            let palette = SemanticPalette::for_appearance(mode);
+            let opacity = OpacityTokens::for_appearance(mode);
             assert_eq!(
                 palette.get_in(SemanticColorRole::Highlight, opacity),
                 palette.accent
@@ -699,7 +704,7 @@ mod tests {
 
     #[test]
     fn style_model_ref_defaults_to_shared_metrics() {
-        let model = StyleModelRef::new(ThemeMode::Light);
+        let model = StyleModelRef::new(ThemeAppearance::Light);
         assert_eq!(model.metrics.radius_md, 10.0);
         assert_eq!(model.base_text_size(), 13.0);
         assert_eq!(model.palette.accent, SemanticPalette::light().accent);
@@ -712,7 +717,7 @@ mod tests {
         let mut titlebar = palette.surface;
         titlebar.a = 1.0;
         let model = StyleModelRef::with_tokens(
-            ThemeMode::Dark,
+            ThemeAppearance::Dark,
             crate::UI_METRICS,
             palette,
             titlebar,
@@ -840,8 +845,8 @@ mod tests {
         }
 
         for (mode, palette) in [
-            (ThemeMode::Dark, SemanticPalette::dark()),
-            (ThemeMode::Light, SemanticPalette::light()),
+            (ThemeAppearance::Dark, SemanticPalette::dark()),
+            (ThemeAppearance::Light, SemanticPalette::light()),
         ] {
             let focused = over(palette.focus_surface, palette.background);
             let ratio = contrast(focused, palette.background);

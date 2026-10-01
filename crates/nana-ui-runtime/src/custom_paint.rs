@@ -15,8 +15,11 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     CompiledTheme, ElevationRole, Icon, RadiusTier, SemanticColorMix, SemanticColorRole,
-    ThemeMetrics, ThemeMode,
+    ThemeMetrics,
 };
+
+#[cfg(test)]
+use nana_ui_core::ThemeAppearance;
 
 use crate::{ComponentElevation, LayoutBox, TextHorizontalAlignment, TextVerticalAlignment};
 
@@ -1641,8 +1644,8 @@ impl<'a> PaintContext<'a> {
         }
     }
 
-    pub fn theme_mode(&self) -> ThemeMode {
-        self.theme.style_model().theme_mode
+    pub fn theme_appearance(&self) -> nana_ui_core::ThemeAppearance {
+        self.theme.appearance()
     }
 
     pub fn metrics(&self) -> ThemeMetrics {
@@ -1999,7 +2002,7 @@ mod tests {
     fn record_plain(painter: &dyn Painter, size: [f32; 2]) -> PaintRecording {
         record(
             painter,
-            nana_ui_core::builtin_theme_arc(ThemeMode::Dark).as_ref(),
+            nana_ui_core::builtin_theme_arc(ThemeAppearance::Dark).as_ref(),
             size,
             PaintState::default(),
             &no_measure,
@@ -2092,7 +2095,7 @@ mod tests {
                 0
             }
         }
-        let theme = nana_ui_core::builtin_theme_arc(ThemeMode::Dark);
+        let theme = nana_ui_core::builtin_theme_arc(ThemeAppearance::Dark);
         let recording = PaintRecording::record(&Open, &theme, [10.0, 10.0], PaintState::default());
         let closes: Vec<_> = recording.behind_children[3..]
             .iter()
@@ -2203,7 +2206,7 @@ mod tests {
 
         let mut metrics = UI_METRICS;
         metrics.radius_md += 6.0;
-        let theme = ThemeDefinition::for_mode(ThemeMode::Light)
+        let theme = ThemeDefinition::for_appearance(ThemeAppearance::Light)
             .with_metrics(metrics)
             .with_palette(SemanticPalette::light())
             .compile()
@@ -2336,7 +2339,7 @@ mod tests {
 
     #[test]
     fn a_gradient_resolves_its_roles_and_sorts_its_stops() {
-        let theme = nana_ui_core::builtin_theme_arc(ThemeMode::Dark);
+        let theme = nana_ui_core::builtin_theme_arc(ThemeAppearance::Dark);
         let measure = no_measure;
         let cx = PaintContext::new(
             theme.as_ref(),

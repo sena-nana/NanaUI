@@ -362,7 +362,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             event_loop,
             &self.settings,
             target,
-            crate::ThemeMode::default(),
+            crate::ThemeAppearance::default(),
             self.startup_material_mode,
         )?;
         // The device request goes first: the splash then overlaps it instead
@@ -445,9 +445,9 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             Err(failure) => return (None, SplashOutcome::Failed(failure)),
         };
         let theme = match window.theme() {
-            Some(WinitTheme::Light) => crate::ThemeMode::Light,
-            Some(WinitTheme::Dark) => crate::ThemeMode::Dark,
-            None => crate::ThemeMode::default(),
+            Some(WinitTheme::Light) => crate::ThemeAppearance::Light,
+            Some(WinitTheme::Dark) => crate::ThemeAppearance::Dark,
+            None => crate::ThemeAppearance::default(),
         };
         let (red, green, blue, alpha) = theme.palette().background.to_u8_rgba();
         NativeSplash::show(

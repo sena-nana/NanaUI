@@ -1,6 +1,6 @@
 //! Style Model token adapter for the Nana Scene host.
 //!
-//! [`ThemeMetrics`] / [`ThemeMode`] / [`SemanticPalette`] live in `nana-ui-core`.
+//! [`ThemeMetrics`] / [`ThemeAppearance`] / [`SemanticPalette`] live in `nana-ui-core`.
 //! This module is the L3 token view used by the Scene host. It is **not** a CSS
 //! / ThemeTokens factory for arbitrary L1 paint values — see
 //! `nana_ui_core::style_model`.
@@ -16,7 +16,7 @@ use nana_ui_core::{AppearanceSettings, BackdropTarget};
 /// token structs behind `DesignTokens` could not be spelled, and
 /// [`ThemeId`] / [`ThemeSchemaVersion`] / [`ThemeGeneration`] — the three
 /// fields a definition needs for identity — were all private to the consumer.
-/// The host's only way through was to derive from `ThemeMode::definition()`
+/// The host's only way through was to derive from `ThemeAppearance::definition()`
 /// and mutate public fields, which works but cannot name a step.
 ///
 /// `look.md` tells consumers not to depend on `nana-ui-core` directly, so this
@@ -30,9 +30,10 @@ pub use nana_ui_core::{
     MotionRole, MotionTokens, OpacityTokens, RadiusTier, SWITCH_METRICS, SemanticColor,
     SemanticPalette, ShadowToken, SpacingStep, SpacingTokens, SquareSize, StateLayer, StatusRecipe,
     SurfaceMaterial, SurfacePadding, SurfaceRole, SurfaceSpec, SurfaceTokens, SwitchMetrics,
-    TextWeight, ThemeCompileError, ThemeDefinition, ThemeGeneration, ThemeId, ThemeIdentity,
-    ThemeMetrics, ThemeMode, ThemeSchemaVersion, TypeRole, TypographyTokens, UI_BASE_TEXT_SIZE,
-    UI_METRICS, space, type_scale,
+    TextWeight, ThemeAppearance, ThemeChoice, ThemeCompileError, ThemeDefinition, ThemeGeneration,
+    ThemeId, ThemeIdentity, ThemeMetrics, ThemeRegistry, ThemeRegistryError, ThemeResolution,
+    ThemeSchemaVersion, TypeRole, TypographyTokens, UI_BASE_TEXT_SIZE, UI_METRICS,
+    builtin_theme_arc, space, type_scale,
 };
 /// Style-model names a host needs to name a node's paint rather than spend a
 /// number: the two-role mix behind `NodeStyle::surface_mix` / `outline_mix`,
@@ -48,10 +49,11 @@ pub type Color = SemanticColor;
 
 /// Identity of a built-in theme after the Scene host has applied its own
 /// Appearance policy on top.
-const fn host_theme_id(mode: ThemeMode) -> nana_ui_core::ThemeId {
+const fn host_theme_id(mode: ThemeAppearance) -> nana_ui_core::ThemeId {
     match mode {
-        ThemeMode::Dark => nana_ui_core::ThemeId::new("nana.dark+host"),
-        ThemeMode::Light => nana_ui_core::ThemeId::new("nana.light+host"),
+        ThemeAppearance::Dark => nana_ui_core::ThemeId::new("nana.dark+host"),
+        ThemeAppearance::Light => nana_ui_core::ThemeId::new("nana.light+host"),
+        ThemeAppearance::Custom => nana_ui_core::ThemeId::new("nana.custom+host"),
     }
 }
 
@@ -115,8 +117,8 @@ impl ThemeTokens {
     /// and a diagnostic that printed `nana.dark` for it would be pointing at
     /// the wrong thing. Two host bundles still share an id — identity answers
     /// "which theme", never "are these equal"; installs compare values.
-    pub const fn definition(&self, mode: ThemeMode) -> ThemeDefinition {
-        ThemeDefinition::for_mode(mode)
+    pub fn definition(&self, mode: ThemeAppearance) -> ThemeDefinition {
+        ThemeDefinition::for_appearance(mode)
             .with_id(host_theme_id(mode))
             .with_metrics(self.metrics)
             .with_palette(self.palette)
@@ -209,7 +211,7 @@ impl From<&ThemeDefinition> for ThemeTokens {
 /// of a window that lays out wrong.
 pub fn install_theme_tokens(
     context: &mut nana_ui_runtime::AppContext,
-    mode: ThemeMode,
+    mode: ThemeAppearance,
     tokens: ThemeTokens,
 ) -> Result<bool, nana_ui_runtime::FrameworkError> {
     context.set_theme_definition(&tokens.definition(mode))
@@ -226,28 +228,28 @@ pub fn install_theme_definition(
     context.set_theme_definition(definition)
 }
 
-/// Token helpers for [`ThemeMode`].
+/// Token helpers for [`ThemeAppearance`].
 ///
 /// `colors()` is gone: it returned a second palette type with the same fields
 /// as [`SemanticPalette`]. Use [`Self::palette`].
-pub trait ThemeModeExt: Copy {
+pub trait ThemeAppearanceExt: Copy {
     fn tokens(self) -> ThemeTokens;
     fn palette(self) -> SemanticPalette;
     /// The built-in design system for this mode.
     fn definition(self) -> ThemeDefinition;
 }
 
-impl ThemeModeExt for ThemeMode {
+impl ThemeAppearanceExt for ThemeAppearance {
     fn palette(self) -> SemanticPalette {
-        ThemeMode::palette(self)
+        ThemeAppearance::palette(self)
     }
 
     fn definition(self) -> ThemeDefinition {
-        ThemeDefinition::for_mode(self)
+        ThemeDefinition::for_appearance(self)
     }
 
     fn tokens(self) -> ThemeTokens {
-        ThemeTokens::from_definition(&ThemeDefinition::for_mode(self))
+        ThemeTokens::from_definition(&ThemeDefinition::for_appearance(self))
     }
 }
 
@@ -260,7 +262,7 @@ pub use nana_ui_core::fonts::{
 
 #[cfg(test)]
 mod tests {
-    use super::{ThemeMode, ThemeModeExt, ThemeTokens};
+    use super::{ThemeAppearance, ThemeAppearanceExt, ThemeTokens};
     use nana_ui_core::{BackdropTarget, SemanticPalette};
 
     /// One palette type, not two. The adapter used to expose a `Colors` struct
@@ -268,8 +270,11 @@ mod tests {
     /// core palette itself, so there is nothing to keep in sync.
     #[test]
     fn the_token_bundle_carries_the_core_palette_itself() {
-        assert_eq!(ThemeMode::Dark.palette(), SemanticPalette::dark());
-        assert_eq!(ThemeMode::Light.tokens().palette, SemanticPalette::light());
+        assert_eq!(ThemeAppearance::Dark.palette(), SemanticPalette::dark());
+        assert_eq!(
+            ThemeAppearance::Light.tokens().palette,
+            SemanticPalette::light()
+        );
         assert_eq!(
             ThemeTokens::from(SemanticPalette::dark()).palette,
             SemanticPalette::dark()
@@ -278,31 +283,37 @@ mod tests {
 
     #[test]
     fn titlebar_follows_sidebar_controls_titlebar_alpha() {
-        let base = ThemeMode::Light.tokens();
+        let base = ThemeAppearance::Light.tokens();
         let follows = base.with_backdrop(true, BackdropTarget::Sidebar, 0.5, true);
         assert!((follows.palette.surface.a - 0.5).abs() < f32::EPSILON);
         assert!((follows.titlebar.a - 0.5).abs() < f32::EPSILON);
         assert!((follows.palette.background.a - 1.0).abs() < f32::EPSILON);
 
-        let independent = ThemeTokens::new(ThemeMode::Light.palette(), ThemeMode::Light.metrics())
-            .with_backdrop(true, BackdropTarget::Sidebar, 0.5, false);
+        let independent = ThemeTokens::new(
+            ThemeAppearance::Light.palette(),
+            ThemeAppearance::Light.metrics(),
+        )
+        .with_backdrop(true, BackdropTarget::Sidebar, 0.5, false);
         assert!((independent.palette.surface.a - 0.5).abs() < f32::EPSILON);
         assert!(
             (independent.titlebar.a - 1.0).abs() < f32::EPSILON,
             "titlebar must stay opaque when follows=false"
         );
 
-        let main = ThemeMode::Light
-            .tokens()
-            .with_backdrop(true, BackdropTarget::Main, 0.5, true);
+        let main =
+            ThemeAppearance::Light
+                .tokens()
+                .with_backdrop(true, BackdropTarget::Main, 0.5, true);
         assert!((main.palette.background.a - 0.5).abs() < f32::EPSILON);
         assert!((main.palette.surface.a - 1.0).abs() < f32::EPSILON);
         assert!((main.titlebar.a - 1.0).abs() < f32::EPSILON);
 
-        let solid =
-            ThemeMode::Light
-                .tokens()
-                .with_backdrop(false, BackdropTarget::Sidebar, 0.5, true);
+        let solid = ThemeAppearance::Light.tokens().with_backdrop(
+            false,
+            BackdropTarget::Sidebar,
+            0.5,
+            true,
+        );
         assert!((solid.palette.surface.a - 1.0).abs() < f32::EPSILON);
         assert!((solid.titlebar.a - 1.0).abs() < f32::EPSILON);
         assert!((solid.palette.background.a - 1.0).abs() < f32::EPSILON);

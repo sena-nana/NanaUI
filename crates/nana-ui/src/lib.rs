@@ -304,15 +304,17 @@ pub use scene_paint::{
 };
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{
-    AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState, SettingsTab,
-    SettingsTabId, WindowMaterialMode,
+    AppearancePreference, AppearanceSettings, BackdropTarget, SettingsError, SettingsModel,
+    SettingsState, SettingsTab, SettingsTabId, WindowMaterialMode,
 };
 #[cfg(feature = "hosted")]
 pub use settings::{hosted_window_material_modes, window_material_effect};
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController};
 pub use theme::{
-    Color, HAIRLINE, SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, ThemeModeExt,
-    ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, install_theme_tokens, space, type_scale,
+    Color, CompiledTheme, HAIRLINE, SemanticColor, SemanticPalette, ThemeAppearance,
+    ThemeAppearanceExt, ThemeChoice, ThemeId, ThemeMetrics, ThemeRegistry, ThemeRegistryError,
+    ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme_arc, install_theme_tokens, space,
+    type_scale,
 };
 #[cfg(feature = "bundled-fonts")]
 pub use theme::{UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources};

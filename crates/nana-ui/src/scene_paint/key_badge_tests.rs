@@ -8,17 +8,17 @@ fn key_layer_badges_keep_text_above_their_backplates_on_gpu() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     for (theme_name, theme, clear) in [
-        ("light", nana_ui_core::ThemeMode::Light, [1.0; 4]),
+        ("light", nana_ui_core::ThemeAppearance::Light, [1.0; 4]),
         (
             "dark",
-            nana_ui_core::ThemeMode::Dark,
+            nana_ui_core::ThemeAppearance::Dark,
             [0.08, 0.08, 0.08, 1.0],
         ),
     ] {
         let id = DocumentId::new(921).unwrap();
         let mut document = RuntimeDocument::new(id);
         let context = document.context_mut();
-        context.set_theme(theme).unwrap();
+        context.set_preset_theme(theme).unwrap();
         let root = context
             .create_component(id, Stack::fill_column(12.0).padding(8.0))
             .unwrap();

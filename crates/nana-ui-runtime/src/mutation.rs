@@ -5,7 +5,7 @@ use crate::{
     StandardVisual, TextCodeFold, TextCompletion, TextContent, TextHover, TextInlay,
     TextInputState, TextSelection, TextSignatureHelp, components::TextSnippetSession,
 };
-use nana_ui_core::ThemeMode;
+use nana_ui_core::ThemeAppearance;
 use std::{sync::Arc, time::Duration};
 
 /// One retained-tree mutation. Mutations are validated as a batch before the
@@ -41,8 +41,8 @@ pub enum UiMutation {
         id: StableNodeId,
         style: NodeStyle,
     },
-    SetTheme {
-        mode: ThemeMode,
+    SetPresetTheme {
+        mode: ThemeAppearance,
     },
     /// Install a validated design system.
     ///
@@ -283,8 +283,8 @@ impl MutationQueue {
         self.mutations.push(UiMutation::SetStyle { id, style });
     }
 
-    pub fn set_theme(&mut self, mode: ThemeMode) {
-        self.mutations.push(UiMutation::SetTheme { mode });
+    pub fn set_preset_theme(&mut self, mode: ThemeAppearance) {
+        self.mutations.push(UiMutation::SetPresetTheme { mode });
     }
 
     pub fn set_theme_tokens(&mut self, theme: std::sync::Arc<nana_ui_core::CompiledTheme>) {

@@ -10,7 +10,7 @@ use nana_ui::window_chrome::{WindowChromeAction, WindowChromeEvent, WindowChrome
 use nana_ui::{
     ActionId, ActionPickerNavigation, AppearanceSettings, BackdropTarget, CommandPaletteEvent,
     Icon, KeyModifiers, KeyStroke, MaterialOutcome, RegionId, SelectionMove, SettingsTabId,
-    SplitPaneAction, ThemeMode, WindowMaterialMode, WorkspaceAction,
+    SplitPaneAction, ThemeAppearance, WindowMaterialMode, WorkspaceAction,
 };
 use nana_ui_platform::host::WindowCommand;
 use std::path::PathBuf;
@@ -324,7 +324,7 @@ fn command_palette_filters_by_context_and_dispatches_real_actions() {
     state.update(GalleryMessage::CommandPalette(CommandPaletteEvent::Select(
         ActionId::from("appearance.toggle_theme"),
     )));
-    assert_eq!(state.theme, ThemeMode::Light);
+    assert_eq!(state.theme, ThemeAppearance::Light);
     assert!(!state.overlay.is_open());
 
     state.update(GalleryMessage::SelectSection(GallerySection::Graph));
@@ -357,7 +357,7 @@ fn command_palette_keybinding_opens_and_keyboard_navigation_selects() {
         state.palette_action.as_ref().map(ActionId::as_str),
         Some("appearance.toggle_theme")
     );
-    assert_eq!(state.theme, ThemeMode::Light);
+    assert_eq!(state.theme, ThemeAppearance::Light);
     assert!(!state.overlay.is_open());
 }
 
@@ -448,13 +448,13 @@ fn settings_return_to_the_gallery_and_appearance_updates_immediately() {
     state.update(GalleryMessage::OpenSettings);
     assert!(state.settings_open);
 
-    state.update(GalleryMessage::SetTheme(ThemeMode::Light));
+    state.update(GalleryMessage::SetTheme(ThemeAppearance::Light));
     state.update(GalleryMessage::SetStandardRadius(8));
     state.update(GalleryMessage::BackFromSettings);
 
     assert!(!state.settings_open);
     assert_eq!(state.section, GallerySection::Surfaces);
-    assert_eq!(state.theme_mode(), ThemeMode::Light);
+    assert_eq!(state.preset_theme(), ThemeAppearance::Light);
     assert_eq!(state.appearance.standard_radius(), 8.0);
 }
 
@@ -631,7 +631,7 @@ fn appearance_material_and_opacity_drive_runtime_state() {
     assert!(state.material_outcome().is_native());
 
     // Stay on Dark (gallery default) so Reset must visibly restore Light.
-    assert_eq!(state.theme_mode(), ThemeMode::Dark);
+    assert_eq!(state.preset_theme(), ThemeAppearance::Dark);
     state.update(GalleryMessage::ResetAppearance);
     assert_eq!(
         state.appearance.window_material(),
@@ -642,7 +642,7 @@ fn appearance_material_and_opacity_drive_runtime_state() {
             < f32::EPSILON
     );
     assert_eq!(
-        state.theme_mode(),
+        state.preset_theme(),
         AppearanceSettings::RESET_THEME,
         "ResetAppearance must restore theme to Light (Lilia resetAppearanceDefaults)"
     );

@@ -5,7 +5,36 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::icon::Icon;
 use crate::persist::{AppSettings, StoreError};
-use crate::theme::{ThemeMetrics, ThemeMode, UI_METRICS};
+use crate::theme::{ThemeAppearance, ThemeId, ThemeMetrics, UI_METRICS};
+/// Persisted theme selection owned by an application settings store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThemePreference {
+    #[serde(default = "default_theme_id")]
+    pub theme_id: ThemeId,
+}
+
+/// Persisted appearance bundle. Theme identity is stored beside appearance
+/// policy so custom themes survive a restart without making `AppearanceSettings`
+/// carry application-owned registry state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppearancePreference {
+    #[serde(flatten)]
+    pub appearance: AppearanceSettings,
+    #[serde(default = "default_theme_id")]
+    pub theme_id: ThemeId,
+}
+
+fn default_theme_id() -> ThemeId {
+    ThemeId::new("nana.light")
+}
+
+impl Default for ThemePreference {
+    fn default() -> Self {
+        Self {
+            theme_id: default_theme_id(),
+        }
+    }
+}
 
 /// CSS px for the four exposed radius steps (micro / control / card / page).
 const DEFAULT_RADIUS_XS: f32 = 2.0;
@@ -93,8 +122,8 @@ impl AppearanceSettings {
     /// Theme restored by [`AppearanceEvent::Reset`], matching Lilia
     /// `resetAppearanceDefaults` (`setTheme("light")`).
     ///
-    /// Not [`ThemeMode::default`] (Dark): reset always returns to Light.
-    pub const RESET_THEME: ThemeMode = ThemeMode::Light;
+    /// Not [`ThemeAppearance::default`] (Dark): reset always returns to Light.
+    pub const RESET_THEME: ThemeAppearance = ThemeAppearance::Light;
 
     pub fn new(standard_radius: f32) -> Self {
         let radius_md = normalize_radius(standard_radius, DEFAULT_RADIUS_MD);
@@ -273,6 +302,22 @@ impl AppearanceSettings {
         };
         *self = restored;
         Ok(true)
+    }
+
+    pub fn to_json_with_theme_id(&self, theme_id: &ThemeId) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(&AppearancePreference {
+            appearance: self.clone(),
+            theme_id: theme_id.clone(),
+        })
+    }
+
+    pub fn restore_json_with_theme_id(
+        &mut self,
+        value: &str,
+    ) -> Result<ThemeId, serde_json::Error> {
+        let restored: AppearancePreference = serde_json::from_str(value)?;
+        *self = restored.appearance;
+        Ok(restored.theme_id)
     }
 }
 
@@ -647,9 +692,9 @@ impl SettingsState {
 ///
 /// Kept next to settings data so Vue and Runtime can share the same contract
 /// without depending on settings-section widgets.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AppearanceEvent {
-    Theme(ThemeMode),
+    Theme(ThemeId),
     StandardRadius(u8),
     WorkspaceCorners(bool),
     WindowMaterial(WindowMaterialMode),
@@ -660,7 +705,7 @@ pub enum AppearanceEvent {
     ///
     /// Matches Lilia / `nanavue-components` `resetAppearanceDefaults`: hosts must
     /// call [`AppearanceSettings::reset`] and set theme to
-    /// [`AppearanceSettings::RESET_THEME`] (`ThemeMode::Light`).
+    /// The built-in Light theme (`nana.light`).
     /// `AppearanceSettings` itself does not store theme; theme lives on the host.
     Reset,
 }
@@ -669,10 +714,38 @@ pub enum AppearanceEvent {
 mod tests {
     use super::{
         AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState,
-        SettingsTab, SettingsTabId, WindowMaterialMode,
+        SettingsTab, SettingsTabId, ThemePreference, WindowMaterialMode,
     };
 
     use crate::theme::UI_METRICS;
+
+    #[test]
+    fn theme_preference_round_trips_owned_ids_and_defaults_missing_ids() {
+        let preference = ThemePreference {
+            theme_id: crate::ThemeId::from_owned("user.sunset"),
+        };
+        let encoded = serde_json::to_string(&preference).unwrap();
+        let restored: ThemePreference = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored, preference);
+
+        let legacy: ThemePreference = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.theme_id, crate::ThemeId::new("nana.light"));
+    }
+
+    #[test]
+    fn appearance_bundle_persists_theme_id_and_legacy_defaults_to_light() {
+        let appearance = AppearanceSettings::default();
+        let id = crate::ThemeId::from_owned("user.sunset");
+        let json = appearance.to_json_with_theme_id(&id).unwrap();
+        let mut restored = AppearanceSettings::default();
+        assert_eq!(restored.restore_json_with_theme_id(&json).unwrap(), id);
+        assert_eq!(
+            serde_json::from_str::<super::AppearancePreference>(&appearance.to_json().unwrap())
+                .unwrap()
+                .theme_id,
+            crate::ThemeId::new("nana.light")
+        );
+    }
 
     fn model() -> SettingsModel {
         SettingsModel::new(
@@ -819,7 +892,7 @@ mod tests {
         assert!(!appearance.reset());
         assert_eq!(
             AppearanceSettings::RESET_THEME,
-            crate::theme::ThemeMode::Light,
+            crate::theme::ThemeAppearance::Light,
             "Reset must restore Light to match Lilia resetAppearanceDefaults"
         );
     }

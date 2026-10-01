@@ -1287,7 +1287,7 @@ mod tests {
         assert!(
             context
                 .set_style_tokens(
-                    nana_ui_core::ThemeMode::Dark,
+                    nana_ui_core::ThemeAppearance::Dark,
                     metrics,
                     nana_ui_core::SemanticPalette::dark(),
                     nana_ui_core::SemanticPalette::dark().surface,
@@ -1484,11 +1484,11 @@ mod tests {
             .unwrap();
         for (mode, palette) in [
             (
-                nana_ui_core::ThemeMode::Light,
+                nana_ui_core::ThemeAppearance::Light,
                 nana_ui_core::SemanticPalette::light(),
             ),
             (
-                nana_ui_core::ThemeMode::Dark,
+                nana_ui_core::ThemeAppearance::Dark,
                 nana_ui_core::SemanticPalette::dark(),
             ),
         ] {
@@ -1502,7 +1502,7 @@ mod tests {
             };
             assert_eq!(
                 scrim_color,
-                nana_ui_core::EffectTokens::for_mode(mode)
+                nana_ui_core::EffectTokens::for_appearance(mode)
                     .media_scrim
                     .as_rgba_array()
             );

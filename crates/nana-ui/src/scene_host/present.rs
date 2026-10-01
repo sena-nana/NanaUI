@@ -295,7 +295,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
             }
         }
-        let theme = self.program.theme_mode();
+        let theme = self.program.theme();
         let window_background = self.program.window_background();
         let fetch_host = self.program.resource_fetch_host(id);
         // Subpixel text only onto a surface the compositor shows opaque: over
@@ -326,7 +326,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             scene.as_ref(),
             &mut recording,
             &target,
-            scene_paint_viewport(&geometry, material, theme, window_background),
+            scene_paint_viewport(&geometry, material, theme.as_ref(), window_background),
             host_textures.as_ref(),
             gpu_renderers.as_ref(),
         );

@@ -28,7 +28,7 @@ use std::{
 
 use nana_ui_core::{
     ControlSize, LayoutStyle, LengthSpec, PointerEventsSpec, PositionSpec, SemanticColorRole,
-    SemanticPalette, StyleModelRef, SwitchControlPosition, ThemeMode, ThemeWorkCounters,
+    SemanticPalette, StyleModelRef, SwitchControlPosition, ThemeAppearance, ThemeWorkCounters,
     icon_y_on_text_glyph_center,
 };
 
@@ -815,7 +815,7 @@ impl UiWorld {
             closing_surfaces: HashSet::default(),
             hover_transitions: HashMap::default(),
             animation_deadlines: BTreeSet::new(),
-            theme: nana_ui_core::builtin_theme_arc(ThemeMode::default()),
+            theme: nana_ui_core::builtin_theme_arc(ThemeAppearance::default()),
             style_model: StyleModelRef::default(),
             generation: 0,
             cursor_style_dirty: false,
@@ -1131,8 +1131,8 @@ impl UiWorld {
         self.record_hot_path_allocation(1, len);
     }
 
-    pub fn theme_mode(&self) -> ThemeMode {
-        self.style_model.theme_mode
+    pub fn theme_appearance(&self) -> nana_ui_core::ThemeAppearance {
+        self.style_model.theme_appearance
     }
 
     pub fn theme_metrics(&self) -> nana_ui_core::ThemeMetrics {

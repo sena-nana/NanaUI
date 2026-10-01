@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use nana_js_engine::probe::{VUE_SFC_COMPAT_CSS, vue_sfc_compat_artifact};
 use nana_js_engine::{HostApiRegistry, HostValue, JsEngine};
 use nana_ui::{
-    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode,
+    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeAppearance,
     WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::{CompositionInput, InputPayload, PointerType, WindowEvent, WindowId};
@@ -336,8 +336,8 @@ impl RuntimeProgram for AcceptanceProgram {
         self.inner.update(message, context)
     }
 
-    fn theme_mode(&self) -> ThemeMode {
-        self.inner.theme_mode()
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        self.inner.theme()
     }
 
     fn host_failure(&mut self, failure: nana_ui::HostFailure) {

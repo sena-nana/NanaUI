@@ -4,8 +4,8 @@
 
 pub use nana_ui_core::AppearanceEvent;
 pub use nana_ui_core::settings::{
-    AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState, SettingsTab,
-    SettingsTabId, WindowMaterialMode,
+    AppearancePreference, AppearanceSettings, BackdropTarget, SettingsError, SettingsModel,
+    SettingsState, SettingsTab, SettingsTabId, WindowMaterialMode,
 };
 #[cfg(feature = "hosted")]
 use nana_window::{MaterialEffect, PlatformMaterialSupport, hosted_platform_material_support};

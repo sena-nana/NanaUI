@@ -31,7 +31,7 @@ pub(crate) struct SemanticRead<'a> {
     // A per-prepare read cache, discarded before commit. Runtime remains authoritative.
     topology: RefCell<HashMap<u64, (Option<u64>, Arc<[u64]>)>>,
     pub revision: u64,
-    pub theme: nana_ui_core::ThemeMode,
+    pub theme_tokens: Arc<nana_ui_core::CompiledTheme>,
     pub changes: crate::bridge::SnapshotChanges,
 }
 
@@ -48,7 +48,7 @@ impl<'a> SemanticRead<'a> {
             },
             topology: RefCell::new(HashMap::new()),
             revision: snapshot.revision,
-            theme: snapshot.theme,
+            theme_tokens: snapshot.theme_tokens.clone(),
             changes: snapshot.changes.clone(),
         }
     }
@@ -61,7 +61,7 @@ impl<'a> SemanticRead<'a> {
             source: Source::Bridge { bridge, document },
             topology: RefCell::new(HashMap::new()),
             revision: bridge.revision(),
-            theme: bridge.theme(),
+            theme_tokens: bridge.theme_tokens().clone(),
             changes,
         }
     }

@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let id = DocumentId::new(61).unwrap();
         let mut document = RuntimeDocument::new(id);
         let context = document.context_mut();
-        context.set_theme(nana_ui::ThemeMode::Light)?;
+        context.set_preset_theme(nana_ui::ThemeAppearance::Light)?;
         let model =
             SettingsModel::new("appearance", [SettingsTab::new("appearance", "Appearance")])?
                 .hide_header(true);

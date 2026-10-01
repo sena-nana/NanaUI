@@ -5,8 +5,8 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     BrowserCommand, BrowserEvent, BrowserPolicy, DocumentAccessError, NativeBrowserEvent,
-    NativeBrowserRequest, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode,
-    WindowDescriptor, run_runtime,
+    NativeBrowserRequest, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
+    ThemeAppearance, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::WindowId;
 use std::io::Write;
@@ -46,7 +46,7 @@ impl RuntimeProgram for BrowserExample {
         let mut document = RuntimeDocument::new(id);
         document
             .context_mut()
-            .set_theme(ThemeMode::Light)
+            .set_preset_theme(ThemeAppearance::Light)
             .map_err(|error| error.to_string())?;
         let (_, (view, status)) = document
             .context_mut()
@@ -205,8 +205,8 @@ impl RuntimeProgram for BrowserExample {
             .update_component(self.status, |text, _| text.value = value);
         RuntimeProgramUpdate::redraw(WindowId::PRIMARY)
     }
-    fn theme_mode(&self) -> ThemeMode {
-        ThemeMode::Light
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(ThemeAppearance::Light)
     }
     fn window_frame_presented(
         &mut self,

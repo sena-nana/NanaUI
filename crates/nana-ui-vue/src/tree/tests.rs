@@ -5361,7 +5361,9 @@ fn runtime_is_authoritative_for_semantic_hierarchy_and_unchanged_style_is_idle()
     props.layout.opacity = Some(0.5);
     let mut snapshot = crate::SemanticSnapshot {
         revision: 1,
-        theme: nana_ui_core::ThemeMode::Light,
+        theme_id: nana_ui_core::ThemeId::new("nana.light"),
+        theme_appearance: nana_ui_core::ThemeAppearance::Light,
+        theme_tokens: nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeAppearance::Light),
         appearance: nana_ui_core::AppearanceSettings::default(),
         roots: vec![child.0],
         changes: Default::default(),
@@ -5387,12 +5389,18 @@ fn runtime_is_authoritative_for_semantic_hierarchy_and_unchanged_style_is_idle()
         Some(0.5)
     );
     assert!(doc.runtime.interaction(id).unwrap().focusable);
-    assert_eq!(doc.runtime.theme_mode(), nana_ui_core::ThemeMode::Light);
+    assert_eq!(
+        doc.runtime.theme_appearance(),
+        nana_ui_core::ThemeAppearance::Light
+    );
 
     snapshot.revision += 1;
-    snapshot.theme = nana_ui_core::ThemeMode::Dark;
+    snapshot.theme_tokens = nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeAppearance::Dark);
     doc.sync_semantic_styles(&snapshot);
-    assert_eq!(doc.runtime.theme_mode(), nana_ui_core::ThemeMode::Dark);
+    assert_eq!(
+        doc.runtime.theme_appearance(),
+        nana_ui_core::ThemeAppearance::Dark
+    );
 }
 
 #[test]
@@ -5897,7 +5905,9 @@ fn document_hit_test_uses_runtime_transform_authority() {
     });
     let snapshot = crate::SemanticSnapshot {
         revision: 1,
-        theme: nana_ui_core::ThemeMode::Light,
+        theme_id: nana_ui_core::ThemeId::new("nana.light"),
+        theme_appearance: nana_ui_core::ThemeAppearance::Light,
+        theme_tokens: nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeAppearance::Light),
         appearance: nana_ui_core::AppearanceSettings::default(),
         roots: vec![node.0],
         changes: Default::default(),
@@ -5942,7 +5952,9 @@ fn pointer_events_none_is_not_hit() {
     overlay_props.layout.height = Some(nana_ui_core::LengthSpec::Px(40.0));
     let snapshot = crate::SemanticSnapshot {
         revision: 1,
-        theme: nana_ui_core::ThemeMode::Light,
+        theme_id: nana_ui_core::ThemeId::new("nana.light"),
+        theme_appearance: nana_ui_core::ThemeAppearance::Light,
+        theme_tokens: nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeAppearance::Light),
         appearance: nana_ui_core::AppearanceSettings::default(),
         roots: vec![under.0, overlay.0],
         changes: Default::default(),
@@ -6019,7 +6031,9 @@ fn pointer_events_none_skips_hit_and_auto_child_punches_through() {
     child_props.layout.pointer_events = Some(PointerEventsSpec::Auto);
     let snapshot = crate::SemanticSnapshot {
         revision: 1,
-        theme: nana_ui_core::ThemeMode::Light,
+        theme_id: nana_ui_core::ThemeId::new("nana.light"),
+        theme_appearance: nana_ui_core::ThemeAppearance::Light,
+        theme_tokens: nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeAppearance::Light),
         appearance: nana_ui_core::AppearanceSettings::default(),
         roots: vec![parent.0],
         changes: Default::default(),

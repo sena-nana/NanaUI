@@ -1405,7 +1405,9 @@ impl SnapshotChanges {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticSnapshot {
     pub revision: u64,
-    pub theme: ThemeMode,
+    pub theme_id: nana_ui_core::ThemeId,
+    pub theme_appearance: nana_ui_core::ThemeAppearance,
+    pub theme_tokens: std::sync::Arc<nana_ui_core::CompiledTheme>,
     /// Appearance backdrop fields synced from L1 document dataset/style.
     pub appearance: AppearanceSettings,
     pub roots: Vec<WidgetId>,
@@ -1459,7 +1461,9 @@ impl SemanticSnapshot {
             .collect();
         Self {
             revision: self.revision,
-            theme: self.theme,
+            theme_id: self.theme_id.clone(),
+            theme_appearance: self.theme_tokens.appearance(),
+            theme_tokens: self.theme_tokens.clone(),
             appearance: self.appearance,
             roots: roots
                 .into_iter()
@@ -1658,7 +1662,9 @@ impl SemanticSnapshot {
             .collect();
         Self {
             revision: self.revision,
-            theme: self.theme,
+            theme_id: self.theme_id.clone(),
+            theme_appearance: self.theme_tokens.appearance(),
+            theme_tokens: self.theme_tokens.clone(),
             appearance: self.appearance,
             roots: roots
                 .into_iter()
@@ -1689,7 +1695,9 @@ impl SemanticSnapshot {
         let keep: std::collections::BTreeSet<WidgetId> = widgets.iter().map(|w| w.id).collect();
         let mut out = Self {
             revision: self.revision,
-            theme: self.theme,
+            theme_id: self.theme_id.clone(),
+            theme_appearance: self.theme_tokens.appearance(),
+            theme_tokens: self.theme_tokens.clone(),
             appearance: self.appearance,
             roots: self
                 .roots

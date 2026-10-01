@@ -8,7 +8,7 @@ use nana_ui::runtime::{
     AccessibilityAction, AccessibilityActionRequest, LayoutViewport, RuntimeDocument,
     RuntimeFrameUpdate, StableNodeId,
 };
-use nana_ui::{HeadlessInput, HostTextureRegistry, InputCounters, NanaTextShaper, ThemeMode};
+use nana_ui::{HeadlessInput, HostTextureRegistry, InputCounters, NanaTextShaper, ThemeAppearance};
 use nana_ui_core::SemanticColorRole;
 use nana_ui_platform::{
     InputModifiers, InputPayload, KeyInput, KeyState, LogicalKey, PhysicalKey, PointerInput,
@@ -376,12 +376,12 @@ impl AgentSession for RuntimeAgentSession {
 
     fn set_theme(&mut self, mode: ThemeName) -> Result<(), AgentError> {
         let mode = match mode {
-            ThemeName::Light => ThemeMode::Light,
-            ThemeName::Dark => ThemeMode::Dark,
+            ThemeName::Light => ThemeAppearance::Light,
+            ThemeName::Dark => ThemeAppearance::Dark,
         };
         self.document
             .context_mut()
-            .set_theme(mode)
+            .set_preset_theme(mode)
             .map_err(|error| AgentError(error.to_string()))?;
         Self::flush(self).map(drop)
     }

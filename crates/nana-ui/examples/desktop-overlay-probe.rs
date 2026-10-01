@@ -5,7 +5,7 @@ use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{DocumentId, FrameworkError, RuntimeDocument, Stack, Text};
 use nana_ui::{
     DocumentAccessError, MaterialEffect, RoutedInput, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, ThemeMode, WindowDescriptor, WindowHandle, run_runtime,
+    RuntimeProgramUpdate, ThemeAppearance, WindowDescriptor, WindowHandle, run_runtime,
 };
 use nana_ui_core::LengthSpec;
 use nana_ui_platform::host::WindowCommand;
@@ -173,8 +173,8 @@ impl RuntimeProgram for Probe {
             Message::Quit => RuntimeProgramUpdate::exit(),
         }
     }
-    fn theme_mode(&self) -> ThemeMode {
-        ThemeMode::Dark
+    fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
+        nana_ui::builtin_theme_arc(ThemeAppearance::Dark)
     }
     fn window_material_mode_for(&self, id: WindowId) -> MaterialEffect {
         if id == OVERLAY {

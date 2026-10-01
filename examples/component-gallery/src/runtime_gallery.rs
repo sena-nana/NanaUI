@@ -269,7 +269,7 @@ impl GalleryRuntime {
             RuntimeDocument::new(DocumentId::new(GALLERY_DOCUMENT).expect("gallery document id"));
         let document_id = document.document();
         let context = document.context_mut();
-        let _ = context.set_theme(state.theme);
+        let _ = context.set_preset_theme(state.theme);
 
         let (sidebar, sidebar_rows, settings_footer) = mount_sidebar(context, document_id, state)?;
         let controls = mount_controls(context, document_id, state, &pending)?;
@@ -446,7 +446,7 @@ impl GalleryRuntime {
 
     fn sync(&mut self, state: &GalleryState) {
         let context = self.document.context_mut();
-        let _ = context.set_theme(state.theme);
+        let _ = context.set_preset_theme(state.theme);
         let sidebar_collapsed = state
             .workspace
             .layout()
@@ -1109,7 +1109,7 @@ impl DockWindowRuntime {
             .expect("dock document id");
         let mut document = RuntimeDocument::new(document_id);
         let context = document.context_mut();
-        let _ = context.set_theme(state.theme);
+        let _ = context.set_preset_theme(state.theme);
         let ids = surface.root.flatten();
         let (_, (dock, panels)) = context.mount_view_root(document_id, || {
             let dock = entity_ref::<nana_ui::runtime::Dock>();
@@ -1151,7 +1151,7 @@ impl DockWindowRuntime {
 
     pub(super) fn sync(&mut self, state: &GalleryState, surface: &DockFloatingSurface) {
         let context = self.document.context_mut();
-        let _ = context.set_theme(state.theme);
+        let _ = context.set_preset_theme(state.theme);
         let mut contents = std::collections::HashMap::new();
         for (id, panel) in &self.panels {
             contents.insert(id.clone(), panel.stable_id());

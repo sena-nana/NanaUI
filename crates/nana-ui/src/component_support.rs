@@ -485,7 +485,7 @@ mod tests {
         let _: nana_ui_runtime::SidebarSection = crate::runtime::SidebarSection::new("资源");
         let _: nana_ui_runtime::SidebarFooter = crate::runtime::SidebarFooter::new();
         let _: nana_ui_runtime::AppearanceSection = crate::runtime::AppearanceSection::new(
-            nana_ui_core::ThemeMode::Dark,
+            nana_ui_core::ThemeAppearance::Dark,
             nana_ui_core::AppearanceSettings::default(),
         );
         let _: nana_ui_runtime::AboutSection =
@@ -500,7 +500,7 @@ mod tests {
         let _: nana_ui_runtime::SidebarSection = crate::components::SidebarSection::new("资源");
         let _: nana_ui_runtime::SidebarFooter = crate::components::SidebarFooter::new();
         let _: nana_ui_runtime::AppearanceSection = crate::components::AppearanceSection::new(
-            nana_ui_core::ThemeMode::Dark,
+            nana_ui_core::ThemeAppearance::Dark,
             nana_ui_core::AppearanceSettings::default(),
         );
         let _: nana_ui_runtime::AboutSection = crate::components::AboutSection::new(

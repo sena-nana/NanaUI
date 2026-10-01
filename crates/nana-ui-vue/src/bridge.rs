@@ -33,7 +33,7 @@ use std::{
 
 use nana_ui_core::{
     AppearanceSettings, BackdropTarget, ButtonKind, CardKind, ControlSize, Icon,
-    SwitchControlPosition, ThemeMode, WindowMaterialMode,
+    SwitchControlPosition, ThemeAppearance, ThemeId, ThemeRegistry, WindowMaterialMode,
 };
 
 pub use crate::widget_map::resolve_kind_from_hints;
@@ -95,7 +95,9 @@ pub struct MessageBridge {
     revision: u64,
     /// Mutation footprint since the previous snapshot (incremental sync).
     changes: SnapshotChanges,
-    theme: ThemeMode,
+    theme_id: ThemeId,
+    theme_tokens: std::sync::Arc<nana_ui_core::CompiledTheme>,
+    theme_registry: Option<std::sync::Arc<ThemeRegistry>>,
     appearance: AppearanceSettings,
     /// When true, html/body scaffold owns roots — createElement must not promote.
     scaffolded: bool,
@@ -158,7 +160,9 @@ impl MessageBridge {
             pending: VecDeque::new(),
             revision: 0,
             changes: SnapshotChanges::default(),
-            theme: ThemeMode::Light,
+            theme_id: ThemeId::new("nana.light"),
+            theme_tokens: nana_ui_core::builtin_theme_arc(ThemeAppearance::Light),
+            theme_registry: None,
             appearance: AppearanceSettings::default(),
             scaffolded: false,
             cascade: cascade::State::default(),
@@ -820,7 +824,10 @@ impl MessageBridge {
     fn media_env(&self) -> crate::css_cascade::MediaEnv {
         crate::css_cascade::MediaEnv {
             viewport: self.cascade.layout_viewport,
-            color_scheme_dark: matches!(self.theme, ThemeMode::Dark),
+            color_scheme_dark: matches!(
+                self.theme_tokens.appearance(),
+                nana_ui_core::ThemeAppearance::Dark
+            ),
         }
     }
 
@@ -897,13 +904,68 @@ impl MessageBridge {
         self.revision
     }
 
-    pub fn theme(&self) -> ThemeMode {
-        self.theme
+    pub fn theme_appearance(&self) -> ThemeAppearance {
+        self.theme_tokens.appearance()
     }
 
-    pub fn set_theme(&mut self, theme: ThemeMode) {
-        let changed = self.theme != theme;
-        self.theme = theme;
+    pub fn theme_id(&self) -> &ThemeId {
+        &self.theme_id
+    }
+
+    pub fn theme_tokens(&self) -> &std::sync::Arc<nana_ui_core::CompiledTheme> {
+        &self.theme_tokens
+    }
+
+    pub fn set_theme_tokens(&mut self, theme: std::sync::Arc<nana_ui_core::CompiledTheme>) {
+        if self.theme_tokens.as_ref() == theme.as_ref() {
+            return;
+        }
+        self.theme_id = theme.identity().id;
+        self.theme_tokens = theme;
+        self.sync_document_theme_attr();
+        self.changed_all();
+    }
+
+    pub fn set_theme_id(&mut self, theme_id: ThemeId) {
+        if let Some(registry) = &self.theme_registry {
+            let resolution = registry.resolve(&theme_id);
+            if resolution.fell_back_to_light {
+                self.set_theme_tokens(resolution.theme);
+                return;
+            }
+            self.set_theme_tokens(resolution.theme);
+            return;
+        }
+        // A bridge without an application registry still resolves the two
+        // built-ins. Unknown persisted or JS-provided IDs must not leave the
+        // old tokens installed under a new identity.
+        let resolved = match theme_id.as_str() {
+            "nana.light" => nana_ui_core::builtin_theme_arc(ThemeAppearance::Light),
+            "nana.dark" => nana_ui_core::builtin_theme_arc(ThemeAppearance::Dark),
+            _ => nana_ui_core::builtin_theme_arc(ThemeAppearance::Light),
+        };
+        self.set_theme_tokens(resolved);
+    }
+
+    /// Install the application-owned registry used to resolve persisted and
+    /// JS-provided theme IDs. The bridge never creates a process-global
+    /// registry; hosts explicitly provide the registry they own.
+    pub fn set_theme_registry(&mut self, registry: std::sync::Arc<ThemeRegistry>) {
+        let current_id = self.theme_id.clone();
+        self.theme_registry = Some(registry);
+        let resolution = self
+            .theme_registry
+            .as_ref()
+            .expect("theme registry just installed")
+            .resolve(&current_id);
+        self.set_theme_tokens(resolution.theme);
+    }
+
+    pub fn set_preset_theme(&mut self, theme: ThemeAppearance) {
+        let next = nana_ui_core::builtin_theme_arc(theme);
+        let changed = self.theme_tokens.as_ref() != next.as_ref();
+        self.theme_tokens = next;
+        self.theme_id = self.theme_tokens.identity().id;
         // Mirror JS `documentElement.dataset.theme` onto the html scaffold so
         // cascade `[data-theme=…]` / `:root[data-theme=…]` can match the node
         // (document `--*` still come from theme-aware stylesheet_vars).
@@ -949,7 +1011,7 @@ impl MessageBridge {
     /// `workspaceCorners`, and style `--lilia-backdrop-opacity` / `--nana-backdrop-opacity` /
     /// `--backdrop-opacity` / `--app-corner-radius`.
     ///
-    /// Theme direction: JS `dataset.theme` → bridge [`ThemeMode`] (paired with
+    /// Theme direction: JS `dataset.theme` → bridge [`ThemeAppearance`] (paired with
     /// [`crate::VueHost::inject_theme`] for Rust → JS).
     pub fn apply_document_appearance(
         &mut self,
@@ -958,11 +1020,11 @@ impl MessageBridge {
     ) {
         if let Some(raw) = dataset.get("theme") {
             let mode = if raw.eq_ignore_ascii_case("dark") {
-                ThemeMode::Dark
+                ThemeAppearance::Dark
             } else {
-                ThemeMode::Light
+                ThemeAppearance::Light
             };
-            self.set_theme(mode);
+            self.set_preset_theme(mode);
         }
         let mut next = self.appearance;
         if let Some(raw) = dataset.get("backdrop") {
@@ -1015,10 +1077,11 @@ impl MessageBridge {
         self.set_appearance(next);
     }
 
-    pub fn theme_label(&self) -> &'static str {
-        match self.theme {
-            ThemeMode::Light => "light",
-            ThemeMode::Dark => "dark",
+    pub fn theme_label(&self) -> &str {
+        match self.theme_id.as_str() {
+            "nana.light" => "light",
+            "nana.dark" => "dark",
+            id => id,
         }
     }
 
@@ -2424,7 +2487,9 @@ impl MessageBridge {
         }
         SemanticSnapshot {
             revision: self.revision,
-            theme: self.theme,
+            theme_id: self.theme_id.clone(),
+            theme_appearance: self.theme_tokens.appearance(),
+            theme_tokens: self.theme_tokens.clone(),
             appearance: self.appearance,
             roots: self.roots.clone(),
             widgets,

@@ -6,7 +6,7 @@ use nana_ui::runtime::{
     RuntimeDocument, SemanticColorRole, StableNodeId, Text, UiWorld, View, ViewContext, Workspace,
 };
 use nana_ui::{
-    ButtonKind, ControlSize, HeadlessInput, Icon, InputRouteOutcome, LogicalPoint, ThemeMode,
+    ButtonKind, ControlSize, HeadlessInput, Icon, InputRouteOutcome, LogicalPoint, ThemeAppearance,
     TitleBarDragTracker,
 };
 use nana_ui_platform::{
@@ -154,10 +154,11 @@ pub(super) fn sidebar_toggle_button(collapsed: bool) -> IconButton {
         })
 }
 
-pub(super) fn theme_toggle_button(theme: ThemeMode) -> IconButton {
+pub(super) fn theme_toggle_button(theme: ThemeAppearance) -> IconButton {
     let icon = match theme {
-        ThemeMode::Dark => Icon::Appearance,
-        ThemeMode::Light => Icon::Moon,
+        ThemeAppearance::Dark => Icon::Appearance,
+        ThemeAppearance::Light => Icon::Moon,
+        ThemeAppearance::Custom => Icon::Appearance,
     };
     IconButton::new(icon, "切换主题")
         .size(ControlSize::Small)
