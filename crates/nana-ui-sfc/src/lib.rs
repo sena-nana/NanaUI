@@ -32,6 +32,7 @@
 //! Use [`Compiler::build`] from a build script and `include!` the result.
 
 mod analyze;
+pub mod diagnostics;
 mod parse;
 
 use std::collections::HashMap;
@@ -77,6 +78,38 @@ pub struct Output {
     pub report: String,
     /// `file: message` lines.
     pub warnings: Vec<String>,
+    /// JSON source map for rustc diagnostics in generated code.
+    pub source_map: String,
+}
+
+const SOURCE_MAP_SCHEMA: &str = "nana-sfc-source-map/1";
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct SourceSegment {
+    generated: GeneratedRange,
+    source: SourcePoint,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct GeneratedRange {
+    start_line: usize,
+    start_column: usize,
+    end_line: usize,
+    end_column: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct SourcePoint {
+    file: String,
+    line: usize,
+    column: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SourceMapFile<'a> {
+    schema: &'static str,
+    generated: &'a str,
+    segments: Vec<SourceSegment>,
 }
 
 pub struct Compiler {
@@ -103,6 +136,68 @@ fn stable_hash(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
     })
+}
+
+fn finalize_source_map(rendered: &str) -> (String, String) {
+    let mut lines: Vec<String> = rendered.lines().map(str::to_owned).collect();
+    let mut markers = Vec::new();
+    let mut marker_lines = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(start) = line.find("__NANA_SFC_MARKER__|") else {
+            continue;
+        };
+        let value = &line[start..];
+        let value = value
+            .split('"')
+            .next()
+            .unwrap_or(value)
+            .trim_end_matches(';');
+        let mut parts = value.split('|');
+        let _ = parts.next();
+        let Some(file) = parts.next() else { continue };
+        let Some(line_no) = parts.next().and_then(|v| v.parse().ok()) else {
+            continue;
+        };
+        let Some(column) = parts.next().and_then(|v| v.parse().ok()) else {
+            continue;
+        };
+        let file = file
+            .replace("%5C", "\\")
+            .replace("%7C", "|")
+            .replace("%25", "%");
+        markers.push((index + 1, file, line_no, column));
+        marker_lines.push(index);
+    }
+    for index in marker_lines {
+        lines[index].clear();
+    }
+    let mut segments = Vec::with_capacity(markers.len());
+    for (index, (line, file, source_line, source_column)) in markers.iter().enumerate() {
+        let end_line = markers
+            .get(index + 1)
+            .map_or(lines.len() + 1, |next| next.0);
+        segments.push(SourceSegment {
+            generated: GeneratedRange {
+                start_line: *line,
+                start_column: 1,
+                end_line,
+                end_column: 1,
+            },
+            source: SourcePoint {
+                file: file.clone(),
+                line: *source_line,
+                column: *source_column,
+            },
+        });
+    }
+    let code = lines.join("\n") + if rendered.ends_with('\n') { "\n" } else { "" };
+    let map = serde_json::to_string_pretty(&SourceMapFile {
+        schema: SOURCE_MAP_SCHEMA,
+        generated: "nana_views.rs",
+        segments,
+    })
+    .expect("source map serializes");
+    (code, map + "\n")
 }
 
 /// Replace every text node that is only static text with a read of the
@@ -228,10 +323,13 @@ impl Compiler {
             column: 0,
             message: error.to_string(),
         })?;
+        let rendered = prettyplease::unparse(&file);
+        let (code, source_map) = finalize_source_map(&rendered);
         Ok(Output {
-            code: prettyplease::unparse(&file),
+            code,
             report,
             warnings,
+            source_map,
         })
     }
 
@@ -256,6 +354,7 @@ impl Compiler {
         let out = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
         std::fs::write(out.join("nana_views.rs"), output.code)?;
         std::fs::write(out.join("nana_views.deps.md"), output.report)?;
+        std::fs::write(out.join("nana_views.map.json"), output.source_map)?;
         for warning in output.warnings {
             println!("cargo:warning={warning}");
         }
@@ -373,6 +472,27 @@ impl Compiler {
         } else {
             (TokenStream::new(), None)
         };
+        let script = script
+            .into_iter()
+            .map(|stmt| {
+                let start = stmt.span().start();
+                let marker = syn::LitStr::new(
+                    &format!(
+                        "__NANA_SFC_MARKER__|{}|{}|{}",
+                        file.replace('%', "%25")
+                            .replace('|', "%7C")
+                            .replace('\\', "%5C"),
+                        start.line,
+                        start.column + 1
+                    ),
+                    stmt.span(),
+                );
+                quote! {
+                    const _: &str = #marker;
+                    #stmt
+                }
+            })
+            .collect::<Vec<_>>();
         let item = quote! {
             #[allow(unused_imports, unused_variables, clippy::all)]
             pub fn #function(#(#props),*) -> impl #runtime::view::IntoView {

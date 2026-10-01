@@ -496,7 +496,7 @@ pub mod views {
 - `ref="name"` 把元素的节点 id 写进脚本里的 `let name = node_ref();`。`on_mount(move |cx| …)` 在视图进树之后执行。可以拿它聚焦、读布局。
 - 组件上的 `key` 落在组件的第一个根节点上（`keyed`）。不在这一批里的标签。按 `view!` 的规则调用同名的 Rust 函数。
 - `<style>`（写不写 `scoped` 都一样。总是只作用于本组件）在构建时编译。见下文"样式表"。模板里仍然要遵守 Rust 的所有权规则。例如同一个值既要传给组件又要被事件闭包使用时。得写 `todo.clone()`。
-- 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`。rustc 的报错会指向可读的代码。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出。带文件、行、列。
+- 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`，同时写出版本化的 `$OUT_DIR/nana_views.map.json`。rustc 原生 JSON 诊断仍指向生成文件；把诊断逐行送给 `nana-sfc-remap <nana_views.map.json>` 后，primary/child span 会回指 `.vue` 文件、行和列。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出。带文件、行、列。
 
 开发期热重载：构建脚本写 `Compiler::new(..).hot(debug)`。只改 `.vue` 里的静态文字时。`nana-ui-dev` 的 `watch_templates` 把新文字送进正在运行的窗口。不重建。改了别的就照常重建。见 `docs/reference/hot-reload.md`。
 

@@ -84,6 +84,9 @@ let label = computed(move || format!("{} 项", title.get()));
         out.code.contains("ViewSource") && out.code.contains("SourceLocation::new"),
         "SFC nodes retain their template source location: {code}"
     );
+    assert!(!out.code.contains("__NANA_SFC_MARKER__"));
+    assert!(out.source_map.contains("nana-sfc-source-map/1"));
+    assert!(out.source_map.contains("Title.vue"));
     assert!(
         out.report
             .contains("| `title` | signal | 2 | 0 | 0 | 折叠为常量 |"),

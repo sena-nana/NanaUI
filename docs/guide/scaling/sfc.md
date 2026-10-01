@@ -56,7 +56,7 @@ defineProps!(todo: Todo, on_remove: impl Fn() + Send + 'static);
 
 `<style>` 写不写 `scoped` 都只作用于本组件，在构建时编译。模板仍遵守 Rust 的所有权，同一个值既要传给组件又要被事件闭包使用时，写 `todo.clone()`。
 
-生成的代码排版后写进 `$OUT_DIR/nana_views.rs`。每个组件的信号和每条绑定的分类写进 `$OUT_DIR/nana_views.deps.md`。
+生成的代码排版后写进 `$OUT_DIR/nana_views.rs`，并生成 `$OUT_DIR/nana_views.map.json` 供 `nana-sfc-remap` 把 rustc JSON span 回指 `.vue`。每个组件的信号和每条绑定的分类写进 `$OUT_DIR/nana_views.deps.md`。
 
 ## 编译器替你折掉的
 

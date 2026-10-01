@@ -189,6 +189,15 @@ pub enum TextPart {
     Expr(Expr),
 }
 
+fn node_span(node: &Node) -> Span {
+    match node {
+        Node::Element(element) => element.name.span(),
+        Node::Text(text) => text.span(),
+        Node::Mixed(_, span) | Node::Verbatim(_, span) => *span,
+        Node::Expr(expr) => expr.span(),
+    }
+}
+
 pub struct Element {
     /// The path before the name: `kit` in `<kit::EmptyState>`. A tag with a
     /// path always calls the component function it names, even when its
@@ -595,7 +604,7 @@ impl Gen<'_> {
 
     fn node(&self, node: &Node) -> syn::Result<TokenStream> {
         let krate = self.krate;
-        Ok(match node {
+        let value = match node {
             Node::Element(element) => self.element(element)?,
             Node::Text(text) if interpolates(&text.value()) => {
                 quote_spanned!(text.span()=> #krate::text!(#text))
@@ -607,6 +616,46 @@ impl Gen<'_> {
             }
             Node::Expr(expr) => quote!(#expr),
             Node::Verbatim(value, _) => quote!(#krate::view::text(#value)),
+        };
+        let needs_marker = match node {
+            Node::Element(element) => element
+                .attrs
+                .iter()
+                .any(|attr| matches!(&attr.value, AttrValue::Expr(_) | AttrValue::For(_, _))),
+            Node::Text(_) => false,
+            Node::Mixed(..) | Node::Verbatim(..) => true,
+            Node::Expr(..) => false,
+        };
+        Ok(if needs_marker {
+            self.marker(node_span(node), value)
+        } else {
+            value
+        })
+    }
+
+    /// SFC builds use compile-time-only markers to recover the source range
+    /// after prettyplease has rendered tokens into plain text. The markers
+    /// are removed by nana-ui-sfc before the generated file is written.
+    fn marker(&self, span: Span, value: TokenStream) -> TokenStream {
+        let Some(file) = self.source_file else {
+            return value;
+        };
+        let start = span.start();
+        let file = file
+            .replace('%', "%25")
+            .replace('|', "%7C")
+            .replace('\\', "%5C");
+        let marker = syn::LitStr::new(
+            &format!(
+                "__NANA_SFC_MARKER__|{file}|{}|{}",
+                start.line,
+                start.column + 1
+            ),
+            span,
+        );
+        quote!({
+            const _: &str = #marker;
+            #value
         })
     }
 
@@ -647,7 +696,10 @@ impl Gen<'_> {
             };
             out = quote!(#out.otherwise(move || #otherwise));
         }
-        Ok(quote!(#out #(#modifiers)* #(#container)*))
+        Ok(self.marker(
+            first.name.span(),
+            quote!(#out #(#modifiers)* #(#container)*),
+        ))
     }
 
     /// One element, with `v-for` wrapping it in `each` when present.
@@ -1370,7 +1422,7 @@ impl Gen<'_> {
                             _ => None,
                         })
                         .unwrap_or(*at),
-                    [Node::Text(_)] | _ => continue,
+                    _ => continue,
                 };
                 let at = self.source_site(at).expect("source file is set");
                 fields.push(quote!((#name, #at)));

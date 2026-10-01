@@ -12,4 +12,6 @@ prettyplease = "0.2"
 # Spans of parsed text carry line and column, so errors point into the file.
 proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
+serde_json.workspace = true
+serde.workspace = true
 syn = { version = "2", features = ["full"] }
