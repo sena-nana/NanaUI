@@ -246,6 +246,17 @@ impl<E: Copy + Eq> FrameInbox<E> {
             && self.shared.active.load(Ordering::Acquire)
             && token.epoch == *lock(&self.shared.epoch)
     }
+
+    /// The exchange is still the one that produced `token`, its epoch has
+    /// moved, and it has not published the next frame. The picture already on
+    /// screen stays: unbinding here presents a transparent window.
+    pub fn awaits_replacement(&self, token: &FrameToken<E>) -> bool {
+        token.exchange == self.shared.exchange
+            && token.device_generation == self.shared.device_generation
+            && self.shared.active.load(Ordering::Acquire)
+            && token.epoch != *lock(&self.shared.epoch)
+            && lock(&self.shared.latest).is_none()
+    }
 }
 
 struct PendingCopy<E> {

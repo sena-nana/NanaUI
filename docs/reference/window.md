@@ -19,7 +19,7 @@ WindowShadow 与 UiScene 的 `DropShadow` 是两条 authority：前者由 Window
 | `Custom(ContentAlpha)` | `ContentAlphaUnavailable` | 同左 |
 | `None` | 关闭 | 关闭 |
 
-- **可见主体**：窗口画出的第一个大面积（≥ 视口 1/4）填充背景 quad。透明窗口的根卡片。及其圆角。找不到时是整个客户区。只在 scene 的 projection revision、窗口尺寸或可见性变化后重新计算。静止窗口每帧零工作。输入、拖拽、缩放区域从不参与。
+- **可见主体**：窗口画出的第一个大面积（≥ 视口 1/4）填充背景 quad。透明窗口的根卡片。及其圆角。找不到时是整个客户区。只在 scene 的 projection revision、窗口尺寸或可见性变化后重新计算。重新计算后若主体、尺寸与可见性未变，只更新 revision，不重排 companion。Windows 平台也跳过未变化的定位请求；主窗口移动仍由 subclass 同步。输入、拖拽、缩放区域从不参与。
 - **companion** 是平台私有、不可命中、不激活、不进任务栏的辅助窗口。始终在主窗口正下方。主窗口的 frame、客户区、`WindowId`、原生句柄都不变。companion 不是 NanaUI 窗口。不收事件。移动只移动它（macOS 由 window server 带着子窗口移动。零工作）。缩放只更新几何。样式或缩放比变化才重新栅格化（`WindowShadowWork` 分别计数）。
   - macOS：无边框子窗口 `orderedBelow` 主窗口。一个 `CALayer` 的 `shadowPath` 为主体圆角矩形。用偶奇规则的 `CAShapeLayer` 遮掉主体内部。半透明卡片不会透出自己的阴影。阴影由 render server 绘制。
   - Windows：`WS_POPUP` + `WS_EX_TOOLWINDOW | NOACTIVATE | NOREDIRECTIONBITMAP | LAYERED | TRANSPARENT`。`WM_NCHITTEST` 返回 `HTTRANSPARENT`。DirectComposition 九宫格（CPU 只栅格化一块圆角阴影 tile。边缘由缩放变换拉伸）。主窗口子类在 `WM_WINDOWPOSCHANGED` 里把它放到主窗口正下方。最小化 / 最大化 / 隐藏时隐藏。随主窗口销毁。
