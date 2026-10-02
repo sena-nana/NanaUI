@@ -402,7 +402,7 @@ impl UiScene {
                     // Slot 1 sits under the glyph run at slot 2 (same as
                     // TextInput selection): CSS `::selection` background is
                     // behind text; span color still tints the glyphs.
-                    self.insert_primitive(visual_quad_batch(
+                    let mut selection = visual_quad_batch(
                         &VisualPrimitiveContext {
                             node: id,
                             transform,
@@ -422,7 +422,11 @@ impl UiScene {
                             height: line.height,
                         }),
                         VisualQuadStyle::solid(node.document_text_selection_color),
-                    ));
+                    );
+                    if let ScenePrimitiveKind::QuadBatch { surface, .. } = &mut selection.kind {
+                        surface.background_color = node.style.paint_colors.selection_background;
+                    }
+                    self.insert_primitive(selection);
                 }
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 2 },
@@ -435,7 +439,13 @@ impl UiScene {
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Text {
                         content: text.value.clone(),
-                        color: node.style.color,
+                        color: node
+                            .style
+                            .paint_colors
+                            .color
+                            .map(nana_ui_core::PaintColor::to_srgb)
+                            .or(node.style.color),
+                        paint_color: node.style.paint_colors.color,
                         size: node.style.font_size,
                         weight: node.style.font_weight,
                         family: node.style.font_family.as_deref().map(str::to_owned),
@@ -631,6 +641,9 @@ impl UiScene {
                                 kind: ScenePrimitiveKind::Spinner {
                                     phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
                                     color: node.standard_visual_foreground.or(node.style.color),
+                                    paint_color: node.style.paint_colors.color.filter(|paint| {
+                                        node.standard_visual_foreground == Some(paint.to_srgb())
+                                    }),
                                 },
                             });
                         }
@@ -1358,7 +1371,7 @@ impl UiScene {
                         width: extent,
                         height: extent,
                     };
-                    self.insert_primitive(visual_quad(
+                    self.insert_primitive(visual_quad_with_paint(
                         &visual_context,
                         3,
                         indicator,
@@ -1368,11 +1381,13 @@ impl UiScene {
                             border_width: 1.0,
                             corner_radius: corner_radii(4.0),
                         },
+                        node.style.paint_colors.background,
+                        node.style.paint_colors.border,
                     ));
                     if *indeterminate {
                         let dash_height = (extent / 8.0).max(1.5);
                         let dash_inset = extent / 4.0;
-                        self.insert_primitive(visual_quad(
+                        self.insert_primitive(visual_quad_with_paint(
                             &visual_context,
                             4,
                             SceneRect {
@@ -1387,6 +1402,11 @@ impl UiScene {
                                 border_width: 0.0,
                                 corner_radius: corner_radii(dash_height / 2.0),
                             },
+                            matching_paint_color(
+                                node.style.paint_colors.color,
+                                node.standard_visual_foreground,
+                            ),
+                            None,
                         ));
                     } else if *checked {
                         self.insert_primitive(ScenePrimitive {
@@ -1401,6 +1421,10 @@ impl UiScene {
                             kind: ScenePrimitiveKind::Text {
                                 content: "✓".into(),
                                 color: node.standard_visual_foreground,
+                                paint_color: matching_paint_color(
+                                    node.style.paint_colors.color,
+                                    node.standard_visual_foreground,
+                                ),
                                 size: extent * 0.75,
                                 weight: Some(700),
                                 family: None,
@@ -1445,7 +1469,18 @@ impl UiScene {
                         document_order: node_order,
                         kind: ScenePrimitiveKind::Icon {
                             icon: *icon,
-                            color: node.standard_visual_foreground.or(node.style.color),
+                            color: node
+                                .standard_visual_foreground
+                                .or_else(|| {
+                                    node.style
+                                        .paint_colors
+                                        .color
+                                        .map(nana_ui_core::PaintColor::to_srgb)
+                                })
+                                .or(node.style.color),
+                            paint_color: node.style.paint_colors.color.filter(|paint| {
+                                node.standard_visual_foreground == Some(paint.to_srgb())
+                            }),
                         },
                     });
                 }
@@ -1481,7 +1516,13 @@ impl UiScene {
                                 node.standard_visual_foreground,
                             ),
                         };
-                    self.insert_primitive(visual_quad(
+                    let track_background_paint =
+                        matching_paint_color(node.style.paint_colors.background, track_background);
+                    let track_border_paint =
+                        matching_paint_color(node.style.paint_colors.border, track_border);
+                    let thumb_background_paint =
+                        matching_paint_color(node.style.paint_colors.color, thumb_background);
+                    self.insert_primitive(visual_quad_with_paint(
                         &visual_context,
                         4,
                         track,
@@ -1491,8 +1532,10 @@ impl UiScene {
                             border_width: 1.0,
                             corner_radius: corner_radii(8.0),
                         },
+                        track_background_paint,
+                        track_border_paint,
                     ));
-                    self.insert_primitive(visual_quad(
+                    self.insert_primitive(visual_quad_with_paint(
                         &visual_context,
                         5,
                         SceneRect {
@@ -1507,6 +1550,8 @@ impl UiScene {
                             border_width: 0.0,
                             corner_radius: corner_radii(5.0),
                         },
+                        thumb_background_paint,
+                        None,
                     ));
                     if *loading {
                         self.insert_primitive(ScenePrimitive {
@@ -1526,11 +1571,14 @@ impl UiScene {
                             kind: ScenePrimitiveKind::Spinner {
                                 phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
                                 color: node.standard_visual_foreground.or(node.style.color),
+                                paint_color: node.style.paint_colors.color.filter(|paint| {
+                                    node.standard_visual_foreground == Some(paint.to_srgb())
+                                }),
                             },
                         });
                     }
                     if node.focused {
-                        self.insert_primitive(visual_quad(
+                        self.insert_primitive(visual_quad_with_paint(
                             &visual_context,
                             7,
                             SceneRect {
@@ -1545,6 +1593,11 @@ impl UiScene {
                                 border_width: 2.0,
                                 corner_radius: corner_radii(12.0),
                             },
+                            None,
+                            matching_paint_color(
+                                node.style.paint_colors.border,
+                                node.style.border_color,
+                            ),
                         ));
                     }
                 }
@@ -1572,7 +1625,7 @@ impl UiScene {
                         width: track_band.width,
                         height: 4.0,
                     };
-                    self.insert_primitive(visual_quad(
+                    self.insert_primitive(visual_quad_with_paint(
                         &visual_context,
                         3,
                         rail,
@@ -1582,8 +1635,13 @@ impl UiScene {
                             border_width: 0.0,
                             corner_radius: corner_radii(2.0),
                         },
+                        matching_paint_color(
+                            node.style.paint_colors.border,
+                            node.style.border_color,
+                        ),
+                        None,
                     ));
-                    self.insert_primitive(visual_quad(
+                    self.insert_primitive(visual_quad_with_paint(
                         &visual_context,
                         4,
                         SceneRect {
@@ -1596,6 +1654,8 @@ impl UiScene {
                             border_width: 0.0,
                             corner_radius: corner_radii(2.0),
                         },
+                        node.style.paint_colors.background,
+                        None,
                     ));
                     let thumb_rect = SceneRect {
                         x: track_band.x + track_band.width * ratio - thumb_extent / 2.0,
@@ -1603,7 +1663,7 @@ impl UiScene {
                         width: thumb_extent,
                         height: thumb_extent,
                     };
-                    self.insert_primitive(visual_quad(
+                    self.insert_primitive(visual_quad_with_paint(
                         &visual_context,
                         5,
                         thumb_rect,
@@ -1613,6 +1673,8 @@ impl UiScene {
                             border_width: 1.0,
                             corner_radius: corner_radii(thumb_extent / 2.0),
                         },
+                        node.style.paint_colors.background,
+                        node.style.paint_colors.border,
                     ));
                     if node.focused {
                         // Focus marks the thumb (LiliaUI focus-visible outline),
@@ -1623,7 +1685,7 @@ impl UiScene {
                             width: thumb_rect.width + 6.0,
                             height: thumb_rect.height + 6.0,
                         };
-                        self.insert_primitive(visual_quad(
+                        self.insert_primitive(visual_quad_with_paint(
                             &visual_context,
                             6,
                             ring,
@@ -1633,6 +1695,11 @@ impl UiScene {
                                 border_width: 2.0,
                                 corner_radius: corner_radii(ring.width.max(ring.height) / 2.0),
                             },
+                            None,
+                            matching_paint_color(
+                                node.style.paint_colors.color,
+                                node.standard_visual_foreground,
+                            ),
                         ));
                     }
                 }
@@ -1701,6 +1768,9 @@ impl UiScene {
                             kind: ScenePrimitiveKind::Spinner {
                                 phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
                                 color: node.standard_visual_foreground.or(node.style.color),
+                                paint_color: node.style.paint_colors.color.filter(|paint| {
+                                    node.standard_visual_foreground == Some(paint.to_srgb())
+                                }),
                             },
                         });
                     }
@@ -1732,6 +1802,9 @@ impl UiScene {
                         kind: ScenePrimitiveKind::Spinner {
                             phase: (phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
                             color: node.standard_visual_foreground.or(node.style.color),
+                            paint_color: node.style.paint_colors.color.filter(|paint| {
+                                node.standard_visual_foreground == Some(paint.to_srgb())
+                            }),
                         },
                     });
                 }

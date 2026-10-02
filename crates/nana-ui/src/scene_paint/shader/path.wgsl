@@ -126,23 +126,30 @@ fn gradient_color(index: u32, p: vec2<f32>) -> vec4<f32> {
             }
         }
     }
-    // Stops interpolate premultiplied in sRGB, as CSS does; the target
-    // blends linear.
+    // Legacy stops interpolate premultiplied in sRGB, then decode once. An
+    // explicit authoring-space gradient is uploaded in linear scRGB already
+    // so extended channels survive without a second transfer curve.
     if srgb.a <= 0.0 {
         return vec4<f32>(0.0);
     }
     let straight = srgb.rgb / srgb.a;
-    let linear = vec3<f32>(
-        srgb_channel_to_linear(straight.r),
-        srgb_channel_to_linear(straight.g),
-        srgb_channel_to_linear(straight.b),
+    let linear = select(
+        vec3<f32>(
+            srgb_channel_to_linear(straight.r),
+            srgb_channel_to_linear(straight.g),
+            srgb_channel_to_linear(straight.b),
+        ),
+        straight,
+        g.header.w == 1u,
     );
     return vec4<f32>(linear * srgb.a, srgb.a);
 }
 
 // The pass's sample count, and a 4× pass's sample positions relative to the
 // pixel centre: the standard pattern WebGPU fixes.
-override PATH_SAMPLES: u32 = 1u;
+// Keep the specialization scalar as a float. Some GLES translators materialize
+// integer overrides as an `int[1]`, which cannot initialize a WGSL `u32`.
+override PATH_SAMPLES: f32 = 1.0;
 const PATH_SAMPLE_OFFSETS = array<vec2<f32>, 4>(
     vec2<f32>(-0.125, -0.375),
     vec2<f32>(0.375, -0.125),
@@ -161,7 +168,7 @@ fn path_alpha(coverage: f32, fringe: bool) -> f32 {
 @fragment
 fn path_fs_main(
     input: PathVertexOutput,
-    @builtin(sample_mask) samples: u32,
+    @builtin(sample_index) sample_index: u32,
 ) -> @location(0) vec4<f32> {
     // Coverage is linear across a triangle; its screen gradient, taken while
     // every invocation of the quad still runs, reaches any sample from here.
@@ -185,21 +192,16 @@ fn path_fs_main(
     }
     let fringe = input.fringe > 0.5;
     var coverage = path_alpha(input.coverage, fringe);
-    if PATH_SAMPLES == 4u {
-        // A fringe's inner and outer rings are geometry edges inside its
-        // ramp, where the samples this triangle leaves to its neighbour get
-        // the interior's 1 or nothing. Those are the ramp's own values there,
-        // so the ramp averaged over the samples it covers makes the pixel
-        // resolve to the ramp averaged over all four, without shading each.
-        var sum = 0.0;
-        var covered = 0.0;
-        for (var i = 0u; i < 4u; i = i + 1u) {
-            if (samples & (1u << i)) != 0u {
-                sum += path_alpha(input.coverage + dot(ramp, PATH_SAMPLE_OFFSETS[i]), fringe);
-                covered += 1.0;
-            }
-        }
-        coverage = sum / max(covered, 1.0);
+    if PATH_SAMPLES == 4.0 {
+        // Sample-index shading makes the MSAA resolve average the four
+        // coverage values. It also avoids relying on the backend's
+        // `sample_mask` array builtin, which is not representable as a scalar
+        // u32 by every GLSL translation backend.
+        let sample = min(sample_index, 3u);
+        coverage = path_alpha(
+            input.coverage + dot(ramp, PATH_SAMPLE_OFFSETS[sample]),
+            fringe,
+        );
     }
     let alpha = coverage * clip_cover;
     if alpha <= 0.0 {

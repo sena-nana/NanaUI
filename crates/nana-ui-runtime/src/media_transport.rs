@@ -1529,6 +1529,7 @@ mod tests {
                 MediaTransportBar::new().density(MediaTransportDensity::Stacked),
             )
             .unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
         let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
         sync_time(&mut cx, bar, 61.0, 3725.0);
         let duration = slots.time_duration.unwrap();

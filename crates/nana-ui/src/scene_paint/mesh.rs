@@ -7,7 +7,7 @@ use nana_ui_scene::StrokeCap;
 
 use super::{
     clip::{FragmentClip, LogicalRect},
-    color::{orthographic_scaled, pack_linear, with_opacity},
+    color::{orthographic_scaled, pack_linear, pack_paint_color, with_opacity},
 };
 use crate::{PhysicalRect, gpu_work::ManagedBuffer};
 
@@ -191,13 +191,14 @@ const INITIAL_GRADIENTS: usize = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct GpuGradient {
     /// kind (0 linear, 1 radial, 2 conic), extend (0 pad, 1 repeat, 2
-    /// reflect), stop count, unused.
+    /// reflect), stop count, color space (0 sRGB, 1 linear scRGB).
     header: [u32; 4],
     /// Linear: start.xy, end.xy. Radial: center.xy, radius. Conic: center.xy,
     /// start angle.
     geometry: [f32; 4],
     offsets: [[f32; 4]; GRADIENT_STOPS / 4],
-    /// Premultiplied sRGB, the space CSS interpolates stops in.
+    /// Premultiplied sRGB for legacy gradients, or premultiplied linear
+    /// scRGB when `header.w` is set for explicit authoring stops.
     colors: [[f32; 4]; GRADIENT_STOPS],
 }
 
@@ -217,18 +218,24 @@ impl GpuGradient {
             GradientExtend::Repeat => 1,
             GradientExtend::Reflect => 2,
         };
-        let stops: Vec<(f32, [f32; 4])> = if gradient.stops.len() <= GRADIENT_STOPS {
-            gradient.stops.clone()
+        let source = gradient.linear_stops.as_deref().unwrap_or(&gradient.stops);
+        let stops: Vec<(f32, [f32; 4])> = if source.len() <= GRADIENT_STOPS {
+            source.to_vec()
         } else {
             (0..GRADIENT_STOPS)
                 .map(|i| {
                     let t = i as f32 / (GRADIENT_STOPS - 1) as f32;
-                    (t, sample_stops(&gradient.stops, t))
+                    (t, sample_stops(source, t))
                 })
                 .collect()
         };
         let mut packed = Self::zeroed();
-        packed.header = [kind, extend, stops.len() as u32, 0];
+        packed.header = [
+            kind,
+            extend,
+            stops.len() as u32,
+            gradient.linear_stops.is_some() as u32,
+        ];
         packed.geometry = geometry;
         for (index, (offset, [r, g, b, a])) in stops.iter().enumerate() {
             packed.offsets[index / 4][index % 4] = *offset;
@@ -756,10 +763,13 @@ impl MeshPipeline {
                 // A mesh is mostly one colour: convert it to linear once,
                 // not three `powf`s a vertex.
                 if vertex.color != last_color.0 {
-                    last_color = (
-                        vertex.color,
-                        pack_linear(with_opacity(vertex.color, opacity)),
-                    );
+                    let packed = if let Some(paint) = mesh.paint_color {
+                        let [r, g, b, _] = pack_paint_color(paint);
+                        [r, g, b, vertex.color[3] * opacity]
+                    } else {
+                        pack_linear(with_opacity(vertex.color, opacity))
+                    };
+                    last_color = (vertex.color, packed);
                 }
                 let x = vertex.position[0] + origin[0];
                 let y = vertex.position[1] + origin[1];
@@ -905,6 +915,7 @@ impl MeshPipeline {
         affine: [f32; 6],
         phase: u8,
         color: [f32; 4],
+        paint_color: Option<nana_ui_core::PaintColor>,
         opacity: f32,
         fragment_clip: FragmentClip,
     ) -> Option<MeshRange> {
@@ -913,6 +924,9 @@ impl MeshPipeline {
             return None;
         }
         let color = with_opacity(color, opacity);
+        let explicit_color = paint_color
+            .map(pack_paint_color)
+            .map(|[r, g, b, a]| [r, g, b, a * opacity]);
         let center = [
             bounds.x + bounds.width / 2.0,
             bounds.y + bounds.height / 2.0,
@@ -931,7 +945,7 @@ impl MeshPipeline {
             ];
             let distance = (index + 8 - phase % 8) % 8;
             let alpha = 1.0 - f32::from(distance) * 0.105;
-            let mut tick_color = color;
+            let mut tick_color = explicit_color.unwrap_or(color);
             tick_color[3] *= alpha;
             push_segment(
                 &mut self.pending_instances,

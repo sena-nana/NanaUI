@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::scrollbar::ScrollbarSkin;
+use crate::style_model::PaintColor;
 use crate::typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
 
 mod calc;
@@ -1403,6 +1404,8 @@ pub const MAX_BOX_SHADOWS: usize = 4;
 /// One `box-shadow` layer (physical px after parse).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BoxShadowSpec {
+    #[serde(default)]
+    pub paint_color: Option<PaintColor>,
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur_radius: f32,
@@ -1688,6 +1691,11 @@ pub struct TextShadowSpec {
     pub offset_y: f32,
     pub blur_radius: f32,
     pub color: [f32; 4],
+    /// Authoring-space color, when the declaration used an explicit color
+    /// function such as `oklch()`, `hsv()` or `color-mix()`. The legacy sRGB
+    /// field remains populated for theme/API compatibility.
+    #[serde(default)]
+    pub paint_color: Option<PaintColor>,
 }
 
 /// CSS `text-decoration-line` subset Scene can stroke (underline / line-through).
@@ -1719,6 +1727,8 @@ impl FontFeatureSetting {
 /// One stop in a CSS `linear-gradient` (position 0..=1 along the gradient line).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GradientStop {
+    #[serde(default)]
+    pub paint_color: Option<PaintColor>,
     pub position: f32,
     pub color: [f32; 4],
 }
@@ -2334,6 +2344,8 @@ fn resolve_clip_axis(spec: LengthSpec, axis: f32) -> f32 {
 /// CSS `filter: drop-shadow()` — alpha silhouette, not border-box geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FilterDropShadow {
+    #[serde(default)]
+    pub paint_color: Option<PaintColor>,
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur_radius: f32,
@@ -3149,6 +3161,9 @@ impl LogicalEdges {
 /// 可测布局意图（Style Model Layout 盒切片）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayoutStyle {
+    /// Explicit authoring-space colors retained alongside compatibility RGBA fields.
+    #[serde(default)]
+    pub paint_colors: crate::style_model::PaintColorSlots,
     /// Isolate descendant layout invalidation when both authored dimensions
     /// are fixed pixels and the box is in normal flow. Other boxes retain
     /// normal dependency propagation.
@@ -3482,6 +3497,7 @@ pub struct LayoutStyle {
 impl Default for LayoutStyle {
     fn default() -> Self {
         Self {
+            paint_colors: Default::default(),
             layout_isolation: false,
             direction: None,
             dir: None,
@@ -4288,8 +4304,16 @@ impl LayoutStyle {
         if self.letter_spacing.is_none() {
             self.letter_spacing = parent.letter_spacing;
         }
+        let inherit_paint_color = self.color.is_none() && self.paint_colors.color.is_none();
         if self.color.is_none() {
             self.color = parent.color;
+        }
+        // Preserve the authoring-space value alongside the legacy RGBA
+        // foreground. A child with an explicit legacy `color` must suppress
+        // the parent's metadata as well, otherwise scene extraction would
+        // prefer the inherited OKLCH/HSV value over the child's declaration.
+        if inherit_paint_color {
+            self.paint_colors.color = parent.paint_colors.color;
         }
         if self.text_decoration.is_none() {
             self.text_decoration = parent.text_decoration;
@@ -5859,6 +5883,32 @@ mod tests {
     }
 
     #[test]
+    fn inherit_typography_preserves_authoring_color_metadata() {
+        let parent = LayoutStyle {
+            paint_colors: crate::style_model::PaintColorSlots {
+                color: Some(crate::style_model::PaintColor::Oklch {
+                    l: 0.62,
+                    c: 0.18,
+                    h: Some(280.0),
+                    alpha: 1.0,
+                }),
+                ..Default::default()
+            },
+            ..LayoutStyle::default()
+        };
+        let mut child = LayoutStyle::default();
+        child.inherit_typography_from(&parent);
+        assert_eq!(child.paint_colors.color, parent.paint_colors.color);
+
+        let mut overridden = LayoutStyle {
+            color: Some([1.0, 0.0, 0.0, 1.0]),
+            ..LayoutStyle::default()
+        };
+        overridden.inherit_typography_from(&parent);
+        assert!(overridden.paint_colors.color.is_none());
+    }
+
+    #[test]
     fn logical_padding_rebakes_when_direction_becomes_rtl() {
         let mut layout = LayoutStyle::default();
         layout.logical_padding.set_start(Some(LengthSpec::Px(12.0)));
@@ -6018,6 +6068,7 @@ mod tests {
     #[test]
     fn inset_box_shadow_is_distinct_from_outset() {
         let outset = BoxShadowSpec {
+            paint_color: None,
             offset_x: 2.0,
             offset_y: 2.0,
             blur_radius: 4.0,
@@ -6026,6 +6077,7 @@ mod tests {
             inset: false,
         };
         let inset = BoxShadowSpec {
+            paint_color: None,
             inset: true,
             ..outset
         };

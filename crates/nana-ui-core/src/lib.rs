@@ -146,8 +146,8 @@ pub use settings::{
 };
 pub use split_pane::{SplitAxis, SplitPaneModel, SplitPaneMutation};
 pub use style_model::{
-    ControlSemantics, SemanticColor, SemanticColorMix, SemanticColorRole, SemanticPalette,
-    StyleModelRef,
+    ControlSemantics, PaintColor, PaintColorSlots, SemanticColor, SemanticColorMix,
+    SemanticColorRole, SemanticPalette, StyleModelRef,
 };
 pub use tab_drag::{
     TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,

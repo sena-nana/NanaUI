@@ -11033,11 +11033,13 @@ fn inlay_glyph_merge_lets_inlay_color_win_on_overlap() {
                 start: 0,
                 end: 4,
                 color: red,
+                paint_color: None,
             },
             ExtractedTextSpan {
                 start: 6,
                 end: 10,
                 color: green,
+                paint_color: None,
             },
         ],
         &[(1usize, 3usize), (6, 8)],
@@ -11053,26 +11055,31 @@ fn inlay_glyph_merge_lets_inlay_color_win_on_overlap() {
                 start: 0,
                 end: 1,
                 color: red,
+                paint_color: None,
             },
             ExtractedTextSpan {
                 start: 1,
                 end: 3,
                 color: muted,
+                paint_color: None,
             },
             ExtractedTextSpan {
                 start: 3,
                 end: 4,
                 color: red,
+                paint_color: None,
             },
             ExtractedTextSpan {
                 start: 6,
                 end: 8,
                 color: muted,
+                paint_color: None,
             },
             ExtractedTextSpan {
                 start: 8,
                 end: 10,
                 color: green,
+                paint_color: None,
             },
         ]
     );

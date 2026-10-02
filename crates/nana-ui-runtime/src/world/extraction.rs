@@ -181,15 +181,27 @@ impl UiWorld {
         } else {
             Vec::new()
         };
-        if let (Some(selection), Some(color)) = (document_selection, style.selection_color) {
+        let selection_paint_color = style.paint_colors.selection_color;
+        let selection_color = selection_paint_color
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(style.selection_color);
+        if let (Some(selection), Some(color)) = (document_selection, selection_color) {
             let (start, end) = selection.ordered();
-            text_spans = merge_inlay_glyph_spans(text_spans, &[(start, end)], color);
+            text_spans = merge_inlay_glyph_spans_with_paint(
+                text_spans,
+                &[(start, end)],
+                color,
+                selection_paint_color,
+            );
         }
         let document_text_selection = document_selection
             .map(|selection| selection.lines.clone())
             .unwrap_or_default();
         let document_text_selection_color = style
+            .paint_colors
             .selection_background
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(style.selection_background)
             .unwrap_or_else(|| self.style_model.palette.accent_soft.as_rgba_array());
         Some(ExtractedNode {
             id,
@@ -463,6 +475,7 @@ impl UiWorld {
                                 start,
                                 end,
                                 color: self.style_model.color(span.color).as_rgba_array(),
+                                paint_color: None,
                             })
                             .collect::<Vec<_>>()
                     })

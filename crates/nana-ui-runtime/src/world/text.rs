@@ -1655,6 +1655,7 @@ pub(super) fn merge_bracket_glyph_spans(
                     start,
                     end,
                     color: bracket_color(depth),
+                    paint_color: None,
                 });
             }
             bracket_index += 1;
@@ -1667,12 +1668,14 @@ pub(super) fn merge_bracket_glyph_spans(
                     start: cursor,
                     end: start,
                     color: span.color,
+                    paint_color: span.paint_color,
                 });
             }
             merged.push(ExtractedTextSpan {
                 start: start.max(cursor),
                 end,
                 color: bracket_color(depth),
+                paint_color: None,
             });
             cursor = end.max(cursor);
             bracket_index += 1;
@@ -1682,6 +1685,7 @@ pub(super) fn merge_bracket_glyph_spans(
                 start: cursor,
                 end: span.end,
                 color: span.color,
+                paint_color: span.paint_color,
             });
         }
     }
@@ -1692,6 +1696,7 @@ pub(super) fn merge_bracket_glyph_spans(
                 start,
                 end,
                 color: bracket_color(depth),
+                paint_color: None,
             });
         }
         bracket_index += 1;
@@ -1704,9 +1709,18 @@ pub(super) fn merge_bracket_glyph_spans(
 /// 输入各自不重叠且有序；输出按起点有序、互不重叠（场景文本渲染按
 /// 游标推进消费 span）。
 pub(super) fn merge_inlay_glyph_spans(
+    spans: Vec<ExtractedTextSpan>,
+    inlays: &[(usize, usize)],
+    color: [f32; 4],
+) -> Vec<ExtractedTextSpan> {
+    merge_inlay_glyph_spans_with_paint(spans, inlays, color, None)
+}
+
+pub(super) fn merge_inlay_glyph_spans_with_paint(
     mut spans: Vec<ExtractedTextSpan>,
     inlays: &[(usize, usize)],
     color: [f32; 4],
+    paint_color: Option<nana_ui_core::PaintColor>,
 ) -> Vec<ExtractedTextSpan> {
     if inlays.is_empty() {
         return spans;
@@ -1718,7 +1732,12 @@ pub(super) fn merge_inlay_glyph_spans(
         while inlay_index < inlays.len() && inlays[inlay_index].1 <= span.start {
             let &(start, end) = &inlays[inlay_index];
             if start < end {
-                merged.push(ExtractedTextSpan { start, end, color });
+                merged.push(ExtractedTextSpan {
+                    start,
+                    end,
+                    color,
+                    paint_color,
+                });
             }
             inlay_index += 1;
         }
@@ -1730,12 +1749,18 @@ pub(super) fn merge_inlay_glyph_spans(
                     start: cursor,
                     end: start,
                     color: span.color,
+                    paint_color: span.paint_color,
                 });
             }
             // inlay 区间以 inlay 色整段胜出（与前置/尾 flush 同款补发，
             // 重叠路径不吞段）。
             if start < end {
-                merged.push(ExtractedTextSpan { start, end, color });
+                merged.push(ExtractedTextSpan {
+                    start,
+                    end,
+                    color,
+                    paint_color,
+                });
             }
             cursor = end.max(cursor);
             inlay_index += 1;
@@ -1745,13 +1770,19 @@ pub(super) fn merge_inlay_glyph_spans(
                 start: cursor,
                 end: span.end,
                 color: span.color,
+                paint_color: span.paint_color,
             });
         }
     }
     while inlay_index < inlays.len() {
         let &(start, end) = &inlays[inlay_index];
         if start < end {
-            merged.push(ExtractedTextSpan { start, end, color });
+            merged.push(ExtractedTextSpan {
+                start,
+                end,
+                color,
+                paint_color,
+            });
         }
         inlay_index += 1;
     }

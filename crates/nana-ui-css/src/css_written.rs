@@ -256,6 +256,10 @@ fn reference() -> &'static (Value, Value) {
         layout.placeholder_opacity = Some(0.5);
         layout.selection_background = Some([0.5; 4]);
         layout.selection_color = Some([0.5; 4]);
+        layout.paint_colors.selection_background =
+            Some(nana_ui_core::PaintColor::Srgb { rgba: [0.5; 4] });
+        layout.paint_colors.selection_color =
+            Some(nana_ui_core::PaintColor::Srgb { rgba: [0.25; 4] });
         crate::css_paint::apply_img_replaced_content(&mut layout, "witness.png");
         layout.paint.skipped_replaced = Some("video".into());
         layout.paint.scrollbar = Some(nana_ui_core::ScrollbarSkin {

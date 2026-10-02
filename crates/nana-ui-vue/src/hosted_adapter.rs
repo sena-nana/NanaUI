@@ -18,7 +18,7 @@ use nana_ui_scene::RuntimeDocument;
 
 use crate::{
     BridgeEvent, KeyboardInput, PointerInput, SharedRuntimeDocument, VueRuntime, VueWindowId,
-    WheelInput, WindowLifecycleEvent, theme_tokens_from_appearance,
+    WheelInput, WindowLifecycleEvent,
 };
 
 thread_local! {
@@ -834,6 +834,7 @@ fn hosted_text_position(value: &str, byte_offset: usize) -> Option<HostedTextPos
 pub struct VueRuntimeProgram<E: JsEngine> {
     runtime: VueHostedRuntime<E>,
     documents: HashMap<WindowId, Arc<SharedRuntimeDocument>>,
+    #[cfg(feature = "dev-reload")]
     theme: ThemeAppearance,
     compiled_theme: Arc<nana_ui::CompiledTheme>,
     /// `Nana.startup`, when this program was bootstrapped by the host.
@@ -950,6 +951,7 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
         let mut program = Self {
             runtime,
             documents: HashMap::new(),
+            #[cfg(feature = "dev-reload")]
             theme: ThemeAppearance::Light,
             compiled_theme: nana_ui::builtin_theme_arc(ThemeAppearance::Light),
             startup: None,
@@ -964,6 +966,7 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
         let mut program = Self {
             runtime,
             documents: HashMap::new(),
+            #[cfg(feature = "dev-reload")]
             theme: ThemeAppearance::Light,
             compiled_theme: nana_ui::builtin_theme_arc(ThemeAppearance::Light),
             startup: None,

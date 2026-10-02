@@ -59,6 +59,10 @@ pub struct PathMesh {
     /// [`PathVertex::paint_pos`]; the vertex colour then only tints it
     /// (coverage and opacity). `None`: the vertex colour is the colour.
     pub gradient: Option<Arc<ResolvedGradient>>,
+    /// Explicit authoring-space solid, if the mesh was made from one. The
+    /// GPU uses its linear scRGB channels directly instead of decoding the
+    /// compatibility sRGB vertex colour a second time.
+    pub paint_color: Option<nana_ui_core::PaintColor>,
 }
 
 /// One tessellated vertex.
@@ -104,7 +108,9 @@ enum BuiltOp {
         rect: SceneRect,
         radii: [f32; 4],
         fill: Option<[f32; 4]>,
+        fill_color_space: Option<nana_ui_core::PaintColor>,
         border: Option<([f32; 4], f32)>,
+        border_color_space: Option<nana_ui_core::PaintColor>,
         shadow: Option<ComponentElevation>,
         transform: Affine,
     },
@@ -122,6 +128,7 @@ enum BuiltOp {
         rect: SceneRect,
         text: Arc<TextStyle>,
         color: [f32; 4],
+        paint_color: Option<nana_ui_core::PaintColor>,
         clips: Arc<[LocalClip]>,
         transform: Affine,
     },
@@ -129,6 +136,7 @@ enum BuiltOp {
         rect: SceneRect,
         icon: Icon,
         color: [f32; 4],
+        paint_color: Option<nana_ui_core::PaintColor>,
         clips: Arc<[LocalClip]>,
         transform: Affine,
     },
@@ -334,7 +342,9 @@ impl UiScene {
                         rect,
                         radii,
                         fill,
+                        fill_color_space,
                         border,
+                        border_color_space,
                         shadow,
                         transform: local_transform,
                     } => (
@@ -345,7 +355,11 @@ impl UiScene {
                             border_width: border.map_or(0.0, |(_, width)| width),
                             corner_radius: *radii,
                             shadow: *shadow,
-                            surface: QuadSurfacePaint::default(),
+                            surface: QuadSurfacePaint {
+                                background_color: *fill_color_space,
+                                border_color_space: *border_color_space,
+                                ..QuadSurfacePaint::default()
+                            },
                         },
                         Arc::clone(clips),
                         under(local_transform),
@@ -372,11 +386,12 @@ impl UiScene {
                         rect,
                         text,
                         color,
+                        paint_color,
                         clips: local,
                         transform: local_transform,
                     } => (
                         offset_rect(*rect, origin),
-                        custom_text(node, text, *color),
+                        custom_text(node, text, *color, *paint_color),
                         local_clips(local),
                         under(local_transform),
                     ),
@@ -384,6 +399,7 @@ impl UiScene {
                         rect,
                         icon,
                         color,
+                        paint_color,
                         clips: local,
                         transform: local_transform,
                     } => (
@@ -391,6 +407,7 @@ impl UiScene {
                         ScenePrimitiveKind::Icon {
                             icon: *icon,
                             color: Some(*color),
+                            paint_color: *paint_color,
                         },
                         local_clips(local),
                         under(local_transform),
@@ -496,16 +513,26 @@ fn image_quad(
         corner_radius: radii,
         shadow: None,
         surface: QuadSurfacePaint {
+            border_colors_space: [None; 4],
+            outline_color_space: None,
+            background_color: None,
+            border_color_space: None,
             content_image: Some(image),
             ..QuadSurfacePaint::default()
         },
     }
 }
 
-fn custom_text(node: &ExtractedNode, text: &TextStyle, color: [f32; 4]) -> ScenePrimitiveKind {
+fn custom_text(
+    node: &ExtractedNode,
+    text: &TextStyle,
+    color: [f32; 4],
+    paint_color: Option<nana_ui_core::PaintColor>,
+) -> ScenePrimitiveKind {
     ScenePrimitiveKind::Text {
         content: text.content.to_string().into(),
         color: Some(color),
+        paint_color,
         size: text.size,
         weight: text.weight,
         family: node.style.font_family.as_deref().map(str::to_owned),
@@ -624,14 +651,16 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 // triangulate, and a handful of instance bytes a frame instead
                 // of a mesh's worth of vertices.
                 if clip.is_none()
-                    && let ResolvedPaint::Solid(color) = paint
+                    && let Some(color) = paint_srgb(paint)
                     && let Some((rect, radii)) = quad_shape(path)
                 {
                     built.push(BuiltOp::Quad {
                         rect,
                         radii,
-                        fill: Some(fade(*color, alpha)),
+                        fill: Some(fade(color, alpha)),
+                        fill_color_space: paint_authoring_color(paint, alpha),
                         border: None,
+                        border_color_space: None,
                         shadow: None,
                         transform: t,
                     });
@@ -647,7 +676,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 // Likewise a solid, undashed stroke of one: a border drawn on
                 // the rectangle grown by half the width.
                 if clip.is_none()
-                    && let ResolvedPaint::Solid(color) = paint
+                    && let Some(color) = paint_srgb(paint)
                     && let Some((rect, radii)) = quad_shape(path)
                     && let Some(outer) = stroke_quad_radii(radii, stroke)
                 {
@@ -656,7 +685,9 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                         rect: outset(rect, half),
                         radii: outer,
                         fill: None,
-                        border: Some((fade(*color, alpha), stroke.width)),
+                        fill_color_space: None,
+                        border: Some((fade(color, alpha), stroke.width)),
+                        border_color_space: paint_authoring_color(paint, alpha),
                         shadow: None,
                         transform: t,
                     });
@@ -678,13 +709,22 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 radii,
                 fill,
                 border,
+                border_paint,
                 shadow,
             } => {
                 let rect = scene_rect(*rect);
+                let fill_color_space = fill
+                    .as_ref()
+                    .and_then(|paint| paint_authoring_color(paint, alpha));
+                let border_color_space = border_paint.map(|(color, _)| match color {
+                    nana_ui_runtime::PaintColor::Authoring(color) => {
+                        scale_paint_alpha(color, alpha)
+                    }
+                    _ => unreachable!(),
+                });
                 let solid = match fill {
                     None => Some(None),
-                    Some(ResolvedPaint::Solid(color)) => Some(Some(fade(*color, alpha))),
-                    Some(ResolvedPaint::Gradient(_)) => None,
+                    Some(paint) => paint_srgb(paint).map(|color| Some(fade(color, alpha))),
                 };
                 // The SDF quad draws a solid box under any affine transform;
                 // a gradient or a path clip needs the box as paths, and so
@@ -699,8 +739,13 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                         rect,
                         radii: *radii,
                         fill,
+                        fill_color_space,
                         border: border.map(|(color, width)| (fade(color, alpha), width)),
+                        border_color_space,
                         shadow: shadow.map(|shadow| ComponentElevation {
+                            paint_color: shadow
+                                .paint_color
+                                .map(|color| scale_paint_alpha(color, alpha)),
                             color: fade(shadow.color, alpha),
                             ..shadow
                         }),
@@ -728,7 +773,17 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                     );
                     let ring =
                         outline.overlay(&inner, OverlayRule::Difference, OverlayFill::NonZero);
-                    push_fill(&mut built, ring, &ResolvedPaint::Solid(*color), state, clip);
+                    let paint =
+                        border_paint.map_or(
+                            ResolvedPaint::Solid(*color),
+                            |(color, _)| match color {
+                                nana_ui_runtime::PaintColor::Authoring(color) => {
+                                    ResolvedPaint::Authoring(color)
+                                }
+                                _ => unreachable!("border_paint only stores authoring colors"),
+                            },
+                        );
+                    push_fill(&mut built, ring, &paint, state, clip);
                 }
             }
             PaintOp::Image {
@@ -813,23 +868,32 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 // Glyphs can reach past their box: italics, a clipped
                 // ellipsis. A tint must reach them too.
                 let reach = size * 0.5;
-                tinted(&mut built, paint, rect, reach, state, |color| {
-                    clipped_op(clip, &no_clips, |clips| BuiltOp::Text {
-                        rect,
-                        text: Arc::clone(&text),
-                        color,
-                        clips,
-                        transform: t,
-                    })
-                });
+                tinted(
+                    &mut built,
+                    paint,
+                    rect,
+                    reach,
+                    state,
+                    |color, paint_color| {
+                        clipped_op(clip, &no_clips, |clips| BuiltOp::Text {
+                            rect,
+                            text: Arc::clone(&text),
+                            color,
+                            paint_color,
+                            clips,
+                            transform: t,
+                        })
+                    },
+                );
             }
             PaintOp::Icon { rect, icon, paint } => {
                 let rect = scene_rect(*rect);
-                tinted(&mut built, paint, rect, 1.0, state, |color| {
+                tinted(&mut built, paint, rect, 1.0, state, |color, paint_color| {
                     clipped_op(clip, &no_clips, |clips| BuiltOp::Icon {
                         rect,
                         icon: *icon,
                         color,
+                        paint_color,
                         clips,
                         transform: t,
                     })
@@ -962,10 +1026,14 @@ fn tinted(
     rect: SceneRect,
     reach: f32,
     state: OpState,
-    content: impl FnOnce([f32; 4]) -> Vec<BuiltOp>,
+    content: impl FnOnce([f32; 4], Option<nana_ui_core::PaintColor>) -> Vec<BuiltOp>,
 ) {
     match paint {
-        ResolvedPaint::Solid(color) => built.extend(content(fade(*color, state.opacity))),
+        ResolvedPaint::Solid(color) => built.extend(content(fade(*color, state.opacity), None)),
+        ResolvedPaint::Authoring(color) => built.extend(content(
+            fade(color.to_srgb(), state.opacity),
+            Some(scale_paint_alpha(*color, state.opacity)),
+        )),
         ResolvedPaint::Gradient(gradient) => {
             let over = outset(rect, reach);
             let mut area = PaintPath::new();
@@ -981,7 +1049,7 @@ fn tinted(
                 blend: BlendMode::Normal,
                 clip: None,
             });
-            built.extend(content([1.0; 4]));
+            built.extend(content([1.0; 4], None));
             built.push(BuiltOp::LayerEnd {
                 mask: mask.map(|mesh| (mesh, LayerMaskMode::Tint)),
             });
@@ -1048,9 +1116,59 @@ fn push_fill(
                 built.push(BuiltOp::Mesh(Arc::new(mesh)));
             }
         }
+        ResolvedPaint::Authoring(color) => {
+            let mut mesh = MeshBuilder::default();
+            mesh.fill(&shapes, fade(color.to_srgb(), state.opacity));
+            if let Some(mut mesh) = mesh.finish() {
+                mesh.paint_color = Some(*color);
+                built.push(BuiltOp::Mesh(Arc::new(mesh)));
+            }
+        }
         ResolvedPaint::Gradient(gradient) => {
             if let Some(mesh) = gradient_mesh(shapes, gradient, state) {
                 built.push(BuiltOp::Mesh(mesh));
+            }
+        }
+    }
+}
+
+fn paint_srgb(paint: &ResolvedPaint) -> Option<[f32; 4]> {
+    match paint {
+        ResolvedPaint::Solid(color) => Some(*color),
+        ResolvedPaint::Authoring(color) => Some(color.to_srgb()),
+        ResolvedPaint::Gradient(_) => None,
+    }
+}
+
+fn paint_authoring_color(paint: &ResolvedPaint, opacity: f32) -> Option<nana_ui_core::PaintColor> {
+    match paint {
+        ResolvedPaint::Authoring(color) => Some(scale_paint_alpha(*color, opacity)),
+        ResolvedPaint::Solid(_) | ResolvedPaint::Gradient(_) => None,
+    }
+}
+
+fn scale_paint_alpha(color: nana_ui_core::PaintColor, opacity: f32) -> nana_ui_core::PaintColor {
+    match color {
+        nana_ui_core::PaintColor::Srgb { mut rgba } => {
+            rgba[3] *= opacity;
+            nana_ui_core::PaintColor::Srgb { rgba }
+        }
+        nana_ui_core::PaintColor::Oklch { l, c, h, alpha } => nana_ui_core::PaintColor::Oklch {
+            l,
+            c,
+            h,
+            alpha: alpha * opacity,
+        },
+        nana_ui_core::PaintColor::Hsv { h, s, v, alpha } => nana_ui_core::PaintColor::Hsv {
+            h,
+            s,
+            v,
+            alpha: alpha * opacity,
+        },
+        nana_ui_core::PaintColor::LinearScRgb { channels, alpha } => {
+            nana_ui_core::PaintColor::LinearScRgb {
+                channels,
+                alpha: alpha * opacity,
             }
         }
     }
@@ -1063,7 +1181,13 @@ fn push_shadow(
     alpha: f32,
     clip: Option<&ActiveClip>,
 ) {
-    let color = fade(shadow.color, alpha);
+    // Mesh vertices carry straight sRGB and are linearized once by the GPU
+    // path uploader. Keep the compatibility value here; the explicit value
+    // is carried alongside the finished mesh for direct linear scRGB upload.
+    let source_color = shadow
+        .paint_color
+        .map_or(shadow.color, nana_ui_core::PaintColor::to_srgb);
+    let color = fade(source_color, alpha);
     let lengths = [
         shadow.offset_x,
         shadow.offset_y,
@@ -1074,7 +1198,9 @@ fn push_shadow(
         return;
     }
     // Past a screen's reach a blur or spread only costs geometry.
+    let paint_color = shadow.paint_color;
     let shadow = ComponentElevation {
+        paint_color: None,
         color,
         blur_radius: shadow.blur_radius.min(MAX_LENGTH),
         spread_radius: shadow.spread_radius.clamp(-MAX_LENGTH, MAX_LENGTH),
@@ -1090,6 +1216,8 @@ fn push_shadow(
         mesh.clip_to(&clip.triangles);
     }
     if let Some(mesh) = mesh.finish() {
+        let mut mesh = mesh;
+        mesh.paint_color = paint_color;
         built.push(BuiltOp::Mesh(Arc::new(mesh)));
     }
 }
@@ -1991,6 +2119,7 @@ impl MeshBuilder {
             // The band around the hole, dark side out.
             let start = self.vertices.len();
             let plain = ComponentElevation {
+                paint_color: None,
                 offset_x: 0.0,
                 offset_y: 0.0,
                 spread_radius: 0.0,
@@ -2090,6 +2219,7 @@ impl MeshBuilder {
                 height: max[1] - min[1],
             },
             gradient: None,
+            paint_color: None,
         })
     }
 }
@@ -2224,6 +2354,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn custom_authoring_path_keeps_extended_linear_channels() {
+        let color = nana_ui_core::PaintColor::LinearScRgb {
+            channels: [1.25, -0.125, 0.25],
+            alpha: 0.7,
+        };
+        let built = build_ops(&[PaintOp::FillPath {
+            path: Arc::new(rect_path(0.0, 0.0, 10.0, 10.0)),
+            paint: ResolvedPaint::Authoring(color),
+        }]);
+        assert_eq!(only_mesh(&built).paint_color, Some(color));
+    }
+
+    #[test]
+    fn custom_authoring_shadow_keeps_linear_channels_without_double_decode() {
+        let color = nana_ui_core::PaintColor::LinearScRgb {
+            channels: [0.2, 0.1, 0.05],
+            alpha: 0.6,
+        };
+        let built = build_ops(&[PaintOp::Shadow {
+            path: Arc::new(rect_path(0.0, 0.0, 10.0, 10.0)),
+            shadow: ComponentElevation {
+                paint_color: Some(color),
+                color: color.to_srgb(),
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur_radius: 0.0,
+                spread_radius: 0.0,
+                inset: false,
+            },
+        }]);
+        assert_eq!(only_mesh(&built).paint_color, Some(color));
+    }
+
+    #[test]
+    fn custom_authoring_icon_keeps_explicit_paint_color() {
+        let color = nana_ui_core::PaintColor::LinearScRgb {
+            channels: [1.2, -0.1, 0.3],
+            alpha: 0.65,
+        };
+        let built = build_ops(&[PaintOp::Icon {
+            rect: LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 16.0,
+                height: 16.0,
+            },
+            icon: Icon::Search,
+            paint: ResolvedPaint::Authoring(color),
+        }]);
+        let [
+            BuiltOp::Icon {
+                color: fallback,
+                paint_color,
+                ..
+            },
+        ] = &built[..]
+        else {
+            panic!("expected one icon, got {built:?}");
+        };
+        assert_eq!(*paint_color, Some(color));
+        assert_eq!(*fallback, color.to_srgb());
+    }
+
     /// Coverage the mesh interpolates at `p`, summed over every triangle that
     /// holds it (overlap would show up as more than one).
     fn coverage_at(mesh: &PathMesh, p: [f32; 2]) -> (f32, usize) {
@@ -2251,6 +2445,7 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
             shadow: ComponentElevation {
+                paint_color: None,
                 color: [0.0, 0.0, 0.0, 0.5],
                 offset_x: 0.0,
                 offset_y: 6.0,
@@ -2419,6 +2614,7 @@ mod tests {
             .close();
         let square = Arc::new(rect_path(0.0, 0.0, 10.0, 10.0));
         let shadow = |blur_radius: f32| ComponentElevation {
+            paint_color: None,
             color: [0.0, 0.0, 0.0, 1.0],
             offset_x: 0.0,
             offset_y: 0.0,
@@ -2464,6 +2660,7 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
             shadow: ComponentElevation {
+                paint_color: None,
                 color: [0.0, 0.0, 0.0, 1.0],
                 offset_x: 20.0,
                 offset_y: 20.0,
@@ -2504,6 +2701,7 @@ mod tests {
         ring.ellipse(circle(50.0)).ellipse(circle(48.0));
         let ring = ring.with_fill_rule(FillRule::EvenOdd);
         let shadow = ComponentElevation {
+            paint_color: None,
             color: [0.0, 0.0, 0.0, 1.0],
             offset_x: 0.0,
             offset_y: 0.0,
@@ -2550,6 +2748,7 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(path),
             shadow: ComponentElevation {
+                paint_color: None,
                 color: [0.0, 0.0, 0.0, 0.5],
                 offset_x: 0.0,
                 offset_y: 0.0,
@@ -2581,6 +2780,7 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
             shadow: ComponentElevation {
+                paint_color: None,
                 color: [0.0, 0.0, 0.0, 0.5],
                 offset_x: 0.0,
                 offset_y: 6.0,
@@ -2681,6 +2881,7 @@ mod tests {
                 end: [10.0, 0.0],
             },
             stops: vec![(0.0, [1.0, 0.0, 0.0, 1.0]), (1.0, [0.0, 0.0, 1.0, 1.0])],
+            linear_stops: None,
             extend: Default::default(),
         });
         let built = build_ops(&[
@@ -2773,6 +2974,7 @@ mod tests {
                 radii: [2.0; 4],
                 fill: Some(ResolvedPaint::Solid([1.0; 4])),
                 border: None,
+                border_paint: None,
                 shadow: None,
             },
             text_op(ResolvedPaint::Solid([1.0; 4])),
@@ -2805,6 +3007,7 @@ mod tests {
                 end: [40.0, 0.0],
             },
             stops: vec![(0.0, [1.0, 0.0, 0.0, 1.0]), (1.0, [0.0, 0.0, 1.0, 1.0])],
+            linear_stops: None,
             extend: Default::default(),
         });
         let built = build_ops(&[text_op(ResolvedPaint::Gradient(gradient))]);
@@ -2890,6 +3093,7 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
             shadow: ComponentElevation {
+                paint_color: None,
                 color: [0.0, 0.0, 0.0, 0.5],
                 offset_x: 0.0,
                 offset_y: 0.0,

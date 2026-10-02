@@ -358,8 +358,16 @@ impl UiWorld {
                         style.font_weight,
                     ),
                     spinner,
-                    background: style.background,
-                    border: style.border_color,
+                    background: style
+                        .paint_colors
+                        .background
+                        .map(nana_ui_core::PaintColor::to_srgb)
+                        .or(style.background),
+                    border: style
+                        .paint_colors
+                        .border
+                        .map(nana_ui_core::PaintColor::to_srgb)
+                        .or(style.border_color),
                     border_width: if style.border_color.is_some() {
                         source.layout.resolved_border_width()
                     } else {
@@ -981,11 +989,16 @@ impl UiWorld {
                                 font_size: size.text_size(),
                                 font_weight: style.font_weight,
                             },
-                            background: style.background.unwrap_or_else(|| {
-                                self.style_model
-                                    .color(SemanticColorRole::Surface)
-                                    .as_rgba_array()
-                            }),
+                            background: style
+                                .paint_colors
+                                .background
+                                .map(nana_ui_core::PaintColor::to_srgb)
+                                .or(style.background)
+                                .unwrap_or_else(|| {
+                                    self.style_model
+                                        .color(SemanticColorRole::Surface)
+                                        .as_rgba_array()
+                                }),
                             divider_color: self
                                 .style_model
                                 .color(SemanticColorRole::Border)
@@ -1157,8 +1170,8 @@ impl UiWorld {
                     },
                     minimap,
                     sticky_line,
-                    background: style.background,
-                    border: style.border_color,
+                    background: style.paint_colors.background.map(nana_ui_core::PaintColor::to_srgb).or(style.background),
+                    border: style.paint_colors.border.map(nana_ui_core::PaintColor::to_srgb).or(style.border_color),
                     border_width: {
                         let width = if style.border_color.is_some() {
                             source.layout.resolved_border_width()
@@ -1172,7 +1185,16 @@ impl UiWorld {
                         }
                     },
                     focus_ring: None,
-                    selection_color: self.style_model.color(SemanticColorRole::AccentSoft).as_rgba_array(),
+                    selection_color: style
+                        .paint_colors
+                        .selection_background
+                        .map(nana_ui_core::PaintColor::to_srgb)
+                        .or(style.selection_background)
+                        .unwrap_or_else(|| {
+                            self.style_model
+                                .color(SemanticColorRole::AccentSoft)
+                                .as_rgba_array()
+                        }),
                     caret_color,
                     additional_caret_color,
                     preedit_color: self.style_model.color(SemanticColorRole::Accent).as_rgba_array(),

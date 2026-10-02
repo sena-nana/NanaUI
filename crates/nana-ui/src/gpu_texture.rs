@@ -16,6 +16,7 @@ use crate::geometry::{LogicalRect, PhysicalRect};
 use crate::gpu_view::{RenderSlot, intersect_physical, slot_for_bounds};
 use crate::painted_demand::SharedPaintedDemand;
 use crate::scene_paint::url_texture_cache::UrlTextureCache;
+use crate::scene_paint::{pack_linear, pack_paint_color};
 
 const SOURCE: &str = r#"
 @group(0) @binding(0)
@@ -1619,7 +1620,10 @@ fn pack_layer_mask(
     packed.meta = [kind, count as f32, angle, circle];
     packed.center = [center[0], center[1], 0.0, 0.0];
     for (index, stop) in stops.iter().take(8).enumerate() {
-        packed.stops[index] = stop.color;
+        packed.stops[index] = stop
+            .paint_color
+            .map(pack_paint_color)
+            .unwrap_or_else(|| pack_linear(stop.color));
         if index < 4 {
             packed.pos[index] = stop.position;
         } else {
@@ -2064,10 +2068,12 @@ mod tests {
                 angle_deg: 90.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.0,
                         color: [1.0, 1.0, 1.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 1.0,
                         color: [1.0, 1.0, 1.0, 0.0],
                     },
@@ -2090,6 +2096,48 @@ mod tests {
         assert_eq!(uniform.mask_stops1[3], 0.0);
         assert_eq!(uniform.mask_pos[0], 0.0);
         assert_eq!(uniform.mask_pos[1], 1.0);
+    }
+
+    #[test]
+    fn layer_uniform_keeps_explicit_mask_stop_space() {
+        let texture = test_host_texture(7, 3);
+        let registry = HostTextureRegistry::new();
+        let binding = registry.register(
+            "masked-oklch",
+            texture,
+            64,
+            64,
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let stop = nana_ui_core::PaintColor::Oklch {
+            l: 0.72,
+            c: 0.16,
+            h: Some(210.0),
+            alpha: 0.8,
+        };
+        let mask = nana_ui_core::MaskImage::Gradient(nana_ui_core::CssGradient::Linear(
+            nana_ui_core::LinearGradient {
+                angle_deg: 90.0,
+                stops: vec![nana_ui_core::GradientStop {
+                    paint_color: Some(stop),
+                    position: 0.0,
+                    color: [0.01, 0.02, 0.03, 0.04],
+                }],
+            },
+        ));
+        let uniform = make_layer_uniform(
+            &HostTextureLayer::from_binding(binding).with_mask(Some(mask)),
+            LogicalRect::new(0.0, 0.0, 64.0, 64.0),
+            [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0],
+            1.0,
+            [64, 64],
+            false,
+        );
+        let expected = crate::scene_paint::pack_paint_color(stop);
+        for (actual, expected) in uniform.mask_stops0.into_iter().zip(expected) {
+            assert!((actual - expected).abs() <= 1.0e-6);
+        }
     }
 
     #[test]

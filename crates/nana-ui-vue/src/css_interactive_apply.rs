@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use nana_ui_core::FontVariationSetting;
+use nana_ui_core::style_model::PaintColorSlots;
 use nana_ui_runtime::{
     AnimatableProperty, AnimationClass, AnimationDirection, AnimationFillMode, AnimationId,
     AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, Easing, Keyframe,
@@ -132,6 +133,12 @@ pub struct CssPaintSnapshot {
     pub opacity: Option<f32>,
     pub color: Option<[f32; 4]>,
     pub background: Option<[f32; 4]>,
+    /// Authoring-space paint values retained alongside the sRGB compatibility
+    /// channels above. During a CPU color transition this is intentionally
+    /// empty for the interpolated longhand, so scene/GPU consumers use the
+    /// sampled RGBA value. At the endpoint it is restored from the target
+    /// snapshot.
+    pub paint_colors: PaintColorSlots,
     pub transform: Option<nana_ui_core::box_layout::PaintTransform>,
     pub transform_3d: Option<nana_ui_core::box_layout::PaintMat4>,
     pub transform_origin: Option<nana_ui_core::box_layout::TransformOrigin>,
@@ -156,6 +163,7 @@ impl CssPaintSnapshot {
             opacity: layout.opacity,
             color: layout.color,
             background: layout.background,
+            paint_colors: layout.paint_colors.clone(),
             transform: layout.transform,
             transform_3d: layout.transform_3d,
             transform_origin: layout.transform_origin,
@@ -179,6 +187,11 @@ impl CssPaintSnapshot {
         if let Some(background) = self.background {
             layout.background = Some(background);
         }
+        // Keep the explicit authoring metadata in lockstep with the sampled
+        // compatibility channels. This clears a stale OKLCH/HSV slot during
+        // a mid-transition and restores it when the target snapshot is at its
+        // endpoint.
+        layout.paint_colors = self.paint_colors.clone();
         if let Some(transform) = self.transform {
             layout.transform = Some(transform);
             layout.transform_3d = None;
@@ -208,6 +221,9 @@ impl CssPaintSnapshot {
         if let Some(background) = self.background {
             layout.background = Some(background);
         }
+        // See `apply_to_layout`: an interpolated sRGB value must not be
+        // overridden by an old explicit authoring value in the scene.
+        layout.paint_colors = self.paint_colors.clone();
         if let Some(origin) = self.transform_origin {
             layout.transform_origin = Some(origin);
         }
@@ -447,11 +463,17 @@ pub fn apply_selection_paint(
                 "color" => {
                     if let Some(color) = crate::css_map::resolve_paint_color(&entry.value) {
                         layout.selection_color = Some(color);
+                        layout.paint_colors.selection_color =
+                            crate::style::resolve_css_paint_color(&entry.value)
+                                .map(|p| p.to_core());
                     }
                 }
                 "background" | "background-color" => {
                     if let Some(color) = crate::css_map::resolve_paint_color(&entry.value) {
                         layout.selection_background = Some(color);
+                        layout.paint_colors.selection_background =
+                            crate::style::resolve_css_paint_color(&entry.value)
+                                .map(|p| p.to_core());
                     }
                 }
                 _ => {}
@@ -844,6 +866,22 @@ pub fn lerp_paint_for_properties(
             .any(|property| property.eq_ignore_ascii_case(name))
     };
     let _applies_edge = |prefix: &str, side: &str| applies(prefix) || applies(side);
+    let mut paint_colors = to.paint_colors.clone();
+    // CSS motion currently samples colors in the compatibility sRGB space.
+    // Keep the authoring value only at an endpoint; otherwise the downstream
+    // scene resolver would prefer the old OKLCH/HSV value and hide animation.
+    paint_colors.color = transition_paint_slot(
+        from.paint_colors.color,
+        to.paint_colors.color,
+        applies("color"),
+        t,
+    );
+    paint_colors.background = transition_paint_slot(
+        from.paint_colors.background,
+        to.paint_colors.background,
+        applies("background") || applies("background-color"),
+        t,
+    );
     CssPaintSnapshot {
         opacity: if applies("opacity") {
             Some(lerp_opt(from.opacity, to.opacity, 1.0, t))
@@ -860,6 +898,7 @@ pub fn lerp_paint_for_properties(
         } else {
             to.background.or(from.background)
         },
+        paint_colors,
         transform: if applies("transform") {
             lerp_transform(from.transform, to.transform, t)
         } else {
@@ -892,6 +931,24 @@ pub fn lerp_paint_for_properties(
         },
         // Font axes interpolate on their own Motion tracks, not in this lerp.
         font_variations: None,
+    }
+}
+
+fn transition_paint_slot(
+    from: Option<nana_ui_core::PaintColor>,
+    to: Option<nana_ui_core::PaintColor>,
+    applies: bool,
+    t: f32,
+) -> Option<nana_ui_core::PaintColor> {
+    if !applies {
+        return to.or(from);
+    }
+    if t <= f32::EPSILON {
+        from
+    } else if t >= 1.0 - f32::EPSILON {
+        to
+    } else {
+        None
     }
 }
 
@@ -1084,6 +1141,7 @@ fn lerp_drop_shadow(
 ) -> Option<nana_ui_core::FilterDropShadow> {
     use nana_ui_core::FilterDropShadow;
     let zero = FilterDropShadow {
+        paint_color: None,
         offset_x: 0.0,
         offset_y: 0.0,
         blur_radius: 0.0,
@@ -1095,6 +1153,7 @@ fn lerp_drop_shadow(
     let a = from.unwrap_or(zero);
     let b = to.unwrap_or(zero);
     let out = FilterDropShadow {
+        paint_color: None,
         offset_x: a.offset_x + (b.offset_x - a.offset_x) * t,
         offset_y: a.offset_y + (b.offset_y - a.offset_y) * t,
         blur_radius: a.blur_radius + (b.blur_radius - a.blur_radius) * t,
@@ -1854,6 +1913,42 @@ mod tests {
         assert_eq!(parsed.property, "opacity");
         assert_eq!(parsed.duration, "0.2s");
         assert_eq!(parse_css_time_ms(&parsed.duration), Some(200.0));
+    }
+
+    #[test]
+    fn color_transition_clears_explicit_paint_until_target_endpoint() {
+        let mut from_layout = LayoutStyle::default();
+        from_layout.color = Some([0.0, 0.0, 1.0, 1.0]);
+        from_layout.paint_colors.color = Some(nana_ui_core::PaintColor::Oklch {
+            l: 0.45,
+            c: 0.2,
+            h: Some(260.0),
+            alpha: 1.0,
+        });
+        let mut to_layout = LayoutStyle::default();
+        to_layout.color = Some([1.0, 0.0, 0.0, 1.0]);
+        to_layout.paint_colors.color = Some(nana_ui_core::PaintColor::Hsv {
+            h: 10.0,
+            s: 1.0,
+            v: 1.0,
+            alpha: 1.0,
+        });
+        let from = CssPaintSnapshot::from_layout(&from_layout);
+        let to = CssPaintSnapshot::from_layout(&to_layout);
+        let color = parse_transition_properties("color");
+
+        let start = lerp_paint_for_properties(&from, &to, 0.0, &color);
+        assert_eq!(start.paint_colors.color, from.paint_colors.color);
+        let mid = lerp_paint_for_properties(&from, &to, 0.5, &color);
+        assert!(mid.paint_colors.color.is_none());
+        let end = lerp_paint_for_properties(&from, &to, 1.0, &color);
+        assert_eq!(end.paint_colors.color, to.paint_colors.color);
+
+        let mut applied = from_layout;
+        mid.apply_cpu_to_layout(&mut applied);
+        assert!(applied.paint_colors.color.is_none());
+        end.apply_cpu_to_layout(&mut applied);
+        assert_eq!(applied.paint_colors.color, to_layout.paint_colors.color);
     }
 
     #[test]

@@ -1389,7 +1389,12 @@ impl UiWorld {
                 let inherited_paint_changed = previous.foreground != style.foreground
                     || previous.layout.color != style.layout.color
                     || previous.layout.selection_background != style.layout.selection_background
-                    || previous.layout.selection_color != style.layout.selection_color;
+                    || previous.layout.selection_color != style.layout.selection_color
+                    || previous.layout.paint_colors.color != style.layout.paint_colors.color
+                    || previous.layout.paint_colors.selection_background
+                        != style.layout.paint_colors.selection_background
+                    || previous.layout.paint_colors.selection_color
+                        != style.layout.paint_colors.selection_color;
                 let inherited_opacity_changed = previous.layout.opacity != style.layout.opacity;
                 let paint_visibility_changed =
                     previous.layout.paint.visibility != style.layout.paint.visibility;

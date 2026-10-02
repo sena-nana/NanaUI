@@ -2355,6 +2355,7 @@ fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
                 paint: nana_ui_core::PaintStyle {
                     filter: Some(nana_ui_core::ColorFilter {
                         drop_shadow: Some(nana_ui_core::FilterDropShadow {
+                            paint_color: None,
                             offset_x: 16.0,
                             offset_y: 0.0,
                             blur_radius: 0.0,
@@ -2447,6 +2448,7 @@ fn drop_shadow_dest_group_follows_scene_origin() {
                 paint: nana_ui_core::PaintStyle {
                     filter: Some(nana_ui_core::ColorFilter {
                         drop_shadow: Some(nana_ui_core::FilterDropShadow {
+                            paint_color: None,
                             offset_x: 16.0,
                             offset_y: 0.0,
                             blur_radius: 0.0,
@@ -2518,6 +2520,7 @@ fn outline_and_shadow_spread_stay_css_px_at_hidpi() {
                         style: nana_ui_core::OutlineStyle::Solid,
                     },
                     box_shadows: vec![nana_ui_core::BoxShadowSpec {
+                        paint_color: None,
                         offset_x: 0.0,
                         offset_y: 0.0,
                         blur_radius: 0.0,
@@ -4161,6 +4164,7 @@ fn unblurred_shadow_and_outline_edges_stay_one_device_pixel_under_transform_scal
                 (green, paint)
             } else {
                 let shadow = nana_ui_core::BoxShadowSpec {
+                    paint_color: None,
                     offset_x: 0.0,
                     offset_y: 0.0,
                     blur_radius: 0.0,
@@ -4210,6 +4214,7 @@ fn inset_shadow_spread_shrinks_its_shape_inside_the_box() {
     for (label, [x, y, w, h], scale, factor) in SCALED_CIRCLES {
         let spread = w / 8.0;
         let shadow = nana_ui_core::BoxShadowSpec {
+            paint_color: None,
             offset_x: 0.0,
             offset_y: 0.0,
             blur_radius: 0.0,
@@ -4257,6 +4262,7 @@ fn paint_box_shadow(
 ) -> Vec<u8> {
     let black = [0.0, 0.0, 0.0, 1.0];
     let shadow = nana_ui_core::BoxShadowSpec {
+        paint_color: None,
         offset_x: 0.0,
         offset_y: 0.0,
         blur_radius,
@@ -6441,15 +6447,21 @@ fn gradient_white_to_transparent_source_over_red() {
     let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let gradient_surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 180.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.0,
                         color: [1.0, 1.0, 1.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 1.0,
                         color: [1.0, 1.0, 1.0, 0.0],
                     },
@@ -6505,10 +6517,15 @@ fn mask_linear_fade_scales_rgb_with_alpha() {
     let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let masked_surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 0.0,
                 stops: vec![nana_ui_core::GradientStop {
+                    paint_color: None,
                     position: 0.0,
                     color: [1.0, 0.0, 0.0, 1.0],
                 }],
@@ -6519,10 +6536,12 @@ fn mask_linear_fade_scales_rgb_with_alpha() {
                 angle_deg: 90.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.0,
                         color: [1.0, 1.0, 1.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 1.0,
                         color: [1.0, 1.0, 1.0, 0.0],
                     },
@@ -6607,10 +6626,12 @@ fn host_texture_mask_linear_fade_samples_in_document_order() {
                         angle_deg: 90.0,
                         stops: vec![
                             nana_ui_core::GradientStop {
+                                paint_color: None,
                                 position: 0.0,
                                 color: [1.0, 1.0, 1.0, 1.0],
                             },
                             nana_ui_core::GradientStop {
+                                paint_color: None,
                                 position: 1.0,
                                 color: [1.0, 1.0, 1.0, 0.0],
                             },
@@ -6704,10 +6725,15 @@ fn mask_url_alpha_scales_quad_in_document_order() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     let masked_surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 0.0,
                 stops: vec![nana_ui_core::GradientStop {
+                    paint_color: None,
                     position: 0.0,
                     color: [1.0, 0.0, 0.0, 1.0],
                 }],
@@ -6888,10 +6914,15 @@ fn mask_url_unloadable_is_ignored_not_gradient() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     let masked_surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 0.0,
                 stops: vec![nana_ui_core::GradientStop {
+                    paint_color: None,
                     position: 0.0,
                     color: [1.0, 0.0, 0.0, 1.0],
                 }],
@@ -6951,10 +6982,15 @@ fn mask_linear_six_stops_uses_stop_five_on_gpu() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     let masked_surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 0.0,
                 stops: vec![nana_ui_core::GradientStop {
+                    paint_color: None,
                     position: 0.0,
                     color: [1.0, 0.0, 0.0, 1.0],
                 }],
@@ -6965,26 +7001,32 @@ fn mask_linear_six_stops_uses_stop_five_on_gpu() {
                 angle_deg: 180.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.0,
                         color: [1.0, 1.0, 1.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.2,
                         color: [1.0, 1.0, 1.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.4,
                         color: [1.0, 1.0, 1.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.6,
                         color: [1.0, 1.0, 1.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.8,
                         color: [1.0, 1.0, 1.0, 0.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 1.0,
                         color: [1.0, 1.0, 1.0, 0.0],
                     },
@@ -7042,16 +7084,22 @@ fn radial_gradient_center_differs_from_linear_edge() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     let radial = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Radial(nana_ui_core::RadialGradient {
                 circle: true,
                 center: [nana_ui_core::LengthSpec::Percent(50.0); 2],
                 stops: vec![
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.0,
                         color: [1.0, 0.0, 0.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 1.0,
                         color: [0.0, 0.0, 1.0, 1.0],
                     },
@@ -7061,15 +7109,21 @@ fn radial_gradient_center_differs_from_linear_edge() {
         ..Default::default()
     };
     let linear = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 90.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.0,
                         color: [1.0, 0.0, 0.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 1.0,
                         color: [0.0, 0.0, 1.0, 1.0],
                     },
@@ -7162,31 +7216,41 @@ fn linear_gradient_five_stops_uses_stop_five_on_gpu() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::for_test(format);
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                 angle_deg: 180.0,
                 stops: vec![
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.0,
                         color: [1.0, 0.0, 0.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.2,
                         color: [1.0, 0.0, 0.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.4,
                         color: [1.0, 0.0, 0.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.6,
                         color: [1.0, 0.0, 0.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 0.8,
                         color: [0.0, 0.0, 1.0, 1.0],
                     },
                     nana_ui_core::GradientStop {
+                        paint_color: None,
                         position: 1.0,
                         color: [0.0, 0.0, 1.0, 1.0],
                     },
@@ -7265,6 +7329,10 @@ fn paint_url_quad_and_sample_center(
     let mut painter = SceneWgpuPainter::for_test(format);
     painter.set_resource_fetch_host(fetch_host);
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
             url,
             nana_ui_core::BackgroundImageFit::Stretch,
@@ -7341,6 +7409,10 @@ fn closing_a_window_cancels_its_image_requests_and_releases_its_fetch_host() {
             64.0,
             [0.0; 4],
             nana_ui_scene::QuadSurfacePaint {
+                border_colors_space: [None; 4],
+                outline_color_space: None,
+                background_color: None,
+                border_color_space: None,
                 background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
                     url,
                     nana_ui_core::BackgroundImageFit::Stretch,
@@ -7465,6 +7537,10 @@ fn url_images_go_only_through_the_fetch_host_of_the_document_being_painted() {
             64.0,
             [0.0; 4],
             nana_ui_scene::QuadSurfacePaint {
+                border_colors_space: [None; 4],
+                outline_color_space: None,
+                background_color: None,
+                border_color_space: None,
                 background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
                     server.url.clone(),
                     nana_ui_core::BackgroundImageFit::Stretch,
@@ -7656,6 +7732,10 @@ fn more_http_images_than_fetch_slots_eventually_paint() {
                 20.0,
                 [0.0; 4],
                 nana_ui_scene::QuadSurfacePaint {
+                    border_colors_space: [None; 4],
+                    outline_color_space: None,
+                    background_color: None,
+                    border_color_space: None,
                     background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
                         format!("{}?id={id}", server.url),
                         nana_ui_core::BackgroundImageFit::Stretch,
@@ -7753,6 +7833,10 @@ fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_comple
             64.0,
             [0.0; 4],
             nana_ui_scene::QuadSurfacePaint {
+                border_colors_space: [None; 4],
+                outline_color_space: None,
+                background_color: None,
+                border_color_space: None,
                 background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
                     url,
                     nana_ui_core::BackgroundImageFit::Stretch,
@@ -7852,6 +7936,10 @@ fn async_http_image_rebinds_each_render_target_after_shared_completion() {
             64.0,
             [0.0; 4],
             nana_ui_scene::QuadSurfacePaint {
+                border_colors_space: [None; 4],
+                outline_color_space: None,
+                background_color: None,
+                border_color_space: None,
                 background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
                     url,
                     nana_ui_core::BackgroundImageFit::Stretch,
@@ -8000,6 +8088,10 @@ fn img_src_content_image_paints_fixture_png() {
     let (fixture_dir, png_path) = blue_tile_fixture_png();
     super::set_background_image_url_base(fixture_dir);
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         content_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
             png_path
                 .file_name()
@@ -8034,6 +8126,10 @@ fn inline_svg_data_url_paints_through_content_image() {
         base64::engine::general_purpose::STANDARD.encode(svg.as_bytes())
     );
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         content_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
             url,
             nana_ui_core::BackgroundImageFit::Stretch,
@@ -8052,6 +8148,10 @@ fn object_fit_contain_letterboxes_on_wide_box() {
     let (fixture_dir, png_path) = blue_tile_fixture_png();
     super::set_background_image_url_base(fixture_dir);
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         content_image: Some(nana_ui_core::BackgroundImage::Url {
             url: png_path
                 .file_name()
@@ -8087,6 +8187,10 @@ fn two_layer_background_paints_top_over_bottom() {
     let red_path = red_tile_fixture_png();
     super::set_background_image_url_base(fixture_dir);
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Url {
             url: red_path
                 .file_name()
@@ -8143,6 +8247,10 @@ fn background_repeat_x_tiles_stripe() {
     let stripe = stripe_tile_fixture_png();
     super::set_background_image_url_base(fixture_dir);
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Url {
             url: stripe
                 .file_name()
@@ -8183,6 +8291,10 @@ fn default_background_repeat_tiles_sized_url() {
     let (fixture_dir, png_path) = blue_tile_fixture_png();
     super::set_background_image_url_base(fixture_dir);
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Url {
             url: png_path
                 .file_name()
@@ -8230,6 +8342,10 @@ fn background_repeat_space_does_not_paint_as_repeat() {
     let (fixture_dir, png_path) = blue_tile_fixture_png();
     super::set_background_image_url_base(fixture_dir);
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(nana_ui_core::BackgroundImage::Url {
             url: png_path
                 .file_name()
@@ -8258,6 +8374,10 @@ fn mask_image_url_reuses_jail_texture() {
     let (fixture_dir, png_path) = blue_tile_fixture_png();
     super::set_background_image_url_base(fixture_dir);
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         mask: Some(nana_ui_core::MaskImage::Url(
             png_path
                 .file_name()
@@ -8406,6 +8526,10 @@ fn border_image_url_nine_slice_paints_corners_and_fill() {
         .unwrap_or("nine-slice.png")
         .to_string();
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         border_image: Some(nana_ui_core::BorderImageSpec {
             source: nana_ui_core::BackgroundImage::url(url),
             slice: [nana_ui_core::BorderImageSlice::Number(2.0); 4],
@@ -8510,16 +8634,22 @@ fn unsupported_border_image_does_not_paint_nine_slice() {
 #[test]
 fn border_image_linear_gradient_nine_slice_paints() {
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         border_image: Some(nana_ui_core::BorderImageSpec {
             source: nana_ui_core::BackgroundImage::Gradient(nana_ui_core::CssGradient::Linear(
                 nana_ui_core::LinearGradient {
                     angle_deg: 180.0,
                     stops: vec![
                         nana_ui_core::GradientStop {
+                            paint_color: None,
                             position: 0.0,
                             color: [1.0, 0.0, 0.0, 1.0],
                         },
                         nana_ui_core::GradientStop {
+                            paint_color: None,
                             position: 1.0,
                             color: [0.0, 0.0, 1.0, 1.0],
                         },
@@ -8833,6 +8963,7 @@ fn icon_batch_reuses_atlas_and_vertex_uploads() {
                 1.0,
                 Icon::Close,
                 [0.2, 0.4, 0.8, 1.0],
+                None,
                 1.0,
                 super::clip::FragmentClip::PASS,
             );

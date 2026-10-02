@@ -11,7 +11,7 @@ use nana_ui_scene::QuadSurfacePaint;
 
 use super::{
     clip::LogicalRect,
-    color::{orthographic, pack_linear, with_opacity},
+    color::{orthographic, pack_linear, pack_paint_color, with_opacity},
     url_texture_cache::{Demand, LayerDemand, UrlTextureCache, cache_key},
 };
 use crate::{PhysicalRect, gpu_work::ManagedBuffer};
@@ -515,6 +515,17 @@ impl QuadPipeline {
         surface: &QuadSurfacePaint,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> Option<u32> {
+        // Explicit authoring colors take precedence over compatibility RGBA
+        // fields. They are carried as linear scRGB through the instance ABI,
+        // so extended values are not clipped by an intermediate sRGB roundtrip.
+        let background_color = surface.background_color;
+        let background = background_color
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(background);
+        let border_color_space = surface.border_color_space;
+        let border_color = border_color_space
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(border_color);
         if self.motion_ids.0 == 0 {
             let world = super::clip::transformed_aabb_projective(bounds, affine, persp);
             let _ = world.intersection(clip)?;
@@ -559,7 +570,7 @@ impl QuadPipeline {
         } else {
             outsets.first().copied()
         };
-        let (mut edge_widths, edge_colors) =
+        let (mut edge_widths, edge_colors, edge_colors_space) =
             resolved_instance_border(border_color, border_width, surface);
         let zero_widths = [0.0f32; 4];
         let zero_colors = [[0.0f32; 4]; 4];
@@ -593,7 +604,9 @@ impl QuadPipeline {
                     position,
                     [bounds.width, bounds.height],
                     None,
+                    None,
                     zero_colors,
+                    [None; 4],
                     zero_widths,
                     corner_radius,
                     Some(*layer),
@@ -628,7 +641,9 @@ impl QuadPipeline {
                 position,
                 [bounds.width, bounds.height],
                 background,
+                background_color,
                 edge_colors,
+                edge_colors_space,
                 edge_widths,
                 corner_radius,
                 fill_shadow,
@@ -662,7 +677,9 @@ impl QuadPipeline {
                     position,
                     [bounds.width, bounds.height],
                     if first { background } else { None },
+                    if first { background_color } else { None },
                     if first { edge_colors } else { zero_colors },
+                    if first { edge_colors_space } else { [None; 4] },
                     if first { edge_widths } else { zero_widths },
                     corner_radius,
                     if first { fill_shadow } else { None },
@@ -691,7 +708,9 @@ impl QuadPipeline {
                     [position[0] + tile.dest_x, position[1] + tile.dest_y],
                     [tile.dest_w, tile.dest_h],
                     None,
+                    None,
                     zero_colors,
+                    [None; 4],
                     zero_widths,
                     [0.0; 4],
                     None,
@@ -725,7 +744,9 @@ impl QuadPipeline {
                 position,
                 [bounds.width, bounds.height],
                 None,
+                None,
                 zero_colors,
+                [None; 4],
                 zero_widths,
                 corner_radius,
                 None,
@@ -748,7 +769,9 @@ impl QuadPipeline {
                     position,
                     [bounds.width, bounds.height],
                     None,
+                    None,
                     zero_colors,
+                    [None; 4],
                     zero_widths,
                     corner_radius,
                     Some(*layer),
@@ -1020,7 +1043,9 @@ fn push_solid_instance(
     position: [f32; 2],
     size: [f32; 2],
     background: Option<[f32; 4]>,
+    background_color: Option<nana_ui_core::PaintColor>,
     border_colors: [[f32; 4]; 4],
+    border_colors_space: [Option<nana_ui_core::PaintColor>; 4],
     border_widths: [f32; 4],
     corner_radius: [f32; 4],
     shadow: Option<ComponentElevation>,
@@ -1031,30 +1056,35 @@ fn push_solid_instance(
     instance_persp: [f32; 2],
     fragment_clip: super::clip::FragmentClip,
 ) {
-    paint.border_color_right = pack_linear(with_opacity(border_colors[1], opacity));
-    paint.border_color_bottom = pack_linear(with_opacity(border_colors[2], opacity));
-    paint.border_color_left = pack_linear(with_opacity(border_colors[3], opacity));
+    paint.border_color_right = pack_color(border_colors_space[1], border_colors[1], opacity);
+    paint.border_color_bottom = pack_color(border_colors_space[2], border_colors[2], opacity);
+    paint.border_color_left = pack_color(border_colors_space[3], border_colors[3], opacity);
     paint._pad_tail0 = (snap >> 1) & 0x7fff;
     paint._pad_tail1 = snap >> 16;
     pending_paint.push(paint);
     pending_urls.push(paint_url);
     pending.push(SolidInstance {
-        color: pack_linear(with_opacity(
+        color: pack_color(
+            background_color,
             background.unwrap_or([0.0, 0.0, 0.0, 0.0]),
             opacity,
-        )),
+        ),
         position,
         size,
-        border_color: pack_linear(with_opacity(border_colors[0], opacity)),
+        border_color: pack_color(border_colors_space[0], border_colors[0], opacity),
         border_radius: corner_radius,
         border_widths,
-        shadow_color: pack_linear(with_opacity(
-            shadow.map_or([0.0; 4], |shadow| {
-                let [r, g, b, a] = shadow.color;
-                [r, g, b, a * shadow_peak(size, &shadow)]
-            }),
-            opacity,
-        )),
+        shadow_color: if let Some(shadow) = shadow {
+            let alpha_scale = shadow_peak(size, &shadow);
+            if let Some(color) = shadow.paint_color {
+                let [r, g, b, a] = pack_paint_color(color);
+                [r, g, b, a * alpha_scale * opacity]
+            } else {
+                pack_linear(with_opacity(shadow.color, alpha_scale * opacity))
+            }
+        } else {
+            [0.0; 4]
+        },
         shadow_offset: [
             shadow.map(|shadow| shadow.offset_x).unwrap_or(0.0),
             shadow.map(|shadow| shadow.offset_y).unwrap_or(0.0),
@@ -1089,6 +1119,19 @@ fn push_solid_instance(
     });
 }
 
+fn pack_color(
+    explicit: Option<nana_ui_core::PaintColor>,
+    fallback: [f32; 4],
+    opacity: f32,
+) -> [f32; 4] {
+    if let Some(color) = explicit {
+        let [r, g, b, a] = pack_paint_color(color);
+        [r, g, b, a * opacity]
+    } else {
+        pack_linear(with_opacity(fallback, opacity))
+    }
+}
+
 fn pack_border_styles(codes: [u8; 4]) -> u32 {
     (u32::from(codes[0]) & 3)
         | ((u32::from(codes[1]) & 3) << 2)
@@ -1100,8 +1143,15 @@ fn resolved_instance_border(
     border_color: Option<[f32; 4]>,
     border_width: f32,
     surface: &QuadSurfacePaint,
-) -> ([f32; 4], [[f32; 4]; 4]) {
+) -> (
+    [f32; 4],
+    [[f32; 4]; 4],
+    [Option<nana_ui_core::PaintColor>; 4],
+) {
     let fallback = border_color.unwrap_or([0.0, 0.0, 0.0, 0.0]);
+    let explicit = surface
+        .border_colors_space
+        .map(|color| color.or(surface.border_color_space));
     if surface
         .border_widths
         .iter()
@@ -1109,14 +1159,19 @@ fn resolved_instance_border(
         .any(|width| width > 0.0)
     {
         let mut colors = surface.border_colors;
+        for (color, explicit) in colors.iter_mut().zip(explicit) {
+            if let Some(explicit) = explicit {
+                *color = explicit.to_srgb();
+            }
+        }
         for color in colors.iter_mut() {
             if color[3] <= 0.0 {
                 *color = fallback;
             }
         }
-        (surface.border_widths, colors)
+        (surface.border_widths, colors, explicit)
     } else {
-        ([border_width.max(0.0); 4], [fallback; 4])
+        ([border_width.max(0.0); 4], [fallback; 4], explicit)
     }
 }
 
@@ -1276,7 +1331,11 @@ fn pack_shared(
     }
     if surface.outline_width > 0.0 {
         paint.outline_width = surface.outline_width;
-        paint.outline_color = surface.outline_color.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        paint.outline_color = surface
+            .outline_color_space
+            .map(pack_paint_color)
+            .or(surface.outline_color)
+            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
     }
     paint.border_styles = pack_border_styles(surface.border_styles);
     if let Some(points) = surface.polygon_clip.as_ref()
@@ -1356,7 +1415,10 @@ fn pack_stop_arrays(stops: &[nana_ui_core::GradientStop]) -> (u32, [[f32; 4]; 8]
     let mut colors = [[0.0; 4]; 8];
     let mut positions = [0.0; 8];
     for (index, stop) in stops.iter().take(8).enumerate() {
-        colors[index] = stop.color;
+        colors[index] = stop
+            .paint_color
+            .map(super::color::pack_paint_color)
+            .unwrap_or_else(|| pack_linear(stop.color));
         positions[index] = stop.position;
     }
     (count, colors, positions)
@@ -1460,9 +1522,10 @@ fn insert_rgba_texture(
 fn linear_gradient_cache_key(linear: &LinearGradient) -> String {
     let mut key = format!("nana:border-image-linear:{:.4}", linear.angle_deg);
     for stop in linear.stops.iter().take(8) {
+        let color = gradient_stop_linear_color(stop);
         key.push_str(&format!(
-            ":{:.4},{:.4},{:.4},{:.4},{:.4}",
-            stop.position, stop.color[0], stop.color[1], stop.color[2], stop.color[3]
+            ":{:.6},{:.7},{:.7},{:.7},{:.7}",
+            stop.position, color[0], color[1], color[2], color[3]
         ));
     }
     key
@@ -1505,25 +1568,36 @@ fn cpu_sample_stops(t: f32, stops: &[GradientStop]) -> [f32; 4] {
         return [0.0, 0.0, 0.0, 0.0];
     }
     if stops.len() == 1 || t <= stops[0].position {
-        return stops[0].color;
+        return gradient_stop_linear_color(&stops[0]);
     }
     if t >= stops[stops.len() - 1].position {
-        return stops[stops.len() - 1].color;
+        return gradient_stop_linear_color(&stops[stops.len() - 1]);
     }
     for window in stops.windows(2) {
         let a = window[0];
         let b = window[1];
         if t >= a.position && t <= b.position {
             let mix = (t - a.position) / (b.position - a.position).max(0.0001);
+            let a = gradient_stop_linear_color(&a);
+            let b = gradient_stop_linear_color(&b);
             return [
-                a.color[0] + (b.color[0] - a.color[0]) * mix,
-                a.color[1] + (b.color[1] - a.color[1]) * mix,
-                a.color[2] + (b.color[2] - a.color[2]) * mix,
-                a.color[3] + (b.color[3] - a.color[3]) * mix,
+                a[0] + (b[0] - a[0]) * mix,
+                a[1] + (b[1] - a[1]) * mix,
+                a[2] + (b[2] - a[2]) * mix,
+                a[3] + (b[3] - a[3]) * mix,
             ];
         }
     }
-    stops[0].color
+    gradient_stop_linear_color(&stops[0])
+}
+
+/// Resolve a gradient stop into the same linear scRGB upload space used by
+/// analytic quad gradients. Legacy `color` values are sRGB for compatibility;
+/// explicit authoring values retain their OKLCH/HSV/scRGB conversion metadata.
+fn gradient_stop_linear_color(stop: &GradientStop) -> [f32; 4] {
+    stop.paint_color
+        .map(super::color::pack_paint_color)
+        .unwrap_or_else(|| pack_linear(stop.color))
 }
 
 fn url_dest_for_uv(u0: f32, v0: f32, u1: f32, v1: f32) -> [f32; 4] {
@@ -1776,14 +1850,20 @@ fn pack_paint_sets_mask_flag() {
 
     let (device, queue) = quad_paint_test_device();
     let surface = QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         mask: Some(MaskImage::Gradient(CssGradient::Linear(LinearGradient {
             angle_deg: 90.0,
             stops: vec![
                 GradientStop {
+                    paint_color: None,
                     position: 0.0,
                     color: [1.0, 1.0, 1.0, 1.0],
                 },
                 GradientStop {
+                    paint_color: None,
                     position: 1.0,
                     color: [1.0, 1.0, 1.0, 0.0],
                 },
@@ -1803,6 +1883,63 @@ fn pack_paint_sets_mask_flag() {
     assert_eq!(paint.mask_stop_count, 2);
 }
 
+#[test]
+fn border_image_gradient_uses_explicit_stop_color_space() {
+    use nana_ui_core::{GradientStop, PaintColor};
+
+    let explicit = GradientStop {
+        paint_color: Some(PaintColor::Oklch {
+            l: 0.72,
+            c: 0.19,
+            h: Some(42.0),
+            alpha: 0.65,
+        }),
+        position: 0.0,
+        // Kept as a compatibility fallback; the explicit value must win.
+        color: [0.01, 0.02, 0.03, 0.04],
+    };
+    let expected = super::color::pack_paint_color(explicit.paint_color.unwrap());
+    let resolved = gradient_stop_linear_color(&explicit);
+    for (actual, expected) in resolved.into_iter().zip(expected) {
+        assert!((actual - expected).abs() <= 1.0e-6);
+    }
+
+    let legacy = GradientStop {
+        paint_color: None,
+        position: 0.0,
+        color: [0.5, 0.5, 0.5, 1.0],
+    };
+    let legacy_expected = pack_linear(legacy.color);
+    assert_eq!(gradient_stop_linear_color(&legacy), legacy_expected);
+}
+
+#[test]
+fn border_image_gradient_cache_key_tracks_explicit_stop_values() {
+    use nana_ui_core::{GradientStop, LinearGradient, PaintColor};
+
+    let mut first = LinearGradient {
+        angle_deg: 90.0,
+        stops: vec![GradientStop {
+            paint_color: Some(PaintColor::Oklch {
+                l: 0.7,
+                c: 0.18,
+                h: Some(35.0),
+                alpha: 1.0,
+            }),
+            position: 0.0,
+            color: [0.0; 4],
+        }],
+    };
+    let first_key = linear_gradient_cache_key(&first);
+    first.stops[0].paint_color = Some(PaintColor::Oklch {
+        l: 0.7,
+        c: 0.18,
+        h: Some(36.0),
+        alpha: 1.0,
+    });
+    assert_ne!(first_key, linear_gradient_cache_key(&first));
+}
+
 #[cfg(test)]
 #[test]
 fn pack_paint_resolves_radial_mask_px_center_against_used_box() {
@@ -1811,15 +1948,21 @@ fn pack_paint_resolves_radial_mask_px_center_against_used_box() {
 
     let (device, queue) = quad_paint_test_device();
     let surface = QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         mask: Some(MaskImage::Gradient(CssGradient::Radial(RadialGradient {
             circle: true,
             center: [LengthSpec::Px(10.0), LengthSpec::Px(20.0)],
             stops: vec![
                 GradientStop {
+                    paint_color: None,
                     position: 0.0,
                     color: [1.0, 1.0, 1.0, 1.0],
                 },
                 GradientStop {
+                    paint_color: None,
                     position: 1.0,
                     color: [1.0, 1.0, 1.0, 0.0],
                 },
@@ -1857,6 +2000,10 @@ fn pack_paint_sets_hue_rotate() {
 
     let (device, queue) = quad_paint_test_device();
     let surface = QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         filter: Some(ColorFilter {
             hue_rotate_deg: 90.0,
             ..Default::default()
@@ -1883,6 +2030,10 @@ fn pack_paint_sets_invert_and_opacity() {
 
     let (device, queue) = quad_paint_test_device();
     let surface = QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         filter: Some(ColorFilter {
             invert: 1.0,
             opacity: 0.5,
@@ -1910,6 +2061,10 @@ fn pack_paint_packs_dashed_border_styles() {
 
     let (device, queue) = quad_paint_test_device();
     let surface = QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         border_styles: [1, 2, 1, 0],
         ..Default::default()
     };
@@ -1947,6 +2102,10 @@ fn pack_paint_sets_mask_url_flag_from_png_alpha() {
     let (device, queue) = quad_paint_test_device();
     let url = alpha_split_png_data_url();
     let surface = QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         mask: Some(MaskImage::Url(url)),
         ..Default::default()
     };
@@ -1970,6 +2129,10 @@ fn pack_paint_ignores_unloadable_mask_url() {
 
     let (device, queue) = quad_paint_test_device();
     let surface = QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         mask: Some(MaskImage::Url("nana-missing-mask-image-xyz.png".into())),
         ..Default::default()
     };

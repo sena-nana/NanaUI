@@ -11,6 +11,14 @@ pub(crate) fn pack_linear([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     ]
 }
 
+/// Pack an explicit authoring-space color without assuming the input is sRGB.
+/// Extended-range linear scRGB channels are intentionally preserved for the
+/// presentation/gamut stage instead of being clamped here.
+pub(crate) fn pack_paint_color(color: nana_ui_core::PaintColor) -> [f32; 4] {
+    let (channels, alpha) = color.to_linear_sc_rgb();
+    [channels[0], channels[1], channels[2], alpha]
+}
+
 pub(super) fn with_opacity([r, g, b, a]: [f32; 4], opacity: f32) -> [f32; 4] {
     [r, g, b, a * opacity]
 }

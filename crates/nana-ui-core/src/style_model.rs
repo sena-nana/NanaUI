@@ -64,6 +64,151 @@ pub struct SemanticColor {
     pub a: f32,
 }
 
+/// Explicit authoring-space paint value passed across the CSS/paint boundary.
+/// Semantic theme colors continue to use [`SemanticColor`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum PaintColor {
+    Srgb {
+        rgba: [f32; 4],
+    },
+    Oklch {
+        l: f32,
+        c: f32,
+        h: Option<f32>,
+        alpha: f32,
+    },
+    Hsv {
+        h: f32,
+        s: f32,
+        v: f32,
+        alpha: f32,
+    },
+    LinearScRgb {
+        channels: [f32; 3],
+        alpha: f32,
+    },
+}
+
+impl PaintColor {
+    pub const fn srgb(rgba: [f32; 4]) -> Self {
+        Self::Srgb { rgba }
+    }
+
+    pub fn to_srgb(self) -> [f32; 4] {
+        match self {
+            Self::Srgb { rgba } => rgba,
+            Self::LinearScRgb { channels, alpha } => [
+                Self::gamma_encode(channels[0]),
+                Self::gamma_encode(channels[1]),
+                Self::gamma_encode(channels[2]),
+                alpha,
+            ],
+            Self::Hsv { h, s, v, alpha } => hsv_to_srgb(h, s, v, alpha),
+            Self::Oklch { l, c, h, alpha } => {
+                let [r, g, b] = oklch_to_linear(l, c, h);
+                [
+                    Self::gamma_encode(r),
+                    Self::gamma_encode(g),
+                    Self::gamma_encode(b),
+                    alpha,
+                ]
+            }
+        }
+    }
+
+    pub fn to_linear_sc_rgb(self) -> ([f32; 3], f32) {
+        match self {
+            Self::LinearScRgb { channels, alpha } => (channels, alpha),
+            Self::Oklch { l, c, h, alpha } => (oklch_to_linear(l, c, h), alpha),
+            Self::Hsv { h, s, v, alpha } => {
+                let [r, g, b, _] = hsv_to_srgb(h, s, v, alpha);
+                (
+                    [
+                        Self::gamma_decode(r),
+                        Self::gamma_decode(g),
+                        Self::gamma_decode(b),
+                    ],
+                    alpha,
+                )
+            }
+            Self::Srgb { rgba: [r, g, b, a] } => (
+                [
+                    Self::gamma_decode(r),
+                    Self::gamma_decode(g),
+                    Self::gamma_decode(b),
+                ],
+                a,
+            ),
+        }
+    }
+
+    fn gamma_encode(v: f32) -> f32 {
+        let v = v.max(0.0);
+        if v <= 0.0031308 {
+            (12.92 * v).clamp(0.0, 1.0)
+        } else {
+            (1.055 * v.powf(1.0 / 2.4) - 0.055).clamp(0.0, 1.0)
+        }
+    }
+    fn gamma_decode(v: f32) -> f32 {
+        let v = v.clamp(0.0, 1.0);
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaintColorSlots {
+    pub color: Option<PaintColor>,
+    pub background: Option<PaintColor>,
+    /// Shorthand/legacy border color (also used as the fallback for sides).
+    pub border: Option<PaintColor>,
+    /// Explicit CSS border colors in TRBL order.
+    pub border_top: Option<PaintColor>,
+    pub border_right: Option<PaintColor>,
+    pub border_bottom: Option<PaintColor>,
+    pub border_left: Option<PaintColor>,
+    pub outline: Option<PaintColor>,
+    pub selection_background: Option<PaintColor>,
+    pub selection_color: Option<PaintColor>,
+}
+
+fn oklch_to_linear(l: f32, c: f32, hue: Option<f32>) -> [f32; 3] {
+    let h = hue.unwrap_or(0.0).to_radians();
+    let (a, b) = (c * h.cos(), c * h.sin());
+    let l_ = l + 0.3963377774 * a + 0.2158037573 * b;
+    let m_ = l - 0.1055613458 * a - 0.0638541728 * b;
+    let s_ = l - 0.0894841775 * a - 1.2914855480 * b;
+    let (ll, mm, ss) = (l_.powi(3), m_.powi(3), s_.powi(3));
+    [
+        4.0767416621 * ll - 3.3077115913 * mm + 0.2309699292 * ss,
+        -1.2684380046 * ll + 2.6097574011 * mm - 0.3413193965 * ss,
+        -0.0041960863 * ll - 0.7034186147 * mm + 1.7076147010 * ss,
+    ]
+}
+
+fn hsv_to_srgb(h: f32, s: f32, v: f32, alpha: f32) -> [f32; 4] {
+    let h = ((h % 360.0) + 360.0) % 360.0 / 60.0;
+    let i = h.floor() as i32;
+    let f = h - i as f32;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    let (r, g, b) = match i.rem_euclid(6) {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    [r, g, b, alpha]
+}
+
 impl SemanticColor {
     pub const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self { r, g, b, a }
@@ -652,7 +797,9 @@ impl Default for ControlSemantics {
 
 #[cfg(test)]
 mod tests {
-    use super::{OpacityTokens, SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef};
+    use super::{
+        OpacityTokens, PaintColor, SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef,
+    };
     use crate::theme::ThemeAppearance;
 
     /// `Highlight` is opt-in: a built-in theme that never names it must look
@@ -700,6 +847,39 @@ mod tests {
         assert_eq!(c.g, 0.0);
         assert!((c.b - 128.0 / 255.0).abs() < 1e-6);
         assert_eq!(c.a, 1.0);
+    }
+
+    #[test]
+    fn paint_color_conversions_stay_within_numeric_tolerance() {
+        let red = PaintColor::Oklch {
+            l: 0.62795536,
+            c: 0.2576833,
+            h: Some(29.2339),
+            alpha: 0.5,
+        };
+        let (linear, alpha) = red.to_linear_sc_rgb();
+        assert!((linear[0] - 1.0).abs() < 2.0e-4);
+        assert!(linear[1].abs() < 2.0e-4);
+        assert!(linear[2].abs() < 2.0e-4);
+        assert!((alpha - 0.5).abs() < 1.0e-6);
+
+        let hsv = PaintColor::Hsv {
+            h: -240.0,
+            s: 1.0,
+            v: 0.5,
+            alpha: 0.75,
+        };
+        let srgb = hsv.to_srgb();
+        assert!(srgb[0].abs() < 1.0e-6);
+        assert!((srgb[1] - 0.5).abs() < 1.0e-6);
+        assert!(srgb[2].abs() < 1.0e-6);
+        assert!((srgb[3] - 0.75).abs() < 1.0e-6);
+
+        let extended = PaintColor::LinearScRgb {
+            channels: [1.25, -0.125, 0.25],
+            alpha: 0.7,
+        };
+        assert_eq!(extended.to_linear_sc_rgb(), ([1.25, -0.125, 0.25], 0.7));
     }
 
     #[test]

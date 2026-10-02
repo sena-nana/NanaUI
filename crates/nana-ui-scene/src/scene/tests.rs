@@ -437,6 +437,7 @@ fn extracted_text_spans_travel_on_the_text_primitive() {
         start: 0,
         end: 2,
         color: [0.2, 0.6, 1.0, 1.0],
+        paint_color: None,
     }];
     let mut scene = UiScene::new();
     scene.apply_delta([labeled], []);
@@ -460,6 +461,7 @@ fn extracted_text_spans_travel_on_the_text_primitive() {
             start: 0,
             end: 2,
             color: [0.2, 0.6, 1.0, 1.0],
+            paint_color: None,
         }]
     );
 }
@@ -894,6 +896,7 @@ fn a_menu_surface_paints_the_radius_it_was_handed_not_the_constant() {
             search_field: None,
             options: Vec::new(),
             elevation: ComponentElevation {
+                paint_color: None,
                 color: [0.0, 0.0, 0.0, 0.55],
                 offset_x: 0.0,
                 offset_y: 4.0,
@@ -1038,6 +1041,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
             },
         ],
         elevation: ComponentElevation {
+            paint_color: None,
             color: [0.0, 0.0, 0.0, 0.55],
             offset_x: 0.0,
             offset_y: 4.0,
@@ -2183,6 +2187,12 @@ fn text_primitive_preserves_content_box_and_paint_semantics() {
         ..Default::default()
     };
     style_mut(&mut text).line_height = Some(LineHeightSpec::Absolute(18.0));
+    style_mut(&mut text).paint_colors.color = Some(nana_ui_core::PaintColor::Oklch {
+        l: 0.65,
+        c: 0.12,
+        h: Some(35.0),
+        alpha: 0.9,
+    });
 
     let mut scene = UiScene::new();
     scene.apply_delta([text], []);
@@ -2209,6 +2219,7 @@ fn text_primitive_preserves_content_box_and_paint_semantics() {
             ellipsis: true,
             horizontal_alignment: TextHorizontalAlignment::Center,
             vertical_alignment: TextVerticalAlignment::Center,
+            paint_color: Some(nana_ui_core::PaintColor::Oklch { .. }),
             ..
         }
     ));
@@ -2288,6 +2299,13 @@ fn document_selection_fill_paints_under_glyphs() {
         value: "Hello".into(),
     });
     style_mut(&mut text).color = Some([1.0, 1.0, 1.0, 1.0]);
+    style_mut(&mut text).paint_colors.selection_background =
+        Some(nana_ui_core::PaintColor::Oklch {
+            l: 0.7,
+            c: 0.15,
+            h: Some(210.0),
+            alpha: 0.8,
+        });
     text.document_text_selection = vec![LayoutBox {
         x: 0.0,
         y: 0.0,
@@ -2311,6 +2329,10 @@ fn document_selection_fill_paints_under_glyphs() {
             scene.primitive(fill_id).map(|primitive| &primitive.kind),
             Some(ScenePrimitiveKind::QuadBatch {
                 background: Some([1.0, 0.0, 0.0, 1.0]),
+                surface: QuadSurfacePaint {
+                    background_color: Some(nana_ui_core::PaintColor::Oklch { .. }),
+                    ..
+                },
                 ..
             })
         ),
@@ -4966,6 +4988,7 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
         background: [0.1, 0.1, 0.1, 1.0],
         border: [0.3, 0.3, 0.3, 1.0],
         elevation: ComponentElevation {
+            paint_color: None,
             color: [0.0, 0.0, 0.0, 0.24],
             offset_x: 0.0,
             offset_y: 8.0,
@@ -5074,6 +5097,7 @@ fn command_palette_title_and_query_sort_above_surface_quads() {
         input_background: [0.08, 0.08, 0.08, 1.0],
         input_border: [0.3, 0.3, 0.3, 1.0],
         elevation: ComponentElevation {
+            paint_color: None,
             color: [0.0, 0.0, 0.0, 0.4],
             offset_x: 0.0,
             offset_y: 12.0,
@@ -5182,6 +5206,7 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
         background: [0.1, 0.1, 0.1, 1.0],
         border: [0.0; 4],
         elevation: ComponentElevation {
+            paint_color: None,
             color: [0.0, 0.0, 0.0, 0.45],
             offset_x: 0.0,
             offset_y: 14.0,
@@ -5839,6 +5864,7 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
         search_field: None,
         options: Vec::new(),
         elevation: ComponentElevation {
+            paint_color: None,
             color: [0.0, 0.0, 0.0, 0.0],
             offset_x: 0.0,
             offset_y: 0.0,
@@ -6101,6 +6127,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             height: 34.0,
         },
         elevation: Some(ComponentElevation {
+            paint_color: None,
             color: [0.0, 0.0, 0.0, 0.25],
             offset_x: 0.0,
             offset_y: 3.0,
@@ -6287,6 +6314,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             .kind,
         ScenePrimitiveKind::Quad {
             shadow: Some(ComponentElevation {
+                paint_color: None,
                 offset_x: 0.0,
                 offset_y: 3.0,
                 blur_radius: 8.0,
@@ -6888,10 +6916,12 @@ fn css_gradient_and_clip_path_surface_paint_travels_on_quad() {
                         angle_deg: 180.0,
                         stops: vec![
                             nana_ui_core::GradientStop {
+                                paint_color: None,
                                 position: 0.0,
                                 color: [1.0, 1.0, 1.0, 1.0],
                             },
                             nana_ui_core::GradientStop {
+                                paint_color: None,
                                 position: 1.0,
                                 color: [1.0, 1.0, 1.0, 0.0],
                             },
@@ -7183,6 +7213,7 @@ fn css_drop_shadow_isolates_dest_group_not_box_shadow() {
             paint: nana_ui_core::PaintStyle {
                 filter: Some(nana_ui_core::ColorFilter {
                     drop_shadow: Some(nana_ui_core::FilterDropShadow {
+                        paint_color: None,
                         offset_x: 4.0,
                         offset_y: 6.0,
                         blur_radius: 8.0,
@@ -7243,6 +7274,7 @@ fn css_box_shadow_layers_outline_and_line_clamp_travel() {
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![
                     nana_ui_core::BoxShadowSpec {
+                        paint_color: None,
                         offset_x: 2.0,
                         offset_y: 2.0,
                         blur_radius: 4.0,
@@ -7251,6 +7283,7 @@ fn css_box_shadow_layers_outline_and_line_clamp_travel() {
                         inset: true,
                     },
                     nana_ui_core::BoxShadowSpec {
+                        paint_color: None,
                         offset_x: 0.0,
                         offset_y: 4.0,
                         blur_radius: 8.0,
@@ -7320,6 +7353,7 @@ fn inset_box_shadow_on_a_leaf_is_not_an_outset_elevation() {
             background: Some([1.0, 1.0, 1.0, 1.0]),
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![nana_ui_core::BoxShadowSpec {
+                    paint_color: None,
                     offset_x: 2.0,
                     offset_y: 4.0,
                     blur_radius: 6.0,
@@ -7377,6 +7411,7 @@ fn inset_box_shadow_with_children_is_a_dest_group_not_parent_quad() {
             background: Some([1.0, 0.0, 0.0, 1.0]),
             paint: nana_ui_core::PaintStyle {
                 box_shadows: vec![nana_ui_core::BoxShadowSpec {
+                    paint_color: None,
                     offset_x: 0.0,
                     offset_y: 2.0,
                     blur_radius: 4.0,
@@ -7439,6 +7474,7 @@ fn css_mask_and_gradient_both_travel_on_quad() {
                     nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                         angle_deg: 90.0,
                         stops: vec![nana_ui_core::GradientStop {
+                            paint_color: None,
                             position: 0.0,
                             color: [1.0, 0.0, 0.0, 1.0],
                         }],
@@ -7448,6 +7484,7 @@ fn css_mask_and_gradient_both_travel_on_quad() {
                     nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
                         angle_deg: 180.0,
                         stops: vec![nana_ui_core::GradientStop {
+                            paint_color: None,
                             position: 0.0,
                             color: [0.0, 0.0, 0.0, 1.0],
                         }],
@@ -7693,10 +7730,12 @@ fn host_texture_custom_carries_css_mask() {
                         angle_deg: 180.0,
                         stops: vec![
                             nana_ui_core::GradientStop {
+                                paint_color: None,
                                 position: 0.0,
                                 color: [1.0, 1.0, 1.0, 1.0],
                             },
                             nana_ui_core::GradientStop {
+                                paint_color: None,
                                 position: 1.0,
                                 color: [1.0, 1.0, 1.0, 0.0],
                             },
@@ -8293,11 +8332,13 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
             start: 0,
             end: 4,
             color: [1.0, 0.0, 0.0, 1.0],
+            paint_color: None,
         },
         nana_ui_runtime::ExtractedTextSpan {
             start: 13,
             end: 16,
             color: [0.0, 1.0, 0.0, 1.0],
+            paint_color: None,
         },
     ];
 
@@ -8321,12 +8362,14 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
             SceneTextSpan {
                 start: 0,
                 end: 4,
-                color: [1.0, 0.0, 0.0, 1.0]
+                color: [1.0, 0.0, 0.0, 1.0],
+                paint_color: None,
             },
             SceneTextSpan {
                 start: 13,
                 end: 16,
-                color: [0.0, 1.0, 0.0, 1.0]
+                color: [0.0, 1.0, 0.0, 1.0],
+                paint_color: None,
             }
         ]
     );

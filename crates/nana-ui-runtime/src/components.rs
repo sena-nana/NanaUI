@@ -1217,6 +1217,7 @@ impl ScrollbarBar {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComponentElevation {
+    pub paint_color: Option<nana_ui_core::PaintColor>,
     pub color: [f32; 4],
     pub offset_x: f32,
     pub offset_y: f32,
@@ -1230,6 +1231,7 @@ impl ComponentElevation {
     /// One elevation step of a theme, as the scene consumes it.
     pub fn from_shadow(shadow: nana_ui_core::ShadowToken) -> Self {
         Self {
+            paint_color: None,
             color: shadow.color.as_rgba_array(),
             offset_x: shadow.offset_x,
             offset_y: shadow.offset_y,
@@ -1256,6 +1258,7 @@ impl ComponentElevation {
 
     pub fn from_box_shadow(shadow: nana_ui_core::BoxShadowSpec) -> Self {
         Self {
+            paint_color: shadow.paint_color,
             color: shadow.color,
             offset_x: shadow.offset_x,
             offset_y: shadow.offset_y,
@@ -1875,6 +1878,7 @@ impl NodeStyle {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
+    pub paint_colors: nana_ui_core::PaintColorSlots,
     pub foreground: SemanticColorRole,
     pub color: Option<[f32; 4]>,
     pub background: Option<[f32; 4]>,
@@ -1932,6 +1936,7 @@ impl ComputedStyle {
 impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
+            paint_colors: Default::default(),
             foreground: SemanticColorRole::Text,
             color: None,
             background: None,
@@ -3699,6 +3704,9 @@ pub struct ExtractedTextSpan {
     pub start: usize,
     pub end: usize,
     pub color: [f32; 4],
+    /// Explicit authoring-space foreground, such as CSS `::selection`.
+    /// `color` remains the compatibility value for legacy renderers.
+    pub paint_color: Option<nana_ui_core::PaintColor>,
 }
 
 impl StandardVisual {

@@ -30,6 +30,10 @@ impl UiWorld {
         let inherited_color = parent.and(inherited.color);
         let (foreground, color, background, border_color) =
             self.palette_paint_colors(id, inherited_color);
+        let local_paint = self.semantic_paint(id, &self.record(id).style);
+        let color_override = layout.color.is_some()
+            || local_paint.foreground.is_some()
+            || local_paint.foreground_mix.is_some();
         let visibility = layout.paint.visibility.unwrap_or(inherited.visibility);
         // Overlay/menu presence is structural: descendants cannot make a closed
         // branch paintable again by resolving their own local visibility.
@@ -44,6 +48,38 @@ impl UiWorld {
         let pointer_events =
             PointerEventsSpec::inherit_from(layout.pointer_events, inherited.pointer_events);
         let next = ComputedStyle {
+            paint_colors: nana_ui_core::PaintColorSlots {
+                color: layout.paint_colors.color.or_else(|| {
+                    (!color_override)
+                        .then_some(inherited.paint_colors.color)
+                        .flatten()
+                }),
+                // Backgrounds, borders, and outlines are non-inherited CSS
+                // properties. Keep their authoring-space values local to the
+                // node while the foreground and selection colors follow the
+                // existing inherited compatibility fields below.
+                background: layout.paint_colors.background,
+                border: layout.paint_colors.border,
+                border_top: layout.paint_colors.border_top,
+                border_right: layout.paint_colors.border_right,
+                border_bottom: layout.paint_colors.border_bottom,
+                border_left: layout.paint_colors.border_left,
+                outline: layout.paint_colors.outline,
+                selection_background: layout.paint_colors.selection_background.or_else(|| {
+                    layout
+                        .selection_background
+                        .is_none()
+                        .then_some(inherited.paint_colors.selection_background)
+                        .flatten()
+                }),
+                selection_color: layout.paint_colors.selection_color.or_else(|| {
+                    layout
+                        .selection_color
+                        .is_none()
+                        .then_some(inherited.paint_colors.selection_color)
+                        .flatten()
+                }),
+            },
             foreground,
             color,
             background,

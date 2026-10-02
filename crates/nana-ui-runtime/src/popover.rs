@@ -726,6 +726,7 @@ pub(crate) fn menu_surface_geometry(
         search_field: None,
         options: Vec::new(),
         elevation: ComponentElevation {
+            paint_color: None,
             color: [0.0, 0.0, 0.0, if is_light { 0.30 } else { 0.55 }],
             offset_x: 0.0,
             offset_y: 4.0,

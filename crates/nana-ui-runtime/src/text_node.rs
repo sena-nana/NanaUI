@@ -344,6 +344,9 @@ pub(crate) fn classify_computed_style_change(
         || previous.foreground != next.foreground
         || previous.selection_background != next.selection_background
         || previous.selection_color != next.selection_color
+        || previous.paint_colors.color != next.paint_colors.color
+        || previous.paint_colors.selection_background != next.paint_colors.selection_background
+        || previous.paint_colors.selection_color != next.paint_colors.selection_color
     {
         dirty |= TextDirty::PAINT;
     }

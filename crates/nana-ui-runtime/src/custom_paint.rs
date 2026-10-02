@@ -161,6 +161,10 @@ pub enum PaintColor {
     Role(SemanticColorRole),
     Mix(SemanticColorMix),
     Rgba([f32; 4]),
+    /// An explicit authoring-space value shared with the CSS paint resolver.
+    /// It remains tagged through custom paint resolution until the scene
+    /// painter uploads the final primitive.
+    Authoring(nana_ui_core::PaintColor),
 }
 
 impl From<SemanticColorRole> for PaintColor {
@@ -178,6 +182,12 @@ impl From<SemanticColorMix> for PaintColor {
 impl From<[f32; 4]> for PaintColor {
     fn from(rgba: [f32; 4]) -> Self {
         Self::Rgba(rgba)
+    }
+}
+
+impl From<nana_ui_core::PaintColor> for PaintColor {
+    fn from(color: nana_ui_core::PaintColor) -> Self {
+        Self::Authoring(color)
     }
 }
 
@@ -426,6 +436,9 @@ impl From<Gradient> for Paint {
 pub struct ResolvedGradient {
     pub shape: GradientShape,
     pub stops: Vec<(f32, [f32; 4])>,
+    /// Linear scRGB stops when at least one stop was supplied in an explicit
+    /// authoring space. Legacy callers keep using `stops` (sRGB) unchanged.
+    pub linear_stops: Option<Vec<(f32, [f32; 4])>>,
     pub extend: GradientExtend,
 }
 
@@ -433,6 +446,8 @@ pub struct ResolvedGradient {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResolvedPaint {
     Solid([f32; 4]),
+    /// An explicit authoring-space solid retained until the scene painter.
+    Authoring(nana_ui_core::PaintColor),
     Gradient(Arc<ResolvedGradient>),
 }
 
@@ -441,6 +456,7 @@ impl ResolvedPaint {
     pub fn is_invisible(&self) -> bool {
         match self {
             Self::Solid(color) => color[3] <= 0.0,
+            Self::Authoring(color) => color.to_linear_sc_rgb().1 <= 0.0,
             Self::Gradient(gradient) => gradient.stops.iter().all(|(_, color)| color[3] <= 0.0),
         }
     }
@@ -1033,6 +1049,7 @@ pub enum PaintOp {
         radii: [f32; 4],
         fill: Option<ResolvedPaint>,
         border: Option<([f32; 4], f32)>,
+        border_paint: Option<(PaintColor, f32)>,
         shadow: Option<ComponentElevation>,
     },
     Image {
@@ -1607,7 +1624,10 @@ impl<'a> PaintContext<'a> {
     /// 按当前主题解析上色。
     pub fn paint(&self, paint: impl Into<Paint>) -> ResolvedPaint {
         match paint.into() {
-            Paint::Color(color) => ResolvedPaint::Solid(self.color(color)),
+            Paint::Color(color) => match color {
+                PaintColor::Authoring(color) => ResolvedPaint::Authoring(color),
+                color => ResolvedPaint::Solid(self.color(color)),
+            },
             Paint::Gradient(gradient) => {
                 let mut stops: Vec<(f32, [f32; 4])> = gradient
                     .stops
@@ -1620,9 +1640,37 @@ impl<'a> PaintContext<'a> {
                 if stops.is_empty() {
                     stops.push((0.0, [0.0; 4]));
                 }
+                let linear_stops = gradient
+                    .stops
+                    .iter()
+                    .any(|stop| matches!(stop.color, PaintColor::Authoring(_)))
+                    .then(|| {
+                        let mut stops = gradient
+                            .stops
+                            .iter()
+                            .filter(|stop| stop.offset.is_finite())
+                            .map(|stop| {
+                                let offset = stop.offset.clamp(0.0, 1.0);
+                                let resolved = match stop.color {
+                                    PaintColor::Authoring(color) => color,
+                                    color => nana_ui_core::PaintColor::Srgb {
+                                        rgba: self.color(color),
+                                    },
+                                };
+                                let (channels, alpha) = resolved.to_linear_sc_rgb();
+                                (offset, [channels[0], channels[1], channels[2], alpha])
+                            })
+                            .collect::<Vec<_>>();
+                        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+                        if stops.is_empty() {
+                            stops.push((0.0, [0.0; 4]));
+                        }
+                        stops
+                    });
                 ResolvedPaint::Gradient(Arc::new(ResolvedGradient {
                     shape: gradient.shape,
                     stops,
+                    linear_stops,
                     extend: gradient.extend,
                 }))
             }
@@ -1659,6 +1707,7 @@ impl<'a> PaintContext<'a> {
             PaintColor::Role(role) => model.color(role).as_rgba_array(),
             PaintColor::Mix(mix) => mix.resolve(model).as_rgba_array(),
             PaintColor::Rgba(rgba) => rgba,
+            PaintColor::Authoring(color) => color.to_srgb(),
         }
     }
 
@@ -1683,6 +1732,10 @@ impl<'a> PaintContext<'a> {
                 spread,
                 inset,
             } => ComponentElevation {
+                paint_color: match color {
+                    PaintColor::Authoring(color) => Some(color),
+                    _ => None,
+                },
                 color: self.color(color),
                 offset_x: offset[0],
                 offset_y: offset[1],
@@ -1760,6 +1813,9 @@ impl<'a> PaintContext<'a> {
             .border
             .filter(|(_, width)| *width > 0.0)
             .map(|(color, width)| (self.color(color), width));
+        let border_paint = paint
+            .border
+            .filter(|(color, width)| *width > 0.0 && matches!(color, PaintColor::Authoring(_)));
         let shadow = paint.shadow.map(|shadow| self.elevation(shadow));
         if fill.is_none() && border.is_none() && shadow.is_none() {
             return;
@@ -1769,6 +1825,7 @@ impl<'a> PaintContext<'a> {
             radii,
             fill,
             border,
+            border_paint,
             shadow,
         });
     }
@@ -2365,6 +2422,34 @@ mod tests {
             ]
         );
         assert_eq!(gradient.extend, GradientExtend::Reflect);
+    }
+
+    #[test]
+    fn explicit_authoring_paint_keeps_linear_sc_rgb_until_scene_upload() {
+        let theme = nana_ui_core::builtin_theme_arc(ThemeAppearance::Dark);
+        let cx = PaintContext::new(
+            theme.as_ref(),
+            [10.0, 10.0],
+            PaintState::default(),
+            &no_measure,
+            false,
+        );
+        let color = nana_ui_core::PaintColor::LinearScRgb {
+            channels: [1.25, -0.125, 0.25],
+            alpha: 0.7,
+        };
+        assert_eq!(cx.paint(color), ResolvedPaint::Authoring(color));
+        let ResolvedPaint::Gradient(gradient) = cx.paint(
+            Gradient::linear([0.0, 0.0], [10.0, 0.0])
+                .stop(0.0, color)
+                .stop(1.0, [0.0, 0.0, 0.0, 1.0]),
+        ) else {
+            panic!("explicit gradient");
+        };
+        let stops = gradient.linear_stops.as_ref().expect("linear stops");
+        assert!((stops[0].1[0] - 1.25).abs() <= 1.0e-6);
+        assert!((stops[0].1[1] + 0.125).abs() <= 1.0e-6);
+        assert!((stops[0].1[3] - 0.7).abs() <= 1.0e-6);
     }
 
     /// Records the state it was painted in.

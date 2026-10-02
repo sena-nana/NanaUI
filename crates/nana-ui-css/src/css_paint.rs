@@ -28,8 +28,11 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
             let v = val.trim();
             if v.eq_ignore_ascii_case("none") || v.eq_ignore_ascii_case("transparent") {
                 style.background = None;
+                style.paint_colors.background = None;
             } else if let Some(c) = resolve_paint_color(val) {
                 style.background = Some(c);
+                style.paint_colors.background =
+                    crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
             }
         }
         "mask-image" | "-webkit-mask-image" => {
@@ -63,6 +66,8 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
         "outline-color" => {
             if let Some(c) = resolve_paint_color(val) {
                 style.paint.outline.color = Some(c);
+                style.paint_colors.outline =
+                    crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
             }
         }
         "outline-style" => apply_outline_style(style, val),
@@ -384,6 +389,7 @@ fn apply_background_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) 
     let trimmed = val.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
         style.background = None;
+        style.paint_colors.background = None;
         clear_background_images(style);
         return;
     }
@@ -392,6 +398,7 @@ fn apply_background_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) 
         return;
     }
     let mut color = None;
+    let mut paint_color = None;
     let mut layers = Vec::new();
     for (index, part) in parts.iter().enumerate() {
         let last = index + 1 == parts.len();
@@ -399,18 +406,24 @@ fn apply_background_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) 
         if let Some(c) = parsed.color {
             color = Some(c);
         }
+        if let Some(c) = parsed.paint_color {
+            paint_color = Some(c);
+        }
         if let Some(image) = parsed.image {
             layers.push(image);
         }
     }
     if let Some(c) = color {
         style.background = Some(c);
+        style.paint_colors.background = paint_color.map(|p| p.to_core());
     }
     if layers.is_empty() {
         if color.is_some() {
             clear_background_images(style);
         } else if let Some(c) = resolve_paint_color(trimmed) {
             style.background = Some(c);
+            style.paint_colors.background =
+                crate::style::resolve_css_paint_color(trimmed).map(|p| p.to_core());
             clear_background_images(style);
         }
         return;
@@ -618,6 +631,7 @@ fn parse_background_image_value(input: &str) -> Option<BackgroundImage> {
 struct ParsedBackgroundLayer {
     image: Option<BackgroundImage>,
     color: Option<[f32; 4]>,
+    paint_color: Option<crate::style::CssPaintColor>,
 }
 
 fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLayer {
@@ -635,10 +649,12 @@ fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLay
         rest = strip_first_function(&rest, "radial-gradient");
     }
     let mut color = None;
+    let mut paint_color = None;
     if allow_color {
         for token in rest.split_whitespace() {
             if let Some(c) = resolve_paint_color(token) {
                 color = Some(c);
+                paint_color = crate::style::resolve_css_paint_color(token);
                 break;
             }
         }
@@ -646,6 +662,7 @@ fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLay
             && let Some(c) = resolve_paint_color(&rest)
         {
             color = Some(c);
+            paint_color = crate::style::resolve_css_paint_color(&rest);
         }
     }
     if let Some(BackgroundImage::Url {
@@ -669,7 +686,11 @@ fn parse_background_layer(input: &str, allow_color: bool) -> ParsedBackgroundLay
             *position = parsed_pos;
         }
     }
-    ParsedBackgroundLayer { image, color }
+    ParsedBackgroundLayer {
+        image,
+        color,
+        paint_color,
+    }
 }
 
 pub fn parse_linear_gradient(input: &str) -> Option<LinearGradient> {
@@ -941,10 +962,12 @@ fn apply_outline_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
     let trimmed = val.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
         style.paint.outline = Default::default();
+        style.paint_colors.outline = None;
         return;
     }
     let mut saw_style = false;
-    for part in trimmed.split_whitespace() {
+    // Keep function arguments (e.g. `oklch(70% .1 200)`) as one token.
+    for part in split_css_space_tokens(trimmed) {
         let lower = part.to_ascii_lowercase();
         if lower == "none" || lower == "hidden" {
             style.paint.outline.style = OutlineStyle::None;
@@ -952,10 +975,12 @@ fn apply_outline_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
         } else if lower == "solid" {
             style.paint.outline.style = OutlineStyle::Solid;
             saw_style = true;
-        } else if let Some(px) = parse_css_length_px(part, None) {
+        } else if let Some(px) = parse_css_length_px(&part, None) {
             style.paint.outline.width = px.max(0.0);
-        } else if let Some(c) = resolve_paint_color(part) {
+        } else if let Some(c) = resolve_paint_color(&part) {
             style.paint.outline.color = Some(c);
+            style.paint_colors.outline =
+                crate::style::resolve_css_paint_color(&part).map(|p| p.to_core());
         }
     }
     if !saw_style && style.paint.outline.width > 0.0 {
@@ -974,7 +999,7 @@ fn apply_text_decoration_line(style: &mut nana_ui_core::LayoutStyle, val: &str) 
     }
     let mut deco = TextDecorationLine::default();
     let mut saw = false;
-    for part in trimmed.split_whitespace() {
+    for part in split_css_space_tokens(trimmed) {
         match part.to_ascii_lowercase().as_str() {
             "underline" => {
                 deco.underline = true;
@@ -1359,12 +1384,14 @@ fn parse_gradient_stops(input: &str, repeating: bool) -> Option<Vec<GradientStop
                 index as f32 / (raw.len().saturating_sub(1) as f32)
             };
             stops.push(GradientStop {
+                paint_color: item.paint_color,
                 position,
                 color: item.color,
             });
         } else {
             for &position in &item.positions {
                 stops.push(GradientStop {
+                    paint_color: item.paint_color,
                     position,
                     color: item.color,
                 });
@@ -1385,6 +1412,7 @@ fn parse_gradient_stops(input: &str, repeating: bool) -> Option<Vec<GradientStop
 
 struct ColorStopItem {
     color: [f32; 4],
+    paint_color: Option<nana_ui_core::PaintColor>,
     positions: Vec<f32>,
 }
 
@@ -1400,7 +1428,35 @@ fn parse_color_stop_item(input: &str) -> Option<ColorStopItem> {
             return None;
         }
     }
-    Some(ColorStopItem { color, positions })
+    Some(ColorStopItem {
+        color,
+        paint_color: parse_author_color_prefix(input),
+        positions,
+    })
+}
+
+fn parse_author_color_prefix(input: &str) -> Option<nana_ui_core::PaintColor> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for name in [
+        "rgba",
+        "hsla",
+        "rgb",
+        "hsl",
+        "oklch",
+        "hsv",
+        "color",
+        "color-mix",
+        "light-dark",
+    ] {
+        if let Some(end) = leading_function_end(&lower, name) {
+            return crate::style::resolve_css_paint_color(&trimmed[..end]).map(|c| c.to_core());
+        }
+    }
+    if let Some((head, _)) = split_first_token(trimmed) {
+        return crate::style::resolve_css_paint_color(head).map(|c| c.to_core());
+    }
+    crate::style::resolve_css_paint_color(trimmed).map(|c| c.to_core())
 }
 
 fn split_color_and_rest(input: &str) -> Option<([f32; 4], &str)> {
@@ -1409,7 +1465,21 @@ fn split_color_and_rest(input: &str) -> Option<([f32; 4], &str)> {
         return None;
     }
     let lower = trimmed.to_ascii_lowercase();
-    for name in ["rgba", "hsla", "rgb", "hsl"] {
+    // Function colors can contain spaces before their trailing stop
+    // position. Find the matching close-paren before splitting on whitespace
+    // so explicit OKLCH/HSV (and nested color-mix/light-dark) metadata is
+    // retained by the GradientStop.
+    for name in [
+        "rgba",
+        "hsla",
+        "rgb",
+        "hsl",
+        "oklch",
+        "hsv",
+        "color",
+        "color-mix",
+        "light-dark",
+    ] {
         if let Some(end) = leading_function_end(&lower, name) {
             let color = resolve_paint_color(&trimmed[..end])?;
             return Some((color, trimmed[end..].trim()));
@@ -1492,6 +1562,7 @@ fn expand_repeating_linear_stops(stops: Vec<GradientStop>) -> Option<Vec<Gradien
                 continue;
             }
             out.push(GradientStop {
+                paint_color: stop.paint_color,
                 position: pos,
                 color: stop.color,
             });
@@ -1990,6 +2061,35 @@ mod tests {
         assert_eq!(grad.stops.len(), 2);
         assert!((grad.stops[0].color[3] - 1.0).abs() < 0.01);
         assert!(grad.stops[1].color[3] < 0.01);
+    }
+
+    #[test]
+    fn gradient_stops_keep_explicit_oklch_and_hsv_spaces() {
+        let grad =
+            parse_linear_gradient("linear-gradient(oklch(65% .15 30) 10%, hsv(120 60% 70%) 90%)")
+                .unwrap();
+        assert!(matches!(
+            grad.stops[0].paint_color,
+            Some(nana_ui_core::PaintColor::Oklch { .. })
+        ));
+        assert!(matches!(
+            grad.stops[1].paint_color,
+            Some(nana_ui_core::PaintColor::Hsv { .. })
+        ));
+    }
+
+    #[test]
+    fn gradient_stops_keep_explicit_linear_scrgb_space() {
+        let grad = parse_linear_gradient(
+            "linear-gradient(color(srgb-linear 1.25 -0.1 0.5) 0%, white 100%)",
+        )
+        .unwrap();
+        assert!(matches!(
+            grad.stops[0].paint_color,
+            Some(nana_ui_core::PaintColor::LinearScRgb { channels, .. })
+                if (channels[0] - 1.25).abs() < 1.0e-6
+                    && (channels[1] + 0.1).abs() < 1.0e-6
+        ));
     }
 
     #[test]

@@ -24,6 +24,10 @@ fn stripes_data_url(width: u32, height: u32) -> String {
 
 fn stretched_image_scene(url: &str, sampling: ImageSampling, size: f32) -> UiScene {
     let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
         background_image: Some(
             nana_ui_core::BackgroundImage::url_with_fit(
                 url,

@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex};
 use nana_js_engine::probe::{VUE_SFC_COMPAT_CSS, vue_sfc_compat_artifact};
 use nana_js_engine::{HostApiRegistry, HostValue, JsEngine};
 use nana_ui::{
-    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeAppearance,
-    WindowDescriptor, run_runtime,
+    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor,
+    run_runtime,
 };
 use nana_ui_platform::{CompositionInput, InputPayload, PointerType, WindowEvent, WindowId};
 use nana_ui_runtime::FrameworkError;

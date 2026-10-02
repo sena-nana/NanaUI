@@ -12,11 +12,26 @@ pub(in crate::world) fn selectable_text_regions(
     let region = crate::ComponentTextRegion {
         bounds: content,
         content: Arc::clone(text).into(),
-        color: Some(style.color.unwrap_or_else(|| palette.text.as_rgba_array())),
+        color: Some(
+            style
+                .paint_colors
+                .color
+                .map(nana_ui_core::PaintColor::to_srgb)
+                .or(style.color)
+                .unwrap_or_else(|| palette.text.as_rgba_array()),
+        ),
         font_size: style.font_size,
         font_weight: style.font_weight,
     };
-    (region, palette.accent_soft.as_rgba_array())
+    (
+        region,
+        style
+            .paint_colors
+            .selection_color
+            .map(nana_ui_core::PaintColor::to_srgb)
+            .or(style.selection_color)
+            .unwrap_or_else(|| palette.accent_soft.as_rgba_array()),
+    )
 }
 
 impl UiWorld {

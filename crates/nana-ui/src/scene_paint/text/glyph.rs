@@ -200,6 +200,8 @@ pub(super) struct NanaGlyphRun {
     pub render_mode: GlyphRenderMode,
     /// sRGB, opacity already folded in. Not in the raster key.
     pub color: [f32; 4],
+    /// Authoring-space value, when this run came from an explicit CSS paint.
+    pub paint_color: Option<nana_ui_core::PaintColor>,
     pub glyphs: Range<u32>,
 }
 
@@ -270,6 +272,7 @@ impl NanaGlyphBuffer {
         synthesis: GlyphSynthesis,
         render_mode: GlyphRenderMode,
         color: [f32; 4],
+        paint_color: Option<nana_ui_core::PaintColor>,
         glyph: PlacedGlyph,
     ) {
         let index = self.glyphs.len() as u32;
@@ -282,6 +285,7 @@ impl NanaGlyphBuffer {
             && run.synthesis == synthesis
             && run.render_mode == render_mode
             && run.color == color
+            && run.paint_color == paint_color
             && run.glyphs.end == index
         {
             run.glyphs.end = index + 1;
@@ -295,6 +299,7 @@ impl NanaGlyphBuffer {
             synthesis,
             render_mode,
             color,
+            paint_color,
             glyphs: index..index + 1,
         });
     }
@@ -345,6 +350,7 @@ mod tests {
                 GlyphSynthesis::NONE,
                 GlyphRenderMode::Mask,
                 color,
+                None,
                 glyph,
             );
         }
@@ -369,6 +375,7 @@ mod tests {
                 GlyphSynthesis::NONE,
                 GlyphRenderMode::Mask,
                 [1.0; 4],
+                None,
                 PlacedGlyph {
                     glyph: index,
                     x: index as f32,

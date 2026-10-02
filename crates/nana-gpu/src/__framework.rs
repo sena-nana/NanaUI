@@ -144,6 +144,18 @@ pub const fn format_to_wgpu(format: GpuTextureFormat) -> wgpu::TextureFormat {
     format.to_wgpu()
 }
 
+/// Return the format capabilities that WGPU will use for this context. The
+/// framework uses this for internal render targets whose format is not tied to
+/// the host surface (for example the motion evaluator). Keeping the query here
+/// matters when an adapter-specific format table rejects a WebGPU-guaranteed
+/// format.
+pub fn texture_format_features(
+    gpu: &GpuContext,
+    format: wgpu::TextureFormat,
+) -> Option<wgpu::TextureFormatFeatures> {
+    gpu.format_features(format)
+}
+
 pub fn usages_to_wgpu(usage: GpuTextureUsages) -> wgpu::TextureUsages {
     usage.to_wgpu()
 }

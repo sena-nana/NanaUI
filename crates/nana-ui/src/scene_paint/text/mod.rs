@@ -833,6 +833,11 @@ pub(super) struct TextPipeline {
     /// What upright text on an opaque backdrop is resolved as: `Mask`
     /// unless the host turned subpixel text on and the device can draw it.
     subpixel: GlyphRenderMode,
+    /// One-shot linear presentation color used by a paint-only pass such as
+    /// an explicit CSS text shadow. Text's retained glyph entries continue
+    /// to use their compatibility sRGB colors; only the run row changes.
+    linear_color_override: Option<[f32; 4]>,
+    paint_color_override: Option<nana_ui_core::PaintColor>,
 }
 
 impl TextPipeline {
@@ -890,7 +895,22 @@ impl TextPipeline {
             slots_drawn: Cell::new(0),
             closed: TargetCounters::default(),
             subpixel: GlyphRenderMode::Mask,
+            linear_color_override: None,
+            paint_color_override: None,
         }
+    }
+
+    /// Set the linear color for the next [`Self::prepare`] call. This keeps
+    /// the existing text preparation API (and its retained-entry behavior)
+    /// while allowing CSS authoring spaces to reach the shader without an
+    /// sRGB round-trip. The value is consumed even when preparation culls the
+    /// paragraph, so it cannot leak into the following text node.
+    pub(super) fn set_linear_color_override(&mut self, color: Option<[f32; 4]>) {
+        self.linear_color_override = color;
+    }
+
+    pub(super) fn set_paint_color_override(&mut self, color: Option<nana_ui_core::PaintColor>) {
+        self.paint_color_override = color;
     }
 
     /// Resolve upright text on an opaque backdrop with per-subpixel coverage
@@ -1160,6 +1180,8 @@ impl TextPipeline {
         // take subpixel coverage as colored alpha.
         opaque_backdrop: bool,
     ) -> Option<PreparedText> {
+        let linear_color_override = self.linear_color_override.take();
+        let paint_color_override = self.paint_color_override.take();
         if content.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
         }
@@ -1191,7 +1213,7 @@ impl TextPipeline {
         // what decides that lookup: the layout is not keyed by colour, so for
         // rich text this is the only thing that can tell one paint from
         // another. Solid text costs an empty `Vec` and a zero.
-        let colors = SpanColors::new(content, spans, default_color);
+        let colors = SpanColors::new(content, spans, default_color, paint_color_override);
         // Every path shapes with the full OpenType machinery. The scene still
         // carries the old `Auto | Advanced` distinction; `nana-text` has no
         // reduced mode to select, and a reduced one changed advances enough to
@@ -1577,7 +1599,7 @@ impl TextPipeline {
         run.entry = entry;
         run.presentation = RunPresentation {
             origin: whole,
-            color: run_color(default_color),
+            color: linear_color_override.unwrap_or_else(|| run_color(default_color)),
             opacity: opacity.clamp(0.0, 1.0),
             flags,
             presentation,
@@ -1802,7 +1824,8 @@ impl TextPipeline {
                         size,
                         synthesis,
                         mode,
-                        colors.color_at(glyph.cluster as usize),
+                        colors.color_at(glyph.cluster as usize).srgb,
+                        colors.color_at(glyph.cluster as usize).paint_color,
                         PlacedGlyph {
                             glyph: glyph.glyph_id,
                             x,
@@ -1858,11 +1881,20 @@ impl TextPipeline {
             // inherit the run row instead of carrying four bytes that a
             // recolor would then have to rewrite.
             let color = pipeline::pack_srgb(run.color);
-            let own = if color == inherited {
+            let own = if run.paint_color.is_some() {
+                pipeline::INSTANCE_OWN_COLOR | pipeline::INSTANCE_LINEAR_COLOR
+            } else if color == inherited {
                 0
             } else {
                 pipeline::INSTANCE_OWN_COLOR
             };
+            let linear_color = run
+                .paint_color
+                .map(|paint| {
+                    let (channels, alpha) = paint.to_linear_sc_rgb();
+                    [channels[0], channels[1], channels[2], alpha]
+                })
+                .unwrap_or([0.0; 4]);
             for glyph in resolved.glyphs_of(run) {
                 *resolve_requests += 1;
                 let (raster_key, pen) = run.raster_key(glyph);
@@ -1907,6 +1939,7 @@ impl TextPipeline {
                         placement.origin,
                         color,
                         content | own,
+                        linear_color,
                     ),
                 );
                 placed += 1;
@@ -2838,23 +2871,60 @@ fn push_entry_segment(
 ///
 /// Node opacity is deliberately not folded in: it rides on the run row, so a
 /// fade neither relayouts rich text nor rewrites a glyph.
+#[derive(Clone, Copy)]
+struct ResolvedSpanColor {
+    srgb: [f32; 4],
+    paint_color: Option<nana_ui_core::PaintColor>,
+}
+
 struct SpanColors {
     /// Well-formed spans, in start order. Empty means solid `default`.
-    spans: Vec<(Range<usize>, [f32; 4])>,
+    spans: Vec<(Range<usize>, ResolvedSpanColor)>,
     default: [f32; 4],
+    default_paint_color: Option<nana_ui_core::PaintColor>,
     /// Identity of the whole mapping, for [`TextGpuEntry::colors`]. Zero for
     /// solid text, which is the case that may be recoloured without rebuilding
     /// anything.
     fingerprint: u64,
 }
 
+#[cfg(test)]
+mod span_color_tests {
+    use super::*;
+
+    #[test]
+    fn authoring_span_keeps_extended_linear_sc_rgb_channels() {
+        let paint = nana_ui_core::PaintColor::LinearScRgb {
+            channels: [1.25, -0.125, 0.25],
+            alpha: 0.7,
+        };
+        let spans = [SceneTextSpan {
+            start: 0,
+            end: 1,
+            color: paint.to_srgb(),
+            paint_color: Some(paint),
+        }];
+        let colors = SpanColors::new("x", &spans, [0.0; 4], None);
+        let resolved = colors.color_at(0);
+        assert_eq!(resolved.paint_color, Some(paint));
+        let (channels, alpha) = resolved.paint_color.unwrap().to_linear_sc_rgb();
+        assert_eq!(channels, [1.25, -0.125, 0.25]);
+        assert_eq!(alpha, 0.7);
+    }
+}
+
 impl SpanColors {
-    fn new(content: &str, spans: &[SceneTextSpan], default: [f32; 4]) -> Self {
+    fn new(
+        content: &str,
+        spans: &[SceneTextSpan],
+        default: [f32; 4],
+        default_paint_color: Option<nana_ui_core::PaintColor>,
+    ) -> Self {
         let mut ordered: Vec<&SceneTextSpan> = spans.iter().collect();
         // Overlap is resolved by start order below, so the order has to be the
         // one the rule assumes rather than the one the scene happened to write.
         ordered.sort_by_key(|span| (span.start, span.end));
-        let mut kept: Vec<(Range<usize>, [f32; 4])> = Vec::new();
+        let mut kept: Vec<(Range<usize>, ResolvedSpanColor)> = Vec::new();
         for span in ordered {
             // A span the scene built against different bytes would recolor
             // whatever now sits at those offsets, so a range that is not a
@@ -2871,7 +2941,13 @@ impl SpanColors {
             if kept.last().is_some_and(|(last, _)| last.end > span.start) {
                 continue;
             }
-            kept.push((span.start..span.end, span.color));
+            kept.push((
+                span.start..span.end,
+                ResolvedSpanColor {
+                    srgb: span.color,
+                    paint_color: span.paint_color,
+                },
+            ));
         }
         // The default is in the fingerprint because it decides which glyphs
         // carry their own colour: a span that happens to paint the default
@@ -2886,28 +2962,51 @@ impl SpanColors {
             for (range, color) in &kept {
                 range.start.hash(&mut hasher);
                 range.end.hash(&mut hasher);
-                color.map(f32::to_bits).hash(&mut hasher);
+                color.srgb.map(f32::to_bits).hash(&mut hasher);
+                hash_paint_color(color.paint_color, &mut hasher);
             }
+            hash_paint_color(default_paint_color, &mut hasher);
             // Zero means "solid"; a fingerprint that lands there would claim it.
             hasher.finish() | 1
         };
         Self {
             spans: kept,
             default,
+            default_paint_color,
             fingerprint,
         }
     }
 
     /// The color at a byte offset. Binary search rather than a cursor: an RTL
     /// run walks its clusters backwards, so offsets do not arrive in order.
-    fn color_at(&self, byte: usize) -> [f32; 4] {
+    fn color_at(&self, byte: usize) -> ResolvedSpanColor {
         if self.spans.is_empty() {
-            return self.default;
+            return ResolvedSpanColor {
+                srgb: self.default,
+                paint_color: self.default_paint_color,
+            };
         }
         let index = self.spans.partition_point(|(range, _)| range.start <= byte);
         match index.checked_sub(1).and_then(|i| self.spans.get(i)) {
             Some((range, color)) if range.end > byte => *color,
-            _ => self.default,
+            _ => ResolvedSpanColor {
+                srgb: self.default,
+                paint_color: self.default_paint_color,
+            },
+        }
+    }
+}
+
+fn hash_paint_color(paint: Option<nana_ui_core::PaintColor>, hasher: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    match paint {
+        None => 0u8.hash(hasher),
+        Some(paint) => {
+            1u8.hash(hasher);
+            std::mem::discriminant(&paint).hash(hasher);
+            let (channels, alpha) = paint.to_linear_sc_rgb();
+            channels.map(f32::to_bits).hash(hasher);
+            alpha.to_bits().hash(hasher);
         }
     }
 }
@@ -2973,7 +3072,8 @@ fn resolve_vertical(
                     size,
                     synthesis,
                     GlyphRenderMode::Mask,
-                    colors.color_at(glyph.cluster as usize),
+                    colors.color_at(glyph.cluster as usize).srgb,
+                    colors.color_at(glyph.cluster as usize).paint_color,
                     PlacedGlyph {
                         glyph: glyph.glyph_id,
                         x,
@@ -3789,6 +3889,7 @@ mod tests {
                 start: 0,
                 end: "warm".len(),
                 color,
+                paint_color: None,
             }]
         };
         paint_rich(&device, &queue, &mut pipeline, &span([1.0, 0.0, 0.0, 1.0]));
@@ -3962,6 +4063,7 @@ mod tests {
                     placement.origin,
                     pipeline::pack_srgb([1.0; 4]),
                     content,
+                    [0.0; 4],
                 ),
             );
         }
@@ -6077,8 +6179,12 @@ mod tests {
         );
         assert_eq!(
             shared.glyph_atlas_hit,
-            first.glyph_atlas_hit + first.glyph_atlas_miss,
+            first.glyph_atlas_hit + first.glyph_rasterized,
             "every glyph of the second window must hit the shared atlas"
+        );
+        assert_eq!(
+            shared.glyph_atlas_miss, first.glyph_atlas_miss,
+            "a second window must not fault a glyph into the shared atlas"
         );
         assert_eq!(shared.glyph_atlas_pages, first.glyph_atlas_pages);
     }
@@ -6991,14 +7097,13 @@ mod tests {
 #[cfg(test)]
 mod placement_size {
     #[test]
-    fn a_retained_glyph_stays_twenty_four_bytes() {
+    fn a_retained_glyph_carries_linear_authoring_color() {
         // One per glyph, held between frames and never rewritten while the
         // paragraph, its sub-pixel phase and its atlas placements stand still.
         assert_eq!(
             std::mem::size_of::<super::pipeline::GlyphInstance>(),
-            24,
-            "the retained glyph is the instance; growing it grows every \
-             entry's block and the arena that mirrors it"
+            48,
+            "the retained glyph carries an optional linear authoring color"
         );
         assert_eq!(std::mem::size_of::<super::pipeline::TextRunGpu>(), 48);
         assert_eq!(

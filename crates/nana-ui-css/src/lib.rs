@@ -69,4 +69,7 @@ pub use css_map::{
     resolve_grid_track_sizes, resolve_paint_color,
 };
 pub use css_written::{WrittenLayout, written_layout};
-pub use style::{is_non_token_css_color, map_css_color_for_tokens, parse_css_color};
+pub use style::{
+    CssPaintColor, is_non_token_css_color, map_css_color_for_tokens, parse_css_color,
+    parse_css_paint_color, resolve_css_paint_color,
+};

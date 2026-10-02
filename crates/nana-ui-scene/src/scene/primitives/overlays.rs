@@ -205,6 +205,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     kind: ScenePrimitiveKind::Icon {
                         icon: *icon,
                         color: Some(*color),
+                        paint_color: matching_paint_color(
+                            node.style.paint_colors.color,
+                            Some(*color),
+                        ),
                     },
                 });
             }
@@ -291,7 +295,18 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Icon {
                         icon: *icon,
-                        color: node.standard_visual_foreground.or(node.style.color),
+                        color: node
+                            .standard_visual_foreground
+                            .or_else(|| {
+                                node.style
+                                    .paint_colors
+                                    .color
+                                    .map(nana_ui_core::PaintColor::to_srgb)
+                            })
+                            .or(node.style.color),
+                        paint_color: node.style.paint_colors.color.filter(|paint| {
+                            node.standard_visual_foreground == Some(paint.to_srgb())
+                        }),
                     },
                 });
             } else if let Some(trigger) = trigger {
@@ -415,6 +430,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         kind: ScenePrimitiveKind::Icon {
                             icon,
                             color: Some(color),
+                            paint_color: matching_paint_color(
+                                node.style.paint_colors.color,
+                                Some(color),
+                            ),
                         },
                     });
                 }

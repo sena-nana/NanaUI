@@ -676,7 +676,10 @@ impl GpuContext {
     /// What WGPU will allow for `format`, chosen the way WGPU validates it:
     /// the WebGPU table unless the device asks the adapter. `None` when the
     /// format needs a feature the device lacks.
-    fn format_features(&self, format: wgpu::TextureFormat) -> Option<wgpu::TextureFormatFeatures> {
+    pub(crate) fn format_features(
+        &self,
+        format: wgpu::TextureFormat,
+    ) -> Option<wgpu::TextureFormatFeatures> {
         let features = self.inner.device.features();
         if !features.contains(format.required_features()) {
             return None;

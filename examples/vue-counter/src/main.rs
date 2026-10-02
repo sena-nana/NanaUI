@@ -140,9 +140,10 @@ fn run_semantic(clicks: usize) -> Result<String, String> {
         return Err(format!("expected {expected}, got {count_label}"));
     }
 
-    let theme = match snap.theme {
+    let theme = match snap.theme_appearance {
         nana_ui_vue::ThemeAppearance::Light => "light",
         nana_ui_vue::ThemeAppearance::Dark => "dark",
+        nana_ui_vue::ThemeAppearance::Custom => "custom",
     };
 
     Ok(format!(

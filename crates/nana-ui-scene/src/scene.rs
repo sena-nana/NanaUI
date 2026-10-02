@@ -193,6 +193,12 @@ fn triggered_overlay_surface_key(primitive: &ScenePrimitive) -> Option<SceneOrde
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QuadSurfacePaint {
+    /// Explicit authoring-space background color, when supplied by CSS.
+    pub background_color: Option<nana_ui_core::PaintColor>,
+    /// Explicit authoring-space border color, when supplied by CSS.
+    pub border_color_space: Option<nana_ui_core::PaintColor>,
+    pub border_colors_space: [Option<nana_ui_core::PaintColor>; 4],
+    pub outline_color_space: Option<nana_ui_core::PaintColor>,
     pub background_image: Option<BackgroundImage>,
     /// Extra CSS `background-image` layers after the first (below it).
     pub background_layers: Vec<BackgroundImage>,
@@ -252,6 +258,9 @@ pub enum ScenePrimitiveKind {
     Text {
         content: nana_ui_runtime::TextValue,
         color: Option<[f32; 4]>,
+        /// Explicit authoring-space color for custom paint text. Legacy text
+        /// continues to use the resolved sRGB field above.
+        paint_color: Option<nana_ui_core::PaintColor>,
         size: f32,
         weight: Option<u16>,
         family: Option<String>,
@@ -283,6 +292,9 @@ pub enum ScenePrimitiveKind {
     Icon {
         icon: Icon,
         color: Option<[f32; 4]>,
+        /// Explicit authoring-space color for custom paint icons. Legacy
+        /// icons continue to use the resolved sRGB field above.
+        paint_color: Option<nana_ui_core::PaintColor>,
     },
     /// Many instances of one icon in a single primitive. Mirrors
     /// [`ScenePrimitiveKind::QuadBatch`]: one scene slot regardless of count,
@@ -296,6 +308,9 @@ pub enum ScenePrimitiveKind {
     Spinner {
         phase: u8,
         color: Option<[f32; 4]>,
+        /// Explicit authoring-space spinner colour, when it matches the
+        /// authored foreground slot. Legacy `color` remains the fallback.
+        paint_color: Option<nana_ui_core::PaintColor>,
     },
     Stroke {
         points: Vec<[f32; 2]>,
@@ -335,9 +350,7 @@ pub enum ScenePrimitiveKind {
         clip: Option<SceneRect>,
     },
     /// The layer closes, after `mask` has been applied to it.
-    LayerEnd {
-        mask: Option<LayerMask>,
-    },
+    LayerEnd { mask: Option<LayerMask> },
 }
 
 /// A mesh applied to a painter layer before it composites.
@@ -412,6 +425,8 @@ pub struct SceneTextSpan {
     pub start: usize,
     pub end: usize,
     pub color: [f32; 4],
+    /// Authoring-space foreground retained until linear GPU upload.
+    pub paint_color: Option<nana_ui_core::PaintColor>,
 }
 
 /// OpenType and wrap extras on a [`ScenePrimitiveKind::Text`] run.
@@ -2531,6 +2546,11 @@ fn component_text_primitive(
     opacity: f32,
     document_order: usize,
 ) -> ScenePrimitive {
+    let paint_color = node
+        .style
+        .paint_colors
+        .color
+        .filter(|paint| region.color.is_none_or(|color| color == paint.to_srgb()));
     let multiline = matches!(
         node.component_geometry.as_deref(),
         Some(ComponentGeometry::TextInput {
@@ -2558,7 +2578,16 @@ fn component_text_primitive(
         document_order,
         kind: ScenePrimitiveKind::Text {
             content: region.content.clone(),
-            color: region.color.or(node.style.color),
+            color: region
+                .color
+                .or_else(|| {
+                    node.style
+                        .paint_colors
+                        .color
+                        .map(nana_ui_core::PaintColor::to_srgb)
+                })
+                .or(node.style.color),
+            paint_color,
             size: region.font_size,
             weight: region.font_weight,
             family: node.style.font_family.as_deref().map(str::to_owned),
@@ -2661,6 +2690,7 @@ fn scene_text_spans(
             start: span.start,
             end: span.end,
             color: span.color,
+            paint_color: span.paint_color,
         })
         .collect()
 }
@@ -2722,12 +2752,60 @@ fn visual_quad(
     }
 }
 
+/// Build a component quad while retaining an explicit authoring-space paint
+/// value.  StandardVisual component geometry still carries the resolved sRGB
+/// fallback in `VisualQuadStyle`; this helper records the matching PaintColor
+/// in the surface so GPU paths can convert it in linear scRGB without
+/// changing legacy/theme behaviour.
+fn visual_quad_with_paint(
+    context: &VisualPrimitiveContext<'_>,
+    slot: u64,
+    bounds: SceneRect,
+    style: VisualQuadStyle,
+    background_color: Option<nana_ui_core::PaintColor>,
+    border_color_space: Option<nana_ui_core::PaintColor>,
+) -> ScenePrimitive {
+    let mut primitive = visual_quad(context, slot, bounds, style);
+    if let ScenePrimitiveKind::Quad { surface, .. } = &mut primitive.kind {
+        surface.background_color = background_color;
+        surface.border_color_space = border_color_space;
+        surface.border_colors_space = [
+            border_color_space,
+            border_color_space,
+            border_color_space,
+            border_color_space,
+        ];
+    }
+    primitive
+}
+
+/// Keep explicit metadata only when it describes the resolved legacy colour
+/// used by a component slot.  A StandardVisual often has separate semantic
+/// colours for its track, thumb, or indicator, so blindly copying the node's
+/// PaintColor would tint the wrong slot.
+fn matching_paint_color(
+    paint: Option<nana_ui_core::PaintColor>,
+    legacy: Option<[f32; 4]>,
+) -> Option<nana_ui_core::PaintColor> {
+    paint.filter(|paint| legacy == Some(paint.to_srgb()))
+}
+
 fn quad_surface_from_style(
     style: &nana_ui_core::LayoutStyle,
     width: f32,
     height: f32,
 ) -> QuadSurfacePaint {
+    let border_fallback = style.paint_colors.border;
     QuadSurfacePaint {
+        background_color: style.paint_colors.background,
+        border_color_space: border_fallback,
+        border_colors_space: [
+            style.paint_colors.border_top.or(border_fallback),
+            style.paint_colors.border_right.or(border_fallback),
+            style.paint_colors.border_bottom.or(border_fallback),
+            style.paint_colors.border_left.or(border_fallback),
+        ],
+        outline_color_space: style.paint_colors.outline.or(border_fallback),
         background_image: style.paint.background_image.clone(),
         background_layers: style.paint.background_layers.clone(),
         content_image: style.paint.content_image.clone(),
@@ -2966,6 +3044,11 @@ fn overlay_text_primitive(
     opacity: f32,
     document_order: usize,
 ) -> ScenePrimitive {
+    let paint_color = node
+        .style
+        .paint_colors
+        .color
+        .filter(|paint| region.color.is_none_or(|color| color == paint.to_srgb()));
     ScenePrimitive {
         id: PrimitiveId { node: id, slot },
         node: id,
@@ -2977,7 +3060,16 @@ fn overlay_text_primitive(
         document_order,
         kind: ScenePrimitiveKind::Text {
             content: region.content.clone(),
-            color: region.color.or(node.style.color),
+            color: region
+                .color
+                .or_else(|| {
+                    node.style
+                        .paint_colors
+                        .color
+                        .map(nana_ui_core::PaintColor::to_srgb)
+                })
+                .or(node.style.color),
+            paint_color,
             size: region.font_size,
             weight: region.font_weight,
             family: node.style.font_family.as_deref().map(str::to_owned),

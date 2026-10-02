@@ -828,7 +828,14 @@ mod tests {
             layout.user_select = Some(UserSelectSpec::Text);
             layout.selection_background = Some([1.0, 0.0, 0.0, 1.0]);
             layout.selection_color = Some([0.0, 1.0, 0.0, 1.0]);
+            layout.paint_colors.selection_color = Some(nana_ui_core::PaintColor::Oklch {
+                l: 0.7,
+                c: 0.15,
+                h: Some(145.0),
+                alpha: 0.8,
+            });
         }
+        let expected_selection_paint = style.layout.paint_colors.selection_color;
         let label = context
             .create_component(document, Text::new("Hello copy").style(style))
             .unwrap();
@@ -856,11 +863,21 @@ mod tests {
             [1.0, 0.0, 0.0, 1.0]
         );
         assert!(
-            extracted
-                .text_spans
-                .iter()
-                .any(|span| span.color == [0.0, 1.0, 0.0, 1.0] && span.start < span.end),
+            extracted.text_spans.iter().any(|span| {
+                span.color
+                    == expected_selection_paint
+                        .map(nana_ui_core::PaintColor::to_srgb)
+                        .unwrap_or([0.0, 1.0, 0.0, 1.0])
+                    && span.start < span.end
+            }),
             "author ::selection color must overlay the selected range, spans={:?}",
+            extracted.text_spans
+        );
+        assert!(
+            extracted.text_spans.iter().any(|span| {
+                span.paint_color == expected_selection_paint && span.start < span.end
+            }),
+            "author ::selection metadata must reach extracted spans, spans={:?}",
             extracted.text_spans
         );
     }

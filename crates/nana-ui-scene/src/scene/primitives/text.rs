@@ -77,12 +77,16 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         kind: ScenePrimitiveKind::Icon {
                             icon,
                             color: Some(color),
+                            paint_color: matching_paint_color(
+                                node.style.paint_colors.color,
+                                Some(color),
+                            ),
                         },
                     });
                 }
             }
             if !selection.is_empty() {
-                emit(visual_quad_batch(
+                let mut selection = visual_quad_batch(
                     &VisualPrimitiveContext {
                         node: id,
                         transform: scroll.transform(transform),
@@ -94,7 +98,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     1,
                     selection.iter().map(|selection| scroll.rect(*selection)),
                     VisualQuadStyle::solid(*selection_color),
-                ));
+                );
+                if let ScenePrimitiveKind::QuadBatch { surface, .. } = &mut selection.kind {
+                    surface.background_color = node.style.paint_colors.selection_background;
+                }
+                emit(selection);
             }
             emit(scroll.value(component_text_primitive(
                 id,
@@ -213,6 +221,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     kind: ScenePrimitiveKind::Icon {
                         icon: *icon,
                         color: Some(*color),
+                        paint_color: matching_paint_color(
+                            node.style.paint_colors.color,
+                            Some(*color),
+                        ),
                     },
                 });
             }

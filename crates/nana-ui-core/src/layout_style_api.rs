@@ -39,6 +39,24 @@ macro_rules! set_val {
     };
 }
 
+/// Set a legacy RGBA paint field and keep its authoring-space companion in
+/// sync.  L3 builders traditionally wrote only the compatibility RGBA value;
+/// once CSS began retaining OKLCH/HSV/scRGB values, leaving the companion
+/// slot untouched would let an older authoring value win at paint time.
+macro_rules! set_color {
+    ($($name:ident => $slot:ident),+ $(,)?) => {
+        $(
+            #[inline]
+            pub fn $name(mut self, value: [f32; 4]) -> Self {
+                self.$name = Some(value);
+                self.paint_colors.$slot =
+                    Some(crate::style_model::PaintColor::Srgb { rgba: value });
+                self
+            }
+        )+
+    };
+}
+
 impl PaintStyle {
     set_opt! {
         visibility: VisibilitySpec,
@@ -121,13 +139,10 @@ impl LayoutStyle {
         font_family: String,
         line_height: LineHeightSpec,
         letter_spacing: f32,
-        color: [f32; 4],
         text_decoration: TextDecorationLine,
         font_features: Vec<FontFeatureSetting>,
         placeholder_color: [f32; 4],
         placeholder_opacity: f32,
-        selection_background: [f32; 4],
-        selection_color: [f32; 4],
         grid_columns: Vec<GridTrack>,
         grid_rows: Vec<GridTrack>,
         grid_columns_unsupported: GridTrackListUnsupported,
@@ -141,23 +156,29 @@ impl LayoutStyle {
         grid_column_line_names: Vec<Vec<String>>,
         grid_row_line_names: Vec<Vec<String>>,
         opacity: f32,
-        background: [f32; 4],
         border_radius: f32,
         border_width: f32,
         border_top_width: f32,
         border_right_width: f32,
         border_bottom_width: f32,
         border_left_width: f32,
-        border_color: [f32; 4],
-        border_top_color: [f32; 4],
-        border_right_color: [f32; 4],
-        border_bottom_color: [f32; 4],
-        border_left_color: [f32; 4],
         border_style: BorderStyle,
         border_top_style: BorderStyle,
         border_right_style: BorderStyle,
         border_bottom_style: BorderStyle,
         border_left_style: BorderStyle,
+    }
+
+    set_color! {
+        color => color,
+        background => background,
+        selection_background => selection_background,
+        selection_color => selection_color,
+        border_color => border,
+        border_top_color => border_top,
+        border_right_color => border_right,
+        border_bottom_color => border_bottom,
+        border_left_color => border_left,
     }
 
     set_val! {
@@ -203,6 +224,7 @@ mod tests {
         PointerEventsSpec, PositionSpec, TextAlignSpec, TransformBox, VisibilitySpec,
         WhiteSpaceSpec,
     };
+    use crate::style_model::PaintColor;
 
     #[test]
     fn layout_style_builders_cover_declared_fields() {
@@ -303,6 +325,7 @@ mod tests {
                 PaintStyle::default()
                     .visibility(VisibilitySpec::Hidden)
                     .box_shadows(vec![BoxShadowSpec {
+                        paint_color: None,
                         offset_x: 1.0,
                         offset_y: 2.0,
                         blur_radius: 3.0,
@@ -337,11 +360,70 @@ mod tests {
     }
 
     #[test]
+    fn color_builders_sync_authoring_slots_without_resetting_other_sides() {
+        let stale = PaintColor::Oklch {
+            l: 0.62,
+            c: 0.14,
+            h: Some(280.0),
+            alpha: 0.8,
+        };
+        let color = [0.9, 0.2, 0.1, 1.0];
+        let background = [0.1, 0.2, 0.3, 0.9];
+        let selection_background = [0.3, 0.4, 0.5, 0.8];
+        let selection_color = [0.8, 0.7, 0.6, 1.0];
+        let border = [0.2, 0.3, 0.4, 1.0];
+        let border_top = [0.4, 0.3, 0.2, 1.0];
+
+        let mut style = LayoutStyle::default();
+        style.paint_colors.color = Some(stale);
+        style.paint_colors.background = Some(stale);
+        style.paint_colors.selection_background = Some(stale);
+        style.paint_colors.selection_color = Some(stale);
+        style.paint_colors.border = Some(stale);
+        style.paint_colors.border_top = Some(stale);
+        style.paint_colors.border_right = Some(stale);
+
+        let style = style
+            .color(color)
+            .background(background)
+            .selection_background(selection_background)
+            .selection_color(selection_color)
+            .border_color(border)
+            .border_top_color(border_top);
+
+        assert_eq!(style.paint_colors.color, Some(PaintColor::srgb(color)));
+        assert_eq!(
+            style.paint_colors.background,
+            Some(PaintColor::srgb(background))
+        );
+        assert_eq!(
+            style.paint_colors.selection_background,
+            Some(PaintColor::srgb(selection_background))
+        );
+        assert_eq!(
+            style.paint_colors.selection_color,
+            Some(PaintColor::srgb(selection_color))
+        );
+        assert_eq!(style.paint_colors.border, Some(PaintColor::srgb(border)));
+        assert_eq!(
+            style.paint_colors.border_top,
+            Some(PaintColor::srgb(border_top))
+        );
+        // The uniform setter intentionally leaves another side's explicit
+        // authoring value intact; side precedence remains compatible.
+        assert_eq!(style.paint_colors.border_right, Some(stale));
+        assert_eq!(style.color, Some(color));
+        assert_eq!(style.border_color, Some(border));
+        assert_eq!(style.border_top_color, Some(border_top));
+    }
+
+    #[test]
     fn paint_style_builders_round_trip() {
         let paint = PaintStyle::default()
             .visibility(VisibilitySpec::Hidden)
             .border_radii([LengthSpec::Px(1.0); 4])
             .box_shadows(vec![BoxShadowSpec {
+                paint_color: None,
                 offset_x: 0.0,
                 offset_y: 1.0,
                 blur_radius: 2.0,

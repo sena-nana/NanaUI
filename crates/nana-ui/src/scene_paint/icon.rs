@@ -5,7 +5,7 @@ use nana_gpu::{__framework, LogicalBinding, LogicalBindingType, ResourceTable, S
 
 use super::{
     clip::{self, FragmentClip, LogicalRect},
-    color::{orthographic, pack_linear, with_opacity},
+    color::{orthographic, pack_linear, pack_paint_color, with_opacity},
 };
 use crate::{PhysicalRect, gpu_work::ManagedBuffer, icons::Icon};
 
@@ -475,6 +475,7 @@ impl IconPipeline {
         scale: f32,
         icon: Icon,
         color: [f32; 4],
+        paint_color: Option<nana_ui_core::PaintColor>,
         opacity: f32,
         fragment_clip: FragmentClip,
     ) -> Option<PreparedIcon> {
@@ -487,6 +488,7 @@ impl IconPipeline {
             scale,
             icon,
             color,
+            paint_color,
             opacity,
             fragment_clip,
             None,
@@ -504,6 +506,7 @@ impl IconPipeline {
         scale: f32,
         icon: Icon,
         color: [f32; 4],
+        paint_color: Option<nana_ui_core::PaintColor>,
         opacity: f32,
         fragment_clip: FragmentClip,
         work: Option<&crate::gpu_work::GpuWorkSink>,
@@ -526,7 +529,14 @@ impl IconPipeline {
         }
         self.frame_keys.insert(key);
         let uv_rect = UvRect::of(self.entries.get(&key)?, self.atlas.edge);
-        let color = pack_linear(with_opacity(color, opacity));
+        let color = match paint_color {
+            Some(paint_color) => {
+                let mut packed = pack_paint_color(paint_color);
+                packed[3] *= opacity;
+                packed
+            }
+            None => pack_linear(with_opacity(color, opacity)),
+        };
         let clip = fragment_clip.for_physical_pixels(scale);
         let first_vertex = self.pending_vertices.len() as u32;
         let [tl, tr, bl, br] = icon_quad(bounds, affine, persp, scale);
@@ -1053,6 +1063,35 @@ mod tests {
             rgba.chunks(4).any(|pixel| pixel[3] < 16),
             "search icon should keep transparent padding"
         );
+    }
+
+    #[test]
+    fn explicit_authoring_icon_upload_keeps_linear_sc_rgb_channels() {
+        let (device, queue) = crate::scene_paint::tests::test_device();
+        let mut pipeline = IconPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let color = nana_ui_core::PaintColor::LinearScRgb {
+            channels: [1.25, -0.125, 0.25],
+            alpha: 0.6,
+        };
+        pipeline.begin_frame([64; 2]);
+        pipeline
+            .prepare(
+                &device,
+                &queue,
+                LogicalRect::from_xywh(0.0, 0.0, 16.0, 16.0),
+                clip::IDENTITY_AFFINE,
+                [0.0; 2],
+                1.0,
+                Icon::Search,
+                [0.1, 0.2, 0.3, 1.0],
+                Some(color),
+                0.5,
+                FragmentClip::PASS,
+            )
+            .expect("icon should be prepared");
+        let mut expected = pack_paint_color(color);
+        expected[3] *= 0.5;
+        assert_eq!(pipeline.pending_vertices[0].color, expected);
     }
 
     fn ink_bbox(rgba: &[u8], px: u32) -> (u32, u32, u32, u32) {

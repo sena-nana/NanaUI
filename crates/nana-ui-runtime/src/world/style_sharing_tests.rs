@@ -72,6 +72,63 @@ fn shared_inherited_styles_keep_local_overrides_and_old_snapshots_immutable() {
     }
 }
 
+#[test]
+fn authoring_paint_metadata_follows_inheritance_priority() {
+    let mut world = UiWorld::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = StableNodeId::new(1).unwrap();
+    let child = StableNodeId::new(2).unwrap();
+    let authoring = nana_ui_core::PaintColor::Oklch {
+        l: 0.62,
+        c: 0.18,
+        h: Some(280.0),
+        alpha: 1.0,
+    };
+    let mut queue = MutationQueue::new();
+    queue.create(parent, document, NodeKind::Element { tag: "div".into() });
+    queue.create(child, document, NodeKind::Element { tag: "span".into() });
+    queue.insert(parent, child, None);
+    queue.set_style(
+        parent,
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                paint_colors: nana_ui_core::PaintColorSlots {
+                    color: Some(authoring),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    assert_eq!(
+        world.computed_style(child).unwrap().paint_colors.color,
+        Some(authoring)
+    );
+
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        child,
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                color: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    assert_eq!(
+        world.computed_style(child).unwrap().paint_colors.color,
+        None
+    );
+}
+
 #[cfg(feature = "benchmark")]
 #[test]
 fn paired_style_control_produces_identical_resolved_values() {

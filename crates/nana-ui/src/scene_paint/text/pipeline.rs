@@ -1,6 +1,6 @@
 //! The renderer's own text pipeline, shader and per-target GPU buffers.
 //!
-//! One program over one atlas bind group. A glyph is always the same 24-byte
+//! One program over one atlas bind group. A glyph is always the same 48-byte
 //! instance — four vertices, its origin relative to its run, its rectangle in
 //! the atlas — and everything about *how* that paragraph reaches the screen
 //! lives in two side tables the instances only name:
@@ -20,7 +20,7 @@
 //! out of its block be placed anywhere in the instance buffer without taking
 //! its neighbours' bytes with it — the draw it belongs to follows the table,
 //! and the table is rewritten at four bytes a slot where the instances would
-//! cost twenty-four.
+//! cost forty-eight.
 //!
 //! Upright and transformed text are the same program because the difference
 //! between them is two bits in the run: whether each corner goes through the
@@ -47,8 +47,10 @@ pub(super) const CONTENT_COLOR: u32 = 1;
 pub(super) const INSTANCE_OWN_COLOR: u32 = 2;
 /// A [`CONTENT_COLOR`] glyph whose texels are subpixel coverage, not color.
 pub(super) const INSTANCE_SUBPIXEL: u32 = 4;
-/// Bits above these three are the run index.
-pub(super) const INSTANCE_RUN_SHIFT: u32 = 3;
+/// The instance carries a linear authoring color in `linear_color`.
+pub(super) const INSTANCE_LINEAR_COLOR: u32 = 8;
+/// Bits above these four are the run index.
+pub(super) const INSTANCE_RUN_SHIFT: u32 = 4;
 
 /// Bilinear sampling: the quad no longer lands on the texel grid.
 pub(super) const RUN_LINEAR: u32 = 1;
@@ -70,13 +72,15 @@ macro_rules! text_shader {
             include_str!("../shader/color.wgsl"),
             include_str!("../shader/text_atlas.wgsl"),
             r#"
-// One glyph, as `GlyphInstance` lays it out: 24 bytes.
+// One glyph, as `GlyphInstance` lays it out: 48 bytes.
 struct GlyphInstance {
     origin: vec2<i32>,
     dim: u32,
     uv: u32,
     color: u32,
     control: u32,
+    pad: vec2<u32>,
+    linear_color: vec4<f32>,
 }
 
 @group(0) @binding(3)
@@ -118,7 +122,7 @@ fn vs_main(vertex: VsIn) -> VsOut {
         return vacant;
     }
     let input = text_instances[vertex.slot];
-    let run = text_runs[input.control >> 3u];
+    let run = text_runs[input.control >> 4u];
     // The page, then whether a color-page texel is subpixel coverage.
     let page = input.control & 1u;
     var content = page;
@@ -142,7 +146,11 @@ fn vs_main(vertex: VsIn) -> VsOut {
 
     var color = run.color;
     if (input.control & 2u) != 0u {
-        color = unpack_srgb(input.color);
+        if (input.control & 8u) != 0u {
+            color = input.linear_color;
+        } else {
+            color = unpack_srgb(input.color);
+        }
     }
     color.a = color.a * run.opacity;
 
@@ -181,6 +189,18 @@ fn footprint_sample(page: texture_2d<f32>, uv: vec2<f32>, dx: vec2<f32>, dy: vec
         }
     }
     return sum / (taps.x * taps.y);
+}
+
+// Keep the nearest path as an integer texel load.  Some backends (notably the
+// GLSL translator used by the test adapter) cannot represent one image paired
+// with both a nearest and a filtering sampler.  The interpolated UV already
+// names the texel, so an explicit load has the same clamp-to-edge behaviour
+// without needing a second sampler for each atlas image.
+fn nearest_sample(page: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let dims = vec2<i32>(textureDimensions(page));
+    let max_coord = dims - vec2<i32>(1);
+    let coord = clamp(vec2<i32>(floor(uv * vec2<f32>(dims))), vec2<i32>(0), max_coord);
+    return textureLoad(page, coord, 0);
 }
 
 // What a fragment paints: the color, and the per-channel alpha it paints
@@ -222,7 +242,7 @@ fn shade(input: VsOut) -> TextShade {
         if linear {
             coverage = footprint_sample(mask_atlas, input.uv, uv_dx, uv_dy, input.cell).x;
         } else {
-            coverage = textureSampleLevel(mask_atlas, atlas_nearest, input.uv, 0.0).x;
+            coverage = nearest_sample(mask_atlas, input.uv).x;
         }
         // One coverage against the foreground's luma, as DirectWrite's
         // grayscale blend does.
@@ -242,7 +262,7 @@ fn shade(input: VsOut) -> TextShade {
     if linear {
         sampled = footprint_sample(color_atlas, input.uv, uv_dx, uv_dy, input.cell);
     } else {
-        sampled = textureSampleLevel(color_atlas, atlas_nearest, input.uv, 0.0);
+        sampled = nearest_sample(color_atlas, input.uv);
     }
     if input.content == CONTENT_SUBPIXEL {
         // Coverage per subpixel, stored encoded so the page's sRGB decode
@@ -312,11 +332,11 @@ struct Globals {
     contrast: [f32; 8],
 }
 
-/// One glyph: 24 bytes, against the 60 a vertex-per-corner quad would cost.
+/// One glyph: 48 bytes, against the 60 a vertex-per-corner quad would cost.
 /// This compactness is the whole point of the instanced path, and keeping
 /// presentation out of it is what lets the bytes be retained across frames.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub(super) struct GlyphInstance {
     /// Quad top-left in physical pixels, relative to the run's origin.
     origin: [i32; 2],
@@ -327,8 +347,12 @@ pub(super) struct GlyphInstance {
     /// sRGB `a << 24 | r << 16 | g << 8 | b`, linearized in the shader. Only
     /// read when [`INSTANCE_OWN_COLOR`] is set.
     color: u32,
-    /// `content | own-color | run << 2`.
+    /// `content | own-color | subpixel | linear-color | run << 4`.
     control: u32,
+    /// Explicit linear scRGB color storage. Kept out of legacy instances via
+    /// [`INSTANCE_LINEAR_COLOR`], while preserving extended channels.
+    pad: [u32; 2],
+    pub(super) linear_color: [f32; 4],
 }
 
 /// One text draw's presentation. 48 bytes; see the module docs.
@@ -1303,6 +1327,7 @@ impl GlyphInstance {
         texel: [u32; 2],
         color: u32,
         control: u32,
+        linear_color: [f32; 4],
     ) -> Self {
         Self {
             origin,
@@ -1310,6 +1335,8 @@ impl GlyphInstance {
             uv: (texel[0] & 0xffff) | ((texel[1] & 0xffff) << 16),
             color,
             control,
+            pad: [0; 2],
+            linear_color,
         }
     }
 
@@ -1357,6 +1384,8 @@ impl GlyphInstance {
         uv: 0,
         color: 0,
         control: 0,
+        pad: [0; 2],
+        linear_color: [0.0; 4],
     };
 }
 

@@ -2381,6 +2381,8 @@ impl LayoutStyleCss for LayoutStyle {
                 // There is no Vue/CSS extract into Scene StrokePattern.
                 if let Some(c) = resolve_paint_color(val) {
                     self.border_color = Some(c);
+                    self.paint_colors.border =
+                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                     if self.border_width.is_none() {
                         self.border_width = Some(8.0);
                     }
@@ -2422,23 +2424,31 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "border-color" => apply_border_color_shorthand(self, val),
             "border-top-color" => {
-                if let Some(c) = crate::style::parse_css_color(val) {
+                if let Some(c) = resolve_paint_color(val) {
                     self.border_top_color = Some(c);
+                    self.paint_colors.border_top =
+                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                 }
             }
             "border-right-color" => {
-                if let Some(c) = crate::style::parse_css_color(val) {
+                if let Some(c) = resolve_paint_color(val) {
                     self.border_right_color = Some(c);
+                    self.paint_colors.border_right =
+                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                 }
             }
             "border-bottom-color" => {
-                if let Some(c) = crate::style::parse_css_color(val) {
+                if let Some(c) = resolve_paint_color(val) {
                     self.border_bottom_color = Some(c);
+                    self.paint_colors.border_bottom =
+                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                 }
             }
             "border-left-color" => {
-                if let Some(c) = crate::style::parse_css_color(val) {
+                if let Some(c) = resolve_paint_color(val) {
                     self.border_left_color = Some(c);
+                    self.paint_colors.border_left =
+                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                 }
             }
             "border-style" => apply_border_style_shorthand(self, val),
@@ -2724,6 +2734,8 @@ impl LayoutStyleCss for LayoutStyle {
             "color" => {
                 if let Some(c) = resolve_paint_color(val) {
                     self.color = Some(c);
+                    self.paint_colors.color =
+                        crate::style::resolve_css_paint_color(val).map(|p| p.to_core());
                 }
             }
             "grid-template-columns" => {
@@ -4454,7 +4466,7 @@ fn expand_css_vars_with_lookup(
     out
 }
 
-fn expand_css_var_fallback(input: &str) -> String {
+pub(crate) fn expand_css_var_fallback(input: &str) -> String {
     // 1) stylesheet custom-prop lookup  2) var(--name, fallback) → fallback
     // Unresolved var() without fallback is removed (single-value props fail closed).
     // Grid track lists must use [`expand_css_vars_for_grid_tracks`] instead.
@@ -4550,20 +4562,14 @@ fn expand_css_vars_with_unresolved(input: &str, unresolved: Option<&str>) -> Str
     simplify_simple_calc(&out)
 }
 
-/// Resolve `#rgb` / `rgb()` / `var(--x, fallback)` paint colors (no app token maps).
+/// Resolve CSS paint colors, including OKLCH/color-mix, and `var(--x, fallback)`
+/// expansion (no app token maps).
 pub fn resolve_paint_color(input: &str) -> Option<[f32; 4]> {
     let s = input.trim();
     if s.is_empty() {
         return None;
     }
-    if let Some(c) = crate::style::parse_css_color(s) {
-        return Some(c);
-    }
-    let expanded = expand_css_var_fallback(s);
-    if expanded != s {
-        return crate::style::parse_css_color(&expanded);
-    }
-    None
+    crate::style::resolve_css_paint_color(s).map(crate::style::CssPaintColor::to_srgb)
 }
 
 /// CSS `font-size` → computed px using [`active_font_sizes`] (parent = `element_px`).
@@ -5100,7 +5106,7 @@ fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
     let parts = split_css_space_tokens(val);
     let Some(parsed) = parts
         .iter()
-        .map(|part| crate::style::parse_css_color(part))
+        .map(|part| resolve_paint_color(part))
         .collect::<Option<Vec<[f32; 4]>>>()
     else {
         return;
@@ -5113,6 +5119,18 @@ fn apply_border_color_shorthand(style: &mut LayoutStyle, val: &str) {
     style.border_right_color = Some(right);
     style.border_bottom_color = Some(bottom);
     style.border_left_color = Some(left);
+    if let Some([top, right, bottom, left]) = parts
+        .iter()
+        .map(|part| crate::style::resolve_css_paint_color(part).map(|p| p.to_core()))
+        .collect::<Option<Vec<_>>>()
+        .and_then(|parsed| css_four_sides(&parsed))
+    {
+        style.paint_colors.border = Some(top);
+        style.paint_colors.border_top = Some(top);
+        style.paint_colors.border_right = Some(right);
+        style.paint_colors.border_bottom = Some(bottom);
+        style.paint_colors.border_left = Some(left);
+    }
 }
 
 fn apply_border_style_shorthand(style: &mut LayoutStyle, val: &str) {
@@ -5155,18 +5173,21 @@ fn apply_border_shorthand(style: &mut LayoutStyle, val: &str, side: Option<usize
     if trimmed.eq_ignore_ascii_case("none") {
         assign_border_side_style(style, side, BorderStyle::None);
         assign_border_side_width(style, side, 0.0);
+        clear_border_side_paint(style, side);
         return;
     }
     let mut width = None;
     let mut parsed_style = None;
     let mut color = None;
+    let mut explicit_color = None;
     for part in split_css_space_tokens(trimmed) {
         if let Some(s) = BorderStyle::parse(&part) {
             parsed_style = Some(s);
         } else if let Some(v) = parse_css_length_px(&part, None) {
             width = Some(v.max(0.0));
-        } else if let Some(c) = crate::style::parse_css_color(&part) {
+        } else if let Some(c) = resolve_paint_color(&part) {
             color = Some(c);
+            explicit_color = crate::style::resolve_css_paint_color(&part).map(|p| p.to_core());
         }
     }
     if let Some(w) = width {
@@ -5177,6 +5198,9 @@ fn apply_border_shorthand(style: &mut LayoutStyle, val: &str, side: Option<usize
     }
     if let Some(c) = color {
         assign_border_side_color(style, side, c);
+    }
+    if let Some(c) = explicit_color {
+        assign_border_side_paint(style, side, c);
     }
 }
 
@@ -5209,6 +5233,42 @@ fn assign_border_side_color(style: &mut LayoutStyle, side: Option<usize>, color:
         Some(1) => style.border_right_color = Some(color),
         Some(2) => style.border_bottom_color = Some(color),
         _ => style.border_left_color = Some(color),
+    }
+}
+
+fn assign_border_side_paint(
+    style: &mut LayoutStyle,
+    side: Option<usize>,
+    color: nana_ui_core::PaintColor,
+) {
+    match side {
+        None => {
+            style.paint_colors.border = Some(color);
+            style.paint_colors.border_top = Some(color);
+            style.paint_colors.border_right = Some(color);
+            style.paint_colors.border_bottom = Some(color);
+            style.paint_colors.border_left = Some(color);
+        }
+        Some(0) => style.paint_colors.border_top = Some(color),
+        Some(1) => style.paint_colors.border_right = Some(color),
+        Some(2) => style.paint_colors.border_bottom = Some(color),
+        _ => style.paint_colors.border_left = Some(color),
+    }
+}
+
+fn clear_border_side_paint(style: &mut LayoutStyle, side: Option<usize>) {
+    match side {
+        None => {
+            style.paint_colors.border = None;
+            style.paint_colors.border_top = None;
+            style.paint_colors.border_right = None;
+            style.paint_colors.border_bottom = None;
+            style.paint_colors.border_left = None;
+        }
+        Some(0) => style.paint_colors.border_top = None,
+        Some(1) => style.paint_colors.border_right = None,
+        Some(2) => style.paint_colors.border_bottom = None,
+        _ => style.paint_colors.border_left = None,
     }
 }
 
@@ -5330,9 +5390,14 @@ fn parse_one_box_shadow_layer(input: &str) -> Option<BoxShadowSpec> {
         .unwrap_or(0.0);
     let color = color_token
         .as_deref()
-        .and_then(crate::style::parse_css_color)
+        .and_then(resolve_paint_color)
         .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+    let paint_color = color_token
+        .as_deref()
+        .and_then(crate::style::resolve_css_paint_color)
+        .map(|c| c.to_core());
     Some(BoxShadowSpec {
+        paint_color,
         offset_x,
         offset_y,
         blur_radius,
@@ -5359,10 +5424,14 @@ pub fn parse_drop_shadow(input: &str) -> Option<nana_ui_core::FilterDropShadow> 
         None => 0.0,
     };
     let color = match color_token.as_deref() {
-        Some(token) => crate::style::parse_css_color(token)?,
+        Some(token) => resolve_paint_color(token)?,
         None => [0.0, 0.0, 0.0, 1.0],
     };
     Some(nana_ui_core::FilterDropShadow {
+        paint_color: color_token
+            .as_deref()
+            .and_then(crate::style::resolve_css_paint_color)
+            .map(|c| c.to_core()),
         offset_x,
         offset_y,
         blur_radius,
@@ -5401,13 +5470,18 @@ pub fn parse_text_shadow(input: &str) -> Option<TextShadowSpec> {
         .unwrap_or(0.0);
     let color = color_token
         .as_deref()
-        .and_then(crate::style::parse_css_color)
+        .and_then(resolve_paint_color)
         .unwrap_or([0.0, 0.0, 0.0, 0.5]);
+    let paint_color = color_token
+        .as_deref()
+        .and_then(crate::style::resolve_css_paint_color)
+        .map(|color| color.to_core());
     Some(TextShadowSpec {
         offset_x,
         offset_y,
         blur_radius,
         color,
+        paint_color,
     })
 }
 
@@ -5500,9 +5574,17 @@ fn classify_box_shadow_token(
 }
 
 fn is_css_color_token(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
     token.starts_with('#')
-        || token.starts_with("rgb")
-        || token.starts_with("hsl")
+        || lower.starts_with("rgb")
+        || lower.starts_with("hsl")
+        || lower.starts_with("oklch(")
+        || lower.starts_with("hsv(")
+        || lower.starts_with("color(srgb-linear ")
+        || lower.starts_with("color(scrgb ")
+        || lower.starts_with("color-mix(")
+        || lower.starts_with("light-dark(")
+        || lower.starts_with("var(")
         || is_css_named_color(token)
 }
 
@@ -7821,6 +7903,26 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     }
 
     #[test]
+    fn text_shadow_keeps_explicit_oklch_authoring_color() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "text-shadow: 1px 2px 3px oklch(62% 0.18 280 / 0.7)",
+            None,
+            None,
+        );
+        let shadow = layout.paint.text_shadow.expect("text-shadow");
+        match shadow.paint_color {
+            Some(nana_ui_core::PaintColor::Oklch { l, c, h, alpha }) => {
+                assert!((l - 0.62).abs() < 1e-6);
+                assert!((c - 0.18).abs() < 1e-6);
+                assert!((h.expect("hue") - 280.0).abs() < 1e-5);
+                assert!((alpha - 0.7).abs() < 1e-6);
+            }
+            other => panic!("expected explicit OKLCH, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn grid_column_start_span() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("grid-column: 1 / span 2", None, None);
@@ -8738,6 +8840,42 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         assert!(ring.background.is_none(), "fill:none must clear background");
         assert_eq!(ring.border_width, Some(28.0));
         assert!(ring.border_color.is_some());
+    }
+
+    #[test]
+    fn border_side_and_outline_preserve_authoring_space() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "border-color:oklch(65% .15 30) hsv(120 60% 70%) #123456 rgb(20,30,40)",
+            None,
+            None,
+        );
+        layout.apply_css_text("outline:2px solid oklch(70% .1 200)", None, None);
+        assert!(matches!(
+            layout.paint_colors.border_top,
+            Some(nana_ui_core::PaintColor::Oklch { .. })
+        ));
+        assert!(matches!(
+            layout.paint_colors.border_right,
+            Some(nana_ui_core::PaintColor::Hsv { .. })
+        ));
+        assert!(layout.paint_colors.border_bottom.is_some());
+        assert!(layout.paint_colors.border_left.is_some());
+        assert!(matches!(
+            layout.paint_colors.outline,
+            Some(nana_ui_core::PaintColor::Oklch { .. })
+        ));
+
+        let mut sides = LayoutStyle::default();
+        sides.apply_css_text("border-left-color:oklch(55% .2 280)", None, None);
+        assert!(matches!(
+            sides.paint_colors.border_left,
+            Some(nana_ui_core::PaintColor::Oklch { .. })
+        ));
+        assert!(sides.paint_colors.border_top.is_none());
+
+        sides.apply_css_text("border:none", None, None);
+        assert!(sides.paint_colors.border_left.is_none());
     }
 
     #[test]

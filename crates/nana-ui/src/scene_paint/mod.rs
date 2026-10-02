@@ -60,13 +60,13 @@ use clip::{
     paint_transform, physical_bounds, physical_scissor, transformed_aabb,
     transformed_aabb_projective, union_physical,
 };
-pub(crate) use color::pack_linear;
 use color::with_opacity;
+pub(crate) use color::{pack_linear, pack_paint_color};
 use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
 use icon::{IconPipeline, PreparedIcon};
 use mesh::{MeshPipeline, MeshRange, PathRange, StrokeStyle};
-use motion::MotionGpuResources;
+use motion::{MotionGpuResources, eval_format_for_gpu};
 use quad::QuadPipeline;
 use text::{PreparedText, TextPipeline};
 
@@ -258,8 +258,12 @@ impl SceneWgpuPainter {
         let queue = __framework::queue(gpu);
         let format = __framework::format_to_wgpu(format);
         let quads = QuadPipeline::new_with_policy(device, format, Some(gpu.policy()));
-        let motion =
-            MotionGpuResources::new_with_policy(device, quads.motion_layout(), Some(gpu.policy()));
+        let motion = MotionGpuResources::new_with_policy(
+            device,
+            quads.motion_layout(),
+            Some(gpu.policy()),
+            eval_format_for_gpu(gpu),
+        );
         Self {
             targets: std::collections::HashMap::new(),
             prepared_batch: None,
@@ -1120,6 +1124,7 @@ impl SceneWgpuPainter {
                     ScenePrimitiveKind::Text {
                         content,
                         color,
+                        paint_color,
                         size,
                         weight,
                         family,
@@ -1153,64 +1158,69 @@ impl SceneWgpuPainter {
                         let slot = id.slot;
                         let mut pass = 0u32;
                         let opaque_backdrop = group_depth == 0;
-                        let mut push_text =
-                            |commands: &mut Vec<DrawCommand>,
-                             batching: &mut Batching,
-                             extra_offset: [f32; 2],
-                             color_override: Option<[f32; 4]>| {
-                                let prepared = self.text.prepare(
-                                    &self.device,
-                                    bounds,
-                                    clip,
-                                    scale,
-                                    content,
-                                    color_override.or(*color),
-                                    *size,
-                                    *weight,
-                                    family.as_deref(),
-                                    *line_height,
-                                    *wrap,
-                                    *wrap_break,
-                                    *italic,
-                                    *ellipsis,
-                                    *max_lines,
-                                    *shaping,
-                                    *horizontal_alignment,
-                                    *vertical_alignment,
-                                    spans,
-                                    *letter_spacing,
-                                    font_features,
-                                    opentype,
+                        let mut push_text = |commands: &mut Vec<DrawCommand>,
+                                             batching: &mut Batching,
+                                             extra_offset: [f32; 2],
+                                             color_override: Option<[f32; 4]>,
+                                             linear_color_override: Option<[f32; 4]>,
+                                             paint_color_override: Option<
+                            nana_ui_core::PaintColor,
+                        >| {
+                            self.text.set_linear_color_override(linear_color_override);
+                            self.text.set_paint_color_override(paint_color_override);
+                            let prepared = self.text.prepare(
+                                &self.device,
+                                bounds,
+                                clip,
+                                scale,
+                                content,
+                                color_override.or(*color),
+                                *size,
+                                *weight,
+                                family.as_deref(),
+                                *line_height,
+                                *wrap,
+                                *wrap_break,
+                                *italic,
+                                *ellipsis,
+                                *max_lines,
+                                *shaping,
+                                *horizontal_alignment,
+                                *vertical_alignment,
+                                spans,
+                                *letter_spacing,
+                                font_features,
+                                opentype,
+                                affine,
+                                persp,
+                                frag_clip,
+                                opacity,
+                                extra_offset,
+                                text::EntryKey { node, slot, pass },
+                                primitive.revision,
+                                layout.as_ref(),
+                                opaque_backdrop,
+                            );
+                            pass += 1;
+                            if let Some(prepared) = prepared {
+                                let painted = painted_bounds(
+                                    prepared.ink,
+                                    0.0,
                                     affine,
                                     persp,
-                                    frag_clip,
-                                    opacity,
-                                    extra_offset,
-                                    text::EntryKey { node, slot, pass },
-                                    primitive.revision,
-                                    layout.as_ref(),
-                                    opaque_backdrop,
+                                    scale,
+                                    scissor,
                                 );
-                                pass += 1;
-                                if let Some(prepared) = prepared {
-                                    let painted = painted_bounds(
-                                        prepared.ink,
-                                        0.0,
-                                        affine,
-                                        persp,
-                                        scale,
-                                        scissor,
-                                    );
-                                    push_text_run(
-                                        commands,
-                                        batching,
-                                        &mut self.text,
-                                        prepared,
-                                        scissor,
-                                        painted,
-                                    );
-                                }
-                            };
+                                push_text_run(
+                                    commands,
+                                    batching,
+                                    &mut self.text,
+                                    prepared,
+                                    scissor,
+                                    painted,
+                                );
+                            }
+                        };
                         if let Some(shadow) = text_shadow {
                             let base_color = with_opacity(shadow.color, opacity);
                             for (dx, dy, alpha_scale) in text_shadow_draw_offsets(*shadow) {
@@ -1225,10 +1235,22 @@ impl SceneWgpuPainter {
                                     &mut batching,
                                     [shadow.offset_x + dx, shadow.offset_y + dy],
                                     Some(scaled),
+                                    shadow.paint_color.map(pack_paint_color).map(|mut color| {
+                                        color[3] *= alpha_scale;
+                                        color
+                                    }),
+                                    None,
                                 );
                             }
                         }
-                        push_text(&mut commands, &mut batching, [0.0, 0.0], None);
+                        push_text(
+                            &mut commands,
+                            &mut batching,
+                            [0.0, 0.0],
+                            None,
+                            paint_color.map(pack_paint_color),
+                            *paint_color,
+                        );
                     }
                     ScenePrimitiveKind::QuadColorBatch {
                         bounds: batch,
@@ -1284,7 +1306,11 @@ impl SceneWgpuPainter {
                             }
                         }
                     }
-                    ScenePrimitiveKind::Icon { icon, color } => {
+                    ScenePrimitiveKind::Icon {
+                        icon,
+                        color,
+                        paint_color,
+                    } => {
                         if let Some(prepared) = self.icons.prepare_with_work(
                             &self.device,
                             &self.queue,
@@ -1294,6 +1320,7 @@ impl SceneWgpuPainter {
                             scale,
                             *icon,
                             color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                            *paint_color,
                             opacity,
                             vertex_clip,
                             Some(&gpu_work),
@@ -1324,6 +1351,7 @@ impl SceneWgpuPainter {
                                 scale,
                                 *icon,
                                 color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                                None,
                                 opacity,
                                 vertex_clip,
                                 Some(&gpu_work),
@@ -1339,12 +1367,17 @@ impl SceneWgpuPainter {
                             }
                         }
                     }
-                    ScenePrimitiveKind::Spinner { phase, color } => {
+                    ScenePrimitiveKind::Spinner {
+                        phase,
+                        color,
+                        paint_color,
+                    } => {
                         if let Some(range) = self.meshes.push_spinner(
                             bounds,
                             mesh_affine(affine, persp),
                             *phase,
                             color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                            *paint_color,
                             opacity,
                             frag_clip,
                         ) {
@@ -1998,7 +2031,10 @@ fn dest_group_slot(
         };
         slot.drop_shadow_offset = [ox, oy];
         slot.drop_shadow_blur = blur;
-        slot.drop_shadow_color = pack_linear(shadow.color);
+        slot.drop_shadow_color = shadow
+            .paint_color
+            .map(pack_paint_color)
+            .unwrap_or_else(|| pack_linear(shadow.color));
     }
     slot
 }

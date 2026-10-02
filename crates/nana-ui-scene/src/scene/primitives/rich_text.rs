@@ -16,7 +16,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             selection_color,
         }) => {
             if !selection.is_empty() {
-                emit(visual_quad_batch(
+                let mut selection = visual_quad_batch(
                     &VisualPrimitiveContext {
                         node: id,
                         transform,
@@ -28,7 +28,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     1,
                     selection.iter().copied().map(scene_rect),
                     VisualQuadStyle::solid(*selection_color),
-                ));
+                );
+                if let ScenePrimitiveKind::QuadBatch { surface, .. } = &mut selection.kind {
+                    surface.background_color = node.style.paint_colors.selection_background;
+                }
+                emit(selection);
             }
             super::markdown_drawing::build(
                 context,
@@ -44,7 +48,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             selection_color,
         }) => {
             if !selection.is_empty() {
-                emit(visual_quad_batch(
+                let mut selection = visual_quad_batch(
                     &VisualPrimitiveContext {
                         node: id,
                         transform,
@@ -56,7 +60,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     1,
                     selection.iter().copied().map(scene_rect),
                     VisualQuadStyle::solid(*selection_color),
-                ));
+                );
+                if let ScenePrimitiveKind::QuadBatch { surface, .. } = &mut selection.kind {
+                    surface.background_color = node.style.paint_colors.selection_background;
+                }
+                emit(selection);
             }
             emit(component_text_primitive(
                 id,

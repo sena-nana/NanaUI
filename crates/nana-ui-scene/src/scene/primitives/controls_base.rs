@@ -34,6 +34,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     kind: ScenePrimitiveKind::Icon {
                         icon: *icon,
                         color: label.color,
+                        paint_color: node
+                            .style
+                            .paint_colors
+                            .color
+                            .filter(|paint| label.color == Some(paint.to_srgb())),
                     },
                 });
             }
@@ -188,7 +193,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     z_index: node.z_index,
                     document_order: node_order,
                 };
-                emit(visual_quad(
+                emit(visual_quad_with_paint(
                     &indicator_context,
                     8,
                     scene_rect(indicator.ring),
@@ -198,9 +203,17 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         border_width: if indicator.dot.is_some() { 2.0 } else { 1.0 },
                         corner_radius: corner_radii(indicator.ring.height / 2.0),
                     },
+                    None,
+                    matching_paint_color(node.style.paint_colors.color, Some(indicator.ring_color))
+                        .or_else(|| {
+                            matching_paint_color(
+                                node.style.paint_colors.border,
+                                Some(indicator.ring_color),
+                            )
+                        }),
                 ));
                 if let Some((dot, color)) = indicator.dot {
-                    emit(visual_quad(
+                    emit(visual_quad_with_paint(
                         &indicator_context,
                         9,
                         scene_rect(dot),
@@ -210,6 +223,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             border_width: 0.0,
                             corner_radius: corner_radii(dot.height / 2.0),
                         },
+                        matching_paint_color(node.style.paint_colors.color, Some(color)),
+                        None,
                     ));
                 }
             }
@@ -226,11 +241,15 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     kind: ScenePrimitiveKind::Icon {
                         icon: *icon,
                         color: Some(*color),
+                        paint_color: matching_paint_color(
+                            node.style.paint_colors.color,
+                            Some(*color),
+                        ),
                     },
                 });
             }
             if let Some(color) = focus_ring {
-                emit(visual_quad(
+                emit(visual_quad_with_paint(
                     &VisualPrimitiveContext {
                         node: id,
                         transform,
@@ -261,6 +280,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             4.0,
                         ),
                     },
+                    None,
+                    matching_paint_color(node.style.paint_colors.color, Some(*color)).or_else(
+                        || matching_paint_color(node.style.paint_colors.border, Some(*color)),
+                    ),
                 ));
             }
         }
@@ -285,7 +308,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     node_order,
                 ));
             }
-            emit(visual_quad(
+            let mut track_primitive = visual_quad(
                 &VisualPrimitiveContext {
                     node: id,
                     transform,
@@ -302,8 +325,12 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     border_width: 0.0,
                     corner_radius: corner_radii(*corner_radius),
                 },
-            ));
-            emit(visual_quad(
+            );
+            if let ScenePrimitiveKind::Quad { surface, .. } = &mut track_primitive.kind {
+                surface.background_color = node.style.paint_colors.background;
+            }
+            emit(track_primitive);
+            let mut fill_primitive = visual_quad(
                 &VisualPrimitiveContext {
                     node: id,
                     transform,
@@ -320,7 +347,15 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     border_width: 0.0,
                     corner_radius: corner_radii(*corner_radius),
                 },
-            ));
+            );
+            if let ScenePrimitiveKind::Quad { surface, .. } = &mut fill_primitive.kind {
+                surface.background_color = node
+                    .style
+                    .paint_colors
+                    .color
+                    .filter(|paint| node.standard_visual_foreground == Some(paint.to_srgb()));
+            }
+            emit(fill_primitive);
             if let Some(cancel) = cancel {
                 emit(component_text_primitive(
                     id,
@@ -375,7 +410,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 ));
             }
             if let Some((bounds, color)) = indicator {
-                emit(visual_quad(
+                emit(visual_quad_with_paint(
                     &VisualPrimitiveContext {
                         node: id,
                         transform,
@@ -392,6 +427,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         border_width: 1.0,
                         corner_radius: corner_radii(999.0),
                     },
+                    None,
+                    matching_paint_color(node.style.paint_colors.color, Some(*color)).or_else(
+                        || matching_paint_color(node.style.paint_colors.border, Some(*color)),
+                    ),
                 ));
             }
         }
@@ -404,7 +443,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             axis_color,
             ..
         }) => {
-            emit(visual_quad(
+            emit(visual_quad_with_paint(
                 &VisualPrimitiveContext {
                     node: id,
                     transform,
@@ -416,8 +455,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 1,
                 scene_rect(*h_axis),
                 VisualQuadStyle::solid(*axis_color),
+                matching_paint_color(node.style.paint_colors.color, Some(*axis_color)),
+                None,
             ));
-            emit(visual_quad(
+            emit(visual_quad_with_paint(
                 &VisualPrimitiveContext {
                     node: id,
                     transform,
@@ -429,8 +470,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 2,
                 scene_rect(*v_axis),
                 VisualQuadStyle::solid(*axis_color),
+                matching_paint_color(node.style.paint_colors.color, Some(*axis_color)),
+                None,
             ));
-            emit(visual_quad(
+            emit(visual_quad_with_paint(
                 &VisualPrimitiveContext {
                     node: id,
                     transform,
@@ -447,10 +490,12 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     border_width: 0.0,
                     corner_radius: corner_radii(999.0),
                 },
+                matching_paint_color(node.style.paint_colors.color, Some(*thumb_color)),
+                None,
             ));
         }
         Some(ComponentGeometry::QrCode { field, dark, .. }) => {
-            emit(visual_quad(
+            emit(visual_quad_with_paint(
                 &VisualPrimitiveContext {
                     node: id,
                     transform,
@@ -467,6 +512,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     border_width: 0.0,
                     corner_radius: corner_radii(node.chrome_radii.md),
                 },
+                None,
+                None,
             ));
             if !dark.is_empty() {
                 emit(visual_quad_batch(
@@ -531,7 +578,17 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         border_width: 1.0,
                         corner_radius: corner_radii(node.chrome_radii.md),
                         shadow: Some(menu.elevation),
-                        surface: QuadSurfacePaint::default(),
+                        surface: QuadSurfacePaint {
+                            background_color: matching_paint_color(
+                                node.style.paint_colors.background,
+                                Some(menu.background),
+                            ),
+                            border_color_space: matching_paint_color(
+                                node.style.paint_colors.border,
+                                Some(menu.border),
+                            ),
+                            ..QuadSurfacePaint::default()
+                        },
                     },
                 });
                 for (index, option) in menu.options.iter().enumerate() {
@@ -564,7 +621,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         emit(mark);
                     }
                     if let Some(background) = option.background {
-                        emit(visual_quad(
+                        emit(visual_quad_with_paint(
                             &VisualPrimitiveContext {
                                 node: id,
                                 transform,
@@ -581,6 +638,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                                 border_width: 0.0,
                                 corner_radius: corner_radii(node.chrome_radii.sm),
                             },
+                            matching_paint_color(
+                                node.style.paint_colors.background,
+                                Some(background),
+                            ),
+                            None,
                         ));
                     }
                     let mut label = component_text_primitive(
@@ -604,7 +666,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             for (index, row) in rows.iter().enumerate() {
                 let index = u64::try_from(index).unwrap_or(u64::MAX);
                 if let Some(background) = row.background {
-                    emit(visual_quad(
+                    emit(visual_quad_with_paint(
                         &VisualPrimitiveContext {
                             node: id,
                             transform,
@@ -621,6 +683,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             border_width: 0.0,
                             corner_radius: corner_radii(node.chrome_radii.sm),
                         },
+                        matching_paint_color(node.style.paint_colors.background, Some(background)),
+                        None,
                     ));
                 }
                 if let Some(disclosure) = row.disclosure {
@@ -663,6 +727,10 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         kind: ScenePrimitiveKind::Icon {
                             icon,
                             color: Some(color),
+                            paint_color: matching_paint_color(
+                                node.style.paint_colors.color,
+                                Some(color),
+                            ),
                         },
                     });
                 }
@@ -721,7 +789,13 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     border_width: 0.0,
                     corner_radius: corner_radii(node.chrome_radii.md),
                     shadow: Some(*elevation),
-                    surface: QuadSurfacePaint::default(),
+                    surface: QuadSurfacePaint {
+                        background_color: matching_paint_color(
+                            node.style.paint_colors.background,
+                            Some(*background),
+                        ),
+                        ..QuadSurfacePaint::default()
+                    },
                 },
             });
             let mut title_text = component_text_primitive(
@@ -738,7 +812,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             );
             title_text.z_index = overlay_z;
             emit(title_text);
-            emit(visual_quad(
+            emit(visual_quad_with_paint(
                 &VisualPrimitiveContext {
                     node: id,
                     transform,
@@ -755,6 +829,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     border_width: 1.0,
                     corner_radius: corner_radii(node.chrome_radii.sm),
                 },
+                matching_paint_color(node.style.paint_colors.background, Some(*input_background)),
+                matching_paint_color(node.style.paint_colors.border, Some(*input_border)),
             ));
             let mut input_text = component_text_primitive(
                 id,
@@ -789,7 +865,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             for (index, row) in rows.iter().enumerate() {
                 let index = u64::try_from(index).unwrap_or(u64::MAX);
                 if let Some(background) = row.background {
-                    emit(visual_quad(
+                    emit(visual_quad_with_paint(
                         &VisualPrimitiveContext {
                             node: id,
                             transform,
@@ -806,6 +882,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             border_width: 0.0,
                             corner_radius: corner_radii(node.chrome_radii.sm),
                         },
+                        matching_paint_color(node.style.paint_colors.background, Some(background)),
+                        None,
                     ));
                 }
                 let mut label = component_text_primitive(
@@ -858,7 +936,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
         }
         Some(ComponentGeometry::KeyCaptureLayer { badge, background }) => {
             if let Some(background) = background {
-                emit(visual_quad(
+                emit(visual_quad_with_paint(
                     &VisualPrimitiveContext {
                         node: id,
                         transform,
@@ -875,6 +953,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         border_width: 0.0,
                         corner_radius: corner_radii(node.chrome_radii.sm),
                     },
+                    matching_paint_color(node.style.paint_colors.background, Some(*background)),
+                    None,
                 ));
             }
             emit(component_text_primitive(
