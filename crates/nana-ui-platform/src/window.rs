@@ -558,6 +558,24 @@ impl WindowDescriptor {
         self
     }
 
+    /// Keep this window above normal windows when the host presents it.
+    pub const fn always_on_top(mut self, enabled: bool) -> Self {
+        self.always_on_top = enabled;
+        self
+    }
+
+    /// Omit this window from the platform taskbar or dock when supported.
+    pub const fn skip_taskbar(mut self, enabled: bool) -> Self {
+        self.skip_taskbar = enabled;
+        self
+    }
+
+    /// Mark utility windows (such as a picture-in-picture player) as tools.
+    pub const fn role(mut self, role: WindowRole) -> Self {
+        self.role = role;
+        self
+    }
+
     pub fn minimum_size(mut self, width: f64, height: f64) -> Self {
         self.minimum_size = (width, height);
         self
