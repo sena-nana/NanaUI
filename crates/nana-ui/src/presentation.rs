@@ -24,6 +24,67 @@
 use nana_ui_platform::{WindowDescriptor, WindowSurfacePreference};
 use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome, NonClientRenderingStrategy};
 
+/// Host-owned colour presentation request for a native surface.
+///
+/// The request is deliberately independent of a renderer or a device.  The
+/// host resolves it against the complete `wgpu::SurfaceCapabilities` table at
+/// each surface bind, so a window can move between displays without creating
+/// another device or queue.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum SurfacePresentationPolicy {
+    /// Prefer the safe sRGB SDR profile, with deterministic capability fallbacks.
+    #[default]
+    Auto,
+    /// Request sRGB SDR output.
+    Sdr,
+    /// Request Display-P3 SDR output, falling back through SDR profiles.
+    WideGamut,
+    /// Request extended-sRGB HDR output, falling back through wide-gamut and SDR.
+    Hdr,
+}
+
+/// Why a requested surface profile was not selected exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurfaceProfileFallback {
+    /// The requested colour space/format was not advertised by the surface.
+    CapabilityUnavailable,
+}
+
+/// The concrete format and colour space a host configured for one surface.
+///
+/// This is the single profile identity carried across resize, recovery and
+/// device migration.  Equal profiles are a no-op and must not trigger a
+/// swapchain rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResolvedSurfaceProfile {
+    pub requested: SurfacePresentationPolicy,
+    pub format: wgpu::TextureFormat,
+    pub color_space: wgpu::SurfaceColorSpace,
+    pub fallback: Option<SurfaceProfileFallback>,
+}
+
+impl ResolvedSurfaceProfile {
+    pub const fn is_hdr(self) -> bool {
+        self.color_space.is_hdr()
+    }
+    pub const fn is_wide_gamut(self) -> bool {
+        matches!(
+            self.color_space,
+            wgpu::SurfaceColorSpace::DisplayP3 | wgpu::SurfaceColorSpace::ExtendedDisplayP3
+        )
+    }
+
+    pub const fn format(self) -> wgpu::TextureFormat {
+        self.format
+    }
+    pub const fn color_space(self) -> wgpu::SurfaceColorSpace {
+        self.color_space
+    }
+    pub const fn fallback(self) -> Option<SurfaceProfileFallback> {
+        self.fallback
+    }
+}
+
 /// What a process needs from its GPU backend.
 ///
 /// The backend, adapter and device are process-wide — every window shares one

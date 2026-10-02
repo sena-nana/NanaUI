@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::{ResolvedSurfaceProfile, SurfacePresentationPolicy, SurfaceProfileFallback};
 use nana_gpu::{__framework, GpuContext, GpuDeviceLost, GpuTextureFormat};
 
 /// Native presentation mechanism, selected before creating the window surface.
@@ -195,6 +196,7 @@ pub struct HostedGpuSurface {
     /// while that frame is alive, so reconfiguration waits for the next acquire.
     needs_reconfigure: bool,
     format: wgpu::TextureFormat,
+    profile: ResolvedSurfaceProfile,
     configuration: wgpu::SurfaceConfiguration,
     want_transparent: bool,
     /// Whether this surface spent its one alpha-mode rebuild. Never cleared:
@@ -229,6 +231,11 @@ impl HostedGpuSurface {
 
     pub const fn format(&self) -> GpuTextureFormat {
         __framework::format_from_wgpu(self.format)
+    }
+
+    /// The concrete colour profile negotiated for this surface.
+    pub const fn profile(&self) -> ResolvedSurfaceProfile {
+        self.profile
     }
 
     /// Alpha composition mode selected from the native surface capabilities.
@@ -345,8 +352,13 @@ impl HostedGpuSurface {
         gpu: &GpuContext,
     ) -> Result<(), HostedGpuError> {
         let capabilities = surface.get_capabilities(__framework::adapter(gpu));
-        let format = preferred_surface_format(&capabilities.formats)
-            .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+        let profile = resolve_surface_profile(
+            SurfacePresentationPolicy::Auto,
+            &capabilities,
+            self.want_transparent,
+        )
+        .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+        let format = profile.format;
         let alpha_mode = surface_alpha(
             self.target.mode(),
             &capabilities.alpha_modes,
@@ -355,11 +367,12 @@ impl HostedGpuSurface {
         self.surface = surface;
         let size = self.window.surface_size();
         self.format = format;
+        self.profile = profile;
         self.live_present_mode = preferred_live_present_mode(&capabilities.present_modes);
         self.configuration = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            color_space: wgpu::SurfaceColorSpace::Srgb,
+            color_space: profile.color_space,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: self.live_present_mode,
@@ -391,11 +404,9 @@ impl HostedGpuSurface {
     ) -> Result<(), HostedGpuError> {
         let surface = self.target.create_surface(instance, self.window.clone())?;
         let capabilities = surface.get_capabilities(__framework::adapter(gpu));
-        if !capabilities.formats.contains(&self.format) {
-            return Err(HostedGpuError::SurfaceFormatChanged {
-                expected: __framework::format_from_wgpu(self.format),
-            });
-        }
+        let profile =
+            resolve_surface_profile(self.profile.requested, &capabilities, want_transparent)
+                .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
         self.configuration.alpha_mode = surface_alpha(
             self.target.mode(),
             &capabilities.alpha_modes,
@@ -403,6 +414,10 @@ impl HostedGpuSurface {
         )?;
         self.live_present_mode = preferred_live_present_mode(&capabilities.present_modes);
         self.configuration.present_mode = self.live_present_mode;
+        self.format = profile.format;
+        self.profile = profile;
+        self.configuration.format = profile.format;
+        self.configuration.color_space = profile.color_space;
         self.surface = surface;
         self.reconfigure(gpu);
         self.commit_target()?;
@@ -697,7 +712,16 @@ impl HostedGpuShared {
         window: Arc<dyn winit::window::Window>,
         want_transparent: bool,
     ) -> Result<HostedGpuSurface, HostedGpuError> {
-        self.create_surface_with_mode(window, want_transparent, HostedSurfaceMode::Window)
+        self.create_surface_with_policy(window, want_transparent, SurfacePresentationPolicy::Auto)
+    }
+    pub fn create_surface_with_policy(
+        &self,
+        window: Arc<dyn winit::window::Window>,
+        want_transparent: bool,
+        policy: SurfacePresentationPolicy,
+    ) -> Result<HostedGpuSurface, HostedGpuError> {
+        let target = HostedSurfaceTarget::new(HostedSurfaceMode::Window, window.clone())?;
+        self.create_surface_with_target_policy(window, want_transparent, target, policy)
     }
     pub fn create_surface_with_mode(
         &self,
@@ -706,7 +730,12 @@ impl HostedGpuShared {
         mode: HostedSurfaceMode,
     ) -> Result<HostedGpuSurface, HostedGpuError> {
         let target = HostedSurfaceTarget::new(mode, window.clone())?;
-        self.create_surface_with_target(window, want_transparent, target)
+        self.create_surface_with_target_policy(
+            window,
+            want_transparent,
+            target,
+            SurfacePresentationPolicy::Auto,
+        )
     }
     /// Rebind a surface onto these GPU resources in place, keeping its window
     /// or composition target. See [`HostedGpuSurface::rebind`].
@@ -724,11 +753,12 @@ impl HostedGpuShared {
             .create_surface(&self.instance, surface.window.clone())?;
         surface.rebind(raw, &self.gpu)
     }
-    fn create_surface_with_target(
+    fn create_surface_with_target_policy(
         &self,
         window: Arc<dyn winit::window::Window>,
         want_transparent: bool,
         target: HostedSurfaceTarget,
+        policy: SurfacePresentationPolicy,
     ) -> Result<HostedGpuSurface, HostedGpuError> {
         #[cfg(target_os = "windows")]
         if target.mode() == HostedSurfaceMode::WindowsComposition
@@ -740,16 +770,14 @@ impl HostedGpuShared {
         }
         let surface = target.create_surface(&self.instance, window.clone())?;
         let capabilities = surface.get_capabilities(__framework::adapter(&self.gpu));
-        let format = preferred_surface_format(&capabilities.formats)
-            .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
         configure_surface(
             window,
             surface,
-            format,
             &capabilities,
             &self.gpu,
             want_transparent,
             target,
+            policy,
         )
     }
     pub fn resize_surface(&self, surface: &mut HostedGpuSurface) {
@@ -803,17 +831,20 @@ impl HostedGpuShared {
 fn configure_surface(
     window: Arc<dyn winit::window::Window>,
     surface: wgpu::Surface<'static>,
-    format: wgpu::TextureFormat,
     capabilities: &wgpu::SurfaceCapabilities,
     gpu: &GpuContext,
     want_transparent: bool,
     target: HostedSurfaceTarget,
+    policy: SurfacePresentationPolicy,
 ) -> Result<HostedGpuSurface, HostedGpuError> {
+    let profile = resolve_surface_profile(policy, capabilities, want_transparent)
+        .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+    let format = profile.format;
     let size = window.surface_size();
     let configuration = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
-        color_space: wgpu::SurfaceColorSpace::Srgb,
+        color_space: profile.color_space,
         width: size.width.max(1),
         height: size.height.max(1),
         present_mode: preferred_live_present_mode(&capabilities.present_modes),
@@ -832,6 +863,7 @@ fn configure_surface(
         needs_recovery: false,
         needs_reconfigure: false,
         format,
+        profile,
         configuration,
         want_transparent,
         alpha_recreate_attempted: false,
@@ -900,11 +932,11 @@ impl PendingPrimarySurface {
         let primary = configure_surface(
             self.window,
             device.surface,
-            device.format,
             &device.capabilities,
             &device.shared.gpu,
             self.want_transparent,
             self.target,
+            SurfacePresentationPolicy::Auto,
         )?;
         Ok(HostedGpuContext {
             shared: device.shared,
@@ -1066,6 +1098,106 @@ fn preferred_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Tex
         .or_else(|| formats.first().copied())
 }
 
+/// Resolve a policy from the complete per-format capability table.  The
+/// ordering is intentional and stable: HDR prefers encoded extended sRGB on
+/// fp16, wide gamut prefers Display-P3 on an 8-bit UNORM target, and every
+/// request has an sRGB SDR escape hatch.  `formats` is retained as a fallback
+/// for adapters that do not populate the extended table.
+pub fn resolve_surface_profile(
+    requested: SurfacePresentationPolicy,
+    capabilities: &wgpu::SurfaceCapabilities,
+    _transparent: bool,
+) -> Option<ResolvedSurfaceProfile> {
+    use wgpu::{SurfaceColorSpace as C, SurfaceColorSpaces as S, TextureFormat as F};
+
+    let mut rows: Vec<(F, wgpu::SurfaceColorSpaces)> = capabilities
+        .format_capabilities
+        .iter()
+        .map(|row| (row.format, row.color_spaces))
+        .collect();
+    if rows.is_empty() {
+        rows = capabilities
+            .formats
+            .iter()
+            .copied()
+            .map(|format| (format, S::SRGB))
+            .collect();
+    }
+    if rows.is_empty() {
+        return None;
+    }
+
+    let srgb_formats = [
+        F::Rgba8UnormSrgb,
+        F::Bgra8UnormSrgb,
+        F::Rgba8Unorm,
+        F::Bgra8Unorm,
+    ];
+    let p3_formats = [
+        F::Bgra8Unorm,
+        F::Rgba8Unorm,
+        F::Bgra8UnormSrgb,
+        F::Rgba8UnormSrgb,
+    ];
+    let hdr_formats = [F::Rgba16Float];
+    let mut candidates: Vec<(C, &[F])> = match requested {
+        SurfacePresentationPolicy::Hdr => vec![
+            (C::ExtendedSrgb, &hdr_formats),
+            (C::ExtendedSrgbLinear, &hdr_formats),
+            (C::DisplayP3, &p3_formats),
+            (C::Srgb, &srgb_formats),
+        ],
+        SurfacePresentationPolicy::WideGamut => {
+            vec![(C::DisplayP3, &p3_formats), (C::Srgb, &srgb_formats)]
+        }
+        SurfacePresentationPolicy::Sdr | SurfacePresentationPolicy::Auto => {
+            vec![(C::Srgb, &srgb_formats)]
+        }
+    };
+    for (index, (space, formats)) in candidates.drain(..).enumerate() {
+        let flag = space.to_color_spaces()?;
+        if let Some((format, _)) = formats.iter().find_map(|wanted| {
+            rows.iter()
+                .find(|(format, spaces)| format == wanted && spaces.contains(flag))
+        }) {
+            return Some(ResolvedSurfaceProfile {
+                requested,
+                format: *format,
+                color_space: space,
+                fallback: (index != 0).then_some(SurfaceProfileFallback::CapabilityUnavailable),
+            });
+        }
+    }
+    // Some old/native capability providers list the format but omit the
+    // colour-space table. Preserve the historic sRGB choice deterministically.
+    let (format, spaces) = rows.first().copied()?;
+    let color_space = if spaces.contains(S::SRGB) {
+        C::Srgb
+    } else if spaces.contains(S::DISPLAY_P3) {
+        C::DisplayP3
+    } else if spaces.contains(S::EXTENDED_SRGB) {
+        C::ExtendedSrgb
+    } else {
+        C::Srgb
+    };
+    Some(ResolvedSurfaceProfile {
+        requested,
+        format,
+        color_space,
+        fallback: Some(SurfaceProfileFallback::CapabilityUnavailable),
+    })
+}
+
+/// Whether a profile transition requires reconfiguring the swapchain.
+/// Resizes and present-mode policy remain separate concerns; an identical
+/// profile is explicitly a no-op.
+pub fn surface_profile_changed(
+    current: ResolvedSurfaceProfile,
+    next: ResolvedSurfaceProfile,
+) -> bool {
+    current != next
+}
+
 pub(crate) fn preferred_alpha_mode(
     modes: &[wgpu::CompositeAlphaMode],
     want_transparent: bool,
@@ -1162,7 +1294,7 @@ mod tests {
     use super::{
         alpha_mode_needs_surface_recreate, live_resize_frame_latency, live_resize_policy_change,
         preferred_alpha_mode, preferred_live_present_mode, preferred_surface_format,
-        surface_size_changed,
+        resolve_surface_profile, surface_profile_changed, surface_size_changed,
     };
 
     #[cfg(target_os = "windows")]
@@ -1222,6 +1354,85 @@ mod tests {
             ]),
             Some(wgpu::TextureFormat::Bgra8UnormSrgb)
         );
+    }
+
+    #[test]
+    fn capability_table_resolves_sdr_p3_and_hdr_with_deterministic_fallbacks() {
+        use wgpu::{
+            SurfaceColorSpace as C, SurfaceColorSpaces as S, SurfaceFormatCapabilities as Row,
+            TextureFormat as F,
+        };
+        let caps = wgpu::SurfaceCapabilities {
+            formats: vec![F::Bgra8UnormSrgb],
+            format_capabilities: vec![
+                Row {
+                    format: F::Bgra8UnormSrgb,
+                    color_spaces: S::SRGB,
+                },
+                Row {
+                    format: F::Bgra8Unorm,
+                    color_spaces: S::DISPLAY_P3,
+                },
+                Row {
+                    format: F::Rgba16Float,
+                    color_spaces: S::EXTENDED_SRGB,
+                },
+            ],
+            present_modes: vec![wgpu::PresentMode::Fifo],
+            alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
+            usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        };
+        assert_eq!(
+            resolve_surface_profile(crate::SurfacePresentationPolicy::Sdr, &caps, false)
+                .unwrap()
+                .color_space,
+            C::Srgb
+        );
+        assert_eq!(
+            resolve_surface_profile(crate::SurfacePresentationPolicy::WideGamut, &caps, false)
+                .unwrap()
+                .color_space,
+            C::DisplayP3
+        );
+        assert_eq!(
+            resolve_surface_profile(crate::SurfacePresentationPolicy::Hdr, &caps, false)
+                .unwrap()
+                .color_space,
+            C::ExtendedSrgb
+        );
+        let no_hdr = wgpu::SurfaceCapabilities {
+            format_capabilities: vec![Row {
+                format: F::Bgra8Unorm,
+                color_spaces: S::DISPLAY_P3,
+            }],
+            formats: vec![F::Bgra8Unorm],
+            ..caps
+        };
+        assert_eq!(
+            resolve_surface_profile(crate::SurfacePresentationPolicy::Hdr, &no_hdr, false)
+                .unwrap()
+                .color_space,
+            C::DisplayP3
+        );
+    }
+
+    #[test]
+    fn equal_profiles_do_not_reconfigure() {
+        use wgpu::{SurfaceColorSpace as C, TextureFormat as F};
+        let p = crate::ResolvedSurfaceProfile {
+            requested: crate::SurfacePresentationPolicy::Auto,
+            format: F::Bgra8UnormSrgb,
+            color_space: C::Srgb,
+            fallback: None,
+        };
+        assert!(!surface_profile_changed(p, p));
+        assert!(surface_profile_changed(
+            p,
+            crate::ResolvedSurfaceProfile {
+                color_space: C::DisplayP3,
+                ..p
+            }
+        ));
     }
 
     /// A program that asks for composition on a host device that is not DX12
