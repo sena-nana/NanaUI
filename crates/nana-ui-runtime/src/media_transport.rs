@@ -299,6 +299,20 @@ impl MediaTransportBar {
         self
     }
 
+    /// Configure the compact transport used by an in-flow mini player.
+    pub fn compact_inline(mut self) -> Self {
+        self.density = MediaTransportDensity::Compact;
+        self.placement = MediaTransportPlacement::Inline;
+        self
+    }
+
+    /// Configure the compact transport used by a detached player window.
+    pub fn compact_overlay(mut self) -> Self {
+        self.density = MediaTransportDensity::Compact;
+        self.placement = MediaTransportPlacement::Overlay;
+        self
+    }
+
     /// Show or hide the play button; hidden, it takes no focus or press.
     pub fn show_play(mut self, show: bool) -> Self {
         self.show_play = Some(show);
