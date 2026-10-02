@@ -357,6 +357,15 @@ fn logical_buffer_upload_checks_usage_and_bounds() {
         .unwrap();
     gpu.write_buffer(&buffer, 4, &[1, 2, 3, 4]).unwrap();
     assert_eq!(
+        gpu.write_buffer(&buffer, 2, &[1, 2]),
+        Err(GpuError::InvalidBindingRange)
+    );
+    assert_eq!(
+        gpu.write_buffer(&buffer, 12, &[1, 2, 3, 4, 5]),
+        Err(GpuError::InvalidBindingRange),
+        "the staged copy is padded to four-byte alignment"
+    );
+    assert_eq!(
         gpu.write_buffer(&buffer, 15, &[1, 2]),
         Err(GpuError::InvalidBindingRange)
     );
