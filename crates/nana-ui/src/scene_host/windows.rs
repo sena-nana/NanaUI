@@ -320,15 +320,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     .map_err(window_request_error)
             })
             .unwrap_or(Err(crate::WindowError::WindowClosed));
-        if result.is_ok()
-            && let Some(host) = self.window_contexts.get_mut(&id)
-        {
-            host.os_mouse_passthrough = enabled;
-        }
+        let applied_enabled = if result.is_ok() {
+            if let Some(host) = self.window_contexts.get_mut(&id) {
+                host.os_mouse_passthrough = enabled;
+            }
+            enabled
+        } else {
+            // Report the style that is actually still applied. Consumers use
+            // this bit to decide whether it is safe to deliver pointer input.
+            self.window_contexts
+                .get(&id)
+                .is_some_and(|host| host.os_mouse_passthrough)
+        };
         let update = self.program.window_event(
             WindowEvent::MousePassthroughChanged {
                 id,
-                enabled,
+                enabled: applied_enabled,
                 result: result.as_ref().copied().map_err(ToString::to_string),
             },
             &self.context_for(id),
