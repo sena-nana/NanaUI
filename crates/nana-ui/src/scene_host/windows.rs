@@ -552,6 +552,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
     }
 
+    /// An occluded or hidden Forward window cannot receive the pointer event
+    /// that normally moves it from content back to transparent space. Reset
+    /// native hit-testing while it is unavailable so sampling can resume when
+    /// the window becomes visible again.
+    pub(super) fn reset_forward_passthrough_if_needed(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+    ) {
+        if self.window_contexts.get(&id).is_some_and(|host| {
+            host.passthrough_mode == MousePassthroughMode::Forward && !host.os_mouse_passthrough
+        }) {
+            let _ = self.apply_os_mouse_passthrough(event_loop, id, true, false);
+        }
+    }
+
     pub(super) fn open_window(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -1854,6 +1870,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     self.request_redraw(id);
                 } else {
                     self.hide_pointer_presence(event_loop, id);
+                    self.reset_forward_passthrough_if_needed(event_loop, id);
                 }
                 let update = self.program.window_event(
                     WindowEvent::VisibilityChanged {
