@@ -91,8 +91,9 @@ pub mod pane;
 mod presentation;
 #[cfg(feature = "hosted")]
 pub use presentation::{
-    GpuBackendPolicy, NativeChromePolicy, ResolvedWindowPresentation, SurfaceAlphaMode,
-    SurfaceTargetFallback, WindowSurfaceTarget,
+    GpuBackendPolicy, NativeChromePolicy, ResolvedSurfaceProfile, ResolvedWindowPresentation,
+    SurfaceAlphaMode, SurfacePresentationPolicy, SurfaceProfileFallback, SurfaceTargetFallback,
+    WindowSurfaceTarget,
 };
 mod runtime_animation;
 #[cfg(feature = "hosted")]
@@ -176,6 +177,10 @@ pub use graph::{
 };
 #[cfg(all(feature = "hosted", feature = "wgpu-interop"))]
 pub use hosted_context::HostedSurfaceFrame;
+#[cfg(feature = "hosted")]
+pub use hosted_context::resolve_surface_profile;
+#[cfg(feature = "hosted")]
+pub use hosted_context::surface_profile_changed;
 #[cfg(feature = "hosted")]
 pub use hosted_context::{
     HostedGpuContext, HostedGpuError, HostedGpuShared, HostedGpuSurface, HostedRunError,

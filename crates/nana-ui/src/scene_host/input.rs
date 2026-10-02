@@ -195,6 +195,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     // covered — so nothing can hover it: report the leave the
                     // platform may never send, as hiding does.
                     self.hide_pointer_presence(event_loop, id);
+                    self.reset_forward_passthrough_if_needed(event_loop, id);
                     if event_loop.exiting() || !self.window_contexts.contains_key(&id) {
                         return;
                     }

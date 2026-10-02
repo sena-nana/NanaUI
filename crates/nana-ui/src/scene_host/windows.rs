@@ -320,15 +320,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     .map_err(window_request_error)
             })
             .unwrap_or(Err(crate::WindowError::WindowClosed));
-        if result.is_ok()
-            && let Some(host) = self.window_contexts.get_mut(&id)
-        {
-            host.os_mouse_passthrough = enabled;
-        }
+        let applied_enabled = if result.is_ok() {
+            if let Some(host) = self.window_contexts.get_mut(&id) {
+                host.os_mouse_passthrough = enabled;
+            }
+            enabled
+        } else {
+            // Report the style that is actually still applied. Consumers use
+            // this bit to decide whether it is safe to deliver pointer input.
+            self.window_contexts
+                .get(&id)
+                .is_some_and(|host| host.os_mouse_passthrough)
+        };
         let update = self.program.window_event(
             WindowEvent::MousePassthroughChanged {
                 id,
-                enabled,
+                enabled: applied_enabled,
                 result: result.as_ref().copied().map_err(ToString::to_string),
             },
             &self.context_for(id),
@@ -548,6 +555,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) {
         self.dispatch_forward_leave(event_loop, id);
         if self.window_contexts.contains_key(&id) {
+            let _ = self.apply_os_mouse_passthrough(event_loop, id, true, false);
+        }
+    }
+
+    /// An occluded or hidden Forward window cannot receive the pointer event
+    /// that normally moves it from content back to transparent space. Reset
+    /// native hit-testing while it is unavailable so sampling can resume when
+    /// the window becomes visible again.
+    pub(super) fn reset_forward_passthrough_if_needed(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+    ) {
+        if self.window_contexts.get(&id).is_some_and(|host| {
+            host.passthrough_mode == MousePassthroughMode::Forward && !host.os_mouse_passthrough
+        }) {
             let _ = self.apply_os_mouse_passthrough(event_loop, id, true, false);
         }
     }
@@ -1854,6 +1877,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     self.request_redraw(id);
                 } else {
                     self.hide_pointer_presence(event_loop, id);
+                    self.reset_forward_passthrough_if_needed(event_loop, id);
                 }
                 let update = self.program.window_event(
                     WindowEvent::VisibilityChanged {

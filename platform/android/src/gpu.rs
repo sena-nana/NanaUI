@@ -224,19 +224,24 @@ impl GpuSurface {
         .map_err(|e| format!("request_device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
-        let format = caps
-            .formats
+        // Resolve the host's default SDR profile from the complete table. In
+        // particular, do not assume that the first format is sRGB: wgpu 30
+        // can advertise formats that are only valid in an explicit colour
+        // space (and those capabilities change when the window moves).
+        let (format, color_space) = caps
+            .format_capabilities
             .iter()
-            .copied()
-            .find(|f| {
-                matches!(
-                    f,
-                    TextureFormat::Rgba8Unorm
-                        | TextureFormat::Bgra8Unorm
-                        | TextureFormat::Rgba8UnormSrgb
-                )
+            .find_map(|row| {
+                row.color_spaces
+                    .contains(wgpu::SurfaceColorSpaces::SRGB)
+                    .then_some((row.format, wgpu::SurfaceColorSpace::Srgb))
             })
-            .or_else(|| caps.formats.first().copied())
+            .or_else(|| {
+                caps.formats
+                    .first()
+                    .copied()
+                    .map(|f| (f, wgpu::SurfaceColorSpace::Srgb))
+            })
             .ok_or_else(|| "no surface formats".to_string())?;
 
         let alpha = if caps.alpha_modes.contains(&CompositeAlphaMode::Opaque) {
@@ -260,7 +265,7 @@ impl GpuSurface {
         let config = SurfaceConfiguration {
             usage: TextureUsages::RENDER_ATTACHMENT,
             format,
-            color_space: wgpu::SurfaceColorSpace::Srgb,
+            color_space,
             width,
             height,
             present_mode: present,

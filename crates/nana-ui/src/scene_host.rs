@@ -2376,11 +2376,17 @@ fn forward_pointer_action(
     hits_content: bool,
     event: &WinitWindowEvent,
 ) -> ForwardPointerAction {
-    if mode != MousePassthroughMode::Forward || !forward_pointer_event(event) {
+    if !forward_pointer_event(event) {
         return ForwardPointerAction::Dispatch;
     }
     if os_passthrough {
+        // Native hit-testing is still disabled. This also covers a failed
+        // attempt to turn passthrough off; dispatching here would violate the
+        // actual OS route.
         return ForwardPointerAction::IgnoreUntilRecovered;
+    }
+    if mode != MousePassthroughMode::Forward {
+        return ForwardPointerAction::Dispatch;
     }
     match event {
         WinitWindowEvent::PointerLeft { .. } => ForwardPointerAction::RestorePassthrough,
@@ -5429,7 +5435,13 @@ mod tests {
         );
         assert_eq!(
             forward_pointer_action(MousePassthroughMode::Off, true, true, &down),
-            ForwardPointerAction::Dispatch
+            ForwardPointerAction::IgnoreUntilRecovered,
+            "a failed native disable must not let pointer input reach widgets"
+        );
+        assert_eq!(
+            forward_pointer_action(MousePassthroughMode::Passthrough, true, true, &down),
+            ForwardPointerAction::IgnoreUntilRecovered,
+            "whole-window passthrough must keep native pointer input out"
         );
     }
 }
