@@ -19,7 +19,7 @@
 
 use std::sync::OnceLock;
 
-use nana_ui_core::LayoutStyle;
+use nana_ui_core::{LayoutFieldMask, LayoutStyle};
 use serde_json::{Map, Value};
 
 use crate::css_map::LayoutStyleCss;
@@ -30,6 +30,10 @@ use crate::css_map::LayoutStyleCss;
 pub struct WrittenLayout {
     pub layout: LayoutStyle,
     pub written: Vec<String>,
+    /// Coarse ownership groups written by the declaration set. The original
+    /// paths remain available for code generation; the mask lets a resolver
+    /// classify invalidation without reparsing CSS.
+    pub field_mask: LayoutFieldMask,
 }
 
 impl WrittenLayout {
@@ -56,7 +60,7 @@ pub fn written_layout(declarations: impl Fn(&mut LayoutStyle)) -> WrittenLayout 
     declarations(&mut over_witness);
     let applied = layout_json(&layout);
     let applied_witness = layout_json(&over_witness);
-    let written = leaf_paths(default)
+    let written: Vec<String> = leaf_paths(default)
         .into_iter()
         .filter(|path| {
             let value = leaf(&applied, path);
@@ -65,7 +69,14 @@ pub fn written_layout(declarations: impl Fn(&mut LayoutStyle)) -> WrittenLayout 
                     && leaf(&applied_witness, path) == value)
         })
         .collect();
-    WrittenLayout { layout, written }
+    let field_mask = written.iter().fold(LayoutFieldMask::NONE, |mask, path| {
+        mask.union(LayoutFieldMask::from_property(path))
+    });
+    WrittenLayout {
+        layout,
+        written,
+        field_mask,
+    }
 }
 
 /// Every declaration here is valid and each leaves at least one field away

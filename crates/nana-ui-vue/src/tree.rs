@@ -384,7 +384,7 @@ pub struct NanaTreeDocument {
     /// projection, recorded by the last semantic sync. Those components already
     /// consumed `props.layout` when they were built, so the CSS cascade
     /// writeback must not overwrite the geometry they projected.
-    component_owned_layout: HashSet<u64>,
+    component_owned_layout: HashMap<u64, nana_ui_core::LayoutOwnership>,
     pending_accessibility_updated: BTreeMap<StableNodeId, nana_ui_runtime::AccessibilityNode>,
     pending_accessibility_removed: BTreeSet<StableNodeId>,
     pending_accessibility_generation: u64,
@@ -524,7 +524,7 @@ impl NanaTreeDocument {
             logical_height,
             scale_factor: scale,
             synced_semantic_revision: None,
-            component_owned_layout: HashSet::new(),
+            component_owned_layout: HashMap::new(),
             pending_accessibility_updated: BTreeMap::new(),
             pending_accessibility_removed: BTreeSet::new(),
             pending_accessibility_generation: 0,
@@ -597,26 +597,60 @@ impl NanaTreeDocument {
         &mut self,
         layouts: impl IntoIterator<Item = (u64, &'a nana_ui_core::LayoutStyle)>,
     ) {
+        self.sync_widget_layouts_with_authority(
+            layouts
+                .into_iter()
+                .map(|(id, layout)| (id, layout, nana_ui_core::LayoutFieldMask::NONE)),
+        );
+    }
+
+    pub fn sync_widget_layouts_with_authority<'a>(
+        &mut self,
+        layouts: impl IntoIterator<
+            Item = (
+                u64,
+                &'a nana_ui_core::LayoutStyle,
+                nana_ui_core::LayoutFieldMask,
+            ),
+        >,
+    ) {
         let mut mutations = MutationQueue::new();
         let mut surface_ids = Vec::new();
-        for (raw_id, layout) in layouts {
+        for (raw_id, layout, author_mask) in layouts {
             let Some(id) = StableNodeId::new(raw_id) else {
                 continue;
             };
             if !self.runtime.contains(id) && !self.nodes.contains_key(&raw_id) {
                 continue;
             }
-            if self.component_owned_layout.contains(&raw_id) {
+            if let Some(ownership) = self.component_owned_layout.get(&raw_id)
+                && ownership
+                    .required
+                    .union(ownership.defaults)
+                    .contains(nana_ui_core::LayoutFieldMask::ALL)
+            {
+                // Components that own the complete layout contract (for
+                // example graph surfaces) still publish their resolved style
+                // exclusively through the Runtime projection. Partial
+                // ownership, such as a row's default flow axis, is allowed to
+                // receive author CSS through this common write path.
                 continue;
             }
             let current = self.runtime.node_style(id);
-            if current.is_some_and(|style| {
-                std::ptr::eq(style.layout.as_ref(), layout) || style.layout.as_ref() == layout
-            }) {
+            let effective_layout = match (
+                self.component_owned_layout.get(&raw_id),
+                current.map(|style| style.layout.as_ref()),
+            ) {
+                (Some(ownership), Some(component)) => {
+                    nana_ui_core::resolve_layout_intent(component, layout, *ownership, author_mask)
+                }
+                _ => layout.clone(),
+            };
+            if current.is_some_and(|style| style.layout.as_ref() == &effective_layout) {
                 continue;
             }
             let mut style = current.cloned().unwrap_or_default();
-            style.layout = Arc::new(layout.clone());
+            style.layout = Arc::new(effective_layout);
             mutations.set_style(id, style);
             if self.host_texture_nodes.contains(&raw_id) {
                 surface_ids.push(raw_id);
@@ -1256,7 +1290,7 @@ impl NanaTreeDocument {
         let full_pass = snapshot.changes.needs_full_pass() || snapshot.changes.dirty.is_empty();
         let mut mutations = MutationQueue::new();
         let mut pending = PendingAssembly::default();
-        let mut component_owned_layout = HashSet::new();
+        let mut component_owned_layout = HashMap::new();
         let mut paint_errors = Vec::new();
         if self.runtime.theme() != snapshot.theme_tokens.as_ref() {
             mutations.set_theme_tokens(snapshot.theme_tokens.clone());
@@ -1409,10 +1443,20 @@ impl NanaTreeDocument {
                 // The component consumed `props.layout` when it was built and
                 // now owns this node's LayoutStyle. Record it so the cascade
                 // writeback leaves the projected geometry alone.
-                component_owned_layout.insert(id.get());
+                let ownership = if matches!(
+                    widget.kind,
+                    crate::WidgetKind::Row | crate::WidgetKind::TableRow
+                ) {
+                    nana_ui_core::LayoutIntent::row_default().ownership
+                } else {
+                    nana_ui_core::LayoutOwnership::component_default(
+                        nana_ui_core::LayoutFieldMask::ALL,
+                    )
+                };
+                component_owned_layout.insert(id.get(), ownership);
                 if widget.kind == crate::WidgetKind::GraphCanvas {
                     for child in widget.children.iter() {
-                        component_owned_layout.insert(*child);
+                        component_owned_layout.insert(*child, ownership);
                     }
                 }
                 continue;

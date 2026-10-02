@@ -175,7 +175,7 @@ impl<'a> SemanticRead<'a> {
 pub(super) struct PreparedSemanticSync {
     pub mutations: MutationQueue,
     pub pending: PendingAssembly,
-    pub component_owned_layout: HashSet<u64>,
+    pub component_owned_layout: HashMap<u64, nana_ui_core::LayoutOwnership>,
     pub projected: Vec<u64>,
     pub full_pass: bool,
     pub revision: u64,

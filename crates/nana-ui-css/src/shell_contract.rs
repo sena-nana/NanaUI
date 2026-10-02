@@ -419,7 +419,11 @@ pub fn apply_class_layout_hints(layout: &mut LayoutStyle, class_names: &[String]
         match name.as_str() {
             "flex-row" | "hstack" | "nana-row" | "row" => {
                 if !grid_axis_locked {
-                    layout.direction = Some(FlexDirection::Row);
+                    // Generic utility classes provide a default flow axis;
+                    // explicit author CSS remains the final authority.
+                    if layout.direction.is_none() {
+                        layout.direction = Some(FlexDirection::Row);
+                    }
                 }
                 // Do not invent gap — CSS flex direction utilities are gapless
                 // unless `gap` / `gap-*` is authored (avoids workspace seams).

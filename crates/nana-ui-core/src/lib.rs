@@ -21,6 +21,7 @@ pub mod graph;
 pub mod icon;
 mod icon_data;
 pub mod layout;
+pub mod layout_authority;
 mod layout_style_api;
 pub mod menu;
 pub mod menu_bar;
@@ -93,6 +94,9 @@ pub use icon::{Icon, IconData, IconGeometry, IconPathCommand, IconShape};
 pub use layout::{
     NarrowBehavior, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
     WorkspaceLayout, WorkspaceLayoutError,
+};
+pub use layout_authority::{
+    LayoutFieldMask, LayoutIntent, LayoutOrigin, LayoutOwnership, resolve_layout_intent,
 };
 pub use menu::{MenuConfirmation, MenuSelection};
 pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};

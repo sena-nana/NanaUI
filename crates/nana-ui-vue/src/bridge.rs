@@ -95,6 +95,14 @@ pub struct MessageBridge {
     revision: u64,
     /// Mutation footprint since the previous snapshot (incremental sync).
     changes: SnapshotChanges,
+    /// Nodes whose cascaded layout changed since the last containing-block
+    /// refresh. This is narrower than `changes.dirty`: paint, interaction,
+    /// and text updates do not require a containing-block walk.
+    layout_dirty: HashSet<WidgetId>,
+    /// Author-side layout intent groups for the latest cascade result. This
+    /// is consumed by the retained projection when a component owns only a
+    /// subset of its layout fields.
+    layout_author_masks: HashMap<WidgetId, nana_ui_core::LayoutFieldMask>,
     theme_id: ThemeId,
     theme_tokens: std::sync::Arc<nana_ui_core::CompiledTheme>,
     theme_registry: Option<std::sync::Arc<ThemeRegistry>>,
@@ -160,6 +168,8 @@ impl MessageBridge {
             pending: VecDeque::new(),
             revision: 0,
             changes: SnapshotChanges::default(),
+            layout_dirty: HashSet::new(),
+            layout_author_masks: HashMap::new(),
             theme_id: ThemeId::new("nana.light"),
             theme_tokens: nana_ui_core::builtin_theme_arc(ThemeAppearance::Light),
             theme_registry: None,
@@ -212,10 +222,17 @@ impl MessageBridge {
     fn sync_widget_layouts_for(&self, doc: &mut crate::tree::NanaTreeDocument, ids: &[WidgetId]) {
         // Incremental: only widgets whose interpolated LayoutStyle changed.
         // Never writes Runtime LayoutBox (scroll authority stays on the engine).
-        doc.sync_widget_layouts(ids.iter().filter_map(|id| {
-            self.widgets
-                .get(id)
-                .map(|widget| (*id, &widget.props.layout))
+        doc.sync_widget_layouts_with_authority(ids.iter().filter_map(|id| {
+            self.widgets.get(id).map(|widget| {
+                (
+                    *id,
+                    &widget.props.layout,
+                    self.layout_author_masks
+                        .get(id)
+                        .copied()
+                        .unwrap_or(nana_ui_core::LayoutFieldMask::NONE),
+                )
+            })
         }));
     }
 
@@ -1378,6 +1395,7 @@ impl MessageBridge {
         self.cascade.has_descendant_bits.remove(&id);
         self.cascade.has_self_bits.remove(&id);
         if let Some(widget) = self.widgets.remove(&id) {
+            self.layout_author_masks.remove(&id);
             if let Some(parent) = widget.parent
                 && let Some(p) = self.widgets.get_mut(&parent)
             {
@@ -1455,6 +1473,7 @@ impl MessageBridge {
         self.motion.css_transitions.remove(&child);
         self.motion.css_transition_base.remove(&child);
         self.motion.css_transition_progress.remove(&child);
+        self.layout_author_masks.remove(&child);
         if let Some(widget) = self.widgets.remove(&child)
             && let Some(parent) = widget.parent
             && let Some(p) = self.widgets.get_mut(&parent)
@@ -1578,15 +1597,56 @@ impl MessageBridge {
             return;
         }
         let mut changed = false;
+        let mut affected = Vec::new();
         let vp = self.cascade.layout_viewport;
-        for root in roots {
-            self.propagate_layout_containing_blocks(
-                root,
-                viewport.width,
-                viewport.height,
-                vp,
-                &mut changed,
-            );
+        let structural = self.changes.structure_changed;
+        if viewport_changed || structural {
+            self.layout_dirty.clear();
+            for root in roots {
+                self.propagate_layout_containing_blocks(
+                    root,
+                    viewport.width,
+                    viewport.height,
+                    vp,
+                    &mut changed,
+                    &mut affected,
+                );
+            }
+        } else {
+            // A layout declaration only changes the containing block of its
+            // own descendants. Start from the changed node's existing parent
+            // box and let the worklist stop naturally when values are stable.
+            // Paint-only and interaction-only updates leave this set empty.
+            let seeds: Vec<_> = self.layout_dirty.drain().collect();
+            for id in seeds {
+                let (width, height) = self
+                    .widgets
+                    .get(&id)
+                    .map(|widget| {
+                        (
+                            widget.props.containing_block_width,
+                            widget.props.containing_block_height,
+                        )
+                    })
+                    .unwrap_or((None, None));
+                self.propagate_layout_containing_blocks(
+                    id,
+                    width,
+                    height,
+                    vp,
+                    &mut changed,
+                    &mut affected,
+                );
+            }
+        }
+        if changed && !viewport_changed {
+            // Percentage and viewport-relative declarations must be rebuilt
+            // against the new base before the semantic snapshot is consumed.
+            // The affected list is the same closure discovered by the CB
+            // worklist, so this does not reintroduce a document-wide cascade.
+            for id in affected.iter().copied() {
+                self.reapply_layout_for(id);
+            }
         }
         // Re-cascade after CB writeback so % / vh resolve against fresh bases.
         if viewport_changed {
@@ -1596,7 +1656,10 @@ impl MessageBridge {
             }
             self.reapply_layout_cascade_all();
         } else if changed {
-            self.changed_all();
+            // `propagate_layout_containing_blocks` already records the exact
+            // nodes whose percentage bases changed. Preserve that footprint so
+            // semantic projection can re-cascade only the affected closure.
+            self.bump();
         }
     }
 
@@ -1622,11 +1685,16 @@ impl MessageBridge {
     ) {
         // Compare in place; clone LayoutStyle only for nodes whose cascade
         // actually changed. Never writes Runtime LayoutBox.
-        doc.sync_widget_layouts(
-            self.widgets
-                .iter()
-                .map(|(id, widget)| (*id, &widget.props.layout)),
-        );
+        doc.sync_widget_layouts_with_authority(self.widgets.iter().map(|(id, widget)| {
+            (
+                *id,
+                &widget.props.layout,
+                self.layout_author_masks
+                    .get(id)
+                    .copied()
+                    .unwrap_or(nana_ui_core::LayoutFieldMask::NONE),
+            )
+        }));
     }
 
     /// Fill only nodes that still have no engine box after flush.
@@ -1707,10 +1775,9 @@ impl MessageBridge {
     /// 0.096 -> 0.091 ms on a 2,000-row hover and left settle where it was;
     /// fusing the two lookups took it to 0.079. **Neither was the bulk.**
     ///
-    /// This still walks every node every frame. Pushing down only from the
-    /// widgets whose content box may have moved would take the stage to
-    /// ~0.0001 ms -- measured -- but nothing available can prove that the
-    /// seeding is complete; see `archive/docs-notes/runtime-dirty-frame.md`.
+    /// The normal path now starts from the layout mutation footprint. A full
+    /// root walk remains for viewport and structural changes, where the root
+    /// seed is the correctness boundary.
     ///
     /// Sibling order does not matter here -- a node's containing block depends
     /// only on its parent's content box -- but parent-before-child does, so
@@ -1722,6 +1789,7 @@ impl MessageBridge {
         height: Option<f32>,
         viewport: Option<(f32, f32)>,
         changed: &mut bool,
+        affected: &mut Vec<WidgetId>,
     ) {
         let mut pending: Vec<(WidgetId, Option<f32>, Option<f32>)> = vec![(id, width, height)];
         while let Some((id, width, height)) = pending.pop() {
@@ -1750,6 +1818,7 @@ impl MessageBridge {
                 // Disjoint field borrow: `widgets` above, `changes` here.
                 self.changes.dirty.insert(id);
                 *changed = true;
+                affected.push(id);
             }
         }
     }

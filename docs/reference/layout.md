@@ -8,6 +8,17 @@ Rust 的第一路径用控件自己的布局。你不写 CSS。排行、列和�
 
 对话框、抽屉、菜单用 [控件](components.md) 里的浮层。
 
+## Layout intent authority
+
+组件语义、作者 CSS/Rust 和运行时约束都进入同一份 layout intent。字段按
+`nana_ui_core::LayoutOwnership` 标记为 component-required 或
+component-default；默认值允许作者覆盖，required 值保留给组件。最终样式仍由
+Runtime 写入口提交，`LayoutBox` 和滚动投影是输出，不是可写的前端属性。
+
+Vue 的 containing block 传播以 layout mutation footprint 为 seed。静态帧和
+paint-only 更新不再扫描整棵投影树；视口变化与结构变更仍从根节点重算，以保持
+百分比、Fill 和 intrinsic sizing 的正确性。
+
 ## 能用的
 
 **Flex。** 你可以用 `flex-direction`、`flex-wrap`、`gap`、`align-items`、`align-self`、`justify-content`。多行换行时还有 `align-content`。`stretch` 和 `normal` 把剩余的交叉空间均分给各行。还有 `order`、`flex-grow`、`flex-shrink`、`flex-basis`。侧栏加主区，用这一套就够。

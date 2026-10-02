@@ -502,8 +502,16 @@ impl MessageBridge {
             layout
         } else {
             // Author CSS present: seed nothing from the kind. Gap and padding come
-            // from the stylesheet / `gap-*` hints, direction from `display:flex`.
-            LayoutStyle::default()
+            // from the stylesheet / `gap-*` hints. A semantic row is the one
+            // exception: its default flow axis is component intent, while an
+            // authored `flex-direction` declaration below still overrides it.
+            // Keeping this seed in the cascade resolver prevents the component
+            // projection from writing `Some(Row)` back after every pass.
+            let mut layout = LayoutStyle::default();
+            if matches!(kind, WidgetKind::Row | WidgetKind::TableRow) {
+                layout.direction = kind_default_direction(kind);
+            }
+            layout
         };
 
         // CSS `direction` inherits. Seed the used parent value before cascade so
@@ -519,6 +527,11 @@ impl MessageBridge {
         // author CSS `direction`. `auto` is fail-closed (no specified value).
         if let Some(attr_dir) = crate::widget_map::html_dir_spec_from_map(&leaf_attrs) {
             base.dir = Some(attr_dir);
+        }
+        // Custom-element shell contracts provide component defaults. Seed them
+        // before authored CSS so an explicit stylesheet/inline direction wins.
+        if leaf_tag.starts_with("nana-") && !leaf_classes.iter().any(|c| c == &leaf_tag) {
+            base.apply_class_layout_hints(std::slice::from_ref(&leaf_tag));
         }
 
         // Author layers: stylesheet → class hints → prop style → class hints →
@@ -596,13 +609,6 @@ impl MessageBridge {
             // overlay. Progress is 0 for compositor-only tracks, so
             // `apply_to_layout` would stamp the from value back onto logical.
             paint.apply_cpu_to_layout(&mut layout);
-        }
-        // Custom-element contract: tag `nana-sidebar-frame` / `nana-sidebar-row`
-        // mirrors the public class hints when Vue omitted `class` (host CEs often
-        // only set the tag). This is the element-name contract — not a WidgetKind
-        // whitelist inventing geometry from the enum alone.
-        if leaf_tag.starts_with("nana-") && !leaf_classes.iter().any(|c| c == &leaf_tag) {
-            layout.apply_class_layout_hints(std::slice::from_ref(&leaf_tag));
         }
         // Preserve SVG fill/stroke paint when stylesheet didn't set them —
         // unless the author explicitly declared `fill`/`stroke` this pass and
@@ -691,6 +697,18 @@ impl MessageBridge {
         // implement. Without this they are only visible as a box that silently
         // did not move.
         self.cascade.unsupported_css.observe(id, &layout);
+
+        let author_mask = if !self.cascade.stylesheet_rules.is_empty()
+            || !self.cascade.authored_sheets.is_empty()
+            || !inline_style.trim().is_empty()
+            || !prop_style.trim().is_empty()
+            || !leaf_classes.is_empty()
+        {
+            nana_ui_core::LayoutFieldMask::ALL
+        } else {
+            nana_ui_core::LayoutFieldMask::NONE
+        };
+        self.layout_author_masks.insert(id, author_mask);
 
         if let Some(widget) = self.widgets.get_mut(&id) {
             if widget.props.layout != layout {
@@ -834,6 +852,10 @@ impl MessageBridge {
         // Cascaded props/layout for this widget may change: record it for the
         // incremental semantic sync (a no-op reapply costs one set insert).
         self.changes.dirty.insert(id);
+        let previous_layout = self
+            .widgets
+            .get(&id)
+            .map(|widget| widget.props.layout.clone());
         // Refresh once per cascade pass. `bump()` clears the flag so a loop of
         // `reapply_layout_for` never rebuilds the index per node (O(n²)).
         self.ensure_has_index();
@@ -866,7 +888,97 @@ impl MessageBridge {
         };
         crate::css_map::with_active_color_scheme_dark(dark, run);
         self.strip_deferred_position_on_overlay(id);
+        let layout_changed = match (previous_layout, self.widgets.get(&id)) {
+            (Some(previous), Some(widget)) => {
+                layout_affects_containing_block(&previous, &widget.props.layout)
+            }
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if layout_changed {
+            self.layout_dirty.insert(id);
+        }
     }
+}
+
+/// Paint, visibility, and interaction changes must not seed containing-block
+/// work. Keep this classification next to the cascade write boundary so every
+/// L1/L2 layout mutation uses the same footprint rule.
+fn layout_affects_containing_block(
+    previous: &nana_ui_core::LayoutStyle,
+    next: &nana_ui_core::LayoutStyle,
+) -> bool {
+    previous.direction != next.direction
+        || previous.dir != next.dir
+        || previous.flex_reverse != next.flex_reverse
+        || previous.order != next.order
+        || previous.flex_wrap != next.flex_wrap
+        || previous.display != next.display
+        || previous.box_sizing != next.box_sizing
+        || previous.position != next.position
+        || previous.gap != next.gap
+        || previous.row_gap != next.row_gap
+        || previous.column_gap != next.column_gap
+        || previous.padding != next.padding
+        || previous.padding_top != next.padding_top
+        || previous.padding_right != next.padding_right
+        || previous.padding_bottom != next.padding_bottom
+        || previous.padding_left != next.padding_left
+        || previous.logical_padding != next.logical_padding
+        || previous.margin != next.margin
+        || previous.margin_top != next.margin_top
+        || previous.margin_right != next.margin_right
+        || previous.margin_bottom != next.margin_bottom
+        || previous.margin_left != next.margin_left
+        || previous.logical_margin != next.logical_margin
+        || previous.offset_top != next.offset_top
+        || previous.offset_right != next.offset_right
+        || previous.offset_bottom != next.offset_bottom
+        || previous.offset_left != next.offset_left
+        || previous.logical_inset != next.logical_inset
+        || previous.width != next.width
+        || previous.height != next.height
+        || previous.min_width != next.min_width
+        || previous.max_width != next.max_width
+        || previous.min_height != next.min_height
+        || previous.max_height != next.max_height
+        || previous.allow_shrink != next.allow_shrink
+        || previous.align_items != next.align_items
+        || previous.align_self != next.align_self
+        || previous.align_content != next.align_content
+        || previous.justify_content != next.justify_content
+        || previous.justify_items != next.justify_items
+        || previous.justify_self != next.justify_self
+        || previous.flex_grow != next.flex_grow
+        || previous.flex_shrink != next.flex_shrink
+        || previous.flex_basis != next.flex_basis
+        || previous.overflow_x != next.overflow_x
+        || previous.overflow_y != next.overflow_y
+        || previous.aspect_ratio != next.aspect_ratio
+        || previous.float != next.float
+        || previous.clear != next.clear
+        || previous.writing_mode != next.writing_mode
+        || previous.unsupported_writing_mode != next.unsupported_writing_mode
+        || previous.layout_isolation != next.layout_isolation
+        || previous.grid_template_areas != next.grid_template_areas
+        || previous.grid_columns != next.grid_columns
+        || previous.grid_rows != next.grid_rows
+        || previous.grid_auto_columns != next.grid_auto_columns
+        || previous.grid_auto_rows != next.grid_auto_rows
+        || previous.grid_auto_flow != next.grid_auto_flow
+        || previous.grid_columns_repeat != next.grid_columns_repeat
+        || previous.grid_rows_repeat != next.grid_rows_repeat
+        || previous.grid_placement != next.grid_placement
+        || previous.border_width != next.border_width
+        || previous.border_top_width != next.border_top_width
+        || previous.border_right_width != next.border_right_width
+        || previous.border_bottom_width != next.border_bottom_width
+        || previous.border_left_width != next.border_left_width
+        || previous.border_style != next.border_style
+        || previous.border_top_style != next.border_top_style
+        || previous.border_right_style != next.border_right_style
+        || previous.border_bottom_style != next.border_bottom_style
+        || previous.border_left_style != next.border_left_style
 }
 
 impl MessageBridge {

@@ -377,6 +377,93 @@ fn display_block_does_not_rewrite_row_widget_kind() {
 }
 
 #[test]
+fn row_component_default_survives_author_css_rebuild_without_reseeding() {
+    let mut bridge = MessageBridge::new();
+    bridge.register(
+        1,
+        WidgetKind::Row,
+        WidgetProps {
+            class_names: vec!["row".into()],
+            ..WidgetProps::default()
+        },
+    );
+    bridge.inject_stylesheet(".row { display: flex; gap: 4px; }");
+
+    bridge.reapply_layout_for(1);
+    let first = bridge.get(1).expect("row").props.layout.clone();
+    bridge.reapply_layout_for(1);
+    let second = bridge.get(1).expect("row").props.layout.clone();
+
+    assert_eq!(first, second);
+    assert_eq!(
+        first.direction,
+        Some(nana_ui_core::FlexDirection::Row),
+        "the component default must remain the resolved direction when CSS only sets display"
+    );
+
+    bridge.patch_prop(1, "style", &HostValue::string("flex-direction: column"));
+    assert_eq!(
+        bridge.get(1).expect("row").props.layout.direction,
+        Some(nana_ui_core::FlexDirection::Column),
+        "an explicit author direction still overrides the component default"
+    );
+
+    bridge.patch_prop(1, "style", &HostValue::string(""));
+    assert_eq!(
+        bridge.get(1).expect("row").props.layout.direction,
+        Some(nana_ui_core::FlexDirection::Row),
+        "removing the author declaration restores the component default"
+    );
+}
+
+#[test]
+fn paint_only_cascade_does_not_seed_containing_block_work() {
+    let mut bridge = MessageBridge::new();
+    bridge.register(
+        1,
+        WidgetKind::Row,
+        WidgetProps {
+            class_names: vec!["paint".into()],
+            ..WidgetProps::default()
+        },
+    );
+    bridge.inject_stylesheet(".paint { display: flex; color: red; }");
+    bridge.reapply_layout_for(1);
+    bridge.layout_dirty.clear();
+
+    bridge.patch_prop(1, "style", &HostValue::string("color: blue"));
+    assert!(
+        bridge.layout_dirty.is_empty(),
+        "paint-only updates must not seed containing-block propagation"
+    );
+}
+
+#[test]
+fn paint_only_cascade_is_zero_layout_work_at_2k_and_8k_scale() {
+    for count in [2_000_u64, 8_000_u64] {
+        let mut bridge = MessageBridge::new();
+        for id in 1..=count {
+            bridge.register(
+                id,
+                WidgetKind::Row,
+                WidgetProps {
+                    class_names: vec!["paint-scale".into()],
+                    ..WidgetProps::default()
+                },
+            );
+        }
+        bridge.inject_stylesheet(".paint-scale { display: flex; color: red; }");
+        bridge.layout_dirty.clear();
+
+        bridge.patch_prop(count, "style", &HostValue::string("color: blue"));
+        assert!(
+            bridge.layout_dirty.is_empty(),
+            "paint-only update seeded layout work at {count} nodes"
+        );
+    }
+}
+
+#[test]
 fn create_button_and_press_queues_event() {
     let mut bridge = MessageBridge::new();
     bridge.register(
