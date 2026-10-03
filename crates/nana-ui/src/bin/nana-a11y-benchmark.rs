@@ -30,6 +30,8 @@ fn node(value: u64) -> AccessibilityNode {
         numeric_maximum: None,
         numeric_step: None,
         numeric_value: None,
+        scroll_x: None,
+        scroll_y: None,
         focused: false,
         bounds: LayoutBox::default(),
         writing: Default::default(),

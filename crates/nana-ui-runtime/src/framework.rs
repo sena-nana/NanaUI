@@ -54,20 +54,21 @@ use nana_ui_core::{
 #[cfg(test)]
 use crate::Dialog;
 use crate::{
-    AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
-    AnimationFrame, Button, Checkbox, Chip, CodeEditing, CommandPalette, ComponentView,
-    ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent, FormField,
-    FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton, LabeledValue, List, ListItem,
-    ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
-    NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
-    ProgressCancelled, RangeAdjustment, RangeChanged, RangeDragging, RangeField, RangeInput,
-    RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollMetrics, ScrollOffset,
-    ScrollView, ScrollViewportChanged, SearchDropdown, SearchDropdownEvent, SecondaryPress,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
-    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, SizeChanged,
-    StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextClamped,
-    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
-    UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
+    AccessibilityAction, AccessibilityActionRequest, AccessibilityScrollDirection, ActionMenu,
+    ActionMenuItem, Activate, AnimationFrame, Button, Checkbox, Chip, CodeEditing, CommandPalette,
+    ComponentView, ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent,
+    FormField, FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton, LabeledValue, List,
+    ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind,
+    NumberChanged, NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed,
+    PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeDragging,
+    RangeField, RangeInput, RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollLaidOut,
+    ScrollMetrics, ScrollOffset, ScrollView, ScrollViewportChanged, SearchDropdown,
+    SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
+    SidebarSection, SizeChanged, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea,
+    TextChanged, TextClamped, TextInput, TextInputState, TextPresenter, TextSelection,
+    ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
+    XYPadEvent,
     component_registry::{
         ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
         RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
@@ -2726,6 +2727,22 @@ impl AppContext {
                     return self.focus_context_menu_index(entity, index);
                 }
                 self.focus_node(document, request.target)
+            }
+            AccessibilityAction::Scroll(direction) => {
+                if !self.world.is_scroll_container(request.target) {
+                    return Ok(false);
+                }
+                let metrics = self.world.scroll_metrics(request.target);
+                let (step_x, step_y) = metrics
+                    .map(|metrics| (metrics.viewport_width, metrics.viewport_height))
+                    .unwrap_or((40.0, 40.0));
+                let delta = match direction {
+                    AccessibilityScrollDirection::Up => ScrollOffset { x: 0.0, y: -step_y },
+                    AccessibilityScrollDirection::Down => ScrollOffset { x: 0.0, y: step_y },
+                    AccessibilityScrollDirection::Left => ScrollOffset { x: -step_x, y: 0.0 },
+                    AccessibilityScrollDirection::Right => ScrollOffset { x: step_x, y: 0.0 },
+                };
+                self.scroll_node_by(request.target, delta)
             }
             AccessibilityAction::SetValue(value) => {
                 if let Some(entity) = self.view_entity::<TextInput>(request.target) {

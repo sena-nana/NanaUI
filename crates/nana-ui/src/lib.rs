@@ -317,9 +317,9 @@ pub use settings::{hosted_window_material_modes, window_material_effect};
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController};
 pub use theme::{
     Color, CompiledTheme, HAIRLINE, SemanticColor, SemanticPalette, ThemeAppearance,
-    ThemeAppearanceExt, ThemeChoice, ThemeId, ThemeMetrics, ThemeRegistry, ThemeRegistryError,
-    ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme_arc, install_theme_tokens, space,
-    type_scale,
+    ThemeAppearanceExt, ThemeChoice, ThemeId, ThemeMetrics, ThemeMode, ThemeModeExt, ThemeRegistry,
+    ThemeRegistryError, ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme_arc,
+    install_theme_tokens, space, type_scale,
 };
 #[cfg(feature = "bundled-fonts")]
 pub use theme::{UI_FONT_BOLD, UI_FONT_MEDIUM, UI_FONT_REGULAR, UI_FONT_SEMIBOLD, ui_font_sources};

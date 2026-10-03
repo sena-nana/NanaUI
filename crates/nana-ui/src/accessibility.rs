@@ -11,7 +11,8 @@ use accesskit::{
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 use nana_ui_runtime::AccessibilityUpdate;
 use nana_ui_runtime::{
-    AccessibilityDelta, AccessibilityNode, AccessibilityRole, SelectionOrientation, StableNodeId,
+    AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityScrollDirection,
+    SelectionOrientation, StableNodeId,
 };
 
 use accesskit::ActionRequest;
@@ -443,6 +444,18 @@ impl AccessibilityProjector {
             }
             Action::Focus if supports_focus(node.role) => {
                 nana_ui_runtime::AccessibilityAction::Focus
+            }
+            Action::ScrollDown if node.scroll_y.is_some() => {
+                nana_ui_runtime::AccessibilityAction::Scroll(AccessibilityScrollDirection::Down)
+            }
+            Action::ScrollUp if node.scroll_y.is_some() => {
+                nana_ui_runtime::AccessibilityAction::Scroll(AccessibilityScrollDirection::Up)
+            }
+            Action::ScrollLeft if node.scroll_x.is_some() => {
+                nana_ui_runtime::AccessibilityAction::Scroll(AccessibilityScrollDirection::Left)
+            }
+            Action::ScrollRight if node.scroll_x.is_some() => {
+                nana_ui_runtime::AccessibilityAction::Scroll(AccessibilityScrollDirection::Right)
             }
             Action::SetValue if supports_set_value(node) => match request.data {
                 Some(ActionData::Value(value)) => {
@@ -992,6 +1005,26 @@ fn project_node(
     if let Some(step) = node.numeric_step {
         projected.set_numeric_value_step(step);
     }
+    if let Some(scroll) = node.scroll_x {
+        projected.set_scroll_x(scroll.value);
+        projected.set_scroll_x_min(scroll.minimum);
+        projected.set_scroll_x_max(scroll.maximum);
+    }
+    if let Some(scroll) = node.scroll_y {
+        projected.set_scroll_y(scroll.value);
+        projected.set_scroll_y_min(scroll.minimum);
+        projected.set_scroll_y_max(scroll.maximum);
+    }
+    if interactive && !node.disabled {
+        if node.scroll_y.is_some() {
+            projected.add_action(Action::ScrollDown);
+            projected.add_action(Action::ScrollUp);
+        }
+        if node.scroll_x.is_some() {
+            projected.add_action(Action::ScrollLeft);
+            projected.add_action(Action::ScrollRight);
+        }
+    }
     if node.role == AccessibilityRole::TextInput && !node.editable {
         projected.set_read_only();
     }
@@ -1063,8 +1096,10 @@ const fn supports_click(role: AccessibilityRole) -> bool {
         AccessibilityRole::Button
             | AccessibilityRole::Checkbox
             | AccessibilityRole::Switch
+            | AccessibilityRole::ComboBox
             | AccessibilityRole::TextInput
             | AccessibilityRole::Tab
+            | AccessibilityRole::ListItem
             | AccessibilityRole::MenuItem
             | AccessibilityRole::Radio
     )
@@ -1076,6 +1111,7 @@ const fn supports_focus(role: AccessibilityRole) -> bool {
         AccessibilityRole::Button
             | AccessibilityRole::Checkbox
             | AccessibilityRole::Switch
+            | AccessibilityRole::ListItem
             | AccessibilityRole::TextInput
             | AccessibilityRole::Slider
             | AccessibilityRole::ComboBox
@@ -1271,6 +1307,8 @@ mod tests {
             numeric_maximum: None,
             numeric_step: None,
             numeric_value: None,
+            scroll_x: None,
+            scroll_y: None,
             focused: false,
             bounds: LayoutBox::default(),
             writing: Default::default(),
@@ -1837,6 +1875,100 @@ mod tests {
                 nana_ui_runtime::AccessibilityAction::ActivateMenuItem { .. }
                     | nana_ui_runtime::AccessibilityAction::Focus
             ));
+        }
+    }
+
+    #[test]
+    fn list_items_and_combo_boxes_project_runtime_actions() {
+        let root = node(1, None, &[2, 3]);
+        let mut list_item = node(2, Some(1), &[]);
+        list_item.role = AccessibilityRole::ListItem;
+        list_item.label = Some("素材".into());
+        let mut combo_box = node(3, Some(1), &[]);
+        combo_box.role = AccessibilityRole::ComboBox;
+        combo_box.label = Some("主题".into());
+
+        let (projector, update) =
+            AccessibilityProjector::new(vec![root, list_item, combo_box], true, 1.0);
+        for (id, actions) in [
+            (NodeId(2), [Action::Click, Action::Focus]),
+            (NodeId(3), [Action::Click, Action::Focus]),
+        ] {
+            let projected = &update
+                .nodes
+                .iter()
+                .find(|(node_id, _)| *node_id == id)
+                .expect("projected interactive node")
+                .1;
+            for action in actions {
+                assert!(
+                    projected.supports_action(action),
+                    "{action:?} should be advertised for {id:?}"
+                );
+                let request = projector
+                    .project_action_request(ActionRequest {
+                        action,
+                        target_tree: TreeId::ROOT,
+                        target_node: id,
+                        data: None,
+                    })
+                    .expect("projected action request");
+                assert_eq!(request.target, StableNodeId::new(id.0).unwrap());
+                assert_eq!(
+                    request.action,
+                    match action {
+                        Action::Click => nana_ui_runtime::AccessibilityAction::Click,
+                        Action::Focus => nana_ui_runtime::AccessibilityAction::Focus,
+                        _ => unreachable!(),
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scrollable_nodes_project_range_and_directional_actions() {
+        let root = node(1, None, &[2]);
+        let mut scroll = node(2, Some(1), &[]);
+        scroll.scroll_y = Some(nana_ui_runtime::AccessibilityScrollAxis {
+            value: 12.0,
+            minimum: 0.0,
+            maximum: 240.0,
+        });
+        let (projector, update) = AccessibilityProjector::new(vec![root, scroll], true, 1.0);
+        let projected = &update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(2))
+            .expect("projected scroll container")
+            .1;
+        assert_eq!(projected.scroll_y(), Some(12.0));
+        assert_eq!(projected.scroll_y_min(), Some(0.0));
+        assert_eq!(projected.scroll_y_max(), Some(240.0));
+        assert!(projected.supports_action(Action::ScrollUp));
+        assert!(projected.supports_action(Action::ScrollDown));
+        for (action, expected) in [
+            (
+                Action::ScrollUp,
+                nana_ui_runtime::AccessibilityScrollDirection::Up,
+            ),
+            (
+                Action::ScrollDown,
+                nana_ui_runtime::AccessibilityScrollDirection::Down,
+            ),
+        ] {
+            let request = projector
+                .project_action_request(ActionRequest {
+                    action,
+                    target_tree: TreeId::ROOT,
+                    target_node: NodeId(2),
+                    data: None,
+                })
+                .expect("scroll action request");
+            assert_eq!(
+                request.action,
+                nana_ui_runtime::AccessibilityAction::Scroll(expected)
+            );
         }
     }
 

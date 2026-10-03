@@ -263,11 +263,20 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
         let target = crate::NodeHandle(request.target.get());
         match request.action {
+            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { .. } => {
+                // Vue menus are retained DOM nodes; virtual painted menu rows
+                // are owned by the native Runtime host and have no Vue node
+                // equivalent to dispatch into.
+                Ok(false)
+            }
             nana_ui_runtime::AccessibilityAction::Focus => {
                 host.accessibility_focus(&mut self.engine, target)
             }
             nana_ui_runtime::AccessibilityAction::Click => {
                 host.accessibility_click(&mut self.engine, target)
+            }
+            nana_ui_runtime::AccessibilityAction::Scroll(direction) => {
+                Ok(host.accessibility_scroll(target, direction))
             }
             nana_ui_runtime::AccessibilityAction::SetValue(value) => {
                 host.accessibility_set_value(&mut self.engine, target, &value)

@@ -274,6 +274,18 @@ impl UiWorld {
             self.nodes.visual(id),
             Some(StandardVisual::TextInput { secure: true, .. })
         );
+        // Scroll positions are part of the semantic node, rather than a
+        // second visual-only state. Publish an axis only when the retained
+        // geometry says it can actually move; this keeps ordinary containers
+        // from advertising meaningless scroll actions.
+        let scroll_metrics = visible
+            .then(|| {
+                self.is_scroll_container(id)
+                    .then(|| self.scroll_metrics(id))
+            })
+            .flatten()
+            .flatten();
+        let scroll_offset = scroll_metrics.and_then(|_| self.scroll_offset(id));
         // A node another one names (a settings row's label beside its
         // switch) keeps a label of its own first, as `aria-label` wins over
         // `aria-labelledby`; an empty one names nothing. Its own text (a
@@ -351,6 +363,26 @@ impl UiWorld {
             numeric_maximum: state.numeric_maximum,
             numeric_step: state.numeric_step,
             numeric_value: state.numeric_value,
+            scroll_x: scroll_metrics.and_then(|metrics| {
+                let min = metrics.min_offset().x;
+                let max = metrics.max_offset().x;
+                let offset = scroll_offset?;
+                (max > min).then(|| crate::AccessibilityScrollAxis {
+                    value: offset.x as f64,
+                    minimum: min as f64,
+                    maximum: max as f64,
+                })
+            }),
+            scroll_y: scroll_metrics.and_then(|metrics| {
+                let min = metrics.min_offset().y;
+                let max = metrics.max_offset().y;
+                let offset = scroll_offset?;
+                (max > min).then(|| crate::AccessibilityScrollAxis {
+                    value: offset.y as f64,
+                    minimum: min as f64,
+                    maximum: max as f64,
+                })
+            }),
             focused: visible && self.input.focused.get(&document) == Some(&id),
             bounds,
             writing,
@@ -411,6 +443,8 @@ impl UiWorld {
                     numeric_maximum: None,
                     numeric_step: None,
                     numeric_value: None,
+                    scroll_x: None,
+                    scroll_y: None,
                     focused: *highlighted == Some(index),
                     bounds,
                     writing: menu.writing,

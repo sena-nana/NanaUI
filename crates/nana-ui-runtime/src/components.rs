@@ -2902,11 +2902,25 @@ pub struct AccessibilityNode {
     pub numeric_maximum: Option<f64>,
     pub numeric_step: Option<f64>,
     pub numeric_value: Option<f64>,
+    /// Current and reachable range for a horizontally scrollable container.
+    /// This is omitted when the node cannot move on that axis.
+    pub scroll_x: Option<AccessibilityScrollAxis>,
+    /// Current and reachable range for a vertically scrollable container.
+    /// This is omitted when the node cannot move on that axis.
+    pub scroll_y: Option<AccessibilityScrollAxis>,
     pub focused: bool,
     pub bounds: LayoutBox,
     /// The writing mode and direction its text reads in (#59): which way an
     /// assistive technology walks a text run.
     pub writing: nana_ui_core::WritingContext,
+}
+
+/// The logical scroll position and range exposed to assistive technology.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AccessibilityScrollAxis {
+    pub value: f64,
+    pub minimum: f64,
+    pub maximum: f64,
 }
 
 /// Stable IDs for menu rows that are painted by a menu surface rather than
@@ -2970,8 +2984,19 @@ pub enum AccessibilityAction {
         index: usize,
     },
     Focus,
+    /// Move the target scroll container by one viewport in the requested
+    /// direction. The runtime clamps the result to its published range.
+    Scroll(AccessibilityScrollDirection),
     SetValue(String),
     SetSelection(TextSelection),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityScrollDirection {
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

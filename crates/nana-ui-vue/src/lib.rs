@@ -768,6 +768,54 @@ impl VueHost {
         Arc::clone(&self.bridge)
     }
 
+    /// Apply one assistive-technology scroll step to a retained scrollport.
+    ///
+    /// The Runtime accessibility projector exposes viewport-sized directional
+    /// actions. Reuse the same scroll helper as CSSOM `scrollTop` so descendant
+    /// layout boxes, sticky children, and the pending Scene command stay in
+    /// sync with the authoritative Runtime offset.
+    #[cfg(feature = "hosted")]
+    pub(crate) fn accessibility_scroll(
+        &self,
+        node: NodeHandle,
+        direction: nana_ui_runtime::AccessibilityScrollDirection,
+    ) -> bool {
+        let mut document = self.document.lock().expect("vue doc");
+        let Some(metrics) = document.scroll_metrics(node) else {
+            return false;
+        };
+        let current = document.scroll_offset(node);
+        let (step_x, step_y) = (metrics.viewport_width, metrics.viewport_height);
+        let delta = match direction {
+            nana_ui_runtime::AccessibilityScrollDirection::Up => {
+                nana_ui_runtime::ScrollOffset { x: 0.0, y: -step_y }
+            }
+            nana_ui_runtime::AccessibilityScrollDirection::Down => {
+                nana_ui_runtime::ScrollOffset { x: 0.0, y: step_y }
+            }
+            nana_ui_runtime::AccessibilityScrollDirection::Left => {
+                nana_ui_runtime::ScrollOffset { x: -step_x, y: 0.0 }
+            }
+            nana_ui_runtime::AccessibilityScrollDirection::Right => {
+                nana_ui_runtime::ScrollOffset { x: step_x, y: 0.0 }
+            }
+        };
+        let next = nana_ui_runtime::ScrollOffset {
+            x: current.x + delta.x,
+            y: current.y + delta.y,
+        };
+        let bridge = self.bridge.lock().expect("vue bridge");
+        let applied = set_scroll_offset(
+            &mut document,
+            &self.layout_boxes,
+            &shared_scroll_offset_store(),
+            widget_id(node),
+            next,
+            Some(&bridge),
+        );
+        applied != current
+    }
+
     pub fn web_api(&self) -> SharedWebApiState {
         Arc::clone(&self.web_api)
     }
