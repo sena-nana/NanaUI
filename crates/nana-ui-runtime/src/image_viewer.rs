@@ -822,7 +822,7 @@ impl AppContext {
         else {
             return Ok(None);
         };
-        let Some(bounds) = self.world().layout_box(viewer.stable_id()) else {
+        let Some(bounds) = self.world().canonical_layout_box(viewer.stable_id()) else {
             return Ok(None);
         };
         let metrics = self.world().theme_metrics();
@@ -865,7 +865,7 @@ impl AppContext {
         let Some((x, y)) = self.world().pointer_layout_position(id, x, y) else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().layout_box(viewer.stable_id()) else {
+        let Some(bounds) = self.world().canonical_layout_box(viewer.stable_id()) else {
             return Ok(false);
         };
         let metrics = self.world().theme_metrics();
@@ -908,7 +908,7 @@ impl AppContext {
         else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().layout_box(viewer.stable_id()) else {
+        let Some(bounds) = self.world().canonical_layout_box(viewer.stable_id()) else {
             return Ok(false);
         };
         let metrics = self.world().theme_metrics();
@@ -1270,13 +1270,19 @@ mod tests {
         let viewport = crate::LayoutViewport::new(400.0, 300.0);
         let close_box = |context: &mut AppContext| {
             context.layout_document(document, viewport).unwrap();
-            let bounds = context.world().layout_box(viewer.stable_id()).unwrap();
+            let bounds = context
+                .world()
+                .canonical_layout_box(viewer.stable_id())
+                .unwrap();
             let expected = context
                 .read(viewer, |view| {
                     view.geometry(bounds, context.world().theme_metrics()).close
                 })
                 .unwrap();
-            (context.world().layout_box(close).unwrap(), expected)
+            (
+                context.world().canonical_layout_box(close).unwrap(),
+                expected,
+            )
         };
         let default = nana_ui_core::UI_METRICS.compact_control_height;
         let (actual, expected) = close_box(&mut context);
@@ -1341,7 +1347,7 @@ mod tests {
             .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
             .unwrap();
         context.rebuild_hit_test(document);
-        let control = context.world().layout_box(close).unwrap();
+        let control = context.world().canonical_layout_box(close).unwrap();
         let (x, y) = (
             control.x + control.width / 2.0,
             control.y + control.height / 2.0,
@@ -1459,13 +1465,16 @@ mod tests {
         context
             .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
             .unwrap();
-        let bounds = context.world().layout_box(viewer.stable_id()).unwrap();
+        let bounds = context
+            .world()
+            .canonical_layout_box(viewer.stable_id())
+            .unwrap();
         let stage = context
             .read(viewer, |view| {
                 view.geometry(bounds, context.world().theme_metrics()).stage
             })
             .unwrap();
-        let row = context.world().layout_box(navigation).unwrap();
+        let row = context.world().canonical_layout_box(navigation).unwrap();
         assert!(row.y + row.height <= stage.y + stage.height);
         assert!(row.y >= stage.y);
     }
@@ -1560,7 +1569,10 @@ mod tests {
         let geometry = context
             .read(viewer, |view| {
                 view.geometry(
-                    context.world().layout_box(viewer.stable_id()).unwrap(),
+                    context
+                        .world()
+                        .canonical_layout_box(viewer.stable_id())
+                        .unwrap(),
                     context.world().theme_metrics(),
                 )
             })

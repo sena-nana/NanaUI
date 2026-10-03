@@ -35,10 +35,10 @@ impl AppContext {
         if !self.scroll_contains_row(scroll.id, row) {
             return Ok(None);
         }
-        let Some(viewport) = self.world.layout_box(scroll.id) else {
+        let Some(viewport) = self.world.component_layout_box(scroll.id) else {
             return Ok(None);
         };
-        let Some(bounds) = self.world.layout_box(row) else {
+        let Some(bounds) = self.world.component_layout_box(row) else {
             return Ok(None);
         };
         let offset = self.world.scroll_offset(scroll.id).unwrap_or_default();
@@ -95,8 +95,8 @@ impl AppContext {
             self.update_scroll_view_visual(scroll, |view, _| view.pending_anchor = None)?;
             if self.scroll_contains_row(scroll.id, anchor.row)
                 && let (Some(viewport), Some(row)) = (
-                    self.world.layout_box(scroll.id),
-                    self.world.layout_box(anchor.row),
+                    self.world.component_layout_box(scroll.id),
+                    self.world.component_layout_box(anchor.row),
                 )
             {
                 return self.scroll_to(
@@ -202,10 +202,10 @@ impl AppContext {
         target: StableNodeId,
         margin: f32,
     ) -> Result<bool, FrameworkError> {
-        let Some(target_box) = self.world.layout_box(target) else {
+        let Some(target_box) = self.world.component_layout_box(target) else {
             return Err(FrameworkError::MissingView(target));
         };
-        let Some(view_box) = self.world.layout_box(scroll.id) else {
+        let Some(view_box) = self.world.component_layout_box(scroll.id) else {
             return Err(FrameworkError::MissingView(scroll.id));
         };
         let offset = self.world.scroll_offset(scroll.id).unwrap_or_default();

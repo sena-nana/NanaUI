@@ -509,7 +509,7 @@ impl AppContext {
             match items
                 .containers
                 .get(key)
-                .and_then(|container| self.world.layout_box(container.id))
+                .and_then(|container| self.world.component_layout_box(container.id))
             {
                 Some(bounds) if bounds.height > 0.0 => {
                     measured |= layout.measure_anchored(index, bounds.height, &mut viewport);
@@ -871,8 +871,8 @@ impl AppContext {
     ) -> Result<VirtualViewport, FrameworkError> {
         let mut viewport = self.virtual_viewport_from_scroll(scroll, [0.0, overscan])?;
         let start = match (
-            self.world.layout_box(list.id),
-            self.world.layout_box(scroll.id),
+            self.world.component_layout_box(list.id),
+            self.world.component_layout_box(scroll.id),
         ) {
             // Layout boxes are unscrolled, so this is where the list sits in
             // the scroll content, padding and preceding siblings included.
@@ -893,7 +893,7 @@ impl AppContext {
     ) -> Result<VirtualViewport, FrameworkError> {
         self.read(scroll, |_| ())?;
         let offset = self.world.scroll_offset(scroll.id).unwrap_or_default();
-        let bounds = self.world.layout_box(scroll.id);
+        let bounds = self.world.component_layout_box(scroll.id);
         let metrics = self.world.scroll_metrics(scroll.id);
         let width = bounds
             .and_then(|bounds| (bounds.width > 0.0).then_some(bounds.width))

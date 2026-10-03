@@ -1187,7 +1187,14 @@ impl LayoutFoundation {
         if result_changed {
             self.generation = self.generation.saturating_add(1);
         }
-        result.generation = self.generation;
+        result.generation = if result_changed {
+            self.generation
+        } else {
+            previous_result
+                .as_ref()
+                .map(|previous| previous.generation)
+                .unwrap_or(self.generation)
+        };
         let replaced = self.results.insert(result.node, result).is_some();
         if replaced {
             self.counters.layout_results_reused =

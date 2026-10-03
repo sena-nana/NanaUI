@@ -1269,6 +1269,16 @@ impl UiWorld {
         counters
     }
 
+    /// Attach counters from a shared Foundation layout pass to the current
+    /// work snapshot. The Foundation adapter is intentionally supplied by the
+    /// frame owner so Runtime does not run a second layout algorithm.
+    pub fn record_layout_foundation_counters(
+        &mut self,
+        counters: nana_ui_core::LayoutFoundationCounters,
+    ) {
+        self.bump_last_counters(|work| work.record_layout_foundation(counters));
+    }
+
     /// Start a multi-pass frame accumulator. Idle drains still leave the
     /// previous snapshot in place until a non-empty pass runs.
     pub fn begin_frame_counters(&mut self) {
@@ -1537,6 +1547,7 @@ impl UiWorld {
             baseline_queries: 0,
             cross_context_measure_hits: 0,
             cross_context_measure_misses: 0,
+            layout_foundation: nana_ui_core::LayoutFoundationCounters::default(),
             glyph_cache_hits: None,
             glyph_cache_misses: None,
             cache_eviction: None,
@@ -1774,15 +1785,27 @@ impl UiWorld {
         }
     }
 
-    pub fn layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
+    /// Geometry from the published canonical layout result.
+    ///
+    /// Projection code uses this accessor so it cannot render, hit-test, or
+    /// expose a retained box that has not been committed to a result yet.
+    pub fn canonical_layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
+        self.layout_result(id).map(|result| result.bounds)
+    }
+
+    /// Canonical geometry with the retained writeback fallback needed by
+    /// component APIs that may run between box writes and result publication.
+    pub(crate) fn component_layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
         let node = self.nodes.get(id)?;
-        // A layout pass writes the compatibility cache before publishing its
-        // immutable snapshot. During that short window the current box is the
-        // only safe value for scroll remeasurement and component placement.
-        self.layout_result(id)
-            .filter(|result| result.bounds == node.layout)
-            .map(|result| result.bounds)
+        self.canonical_layout_box(id)
+            .filter(|bounds| *bounds == node.layout)
             .or(Some(node.layout))
+    }
+
+    /// Compatibility accessor for callers that need the retained box during
+    /// the short writeback window before a result is published.
+    pub fn layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
+        self.component_layout_box(id)
     }
 
     /// Where `id` is scrolled: the offset last set, except that a multiline

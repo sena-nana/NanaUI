@@ -554,7 +554,7 @@ impl AppContext {
 
     pub fn terminal_caret_bounds(&self, document: DocumentId) -> Option<LayoutBox> {
         let entity = self.focused_terminal(document)?;
-        let bounds = self.world().layout_box(entity.stable_id())?;
+        let bounds = self.world().canonical_layout_box(entity.stable_id())?;
         self.read(entity, |view| {
             let position = view
                 .screen
@@ -690,7 +690,7 @@ impl AppContext {
         let Some(entity) = entity else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().layout_box(entity.stable_id()) else {
+        let Some(bounds) = self.world().canonical_layout_box(entity.stable_id()) else {
             return Ok(false);
         };
         if phase == 0 {
@@ -1094,7 +1094,7 @@ mod tests {
         let rows = context.world().node(terminal.stable_id()).unwrap().children;
         let second_cell = context.world().node(rows[1]).unwrap().children[1];
         assert_eq!(
-            context.world().layout_box(second_cell),
+            context.world().canonical_layout_box(second_cell),
             Some(LayoutBox {
                 x: 8.0,
                 y: 18.0,

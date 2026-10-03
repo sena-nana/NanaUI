@@ -19,6 +19,36 @@ fn id(value: u64) -> StableNodeId {
 }
 
 #[test]
+fn foundation_adapter_publishes_stable_runtime_results() {
+    let (world, document) = column_tree(1);
+    let engine = RuntimeLayoutEngine;
+    let viewport = LayoutViewport::new(300.0, 200.0);
+    let mut foundation = LayoutFoundation::new();
+
+    engine
+        .layout_document_foundation_into(&world, document, viewport, &mut foundation)
+        .unwrap();
+    let child = LayoutNodeId::new(3).unwrap();
+    let first = foundation.result(child).cloned().expect("child result");
+    assert!(first.is_finite());
+    assert!(foundation.node(child).is_some());
+    let generation = foundation.generation();
+
+    engine
+        .layout_document_foundation_into(&world, document, viewport, &mut foundation)
+        .unwrap();
+    let second = foundation.result(child).cloned().expect("child result");
+    let mut first_without_generation = first.clone();
+    first_without_generation.generation = 0;
+    let mut second_without_generation = second.clone();
+    second_without_generation.generation = 0;
+    assert_eq!(second_without_generation, first_without_generation);
+    assert_eq!(second.generation, first.generation);
+    assert_eq!(foundation.generation(), generation);
+    assert!(foundation.counters().layout_results_reused > 0);
+}
+
+#[test]
 fn isolated_leaf_preserves_relative_position_and_resolved_padding() {
     use crate::{AppContext, Stack};
     let document = DocumentId::new(42).unwrap();

@@ -943,7 +943,7 @@ impl crate::AppContext {
         if self.read(entity, |canvas| canvas.disabled)? {
             return Ok(false);
         }
-        let Some(bounds) = self.world().layout_box(target) else {
+        let Some(bounds) = self.world().canonical_layout_box(target) else {
             return Ok(false);
         };
         if !point_in_bounds(bounds, x, y) {
@@ -977,7 +977,7 @@ impl crate::AppContext {
         let Some(entity) = self.graph_canvas_entity(target) else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().layout_box(target) else {
+        let Some(bounds) = self.world().canonical_layout_box(target) else {
             return Ok(false);
         };
         self.update_component(entity, |canvas, cx| {
@@ -1004,7 +1004,7 @@ impl crate::AppContext {
         let Some(entity) = self.graph_canvas_entity(target) else {
             return Ok(false);
         };
-        let bounds = self.world().layout_box(target);
+        let bounds = self.world().canonical_layout_box(target);
         let local = bounds
             .map(|bounds| local_point(bounds, x, y))
             .unwrap_or(GraphPoint::new(x, y));
@@ -1026,7 +1026,7 @@ impl crate::AppContext {
         let Some(entity) = self.graph_canvas_entity(target) else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().layout_box(target) else {
+        let Some(bounds) = self.world().canonical_layout_box(target) else {
             return Ok(false);
         };
         if !point_in_bounds(bounds, x, y) {
@@ -1053,7 +1053,7 @@ impl crate::AppContext {
         y: f32,
     ) -> Option<GraphCanvasHit> {
         let entity = self.graph_canvas_entity(target)?;
-        let bounds = self.world().layout_box(target)?;
+        let bounds = self.world().canonical_layout_box(target)?;
         if !point_in_bounds(bounds, x, y) {
             return None;
         }
@@ -1086,7 +1086,7 @@ impl crate::AppContext {
         if self.read(entity, |canvas| canvas.disabled)? {
             return Ok(false);
         }
-        let Some(bounds) = self.world().layout_box(target) else {
+        let Some(bounds) = self.world().canonical_layout_box(target) else {
             return Ok(false);
         };
         if !point_in_bounds(bounds, x, y) {
@@ -1117,7 +1117,7 @@ impl crate::AppContext {
         if self.read(entity, |canvas| canvas.disabled)? {
             return Ok(false);
         }
-        let canvas_size = match self.world().layout_box(target) {
+        let canvas_size = match self.world().canonical_layout_box(target) {
             Some(bounds) => GraphSize::new(bounds.width, bounds.height),
             None if matches!(
                 adjustment,

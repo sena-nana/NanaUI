@@ -87,7 +87,10 @@ impl UiWorld {
                 node.document,
             )
         };
-        // LayoutBox is a compatibility projection of the canonical result.
+        // Extraction also runs during retained writeback, before the next
+        // immutable result is published. Keep the compatibility fallback for
+        // this transitional projection; scene/hit geometry uses canonical
+        // accessors once the batch is committed.
         let layout = self.layout_box(id)?;
         if resolved_epoch != self.palette_epoch {
             let inherited_color = parent.and_then(|parent| {

@@ -337,7 +337,7 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
-        let layout = context.world().layout_box(id).unwrap();
+        let layout = context.world().canonical_layout_box(id).unwrap();
         assert_eq!(layout.width, QrCode::DEFAULT_SIZE);
         assert_eq!(layout.height, QrCode::DEFAULT_SIZE);
 
@@ -361,7 +361,7 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
-        let layout = context.world().layout_box(id).unwrap();
+        let layout = context.world().canonical_layout_box(id).unwrap();
         assert_eq!(layout.width, QrCode::MIN_SIZE);
         assert_eq!(layout.height, QrCode::MIN_SIZE);
     }

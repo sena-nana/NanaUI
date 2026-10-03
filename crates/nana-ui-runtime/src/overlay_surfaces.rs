@@ -873,8 +873,8 @@ mod tests {
         assert_eq!((scrim.width, scrim.height), (800.0, 600.0));
         assert_eq!(surface.width, 800.0);
         assert_eq!(surface.y + surface.height, 600.0);
-        let body_bounds = cx.world().layout_box(body.stable_id()).unwrap();
-        let action_bounds = cx.world().layout_box(action.stable_id()).unwrap();
+        let body_bounds = cx.world().canonical_layout_box(body.stable_id()).unwrap();
+        let action_bounds = cx.world().canonical_layout_box(action.stable_id()).unwrap();
         assert!(surface.contains(body_bounds.x, body_bounds.y));
         assert!(surface.contains(action_bounds.x, action_bounds.y));
         assert!(body_bounds.y + body_bounds.height <= action_bounds.y);
@@ -1227,7 +1227,7 @@ mod tests {
             })
         ));
         cx.rebuild_hit_test(document);
-        let commit_bounds = cx.world().layout_box(commit.stable_id()).unwrap();
+        let commit_bounds = cx.world().canonical_layout_box(commit.stable_id()).unwrap();
         let commit_center = (
             commit_bounds.x + commit_bounds.width / 2.0,
             commit_bounds.y + commit_bounds.height / 2.0,

@@ -117,6 +117,8 @@ pub struct SystemWork {
     pub baseline_queries: usize,
     pub cross_context_measure_hits: usize,
     pub cross_context_measure_misses: usize,
+    /// Shared Layout Foundation counters collected during the frame.
+    pub layout_foundation: nana_ui_core::LayoutFoundationCounters,
     /// `GlyphCache` lookup hits. `None` until a glyph backend consults it.
     pub glyph_cache_hits: Option<usize>,
     /// `GlyphCache` inserts after a miss. `None` until consulted.
@@ -129,6 +131,11 @@ pub struct SystemWork {
 }
 
 impl SystemWork {
+    /// Attach work observed by a Foundation layout pass to this frame batch.
+    pub fn record_layout_foundation(&mut self, counters: nana_ui_core::LayoutFoundationCounters) {
+        self.layout_foundation.accumulate(counters);
+    }
+
     /// Whether any frame stage has work. `state` and `transform` are excluded:
     /// no stage consumes them, so counting them would schedule a settle pass
     /// that produces nothing. When either invalidation has downstream effect it
@@ -177,6 +184,7 @@ impl SystemWork {
             baseline_queries: self.baseline_queries,
             cross_context_measure_hits: self.cross_context_measure_hits,
             cross_context_measure_misses: self.cross_context_measure_misses,
+            layout_foundation: self.layout_foundation,
             glyph_cache_hits: self.glyph_cache_hits,
             glyph_cache_misses: self.glyph_cache_misses,
             cache_eviction: self.cache_eviction,
@@ -455,6 +463,11 @@ mod tests {
         assert_eq!(counters.gpu_upload_bytes, None);
         assert_eq!(counters.gpu_buffer_reallocations, None);
         assert_eq!(counters.batch_rebuilds, None);
+
+        let mut foundation = nana_ui_core::LayoutFoundationCounters::default();
+        foundation.layout_nodes_placed = 2;
+        work.record_layout_foundation(foundation);
+        assert_eq!(work.counters().layout_foundation.layout_nodes_placed, 2);
     }
 
     #[test]
