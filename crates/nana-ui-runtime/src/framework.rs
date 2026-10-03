@@ -2679,6 +2679,9 @@ impl AppContext {
     ) -> Result<bool, FrameworkError> {
         let owner = match &request.action {
             AccessibilityAction::ActivateMenuItem { menu, .. } => *menu,
+            AccessibilityAction::Click => crate::decode_virtual_menu_item(request.target)
+                .map(|(menu, _)| menu)
+                .unwrap_or(request.target),
             _ => request.target,
         };
         if self.world.document_of(owner) != Some(document) {
@@ -2686,6 +2689,11 @@ impl AppContext {
         }
         match request.action {
             AccessibilityAction::Click => {
+                if let Some((menu, index)) = crate::decode_virtual_menu_item(request.target)
+                    && let Some(entity) = self.view_entity::<ContextMenu>(menu)
+                {
+                    return self.activate_context_menu_index(entity, index);
+                }
                 if self.activate_node(request.target)? {
                     return Ok(true);
                 }

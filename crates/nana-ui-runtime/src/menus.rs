@@ -1266,10 +1266,10 @@ mod tests {
                     document(),
                     crate::AccessibilityActionRequest {
                         target: row.id,
-                        action: crate::AccessibilityAction::ActivateMenuItem {
-                            menu: menu.stable_id(),
-                            index: 0,
-                        },
+                        // Offscreen/agent clients send the generic Click
+                        // action. The framework resolves this virtual target
+                        // back to the retained ContextMenu row.
+                        action: crate::AccessibilityAction::Click,
                     },
                 )
                 .unwrap()
