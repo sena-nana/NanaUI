@@ -31,8 +31,10 @@ mod date_picker;
 mod diff_view;
 mod dock;
 mod dropdown;
+mod dynamic_form;
 mod feedback;
 mod file_tab;
+mod find_replace;
 mod form_surfaces;
 mod framework;
 mod glyph_cache;
@@ -42,6 +44,7 @@ mod graph_canvas;
 #[cfg(feature = "graph-canvas")]
 mod graph_minimap;
 mod hover_card;
+mod interaction_request_card;
 mod json_num;
 pub(crate) use json_num::json_u64;
 #[cfg(feature = "image-viewer")]
@@ -197,11 +200,13 @@ pub use dock::{
     dock_surface_window_key,
 };
 pub use dropdown::{Dropdown, DropdownOption};
+pub use dynamic_form::{DynamicForm, DynamicFormEvent, DynamicFormField, DynamicFormOption};
 pub use feedback::{
     EmptyState, LabeledValue, Progress, ProgressCancelled, Spinner, StatusBadge, ValidationMessage,
     ValueEmphasis,
 };
 pub use file_tab::{FileTab, FileTabEvent};
+pub use find_replace::{FindReplaceBar, FindReplaceEvent, TextSearchBar};
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::MountedView;
 pub(crate) use framework::UiBuilder;
@@ -234,6 +239,7 @@ pub use image_viewer::{
     ImageViewer, ImageViewerContent, ImageViewerDrag, ImageViewerEvent, ImageViewerGeometry,
     ImageViewerHit, ImageViewerOffset, ImageViewerPosition, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
 };
+pub use interaction_request_card::{InteractionRequestCard, InteractionRequestField};
 pub use key_layers::{
     ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,
     KeyCaptureEvent, KeyCaptureLayer, KeyInput, KeyModifiers, Keymap, KeymapLayer, KeymapMatch,
