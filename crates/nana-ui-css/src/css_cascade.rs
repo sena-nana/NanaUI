@@ -1793,10 +1793,7 @@ fn compound_matches_ctx(compound: &CompoundSelector, ctx: &MatchContext<'_>) -> 
             }
         }
     }
-    if compound.focus_within && !ctx.focus_within {
-        return false;
-    }
-    true
+    !compound.focus_within || ctx.focus_within
 }
 
 /// True if any rule's selector matches `ctx` (subject + combinators).

@@ -258,7 +258,7 @@ impl AnchoredActionMenu {
         layout.offset_top = Some(LengthSpec::Px(origin.1));
     }
 
-    fn apply_anchor(&mut self) {
+    pub(crate) fn apply_anchor(&mut self) {
         let layout = Arc::make_mut(&mut self.style.layout);
         layout.position = PositionSpec::Fixed;
         layout.offset_left = Some(LengthSpec::Px(self.x));
@@ -346,7 +346,7 @@ pub enum ContextMenuEvent {
 }
 
 /// Pointer-anchored menu. Slash-separated values (`parent/child`) are a tree;
-/// [`Self::query`] filters the current level or matching leaves. Searchable
+/// [`Self::query_text`] filters the current level or matching leaves. Searchable
 /// menus own a committed [`TextInputState`] for the filter field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextMenu {
@@ -358,7 +358,6 @@ pub struct ContextMenu {
     pub width: f32,
     pub style: NodeStyle,
     pub active_path: Vec<Arc<str>>,
-    pub query: Arc<str>,
     pub searchable: bool,
     pub state: TextInputState,
     /// Bounds the surface is kept inside; `None` anchors verbatim.
@@ -385,7 +384,6 @@ impl ContextMenu {
             width: MENU_WIDTH,
             style: menu_surface_style(MENU_WIDTH, MENU_PADDING),
             active_path: Vec::new(),
-            query: Arc::from(""),
             searchable: false,
             state: TextInputState::new(""),
             viewport: None,
@@ -419,10 +417,14 @@ impl ContextMenu {
 
     pub fn query(mut self, query: impl Into<Arc<str>>) -> Self {
         let query = query.into();
-        self.query = Arc::clone(&query);
         self.state = TextInputState::new(query.as_ref());
         self.apply_anchor();
         self
+    }
+
+    /// The current search text, owned by the retained text input state.
+    pub fn query_text(&self) -> &str {
+        self.state.value.as_str()
     }
 
     pub fn searchable(mut self, searchable: bool) -> Self {
@@ -433,19 +435,13 @@ impl ContextMenu {
 
     pub fn set_query(&mut self, query: impl Into<Arc<str>>) {
         let query = query.into();
-        self.query = Arc::clone(&query);
         self.state = TextInputState::new(query.as_ref());
-        self.apply_anchor();
-    }
-
-    pub(crate) fn sync_query_from_state(&mut self) {
-        self.query = Arc::from(self.state.value.as_str());
         self.apply_anchor();
     }
 
     /// Rows at the current nested level, or matching leaves when `query` is set.
     pub fn visible_items(&self) -> Vec<ContextMenuItem> {
-        if self.query.trim().is_empty() {
+        if self.query_text().trim().is_empty() {
             self.current_level_items()
         } else {
             self.matching_leaves()
@@ -498,7 +494,7 @@ impl ContextMenu {
         self.active_path.clear();
     }
 
-    fn apply_anchor(&mut self) {
+    pub(crate) fn apply_anchor(&mut self) {
         let height = context_menu_height(
             self.visible_items().len(),
             self.searchable,
@@ -557,7 +553,7 @@ impl ContextMenu {
         self.items
             .iter()
             .filter(|item| {
-                !self.has_descendants(&item.value) && item_matches_query(item, &self.query)
+                !self.has_descendants(&item.value) && item_matches_query(item, self.query_text())
             })
             .cloned()
             .collect()
@@ -619,7 +615,7 @@ impl crate::ComponentView for ContextMenu {
                 trigger_image: None,
                 gap: 0.0,
                 overlay: None,
-                query: self.searchable.then(|| Arc::clone(&self.query)),
+                query: self.searchable.then(|| Arc::from(self.query_text())),
                 rows,
                 highlighted: self.highlighted,
             };
@@ -676,7 +672,8 @@ impl crate::ComponentView for ContextMenu {
                 role: AccessibilityRole::Menu,
                 label: Some(Arc::from("context-menu")),
                 hidden: !self.open,
-                value: (self.searchable && !self.query.is_empty()).then(|| Arc::clone(&self.query)),
+                value: (self.searchable && !self.query_text().is_empty())
+                    .then(|| Arc::from(self.query_text())),
                 editable: self.searchable && self.open,
                 ..AccessibilityState::default()
             },
@@ -1170,6 +1167,21 @@ mod tests {
             panic!("searchable menu height");
         };
         assert!(searchable_height > context_menu_height(1, false, nana_ui_core::UI_METRICS));
+    }
+
+    #[test]
+    fn text_input_state_is_the_query_authority() {
+        let mut menu = ContextMenu::new(24.0, 36.0)
+            .items([
+                ContextMenuItem::new("rename", "Rename"),
+                ContextMenuItem::new("delete", "Delete"),
+            ])
+            .searchable(true)
+            .query("rename");
+        menu.state.replace_value("delete");
+
+        assert_eq!(menu.query_text(), "delete");
+        assert_eq!(menu.visible_items()[0].value.as_ref(), "delete");
     }
 
     #[test]

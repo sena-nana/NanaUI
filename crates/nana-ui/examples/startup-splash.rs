@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Two-phase startup (Issue #225): an Early Splash while the device is
 //! requested, an ordinary loading page once the program is ready, then the
 //! main screen when the (simulated) business work finishes.

@@ -20,6 +20,7 @@ mod accessibility;
 mod accessibility_tree;
 pub mod command;
 pub mod component_support;
+#[doc(hidden)]
 pub mod components;
 #[cfg(feature = "gpu")]
 mod default_gpu_view;
@@ -148,9 +149,7 @@ pub use component_support::{
     component_ids, component_support, component_uses_runtime,
 };
 #[cfg(feature = "gpu")]
-pub use default_gpu_view::{
-    DefaultGpuViewRenderer, default_scene_gpu_renderers, resolve_scene_gpu_renderers,
-};
+pub use default_gpu_view::{DefaultGpuViewRenderer, default_scene_gpu_renderers};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 #[cfg(feature = "gpu")]
 pub use font_face_ingest::{HostFontFaceSpec, ingest_host_font_faces};
@@ -197,8 +196,9 @@ pub use nana_app_icon::{default_window_icon, window_icon_from_png};
 /// Producer half of the latest-frame exchange; [`FrameBinding`] is the consumer.
 #[cfg(feature = "gpu")]
 pub use nana_frame_exchange::{
-    self as frame_exchange, CopyOutcome, DEFAULT_CAPACITY, FrameExchange, FrameExchangeStats,
-    FrameInbox, FrameLease, FrameToken,
+    self as frame_exchange, CopyOutcome, DEFAULT_CAPACITY, FrameAlphaMode, FrameColorMetadata,
+    FrameColorPrimaries, FrameColorRange, FrameExchange, FrameExchangeStats, FrameInbox,
+    FrameLease, FrameLinearUnit, FrameToken, FrameTransferFunction,
 };
 /// The GPU backend contract: the device, frames and textures every renderer,
 /// producer and host works with. See the `nana-gpu` crate.
@@ -303,9 +303,11 @@ pub use scene_gpu::{
 pub use scene_host::run_runtime_scene;
 #[cfg(feature = "gpu")]
 pub use scene_paint::{
-    AlphaEncoding, HostTextureSceneResolver, RenderTargetId, ScenePaintError, ScenePaintViewport,
-    ScenePresentationColorSpace, ScenePresentationProfile, SceneWgpuPainter, SubpixelOrder,
-    TextGlyphCounters, resolve_background_image_url, set_background_image_url_base,
+    AlphaEncoding, BT709_TO_BT2020, RenderTargetId, ScenePaintError, ScenePaintViewport,
+    ScenePresentationColorSpace, ScenePresentationParameters, ScenePresentationProfile,
+    SceneWgpuPainter, SubpixelOrder, TextGlyphCounters, hlg_decode, hlg_encode, hlg_eotf, hlg_oetf,
+    linear_sc_rgb_to_bt2020, pq_decode, pq_decode_nits, pq_encode, pq_encode_nits, pq_eotf,
+    pq_oetf, resolve_background_image_url, set_background_image_url_base, tone_map_headroom_rgb,
 };
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{
@@ -332,7 +334,7 @@ pub use virtual_list::{
     VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
     VirtualTreeWindow, VirtualViewport,
 };
-pub use widgets::{ButtonKind, ButtonPaintOverride, CardKind};
+pub use widgets::{ButtonKind, CardKind};
 pub use window_chrome::{
     TitleBarDragTracker, WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,
     WindowControlMode, apply_title_bar_pointer, title_bar_hits_window_control,

@@ -6,7 +6,7 @@ mod scroll_bounds;
 
 use nana_ui_core::{
     LengthSpec, TableColumn, VirtualListLayout, VirtualTableLayout, VirtualTreeLayout,
-    VirtualTreeRow,
+    VirtualTreeRow, VirtualViewport,
 };
 use nana_ui_runtime::{
     ActionMenu, Activate, AppContext, Button, ContextPredicate, Dialog, Dock, DockAxis, DockNode,
@@ -17,6 +17,9 @@ use nana_ui_runtime::{
 };
 use serde::Serialize;
 
+// Keep performance numbers on the retained product contract. Legacy unplaced
+// behavior is intentionally measured by the compatibility tests instead of
+// extending the old public path's lifetime through the benchmark binary.
 const WARMUP_ITERATIONS: usize = 100;
 const ITERATIONS: usize = 1_000;
 const FRAME_BUDGET_MS: f64 = 16.67;
@@ -129,6 +132,29 @@ fn list_live_entity_bound(list: ListWindow) -> usize {
     list.live_entity_bound()
 }
 
+/// Retained lists keep one placement container beside each mounted item.
+/// Count descendants instead of only the List's direct children so the
+/// benchmark reports the actual retained-tree footprint.
+fn retained_list_live_entity_count(context: &AppContext, list: StableNodeId) -> usize {
+    let mut stack = context
+        .world()
+        .node(list)
+        .map(|node| node.children)
+        .unwrap_or_default();
+    let mut count = 0;
+    while let Some(id) = stack.pop() {
+        count += 1;
+        if let Some(node) = context.world().node(id) {
+            stack.extend(node.children);
+        }
+    }
+    count
+}
+
+fn retained_list_live_entity_bound(list: ListWindow) -> usize {
+    list_live_entity_bound(list).saturating_mul(2)
+}
+
 fn table_column_cap(table: TableWindow) -> usize {
     table.column_cap()
 }
@@ -214,16 +240,24 @@ fn isolated_table_text_work(
             .map(|index| TableColumn::new(format!("column-{index}"), table.column_extent)),
     );
     let _ = context.take_system_work();
+    // Benchmarks exercise the product retained path. The old unplaced
+    // materializer remains covered by framework compatibility tests only.
     context
-        .materialize_virtual_table(
+        .materialize_virtual_table_retained_in(
             host,
             &mut items,
             &layout,
-            (0.0, 0.0),
-            table.viewport,
-            table.overscan,
+            VirtualViewport {
+                offset: [0.0, 0.0],
+                extent: [table.viewport.0, table.viewport.1],
+                overscan: [table.overscan.0, table.overscan.1],
+            },
+            [0, 0],
+            &[],
             |index| index,
+            |key| Some(*key),
             |index| index,
+            |key| Some(*key),
             |_index, _| TableRow::new(),
             |row, _, column, _| text_table_cell(row, column),
         )
@@ -559,31 +593,26 @@ fn main() {
         };
         let started = Instant::now();
         let materialized = context
-            .materialize_virtual_list(
+            .materialize_virtual_list_retained_in(
                 materialized_list,
                 &mut materialized_items,
                 &virtual_list,
-                materialize_offset,
-                list.viewport,
-                list.overscan,
+                VirtualViewport::vertical(materialize_offset, list.viewport, list.overscan),
+                &[],
                 |index| index,
+                |key| Some(*key),
                 |index, _| Text::new(format!("Visible row {index}")),
             )
             .unwrap();
         let virtual_list_materialize_elapsed = started.elapsed();
-        let live_list = context
-            .world()
-            .node(materialized_list.stable_id())
-            .unwrap()
-            .children
-            .len();
+        let live_list = retained_list_live_entity_count(&context, materialized_list.stable_id());
         let visible_list = virtual_list
             .window(materialize_offset, list.viewport, 0.0)
             .range
             .len();
         let overscan_list = materialized.range.len().saturating_sub(visible_list);
-        let list_bound = list_live_entity_bound(list);
-        assert_eq!(live_list, materialized.range.len());
+        let list_bound = retained_list_live_entity_bound(list);
+        assert_eq!(live_list, materialized.range.len() * 2);
         assert!(
             live_list <= list_bound,
             "virtual list live entities {live_list} exceed geometric bound {list_bound}"
@@ -610,15 +639,21 @@ fn main() {
         };
         let started = Instant::now();
         let materialized_table_window = context
-            .materialize_virtual_table(
+            .materialize_virtual_table_retained_in(
                 materialized_table,
                 &mut materialized_table_items,
                 &virtual_table,
-                materialize_scroll,
-                table.viewport,
-                table.overscan,
+                VirtualViewport {
+                    offset: [materialize_scroll.0, materialize_scroll.1],
+                    extent: [table.viewport.0, table.viewport.1],
+                    overscan: [table.overscan.0, table.overscan.1],
+                },
+                [0, 0],
+                &[],
                 |index| index,
+                |key| Some(*key),
                 |index| index,
+                |key| Some(*key),
                 |_index, _| TableRow::new(),
                 |row, _, column, _| text_table_cell(row, column),
             )
@@ -1195,7 +1230,7 @@ fn bench_virtual_list_scale(
     let mut last_visible = 0;
     let mut last_overscan = 0;
     let mut last_live = 0;
-    let list_bound = list_live_entity_bound(list_window);
+    let list_bound = retained_list_live_entity_bound(list_window);
     for iteration in 0..(warmup + iterations) {
         if timeout.is_some_and(|limit| loop_started.elapsed() > limit) {
             return skipped_scale(
@@ -1212,27 +1247,22 @@ fn bench_virtual_list_scale(
         assert!(!window.range.is_empty());
         let materialize_started = Instant::now();
         let materialized = context
-            .materialize_virtual_list(
+            .materialize_virtual_list_retained_in(
                 list,
                 &mut items,
                 &layout,
-                scroll,
-                list_window.viewport,
-                list_window.overscan,
+                VirtualViewport::vertical(scroll, list_window.viewport, list_window.overscan),
+                &[],
                 |index| index,
+                |key| Some(*key),
                 |index, _| Text::new(format!("Visible row {index}")),
             )
             .unwrap();
         let materialize_elapsed = materialize_started.elapsed();
-        let live = context
-            .world()
-            .node(list.stable_id())
-            .unwrap()
-            .children
-            .len();
+        let live = retained_list_live_entity_count(&context, list.stable_id());
         let visible = layout.window(scroll, list_window.viewport, 0.0).range.len();
         let overscan = materialized.range.len().saturating_sub(visible);
-        assert_eq!(live, materialized.range.len());
+        assert_eq!(live, materialized.range.len() * 2);
         assert!(
             live <= list_bound,
             "virtual list live entities {live} exceed geometric bound {list_bound}"
@@ -1330,15 +1360,21 @@ fn bench_virtual_table_scale(
         assert!(!window.columns.range.is_empty());
         let materialize_started = Instant::now();
         let materialized = context
-            .materialize_virtual_table(
+            .materialize_virtual_table_retained_in(
                 table_host,
                 &mut items,
                 &layout,
-                scroll,
-                table.viewport,
-                table.overscan,
+                VirtualViewport {
+                    offset: [scroll.0, scroll.1],
+                    extent: [table.viewport.0, table.viewport.1],
+                    overscan: [table.overscan.0, table.overscan.1],
+                },
+                [0, 0],
+                &[],
                 |index| index,
+                |key| Some(*key),
                 |index| index,
+                |key| Some(*key),
                 |_index, _| TableRow::new(),
                 |row, _, column, _| text_table_cell(row, column),
             )
@@ -1485,7 +1521,7 @@ fn bench_virtual_tree_scale(
     let mut last_visible = 0;
     let mut last_overscan = 0;
     let mut last_live = 0;
-    let tree_bound = list_live_entity_bound(list_window);
+    let tree_bound = retained_list_live_entity_bound(list_window);
     for iteration in 0..(warmup + iterations) {
         if timeout.is_some_and(|limit| loop_started.elapsed() > limit) {
             return skipped_scale(
@@ -1502,27 +1538,22 @@ fn bench_virtual_tree_scale(
         assert!(!window.range.is_empty());
         let materialize_started = Instant::now();
         let materialized = context
-            .materialize_virtual_tree(
+            .materialize_virtual_tree_retained_in(
                 tree,
                 &mut items,
                 &layout,
-                scroll,
-                list_window.viewport,
-                list_window.overscan,
+                VirtualViewport::vertical(scroll, list_window.viewport, list_window.overscan),
+                &[],
                 |index| index,
+                |key| Some(*key),
                 |index, _| Text::new(format!("Visible tree row {index}")),
             )
             .unwrap();
         let materialize_elapsed = materialize_started.elapsed();
-        let live = context
-            .world()
-            .node(tree.stable_id())
-            .unwrap()
-            .children
-            .len();
+        let live = retained_list_live_entity_count(&context, tree.stable_id());
         let visible = layout.window(scroll, list_window.viewport, 0.0).range.len();
         let overscan = materialized.range.len().saturating_sub(visible);
-        assert_eq!(live, materialized.range.len());
+        assert_eq!(live, materialized.range.len() * 2);
         assert!(
             live <= tree_bound,
             "virtual tree live entities {live} exceed geometric bound {tree_bound}"

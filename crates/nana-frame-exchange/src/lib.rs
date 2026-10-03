@@ -24,6 +24,208 @@ use nana_gpu::{__framework, GpuTextureDescriptor, GpuTextureUsages, TransientRes
 /// other GPU dependency.
 pub use nana_gpu::{DeviceGeneration, GpuContext, GpuTexture, GpuTextureFormat};
 
+/// The RGB primaries declared for a frame's texels.
+///
+/// `Unknown` is used by the backwards-compatible [`FrameExchange::copy_from`]
+/// entry point.  Consumers must not treat it as sRGB; a producer that knows
+/// the encoding should use [`FrameExchange::copy_from_with_metadata`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FrameColorPrimaries {
+    /// The producer did not declare the primaries.
+    #[default]
+    Unknown,
+    /// Rec.709 / sRGB primaries.
+    Srgb,
+    /// Display-P3 primaries.
+    DisplayP3,
+    /// Rec.2020 primaries (used by BT.2100 PQ and HLG).
+    Bt2020,
+}
+
+/// The transfer function applied to the RGB channels in a frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FrameTransferFunction {
+    /// The producer did not declare a transfer function.
+    #[default]
+    Unknown,
+    /// Linear-light values, including the linear scRGB working convention.
+    Linear,
+    /// The sRGB OETF.
+    Srgb,
+    /// BT.2100 perceptual quantizer.
+    Pq,
+    /// BT.2100 hybrid log-gamma.
+    Hlg,
+}
+
+/// The sample range of the encoded RGB channels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FrameColorRange {
+    /// The producer did not declare a range. Consumers must not infer one
+    /// from the texture format alone.
+    #[default]
+    Unknown,
+    /// Full-range RGB (for example, 0..1 in normalized texture samples).
+    Full,
+    /// Studio/video range (for example, nominal 16..235 in 8-bit samples).
+    Limited,
+}
+
+/// Alpha interpretation for the copied pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FrameAlphaMode {
+    /// The producer did not declare alpha semantics.
+    #[default]
+    Unknown,
+    /// Alpha is always one; RGB is opaque.
+    Opaque,
+    /// RGB is stored independently of alpha.
+    Straight,
+    /// RGB is already multiplied by alpha.
+    Premultiplied,
+}
+
+/// Absolute luminance convention for linear RGB values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FrameLinearUnit {
+    /// The producer has not declared what a linear value of one means.
+    #[default]
+    Unknown,
+    /// Linear scRGB: RGB value one represents 80 cd/m² (nit).
+    Scrgb80Nits,
+}
+
+/// Source color metadata carried with one exchanged frame.
+///
+/// [`FrameExchange`] copies texels byte-for-byte and does not perform a color
+/// conversion. This value is therefore a declaration of the source pixels,
+/// not a promise about the destination surface. A consumer must inspect it
+/// before sampling or exporting a frame and perform an explicit conversion
+/// when its destination contract differs. The legacy [`FrameExchange::copy_from`]
+/// method attaches [`Self::unknown`], so it never silently labels an unknown
+/// source as sRGB.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FrameColorMetadata {
+    primaries: FrameColorPrimaries,
+    transfer: FrameTransferFunction,
+    range: FrameColorRange,
+    alpha: FrameAlphaMode,
+    linear_unit: FrameLinearUnit,
+}
+
+impl FrameColorMetadata {
+    /// Construct an explicit source declaration.
+    pub const fn new(
+        primaries: FrameColorPrimaries,
+        transfer: FrameTransferFunction,
+        range: FrameColorRange,
+        alpha: FrameAlphaMode,
+    ) -> Self {
+        Self {
+            primaries,
+            transfer,
+            range,
+            alpha,
+            linear_unit: FrameLinearUnit::Unknown,
+        }
+    }
+
+    /// Metadata used by the backwards-compatible copy methods.
+    pub const fn unknown() -> Self {
+        Self::new(
+            FrameColorPrimaries::Unknown,
+            FrameTransferFunction::Unknown,
+            FrameColorRange::Unknown,
+            FrameAlphaMode::Unknown,
+        )
+    }
+
+    /// Common full-range sRGB declaration.
+    pub const fn srgb(alpha: FrameAlphaMode) -> Self {
+        Self::new(
+            FrameColorPrimaries::Srgb,
+            FrameTransferFunction::Srgb,
+            FrameColorRange::Full,
+            alpha,
+        )
+    }
+
+    /// Relative linear Rec.709 declaration with an unspecified luminance unit.
+    /// A consumer cannot automatically treat it as linear scRGB.
+    pub const fn linear_srgb(alpha: FrameAlphaMode) -> Self {
+        Self::new(
+            FrameColorPrimaries::Srgb,
+            FrameTransferFunction::Linear,
+            FrameColorRange::Full,
+            alpha,
+        )
+    }
+
+    /// Linear scRGB declaration, with RGB value one fixed at 80 nit.
+    pub const fn linear_scrgb(alpha: FrameAlphaMode) -> Self {
+        Self {
+            linear_unit: FrameLinearUnit::Scrgb80Nits,
+            ..Self::linear_srgb(alpha)
+        }
+    }
+
+    /// Full-range BT.2100 PQ declaration.
+    pub const fn bt2020_pq(alpha: FrameAlphaMode) -> Self {
+        Self::new(
+            FrameColorPrimaries::Bt2020,
+            FrameTransferFunction::Pq,
+            FrameColorRange::Full,
+            alpha,
+        )
+    }
+
+    /// Full-range BT.2100 HLG declaration.
+    pub const fn bt2020_hlg(alpha: FrameAlphaMode) -> Self {
+        Self::new(
+            FrameColorPrimaries::Bt2020,
+            FrameTransferFunction::Hlg,
+            FrameColorRange::Full,
+            alpha,
+        )
+    }
+
+    pub const fn primaries(self) -> FrameColorPrimaries {
+        self.primaries
+    }
+
+    pub const fn transfer(self) -> FrameTransferFunction {
+        self.transfer
+    }
+
+    pub const fn range(self) -> FrameColorRange {
+        self.range
+    }
+
+    pub const fn alpha(self) -> FrameAlphaMode {
+        self.alpha
+    }
+
+    pub const fn linear_unit(self) -> FrameLinearUnit {
+        self.linear_unit
+    }
+
+    /// Whether primaries, transfer, range, and alpha are all declared. Linear
+    /// luminance units are checked separately with [`Self::linear_unit`].
+    pub const fn is_explicit(self) -> bool {
+        !matches!(self.primaries, FrameColorPrimaries::Unknown)
+            && !matches!(self.transfer, FrameTransferFunction::Unknown)
+            && !matches!(self.range, FrameColorRange::Unknown)
+            && !matches!(self.alpha, FrameAlphaMode::Unknown)
+    }
+
+    pub const fn is_hdr(self) -> bool {
+        matches!(
+            self.transfer,
+            FrameTransferFunction::Pq | FrameTransferFunction::Hlg
+        )
+    }
+}
+
 /// One in-flight copy, the frame a consumer samples, and the frame it retired
 /// but has not presented yet. Add two slots for every additional consumer.
 pub const DEFAULT_CAPACITY: NonZeroU8 = NonZeroU8::new(3).unwrap();
@@ -168,6 +370,7 @@ impl Drop for Retirement {
 pub struct FrameLease<E = u64> {
     token: FrameToken<E>,
     texture: GpuTexture,
+    color_metadata: FrameColorMetadata,
     ownership: Arc<SlotOwnership>,
     _retirement: Arc<Retirement>,
 }
@@ -188,6 +391,15 @@ impl<E: Copy> FrameLease<E> {
 
     pub fn format(&self) -> GpuTextureFormat {
         self.texture.format()
+    }
+
+    /// Source color metadata supplied by the producer for this copy.
+    ///
+    /// The exchange never converts pixels. A consumer must use this value to
+    /// choose the correct sampling/export path instead of assuming the
+    /// texture is sRGB.
+    pub fn color_metadata(&self) -> FrameColorMetadata {
+        self.color_metadata
     }
 }
 
@@ -267,6 +479,7 @@ impl<E: Copy + Eq> FrameInbox<E> {
 
 struct PendingCopy<E> {
     token: FrameToken<E>,
+    color_metadata: FrameColorMetadata,
     completed: Arc<AtomicBool>,
 }
 
@@ -353,21 +566,51 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
     /// Safe from any thread: the copy is submitted under the device's
     /// submission guard, so it never races a window's surface reconfiguration.
     pub fn copy_from(&mut self, source: &GpuTexture, epoch: E) -> CopyOutcome {
+        self.copy_from_with_metadata(source, epoch, FrameColorMetadata::unknown())
+    }
+
+    /// Copy `source` while carrying an explicit source color declaration.
+    ///
+    /// The declaration is attached to the resulting [`FrameLease`]; texels
+    /// are still copied byte-for-byte and no conversion is performed.
+    pub fn copy_from_with_metadata(
+        &mut self,
+        source: &GpuTexture,
+        epoch: E,
+        color_metadata: FrameColorMetadata,
+    ) -> CopyOutcome {
         if source.generation() != self.gpu.generation() {
             self.set_epoch(epoch);
             return CopyOutcome::DeviceMismatch;
         }
-        self.copy_raw(__framework::texture(source), epoch)
+        self.copy_raw(__framework::texture(source), epoch, color_metadata)
     }
 
     /// [`Self::copy_from`] for a raw WGPU texture created on the exchange's
     /// device.
     #[cfg(feature = "wgpu-interop")]
     pub fn copy_from_wgpu(&mut self, source: &wgpu::Texture, epoch: E) -> CopyOutcome {
-        self.copy_raw(source, epoch)
+        self.copy_from_wgpu_with_metadata(source, epoch, FrameColorMetadata::unknown())
     }
 
-    fn copy_raw(&mut self, source: &wgpu::Texture, epoch: E) -> CopyOutcome {
+    /// [`Self::copy_from_with_metadata`] for a raw WGPU texture created on the
+    /// exchange's device.
+    #[cfg(feature = "wgpu-interop")]
+    pub fn copy_from_wgpu_with_metadata(
+        &mut self,
+        source: &wgpu::Texture,
+        epoch: E,
+        color_metadata: FrameColorMetadata,
+    ) -> CopyOutcome {
+        self.copy_raw(source, epoch, color_metadata)
+    }
+
+    fn copy_raw(
+        &mut self,
+        source: &wgpu::Texture,
+        epoch: E,
+        color_metadata: FrameColorMetadata,
+    ) -> CopyOutcome {
         self.set_epoch(epoch);
         let size = source.size();
         if size.width == 0 || size.height == 0 {
@@ -459,6 +702,7 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
                 slot: slot.ownership.slot,
                 sequence,
             },
+            color_metadata,
             completed,
         });
         self.stats.submitted += 1;
@@ -513,6 +757,7 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
             published = Some(FrameLease {
                 token: pending.token,
                 texture: texture.clone(),
+                color_metadata: pending.color_metadata,
                 ownership: Arc::clone(&slot.ownership),
                 _retirement: Arc::clone(&self.retirement),
             });
@@ -581,6 +826,23 @@ mod tests {
         assert!(slot.is_free());
     }
 
+    #[test]
+    fn color_metadata_is_explicit_and_unknown_does_not_mean_srgb() {
+        let pq = FrameColorMetadata::bt2020_pq(FrameAlphaMode::Premultiplied);
+        assert!(pq.is_explicit());
+        assert!(pq.is_hdr());
+        assert_eq!(pq.primaries(), FrameColorPrimaries::Bt2020);
+        assert_eq!(pq.transfer(), FrameTransferFunction::Pq);
+        assert_eq!(pq.range(), FrameColorRange::Full);
+        assert_eq!(pq.alpha(), FrameAlphaMode::Premultiplied);
+
+        let unknown = FrameColorMetadata::unknown();
+        assert!(!unknown.is_explicit());
+        assert!(!unknown.is_hdr());
+        assert_eq!(unknown.primaries(), FrameColorPrimaries::Unknown);
+        assert_ne!(unknown, FrameColorMetadata::srgb(FrameAlphaMode::Opaque));
+    }
+
     fn test_gpu() -> GpuContext {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
@@ -626,6 +888,25 @@ mod tests {
         assert_eq!(exchange.copy_from(&texture, 1), CopyOutcome::Submitted);
         let stats = gpu.policy().stats();
         assert!(stats.transient_pool_hits >= 1);
+    }
+
+    #[test]
+    fn lease_carries_the_producer_color_declaration_without_conversion() {
+        let gpu = test_gpu();
+        let mut exchange =
+            FrameExchange::new(&gpu, NonZeroU8::new(1).unwrap(), 0u64, Arc::new(|| {}));
+        let inbox = exchange.inbox();
+        let texture = source(&gpu, 4, 1, wgpu::TextureUsages::COPY_SRC);
+        let metadata = FrameColorMetadata::bt2020_hlg(FrameAlphaMode::Opaque);
+        assert_eq!(
+            exchange.copy_from_with_metadata(&texture, 0, metadata),
+            CopyOutcome::Submitted
+        );
+        wait(&gpu);
+        assert!(exchange.poll());
+        let lease = inbox.latest().expect("published frame");
+        assert_eq!(lease.color_metadata(), metadata);
+        assert_eq!(lease.format(), GpuTextureFormat::RGBA8_UNORM);
     }
 
     fn source(gpu: &GpuContext, size: u32, layers: u32, usage: wgpu::TextureUsages) -> GpuTexture {

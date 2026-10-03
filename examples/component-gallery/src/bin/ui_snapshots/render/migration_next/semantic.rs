@@ -75,7 +75,7 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
             color(*border_color),
             number(*border_width),
             radius(*corner_radius),
-            shadow.map_or_else(|| "none".to_owned(), |value| format!("{value:?}")),
+            shadow.map_or_else(|| "none".to_owned(), describe_shadow),
         ),
         ScenePrimitiveKind::QuadBatch {
             bounds,
@@ -92,7 +92,7 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
             color(*border_color),
             number(*border_width),
             radius(*corner_radius),
-            shadow.map_or_else(|| "none".to_owned(), |value| format!("{value:?}")),
+            shadow.map_or_else(|| "none".to_owned(), describe_shadow),
         ),
         ScenePrimitiveKind::QuadColorBatch {
             bounds,
@@ -137,11 +137,13 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
         ScenePrimitiveKind::Icon {
             icon,
             color: icon_color,
+            ..
         } => format!("icon {head} icon={icon:?} color={}", color(*icon_color)),
         ScenePrimitiveKind::IconBatch {
             bounds,
             icon,
             color: icon_color,
+            ..
         } => format!(
             "icon-batch {head} count={} icon={icon:?} color={}",
             bounds.len(),
@@ -185,6 +187,28 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
         ),
         // A custom node's contents are the host's, not the theme's.
         ScenePrimitiveKind::Custom { .. } => format!("custom {head}"),
+    }
+}
+
+/// Keep the semantic baseline stable when the scene's elevation carries an
+/// optional paint override that is not active.  The old `Debug` output did
+/// not have that field, and recording `paint_color: None` would make every
+/// existing shadow snapshot change without changing the resolved paint.
+fn describe_shadow(value: nana_ui::runtime::ComponentElevation) -> String {
+    let fields = format!(
+        "color: {:?}, offset_x: {:?}, offset_y: {:?}, blur_radius: {:?}, spread_radius: {:?}, inset: {:?}",
+        value.color,
+        value.offset_x,
+        value.offset_y,
+        value.blur_radius,
+        value.spread_radius,
+        value.inset,
+    );
+    match value.paint_color {
+        Some(paint_color) => {
+            format!("ComponentElevation {{ paint_color: {paint_color:?}, {fields} }}")
+        }
+        None => format!("ComponentElevation {{ {fields} }}"),
     }
 }
 

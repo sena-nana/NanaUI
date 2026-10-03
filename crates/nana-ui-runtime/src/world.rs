@@ -1430,6 +1430,24 @@ impl UiWorld {
         }
     }
 
+    pub(crate) fn record_intrinsic_measure_counters(
+        &mut self,
+        counters: crate::IntrinsicCacheCounters,
+    ) {
+        self.bump_last_counters(|work| {
+            work.record_intrinsic_measure(
+                counters.intrinsic_measure_requests,
+                counters.intrinsic_measure_cache_hits,
+                counters.intrinsic_measure_cache_misses,
+                counters.intrinsic_measure_full_subtrees,
+                counters.generation_bumps,
+                counters.baseline_queries,
+                counters.cross_context_hits,
+                counters.cross_context_misses,
+            );
+        });
+    }
+
     fn record_id_list_alloc(&self, len: usize) {
         if len == 0 {
             return;
@@ -1466,8 +1484,16 @@ impl UiWorld {
         &self.theme
     }
 
-    /// Drain dirty components into deterministic system work. Calling this on
-    /// an unchanged world returns an empty work set and performs no scheduling.
+    /// Drain this world's dirty components into deterministic system work.
+    ///
+    /// This is the low-level world drain and intentionally has the same name
+    /// as [`crate::AppContext::take_system_work`]. The `AppContext` method is
+    /// the canonical application/frame entry point: it first polls local
+    /// tasks and flushes the reactive host, then delegates here. Calling this
+    /// method directly is reserved for world-owned tests, benchmarks and
+    /// compatibility adapters that already performed those steps themselves.
+    /// Calling it on an unchanged world returns an empty work set and performs
+    /// no scheduling.
     pub fn take_system_work(&mut self) -> SystemWork {
         let mut ids = std::mem::take(&mut self.dirty_entities)
             .into_iter()
@@ -1503,6 +1529,14 @@ impl UiWorld {
             text_layout_cache_hits: 0,
             text_layout_cache_misses: 0,
             text_wrap_layouts: 0,
+            intrinsic_measure_requests: 0,
+            intrinsic_measure_cache_hits: 0,
+            intrinsic_measure_cache_misses: 0,
+            intrinsic_measure_full_subtrees: 0,
+            intrinsic_generation_bumps: 0,
+            baseline_queries: 0,
+            cross_context_measure_hits: 0,
+            cross_context_measure_misses: 0,
             glyph_cache_hits: None,
             glyph_cache_misses: None,
             cache_eviction: None,

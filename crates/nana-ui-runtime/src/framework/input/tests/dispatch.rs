@@ -2402,7 +2402,7 @@ fn escape_closes_focused_field_options_without_committing() {
             .read(search, |field| (
                 field.opened,
                 field.value.clone(),
-                field.query.clone(),
+                field.query_text().to_owned(),
                 field.state.clone()
             ))
             .unwrap(),

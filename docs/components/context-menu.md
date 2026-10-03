@@ -56,7 +56,7 @@ widget(
 
 `.searchable(true)` 加上过滤框，查询存在已提交的 `TextInputState` 里。
 
-`.query` 和 `set_query` 改这串文字。
+`.query(...)` 和 `set_query` 改这串文字；读取时使用 `query_text()`。
 
 空查询显示当前层；有查询时显示匹配的叶子。
 
@@ -95,7 +95,7 @@ widget(
 | `.disabled` | — | 写在条目上 |
 | `.danger` | — | 写在条目上 |
 | `.searchable` | — | `.searchable(true)` 加上过滤框，查询存在已提交的 `TextInputState` 里 |
-| `.query` | — | 和 `set_query` 改这串文字 |
+| `.query(...)` | — | 和 `set_query` 改这串文字；`query_text()` 读取当前值 |
 | `set_query` | — | 改这串文字 |
 | `open` | — | 构造时为真。框架收起时写成 `false` |
 | `place_in(viewport)` | — | 让表面留在视口里。不调用时，锚点按原坐标放置 |

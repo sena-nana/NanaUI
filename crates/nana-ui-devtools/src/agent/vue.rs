@@ -296,7 +296,7 @@ impl<E: JsEngine> VueAgentSession<E> {
     pub fn screenshot_png(&mut self, path: impl AsRef<Path>) -> Result<PixelStats, AgentError> {
         let clear = self.clear_color();
         let (size, pixels) = self.screenshot_rgba()?;
-        offscreen::write_png(path.as_ref(), size, &pixels)
+        offscreen::write_painter_png(path.as_ref(), size, &pixels)
             .map_err(|error| AgentError(error.to_string()))?;
         Ok(super::pixels::pixel_stats(size, &pixels, clear))
     }

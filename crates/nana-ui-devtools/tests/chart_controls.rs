@@ -182,8 +182,13 @@ fn donut_ring_has_no_join_cracks_or_translucent_overdraw() {
         let model = cx.world().style_model();
         let mut palette = model.palette;
         palette.accent.a = 0.5;
-        cx.set_style_tokens(model.theme_mode, model.metrics, palette, model.titlebar)
-            .unwrap();
+        cx.set_style_tokens(
+            model.theme_appearance,
+            model.metrics,
+            palette,
+            model.titlebar,
+        )
+        .unwrap();
         let mut style = NodeStyle::default();
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Px(144.0));

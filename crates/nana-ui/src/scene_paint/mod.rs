@@ -16,6 +16,7 @@ mod image_resample;
 pub(crate) mod image_url;
 mod mesh;
 mod motion;
+mod presentation_color;
 mod quad;
 mod text;
 
@@ -50,8 +51,13 @@ use crate::{
 pub use image_url::{
     resolve_background_image_url, resolved_resource_is_allowed, set_background_image_url_base,
 };
+pub use presentation_color::{
+    BT709_TO_BT2020, ScenePresentationParameters, hlg_decode, hlg_encode, hlg_eotf, hlg_oetf,
+    linear_sc_rgb_to_bt2020, pq_decode, pq_decode_nits, pq_encode, pq_encode_nits, pq_eotf,
+    pq_oetf, tone_map_headroom_rgb,
+};
+pub use validate::ScenePaintError;
 use validate::validate_scene;
-pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 /// Final surface encoding for the linear-scRGB Scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,6 +67,10 @@ pub enum ScenePresentationColorSpace {
     ExtendedSrgbLinear,
     ExtendedSrgb,
     ExtendedDisplayP3,
+    /// BT.2100 HDR10 signal: BT.2020 primaries with absolute PQ encoding.
+    Bt2100Pq,
+    /// BT.2100 HLG signal: BT.2020 primaries with relative HLG encoding.
+    Bt2100Hlg,
 }
 
 /// Host-resolved target profile. Scene primitives are always composed as
@@ -97,6 +107,8 @@ impl ScenePresentationProfile {
     /// surface boundary. For a native surface, pass the format/colour-space
     /// pair returned by its capability table; offscreen callers may choose an
     /// untyped target when they want the painter to own the transfer function.
+    /// BT.2100 PQ/HLG profiles should use an untyped target; the surface
+    /// resolver only negotiates those encodings on untyped formats.
     pub const fn new(
         target_format: GpuTextureFormat,
         color_space: ScenePresentationColorSpace,
@@ -155,11 +167,17 @@ impl ScenePresentationProfile {
         }
     }
 
-    /// Convert a linear-premultiplied clear colour for the surface load
-    /// operation. Scene targets are always cleared in linear scRGB; a surface
-    /// clear happens after the presentation boundary and therefore needs the
-    /// same transfer, gamut and alpha ordering as the blit shader.
-    pub(crate) fn surface_clear(self, color: [f32; 4], encoding: AlphaEncoding) -> wgpu::Color {
+    /// Surface clear matching the final presentation transfer.  The dynamic
+    /// HDR parameters are deliberately supplied separately from the profile:
+    /// changing display headroom must not invalidate a painter/pipeline cache
+    /// keyed by [`ScenePresentationProfile`].
+    #[allow(clippy::excessive_precision)]
+    pub(crate) fn surface_clear_with_parameters(
+        self,
+        color: [f32; 4],
+        encoding: AlphaEncoding,
+        parameters: ScenePresentationParameters,
+    ) -> wgpu::Color {
         let color = normalize_clear_color(color);
         if self.is_direct_linear() {
             return wgpu::Color {
@@ -174,33 +192,12 @@ impl ScenePresentationProfile {
             return wgpu::Color::TRANSPARENT;
         }
         let mut rgb = [color[0], color[1], color[2]];
-        // Extended-sRGB-linear is intentionally a linear output profile. Its
-        // shader path returns premultiplied linear values before the target's
-        // own format conversion, and AlphaEncoding does not change that
-        // colour-space contract.
-        if matches!(
-            self.color_space,
-            ScenePresentationColorSpace::ExtendedSrgbLinear
-        ) {
-            return wgpu::Color {
-                r: (rgb[0] * alpha) as f64,
-                g: (rgb[1] * alpha) as f64,
-                b: (rgb[2] * alpha) as f64,
-                a: alpha as f64,
-            };
-        }
         let tone_map = self.force_float_working;
+        let headroom = if tone_map { 1.0 } else { parameters.headroom() };
         let gamut_transform = tone_map
             || matches!(self.color_space, ScenePresentationColorSpace::DisplayP3)
             || (matches!(self.color_space, ScenePresentationColorSpace::Srgb)
                 && !self.target_format.is_srgb());
-        let shoulder = |value: f32| {
-            if tone_map && value > 0.85 {
-                0.85 + 0.15 * (1.0 - (-0.8 * (value - 0.85)).exp())
-            } else {
-                value
-            }
-        };
         let gamut = |mut value: [f32; 3]| {
             let luma = 0.2126 * value[0] + 0.7152 * value[1] + 0.0722 * value[2];
             let lo = value[0].min(value[1].min(value[2]));
@@ -252,7 +249,30 @@ impl ScenePresentationProfile {
             };
         }
         if tone_map {
-            rgb = rgb.map(shoulder);
+            // The SDR fallback keeps the established smooth shoulder used by
+            // the HDR-to-SDR path. Its target is SDR by definition, so live
+            // HDR headroom must not silently change this fallback contract.
+            rgb = rgb.map(|value| {
+                if value > 0.85 {
+                    0.85 + 0.15 * (1.0 - (-0.8 * (value - 0.85)).exp())
+                } else {
+                    value
+                }
+            });
+        } else if matches!(
+            self.color_space,
+            ScenePresentationColorSpace::ExtendedSrgbLinear
+                | ScenePresentationColorSpace::ExtendedSrgb
+                | ScenePresentationColorSpace::ExtendedDisplayP3
+                | ScenePresentationColorSpace::Bt2100Pq
+                | ScenePresentationColorSpace::Bt2100Hlg
+        ) {
+            // All HDR profiles share the same scene-linear shoulder.  The
+            // extended-scRGB targets keep their linear intermediate, while
+            // PQ/HLG then apply their transfer function below.  Keeping this
+            // mapping here makes headroom=1 the SDR-limit behaviour for every
+            // HDR output contract.
+            rgb = tone_map_headroom_rgb(rgb, headroom);
         }
         if matches!(
             self.color_space,
@@ -269,11 +289,42 @@ impl ScenePresentationProfile {
         }
         let encoded = match self.color_space {
             ScenePresentationColorSpace::ExtendedSrgbLinear => rgb,
+            ScenePresentationColorSpace::Bt2100Pq => {
+                let rgb = linear_sc_rgb_to_bt2020(rgb);
+                rgb.map(|value| pq_encode_nits(value * parameters.reference_white_nits()))
+            }
+            ScenePresentationColorSpace::Bt2100Hlg => {
+                let rgb = linear_sc_rgb_to_bt2020(rgb);
+                rgb.map(|value| hlg_encode(value * parameters.reference_white_nits() / 1_000.0))
+            }
             _ => rgb.map(encode),
         };
         let linear_premult = rgb.map(|value| value * alpha);
         let encoded_premult = encoded.map(|value| value * alpha);
-        let output = if self.target_format.is_srgb() && encoding == AlphaEncoding::Gamma {
+        let output = if matches!(
+            self.color_space,
+            ScenePresentationColorSpace::ExtendedSrgbLinear
+        ) {
+            // Extended-linear targets own no transfer function. Keep the
+            // tone-mapped scene value linear, including for gamma alpha;
+            // shader mode 2 follows this same raw-linear contract.
+            linear_premult
+        } else if matches!(
+            self.color_space,
+            ScenePresentationColorSpace::Bt2100Pq | ScenePresentationColorSpace::Bt2100Hlg
+        ) {
+            // BT.2100 surfaces carry the transfer-encoded signal directly.
+            // They are normally untyped RGB10A2/FP16; applying an sRGB
+            // attachment transfer to a PQ/HLG code would be incorrect. If a
+            // caller constructs an invalid typed-sRGB combination manually,
+            // pre-decode the clear so the attachment's OETF still produces
+            // the requested BT.2100 code.
+            if self.target_format.is_srgb() {
+                encoded_premult.map(decode)
+            } else {
+                encoded_premult
+            }
+        } else if self.target_format.is_srgb() && encoding == AlphaEncoding::Gamma {
             // A typed sRGB attachment applies its OETF in hardware. Gamma
             // alpha therefore stores the encoded-straight colour multiplied
             // by alpha, and the CPU clear must provide the corresponding
@@ -353,6 +404,7 @@ pub struct SceneWgpuPainter {
     format: wgpu::TextureFormat,
     working_format: wgpu::TextureFormat,
     presentation: ScenePresentationProfile,
+    presentation_parameters: ScenePresentationParameters,
     quads: QuadPipeline,
     motion: MotionGpuResources,
     meshes: MeshPipeline,
@@ -531,6 +583,7 @@ impl SceneWgpuPainter {
             format,
             working_format: format,
             presentation,
+            presentation_parameters: ScenePresentationParameters::default(),
             quads,
             motion,
             meshes: MeshPipeline::new_with_policy(device, format, Some(gpu.policy())),
@@ -586,6 +639,17 @@ impl SceneWgpuPainter {
 
     pub fn presentation(&self) -> ScenePresentationProfile {
         self.presentation
+    }
+
+    /// Runtime HDR metadata used by the final presentation pass. Updating it
+    /// only writes a small uniform; the painter, retained scene and pipelines
+    /// remain reusable across display headroom changes.
+    pub fn set_presentation_parameters(&mut self, parameters: ScenePresentationParameters) {
+        self.presentation_parameters = parameters.normalized();
+    }
+
+    pub fn presentation_parameters(&self) -> ScenePresentationParameters {
+        self.presentation_parameters
     }
 
     /// The device this painter records on.
@@ -954,9 +1018,11 @@ impl SceneWgpuPainter {
             b: (clear_color[2] * clear_color[3]) as f64,
             a: clear_color[3] as f64,
         };
-        let surface_clear = self
-            .presentation
-            .surface_clear(clear_color, self.alpha_encoding);
+        let surface_clear = self.presentation.surface_clear_with_parameters(
+            clear_color,
+            self.alpha_encoding,
+            self.presentation_parameters,
+        );
         let painted = PaintedDest {
             instance,
             presentation_epoch: scene.presentation_epoch(),
@@ -970,10 +1036,15 @@ impl SceneWgpuPainter {
             .any(|descriptor| descriptor.is_live());
         if self.painted == Some(painted)
             && !gpu_motion_live
-            && let Some(dest) = self.dest.as_ref()
+            && let Some(dest) = self.dest.as_mut()
             && dest.width == dest_physical[0]
             && dest.height == dest_physical[1]
         {
+            dest.set_presentation_parameters(
+                &self.queue,
+                self.presentation_parameters,
+                Some(&gpu_work),
+            );
             let encode_started = Instant::now();
             let mut dest_passes = DestPassCounts {
                 msaa_allocated: dest.msaa_allocated,
@@ -1958,6 +2029,14 @@ impl SceneWgpuPainter {
             !gpu_interleaved,
             self.gpu.policy(),
         );
+        self.dest
+            .as_mut()
+            .expect("dest target")
+            .set_presentation_parameters(
+                &self.queue,
+                self.presentation_parameters,
+                Some(&gpu_work),
+            );
         if max_group_depth > 0 {
             self.dest.as_mut().expect("dest target").prepare_groups(
                 &self.device,

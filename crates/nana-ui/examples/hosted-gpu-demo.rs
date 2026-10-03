@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 #[path = "hosted_gpu/panel.rs"]
 mod panel;
 #[path = "hosted_gpu/performance.rs"]

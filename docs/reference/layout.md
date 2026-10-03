@@ -19,6 +19,15 @@ Vue 的 containing block 传播以 layout mutation footprint 为 seed。静态�
 paint-only 更新不再扫描整棵投影树；视口变化与结构变更仍从根节点重算，以保持
 百分比、Fill 和 intrinsic sizing 的正确性。
 
+Intrinsic metrics 由 Runtime 的 `IntrinsicCache` 统一保存。它记录内容和样式
+事实（min/max inline/block、preferred size、首尾 baseline、aspect ratio）以及
+generation；当前 containing block 解析出的 used size 单独保留，不能回写这份
+事实缓存。缓存 key 不含 Flex、Grid 或 IFC 的名称，因此相同的约束类可以跨
+formatting context 复用；百分比、Fill、aspect ratio、字体、writing context 和
+viewport 等依赖会进入约束或输入身份。内容、形状样式、边框、min/max、资源
+metadata、scale/font 和子树 metrics 的变化才会 bump generation；颜色、opacity、
+transform、hover 和 accessibility 更新不会 bump。
+
 ## 能用的
 
 **Flex。** 你可以用 `flex-direction`、`flex-wrap`、`gap`、`align-items`、`align-self`、`justify-content`。多行换行时还有 `align-content`。`stretch` 和 `normal` 把剩余的交叉空间均分给各行。还有 `order`、`flex-grow`、`flex-shrink`、`flex-basis`。侧栏加主区，用这一套就够。
@@ -121,7 +130,10 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 
 `white-space: pre` 在量测里保留换行和空格。
 
-`align-items: baseline` 用字号近似第一行基线，公式是 `padding + border + 0.8em`。这不是完整的 CSS 基线对齐。
+`align-items: baseline` 读取同一份 intrinsic metrics。文本节点优先使用
+`nana-text` 保留的首行和末行 baseline；宿主只提供 ascent 时才使用该
+fallback。替换内容和 Custom 节点以 block 轴末端作为明确 fallback。Flex、Grid
+和 IFC 不各自估算一套基线。
 
 **浮动子集。** `float: left | right` 把盒子从块流里拿出来。同侧多个浮动按几何并排。放不下就折到下一行。
 

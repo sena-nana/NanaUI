@@ -258,30 +258,55 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         request: nana_ui_runtime::AccessibilityActionRequest,
     ) -> Result<bool, JsEngineError> {
         let host = self.require_host(VueWindowId(id.0))?;
-        let mut host = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
         let target = crate::NodeHandle(request.target.get());
         match request.action {
-            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { .. } => {
-                // Vue menus are retained DOM nodes; virtual painted menu rows
-                // are owned by the native Runtime host and have no Vue node
-                // equivalent to dispatch into.
-                Ok(false)
+            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, index } => {
+                let shared = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+                    .shared_runtime_document();
+                let request = nana_ui_runtime::AccessibilityActionRequest {
+                    target: request.target,
+                    action: nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, index },
+                };
+                let result = shared
+                    .with_document_mut(|document| {
+                        let document_id = document.document();
+                        document
+                            .context_mut()
+                            .apply_accessibility_action(document_id, request)
+                    })
+                    .map_err(|error| JsEngineError::new(error.to_string()))?;
+                result.map_err(|error| JsEngineError::new(error.to_string()))
+            }
+            nana_ui_runtime::AccessibilityAction::Scroll(direction) => {
+                let host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+                Ok(host.accessibility_scroll(target, direction))
             }
             nana_ui_runtime::AccessibilityAction::Focus => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
                 host.accessibility_focus(&mut self.engine, target)
             }
             nana_ui_runtime::AccessibilityAction::Click => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
                 host.accessibility_click(&mut self.engine, target)
             }
-            nana_ui_runtime::AccessibilityAction::Scroll(direction) => {
-                Ok(host.accessibility_scroll(target, direction))
-            }
             nana_ui_runtime::AccessibilityAction::SetValue(value) => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
                 host.accessibility_set_value(&mut self.engine, target, &value)
             }
             nana_ui_runtime::AccessibilityAction::SetSelection(selection) => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
                 host.accessibility_set_selection(&mut self.engine, target, selection)
             }
         }

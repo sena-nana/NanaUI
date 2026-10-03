@@ -49,6 +49,7 @@ mod json_num;
 pub(crate) use json_num::json_u64;
 #[cfg(feature = "image-viewer")]
 mod image_viewer;
+pub mod intrinsic_cache;
 mod key_layers;
 mod layout_engine;
 mod layout_result;
@@ -212,6 +213,7 @@ pub use find_replace::{FindReplaceBar, FindReplaceEvent, TextSearchBar};
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::MountedView;
 pub(crate) use framework::UiBuilder;
+#[allow(deprecated)]
 pub use framework::{
     ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, BuiltinComponents,
     Entity, ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError,
@@ -242,6 +244,11 @@ pub use image_viewer::{
     ImageViewerHit, ImageViewerOffset, ImageViewerPosition, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
 };
 pub use interaction_request_card::{InteractionRequestCard, InteractionRequestField};
+pub use intrinsic_cache::{
+    Baseline, ConstraintClass, FormattingContextId, IntrinsicCache, IntrinsicCacheBudget,
+    IntrinsicCacheCounters, IntrinsicCacheKey, IntrinsicGeneration, IntrinsicMetrics,
+    InvalidationReason, MaxBlockInput, UsedSize,
+};
 pub use key_layers::{
     ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,
     KeyCaptureEvent, KeyCaptureLayer, KeyInput, KeyModifiers, Keymap, KeymapLayer, KeymapMatch,

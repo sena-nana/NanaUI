@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Advanced host integration: this executable owns the sole event loop and GPU.
 mod window_lifecycle;
 use nana_ui::{GpuContext, HostedGpuShared, RuntimeApplication, platform_host::EmbeddedRuntime};

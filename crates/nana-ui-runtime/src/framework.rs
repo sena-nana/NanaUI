@@ -356,8 +356,8 @@ impl EditableText for SearchDropdown {
     }
 
     fn commit_ime_text(&mut self, text: &str) -> bool {
-        // Composite search surfaces are single-selection and keep `query`
-        // synchronized through their own replace path.
+        // Composite search surfaces are single-selection and keep the
+        // retained text state synchronized through their own replace path.
         self.replace_selection(text)
     }
 
@@ -379,11 +379,11 @@ impl EditableText for SearchDropdown {
     }
 
     fn change(&self) -> SearchDropdownEvent {
-        SearchDropdownEvent::Search(self.query.clone())
+        SearchDropdownEvent::Search(self.query_text().to_owned())
     }
 
     fn set_value(&mut self, value: String) -> bool {
-        if self.query == value {
+        if self.query_text() == value {
             return false;
         }
         let _ = self.set_query(value);
@@ -402,13 +402,13 @@ impl EditableText for ContextMenu {
         if !self.state.replace_selection(text) {
             return false;
         }
-        self.sync_query_from_state();
+        self.apply_anchor();
         true
     }
 
     fn commit_ime_text(&mut self, text: &str) -> bool {
-        // Searchable menus keep `query` synchronized with the committed
-        // state through their own replace path.
+        // Searchable menus keep the committed text state synchronized through
+        // their own replace path.
         self.replace_selection(text)
     }
 
@@ -424,7 +424,7 @@ impl EditableText for ContextMenu {
         {
             return false;
         }
-        self.sync_query_from_state();
+        self.apply_anchor();
         true
     }
 
@@ -437,11 +437,11 @@ impl EditableText for ContextMenu {
     }
 
     fn change(&self) -> ContextMenuEvent {
-        ContextMenuEvent::Search(Arc::clone(&self.query))
+        ContextMenuEvent::Search(Arc::from(self.query_text()))
     }
 
     fn set_value(&mut self, value: String) -> bool {
-        if self.query.as_ref() == value {
+        if self.query_text() == value {
             return false;
         }
         self.set_query(value);
@@ -461,8 +461,8 @@ impl EditableText for CommandPalette {
     }
 
     fn commit_ime_text(&mut self, text: &str) -> bool {
-        // Composite palettes are single-selection and keep `query`
-        // synchronized through their own replace path.
+        // Composite palettes are single-selection and keep the retained text
+        // state synchronized through their own replace path.
         self.replace_selection(text)
     }
 
@@ -484,11 +484,11 @@ impl EditableText for CommandPalette {
     }
 
     fn change(&self) -> CommandPaletteEvent {
-        CommandPaletteEvent::Search(self.query.clone())
+        CommandPaletteEvent::Search(self.query_text().to_owned())
     }
 
     fn set_value(&mut self, value: String) -> bool {
-        if self.query == value {
+        if self.query_text() == value {
             return false;
         }
         let _ = self.set_query(value);
@@ -1676,6 +1676,7 @@ impl AppContext {
     /// This is intentionally named as a low-level compatibility boundary: it
     /// must not be used by ordinary application code in place of
     /// `commit_mutations` and the component/event APIs.
+    #[doc(hidden)]
     pub fn compat_world_mut(&mut self) -> &mut UiWorld {
         &mut self.world
     }
@@ -1994,6 +1995,16 @@ impl AppContext {
         Ok(true)
     }
 
+    /// Create a low-level retained view node without running a component
+    /// projection.
+    ///
+    /// This is the compatibility/host primitive for placeholder and
+    /// heterogeneous slot nodes. A [`ComponentView`] passed to this method is
+    /// stored as a plain [`View`]; its `project` and lifecycle hooks are not
+    /// run. Product code should use [`Self::create_component`] so the typed
+    /// component contract remains intact. The method stays public because
+    /// host adapters in other crates still use it while those paths migrate.
+    #[doc(hidden)]
     pub fn create_view<V: View>(
         &mut self,
         document: DocumentId,
@@ -2986,8 +2997,15 @@ impl AppContext {
         option.synchronize_surface(size, chrome, fill);
     }
 
-    /// Update typed state, deliver closure events, then atomically commit all
-    /// retained-tree mutations produced by the update.
+    /// Update a low-level [`View`], deliver closure events, then atomically
+    /// commit all retained-tree mutations produced by the update.
+    ///
+    /// This is the raw compatibility path. For a [`ComponentView`], it does
+    /// not run `ComponentView::project`, compare component state, or execute
+    /// component lifecycle hooks. Use [`Self::update_component`] for typed
+    /// components; this method remains public for plain views and host
+    /// placeholders that have not adopted that contract yet.
+    #[doc(hidden)]
     pub fn update<V: View, R>(
         &mut self,
         entity: Entity<V>,
@@ -3317,6 +3335,14 @@ impl AppContext {
         Ok(result)
     }
 
+    /// Remove a low-level [`View`] and its retained node.
+    ///
+    /// This is the raw counterpart to the typed component lifecycle. It
+    /// despawns the node and returns the stored value without invoking a
+    /// component projection. Hosts should use it only for plain views and
+    /// compatibility placeholders; ordinary components should be removed by
+    /// the owning component/host lifecycle.
+    #[doc(hidden)]
     pub fn remove_view<V: View>(&mut self, entity: Entity<V>) -> Result<V, FrameworkError> {
         self.read(entity, |_| ())?;
         let boxed = self
@@ -3531,14 +3557,27 @@ impl<T> Task<T> {
     }
 }
 
-/// Wake-driven event stream. Platform adapters own execution and cancellation;
-/// the core runtime does not create a competing executor.
+/// Compatibility wrapper for a host-owned event stream.
+///
+/// No runtime host currently consumes this type. It remains available for
+/// source compatibility with early adapters, but new integrations should use
+/// the host's native stream/subscription contract instead. Keeping it hidden
+/// prevents it from becoming a second runtime subscription API while existing
+/// callers migrate.
+///
+/// Platform adapters own execution and cancellation; the core runtime does
+/// not create a competing executor.
+#[doc(hidden)]
+#[deprecated(
+    note = "Subscription is an unconsumed compatibility API; use the host-owned stream contract"
+)]
 #[must_use = "subscriptions do nothing until a host consumes their stream"]
 pub struct Subscription<T> {
     id: String,
     stream: Pin<Box<dyn Stream<Item = T> + Send + 'static>>,
 }
 
+#[allow(deprecated)]
 impl<T> Subscription<T> {
     pub fn new(id: impl Into<String>, stream: impl Stream<Item = T> + Send + 'static) -> Self {
         Self {

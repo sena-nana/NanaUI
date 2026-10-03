@@ -4,6 +4,12 @@ use super::*;
 
 impl AppContext {
     /// Drain deterministic work scheduled since the previous frame.
+    ///
+    /// This is the canonical application/frame drain. It polls local tasks
+    /// and flushes the reactive host before delegating to
+    /// [`crate::UiWorld::take_system_work`]. Callers with an [`AppContext`]
+    /// should use this method instead of draining `compat_world_mut()`
+    /// directly, because the latter bypasses those runtime steps.
     pub fn take_system_work(&mut self) -> crate::SystemWork {
         // Signal writes outside input (timers, program updates, other
         // contexts) land here, before the frame reads the world.
@@ -301,6 +307,9 @@ impl AppContext {
                 &mut self.layout_cache,
                 force_full,
             )?;
+            let intrinsic_counters = self.layout_cache.take_intrinsic_counters();
+            self.world
+                .record_intrinsic_measure_counters(intrinsic_counters);
             completed(1);
             let mut mutations = MutationQueue::new();
             let mut scope = Vec::with_capacity(layouts.len());

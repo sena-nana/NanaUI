@@ -13,7 +13,7 @@
 //! [`EachVirtual::grid`] flows items into as many columns as fit.
 
 use std::borrow::Cow;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Range;
 use std::panic::Location;
@@ -54,7 +54,14 @@ struct Grid {
 enum Unit<K> {
     Item(K),
     /// A grid row, by its column count and the keys in it.
-    Row(u64),
+    ///
+    /// Keep the keys themselves instead of a hash. A hash was used here as a
+    /// compact identity, but collisions could make a changed row reuse the
+    /// previous row's retained scope and state.
+    Row {
+        columns: usize,
+        keys: Vec<K>,
+    },
 }
 
 /// `v-for` over many rows: see the module docs.
@@ -517,12 +524,11 @@ where
                     .step_by(columns)
                     .map(|start| {
                         let end = (start + columns).min(items.len());
-                        let mut hasher = DefaultHasher::new();
-                        columns.hash(&mut hasher);
-                        for (key, _) in &items[start..end] {
-                            key.hash(&mut hasher);
-                        }
-                        (Unit::Row(hasher.finish()), start..end)
+                        let keys = items[start..end]
+                            .iter()
+                            .map(|(key, _)| key.clone())
+                            .collect();
+                        (Unit::Row { columns, keys }, start..end)
                     })
                     .collect(),
             ),
@@ -892,5 +898,29 @@ where
     ) -> Result<(), FrameworkError> {
         let items = reactive::run_tracked(effect, || self.read());
         self.sync(cx, items)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Unit;
+
+    #[test]
+    fn grid_row_identity_keeps_structure_without_hash_collisions() {
+        let same_keys_different_columns = Unit::Row {
+            columns: 2,
+            keys: vec![1_u32, 2],
+        };
+        let different_keys = Unit::Row {
+            columns: 2,
+            keys: vec![3_u32, 4],
+        };
+        let different_columns = Unit::Row {
+            columns: 3,
+            keys: vec![1_u32, 2],
+        };
+
+        assert!(same_keys_different_columns != different_keys);
+        assert!(same_keys_different_columns != different_columns);
     }
 }

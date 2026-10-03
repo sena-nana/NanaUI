@@ -1,9 +1,21 @@
 //! AppContext virtualize operations.
+//!
+//! The entry points in this module are the compatibility implementation for
+//! the original unplaced virtual materializer. Product code should use the
+//! retained entry points in [`super::virtualize_retained`], which own the
+//! placement containers, content extent, and focus/IME retention. The legacy
+//! API remains available for hosts that arrange their own placement, but it
+//! must not be mixed with a retained API on the same `Virtual*Items` value.
 
 use super::*;
 
 impl AppContext {
     #[allow(clippy::too_many_arguments)]
+    #[doc(hidden)]
+    #[deprecated(
+        note = "legacy unplaced virtualization; use materialize_virtual_table_retained_in"
+    )]
+    #[allow(deprecated)]
     pub fn materialize_virtual_table_in<R, C>(
         &mut self,
         table: Entity<Table>,
@@ -33,6 +45,9 @@ impl AppContext {
         )
     }
 
+    #[doc(hidden)]
+    #[deprecated(note = "legacy unplaced virtualization; use materialize_virtual_tree_retained_in")]
+    #[allow(deprecated)]
     pub fn materialize_virtual_tree_in<K, C>(
         &mut self,
         tree: Entity<List>,
@@ -57,6 +72,12 @@ impl AppContext {
     }
 
     /// Materialize a list using the shared viewport contract.
+    ///
+    /// This is the legacy unplaced compatibility path. Use
+    /// [`Self::materialize_virtual_list_retained_in`] for product UI.
+    #[doc(hidden)]
+    #[deprecated(note = "legacy unplaced virtualization; use materialize_virtual_list_retained_in")]
+    #[allow(deprecated)]
     pub fn materialize_virtual_list_in<K, C>(
         &mut self,
         list: Entity<List>,
@@ -85,6 +106,13 @@ impl AppContext {
     /// Reconcile a virtual List to one visible keyed window. Creation,
     /// removal, and final child order share one Runtime commit; the external
     /// materializer is published only after that commit succeeds.
+    ///
+    /// This is the legacy unplaced compatibility path. It leaves placement,
+    /// content extent, and focus/IME retention to the caller. Use
+    /// [`Self::materialize_virtual_list_retained_in`] for product UI.
+    #[doc(hidden)]
+    #[deprecated(note = "legacy unplaced virtualization; use materialize_virtual_list_retained_in")]
+    #[allow(deprecated)]
     #[allow(clippy::too_many_arguments)]
     pub fn materialize_virtual_list<K, C>(
         &mut self,
@@ -239,6 +267,15 @@ impl AppContext {
     /// Reconcile both visible axes of a virtual Table in one Runtime commit.
     /// Rows and cells with overlapping keys retain their stable entities.
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// This is the legacy unplaced compatibility path. It leaves placement,
+    /// content extent, and focus/IME retention to the caller. Use
+    /// [`Self::materialize_virtual_table_retained_in`] for product UI.
+    #[doc(hidden)]
+    #[deprecated(
+        note = "legacy unplaced virtualization; use materialize_virtual_table_retained_in"
+    )]
+    #[allow(deprecated)]
     pub fn materialize_virtual_table<R, C>(
         &mut self,
         table: Entity<Table>,
@@ -662,6 +699,12 @@ impl AppContext {
     /// expanded rows. Creation, removal, and final child order share one
     /// Runtime commit; collapsed descendants are never spawned.
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// This is the legacy unplaced compatibility path. Use
+    /// [`Self::materialize_virtual_tree_retained_in`] for product UI.
+    #[doc(hidden)]
+    #[deprecated(note = "legacy unplaced virtualization; use materialize_virtual_tree_retained_in")]
+    #[allow(deprecated)]
     pub fn materialize_virtual_tree<K, C>(
         &mut self,
         tree: Entity<List>,

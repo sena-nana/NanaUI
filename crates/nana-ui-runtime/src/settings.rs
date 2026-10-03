@@ -1784,9 +1784,8 @@ fn ensure_theme_options(
         {
             Entity::from_stable_id(id)
         } else {
-            let entity = context
-                .create_detached_component(document, SegmentedOption::new(choice.label.as_ref()))?;
-            entity
+            context
+                .create_detached_component(document, SegmentedOption::new(choice.label.as_ref()))?
         };
         assembly.theme_options.push(entity.stable_id());
         options.push(entity);

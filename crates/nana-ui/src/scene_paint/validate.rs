@@ -4,16 +4,15 @@
 //! of being silently skipped. Affine transforms, letter-spacing, and named
 //! fonts are painted, not fail-closed.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
 use nana_gpu::DeviceGeneration;
 use nana_ui_runtime::StableNodeId;
-use nana_ui_scene::{PrimitiveId, RenderOperation, ScenePrimitiveKind, UiScene};
+use nana_ui_scene::{PrimitiveId, ScenePrimitiveKind, UiScene};
 
+use crate::HostTextureRegistry;
 use crate::scene_gpu::SceneGpuRendererRegistry;
-use crate::{HostTextureBinding, HostTextureRegistry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScenePaintError {
@@ -83,51 +82,6 @@ impl fmt::Display for ScenePaintError {
 }
 
 impl std::error::Error for ScenePaintError {}
-
-/// Resolves `"nana.host-texture"` custom scene nodes from the host registry.
-/// Scene GPU painters such as `"gpu-view"` are resolved by
-/// [`super::SceneWgpuPainter`], not this lookup.
-#[derive(Debug, Clone)]
-pub struct HostTextureSceneResolver {
-    bindings: HashMap<u64, HostTextureBinding>,
-}
-
-impl HostTextureSceneResolver {
-    pub fn new(
-        scene: &UiScene,
-        host_textures: &HostTextureRegistry,
-    ) -> Result<Self, ScenePaintError> {
-        let graph = scene
-            .frame_plan()
-            .map_err(|error| ScenePaintError::InvalidRenderGraph(error.to_string()))?;
-        let mut bindings = HashMap::new();
-        for operation in graph.operations.iter() {
-            let RenderOperation::InvokeCustom(id) = operation else {
-                continue;
-            };
-            let Some(primitive) = scene.primitive(*id) else {
-                continue;
-            };
-            let ScenePrimitiveKind::Custom { node: custom, .. } = &primitive.kind else {
-                continue;
-            };
-            // Scene GPU painters such as `"gpu-view"` are resolved by
-            // `SceneWgpuPainter`, not this host-texture lookup.
-            if custom.renderer.as_ref() != "nana.host-texture" {
-                continue;
-            }
-            let binding = host_textures
-                .get(custom.resource.as_ref())
-                .ok_or(ScenePaintError::MissingCustomResource(*id))?;
-            bindings.insert(primitive.node.get(), binding);
-        }
-        Ok(Self { bindings })
-    }
-
-    pub fn binding(&self, node: u64) -> Option<HostTextureBinding> {
-        self.bindings.get(&node).cloned()
-    }
-}
 
 /// What the painter resolved about the frame's custom nodes.
 ///
@@ -216,7 +170,7 @@ mod tests {
         AppContext, Button as RuntimeButton, CustomRenderNode, DocumentId, GPU_VIEW_RENDERER,
         GpuTextureView, GpuView, LayoutBox, MutationQueue,
     };
-    use nana_ui_scene::UiScene;
+    use nana_ui_scene::{RenderOperation, UiScene};
 
     use super::*;
     use crate::scene_gpu::{
@@ -518,12 +472,6 @@ mod tests {
         )
         .expect_err("empty registry must not paint gpu-view");
         assert!(matches!(err, ScenePaintError::UnsupportedCustomRenderer(_)));
-    }
-
-    #[test]
-    fn host_texture_resolver_skips_gpu_view_custom_nodes() {
-        let (scene, _) = gpu_view_scene();
-        HostTextureSceneResolver::new(&scene, &HostTextureRegistry::new()).unwrap();
     }
 
     #[test]

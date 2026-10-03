@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Real Windows DirectComposition acceptance probe.
 //!
 //! Default run: two composed windows and one plain window on one GPU device,

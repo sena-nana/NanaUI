@@ -13,7 +13,18 @@ class EngineBoundaryTests(unittest.TestCase):
         names = sorted({root, *edges, *(child for children in edges.values() for child in children)})
         return {
             "workspace_members": [root],
-            "packages": [{"id": name, "name": name.split("@")[0], "version": (versions or {}).get(name, "1.0.0")} for name in names],
+            # `cargo metadata` always includes a target list. Keep the
+            # synthetic graph shaped like that output so the proc-macro
+            # build-edge rule is exercised without relying on missing keys.
+            "packages": [
+                {
+                    "id": name,
+                    "name": name.split("@")[0],
+                    "version": (versions or {}).get(name, "1.0.0"),
+                    "targets": [],
+                }
+                for name in names
+            ],
             "resolve": {"nodes": [{"id": name, "deps": [{"pkg": child, "dep_kinds": [{"kind": None}]} for child in edges.get(name, [])]} for name in names]},
         }
     def text_crate(self, source):

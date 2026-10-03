@@ -48,6 +48,7 @@ offscreen = [
     # nana_gpu::__framework like the framework's own painter.
     "dep:nana-gpu",
     "dep:image",
+    "dep:png",
     "dep:pollster",
     "dep:wgpu",
 ]
@@ -84,6 +85,7 @@ nana-ui-scene = { workspace = true, optional = true }
 nana-ui-vue = { workspace = true, optional = true }
 nana-js-v8 = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Native two-window acceptance probe. Commands on stdin: lock, unlock, forward, forward-off,
 //! taskbar-show, taskbar-hide, hide, show, close, quit.
 //! Run through the Scene host; inspect output plus native pointer/compositor behavior.

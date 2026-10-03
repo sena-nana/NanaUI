@@ -821,7 +821,7 @@ pub(super) fn place_grid_2d_items(
     viewport: LayoutViewport,
     child_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<(), UiWorldError> {
@@ -1007,7 +1007,7 @@ pub(super) fn auto_track_contributions(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    cache: &mut IntrinsicCache,
+    cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Vec<f32>, UiWorldError> {
     let n = tracks.len().min(children.len());
@@ -1080,7 +1080,7 @@ pub(super) fn intrinsic_size_demoted(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    cache: &mut IntrinsicCache,
+    cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
     column_main: bool,
 ) -> Result<Size, UiWorldError> {
@@ -1113,7 +1113,7 @@ pub(super) fn apply_grid_main_sizes(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<(), UiWorldError> {
     let n = children.len();

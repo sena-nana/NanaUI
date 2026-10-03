@@ -1160,17 +1160,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
     }
     pub(super) fn is_live_resize(&self, id: WindowId) -> bool {
-        if self.size_move_active(id) {
-            return true;
-        }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
-            self.live_frame_resize
-                .as_ref()
-                .is_some_and(|(session, _)| *session == id)
+            self.size_move_active(id)
+                || self
+                    .live_frame_resize
+                    .as_ref()
+                    .is_some_and(|(session, _)| *session == id)
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        false
+        {
+            self.size_move_active(id)
+        }
     }
     pub(super) fn size_move_active(&self, id: WindowId) -> bool {
         self.window_contexts

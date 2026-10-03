@@ -52,7 +52,7 @@ widget(CommandPalette::new(
 
 ## 查询与导航
 
-`.query` 和 `set_query` 同时改查询字符串和输入状态，并把选中下标收成 0。
+`.query(...)` 和 `set_query` 同时改查询字符串和输入状态，并把选中下标收成 0；读取当前值使用 `query_text()`。
 
 `set_query` 返回 `CommandPaletteEvent::Search`。
 
@@ -81,7 +81,7 @@ widget(CommandPalette::new(
 | `.placeholder` | — | 默认占位是「搜索操作」 |
 | `.empty_label` | — | 默认空结果是「没有可用操作」 |
 | `.filtered_items` | — | `.filtered_items(true)` 表示条目已经由你滤好、排好，调色板不再滤第二遍 |
-| `.query` | — | 和 `set_query` 同时改查询字符串和输入状态，并把选中下标收成 0 |
+| `.query(...)` | — | 和 `set_query` 同时改查询字符串和输入状态，并把选中下标收成 0；`query_text()` 读取当前值 |
 | `set_query` | — | 返回 `CommandPaletteEvent::Search` |
 
 ## 事件

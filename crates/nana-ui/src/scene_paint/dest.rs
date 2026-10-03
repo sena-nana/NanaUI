@@ -5,7 +5,10 @@ use std::num::NonZeroU64;
 use nana_gpu::{LogicalBinding, LogicalBindingType, ResourceTable, ShaderStage};
 
 use super::clip::FragmentClip;
-use super::{AlphaEncoding, ScenePresentationColorSpace, ScenePresentationProfile};
+use super::{
+    AlphaEncoding, ScenePresentationColorSpace, ScenePresentationParameters,
+    ScenePresentationProfile,
+};
 use crate::gpu_work::ManagedBuffer;
 
 fn cached_dest_pipeline(
@@ -42,6 +45,12 @@ fn dest_blit_layout_key() -> u64 {
             &[ShaderStage::Fragment],
         ),
         LogicalBinding::new(1, LogicalBindingType::Sampler, &[ShaderStage::Fragment]),
+        LogicalBinding::new(
+            2,
+            LogicalBindingType::UniformBuffer,
+            &[ShaderStage::Fragment],
+        )
+        .min_size(PRESENTATION_UNIFORM_SIZE),
     ])
     .expect("dest blit table")
     .layout_key()
@@ -69,6 +78,7 @@ fn dest_group_layout_key() -> u64 {
 const GROUP_UNIFORM_STRIDE: u64 = 256;
 const GROUP_UNIFORM_SLOTS: u64 = 64;
 const GROUP_UNIFORM_SIZE: u64 = 176;
+const PRESENTATION_UNIFORM_SIZE: u64 = 16;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct GroupSlot {
@@ -465,6 +475,8 @@ pub(super) struct DestTarget {
     blit_clear_gamma_pipeline: Option<wgpu::RenderPipeline>,
     blit_clear_presentation_pipeline: Option<wgpu::RenderPipeline>,
     blit_bind_group: wgpu::BindGroup,
+    presentation_uniforms: ManagedBuffer,
+    presentation_uniform: [f32; 4],
     group_layers: Vec<GroupLayer>,
     group_pipeline: wgpu::RenderPipeline,
     group_pipeline_multiply: wgpu::RenderPipeline,
@@ -520,6 +532,7 @@ impl DestTarget {
         ));
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new(
         device: &wgpu::Device,
         pipeline_cache: Option<&wgpu::PipelineCache>,
@@ -579,6 +592,8 @@ impl DestTarget {
             let table = ResourceTable::new(vec![
                 LogicalBinding::new(0, LogicalBindingType::SampledTexture, stages),
                 LogicalBinding::new(1, LogicalBindingType::Sampler, stages),
+                LogicalBinding::new(2, LogicalBindingType::UniformBuffer, stages)
+                    .min_size(PRESENTATION_UNIFORM_SIZE),
             ])
             .expect("dest blit logical table is valid")
             .for_generation(policy.generation());
@@ -606,9 +621,26 @@ impl DestTarget {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(PRESENTATION_UNIFORM_SIZE),
+                        },
+                        count: None,
+                    },
                 ],
             })
         };
+        let presentation_uniforms =
+            ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.dest.presentation.uniforms"),
+                size: PRESENTATION_UNIFORM_SIZE,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
         let blit_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("nana-ui.scene.dest.blit.bind"),
             layout: &bind_layout,
@@ -620,6 +652,10 @@ impl DestTarget {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: presentation_uniforms.as_entire_binding(),
                 },
             ],
         });
@@ -686,6 +722,8 @@ impl DestTarget {
             ScenePresentationColorSpace::ExtendedSrgbLinear => "linear",
             ScenePresentationColorSpace::ExtendedSrgb => "extended_srgb",
             ScenePresentationColorSpace::ExtendedDisplayP3 => "extended_p3",
+            ScenePresentationColorSpace::Bt2100Pq => "bt2100_pq",
+            ScenePresentationColorSpace::Bt2100Hlg => "bt2100_hlg",
         };
         let make_presentation = |gamma: bool, clear: bool| {
             let entry = if direct_srgb && gamma {
@@ -827,6 +865,8 @@ impl DestTarget {
             blit_clear_gamma_pipeline,
             blit_clear_presentation_pipeline,
             blit_bind_group,
+            presentation_uniforms,
+            presentation_uniform: [f32::NAN; 4],
             group_layers: Vec::new(),
             group_pipeline,
             group_pipeline_multiply,
@@ -843,6 +883,28 @@ impl DestTarget {
 
     pub(super) fn color_view(&self) -> &wgpu::TextureView {
         &self.color_view
+    }
+
+    /// Update the presentation parameters without changing the target or any
+    /// render pipeline. Display headroom is event-driven and lands here as a
+    /// single 16-byte uniform write when it actually changes.
+    pub(super) fn set_presentation_parameters(
+        &mut self,
+        queue: &wgpu::Queue,
+        parameters: ScenePresentationParameters,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        let uniform = parameters.to_uniform();
+        if self.presentation_uniform == uniform {
+            return;
+        }
+        let bytes = bytemuck::cast_slice(&uniform);
+        if let Some(work) = gpu_work {
+            work.write_buffer(queue, &self.presentation_uniforms, 0, bytes);
+        } else {
+            queue.write_buffer(&self.presentation_uniforms, 0, bytes);
+        }
+        self.presentation_uniform = uniform;
     }
 
     pub(super) fn group_view(&self, layer: usize) -> &wgpu::TextureView {
