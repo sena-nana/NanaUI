@@ -50,10 +50,11 @@ impl PaintScript {
     /// - 长度：数字为像素；字符串 `"50%"`、`"100% - 12"`、`"50% + 4"` 相对节点
     ///   宽（x、宽）或高（y、高）。半径类长度（圆角、`arc` / `arcTo` 半径、
     ///   径向渐变半径）的百分比相对节点较短的一边，`"50%"` 即内切圆。
-    /// - 颜色：语义角色名（`"accent"`、`"surface"` …）、`"#rgb"`/`"#rgba"`/
-    ///   `"#rrggbb"`/`"#rrggbbaa"`、`"rgb(…)"`/`"rgba(…)"`、`[r, g, b]` 或
+    /// - 颜色：语义角色名（`"accent"`、`"surface"` …）、`[r, g, b]` 或
     ///   `[r, g, b, a]`（`0..=1`）；主题相关的混色写 `{ "mix": [角色, 角色, 比例] }`
-    ///   （比例是第一个角色的份量）或 `{ "alpha": [角色, 不透明度] }`。
+    ///   （比例是第一个角色的份量）或 `{ "alpha": [角色, 不透明度] }`。CSS
+    ///   字符串由拥有 CSS 引擎的上游适配器通过 [`Self::from_json_with_color_parser`]
+    ///   解析；Runtime 本身不解析 CSS。
     /// - 上色：颜色，或渐变 `{ "linear": [x0, y0, x1, y1] | "radial": [cx, cy, r]
     ///   | "conic": [cx, cy, 起始弧度], "stops": [[偏移, 颜色], …], "extend":
     ///   "pad" | "repeat" | "reflect" }`，色标进入 Scene 后在 linear scRGB 中按
@@ -92,6 +93,31 @@ impl PaintScript {
     /// 脚本是静态的：需要读回结果的 `measure_text`、自定义 `hit_test` 逻辑只在
     /// Rust 的 [`Painter`] 里有。
     pub fn from_json(value: &Value) -> Result<Self, String> {
+        Self::from_json_impl(value, None)
+    }
+
+    /// Parse a script while delegating CSS color strings to the caller.
+    ///
+    /// The runtime deliberately has no dependency on `nana-ui-css`. Hosts
+    /// that own CSS input can pass that crate's canonical parser here and map
+    /// its typed result to [`nana_ui_core::PaintColor`].
+    pub fn from_json_with_color_parser(
+        value: &Value,
+        color_parser: &dyn Fn(&str) -> Option<nana_ui_core::PaintColor>,
+    ) -> Result<Self, String> {
+        Self::from_json_impl(value, Some(color_parser))
+    }
+
+    /// Parse a JSON script while delegating CSS color strings to the caller.
+    pub fn from_json_str_with_color_parser(
+        text: &str,
+        color_parser: &dyn Fn(&str) -> Option<nana_ui_core::PaintColor>,
+    ) -> Result<Self, String> {
+        let value: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+        Self::from_json_with_color_parser(&value, color_parser)
+    }
+
+    fn from_json_impl(value: &Value, color_parser: ColorParser<'_>) -> Result<Self, String> {
         if !numbers_fit_f32(value) {
             return Err("a number does not fit a 32-bit float".into());
         }
@@ -124,7 +150,8 @@ impl PaintScript {
             .iter()
             .enumerate()
             .map(|(index, command)| {
-                Command::parse(command).map_err(|error| format!("command {index}: {error}"))
+                Command::parse(command, color_parser)
+                    .map_err(|error| format!("command {index}: {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -560,9 +587,10 @@ impl PaintPath {
 // ---------------------------------------------------------------------------
 
 type Map = serde_json::Map<String, Value>;
+type ColorParser<'a> = Option<&'a dyn Fn(&str) -> Option<nana_ui_core::PaintColor>>;
 
 impl Command {
-    fn parse(value: &Value) -> Result<Self, String> {
+    fn parse(value: &Value, color_parser: ColorParser<'_>) -> Result<Self, String> {
         let map = value.as_object().ok_or("a command is an object")?;
         let op = map
             .get("op")
@@ -592,7 +620,7 @@ impl Command {
         Ok(Self {
             phase,
             when,
-            op: parse_op(op, map)?,
+            op: parse_op(op, map, color_parser)?,
         })
     }
 }
@@ -683,7 +711,7 @@ fn matrix(map: &Map) -> Result<[f32; 6], String> {
         .map_err(|_| "`matrix` is six numbers".to_string())
 }
 
-fn parse_op(op: &str, map: &Map) -> Result<Op, String> {
+fn parse_op(op: &str, map: &Map, color_parser: ColorParser<'_>) -> Result<Op, String> {
     let Some(keys) = op_keys(op) else {
         return Err(format!("unknown op `{op}`"));
     };
@@ -693,7 +721,7 @@ fn parse_op(op: &str, map: &Map) -> Result<Op, String> {
         return Err(format!("unknown key `{key}` for `{op}`"));
     }
     let path = || required(map, "path").and_then(parse_path);
-    let paint = |key: &str| required(map, key).and_then(parse_paint);
+    let paint = |key: &str| required(map, key).and_then(|value| parse_paint(value, color_parser));
     let number = |key: &str, default: f32| optional_number(map, key).map(|v| v.unwrap_or(default));
     let rect = || required(map, "rect").and_then(|v| lens::<4>(v, "rect"));
     Ok(match op {
@@ -733,14 +761,17 @@ fn parse_op(op: &str, map: &Map) -> Result<Op, String> {
         }
         "shadow" => Op::Shadow {
             path: path()?,
-            shadow: parse_shadow(map)?,
+            shadow: parse_shadow(map, color_parser)?,
         },
         "roundedRect" => Op::RoundedRect {
             rect: rect()?,
             radii: map
                 .get("radii")
                 .map_or(Ok([ScriptRadius::Len(px(0.0)); 4]), parse_radii)?,
-            fill: map.get("fill").map(parse_paint).transpose()?,
+            fill: map
+                .get("fill")
+                .map(|value| parse_paint(value, color_parser))
+                .transpose()?,
             border: map
                 .get("border")
                 .map(|border| {
@@ -749,7 +780,7 @@ fn parse_op(op: &str, map: &Map) -> Result<Op, String> {
                         return Err("`border` is [color, width]".to_string());
                     };
                     Ok((
-                        parse_color(color)?,
+                        parse_color(color, color_parser)?,
                         width.as_f64().ok_or("border width is a number")? as f32,
                     ))
                 })
@@ -763,7 +794,7 @@ fn parse_op(op: &str, map: &Map) -> Result<Op, String> {
                         &["elevation", "color", "offset", "blur", "spread", "inset"],
                         "`shadow`",
                     )?;
-                    parse_shadow(shadow)
+                    parse_shadow(shadow, color_parser)
                 })
                 .transpose()?,
         },
@@ -779,7 +810,7 @@ fn parse_op(op: &str, map: &Map) -> Result<Op, String> {
                     Ok(ScriptPaint::Color(PaintColor::Role(
                         SemanticColorRole::Text,
                     ))),
-                    parse_paint,
+                    |value| parse_paint(value, color_parser),
                 )?,
                 size: optional_number(map, "size")?,
                 weight: optional_number(map, "weight")?.map(|w| w.clamp(1.0, 1000.0) as u16),
@@ -812,7 +843,7 @@ fn parse_op(op: &str, map: &Map) -> Result<Op, String> {
                     Ok(ScriptPaint::Color(PaintColor::Role(
                         SemanticColorRole::Text,
                     ))),
-                    parse_paint,
+                    |value| parse_paint(value, color_parser),
                 )?,
             }
         }
@@ -954,7 +985,7 @@ fn lens<const N: usize>(value: &Value, what: &str) -> Result<[Len; N], String> {
         .map_err(|_| format!("`{what}` holds {N} lengths"))
 }
 
-fn parse_color(value: &Value) -> Result<PaintColor, String> {
+fn parse_color(value: &Value, color_parser: ColorParser<'_>) -> Result<PaintColor, String> {
     if let Some(map) = value.as_object() {
         let role = |value: &Value| {
             value
@@ -997,76 +1028,20 @@ fn parse_color(value: &Value) -> Result<PaintColor, String> {
         };
     }
     let text = value.as_str().ok_or("a colour is a string or an array")?;
-    if let Some(rgba) = parse_css_color(text) {
-        return Ok(PaintColor::Rgba(rgba));
+    if let Some(color) = color_parser.and_then(|parse| parse(text)) {
+        return Ok(PaintColor::Authoring(color));
     }
     SemanticColorRole::from_css_token_name(text)
         .map(PaintColor::Role)
         .ok_or_else(|| format!("unknown colour `{text}`"))
 }
 
-/// `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb(…)`, `rgba(…)`.
-fn parse_css_color(text: &str) -> Option<[f32; 4]> {
-    let text = text.trim();
-    if let Some(hex) = text.strip_prefix('#') {
-        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
-        }
-        let digit = |i: usize| u8::from_str_radix(&hex[i..i + 1], 16).ok().map(f32::from);
-        let pair = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok().map(f32::from);
-        return match hex.len() {
-            3 | 4 => {
-                let alpha = if hex.len() == 4 {
-                    digit(3)? / 15.0
-                } else {
-                    1.0
-                };
-                Some([digit(0)? / 15.0, digit(1)? / 15.0, digit(2)? / 15.0, alpha])
-            }
-            6 | 8 => {
-                let alpha = if hex.len() == 8 {
-                    pair(6)? / 255.0
-                } else {
-                    1.0
-                };
-                Some([pair(0)? / 255.0, pair(2)? / 255.0, pair(4)? / 255.0, alpha])
-            }
-            _ => None,
-        };
-    }
-    let inner = text
-        .strip_prefix("rgba(")
-        .or_else(|| text.strip_prefix("rgb("))?
-        .strip_suffix(')')?;
-    let parts: Vec<&str> = inner
-        .split([',', '/', ' '])
-        .filter(|part| !part.is_empty())
-        .collect();
-    let channel = |part: &str| -> Option<f32> {
-        match part.strip_suffix('%') {
-            Some(percent) => finite(percent).map(|v| v / 100.0),
-            None => finite(part).map(|v| v / 255.0),
-        }
-    };
-    let alpha = |part: &str| -> Option<f32> {
-        match part.strip_suffix('%') {
-            Some(percent) => finite(percent).map(|v| v / 100.0),
-            None => finite(part),
-        }
-    };
-    match parts.as_slice() {
-        [r, g, b] => Some([channel(r)?, channel(g)?, channel(b)?, 1.0]),
-        [r, g, b, a] => Some([channel(r)?, channel(g)?, channel(b)?, alpha(a)?]),
-        _ => None,
-    }
-}
-
-fn parse_paint(value: &Value) -> Result<ScriptPaint, String> {
+fn parse_paint(value: &Value, color_parser: ColorParser<'_>) -> Result<ScriptPaint, String> {
     let Some(map) = value.as_object() else {
-        return parse_color(value).map(ScriptPaint::Color);
+        return parse_color(value, color_parser).map(ScriptPaint::Color);
     };
     if map.contains_key("mix") || map.contains_key("alpha") {
-        return parse_color(value).map(ScriptPaint::Color);
+        return parse_color(value, color_parser).map(ScriptPaint::Color);
     }
     only_keys(
         map,
@@ -1107,7 +1082,7 @@ fn parse_paint(value: &Value) -> Result<ScriptPaint, String> {
             };
             Ok((
                 offset.as_f64().ok_or("a stop offset is a number")? as f32,
-                parse_color(color)?,
+                parse_color(color, color_parser)?,
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1151,7 +1126,7 @@ fn parse_radii(value: &Value) -> Result<[ScriptRadius; 4], String> {
     }
 }
 
-fn parse_shadow(map: &Map) -> Result<PaintShadow, String> {
+fn parse_shadow(map: &Map, color_parser: ColorParser<'_>) -> Result<PaintShadow, String> {
     if let Some(role) = map.get("elevation") {
         if map.contains_key("color") || map.contains_key("blur") {
             return Err("a shadow is an `elevation` or its own `color` / `blur` …".into());
@@ -1178,7 +1153,9 @@ fn parse_shadow(map: &Map) -> Result<PaintShadow, String> {
     Ok(PaintShadow::Custom {
         color: map
             .get("color")
-            .map_or(Ok(PaintColor::Rgba([0.0, 0.0, 0.0, 0.25])), parse_color)?,
+            .map_or(Ok(PaintColor::Rgba([0.0, 0.0, 0.0, 0.25])), |value| {
+                parse_color(value, color_parser)
+            })?,
         offset,
         blur: optional_number(map, "blur")?.unwrap_or(0.0),
         spread: optional_number(map, "spread")?.unwrap_or(0.0),
@@ -1631,7 +1608,7 @@ mod tests {
         let recording = record(
             r##"[
                 {"op": "fill", "path": [["rect", 0, 0, "100%", "50% - 2"]], "paint": "accent"},
-                {"op": "stroke", "path": "M0 0 h10 v10 z", "paint": "#ff000080", "width": 2,
+                {"op": "stroke", "path": "M0 0 h10 v10 z", "paint": [1, 0, 0, 0.5019608], "width": 2,
                  "dash": [3, 1], "phase": "over"},
                 {"op": "fill", "path": "M0 0 L1 1 Z", "paint": "surface", "when": {"hovered": true}}
             ]"##,
@@ -1666,8 +1643,10 @@ mod tests {
     fn malformed_input_fails_closed_instead_of_hanging_or_panicking() {
         // A number after closepath has no command to repeat.
         assert!(PaintScript::from_json_str(r#"[{"op":"fill","path":"M0 0 Z 5 5"}]"#).is_err());
-        assert_eq!(parse_css_color("#éa"), None);
-        assert_eq!(parse_css_color("#+f+f+f"), None);
+        assert!(
+            PaintScript::from_json_str(r##"[{"op":"fill","path":"M0 0","paint":"#ff0000"}]"##)
+                .is_err()
+        );
         assert!(parse_len(&Value::from("NaN")).is_err());
         assert!(parse_len(&Value::from("inf% + 1")).is_err());
         assert!(parse_svg_path("M0 0 L1e99 0").is_err());
@@ -1860,8 +1839,12 @@ mod tests {
             error.contains("command 0") && error.contains("no-such-role"),
             "{error}"
         );
-        assert!(parse_css_color("rgb(255, 0, 0)") == Some([1.0, 0.0, 0.0, 1.0]));
-        assert!(parse_css_color("#0f08") == Some([0.0, 1.0, 0.0, 8.0 / 15.0]));
+        assert!(
+            PaintScript::from_json_str(
+                r##"[{"op": "fill", "path": "M0 0", "paint": [1, 0, 0, 1]}]"##
+            )
+            .is_ok()
+        );
     }
 
     #[test]

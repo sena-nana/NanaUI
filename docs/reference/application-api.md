@@ -295,7 +295,9 @@ painter。组件重写节点样式也不会把它冲掉。适合给内建组件�
 拿不到 Rust trait 的消费方用 `PaintScript`：一份 JSON 命令列表。覆盖 `cx` 的
 全部绘制命令（需要读回结果的 `measure_text` 和自定义命中逻辑除外。命中可以给
 一条路径）。长度可以写成相对节点尺寸的 `"50%"`、`"100% - 12"`。颜色写语义
-角色名、主题混色或 CSS 颜色。路径写 SVG path 字符串。命令可按交互状态筛选。
+角色名、主题混色或 typed paint。Vue 的 `paint` 属性还会由
+`nana-ui-css` 将 CSS 颜色字符串解析成同一份 typed paint；直接调用 Runtime
+`PaintScript::from_json` 时请传 typed paint。路径写 SVG path 字符串。命令可按交互状态筛选。
 写错的字段名直接报错（格式见 `PaintScript::from_json` 的文档）。图标按内建
 图标名画。
 

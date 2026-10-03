@@ -389,7 +389,7 @@ pub struct WidgetProps {
     /// 最近已知的包含块高度（父 content box）。
     pub containing_block_height: Option<f32>,
     /// `paint` 属性：节点自绘脚本（Issue #217），格式见
-    /// [`nana_ui_runtime::PaintScript::from_json`]。挂在布局元素上。
+    /// [`nana_ui_runtime::PaintScript::from_json_with_color_parser`]。挂在布局元素上。
     pub paint: Option<nana_ui_runtime::NodePainter>,
     /// `paint` 属性解析失败的原因；此时不挂 painter。
     pub paint_error: Option<String>,
@@ -1177,7 +1177,10 @@ impl WidgetProps {
                     return;
                 }
                 self.paint_source = Some(text.clone());
-                nana_ui_runtime::PaintScript::from_json_str(text)
+                nana_ui_runtime::PaintScript::from_json_str_with_color_parser(
+                    text,
+                    &crate::parse_paint_script_color,
+                )
             }
             other => {
                 let value = other.to_json_value();
@@ -1186,7 +1189,10 @@ impl WidgetProps {
                     return;
                 }
                 self.paint_source = Some(source);
-                nana_ui_runtime::PaintScript::from_json(&value)
+                nana_ui_runtime::PaintScript::from_json_with_color_parser(
+                    &value,
+                    &crate::parse_paint_script_color,
+                )
             }
         };
         match parsed {
