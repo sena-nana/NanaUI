@@ -1,5 +1,10 @@
 # 实时画面
 
+无窗口的 retained output、目标规划和多 consumer 路径见
+[`Window-independent presentation`](output.md)。本页描述的 `GpuContext`、
+`FrameContext` 与 `GpuTexture` 是该 output boundary 的唯一设备、提交和资源
+所有者。
+
 ## Native RHI 决策门（Issue #186）
 
 Issue #186 当前结论为 **NO-GO**。WGPU 仍是 NanaUI 的唯一正式 backend。正式路径保持 `Logical GPU ABI -> WgpuBackend -> wgpu`。现有 native probe 只覆盖离屏 clear-pass smoke workload。没有 NanaUI RenderPlan。没有第二个真实 GPU-heavy consumer。没有 presentation 或 device-loss A/B 证据。因此不能据此创建 `nana-hal` 或 native renderer。完整条件审计和重新开启条件见 [Issue #186 交付记录](../../archive/docs-notes/consumer-upgrade-2026-09-25-issue186.md)。

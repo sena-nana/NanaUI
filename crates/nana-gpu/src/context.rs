@@ -161,7 +161,9 @@ impl GpuCapabilities {
                     GpuCapability::Indirect => "indirect first-instance is unavailable",
                     GpuCapability::MultiDraw => "multi-draw indirect count is unavailable",
                     GpuCapability::Timestamps => "timestamp queries are unavailable",
-                    GpuCapability::ExternalTexture => "external resource interop is unavailable",
+                    GpuCapability::ExternalTexture => {
+                        "external memory export/semaphore ownership interop is unavailable"
+                    }
                     GpuCapability::TransientHint => "transient resource hints are unavailable",
                 })
             },
@@ -658,6 +660,32 @@ impl GpuContext {
         let id = FrameId::new(self.inner.next_frame.fetch_add(1, Ordering::Relaxed));
         let slot = self.inner.policy.take_frame_slot(id.get()).ok()?;
         Some(self.make_frame(label, id, Some(slot)))
+    }
+
+    /// Run `callback` after work submitted through this queue has completed.
+    ///
+    /// This is the non-blocking completion seam for retained output consumers.
+    /// It deliberately does not poll or wait on the calling thread. WGPU's
+    /// queue callback is ordered after the submission represented by
+    /// `submission` (and may conservatively run after later submissions too),
+    /// which is sufficient for resource retirement and frame-slot handoff.
+    pub fn on_submission_complete(
+        &self,
+        submission: &crate::GpuSubmission,
+        callback: impl FnOnce() + Send + 'static,
+    ) -> Result<(), GpuError> {
+        self.check_device(submission.generation())?;
+        self.inner.queue.on_submitted_work_done(callback);
+        Ok(())
+    }
+
+    /// Drive completion callbacks without waiting for GPU work. Hosts that
+    /// own an event loop normally call this from their tick; retained output
+    /// producers can expose it through their own `poll` seam. This never uses
+    /// `PollType::Wait` and therefore cannot serialize a producer with a
+    /// consumer just to sample a completed frame.
+    pub fn poll(&self) {
+        let _ = self.inner.device.poll(wgpu::PollType::Poll);
     }
 
     fn make_frame(

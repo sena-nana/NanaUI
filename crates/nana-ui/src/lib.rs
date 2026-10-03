@@ -119,8 +119,21 @@ pub use startup::{
     StartupHandle, StartupOptions, StartupPhase, StartupStatus, StartupTakeover, StartupTicket,
     StartupTimeline, StartupWork,
 };
+/// Window-independent retained presentation targets and target planning.
+#[cfg(feature = "gpu")]
+pub mod output;
 #[cfg(feature = "gpu")]
 mod scene_paint;
+#[cfg(all(feature = "gpu", feature = "hosted"))]
+pub use output::WindowPresenter;
+#[cfg(feature = "gpu")]
+pub use output::{
+    ConsumerId, ConsumerKind, ConsumerRoute, EmbeddedBindError, EmbeddedFrameBinding,
+    EmbeddedMetadataError, EmbeddedOutputMetadata, EmbeddedSurfaceNode, ExternalFrame,
+    ExternalRenderOutcome, ExternalSurface, ExternalSurfaceConfig, ExternalSurfaceError,
+    OutputConsumer, OutputPath, OutputPlan, OutputTopology, PlanError, PresenterCapabilities,
+    RenderTargetPlanner, RenderTargetRequirements,
+};
 pub mod selection;
 pub mod settings;
 pub mod split_pane;

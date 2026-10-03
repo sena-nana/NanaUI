@@ -441,7 +441,7 @@ pub struct SceneWgpuPainter {
 /// How a paint stores its premultiplied pixels. Blending is linear either
 /// way; a window compositor, though, reads a surface as `enc(color) * alpha`
 /// and shows the linear `enc(color * alpha)` too bright wherever alpha is low.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AlphaEncoding {
     /// `enc(color * alpha)`: for offscreen readers and opaque surfaces.
     #[default]

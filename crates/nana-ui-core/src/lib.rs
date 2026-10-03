@@ -191,7 +191,9 @@ pub use virtual_table::{
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
 };
 pub use virtual_tree::{VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow};
-pub use work::{FrameStage, GpuWorkObservation, ThemeWorkCounters, WorkCounters};
+pub use work::{
+    FrameStage, GpuWorkObservation, OutputWorkObservation, ThemeWorkCounters, WorkCounters,
+};
 pub use workspace_model::{
     WORKSPACE_REGION_TRANSITION_DURATION, WorkspaceModel, WorkspaceMutation,
 };

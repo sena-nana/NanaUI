@@ -123,6 +123,22 @@ pub struct WorkCounters {
     /// the changed subtrees, so this is the sentinel for a rebuild that regressed
     /// to the whole document. `None` until a frame driver reports it.
     pub hit_test_nodes_rebuilt: Option<usize>,
+    /// Output/presentation work observed by a host that negotiated a target
+    /// topology. These remain `None` until an output host actually runs; a
+    /// Runtime-only drain must not fabricate zeros for GPU/output stages.
+    pub output_target_plan_rebuilds: Option<usize>,
+    pub output_extra_passes: Option<usize>,
+    pub output_gpu_copies: Option<usize>,
+    pub output_cpu_readbacks: Option<usize>,
+    pub output_canonical_target_count: Option<usize>,
+    pub output_consumer_count: Option<usize>,
+    pub output_target_recreates: Option<usize>,
+    pub output_content_revisions: Option<usize>,
+    pub output_idle_reuse_frames: Option<usize>,
+    pub output_resolve_count: Option<usize>,
+    pub output_gpu_copy_bytes: Option<usize>,
+    pub output_gpu_convert_passes: Option<usize>,
+    pub output_cpu_fallback_frames: Option<usize>,
 }
 
 /// GPU work a renderer observed while encoding or submitting a real frame.
@@ -157,6 +173,53 @@ impl GpuWorkObservation {
 
     pub fn record_draw_call(&mut self) {
         self.draw_calls = self.draw_calls.saturating_add(1);
+    }
+}
+
+/// Work counters for the Window-independent presentation boundary (Issue
+/// #242). An observation is emitted by a target planner/producer, not by a
+/// consumer merely sampling an already completed texture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OutputWorkObservation {
+    pub target_plan_rebuilds: usize,
+    pub extra_passes: usize,
+    pub gpu_copies: usize,
+    pub cpu_readbacks: usize,
+    pub canonical_target_count: usize,
+    pub consumer_count: usize,
+    pub target_recreates: usize,
+    pub content_revisions: usize,
+    pub idle_reuse_frames: usize,
+    pub resolve_count: usize,
+    pub gpu_copy_bytes: usize,
+    pub gpu_convert_passes: usize,
+    pub cpu_fallback_frames: usize,
+}
+
+impl OutputWorkObservation {
+    pub fn record_plan_rebuild(&mut self) {
+        self.target_plan_rebuilds = self.target_plan_rebuilds.saturating_add(1);
+    }
+
+    pub fn record_target_recreate(&mut self) {
+        self.target_recreates = self.target_recreates.saturating_add(1);
+    }
+
+    pub fn record_content_revision(&mut self) {
+        self.content_revisions = self.content_revisions.saturating_add(1);
+    }
+
+    pub fn record_idle_reuse(&mut self) {
+        self.idle_reuse_frames = self.idle_reuse_frames.saturating_add(1);
+    }
+
+    pub fn record_gpu_copy(&mut self, bytes: usize) {
+        self.gpu_copies = self.gpu_copies.saturating_add(1);
+        self.gpu_copy_bytes = self.gpu_copy_bytes.saturating_add(bytes);
+    }
+
+    pub fn record_cpu_fallback(&mut self) {
+        self.cpu_fallback_frames = self.cpu_fallback_frames.saturating_add(1);
     }
 }
 
@@ -249,6 +312,40 @@ impl WorkCounters {
         fold_optional_count(
             &mut self.hit_test_nodes_rebuilt,
             other.hit_test_nodes_rebuilt,
+        );
+        fold_optional_count(
+            &mut self.output_target_plan_rebuilds,
+            other.output_target_plan_rebuilds,
+        );
+        fold_optional_count(&mut self.output_extra_passes, other.output_extra_passes);
+        fold_optional_count(&mut self.output_gpu_copies, other.output_gpu_copies);
+        fold_optional_count(&mut self.output_cpu_readbacks, other.output_cpu_readbacks);
+        fold_optional_count(
+            &mut self.output_canonical_target_count,
+            other.output_canonical_target_count,
+        );
+        fold_optional_count(&mut self.output_consumer_count, other.output_consumer_count);
+        fold_optional_count(
+            &mut self.output_target_recreates,
+            other.output_target_recreates,
+        );
+        fold_optional_count(
+            &mut self.output_content_revisions,
+            other.output_content_revisions,
+        );
+        fold_optional_count(
+            &mut self.output_idle_reuse_frames,
+            other.output_idle_reuse_frames,
+        );
+        fold_optional_count(&mut self.output_resolve_count, other.output_resolve_count);
+        fold_optional_count(&mut self.output_gpu_copy_bytes, other.output_gpu_copy_bytes);
+        fold_optional_count(
+            &mut self.output_gpu_convert_passes,
+            other.output_gpu_convert_passes,
+        );
+        fold_optional_count(
+            &mut self.output_cpu_fallback_frames,
+            other.output_cpu_fallback_frames,
         );
     }
 
@@ -358,6 +455,46 @@ impl WorkCounters {
             self.gpu_buffer_reallocations
                 .unwrap_or(0)
                 .saturating_add(observed.gpu_buffer_reallocations),
+        );
+    }
+
+    /// Fold output work observed by a real presenter/producer. Calling this
+    /// with the default observation records explicit zeroes, which is useful
+    /// for proving a direct window path did no extra work.
+    pub fn record_output_work(&mut self, observed: OutputWorkObservation) {
+        let record = |slot: &mut Option<usize>, value: usize| {
+            *slot = Some(slot.unwrap_or(0).saturating_add(value));
+        };
+        record(
+            &mut self.output_target_plan_rebuilds,
+            observed.target_plan_rebuilds,
+        );
+        record(&mut self.output_extra_passes, observed.extra_passes);
+        record(&mut self.output_gpu_copies, observed.gpu_copies);
+        record(&mut self.output_cpu_readbacks, observed.cpu_readbacks);
+        record(
+            &mut self.output_canonical_target_count,
+            observed.canonical_target_count,
+        );
+        record(&mut self.output_consumer_count, observed.consumer_count);
+        record(&mut self.output_target_recreates, observed.target_recreates);
+        record(
+            &mut self.output_content_revisions,
+            observed.content_revisions,
+        );
+        record(
+            &mut self.output_idle_reuse_frames,
+            observed.idle_reuse_frames,
+        );
+        record(&mut self.output_resolve_count, observed.resolve_count);
+        record(&mut self.output_gpu_copy_bytes, observed.gpu_copy_bytes);
+        record(
+            &mut self.output_gpu_convert_passes,
+            observed.gpu_convert_passes,
+        );
+        record(
+            &mut self.output_cpu_fallback_frames,
+            observed.cpu_fallback_frames,
         );
     }
 }
@@ -775,6 +912,33 @@ mod tests {
         assert_eq!(recorded.draw_batches, Some(1));
         assert_eq!(recorded.batch_rebuilds, Some(1));
         assert_eq!(recorded.gpu_buffer_reallocations, Some(0));
+    }
+
+    #[test]
+    fn output_work_is_absent_until_a_presenter_records_an_observation() {
+        let mut counters = WorkCounters::default();
+        assert_eq!(counters.output_gpu_copies, None);
+        counters.record_output_work(OutputWorkObservation {
+            target_plan_rebuilds: 1,
+            consumer_count: 2,
+            content_revisions: 1,
+            idle_reuse_frames: 3,
+            ..Default::default()
+        });
+        assert_eq!(counters.output_target_plan_rebuilds, Some(1));
+        assert_eq!(counters.output_consumer_count, Some(2));
+        assert_eq!(counters.output_content_revisions, Some(1));
+        assert_eq!(counters.output_idle_reuse_frames, Some(3));
+        assert_eq!(counters.output_gpu_copies, Some(0));
+
+        let mut total = counters;
+        total.accumulate(WorkCounters {
+            output_gpu_copies: Some(2),
+            output_gpu_copy_bytes: Some(2048),
+            ..Default::default()
+        });
+        assert_eq!(total.output_gpu_copies, Some(2));
+        assert_eq!(total.output_gpu_copy_bytes, Some(2048));
     }
 
     #[test]
