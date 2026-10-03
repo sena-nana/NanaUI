@@ -1402,7 +1402,7 @@ pub(crate) fn resolve_surface_profile_internal(
     // A surface without any supported pair is incompatible with this policy.
     let format = rows
         .iter()
-        .find(|(_, spaces)| spaces.contains(S::SRGB))
+        .find(|(format, spaces)| srgb_formats.contains(format) && spaces.contains(S::SRGB))
         .map(|(format, _)| *format)
         // A malformed native table may omit the default-SDR rows while still
         // exposing them through `formats`. Only derive sRGB for the known
@@ -1920,6 +1920,29 @@ mod tests {
         assert_eq!(
             resolved.fallback,
             Some(crate::SurfaceProfileFallback::CapabilityUnavailable)
+        );
+    }
+
+    #[test]
+    fn sdr_fallback_does_not_relabel_hdr_format_with_srgb_space() {
+        use wgpu::{SurfaceColorSpaces as S, SurfaceFormatCapabilities as Row, TextureFormat as F};
+        let malformed = wgpu::SurfaceCapabilities {
+            formats: vec![F::Rgba16Float],
+            format_capabilities: vec![Row {
+                format: F::Rgba16Float,
+                color_spaces: S::SRGB,
+            }],
+            present_modes: vec![wgpu::PresentMode::Fifo],
+            alpha_modes: vec![wgpu::CompositeAlphaMode::Opaque],
+            usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        };
+        assert!(
+            resolve_surface_profile_internal(
+                crate::SurfacePresentationPolicy::Sdr,
+                &malformed,
+                false,
+            )
+            .is_none()
         );
     }
 
