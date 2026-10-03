@@ -2856,6 +2856,10 @@ pub struct AccessibilityState {
     pub label: Option<Arc<str>>,
     pub value: Option<Arc<str>>,
     pub description: Option<Arc<str>>,
+    /// Remove this node and its descendants from the projected accessibility
+    /// tree while keeping them painted and laid out. This is the runtime
+    /// equivalent of `aria-hidden="true"` for decorative subtrees.
+    pub hidden: bool,
     pub disabled: bool,
     pub checked: Option<bool>,
     /// Tri-state checkbox in its mixed state. Wins over `checked`.

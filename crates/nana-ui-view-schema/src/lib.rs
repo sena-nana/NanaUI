@@ -117,6 +117,7 @@ macro_rules! for_each_control {
                 version: u64 = set,
                 aspect: f32 = set,
                 label: Arc<str> = set,
+                decorative: bool = set,
             };
             Avatar => avatar(size: f32) for Avatar {
                 resource: Arc<str> = set,

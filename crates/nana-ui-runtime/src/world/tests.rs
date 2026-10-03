@@ -9430,6 +9430,62 @@ fn accessibility_delta_removes_and_restores_hidden_subtrees_atomically() {
     assert_eq!(visible.updated[1].children, vec![node(3)]);
 }
 
+#[test]
+fn accessibility_state_hidden_removes_and_restores_descendants() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.create(node(3), document(1), NodeKind::Text);
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let _ = world.project_accessibility_delta(&work);
+
+    let mut hide = MutationQueue::new();
+    hide.set_accessibility(
+        node(2),
+        AccessibilityState {
+            hidden: true,
+            ..world.accessibility(node(2)).unwrap().clone()
+        },
+    );
+    world.commit(hide).unwrap();
+    let work = world.take_system_work();
+    let hidden = world.project_accessibility_delta(&work);
+    assert_eq!(hidden.removed, vec![node(2), node(3)]);
+    assert_eq!(hidden.updated[0].id, node(1));
+    assert!(hidden.updated[0].children.is_empty());
+
+    let mut show = MutationQueue::new();
+    show.set_accessibility(
+        node(2),
+        AccessibilityState {
+            hidden: false,
+            ..world.accessibility(node(2)).unwrap().clone()
+        },
+    );
+    world.commit(show).unwrap();
+    let work = world.take_system_work();
+    let visible = world.project_accessibility_delta(&work);
+    assert!(visible.removed.is_empty());
+    assert_eq!(
+        visible
+            .updated
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>(),
+        vec![node(1), node(2), node(3)]
+    );
+    assert_eq!(visible.updated[0].children, vec![node(2)]);
+}
+
 /// #59: an ancestor's writing mode reaches its text's accessibility node, so
 /// assistive technology walks a column top to bottom. The text itself does
 /// not change or move, so only the inherited writing context can say so.
