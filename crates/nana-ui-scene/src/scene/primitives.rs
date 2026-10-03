@@ -1832,6 +1832,52 @@ impl UiScene {
                 ) => {
                     // The row surface and fallback label are emitted above;
                     // typed slots remain ordinary retained child nodes.
+                    //
+                    // ListItem is the framework's generic toolbar/list action
+                    // primitive.  It intentionally uses a focus surface in
+                    // its interaction style, but a caller may replace that
+                    // style (or make the surface transparent) while keeping
+                    // the row focusable.  Keep keyboard focus observable at
+                    // the scene boundary as well: a two-pixel outer outline
+                    // is independent of the row's fill and is clipped by the
+                    // parent's chain rather than by the row itself.
+                    if matches!(node.standard_visual, Some(StandardVisual::ListItem { .. }))
+                        && node.focused
+                        && let Some(color) = node.standard_visual_foreground
+                    {
+                        self.insert_primitive(visual_quad(
+                            &VisualPrimitiveContext {
+                                node: id,
+                                transform,
+                                clips: &parent_clips,
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                            },
+                            7,
+                            SceneRect {
+                                x: bounds.x - 3.0,
+                                y: bounds.y - 3.0,
+                                width: bounds.width + 6.0,
+                                height: bounds.height + 6.0,
+                            },
+                            VisualQuadStyle {
+                                background: None,
+                                border_color: Some(color),
+                                border_width: 2.0,
+                                corner_radius: focus_ring_corner_radius(
+                                    style,
+                                    SceneRect {
+                                        x: bounds.x - 3.0,
+                                        y: bounds.y - 3.0,
+                                        width: bounds.width + 6.0,
+                                        height: bounds.height + 6.0,
+                                    },
+                                    3.0,
+                                ),
+                            },
+                        ));
+                    }
                 }
                 #[cfg(feature = "calendar")]
                 Some(StandardVisual::CalendarHeatmap { .. }) => {}

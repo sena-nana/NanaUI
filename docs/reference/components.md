@@ -74,6 +74,18 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 
 `ColorField` 是色块 + hex。`assemble_color_field` 挂 HSV 选择器。提交发 `ColorChanged`。拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮。浏览只发 `BrowseRequested`。由应用打开系统对话框。
 
+### FindReplaceBar
+
+`FindReplaceBar` 是可复用的查找 / 替换工具条（`nana.find-replace-bar`，别名 `text-search-bar`）。它只维护查找与替换草稿、展开状态和只读门控；文档搜索及修改由应用处理。调用 `assemble_find_replace_bar` 后会保留两个 `TextInput`、上一处 / 下一处 / 替换 / 全部替换按钮和反馈文本。`read_only(true)` 仍允许导航，但会禁用替换输入与动作。用户输入和动作通过 `FindReplaceEvent::{QueryChanged, ReplacementChanged, Previous, Next, Replace, ReplaceAll, Expanded}` 发出。
+
+### DynamicForm
+
+`DynamicForm`（`nana.dynamic-form`，别名 `property-surface`）按稳定字段键保留动态的 `Switch`、`Dropdown`、`TextInput`、`TextArea` 和动作控件。`DynamicFormField::Section` 使用 `SettingsCard` 分组，文本字段支持 `multiline`、`secure` 和 `binding_identity`。值、校验、产品标签和持久化仍由应用维护；`DynamicFormEvent` 只把键和值送回宿主。
+
+### InteractionRequestCard
+
+`InteractionRequestCard` 是中性的请求/审批表面，提供 `prompt`、`body`、`actions` 槽，并按 `InteractionRequestField::key` 保留 `FormField` 包装。字段控件和动作由应用创建并监听，卡片不携带 Pending、MCP 或导航语义。
+
 `GraphCanvas` 默认只画网格、节点框和边（Scene Quad / Stroke）。节点内部内容由应用往子节点里放。`"graph-canvas"` 自定义 GPU renderer 不会自动挂上。要直写 pass，须宿主自己登记并 `set_custom_render`。右键仍然只发 `SecondaryPress`（窗口坐标）。`AppContext::graph_canvas_hit_at` 把它换成画布局部点与命中结果（`GraphCanvasHit`）。菜单开不开、开什么由应用决定。`NativeMarkdown` 解析 mermaid 与公式围栏并给出 presenter 槽。但**不渲染**图和公式。那两样由宿主自己画进槽里。
 
 `GraphMinimap` 是图画布的概览小地图。按 `GraphModel::bounds` 等比缩放画节点矩形和视口指示框。点击/拖拽发 `GraphMinimapEvent::ViewportRequested`。由应用写回 `GraphCanvas::set_viewport`。它自己是普通组件。`canvas_size` 传图画布的可见尺寸。位置尺寸由应用布局给定（通常是画布角落的 `PositionSpec::Absolute`）。

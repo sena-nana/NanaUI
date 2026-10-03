@@ -56,6 +56,9 @@ pub struct Thumbnail {
     /// [`ImageSampling::Mipmap`] samples the host's mip chain trilinearly.
     pub sampling: ImageSampling,
     pub label: Arc<str>,
+    /// Paint the thumbnail while omitting it from the accessibility tree.
+    /// Useful for repeated/decorative layers such as a collection cover.
+    pub decorative: bool,
     pub style: NodeStyle,
 }
 
@@ -78,6 +81,7 @@ impl Thumbnail {
             fit: ContentFit::Contain,
             sampling: ImageSampling::Resample,
             label: Arc::from(""),
+            decorative: false,
             style: NodeStyle::default(),
         }
     }
@@ -122,6 +126,14 @@ impl Thumbnail {
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = label.into();
+        self
+    }
+
+    /// Keep the thumbnail visible while exposing it as decorative content.
+    /// The thumbnail and its descendants are omitted from accessibility
+    /// projection, equivalent to `aria-hidden="true"`.
+    pub const fn decorative(mut self) -> Self {
+        self.decorative = true;
         self
     }
 
@@ -290,6 +302,7 @@ impl ComponentView for Thumbnail {
             AccessibilityState {
                 role: AccessibilityRole::Image,
                 label: (!self.label.is_empty()).then(|| Arc::clone(&self.label)),
+                hidden: self.decorative,
                 busy: self.state == ThumbnailState::Loading,
                 invalid: self.state == ThumbnailState::Unavailable,
                 ..AccessibilityState::default()
@@ -408,6 +421,13 @@ mod tests {
                 focusable: false,
             })
         );
+    }
+
+    #[test]
+    fn decorative_thumbnail_is_hidden_from_accessibility_projection() {
+        let (world, id) = mount(Thumbnail::new("stage.thumb").decorative());
+        let accessibility = world.accessibility(id).expect("thumbnail semantics");
+        assert!(accessibility.hidden);
     }
 
     #[test]

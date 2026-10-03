@@ -127,7 +127,10 @@ impl UiWorld {
                 None,
             );
         }
-        self.mark_subtree(id, DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT);
+        self.mark_subtree(
+            id,
+            DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT | DirtyMask::ACCESSIBILITY,
+        );
     }
 
     pub(crate) fn project_menu_presence(
@@ -213,7 +216,11 @@ impl UiWorld {
         // painted. Layout has to run again so those boxes go to zero.
         let mut dirty = DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT;
         if !motion.open {
-            dirty |= DirtyMask::LAYOUT;
+            // A closing menu keeps its retained surface alive during the
+            // fade, but its virtual MenuItem nodes must be removed when the
+            // motion completes so native accessibility caches do not retain
+            // stale rows.
+            dirty |= DirtyMask::LAYOUT | DirtyMask::ACCESSIBILITY;
         }
         self.mark_subtree(sample.target, dirty);
         self.account_animation_dirty(dirty);

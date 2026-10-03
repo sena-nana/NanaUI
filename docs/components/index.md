@@ -23,6 +23,7 @@
 - [Select](select.md) — 单值下拉。
 - [Dropdown](dropdown.md) — 单值或多值。没有 `<Dropdown>` 标签。
 - [SearchDropdown](search-dropdown.md) — 查询走已提交的 `TextInput`。
+- [FindReplaceBar](find-replace-bar.md) — 查找和替换工具条；搜索与修改由应用处理。
 - [SegmentedControl](segmented-control.md) — 分段选择。选项是它的子节点。
 - [Tabs](tabs.md) — 页签。选择、重排、关闭和跨条拖动从这里报出来。
 - [XYPad](xy-pad.md) — 二维垫。按下和移动是 `Input`，抬起是 `Change`。
@@ -52,6 +53,8 @@
 - [List](list.md) — 列表。读屏按列表来念。
 - [ListItem](list-item.md) — 一行。选中不由控件自己翻。
 - [FormField](form-field.md) — 表单行。控件是你的子节点。
+- [DynamicForm](dynamic-form.md) — 稳定键驱动的动态表单；状态和校验由应用拥有。
+- [InteractionRequestCard](interaction-request-card.md) — 中性的请求卡片；字段和动作由应用提供。
 - [EmptyState](empty-state.md) — 空状态。标题下可以用 `.action` 放一个动作。
 - [Progress](progress.md) — 进度。只有 `value` 和 `label`。
 - [Skeleton](skeleton.md) — 内容还没到时占住尺寸。

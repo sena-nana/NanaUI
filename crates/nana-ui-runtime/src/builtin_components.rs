@@ -15,17 +15,18 @@ use crate::json_u64;
 use crate::{
     ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Avatar, Button, Card, Checkbox, Chip,
     ColorField, CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog,
-    DiffView, Divider, Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState,
-    ExtensionRegistrar, FormField, FrameworkError, GpuTextureView, GpuView, HostedTextarea,
-    IconButton, IconGlyph, InteractiveCard, LabeledValue, LevelMeter, List, ListItem,
-    ListItemSlots, ModalSurface, NodeStyle, NumberInput, PaneChrome, PathField, Popover, Progress,
-    QrCode, RangeField, ScrollView, SearchDropdown, SearchDropdownOption, SegmentedControl, Select,
-    SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame,
-    SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane,
-    Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea,
-    TextDiagnosticSeverity, TextDiagnosticSpan, TextGitMark, TextGitMarkKind, TextInput,
-    TextInputState, Thumbnail, ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension,
-    ValidationMessage, ValueEmphasis, Video, Workspace, WorkspaceRegionSlot, XYPad, XYPadValue,
+    DiffView, Divider, Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, DynamicForm,
+    EmptyState, ExtensionRegistrar, FindReplaceBar, FormField, FrameworkError, GpuTextureView,
+    GpuView, HostedTextarea, IconButton, IconGlyph, InteractionRequestCard, InteractiveCard,
+    LabeledValue, LevelMeter, List, ListItem, ListItemSlots, ModalSurface, NodeStyle, NumberInput,
+    PaneChrome, PathField, Popover, Progress, QrCode, RangeField, ScrollView, SearchDropdown,
+    SearchDropdownOption, SegmentedControl, Select, SettingsCard, SettingsCollapsibleCard,
+    SettingsPage, SettingsRow, SidebarFooter, SidebarFrame, SidebarRow, SidebarRowState,
+    SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane, Stack, StatusBadge, Switch,
+    Table, TableCell, TableRow, Tabs, Text, TextArea, TextDiagnosticSeverity, TextDiagnosticSpan,
+    TextGitMark, TextGitMarkKind, TextInput, TextInputState, Thumbnail, ThumbnailState, Toast,
+    ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage, ValueEmphasis, Video, Workspace,
+    WorkspaceRegionSlot, XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 #[cfg(feature = "calendar")]
@@ -119,6 +120,7 @@ fn install_builtins<const BIND: bool>(
     component::<NumberInput, BIND>(registrar)?;
     component::<Switch, BIND>(registrar)?;
     component::<Card, BIND>(registrar)?;
+    component::<InteractionRequestCard, BIND>(registrar)?;
     component::<ListItem, BIND>(registrar)?;
     component::<Thumbnail, BIND>(registrar)?;
     component::<Chip, BIND>(registrar)?;
@@ -128,6 +130,7 @@ fn install_builtins<const BIND: bool>(
     component::<crate::MediaTransportBar, BIND>(registrar)?;
     component::<Avatar, BIND>(registrar)?;
     component::<TextInput, BIND>(registrar)?;
+    component::<FindReplaceBar, BIND>(registrar)?;
     component::<TextArea, BIND>(registrar)?;
     component::<crate::TerminalView, BIND>(registrar)?;
     component::<DiffView, BIND>(registrar)?;
@@ -161,6 +164,7 @@ fn install_builtins<const BIND: bool>(
     component::<PathField, BIND>(registrar)?;
     component::<QrCode, BIND>(registrar)?;
     component::<FormField, BIND>(registrar)?;
+    component::<DynamicForm, BIND>(registrar)?;
     component::<InteractiveCard, BIND>(registrar)?;
     component::<Skeleton, BIND>(registrar)?;
     component::<LevelMeter, BIND>(registrar)?;
@@ -429,6 +433,20 @@ impl RegisterableComponent for Card {
     }
 }
 
+impl RegisterableComponent for InteractionRequestCard {
+    const TYPE_ID: &'static str = crate::component_descriptors::INTERACTION_REQUEST_CARD.type_id;
+    const TAGS: &'static [&'static str] =
+        crate::component_descriptors::INTERACTION_REQUEST_CARD.tags;
+
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut card = InteractionRequestCard::new(spec.display_label())
+            .kind(parse_card_kind(spec.attr("card-kind")))
+            .loading(spec.loading);
+        card.style.layout = Arc::clone(spec.layout);
+        card
+    }
+}
+
 impl RegisterableComponent for ListItem {
     const TYPE_ID: &'static str = crate::component_descriptors::LIST_ITEM.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::LIST_ITEM.tags;
@@ -552,6 +570,9 @@ impl RegisterableComponent for Thumbnail {
         }
         if let Some(aspect) = spec.attr("aspect").and_then(|value| value.parse().ok()) {
             thumbnail = thumbnail.aspect(aspect);
+        }
+        if spec.attr("decorative").is_some_and(truthy_attr) {
+            thumbnail = thumbnail.decorative();
         }
         if spec.loading {
             thumbnail = thumbnail.state(ThumbnailState::Loading);
@@ -1135,6 +1156,39 @@ impl RegisterableComponent for FormField {
             component = component.control_child(control);
         }
         component
+    }
+}
+
+impl RegisterableComponent for DynamicForm {
+    const TYPE_ID: &'static str = crate::component_descriptors::DYNAMIC_FORM.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::DYNAMIC_FORM.tags;
+    const RETAIN_SEMANTIC_STATE: bool = true;
+
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        let mut form = DynamicForm::new([]);
+        form.style.layout = Arc::clone(spec.layout);
+        if spec.display_label().is_empty() {
+            form
+        } else {
+            form.label(Arc::<str>::from(spec.display_label()))
+        }
+    }
+
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        let mut next = Self::from_semantic(spec);
+        if let Some(previous) = previous {
+            next.field_nodes = previous.field_nodes.clone();
+            next.wired_nodes = previous.wired_nodes.clone();
+            next.editor_identities = previous.editor_identities.clone();
+        }
+        next
+    }
+
+    fn finish_semantic(
+        context: &mut crate::AppContext,
+        entity: crate::Entity<Self>,
+    ) -> Result<(), FrameworkError> {
+        context.assemble_dynamic_form(entity).map(|_| ())
     }
 }
 
@@ -3447,6 +3501,17 @@ mod tests {
             slots,
             ..SemanticSpec::from_parts(type_id, layout)
         }
+    }
+
+    #[test]
+    fn thumbnail_semantic_decorative_attr_hides_only_a11y() {
+        let ty = ComponentTypeId::new("nana.thumbnail").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [("decorative", "true")];
+        let spec = spec_with(&ty, &layout, &attrs, &[], &[], "cover", "");
+        let thumbnail = Thumbnail::from_semantic(&spec);
+        assert!(thumbnail.decorative);
+        assert!(thumbnail.custom_render().is_some());
     }
 
     #[cfg(feature = "charts")]

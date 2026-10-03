@@ -2856,6 +2856,10 @@ pub struct AccessibilityState {
     pub label: Option<Arc<str>>,
     pub value: Option<Arc<str>>,
     pub description: Option<Arc<str>>,
+    /// Remove this node and its descendants from the projected accessibility
+    /// tree while keeping them painted and laid out. This is the runtime
+    /// equivalent of `aria-hidden="true"` for decorative subtrees.
+    pub hidden: bool,
     pub disabled: bool,
     pub checked: Option<bool>,
     /// Tri-state checkbox in its mixed state. Wins over `checked`.
@@ -2905,6 +2909,35 @@ pub struct AccessibilityNode {
     pub writing: nana_ui_core::WritingContext,
 }
 
+/// Stable IDs for menu rows that are painted by a menu surface rather than
+/// retained as separate view nodes. The top bit is reserved for these virtual
+/// descendants; the remaining bits carry the owning menu ID and row index.
+///
+/// Keeping the identity derived from the menu and visible row index means a
+/// screen reader can retain focus while a context menu is reprojected, while
+/// still allowing filtering and nested levels to replace the row set.
+pub fn virtual_menu_item_id(menu: StableNodeId, index: usize) -> Option<StableNodeId> {
+    let index = u64::try_from(index).ok()?.checked_add(1)?;
+    if index > u16::MAX as u64 {
+        return None;
+    }
+    let menu = menu.get();
+    if menu > 0x7fff_ffff_ffff {
+        return None;
+    }
+    StableNodeId::new(0x8000_0000_0000_0000 | (menu << 16) | index)
+}
+
+pub fn decode_virtual_menu_item(id: StableNodeId) -> Option<(StableNodeId, usize)> {
+    let raw = id.get();
+    if raw & 0x8000_0000_0000_0000 == 0 {
+        return None;
+    }
+    let index = (raw & u16::MAX as u64).checked_sub(1)? as usize;
+    let menu = StableNodeId::new((raw >> 16) & 0x7fff_ffff_ffff)?;
+    Some((menu, index))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccessibilityDelta {
     pub generation: u64,
@@ -2930,6 +2963,12 @@ pub enum AccessibilityUpdate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccessibilityAction {
     Click,
+    /// Activate one painted row in a menu surface. The row is a virtual
+    /// accessibility node, so route it back to the retained ContextMenu.
+    ActivateMenuItem {
+        menu: StableNodeId,
+        index: usize,
+    },
     Focus,
     SetValue(String),
     SetSelection(TextSelection),

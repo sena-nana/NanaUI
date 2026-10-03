@@ -202,6 +202,12 @@ impl GpuView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpuTextureView {
     pub resource: Arc<str>,
+    /// Accessible name announced for the rendered content.  Host textures
+    /// have no intrinsic text, so applications should provide this for any
+    /// image that conveys information to assistive technology.
+    pub label: Option<Arc<str>>,
+    /// Optional additional context announced with [`Self::label`].
+    pub description: Option<Arc<str>>,
     pub generation: u64,
     pub version: u64,
     pub opacity: f32,
@@ -259,6 +265,8 @@ impl GpuTextureView {
     pub fn new(resource: impl Into<Arc<str>>) -> Self {
         Self {
             resource: resource.into(),
+            label: None,
+            description: None,
             generation: 0,
             version: 0,
             opacity: 1.0,
@@ -270,6 +278,22 @@ impl GpuTextureView {
             zoom: 1.0,
             sampling: nana_ui_core::ImageSampling::Resample,
         }
+    }
+
+    /// Gives this rendered texture an accessible name. Empty names clear the
+    /// override and leave the node unnamed.
+    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
+        let label = label.into();
+        self.label = (!label.trim().is_empty()).then_some(label);
+        self
+    }
+
+    /// Adds an accessible description to supplement [`Self::label`]. Empty
+    /// descriptions clear the override.
+    pub fn description(mut self, description: impl Into<Arc<str>>) -> Self {
+        let description = description.into();
+        self.description = (!description.trim().is_empty()).then_some(description);
+        self
     }
 
     /// 在纹理下方绘制 alpha 棋盘底。
@@ -447,6 +471,8 @@ impl ComponentView for GpuTextureView {
             },
             AccessibilityState {
                 role: AccessibilityRole::Image,
+                label: self.label.clone(),
+                description: self.description.clone(),
                 ..AccessibilityState::default()
             },
         );
@@ -482,6 +508,15 @@ impl RegisterableComponent for GpuTextureView {
         view.style.layout = Arc::clone(spec.layout);
         if let Some(opacity) = spec.layout.opacity {
             view.opacity = finite_opacity(opacity);
+        }
+        if let Some(label) = spec.attr("aria-label").or_else(|| spec.attr("label")) {
+            view = view.label(label);
+        }
+        if let Some(description) = spec
+            .attr("aria-description")
+            .or_else(|| spec.attr("description"))
+        {
+            view = view.description(description);
         }
         if let Some(radius) = spec.layout.border_radius {
             view.corner_radius = finite_radius(radius);
@@ -716,6 +751,23 @@ mod tests {
         assert!(GpuTextureView::new("   ").custom_render().is_none());
         let (world, id) = mount(GpuTextureView::new(""));
         assert!(world.custom_render(id).is_none());
+    }
+
+    #[test]
+    fn texture_view_projects_accessible_label_and_description() {
+        let (world, id) = mount(
+            GpuTextureView::new("stage.main")
+                .label("Live2D 舞台")
+                .description("当前模型预览画面"),
+        );
+        let node = world
+            .project_accessibility(DocumentId::new(1).unwrap())
+            .into_iter()
+            .find(|node| node.id == id)
+            .expect("texture view accessibility node");
+        assert_eq!(node.role, AccessibilityRole::Image);
+        assert_eq!(node.label.as_deref(), Some("Live2D 舞台"));
+        assert_eq!(node.description.as_deref(), Some("当前模型预览画面"));
     }
 
     #[test]

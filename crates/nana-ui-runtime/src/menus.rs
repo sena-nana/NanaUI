@@ -675,6 +675,7 @@ impl crate::ComponentView for ContextMenu {
             AccessibilityState {
                 role: AccessibilityRole::Menu,
                 label: Some(Arc::from("context-menu")),
+                hidden: !self.open,
                 value: (self.searchable && !self.query.is_empty()).then(|| Arc::clone(&self.query)),
                 editable: self.searchable && self.open,
                 ..AccessibilityState::default()
@@ -1191,6 +1192,282 @@ mod tests {
             }
             other => panic!("context menu visual: {other:?}"),
         }
+    }
+
+    #[test]
+    fn context_menu_projects_virtual_menu_item_semantics() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([
+                        ContextMenuItem::new("open", "打开"),
+                        ContextMenuItem::new("delete", "删除")
+                            .hint("⌫")
+                            .disabled(true),
+                    ])
+                    .open(true),
+            )
+            .unwrap();
+        let nodes = context.world().project_accessibility(document());
+        let root = nodes
+            .iter()
+            .find(|node| node.id == menu.stable_id())
+            .expect("context menu semantics");
+        assert_eq!(root.role, AccessibilityRole::Menu);
+        assert_eq!(root.children.len(), 2);
+        let first = nodes
+            .iter()
+            .find(|node| node.id == root.children[0])
+            .expect("first virtual menu item");
+        assert_eq!(first.role, AccessibilityRole::MenuItem);
+        assert_eq!(first.label.as_deref(), Some("打开"));
+        assert!(!first.disabled);
+        let second = nodes
+            .iter()
+            .find(|node| node.id == root.children[1])
+            .expect("second virtual menu item");
+        assert_eq!(second.description.as_deref(), Some("⌫"));
+        assert!(second.disabled);
+        assert_eq!(
+            crate::decode_virtual_menu_item(second.id),
+            Some((menu.stable_id(), 1))
+        );
+    }
+
+    #[test]
+    fn accessibility_click_activates_context_menu_virtual_item() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([ContextMenuItem::new("open", "打开")])
+                    .open(true),
+            )
+            .unwrap();
+        let selected = Arc::new(std::sync::Mutex::new(None::<Arc<str>>));
+        let observed = Arc::clone(&selected);
+        context
+            .on(menu, move |_menu, event: &ContextMenuEvent, _cx| {
+                if let ContextMenuEvent::Select(value) = event {
+                    *observed.lock().unwrap() = Some(Arc::clone(value));
+                }
+            })
+            .unwrap();
+        let nodes = context.world().project_accessibility(document());
+        let row = nodes
+            .iter()
+            .find(|node| node.role == AccessibilityRole::MenuItem)
+            .expect("virtual menu item");
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document(),
+                    crate::AccessibilityActionRequest {
+                        target: row.id,
+                        // Offscreen/agent clients send the generic Click
+                        // action. The framework resolves this virtual target
+                        // back to the retained ContextMenu row.
+                        action: crate::AccessibilityAction::Click,
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(selected.lock().unwrap().as_deref(), Some("open"));
+        assert!(!context.read(menu, |menu| menu.open).unwrap());
+    }
+
+    #[test]
+    fn accessibility_click_rejects_wrong_virtual_menu_target() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([ContextMenuItem::new("open", "打开")])
+                    .open(true),
+            )
+            .unwrap();
+        let row = context
+            .world()
+            .project_accessibility(document())
+            .into_iter()
+            .find(|node| node.role == AccessibilityRole::MenuItem)
+            .expect("virtual menu item");
+        let wrong_menu = StableNodeId::new(menu.stable_id().get() + 1).unwrap();
+        assert!(
+            !context
+                .apply_accessibility_action(
+                    document(),
+                    crate::AccessibilityActionRequest {
+                        target: row.id,
+                        action: crate::AccessibilityAction::ActivateMenuItem {
+                            menu: wrong_menu,
+                            index: 0,
+                        },
+                    },
+                )
+                .unwrap()
+        );
+        assert!(context.read(menu, |menu| menu.open).unwrap());
+    }
+
+    #[test]
+    fn accessibility_click_reports_nested_context_menu_as_handled() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([
+                        ContextMenuItem::new("file", "文件"),
+                        ContextMenuItem::new("file/open", "打开"),
+                    ])
+                    .open(true),
+            )
+            .unwrap();
+        let row = context
+            .world()
+            .project_accessibility(document())
+            .into_iter()
+            .find(|node| node.role == AccessibilityRole::MenuItem)
+            .expect("parent virtual menu item");
+
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document(),
+                    crate::AccessibilityActionRequest {
+                        target: row.id,
+                        action: crate::AccessibilityAction::Click,
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(menu, |menu| menu.active_path.clone()).unwrap(),
+            vec![Arc::<str>::from("file")]
+        );
+        assert!(context.read(menu, |menu| menu.open).unwrap());
+    }
+
+    #[test]
+    fn accessibility_focus_moves_context_menu_highlight() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([
+                        ContextMenuItem::new("open", "打开"),
+                        ContextMenuItem::new("edit", "编辑"),
+                    ])
+                    .open(true),
+            )
+            .unwrap();
+        let row = context
+            .world()
+            .project_accessibility(document())
+            .into_iter()
+            .find(|node| {
+                node.role == AccessibilityRole::MenuItem && node.label.as_deref() == Some("编辑")
+            })
+            .expect("second virtual menu item");
+        context.take_system_work();
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document(),
+                    crate::AccessibilityActionRequest {
+                        target: row.id,
+                        action: crate::AccessibilityAction::Focus,
+                    },
+                )
+                .unwrap()
+        );
+        let work = context.take_system_work();
+        assert!(work.accessibility.contains(&menu.stable_id()));
+        let focused = context
+            .world()
+            .project_accessibility(document())
+            .into_iter()
+            .find(|node| node.id == row.id)
+            .expect("focused virtual menu item");
+        assert!(focused.focused);
+        assert_eq!(
+            context.read(menu, |menu| menu.highlighted).unwrap(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn closing_context_menu_hides_virtual_items_immediately() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([ContextMenuItem::new("open", "打开")])
+                    .open(true),
+            )
+            .unwrap();
+        assert!(
+            context
+                .world()
+                .project_accessibility(document())
+                .iter()
+                .any(|node| node.role == AccessibilityRole::MenuItem)
+        );
+
+        context
+            .update_component(menu, |menu, _| menu.open = false)
+            .unwrap();
+
+        assert!(
+            context
+                .world()
+                .project_accessibility(document())
+                .iter()
+                .all(|node| node.role != AccessibilityRole::MenuItem)
+        );
+    }
+
+    #[test]
+    fn accessibility_rows_follow_nested_and_filtered_context_menu_items() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([
+                        ContextMenuItem::new("file", "文件"),
+                        ContextMenuItem::new("file/open", "打开"),
+                        ContextMenuItem::new("file/delete", "删除"),
+                        ContextMenuItem::new("edit", "编辑"),
+                    ])
+                    .active_path(["file"])
+                    .searchable(true)
+                    .query("删")
+                    .open(true),
+            )
+            .unwrap();
+        let nodes = context.world().project_accessibility(document());
+        let root = nodes
+            .iter()
+            .find(|node| node.id == menu.stable_id())
+            .expect("context menu semantics");
+        assert_eq!(root.children.len(), 1);
+        let item = nodes
+            .iter()
+            .find(|node| node.id == root.children[0])
+            .expect("filtered virtual menu item");
+        assert_eq!(item.label.as_deref(), Some("删除"));
+        assert_eq!(
+            crate::decode_virtual_menu_item(item.id),
+            Some((menu.stable_id(), 0))
+        );
     }
 
     #[test]

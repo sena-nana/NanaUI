@@ -2637,6 +2637,15 @@ impl ComponentView for TextArea {
         share(&mut self.style.layout);
     }
 
+    /// Keep caret, selection and undo history when a declarative snapshot
+    /// writes the same value back to a retained editor.
+    fn reconcile(&mut self, mut next: Self) {
+        if self.state.value == next.state.value {
+            next.state = self.state.clone();
+        }
+        *self = next;
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "textarea".into(),

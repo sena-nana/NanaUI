@@ -2677,11 +2677,26 @@ impl AppContext {
         document: DocumentId,
         request: AccessibilityActionRequest,
     ) -> Result<bool, FrameworkError> {
-        if self.world.document_of(request.target) != Some(document) {
+        let owner = match &request.action {
+            AccessibilityAction::ActivateMenuItem { menu, .. } => *menu,
+            AccessibilityAction::Click => crate::decode_virtual_menu_item(request.target)
+                .map(|(menu, _)| menu)
+                .unwrap_or(request.target),
+            AccessibilityAction::Focus => crate::decode_virtual_menu_item(request.target)
+                .map(|(menu, _)| menu)
+                .unwrap_or(request.target),
+            _ => request.target,
+        };
+        if self.world.document_of(owner) != Some(document) {
             return Ok(false);
         }
         match request.action {
             AccessibilityAction::Click => {
+                if let Some((menu, index)) = crate::decode_virtual_menu_item(request.target)
+                    && let Some(entity) = self.view_entity::<ContextMenu>(menu)
+                {
+                    return self.activate_context_menu_index(entity, index);
+                }
                 if self.activate_node(request.target)? {
                     return Ok(true);
                 }
@@ -2695,7 +2710,23 @@ impl AppContext {
                 }
                 Ok(false)
             }
-            AccessibilityAction::Focus => self.focus_node(document, request.target),
+            AccessibilityAction::ActivateMenuItem { menu, index } => {
+                if crate::decode_virtual_menu_item(request.target) != Some((menu, index)) {
+                    return Ok(false);
+                }
+                let Some(entity) = self.view_entity::<ContextMenu>(menu) else {
+                    return Ok(false);
+                };
+                self.activate_context_menu_index(entity, index)
+            }
+            AccessibilityAction::Focus => {
+                if let Some((menu, index)) = crate::decode_virtual_menu_item(request.target)
+                    && let Some(entity) = self.view_entity::<ContextMenu>(menu)
+                {
+                    return self.focus_context_menu_index(entity, index);
+                }
+                self.focus_node(document, request.target)
+            }
             AccessibilityAction::SetValue(value) => {
                 if let Some(entity) = self.view_entity::<TextInput>(request.target) {
                     return self.set_editable_value(entity, value);

@@ -18,9 +18,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use nana_ui_input::{
-    CanonicalInputEvent, DeviceId, EndpointGeneration, HostServices, InputDisposition,
-    InputEndpoint, InputPayload, InputSequence, InputSourceId, InputTimestamp, KeyState, PointerId,
-    PointerInput, PointerPhase, PointerType,
+    CanonicalInputEvent, CompositionInput, DeviceId, EndpointGeneration, HostServices,
+    InputDisposition, InputEndpoint, InputPayload, InputSequence, InputSourceId, InputTimestamp,
+    KeyState, PointerId, PointerInput, PointerPhase, PointerType,
 };
 
 use crate::{AppContext, DocumentId, FrameworkError, StableNodeId, TextShaper};
@@ -156,11 +156,16 @@ struct SourceState {
     pointers: HashMap<(DeviceId, PointerId), PointerIdentity>,
     /// Whether the host window this source stands for has focus.
     focused: bool,
+    /// Whether this source has ever held the document focus. Window blur
+    /// deliberately keeps the document's focused control, so a later source
+    /// disconnect must still be able to clear that focus even though
+    /// `focused` is already false.
+    focus_ever: bool,
     /// The last pointer position on this source, for re-deriving the cursor
     /// after the world under it changed.
     pointer: Option<(u64, f32, f32)>,
     effects: effects::SourceEffects,
-    /// The last key press a control handled; text naming it is dropped.
+    /// The last key press handled by Runtime; text naming it is dropped.
     handled_key: Option<InputSequence>,
     /// A file drag from this source is hovering the document.
     file_drag: bool,
@@ -176,6 +181,7 @@ impl SourceState {
             disconnected_devices: HashSet::new(),
             pointers: HashMap::new(),
             focused: false,
+            focus_ever: false,
             pointer: None,
             effects: effects::SourceEffects::default(),
             handled_key: None,
@@ -278,18 +284,35 @@ impl AppContext {
 
     /// Unbind `source`: its presses and captures are cancelled through the
     /// same path an explicit pointer cancel takes, then forgotten, and a file
-    /// drag it has hovering ends. Document
-    /// focus is left alone. Returns the document it was bound to.
+    /// drag it has hovering ends. An active IME preedit is cancelled while
+    /// the old document focus is still available. Document focus is left
+    /// alone. Returns the document it was bound to.
     pub fn unbind_input_source(
         &mut self,
         source: InputSourceId,
         now: Duration,
     ) -> Result<Option<DocumentId>, FrameworkError> {
-        let Some(document) = self.input.sources.get(&source).map(|state| state.document) else {
+        let Some((document, should_cancel_composition)) =
+            self.input.sources.get(&source).map(|state| {
+                let other_focused = self.input.sources.iter().any(|(id, other)| {
+                    *id != source
+                        && other.document == state.document
+                        && other.focused
+                        && !other.disconnected
+                });
+                (state.document, !other_focused)
+            })
+        else {
             return Ok(None);
         };
         self.cancel_source_pointers(source, document, None, now)?;
         self.cancel_source_file_drag(source, document)?;
+        if should_cancel_composition {
+            // Unbinding can happen without a preceding Focus(false) (window
+            // close, host takeover, or a document replacement). Clear the
+            // preedit while the old document focus is still available.
+            self.dispatch_composition(document, &CompositionInput::End)?;
+        }
         self.input.sources.remove(&source);
         Ok(Some(document))
     }
@@ -634,10 +657,10 @@ impl AppContext {
     }
 
     /// Window focus for `source`. Losing it cancels what the source held
-    /// pressed or captured and nothing more: the document keeps its focused
-    /// control, so returning to the window types where it left off. Gaining
-    /// it hands the host the text-input state again, which the platform
-    /// dropped with focus.
+    /// pressed or captured and any active IME preedit when no other source
+    /// still has focus: the document keeps its focused control, so returning
+    /// to the window types where it left off. Gaining it hands the host the
+    /// text-input state again, which the platform dropped with focus.
     fn route_focus(
         &mut self,
         source: InputSourceId,
@@ -648,12 +671,25 @@ impl AppContext {
     ) -> Result<(), FrameworkError> {
         if let Some(state) = self.input.source(source) {
             state.focused = focused;
+            if focused {
+                state.focus_ever = true;
+            }
         }
         if focused {
             self.sync_text_input(source, document, true, services);
         } else {
             self.cancel_source_pointers(source, document, None, now)?;
             self.cancel_source_file_drag(source, document)?;
+            // Losing the host window cancels an in-progress IME preedit. A
+            // later commit must never land after focus moved away; the page
+            // observes the corresponding composition end through the Focus
+            // event's routed observation.
+            let other_focused = self.input.sources.iter().any(|(id, other)| {
+                *id != source && other.document == document && other.focused && !other.disconnected
+            });
+            if !other_focused {
+                self.dispatch_composition(document, &CompositionInput::End)?;
+            }
         }
         Ok(())
     }
@@ -687,12 +723,19 @@ impl AppContext {
         let Some(state) = self.input.source(source) else {
             return Ok(());
         };
-        let was_focused = std::mem::replace(&mut state.focused, false);
+        let had_focus = state.focus_ever;
+        state.focused = false;
         state.disconnected = true;
         let other_focused = self.input.sources.iter().any(|(id, other)| {
             *id != source && other.document == document && other.focused && !other.disconnected
         });
-        if was_focused && !other_focused {
+        if !other_focused {
+            // A source may disappear without first sending Focus(false). End
+            // the preedit before clear_focus makes the focused editor
+            // undiscoverable to the text-input router.
+            self.dispatch_composition(document, &CompositionInput::End)?;
+        }
+        if had_focus && !other_focused {
             self.clear_focus(document)?;
         }
         Ok(())

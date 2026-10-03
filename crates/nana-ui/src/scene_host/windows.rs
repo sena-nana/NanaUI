@@ -8,6 +8,14 @@ fn uses_host_managed_drag(settings: &WindowDescriptor, button: i16) -> bool {
     settings.host_managed_drag || button != PRIMARY_MOUSE_BUTTON
 }
 
+/// Advance a native window's input endpoint identity without ever reusing it.
+/// This deliberately has the same exhaustion policy as `InputSequencer`.
+fn next_input_generation(generation: u64) -> u64 {
+    generation
+        .checked_add(1)
+        .expect("input endpoint generation exhausted")
+}
+
 impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn apply_window_command(
         &mut self,
@@ -830,7 +838,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         let generation = self.input_generations.entry(id).or_insert(1);
-        *generation = generation.saturating_add(1).max(1);
+        // Endpoint generations are non-repeating identities. Saturating here
+        // would keep `u64::MAX` forever and let a reused WindowId accept stale
+        // events; match `InputSequencer::advance` and fail closed on exhaustion.
+        *generation = next_input_generation(*generation);
         let source = nana_ui_platform::InputSourceId(id.0);
         let now = self.animation_clock.runtime_time(Instant::now());
         // Presses and captures the window held are cancelled while its
@@ -2173,6 +2184,18 @@ fn window_request_error(error: winit::error::RequestError) -> crate::WindowError
 #[cfg(test)]
 mod request_error_tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "input endpoint generation exhausted")]
+    fn input_generation_exhaustion_does_not_reuse_the_last_identity() {
+        next_input_generation(u64::MAX);
+    }
+
+    #[test]
+    fn input_generation_advances_without_zero_wrap() {
+        assert_eq!(next_input_generation(0), 1);
+        assert_eq!(next_input_generation(u64::MAX - 1), u64::MAX);
+    }
 
     #[test]
     fn ignored_request_is_an_operation_failure_not_a_missing_capability() {

@@ -182,6 +182,112 @@ fn box_at(x: f32, y: f32, width: f32, height: f32) -> LayoutBox {
     }
 }
 
+#[test]
+fn layout_result_is_the_shared_geometry_snapshot_and_survives_paint_only_work() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    create.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    create.insert(node(1), node(2), None);
+    world.commit(create).unwrap();
+
+    let mut layout = MutationQueue::new();
+    layout.write_layout(node(1), box_at(4.0, 6.0, 100.0, 40.0));
+    layout.write_layout(node(2), box_at(12.0, 18.0, 32.0, 16.0));
+    world.commit(layout).unwrap();
+
+    let result = world.layout_result(node(1)).expect("published result");
+    assert_eq!(result.bounds, box_at(4.0, 6.0, 100.0, 40.0));
+    assert_eq!(world.layout_box(node(1)), Some(result.bounds));
+    assert_eq!(result.child_placements.len(), 1);
+    assert_eq!(result.child_placements[0].node, node(2));
+    assert!(
+        result
+            .fragments
+            .iter()
+            .any(|fragment| fragment.node == Some(node(2)))
+    );
+    assert_eq!(result.generation, world.layout_generation());
+    let generation = world.layout_generation();
+
+    // Re-publishing bit-identical geometry keeps the same layout revision.
+    let mut same_layout = MutationQueue::new();
+    same_layout.write_layout(node(1), box_at(4.0, 6.0, 100.0, 40.0));
+    same_layout.write_layout(node(2), box_at(12.0, 18.0, 32.0, 16.0));
+    world.commit(same_layout).unwrap();
+    assert_eq!(world.layout_generation(), generation);
+
+    // Interaction/paint state advances the world mutation generation but does
+    // not rebuild layout output or its revision.
+    let mut paint = MutationQueue::new();
+    paint.set_interaction(
+        node(1),
+        InteractionState {
+            pointer_events: true,
+            focusable: true,
+        },
+    );
+    world.commit(paint).unwrap();
+    assert_eq!(world.layout_generation(), generation);
+    assert_eq!(world.layout_result(node(1)).unwrap().generation, generation);
+
+    let mut park = MutationQueue::new();
+    park.park_subtree(node(1));
+    world.commit(park).unwrap();
+    assert!(world.layout_result(node(1)).is_none());
+    assert!(world.layout_result(node(2)).is_none());
+}
+
+#[test]
+fn layout_result_uses_each_border_edge_for_content_geometry() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    world.commit(create).unwrap();
+
+    let mut style = NodeStyle::default();
+    let layout = std::sync::Arc::make_mut(&mut style.layout);
+    layout.border_style = Some(nana_ui_core::BorderStyle::Solid);
+    layout.border_top_width = Some(1.0);
+    layout.border_right_width = Some(2.0);
+    layout.border_bottom_width = Some(3.0);
+    layout.border_left_width = Some(4.0);
+    let mut style_write = MutationQueue::new();
+    style_write.set_style(node(1), style);
+    world.commit(style_write).unwrap();
+
+    let mut layout_write = MutationQueue::new();
+    layout_write.write_layout(node(1), box_at(10.0, 20.0, 100.0, 80.0));
+    world.commit(layout_write).unwrap();
+    let result = world.layout_result(node(1)).expect("published result");
+    assert_eq!(result.padding_box, box_at(14.0, 21.0, 94.0, 76.0));
+    assert_eq!(result.content_box, result.padding_box);
+
+    let mut changed_style = NodeStyle::default();
+    let changed_layout = std::sync::Arc::make_mut(&mut changed_style.layout);
+    changed_layout.border_style = Some(nana_ui_core::BorderStyle::Solid);
+    changed_layout.border_top_width = Some(2.0);
+    changed_layout.border_right_width = Some(2.0);
+    changed_layout.border_bottom_width = Some(3.0);
+    changed_layout.border_left_width = Some(4.0);
+    let mut style_change = MutationQueue::new();
+    style_change.set_style(node(1), changed_style);
+    world.commit(style_change).unwrap();
+    assert!(world.layout_result(node(1)).is_none());
+}
+
 /// Hit entries built so far. The counter accumulates until a drain, so
 /// callers compare deltas around the build they are measuring.
 fn hit_entries_built(world: &UiWorld) -> usize {
@@ -9428,6 +9534,62 @@ fn accessibility_delta_removes_and_restores_hidden_subtrees_atomically() {
     );
     assert_eq!(visible.updated[0].children, vec![node(2)]);
     assert_eq!(visible.updated[1].children, vec![node(3)]);
+}
+
+#[test]
+fn accessibility_state_hidden_removes_and_restores_descendants() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.create(node(3), document(1), NodeKind::Text);
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let _ = world.project_accessibility_delta(&work);
+
+    let mut hide = MutationQueue::new();
+    hide.set_accessibility(
+        node(2),
+        AccessibilityState {
+            hidden: true,
+            ..world.accessibility(node(2)).unwrap().clone()
+        },
+    );
+    world.commit(hide).unwrap();
+    let work = world.take_system_work();
+    let hidden = world.project_accessibility_delta(&work);
+    assert_eq!(hidden.removed, vec![node(2), node(3)]);
+    assert_eq!(hidden.updated[0].id, node(1));
+    assert!(hidden.updated[0].children.is_empty());
+
+    let mut show = MutationQueue::new();
+    show.set_accessibility(
+        node(2),
+        AccessibilityState {
+            hidden: false,
+            ..world.accessibility(node(2)).unwrap().clone()
+        },
+    );
+    world.commit(show).unwrap();
+    let work = world.take_system_work();
+    let visible = world.project_accessibility_delta(&work);
+    assert!(visible.removed.is_empty());
+    assert_eq!(
+        visible
+            .updated
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>(),
+        vec![node(1), node(2), node(3)]
+    );
+    assert_eq!(visible.updated[0].children, vec![node(2)]);
 }
 
 /// #59: an ancestor's writing mode reaches its text's accessibility node, so

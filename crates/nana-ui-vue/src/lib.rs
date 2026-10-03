@@ -205,6 +205,13 @@ mod canvas_gpu;
 use nana_ui_css::{
     css_at_rule, css_cascade, css_font_face, css_interactive, css_map, css_paint, style,
 };
+
+/// Resolve a paint-script CSS string in the adapter that owns the CSS engine.
+/// Runtime receives the typed authoring value through its parser callback and
+/// therefore stays independent of `nana-ui-css`.
+pub(crate) fn parse_paint_script_color(value: &str) -> Option<nana_ui_core::PaintColor> {
+    nana_ui_css::parse_css_paint_color(value).map(|color| color.to_core())
+}
 #[cfg(all(test, feature = "scene-view"))]
 mod css_font_face_ingest_tests;
 mod css_interactive_apply;

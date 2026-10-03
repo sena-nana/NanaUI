@@ -424,6 +424,19 @@ impl AccessibilityProjector {
         if !self.interactive || node.disabled {
             return None;
         }
+        if let Some((menu, index)) = nana_ui_runtime::decode_virtual_menu_item(target) {
+            if node.role != AccessibilityRole::MenuItem {
+                return None;
+            }
+            let action = match request.action {
+                Action::Click => {
+                    nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, index }
+                }
+                Action::Focus => nana_ui_runtime::AccessibilityAction::Focus,
+                _ => return None,
+            };
+            return Some(nana_ui_runtime::AccessibilityActionRequest { target, action });
+        }
         let action = match request.action {
             Action::Click if supports_click(node.role) => {
                 nana_ui_runtime::AccessibilityAction::Click
@@ -1787,6 +1800,44 @@ mod tests {
         assert_eq!(radio.toggled(), Some(Toggled::True));
         assert!(radio.supports_action(Action::Click));
         assert!(radio.supports_action(Action::Focus));
+    }
+
+    #[test]
+    fn virtual_menu_items_project_click_and_focus_actions() {
+        let menu = StableNodeId::new(2).unwrap();
+        let item = nana_ui_runtime::virtual_menu_item_id(menu, 0).unwrap();
+        let mut virtual_item = node(item.get(), Some(menu.get()), &[]);
+        virtual_item.role = AccessibilityRole::MenuItem;
+        virtual_item.label = Some("打开".into());
+        let (projector, update) = AccessibilityProjector::new(
+            vec![node(menu.get(), None, &[item.get()]), virtual_item],
+            true,
+            1.0,
+        );
+        let projected = &update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(item.get()))
+            .expect("virtual menu item projection")
+            .1;
+        assert!(projected.supports_action(Action::Click));
+        assert!(projected.supports_action(Action::Focus));
+        for action in [Action::Click, Action::Focus] {
+            let request = projector
+                .project_action_request(ActionRequest {
+                    action,
+                    target_tree: TreeId::ROOT,
+                    target_node: NodeId(item.get()),
+                    data: None,
+                })
+                .expect("virtual menu action")
+                .action;
+            assert!(matches!(
+                request,
+                nana_ui_runtime::AccessibilityAction::ActivateMenuItem { .. }
+                    | nana_ui_runtime::AccessibilityAction::Focus
+            ));
+        }
     }
 
     #[cfg(all(feature = "hosted", not(target_os = "android")))]

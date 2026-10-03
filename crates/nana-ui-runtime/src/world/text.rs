@@ -4670,21 +4670,13 @@ impl UiWorld {
         &self,
         id: StableNodeId,
     ) -> Option<(LayoutBox, ScrollOffset)> {
-        let node = self.nodes.get(id)?;
         if !matches!(
             self.nodes.visual(id),
             Some(StandardVisual::TextInput { .. })
         ) {
             return None;
         }
-        let padding = self.used_layout_padding(id);
-        let border = node.style.layout.resolved_border_width();
-        let content = LayoutBox {
-            x: node.layout.x + border + padding.left,
-            y: node.layout.y + border + padding.top,
-            width: (node.layout.width - border * 2.0 - padding.left - padding.right).max(0.0),
-            height: (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
-        };
+        let content = self.component_content_box(id)?;
         Some((content, self.record(id).scroll_offset))
     }
 

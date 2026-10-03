@@ -2330,7 +2330,10 @@ impl NanaTreeDocument {
             .filter(|text| !text.trim().is_empty())
         {
             Some(text) => {
-                let parsed = nana_ui_runtime::PaintScript::from_json_str(&text);
+                let parsed = nana_ui_runtime::PaintScript::from_json_str_with_color_parser(
+                    &text,
+                    &crate::parse_paint_script_color,
+                );
                 self.note_paint_error(el.0, parsed.as_ref().err());
                 self.paint_scripts
                     .insert(el.0, parsed.ok().map(nana_ui_runtime::NodePainter::new));

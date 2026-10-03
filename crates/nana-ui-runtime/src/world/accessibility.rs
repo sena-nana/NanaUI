@@ -41,10 +41,10 @@ impl UiWorld {
         ) {
             match self.component_geometry(id) {
                 Some(crate::ComponentGeometry::ModalFrame { surface, .. }) => surface,
-                _ => self.nodes.get(id)?.layout,
+                _ => self.layout_box(id)?,
             }
         } else {
-            self.nodes.get(id)?.layout
+            self.layout_box(id)?
         };
         let mut bounds = self.accessibility_viewport_bounds(id, local, memo)?;
         if self.clip_visuals == 0 {
@@ -58,11 +58,7 @@ impl UiWorld {
             ) {
                 bounds = intersect_layout_boxes(
                     bounds,
-                    self.accessibility_viewport_bounds(
-                        ancestor,
-                        self.nodes.get(ancestor)?.layout,
-                        memo,
-                    )?,
+                    self.accessibility_viewport_bounds(ancestor, self.layout_box(ancestor)?, memo)?,
                 )?;
             }
             if matches!(
@@ -120,7 +116,7 @@ impl UiWorld {
         }
         while let Some(node) = memo.chain.pop() {
             let record = self.nodes.get(node)?;
-            let bounds = record.layout;
+            let bounds = self.layout_box(node)?;
             let layout = self.hit_motion_layout(node);
             if layout.position == PositionSpec::Fixed {
                 // Viewport-relative; ancestors cannot scroll or clip this branch.
@@ -196,6 +192,23 @@ impl UiWorld {
 mod viewport_tests;
 
 impl UiWorld {
+    /// Whether a node or one of its ancestors is explicitly hidden from the
+    /// accessibility tree. The retained hierarchy is still used for paint,
+    /// layout, and input; this is only the semantic projection boundary.
+    fn accessibility_hidden(&self, id: StableNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(node_id) = current {
+            let Some(node) = self.nodes.get(node_id) else {
+                return false;
+            };
+            if node.accessibility.hidden {
+                return true;
+            }
+            current = node.hierarchy.parent;
+        }
+        false
+    }
+
     /// What `id` says to assistive technology as the name of a node it
     /// labels: its own label, or its text.
     fn accessible_text(&self, id: StableNodeId) -> Option<Arc<str>> {
@@ -214,7 +227,7 @@ impl UiWorld {
         id: StableNodeId,
         memo: &mut ProjectionMemo,
     ) -> Option<AccessibilityNode> {
-        if !self.is_mounted(id) {
+        if !self.is_mounted(id) || self.accessibility_hidden(id) {
             return None;
         }
         let (parent, children, kind, state, text_value, document, visible, box_visible, writing) = {
@@ -277,21 +290,33 @@ impl UiWorld {
             }),
         };
         let bounds = self.visible_accessibility_bounds(id, memo)?;
+        let mut children = children
+            .iter()
+            .copied()
+            .filter(|child| {
+                let child_id = *child;
+                self.nodes.get(child_id).is_some_and(|node| {
+                    node.resolved.0.box_visible
+                        && (node.resolved.0.visible || !node.hierarchy.children.is_empty())
+                        && !matches!(node.kind.as_ref(), NodeKind::Comment)
+                }) && !self.accessibility_hidden(child_id)
+                    && self.visible_accessibility_bounds(child_id, memo).is_some()
+            })
+            .collect::<Vec<_>>();
+        if let Some(StandardVisual::MenuSurface {
+            kind: crate::MenuSurfaceKind::ContextMenu,
+            open: true,
+            rows,
+            ..
+        }) = self.nodes.visual(id)
+        {
+            children
+                .extend((0..rows.len()).filter_map(|index| crate::virtual_menu_item_id(id, index)));
+        }
         Some(AccessibilityNode {
             id,
             parent,
-            children: children
-                .iter()
-                .copied()
-                .filter(|child| {
-                    let child_id = *child;
-                    self.nodes.get(child_id).is_some_and(|node| {
-                        node.resolved.0.box_visible
-                            && (node.resolved.0.visible || !node.hierarchy.children.is_empty())
-                            && !matches!(node.kind.as_ref(), NodeKind::Comment)
-                    }) && self.visible_accessibility_bounds(child_id, memo).is_some()
-                })
-                .collect(),
+            children,
             role,
             label,
             description: state.description.clone(),
@@ -334,6 +359,80 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    fn project_virtual_menu_items(&self, menu: &AccessibilityNode) -> Vec<AccessibilityNode> {
+        let Some(StandardVisual::MenuSurface {
+            kind: crate::MenuSurfaceKind::ContextMenu,
+            open: true,
+            rows,
+            highlighted,
+            ..
+        }) = self.nodes.visual(menu.id)
+        else {
+            return Vec::new();
+        };
+        let options = match self.component_geometry(menu.id) {
+            Some(crate::ComponentGeometry::MenuSurface { options, .. }) => options,
+            _ => Vec::new(),
+        };
+        let count = rows.len().max(1) as f32;
+        rows.iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let id = crate::virtual_menu_item_id(menu.id, index)?;
+                let bounds = options
+                    .get(index)
+                    .map(|option| option.bounds)
+                    .unwrap_or_else(|| LayoutBox {
+                        x: menu.bounds.x,
+                        y: menu.bounds.y + menu.bounds.height * index as f32 / count,
+                        width: menu.bounds.width,
+                        height: menu.bounds.height / count,
+                    });
+                Some(AccessibilityNode {
+                    id,
+                    parent: Some(menu.id),
+                    children: Vec::new(),
+                    role: AccessibilityRole::MenuItem,
+                    label: Some(Arc::clone(&row.label)),
+                    value: None,
+                    description: row.hint.clone(),
+                    disabled: row.disabled,
+                    checked: None,
+                    mixed: false,
+                    orientation: None,
+                    selected: Some(*highlighted == Some(index)),
+                    multiline: false,
+                    editable: false,
+                    selection: None,
+                    modal: false,
+                    busy: false,
+                    invalid: false,
+                    numeric_minimum: None,
+                    numeric_maximum: None,
+                    numeric_step: None,
+                    numeric_value: None,
+                    focused: *highlighted == Some(index),
+                    bounds,
+                    writing: menu.writing,
+                })
+            })
+            .collect()
+    }
+
+    fn project_accessibility_entries(
+        &self,
+        id: StableNodeId,
+        memo: &mut ProjectionMemo,
+    ) -> Vec<AccessibilityNode> {
+        let Some(node) = self.project_accessibility_node(id, memo) else {
+            return Vec::new();
+        };
+        let mut entries = vec![node];
+        let menu = entries[0].clone();
+        entries.extend(self.project_virtual_menu_items(&menu));
+        entries
+    }
+
     /// Project one complete incremental accessibility transaction, including
     /// tombstones for nodes removed from the retained world.
     pub fn project_accessibility_delta(&self, work: &SystemWork) -> AccessibilityDelta {
@@ -385,10 +484,13 @@ impl UiWorld {
         let mut memo = ProjectionMemo::default();
         let mut updated = Vec::new();
         for id in affected {
-            if let Some(node) = self.project_accessibility_node(id, &mut memo) {
-                updated.push(node);
-            } else if self.nodes.contains(id) {
-                removed.push(id);
+            let entries = self.project_accessibility_entries(id, &mut memo);
+            if entries.is_empty() {
+                if self.nodes.contains(id) {
+                    removed.push(id);
+                }
+            } else {
+                updated.extend(entries);
             }
         }
         removed.sort_unstable();
@@ -406,10 +508,9 @@ impl UiWorld {
     pub fn project_accessibility_nodes(&self, ids: &[StableNodeId]) -> Vec<AccessibilityNode> {
         let mut memo = ProjectionMemo::default();
         let mut projected = Vec::with_capacity(ids.len());
-        projected.extend(
-            ids.iter()
-                .filter_map(|&id| self.project_accessibility_node(id, &mut memo)),
-        );
+        for &id in ids {
+            projected.extend(self.project_accessibility_entries(id, &mut memo));
+        }
         projected
     }
 }

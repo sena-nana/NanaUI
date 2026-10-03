@@ -392,7 +392,9 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 )?;
                 // Text a handled or prevented key typed is not typed: the
                 // page sees no `input` for it, as a browser would not.
-                if key.is_pressed() && (disposition.handled || !allowed) {
+                if key.is_pressed()
+                    && (disposition.handled || disposition.prevent_default || !allowed)
+                {
                     host.input_projection.handled_key = Some(event.metadata.sequence);
                 }
             }
@@ -427,11 +429,23 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             }
             InputPayload::PointerEnter { .. }
             | InputPayload::PointerLeave { .. }
-            | InputPayload::Focus { .. }
+            | InputPayload::Focus { focused: true }
             | InputPayload::DeviceConnected
             | InputPayload::DeviceDisconnected
             | InputPayload::SourceConnected
             | InputPayload::SourceDisconnected => {}
+            InputPayload::Focus { focused: false } => {
+                // Runtime focus loss cancels its preedit. Mirror that end in
+                // the page projection so a composition started before blur
+                // cannot be committed into a later focus target.
+                if host.input_projection.ime.is_some() {
+                    host.emit_native_ime_from_runtime(
+                        engine,
+                        &nana_ui_platform::CompositionInput::End,
+                        false,
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -1507,6 +1521,35 @@ mod tests {
             .runtime_input(WindowId::PRIMARY, InputPayload::Focus { focused: true })
             .unwrap();
         assert_eq!(generation(&runtime), Some(EndpointGeneration(2)));
+    }
+
+    #[test]
+    fn a_reopened_window_reports_generation_exhaustion() {
+        let mut runtime = test_runtime();
+        let host = runtime.vue.host(VueWindowId::PRIMARY).unwrap();
+        let document = host.lock().unwrap().document();
+        {
+            let mut document = document.lock().unwrap();
+            let retained = document.runtime_document_mut();
+            let document_id = retained.document();
+            retained
+                .context_mut()
+                .bind_input_source(
+                    nana_ui::HeadlessInput::SOURCE,
+                    EndpointGeneration(u64::MAX),
+                    document_id,
+                )
+                .unwrap();
+        }
+
+        let error = runtime
+            .route_standalone(VueWindowId::PRIMARY, InputPayload::Focus { focused: true })
+            .expect_err("an exhausted source generation must not wrap");
+        assert!(
+            error
+                .to_string()
+                .contains("input endpoint generation exhausted")
+        );
     }
 
     #[test]

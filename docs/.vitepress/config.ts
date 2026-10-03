@@ -232,6 +232,7 @@ export default defineConfig({
             { text: "Vue 宿主边界", link: "/reference/vue-host" },
             { text: "布局（CSS 子集）", link: "/reference/layout" },
             { text: "布局（Rust）", link: "/reference/rust-layout" },
+            { text: "布局结果合同", link: "/reference/layout-result" },
             { text: "诊断码", link: "/reference/errors" },
           ],
         },

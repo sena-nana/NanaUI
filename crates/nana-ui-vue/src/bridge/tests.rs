@@ -6240,6 +6240,36 @@ fn a_paint_prop_parses_to_a_painter_and_reports_a_bad_script() {
     );
 }
 
+#[test]
+fn a_paint_prop_uses_the_canonical_css_color_parser() {
+    use nana_js_engine::HostValue;
+    use nana_ui_runtime::{PaintOp, PaintRecording, PaintState, ResolvedPaint};
+
+    let css = "oklch(62.8% 0.2577 29.23 / 50%)";
+    let script = format!(r#"[{{"op":"fill","path":"M0 0 H10 V10 Z","paint":"{css}"}}]"#);
+    let props = WidgetProps::from_map(&[("paint".to_string(), HostValue::string(script))].into());
+    let painter = props.paint.as_ref().expect("canonical CSS color parses");
+    assert!(props.paint_error.is_none());
+
+    let theme = nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeAppearance::Dark);
+    let recording = PaintRecording::record(
+        painter.painter(),
+        theme.as_ref(),
+        [10.0, 10.0],
+        PaintState::default(),
+    );
+    let [PaintOp::FillPath { paint, .. }] = &recording.behind_children[..] else {
+        panic!("{recording:?}");
+    };
+    let ResolvedPaint::Authoring(actual) = paint else {
+        panic!("expected typed authoring paint, got {paint:?}");
+    };
+    let expected = nana_ui_css::parse_css_paint_color(css)
+        .expect("the canonical parser accepts the regression color")
+        .to_core();
+    assert_eq!(*actual, expected);
+}
+
 fn runtime_axis(doc: &crate::tree::NanaTreeDocument, id: u64, tag: [u8; 4]) -> Option<f32> {
     let style = doc
         .world()

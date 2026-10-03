@@ -713,12 +713,51 @@ impl AppContext {
             return Ok(false);
         };
         self.update_component(entity, |menu, cx| {
+            let before = (menu.open, menu.active_path.clone(), menu.highlighted);
             if let Some(event) = menu.select_index(index) {
                 cx.emit(event);
-                true
-            } else {
-                false
             }
+            before != (menu.open, menu.active_path.clone(), menu.highlighted)
+        })
+    }
+
+    /// Activate a painted context-menu row by its visible index. Accessibility
+    /// exposes rows as virtual MenuItem nodes because the surface keeps one
+    /// retained entity for pointer hit-testing and nested navigation.
+    pub fn activate_context_menu_index(
+        &mut self,
+        entity: Entity<ContextMenu>,
+        index: usize,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |menu, cx| {
+            let before = (menu.open, menu.active_path.clone(), menu.highlighted);
+            if let Some(event) = menu.select_index(index) {
+                cx.emit(event);
+            }
+            before != (menu.open, menu.active_path.clone(), menu.highlighted)
+        })
+    }
+
+    /// Move the virtual accessibility focus/highlight to a visible menu row.
+    pub fn focus_context_menu_index(
+        &mut self,
+        entity: Entity<ContextMenu>,
+        index: usize,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |menu, _cx| {
+            if !menu.open
+                || menu
+                    .visible_items()
+                    .get(index)
+                    .is_none_or(|item| item.disabled)
+            {
+                return false;
+            }
+            if menu.highlighted == Some(index) {
+                return false;
+            }
+            menu.highlighted = Some(index);
+            true
         })
     }
 
