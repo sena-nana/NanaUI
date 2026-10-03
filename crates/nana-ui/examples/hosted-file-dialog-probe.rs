@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Native acceptance: stdin accepts file, files, folder, folders, save,
 //! duplicate, busy, and quit. The frame counter keeps updating behind a sheet.
 //! Completions and actual presentations are printed for verification.

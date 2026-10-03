@@ -937,6 +937,7 @@ impl MeshPipeline {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn push_spinner(
         &mut self,
         bounds: LogicalRect,

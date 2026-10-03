@@ -1526,7 +1526,9 @@ mod tests {
         let pixels = [[-1.5, 2.0, 1.25, 1.0], [4.0, -0.25, 0.0, 0.5]];
         let bytes = encode_linear_rgba16(&pixels);
         let bits: Vec<u16> = bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|channel| u16::from_le_bytes([channel[0], channel[1]]))
             .collect();
         assert_eq!(

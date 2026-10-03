@@ -212,6 +212,7 @@ pub use find_replace::{FindReplaceBar, FindReplaceEvent, TextSearchBar};
 pub use form_surfaces::{FormField, InteractiveCard};
 pub use framework::MountedView;
 pub(crate) use framework::UiBuilder;
+#[allow(deprecated)]
 pub use framework::{
     ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, BuiltinComponents,
     Entity, ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError,

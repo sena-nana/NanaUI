@@ -5,6 +5,8 @@
 //! snapshots agree (or `--bless` recorded them), `1` at least one disagrees,
 //! `2` the suite could not run.
 
+#![recursion_limit = "256"]
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 

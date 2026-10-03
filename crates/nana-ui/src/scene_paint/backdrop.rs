@@ -56,11 +56,16 @@ struct BlurUniforms {
 
 fn pack_clip_polygon(clip: &FragmentClip) -> [[f32; 4]; 4] {
     let mut packed = [[0.0; 4]; 4];
-    for index in 0..clip.polygon_count.min(8) as usize {
+    for (index, point) in clip
+        .polygon
+        .iter()
+        .enumerate()
+        .take(clip.polygon_count.min(8) as usize)
+    {
         let slot = index / 2;
         let component = (index % 2) * 2;
-        packed[slot][component] = clip.polygon[index][0];
-        packed[slot][component + 1] = clip.polygon[index][1];
+        packed[slot][component] = point[0];
+        packed[slot][component + 1] = point[1];
     }
     packed
 }

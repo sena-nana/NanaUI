@@ -15,8 +15,8 @@ use nana_ui::runtime::{
 use nana_ui::{
     ButtonKind, CopyOutcome, DEFAULT_CAPACITY, FrameBinding, FrameExchange, FrameExchangeStats,
     FrameInbox, GpuContext, HostTextureAlphaMode, HostTextureRegistry, HostedRunError, RoutedInput,
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeAppearance, WindowDescriptor,
-    WindowHandle, run_runtime,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor, WindowHandle,
+    run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 

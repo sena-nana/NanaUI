@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Development-only hot reload support for NanaUI applications.
 //!
 //! This crate owns what is the same for every tier: a filesystem watcher, a
