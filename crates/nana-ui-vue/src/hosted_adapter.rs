@@ -269,6 +269,12 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             nana_ui_runtime::AccessibilityAction::Click => {
                 host.accessibility_click(&mut self.engine, target)
             }
+            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { .. } => {
+                // Vue-hosted menus expose their item action through the same
+                // semantic DOM click path; the runtime-only virtual menu
+                // identity is already resolved before this adapter is called.
+                host.accessibility_click(&mut self.engine, target)
+            }
             nana_ui_runtime::AccessibilityAction::SetValue(value) => {
                 host.accessibility_set_value(&mut self.engine, target, &value)
             }
