@@ -48,7 +48,6 @@ pub enum SearchDropdownEvent {
 pub struct SearchDropdown {
     pub value: Option<Arc<str>>,
     pub options: Vec<SearchDropdownOption>,
-    pub query: String,
     pub placeholder: Option<Arc<str>>,
     pub size: ControlSize,
     pub disabled: bool,
@@ -73,7 +72,6 @@ impl SearchDropdown {
         Self {
             value: value.map(Into::into),
             options: Vec::new(),
-            query: String::new(),
             placeholder: None,
             size: ControlSize::Medium,
             disabled: false,
@@ -121,7 +119,6 @@ impl SearchDropdown {
     pub fn opened(mut self, opened: bool) -> Self {
         self.opened = opened;
         if opened {
-            self.state = TextInputState::new(self.query.clone());
             self.highlighted = self.first_visible();
         } else {
             self.highlighted = None;
@@ -131,9 +128,13 @@ impl SearchDropdown {
 
     pub fn query(mut self, query: impl Into<String>) -> Self {
         let query = query.into();
-        self.query = query.clone();
         self.state = TextInputState::new(query);
         self
+    }
+
+    /// The current search text, owned by the retained text input state.
+    pub fn query_text(&self) -> &str {
+        self.state.value.as_str()
     }
 
     pub fn inactive(&self) -> bool {
@@ -144,20 +145,20 @@ impl SearchDropdown {
         self.options
             .iter()
             .enumerate()
-            .filter(|(_, option)| option_matches(option, &self.query))
+            .filter(|(_, option)| option_matches(option, self.query_text()))
             .map(|(index, _)| index)
             .collect()
     }
 
     pub fn display_label(&self) -> (Arc<str>, bool) {
         if self.opened && !self.inactive() {
-            if self.query.is_empty() {
+            if self.query_text().is_empty() {
                 return (
                     self.placeholder.clone().unwrap_or_else(|| Arc::from("")),
                     true,
                 );
             }
-            return (Arc::from(self.query.as_str()), false);
+            return (Arc::from(self.query_text()), false);
         }
         if let Some(value) = &self.value
             && let Some(option) = self.options.iter().find(|option| &option.value == value)
@@ -185,7 +186,6 @@ impl SearchDropdown {
         }
         self.opened = !self.opened;
         if self.opened {
-            self.state = TextInputState::new(self.query.clone());
             self.highlighted = self.first_visible();
             Some(SearchDropdownEvent::Opened)
         } else {
@@ -205,7 +205,6 @@ impl SearchDropdown {
 
     pub fn set_query(&mut self, query: impl Into<String>) -> SearchDropdownEvent {
         let query = query.into();
-        self.query = query.clone();
         self.state.replace_value(query.clone());
         self.highlighted = self.first_visible();
         SearchDropdownEvent::Search(query)
@@ -246,7 +245,6 @@ impl SearchDropdown {
         if !self.state.replace_selection(text) {
             return false;
         }
-        self.query = self.state.value.to_string();
         self.highlighted = self.first_visible();
         true
     }
@@ -265,14 +263,13 @@ impl SearchDropdown {
         {
             return false;
         }
-        self.query = self.state.value.to_string();
         self.highlighted = self.first_visible();
         true
     }
 
     pub fn select_index(&mut self, index: usize) -> Option<SearchDropdownEvent> {
         let option = self.options.get(index)?;
-        if self.inactive() || !option_matches(option, &self.query) {
+        if self.inactive() || !option_matches(option, self.query_text()) {
             return None;
         }
         let value = Arc::clone(&option.value);
@@ -345,7 +342,6 @@ impl ComponentView for SearchDropdown {
         } else if self.value == next.value && self.options == next.options {
             next.opened = self.opened;
             next.highlighted = self.highlighted;
-            next.query = self.query.clone();
             next.state = self.state.clone();
         }
         *self = next;
@@ -552,9 +548,18 @@ mod tests {
         assert!(context.commit_ime(document(), "Beta").unwrap());
         context
             .read(dropdown, |dropdown| {
-                assert_eq!(dropdown.query, "Beta");
+                assert_eq!(dropdown.query_text(), "Beta");
                 assert_eq!(dropdown.visible_indices(), vec![1]);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn text_input_state_is_the_query_authority() {
+        let mut dropdown = sample().query("alpha");
+        dropdown.state.replace_value("beta");
+
+        assert_eq!(dropdown.query_text(), "beta");
+        assert_eq!(dropdown.visible_indices(), vec![1]);
     }
 }

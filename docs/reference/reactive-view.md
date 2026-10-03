@@ -746,7 +746,7 @@ fn page() -> impl IntoView {
 场景：
 
 - A：每行一个 `Row`。里面一个文本和一个按钮。文字来自 prop 和一个从没被写过的信号。
-- B：在 A 的基础上加 `<style scoped>` 设 `padding` / `flex-grow`。再加一个条件类 `class:active` 设 `opacity`。手写版分别用构建器（`padding_xy`、`with_layout`）和 `css!`。条件类用一个自定义的 `FieldWrite`。因为函数 API 里没有条件类。
+- B：在 A 的基础上加 `<style scoped>` 设 `padding` / `flex-grow`。再加一个条件类 `class:active` 设 `opacity`。手写版分别用构建器（`padding_xy`、`with_layout`）和 `css!`；函数 API 可直接使用 `.class_when`。
 - C：`v-for` 列表。每行显示一个行内信号。没有朴素版：`.vue` 把 `{{ title }}` 编成闭包。本身就是朴素写法。惯用手写直接绑定 `text(title)`。两者都是每行一个副作用。
 
 | 场景 | `.vue` | 惯用手写 | 朴素手写 |

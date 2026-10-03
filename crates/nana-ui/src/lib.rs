@@ -20,6 +20,7 @@ mod accessibility;
 mod accessibility_tree;
 pub mod command;
 pub mod component_support;
+#[doc(hidden)]
 pub mod components;
 #[cfg(feature = "gpu")]
 mod default_gpu_view;
@@ -148,9 +149,7 @@ pub use component_support::{
     component_ids, component_support, component_uses_runtime,
 };
 #[cfg(feature = "gpu")]
-pub use default_gpu_view::{
-    DefaultGpuViewRenderer, default_scene_gpu_renderers, resolve_scene_gpu_renderers,
-};
+pub use default_gpu_view::{DefaultGpuViewRenderer, default_scene_gpu_renderers};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 #[cfg(feature = "gpu")]
 pub use font_face_ingest::{HostFontFaceSpec, ingest_host_font_faces};
@@ -303,7 +302,7 @@ pub use scene_gpu::{
 pub use scene_host::run_runtime_scene;
 #[cfg(feature = "gpu")]
 pub use scene_paint::{
-    AlphaEncoding, HostTextureSceneResolver, RenderTargetId, ScenePaintError, ScenePaintViewport,
+    AlphaEncoding, RenderTargetId, ScenePaintError, ScenePaintViewport,
     ScenePresentationColorSpace, ScenePresentationProfile, SceneWgpuPainter, SubpixelOrder,
     TextGlyphCounters, resolve_background_image_url, set_background_image_url_base,
 };
@@ -332,7 +331,7 @@ pub use virtual_list::{
     VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
     VirtualTreeWindow, VirtualViewport,
 };
-pub use widgets::{ButtonKind, ButtonPaintOverride, CardKind};
+pub use widgets::{ButtonKind, CardKind};
 pub use window_chrome::{
     TitleBarDragTracker, WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,
     WindowControlMode, apply_title_bar_pointer, title_bar_hits_window_control,

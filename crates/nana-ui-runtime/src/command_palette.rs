@@ -54,7 +54,6 @@ pub struct CommandPalette {
     pub items: Vec<CommandPaletteItem>,
     /// Items have already been filtered and ranked by the host.
     pub filtered_items: bool,
-    pub query: String,
     pub selected: usize,
     pub state: TextInputState,
     pub style: NodeStyle,
@@ -80,7 +79,6 @@ impl CommandPalette {
             empty_label: Arc::from("没有可用操作"),
             items,
             filtered_items: false,
-            query: String::new(),
             selected: 0,
             state: TextInputState::new(""),
             style: modal_root_style(),
@@ -99,10 +97,14 @@ impl CommandPalette {
 
     pub fn query(mut self, query: impl Into<String>) -> Self {
         let query = query.into();
-        self.query = query.clone();
         self.state = TextInputState::new(query);
         self.selected = 0;
         self
+    }
+
+    /// The current search text, owned by the retained text input state.
+    pub fn query_text(&self) -> &str {
+        self.state.value.as_str()
     }
 
     /// Preserve host-filtered results and their ranking without applying the
@@ -115,13 +117,12 @@ impl CommandPalette {
     pub fn visible_items(&self) -> Vec<&CommandPaletteItem> {
         self.items
             .iter()
-            .filter(|item| self.filtered_items || item_matches(item, &self.query))
+            .filter(|item| self.filtered_items || item_matches(item, self.query_text()))
             .collect()
     }
 
     pub fn set_query(&mut self, query: impl Into<String>) -> CommandPaletteEvent {
         let query = query.into();
-        self.query = query.clone();
         self.state.replace_value(query.clone());
         self.selected = 0;
         CommandPaletteEvent::Search(query)
@@ -162,7 +163,6 @@ impl CommandPalette {
         if !self.state.replace_selection(text) {
             return false;
         }
-        self.query = self.state.value.to_string();
         self.selected = 0;
         true
     }
@@ -181,7 +181,6 @@ impl CommandPalette {
         {
             return false;
         }
-        self.query = self.state.value.to_string();
         self.selected = 0;
         true
     }
@@ -241,7 +240,7 @@ impl ComponentView for CommandPalette {
         let empty = rows.is_empty().then(|| Arc::clone(&self.empty_label));
         let visual = StandardVisual::CommandPalette {
             title: Arc::clone(&self.title),
-            query: Arc::from(self.query.as_str()),
+            query: Arc::from(self.query_text()),
             placeholder: Arc::clone(&self.placeholder),
             empty,
             rows: rows.into(),
@@ -267,7 +266,7 @@ impl ComponentView for CommandPalette {
             AccessibilityState {
                 role: AccessibilityRole::Dialog,
                 label: Some(Arc::clone(&self.title)),
-                value: (!self.query.is_empty()).then(|| Arc::from(self.query.as_str())),
+                value: (!self.query_text().is_empty()).then(|| Arc::from(self.query_text())),
                 modal: true,
                 editable: true,
                 ..AccessibilityState::default()
@@ -560,10 +559,19 @@ mod tests {
         assert!(context.commit_ime(document(), "设").unwrap());
         context
             .read(palette, |palette| {
-                assert_eq!(palette.query, "设");
+                assert_eq!(palette.query_text(), "设");
                 assert_eq!(palette.visible_items().len(), 1);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn text_input_state_is_the_query_authority() {
+        let mut palette = sample().query("files");
+        palette.state.replace_value("设");
+
+        assert_eq!(palette.query_text(), "设");
+        assert_eq!(palette.visible_items().len(), 1);
     }
 
     #[test]

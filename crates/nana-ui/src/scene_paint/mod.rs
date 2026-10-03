@@ -50,8 +50,8 @@ use crate::{
 pub use image_url::{
     resolve_background_image_url, resolved_resource_is_allowed, set_background_image_url_base,
 };
+pub use validate::ScenePaintError;
 use validate::validate_scene;
-pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 /// Final surface encoding for the linear-scRGB Scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -159,6 +159,7 @@ impl ScenePresentationProfile {
     /// operation. Scene targets are always cleared in linear scRGB; a surface
     /// clear happens after the presentation boundary and therefore needs the
     /// same transfer, gamut and alpha ordering as the blit shader.
+    #[allow(clippy::excessive_precision)]
     pub(crate) fn surface_clear(self, color: [f32; 4], encoding: AlphaEncoding) -> wgpu::Color {
         let color = normalize_clear_color(color);
         if self.is_direct_linear() {

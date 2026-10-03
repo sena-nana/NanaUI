@@ -220,6 +220,26 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_runtime_descriptors_keep_build_availability_in_sync() {
+        for support in component_catalog() {
+            let Some(descriptor) =
+                nana_ui_runtime::component_descriptors::builtin_component(support.id.as_str())
+            else {
+                // The public catalog also contains composite, host-only, and
+                // facade entries which intentionally have no runtime
+                // descriptor. Only compare identities that both layers own.
+                continue;
+            };
+
+            assert_eq!(
+                support.compiled, descriptor.compiled,
+                "component availability drift for {}",
+                support.id
+            );
+        }
+    }
+
+    #[test]
     fn qualified_components_route_only_reviewed_runtime_paths() {
         for id in [
             component_ids::TEXT,

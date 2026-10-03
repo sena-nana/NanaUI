@@ -78,7 +78,7 @@
 嵌套 NanaUI 的坐标变换（#251。随 #247 的真实嵌入生产者再加）。以及真实 Windows IME、
 Android、XR 与 accessibility provider 的设备验收。
 
-新代码从 `nana_ui::runtime` 引入控件。crate 根控件兼容面已删除。`runtime::internal` 给 Gallery 和宿主适配器。不是第二套产品 API。`runtime::host` 是 Scene / GPU slot 类型。`runtime::perf` 是帧计数。不是视图状态。
+新代码从 `nana_ui::runtime` 引入控件。crate 根控件兼容面已删除。`runtime::internal` 仅给 Gallery 和宿主适配器、迁移检查使用，已隐藏文档，不是第二套产品 API。`runtime::host` 是 Scene / GPU slot 类型。`runtime::perf` 是帧计数。不是视图状态。
 
 ### 根级兼容入口迁移
 
@@ -86,6 +86,7 @@ Android、XR 与 accessibility provider 的设备验收。
 | --- | --- | --- |
 | `nana_ui::Button`、`Text`、`Workspace` 等根级控件 | 已删除 | 使用 `nana_ui::runtime::{Button, Text, Workspace, ...}` |
 | `nana_ui::Textarea` | 已删除 | 使用 `nana_ui::runtime::TextArea` |
+| `nana_ui::components::*` | 兼容面（隐藏文档） | 新代码使用 `nana_ui::runtime::*`；旧路径仅用于迁移和目录检查 |
 | `AppContext::world_mut()` | 已删除 | 使用 `commit_mutations`；仅内部宿主/适配器使用 `compat_world_mut()` |
 | `nana_ui::dock::*` | `nana_ui::runtime::{Dock, DockWorkspace, ...}` + 宿主适配器 | Dock 树只属于 Runtime |
 
@@ -98,7 +99,7 @@ Vue 产品窗口需要 `nana-ui-vue` 的 `hosted`（隐含 `scene-view`。把 Ui
 
 ## Cargo feature
 
-`nana-ui` 默认 `[]`。按职责打开：
+`nana-ui` 默认打开 `wgpu-backends`（仅在启用 `gpu` 时生效）。需要自选图形后端的应用使用 `default-features = false`，再按职责打开：
 
 | feature | 作用 |
 | --- | --- |
@@ -151,7 +152,7 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 | `host_textures` | 默认；slot → `HostTexture` |
 | `prepare_window_frame` | flush 前准备纹理。窗口遮挡或最小化时 `FrameDemand` 到期仍会调用，包括 0 维；不 flush、不 present。producer encode 仅在尺寸可画时跑 |
 | `window_frame_presented` | present 后释放旧资源。隐藏 GPU tick 不调用 |
-| `scene_gpu_renderers` | 高级。`None` = 演示 `"gpu-view"`；空表 = 不画 |
+| `scene_gpu_renderers` | 高级。`None` = 不注册自定义 renderer（不会隐式安装演示 `"gpu-view"`）；空表 = 明确没有自定义 renderer。需要内置演示 painter 时显式返回 `default_scene_gpu_renderers()` |
 | `scene_resource_producers` | 高级。按图离屏；第一次可忽略 |
 | `bind_window` | present 之后填内容 |
 | `rebuild_gpu` | 设备丢失后重绑资源 |
@@ -450,6 +451,12 @@ Vue 目前没有对应的 CSS 属性。`<img>` 只走默认重采样。
 需要真实滚动占位与屏外编辑保留时。将 List 放在 ScrollView 内。使用
 `materialize_virtual_list_retained_in`。树使用 `materialize_virtual_tree_retained_in`
 和只含展开行的 `VirtualTreeLayout`。列表示例（`list` 已挂载。`items` 跨帧保存）：
+
+`materialize_virtual_list[_in]`、`materialize_virtual_tree[_in]` 和
+`materialize_virtual_table[_in]` 是旧的非定位兼容入口，已隐藏并标记为 deprecated。
+它们只负责可见 key 的挂载和卸载，调用方必须自己安排位置、内容总高度以及焦点/IME
+保留；同一个 `Virtual*Items` 实例不能与 retained 入口混用。新代码统一使用下面的
+retained 入口，旧入口只给尚未迁移的宿主保留过渡期。
 
 ```rust
 cx.materialize_virtual_list_retained_in(

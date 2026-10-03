@@ -82,7 +82,9 @@ cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,w
 cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 ```
 
-`nana-ui` 默认 feature 为空。要出窗口至少启用 `hosted`（含 gpu 与 winit）和 `bundled-fonts`。
+`nana-ui` 默认启用 `wgpu-backends`（仅在启用 `gpu` 时生效）。要出窗口仍需启用
+`hosted`（含 gpu 与 winit）和 `bundled-fonts`；需要自选图形后端时使用
+`default-features = false`。
 
 写第一扇窗口：[快速开始](docs/guide/quick-start.md)。文档索引：[docs/index.md](docs/index.md)。
 

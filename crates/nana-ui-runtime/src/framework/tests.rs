@@ -1,3 +1,9 @@
+//! Compatibility coverage for the legacy unplaced virtual materializer lives
+//! here intentionally. Product behavior is covered by
+//! `framework::virtualize_retained::tests`; these tests ensure hosts that have
+//! not adopted placement containers still get the documented old contract.
+#![allow(deprecated)]
+
 use super::*;
 use std::{
     pin::Pin,
@@ -72,6 +78,26 @@ fn content_sized_checkbox_reserves_indicator_and_label_width() {
 #[derive(Debug)]
 struct Counter {
     value: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ProjectionBoundaryProbe {
+    value: usize,
+}
+
+impl ComponentView for ProjectionBoundaryProbe {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Text
+    }
+
+    fn project(&self, id: StableNodeId, _world: &UiWorld, mutations: &mut MutationQueue) {
+        mutations.set_text(
+            id,
+            TextContent {
+                value: self.value.to_string().into(),
+            },
+        );
+    }
 }
 
 struct Increment(usize);
@@ -889,6 +915,27 @@ fn typed_view_update_delivers_closure_events_and_commits_one_batch() {
             .text
             .contains(&entity.stable_id())
     );
+}
+
+#[test]
+fn raw_update_does_not_run_component_projection() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let probe: Entity<ProjectionBoundaryProbe> = context
+        .create_view(
+            document,
+            NodeKind::Text,
+            ProjectionBoundaryProbe { value: 0 },
+        )
+        .unwrap();
+
+    context.update(probe, |probe, _| probe.value = 1).unwrap();
+    assert_eq!(context.world().text(probe.stable_id()), Some(""));
+
+    context
+        .update_component(probe, |probe, _| probe.value = 2)
+        .unwrap();
+    assert_eq!(context.world().text(probe.stable_id()), Some("2"));
 }
 
 #[test]

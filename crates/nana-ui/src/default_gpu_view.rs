@@ -26,8 +26,9 @@ use crate::scene_paint::pack_linear;
 
 /// Scene painter for [`GPU_VIEW_RENDERER`] (`"gpu-view"`).
 ///
-/// The hosted runtime installs this when a program leaves scene GPU renderers
-/// unset. [`Self::draw_in_pass`]
+/// The hosted runtime never installs this renderer implicitly. Applications
+/// that use the built-in painter must opt in with [`default_scene_gpu_renderers`].
+/// [`Self::draw_in_pass`]
 /// encodes into the current Scene dest pass (Inline). [`Self::render`] opens a
 /// dedicated pass on the same encoder/target when the node asks for one or the
 /// painter cannot join.
@@ -293,7 +294,11 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
     }
 }
 
-/// Registry that contains the host default `"gpu-view"` painter.
+/// Registry that contains the opt-in `"gpu-view"` painter.
+///
+/// The runtime never installs this registry implicitly. Return it from
+/// [`RuntimeProgram::scene_gpu_renderers`](crate::RuntimeProgram::scene_gpu_renderers)
+/// only when the application deliberately opts into the demo painter.
 pub fn default_scene_gpu_renderers() -> SceneGpuRendererRegistry {
     scene_gpu_renderers_with_gpu_view(DefaultGpuViewRenderer::new())
 }
@@ -302,18 +307,6 @@ fn scene_gpu_renderers_with_gpu_view(renderer: DefaultGpuViewRenderer) -> SceneG
     let mut registry = SceneGpuRendererRegistry::new();
     registry.insert(GPU_VIEW_RENDERER, Arc::new(renderer));
     registry
-}
-
-/// Prefer a program-supplied registry. `None` keeps [`fallback`], including a
-/// missing fallback when the host has no GPU resources.
-pub fn resolve_scene_gpu_renderers(
-    program: Option<SceneGpuRendererRegistry>,
-    fallback: Option<SceneGpuRendererRegistry>,
-) -> Option<SceneGpuRendererRegistry> {
-    match program {
-        Some(registry) => Some(registry),
-        None => fallback,
-    }
 }
 
 /// Instances a run of `gpu-view` nodes draws from. One vertex buffer, one bind
@@ -684,39 +677,5 @@ mod tests {
         let registry = default_scene_gpu_renderers();
         assert!(registry.get(GPU_VIEW_RENDERER).is_some());
         assert!(registry.get("gpu-view").is_some());
-    }
-
-    #[test]
-    fn resolve_scene_gpu_renderers_keeps_program_registry() {
-        let mut program = SceneGpuRendererRegistry::new();
-        program.insert("app-renderer", Arc::new(DefaultGpuViewRenderer::new()));
-        let resolved =
-            resolve_scene_gpu_renderers(Some(program), Some(default_scene_gpu_renderers()))
-                .expect("program registry is preserved");
-        assert!(resolved.get("app-renderer").is_some());
-        assert!(resolved.get(GPU_VIEW_RENDERER).is_none());
-    }
-
-    #[test]
-    fn resolve_scene_gpu_renderers_does_not_replace_empty_program_registry() {
-        let resolved = resolve_scene_gpu_renderers(
-            Some(SceneGpuRendererRegistry::new()),
-            Some(default_scene_gpu_renderers()),
-        )
-        .expect("empty Some is not treated as None");
-        assert!(resolved.is_empty());
-        assert!(resolved.get(GPU_VIEW_RENDERER).is_none());
-    }
-
-    #[test]
-    fn resolve_scene_gpu_renderers_uses_default_gpu_view_when_program_is_none() {
-        let resolved = resolve_scene_gpu_renderers(None, Some(default_scene_gpu_renderers()))
-            .expect("fallback registry is used");
-        assert!(resolved.get(GPU_VIEW_RENDERER).is_some());
-    }
-
-    #[test]
-    fn resolve_scene_gpu_renderers_stays_none_without_gpu_fallback() {
-        assert!(resolve_scene_gpu_renderers(None, None).is_none());
     }
 }
