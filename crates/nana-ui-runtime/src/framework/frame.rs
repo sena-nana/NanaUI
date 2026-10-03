@@ -307,6 +307,9 @@ impl AppContext {
                 &mut self.layout_cache,
                 force_full,
             )?;
+            let intrinsic_counters = self.layout_cache.take_intrinsic_counters();
+            self.world
+                .record_intrinsic_measure_counters(intrinsic_counters);
             completed(1);
             let mut mutations = MutationQueue::new();
             let mut scope = Vec::with_capacity(layouts.len());

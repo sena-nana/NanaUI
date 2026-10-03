@@ -109,6 +109,14 @@ pub struct SystemWork {
     pub text_layout_cache_misses: usize,
     /// Shape calls that requested wrapping. Zero until shaping.
     pub text_wrap_layouts: usize,
+    pub intrinsic_measure_requests: usize,
+    pub intrinsic_measure_cache_hits: usize,
+    pub intrinsic_measure_cache_misses: usize,
+    pub intrinsic_measure_full_subtrees: usize,
+    pub intrinsic_generation_bumps: usize,
+    pub baseline_queries: usize,
+    pub cross_context_measure_hits: usize,
+    pub cross_context_measure_misses: usize,
     /// `GlyphCache` lookup hits. `None` until a glyph backend consults it.
     pub glyph_cache_hits: Option<usize>,
     /// `GlyphCache` inserts after a miss. `None` until consulted.
@@ -161,6 +169,14 @@ impl SystemWork {
             text_layout_cache_hits: self.text_layout_cache_hits,
             text_layout_cache_misses: self.text_layout_cache_misses,
             text_wrap_layouts: self.text_wrap_layouts,
+            intrinsic_measure_requests: self.intrinsic_measure_requests,
+            intrinsic_measure_cache_hits: self.intrinsic_measure_cache_hits,
+            intrinsic_measure_cache_misses: self.intrinsic_measure_cache_misses,
+            intrinsic_measure_full_subtrees: self.intrinsic_measure_full_subtrees,
+            intrinsic_generation_bumps: self.intrinsic_generation_bumps,
+            baseline_queries: self.baseline_queries,
+            cross_context_measure_hits: self.cross_context_measure_hits,
+            cross_context_measure_misses: self.cross_context_measure_misses,
             glyph_cache_hits: self.glyph_cache_hits,
             glyph_cache_misses: self.glyph_cache_misses,
             cache_eviction: self.cache_eviction,
@@ -202,6 +218,37 @@ impl SystemWork {
         self.text_layout_cache_hits = self.text_layout_cache_hits.saturating_add(cache_hits);
         self.text_layout_cache_misses = self.text_layout_cache_misses.saturating_add(cache_misses);
         self.text_wrap_layouts = self.text_wrap_layouts.saturating_add(wrap_layouts);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_intrinsic_measure(
+        &mut self,
+        requests: usize,
+        hits: usize,
+        misses: usize,
+        full_subtrees: usize,
+        generation_bumps: usize,
+        baseline_queries: usize,
+        cross_context_hits: usize,
+        cross_context_misses: usize,
+    ) {
+        self.intrinsic_measure_requests = self.intrinsic_measure_requests.saturating_add(requests);
+        self.intrinsic_measure_cache_hits = self.intrinsic_measure_cache_hits.saturating_add(hits);
+        self.intrinsic_measure_cache_misses =
+            self.intrinsic_measure_cache_misses.saturating_add(misses);
+        self.intrinsic_measure_full_subtrees = self
+            .intrinsic_measure_full_subtrees
+            .saturating_add(full_subtrees);
+        self.intrinsic_generation_bumps = self
+            .intrinsic_generation_bumps
+            .saturating_add(generation_bumps);
+        self.baseline_queries = self.baseline_queries.saturating_add(baseline_queries);
+        self.cross_context_measure_hits = self
+            .cross_context_measure_hits
+            .saturating_add(cross_context_hits);
+        self.cross_context_measure_misses = self
+            .cross_context_measure_misses
+            .saturating_add(cross_context_misses);
     }
 
     pub fn record_cache_eviction(&mut self, evictions: usize) {

@@ -80,6 +80,15 @@ pub struct WorkCounters {
     pub text_layout_cache_misses: usize,
     /// Shape calls that requested wrapping (`TextShapeConstraints.wrap`).
     pub text_wrap_layouts: usize,
+    /// Shared intrinsic measurement authority counters (Issue #198).
+    pub intrinsic_measure_requests: usize,
+    pub intrinsic_measure_cache_hits: usize,
+    pub intrinsic_measure_cache_misses: usize,
+    pub intrinsic_measure_full_subtrees: usize,
+    pub intrinsic_generation_bumps: usize,
+    pub baseline_queries: usize,
+    pub cross_context_measure_hits: usize,
+    pub cross_context_measure_misses: usize,
     /// `GlyphCache::lookup` hits. `None` until a glyph backend consults the
     /// cache this pass — omitted, never a fake 0.
     pub glyph_cache_hits: Option<usize>,
@@ -189,6 +198,28 @@ impl WorkCounters {
         self.text_wrap_layouts = self
             .text_wrap_layouts
             .saturating_add(other.text_wrap_layouts);
+        self.intrinsic_measure_requests = self
+            .intrinsic_measure_requests
+            .saturating_add(other.intrinsic_measure_requests);
+        self.intrinsic_measure_cache_hits = self
+            .intrinsic_measure_cache_hits
+            .saturating_add(other.intrinsic_measure_cache_hits);
+        self.intrinsic_measure_cache_misses = self
+            .intrinsic_measure_cache_misses
+            .saturating_add(other.intrinsic_measure_cache_misses);
+        self.intrinsic_measure_full_subtrees = self
+            .intrinsic_measure_full_subtrees
+            .saturating_add(other.intrinsic_measure_full_subtrees);
+        self.intrinsic_generation_bumps = self
+            .intrinsic_generation_bumps
+            .saturating_add(other.intrinsic_generation_bumps);
+        self.baseline_queries = self.baseline_queries.saturating_add(other.baseline_queries);
+        self.cross_context_measure_hits = self
+            .cross_context_measure_hits
+            .saturating_add(other.cross_context_measure_hits);
+        self.cross_context_measure_misses = self
+            .cross_context_measure_misses
+            .saturating_add(other.cross_context_measure_misses);
         fold_optional_count(&mut self.glyph_cache_hits, other.glyph_cache_hits);
         fold_optional_count(&mut self.glyph_cache_misses, other.glyph_cache_misses);
         fold_optional_count(&mut self.cache_eviction, other.cache_eviction);
@@ -242,6 +273,37 @@ impl WorkCounters {
         self.text_layout_cache_hits = self.text_layout_cache_hits.saturating_add(cache_hits);
         self.text_layout_cache_misses = self.text_layout_cache_misses.saturating_add(cache_misses);
         self.text_wrap_layouts = self.text_wrap_layouts.saturating_add(wrap_layouts);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_intrinsic_measure(
+        &mut self,
+        requests: usize,
+        hits: usize,
+        misses: usize,
+        full_subtrees: usize,
+        generation_bumps: usize,
+        baseline_queries: usize,
+        cross_context_hits: usize,
+        cross_context_misses: usize,
+    ) {
+        self.intrinsic_measure_requests = self.intrinsic_measure_requests.saturating_add(requests);
+        self.intrinsic_measure_cache_hits = self.intrinsic_measure_cache_hits.saturating_add(hits);
+        self.intrinsic_measure_cache_misses =
+            self.intrinsic_measure_cache_misses.saturating_add(misses);
+        self.intrinsic_measure_full_subtrees = self
+            .intrinsic_measure_full_subtrees
+            .saturating_add(full_subtrees);
+        self.intrinsic_generation_bumps = self
+            .intrinsic_generation_bumps
+            .saturating_add(generation_bumps);
+        self.baseline_queries = self.baseline_queries.saturating_add(baseline_queries);
+        self.cross_context_measure_hits = self
+            .cross_context_measure_hits
+            .saturating_add(cross_context_hits);
+        self.cross_context_measure_misses = self
+            .cross_context_measure_misses
+            .saturating_add(cross_context_misses);
     }
 
     /// Record `TextLayoutCache` FIFO evictions. Does not invent glyph evictions.
@@ -600,6 +662,27 @@ mod tests {
         });
         assert_eq!(total.glyph_cache_hits, Some(3));
         assert_eq!(total.glyph_cache_misses, Some(4));
+    }
+
+    #[test]
+    fn intrinsic_measure_counters_are_published_and_accumulate() {
+        let mut counters = WorkCounters::default();
+        counters.record_intrinsic_measure(5, 2, 3, 1, 4, 6, 7, 8);
+        assert_eq!(counters.intrinsic_measure_requests, 5);
+        assert_eq!(counters.intrinsic_measure_cache_hits, 2);
+        assert_eq!(counters.intrinsic_measure_cache_misses, 3);
+        assert_eq!(counters.intrinsic_measure_full_subtrees, 1);
+        assert_eq!(counters.intrinsic_generation_bumps, 4);
+        assert_eq!(counters.baseline_queries, 6);
+        assert_eq!(counters.cross_context_measure_hits, 7);
+        assert_eq!(counters.cross_context_measure_misses, 8);
+        counters.accumulate(WorkCounters {
+            intrinsic_measure_requests: 1,
+            intrinsic_measure_cache_hits: 1,
+            ..WorkCounters::default()
+        });
+        assert_eq!(counters.intrinsic_measure_requests, 6);
+        assert_eq!(counters.intrinsic_measure_cache_hits, 3);
     }
 
     #[test]

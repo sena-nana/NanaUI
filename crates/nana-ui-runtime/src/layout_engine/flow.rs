@@ -285,7 +285,7 @@ pub(super) fn pack_floated_children(
     viewport: LayoutViewport,
     child_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<PackedFloats, UiWorldError> {
     let mut items = Vec::with_capacity(floated.len());
