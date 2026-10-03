@@ -22,6 +22,7 @@ pub mod icon;
 mod icon_data;
 pub mod layout;
 pub mod layout_authority;
+pub mod layout_foundation;
 mod layout_style_api;
 pub mod menu;
 pub mod menu_bar;
@@ -97,6 +98,12 @@ pub use layout::{
 };
 pub use layout_authority::{
     LayoutFieldMask, LayoutIntent, LayoutOrigin, LayoutOwnership, resolve_layout_intent,
+};
+pub use layout_foundation::{
+    BaselinePolicy, ConstraintClass, FormattingContext, FragmentKind, IntrinsicMetrics,
+    LayoutBehavior, LayoutFoundation, LayoutFoundationCounters, LayoutFragment, LayoutNode,
+    LayoutNodeId, LayoutPlacement, LayoutRect, LayoutResult, LayoutSize, ObjectFit, Participation,
+    PlacementMode, ReplacedContent, UsedSize,
 };
 pub use menu::{MenuConfirmation, MenuSelection};
 pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};

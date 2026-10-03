@@ -11,9 +11,12 @@
 //! | hit-test 预绘制盒 | 同上 | 适配器 |
 //!
 //! `layoutBox` / `getBoundingClientRect` **优先**读 Scene 盒；本模块把
-//! [`LayoutNode`] 交给同一个 `RuntimeLayoutEngine`，供
+//! 下面的 **style-only adapter** [`LayoutNode`] 交给同一个
+//! `RuntimeLayoutEngine`，供
 //! `VueHost::resolve_layout` 在尚未 paint 时填充文档缓存，并与 css-parity 对齐。
 //! 产品 Vue 混合树走 `RuntimeDocument::flush` 文本+布局，不再另写一套 measure。
+//! 它不是 NanaUI 的 canonical `nana_ui_core::LayoutNode`，也不持有 retained
+//! identity、participation、metrics 或 geometry authority。
 //!
 //! 盒边 / content-box / inset / gap 解析消费 `nana-ui-core::box_layout`。
 //! 布局算法本身只在 Runtime 引擎里实现一次（wrap / 2D grid / auto-fill /
@@ -25,7 +28,11 @@ use crate::css_map::{FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, Leng
 use nana_ui_core::DisplaySpec;
 use nana_ui_runtime::{LayoutViewport, RuntimeLayoutEngine, StyleLayoutNode};
 
-/// 待测布局树节点。
+/// 预绘制/css-parity 的 style-only 适配节点。
+///
+/// The canonical retained identity lives in `nana_ui_core::LayoutNode`; this
+/// short-lived string-keyed tree is lowered to `StyleLayoutNode` solely for
+/// the shared Runtime algorithm.
 #[derive(Debug, Clone)]
 pub struct LayoutNode {
     pub id: String,

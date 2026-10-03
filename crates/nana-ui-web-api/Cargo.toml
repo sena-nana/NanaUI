@@ -10,6 +10,12 @@ license = "MIT OR Apache-2.0"
 name = "nana_ui_web_api"
 path = "src/lib.rs"
 
+[features]
+# The Web API remains buildable on minimal Linux images without ALSA headers.
+# Desktop applications that want a real cpal output device opt in explicitly.
+default = []
+native-audio = ["dep:cpal"]
+
 [dependencies]
 base64.workspace = true
 crossbeam-channel.workspace = true
@@ -27,4 +33,4 @@ nana-text.workspace = true
 swash = "0.2.10"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
-cpal.workspace = true
+cpal = { workspace = true, optional = true }

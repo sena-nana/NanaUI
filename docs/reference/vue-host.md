@@ -68,7 +68,7 @@ class 和 role hints 把地标标签改成具体控件时，保留控件角色�
 
 有这些：`window` 和 `document` 的一个子集、事件、定时器、`requestAnimationFrame`、本地存储（应用 namespace；默认内存，宿主注入 `FileStore` 后主上下文可落盘）、`Nana.storage`（应用 namespace 上的 JSON 助手）、桌面剪贴板、`fetch`（响应头到了就 resolve，正文可以边到边读）、Web Audio 的 PCM 子集（`AudioContext`、从 `Float32Array` 填充的 `AudioBuffer`、`AudioBufferSourceNode`、`GainNode`、`destination`、`ScriptProcessorNode` / `onaudioprocess`）。
 
-桌面输出走 cpal。没有宿主，或没有输出设备时，构造 `AudioContext` 抛 `NotSupportedError`。测试注入 mock sink，不依赖扬声器。这条路径不写 HostTexture。
+桌面输出在启用 `native-audio` 特性时走 cpal；最小构建默认不携带系统音频后端。没有宿主、未启用该特性或没有输出设备时，构造 `AudioContext` 抛 `NotSupportedError`。测试注入 mock sink，不依赖扬声器。这条路径不写 HostTexture。
 
 没有这些：完整 DOM 和 CSSOM、流式**请求**体、cookie、浏览器 CORS、Service Worker、IndexedDB（`indexedDB.open`、`deleteDatabase`、`databases`、`cmp` 抛 `NotSupportedError`。结构化持久数据走 `Nana.storage`，或你注册的 `HostApiRegistry`）、Tauri invoke、插件、窗口协议、完整 Web Audio 节点图、空间化、`AudioWorklet`、`decodeAudioData`。
 

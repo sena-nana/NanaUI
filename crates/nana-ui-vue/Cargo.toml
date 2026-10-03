@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["wgpu-backends"]
+native-audio = ["nana-ui-web-api/native-audio"]
 # See nana-ui's `wgpu-backends`.
 wgpu-backends = ["nana-ui/wgpu-backends"]
 calendar = ["nana-ui-runtime/calendar", "nana-ui-scene/calendar", "nana-ui/calendar"]
