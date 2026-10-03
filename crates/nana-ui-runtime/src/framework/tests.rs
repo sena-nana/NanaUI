@@ -15,9 +15,9 @@ use crate::{
     Activate, AnimationId, AnimationSpec, Button, Card, Checkbox, Easing, IconButton, List,
     ListItem, NodeStyle, RangeAdjustment, RangeChanged, RangeField, RangeInput, ScrollAxes,
     ScrollChanged, ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested,
-    Stack, StandardVisual, Switch, TabOption, Table, TableCell, TableCellFocused, TableNavigation,
-    TableRow, Tabs, Text, TextArea, TextCaretIntent, TextChanged, TextCodeFold, TextContent,
-    TextInlay, TextInput, TextSelection, ToggleChanged,
+    Select, SelectOption, Stack, StandardVisual, Switch, TabOption, Table, TableCell,
+    TableCellFocused, TableNavigation, TableRow, Tabs, Text, TextArea, TextCaretIntent,
+    TextChanged, TextCodeFold, TextContent, TextInlay, TextInput, TextSelection, ToggleChanged,
 };
 
 #[test]
@@ -2359,6 +2359,60 @@ fn range_accessibility_set_value_uses_quantized_typed_action() {
     assert_eq!(node.numeric_maximum, Some(1.0));
     assert_eq!(node.numeric_step, Some(0.25));
     assert_eq!(node.numeric_value, Some(0.5));
+}
+
+#[test]
+fn accessibility_step_actions_move_a_range_by_one_step() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let range = context
+        .create_component(document, RangeField::new(0.5, 0.0, 1.0, 0.25))
+        .unwrap();
+    let action = |context: &mut AppContext, action| {
+        context
+            .apply_accessibility_action(
+                document,
+                AccessibilityActionRequest {
+                    target: range.stable_id(),
+                    action,
+                },
+            )
+            .unwrap()
+    };
+    assert!(action(&mut context, AccessibilityAction::Increment));
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 0.75);
+    assert!(action(&mut context, AccessibilityAction::Decrement));
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 0.5);
+}
+
+#[test]
+fn accessibility_combo_actions_open_and_close_a_select() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let select = context
+        .create_component(
+            document,
+            Select::new(Some("one")).options([
+                SelectOption::new("one", "One"),
+                SelectOption::new("two", "Two"),
+            ]),
+        )
+        .unwrap();
+    let act = |context: &mut AppContext, action| {
+        context
+            .apply_accessibility_action(
+                document,
+                AccessibilityActionRequest {
+                    target: select.stable_id(),
+                    action,
+                },
+            )
+            .unwrap()
+    };
+    assert!(act(&mut context, AccessibilityAction::Expand));
+    assert!(context.read(select, |select| select.opened).unwrap());
+    assert!(act(&mut context, AccessibilityAction::Collapse));
+    assert!(!context.read(select, |select| select.opened).unwrap());
 }
 
 #[test]

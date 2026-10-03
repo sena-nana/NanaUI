@@ -2739,6 +2739,36 @@ impl AppContext {
                 }
                 self.focus_node(document, request.target)
             }
+            AccessibilityAction::Increment | AccessibilityAction::Decrement => {
+                let steps = matches!(request.action, AccessibilityAction::Increment) as i32 * 2 - 1;
+                if let Some(entity) = self.view_entity::<RangeField>(request.target) {
+                    return self.adjust_range(
+                        entity,
+                        if steps > 0 {
+                            RangeAdjustment::Increment
+                        } else {
+                            RangeAdjustment::Decrement
+                        },
+                    );
+                }
+                if let Some(entity) = self.view_entity::<NumberInput>(request.target) {
+                    return self.step_number_input(entity, steps);
+                }
+                Ok(false)
+            }
+            AccessibilityAction::Expand | AccessibilityAction::Collapse => {
+                let expand = matches!(request.action, AccessibilityAction::Expand);
+                if let Some(entity) = self.view_entity::<Select>(request.target) {
+                    return self.set_select_opened(entity, expand);
+                }
+                if let Some(entity) = self.view_entity::<Dropdown>(request.target) {
+                    return self.set_dropdown_opened(entity, expand);
+                }
+                if let Some(entity) = self.view_entity::<SearchDropdown>(request.target) {
+                    return self.set_search_dropdown_opened(entity, expand);
+                }
+                Ok(false)
+            }
             AccessibilityAction::Scroll(direction) => {
                 if !self.world.is_scroll_container(request.target) {
                     return Ok(false);

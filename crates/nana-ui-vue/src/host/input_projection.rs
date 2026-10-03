@@ -1154,6 +1154,73 @@ impl VueHost {
         let _ = self.pump_frame(engine)?;
         Ok(true)
     }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn accessibility_step<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+        direction: i32,
+    ) -> Result<bool, JsEngineError> {
+        let widget = self
+            .bridge
+            .lock()
+            .expect("vue bridge")
+            .get(target.0)
+            .cloned();
+        let Some(widget) = widget else {
+            return Ok(false);
+        };
+        if widget.props.disabled || widget.props.loading {
+            return Ok(false);
+        }
+        let kind = widget.kind;
+        if !matches!(kind, WidgetKind::Range | WidgetKind::NumberInput) {
+            return Ok(false);
+        }
+        let value =
+            widget.props.number + direction.signum() as f32 * widget.props.step.max(0.000_001);
+        let value = if kind == WidgetKind::Range {
+            value.clamp(widget.props.min, widget.props.max)
+        } else {
+            value
+        };
+        if kind == WidgetKind::NumberInput {
+            return self.accessibility_set_value(engine, target, &value.to_string());
+        }
+        let result = self.semantic_default_action(engine, target, Some(f64::from(value)), None)?;
+        Ok(result.handled && !result.default_prevented)
+    }
+
+    #[cfg(feature = "hosted")]
+    pub(crate) fn accessibility_set_expanded<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+        expanded: bool,
+    ) -> Result<bool, JsEngineError> {
+        let widget = self
+            .bridge
+            .lock()
+            .expect("vue bridge")
+            .get(target.0)
+            .cloned();
+        let Some(widget) = widget else {
+            return Ok(false);
+        };
+        if widget.props.disabled || widget.props.loading {
+            return Ok(false);
+        }
+        if !matches!(
+            widget.kind,
+            WidgetKind::Select | WidgetKind::Dropdown | WidgetKind::SearchDropdown
+        ) || widget.props.active == expanded
+        {
+            return Ok(false);
+        }
+        let result = self.semantic_default_action(engine, target, None, Some(BTreeMap::new()))?;
+        Ok(result.handled && !result.default_prevented)
+    }
     #[cfg(any(test, feature = "hosted"))]
     pub(crate) fn accessibility_set_selection<E: JsEngine + ?Sized>(
         &mut self,

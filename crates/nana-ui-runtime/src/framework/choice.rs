@@ -3,6 +3,76 @@
 use super::*;
 
 impl AppContext {
+    pub(crate) fn set_select_opened(
+        &mut self,
+        entity: Entity<Select>,
+        opened: bool,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, Select::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |select, _| {
+            if select.opened == opened {
+                false
+            } else if opened {
+                select.toggle_open()
+            } else {
+                select.close();
+                true
+            }
+        })
+    }
+
+    pub(crate) fn set_dropdown_opened(
+        &mut self,
+        entity: Entity<Dropdown>,
+        opened: bool,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, Dropdown::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if dropdown.opened == opened {
+                return false;
+            }
+            if opened {
+                dropdown.toggle_open().is_some_and(|event| {
+                    cx.emit(event);
+                    true
+                })
+            } else {
+                dropdown.close().is_some_and(|event| {
+                    cx.emit(event);
+                    true
+                })
+            }
+        })
+    }
+
+    pub(crate) fn set_search_dropdown_opened(
+        &mut self,
+        entity: Entity<SearchDropdown>,
+        opened: bool,
+    ) -> Result<bool, FrameworkError> {
+        if self.read(entity, SearchDropdown::inactive)? {
+            return Ok(false);
+        }
+        self.update_component(entity, |dropdown, cx| {
+            if dropdown.opened == opened {
+                return false;
+            }
+            let event = if opened {
+                dropdown.toggle_open()
+            } else {
+                dropdown.close()
+            };
+            event.is_some_and(|event| {
+                cx.emit(event);
+                true
+            })
+        })
+    }
+
     pub fn toggle_select(&mut self, entity: Entity<Select>) -> Result<bool, FrameworkError> {
         if self.read(entity, Select::inactive)? {
             return Ok(false);

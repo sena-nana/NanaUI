@@ -2984,6 +2984,14 @@ pub enum AccessibilityAction {
         index: usize,
     },
     Focus,
+    /// Increase a numeric control by one exposed step.
+    Increment,
+    /// Decrease a numeric control by one exposed step.
+    Decrement,
+    /// Open an expandable control such as a combobox.
+    Expand,
+    /// Close an expandable control such as a combobox.
+    Collapse,
     /// Move the target scroll container by one viewport in the requested
     /// direction. The runtime clamps the result to its published range.
     Scroll(AccessibilityScrollDirection),

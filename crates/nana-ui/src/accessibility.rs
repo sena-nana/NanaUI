@@ -445,6 +445,16 @@ impl AccessibilityProjector {
             Action::Focus if supports_focus(node.role) => {
                 nana_ui_runtime::AccessibilityAction::Focus
             }
+            Action::Increment if supports_numeric_step(node) => {
+                nana_ui_runtime::AccessibilityAction::Increment
+            }
+            Action::Decrement if supports_numeric_step(node) => {
+                nana_ui_runtime::AccessibilityAction::Decrement
+            }
+            Action::Expand if supports_expand(node) => nana_ui_runtime::AccessibilityAction::Expand,
+            Action::Collapse if supports_collapse(node) => {
+                nana_ui_runtime::AccessibilityAction::Collapse
+            }
             Action::ScrollDown if node.scroll_y.is_some() => {
                 nana_ui_runtime::AccessibilityAction::Scroll(AccessibilityScrollDirection::Down)
             }
@@ -1055,6 +1065,16 @@ fn project_node(
     if interactive && !node.disabled && supports_set_value(node) {
         projected.add_action(Action::SetValue);
     }
+    if interactive && !node.disabled && supports_numeric_step(node) {
+        projected.add_action(Action::Increment);
+        projected.add_action(Action::Decrement);
+    }
+    if interactive && !node.disabled && supports_expand(node) {
+        projected.add_action(Action::Expand);
+    }
+    if interactive && !node.disabled && supports_collapse(node) {
+        projected.add_action(Action::Collapse);
+    }
     if let Some(selection) = text_run_id.and_then(|id| projected_text_selection(node, id)) {
         projected.set_text_selection(selection);
         if interactive && !node.disabled {
@@ -1124,6 +1144,21 @@ const fn supports_focus(role: AccessibilityRole) -> bool {
 const fn supports_set_value(node: &AccessibilityNode) -> bool {
     (matches!(node.role, AccessibilityRole::TextInput) && node.editable)
         || matches!(node.role, AccessibilityRole::Slider)
+}
+
+fn supports_numeric_step(node: &AccessibilityNode) -> bool {
+    node.role == AccessibilityRole::Slider
+        && node.numeric_step.is_some()
+        && node.numeric_minimum.is_some()
+        && node.numeric_maximum.is_some()
+}
+
+fn supports_expand(node: &AccessibilityNode) -> bool {
+    node.role == AccessibilityRole::ComboBox && node.selected != Some(true)
+}
+
+fn supports_collapse(node: &AccessibilityNode) -> bool {
+    node.role == AccessibilityRole::ComboBox && node.selected == Some(true)
 }
 
 fn projected_text_selection(
@@ -1924,6 +1959,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn sliders_and_combos_project_step_and_expansion_actions() {
+        let root = node(1, None, &[2, 3]);
+        let mut slider = node(2, Some(1), &[]);
+        slider.role = AccessibilityRole::Slider;
+        slider.numeric_minimum = Some(0.0);
+        slider.numeric_maximum = Some(10.0);
+        slider.numeric_step = Some(1.0);
+        let mut opened = node(3, Some(1), &[]);
+        opened.role = AccessibilityRole::ComboBox;
+        opened.selected = Some(true);
+        let (projector, update) =
+            AccessibilityProjector::new(vec![root, slider, opened], true, 1.0);
+        let slider_node = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(2))
+            .unwrap()
+            .1
+            .clone();
+        assert!(slider_node.supports_action(Action::Increment));
+        assert!(slider_node.supports_action(Action::Decrement));
+        for action in [Action::Increment, Action::Decrement] {
+            let request = projector
+                .project_action_request(ActionRequest {
+                    action,
+                    target_tree: TreeId::ROOT,
+                    target_node: NodeId(2),
+                    data: None,
+                })
+                .unwrap();
+            assert_eq!(
+                request.action,
+                match action {
+                    Action::Increment => nana_ui_runtime::AccessibilityAction::Increment,
+                    Action::Decrement => nana_ui_runtime::AccessibilityAction::Decrement,
+                    _ => unreachable!(),
+                }
+            );
+        }
+        let combo_node = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(3))
+            .unwrap()
+            .1
+            .clone();
+        assert!(!combo_node.supports_action(Action::Expand));
+        assert!(combo_node.supports_action(Action::Collapse));
+        let request = projector
+            .project_action_request(ActionRequest {
+                action: Action::Collapse,
+                target_tree: TreeId::ROOT,
+                target_node: NodeId(3),
+                data: None,
+            })
+            .unwrap();
+        assert_eq!(
+            request.action,
+            nana_ui_runtime::AccessibilityAction::Collapse
+        );
     }
 
     #[test]

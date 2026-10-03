@@ -291,6 +291,30 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                     .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
                 host.accessibility_focus(&mut self.engine, target)
             }
+            nana_ui_runtime::AccessibilityAction::Increment => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+                host.accessibility_step(&mut self.engine, target, 1)
+            }
+            nana_ui_runtime::AccessibilityAction::Decrement => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+                host.accessibility_step(&mut self.engine, target, -1)
+            }
+            nana_ui_runtime::AccessibilityAction::Expand => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+                host.accessibility_set_expanded(&mut self.engine, target, true)
+            }
+            nana_ui_runtime::AccessibilityAction::Collapse => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+                host.accessibility_set_expanded(&mut self.engine, target, false)
+            }
             nana_ui_runtime::AccessibilityAction::Click => {
                 let mut host = host
                     .lock()
