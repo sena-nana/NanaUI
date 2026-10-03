@@ -1,5 +1,7 @@
 //! Device-backed checks of the GPU contract.
 
+#![recursion_limit = "256"]
+
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},

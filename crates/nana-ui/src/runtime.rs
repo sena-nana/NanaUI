@@ -6,8 +6,8 @@
 //! [`docs/reference/application-api.md`](../../../docs/reference/application-api.md).
 //!
 //! Typed views and `register_component` live here. Scene types are also under
-//! [`host`]; frame counters under [`perf`]. [`internal`] is the same Runtime
-//! crate for Gallery and host adapters — not a second contract.
+//! [`host`]; frame counters under [`perf`]. [`internal`] is reserved for host
+//! adapters and migration checks — not a second product contract.
 
 /// Scene host: retained document, render scene, opaque GPU slot keys.
 pub mod host {
@@ -28,7 +28,11 @@ pub mod perf {
     };
 }
 
-/// Full `nana-ui-runtime` surface. Prefer the parent module for new applications.
+/// Full `nana-ui-runtime` surface for host adapters and migration checks.
+///
+/// This is a compatibility escape hatch, not a second application API. New
+/// product code should import from [`crate::runtime`] directly.
+#[doc(hidden)]
 pub mod internal {
     pub use nana_ui_runtime::*;
     pub use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, SceneDelta, UiScene};

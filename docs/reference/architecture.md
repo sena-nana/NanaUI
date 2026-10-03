@@ -179,7 +179,9 @@ Runtime 节点仍拥有布局、可访问性、可见性和生命周期锚点。
 
 ## 编译边界
 
-`nana-ui` 的默认 feature 是空的。你要显式打开 `hosted`、`bundled-fonts` 和各控件族。
+`nana-ui` 默认打开 `wgpu-backends`（仅在启用 `gpu` 时生效）。你仍要显式打开
+`hosted`、`bundled-fonts` 和各控件族；需要自选图形后端时使用
+`default-features = false`。
 
 `gpu` 和字体是独立的上层边界。`hosted` 和 `gpu` 确实控制 `mod` 是否编译。
 

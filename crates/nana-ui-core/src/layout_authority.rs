@@ -59,7 +59,7 @@ impl LayoutFieldMask {
     /// Classify a CSS longhand (or the corresponding L3 field name).
     pub fn from_property(property: &str) -> Self {
         let property = property.trim().to_ascii_lowercase();
-        let group = if property.contains("font")
+        if property.contains("font")
             || property.contains("text")
             || property.contains("line-height")
             || property.contains("letter-spacing")
@@ -112,8 +112,7 @@ impl LayoutFieldMask {
             Self::INTERACTION
         } else {
             Self::INTRINSIC
-        };
-        group
+        }
     }
 }
 
@@ -406,10 +405,14 @@ mod tests {
 
     #[test]
     fn resolver_preserves_component_defaults_without_author_fields() {
-        let mut component = crate::LayoutStyle::default();
-        component.direction = Some(FlexDirection::Row);
-        let mut author = crate::LayoutStyle::default();
-        author.direction = Some(FlexDirection::Column);
+        let component = crate::LayoutStyle {
+            direction: Some(FlexDirection::Row),
+            ..Default::default()
+        };
+        let author = crate::LayoutStyle {
+            direction: Some(FlexDirection::Column),
+            ..Default::default()
+        };
         let resolved = resolve_layout_intent(
             &component,
             &author,
@@ -421,10 +424,14 @@ mod tests {
 
     #[test]
     fn resolver_applies_author_fields_and_protects_required_fields() {
-        let mut component = crate::LayoutStyle::default();
-        component.direction = Some(FlexDirection::Row);
-        let mut author = crate::LayoutStyle::default();
-        author.direction = Some(FlexDirection::Column);
+        let component = crate::LayoutStyle {
+            direction: Some(FlexDirection::Row),
+            ..Default::default()
+        };
+        let author = crate::LayoutStyle {
+            direction: Some(FlexDirection::Column),
+            ..Default::default()
+        };
         let resolved = resolve_layout_intent(
             &component,
             &author,

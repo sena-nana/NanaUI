@@ -1,7 +1,8 @@
-//! Runtime component re-exports.
+//! Compatibility component re-exports.
 //!
-//! Product types live in `nana-ui-runtime` and are re-exported here for existing
-//! `components::` paths used by catalog tests.
+//! Product types live in `nana-ui-runtime` and are re-exported here only for
+//! in-crate catalog checks and downstream migration. New code should use
+//! [`crate::runtime`] instead.
 
 pub use nana_ui_core::ControlSize;
 pub use nana_ui_core::{AppearanceEvent, CommandPaletteEvent, CommandPaletteItem};

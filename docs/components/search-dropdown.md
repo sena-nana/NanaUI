@@ -48,7 +48,7 @@ widget(
 
 ## 查询
 
-`set_query` 同时改 `query`、输入状态和高亮的第一项。查询字符串以已提交的输入为准，`set_query` 会同时改 `query`、输入状态，并把高亮移到第一项可见结果。
+`.query(...)` 初始化查询；`set_query` 同时改输入状态和高亮的第一项。查询字符串以已提交的输入为准，读取当前值使用 `query_text()`。
 
 匹配不区分大小写，看标签、值和 `hint`。空查询时全部选项可见。`visible_indices` 是当前查询下仍然可见的下标。
 
@@ -62,13 +62,13 @@ widget(
 
 ## 属性
 
-`SearchDropdown::new(value)` 的 `value` 是当前选中值，可以是 `None`。字段还有 `query`、`placeholder`、`size`、`disabled`、`loading`、`invalid`、`opened` 和 `highlighted`。
+`SearchDropdown::new(value)` 的 `value` 是当前选中值，可以是 `None`。其它可配置字段有 `placeholder`、`size`、`disabled`、`loading`、`invalid`、`opened` 和 `highlighted`；查询通过 `.query(...)` 设置、由 `query_text()` 读取。
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
 | `value` | — | `SearchDropdown::new(value)`。当前选中值，可以是 `None`。选中之后控件自己写入 |
 | 选项 | `SearchDropdownOption` | `SearchDropdownOption::new(value, label)`，`.hint` 给一行补充 |
-| `query` | — | 字段。以已提交的 `TextInput` 为准 |
+| `.query(...)` | — | 初始化查询；`query_text()` 读取以已提交 `TextInput` 为准的当前值 |
 | `placeholder` | — | 字段。菜单打开且查询为空时，表面显示占位 |
 | `size` | — | 字段 |
 | `disabled` | — | 字段。禁用时 `inactive`，`toggle_open` 不发事件，打开不会发出 `Opened` |

@@ -326,6 +326,14 @@ impl HostedGpuSurface {
         size.width > 0 && size.height > 0
     }
 
+    /// Resize and reconfigure this surface from the current native window size.
+    ///
+    /// This is the low-level surface operation. Embedding hosts should normally
+    /// call [`HostedGpuShared::resize_surface`] so the surface is always paired
+    /// with the device that owns it. The method remains public for advanced
+    /// hosts that retain the surface and device as separate parts via
+    /// [`HostedGpuContext::into_parts`].
+    #[doc(hidden)]
     pub fn resize(&mut self, gpu: &GpuContext) {
         let size = self.window.surface_size();
         if !surface_size_changed(
@@ -340,6 +348,13 @@ impl HostedGpuSurface {
     }
 
     /// Apply size and live-resize present policy, then configure at most once.
+    ///
+    /// This is the low-level surface operation. Embedding hosts should normally
+    /// call [`HostedGpuShared::prepare_surface_frame`] so the surface is always
+    /// paired with the device that owns it. The method remains public for
+    /// advanced hosts that retain the surface and device as separate parts via
+    /// [`HostedGpuContext::into_parts`].
+    #[doc(hidden)]
     pub fn prepare_frame(&mut self, gpu: &GpuContext, live: bool) {
         let size = self.window.surface_size();
         let mut changed = self.apply_live_resize_policy(live);
@@ -809,7 +824,15 @@ impl HostedGpuShared {
     pub(crate) fn adapter_info(&self) -> &wgpu::AdapterInfo {
         __framework::adapter_info(&self.gpu)
     }
-    pub(crate) fn prepare_surface_frame(&self, surface: &mut HostedGpuSurface, live: bool) {
+    /// Synchronize a secondary surface with its native size and presentation
+    /// policy for the next frame.
+    ///
+    /// Use this method for surfaces created with [`Self::create_surface`],
+    /// [`Self::create_surface_with_policy`], or
+    /// [`Self::create_surface_with_mode`]. It keeps the GPU owner and surface
+    /// together and is the preferred alternative to calling the hidden
+    /// [`HostedGpuSurface::prepare_frame`] operation directly.
+    pub fn prepare_surface_frame(&self, surface: &mut HostedGpuSurface, live: bool) {
         surface.prepare_frame(&self.gpu, live);
     }
     pub fn apply_surface_alpha_mode(
@@ -927,6 +950,11 @@ impl HostedGpuShared {
             policy,
         )
     }
+    /// Resize a secondary surface from its current native window size.
+    ///
+    /// This is the preferred facade for surfaces owned by this shared GPU
+    /// context. Call it before acquiring a frame when a host handles resize
+    /// events outside the standard scene host.
     pub fn resize_surface(&self, surface: &mut HostedGpuSurface) {
         surface.resize(&self.gpu);
     }

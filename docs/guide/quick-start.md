@@ -8,7 +8,9 @@
 
 ## 添加依赖
 
-`nana-ui` 的默认 feature 是空的：不启用 `hosted` 就没有 `run_runtime`，不启用 `gpu` 就没有 painter。一个桌面应用至少写成这样：
+`nana-ui` 默认启用 `wgpu-backends`（仅在启用 `gpu` 时生效）；不启用 `hosted` 就没有
+`run_runtime`，不启用 `gpu` 就没有 painter。需要自选图形后端时使用
+`default-features = false`。一个桌面应用至少写成这样：
 
 ```toml
 [dependencies]

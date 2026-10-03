@@ -532,6 +532,7 @@ impl DestTarget {
         ));
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new(
         device: &wgpu::Device,
         pipeline_cache: Option<&wgpu::PipelineCache>,

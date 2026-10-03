@@ -7050,7 +7050,7 @@ fn a_paint_attribute_paints_a_layout_element() {
         panel,
         "paint",
         r##"{"commands": [
-            {"op": "fill", "path": [["roundedRect", 0, 0, "100%", "100%", 8]], "paint": "#3366ff"},
+            {"op": "fill", "path": [["roundedRect", 0, 0, "100%", "100%", 8]], "paint": [0.2, 0.4, 1.0, 1.0]},
             {"op": "stroke", "path": "M0 0 H40", "paint": "accent", "width": 2, "phase": "over"}
         ]}"##,
     );
@@ -7164,7 +7164,7 @@ fn a_paint_attribute_paints_a_built_in_component_too() {
     doc.set_attribute(
         button,
         "paint",
-        r##"[{"op": "drawDefault"}, {"op": "fill", "path": "M0 0 H80 L0 2 Z", "paint": "#ff0000"}]"##,
+        r##"[{"op": "drawDefault"}, {"op": "fill", "path": "M0 0 H80 L0 2 Z", "paint": [1.0, 0.0, 0.0, 1.0]}]"##,
     );
     doc.apply_layout_boxes(&[(
         button,

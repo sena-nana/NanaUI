@@ -531,6 +531,9 @@ fn srgb_to_oklch(c: [f32; 4]) -> (f32, f32, Option<f32>, f32) {
 /// clamping to display-referred sRGB. This matters for `color-mix(in oklch)`:
 /// CSS permits out-of-gamut intermediate values and only performs gamut
 /// mapping when a final device space is requested.
+// These constants are the published OKLab conversion matrix. Keep their full
+// precision so CSS color interpolation remains stable across color spaces.
+#[allow(clippy::excessive_precision)]
 fn linear_sc_rgb_to_oklch([r, g, b]: [f32; 3], alpha: f32) -> (f32, f32, Option<f32>, f32) {
     let l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b;
     let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b;

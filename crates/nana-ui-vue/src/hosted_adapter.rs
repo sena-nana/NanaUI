@@ -258,27 +258,49 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         request: nana_ui_runtime::AccessibilityActionRequest,
     ) -> Result<bool, JsEngineError> {
         let host = self.require_host(VueWindowId(id.0))?;
-        let mut host = host
-            .lock()
-            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
         let target = crate::NodeHandle(request.target.get());
         match request.action {
+            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, index } => {
+                let shared = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+                    .shared_runtime_document();
+                let request = nana_ui_runtime::AccessibilityActionRequest {
+                    target: request.target,
+                    action: nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, index },
+                };
+                let result = shared
+                    .with_document_mut(|document| {
+                        let document_id = document.document();
+                        document
+                            .context_mut()
+                            .apply_accessibility_action(document_id, request)
+                    })
+                    .map_err(|error| JsEngineError::new(error.to_string()))?;
+                result.map_err(|error| JsEngineError::new(error.to_string()))
+            }
             nana_ui_runtime::AccessibilityAction::Focus => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
                 host.accessibility_focus(&mut self.engine, target)
             }
             nana_ui_runtime::AccessibilityAction::Click => {
-                host.accessibility_click(&mut self.engine, target)
-            }
-            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { .. } => {
-                // Vue-hosted menus expose their item action through the same
-                // semantic DOM click path; the runtime-only virtual menu
-                // identity is already resolved before this adapter is called.
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
                 host.accessibility_click(&mut self.engine, target)
             }
             nana_ui_runtime::AccessibilityAction::SetValue(value) => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
                 host.accessibility_set_value(&mut self.engine, target, &value)
             }
             nana_ui_runtime::AccessibilityAction::SetSelection(selection) => {
+                let mut host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
                 host.accessibility_set_selection(&mut self.engine, target, selection)
             }
         }

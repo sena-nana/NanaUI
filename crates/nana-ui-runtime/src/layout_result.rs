@@ -101,16 +101,11 @@ pub struct LayoutChildPlacement {
 }
 
 /// Origin of a result, useful when diagnosing a stale or compatibility path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum LayoutResultSource {
+    #[default]
     RuntimeLayout,
     CompatibilityWrite,
-}
-
-impl Default for LayoutResultSource {
-    fn default() -> Self {
-        Self::RuntimeLayout
-    }
 }
 
 /// Immutable geometry snapshot for one retained node.

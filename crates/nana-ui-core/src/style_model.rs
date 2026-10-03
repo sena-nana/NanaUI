@@ -177,6 +177,9 @@ pub struct PaintColorSlots {
     pub selection_color: Option<PaintColor>,
 }
 
+// These constants come from the Oklab conversion matrix. Keep their full
+// precision so the conversion remains stable across semantic paint paths.
+#[allow(clippy::excessive_precision)]
 fn oklch_to_linear(l: f32, c: f32, hue: Option<f32>) -> [f32; 3] {
     let h = hue.unwrap_or(0.0).to_radians();
     let (a, b) = (c * h.cos(), c * h.sin());
@@ -850,6 +853,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn paint_color_conversions_stay_within_numeric_tolerance() {
         let red = PaintColor::Oklch {
             l: 0.62795536,

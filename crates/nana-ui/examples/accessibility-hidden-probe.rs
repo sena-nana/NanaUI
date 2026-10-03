@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 //! Native UI Automation probe. Stdin commands: show, hide, quit.
 use nana_ui::runtime::{
     AccessibilityRole, AccessibilityState, CustomRenderNode, Entity, FrameworkError, GpuView,

@@ -56,8 +56,8 @@ pub use presentation_color::{
     linear_sc_rgb_to_bt2020, pq_decode, pq_decode_nits, pq_encode, pq_encode_nits, pq_eotf,
     pq_oetf, tone_map_headroom_rgb,
 };
+pub use validate::ScenePaintError;
 use validate::validate_scene;
-pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 /// Final surface encoding for the linear-scRGB Scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -171,6 +171,7 @@ impl ScenePresentationProfile {
     /// HDR parameters are deliberately supplied separately from the profile:
     /// changing display headroom must not invalidate a painter/pipeline cache
     /// keyed by [`ScenePresentationProfile`].
+    #[allow(clippy::excessive_precision)]
     pub(crate) fn surface_clear_with_parameters(
         self,
         color: [f32; 4],

@@ -624,7 +624,7 @@ impl GalleryState {
             document.context().read(palette, |palette| {
                 (
                     palette.title.to_string(),
-                    palette.query.clone(),
+                    palette.query_text().to_owned(),
                     palette.state.value.to_string(),
                     palette.selected,
                 )

@@ -306,7 +306,7 @@ impl AppearanceSettings {
 
     pub fn to_json_with_theme_id(&self, theme_id: &ThemeId) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(&AppearancePreference {
-            appearance: self.clone(),
+            appearance: *self,
             theme_id: theme_id.clone(),
         })
     }

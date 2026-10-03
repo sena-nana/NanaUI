@@ -1466,8 +1466,16 @@ impl UiWorld {
         &self.theme
     }
 
-    /// Drain dirty components into deterministic system work. Calling this on
-    /// an unchanged world returns an empty work set and performs no scheduling.
+    /// Drain this world's dirty components into deterministic system work.
+    ///
+    /// This is the low-level world drain and intentionally has the same name
+    /// as [`crate::AppContext::take_system_work`]. The `AppContext` method is
+    /// the canonical application/frame entry point: it first polls local
+    /// tasks and flushes the reactive host, then delegates here. Calling this
+    /// method directly is reserved for world-owned tests, benchmarks and
+    /// compatibility adapters that already performed those steps themselves.
+    /// Calling it on an unchanged world returns an empty work set and performs
+    /// no scheduling.
     pub fn take_system_work(&mut self) -> SystemWork {
         let mut ids = std::mem::take(&mut self.dirty_entities)
             .into_iter()

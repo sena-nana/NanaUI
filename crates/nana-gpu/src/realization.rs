@@ -267,11 +267,9 @@ impl GpuContext {
     ) -> Result<(), GpuError> {
         self.check_device(buffer.generation)?;
         if !buffer.usage.contains(GpuBufferUsages::COPY_DST)
-            || (offset % u64::from(wgpu::COPY_BUFFER_ALIGNMENT) != 0 && !bytes.is_empty())
+            || (!offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT) && !bytes.is_empty())
             || offset
-                .checked_add(
-                    (bytes.len() as u64).next_multiple_of(u64::from(wgpu::COPY_BUFFER_ALIGNMENT)),
-                )
+                .checked_add((bytes.len() as u64).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT))
                 .is_none_or(|end| end > buffer.size)
         {
             return Err(GpuError::InvalidBindingRange);
