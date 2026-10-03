@@ -22,7 +22,7 @@ impl AppContext {
         let Some((x, y)) = self.world.pointer_layout_position(target, x, y) else {
             return self.clear_chart_hover(target);
         };
-        let Some(bounds) = self.world.layout_box(target) else {
+        let Some(bounds) = self.world.canonical_layout_box(target) else {
             return Ok(());
         };
         let title = if let Ok((old, active, title)) =
@@ -264,7 +264,7 @@ mod tests {
             .unwrap();
         context.rebuild_hit_test(document);
         let id = chart.stable_id();
-        let bounds = context.world().layout_box(id).unwrap();
+        let bounds = context.world().canonical_layout_box(id).unwrap();
         let plot = TimeSeriesChart::stacked_plot(bounds);
         let x = plot.x + plot.width * 0.75;
         let y = plot.y + plot.height / 2.0;

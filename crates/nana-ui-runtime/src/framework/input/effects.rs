@@ -122,7 +122,7 @@ impl AppContext {
         handle: Option<StableNodeId>,
         target: Option<StableNodeId>,
     ) -> CursorIcon {
-        if let Some(bounds) = handle.and_then(|handle| self.world.layout_box(handle)) {
+        if let Some(bounds) = handle.and_then(|handle| self.world.component_layout_box(handle)) {
             return if bounds.width <= bounds.height {
                 CursorIcon::EwResize
             } else {
@@ -219,7 +219,7 @@ impl AppContext {
             Some(crate::ComponentGeometry::TextInput {
                 caret: Some(caret), ..
             }) => Some(caret),
-            _ => self.world.layout_box(node),
+            _ => self.world.component_layout_box(node),
         }
     }
 

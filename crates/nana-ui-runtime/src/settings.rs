@@ -2763,10 +2763,16 @@ mod tests {
             // The frame driver settles layout feedback before publishing Scene.
             context.layout_document(document(), viewport).unwrap();
             context.layout_document(document(), viewport).unwrap();
-            let row_box = context.world().layout_box(row.stable_id()).unwrap();
+            let row_box = context
+                .world()
+                .canonical_layout_box(row.stable_id())
+                .unwrap();
             assert_eq!(row_box.width, width);
-            let control_box = context.world().layout_box(control.stable_id()).unwrap();
-            let copy_box = context.world().layout_box(copy).unwrap();
+            let control_box = context
+                .world()
+                .canonical_layout_box(control.stable_id())
+                .unwrap();
+            let copy_box = context.world().canonical_layout_box(copy).unwrap();
             if stacked {
                 assert!(control_box.y >= copy_box.y + copy_box.height);
             } else {

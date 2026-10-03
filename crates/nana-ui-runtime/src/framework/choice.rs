@@ -35,7 +35,7 @@ impl AppContext {
                     }
                 });
             }
-            let Some(field) = self.world.layout_box(entity.id) else {
+            let Some(field) = self.world.canonical_layout_box(entity.id) else {
                 return Ok(false);
             };
             if field.contains(x, y) {
@@ -205,7 +205,7 @@ impl AppContext {
             Some(crate::ComponentGeometry::Select { menu, .. }) => menu,
             _ => None,
         };
-        let Some(field) = self.world.layout_box(entity.id) else {
+        let Some(field) = self.world.canonical_layout_box(entity.id) else {
             return Ok(false);
         };
         self.update_component(entity, |dropdown, cx| {
@@ -357,7 +357,7 @@ impl AppContext {
             Some(crate::ComponentGeometry::Select { menu, .. }) => menu,
             _ => None,
         };
-        let Some(field) = self.world.layout_box(entity.id) else {
+        let Some(field) = self.world.canonical_layout_box(entity.id) else {
             return Ok(false);
         };
         self.update_component(entity, |dropdown, cx| {

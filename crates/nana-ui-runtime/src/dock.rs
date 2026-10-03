@@ -2677,7 +2677,7 @@ impl AppContext {
         if self.read(dock, |dock| dock.locked)? {
             return Ok(false);
         }
-        let Some(bounds) = self.world().layout_box(frame) else {
+        let Some(bounds) = self.world().canonical_layout_box(frame) else {
             return Ok(false);
         };
         let extent = match axis {
@@ -3056,7 +3056,7 @@ impl AppContext {
             })
             .unwrap_or_default();
         for (id, option) in options {
-            let Some(bounds) = self.world().layout_box(option) else {
+            let Some(bounds) = self.world().canonical_layout_box(option) else {
                 continue;
             };
             if !bounds.contains(x, y) {
@@ -3086,7 +3086,7 @@ impl AppContext {
             if id.as_ref() == dragged {
                 continue;
             }
-            let Some(bounds) = self.world().layout_box(frame) else {
+            let Some(bounds) = self.world().canonical_layout_box(frame) else {
                 continue;
             };
             if let Some(zone) = drop_zone_at(bounds, x, y) {

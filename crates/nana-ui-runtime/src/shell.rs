@@ -2243,14 +2243,17 @@ mod tests {
             .parent
             .unwrap();
         assert!(!context.world().node_style(center).unwrap().layout.hidden);
-        let bounds = context.world().layout_box(text.stable_id()).unwrap();
+        let bounds = context
+            .world()
+            .canonical_layout_box(text.stable_id())
+            .unwrap();
         assert!(bounds.width > 0.0 && bounds.height > 0.0);
         assert_eq!(
             context.world().text(text.stable_id()),
             Some("Mounted title")
         );
         assert_eq!(
-            context.world().layout_box(center).unwrap().width,
+            context.world().canonical_layout_box(center).unwrap().width,
             DEFAULT_CENTER_WIDTH
         );
     }
@@ -2299,9 +2302,15 @@ mod tests {
             .layout_document(document(), LayoutViewport::new(640.0, 400.0))
             .unwrap();
         let controls = context.read(bar, |bar| bar.controls.unwrap()).unwrap();
-        let a = context.world().layout_box(leading.stable_id()).unwrap();
-        let b = context.world().layout_box(trailing.stable_id()).unwrap();
-        let c = context.world().layout_box(controls).unwrap();
+        let a = context
+            .world()
+            .canonical_layout_box(leading.stable_id())
+            .unwrap();
+        let b = context
+            .world()
+            .canonical_layout_box(trailing.stable_id())
+            .unwrap();
+        let c = context.world().canonical_layout_box(controls).unwrap();
         assert!((b.width - 280.0).abs() < 0.1);
         assert!(a.x + a.width <= b.x + 0.1);
         assert!(b.x + b.width <= c.x + 0.1);
@@ -2325,7 +2334,10 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))
             .unwrap();
-        let before = context.world().layout_box(text.stable_id()).unwrap();
+        let before = context
+            .world()
+            .canonical_layout_box(text.stable_id())
+            .unwrap();
         let parent = context.world().node(text.stable_id()).unwrap().parent;
         for transparent in [true, false] {
             context
@@ -2342,7 +2354,10 @@ mod tests {
             assert!(style.layout.background.is_none());
             assert_eq!(style.foreground, Some(SemanticColorRole::Text));
             assert_eq!(
-                context.world().layout_box(text.stable_id()).unwrap(),
+                context
+                    .world()
+                    .canonical_layout_box(text.stable_id())
+                    .unwrap(),
                 before
             );
             assert_eq!(
@@ -2390,7 +2405,7 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))
             .unwrap();
-        let bounds = context.world().layout_box(id).unwrap();
+        let bounds = context.world().canonical_layout_box(id).unwrap();
         assert_eq!(bounds.height, TITLE_BAR_HEIGHT);
         assert_eq!(bounds.width, 800.0);
         let bar_view = context.read(bar, |bar| bar.clone()).unwrap();
@@ -2517,11 +2532,14 @@ mod tests {
             context.world().node(columns[0]).unwrap().children.first(),
             Some(&controls)
         );
-        let placeholder = context.world().layout_box(controls).unwrap();
+        let placeholder = context.world().canonical_layout_box(controls).unwrap();
         assert_eq!(placeholder.x, 0.0);
         assert_eq!(placeholder.width, NATIVE_WINDOW_CONTROLS_WIDTH);
         assert_eq!(placeholder.height, TITLE_BAR_HEIGHT);
-        let leading = context.world().layout_box(leading.stable_id()).unwrap();
+        let leading = context
+            .world()
+            .canonical_layout_box(leading.stable_id())
+            .unwrap();
         assert!(
             leading.x + 0.5 >= placeholder.x + placeholder.width + NATIVE_LEADING_CLEARANCE,
             "leading chrome overlapped the native buttons"
@@ -2549,9 +2567,12 @@ mod tests {
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))
             .unwrap();
         let controls = context.read(bar, |bar| bar.controls).unwrap().unwrap();
-        let placeholder = context.world().layout_box(controls).unwrap();
+        let placeholder = context.world().canonical_layout_box(controls).unwrap();
         assert_eq!((placeholder.x, placeholder.y), (12.0, 12.0));
-        let leading = context.world().layout_box(leading.stable_id()).unwrap();
+        let leading = context
+            .world()
+            .canonical_layout_box(leading.stable_id())
+            .unwrap();
         assert!(leading.x + 0.5 >= placeholder.x + placeholder.width);
     }
 
@@ -2565,7 +2586,10 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))
             .unwrap();
-        let leading = context.world().layout_box(leading.stable_id()).unwrap();
+        let leading = context
+            .world()
+            .canonical_layout_box(leading.stable_id())
+            .unwrap();
         assert!(leading.x < NATIVE_WINDOW_CONTROLS_WIDTH);
     }
 
@@ -2692,7 +2716,7 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(1400.0, 400.0))
             .unwrap();
-        let center_box = context.world().layout_box(center_column).unwrap();
+        let center_box = context.world().canonical_layout_box(center_column).unwrap();
         assert_eq!(center_box.width, 420.0);
         assert!((center_box.x + center_box.width / 2.0 - 700.0).abs() < 0.5);
     }
@@ -2718,7 +2742,10 @@ mod tests {
             .unwrap();
         context.rebuild_hit_test(document());
 
-        let bounds = context.world().layout_box(bar.stable_id()).unwrap();
+        let bounds = context
+            .world()
+            .canonical_layout_box(bar.stable_id())
+            .unwrap();
         let blank_x = bounds.x + bounds.width - 24.0;
         let blank_y = bounds.y + bounds.height / 2.0;
         assert_eq!(
@@ -2726,7 +2753,10 @@ mod tests {
             Some(bar.stable_id())
         );
 
-        let button_box = context.world().layout_box(button.stable_id()).unwrap();
+        let button_box = context
+            .world()
+            .canonical_layout_box(button.stable_id())
+            .unwrap();
         let button_x = button_box.x + button_box.width / 2.0;
         let button_y = button_box.y + button_box.height / 2.0;
         assert_eq!(
@@ -2788,13 +2818,19 @@ mod tests {
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))
             .unwrap();
 
-        let bar_box = context.world().layout_box(bar.stable_id()).unwrap();
+        let bar_box = context
+            .world()
+            .canonical_layout_box(bar.stable_id())
+            .unwrap();
         let columns = context.world().node(bar.stable_id()).unwrap().children;
         assert_eq!(columns.len(), 3);
-        let leading_col = context.world().layout_box(columns[0]).unwrap();
-        let center_col = context.world().layout_box(columns[1]).unwrap();
-        let trailing_col = context.world().layout_box(columns[2]).unwrap();
-        let leading_box = context.world().layout_box(leading.stable_id()).unwrap();
+        let leading_col = context.world().canonical_layout_box(columns[0]).unwrap();
+        let center_col = context.world().canonical_layout_box(columns[1]).unwrap();
+        let trailing_col = context.world().canonical_layout_box(columns[2]).unwrap();
+        let leading_box = context
+            .world()
+            .canonical_layout_box(leading.stable_id())
+            .unwrap();
         let center_layout = &context.world().node_style(columns[1]).unwrap().layout;
         assert_eq!(
             center_layout.width,
@@ -2831,7 +2867,7 @@ mod tests {
                 .read(bar, |bar| bar.controls)
                 .unwrap()
                 .expect("custom chrome mounts controls");
-            let controls_box = context.world().layout_box(controls).unwrap();
+            let controls_box = context.world().canonical_layout_box(controls).unwrap();
             assert!(
                 controls_box.x + controls_box.width > bar_box.x + bar_box.width * 0.75,
                 "window controls must sit on the trailing edge, got x={}",
@@ -2853,12 +2889,15 @@ mod tests {
             .unwrap();
         context.rebuild_hit_test(document());
 
-        let bar_box = context.world().layout_box(bar.stable_id()).unwrap();
+        let bar_box = context
+            .world()
+            .canonical_layout_box(bar.stable_id())
+            .unwrap();
         let controls = context
             .read(bar, |bar| bar.controls)
             .unwrap()
             .expect("custom chrome mounts controls");
-        let controls_box = context.world().layout_box(controls).unwrap();
+        let controls_box = context.world().canonical_layout_box(controls).unwrap();
         assert!(
             controls_box.x > bar_box.x + bar_box.width * 0.7,
             "controls were on the left: x={} width={}",
@@ -2866,7 +2905,7 @@ mod tests {
             bar_box.width
         );
         let close = context.world().node(controls).unwrap().children[2];
-        let close_box = context.world().layout_box(close).unwrap();
+        let close_box = context.world().canonical_layout_box(close).unwrap();
         assert!(
             close_box.x + close_box.width > bar_box.x + bar_box.width - 48.0,
             "close button must sit near the trailing edge"
@@ -3129,10 +3168,22 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))
             .unwrap();
-        let title_box = context.world().layout_box(title.stable_id()).unwrap();
-        let body_box = context.world().layout_box(body.stable_id()).unwrap();
-        let overlay_box = context.world().layout_box(overlay.stable_id()).unwrap();
-        let shell_box = context.world().layout_box(shell.stable_id()).unwrap();
+        let title_box = context
+            .world()
+            .canonical_layout_box(title.stable_id())
+            .unwrap();
+        let body_box = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
+        let overlay_box = context
+            .world()
+            .canonical_layout_box(overlay.stable_id())
+            .unwrap();
+        let shell_box = context
+            .world()
+            .canonical_layout_box(shell.stable_id())
+            .unwrap();
         assert_eq!(title_box.height, TITLE_BAR_HEIGHT);
         assert_eq!(title_box.y, shell_box.y);
         assert_eq!(body_box.y, title_box.y + title_box.height);
@@ -3320,8 +3371,14 @@ mod tests {
             !is_descendant(context.world(), title.stable_id(), body.stable_id()),
             "body must stay a sibling of the title bar, not a descendant"
         );
-        let title_box = context.world().layout_box(title.stable_id()).unwrap();
-        let body_box = context.world().layout_box(body.stable_id()).unwrap();
+        let title_box = context
+            .world()
+            .canonical_layout_box(title.stable_id())
+            .unwrap();
+        let body_box = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
         assert!(
             body_box.y + 0.5 >= title_box.y + TITLE_BAR_HEIGHT,
             "body.y={} must sit below title bar y={} height={}",
@@ -3362,8 +3419,14 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
-        let title_box = context.world().layout_box(title.stable_id()).unwrap();
-        let body_box = context.world().layout_box(body.stable_id()).unwrap();
+        let title_box = context
+            .world()
+            .canonical_layout_box(title.stable_id())
+            .unwrap();
+        let body_box = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
         assert!(
             body_box.y + 0.5 >= title_box.y + TITLE_BAR_HEIGHT,
             "body.y={} must sit below title bar y={} height={}",
@@ -3589,7 +3652,11 @@ mod tests {
             .find(|&id| node_tag(context.world(), id).as_deref() == Some(CENTER_COLUMN_TAG))
             .expect("center column");
         assert_eq!(
-            context.world().layout_box(center_slot).unwrap().width,
+            context
+                .world()
+                .canonical_layout_box(center_slot)
+                .unwrap()
+                .width,
             420.0
         );
     }
@@ -3702,10 +3769,16 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))
             .unwrap();
-        let title_box = context.world().layout_box(title.stable_id()).unwrap();
-        let body_box = context.world().layout_box(workspace).unwrap();
-        let overlay_box = context.world().layout_box(overlay_host).unwrap();
-        let shell_box = context.world().layout_box(shell.stable_id()).unwrap();
+        let title_box = context
+            .world()
+            .canonical_layout_box(title.stable_id())
+            .unwrap();
+        let body_box = context.world().canonical_layout_box(workspace).unwrap();
+        let overlay_box = context.world().canonical_layout_box(overlay_host).unwrap();
+        let shell_box = context
+            .world()
+            .canonical_layout_box(shell.stable_id())
+            .unwrap();
         assert_eq!(title_box.height, TITLE_BAR_HEIGHT);
         assert_eq!(title_box.y, shell_box.y);
         assert_eq!(body_box.y, title_box.y + title_box.height);
@@ -4130,14 +4203,17 @@ mod tests {
             TextHorizontalAlignment::Center
         );
 
-        let bar_box = context.world().layout_box(title_bar).unwrap();
-        let center_box = context.world().layout_box(columns[1]).unwrap();
+        let bar_box = context.world().canonical_layout_box(title_bar).unwrap();
+        let center_box = context.world().canonical_layout_box(columns[1]).unwrap();
         let title_mid = center_box.x + center_box.width / 2.0;
         assert!(
             title_mid < bar_box.x + bar_box.width * 0.65,
             "title sat on the trailing edge at {title_mid}"
         );
-        let leading_box = context.world().layout_box(leading.stable_id()).unwrap();
+        let leading_box = context
+            .world()
+            .canonical_layout_box(leading.stable_id())
+            .unwrap();
         assert!(
             leading_box.width < 80.0,
             "leading chrome must hug, got {}",
@@ -4150,8 +4226,14 @@ mod tests {
             );
         }
 
-        let nav_box = context.world().layout_box(navigation.stable_id()).unwrap();
-        let files_box = context.world().layout_box(files.stable_id()).unwrap();
+        let nav_box = context
+            .world()
+            .canonical_layout_box(navigation.stable_id())
+            .unwrap();
+        let files_box = context
+            .world()
+            .canonical_layout_box(files.stable_id())
+            .unwrap();
         assert!(
             nav_box.y + 0.5 >= bar_box.y + bar_box.height,
             "sidebar entered the title-bar / traffic-light band"
@@ -4161,9 +4243,18 @@ mod tests {
             "文件 header overlapped native window chrome"
         );
 
-        let toolbar_box = context.world().layout_box(toolbar.stable_id()).unwrap();
-        let primary_box = context.world().layout_box(primary.stable_id()).unwrap();
-        let inspector_box = context.world().layout_box(inspector.stable_id()).unwrap();
+        let toolbar_box = context
+            .world()
+            .canonical_layout_box(toolbar.stable_id())
+            .unwrap();
+        let primary_box = context
+            .world()
+            .canonical_layout_box(primary.stable_id())
+            .unwrap();
+        let inspector_box = context
+            .world()
+            .canonical_layout_box(inspector.stable_id())
+            .unwrap();
         assert!(
             inspector_box.y + 0.5 >= toolbar_box.y + toolbar_box.height,
             "inspector tabs must not sit on the window toolbar row"

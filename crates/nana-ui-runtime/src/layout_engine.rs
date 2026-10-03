@@ -48,6 +48,21 @@ impl LayoutViewport {
     }
 }
 
+fn inset_foundation_rect(rect: LayoutRect, edges: nana_ui_core::PaddingSpec) -> LayoutRect {
+    let left = edges.left.max(0.0);
+    let right = edges.right.max(0.0);
+    let top = edges.top.max(0.0);
+    let bottom = edges.bottom.max(0.0);
+    LayoutRect::new(
+        rect.inline + left,
+        rect.block + top,
+        LayoutSize::new(
+            (rect.size.inline - left - right).max(0.0),
+            (rect.size.block - top - bottom).max(0.0),
+        ),
+    )
+}
+
 /// Backend-neutral layout owner used by canonical Runtime applications.
 ///
 /// Consumes the same `LayoutStyle` and shaped text metrics stored in `UiWorld`
@@ -105,11 +120,19 @@ impl RuntimeLayoutEngine {
         for (id, bounds) in boxes.iter().copied() {
             by_id.insert(id, bounds);
         }
+        // Keep the resolved style/parent projection local to this lowering
+        // pass.  Foundation results must carry the same clip and containing
+        // block dependencies as the runtime result, without consulting a
+        // potentially stale retained snapshot from the previous frame.
+        let mut styles = HashMap::with_capacity(order.len());
+        let mut parents = HashMap::with_capacity(order.len());
         for id in order {
             let Some(layout_id) = LayoutNodeId::new(id.get()) else {
                 continue;
             };
             let input = world.layout_input(id)?;
+            styles.insert(id, Arc::clone(&input.style));
+            parents.insert(id, input.parent);
             let context = if input.style.omits_box() {
                 FormattingContext::None
             } else {
@@ -135,8 +158,28 @@ impl RuntimeLayoutEngine {
             let replaced = world.custom_render(id).is_some()
                 || input.style.paint.content_image.is_some()
                 || input.style.paint.skipped_replaced.is_some();
+            let intrinsic_size = by_id
+                .get(&id)
+                .map(|bounds| LayoutSize::new(bounds.width, bounds.height));
+            let fit = match input.style.paint.object_fit {
+                Some(nana_ui_core::BackgroundImageFit::Cover) => nana_ui_core::ObjectFit::Cover,
+                Some(nana_ui_core::BackgroundImageFit::Stretch) => nana_ui_core::ObjectFit::Fill,
+                Some(nana_ui_core::BackgroundImageFit::ScaleDown) => {
+                    nana_ui_core::ObjectFit::ScaleDown
+                }
+                Some(nana_ui_core::BackgroundImageFit::Auto) => nana_ui_core::ObjectFit::None,
+                Some(nana_ui_core::BackgroundImageFit::Contain) | None => {
+                    nana_ui_core::ObjectFit::Contain
+                }
+                Some(nana_ui_core::BackgroundImageFit::Length) => nana_ui_core::ObjectFit::Fill,
+            };
             node.participation = if replaced {
-                Participation::Replaced(ReplacedContent::default())
+                Participation::Replaced(ReplacedContent {
+                    intrinsic_size,
+                    aspect_ratio: input.style.aspect_ratio,
+                    fit,
+                    ..ReplacedContent::default()
+                })
             } else if placement.is_out_of_flow() {
                 Participation::OutOfFlow(placement)
             } else if input.text_metrics.is_some() {
@@ -163,6 +206,12 @@ impl RuntimeLayoutEngine {
                     .filter(|value| value.is_finite())
                     .map(|value| value.max(0.0));
                 foundation.set_metrics(layout_id, intrinsic);
+            } else if replaced {
+                if let Some(size) = intrinsic_size {
+                    let mut intrinsic = IntrinsicMetrics::new(size);
+                    intrinsic.aspect_ratio = input.style.aspect_ratio;
+                    foundation.set_metrics(layout_id, intrinsic);
+                }
             }
         }
         let retained_results = boxes
@@ -206,6 +255,65 @@ impl RuntimeLayoutEngine {
             }
             let bounds = LayoutRect::new(box_.x, box_.y, LayoutSize::new(box_.width, box_.height));
             let mut result = FoundationResult::new(layout_id, bounds, 0);
+            if let Some(style) =
+                styles.get(&StableNodeId::new(layout_id.get()).expect("nonzero id"))
+            {
+                let border = style.resolved_border_edges();
+                let percent_base = parents
+                    .get(&StableNodeId::new(layout_id.get()).expect("nonzero id"))
+                    .copied()
+                    .flatten()
+                    .and_then(|parent| by_id.get(&parent).map(|bounds| bounds.width));
+                let padding = style.resolved_padding_against(percent_base);
+                result.padding_box = inset_foundation_rect(bounds, border);
+                result.content_box = inset_foundation_rect(result.padding_box, padding);
+                result.border_box = bounds;
+                result.used_size = result.content_box.size.into();
+            }
+            let mut ancestor = parents
+                .get(&StableNodeId::new(layout_id.get()).expect("nonzero id"))
+                .copied()
+                .flatten();
+            let mut clip = None;
+            let mut containing_block = None;
+            while let Some(candidate) = ancestor {
+                if let Some(style) = styles.get(&candidate) {
+                    if clip.is_none() && style.clips_overflow() {
+                        clip = LayoutNodeId::new(candidate.get());
+                    }
+                    if containing_block.is_none() && style.position.establishes_containing_block() {
+                        containing_block = LayoutNodeId::new(candidate.get());
+                    }
+                }
+                ancestor = parents.get(&candidate).copied().flatten();
+            }
+            if node.placement == PlacementMode::Fixed {
+                containing_block = None;
+            }
+            let clip_dependency = clip;
+            result.clip = clip_dependency
+                .map(|clip| {
+                    styles
+                        .get(&StableNodeId::new(clip.get()).expect("nonzero id"))
+                        .and_then(|_| {
+                            by_id.get(&StableNodeId::new(clip.get()).expect("nonzero id"))
+                        })
+                        .map(|clip_box| {
+                            LayoutRect::new(
+                                clip_box.x,
+                                clip_box.y,
+                                LayoutSize::new(clip_box.width, clip_box.height),
+                            )
+                        })
+                })
+                .flatten();
+            result.containing_block = containing_block;
+            result.dependency_footprint.extend(
+                clip_dependency
+                    .into_iter()
+                    .chain(containing_block)
+                    .filter_map(|id| LayoutNodeId::new(id.get())),
+            );
             let mut children = Vec::new();
             generated_children(foundation, layout_id, &mut children);
             for child in children {
@@ -268,8 +376,27 @@ impl RuntimeLayoutEngine {
                 result.overflow.size.block,
             );
             if let Some(metrics) = foundation.metrics(layout_id, ConstraintClass::Unconstrained) {
-                result.first_baseline = metrics.first_baseline;
-                result.last_baseline = metrics.last_baseline;
+                result.first_baseline = metrics
+                    .first_baseline
+                    .map(|baseline| result.content_box.block + baseline);
+                result.last_baseline = metrics
+                    .last_baseline
+                    .map(|baseline| result.content_box.block + baseline);
+            }
+            if let Participation::Replaced(content) = node.participation {
+                let baseline = match content.baseline {
+                    nana_ui_core::BaselinePolicy::Bottom => {
+                        Some(result.content_box.block + result.content_box.size.block)
+                    }
+                    nana_ui_core::BaselinePolicy::Center => {
+                        Some(result.content_box.block + result.content_box.size.block * 0.5)
+                    }
+                    nana_ui_core::BaselinePolicy::FirstBaseline => {
+                        result.first_baseline.or(Some(result.content_box.block))
+                    }
+                };
+                result.first_baseline = result.first_baseline.or(baseline);
+                result.last_baseline = result.last_baseline.or(baseline);
             }
             foundation.publish_result(result);
         }

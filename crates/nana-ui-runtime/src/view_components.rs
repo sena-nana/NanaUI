@@ -5085,8 +5085,14 @@ mod tests {
         context
             .layout_document(document, crate::LayoutViewport::new(240.0, 120.0))
             .unwrap();
-        let list_box = context.world().layout_box(list.stable_id()).unwrap();
-        let row_box = context.world().layout_box(row.stable_id()).unwrap();
+        let list_box = context
+            .world()
+            .canonical_layout_box(list.stable_id())
+            .unwrap();
+        let row_box = context
+            .world()
+            .canonical_layout_box(row.stable_id())
+            .unwrap();
         assert!((row_box.x - (list_box.x - inset)).abs() < 0.5);
         assert!((row_box.width - (list_box.width + inset * 2.0)).abs() < 0.5);
     }
@@ -5120,14 +5126,26 @@ mod spacing_tests {
         context
             .layout_document(document, crate::LayoutViewport::new(240.0, 200.0))
             .unwrap();
-        let first_box = context.world().layout_box(first.stable_id()).unwrap();
-        let second_box = context.world().layout_box(second.stable_id()).unwrap();
+        let first_box = context
+            .world()
+            .canonical_layout_box(first.stable_id())
+            .unwrap();
+        let second_box = context
+            .world()
+            .canonical_layout_box(second.stable_id())
+            .unwrap();
         assert_eq!(first_box.y, second_box.y);
         context
             .layout_document(document, crate::LayoutViewport::new(160.0, 200.0))
             .unwrap();
-        let first_box = context.world().layout_box(first.stable_id()).unwrap();
-        let second_box = context.world().layout_box(second.stable_id()).unwrap();
+        let first_box = context
+            .world()
+            .canonical_layout_box(first.stable_id())
+            .unwrap();
+        let second_box = context
+            .world()
+            .canonical_layout_box(second.stable_id())
+            .unwrap();
         assert!(second_box.y >= first_box.y + first_box.height + 7.9);
         assert!((second_box.x - first_box.x).abs() < 0.1);
     }

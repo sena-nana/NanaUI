@@ -641,7 +641,10 @@ mod tests {
         context
             .layout_document(id, LayoutViewport::new(430.0, 1200.0))
             .unwrap();
-        let bounds = context.world().layout_box(entity.stable_id()).unwrap();
+        let bounds = context
+            .world()
+            .canonical_layout_box(entity.stable_id())
+            .unwrap();
         assert!((bounds.height - markdown.layout(bounds).bounds.height).abs() < 0.5);
         assert!(
             bounds.height > 150.0,

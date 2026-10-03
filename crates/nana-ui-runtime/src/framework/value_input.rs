@@ -398,7 +398,7 @@ impl AppContext {
         if self.read(Entity::<XYPad>::from_stable_id(target), XYPad::inactive)? {
             return Ok(false);
         }
-        let Some(bounds) = self.world.layout_box(target) else {
+        let Some(bounds) = self.world.canonical_layout_box(target) else {
             return Ok(false);
         };
         self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {
@@ -428,7 +428,7 @@ impl AppContext {
         if !self.is_xy_pad(target) {
             return Ok(false);
         }
-        let Some(bounds) = self.world.layout_box(target) else {
+        let Some(bounds) = self.world.canonical_layout_box(target) else {
             return Ok(false);
         };
         self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {

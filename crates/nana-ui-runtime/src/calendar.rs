@@ -735,7 +735,7 @@ impl crate::AppContext {
             return Ok(false);
         }
         let entity = crate::Entity::<CalendarHeatmap>::from_stable_id(target);
-        let Some(bounds) = self.world().layout_box(target) else {
+        let Some(bounds) = self.world().canonical_layout_box(target) else {
             return Ok(false);
         };
         let local = bounds

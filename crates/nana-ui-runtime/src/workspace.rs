@@ -1024,9 +1024,12 @@ impl AppContext {
                     |workspace| {
                         workspace.handles.values().copied().find(|&handle| {
                             self.workspace_handle_id(handle).is_some()
-                                && self.world().layout_box(handle).is_some_and(|bounds| {
-                                    point_near_box(bounds, x, y, HANDLE_HIT_SLOP)
-                                })
+                                && self
+                                    .world()
+                                    .canonical_layout_box(handle)
+                                    .is_some_and(|bounds| {
+                                        point_near_box(bounds, x, y, HANDLE_HIT_SLOP)
+                                    })
                         })
                     },
                 )
@@ -1861,9 +1864,9 @@ mod tests {
             .layout_document(document(), crate::LayoutViewport::new(800.0, 400.0))
             .unwrap();
 
-        let toolbar_box = context.world().layout_box(toolbar).unwrap();
-        let primary_box = context.world().layout_box(primary).unwrap();
-        let inspector_box = context.world().layout_box(inspector).unwrap();
+        let toolbar_box = context.world().canonical_layout_box(toolbar).unwrap();
+        let primary_box = context.world().canonical_layout_box(primary).unwrap();
+        let inspector_box = context.world().canonical_layout_box(inspector).unwrap();
         assert!(
             inspector_box.y + 0.5 >= toolbar_box.y + toolbar_box.height,
             "inspector header must sit below the toolbar row, not on it"
@@ -2060,8 +2063,8 @@ mod tests {
             (RegionId::Inspector, inspector, true),
         ] {
             let handle = *handles.get(&id).expect("handle");
-            let region = context.world().layout_box(content).unwrap();
-            let bar = context.world().layout_box(handle).unwrap();
+            let region = context.world().canonical_layout_box(content).unwrap();
+            let bar = context.world().canonical_layout_box(handle).unwrap();
             let edge = if start_edge {
                 region.x
             } else {

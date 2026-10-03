@@ -549,7 +549,7 @@ impl crate::AppContext {
         let Some(entity) = self.reorder_list_entity(list_id) else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().layout_box(list_id) else {
+        let Some(bounds) = self.world().canonical_layout_box(list_id) else {
             return Ok(false);
         };
         let rows = self.reorder_row_boxes(list_id, bounds);
@@ -582,7 +582,7 @@ impl crate::AppContext {
         let Some(entity) = self.reorder_list_entity(target) else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().layout_box(target) else {
+        let Some(bounds) = self.world().canonical_layout_box(target) else {
             return Ok(false);
         };
         let rows = self.reorder_row_boxes(target, bounds);
@@ -606,7 +606,7 @@ impl crate::AppContext {
         let Some(entity) = self.reorder_list_entity(target) else {
             return Ok(false);
         };
-        let bounds = self.world().layout_box(target);
+        let bounds = self.world().canonical_layout_box(target);
         let rows = bounds
             .map(|bounds| self.reorder_row_boxes(target, bounds))
             .unwrap_or_default();
@@ -645,7 +645,7 @@ impl crate::AppContext {
         }
         children
             .into_iter()
-            .filter_map(|child| self.world().layout_box(child))
+            .filter_map(|child| self.world().canonical_layout_box(child))
             .collect()
     }
 
@@ -660,7 +660,7 @@ impl crate::AppContext {
             .unwrap_or_default();
         tools
             .into_iter()
-            .filter_map(|id| self.world().layout_box(id))
+            .filter_map(|id| self.world().canonical_layout_box(id))
             .collect()
     }
 
@@ -681,7 +681,7 @@ impl crate::AppContext {
         let Some(entity) = self.reorder_list_entity(id) else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().layout_box(id) else {
+        let Some(bounds) = self.world().canonical_layout_box(id) else {
             return Ok(false);
         };
         let rows = self.reorder_row_boxes(id, bounds);
@@ -1095,7 +1095,10 @@ mod tests {
                 )
                 .unwrap()
         );
-        let bounds = context.world().layout_box(list.stable_id()).unwrap();
+        let bounds = context
+            .world()
+            .canonical_layout_box(list.stable_id())
+            .unwrap();
         // Compile-time Small rows are 28px; at y=35 that is row "b". Installed
         // 40px rows put the same point on row "a".
         let x = bounds.x + 40.0;

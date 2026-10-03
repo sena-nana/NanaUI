@@ -555,9 +555,9 @@ mod tests {
         tick(&mut context, 400);
         relayout(&mut context);
         context.rebuild_hit_test(document());
-        let button_box = context.world().layout_box(button_id).unwrap();
-        let trigger_box = context.world().layout_box(card_id).unwrap();
-        let body_box = context.world().layout_box(body_id).unwrap();
+        let button_box = context.world().canonical_layout_box(button_id).unwrap();
+        let trigger_box = context.world().canonical_layout_box(card_id).unwrap();
+        let body_box = context.world().canonical_layout_box(body_id).unwrap();
         assert!(
             button_box.y >= trigger_box.y + trigger_box.height,
             "card hangs below the titlebar trigger: trigger={trigger_box:?} button={button_box:?}"
@@ -594,8 +594,8 @@ mod tests {
         tick(context, 400);
         relayout(context);
         context.rebuild_hit_test(document());
-        let trigger = context.world().layout_box(card_id).unwrap();
-        let content_box = context.world().layout_box(content_id).unwrap();
+        let trigger = context.world().canonical_layout_box(card_id).unwrap();
+        let content_box = context.world().canonical_layout_box(content_id).unwrap();
         let (along_x, hangs, edge, mid) = match placement {
             PopoverPlacement::Bottom => (
                 false,
@@ -663,8 +663,11 @@ mod tests {
         let (mut context, card, button, body) = desktop_shell_account_hover_card();
         assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Bottom);
         let button_id = button.stable_id();
-        let content = context.world().layout_box(button_id).unwrap();
-        let body_box = context.world().layout_box(body.stable_id()).unwrap();
+        let content = context.world().canonical_layout_box(button_id).unwrap();
+        let body_box = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
         assert_eq!(
             context.pointer_target(
                 document(),
@@ -769,8 +772,14 @@ mod tests {
         tick(&mut context, 400);
         relayout(&mut context);
         context.rebuild_hit_test(document());
-        let trigger = context.world().layout_box(card.stable_id()).unwrap();
-        let body_box = context.world().layout_box(body.stable_id()).unwrap();
+        let trigger = context
+            .world()
+            .canonical_layout_box(card.stable_id())
+            .unwrap();
+        let body_box = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
         let hit = context.pointer_target(
             document(),
             trigger.x + trigger.width / 2.0,
@@ -786,7 +795,10 @@ mod tests {
     fn pointer_on_hittable_card_body_padding_keeps_the_card_open() {
         let (mut context, card, body, button) = card_with_stack_body(true);
         assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Bottom);
-        let body_box = context.world().layout_box(body.stable_id()).unwrap();
+        let body_box = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
         let hit = hover_point(&mut context, body_box.x + 6.0, body_box.y + 6.0, 900);
         assert_eq!(hit, Some(body.stable_id()));
         tick(&mut context, 1100);
@@ -804,8 +816,8 @@ mod tests {
         tick(&mut context, 400);
         relayout(&mut context);
         context.rebuild_hit_test(document());
-        let button_box = context.world().layout_box(button_id).unwrap();
-        let trigger_box = context.world().layout_box(card_id).unwrap();
+        let button_box = context.world().canonical_layout_box(button_id).unwrap();
+        let trigger_box = context.world().canonical_layout_box(card_id).unwrap();
         assert!(
             button_box.x >= trigger_box.x + trigger_box.width
                 || button_box.y >= trigger_box.y + trigger_box.height,
@@ -871,8 +883,14 @@ mod tests {
         context.append_child(root, card).unwrap();
         relayout(&mut context);
         open_card(&mut context, card);
-        let trigger = context.world().layout_box(card.stable_id()).unwrap();
-        let content = context.world().layout_box(body.stable_id()).unwrap();
+        let trigger = context
+            .world()
+            .canonical_layout_box(card.stable_id())
+            .unwrap();
+        let content = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
         assert!(
             content.y + content.height <= trigger.y && content.y >= 0.0,
             "the card opens above the trigger, inside the viewport: trigger={trigger:?} content={content:?}"
@@ -944,7 +962,10 @@ mod tests {
             .presentation_input_bounds(card.stable_id())
             .unwrap();
         assert!((shown.y - 100.0).abs() < 0.5, "trigger shows at {shown:?}");
-        let content = context.world().layout_box(button.stable_id()).unwrap();
+        let content = context
+            .world()
+            .canonical_layout_box(button.stable_id())
+            .unwrap();
         assert!(
             content.y >= shown.y + shown.height && content.y < shown.y + shown.height + 16.0,
             "the card hangs just below the shown trigger: shown={shown:?} content={content:?}"
@@ -989,8 +1010,11 @@ mod tests {
         assert!(context.read(card, |card| card.open).unwrap());
         relayout(&mut context);
         // The open card keeps its trigger in flow; the button floats free.
-        let trigger_box = context.world().layout_box(card_id).unwrap();
-        let button_box = context.world().layout_box(button.stable_id()).unwrap();
+        let trigger_box = context.world().canonical_layout_box(card_id).unwrap();
+        let button_box = context
+            .world()
+            .canonical_layout_box(button.stable_id())
+            .unwrap();
         let style = context.world().layout_style(button.stable_id()).unwrap();
         assert_eq!(style.position, nana_ui_core::PositionSpec::Fixed);
         assert!(
@@ -1126,7 +1150,10 @@ mod tests {
         assert_eq!(style.layout.height, Some(LengthSpec::Px(28.0)));
         assert!(style.background.is_none());
         assert!(style.border.is_none());
-        let bounds = context.world().layout_box(card.stable_id()).unwrap();
+        let bounds = context
+            .world()
+            .canonical_layout_box(card.stable_id())
+            .unwrap();
         assert!((bounds.width - 28.0).abs() < f32::EPSILON);
         assert!((bounds.height - 28.0).abs() < f32::EPSILON);
     }

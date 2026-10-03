@@ -31,6 +31,14 @@ impl AppContext {
         self.world.last_work_counters()
     }
 
+    /// Publish counters produced by a shared Foundation layout pass.
+    pub fn record_layout_foundation_counters(
+        &mut self,
+        counters: nana_ui_core::LayoutFoundationCounters,
+    ) {
+        self.world.record_layout_foundation_counters(counters);
+    }
+
     /// Record extract output onto the last drained work counters.
     pub fn record_extract(&mut self, extracted: &[crate::ExtractedNode]) {
         self.world.record_extract(extracted);

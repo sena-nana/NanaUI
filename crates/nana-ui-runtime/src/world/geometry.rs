@@ -208,7 +208,7 @@ impl UiWorld {
                 let body_copy = presentation.body.map_or(0.0, |metrics| metrics.height);
                 let body_slot = slots
                     .body
-                    .and_then(|id| self.layout_box(id))
+                    .and_then(|id| self.canonical_layout_box(id))
                     .map_or(0.0, |region| region.height);
                 let body_gap = if body_copy > 0.0 && body_slot > 0.0 {
                     8.0
@@ -1648,7 +1648,7 @@ impl UiWorld {
                     {
                         return None;
                     }
-                    self.layout_box(id)
+                    self.canonical_layout_box(id)
                 };
                 let leading = leading.and_then(slot_box);
                 let trailing = trailing.and_then(slot_box);
@@ -1924,7 +1924,7 @@ impl UiWorld {
                     icon,
                     title: title_region,
                     message,
-                    action: action.and_then(|action| self.layout_box(action)),
+                    action: action.and_then(|action| self.canonical_layout_box(action)),
                 })
             }
             StandardVisual::LabeledValue {
@@ -1941,7 +1941,7 @@ impl UiWorld {
                     nana_ui_core::space::MD
                 };
                 let right = action
-                    .and_then(|action| self.layout_box(action))
+                    .and_then(|action| self.canonical_layout_box(action))
                     .map_or(bounds.x + bounds.width, |action| {
                         (action.x - gap).max(bounds.x)
                     });
@@ -2000,7 +2000,7 @@ impl UiWorld {
                         font_size: value_size,
                         font_weight: Some(*value_weight),
                     },
-                    action: action.and_then(|action| self.layout_box(action)),
+                    action: action.and_then(|action| self.canonical_layout_box(action)),
                 })
             }
             StandardVisual::SelectionOption {
@@ -2171,7 +2171,7 @@ impl UiWorld {
                 hint.as_ref(),
                 error.as_ref(),
                 *control,
-                &|id| self.layout_box(id),
+                &|id| self.canonical_layout_box(id),
                 self.style_model,
             ),
             StandardVisual::Toast {

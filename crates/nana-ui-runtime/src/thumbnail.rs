@@ -364,7 +364,10 @@ mod tests {
             context
                 .layout_document(document(), LayoutViewport::new(240.0, 80.0))
                 .unwrap();
-            let bounds = context.world().layout_box(entity.stable_id()).unwrap();
+            let bounds = context
+                .world()
+                .canonical_layout_box(entity.stable_id())
+                .unwrap();
             assert_eq!((bounds.width, bounds.height), expected);
         }
         let wide = context
@@ -373,7 +376,10 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(240.0, 80.0))
             .unwrap();
-        let bounds = context.world().layout_box(wide.stable_id()).unwrap();
+        let bounds = context
+            .world()
+            .canonical_layout_box(wide.stable_id())
+            .unwrap();
         assert_eq!(bounds.height, square);
         assert!((bounds.width - square * 16.0 / 9.0).abs() < 0.01);
     }
@@ -469,7 +475,10 @@ mod tests {
                 context
                     .layout_document(document(), LayoutViewport::new(width, 200.0))
                     .unwrap();
-                let bounds = context.world().layout_box(thumbnail.stable_id()).unwrap();
+                let bounds = context
+                    .world()
+                    .canonical_layout_box(thumbnail.stable_id())
+                    .unwrap();
                 assert_eq!((bounds.width, bounds.height), (width, 135.0));
                 assert_eq!(
                     context
@@ -505,7 +514,10 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(240.0, 80.0))
             .unwrap();
-        let thumb = context.world().layout_box(leading.stable_id()).unwrap();
+        let thumb = context
+            .world()
+            .canonical_layout_box(leading.stable_id())
+            .unwrap();
         assert_eq!(thumb.width, ControlSize::Small.height_in(UI_METRICS));
         assert_eq!(thumb.height, ControlSize::Small.height_in(UI_METRICS));
         assert_eq!(
@@ -573,8 +585,14 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(240.0, 120.0))
             .unwrap();
-        let cover = context.world().layout_box(thumbnail.stable_id()).unwrap();
-        let badge_box = context.world().layout_box(badge.stable_id()).unwrap();
+        let cover = context
+            .world()
+            .canonical_layout_box(thumbnail.stable_id())
+            .unwrap();
+        let badge_box = context
+            .world()
+            .canonical_layout_box(badge.stable_id())
+            .unwrap();
         let cover_style = context.world().node_style(thumbnail.stable_id()).unwrap();
         assert_eq!(cover_style.layout.position, PositionSpec::Relative);
         assert_eq!(

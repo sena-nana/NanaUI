@@ -905,7 +905,10 @@ mod tests {
         context.rebuild_hit_test(document());
         let first_id = first.stable_id();
         let first_box = context.world().layout_box(first_id).unwrap();
-        let last_box = context.world().layout_box(last.stable_id()).unwrap();
+        let last_box = context
+            .world()
+            .canonical_layout_box(last.stable_id())
+            .unwrap();
         assert!(
             last_box.y > first_box.y,
             "items stack below the trigger: first={first_box:?} last={last_box:?}"
@@ -1353,9 +1356,18 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
-        let closed_slot = context.world().layout_box(slot.stable_id()).unwrap();
-        let closed_sibling = context.world().layout_box(sibling.stable_id()).unwrap();
-        let closed_trigger = context.world().layout_box(menu.stable_id()).unwrap();
+        let closed_slot = context
+            .world()
+            .canonical_layout_box(slot.stable_id())
+            .unwrap();
+        let closed_sibling = context
+            .world()
+            .canonical_layout_box(sibling.stable_id())
+            .unwrap();
+        let closed_trigger = context
+            .world()
+            .canonical_layout_box(menu.stable_id())
+            .unwrap();
 
         context
             .update_component(menu, |menu, _| {
@@ -1370,15 +1382,27 @@ mod tests {
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
 
-        let open_trigger = context.world().layout_box(menu.stable_id()).unwrap();
-        let open_slot = context.world().layout_box(slot.stable_id()).unwrap();
-        let open_item = context.world().layout_box(item.stable_id()).unwrap();
+        let open_trigger = context
+            .world()
+            .canonical_layout_box(menu.stable_id())
+            .unwrap();
+        let open_slot = context
+            .world()
+            .canonical_layout_box(slot.stable_id())
+            .unwrap();
+        let open_item = context
+            .world()
+            .canonical_layout_box(item.stable_id())
+            .unwrap();
         let style = context.world().node_style(menu.stable_id()).unwrap();
         assert_eq!(style.layout.position, PositionSpec::Static);
         assert_eq!(open_trigger, closed_trigger);
         assert_eq!(open_slot, closed_slot);
         assert_eq!(
-            context.world().layout_box(sibling.stable_id()).unwrap(),
+            context
+                .world()
+                .canonical_layout_box(sibling.stable_id())
+                .unwrap(),
             closed_sibling
         );
         assert!(
@@ -1424,7 +1448,10 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
-        let closed_trigger = context.world().layout_box(menu.stable_id()).unwrap();
+        let closed_trigger = context
+            .world()
+            .canonical_layout_box(menu.stable_id())
+            .unwrap();
 
         context
             .update_component(menu, |menu, _| {
@@ -1439,8 +1466,14 @@ mod tests {
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
 
-        let open_trigger = context.world().layout_box(menu.stable_id()).unwrap();
-        let open_item = context.world().layout_box(item.stable_id()).unwrap();
+        let open_trigger = context
+            .world()
+            .canonical_layout_box(menu.stable_id())
+            .unwrap();
+        let open_item = context
+            .world()
+            .canonical_layout_box(item.stable_id())
+            .unwrap();
         assert_eq!(
             open_trigger, closed_trigger,
             "trigger stays in the host row"

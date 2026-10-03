@@ -331,7 +331,7 @@ impl UiWorld {
     /// Viewport AABB of the logical layout box after compositor presentation
     /// transform. Layout-class overlays do not change the box.
     pub fn presentation_input_bounds(&self, id: StableNodeId) -> Option<LayoutBox> {
-        self.project_input_bounds(id, self.layout_box(id)?)
+        self.project_input_bounds(id, self.component_layout_box(id)?)
     }
 
     /// Focus geometry follows compositor presentation, not the logical rest

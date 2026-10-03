@@ -1788,8 +1788,14 @@ mod tests {
         context
             .layout_document(doc, crate::LayoutViewport::new(220.0, 120.0))
             .unwrap();
-        let search_box = context.world().layout_box(search.stable_id()).unwrap();
-        let add_box = context.world().layout_box(add.stable_id()).unwrap();
+        let search_box = context
+            .world()
+            .canonical_layout_box(search.stable_id())
+            .unwrap();
+        let add_box = context
+            .world()
+            .canonical_layout_box(add.stable_id())
+            .unwrap();
         let search_center = search_box.x + search_box.width / 2.0;
         let add_center = add_box.x + add_box.width / 2.0;
         assert_eq!(search_box.width, UI_METRICS.icon_button_size);
@@ -1936,11 +1942,23 @@ mod tests {
         context
             .layout_document(document(), crate::LayoutViewport::new(220.0, 160.0))
             .unwrap();
-        let top_before = context.world().layout_box(top.stable_id()).unwrap();
-        let body_box = context.world().layout_box(body.stable_id()).unwrap();
-        let footer_before = context.world().layout_box(footer.stable_id()).unwrap();
+        let top_before = context
+            .world()
+            .canonical_layout_box(top.stable_id())
+            .unwrap();
+        let body_box = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
+        let footer_before = context
+            .world()
+            .canonical_layout_box(footer.stable_id())
+            .unwrap();
         let content = rows[0];
-        let content_before = context.world().layout_box(content.stable_id()).unwrap();
+        let content_before = context
+            .world()
+            .canonical_layout_box(content.stable_id())
+            .unwrap();
         assert!(top_before.y < body_box.y);
         assert!(footer_before.y >= body_box.y + body_box.height - 0.5);
         assert!(
@@ -1976,15 +1994,24 @@ mod tests {
             Some(crate::ScrollOffset { x: 0.0, y: 40.0 })
         );
         assert_eq!(
-            context.world().layout_box(top.stable_id()).unwrap(),
+            context
+                .world()
+                .canonical_layout_box(top.stable_id())
+                .unwrap(),
             top_before
         );
         assert_eq!(
-            context.world().layout_box(footer.stable_id()).unwrap(),
+            context
+                .world()
+                .canonical_layout_box(footer.stable_id())
+                .unwrap(),
             footer_before
         );
         assert_eq!(
-            context.world().layout_box(content.stable_id()).unwrap(),
+            context
+                .world()
+                .canonical_layout_box(content.stable_id())
+                .unwrap(),
             content_before
         );
 
@@ -2183,8 +2210,14 @@ mod tests {
         context
             .layout_document(document(), crate::LayoutViewport::new(220.0, 80.0))
             .unwrap();
-        let row_box = context.world().layout_box(row.stable_id()).unwrap();
-        let tools_box = context.world().layout_box(close.stable_id()).unwrap();
+        let row_box = context
+            .world()
+            .canonical_layout_box(row.stable_id())
+            .unwrap();
+        let tools_box = context
+            .world()
+            .canonical_layout_box(close.stable_id())
+            .unwrap();
         assert!(tools_box.x > row_box.x);
         assert!(tools_box.x + tools_box.width <= row_box.x + row_box.width + 0.5);
         let Some(crate::ComponentGeometry::ListItem {
@@ -2246,9 +2279,18 @@ mod tests {
         context
             .layout_document(doc, crate::LayoutViewport::new(220.0, 120.0))
             .unwrap();
-        let row_box = context.world().layout_box(clustered.stable_id()).unwrap();
-        let draft_box = context.world().layout_box(draft.stable_id()).unwrap();
-        let menu_box = context.world().layout_box(menu.stable_id()).unwrap();
+        let row_box = context
+            .world()
+            .canonical_layout_box(clustered.stable_id())
+            .unwrap();
+        let draft_box = context
+            .world()
+            .canonical_layout_box(draft.stable_id())
+            .unwrap();
+        let menu_box = context
+            .world()
+            .canonical_layout_box(menu.stable_id())
+            .unwrap();
         assert_eq!(
             (menu_box.x - draft_box.x - draft_box.width).round(),
             2.0,
@@ -2268,8 +2310,14 @@ mod tests {
         context
             .layout_document(doc, crate::LayoutViewport::new(220.0, 120.0))
             .unwrap();
-        let lone_row_box = context.world().layout_box(lone.stable_id()).unwrap();
-        let single_box = context.world().layout_box(single.stable_id()).unwrap();
+        let lone_row_box = context
+            .world()
+            .canonical_layout_box(lone.stable_id())
+            .unwrap();
+        let single_box = context
+            .world()
+            .canonical_layout_box(single.stable_id())
+            .unwrap();
         let single_center = single_box.x + single_box.width / 2.0;
         assert!(
             (single_center
@@ -2392,7 +2440,10 @@ mod tests {
         context
             .layout_document(document(), crate::LayoutViewport::new(220.0, 320.0))
             .unwrap();
-        let gallery_body = context.world().layout_box(body.stable_id()).unwrap();
+        let gallery_body = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
         let row_height = ControlSize::Small.height_in(UI_METRICS);
         assert!(gallery_body.height >= row_height * 2.0);
         context
@@ -2433,7 +2484,10 @@ mod tests {
         context
             .layout_document(document(), crate::LayoutViewport::new(220.0, 320.0))
             .unwrap();
-        let late_box = context.world().layout_box(late_body.stable_id()).unwrap();
+        let late_box = context
+            .world()
+            .canonical_layout_box(late_body.stable_id())
+            .unwrap();
         assert!(late_box.height >= row_height * 2.0);
     }
 
@@ -2667,7 +2721,10 @@ mod tests {
             .unwrap()
             .layout
             .clone();
-        let expanded_body = context.world().layout_box(body.stable_id()).unwrap();
+        let expanded_body = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
         assert!(expanded_body.height > 0.0);
         assert_eq!(
             context
@@ -2687,7 +2744,10 @@ mod tests {
         let progress = context
             .read(section, |section| section.animation_progress)
             .unwrap();
-        let clipped = context.world().layout_box(body.stable_id()).unwrap();
+        let clipped = context
+            .world()
+            .canonical_layout_box(body.stable_id())
+            .unwrap();
         assert!(progress > 0.0 && progress < 1.0);
         assert!(clipped.height < expanded_body.height);
         assert!((clipped.height - expanded_body.height * progress).abs() < 1.0);

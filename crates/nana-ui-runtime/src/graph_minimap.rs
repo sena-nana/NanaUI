@@ -312,7 +312,7 @@ impl crate::AppContext {
         })? {
             return Ok(false);
         }
-        let Some(bounds) = self.world().layout_box(target) else {
+        let Some(bounds) = self.world().canonical_layout_box(target) else {
             return Ok(false);
         };
         if !point_in_bounds(bounds, x, y) {
@@ -348,7 +348,7 @@ impl crate::AppContext {
         let Some(entity) = self.graph_minimap_entity(target) else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().layout_box(target) else {
+        let Some(bounds) = self.world().canonical_layout_box(target) else {
             return Ok(false);
         };
         self.update_component(entity, |minimap, cx| {
