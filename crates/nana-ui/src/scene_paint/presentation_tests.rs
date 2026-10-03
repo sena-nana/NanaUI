@@ -10,7 +10,9 @@ use nana_ui_runtime::{AppContext, DocumentId, LayoutBox, PaintContext, PaintPath
 use nana_ui_scene::UiScene;
 
 use super::{
-    ScenePaintViewport, ScenePresentationColorSpace, ScenePresentationProfile, SceneWgpuPainter,
+    ScenePaintViewport, ScenePresentationColorSpace, ScenePresentationParameters,
+    ScenePresentationProfile, SceneWgpuPainter, hlg_encode, linear_sc_rgb_to_bt2020,
+    pq_encode_nits, tone_map_headroom_rgb,
 };
 
 const WIDTH: u32 = 4;
@@ -149,11 +151,26 @@ fn paint(
     scene: UiScene,
     clear_color: [f32; 4],
 ) -> (Vec<u8>, super::DestPassCounts) {
+    paint_with_parameters(
+        profile,
+        scene,
+        clear_color,
+        ScenePresentationParameters::default(),
+    )
+}
+
+fn paint_with_parameters(
+    profile: ScenePresentationProfile,
+    scene: UiScene,
+    clear_color: [f32; 4],
+    parameters: ScenePresentationParameters,
+) -> (Vec<u8>, super::DestPassCounts) {
     let gpu = crate::test_gpu::context();
     let device = nana_gpu::__framework::device(&gpu);
     let queue = nana_gpu::__framework::queue(&gpu);
     let (texture, view) = target(device, profile);
     let mut painter = SceneWgpuPainter::new_with_presentation(&gpu, profile);
+    painter.set_presentation_parameters(parameters);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("nana-ui presentation test encode"),
     });
@@ -185,6 +202,44 @@ fn paint(
     (
         readback(device, queue, encoder, &texture, bytes_per_pixel),
         counts,
+    )
+}
+
+fn encode_paint(
+    painter: &mut SceneWgpuPainter,
+    scene: &UiScene,
+    view: &wgpu::TextureView,
+    parameters: ScenePresentationParameters,
+) -> (wgpu::CommandEncoder, super::DestPassCounts) {
+    let gpu = crate::test_gpu::context();
+    let device = nana_gpu::__framework::device(&gpu);
+    painter.set_presentation_parameters(parameters);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui presentation parameter update"),
+    });
+    painter
+        .paint_encoder(
+            scene,
+            &mut encoder,
+            view,
+            ScenePaintViewport {
+                logical_size: [WIDTH as f32, HEIGHT as f32],
+                physical_size: [WIDTH, HEIGHT],
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [0.0; 4],
+                clear: true,
+            },
+            None,
+            None,
+        )
+        .expect("parameter update paint");
+    (
+        encoder,
+        painter
+            .last_dest_pass_counts
+            .expect("parameter update records pass counts"),
     )
 }
 
@@ -300,6 +355,27 @@ fn extended_linear_profile_keeps_negative_and_overwhite_values() {
         pixel.iter().all(|value| value.is_finite()),
         "fp16 NaN={pixel:?}"
     );
+    assert_eq!(counts.color + counts.msaa, 1);
+    assert_eq!(counts.blit, 1);
+}
+
+#[test]
+fn extended_linear_clear_uses_the_same_headroom_as_blit() {
+    let profile = ScenePresentationProfile::new(
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT,
+        ScenePresentationColorSpace::ExtendedSrgbLinear,
+    );
+    let parameters = ScenePresentationParameters::new(1.0, 80.0);
+    let (pixels, counts) =
+        paint_with_parameters(profile, empty_scene(), [2.0, 0.5, 0.0, 0.5], parameters);
+    let pixel = rgba16(&pixels);
+    // H=1 clips only the above-white channel before premultiplication;
+    // ExtendedLinear still stores that result linearly (it does not apply
+    // sRGB OETF).
+    assert!((pixel[0] - 0.5).abs() < 0.02, "clear={pixel:?}");
+    assert!((pixel[1] - 0.25).abs() < 0.02, "clear={pixel:?}");
+    assert!(pixel[2].abs() < 0.02, "clear={pixel:?}");
+    assert!((pixel[3] - 0.5).abs() < 0.02, "clear alpha={pixel:?}");
     assert_eq!(counts.color + counts.msaa, 1);
     assert_eq!(counts.blit, 1);
 }
@@ -460,4 +536,168 @@ fn presentation_clear_with_transparent_alpha_is_finite() {
     );
     assert_eq!(counts.color + counts.msaa, 1);
     assert_eq!(counts.blit, 1);
+}
+
+#[test]
+fn pq_presentation_matches_reference_encoding_and_preserves_alpha() {
+    let profile = ScenePresentationProfile::new(
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT,
+        ScenePresentationColorSpace::Bt2100Pq,
+    );
+    // A headroom of one is the SDR reference budget: values at or below
+    // reference white pass through unchanged, while highlights are clipped
+    // to that same peak before the requested HDR transfer.
+    let parameters = ScenePresentationParameters::new(1.0, 80.0);
+    let (pixels, counts) = paint_with_parameters(
+        profile,
+        scene_with_fill(PaintColor::LinearScRgb {
+            channels: [0.18, 0.18, 0.18],
+            alpha: 0.5,
+        }),
+        [0.0; 4],
+        parameters,
+    );
+    let pixel = rgba16(&pixels);
+    let expected = pq_encode_nits(0.18 * parameters.reference_white_nits()) * 0.5;
+    for (actual, expected) in pixel[..3].iter().zip([expected; 3]) {
+        assert!(
+            (actual - expected).abs() < 0.02,
+            "PQ={pixel:?}, expected={expected}"
+        );
+    }
+    assert!((pixel[3] - 0.5).abs() < 0.02, "PQ alpha={pixel:?}");
+    assert_eq!(counts.color + counts.msaa, 1);
+    assert_eq!(counts.blit, 1);
+}
+
+#[test]
+fn hlg_presentation_matches_reference_encoding_and_clear() {
+    let profile = ScenePresentationProfile::new(
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT,
+        ScenePresentationColorSpace::Bt2100Hlg,
+    );
+    let parameters = ScenePresentationParameters::new(4.0, 80.0);
+    let rgb = linear_sc_rgb_to_bt2020([0.18, 0.18, 0.18]);
+    let expected = hlg_encode(rgb[0] * parameters.reference_white_nits() / 1_000.0);
+    let (pixels, counts) = paint_with_parameters(
+        profile,
+        scene_with_fill(PaintColor::LinearScRgb {
+            channels: [0.18, 0.18, 0.18],
+            alpha: 1.0,
+        }),
+        [0.0; 4],
+        parameters,
+    );
+    let pixel = rgba16(&pixels);
+    for actual in &pixel[..3] {
+        assert!(
+            (actual - expected).abs() < 0.02,
+            "HLG={pixel:?}, expected={expected}"
+        );
+    }
+    assert!((pixel[3] - 1.0).abs() < 0.02);
+    assert_eq!(counts.blit, 1);
+
+    // The empty-scene clear uses the same presentation branch as a drawn
+    // pixel, including transfer, alpha and BT.2020 primaries.
+    let (cleared, _) =
+        paint_with_parameters(profile, empty_scene(), [0.18, 0.18, 0.18, 0.5], parameters);
+    let clear_pixel = rgba16(&cleared);
+    for actual in &clear_pixel[..3] {
+        assert!(
+            (actual - expected * 0.5).abs() < 0.02,
+            "HLG clear={clear_pixel:?}"
+        );
+    }
+    assert!(
+        (clear_pixel[3] - 0.5).abs() < 0.02,
+        "HLG clear alpha={clear_pixel:?}"
+    );
+}
+
+#[test]
+fn headroom_update_reuses_scene_and_changes_only_presentation_blit() {
+    let profile = ScenePresentationProfile::new(
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT,
+        ScenePresentationColorSpace::Bt2100Pq,
+    );
+    let gpu = crate::test_gpu::context();
+    let device = nana_gpu::__framework::device(&gpu);
+    let queue = nana_gpu::__framework::queue(&gpu);
+    let (texture, view) = target(device, profile);
+    let scene = scene_with_fill(PaintColor::LinearScRgb {
+        channels: [2.0, 1.0, 0.5],
+        alpha: 1.0,
+    });
+    let mut painter = SceneWgpuPainter::new_with_presentation(&gpu, profile);
+    let (first_encoder, first_counts) = encode_paint(
+        &mut painter,
+        &scene,
+        &view,
+        ScenePresentationParameters::new(1.0, 80.0),
+    );
+    let first = readback(device, queue, first_encoder, &texture, 8);
+    let (second_encoder, second_counts) = encode_paint(
+        &mut painter,
+        &scene,
+        &view,
+        ScenePresentationParameters::new(16.0, 80.0),
+    );
+    let second = readback(device, queue, second_encoder, &texture, 8);
+    let first_pixel = rgba16(&first);
+    let second_pixel = rgba16(&second);
+    let first_expected = linear_sc_rgb_to_bt2020(tone_map_headroom_rgb([2.0, 1.0, 0.5], 1.0))
+        .map(|channel| pq_encode_nits(channel * 80.0));
+    for (actual, expected) in first_pixel[..3].iter().zip(first_expected) {
+        assert!(
+            (actual - expected).abs() < 0.02,
+            "headroom=1 highlight={first_pixel:?}, expected={first_expected:?}"
+        );
+    }
+    assert!(
+        (first_pixel[0] - second_pixel[0]).abs() > 0.01,
+        "headroom update did not change highlight: {first_pixel:?} -> {second_pixel:?}"
+    );
+    // The shared shoulder keeps equal scene channels neutral. The saturated
+    // sample above may change chroma when only one channel is above white,
+    // but the midtone channels themselves are not globally rescaled.
+    let neutral_scene = scene_with_fill(PaintColor::LinearScRgb {
+        channels: [2.0, 2.0, 2.0],
+        alpha: 1.0,
+    });
+    let (neutral_first_encoder, _) = encode_paint(
+        &mut painter,
+        &neutral_scene,
+        &view,
+        ScenePresentationParameters::new(1.0, 80.0),
+    );
+    let neutral_first = rgba16(&readback(device, queue, neutral_first_encoder, &texture, 8));
+    let (neutral_second_encoder, _) = encode_paint(
+        &mut painter,
+        &neutral_scene,
+        &view,
+        ScenePresentationParameters::new(16.0, 80.0),
+    );
+    let neutral_second = rgba16(&readback(
+        device,
+        queue,
+        neutral_second_encoder,
+        &texture,
+        8,
+    ));
+    for pixel in [neutral_first, neutral_second] {
+        assert!(
+            (pixel[1] / pixel[0] - 1.0).abs() < 0.02,
+            "neutral={pixel:?}"
+        );
+        assert!(
+            (pixel[2] / pixel[0] - 1.0).abs() < 0.02,
+            "neutral={pixel:?}"
+        );
+    }
+    assert_eq!(first_counts.color + first_counts.msaa, 1);
+    assert_eq!(first_counts.blit, 1);
+    assert_eq!(second_counts.color + second_counts.msaa, 0);
+    assert_eq!(second_counts.blit, 1);
+    assert_eq!(painter.presentation_parameters().headroom(), 16.0);
 }

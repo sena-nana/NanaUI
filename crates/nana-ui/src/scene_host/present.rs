@@ -166,6 +166,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         };
         let profile = host.surface.profile().scene_profile();
+        // Display HDR metadata is cached by the surface and refreshed only on
+        // window/display events.  It is a presentation uniform, not part of
+        // the profile/pipeline cache key, so headroom changes do not rebuild
+        // Scene state or shaders.
+        let presentation_parameters = host.surface.presentation_parameters();
         // Decided before the drawable is acquired: a macOS handoff changes how
         // this frame is presented.
         let takes_over = self.prepare_startup_frame(id);
@@ -318,6 +323,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 crate::ScenePresentationColorSpace::Srgb
             );
         let painter = self.painter_mut(profile);
+        painter.set_presentation_parameters(presentation_parameters);
         // Painters are shared per resolved presentation profile, so every window supplies its own
         // egress, including none, and its own surface's text mode.
         painter.set_resource_fetch_host(fetch_host);

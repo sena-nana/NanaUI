@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use nana_diagnostics::framework::{gpu, host};
 use nana_diagnostics::metric;
 
+use crate::ResolvedSurfaceProfile;
+
 use crate::GpuWorkObservation;
 
 /// Describe the adapter the host is rendering with. Called at startup and
@@ -30,6 +32,57 @@ pub(crate) fn record_adapter(info: &wgpu::AdapterInfo) {
             format!("{:04x}:{:04x}", info.vendor, info.device),
         );
     }
+}
+
+/// Record the active surface presentation and the latest advisory HDR data.
+/// This is change-gated by the surface cache: startup/rebind and an event that
+/// changes metadata call it, while steady frames do not.
+pub(crate) fn record_surface_hdr(profile: ResolvedSurfaceProfile, info: &wgpu::DisplayHdrInfo) {
+    let Some(diagnostics) = nana_diagnostics::global() else {
+        return;
+    };
+    diagnostics.set_session_info(
+        "gpu.presentation.requested",
+        format!("{:?}", profile.requested),
+    );
+    diagnostics.set_session_info("gpu.presentation.format", format!("{:?}", profile.format));
+    diagnostics.set_session_info(
+        "gpu.presentation.color_space",
+        format!("{:?}", profile.color_space),
+    );
+    // Keep the transfer function explicit: a colour-space debug name is useful
+    // to humans, while this stable key lets telemetry distinguish the active
+    // PQ/HLG signal from an extended-linear or SDR fallback.
+    let encoding = match profile.color_space {
+        wgpu::SurfaceColorSpace::Bt2100Pq => "pq",
+        wgpu::SurfaceColorSpace::Bt2100Hlg => "hlg",
+        wgpu::SurfaceColorSpace::ExtendedSrgbLinear => "extended-linear",
+        wgpu::SurfaceColorSpace::ExtendedSrgb => "extended-srgb",
+        wgpu::SurfaceColorSpace::ExtendedDisplayP3 => "extended-p3",
+        wgpu::SurfaceColorSpace::DisplayP3 => "srgb-p3",
+        wgpu::SurfaceColorSpace::Srgb => "srgb",
+        _ => "unknown",
+    };
+    diagnostics.set_session_info("gpu.presentation.encoding", encoding);
+    diagnostics.set_session_info(
+        "gpu.presentation.fallback",
+        profile
+            .fallback
+            .map_or_else(|| "none".to_owned(), |fallback| format!("{fallback:?}")),
+    );
+    diagnostics.set_session_info(
+        "gpu.presentation.headroom",
+        info.tone_map_headroom()
+            .filter(|value| value.is_finite() && *value >= 1.0)
+            .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+    );
+    diagnostics.set_session_info(
+        "gpu.presentation.sdr_white_nits",
+        info.luminance
+            .and_then(|luminance| luminance.sdr_white_nits)
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+    );
 }
 
 /// One presented frame.

@@ -90,6 +90,7 @@ lyon_tessellation = "1.0.22"
 i_overlay = "9.0.0"
 resvg = { version = "0.48.1", default-features = false, features = ["text"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+png = "0.18.1"
 unicode-segmentation = "1.13.0"
 unicode-width = "0.2"
 raw-window-handle = "0.6.2"

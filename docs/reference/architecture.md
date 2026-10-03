@@ -136,7 +136,7 @@ FLIP 和 list-move 是显式策略。不是把 width 动画偷成 scale。
 | Window、Surface | 宿主（`run_runtime`，或 `EmbeddedRuntime` 的嵌入方） |
 | 设备：`GpuContext`（代次、能力、丢失状态、提交守卫） | 宿主；设备丢失只记在 `GpuContext::is_lost()`，替换设备就是换一个新的 `GpuContext` |
 | 帧：`FrameContext`（encoder、提交 / 丢弃） | 宿主；painter 与生产者只往里录，丢弃时 painter 的保留写入自动回滚 |
-| 最新帧槽池（`FrameExchange`） | 生产线程；`FrameInbox` / `FrameBinding` 在窗口侧取样 |
+| 最新帧槽池（`FrameExchange`） | 生产线程；`FrameInbox` / `FrameBinding` 在窗口侧取样。已声明的颜色元数据随 lease 传播，消费端不能把 PQ/HLG/P3 未转换地当作 sRGB 或 linear scRGB |
 | 业务状态、应用配置、Region / pane **内容** | 应用 |
 | opt-in 的窗口 / Dock view-state 恢复 | `ViewStateStore`；应用选择稳定 scope/key |
 | 持久化写盘 | 宿主的 `PersistenceCoordinator` 在后台线程合并写入；程序经 `RuntimeProgramContext::store()` 拿到的是 `ProgramStore`：`flush` 只请求尽快写、不等待，`clear` 只清程序自己的键，不动 `nana.*` 框架命名空间。关闭时宿主做一次有界（2 s）的最终 flush，超时发 `persistence.flush_timed_out` |

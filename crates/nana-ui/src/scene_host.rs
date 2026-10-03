@@ -3462,6 +3462,16 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
     pub fn wake(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.manager.drain_host_work(event_loop);
     }
+    /// Refresh cached display HDR/headroom metadata after the embedding host
+    /// receives a system display-parameter notification. This is an
+    /// event-driven update: it only requests redraws for surfaces whose
+    /// metadata changed and never rebuilds application or Scene state.
+    pub fn refresh_display_hdr_info(&mut self) -> bool {
+        let ids: Vec<_> = self.manager.window_contexts.keys().copied().collect();
+        ids.into_iter().fold(false, |changed, id| {
+            self.manager.refresh_surface_hdr_info(id) || changed
+        })
+    }
     /// Returns NanaUI's next deadline for the host to merge with its own timers.
     pub fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) -> Option<Instant> {
         self.manager.about_to_wait(event_loop);

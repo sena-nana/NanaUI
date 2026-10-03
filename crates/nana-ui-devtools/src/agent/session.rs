@@ -111,7 +111,8 @@ pub trait AgentSession {
     fn screenshot_png(&mut self, path: &Path) -> Result<PixelStats, AgentError> {
         let clear = self.describe().clear;
         let (size, rgba) = self.screenshot_rgba()?;
-        offscreen::write_png(path, size, &rgba).map_err(|error| AgentError(error.to_string()))?;
+        offscreen::write_painter_png(path, size, &rgba)
+            .map_err(|error| AgentError(error.to_string()))?;
         Ok(pixels::pixel_stats(size, &rgba, clear))
     }
 

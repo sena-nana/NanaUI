@@ -42,6 +42,14 @@ pub enum SurfacePresentationPolicy {
     WideGamut,
     /// Request extended-sRGB HDR output, falling back through wide-gamut and SDR.
     Hdr,
+    /// Explicitly request BT.2100 PQ output. If the surface cannot present it,
+    /// prefer extended-linear HDR, then encoded HDR, wide-gamut SDR and sRGB.
+    /// Transparent windows use PQ only when a full-alpha format (normally
+    /// fp16) is advertised; two-alpha-bit targets fall back deterministically.
+    HdrPq,
+    /// Explicitly request BT.2100 HLG output for a host whose output contract
+    /// benefits from HLG. Uses the same deterministic fallback as [`Self::HdrPq`].
+    HdrHlg,
 }
 
 /// Why a requested surface profile was not selected exactly.
@@ -71,7 +79,10 @@ impl ResolvedSurfaceProfile {
     pub const fn is_wide_gamut(self) -> bool {
         matches!(
             self.color_space,
-            wgpu::SurfaceColorSpace::DisplayP3 | wgpu::SurfaceColorSpace::ExtendedDisplayP3
+            wgpu::SurfaceColorSpace::DisplayP3
+                | wgpu::SurfaceColorSpace::ExtendedDisplayP3
+                | wgpu::SurfaceColorSpace::Bt2100Pq
+                | wgpu::SurfaceColorSpace::Bt2100Hlg
         )
     }
 
@@ -105,13 +116,21 @@ impl ResolvedSurfaceProfile {
             wgpu::SurfaceColorSpace::ExtendedDisplayP3 => {
                 ScenePresentationColorSpace::ExtendedDisplayP3
             }
+            wgpu::SurfaceColorSpace::Bt2100Pq => ScenePresentationColorSpace::Bt2100Pq,
+            wgpu::SurfaceColorSpace::Bt2100Hlg => ScenePresentationColorSpace::Bt2100Hlg,
             _ => ScenePresentationColorSpace::Srgb,
         };
         let profile = ScenePresentationProfile::new(
             nana_gpu::__framework::format_from_wgpu(self.format),
             color_space,
         );
-        if matches!(self.requested, SurfacePresentationPolicy::Hdr) && !self.is_hdr() {
+        if matches!(
+            self.requested,
+            SurfacePresentationPolicy::Hdr
+                | SurfacePresentationPolicy::HdrPq
+                | SurfacePresentationPolicy::HdrHlg
+        ) && !self.is_hdr()
+        {
             profile.with_force_float_working()
         } else {
             profile

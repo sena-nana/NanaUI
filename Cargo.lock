@@ -2682,6 +2682,7 @@ dependencies = [
  "nana-ui-platform",
  "nana-ui-scene",
  "nana-ui-vue",
+ "png",
  "pollster",
  "serde",
  "serde_json",

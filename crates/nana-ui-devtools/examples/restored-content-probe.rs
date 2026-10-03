@@ -39,7 +39,7 @@ fn capture(
             pixels.get(offset..offset+3).is_some_and(|rgb| (0..3).any(|i| (f32::from(rgb[i])/255.0-clear[i]).abs() > 0.2))
         }), "decoration must paint real pixels");
     }
-    offscreen::write_png(path, size, &pixels)
+    offscreen::write_painter_png(path, size, &pixels)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -7,7 +7,10 @@ use std::sync::{
 };
 
 use nana_diagnostics::{event, framework::gpu, metric};
-use nana_frame_exchange::{FrameInbox, FrameLease, FrameToken};
+use nana_frame_exchange::{
+    FrameAlphaMode, FrameColorMetadata, FrameColorPrimaries, FrameColorRange, FrameInbox,
+    FrameLease, FrameLinearUnit, FrameToken, FrameTransferFunction,
+};
 use nana_gpu::{
     DeviceGeneration, GpuContext, GpuTexture, GpuTextureDescriptor, GpuTextureFormat,
     GpuTextureUsages,
@@ -89,6 +92,14 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
         self.current.as_ref().map(|frame| frame.size())
     }
 
+    /// Source color metadata of the bound frame. `None` while the placeholder
+    /// is shown. Frame exchange performs no conversion, so a consumer that
+    /// exports or composites this texture must inspect this declaration and
+    /// explicitly convert it to the destination contract when needed.
+    pub fn color_metadata(&self) -> Option<FrameColorMetadata> {
+        self.current.as_ref().map(|frame| frame.color_metadata())
+    }
+
     /// Bind the latest frame `accept` admits. Returns whether the slot binding
     /// changed.
     ///
@@ -131,10 +142,12 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
         // Acknowledging loads again, so a frame published since `latest` is
         // bound here instead of raising a wake of its own.
         if let Some(inbox) = inbox
-            && inbox.latest().is_none_or(|frame| accept(&frame.token()))
+            && inbox
+                .latest()
+                .is_none_or(|frame| can_bind(&frame, &accept, self.alpha))
             && let Some(frame) = inbox
                 .try_take_latest()
-                .filter(|frame| accept(&frame.token()))
+                .filter(|frame| can_bind(frame, &accept, self.alpha))
             && self.token() != Some(frame.token())
         {
             let (width, height) = frame.size();
@@ -191,9 +204,9 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
         {
             return true;
         }
-        inbox
-            .and_then(FrameInbox::latest)
-            .is_some_and(|latest| accept(&latest.token()) && self.token() != Some(latest.token()))
+        inbox.and_then(FrameInbox::latest).is_some_and(|latest| {
+            can_bind(&latest, &accept, self.alpha) && self.token() != Some(latest.token())
+        })
     }
 
     fn bind_placeholder(&mut self) {
@@ -217,6 +230,43 @@ fn usable<E: Copy + Eq>(
         })
 }
 
+fn can_bind<E: Copy + Eq>(
+    frame: &FrameLease<E>,
+    accept: &impl Fn(&FrameToken<E>) -> bool,
+    alpha: HostTextureAlphaMode,
+) -> bool {
+    accept(&frame.token()) && metadata_compatible(frame.color_metadata(), alpha)
+}
+
+/// Keep the legacy unknown declaration usable, but never sample a known
+/// transfer function or color gamut through a binding whose contract cannot
+/// represent it. The binding does not perform conversion: callers that need
+/// PQ/HLG/P3 or straight alpha must convert before publishing a frame.
+fn metadata_compatible(metadata: FrameColorMetadata, alpha: HostTextureAlphaMode) -> bool {
+    if metadata == FrameColorMetadata::unknown() {
+        return true;
+    }
+    if metadata.primaries() != FrameColorPrimaries::Srgb
+        || metadata.range() != FrameColorRange::Full
+        || !matches!(
+            metadata.transfer(),
+            FrameTransferFunction::Srgb | FrameTransferFunction::Linear
+        )
+    {
+        return false;
+    }
+    if metadata.transfer() == FrameTransferFunction::Linear
+        && metadata.linear_unit() != FrameLinearUnit::Scrgb80Nits
+    {
+        return false;
+    }
+    match (alpha, metadata.alpha()) {
+        (HostTextureAlphaMode::Opaque, FrameAlphaMode::Opaque)
+        | (HostTextureAlphaMode::Premultiplied, FrameAlphaMode::Premultiplied) => true,
+        _ => false,
+    }
+}
+
 impl<E> Drop for FrameBinding<E> {
     fn drop(&mut self) {
         // A returned slot texture is reused by the producer; the registration
@@ -234,6 +284,36 @@ mod tests {
     use crate::gpu_texture::HostTextureRegistry;
     use nana_frame_exchange::{CopyOutcome, DEFAULT_CAPACITY, FrameExchange};
     use nana_gpu::__framework;
+
+    #[test]
+    fn metadata_contract_accepts_only_surface_safe_known_encodings() {
+        let opaque = HostTextureAlphaMode::Opaque;
+        let premultiplied = HostTextureAlphaMode::Premultiplied;
+        assert!(metadata_compatible(
+            FrameColorMetadata::unknown(),
+            premultiplied
+        ));
+        assert!(metadata_compatible(
+            FrameColorMetadata::srgb(FrameAlphaMode::Premultiplied),
+            premultiplied
+        ));
+        assert!(metadata_compatible(
+            FrameColorMetadata::linear_scrgb(FrameAlphaMode::Opaque),
+            opaque
+        ));
+        assert!(!metadata_compatible(
+            FrameColorMetadata::linear_srgb(FrameAlphaMode::Premultiplied),
+            premultiplied
+        ));
+        assert!(!metadata_compatible(
+            FrameColorMetadata::bt2020_pq(FrameAlphaMode::Premultiplied),
+            premultiplied
+        ));
+        assert!(!metadata_compatible(
+            FrameColorMetadata::srgb(FrameAlphaMode::Straight),
+            premultiplied
+        ));
+    }
 
     fn source(gpu: &GpuContext, width: u32) -> GpuTexture {
         gpu.create_texture(&GpuTextureDescriptor {
@@ -485,5 +565,36 @@ mod tests {
         assert!(!binding.prepare(None, all));
         drop(binding);
         assert_eq!(size(), (1, 1));
+    }
+
+    #[test]
+    fn known_hdr_metadata_is_left_pending_without_redraw_spin() {
+        let gpu = crate::test_gpu::context();
+        let mut exchange = FrameExchange::new(&gpu, DEFAULT_CAPACITY, 0u64, Arc::new(|| {}));
+        let inbox = exchange.inbox();
+        let source = source(&gpu, 4);
+        assert_eq!(
+            exchange.copy_from_with_metadata(
+                &source,
+                0,
+                FrameColorMetadata::bt2020_pq(FrameAlphaMode::Premultiplied),
+            ),
+            CopyOutcome::Submitted
+        );
+        __framework::device(&gpu)
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        assert!(exchange.poll());
+        let registry = HostTextureRegistry::new();
+        let mut binding = FrameBinding::new(
+            &gpu,
+            registry.slot("hdr"),
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let all = |_: &FrameToken<u64>| true;
+        assert!(!binding.prepare(Some(&inbox), all));
+        assert_eq!(binding.size(), None);
+        assert!(!binding.presented(Some(&inbox), all));
+        assert!(!binding.prepare(Some(&inbox), all));
     }
 }

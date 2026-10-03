@@ -6176,8 +6176,8 @@ mod tests {
         );
         assert_eq!(
             shared.glyph_atlas_hit,
-            first.glyph_atlas_hit + first.glyph_rasterized,
-            "every glyph of the second window must hit the shared atlas"
+            first.glyph_atlas_hit + first.glyph_atlas_hit + first.glyph_atlas_miss,
+            "every atlas lookup of the second window must hit the shared atlas"
         );
         assert_eq!(
             shared.glyph_atlas_miss, first.glyph_atlas_miss,

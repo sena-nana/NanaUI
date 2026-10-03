@@ -137,6 +137,7 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
         ScenePrimitiveKind::Icon {
             icon,
             color: icon_color,
+            ..
         } => format!("icon {head} icon={icon:?} color={}", color(*icon_color)),
         ScenePrimitiveKind::IconBatch {
             bounds,

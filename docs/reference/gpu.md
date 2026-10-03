@@ -12,6 +12,50 @@ Issue #186 当前结论为 **NO-GO**。WGPU 仍是 NanaUI 的唯一正式 backen
 
 `GpuContext::policy()` 按 `DeviceGeneration` 保存共享 pipeline registry 与工作计数。Scene painter 的静态 pipeline 通过它复用真实 WGPU 对象。`GpuWorkSink` 将上传和 buffer reallocation 记入设备统计。公开边界仍使用 Nana 类型。
 
+### HDR 显示信息与呈现参数（Issue #283）
+
+Surface 的 HDR 能力仍由 `SurfaceCapabilities::format_capabilities` 决定。
+`wgpu::Surface::display_hdr_info` 返回的是当前显示器的运行时建议值，只用于
+调节最后的 tone-map：Apple EDR 提供相对 headroom，Windows 可能提供峰值和
+SDR reference-white 的 nit 值，浏览器或其他后端可能完全没有这些字段。缺失值
+表示未知，不表示 SDR；不能用它单独决定是否选择 HDR surface。
+
+Hosted surface 会在创建、surface 恢复/换设备时缓存一次 `DisplayHdrInfo`，并在
+窗口移动、缩放或 resize 等显示事件中重新读取。值没有变化时不会触发重绘；值
+变化时只刷新 presentation 参数，不重建 Runtime/Scene 状态。稳定帧不会轮询 OS，
+Metal 的查询也始终在事件线程完成。安全的 tone-map headroom 取值是
+`DisplayHdrInfo::tone_map_headroom().unwrap_or(1.0)`；SDR reference-white 缺失时
+采用 80 nit 的 scRGB 约定。诊断会保留请求/实际色彩空间、fallback、headroom 和
+reference-white 和 active encoding，便于解释为什么某帧走了 extended-linear、PQ/HLG 或 SDR。
+嵌入式宿主如果收到平台自己的 HDR/显示参数通知，应在窗口线程调用
+`EmbeddedRuntime::refresh_display_hdr_info()`；直接持有 `HostedGpuContext` 的宿主则调用
+其同名方法。两者都只刷新发生变化的 surface，并请求一次重绘；调用应与宿主的
+window/event-loop 线程一致（Metal 的 surface 查询有线程亲和性）。Surface 能力表的
+变化仍由 resize/recovery/rebind 重新解析 profile；headroom 通知本身只更新 uniform。
+
+Scene painter 的工作像素是 premultiplied linear scRGB；它们不是普通 sRGB 图片。
+`FrameExchange` 只复制 producer 提供的纹理和格式，不做色彩转换。需要跨线程传递
+色彩信息时，producer 调用 `copy_from_with_metadata`（或 raw-WGPU 对应方法），把
+`FrameColorMetadata` 一起交给 lease；consumer 从 `FrameLease::color_metadata()` 或
+`FrameBinding::color_metadata()` 读取。元数据至少应声明 primaries、transfer 和 alpha
+语义，range 未知时也必须按未知处理。为保持旧代码可编译，旧 `copy_from` 仍可用，
+但它携带的是 `Unknown`，绝不能由 consumer 默认为 sRGB。交换本身不转换像素；离屏
+读回、截图、纹理导出或跨进程 frame exchange 必须保留这些元数据，或者在导出边界
+明确转换到目标（例如 sRGB PNG）。不能把 extended-linear、PQ 或 HLG 的字节静默标成
+sRGB；需要普通 sRGB 消费者时，先做一次显式 tone-map/编码，再写入带 sRGB 标识的资源。
+`FrameBinding` 的默认表面合同只直接接受 full-range sRGB 编码或 80-nit linear scRGB，
+且要求 alpha 与 binding 一致；已声明的 P3、PQ、HLG、limited-range、straight alpha
+会留在 inbox 中而不会被误采样。应用应先在 producer 端转换，或实现自己的带转换的
+consumer，而不能把被拒绝的帧反复请求重绘。
+
+`nana-ui-devtools::offscreen` 是一个明确的 SDR snapshot 边界：`FORMAT` 固定为
+`BGRA8_UNORM_SRGB`。跨导出边界应使用 `readback_image` / `paint_image` 返回的
+`SnapshotImage`，再调用 `into_png_srgb` 和 `write_png_with_metadata`；它们会验证
+premultiplied sRGB → straight-alpha sRGB 转换，并写入 PNG 的 sRGB 标记。旧的
+`readback` / `write_png` 只为兼容保留，调用方必须自己遵守同一合同。offscreen
+不能用于导出 extended-linear、PQ 或 HLG；HDR 导出必须使用带目标色彩空间和传递函数
+的专用路径。带颜色 chunk 的 PNG 之外，不允许把未标记的 PNG 推断成 sRGB。
+
 ### 帧上传
 
 renderer 不直接调用 `queue.write_buffer` / `write_texture`。`GpuWorkSink` 把写入追加到当前 `FrameContext` 的上传批（`__framework::frame_uploads`）。`FrameContext::submit` 时，设备上的待落地批（`GpuContext::write_texture`、`GpuContext::write_buffer`、被丢弃帧的写入）与本帧的批一起，用一次 `memcpy` 拷进 `UploadRing` 的一个已映射 chunk。一个上传 command buffer 按目标合并后逐段 copy。并在同一次 `queue.submit` 里排在本帧之前提交。语义与 queue 写入一致。所有写入在本帧命令之前、按调用顺序落地。但每帧不再为每次写入付一次 WGPU 内部的 staging 分配。
@@ -203,7 +247,7 @@ fn window_frame_presented(..) -> RuntimeProgramUpdate {
 - `draw_in_pass` / `draw_batch_in_pass` 收 painter 正开着的 `ScenePass`（`dest_size`、`set_scissor`、`set_viewport`、`restore_viewport`）和同样带 `gpu`、`target_format`、`presentation` 的上下文。
 - `render`（独立 pass）收 `SceneGpuRenderContext`，用 `with_pass(label, |pass| ..)` 在当前目标上开一个 Load/Store 的 pass，viewport 是整个目标、scissor 是节点的 clip。
 
-自定义 renderer 写入的 RGB 和 alpha 必须是 premultiplied linear scRGB；不要在节点 shader 中做 sRGB/P3/HDR 转换，也不要把最终 surface format 当作工作 format。所有节点最后由 painter 的一个 presentation blit 统一完成传递函数、P3 矩阵和 HDR→SDR shoulder。缓存管线时按 `(context.gpu.generation(), context.target_format, context.presentation)` 建键。
+自定义 renderer 写入的 RGB 和 alpha 必须是 premultiplied linear scRGB；不要在节点 shader 中做 sRGB/P3/HDR 转换，也不要把最终 surface format 当作工作 format。所有节点最后由 painter 的一个 presentation blit 统一完成传递函数、P3 矩阵和按 display headroom 调整的 HDR shoulder。缓存管线时按 `(context.gpu.generation(), context.target_format, context.presentation)` 建键。
 
 在 Nana 有自己的 shader ABI（#185）之前，录 draw 仍要经 `wgpu-interop`。`context.gpu.wgpu().device()` 建管线。`pass.wgpu()` 录 draw。按设备建的缓存以 `(context.gpu.generation(), context.target_format, context.presentation)` 为键。跨设备替换保留下来的 registry 不会拿旧设备的管线去画。不同格式的窗口交替也不必重建。内置的 `DefaultGpuViewRenderer` 就这样做。
 

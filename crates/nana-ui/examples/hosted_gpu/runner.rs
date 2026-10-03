@@ -13,10 +13,10 @@ use nana_ui::runtime::{
     Text,
 };
 use nana_ui::{
-    ButtonKind, CopyOutcome, DEFAULT_CAPACITY, FrameBinding, FrameExchange, FrameExchangeStats,
-    FrameInbox, GpuContext, HostTextureAlphaMode, HostTextureRegistry, HostedRunError, RoutedInput,
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeAppearance, WindowDescriptor,
-    WindowHandle, run_runtime,
+    ButtonKind, CopyOutcome, DEFAULT_CAPACITY, FrameAlphaMode, FrameBinding, FrameColorMetadata,
+    FrameExchange, FrameExchangeStats, FrameInbox, GpuContext, HostTextureAlphaMode,
+    HostTextureRegistry, HostedRunError, RoutedInput, RuntimeProgram, RuntimeProgramContext,
+    RuntimeProgramUpdate, WindowDescriptor, WindowHandle, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -101,7 +101,14 @@ impl PreviewProducer {
                         let mut producer = gpu.begin_frame("hosted gpu demo producer");
                         scene.render(producer.wgpu_encoder());
                         producer.submit();
-                        match exchange.copy_from_wgpu(scene.texture(), 0) {
+                        match exchange.copy_from_wgpu_with_metadata(
+                            scene.texture(),
+                            0,
+                            // The target is BGRA8_UNORM_SRGB and the demo
+                            // shader writes opaque fragments; wgpu performs
+                            // the sRGB encoding at the render target.
+                            FrameColorMetadata::srgb(FrameAlphaMode::Opaque),
+                        ) {
                             CopyOutcome::Submitted | CopyOutcome::PoolFull => {}
                             CopyOutcome::EmptySource
                             | CopyOutcome::IncompatibleSource
