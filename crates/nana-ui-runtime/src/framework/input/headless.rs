@@ -27,13 +27,26 @@ impl HeadlessInput {
     pub const SOURCE: InputSourceId = InputSourceId(1);
 
     /// Bind [`Self::SOURCE`] to `document`, taking over whatever binding the
-    /// source had.
+    /// source had. Taking over revokes the previous source's captures,
+    /// presses and hover state before the new generation is installed.
     pub fn bind(context: &mut AppContext, document: DocumentId) -> Self {
-        let generation = context
-            .input_binding(Self::SOURCE)
-            .map_or(EndpointGeneration(1), |(generation, _)| {
-                EndpointGeneration(generation.0 + 1)
-            });
+        let previous = context.input_binding(Self::SOURCE);
+        let generation = previous.map_or(EndpointGeneration(1), |(generation, _)| {
+            // A generation must never repeat: wrapping would make an
+            // event from a retired source indistinguishable from a live
+            // one. Keep this in lockstep with `InputSequencer::advance`.
+            EndpointGeneration(
+                generation
+                    .0
+                    .checked_add(1)
+                    .expect("input endpoint generation exhausted"),
+            )
+        });
+        if previous.is_some() {
+            context
+                .unbind_input_source(Self::SOURCE, Duration::ZERO)
+                .expect("headless source cleanup must succeed");
+        }
         context
             .bind_input_source(Self::SOURCE, generation, document)
             .expect("a newer generation always binds");

@@ -349,8 +349,18 @@ impl InputSequencer {
 
     /// A new endpoint generation: sequences restart and nothing stamped
     /// before is accepted again.
+    ///
+    /// # Panics
+    /// When the endpoint generation space is exhausted. A generation must
+    /// never repeat: doing so would make an event from an old endpoint
+    /// indistinguishable from a current one.
     pub fn advance(&mut self) -> EndpointGeneration {
-        self.generation = EndpointGeneration(self.generation.0.saturating_add(1));
+        self.generation = EndpointGeneration(
+            self.generation
+                .0
+                .checked_add(1)
+                .expect("input endpoint generation exhausted"),
+        );
         self.last = 0;
         self.generation
     }
@@ -365,9 +375,11 @@ impl InputTimestamp {
 
 /// Bounded single-source inbox. It keeps stamped events in order, merges
 /// adjacent pointer moves and wheel deltas, and hands an event back when full
-/// rather than lose a key, button, focus or IME transition. It judges nothing
-/// about the events: generation, order and disconnects are the router's, at
-/// drain, the same on every path. Hosts own any cross-thread wakeup.
+/// rather than lose a key, button, focus or IME transition. It does not reject
+/// events: generation, order and disconnects remain the router's decision at
+/// drain, the same on every path. It only avoids coalescing metadata
+/// regressions, so the router can still report those malformed events. Hosts
+/// own any cross-thread wakeup.
 #[derive(Debug)]
 pub struct InputEndpoint {
     queue: VecDeque<CanonicalInputEvent>,
@@ -429,6 +441,11 @@ fn coalesce(previous: &mut CanonicalInputEvent, next: &CanonicalInputEvent) -> b
     if previous.metadata.source != next.metadata.source
         || previous.metadata.device != next.metadata.device
         || previous.metadata.generation != next.metadata.generation
+        // The endpoint deliberately leaves validation to the Runtime, but a
+        // coalesced sample must not hide a sequence/timestamp regression from
+        // that validator by overwriting the queued event's metadata.
+        || next.metadata.sequence <= previous.metadata.sequence
+        || next.metadata.timestamp < previous.metadata.timestamp
     {
         return false;
     }
@@ -579,6 +596,43 @@ mod tests {
         let restarted = sequencer.stamp(DeviceId(1), Duration::ZERO);
         assert_eq!(restarted.sequence, InputSequence(1));
         assert_eq!(restarted.generation, EndpointGeneration(2));
+    }
+
+    #[test]
+    #[should_panic(expected = "input endpoint generation exhausted")]
+    fn advancing_an_exhausted_generation_panics() {
+        let mut sequencer = InputSequencer::new(InputSourceId(4), EndpointGeneration(u64::MAX));
+        sequencer.advance();
+    }
+
+    #[test]
+    fn regressed_moves_are_not_coalesced() {
+        let mut endpoint = InputEndpoint::new(4, 0);
+        let mut first = pointer(2, PointerPhase::Move);
+        first.metadata.timestamp = InputTimestamp(20);
+        endpoint.push(first).unwrap();
+
+        // A lower sequence must remain visible to the router as an out of
+        // order event rather than replacing the queued sample.
+        let mut sequence_regression = pointer(1, PointerPhase::Move);
+        sequence_regression.metadata.timestamp = InputTimestamp(30);
+        endpoint.push(sequence_regression).unwrap();
+
+        // A timestamp regression is also invalid and must not be hidden by
+        // coalescing.
+        let mut equal_sequence = pointer(1, PointerPhase::Move);
+        equal_sequence.metadata.timestamp = InputTimestamp(40);
+        endpoint.push(equal_sequence).unwrap();
+
+        let mut timestamp_regression = pointer(3, PointerPhase::Move);
+        timestamp_regression.metadata.timestamp = InputTimestamp(10);
+        endpoint.push(timestamp_regression).unwrap();
+
+        assert_eq!(endpoint.queue.len(), 4);
+        assert_eq!(endpoint.pop().unwrap().metadata.sequence, InputSequence(2));
+        assert_eq!(endpoint.pop().unwrap().metadata.sequence, InputSequence(1));
+        assert_eq!(endpoint.pop().unwrap().metadata.sequence, InputSequence(1));
+        assert_eq!(endpoint.pop().unwrap().metadata.sequence, InputSequence(3));
     }
 
     #[test]

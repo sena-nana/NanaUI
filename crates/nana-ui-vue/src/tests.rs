@@ -3046,6 +3046,28 @@ fn a_page_field_edits_with_editing_keys_and_tells_the_page() {
     assert_eq!(field_state(&host, input).0, "Xb");
 }
 
+#[test]
+fn dispatch_key_drops_printable_text_when_keydown_is_prevented() {
+    let mut host = VueHost::new();
+    let (input, _) = install_focused_native_input(&mut host, "");
+    let mut engine = RecordingEngine {
+        prevent_event: Some("keydown".into()),
+        ..RecordingEngine::default()
+    };
+
+    assert!(
+        !host
+            .dispatch_key(&mut engine, "x", "KeyX", None)
+            .expect("dispatch key")
+    );
+    assert_eq!(field_state(&host, input).0, "");
+    assert!(
+        !fired_events(&engine)
+            .iter()
+            .any(|(target, name, _)| *target == input.0 && name == "input")
+    );
+}
+
 /// The page re-rendering its field keeps the caret; a value it changes
 /// replaces the text.
 #[test]

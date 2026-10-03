@@ -151,6 +151,25 @@ fn binding_rejects_a_stale_generation_and_a_same_generation_rebind() {
 }
 
 #[test]
+#[should_panic(expected = "input endpoint generation exhausted")]
+fn headless_rebind_rejects_generation_exhaustion() {
+    let mut context = AppContext::new();
+    let document = document(14);
+    context
+        .bind_input_source(
+            HeadlessInput::SOURCE,
+            EndpointGeneration(u64::MAX),
+            document,
+        )
+        .unwrap();
+
+    // `HeadlessInput::bind` normally picks the next generation for the source;
+    // once the non-repeating identity space is exhausted it must fail instead
+    // of wrapping and reviving stale events.
+    let _ = HeadlessInput::bind(&mut context, document);
+}
+
+#[test]
 fn events_are_checked_against_the_binding_before_they_dispatch() {
     let mut context = AppContext::new();
     let source = InputSourceId(9);
@@ -761,6 +780,175 @@ fn a_disconnect_clears_focus_only_when_no_focused_source_remains() {
         )
         .unwrap();
     assert_eq!(context.world().focused(doc), None);
+}
+
+#[test]
+fn disconnect_after_blur_clears_the_focus_retained_for_reentry() {
+    let mut context = AppContext::new();
+    let doc = document(43);
+    let source = InputSourceId(43);
+    let generation = EndpointGeneration(1);
+    context.bind_input_source(source, generation, doc).unwrap();
+    let editor = focused_editor(&mut context, doc, "draft");
+    let mut services = UnsupportedHostServices;
+
+    context
+        .route_input(
+            &event(source, generation, 1, InputPayload::Focus { focused: true }),
+            &mut services,
+            None,
+        )
+        .unwrap();
+    context
+        .route_input(
+            &event(
+                source,
+                generation,
+                2,
+                InputPayload::Focus { focused: false },
+            ),
+            &mut services,
+            None,
+        )
+        .unwrap();
+    // Blur deliberately retained the document focus for a possible re-entry.
+    assert_eq!(context.world().focused(doc), Some(editor.stable_id()));
+
+    context
+        .route_input(
+            &event(source, generation, 3, InputPayload::SourceDisconnected),
+            &mut services,
+            None,
+        )
+        .unwrap();
+    assert_eq!(context.world().focused(doc), None);
+}
+
+#[test]
+fn window_blur_cancels_an_active_ime_preedit() {
+    let mut context = AppContext::new();
+    let doc = document(44);
+    let source = InputSourceId(44);
+    let generation = EndpointGeneration(1);
+    context.bind_input_source(source, generation, doc).unwrap();
+    let editor = focused_editor(&mut context, doc, "draft");
+    context
+        .set_ime_preedit(doc, "中".into(), Some((0, "中".len())))
+        .unwrap();
+    assert!(context.world().ime(editor.stable_id()).is_some());
+    let mut services = UnsupportedHostServices;
+
+    context
+        .route_input(
+            &event(
+                source,
+                generation,
+                1,
+                InputPayload::Focus { focused: false },
+            ),
+            &mut services,
+            None,
+        )
+        .unwrap();
+    assert!(context.world().ime(editor.stable_id()).is_none());
+    assert_eq!(context.world().text(editor.stable_id()), Some("draft"));
+}
+
+#[test]
+fn a_blur_from_one_source_does_not_cancel_another_focused_sources_ime() {
+    let mut context = AppContext::new();
+    let doc = document(45);
+    let (source, other) = (InputSourceId(45), InputSourceId(46));
+    let generation = EndpointGeneration(1);
+    context.bind_input_source(source, generation, doc).unwrap();
+    context.bind_input_source(other, generation, doc).unwrap();
+    let editor = focused_editor(&mut context, doc, "draft");
+    let mut services = UnsupportedHostServices;
+
+    for owner in [source, other] {
+        context
+            .route_input(
+                &event(owner, generation, 1, InputPayload::Focus { focused: true }),
+                &mut services,
+                None,
+            )
+            .unwrap();
+    }
+    context
+        .set_ime_preedit(doc, "中".into(), Some((0, "中".len())))
+        .unwrap();
+    context
+        .route_input(
+            &event(
+                source,
+                generation,
+                2,
+                InputPayload::Focus { focused: false },
+            ),
+            &mut services,
+            None,
+        )
+        .unwrap();
+
+    assert!(context.world().ime(editor.stable_id()).is_some());
+}
+
+#[test]
+fn source_disconnect_cancels_ime_before_clearing_focus() {
+    let mut context = AppContext::new();
+    let doc = document(47);
+    let source = InputSourceId(47);
+    let generation = EndpointGeneration(1);
+    context.bind_input_source(source, generation, doc).unwrap();
+    let editor = focused_editor(&mut context, doc, "draft");
+    context
+        .set_ime_preedit(doc, "中".into(), Some((0, "中".len())))
+        .unwrap();
+    let mut services = UnsupportedHostServices;
+
+    context
+        .route_input(
+            &event(source, generation, 1, InputPayload::Focus { focused: true }),
+            &mut services,
+            None,
+        )
+        .unwrap();
+    context
+        .route_input(
+            &event(source, generation, 2, InputPayload::SourceDisconnected),
+            &mut services,
+            None,
+        )
+        .unwrap();
+
+    assert!(context.world().ime(editor.stable_id()).is_none());
+    assert_eq!(context.world().focused(doc), None);
+}
+
+#[test]
+fn unbinding_a_source_cancels_ime_but_retains_document_focus() {
+    let mut context = AppContext::new();
+    let doc = document(48);
+    let source = InputSourceId(48);
+    let generation = EndpointGeneration(1);
+    context.bind_input_source(source, generation, doc).unwrap();
+    let editor = focused_editor(&mut context, doc, "draft");
+    let mut services = UnsupportedHostServices;
+    context
+        .route_input(
+            &event(source, generation, 1, InputPayload::Focus { focused: true }),
+            &mut services,
+            None,
+        )
+        .unwrap();
+    context
+        .set_ime_preedit(doc, "中".into(), Some((0, "中".len())))
+        .unwrap();
+
+    context.unbind_input_source(source, Duration::ZERO).unwrap();
+
+    assert!(context.world().ime(editor.stable_id()).is_none());
+    assert_eq!(context.world().focused(doc), Some(editor.stable_id()));
 }
 
 #[test]

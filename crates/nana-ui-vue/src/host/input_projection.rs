@@ -10,7 +10,7 @@ pub(crate) struct State {
     /// page's `compositionend` after the Runtime already dropped its
     /// [`nana_ui_runtime::ImeComposition`].
     pub(crate) ime: Option<(NodeHandle, String)>,
-    /// The last key press a control handled or the page prevented; text
+    /// The last key press Runtime or the page handled/prevented; text
     /// naming it is not typed.
     #[cfg(feature = "hosted")]
     pub(crate) handled_key: Option<nana_ui_platform::InputSequence>,
@@ -394,11 +394,24 @@ impl VueHost {
             Some(source) if binding == Some((source.generation(), document)) => source,
             slot => {
                 let newest = binding.map_or(retired, |(generation, _)| generation.0.max(retired));
+                // Generations are a non-repeating endpoint identity. Do not
+                // let a detached/rebound Vue source wrap to zero: that would
+                // admit events stamped by an old source. This mirrors
+                // `InputSequencer::advance` (which panics on exhaustion), but
+                // this JS-facing API can return a useful host error instead.
+                let next_generation = newest
+                    .checked_add(1)
+                    .ok_or_else(|| JsEngineError::new("input endpoint generation exhausted"))?;
+                if binding.is_some() {
+                    context
+                        .unbind_input_source(nana_ui_runtime::HeadlessInput::SOURCE, now)
+                        .map_err(|error| JsEngineError::new(error.to_string()))?;
+                }
                 slot.insert(
                     nana_ui_runtime::HeadlessInput::bind_source(
                         context,
                         nana_ui_runtime::HeadlessInput::SOURCE,
-                        nana_ui_platform::EndpointGeneration(newest + 1),
+                        nana_ui_platform::EndpointGeneration(next_generation),
                         document,
                     )
                     .map_err(|error| JsEngineError::new(error.to_string()))?,
@@ -1432,11 +1445,16 @@ impl VueHost {
         target: Option<NodeHandle>,
     ) -> Result<bool, JsEngineError> {
         let input = KeyboardInput::key_down(key, code);
-        let (pressed, _) = self.route_input(InputPayload::Key(input.to_canonical()))?;
-        self.emit_keyboard_from_runtime(engine, &input, target)?;
+        let (pressed, outcome) = self.route_input(InputPayload::Key(input.to_canonical()))?;
+        // The page observes the key even when Runtime consumed it, but a
+        // prevented/consumed key must not synthesize the committed text that
+        // a browser would suppress after `keydown.preventDefault()`.  The
+        // lower-level `dispatch_keyboard` already exposes this distinction;
+        // keep the convenience helper on the same contract.
+        let allowed = self.emit_keyboard_from_runtime(engine, &input, target)?;
         let printable =
             key.chars().count() == 1 && !key.chars().next().is_some_and(char::is_control);
-        if printable {
+        if printable && allowed && !outcome.handled && !outcome.prevent_default {
             self.commit_routed_text(
                 engine,
                 CommittedText {
@@ -1446,7 +1464,7 @@ impl VueHost {
                 "insertText",
             )?;
         }
-        Ok(true)
+        Ok(allowed && !outcome.handled && !outcome.prevent_default)
     }
     pub fn focused(&self) -> Option<NodeHandle> {
         self.document.lock().expect("vue doc").focused()

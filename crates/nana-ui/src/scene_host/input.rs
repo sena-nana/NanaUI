@@ -384,16 +384,27 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return false;
         };
         if let Some(text) = text {
-            self.push_input(
-                event_loop,
-                id,
-                device,
-                InputPayload::Text(nana_ui_platform::CommittedText {
-                    text,
-                    key: Some(key),
-                }),
-                now,
-            );
+            // The key transition must still be drained when its committed text
+            // cannot fit the bounded payload budget. `push_input` reports the
+            // capacity failure to the host; keep the accepted key on the
+            // endpoint and make the failure explicit instead of silently
+            // dropping the return value (and potentially the key as well).
+            if self
+                .push_input(
+                    event_loop,
+                    id,
+                    device,
+                    InputPayload::Text(nana_ui_platform::CommittedText {
+                        text,
+                        key: Some(key),
+                    }),
+                    now,
+                )
+                .is_none()
+            {
+                self.drain_window_input(event_loop, id);
+                return false;
+            }
         }
         true
     }
@@ -452,14 +463,24 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let bound = self.program.write_document(id, |document| {
             let document_id = document.document();
             let context = document.context_mut();
-            let bind = context.bind_input_source(input_id, generation, document_id);
-            if let Err(nana_ui_runtime::InputBindError::DocumentRebind { .. }) = bind {
-                // The program gave this window another document: what the
-                // old one held is cancelled, and the source starts over.
-                let _ = context.unbind_input_source(input_id, Duration::ZERO);
-                let _ = context.bind_input_source(input_id, generation, document_id);
+            let bind = match context.bind_input_source(input_id, generation, document_id) {
+                Ok(()) => Ok(()),
+                Err(nana_ui_runtime::InputBindError::DocumentRebind { .. }) => {
+                    // The program gave this window another document: what the
+                    // old one held is cancelled, and the source starts over.
+                    // Events already queued were stamped while the old
+                    // document was active; there is no document id in the
+                    // canonical envelope, so never replay them into the new
+                    // document.
+                    while endpoint.pop().is_some() {}
+                    let _ = context.unbind_input_source(input_id, Duration::ZERO);
+                    context.bind_input_source(input_id, generation, document_id)
+                }
+                Err(error) => Err(error),
+            };
+            if bind.is_ok() {
+                context.drain_input(endpoint, &mut services, Some(text), &mut routed);
             }
-            context.drain_input(endpoint, &mut services, Some(text), &mut routed);
             bind
         });
         let cursor_changed = services.cursor_changed;
