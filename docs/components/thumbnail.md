@@ -50,6 +50,8 @@ Loading 的转圈居中，边长是紧凑 `Spinner` 的两倍。
 
 有 `label` 时无障碍是有名字的 Image。名字为空则没有 name。和 `Avatar` 的区别：这里默认是 Contain、方框随高度和宽高比，不是圆形固定边长。
 
+重复或仅用于装饰的封面层可以用 `Thumbnail::decorative()`，模板中用 `decorative=true`。它仍然绘制并参与布局，但会从无障碍树中移除，等价于 `aria-hidden="true"`；因此只有最前面的封面层应保留 `label`。
+
 ## 属性
 
 | 属性 | 类型 | 说明 |
@@ -59,6 +61,7 @@ Loading 的转圈居中，边长是紧凑 `Spinner` 的两倍。
 | `version` | `u64` | 同一视图里像素变了时推进。占低 32 位 |
 | `aspect` | `f32` | 没写时按 1。模板 `aspect=1.5` 展开成 `1.5_f32`。非有限或非正退回 1。盒子是控件高度乘这个比 |
 | `label` | `Arc<str>` | 有 `label` 时无障碍是有名字的 Image。名字为空则没有 name |
+| `decorative` | `bool` | 仍绘制并参与布局，但从无障碍树中移除；用于重复或装饰层 |
 
 ## 事件
 

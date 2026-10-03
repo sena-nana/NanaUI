@@ -196,6 +196,23 @@ impl UiWorld {
 mod viewport_tests;
 
 impl UiWorld {
+    /// Whether a node or one of its ancestors is explicitly hidden from the
+    /// accessibility tree. The retained hierarchy is still used for paint,
+    /// layout, and input; this is only the semantic projection boundary.
+    fn accessibility_hidden(&self, id: StableNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(node_id) = current {
+            let Some(node) = self.nodes.get(node_id) else {
+                return false;
+            };
+            if node.accessibility.hidden {
+                return true;
+            }
+            current = node.hierarchy.parent;
+        }
+        false
+    }
+
     /// What `id` says to assistive technology as the name of a node it
     /// labels: its own label, or its text.
     fn accessible_text(&self, id: StableNodeId) -> Option<Arc<str>> {
@@ -214,7 +231,7 @@ impl UiWorld {
         id: StableNodeId,
         memo: &mut ProjectionMemo,
     ) -> Option<AccessibilityNode> {
-        if !self.is_mounted(id) {
+        if !self.is_mounted(id) || self.accessibility_hidden(id) {
             return None;
         }
         let (parent, children, kind, state, text_value, document, visible, box_visible, writing) = {
@@ -289,7 +306,8 @@ impl UiWorld {
                         node.resolved.0.box_visible
                             && (node.resolved.0.visible || !node.hierarchy.children.is_empty())
                             && !matches!(node.kind.as_ref(), NodeKind::Comment)
-                    }) && self.visible_accessibility_bounds(child_id, memo).is_some()
+                    }) && !self.accessibility_hidden(child_id)
+                        && self.visible_accessibility_bounds(child_id, memo).is_some()
                 })
                 .collect(),
             role,

@@ -1828,6 +1828,7 @@ impl UiWorld {
             }
             UiMutation::SetAccessibility { id, accessibility } => {
                 let previous = &self.record(*id).accessibility;
+                let hidden_changed = previous.hidden != accessibility.hidden;
                 let interaction_style_changed = previous.disabled != accessibility.disabled
                     || previous.checked != accessibility.checked
                     || previous.selected != accessibility.selected
@@ -1839,7 +1840,18 @@ impl UiWorld {
                     || previous.numeric_minimum != accessibility.numeric_minimum
                     || previous.numeric_maximum != accessibility.numeric_maximum;
                 self.record_mut(*id).accessibility = accessibility.clone();
-                self.mark(*id, DirtyMask::ACCESSIBILITY);
+                if hidden_changed {
+                    // `aria-hidden` changes the projected structure for the
+                    // whole subtree. Dirty descendants so an incremental
+                    // host receives removals/reinsertions, and dirty
+                    // ancestors so their child lists are updated as well.
+                    self.mark_subtree(*id, DirtyMask::ACCESSIBILITY);
+                    if let Some(parent) = self.parent_id(*id) {
+                        self.mark_ancestors(parent, DirtyMask::ACCESSIBILITY);
+                    }
+                } else {
+                    self.mark(*id, DirtyMask::ACCESSIBILITY);
+                }
                 if spinner_changed {
                     self.mark(*id, DirtyMask::RENDER);
                 }

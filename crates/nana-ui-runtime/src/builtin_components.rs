@@ -553,6 +553,9 @@ impl RegisterableComponent for Thumbnail {
         if let Some(aspect) = spec.attr("aspect").and_then(|value| value.parse().ok()) {
             thumbnail = thumbnail.aspect(aspect);
         }
+        if spec.attr("decorative").is_some_and(truthy_attr) {
+            thumbnail = thumbnail.decorative();
+        }
         if spec.loading {
             thumbnail = thumbnail.state(ThumbnailState::Loading);
         } else if spec.invalid {
@@ -3447,6 +3450,17 @@ mod tests {
             slots,
             ..SemanticSpec::from_parts(type_id, layout)
         }
+    }
+
+    #[test]
+    fn thumbnail_semantic_decorative_attr_hides_only_a11y() {
+        let ty = ComponentTypeId::new("nana.thumbnail").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [("decorative", "true")];
+        let spec = spec_with(&ty, &layout, &attrs, &[], &[], "cover", "");
+        let thumbnail = Thumbnail::from_semantic(&spec);
+        assert!(thumbnail.decorative);
+        assert!(thumbnail.custom_render().is_some());
     }
 
     #[cfg(feature = "charts")]
