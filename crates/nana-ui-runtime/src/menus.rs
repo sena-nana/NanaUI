@@ -1315,6 +1315,45 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_click_reports_nested_context_menu_as_handled() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([
+                        ContextMenuItem::new("file", "文件"),
+                        ContextMenuItem::new("file/open", "打开"),
+                    ])
+                    .open(true),
+            )
+            .unwrap();
+        let row = context
+            .world()
+            .project_accessibility(document())
+            .into_iter()
+            .find(|node| node.role == AccessibilityRole::MenuItem)
+            .expect("parent virtual menu item");
+
+        assert!(
+            context
+                .apply_accessibility_action(
+                    document(),
+                    crate::AccessibilityActionRequest {
+                        target: row.id,
+                        action: crate::AccessibilityAction::Click,
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            context.read(menu, |menu| menu.active_path.clone()).unwrap(),
+            vec![Arc::<str>::from("file")]
+        );
+        assert!(context.read(menu, |menu| menu.open).unwrap());
+    }
+
+    #[test]
     fn accessibility_focus_moves_context_menu_highlight() {
         let mut context = AppContext::new();
         let menu = context
@@ -1336,6 +1375,7 @@ mod tests {
                 node.role == AccessibilityRole::MenuItem && node.label.as_deref() == Some("编辑")
             })
             .expect("second virtual menu item");
+        context.take_system_work();
         assert!(
             context
                 .apply_accessibility_action(
@@ -1347,6 +1387,8 @@ mod tests {
                 )
                 .unwrap()
         );
+        let work = context.take_system_work();
+        assert!(work.accessibility.contains(&menu.stable_id()));
         let focused = context
             .world()
             .project_accessibility(document())

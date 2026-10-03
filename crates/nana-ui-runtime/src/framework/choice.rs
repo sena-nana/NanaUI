@@ -713,12 +713,11 @@ impl AppContext {
             return Ok(false);
         };
         self.update_component(entity, |menu, cx| {
+            let before = (menu.open, menu.active_path.clone(), menu.highlighted);
             if let Some(event) = menu.select_index(index) {
                 cx.emit(event);
-                true
-            } else {
-                false
             }
+            before != (menu.open, menu.active_path.clone(), menu.highlighted)
         })
     }
 
@@ -731,12 +730,11 @@ impl AppContext {
         index: usize,
     ) -> Result<bool, FrameworkError> {
         self.update_component(entity, |menu, cx| {
+            let before = (menu.open, menu.active_path.clone(), menu.highlighted);
             if let Some(event) = menu.select_index(index) {
                 cx.emit(event);
-                true
-            } else {
-                false
             }
+            before != (menu.open, menu.active_path.clone(), menu.highlighted)
         })
     }
 
