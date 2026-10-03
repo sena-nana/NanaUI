@@ -98,7 +98,8 @@ pub enum TextOrientationSpec {
 
 /// 交叉轴对齐（`align-items` / `align-self`）。
 ///
-/// `Baseline` 用字号近似第一行基线（`0.8em`）；无字号时回退 Start。
+/// `Baseline` 由 Runtime 的 shared intrinsic metrics 提供；没有 shaped
+/// metrics 时才使用 host ascent 或明确的 replaced-content fallback。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum AlignSpec {
     #[default]

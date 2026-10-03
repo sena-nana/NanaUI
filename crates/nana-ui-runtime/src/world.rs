@@ -1430,6 +1430,24 @@ impl UiWorld {
         }
     }
 
+    pub(crate) fn record_intrinsic_measure_counters(
+        &mut self,
+        counters: crate::IntrinsicCacheCounters,
+    ) {
+        self.bump_last_counters(|work| {
+            work.record_intrinsic_measure(
+                counters.intrinsic_measure_requests,
+                counters.intrinsic_measure_cache_hits,
+                counters.intrinsic_measure_cache_misses,
+                counters.intrinsic_measure_full_subtrees,
+                counters.generation_bumps,
+                counters.baseline_queries,
+                counters.cross_context_hits,
+                counters.cross_context_misses,
+            );
+        });
+    }
+
     fn record_id_list_alloc(&self, len: usize) {
         if len == 0 {
             return;
@@ -1511,6 +1529,14 @@ impl UiWorld {
             text_layout_cache_hits: 0,
             text_layout_cache_misses: 0,
             text_wrap_layouts: 0,
+            intrinsic_measure_requests: 0,
+            intrinsic_measure_cache_hits: 0,
+            intrinsic_measure_cache_misses: 0,
+            intrinsic_measure_full_subtrees: 0,
+            intrinsic_generation_bumps: 0,
+            baseline_queries: 0,
+            cross_context_measure_hits: 0,
+            cross_context_measure_misses: 0,
             glyph_cache_hits: None,
             glyph_cache_misses: None,
             cache_eviction: None,

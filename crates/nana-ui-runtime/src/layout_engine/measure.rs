@@ -10,7 +10,7 @@ pub(super) fn intrinsic_size(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    cache: &mut IntrinsicCache,
+    cache: &mut PassIntrinsicCache,
 ) -> Result<Size, UiWorldError> {
     intrinsic_size_scoped(
         id,
@@ -58,6 +58,22 @@ fn resolved_size_specs(
         fonts,
     );
     (width, height)
+}
+
+/// A definite declaration can still resolve against a containing block. Such
+/// used values are valid only for the current query and must not be published
+/// as intrinsic facts.
+fn depends_on_used_basis(spec: Option<LengthSpec>) -> bool {
+    spec.is_some_and(|spec| {
+        !matches!(
+            spec,
+            LengthSpec::Px(_)
+                | LengthSpec::Em(_)
+                | LengthSpec::Rem(_)
+                | LengthSpec::CalcEmOffset { .. }
+                | LengthSpec::CalcRemOffset { .. }
+        )
+    })
 }
 
 /// Compose the used size once the content-derived defaults are known.
@@ -139,7 +155,7 @@ pub(super) fn intrinsic_size_scoped(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    cache: &mut IntrinsicCache,
+    cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Size, UiWorldError> {
     measure_node(
@@ -170,7 +186,7 @@ pub(super) fn intrinsic_size_at_main(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    cache: &mut IntrinsicCache,
+    cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Size, UiWorldError> {
     let Some(style) = nodes.style(id) else {
@@ -235,13 +251,65 @@ fn measure_node(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    cache: &mut IntrinsicCache,
+    cache: &mut PassIntrinsicCache,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<Size, UiWorldError> {
-    let cache_key = (id, available.width.to_bits(), available.height.to_bits());
     let unforced = forced.is_none();
+    let Some(node) = nodes.get(id)? else {
+        return Ok(Size::default());
+    };
+    // A root container with children can derive its default width from the
+    // containing block, unlike a child whose parent flow supplies the
+    // constraint. Keep that root-vs-child dependency in the identity while
+    // ordinary child facts remain reusable across formatting contexts.
+    let direction_sensitive = parent_direction.is_none()
+        && !node.children.is_empty()
+        && !node.style.width.is_some_and(LengthSpec::is_content_sized);
+    let cache_key = MeasurementKey::new(
+        id,
+        available,
+        parent_direction,
+        viewport,
+        parent_font_px,
+        node.writing,
+        node.containing_writing,
+        measurement_constraint_class(node.style.as_ref(), available),
+        direction_sensitive,
+    );
+    let context = parent_direction.map(|direction| {
+        crate::FormattingContextId::new(match direction {
+            FlexDirection::Row => 1,
+            FlexDirection::Column => 2,
+        })
+    });
+    // Retained intrinsic facts are shared across formatting contexts. They
+    // seed the pass authority for baseline and metrics consumers; the
+    // containing-block-specific used size below remains a separate memo.
+    if unforced
+        && let Some(scope) = scope
+        && !scope.affected.contains(&id)
+        && let Some(metrics) = scope
+            .retained
+            .intrinsic_metrics
+            .get(&PassIntrinsicCache::intrinsic_key(cache_key))
+            .copied()
+    {
+        cache.seed_intrinsic(
+            PassIntrinsicCache::intrinsic_key(cache_key),
+            metrics,
+            context,
+        );
+    }
+    // The used-size memo is separate from intrinsic metrics and has no work
+    // counter of its own. Query the canonical facts first so a cross-context
+    // reuse is observable even when the concrete used size is already memoed.
+    let cached_intrinsic = if unforced {
+        cache.get_intrinsic(cache_key, context)
+    } else {
+        None
+    };
     if unforced && let Some(size) = cache.get(&cache_key) {
-        return Ok(*size);
+        return Ok(size);
     }
     // A subtree outside the affected closure has no change inside it, so its
     // intrinsic size under the same constraints is unchanged.
@@ -252,14 +320,11 @@ fn measure_node(
             .retained
             .intrinsics
             .get(&id)
-            .and_then(|memo| memo.get(cache_key.1, cache_key.2))
+            .and_then(|memo| memo.get(cache_key))
     {
         cache.insert(cache_key, size);
         return Ok(size);
     }
-    let Some(node) = nodes.get(id)? else {
-        return Ok(Size::default());
-    };
     let style_arc = forced.unwrap_or_else(|| node.style.clone());
     let child_ids = node.children.clone();
     let text_metrics = node.text_metrics;
@@ -343,6 +408,24 @@ fn measure_node(
     // arrive at a size its own style had already fixed.
     let (spec_width, spec_height) =
         resolved_size_specs(style, available, edge_base, viewport, fonts);
+    if unforced && let Some(metrics) = cached_intrinsic {
+        // The intrinsic entry contains natural facts only. Resolve those facts
+        // through the current style/containing block to produce this query's
+        // used size; no adjusted value is written back to the authority.
+        let size = finish_intrinsic_size(
+            style,
+            fonts,
+            viewport,
+            available,
+            edge_base,
+            chrome,
+            parent_direction,
+            metrics.preferred.inline,
+            metrics.preferred.block,
+        );
+        cache.insert(cache_key, size);
+        return Ok(size);
+    }
     if spec_width.is_some() && spec_height.is_some() {
         let size = finish_intrinsic_size(
             style,
@@ -357,6 +440,27 @@ fn measure_node(
         );
         if unforced {
             cache.insert(cache_key, size);
+            if !depends_on_used_basis(style.width) && !depends_on_used_basis(style.height) {
+                let baseline = nodes.baseline_metrics(
+                    id,
+                    fonts.element_px,
+                    Some(writing.inline_size(available.width, available.height)),
+                    Some(size),
+                );
+                cache.insert_intrinsic_bounds(
+                    cache_key,
+                    0.0,
+                    size.width,
+                    0.0,
+                    Some(size.height),
+                    size,
+                    baseline.first,
+                    baseline.last,
+                    style
+                        .aspect_ratio
+                        .filter(|ratio| ratio.is_finite() && *ratio > 0.0),
+                );
+            }
         }
         return Ok(size);
     }
@@ -394,6 +498,10 @@ fn measure_node(
         return Ok(plan.size);
     }
 
+    // We reached the actual child traversal. Fixed-size nodes, retained used
+    // sizes, measure plans, and shared intrinsic facts all return above this
+    // point and therefore do not count as full-subtree work.
+    cache.record_full_subtree();
     let (mut flow_children, descendant_dependent_flow) =
         collect_flow_children_reporting(&child_ids, nodes, style.display)?;
     let grid_measure = uses_2d_grid(style, &flow_children, nodes);
@@ -777,6 +885,28 @@ fn measure_node(
     }
     if unforced {
         cache.insert(cache_key, size);
+        let baseline = nodes.baseline_metrics(
+            id,
+            fonts.element_px,
+            Some(writing.inline_size(available.width, available.height)),
+            Some(size),
+        );
+        cache.insert_intrinsic_bounds(
+            cache_key,
+            // A constrained query may legitimately use less than the
+            // subtree's min-content width. Do not normalize that used query
+            // upward when publishing facts for the same constraint key.
+            min_content_w.min(default_width),
+            max_content_w.max(default_width),
+            0.0,
+            Some(default_height),
+            Size::new(default_width, default_height),
+            baseline.first,
+            baseline.last,
+            style
+                .aspect_ratio
+                .filter(|ratio| ratio.is_finite() && *ratio > 0.0),
+        );
     }
     Ok(size)
 }
@@ -799,7 +929,7 @@ fn measure_plan_children_unchanged(
     viewport: LayoutViewport,
     child_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    cache: &mut IntrinsicCache,
+    cache: &mut PassIntrinsicCache,
     scope: &ScopeContext<'_>,
 ) -> Result<bool, UiWorldError> {
     for affected in scope.affected.iter().copied() {

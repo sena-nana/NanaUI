@@ -11,7 +11,7 @@ pub(super) fn place_node(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
 ) -> Result<(), UiWorldError> {
     place_node_scoped(
@@ -54,7 +54,7 @@ fn check_plan_children(
     plan: &ContainerPlan,
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     scope: &ScopeContext<'_>,
 ) -> Result<PlanCheck, UiWorldError> {
     let mut first_changed: Option<usize> = None;
@@ -138,7 +138,7 @@ fn replay_sequential_suffix(
     from: usize,
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: &ScopeContext<'_>,
 ) -> Result<bool, UiWorldError> {
@@ -314,7 +314,7 @@ pub(super) fn place_node_scoped(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
     inherited_grid: Option<&InheritedGridTracks>,
@@ -912,14 +912,29 @@ pub(super) fn place_node_scoped(
                     justify_offsets(justify, line_main_available, occupied, gap, line_flow.len());
                 (start, extra_gap, 0.0)
             };
-            let line_baseline = line_flow
-                .iter()
-                .filter_map(|id| {
-                    nodes
-                        .style(*id)
-                        .map(|s| s.baseline_from_ascent(child_font_px, nodes.text_ascent(*id)))
-                })
-                .fold(0.0f32, f32::max);
+            let needs_baseline = style.align_items == AlignSpec::Baseline
+                || line_flow.iter().any(|id| {
+                    nodes.style(*id).is_some_and(|child| {
+                        child.resolved_align_self(style.align_items) == AlignSpec::Baseline
+                    })
+                });
+            let line_baseline = if needs_baseline {
+                line_flow
+                    .iter()
+                    .zip(line_sizes.iter())
+                    .filter_map(|(id, size)| {
+                        nodes.style(*id).map(|style| {
+                            let font_px = fonts_of(&style, child_font_px).element_px;
+                            intrinsic
+                                .baseline(*id, crate::Baseline::First)
+                                .unwrap_or_else(|| nodes.baseline(*id, font_px, *size))
+                                .max(style.resolved_border_width())
+                        })
+                    })
+                    .fold(0.0f32, f32::max)
+            } else {
+                0.0
+            };
             for (child, mut child_size) in line_flow.into_iter().zip(line_sizes) {
                 let Some(child_style_arc) = nodes.style(child) else {
                     continue;
@@ -966,8 +981,11 @@ pub(super) fn place_node_scoped(
                 let cross_offset = match align {
                     AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
                     AlignSpec::Baseline => {
-                        let base = child_style
-                            .baseline_from_ascent(child_fonts.element_px, nodes.text_ascent(child));
+                        let base = intrinsic
+                            .baseline(child, crate::Baseline::First)
+                            .unwrap_or_else(|| {
+                                nodes.baseline(child, child_fonts.element_px, child_size)
+                            });
                         cross_cursor + (line_baseline - base).max(0.0)
                     }
                     AlignSpec::Center => {
@@ -1312,7 +1330,7 @@ fn place_triggered_menu_items(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<(), UiWorldError> {
@@ -1410,7 +1428,7 @@ pub(super) fn place_modal_children(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<(), UiWorldError> {
@@ -1603,7 +1621,7 @@ pub(super) fn place_modal_slot(
     viewport: LayoutViewport,
     parent_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
-    intrinsic: &mut IntrinsicCache,
+    intrinsic: &mut PassIntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<(), UiWorldError> {

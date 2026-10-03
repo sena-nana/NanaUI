@@ -81,7 +81,7 @@ impl RuntimeLayoutEngine {
         nodes.prefetch(&order)?;
         let roots = world.document_roots(document);
         let mut output = HashMap::with_capacity(nodes.len());
-        let mut intrinsic = HashMap::with_capacity(nodes.len());
+        let mut intrinsic = PassIntrinsicCache::with_capacity(nodes.len());
         let available = Size::new(viewport.width, viewport.height);
         for root in roots {
             let root_size = intrinsic_size(
@@ -167,7 +167,17 @@ impl RuntimeLayoutEngine {
         // the node, including constraints that are not measured this frame.
         for id in &affected {
             retained.intrinsics.remove(id);
+            retained
+                .intrinsic_metrics
+                .retain(|key, _| key.content != id.get());
         }
+        // A scoped layout dirty seed represents a geometry-affecting source
+        // change. Paint/opacity/transform mutations never enter this path,
+        // so they do not bump intrinsic generations.
+        retained.intrinsic_counters.generation_bumps = retained
+            .intrinsic_counters
+            .generation_bumps
+            .saturating_add(affected.len());
         #[cfg(any(test, feature = "benchmark"))]
         plan_stats::note_scope(dirty.len(), affected.len());
         let scope = ScopeContext {
@@ -176,7 +186,7 @@ impl RuntimeLayoutEngine {
         };
         let scope_ref = (!force_full).then_some(&scope);
         let mut output = HashMap::with_capacity(nodes.len());
-        let mut intrinsic = HashMap::with_capacity(nodes.len());
+        let mut intrinsic = PassIntrinsicCache::with_capacity(nodes.len());
         let available = Size::new(viewport.width, viewport.height);
         let islands = if force_full {
             Vec::new()
@@ -273,18 +283,25 @@ impl RuntimeLayoutEngine {
                 slots.insert(plan);
             }
         }
-        for ((id, width, height), size) in intrinsic {
+        let intrinsic_counters = intrinsic.counters();
+        let universe = if force_full { nodes.len() } else { world.len() };
+        for (key, size) in intrinsic.new_entries {
             retained
                 .intrinsics
-                .entry(id)
+                .entry(key.id)
                 .or_default()
-                .insert(width, height, size);
+                .insert(key, size);
         }
+        let retained_metric_budget = universe
+            .saturating_mul(4)
+            .max(1)
+            .min(crate::IntrinsicCacheBudget::default().max_entries);
+        retained.retain_intrinsic_metrics(intrinsic.new_metrics, retained_metric_budget);
         retained.materialized_inputs = nodes.materialized;
+        retained.record_intrinsic_counters(intrinsic_counters);
         // Despawned ids linger in the retained maps; keep them bounded.
         // Scoped passes only materialize a subset, so membership is the live
         // world, not the partial input map.
-        let universe = if force_full { nodes.len() } else { world.len() };
         if retained.boxes.len() > universe.saturating_mul(2) {
             #[cfg(any(test, feature = "benchmark"))]
             plan_stats::note_retain_sweep();
@@ -297,6 +314,11 @@ impl RuntimeLayoutEngine {
         }
         if retained.intrinsics.len() > universe.saturating_mul(2) {
             retained.intrinsics.retain(|id, _| world.contains(*id));
+        }
+        if retained.intrinsic_metrics.len() > universe.saturating_mul(2) {
+            retained.intrinsic_metrics.retain(|key, _| {
+                StableNodeId::new(key.content).is_some_and(|id| world.contains(id))
+            });
         }
         Ok(emitted)
     }
@@ -403,15 +425,44 @@ impl RuntimeLayoutEngine {
     }
 }
 
-/// Cross-frame layout memo for scoped relayout: last published boxes and
-/// intrinsic sizes keyed like the per-pass intrinsic cache. Each document owns
-/// its entries, so a full pass cannot invalidate another window's layout.
+/// Cross-frame layout memo for scoped relayout: last published boxes, used-size
+/// resolutions, and content-derived intrinsic facts. Each document owns its
+/// entries, so a full pass cannot invalidate another window's layout.
 #[derive(Default)]
 pub struct RetainedLayoutCache {
     documents: HashMap<DocumentId, DocumentLayoutCache>,
 }
 
 impl RetainedLayoutCache {
+    /// Cumulative intrinsic measurement work observed by scoped layout.  The
+    /// snapshot is cumulative across documents and remains available to the
+    /// frame driver until the next read/reset.
+    pub fn intrinsic_cache_counters(&self) -> crate::IntrinsicCacheCounters {
+        let mut counters = crate::IntrinsicCacheCounters::default();
+        for document in self.documents.values() {
+            let snapshot = document.intrinsic_counters;
+            let entries = counters.entries.saturating_add(snapshot.entries);
+            let bytes = counters.bytes.saturating_add(snapshot.bytes);
+            counters.accumulate(snapshot);
+            counters.entries = entries;
+            counters.bytes = bytes;
+        }
+        counters
+    }
+
+    pub(crate) fn take_intrinsic_counters(&mut self) -> crate::IntrinsicCacheCounters {
+        let mut counters = crate::IntrinsicCacheCounters::default();
+        for document in self.documents.values_mut() {
+            let snapshot = std::mem::take(&mut document.intrinsic_counters);
+            let entries = counters.entries.saturating_add(snapshot.entries);
+            let bytes = counters.bytes.saturating_add(snapshot.bytes);
+            counters.accumulate(snapshot);
+            counters.entries = entries;
+            counters.bytes = bytes;
+        }
+        counters
+    }
+
     /// Release all layout state owned by a closed document.
     pub fn remove_document(&mut self, document: DocumentId) {
         self.documents.remove(&document);
@@ -421,6 +472,9 @@ impl RetainedLayoutCache {
     pub fn remove_node(&mut self, document: DocumentId, id: StableNodeId) {
         if let Some(cache) = self.documents.get_mut(&document) {
             cache.intrinsics.remove(&id);
+            cache
+                .intrinsic_metrics
+                .retain(|key, _| key.content != id.get());
             cache.boxes.remove(&id);
             cache.placements.remove(&id);
             cache.used_padding.remove(&id);
@@ -449,26 +503,26 @@ impl RetainedLayoutCache {
     }
 }
 
-/// Two constraint variants per node allow measure/place reuse without
-/// accumulating a new entry for every pixel of an interactive resize. Eviction
-/// only causes remeasurement; the per-pass cache still keeps every constraint.
+/// Two used-size variants per node allow measure/place reuse without
+/// accumulating a new entry for every pixel of an interactive resize. The
+/// content-derived facts live in the generation-aware authority beside it.
 #[derive(Default)]
 struct RetainedIntrinsic {
-    measurements: [Option<(u32, u32, Size)>; 2],
+    measurements: [Option<(MeasurementKey, Size)>; 2],
 }
 
 impl RetainedIntrinsic {
-    fn get(&self, width: u32, height: u32) -> Option<Size> {
+    fn get(&self, key: MeasurementKey) -> Option<Size> {
         self.measurements
             .iter()
             .flatten()
-            .find(|(w, h, _)| *w == width && *h == height)
-            .map(|(_, _, size)| *size)
+            .find(|(held, _)| *held == key)
+            .map(|(_, size)| *size)
     }
 
-    fn insert(&mut self, width: u32, height: u32, size: Size) {
-        let next = Some((width, height, size));
-        if self.measurements[0].is_some_and(|(w, h, _)| w == width && h == height) {
+    fn insert(&mut self, key: MeasurementKey, size: Size) {
+        let next = Some((key, size));
+        if self.measurements[0].is_some_and(|(held, _)| held == key) {
             self.measurements[0] = next;
             return;
         }
@@ -480,6 +534,9 @@ impl RetainedIntrinsic {
 #[derive(Default)]
 struct DocumentLayoutCache {
     intrinsics: HashMap<StableNodeId, RetainedIntrinsic>,
+    /// Content-derived intrinsic facts, independent from retained used sizes.
+    intrinsic_metrics: HashMap<crate::IntrinsicCacheKey, crate::IntrinsicMetrics>,
+    intrinsic_counters: crate::IntrinsicCacheCounters,
     boxes: HashMap<StableNodeId, LayoutBox>,
     materialized_inputs: usize,
     placements: HashMap<StableNodeId, (Point, Size, f32)>,
@@ -494,8 +551,45 @@ struct DocumentLayoutCache {
 }
 
 impl DocumentLayoutCache {
+    fn record_intrinsic_counters(&mut self, counters: crate::IntrinsicCacheCounters) {
+        self.intrinsic_counters.accumulate(counters);
+    }
+
+    fn retain_intrinsic_metrics(
+        &mut self,
+        metrics: HashMap<crate::IntrinsicCacheKey, crate::IntrinsicMetrics>,
+        max_entries: usize,
+    ) {
+        self.intrinsic_metrics.extend(metrics);
+        // The per-pass authority enforces the full byte budget. The retained
+        // mirror has a fixed-size value, so apply the same budget class here
+        // instead of allowing every viewport/constraint variant to accumulate
+        // forever across frames.
+        let bytes_per_entry = std::mem::size_of::<crate::IntrinsicCacheKey>()
+            .saturating_add(std::mem::size_of::<crate::IntrinsicMetrics>())
+            .max(1);
+        let byte_limited = crate::IntrinsicCacheBudget::default()
+            .max_bytes
+            .checked_div(bytes_per_entry)
+            .unwrap_or(1)
+            .max(1);
+        let limit = max_entries.min(byte_limited).max(1);
+        let mut evicted = 0usize;
+        while self.intrinsic_metrics.len() > limit {
+            let Some(key) = self.intrinsic_metrics.keys().next().copied() else {
+                break;
+            };
+            self.intrinsic_metrics.remove(&key);
+            evicted = evicted.saturating_add(1);
+        }
+        self.intrinsic_counters.evictions =
+            self.intrinsic_counters.evictions.saturating_add(evicted);
+    }
+
     fn clear(&mut self) {
         self.intrinsics.clear();
+        self.intrinsic_metrics.clear();
+        self.intrinsic_counters = crate::IntrinsicCacheCounters::default();
         self.placements.clear();
         self.boxes.clear();
         self.used_padding.clear();
@@ -1002,6 +1096,12 @@ struct LayoutInputMap<'a> {
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct BaselineMetrics {
+    first: Option<f32>,
+    last: Option<f32>,
+}
+
 impl<'a> LayoutInputMap<'a> {
     fn new(world: &'a UiWorld) -> Self {
         Self {
@@ -1071,11 +1171,145 @@ impl<'a> LayoutInputMap<'a> {
         resolved
     }
 
-    fn text_ascent(&self, id: StableNodeId) -> Option<f32> {
-        self.nodes
+    /// Shared baseline authority for all formatting contexts. Retained
+    /// `nana-text` layouts provide first/last line baselines; host-shaped text
+    /// falls back to its first-line ascent. Replaced/custom content has an
+    /// explicit bottom-edge fallback so it never accidentally inherits text's
+    /// approximate ascent.
+    fn baseline_metrics(
+        &self,
+        id: StableNodeId,
+        fallback_font_px: f32,
+        inline_base: Option<f32>,
+        used: Option<Size>,
+    ) -> BaselineMetrics {
+        let Some(style) = self.style(id) else {
+            return BaselineMetrics::default();
+        };
+        let font = fonts_of(&style, fallback_font_px).element_px;
+        let chrome_top =
+            style.resolved_padding_against(inline_base).top + style.resolved_border_width();
+        let replaced = self.world.custom_render(id).is_some()
+            || style.paint.content_image.is_some()
+            || style.paint.skipped_replaced.is_some()
+            || {
+                #[cfg(feature = "image-viewer")]
+                {
+                    matches!(
+                        self.world.standard_visual_ref(id),
+                        Some(crate::StandardVisual::ImageViewer { .. })
+                    )
+                }
+                #[cfg(not(feature = "image-viewer"))]
+                {
+                    false
+                }
+            };
+        if replaced {
+            // Replaced content's baseline is its border-box bottom. The
+            // measure caller supplies the used extent when it is available;
+            // an absent extent remains an explicit fallback for a later query.
+            let block = used.and_then(|used| {
+                let (_, block) = self
+                    .nodes
+                    .get(&id)
+                    .map(|node| node.writing.logical_size(used.width, used.height))?;
+                Some(block.max(0.0))
+            });
+            return BaselineMetrics {
+                first: block,
+                last: block,
+            };
+        }
+        if let Some((_, layout)) = self.world.text_layout(id)
+            && !layout.is_vertical()
+            && !layout.lines.is_empty()
+        {
+            let first = layout
+                .lines
+                .first()
+                .map(|line| chrome_top + line.metrics.baseline_y_px);
+            let last = layout
+                .lines
+                .last()
+                .map(|line| chrome_top + line.metrics.baseline_y_px);
+            return BaselineMetrics { first, last };
+        }
+        if matches!(
+            self.world.standard_visual_ref(id),
+            Some(crate::StandardVisual::Button { label, .. }) if label.is_empty()
+        ) {
+            let block = used.map(|used| {
+                let writing = self
+                    .nodes
+                    .get(&id)
+                    .map_or_else(Default::default, |node| node.writing);
+                writing.logical_size(used.width, used.height).1.max(0.0)
+            });
+            return BaselineMetrics {
+                first: block,
+                last: block,
+            };
+        }
+        let button_with_label = matches!(
+            self.world.standard_visual_ref(id),
+            Some(crate::StandardVisual::Button { label, .. }) if !label.is_empty()
+        );
+        let ascent = self
+            .nodes
             .get(&id)
             .and_then(|node| node.text_metrics)
             .and_then(|metrics| metrics.ascent)
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        let ascent = ascent.unwrap_or(font * nana_ui_core::TEXT_APPROX_ASCENT_EM);
+        let first = Some(chrome_top + ascent);
+        if button_with_label {
+            // A labelled button's baseline belongs to its internal label
+            // content. The shaped text metrics above are authoritative; the
+            // approximation is only the same explicit host fallback used
+            // when shaping has not produced a line yet.
+            return BaselineMetrics { first, last: first };
+        }
+        BaselineMetrics { first, last: first }
+    }
+
+    fn baseline(&self, id: StableNodeId, fallback_font_px: f32, used: Size) -> f32 {
+        let writing = self
+            .nodes
+            .get(&id)
+            .map_or_else(Default::default, |node| node.writing);
+        let (_, block_extent) = writing.logical_size(used.width, used.height);
+        let replaced = self.world.custom_render(id).is_some()
+            || self.style(id).is_some_and(|style| {
+                style.paint.content_image.is_some() || style.paint.skipped_replaced.is_some()
+            })
+            || {
+                #[cfg(feature = "image-viewer")]
+                {
+                    matches!(
+                        self.world.standard_visual_ref(id),
+                        Some(crate::StandardVisual::ImageViewer { .. })
+                    )
+                }
+                #[cfg(not(feature = "image-viewer"))]
+                {
+                    false
+                }
+            };
+        if replaced {
+            // Replaced/custom nodes align to their bottom edge by default.
+            return block_extent.max(0.0);
+        }
+        let metrics = self.baseline_metrics(
+            id,
+            fallback_font_px,
+            Some(writing.inline_size(used.width, used.height)),
+            Some(used),
+        );
+        // Read both ends here so callers share one retained result even when
+        // the current parent only asks for first baseline alignment.
+        let _last = metrics.last;
+        metrics.first.unwrap_or(block_extent.max(0.0))
     }
 }
 
@@ -1184,7 +1418,250 @@ struct Size {
     height: f32,
 }
 
-type IntrinsicCache = HashMap<(StableNodeId, u32, u32), Size>;
+/// All non-content inputs that can change a used measurement.  The containing
+/// block size remains in the key, while font, viewport, writing mode, and
+/// parent flow are carried alongside it so a compatible constraint cannot
+/// accidentally reuse a result from another layout environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MeasurementKey {
+    id: StableNodeId,
+    width: u32,
+    height: u32,
+    parent_direction: u8,
+    viewport_width: u32,
+    viewport_height: u32,
+    parent_font: u32,
+    writing: nana_ui_core::WritingContext,
+    containing_writing: nana_ui_core::WritingContext,
+    constraint: crate::ConstraintClass,
+    direction_sensitive: bool,
+}
+
+impl MeasurementKey {
+    fn new(
+        id: StableNodeId,
+        available: Size,
+        parent_direction: Option<FlexDirection>,
+        viewport: LayoutViewport,
+        parent_font_px: f32,
+        writing: nana_ui_core::WritingContext,
+        containing_writing: nana_ui_core::WritingContext,
+        constraint: crate::ConstraintClass,
+        direction_sensitive: bool,
+    ) -> Self {
+        Self {
+            id,
+            width: available.width.to_bits(),
+            height: available.height.to_bits(),
+            parent_direction: match parent_direction {
+                None => 0,
+                Some(FlexDirection::Column) => 1,
+                Some(FlexDirection::Row) => 2,
+            },
+            viewport_width: viewport.width.to_bits(),
+            viewport_height: viewport.height.to_bits(),
+            parent_font: parent_font_px.to_bits(),
+            writing,
+            containing_writing,
+            constraint: constraint.normalized(),
+            direction_sensitive,
+        }
+    }
+}
+
+fn measurement_constraint_class(
+    style: &nana_ui_core::LayoutStyle,
+    available: Size,
+) -> crate::ConstraintClass {
+    let extents = (available.width.max(0.0), available.height.max(0.0));
+    if style
+        .aspect_ratio
+        .is_some_and(|ratio| ratio.is_finite() && ratio > 0.0)
+    {
+        crate::ConstraintClass::aspect_ratio(extents.0, extents.1)
+    } else if style
+        .width
+        .is_some_and(nana_ui_core::LengthSpec::is_full_percent_fill)
+        || style
+            .height
+            .is_some_and(nana_ui_core::LengthSpec::is_full_percent_fill)
+    {
+        crate::ConstraintClass::fill(extents.0, extents.1)
+    } else {
+        crate::ConstraintClass::percentage_cb(extents.0, extents.1)
+    }
+}
+
+/// Per-pass used-size memo.  The public [`crate::IntrinsicCache`] owns the
+/// generation-aware intrinsic contract; this tiny adapter keeps the existing
+/// layout algorithm's physical-size representation while exposing the same
+/// hit/miss accounting.  Its key deliberately has no formatting-context id,
+/// so a child measured by flex/grid/inline can share the result in a pass.
+#[derive(Default)]
+struct PassIntrinsicCache {
+    /// Intrinsic facts are kept separately from used sizes.  A percentage,
+    /// fill, or stretch result is a resolution against one containing block;
+    /// it must never become the preferred value in the shared authority.
+    cache: crate::IntrinsicCache,
+    /// Used-size memo for this pass. Its key contains the concrete available
+    /// size because that is exactly what the placement algorithm resolves.
+    used: HashMap<MeasurementKey, Size>,
+    /// Writeback list for the retained used-size memo. This is deliberately
+    /// not an intrinsic cache.
+    new_entries: HashMap<MeasurementKey, Size>,
+    new_metrics: HashMap<crate::IntrinsicCacheKey, crate::IntrinsicMetrics>,
+    latest_intrinsic_keys: HashMap<StableNodeId, crate::IntrinsicCacheKey>,
+    seeded_intrinsic: HashSet<crate::IntrinsicCacheKey>,
+    extra_counters: crate::IntrinsicCacheCounters,
+}
+
+impl PassIntrinsicCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            cache: crate::IntrinsicCache::new(crate::IntrinsicCacheBudget {
+                // A node may be measured at its parent width and again at a
+                // flex/grid used width. Keep a few constraint classes alive
+                // for baseline and cross-context consumers in this pass.
+                max_entries: capacity.saturating_mul(4).max(1),
+                max_bytes: usize::MAX,
+            }),
+            used: HashMap::with_capacity(capacity),
+            new_entries: HashMap::with_capacity(capacity),
+            new_metrics: HashMap::with_capacity(capacity),
+            latest_intrinsic_keys: HashMap::with_capacity(capacity),
+            seeded_intrinsic: HashSet::with_capacity(capacity),
+            extra_counters: crate::IntrinsicCacheCounters::default(),
+        }
+    }
+
+    fn get(&mut self, key: &MeasurementKey) -> Option<Size> {
+        let value = self.used.get(key).copied();
+        // Used-size memoization is deliberately separate from intrinsic
+        // metrics. It must not inflate intrinsic measure requests or
+        // cross-context counters; the canonical cache lookup above owns those
+        // counters and is performed even when this memo hits.
+        value
+    }
+
+    fn insert(&mut self, key: MeasurementKey, size: Size) {
+        self.used.insert(key, size);
+        self.new_entries.insert(key, size);
+    }
+
+    /// Publish content-derived facts. `preferred` is the natural border-box
+    /// result before resolving the current containing block. Callers pass the
+    /// final used value separately to [`Self::insert`].
+    fn insert_intrinsic_bounds(
+        &mut self,
+        key: MeasurementKey,
+        min_inline: f32,
+        max_inline: f32,
+        min_block: f32,
+        max_block: Option<f32>,
+        preferred: Size,
+        first_baseline: Option<f32>,
+        last_baseline: Option<f32>,
+        aspect_ratio: Option<f32>,
+    ) {
+        let cache_key = Self::intrinsic_key(key);
+        let metrics = crate::IntrinsicMetrics::new(
+            min_inline,
+            max_inline,
+            min_block,
+            max_block,
+            crate::UsedSize::new(preferred.width, preferred.height),
+        )
+        .with_baselines(first_baseline, last_baseline)
+        .with_aspect_ratio(aspect_ratio);
+        let context = match key.parent_direction {
+            1 => Some(crate::FormattingContextId::new(1)),
+            2 => Some(crate::FormattingContextId::new(2)),
+            _ => None,
+        };
+        self.seeded_intrinsic.insert(cache_key);
+        self.cache.insert(cache_key, metrics, context);
+        self.new_metrics.insert(cache_key, metrics);
+        self.latest_intrinsic_keys.insert(key.id, cache_key);
+    }
+
+    fn seed_intrinsic(
+        &mut self,
+        key: crate::IntrinsicCacheKey,
+        metrics: crate::IntrinsicMetrics,
+        context: Option<crate::FormattingContextId>,
+    ) {
+        if !self.seeded_intrinsic.insert(key) {
+            if let Some(id) = StableNodeId::new(key.content) {
+                self.latest_intrinsic_keys.insert(id, key);
+            }
+            return;
+        }
+        self.cache.insert(key, metrics, context);
+        if let Some(id) = StableNodeId::new(key.content) {
+            self.latest_intrinsic_keys.insert(id, key);
+        }
+    }
+
+    fn get_intrinsic(
+        &mut self,
+        key: MeasurementKey,
+        context: Option<crate::FormattingContextId>,
+    ) -> Option<crate::IntrinsicMetrics> {
+        let key = Self::intrinsic_key(key);
+        self.cache.get(&key, context)
+    }
+
+    fn record_full_subtree(&mut self) {
+        self.extra_counters.full_subtrees = self.extra_counters.full_subtrees.saturating_add(1);
+        self.extra_counters.intrinsic_measure_full_subtrees = self
+            .extra_counters
+            .intrinsic_measure_full_subtrees
+            .saturating_add(1);
+    }
+
+    fn baseline(&mut self, id: StableNodeId, which: crate::Baseline) -> Option<f32> {
+        let Some(key) = self.latest_intrinsic_keys.get(&id).copied() else {
+            self.extra_counters.baseline_queries =
+                self.extra_counters.baseline_queries.saturating_add(1);
+            return None;
+        };
+        self.cache.baseline(&key, None, which)
+    }
+
+    fn counters(&self) -> crate::IntrinsicCacheCounters {
+        let mut counters = self.cache.counters();
+        let mut extra = self.extra_counters;
+        extra.entries = counters.entries;
+        extra.bytes = counters.bytes;
+        counters.accumulate(extra);
+        counters
+    }
+
+    fn intrinsic_key(key: MeasurementKey) -> crate::IntrinsicCacheKey {
+        // Natural contributions for wrapping and percentage descendants can
+        // depend on the containing block. Keep that relevant basis in the
+        // constraint class and carry the remaining environment in the style
+        // identity; the formatting-context name itself is still absent.
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // Parent flow direction selects the *used-size* resolution path, but
+        // it is not part of ordinary intrinsic facts. Aspect-ratio stretch
+        // transfer is the deliberate exception: its used width depends on
+        // whether the parent is a row, so keep that relevant dependency in
+        // the identity while all other content still crosses contexts.
+        if key.direction_sensitive
+            || matches!(key.constraint, crate::ConstraintClass::AspectRatio { .. })
+        {
+            key.parent_direction.hash(&mut hasher);
+        }
+        key.viewport_width.hash(&mut hasher);
+        key.viewport_height.hash(&mut hasher);
+        key.parent_font.hash(&mut hasher);
+        key.writing.hash(&mut hasher);
+        key.containing_writing.hash(&mut hasher);
+        crate::IntrinsicCacheKey::new(key.id.get(), hasher.finish(), key.constraint)
+    }
+}
 
 impl Size {
     fn new(width: f32, height: f32) -> Self {
