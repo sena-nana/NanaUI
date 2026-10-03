@@ -424,6 +424,16 @@ impl AccessibilityProjector {
         if !self.interactive || node.disabled {
             return None;
         }
+        if let Some((menu, index)) = nana_ui_runtime::decode_virtual_menu_item(target) {
+            if !matches!(request.action, Action::Click) || node.role != AccessibilityRole::MenuItem
+            {
+                return None;
+            }
+            return Some(nana_ui_runtime::AccessibilityActionRequest {
+                target,
+                action: nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, index },
+            });
+        }
         let action = match request.action {
             Action::Click if supports_click(node.role) => {
                 nana_ui_runtime::AccessibilityAction::Click

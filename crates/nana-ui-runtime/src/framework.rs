@@ -2677,7 +2677,11 @@ impl AppContext {
         document: DocumentId,
         request: AccessibilityActionRequest,
     ) -> Result<bool, FrameworkError> {
-        if self.world.document_of(request.target) != Some(document) {
+        let owner = match &request.action {
+            AccessibilityAction::ActivateMenuItem { menu, .. } => *menu,
+            _ => request.target,
+        };
+        if self.world.document_of(owner) != Some(document) {
             return Ok(false);
         }
         match request.action {
@@ -2694,6 +2698,15 @@ impl AppContext {
                     return self.focus_node(document, request.target);
                 }
                 Ok(false)
+            }
+            AccessibilityAction::ActivateMenuItem { menu, index } => {
+                if crate::decode_virtual_menu_item(request.target) != Some((menu, index)) {
+                    return Ok(false);
+                }
+                let Some(entity) = self.view_entity::<ContextMenu>(menu) else {
+                    return Ok(false);
+                };
+                self.activate_context_menu_index(entity, index)
             }
             AccessibilityAction::Focus => self.focus_node(document, request.target),
             AccessibilityAction::SetValue(value) => {

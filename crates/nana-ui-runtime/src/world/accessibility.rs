@@ -290,22 +290,33 @@ impl UiWorld {
             }),
         };
         let bounds = self.visible_accessibility_bounds(id, memo)?;
+        let mut children = children
+            .iter()
+            .copied()
+            .filter(|child| {
+                let child_id = *child;
+                self.nodes.get(child_id).is_some_and(|node| {
+                    node.resolved.0.box_visible
+                        && (node.resolved.0.visible || !node.hierarchy.children.is_empty())
+                        && !matches!(node.kind.as_ref(), NodeKind::Comment)
+                }) && !self.accessibility_hidden(child_id)
+                    && self.visible_accessibility_bounds(child_id, memo).is_some()
+            })
+            .collect::<Vec<_>>();
+        if let Some(StandardVisual::MenuSurface {
+            kind: crate::MenuSurfaceKind::ContextMenu,
+            open: true,
+            rows,
+            ..
+        }) = self.nodes.visual(id)
+        {
+            children
+                .extend((0..rows.len()).filter_map(|index| crate::virtual_menu_item_id(id, index)));
+        }
         Some(AccessibilityNode {
             id,
             parent,
-            children: children
-                .iter()
-                .copied()
-                .filter(|child| {
-                    let child_id = *child;
-                    self.nodes.get(child_id).is_some_and(|node| {
-                        node.resolved.0.box_visible
-                            && (node.resolved.0.visible || !node.hierarchy.children.is_empty())
-                            && !matches!(node.kind.as_ref(), NodeKind::Comment)
-                    }) && !self.accessibility_hidden(child_id)
-                        && self.visible_accessibility_bounds(child_id, memo).is_some()
-                })
-                .collect(),
+            children,
             role,
             label,
             description: state.description.clone(),
@@ -348,6 +359,80 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    fn project_virtual_menu_items(&self, menu: &AccessibilityNode) -> Vec<AccessibilityNode> {
+        let Some(StandardVisual::MenuSurface {
+            kind: crate::MenuSurfaceKind::ContextMenu,
+            open: true,
+            rows,
+            highlighted,
+            ..
+        }) = self.nodes.visual(menu.id)
+        else {
+            return Vec::new();
+        };
+        let options = match self.component_geometry(menu.id) {
+            Some(crate::ComponentGeometry::MenuSurface { options, .. }) => options,
+            _ => Vec::new(),
+        };
+        let count = rows.len().max(1) as f32;
+        rows.iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                let id = crate::virtual_menu_item_id(menu.id, index)?;
+                let bounds = options
+                    .get(index)
+                    .map(|option| option.bounds)
+                    .unwrap_or_else(|| LayoutBox {
+                        x: menu.bounds.x,
+                        y: menu.bounds.y + menu.bounds.height * index as f32 / count,
+                        width: menu.bounds.width,
+                        height: menu.bounds.height / count,
+                    });
+                Some(AccessibilityNode {
+                    id,
+                    parent: Some(menu.id),
+                    children: Vec::new(),
+                    role: AccessibilityRole::MenuItem,
+                    label: Some(Arc::clone(&row.label)),
+                    value: None,
+                    description: row.hint.clone(),
+                    disabled: row.disabled,
+                    checked: None,
+                    mixed: false,
+                    orientation: None,
+                    selected: Some(*highlighted == Some(index)),
+                    multiline: false,
+                    editable: false,
+                    selection: None,
+                    modal: false,
+                    busy: false,
+                    invalid: false,
+                    numeric_minimum: None,
+                    numeric_maximum: None,
+                    numeric_step: None,
+                    numeric_value: None,
+                    focused: false,
+                    bounds,
+                    writing: menu.writing,
+                })
+            })
+            .collect()
+    }
+
+    fn project_accessibility_entries(
+        &self,
+        id: StableNodeId,
+        memo: &mut ProjectionMemo,
+    ) -> Vec<AccessibilityNode> {
+        let Some(node) = self.project_accessibility_node(id, memo) else {
+            return Vec::new();
+        };
+        let mut entries = vec![node];
+        let menu = entries[0].clone();
+        entries.extend(self.project_virtual_menu_items(&menu));
+        entries
+    }
+
     /// Project one complete incremental accessibility transaction, including
     /// tombstones for nodes removed from the retained world.
     pub fn project_accessibility_delta(&self, work: &SystemWork) -> AccessibilityDelta {
@@ -399,10 +484,13 @@ impl UiWorld {
         let mut memo = ProjectionMemo::default();
         let mut updated = Vec::new();
         for id in affected {
-            if let Some(node) = self.project_accessibility_node(id, &mut memo) {
-                updated.push(node);
-            } else if self.nodes.contains(id) {
-                removed.push(id);
+            let entries = self.project_accessibility_entries(id, &mut memo);
+            if entries.is_empty() {
+                if self.nodes.contains(id) {
+                    removed.push(id);
+                }
+            } else {
+                updated.extend(entries);
             }
         }
         removed.sort_unstable();
@@ -420,10 +508,9 @@ impl UiWorld {
     pub fn project_accessibility_nodes(&self, ids: &[StableNodeId]) -> Vec<AccessibilityNode> {
         let mut memo = ProjectionMemo::default();
         let mut projected = Vec::with_capacity(ids.len());
-        projected.extend(
-            ids.iter()
-                .filter_map(|&id| self.project_accessibility_node(id, &mut memo)),
-        );
+        for &id in ids {
+            projected.extend(self.project_accessibility_entries(id, &mut memo));
+        }
         projected
     }
 }

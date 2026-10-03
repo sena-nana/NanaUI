@@ -722,6 +722,24 @@ impl AppContext {
         })
     }
 
+    /// Activate a painted context-menu row by its visible index. Accessibility
+    /// exposes rows as virtual MenuItem nodes because the surface keeps one
+    /// retained entity for pointer hit-testing and nested navigation.
+    pub fn activate_context_menu_index(
+        &mut self,
+        entity: Entity<ContextMenu>,
+        index: usize,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |menu, cx| {
+            if let Some(event) = menu.select_index(index) {
+                cx.emit(event);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
     pub fn cancel_progress(&mut self, entity: Entity<Progress>) -> Result<bool, FrameworkError> {
         self.update_component(entity, |progress, cx| {
             if !progress.cancellable {
