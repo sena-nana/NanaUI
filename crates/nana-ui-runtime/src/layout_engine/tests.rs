@@ -81,6 +81,47 @@ fn foundation_adapter_publishes_stable_runtime_results() {
 }
 
 #[test]
+fn foundation_adapter_keeps_custom_render_frames_out_of_layout_work() {
+    let (mut world, document) = column_tree(1);
+    let mut mutations = MutationQueue::new();
+    mutations.set_custom_render(
+        id(3),
+        Some(
+            crate::CustomRenderNode::new("test-renderer", "resource", 7)
+                .with_fit(nana_ui_core::ContentFit::Cover),
+        ),
+    );
+    world.commit(mutations).unwrap();
+    let engine = RuntimeLayoutEngine;
+    let viewport = LayoutViewport::new(300.0, 200.0);
+    let mut foundation = LayoutFoundation::new();
+    engine
+        .layout_document_foundation_into(&world, document, viewport, &mut foundation)
+        .unwrap();
+    let generation = foundation.generation();
+    let counters = foundation.counters();
+
+    let mut frame = MutationQueue::new();
+    frame.set_custom_render(
+        id(3),
+        Some(
+            crate::CustomRenderNode::new("test-renderer", "resource", 8)
+                .with_fit(nana_ui_core::ContentFit::Cover),
+        ),
+    );
+    world.commit(frame).unwrap();
+    engine
+        .layout_document_foundation_into(&world, document, viewport, &mut foundation)
+        .unwrap();
+
+    let delta = foundation.counters().delta_since(counters);
+    assert_eq!(delta.layout_context_transitions, 0);
+    assert_eq!(delta.layout_participation_remaps, 0);
+    assert_eq!(delta.intrinsic_generation_bumps, 0);
+    assert_eq!(foundation.generation(), generation);
+}
+
+#[test]
 fn isolated_leaf_preserves_relative_position_and_resolved_padding() {
     use crate::{AppContext, Stack};
     let document = DocumentId::new(42).unwrap();

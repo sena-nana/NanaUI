@@ -557,6 +557,48 @@ impl LayoutResult {
                 .iter()
                 .all(|fragment| fragment.bounds.is_finite())
     }
+
+    /// Compare the parts that can change canonical geometry.  Replaced
+    /// resource frames and object-fit are presentation metadata; keeping them
+    /// out of this comparison lets a renderer refresh a texture without
+    /// advancing layout result generation.
+    fn geometry_eq(&self, other: &Self) -> bool {
+        self.node == other.node
+            && self.bounds == other.bounds
+            && self.content_box == other.content_box
+            && self.padding_box == other.padding_box
+            && self.border_box == other.border_box
+            && self.overflow == other.overflow
+            && self.scroll_extent == other.scroll_extent
+            && self.clip == other.clip
+            && self.containing_block == other.containing_block
+            && self.used_size == other.used_size
+            && self.first_baseline == other.first_baseline
+            && self.last_baseline == other.last_baseline
+            && self.children.len() == other.children.len()
+            && self
+                .children
+                .iter()
+                .zip(&other.children)
+                .all(|(left, right)| {
+                    left.node == right.node
+                        && left.bounds == right.bounds
+                        && participation_geometry_eq(left.participation, right.participation)
+                })
+            && self.fragments == other.fragments
+            && self.dependency_footprint == other.dependency_footprint
+    }
+}
+
+fn participation_geometry_eq(left: Participation, right: Participation) -> bool {
+    match (left, right) {
+        (Participation::Replaced(left), Participation::Replaced(right)) => {
+            left.intrinsic_size == right.intrinsic_size
+                && left.aspect_ratio == right.aspect_ratio
+                && left.baseline == right.baseline
+        }
+        _ => left == right,
+    }
 }
 
 /// Structural work counters for Foundation gates.  A zero value means no
@@ -1107,13 +1149,9 @@ impl LayoutFoundation {
         // rather than in callers: both the runtime adapter and direct
         // Foundation users then report the same structural work.
         let previous_result = self.results.get(&result.node).cloned();
-        let result_changed = previous_result.as_ref().is_none_or(|previous| {
-            let mut previous = previous.clone();
-            previous.generation = 0;
-            let mut current = result.clone();
-            current.generation = 0;
-            previous != current
-        });
+        let result_changed = previous_result
+            .as_ref()
+            .is_none_or(|previous| !previous.geometry_eq(&result));
         self.counters.record_placement(
             result
                 .dependency_footprint
@@ -1718,6 +1756,51 @@ mod tests {
         assert_eq!(counters.layout_dependency_edges_visited, 2);
         assert_eq!(counters.layout_fragments_created, 1);
         assert_eq!(counters.layout_fragments_reused, 1);
+    }
+
+    #[test]
+    fn replaced_frame_metadata_does_not_advance_result_generation() {
+        let mut foundation = LayoutFoundation::new();
+        assert!(foundation.insert(LayoutNode::new(id(1), intent(), FormattingContext::Flow)));
+        let bounds = LayoutRect::new(0.0, 0.0, LayoutSize::new(20.0, 10.0));
+        let mut first = LayoutResult::new(id(1), bounds, 0);
+        first.children.push(LayoutPlacement {
+            node: id(2),
+            bounds,
+            participation: Participation::Replaced(ReplacedContent {
+                resource_generation: 1,
+                ..ReplacedContent::default()
+            }),
+        });
+        assert!(foundation.publish_result(first));
+        let generation = foundation.generation();
+
+        let mut frame = foundation.result(id(1)).cloned().unwrap();
+        frame.children[0].participation = Participation::Replaced(ReplacedContent {
+            resource_generation: 2,
+            fit: ObjectFit::Cover,
+            ..ReplacedContent::default()
+        });
+        assert!(foundation.publish_result(frame));
+        assert_eq!(foundation.generation(), generation);
+        assert_eq!(
+            foundation.result(id(1)).unwrap().children[0].participation,
+            Participation::Replaced(ReplacedContent {
+                resource_generation: 2,
+                fit: ObjectFit::Cover,
+                ..ReplacedContent::default()
+            })
+        );
+
+        let mut intrinsic = foundation.result(id(1)).cloned().unwrap();
+        intrinsic.children[0].participation = Participation::Replaced(ReplacedContent {
+            intrinsic_size: Some(LayoutSize::new(30.0, 10.0)),
+            resource_generation: 2,
+            fit: ObjectFit::Cover,
+            ..ReplacedContent::default()
+        });
+        assert!(foundation.publish_result(intrinsic));
+        assert!(foundation.generation() > generation);
     }
 
     #[test]

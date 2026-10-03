@@ -193,14 +193,15 @@ impl RuntimeLayoutEngine {
                     }
                     Some(nana_ui_core::BackgroundImageFit::Length) => nana_ui_core::ObjectFit::Fill,
                 });
-            node.participation = if replaced {
-                Participation::Replaced(ReplacedContent {
-                    intrinsic_size,
-                    aspect_ratio: input.style.aspect_ratio,
-                    fit,
-                    resource_generation: custom_render.map_or(0, |render| render.revision),
-                    ..ReplacedContent::default()
-                })
+            let replaced_content = replaced.then(|| ReplacedContent {
+                intrinsic_size,
+                aspect_ratio: input.style.aspect_ratio,
+                fit,
+                resource_generation: custom_render.map_or(0, |render| render.revision),
+                ..ReplacedContent::default()
+            });
+            node.participation = if let Some(content) = replaced_content {
+                Participation::Replaced(content)
             } else if placement.is_out_of_flow() {
                 Participation::OutOfFlow(placement)
             } else if input.text_metrics.is_some() {
@@ -218,7 +219,26 @@ impl RuntimeLayoutEngine {
                     .map(|offset| LayoutSize::new(offset.x, offset.y))
                     .unwrap_or(LayoutSize::ZERO),
             };
+            // A custom render revision is a presentation frame/resource
+            // update. Keep the retained participation while upserting the
+            // structural node, then use Foundation's replaced-content path so
+            // frame churn cannot masquerade as a layout participation remap.
+            let previous_replaced = foundation
+                .node(layout_id)
+                .and_then(|existing| match existing.participation {
+                    Participation::Replaced(content) => Some(content),
+                    _ => None,
+                });
+            if previous_replaced.is_some() && replaced_content.is_some() {
+                node.participation = Participation::Replaced(previous_replaced.unwrap());
+            }
             foundation.upsert(node);
+            if let (Some(previous), Some(content)) = (previous_replaced, replaced_content) {
+                let intrinsic_metadata_changed = previous.intrinsic_size != content.intrinsic_size
+                    || previous.aspect_ratio != content.aspect_ratio
+                    || previous.baseline != content.baseline;
+                foundation.set_replaced_content(layout_id, content, intrinsic_metadata_changed);
+            }
             if let Some(metrics) = input.text_metrics {
                 let mut intrinsic =
                     IntrinsicMetrics::new(LayoutSize::new(metrics.width, metrics.height));
