@@ -2529,7 +2529,7 @@ impl AppContext {
             chrome_find(chrome, &mut |node| match node {
                 DockChrome::Split { handle, .. } => self
                     .world()
-                    .layout_box(*handle)
+                    .canonical_layout_box(*handle)
                     .is_some_and(|bounds| point_near_box(bounds, x, y, SLOP))
                     .then_some(*handle),
                 _ => None,
@@ -2591,7 +2591,7 @@ impl AppContext {
             chrome_find(chrome, &mut |node| match node {
                 DockChrome::Tabs { strip, .. } => self
                     .world()
-                    .layout_box(*strip)
+                    .canonical_layout_box(*strip)
                     .is_some_and(|bounds| bounds.contains(x, y))
                     .then_some(*strip),
                 _ => None,
@@ -2874,7 +2874,7 @@ impl AppContext {
         let locked = self.read(dock, |dock| dock.locked)?;
         let outside = self
             .world()
-            .layout_box(dock.stable_id())
+            .canonical_layout_box(dock.stable_id())
             .is_none_or(|bounds| !bounds.contains(x, y));
         self.update_component(dock, |dock, cx| {
             dock.item_drag = None;

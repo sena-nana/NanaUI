@@ -1424,7 +1424,7 @@ pub(crate) mod lifecycle_hooks {
         entity: Entity<crate::TerminalView>,
     ) -> Result<(), FrameworkError> {
         context.refresh_terminal_view(entity)?;
-        if let Some(bounds) = context.world.layout_box(entity.stable_id()) {
+        if let Some(bounds) = context.world.component_layout_box(entity.stable_id()) {
             context.resize_terminal_view(entity, bounds.width, bounds.height)?;
         }
         Ok(())

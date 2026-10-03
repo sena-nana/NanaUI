@@ -197,12 +197,12 @@ impl AppContext {
         if let Some((local_x, local_y)) = self.world.pointer_layout_position(id, x, y) {
             return self
                 .world
-                .layout_box(id)
+                .component_layout_box(id)
                 .is_some_and(|bounds| bounds.contains(local_x, local_y));
         }
         self.world
             .viewport_layout_box(id)
-            .or_else(|| self.world.layout_box(id))
+            .or_else(|| self.world.component_layout_box(id))
             .is_some_and(|bounds| bounds.contains(x, y))
     }
 

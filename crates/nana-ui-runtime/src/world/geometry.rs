@@ -155,10 +155,14 @@ impl UiWorld {
         visual: &StandardVisual,
         style: &ComputedStyle,
     ) -> Option<crate::ComponentGeometry> {
-        let (bounds, source) = {
-            let node = self.nodes.get(id)?;
-            (node.layout, node.style.clone())
-        };
+        // Keep component-owned chrome on the same geometry accessor as the
+        // rest of runtime interaction code.  `component_layout_box` uses the
+        // published result whenever the writeback window is closed and only
+        // falls back to the retained box while a pass is still publishing.
+        // Reading `node.layout` directly here would create a second geometry
+        // authority for component projections.
+        let bounds = self.component_layout_box(id)?;
+        let source = self.nodes.get(id)?.style.clone();
         let padding = self.used_layout_padding(id);
         let border = source.layout.resolved_border_width();
         let content = self.component_content_box(id)?;

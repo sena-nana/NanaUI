@@ -481,7 +481,7 @@ impl AppContext {
         self.split_panes_in(document).find_map(|pane| {
             let handle = self.handle_of_split(pane)?;
             self.world()
-                .layout_box(handle)
+                .canonical_layout_box(handle)
                 .filter(|bounds| point_near_box(*bounds, x, y, SLOP))
                 .map(|_| handle)
         })

@@ -332,7 +332,9 @@ impl AppContext {
                     .layout_cache
                     .far_start(document, id)
                     .is_some_and(|far| self.world.write_layout_far_start(id, far));
-                if padding_changed || far_start_changed || self.world.layout_box(id) != Some(layout)
+                if padding_changed
+                    || far_start_changed
+                    || self.world.component_layout_box(id) != Some(layout)
                 {
                     mutations.write_layout(id, layout);
                 }
@@ -364,7 +366,7 @@ impl AppContext {
                 self.refresh_settings_row_layout(id)?;
             }
             for id in terminal_sizes {
-                if let Some(bounds) = self.world.layout_box(id) {
+                if let Some(bounds) = self.world.component_layout_box(id) {
                     self.resize_terminal_view(
                         Entity::from_stable_id(id),
                         bounds.width,

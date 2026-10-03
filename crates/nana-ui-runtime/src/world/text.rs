@@ -3347,7 +3347,9 @@ impl UiWorld {
         editor_multiline: Option<bool>,
     ) -> crate::TextShapeConstraints {
         let source = &self.record(id).style;
-        let layout = self.record(id).layout;
+        let layout = self
+            .component_layout_box(id)
+            .expect("text node layout is available");
         let text_input_multiline = editor_multiline.unwrap_or(false);
         let is_text_input = editor_multiline.is_some();
         let wrap = if is_text_input {
@@ -3807,7 +3809,9 @@ impl UiWorld {
                 let visual = self.nodes.visual(id);
                 if let Some(visual @ StandardVisual::EmptyState { compact, .. }) = visual {
                     if computed.visible {
-                        let layout = self.record(id).layout;
+                        let Some(layout) = self.component_layout_box(id) else {
+                            continue;
+                        };
                         let horizontal = if *compact { 6.0 } else { 16.0 };
                         let width = (layout.width - horizontal * 2.0).max(0.0);
                         let runs = shaper.runs;
@@ -3828,7 +3832,9 @@ impl UiWorld {
                 }
                 if let Some(visual @ StandardVisual::ModalFrame { kind, slots, .. }) = visual {
                     if computed.visible {
-                        let root = self.record(id).layout;
+                        let Some(root) = self.component_layout_box(id) else {
+                            continue;
+                        };
                         let surface =
                             crate::overlay_surfaces::modal_surface_bounds(root, *kind, None);
                         let chrome = crate::overlay_surfaces::ModalChrome::measure(
@@ -5281,7 +5287,8 @@ impl UiWorld {
         let padding = self.used_layout_padding(id);
         let border = node.style.layout.resolved_border_width();
         let content_height =
-            (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
+            (self.component_layout_box(id)?.height - border * 2.0 - padding.top - padding.bottom)
+                .max(0.0);
         let total_height = presentation.content_size.height;
         let max_scroll = (total_height - content_height).max(0.0);
         let line_top = presentation
@@ -5348,7 +5355,8 @@ impl UiWorld {
         let padding = self.used_layout_padding(id);
         let border = node.style.layout.resolved_border_width();
         let content_height =
-            (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
+            (self.component_layout_box(id)?.height - border * 2.0 - padding.top - padding.bottom)
+                .max(0.0);
         let total_height = presentation.content_size.height;
         let max_scroll = (total_height - content_height).max(0.0);
         let mut scroll_y = self.record(id).scroll_offset.y;

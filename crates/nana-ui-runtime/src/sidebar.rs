@@ -1125,7 +1125,7 @@ fn child_block_height(world: &UiWorld, id: StableNodeId, fallback: f32) -> f32 {
         .and_then(|style| {
             length_px(style.layout.height).or_else(|| length_px(style.layout.min_height))
         })
-        .or_else(|| world.layout_box(id).map(|bounds| bounds.height))
+        .or_else(|| world.component_layout_box(id).map(|bounds| bounds.height))
         .filter(|height| *height > 0.0)
         .unwrap_or(fallback)
 }

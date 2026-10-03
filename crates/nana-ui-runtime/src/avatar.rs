@@ -224,7 +224,10 @@ mod tests {
         assert_eq!(style.layout.border_radius, Some(20.0));
         assert_eq!(style.background, Some(SemanticColorRole::Subtle));
         assert!(context.world().custom_render(avatar.stable_id()).is_none());
-        let box_ = context.world().layout_box(avatar.stable_id()).unwrap();
+        let box_ = context
+            .world()
+            .component_layout_box(avatar.stable_id())
+            .unwrap();
         assert!((box_.width - 40.0).abs() < 0.5);
         assert!((box_.height - 40.0).abs() < 0.5);
         assert_eq!(context.world().text(avatar.stable_id()), Some(""));

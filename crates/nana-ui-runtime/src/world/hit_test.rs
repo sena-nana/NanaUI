@@ -1466,9 +1466,7 @@ impl UiWorld {
                 {
                     // The card is viewport-fixed; the trigger is wherever the
                     // scroll offsets above it put its layout box.
-                    let trigger = self
-                        .component_layout_box(parent)
-                        .unwrap_or(self.record(parent).layout);
+                    let trigger = self.component_layout_box(parent)?;
                     overlay_connector_box(
                         self.project_input_bounds(parent, trigger)
                             .unwrap_or(trigger),
@@ -1515,9 +1513,9 @@ impl UiWorld {
             if !self.node_has_hit_box(id) {
                 continue;
             }
-            let layout = self
-                .component_layout_box(id)
-                .unwrap_or(self.record(id).layout);
+            let Some(layout) = self.component_layout_box(id) else {
+                continue;
+            };
             let motion_layout = self.hit_motion_layout(id);
             let node_style = motion_layout.as_ref();
             // This is a projection root, not a Runtime reparent. Fixed layout

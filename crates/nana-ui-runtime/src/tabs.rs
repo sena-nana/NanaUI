@@ -322,10 +322,10 @@ impl Tabs {
         if self.option_nodes.len() != self.options.len() {
             return None;
         }
-        let bounds = tab_drag_rect(world.layout_box(id)?);
+        let bounds = tab_drag_rect(world.component_layout_box(id)?);
         let mut tab_bounds = Vec::with_capacity(self.option_nodes.len());
         for (_, child) in &self.option_nodes {
-            tab_bounds.push(tab_drag_rect(world.layout_box(*child)?));
+            tab_bounds.push(tab_drag_rect(world.component_layout_box(*child)?));
         }
         Some(self.strip_paint(bounds, tab_bounds))
     }

@@ -511,7 +511,7 @@ where
         };
         let width = cx
             .world()
-            .layout_box(self.list.stable_id())
+            .component_layout_box(self.list.stable_id())
             .map_or(0.0, |bounds| bounds.width);
         if width <= 0.0 {
             return (columns, None);
@@ -682,8 +682,8 @@ where
         offset: f32,
     ) -> Result<(), FrameworkError> {
         let start = match (
-            cx.world().layout_box(self.list.stable_id()),
-            cx.world().layout_box(scroll.stable_id()),
+            cx.world().component_layout_box(self.list.stable_id()),
+            cx.world().component_layout_box(scroll.stable_id()),
         ) {
             (Some(list), Some(scroll)) => list.y - scroll.y,
             _ => 0.0,

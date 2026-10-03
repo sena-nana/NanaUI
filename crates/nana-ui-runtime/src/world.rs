@@ -1064,7 +1064,7 @@ impl UiWorld {
         source: crate::LayoutResultSource,
     ) -> Option<crate::LayoutResult> {
         let node = self.nodes.get(id)?;
-        let bounds = node.layout;
+        let bounds = self.component_layout_box(id)?;
         let padding = self.used_layout_padding(id);
         let border = node.resolved_layout.resolved_border_edges();
         let mut result = crate::LayoutResult::from_box(bounds, padding, border);
@@ -1092,10 +1092,10 @@ impl UiWorld {
             })
             .unwrap_or(crate::LayoutFragmentKind::ChildPlacement);
         for (index, &child) in children.iter().enumerate() {
-            let Some(child_record) = self.nodes.get(child) else {
+            let Some(_child_record) = self.nodes.get(child) else {
                 continue;
             };
-            let child_bounds = child_record.layout;
+            let child_bounds = self.component_layout_box(child)?;
             placements.push(crate::LayoutChildPlacement {
                 node: child,
                 bounds: child_bounds,
@@ -1845,7 +1845,7 @@ impl UiWorld {
 
     /// The scrolling area of `id`'s laid-out box over its descendants' boxes.
     pub(crate) fn layout_scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
-        let viewport = self.layout_box(id)?;
+        let viewport = self.component_layout_box(id)?;
         if viewport.width <= 0.0 || viewport.height <= 0.0 {
             return None;
         }
@@ -2169,7 +2169,7 @@ impl UiWorld {
             return Some(result.content_box);
         }
         let node = self.nodes.get(id)?;
-        let bounds = self.layout_box(id)?;
+        let bounds = self.component_layout_box(id)?;
         let padding = self.used_layout_padding(id);
         let border = node.resolved_layout.resolved_border_edges();
         Some(LayoutBox {

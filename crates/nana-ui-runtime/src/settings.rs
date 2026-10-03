@@ -151,7 +151,7 @@ impl SettingsRow {
                 threshold.is_finite()
                     && threshold > 0.0
                     && world
-                        .layout_box(id)
+                        .component_layout_box(id)
                         .is_some_and(|bounds| bounds.width < threshold)
             })
     }

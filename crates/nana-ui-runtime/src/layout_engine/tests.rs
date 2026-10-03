@@ -20,7 +20,16 @@ fn id(value: u64) -> StableNodeId {
 
 #[test]
 fn foundation_adapter_publishes_stable_runtime_results() {
-    let (world, document) = column_tree(1);
+    let (mut world, document) = column_tree(1);
+    let mut mutations = MutationQueue::new();
+    mutations.set_custom_render(
+        id(3),
+        Some(
+            crate::CustomRenderNode::new("test-renderer", "resource", 7)
+                .with_fit(nana_ui_core::ContentFit::Cover),
+        ),
+    );
+    world.commit(mutations).unwrap();
     let engine = RuntimeLayoutEngine;
     let viewport = LayoutViewport::new(300.0, 200.0);
     let mut foundation = LayoutFoundation::new();
@@ -32,6 +41,29 @@ fn foundation_adapter_publishes_stable_runtime_results() {
     let first = foundation.result(child).cloned().expect("child result");
     assert!(first.is_finite());
     assert!(foundation.node(child).is_some());
+    assert!(matches!(
+        foundation.node(child).map(|node| node.participation),
+        Some(Participation::Replaced(ReplacedContent {
+            fit: nana_ui_core::ObjectFit::Cover,
+            resource_generation: 7,
+            ..
+        }))
+    ));
+    assert_eq!(
+        foundation
+            .node(LayoutNodeId::new(2).unwrap())
+            .expect("stack root")
+            .formatting_context,
+        FormattingContext::Flex
+    );
+    assert_eq!(
+        foundation
+            .node(LayoutNodeId::new(2).unwrap())
+            .expect("stack root")
+            .intent
+            .default_direction,
+        Some(FlexDirection::Column)
+    );
     let generation = foundation.generation();
 
     engine

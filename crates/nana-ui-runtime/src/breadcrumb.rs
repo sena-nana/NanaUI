@@ -512,10 +512,12 @@ mod tests {
             .unwrap();
 
         let world = context.world();
-        let bar_box = world.layout_box(bar.stable_id()).unwrap();
+        let bar_box = world.component_layout_box(bar.stable_id()).unwrap();
         let segments = context.read(breadcrumb, |b| b.segments.clone()).unwrap();
-        let first = world.layout_box(segments[0]).unwrap();
-        let last = world.layout_box(*segments.last().unwrap()).unwrap();
+        let first = world.component_layout_box(segments[0]).unwrap();
+        let last = world
+            .component_layout_box(*segments.last().unwrap())
+            .unwrap();
         let left = first.x - bar_box.x;
         let right = (bar_box.x + bar_box.width) - (last.x + last.width);
         assert!(

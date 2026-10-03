@@ -189,7 +189,7 @@ impl AppContext {
                 if self.world.document_of(id) != Some(document) || !self.world.is_mounted(id) {
                     return None;
                 }
-                let bounds = self.world.layout_box(id)?;
+                let bounds = self.world.canonical_layout_box(id)?;
                 let size = (bounds.width, bounds.height);
                 (watch.sent != Some(size)).then_some((id, size, watch.emit))
             })

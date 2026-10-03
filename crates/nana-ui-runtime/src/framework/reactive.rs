@@ -653,7 +653,7 @@ impl AppContext {
 /// ([`crate::view::Transition`]).
 impl AppContext {
     fn flip_rect(&self, id: StableNodeId) -> Option<nana_ui_core::FlipRect> {
-        let bounds = self.world.layout_box(id)?;
+        let bounds = self.world.component_layout_box(id)?;
         Some(nana_ui_core::FlipRect::new(
             bounds.x,
             bounds.y,

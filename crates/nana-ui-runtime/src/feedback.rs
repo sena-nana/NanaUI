@@ -1061,7 +1061,11 @@ mod tests {
         context
             .layout_document(document(), crate::LayoutViewport::new(120.0, 400.0))
             .unwrap();
-        let first_action_y = context.world().layout_box(action.stable_id()).unwrap().y;
+        let first_action_y = context
+            .world()
+            .component_layout_box(action.stable_id())
+            .unwrap()
+            .y;
 
         assert!(
             context

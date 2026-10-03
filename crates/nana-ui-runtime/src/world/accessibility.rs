@@ -41,10 +41,10 @@ impl UiWorld {
         ) {
             match self.component_geometry(id) {
                 Some(crate::ComponentGeometry::ModalFrame { surface, .. }) => surface,
-                _ => self.layout_box(id)?,
+                _ => self.component_layout_box(id)?,
             }
         } else {
-            self.layout_box(id)?
+            self.component_layout_box(id)?
         };
         let mut bounds = self.accessibility_viewport_bounds(id, local, memo)?;
         if self.clip_visuals == 0 {
@@ -58,7 +58,11 @@ impl UiWorld {
             ) {
                 bounds = intersect_layout_boxes(
                     bounds,
-                    self.accessibility_viewport_bounds(ancestor, self.layout_box(ancestor)?, memo)?,
+                    self.accessibility_viewport_bounds(
+                        ancestor,
+                        self.component_layout_box(ancestor)?,
+                        memo,
+                    )?,
                 )?;
             }
             if matches!(
@@ -116,7 +120,7 @@ impl UiWorld {
         }
         while let Some(node) = memo.chain.pop() {
             let record = self.nodes.get(node)?;
-            let bounds = self.layout_box(node)?;
+            let bounds = self.component_layout_box(node)?;
             let layout = self.hit_motion_layout(node);
             if layout.position == PositionSpec::Fixed {
                 // Viewport-relative; ancestors cannot scroll or clip this branch.

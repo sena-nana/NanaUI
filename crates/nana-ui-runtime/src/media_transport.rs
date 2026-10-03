@@ -1685,7 +1685,7 @@ mod tests {
         }
 
         fn frame(&self, id: StableNodeId) -> crate::LayoutBox {
-            self.cx.world().layout_box(id).unwrap()
+            self.cx.world().component_layout_box(id).unwrap()
         }
 
         fn hidden(&self, id: StableNodeId) -> bool {
@@ -2167,7 +2167,7 @@ mod tests {
             crate::LayoutViewport::new(STAGE_WIDTH, STAGE_HEIGHT),
         )
         .unwrap();
-        let bar = cx.world().layout_box(bar.stable_id()).unwrap();
+        let bar = cx.world().component_layout_box(bar.stable_id()).unwrap();
         assert_close(bar.x, 120.0, "the bar starts after the host cover");
         assert_close(
             bar.x + bar.width,

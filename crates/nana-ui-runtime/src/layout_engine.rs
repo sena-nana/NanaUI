@@ -135,6 +135,12 @@ impl RuntimeLayoutEngine {
             parents.insert(id, input.parent);
             let context = if input.style.omits_box() {
                 FormattingContext::None
+            } else if input.style.display.is_none() && input.style.direction.is_some() {
+                // Stack::row/column lower their parent-owned flow axis into
+                // `direction` while leaving CSS display unspecified. Preserve
+                // that facade contract in Foundation instead of silently
+                // classifying the node as an ordinary block.
+                FormattingContext::Flex
             } else {
                 FormattingContext::from_display(input.style.display.unwrap_or(DisplaySpec::Block))
             };
@@ -146,7 +152,10 @@ impl RuntimeLayoutEngine {
             };
             let mut node = LayoutNode::new(
                 layout_id,
-                LayoutIntent::component_default(LayoutOwnership::default()),
+                LayoutIntent {
+                    default_direction: input.style.direction,
+                    ..LayoutIntent::component_default(LayoutOwnership::default())
+                },
                 context,
             );
             node.children = input
@@ -155,29 +164,41 @@ impl RuntimeLayoutEngine {
                 .filter_map(|child| LayoutNodeId::new(child.get()))
                 .collect();
             node.placement = placement;
-            let replaced = world.custom_render(id).is_some()
+            let custom_render = world.custom_render(id);
+            let replaced = custom_render.is_some()
                 || input.style.paint.content_image.is_some()
                 || input.style.paint.skipped_replaced.is_some();
             let intrinsic_size = by_id
                 .get(&id)
                 .map(|bounds| LayoutSize::new(bounds.width, bounds.height));
-            let fit = match input.style.paint.object_fit {
-                Some(nana_ui_core::BackgroundImageFit::Cover) => nana_ui_core::ObjectFit::Cover,
-                Some(nana_ui_core::BackgroundImageFit::Stretch) => nana_ui_core::ObjectFit::Fill,
-                Some(nana_ui_core::BackgroundImageFit::ScaleDown) => {
-                    nana_ui_core::ObjectFit::ScaleDown
-                }
-                Some(nana_ui_core::BackgroundImageFit::Auto) => nana_ui_core::ObjectFit::None,
-                Some(nana_ui_core::BackgroundImageFit::Contain) | None => {
-                    nana_ui_core::ObjectFit::Contain
-                }
-                Some(nana_ui_core::BackgroundImageFit::Length) => nana_ui_core::ObjectFit::Fill,
-            };
+            let fit = custom_render
+                .map(|render| match render.fit {
+                    nana_ui_core::ContentFit::Cover => nana_ui_core::ObjectFit::Cover,
+                    nana_ui_core::ContentFit::Fill => nana_ui_core::ObjectFit::Fill,
+                    nana_ui_core::ContentFit::ScaleDown => nana_ui_core::ObjectFit::ScaleDown,
+                    nana_ui_core::ContentFit::None => nana_ui_core::ObjectFit::None,
+                    nana_ui_core::ContentFit::Contain => nana_ui_core::ObjectFit::Contain,
+                })
+                .unwrap_or_else(|| match input.style.paint.object_fit {
+                    Some(nana_ui_core::BackgroundImageFit::Cover) => nana_ui_core::ObjectFit::Cover,
+                    Some(nana_ui_core::BackgroundImageFit::Stretch) => {
+                        nana_ui_core::ObjectFit::Fill
+                    }
+                    Some(nana_ui_core::BackgroundImageFit::ScaleDown) => {
+                        nana_ui_core::ObjectFit::ScaleDown
+                    }
+                    Some(nana_ui_core::BackgroundImageFit::Auto) => nana_ui_core::ObjectFit::None,
+                    Some(nana_ui_core::BackgroundImageFit::Contain) | None => {
+                        nana_ui_core::ObjectFit::Contain
+                    }
+                    Some(nana_ui_core::BackgroundImageFit::Length) => nana_ui_core::ObjectFit::Fill,
+                });
             node.participation = if replaced {
                 Participation::Replaced(ReplacedContent {
                     intrinsic_size,
                     aspect_ratio: input.style.aspect_ratio,
                     fit,
+                    resource_generation: custom_render.map_or(0, |render| render.revision),
                     ..ReplacedContent::default()
                 })
             } else if placement.is_out_of_flow() {

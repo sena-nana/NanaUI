@@ -454,7 +454,7 @@ pub(crate) fn overlay_surface_from_items(
         if !world.is_overlay_reachable(child) {
             continue;
         }
-        let Some(child_box) = world.layout_box(child) else {
+        let Some(child_box) = world.component_layout_box(child) else {
             continue;
         };
         if child_box.width <= 0.0 && child_box.height <= 0.0 {
@@ -904,7 +904,7 @@ mod tests {
             .unwrap();
         context.rebuild_hit_test(document());
         let first_id = first.stable_id();
-        let first_box = context.world().layout_box(first_id).unwrap();
+        let first_box = context.world().component_layout_box(first_id).unwrap();
         let last_box = context
             .world()
             .canonical_layout_box(last.stable_id())
