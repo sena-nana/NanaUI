@@ -335,8 +335,14 @@ impl AppContext {
                     settings_rows.push(*id);
                 }
             }
-            self.last_layout_scope = scope;
             let report = self.commit_mutations(mutations)?;
+            // Publish one coherent canonical Result snapshot only after every
+            // sibling box in the scope has been committed. Compatibility
+            // LayoutBox writes published during commit are replaced with the
+            // RuntimeLayout provenance here.
+            self.world
+                .publish_layout_results(&scope, crate::LayoutResultSource::RuntimeLayout);
+            self.last_layout_scope = scope;
             for id in settings_rows {
                 self.refresh_settings_row_layout(id)?;
             }

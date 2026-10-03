@@ -25,6 +25,10 @@ pub struct RuntimeDocument {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeFrameUpdate {
     pub generation: u64,
+    /// Canonical layout revision shared by the Scene, hit-test and
+    /// accessibility projections for this flush. It is independent from the
+    /// world mutation generation above, so paint-only work keeps it stable.
+    pub layout_generation: u64,
     pub passes: usize,
     /// Whether this flush applied an authored cursor declaration change.
     pub cursor_changed: bool,
@@ -305,6 +309,7 @@ impl RuntimeDocument {
         let cursor_changed = self.context.take_window_cursor_dirty();
         Ok(RuntimeFrameUpdate {
             generation,
+            layout_generation: self.context.world().layout_generation(),
             passes,
             cursor_changed,
             scene,

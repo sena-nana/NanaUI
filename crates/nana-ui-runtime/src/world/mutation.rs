@@ -1213,6 +1213,11 @@ impl UiWorld {
                 if old_parent == Some(*parent) && *before == Some(*child) {
                     return;
                 }
+                self.clear_layout_results_subtree(*child);
+                self.clear_layout_result_ancestors(*parent);
+                if let Some(old_parent) = old_parent {
+                    self.clear_layout_result_ancestors(old_parent);
+                }
                 if let Some(old_parent) = old_parent {
                     let hierarchy = self.hierarchy_mut(old_parent);
                     Arc::make_mut(&mut hierarchy.children).retain(|id| id != child);
@@ -1266,6 +1271,8 @@ impl UiWorld {
                 }
             }
             UiMutation::Detach { id } => {
+                self.clear_layout_result_ancestors(*id);
+                self.clear_layout_results_subtree(*id);
                 if self.unlink_from_parent(*id) {
                     report.detached += 1;
                 }
@@ -1273,6 +1280,8 @@ impl UiWorld {
                 self.refresh_root_membership(*id);
             }
             UiMutation::ParkSubtree { root } => {
+                self.clear_layout_result_ancestors(*root);
+                self.clear_layout_results_subtree(*root);
                 self.unlink_from_parent(*root);
                 self.set_subtree_mount_state(*root, MountState::Parked);
                 self.leave_live_document(*root);
@@ -1281,6 +1290,7 @@ impl UiWorld {
             UiMutation::DespawnSubtree { root } => {
                 let root_snapshot = self.node(*root).expect("validated root must exist");
                 if let Some(parent) = root_snapshot.parent {
+                    self.clear_layout_result_ancestors(parent);
                     let hierarchy = self.hierarchy_mut(parent);
                     Arc::make_mut(&mut hierarchy.children).retain(|child| child != root);
                     intern_empty_children(&mut hierarchy.children);
@@ -1295,6 +1305,7 @@ impl UiWorld {
                 while let Some(id) = stack.pop() {
                     let snapshot = self.node(id).expect("validated subtree must exist");
                     stack.extend(snapshot.children.iter().rev().copied());
+                    self.layout_results.remove(&id);
                     self.forget_visual_presence(id);
                     self.scroll_content_bounds
                         .get_mut()
@@ -1458,6 +1469,9 @@ impl UiWorld {
                     // frame of a fade would rebuild primitives byte for byte
                     // the same.
                     self.mark_subtree(*id, DirtyMask::STYLE);
+                }
+                if inherited_text_changed || omits_box_changed || layout_changed {
+                    self.invalidate_layout_result(*id);
                 }
                 if inherited_text_changed {
                     self.mark_subtree(*id, super::motion::INHERITED_TEXT_DIRTY);
@@ -1799,6 +1813,14 @@ impl UiWorld {
                             0
                         },
                 );
+                if button_layout_changed
+                    || text_input_presentation_changed
+                    || empty_state_presentation_changed
+                    || modal_presentation_changed
+                    || menu_state_changed
+                {
+                    self.invalidate_layout_result(*id);
+                }
                 if select_hit_changed {
                     self.mark(*id, DirtyMask::INPUT);
                 }
@@ -1889,6 +1911,7 @@ impl UiWorld {
                     .chain(state.active)
                     .collect::<HashSet<_>>();
                 for root in changed_roots {
+                    self.invalidate_layout_result(root);
                     self.mark_subtree(
                         root,
                         DirtyMask::STYLE
@@ -2562,6 +2585,7 @@ impl UiWorld {
         // A skipped no-op changes nothing, so the generation moves with the
         // first mutation that does; a batch of nothing but no-ops keeps it.
         let mut applied = false;
+        let mut layout_result_ids = Vec::new();
         for mutation in queue.as_slice() {
             if self.is_structural_noop(mutation) {
                 continue;
@@ -2572,7 +2596,16 @@ impl UiWorld {
                 self.generation = self.generation.wrapping_add(1);
                 report.generation = self.generation;
             }
+            let layout_result_id = match mutation {
+                UiMutation::WriteLayout { id, .. }
+                | UiMutation::SetScrollOffset { id, .. }
+                | UiMutation::SetScrollMetrics { id, .. } => Some(*id),
+                _ => None,
+            };
             self.apply(mutation, &mut report);
+            if let Some(id) = layout_result_id {
+                layout_result_ids.push(id);
+            }
             if let Some(roots) = roots.as_deref_mut() {
                 match mutation {
                     UiMutation::ParkSubtree { root } => roots.push(*root),
@@ -2591,6 +2624,10 @@ impl UiWorld {
                 self.scroll_to_clamped(id, offset);
             }
         }
+        self.publish_layout_results(
+            &layout_result_ids,
+            crate::LayoutResultSource::CompatibilityWrite,
+        );
         Ok(report)
     }
 

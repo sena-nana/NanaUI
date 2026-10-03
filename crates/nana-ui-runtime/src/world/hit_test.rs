@@ -862,7 +862,7 @@ impl UiWorld {
         for id in chain.into_iter().rev() {
             let node = self.nodes.get(id)?;
             let style = self.hit_motion_layout(id);
-            let b = node.layout;
+            let b = self.layout_box(id)?;
             let local = self.input_local_scene_transform(id, &style, b, blocks_3d);
             transform = then_hit(transform, local);
             blocks_3d |= style.fails_closed_3d_context();
@@ -1163,7 +1163,9 @@ impl UiWorld {
         } else {
             (parent_hit, parent_blocks_3d)
         };
-        let layout = record.layout;
+        let Some(layout) = self.layout_box(id) else {
+            return false;
+        };
         let local = self.input_local_scene_transform(id, &style, layout, parent_blocks_3d);
         let (transform, persp) = then_hit(parent_hit, local);
         let node = &indexed.entry;
@@ -1464,7 +1466,9 @@ impl UiWorld {
                 {
                     // The card is viewport-fixed; the trigger is wherever the
                     // scroll offsets above it put its layout box.
-                    let trigger = self.record(parent).layout;
+                    let trigger = self
+                        .layout_box(parent)
+                        .unwrap_or(self.record(parent).layout);
                     overlay_connector_box(
                         self.project_input_bounds(parent, trigger)
                             .unwrap_or(trigger),
@@ -1511,7 +1515,7 @@ impl UiWorld {
             if !self.node_has_hit_box(id) {
                 continue;
             }
-            let layout = self.record(id).layout;
+            let layout = self.layout_box(id).unwrap_or(self.record(id).layout);
             let motion_layout = self.hit_motion_layout(id);
             let node_style = motion_layout.as_ref();
             // This is a projection root, not a Runtime reparent. Fixed layout

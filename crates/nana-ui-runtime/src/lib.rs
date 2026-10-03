@@ -51,6 +51,7 @@ pub(crate) use json_num::json_u64;
 mod image_viewer;
 mod key_layers;
 mod layout_engine;
+mod layout_result;
 /// Benchmark-only view of whether scoped layout actually reused its cached
 /// container placements. Hosts use it to tell "the dirty set is small" apart
 /// from "the frame was cheap".
@@ -247,6 +248,10 @@ pub use key_layers::{
 };
 pub use layout_engine::{
     LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine, StyleLayoutNode,
+};
+pub use layout_result::{
+    LayoutChildPlacement, LayoutFragment, LayoutFragmentKind, LayoutPart, LayoutPartKind,
+    LayoutResult, LayoutResultSource,
 };
 pub use media_transport::{
     MediaTransportBar, MediaTransportDensity, MediaTransportEvent, MediaTransportIcons,

@@ -63,7 +63,6 @@ impl UiWorld {
             resolved_layout,
             hierarchy_parent,
             hierarchy_children,
-            layout,
             scroll_offset,
             text,
             text_metrics,
@@ -82,13 +81,14 @@ impl UiWorld {
                 Arc::clone(&node.resolved_layout),
                 node.hierarchy.parent,
                 Arc::clone(&node.hierarchy.children),
-                node.layout,
                 node.scroll_offset,
                 has_text.then(|| node.text.clone()),
                 has_text.then_some(node.text_metrics),
                 node.document,
             )
         };
+        // LayoutBox is a compatibility projection of the canonical result.
+        let layout = self.layout_box(id)?;
         if resolved_epoch != self.palette_epoch {
             let inherited_color = parent.and_then(|parent| {
                 memo.color

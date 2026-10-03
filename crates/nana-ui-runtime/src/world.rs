@@ -626,6 +626,14 @@ pub struct UiWorld {
     theme: Arc<nana_ui_core::CompiledTheme>,
     style_model: StyleModelRef,
     generation: u64,
+    /// Monotonic revision of published layout output. This is deliberately
+    /// separate from [`Self::generation`], which also advances for paint and
+    /// input state, so paint-only work cannot invalidate layout consumers.
+    layout_generation: u64,
+    /// Canonical render/input-facing geometry. `NodeRecord::layout` remains a
+    /// compatibility cache for old internal paths; all public geometry reads
+    /// go through this table when a result has been published.
+    layout_results: crate::NodeMap<Arc<crate::LayoutResult>>,
     /// Cursor declarations changed since the last system-work drain.
     cursor_style_dirty: bool,
     presenters: HashMap<String, Box<dyn TextPresenter>>,
@@ -818,6 +826,8 @@ impl UiWorld {
             theme: nana_ui_core::builtin_theme_arc(ThemeAppearance::default()),
             style_model: StyleModelRef::default(),
             generation: 0,
+            layout_generation: 0,
+            layout_results: crate::NodeMap::default(),
             cursor_style_dirty: false,
             presenters: HashMap::new(),
             spawned_since_drain: 0,
@@ -887,6 +897,7 @@ impl UiWorld {
 
     pub(crate) fn mark_layout(&mut self, id: StableNodeId) {
         if self.nodes.contains(id) {
+            self.invalidate_layout_result(id);
             let _ = self.mark(id, crate::schedule::DirtyMask::LAYOUT);
         }
     }
@@ -920,6 +931,272 @@ impl UiWorld {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Revision of the last published canonical layout snapshot. Unlike the
+    /// world mutation generation this does not advance for paint, hover,
+    /// transform or input-only work.
+    pub fn layout_generation(&self) -> u64 {
+        self.layout_generation
+    }
+
+    /// Canonical geometry for `id`, if the node has been laid out.
+    pub fn layout_result(&self, id: StableNodeId) -> Option<&crate::LayoutResult> {
+        self.layout_results.get(&id).map(Arc::as_ref)
+    }
+
+    pub(crate) fn clear_layout_results_subtree(&mut self, root: StableNodeId) {
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let children = self
+                .nodes
+                .get(id)
+                .map(|node| node.hierarchy.children.clone())
+                .unwrap_or_default();
+            self.layout_results.remove(&id);
+            stack.extend(children.iter().copied());
+        }
+    }
+
+    /// Drop `id` and its ancestor snapshots when topology changes their child
+    /// placement. The subtree helper remains responsible for descendants.
+    pub(crate) fn clear_layout_result_ancestors(&mut self, id: StableNodeId) {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            self.layout_results.remove(&id);
+            current = self.parent_id(id);
+        }
+    }
+
+    /// Invalidate a node's result and every result whose placement or clip
+    /// chain depends on it. The next layout commit publishes a fresh batch.
+    pub(crate) fn invalidate_layout_result(&mut self, id: StableNodeId) {
+        self.clear_layout_results_subtree(id);
+        self.clear_layout_result_ancestors(id);
+    }
+
+    /// Publish a coherent batch of layout results after all box writes in a
+    /// pass have committed. The batch gets one shared generation so callers
+    /// can correlate render, input and accessibility projections.
+    pub(crate) fn publish_layout_results(
+        &mut self,
+        ids: &[StableNodeId],
+        source: crate::LayoutResultSource,
+    ) {
+        let mut unique = ids.to_vec();
+        // A child placement is part of the parent's Result. Include the
+        // ancestor closure so a compatibility write cannot leave a parent
+        // pointing at an older child box.
+        for &id in ids {
+            let mut ancestor = self.parent_id(id);
+            while let Some(parent) = ancestor {
+                unique.push(parent);
+                ancestor = self.parent_id(parent);
+            }
+        }
+        unique.sort_unstable();
+        unique.dedup();
+        let mut built = unique
+            .iter()
+            .filter_map(|&id| {
+                self.build_layout_result(id, source)
+                    .map(|result| (id, result))
+            })
+            .collect::<Vec<_>>();
+        if built.is_empty() {
+            return;
+        }
+        let changed = built.iter().any(|(id, result)| {
+            self.layout_results
+                .get(id)
+                .is_none_or(|previous| !previous.geometry_eq(result))
+        });
+        if changed {
+            self.layout_generation = self.layout_generation.wrapping_add(1);
+        }
+        let generation = self.layout_generation;
+        for (id, mut result) in built.drain(..) {
+            result.generation = generation;
+            result.dependency_generation = generation;
+            self.layout_results.insert(id, Arc::new(result));
+        }
+    }
+
+    fn build_layout_result(
+        &self,
+        id: StableNodeId,
+        source: crate::LayoutResultSource,
+    ) -> Option<crate::LayoutResult> {
+        let node = self.nodes.get(id)?;
+        let bounds = node.layout;
+        let padding = self.used_layout_padding(id);
+        let border = node.resolved_layout.resolved_border_edges();
+        let mut result = crate::LayoutResult::from_box(bounds, padding, border);
+        result.source = source;
+        result.scroll_offset = node.scroll_offset;
+
+        let children = node.hierarchy.children.as_ref();
+        let mut placements = Vec::with_capacity(children.len());
+        let mut fragments = Vec::with_capacity(children.len() + 2);
+        let mut parts = Vec::with_capacity(children.len() + 2);
+        let mut overflow = bounds;
+        let child_kind = node
+            .resolved_layout
+            .display
+            .map(|display| {
+                if display.is_grid_container() {
+                    crate::LayoutFragmentKind::GridChildPlacement
+                } else if display.is_flex_container() {
+                    crate::LayoutFragmentKind::FlexChildPlacement
+                } else if display.is_inline_level() {
+                    crate::LayoutFragmentKind::InlineAtomic
+                } else {
+                    crate::LayoutFragmentKind::ChildPlacement
+                }
+            })
+            .unwrap_or(crate::LayoutFragmentKind::ChildPlacement);
+        for (index, &child) in children.iter().enumerate() {
+            let Some(child_record) = self.nodes.get(child) else {
+                continue;
+            };
+            let child_bounds = child_record.layout;
+            placements.push(crate::LayoutChildPlacement {
+                node: child,
+                bounds: child_bounds,
+                index,
+            });
+            let mut fragment = crate::LayoutFragment::for_node(child_kind, child, child_bounds);
+            fragment.index = index;
+            fragments.push(fragment);
+            parts.push(crate::LayoutPart {
+                kind: crate::LayoutPartKind::ChildPlacement,
+                node: Some(child),
+                bounds: child_bounds,
+            });
+            overflow = union_layout_boxes(overflow, child_bounds);
+        }
+
+        if matches!(node.kind.as_ref(), NodeKind::Text) || !node.text.value.is_empty() {
+            let baseline = node
+                .text_metrics
+                .ascent
+                .map(|ascent| result.content_box.y + ascent.max(0.0));
+            let mut line =
+                crate::LayoutFragment::new(crate::LayoutFragmentKind::TextLine, result.content_box);
+            line.first_baseline = baseline;
+            line.last_baseline = baseline;
+            fragments.push(line);
+            let mut run =
+                crate::LayoutFragment::new(crate::LayoutFragmentKind::TextRun, result.content_box);
+            run.first_baseline = baseline;
+            run.last_baseline = baseline;
+            fragments.push(run);
+            result.first_baseline = baseline;
+            result.last_baseline = baseline;
+            parts.push(crate::LayoutPart::new(
+                crate::LayoutPartKind::TextContent,
+                result.content_box,
+            ));
+        }
+        parts.push(crate::LayoutPart::new(
+            crate::LayoutPartKind::ComponentContent,
+            result.content_box,
+        ));
+        // Fixed-position branches are viewport overlays in the retained
+        // projection. Keep that semantic part alongside the ordinary content
+        // box so Scene, hit testing and accessibility can share the same
+        // classification without reopening component geometry.
+        if node.resolved_layout.position == nana_ui_core::PositionSpec::Fixed {
+            fragments.push(crate::LayoutFragment::new(
+                crate::LayoutFragmentKind::Overlay,
+                result.bounds,
+            ));
+            parts.push(crate::LayoutPart::new(
+                crate::LayoutPartKind::Overlay,
+                result.bounds,
+            ));
+        }
+        if node.resolved_layout.clips_overflow() {
+            fragments.push(crate::LayoutFragment::new(
+                crate::LayoutFragmentKind::ScrollViewport,
+                result.padding_box,
+            ));
+            parts.push(crate::LayoutPart::new(
+                crate::LayoutPartKind::ScrollViewport,
+                result.padding_box,
+            ));
+        }
+
+        let mut clip = None;
+        let mut containing_block = None;
+        let mut dependencies = children.to_vec();
+        let mut ancestor = node.hierarchy.parent;
+        while let Some(candidate) = ancestor {
+            let Some(candidate_record) = self.nodes.get(candidate) else {
+                break;
+            };
+            if clip.is_none() && candidate_record.resolved_layout.clips_overflow() {
+                clip = Some(candidate);
+            }
+            if containing_block.is_none()
+                && candidate_record
+                    .resolved_layout
+                    .position
+                    .establishes_containing_block()
+            {
+                containing_block = Some(candidate);
+            }
+            ancestor = candidate_record.hierarchy.parent;
+        }
+        if let Some(clip) = clip {
+            dependencies.push(clip);
+        }
+        if let Some(containing_block) = containing_block {
+            dependencies.push(containing_block);
+        }
+        dependencies.sort_unstable();
+        dependencies.dedup();
+        result.child_placements = placements.into();
+        result.fragments = fragments.into();
+        result.parts = parts.into();
+        // Only scroll containers need the retained descendant index. Avoid
+        // materializing that index for ordinary nodes while still publishing
+        // the full scroll extent where a consumer can actually use it.
+        let scroll_metrics = self.scroll_metrics(id);
+        if scroll_metrics.is_some() {
+            let content_extent = self.scroll_content_extent(id);
+            if content_extent.left.is_finite()
+                && content_extent.top.is_finite()
+                && content_extent.right.is_finite()
+                && content_extent.bottom.is_finite()
+            {
+                overflow = union_layout_boxes(
+                    overflow,
+                    LayoutBox {
+                        x: content_extent.left,
+                        y: content_extent.top,
+                        width: (content_extent.right - content_extent.left).max(0.0),
+                        height: (content_extent.bottom - content_extent.top).max(0.0),
+                    },
+                );
+            }
+        }
+        result.overflow = overflow;
+        if let Some(metrics) = scroll_metrics {
+            let scroll_area = LayoutBox {
+                x: result.content_box.x + metrics.origin_x.min(0.0),
+                y: result.content_box.y + metrics.origin_y.min(0.0),
+                width: metrics.content_width.max(result.content_box.width),
+                height: metrics.content_height.max(result.content_box.height),
+            };
+            result.scroll_extent = union_layout_boxes(overflow, scroll_area);
+        } else {
+            result.scroll_extent = overflow;
+        }
+        result.clip = clip;
+        result.containing_block = containing_block;
+        result.dependencies = dependencies.into();
+        Some(result)
     }
 
     /// Whether any node still owes system work, i.e. whether the next flush has
@@ -1428,7 +1705,14 @@ impl UiWorld {
     }
 
     pub fn layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
-        self.nodes.get(id).map(|node| node.layout)
+        let node = self.nodes.get(id)?;
+        // A layout pass writes the compatibility cache before publishing its
+        // immutable snapshot. During that short window the current box is the
+        // only safe value for scroll remeasurement and component placement.
+        self.layout_result(id)
+            .filter(|result| result.bounds == node.layout)
+            .map(|result| result.bounds)
+            .or(Some(node.layout))
     }
 
     /// Where `id` is scrolled: the offset last set, except that a multiline
@@ -1788,15 +2072,20 @@ impl UiWorld {
     }
 
     pub(crate) fn component_content_box(&self, id: StableNodeId) -> Option<LayoutBox> {
+        if let Some(result) = self.layout_result(id) {
+            return Some(result.content_box);
+        }
         let node = self.nodes.get(id)?;
-        let bounds = node.layout;
+        let bounds = self.layout_box(id)?;
         let padding = self.used_layout_padding(id);
-        let border = node.style.layout.resolved_border_width();
+        let border = node.resolved_layout.resolved_border_edges();
         Some(LayoutBox {
-            x: bounds.x + border + padding.left,
-            y: bounds.y + border + padding.top,
-            width: (bounds.width - border * 2.0 - padding.left - padding.right).max(0.0),
-            height: (bounds.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
+            x: bounds.x + border.left + padding.left,
+            y: bounds.y + border.top + padding.top,
+            width: (bounds.width - border.left - border.right - padding.left - padding.right)
+                .max(0.0),
+            height: (bounds.height - border.top - border.bottom - padding.top - padding.bottom)
+                .max(0.0),
         })
     }
 
@@ -2930,6 +3219,7 @@ impl UiWorld {
     }
 
     fn propagate_layout_from_node(&mut self, id: StableNodeId) {
+        self.invalidate_layout_result(id);
         self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
         if let Some(parent) = self.parent_id(id) {
             self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
@@ -3062,6 +3352,19 @@ fn intersect_layout_boxes(left: LayoutBox, right: LayoutBox) -> Option<LayoutBox
         width: right_edge - x,
         height: bottom_edge - y,
     })
+}
+
+fn union_layout_boxes(left: LayoutBox, right: LayoutBox) -> LayoutBox {
+    let x = left.x.min(right.x);
+    let y = left.y.min(right.y);
+    let right_edge = (left.x + left.width).max(right.x + right.width);
+    let bottom_edge = (left.y + left.height).max(right.y + right.height);
+    LayoutBox {
+        x,
+        y,
+        width: (right_edge - x).max(0.0),
+        height: (bottom_edge - y).max(0.0),
+    }
 }
 
 /// Drain/layout shaper adapter. `UiWorld::shape_text` and
