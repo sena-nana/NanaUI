@@ -2682,6 +2682,9 @@ impl AppContext {
             AccessibilityAction::Click => crate::decode_virtual_menu_item(request.target)
                 .map(|(menu, _)| menu)
                 .unwrap_or(request.target),
+            AccessibilityAction::Focus => crate::decode_virtual_menu_item(request.target)
+                .map(|(menu, _)| menu)
+                .unwrap_or(request.target),
             _ => request.target,
         };
         if self.world.document_of(owner) != Some(document) {
@@ -2716,7 +2719,14 @@ impl AppContext {
                 };
                 self.activate_context_menu_index(entity, index)
             }
-            AccessibilityAction::Focus => self.focus_node(document, request.target),
+            AccessibilityAction::Focus => {
+                if let Some((menu, index)) = crate::decode_virtual_menu_item(request.target)
+                    && let Some(entity) = self.view_entity::<ContextMenu>(menu)
+                {
+                    return self.focus_context_menu_index(entity, index);
+                }
+                self.focus_node(document, request.target)
+            }
             AccessibilityAction::SetValue(value) => {
                 if let Some(entity) = self.view_entity::<TextInput>(request.target) {
                     return self.set_editable_value(entity, value);

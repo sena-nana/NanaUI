@@ -740,6 +740,29 @@ impl AppContext {
         })
     }
 
+    /// Move the virtual accessibility focus/highlight to a visible menu row.
+    pub fn focus_context_menu_index(
+        &mut self,
+        entity: Entity<ContextMenu>,
+        index: usize,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |menu, _cx| {
+            if !menu.open
+                || menu
+                    .visible_items()
+                    .get(index)
+                    .is_none_or(|item| item.disabled)
+            {
+                return false;
+            }
+            if menu.highlighted == Some(index) {
+                return false;
+            }
+            menu.highlighted = Some(index);
+            true
+        })
+    }
+
     pub fn cancel_progress(&mut self, entity: Entity<Progress>) -> Result<bool, FrameworkError> {
         self.update_component(entity, |progress, cx| {
             if !progress.cancellable {

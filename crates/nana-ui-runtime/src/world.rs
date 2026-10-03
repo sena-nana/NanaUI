@@ -240,6 +240,42 @@ fn menu_surface_open(visual: Option<&StandardVisual>) -> Option<bool> {
     }
 }
 
+/// Menu rows are painted from one retained surface, so their virtual
+/// accessibility children change without a retained child mutation. Keep the
+/// semantic projection in sync when rows, filtering, or the highlighted item
+/// changes even though the surface remains open.
+pub(crate) fn menu_surface_accessibility_changed(
+    previous: Option<&StandardVisual>,
+    next: Option<&StandardVisual>,
+) -> bool {
+    match (previous, next) {
+        (
+            Some(StandardVisual::MenuSurface {
+                open: previous_open,
+                rows: previous_rows,
+                highlighted: previous_highlighted,
+                query: previous_query,
+                ..
+            }),
+            Some(StandardVisual::MenuSurface {
+                open: next_open,
+                rows: next_rows,
+                highlighted: next_highlighted,
+                query: next_query,
+                ..
+            }),
+        ) => {
+            previous_open != next_open
+                || previous_rows != next_rows
+                || previous_highlighted != next_highlighted
+                || previous_query != next_query
+        }
+        (Some(StandardVisual::MenuSurface { .. }), _)
+        | (_, Some(StandardVisual::MenuSurface { .. })) => true,
+        _ => false,
+    }
+}
+
 /// Whether a menu surface with `visual` hides its child `child`: a closed
 /// surface hides its items, never the content that draws its trigger.
 pub(crate) fn closed_menu_hides(visual: Option<&StandardVisual>, child: StableNodeId) -> bool {

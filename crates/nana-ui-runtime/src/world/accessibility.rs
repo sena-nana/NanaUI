@@ -411,7 +411,7 @@ impl UiWorld {
                     numeric_maximum: None,
                     numeric_step: None,
                     numeric_value: None,
-                    focused: false,
+                    focused: *highlighted == Some(index),
                     bounds,
                     writing: menu.writing,
                 })
