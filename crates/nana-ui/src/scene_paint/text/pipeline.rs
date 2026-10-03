@@ -164,7 +164,10 @@ fn vs_main(vertex: VsIn) -> VsOut {
     out.world_pos = world;
     out.content = content;
     out.run_flags = (run.presentation << 3u) | (run.flags & 7u);
-    out.encoded = linear_to_srgb3(color.rgb);
+    // Coverage correction models an SDR display. Its foreground surrogate
+    // must be finite and bounded, while the actual linear scRGB paint in
+    // `out.color` retains negative and above-white channels for composition.
+    out.encoded = linear_to_srgb3(clamp(color.rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
     out.cell = vec4<f32>(atlas_uv(base, page), atlas_uv(base + vec2<u32>(width, height), page));
     return out;
 }

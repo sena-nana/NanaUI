@@ -177,7 +177,7 @@ pub use graph::{
 };
 #[cfg(all(feature = "hosted", feature = "wgpu-interop"))]
 pub use hosted_context::HostedSurfaceFrame;
-#[cfg(feature = "hosted")]
+#[cfg(all(feature = "hosted", feature = "wgpu-interop"))]
 pub use hosted_context::resolve_surface_profile;
 #[cfg(feature = "hosted")]
 pub use hosted_context::surface_profile_changed;
@@ -304,8 +304,8 @@ pub use scene_host::run_runtime_scene;
 #[cfg(feature = "gpu")]
 pub use scene_paint::{
     AlphaEncoding, HostTextureSceneResolver, RenderTargetId, ScenePaintError, ScenePaintViewport,
-    SceneWgpuPainter, SubpixelOrder, TextGlyphCounters, resolve_background_image_url,
-    set_background_image_url_base,
+    ScenePresentationColorSpace, ScenePresentationProfile, SceneWgpuPainter, SubpixelOrder,
+    TextGlyphCounters, resolve_background_image_url, set_background_image_url_base,
 };
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{

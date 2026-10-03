@@ -12,7 +12,7 @@ struct GpuGradient {
     header: vec4<u32>,
     geometry: vec4<f32>,
     offsets: array<vec4<f32>, 4>,
-    // Premultiplied sRGB.
+    // Premultiplied linear scRGB.
     colors: array<vec4<f32>, 16>,
 }
 
@@ -73,13 +73,6 @@ fn gradient_offset(g: GpuGradient, i: u32) -> f32 {
     return g.offsets[i / 4u][i % 4u];
 }
 
-fn srgb_channel_to_linear(u: f32) -> f32 {
-    if u < 0.04045 {
-        return u / 12.92;
-    }
-    return pow((u + 0.055) / 1.055, 2.4);
-}
-
 // Premultiplied linear colour of gradient `index` at `p`.
 fn gradient_color(index: u32, p: vec2<f32>) -> vec4<f32> {
     let g = gradient_palette.items[index];
@@ -126,23 +119,14 @@ fn gradient_color(index: u32, p: vec2<f32>) -> vec4<f32> {
             }
         }
     }
-    // Legacy stops interpolate premultiplied in sRGB, then decode once. An
-    // explicit authoring-space gradient is uploaded in linear scRGB already
-    // so extended channels survive without a second transfer curve.
+    // All stops are uploaded in linear scRGB. This keeps path gradients
+    // consistent with analytic quad gradients and preserves extended values
+    // until the final presentation transform.
     if srgb.a <= 0.0 {
         return vec4<f32>(0.0);
     }
     let straight = srgb.rgb / srgb.a;
-    let linear = select(
-        vec3<f32>(
-            srgb_channel_to_linear(straight.r),
-            srgb_channel_to_linear(straight.g),
-            srgb_channel_to_linear(straight.b),
-        ),
-        straight,
-        g.header.w == 1u,
-    );
-    return vec4<f32>(linear * srgb.a, srgb.a);
+    return vec4<f32>(straight * srgb.a, srgb.a);
 }
 
 // The pass's sample count, and a 4× pass's sample positions relative to the

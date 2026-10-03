@@ -75,7 +75,7 @@ use crate::runtime_host::{
     HostDocumentAccess, HostFailure, ReportHostFailure, RuntimeProgram, RuntimeProgramContext,
     RuntimeProgramUpdate, RuntimeRedraw, WindowDescriptor,
 };
-use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
+use crate::scene_paint::{ScenePaintViewport, ScenePresentationProfile, SceneWgpuPainter};
 use crate::{
     HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, RuntimeAnimationClock,
     TitleBarDragTracker, WindowChromeAction, WindowChromeEvent, WindowChromeState,
@@ -260,7 +260,7 @@ struct WindowManager<Program: RuntimeProgram> {
     /// This says the path *exists*, not that any window is on it: each window
     /// asks for its own target from its descriptor.
     composition: crate::presentation::CompositionAvailability,
-    painters: HashMap<nana_gpu::GpuTextureFormat, SceneWgpuPainter>,
+    painters: HashMap<ScenePresentationProfile, SceneWgpuPainter>,
     native_renderers:
         HashMap<nana_gpu::GpuTextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
     text: NanaTextShaper,
@@ -1087,7 +1087,7 @@ fn complete_startup<Program: RuntimeProgram>(
             None
         }
     };
-    let format = surface.format();
+    let profile = surface.profile().scene_profile();
     let mut presentation = ResolvedWindowPresentation::resolve(
         &settings,
         requested_material,
@@ -1287,9 +1287,12 @@ fn complete_startup<Program: RuntimeProgram>(
         .program
         .sync_animation_clock(ready.animation_clock.epoch());
     match early_painter {
-        Some(painter) => ready.adopt_painter(format, painter),
+        Some(painter) if painter.presentation() == profile => ready.adopt_painter(profile, painter),
+        Some(_) => {
+            let _ = ready.painter_mut(profile);
+        }
         None => {
-            let _ = ready.painter_mut(format);
+            let _ = ready.painter_mut(profile);
         }
     }
     ready.prepare_window_chrome(

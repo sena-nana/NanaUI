@@ -159,7 +159,7 @@ fn apply_hue_rotate(rgb: vec3<f32>, deg: f32) -> vec3<f32> {
         0.072 - 0.072 * c - 0.283 * s,
         0.072 + 0.928 * c + 0.072 * s,
     );
-    return clamp(mat3x3<f32>(col0, col1, col2) * rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    return mat3x3<f32>(col0, col1, col2) * rgb;
 }
 
 fn apply_color_filter_channels(
@@ -175,9 +175,9 @@ fn apply_color_filter_channels(
     let lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
     rgb = mix(vec3(lum), rgb, saturate);
     rgb = (rgb - 0.5) * contrast + 0.5;
-    rgb = apply_hue_rotate(clamp(rgb, vec3(0.0), vec3(1.0)), hue_deg);
+    rgb = apply_hue_rotate(rgb, hue_deg);
     rgb = mix(rgb, vec3(1.0) - rgb, invert);
-    return vec4(clamp(rgb, vec3(0.0), vec3(1.0)), color.a * opacity);
+    return vec4(rgb, color.a * opacity);
 }
 
 // Signed distance in device px from `p` to a rounded box of half extents

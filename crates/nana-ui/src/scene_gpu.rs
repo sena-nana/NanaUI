@@ -6,6 +6,7 @@ use nana_gpu::{FrameContext, GpuContext, GpuSubmission, GpuTextureFormat};
 use nana_ui_runtime::CustomRenderNode;
 use nana_ui_scene::{PrimitiveId, ScenePrimitiveKind, UiScene};
 
+use crate::ScenePresentationProfile;
 use crate::gpu_work::GpuWorkSink;
 use crate::{LogicalRect, PhysicalRect};
 
@@ -19,8 +20,15 @@ pub struct SceneGpuNode {
 /// Preparation of one node, before any pass is open.
 pub struct SceneGpuPrepareContext<'a> {
     pub gpu: &'a GpuContext,
-    /// Format of the destination the node is drawn into.
+    /// Format of the linear scRGB working destination the node is drawn into
+    /// (usually `RGBA16Float` for P3/HDR profiles). A renderer must keep RGB
+    /// and alpha premultiplied and leave transfer/gamut conversion to the
+    /// host-owned presentation pass.
     pub target_format: GpuTextureFormat,
+    /// The linear working target's presentation contract.
+    /// The host-owned final transform. Do not apply this transfer or gamut
+    /// mapping in a custom shader; write premultiplied linear scRGB instead.
+    pub presentation: ScenePresentationProfile,
     pub bounds: LogicalRect,
     pub scale_factor: f32,
     /// Destination size in physical pixels. A change to it invalidates the
@@ -38,7 +46,11 @@ pub struct SceneGpuPrepareContext<'a> {
 /// and the scissor on the node's clip.
 pub struct SceneGpuRenderContext<'a> {
     pub gpu: &'a GpuContext,
+    /// Linear scRGB working format; the final surface transform is host-owned.
     pub target_format: GpuTextureFormat,
+    /// The host-owned final transform; custom draws remain premultiplied
+    /// linear scRGB until the presentation pass.
+    pub presentation: ScenePresentationProfile,
     pub bounds: PhysicalRect,
     pub clip: PhysicalRect,
     /// Size of the destination in physical pixels. A dedicated pass covers the
@@ -54,6 +66,7 @@ impl<'a> SceneGpuRenderContext<'a> {
     pub(crate) fn new(
         gpu: &'a GpuContext,
         target_format: GpuTextureFormat,
+        presentation: ScenePresentationProfile,
         bounds: PhysicalRect,
         clip: PhysicalRect,
         dest_size: [u32; 2],
@@ -64,6 +77,7 @@ impl<'a> SceneGpuRenderContext<'a> {
         Self {
             gpu,
             target_format,
+            presentation,
             bounds,
             clip,
             dest_size,
@@ -190,6 +204,9 @@ impl<'p, 'e> ScenePass<'p, 'e> {
 pub struct SceneGpuPassContext<'a> {
     pub gpu: &'a GpuContext,
     pub target_format: GpuTextureFormat,
+    /// The host-owned final transform; custom draws remain premultiplied
+    /// linear scRGB until the presentation pass.
+    pub presentation: ScenePresentationProfile,
     pub bounds: PhysicalRect,
     pub clip: PhysicalRect,
     pub dest_size: [u32; 2],
@@ -213,6 +230,9 @@ pub struct SceneGpuBatchNode<'a> {
 pub struct SceneGpuBatchPassContext<'a> {
     pub gpu: &'a GpuContext,
     pub target_format: GpuTextureFormat,
+    /// The host-owned final transform; custom draws remain premultiplied
+    /// linear scRGB until the presentation pass.
+    pub presentation: ScenePresentationProfile,
     pub dest_size: [u32; 2],
     pub gpu_work: Option<&'a GpuWorkSink>,
 }

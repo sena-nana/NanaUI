@@ -122,7 +122,7 @@ fn fs_blend(input: VertexOutput) -> @location(0) vec4<f32> {
     let dst = textureSample(backdrop, source_sampler, input.uv);
     let cs = select(vec3<f32>(0.0), src.rgb / src.a, src.a > 0.0);
     let cb = select(vec3<f32>(0.0), dst.rgb / dst.a, dst.a > 0.0);
-    let mixed = clamp(blend_rgb(layer.mix_blend, cb, cs), vec3<f32>(0.0), vec3<f32>(1.0));
+    let mixed = blend_rgb(layer.mix_blend, cb, cs);
     let rgb = src.rgb * (1.0 - dst.a) + dst.rgb * (1.0 - src.a) + src.a * dst.a * mixed;
     let alpha = src.a + dst.a - src.a * dst.a;
     return vec4<f32>(rgb, alpha);

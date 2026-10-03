@@ -53,6 +53,253 @@ pub use image_url::{
 use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
+/// Final surface encoding for the linear-scRGB Scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScenePresentationColorSpace {
+    Srgb,
+    DisplayP3,
+    ExtendedSrgbLinear,
+    ExtendedSrgb,
+    ExtendedDisplayP3,
+}
+
+/// Host-resolved target profile. Scene primitives are always composed as
+/// premultiplied linear scRGB; this describes only the output boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScenePresentationProfile {
+    pub target_format: GpuTextureFormat,
+    pub color_space: ScenePresentationColorSpace,
+    /// Keep a linear fp16 working target when a requested HDR profile fell
+    /// back to SDR, so the final pass can still apply its highlight shoulder.
+    pub force_float_working: bool,
+    /// Compatibility mode for offscreen/test callers that historically pass
+    /// a non-sRGB unorm target and expect the linear Scene bytes directly.
+    direct_linear: bool,
+}
+
+/// Keep the clear used for the linear working target and the clear used for
+/// the presentation target identical, even when a public viewport was built
+/// from malformed input. RGB remains extended (negative and over-white are
+/// valid scRGB values), while alpha is a finite coverage value.
+fn normalize_clear_color(mut color: [f32; 4]) -> [f32; 4] {
+    for channel in &mut color {
+        if !channel.is_finite() {
+            *channel = 0.0;
+        }
+    }
+    color[3] = color[3].clamp(0.0, 1.0);
+    color
+}
+
+impl ScenePresentationProfile {
+    /// Construct a host presentation profile. Scene composition stays in
+    /// linear scRGB; the selected colour space is applied exactly once at the
+    /// surface boundary. For a native surface, pass the format/colour-space
+    /// pair returned by its capability table; offscreen callers may choose an
+    /// untyped target when they want the painter to own the transfer function.
+    pub const fn new(
+        target_format: GpuTextureFormat,
+        color_space: ScenePresentationColorSpace,
+    ) -> Self {
+        Self {
+            target_format,
+            color_space,
+            force_float_working: false,
+            direct_linear: false,
+        }
+    }
+
+    pub const fn sdr(target_format: GpuTextureFormat) -> Self {
+        Self {
+            target_format,
+            color_space: ScenePresentationColorSpace::Srgb,
+            force_float_working: false,
+            direct_linear: false,
+        }
+    }
+
+    pub(crate) fn legacy_linear(target_format: GpuTextureFormat) -> Self {
+        Self {
+            target_format,
+            color_space: ScenePresentationColorSpace::Srgb,
+            force_float_working: false,
+            direct_linear: !target_format.is_srgb(),
+        }
+    }
+
+    pub(crate) const fn is_direct_linear(self) -> bool {
+        self.direct_linear
+    }
+
+    pub const fn with_force_float_working(self) -> Self {
+        Self {
+            force_float_working: true,
+            ..self
+        }
+    }
+
+    pub(crate) fn requires_float_working_target(self) -> bool {
+        !self.direct_linear
+            && (self.force_float_working
+                || !matches!(
+                    (self.color_space, self.target_format.is_srgb()),
+                    (ScenePresentationColorSpace::Srgb, true)
+                ))
+    }
+
+    pub fn working_format(self) -> GpuTextureFormat {
+        if self.requires_float_working_target() {
+            GpuTextureFormat::RGBA16_FLOAT
+        } else {
+            self.target_format
+        }
+    }
+
+    /// Convert a linear-premultiplied clear colour for the surface load
+    /// operation. Scene targets are always cleared in linear scRGB; a surface
+    /// clear happens after the presentation boundary and therefore needs the
+    /// same transfer, gamut and alpha ordering as the blit shader.
+    pub(crate) fn surface_clear(self, color: [f32; 4], encoding: AlphaEncoding) -> wgpu::Color {
+        let color = normalize_clear_color(color);
+        if self.is_direct_linear() {
+            return wgpu::Color {
+                r: (color[0] * color[3]) as f64,
+                g: (color[1] * color[3]) as f64,
+                b: (color[2] * color[3]) as f64,
+                a: color[3] as f64,
+            };
+        }
+        let alpha = color[3].clamp(0.0, 1.0);
+        if alpha <= 0.0 {
+            return wgpu::Color::TRANSPARENT;
+        }
+        let mut rgb = [color[0], color[1], color[2]];
+        // Extended-sRGB-linear is intentionally a linear output profile. Its
+        // shader path returns premultiplied linear values before the target's
+        // own format conversion, and AlphaEncoding does not change that
+        // colour-space contract.
+        if matches!(
+            self.color_space,
+            ScenePresentationColorSpace::ExtendedSrgbLinear
+        ) {
+            return wgpu::Color {
+                r: (rgb[0] * alpha) as f64,
+                g: (rgb[1] * alpha) as f64,
+                b: (rgb[2] * alpha) as f64,
+                a: alpha as f64,
+            };
+        }
+        let tone_map = self.force_float_working;
+        let gamut_transform = tone_map
+            || matches!(self.color_space, ScenePresentationColorSpace::DisplayP3)
+            || (matches!(self.color_space, ScenePresentationColorSpace::Srgb)
+                && !self.target_format.is_srgb());
+        let shoulder = |value: f32| {
+            if tone_map && value > 0.85 {
+                0.85 + 0.15 * (1.0 - (-0.8 * (value - 0.85)).exp())
+            } else {
+                value
+            }
+        };
+        let gamut = |mut value: [f32; 3]| {
+            let luma = 0.2126 * value[0] + 0.7152 * value[1] + 0.0722 * value[2];
+            let lo = value[0].min(value[1].min(value[2]));
+            let hi = value[0].max(value[1].max(value[2]));
+            let hi_scale = if hi <= 1.0 {
+                1.0
+            } else {
+                (1.0 - luma) / (hi - luma).max(1.0e-6)
+            };
+            let lo_scale = if lo >= 0.0 {
+                1.0
+            } else {
+                (0.0 - luma) / (lo - luma).min(-1.0e-6)
+            };
+            let scale = hi_scale.min(lo_scale).clamp(0.0, 1.0);
+            for channel in &mut value {
+                *channel = (luma + (*channel - luma) * scale).clamp(0.0, 1.0);
+            }
+            value
+        };
+        let encode = |value: f32| {
+            let sign = value.signum();
+            let absolute = value.abs();
+            sign * if absolute <= 0.0031308 {
+                absolute * 12.92
+            } else {
+                1.055 * absolute.powf(1.0 / 2.4) - 0.055
+            }
+        };
+        let decode = |value: f32| {
+            let sign = value.signum();
+            let absolute = value.abs();
+            sign * if absolute <= 0.04045 {
+                absolute / 12.92
+            } else {
+                ((absolute + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        if matches!(self.color_space, ScenePresentationColorSpace::Srgb)
+            && !self.force_float_working
+            && encoding == AlphaEncoding::Linear
+            && self.target_format.is_srgb()
+        {
+            return wgpu::Color {
+                r: (color[0] * alpha) as f64,
+                g: (color[1] * alpha) as f64,
+                b: (color[2] * alpha) as f64,
+                a: alpha as f64,
+            };
+        }
+        if tone_map {
+            rgb = rgb.map(shoulder);
+        }
+        if matches!(
+            self.color_space,
+            ScenePresentationColorSpace::DisplayP3 | ScenePresentationColorSpace::ExtendedDisplayP3
+        ) {
+            rgb = [
+                0.8225927 * rgb[0] + 0.1775330 * rgb[1],
+                0.0331995 * rgb[0] + 0.9667835 * rgb[1],
+                0.0170853 * rgb[0] + 0.0723957 * rgb[1] + 0.9103015 * rgb[2],
+            ];
+        }
+        if gamut_transform {
+            rgb = gamut(rgb);
+        }
+        let encoded = match self.color_space {
+            ScenePresentationColorSpace::ExtendedSrgbLinear => rgb,
+            _ => rgb.map(encode),
+        };
+        let linear_premult = rgb.map(|value| value * alpha);
+        let encoded_premult = encoded.map(|value| value * alpha);
+        let output = if self.target_format.is_srgb() && encoding == AlphaEncoding::Gamma {
+            // A typed sRGB attachment applies its OETF in hardware. Gamma
+            // alpha therefore stores the encoded-straight colour multiplied
+            // by alpha, and the CPU clear must provide the corresponding
+            // linear attachment value.
+            encoded_premult.map(decode)
+        } else if self.target_format.is_srgb() {
+            // Linear alpha stores OETF(linear * alpha) in the typed target;
+            // its hardware transfer performs that OETF after the clear.
+            linear_premult
+        } else if encoding == AlphaEncoding::Gamma {
+            encoded_premult
+        } else {
+            // Unorm P3/extended targets have no hardware transfer. Match the
+            // presentation shader's Linear path: encode the premultiplied
+            // linear value, rather than encoding straight colour first.
+            linear_premult.map(encode)
+        };
+        wgpu::Color {
+            r: output[0] as f64,
+            g: output[1] as f64,
+            b: output[2] as f64,
+            a: alpha as f64,
+        }
+    }
+}
+
 use backdrop::BackdropPipeline;
 use clip::{
     FragmentClip, LogicalRect, PaintOrigin, extra_fragment_clips, fragment_clip, intersect_clips,
@@ -80,8 +327,9 @@ pub struct ScenePaintViewport {
     pub scene_origin: [f32; 2],
     /// Logical position of scene (0, 0) on the target.
     pub target_origin: [f32; 2],
-    /// Linear RGBA, like every colour the painter blends. A theme colour is
-    /// sRGB and has to be converted first.
+    /// Straight linear RGBA used to clear the scene. A theme colour is sRGB
+    /// and has to be converted first; the painter premultiplies it for the
+    /// internal render target.
     pub clear_color: [f32; 4],
     /// Clear the whole target; otherwise keep existing pixels (`LoadOp::Load`).
     pub clear: bool,
@@ -100,7 +348,11 @@ pub struct SceneWgpuPainter {
     retained_default: RetainedWrites,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// Surface format. Scene pipelines use `working_format` for wide/HDR
+    /// profiles and write the final encoding only in the presentation pass.
     format: wgpu::TextureFormat,
+    working_format: wgpu::TextureFormat,
+    presentation: ScenePresentationProfile,
     quads: QuadPipeline,
     motion: MotionGpuResources,
     meshes: MeshPipeline,
@@ -254,9 +506,13 @@ impl SceneWgpuPainter {
     /// A painter for targets of `format` on `gpu`. Every frame it paints must
     /// come from the same device.
     pub fn new(gpu: &GpuContext, format: GpuTextureFormat) -> Self {
+        Self::new_with_presentation(gpu, ScenePresentationProfile::legacy_linear(format))
+    }
+
+    pub fn new_with_presentation(gpu: &GpuContext, presentation: ScenePresentationProfile) -> Self {
         let device = __framework::device(gpu);
         let queue = __framework::queue(gpu);
-        let format = __framework::format_to_wgpu(format);
+        let format = __framework::format_to_wgpu(presentation.working_format());
         let quads = QuadPipeline::new_with_policy(device, format, Some(gpu.policy()));
         let motion = MotionGpuResources::new_with_policy(
             device,
@@ -273,13 +529,19 @@ impl SceneWgpuPainter {
             device: device.clone(),
             queue: queue.clone(),
             format,
+            working_format: format,
+            presentation,
             quads,
             motion,
             meshes: MeshPipeline::new_with_policy(device, format, Some(gpu.policy())),
             icons: IconPipeline::new_with_policy(device, format, Some(gpu.policy())),
             text: TextPipeline::new_with_policy(device, queue, format, gpu.policy()),
             host_textures: HostTexturePipeline::new(device, queue, format, gpu.policy(), gpu),
-            url_cache: UrlTextureCache::default(),
+            url_cache: {
+                let mut cache = UrlTextureCache::default();
+                cache.set_srgb_source(!presentation.is_direct_linear());
+                cache
+            },
             backdrop: BackdropPipeline::new(device, format, gpu.policy()),
             dest: None,
             // Pipeline-cache reuse requires a host-enabled device feature;
@@ -309,8 +571,21 @@ impl SceneWgpuPainter {
         }
     }
 
+    /// Format of the surface/target view passed to [`Self::paint`]. Wide and
+    /// HDR profiles may use a different internal [`Self::working_format`].
     pub fn format(&self) -> GpuTextureFormat {
-        __framework::format_from_wgpu(self.format)
+        self.presentation.target_format
+    }
+
+    /// Format used by Scene primitives and custom GPU nodes while composing.
+    /// It is `RGBA16_FLOAT` for wide-gamut/HDR profiles and equals
+    /// [`Self::format`] on the ordinary SDR path.
+    pub fn working_format(&self) -> GpuTextureFormat {
+        __framework::format_from_wgpu(self.working_format)
+    }
+
+    pub fn presentation(&self) -> ScenePresentationProfile {
+        self.presentation
     }
 
     /// The device this painter records on.
@@ -394,8 +669,8 @@ impl SceneWgpuPainter {
         }
     }
 
-    /// How the next paints store alpha. Painters are shared per format, so a
-    /// host sets this per window; the hosted runtime picks
+    /// How the next paints store alpha. Painters are shared per presentation
+    /// profile, so a host sets this per window; the hosted runtime picks
     /// [`AlphaEncoding::Gamma`] for every surface that is not opaque.
     pub fn set_alpha_encoding(&mut self, encoding: AlphaEncoding) {
         self.alpha_encoding = encoding;
@@ -672,12 +947,16 @@ impl SceneWgpuPainter {
         let origin = PaintOrigin::new(paint_origin([0.0, 0.0], viewport.scene_origin), scale);
         let viewport_clip = LogicalRect::viewport([0.0, 0.0], viewport.logical_size);
         let gpu_work = GpuWorkSink::with_frame(&self.gpu, frame);
+        let clear_color = normalize_clear_color(viewport.clear_color);
         let clear = wgpu::Color {
-            r: viewport.clear_color[0] as f64,
-            g: viewport.clear_color[1] as f64,
-            b: viewport.clear_color[2] as f64,
-            a: viewport.clear_color[3] as f64,
+            r: (clear_color[0] * clear_color[3]) as f64,
+            g: (clear_color[1] * clear_color[3]) as f64,
+            b: (clear_color[2] * clear_color[3]) as f64,
+            a: clear_color[3] as f64,
         };
+        let surface_clear = self
+            .presentation
+            .surface_clear(clear_color, self.alpha_encoding);
         let painted = PaintedDest {
             instance,
             presentation_epoch: scene.presentation_epoch(),
@@ -706,7 +985,7 @@ impl SceneWgpuPainter {
                 blit_origin[0],
                 blit_origin[1],
                 viewport.physical_size,
-                viewport.clear.then_some(clear),
+                viewport.clear.then_some(surface_clear),
                 self.alpha_encoding,
                 Some(&gpu_work),
                 &mut dest_passes,
@@ -1551,6 +1830,7 @@ impl SceneWgpuPainter {
                                 SceneGpuPrepareContext {
                                     gpu: &self.gpu,
                                     target_format: __framework::format_from_wgpu(self.format),
+                                    presentation: self.presentation,
                                     bounds: custom_bounds.to_core(),
                                     scale_factor: scale,
                                     dest_size: dest_physical,
@@ -1671,6 +1951,8 @@ impl SceneWgpuPainter {
             &self.device,
             self.dest_pipeline_cache.as_ref(),
             self.format,
+            __framework::format_to_wgpu(self.presentation.target_format),
+            self.presentation,
             dest_physical[0],
             dest_physical[1],
             !gpu_interleaved,
@@ -1709,6 +1991,7 @@ impl SceneWgpuPainter {
                     backdrop: &mut self.backdrop,
                     gpu: &self.gpu,
                     format: __framework::format_from_wgpu(self.format),
+                    presentation: self.presentation,
                     gpu_work: &gpu_work,
                     motion: self.motion.bind_group(),
                     group_extents: &group_extents,
@@ -1792,7 +2075,7 @@ impl SceneWgpuPainter {
             blit_origin[0],
             blit_origin[1],
             viewport.physical_size,
-            viewport.clear.then_some(clear),
+            viewport.clear.then_some(surface_clear),
             self.alpha_encoding,
             Some(&gpu_work),
             &mut dest_passes,
@@ -2377,6 +2660,7 @@ struct EncodeOrdered<'a> {
     backdrop: &'a mut BackdropPipeline,
     gpu: &'a GpuContext,
     format: GpuTextureFormat,
+    presentation: ScenePresentationProfile,
     gpu_work: &'a GpuWorkSink,
     motion: &'a wgpu::BindGroup,
     /// What each group can change, by slot ([`group_extents`]).
@@ -2706,6 +2990,7 @@ fn encode_ordered(
                                     &mut ScenePass::new(&mut pass, dest_physical),
                                     pipelines.gpu,
                                     pipelines.format,
+                                    pipelines.presentation,
                                     pipelines.gpu_work,
                                 );
                                 if encoded > 0 {
@@ -2719,6 +3004,7 @@ fn encode_ordered(
                                     SceneGpuPassContext {
                                         gpu: pipelines.gpu,
                                         target_format: pipelines.format,
+                                        presentation: pipelines.presentation,
                                         bounds: *bounds,
                                         clip: *clip,
                                         dest_size: dest_physical,
@@ -2754,6 +3040,7 @@ fn encode_ordered(
                             SceneGpuRenderContext::new(
                                 pipelines.gpu,
                                 pipelines.format,
+                                pipelines.presentation,
                                 *bounds,
                                 *clip,
                                 dest_physical,
@@ -2788,6 +3075,7 @@ fn draw_custom_run(
     pass: &mut ScenePass<'_, '_>,
     gpu: &GpuContext,
     format: GpuTextureFormat,
+    presentation: ScenePresentationProfile,
     gpu_work: &GpuWorkSink,
 ) -> usize {
     let capacity = renderer.batch_capacity();
@@ -2828,6 +3116,7 @@ fn draw_custom_run(
         SceneGpuBatchPassContext {
             gpu,
             target_format: format,
+            presentation,
             dest_size: pass.dest_size(),
             gpu_work: Some(gpu_work),
         },
@@ -2875,6 +3164,9 @@ fn ensure_backdrop_target_ready(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod presentation_tests;
 
 /// Whether `rect` (layout space), under `affine` into logical target space,
 /// reaches the `size` physical-pixel target.

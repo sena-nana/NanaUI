@@ -455,9 +455,19 @@ pub(crate) struct UrlTextureCache {
     /// Earliest pending shrink.
     next_shrink: Option<Instant>,
     worker: Worker,
+    /// URL decoders produce sRGB bytes. Hosted presentation painters enable
+    /// the sRGB texture view; legacy raw-linear offscreen callers retain the
+    /// historical unorm upload for compatibility.
+    srgb_source: bool,
 }
 
 impl UrlTextureCache {
+    pub(crate) fn set_srgb_source(&mut self, enabled: bool) {
+        if self.srgb_source != enabled {
+            self.srgb_source = enabled;
+            self.buckets.clear();
+        }
+    }
     pub(crate) fn set_wake(&mut self, wake: ImageWake) {
         self.wake = Some(wake);
     }
@@ -587,7 +597,8 @@ impl UrlTextureCache {
         if let Some(bucket) = self.buckets.get_mut(&egress) {
             if let Some(entry) = bucket.entries.get_mut(key.as_ref()) {
                 if let Some(prepared) = entry.ready.take()
-                    && let Some(texture) = upload_levels(device, queue, &prepared.levels, work)
+                    && let Some(texture) =
+                        upload_levels(device, queue, &prepared.levels, work, self.srgb_source)
                 {
                     entry.texture = Some(texture);
                 }
@@ -656,7 +667,13 @@ impl UrlTextureCache {
             self.insert(key.into_owned(), None);
             return None;
         };
-        let Some(texture) = upload_mips(device, queue, &[(width, height, &rgba)], work) else {
+        let Some(texture) = upload_mips(
+            device,
+            queue,
+            &[(width, height, &rgba)],
+            work,
+            self.srgb_source,
+        ) else {
             self.insert(key.into_owned(), None);
             return None;
         };
@@ -1010,13 +1027,30 @@ thread_local! {
     pub(crate) static UPLOADS: Cell<usize> = const { Cell::new(0) };
 }
 
-pub(crate) fn upload_with_work(
+/// Upload a generated linear-scRGB texture. Generated gradients are not URL
+/// image data: they must stay in a float working texture so negative channels
+/// and highlights above one survive until the presentation transfer.
+pub(crate) fn upload_generated_linear_with_work(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    (width, height, rgba): (u32, u32, &[u8]),
+    (width, height, rgba): (u32, u32, &[[f32; 4]]),
     work: Option<&crate::gpu_work::GpuWorkSink>,
 ) -> Option<CachedUrlTexture> {
-    upload_mips(device, queue, &[(width, height, rgba)], work)
+    let expected = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
+    if rgba.len() != expected {
+        return None;
+    }
+    let bytes = encode_linear_rgba16(rgba);
+    upload_mips_format(
+        device,
+        queue,
+        &[(width, height, bytes.as_slice())],
+        work,
+        wgpu::TextureFormat::Rgba16Float,
+        8,
+    )
 }
 
 fn upload_levels(
@@ -1024,12 +1058,13 @@ fn upload_levels(
     queue: &wgpu::Queue,
     levels: &[Level],
     work: Option<&crate::gpu_work::GpuWorkSink>,
+    srgb_source: bool,
 ) -> Option<CachedUrlTexture> {
     let levels: Vec<_> = levels
         .iter()
         .map(|level| (level.width, level.height, level.rgba.as_slice()))
         .collect();
-    upload_mips(device, queue, &levels, work)
+    upload_mips(device, queue, &levels, work, srgb_source)
 }
 
 /// One texture whose mip `i` is `levels[i]`; each level halves the one above.
@@ -1038,6 +1073,29 @@ fn upload_mips(
     queue: &wgpu::Queue,
     levels: &[(u32, u32, &[u8])],
     work: Option<&crate::gpu_work::GpuWorkSink>,
+    srgb_source: bool,
+) -> Option<CachedUrlTexture> {
+    upload_mips_format(
+        device,
+        queue,
+        levels,
+        work,
+        if srgb_source {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        },
+        4,
+    )
+}
+
+fn upload_mips_format(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    levels: &[(u32, u32, &[u8])],
+    work: Option<&crate::gpu_work::GpuWorkSink>,
+    format: wgpu::TextureFormat,
+    bytes_per_pixel: u32,
 ) -> Option<CachedUrlTexture> {
     let &(width, height, _) = levels.first()?;
     let limit = device.limits().max_texture_dimension_2d;
@@ -1056,7 +1114,7 @@ fn upload_mips(
         mip_level_count: levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -1070,7 +1128,7 @@ fn upload_mips(
                 &texture,
                 mip_level,
                 rgba,
-                4 * width,
+                bytes_per_pixel * width,
                 height,
                 [width, height, 1],
             );
@@ -1085,7 +1143,7 @@ fn upload_mips(
                 rgba,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(4 * width),
+                    bytes_per_row: Some(bytes_per_pixel * width),
                     rows_per_image: Some(height),
                 },
                 wgpu::Extent3d {
@@ -1103,6 +1161,68 @@ fn upload_mips(
         mip_levels: levels.len() as u32,
         bytes,
     })
+}
+
+fn encode_linear_rgba16(pixels: &[[f32; 4]]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(pixels.len().saturating_mul(8));
+    for pixel in pixels {
+        for channel in pixel {
+            bytes.extend_from_slice(&f32_to_f16_bits(*channel).to_le_bytes());
+        }
+    }
+    bytes
+}
+
+/// Convert an IEEE-754 binary32 value to binary16 with round-to-nearest-even.
+/// The generated gradient path only needs finite colour values, but preserving
+/// infinities and NaNs here keeps the upload helper well-defined for every
+/// `f32` it is given.
+fn f32_to_f16_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let fraction = bits & 0x007f_ffff;
+
+    if exponent == 0xff {
+        let payload = (fraction >> 13) as u16;
+        return sign | 0x7c00 | if fraction == 0 { 0 } else { payload.max(1) };
+    }
+
+    let unbiased = exponent - 127;
+    if unbiased > 15 {
+        return sign | 0x7c00;
+    }
+
+    if unbiased >= -14 {
+        let mut half_fraction = (fraction >> 13) as u16;
+        let round = fraction & 0x1fff;
+        if round > 0x1000 || (round == 0x1000 && half_fraction & 1 != 0) {
+            half_fraction += 1;
+            if half_fraction == 0x400 {
+                let half_exponent = unbiased + 16;
+                if half_exponent >= 0x1f {
+                    return sign | 0x7c00;
+                }
+                return sign | ((half_exponent as u16) << 10);
+            }
+        }
+        return sign | (((unbiased + 15) as u16) << 10) | half_fraction;
+    }
+
+    // Binary16 subnormals use a 2^-24 quantum. Include binary32's hidden bit
+    // and round the shifted mantissa at the same tie-to-even boundary.
+    let mantissa = fraction | 0x0080_0000;
+    let shift = (-unbiased - 1) as u32;
+    if shift > 24 {
+        return sign;
+    }
+    let mut half_fraction = mantissa >> shift;
+    let remainder = mantissa & ((1u32 << shift) - 1);
+    let halfway = 1u32 << (shift - 1);
+    if remainder > halfway || (remainder == halfway && half_fraction & 1 != 0) {
+        half_fraction += 1;
+    }
+    sign | half_fraction as u16
 }
 
 #[cfg(test)]
@@ -1399,5 +1519,36 @@ mod tests {
             [200, 200]
         );
         assert_eq!(Demand::Full.resolve((400, 200)), [400, 200]);
+    }
+
+    #[test]
+    fn generated_linear_encoding_preserves_negative_and_extended_channels() {
+        let pixels = [[-1.5, 2.0, 1.25, 1.0], [4.0, -0.25, 0.0, 0.5]];
+        let bytes = encode_linear_rgba16(&pixels);
+        let bits: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|channel| u16::from_le_bytes([channel[0], channel[1]]))
+            .collect();
+        assert_eq!(
+            bits,
+            [
+                0xbe00, 0x4000, 0x3d00, 0x3c00, 0x4400, 0xb400, 0x0000, 0x3800
+            ]
+        );
+        assert_eq!(f32_to_f16_bits(-1.5), 0xbe00);
+        assert_eq!(f32_to_f16_bits(4.0), 0x4400);
+    }
+
+    #[test]
+    fn generated_linear_upload_uses_float16_texture() {
+        let (device, queue) = crate::test_gpu::device();
+        let pixels = [[-1.0, 2.0, 0.0, 1.0]];
+        let texture = upload_generated_linear_with_work(&device, &queue, (1, 1, &pixels), None)
+            .expect("generated gradient texture");
+        assert_eq!(
+            texture.view.texture().format(),
+            wgpu::TextureFormat::Rgba16Float
+        );
+        assert_eq!(texture.bytes, 8);
     }
 }

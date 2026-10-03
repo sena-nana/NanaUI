@@ -104,12 +104,14 @@ fn compose_quad_fill(base: vec4<f32>, local: vec2<f32>, paint: QuadPaintData) ->
             paint.grad_pos,
             paint.grad_pos2,
         );
-        let grad_premult = vec4(grad.rgb * grad.a, grad.a);
-        color = source_over_premult(color, grad_premult);
+        color = source_over_premult(color, grad);
     }
     if ((paint.flags & PAINT_URL) != 0u) {
         let sampled = sample_url(local, paint);
-        let sampled_premult = vec4(sampled.rgb * sampled.a, sampled.a);
+        var sampled_premult = vec4(sampled.rgb * sampled.a, sampled.a);
+        if ((paint.flags & PAINT_URL_PREMULT) != 0u) {
+            sampled_premult = sampled;
+        }
         color = source_over_premult(color, sampled_premult);
     }
     if ((paint.flags & PAINT_MASK) != 0u) {

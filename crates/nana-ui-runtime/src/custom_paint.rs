@@ -366,7 +366,8 @@ pub enum GradientExtend {
     Reflect,
 }
 
-/// 线性 / 径向 / 锥形渐变。色标在 premultiplied sRGB 里插值（与 CSS 一致）。
+/// 线性 / 径向 / 锥形渐变。色标在 retained linear scRGB 中按
+/// premultiplied 方式插值；sRGB 输入只在进入 Scene 时解码一次。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gradient {
     pub shape: GradientShape,

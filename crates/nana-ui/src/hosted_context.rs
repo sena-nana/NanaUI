@@ -352,8 +352,12 @@ impl HostedGpuSurface {
         gpu: &GpuContext,
     ) -> Result<(), HostedGpuError> {
         let capabilities = surface.get_capabilities(__framework::adapter(gpu));
-        let profile = resolve_surface_profile(
-            SurfacePresentationPolicy::Auto,
+        let profile = resolve_surface_profile_internal(
+            // Keep the caller's wide-gamut/HDR request across a device
+            // migration. Resolving Auto here silently downgraded an existing
+            // profile to sRGB after recovery, even when the new surface still
+            // advertised the requested colour space.
+            self.profile.requested,
             &capabilities,
             self.want_transparent,
         )
@@ -404,9 +408,12 @@ impl HostedGpuSurface {
     ) -> Result<(), HostedGpuError> {
         let surface = self.target.create_surface(instance, self.window.clone())?;
         let capabilities = surface.get_capabilities(__framework::adapter(gpu));
-        let profile =
-            resolve_surface_profile(self.profile.requested, &capabilities, want_transparent)
-                .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+        let profile = resolve_surface_profile_internal(
+            self.profile.requested,
+            &capabilities,
+            want_transparent,
+        )
+        .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
         self.configuration.alpha_mode = surface_alpha(
             self.target.mode(),
             &capabilities.alpha_modes,
@@ -837,7 +844,7 @@ fn configure_surface(
     target: HostedSurfaceTarget,
     policy: SurfacePresentationPolicy,
 ) -> Result<HostedGpuSurface, HostedGpuError> {
-    let profile = resolve_surface_profile(policy, capabilities, want_transparent)
+    let profile = resolve_surface_profile_internal(policy, capabilities, want_transparent)
         .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
     let format = profile.format;
     let size = window.surface_size();
@@ -894,8 +901,12 @@ impl AcquiredDevice {
         &self.shared.gpu
     }
 
-    pub(crate) const fn format(&self) -> wgpu::TextureFormat {
-        self.format
+    pub(crate) fn scene_profile(&self) -> crate::ScenePresentationProfile {
+        resolve_surface_profile_internal(SurfacePresentationPolicy::Auto, &self.capabilities, false)
+            .map(|profile| profile.scene_profile())
+            .unwrap_or_else(|| {
+                crate::ScenePresentationProfile::sdr(__framework::format_from_wgpu(self.format))
+            })
     }
 }
 
@@ -1103,7 +1114,16 @@ fn preferred_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::Tex
 /// fp16, wide gamut prefers Display-P3 on an 8-bit UNORM target, and every
 /// request has an sRGB SDR escape hatch.  `formats` is retained as a fallback
 /// for adapters that do not populate the extended table.
+#[cfg(feature = "wgpu-interop")]
 pub fn resolve_surface_profile(
+    requested: SurfacePresentationPolicy,
+    capabilities: &wgpu::SurfaceCapabilities,
+    transparent: bool,
+) -> Option<ResolvedSurfaceProfile> {
+    resolve_surface_profile_internal(requested, capabilities, transparent)
+}
+
+pub(crate) fn resolve_surface_profile_internal(
     requested: SurfacePresentationPolicy,
     capabilities: &wgpu::SurfaceCapabilities,
     _transparent: bool,
@@ -1133,17 +1153,25 @@ pub fn resolve_surface_profile(
         F::Rgba8Unorm,
         F::Bgra8Unorm,
     ];
+    // Display-P3 may be advertised with either an untyped UNORM format (the
+    // shader owns the OETF), an sRGB-typed format (the shader writes linear
+    // values and the attachment applies the OETF), or fp16 (the shader owns
+    // the transfer and preserves the extended working range). Keep the
+    // 8-bit choices first for WideGamut's SDR preference, but retain fp16 as
+    // a capability fallback for HDR-capable P3 surfaces.
     let p3_formats = [
         F::Bgra8Unorm,
         F::Rgba8Unorm,
         F::Bgra8UnormSrgb,
         F::Rgba8UnormSrgb,
+        F::Rgba16Float,
     ];
     let hdr_formats = [F::Rgba16Float];
     let mut candidates: Vec<(C, &[F])> = match requested {
         SurfacePresentationPolicy::Hdr => vec![
             (C::ExtendedSrgb, &hdr_formats),
             (C::ExtendedSrgbLinear, &hdr_formats),
+            (C::ExtendedDisplayP3, &hdr_formats),
             (C::DisplayP3, &p3_formats),
             (C::Srgb, &srgb_formats),
         ],
@@ -1294,7 +1322,7 @@ mod tests {
     use super::{
         alpha_mode_needs_surface_recreate, live_resize_frame_latency, live_resize_policy_change,
         preferred_alpha_mode, preferred_live_present_mode, preferred_surface_format,
-        resolve_surface_profile, surface_profile_changed, surface_size_changed,
+        resolve_surface_profile_internal, surface_profile_changed, surface_size_changed,
     };
 
     #[cfg(target_os = "windows")]
@@ -1383,19 +1411,23 @@ mod tests {
             usages: wgpu::TextureUsages::RENDER_ATTACHMENT,
         };
         assert_eq!(
-            resolve_surface_profile(crate::SurfacePresentationPolicy::Sdr, &caps, false)
+            resolve_surface_profile_internal(crate::SurfacePresentationPolicy::Sdr, &caps, false)
                 .unwrap()
                 .color_space,
             C::Srgb
         );
         assert_eq!(
-            resolve_surface_profile(crate::SurfacePresentationPolicy::WideGamut, &caps, false)
-                .unwrap()
-                .color_space,
+            resolve_surface_profile_internal(
+                crate::SurfacePresentationPolicy::WideGamut,
+                &caps,
+                false
+            )
+            .unwrap()
+            .color_space,
             C::DisplayP3
         );
         assert_eq!(
-            resolve_surface_profile(crate::SurfacePresentationPolicy::Hdr, &caps, false)
+            resolve_surface_profile_internal(crate::SurfacePresentationPolicy::Hdr, &caps, false)
                 .unwrap()
                 .color_space,
             C::ExtendedSrgb
@@ -1409,10 +1441,51 @@ mod tests {
             ..caps
         };
         assert_eq!(
-            resolve_surface_profile(crate::SurfacePresentationPolicy::Hdr, &no_hdr, false)
+            resolve_surface_profile_internal(crate::SurfacePresentationPolicy::Hdr, &no_hdr, false)
                 .unwrap()
                 .color_space,
             C::DisplayP3
+        );
+        let p3_float = wgpu::SurfaceCapabilities {
+            formats: vec![F::Bgra8UnormSrgb, F::Rgba16Float],
+            format_capabilities: vec![
+                Row {
+                    format: F::Bgra8UnormSrgb,
+                    color_spaces: S::SRGB,
+                },
+                Row {
+                    format: F::Rgba16Float,
+                    color_spaces: S::DISPLAY_P3,
+                },
+            ],
+            ..no_hdr
+        };
+        let p3 = resolve_surface_profile_internal(
+            crate::SurfacePresentationPolicy::WideGamut,
+            &p3_float,
+            false,
+        )
+        .unwrap();
+        assert_eq!(p3.format, F::Rgba16Float);
+        assert_eq!(p3.color_space, C::DisplayP3);
+        assert_eq!(p3.fallback, None);
+
+        let hdr_p3 = wgpu::SurfaceCapabilities {
+            formats: vec![F::Rgba16Float],
+            format_capabilities: vec![Row {
+                format: F::Rgba16Float,
+                color_spaces: S::EXTENDED_DISPLAY_P3,
+            }],
+            ..p3_float
+        };
+        let hdr_p3 =
+            resolve_surface_profile_internal(crate::SurfacePresentationPolicy::Hdr, &hdr_p3, false)
+                .unwrap();
+        assert_eq!(hdr_p3.format, F::Rgba16Float);
+        assert_eq!(hdr_p3.color_space, C::ExtendedDisplayP3);
+        assert_eq!(
+            hdr_p3.fallback,
+            Some(crate::SurfaceProfileFallback::CapabilityUnavailable)
         );
     }
 

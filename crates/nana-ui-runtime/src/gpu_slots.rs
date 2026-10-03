@@ -56,7 +56,9 @@ pub enum GpuViewMode {
     Standalone,
 }
 
-/// Retained palette for the host painter. Runtime does not shade these colors.
+/// Retained palette for the host painter. RGB channels use the framework's
+/// authoring sRGB space; the host painter decodes them once when the embedded
+/// GPU node joins the linear-scRGB working target. Alpha remains straight.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GpuViewPalette {
     pub background: [f32; 4],

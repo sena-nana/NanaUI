@@ -191,14 +191,14 @@ const INITIAL_GRADIENTS: usize = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct GpuGradient {
     /// kind (0 linear, 1 radial, 2 conic), extend (0 pad, 1 repeat, 2
-    /// reflect), stop count, color space (0 sRGB, 1 linear scRGB).
+    /// reflect), stop count, color space (always 1: linear scRGB).
     header: [u32; 4],
     /// Linear: start.xy, end.xy. Radial: center.xy, radius. Conic: center.xy,
     /// start angle.
     geometry: [f32; 4],
     offsets: [[f32; 4]; GRADIENT_STOPS / 4],
-    /// Premultiplied sRGB for legacy gradients, or premultiplied linear
-    /// scRGB when `header.w` is set for explicit authoring stops.
+    /// Premultiplied linear scRGB stops. `header.w` remains set for ABI
+    /// compatibility with older path shader buffers.
     colors: [[f32; 4]; GRADIENT_STOPS],
 }
 
@@ -218,7 +218,21 @@ impl GpuGradient {
             GradientExtend::Repeat => 1,
             GradientExtend::Reflect => 2,
         };
-        let source = gradient.linear_stops.as_deref().unwrap_or(&gradient.stops);
+        // Both analytic quads and paths interpolate in the retained linear
+        // scRGB scene space. Legacy resolved stops arrive as sRGB for API
+        // compatibility, so decode them once at upload rather than letting
+        // the path shader interpolate in a different space.
+        let legacy_linear;
+        let source = if let Some(stops) = gradient.linear_stops.as_deref() {
+            stops
+        } else {
+            legacy_linear = gradient
+                .stops
+                .iter()
+                .map(|(offset, color)| (*offset, super::color::pack_linear(*color)))
+                .collect::<Vec<_>>();
+            &legacy_linear
+        };
         let stops: Vec<(f32, [f32; 4])> = if source.len() <= GRADIENT_STOPS {
             source.to_vec()
         } else {
@@ -234,20 +248,34 @@ impl GpuGradient {
             kind,
             extend,
             stops.len() as u32,
-            gradient.linear_stops.is_some() as u32,
+            // The uploaded buffer is always linear scRGB now.
+            1,
         ];
         packed.geometry = geometry;
         for (index, (offset, [r, g, b, a])) in stops.iter().enumerate() {
+            let alpha = if a.is_finite() {
+                a.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             packed.offsets[index / 4][index % 4] = *offset;
-            packed.colors[index] = [r * a, g * a, b * a, *a];
+            packed.colors[index] = [r * alpha, g * alpha, b * alpha, alpha];
         }
         packed
     }
 }
 
-/// Straight sRGB colour of sorted stops at `t`, interpolated premultiplied.
+/// Straight linear-scRGB colour of sorted stops at `t`, interpolated
+/// premultiplied.
 fn sample_stops(stops: &[(f32, [f32; 4])], t: f32) -> [f32; 4] {
-    let premultiplied = |[r, g, b, a]: [f32; 4]| [r * a, g * a, b * a, a];
+    let premultiplied = |[r, g, b, a]: [f32; 4]| {
+        let a = if a.is_finite() {
+            a.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        [r * a, g * a, b * a, a]
+    };
     let Some(next) = stops.iter().position(|(offset, _)| *offset >= t) else {
         return stops.last().map_or([0.0; 4], |stop| stop.1);
     };
@@ -947,6 +975,11 @@ impl MeshPipeline {
             let alpha = 1.0 - f32::from(distance) * 0.105;
             let mut tick_color = explicit_color.unwrap_or(color);
             tick_color[3] *= alpha;
+            let packed = if explicit_color.is_some() {
+                tick_color
+            } else {
+                pack_linear(tick_color)
+            };
             push_segment(
                 &mut self.pending_instances,
                 from,
@@ -955,7 +988,7 @@ impl MeshPipeline {
                 radius,
                 StrokeCap::Round,
                 StrokeCap::Round,
-                pack_linear(tick_color),
+                packed,
             );
         }
         apply_affine_to_instances(&mut self.pending_instances, start as usize, affine);

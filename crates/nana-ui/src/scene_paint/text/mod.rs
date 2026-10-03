@@ -1890,10 +1890,7 @@ impl TextPipeline {
             };
             let linear_color = run
                 .paint_color
-                .map(|paint| {
-                    let (channels, alpha) = paint.to_linear_sc_rgb();
-                    [channels[0], channels[1], channels[2], alpha]
-                })
+                .map(super::color::pack_paint_color)
                 .unwrap_or([0.0; 4]);
             for glyph in resolved.glyphs_of(run) {
                 *resolve_requests += 1;

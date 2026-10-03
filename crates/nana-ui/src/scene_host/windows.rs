@@ -728,8 +728,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             window_background,
             true,
         );
-        let format = surface.format();
-        let _ = self.painter_mut(format);
+        let profile = surface.profile().scene_profile();
+        let _ = self.painter_mut(profile);
         #[cfg(not(target_os = "android"))]
         let accessibility = {
             Some(HostedAccessibility::new(

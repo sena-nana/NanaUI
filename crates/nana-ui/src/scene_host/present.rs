@@ -165,7 +165,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(host) = self.window_contexts.get(&id) else {
             return;
         };
-        let format = host.surface.format();
+        let profile = host.surface.profile().scene_profile();
         // Decided before the drawable is acquired: a macOS handoff changes how
         // this frame is presented.
         let takes_over = self.prepare_startup_frame(id);
@@ -278,7 +278,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(composition) = composition.as_ref() {
             match self.sync_native_content(id, composition, &scene, geometry.logical_size) {
                 Ok(true) => {
-                    let renderer = self.native_renderers.entry(format).or_default().clone();
+                    // Native content is drawn into the painter's linear
+                    // working target, which is fp16 for P3/HDR profiles.
+                    // Caching it by the acquired surface format would create
+                    // an incompatible pipeline when that target is unorm.
+                    let renderer = self
+                        .native_renderers
+                        .entry(profile.working_format())
+                        .or_default()
+                        .clone();
                     gpu_renderers
                         .get_or_insert_with(SceneGpuRendererRegistry::new)
                         .insert(nana_ui_runtime::NATIVE_CONTENT_RENDERER, renderer);
@@ -304,9 +312,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let opaque = self
             .window_contexts
             .get(&id)
-            .is_some_and(|host| host.surface.alpha_mode() == crate::SurfaceAlphaMode::Opaque);
-        let painter = self.painter_mut(format);
-        // Painters are shared per format, so every window supplies its own
+            .is_some_and(|host| host.surface.alpha_mode() == crate::SurfaceAlphaMode::Opaque)
+            && matches!(
+                profile.color_space,
+                crate::ScenePresentationColorSpace::Srgb
+            );
+        let painter = self.painter_mut(profile);
+        // Painters are shared per resolved presentation profile, so every window supplies its own
         // egress, including none, and its own surface's text mode.
         painter.set_resource_fetch_host(fetch_host);
         painter.set_subpixel_text(
@@ -350,7 +362,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             prepared.submitted(&submission);
         }
         let submit = submission.cpu_duration();
-        let painter = self.painter_mut(format);
+        let painter = self.painter_mut(profile);
         painter.record_submit(&submission);
         let gpu_work = painter.last_gpu_work();
         self.graphics.present_frame(frame);
@@ -619,28 +631,28 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
     }
-    /// Painters are created lazily per surface format and own their image waker
+    /// Painters are created lazily per presentation profile and own their image waker
     /// from creation, so the per-frame lookup does no allocation.
     pub(super) fn painter_mut(
         &mut self,
-        format: nana_gpu::GpuTextureFormat,
+        profile: crate::ScenePresentationProfile,
     ) -> &mut SceneWgpuPainter {
         // A device switch clears the map; a painter that still names another
         // device would only refuse every frame.
         let current = self.graphics.gpu().generation();
         if self
             .painters
-            .get(&format)
+            .get(&profile)
             .is_some_and(|painter| painter.gpu().generation() != current)
         {
-            self.painters.remove(&format);
+            self.painters.remove(&profile);
         }
-        if !self.painters.contains_key(&format) {
-            let painter = SceneWgpuPainter::new(self.graphics.gpu(), format);
-            self.adopt_painter(format, painter);
+        if !self.painters.contains_key(&profile) {
+            let painter = SceneWgpuPainter::new_with_presentation(self.graphics.gpu(), profile);
+            self.adopt_painter(profile, painter);
         }
         self.painters
-            .get_mut(&format)
+            .get_mut(&profile)
             .expect("painter was just inserted")
     }
 
@@ -648,7 +660,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// one alongside the device) with this host's image waker.
     pub(super) fn adopt_painter(
         &mut self,
-        format: nana_gpu::GpuTextureFormat,
+        profile: crate::ScenePresentationProfile,
         mut painter: SceneWgpuPainter,
     ) {
         let (targets, redraws, proxy) = (
@@ -670,7 +682,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             proxy.wake_up();
         }));
         self.note_startup_painter();
-        self.painters.insert(format, painter);
+        self.painters.insert(profile, painter);
     }
 }
 

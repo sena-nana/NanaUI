@@ -26,6 +26,10 @@ const PAINT_RADIAL: u32 = 32;
 const PAINT_MASK_RADIAL: u32 = 64;
 const PAINT_SHADOW_INSET: u32 = 128;
 const PAINT_MASK_URL: u32 = 256;
+/// The URL binding contains generated linear-premultiplied data rather than
+/// a decoded straight-alpha sRGB image. Border-image gradients use this bit so
+/// the fragment path does not multiply alpha a second time.
+const PAINT_URL_PREMULT: u32 = 512;
 const QUAD_VERTEX_FRAGMENT: &[ShaderStage] = &[ShaderStage::Vertex, ShaderStage::Fragment];
 const QUAD_FRAGMENT: &[ShaderStage] = &[ShaderStage::Fragment];
 fn quad_layout_key() -> u64 {
@@ -692,10 +696,10 @@ impl QuadPipeline {
                 );
             }
         }
-        if let Some((paint_url, tiles)) = border_tiles.as_ref() {
+        if let Some((paint_url, tiles, premultiplied)) = border_tiles.as_ref() {
             for tile in tiles {
                 let paint = QuadPaintData {
-                    flags: PAINT_URL,
+                    flags: PAINT_URL | if *premultiplied { PAINT_URL_PREMULT } else { 0 },
                     url_dest: url_dest_for_uv(tile.u0, tile.v0, tile.u1, tile.v1),
                     ..Default::default()
                 };
@@ -1415,10 +1419,14 @@ fn pack_stop_arrays(stops: &[nana_ui_core::GradientStop]) -> (u32, [[f32; 4]; 8]
     let mut colors = [[0.0; 4]; 8];
     let mut positions = [0.0; 8];
     for (index, stop) in stops.iter().take(8).enumerate() {
-        colors[index] = stop
+        let [r, g, b, a] = stop
             .paint_color
             .map(super::color::pack_paint_color)
             .unwrap_or_else(|| pack_linear(stop.color));
+        // Interpolate gradients in the same premultiplied linear-scRGB space
+        // used by paths and generated border-image textures. This avoids
+        // colour fringes when a stop fades through transparency.
+        colors[index] = [r * a, g * a, b * a, a];
         positions[index] = stop.position;
     }
     (count, colors, positions)
@@ -1464,21 +1472,21 @@ fn prepare_border_image_tiles(
     box_w: f32,
     box_h: f32,
     work: Option<&crate::gpu_work::GpuWorkSink>,
-) -> Option<(String, Vec<BorderImageTile>)> {
+) -> Option<(String, Vec<BorderImageTile>, bool)> {
     let spec = spec.filter(|spec| spec.paints_linear_or_url())?;
-    let (key, image_w, image_h) = match &spec.source {
+    let (key, image_w, image_h, premultiplied) = match &spec.source {
         BackgroundImage::Url { url, .. } => {
             if url.is_empty() {
                 return None;
             }
             let (tex_w, tex_h) = cache.load_with_work(device, queue, url, work)?;
-            (url.clone(), tex_w as f32, tex_h as f32)
+            (url.clone(), tex_w as f32, tex_h as f32, false)
         }
         BackgroundImage::Gradient(CssGradient::Linear(linear)) => {
             let key = linear_gradient_cache_key(linear);
             if !cache.contains_key(&key) {
                 let rgba = rasterize_linear_gradient(linear, BORDER_IMAGE_LINEAR_SIZE);
-                insert_rgba_texture(
+                insert_linear_texture(
                     device,
                     queue,
                     cache,
@@ -1491,7 +1499,7 @@ fn prepare_border_image_tiles(
             } else if cache.get(&key).is_some_and(Option::is_none) {
                 return None;
             }
-            (key, box_w, box_h)
+            (key, box_w, box_h, true)
         }
         BackgroundImage::Gradient(CssGradient::Radial(_)) => return None,
     };
@@ -1499,40 +1507,56 @@ fn prepare_border_image_tiles(
     if tiles.is_empty() {
         None
     } else {
-        Some((key, tiles))
+        Some((key, tiles, premultiplied))
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn insert_rgba_texture(
+fn insert_linear_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     cache: &mut UrlTextureCache,
     key: &str,
     width: u32,
     height: u32,
-    rgba: &[u8],
+    rgba: &[[f32; 4]],
     work: Option<&crate::gpu_work::GpuWorkSink>,
 ) {
-    let texture =
-        super::url_texture_cache::upload_with_work(device, queue, (width, height, rgba), work);
+    let texture = super::url_texture_cache::upload_generated_linear_with_work(
+        device,
+        queue,
+        (width, height, rgba),
+        work,
+    );
     cache.insert(key.to_string(), texture);
 }
 
 fn linear_gradient_cache_key(linear: &LinearGradient) -> String {
-    let mut key = format!("nana:border-image-linear:{:.4}", linear.angle_deg);
-    for stop in linear.stops.iter().take(8) {
+    // Border-image gradients are rasterized from every stop, even when a
+    // caller supplies more than the usual eight-stop CSS shape. Include the
+    // complete resolved input in the key so a later stop cannot reuse a stale
+    // fp16 texture from an otherwise identical prefix.
+    let mut key = format!(
+        "nana:border-image-linear:{:08x}:{}",
+        linear.angle_deg.to_bits(),
+        linear.stops.len()
+    );
+    for stop in &linear.stops {
         let color = gradient_stop_linear_color(stop);
         key.push_str(&format!(
-            ":{:.6},{:.7},{:.7},{:.7},{:.7}",
-            stop.position, color[0], color[1], color[2], color[3]
+            ":{:08x},{:08x},{:08x},{:08x},{:08x}",
+            stop.position.to_bits(),
+            color[0].to_bits(),
+            color[1].to_bits(),
+            color[2].to_bits(),
+            color[3].to_bits()
         ));
     }
     key
 }
 
-fn rasterize_linear_gradient(linear: &LinearGradient, size: u32) -> Vec<u8> {
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
+fn rasterize_linear_gradient(linear: &LinearGradient, size: u32) -> Vec<[f32; 4]> {
+    let mut rgba = vec![[0.0; 4]; (size * size) as usize];
     let size_f = size as f32;
     for y in 0..size {
         for x in 0..size {
@@ -1542,11 +1566,12 @@ fn rasterize_linear_gradient(linear: &LinearGradient, size: u32) -> Vec<u8> {
                 linear.angle_deg,
             );
             let color = cpu_sample_stops(t, &linear.stops);
-            let i = ((y * size + x) * 4) as usize;
-            rgba[i] = (color[0].clamp(0.0, 1.0) * 255.0).round() as u8;
-            rgba[i + 1] = (color[1].clamp(0.0, 1.0) * 255.0).round() as u8;
-            rgba[i + 2] = (color[2].clamp(0.0, 1.0) * 255.0).round() as u8;
-            rgba[i + 3] = (color[3].clamp(0.0, 1.0) * 255.0).round() as u8;
+            // Keep premultiplied linear scRGB values here. The generated
+            // border texture is uploaded as Rgba16Float below; converting to
+            // RGBA8 would lose negative channels and highlights above 1
+            // before composition.
+            rgba[(y * size + x) as usize] =
+                [color[0], color[1], color[2], color[3].clamp(0.0, 1.0)];
         }
     }
     rgba
@@ -1564,22 +1589,23 @@ fn cpu_gradient_t(lx: f32, ly: f32, angle_deg: f32) -> f32 {
 }
 
 fn cpu_sample_stops(t: f32, stops: &[GradientStop]) -> [f32; 4] {
+    let premultiply = |[r, g, b, a]: [f32; 4]| [r * a, g * a, b * a, a];
     if stops.is_empty() {
         return [0.0, 0.0, 0.0, 0.0];
     }
     if stops.len() == 1 || t <= stops[0].position {
-        return gradient_stop_linear_color(&stops[0]);
+        return premultiply(gradient_stop_linear_color(&stops[0]));
     }
     if t >= stops[stops.len() - 1].position {
-        return gradient_stop_linear_color(&stops[stops.len() - 1]);
+        return premultiply(gradient_stop_linear_color(&stops[stops.len() - 1]));
     }
     for window in stops.windows(2) {
         let a = window[0];
         let b = window[1];
         if t >= a.position && t <= b.position {
             let mix = (t - a.position) / (b.position - a.position).max(0.0001);
-            let a = gradient_stop_linear_color(&a);
-            let b = gradient_stop_linear_color(&b);
+            let a = premultiply(gradient_stop_linear_color(&a));
+            let b = premultiply(gradient_stop_linear_color(&b));
             return [
                 a[0] + (b[0] - a[0]) * mix,
                 a[1] + (b[1] - a[1]) * mix,
@@ -1588,7 +1614,7 @@ fn cpu_sample_stops(t: f32, stops: &[GradientStop]) -> [f32; 4] {
             ];
         }
     }
-    gradient_stop_linear_color(&stops[0])
+    premultiply(gradient_stop_linear_color(&stops[0]))
 }
 
 /// Resolve a gradient stop into the same linear scRGB upload space used by
@@ -1884,6 +1910,41 @@ fn pack_paint_sets_mask_flag() {
 }
 
 #[test]
+fn analytic_gradient_stops_are_premultiplied_linear_sc_rgb() {
+    use nana_ui_core::{GradientStop, PaintColor};
+
+    let stops = [
+        GradientStop {
+            paint_color: Some(PaintColor::Srgb {
+                rgba: [0.5, 0.25, 0.0, 0.5],
+            }),
+            position: 0.0,
+            color: [0.0; 4],
+        },
+        GradientStop {
+            paint_color: Some(PaintColor::LinearScRgb {
+                channels: [2.0, -1.0, 0.5],
+                alpha: 0.25,
+            }),
+            position: 1.0,
+            color: [0.0; 4],
+        },
+    ];
+    let (_, colors, _) = pack_stop_arrays(&stops);
+    let first = super::color::pack_paint_color(stops[0].paint_color.unwrap());
+    assert_eq!(
+        colors[0],
+        [
+            first[0] * first[3],
+            first[1] * first[3],
+            first[2] * first[3],
+            first[3],
+        ]
+    );
+    assert_eq!(colors[1], [0.5, -0.25, 0.125, 0.25]);
+}
+
+#[test]
 fn border_image_gradient_uses_explicit_stop_color_space() {
     use nana_ui_core::{GradientStop, PaintColor};
 
@@ -1914,6 +1975,39 @@ fn border_image_gradient_uses_explicit_stop_color_space() {
 }
 
 #[test]
+fn border_image_linear_gradient_keeps_extended_channels_until_upload() {
+    use nana_ui_core::{GradientStop, LinearGradient, PaintColor};
+
+    let gradient = LinearGradient {
+        angle_deg: 90.0,
+        stops: vec![
+            GradientStop {
+                paint_color: Some(PaintColor::LinearScRgb {
+                    channels: [-1.5, 8.0, 0.25],
+                    alpha: 0.25,
+                }),
+                position: 0.0,
+                color: [0.0; 4],
+            },
+            GradientStop {
+                paint_color: Some(PaintColor::LinearScRgb {
+                    channels: [-0.5, 4.0, 1.5],
+                    alpha: 1.5,
+                }),
+                position: 1.0,
+                color: [0.0; 4],
+            },
+        ],
+    };
+    let pixels = rasterize_linear_gradient(&gradient, 2);
+    assert_eq!(pixels.len(), 4);
+    assert!(pixels.iter().all(|pixel| pixel[0] < 0.0));
+    assert!(pixels.iter().all(|pixel| pixel[1] > 1.0));
+    assert!(pixels.iter().all(|pixel| pixel[3] <= 1.0));
+    assert!(pixels.iter().any(|pixel| pixel[3] < 1.0));
+}
+
+#[test]
 fn border_image_gradient_cache_key_tracks_explicit_stop_values() {
     use nana_ui_core::{GradientStop, LinearGradient, PaintColor};
 
@@ -1937,6 +2031,25 @@ fn border_image_gradient_cache_key_tracks_explicit_stop_values() {
         h: Some(36.0),
         alpha: 1.0,
     });
+    assert_ne!(first_key, linear_gradient_cache_key(&first));
+}
+
+#[test]
+fn border_image_gradient_cache_key_includes_all_rasterized_stops() {
+    use nana_ui_core::{GradientStop, LinearGradient};
+
+    let mut first = LinearGradient {
+        angle_deg: 90.0,
+        stops: (0..9)
+            .map(|index| GradientStop {
+                paint_color: None,
+                position: index as f32 / 8.0,
+                color: [index as f32 / 8.0, 0.25, 0.5, 1.0],
+            })
+            .collect(),
+    };
+    let first_key = linear_gradient_cache_key(&first);
+    first.stops[8].color[0] = 0.75;
     assert_ne!(first_key, linear_gradient_cache_key(&first));
 }
 

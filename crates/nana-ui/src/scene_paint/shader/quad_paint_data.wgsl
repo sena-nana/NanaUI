@@ -9,6 +9,8 @@ const PAINT_RADIAL: u32 = 32u;
 const PAINT_MASK_RADIAL: u32 = 64u;
 const PAINT_SHADOW_INSET: u32 = 128u;
 const PAINT_MASK_URL: u32 = 256u;
+// Generated border-image gradients are already linear-premultiplied fp16.
+const PAINT_URL_PREMULT: u32 = 512u;
 
 struct QuadPaintData {
     flags: u32,

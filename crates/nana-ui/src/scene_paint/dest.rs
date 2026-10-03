@@ -4,8 +4,8 @@ use std::num::NonZeroU64;
 
 use nana_gpu::{LogicalBinding, LogicalBindingType, ResourceTable, ShaderStage};
 
-use super::AlphaEncoding;
 use super::clip::FragmentClip;
+use super::{AlphaEncoding, ScenePresentationColorSpace, ScenePresentationProfile};
 use crate::gpu_work::ManagedBuffer;
 
 fn cached_dest_pipeline(
@@ -446,13 +446,24 @@ pub(super) struct DestTarget {
     pub height: u32,
     pub msaa_allocated: bool,
     format: wgpu::TextureFormat,
+    target_format: wgpu::TextureFormat,
+    presentation: ScenePresentationProfile,
     msaa: Option<wgpu::TextureView>,
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
     blit_pipeline: wgpu::RenderPipeline,
-    /// The blit that stores gamma-premultiplied pixels; only an sRGB target
-    /// has one (see [`AlphaEncoding::Gamma`]).
+    /// The blit that stores encoded-premultiplied pixels for compositor
+    /// surfaces (see [`AlphaEncoding::Gamma`]). Wide-gamut profiles use their
+    /// presentation-aware entry point here as well.
     blit_gamma_pipeline: Option<wgpu::RenderPipeline>,
+    blit_presentation_pipeline: Option<wgpu::RenderPipeline>,
+    /// Replacement variants used when the destination attachment was
+    /// cleared for this scene. The scene target already contains its clear
+    /// colour, so blending it over the same surface clear would apply alpha
+    /// twice (and make a 25% clear become 44%).
+    blit_clear_pipeline: wgpu::RenderPipeline,
+    blit_clear_gamma_pipeline: Option<wgpu::RenderPipeline>,
+    blit_clear_presentation_pipeline: Option<wgpu::RenderPipeline>,
     blit_bind_group: wgpu::BindGroup,
     group_layers: Vec<GroupLayer>,
     group_pipeline: wgpu::RenderPipeline,
@@ -479,13 +490,20 @@ impl DestTarget {
         device: &wgpu::Device,
         pipeline_cache: Option<&wgpu::PipelineCache>,
         format: wgpu::TextureFormat,
+        target_format: wgpu::TextureFormat,
+        presentation: ScenePresentationProfile,
         width: u32,
         height: u32,
         want_msaa: bool,
         policy: &nana_gpu::GpuDeviceState,
     ) {
         if current.as_ref().is_some_and(|target| {
-            target.width == width && target.height == height && target.msaa_allocated == want_msaa
+            target.width == width
+                && target.height == height
+                && target.msaa_allocated == want_msaa
+                && target.format == format
+                && target.target_format == target_format
+                && target.presentation == presentation
         }) {
             return;
         }
@@ -493,6 +511,8 @@ impl DestTarget {
             device,
             pipeline_cache,
             format,
+            target_format,
+            presentation,
             width,
             height,
             want_msaa,
@@ -504,6 +524,8 @@ impl DestTarget {
         device: &wgpu::Device,
         pipeline_cache: Option<&wgpu::PipelineCache>,
         format: wgpu::TextureFormat,
+        target_format: wgpu::TextureFormat,
+        presentation: ScenePresentationProfile,
         width: u32,
         height: u32,
         want_msaa: bool,
@@ -612,7 +634,7 @@ impl DestTarget {
             bind_group_layouts: &[Some(&bind_layout)],
             immediate_size: 0,
         });
-        let make_blit = |entry_point: &str, label: &str| {
+        let make_blit = |entry_point: &str, label: &str, blend: Option<wgpu::BlendState>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -626,8 +648,8 @@ impl DestTarget {
                     module: &shader,
                     entry_point: Some(entry_point),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        format: target_format,
+                        blend,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -639,17 +661,73 @@ impl DestTarget {
                 cache: pipeline_cache,
             })
         };
-        let blit_pipeline = cached_dest_pipeline(policy, format, 1, dest_blit_layout_key(), || {
-            make_blit("fs_main", "nana-ui.scene.dest.blit.pipeline")
-        });
-        let blit_gamma_pipeline = format.is_srgb().then(|| {
-            cached_dest_pipeline(policy, format, 2, dest_blit_layout_key(), || {
+        let blit_pipeline =
+            cached_dest_pipeline(policy, target_format, 1, dest_blit_layout_key(), || {
                 make_blit(
-                    "fs_gamma_premultiplied",
-                    "nana-ui.scene.dest.blit.gamma.pipeline",
+                    "fs_main",
+                    "nana-ui.scene.dest.blit.pipeline",
+                    Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 )
-            })
-        });
+            });
+        let blit_clear_pipeline =
+            cached_dest_pipeline(policy, target_format, 0x80, dest_blit_layout_key(), || {
+                make_blit("fs_main", "nana-ui.scene.dest.blit.clear.pipeline", None)
+            });
+        // `direct_linear` is the compatibility path used by the public
+        // offscreen constructor. It must retain the old raw-linear bytes and
+        // therefore must not acquire a presentation pass.
+        let direct_srgb =
+            !presentation.is_direct_linear() && !presentation.requires_float_working_target();
+        let presentation_name = match presentation.color_space {
+            ScenePresentationColorSpace::Srgb if presentation.force_float_working => "hdr_srgb",
+            ScenePresentationColorSpace::Srgb => "srgb",
+            ScenePresentationColorSpace::DisplayP3 if presentation.force_float_working => "hdr_p3",
+            ScenePresentationColorSpace::DisplayP3 => "p3",
+            ScenePresentationColorSpace::ExtendedSrgbLinear => "linear",
+            ScenePresentationColorSpace::ExtendedSrgb => "extended_srgb",
+            ScenePresentationColorSpace::ExtendedDisplayP3 => "extended_p3",
+        };
+        let make_presentation = |gamma: bool, clear: bool| {
+            let entry = if direct_srgb && gamma {
+                "fs_gamma_premultiplied".to_owned()
+            } else {
+                format!(
+                    "fs_present_{presentation_name}{}{}",
+                    if target_format.is_srgb() {
+                        "_typed"
+                    } else {
+                        ""
+                    },
+                    if gamma { "_gamma" } else { "" },
+                )
+            };
+            let material = if clear { 0x180 } else { 0x100 }
+                + presentation.color_space as u64
+                + (u64::from(presentation.force_float_working) << 4)
+                + (u64::from(target_format.is_srgb()) << 5)
+                + (u64::from(gamma) << 6);
+            let label = if clear {
+                "nana-ui.scene.dest.blit.clear.presentation.pipeline"
+            } else {
+                "nana-ui.scene.dest.blit.presentation.pipeline"
+            };
+            let blend = (!clear).then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+            cached_dest_pipeline(
+                policy,
+                target_format,
+                material,
+                dest_blit_layout_key(),
+                || make_blit(&entry, label, blend),
+            )
+        };
+        let blit_gamma_pipeline =
+            (!presentation.is_direct_linear()).then(|| make_presentation(true, false));
+        let blit_presentation_pipeline = (!presentation.is_direct_linear() && !direct_srgb)
+            .then(|| make_presentation(false, false));
+        let blit_clear_gamma_pipeline =
+            (!presentation.is_direct_linear()).then(|| make_presentation(true, true));
+        let blit_clear_presentation_pipeline = (!presentation.is_direct_linear() && !direct_srgb)
+            .then(|| make_presentation(false, true));
         let group_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui.scene.group.sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -737,11 +815,17 @@ impl DestTarget {
             height,
             msaa_allocated: want_msaa,
             format,
+            target_format,
+            presentation,
             msaa,
             color,
             color_view,
             blit_pipeline,
             blit_gamma_pipeline,
+            blit_presentation_pipeline,
+            blit_clear_pipeline,
+            blit_clear_gamma_pipeline,
+            blit_clear_presentation_pipeline,
             blit_bind_group,
             group_layers: Vec::new(),
             group_pipeline,
@@ -1138,11 +1222,18 @@ impl DestTarget {
             0.0,
             1.0,
         );
-        let gamma = self
-            .blit_gamma_pipeline
-            .as_ref()
-            .filter(|_| encoding == AlphaEncoding::Gamma);
-        pass.set_pipeline(gamma.unwrap_or(&self.blit_pipeline));
+        let pipeline = match (encoding, clear_window.is_some()) {
+            (AlphaEncoding::Gamma, true) => self.blit_clear_gamma_pipeline.as_ref(),
+            (AlphaEncoding::Linear, true) => self.blit_clear_presentation_pipeline.as_ref(),
+            (AlphaEncoding::Gamma, false) => self.blit_gamma_pipeline.as_ref(),
+            (AlphaEncoding::Linear, false) => self.blit_presentation_pipeline.as_ref(),
+        };
+        let fallback = if clear_window.is_some() {
+            &self.blit_clear_pipeline
+        } else {
+            &self.blit_pipeline
+        };
+        pass.set_pipeline(pipeline.unwrap_or(fallback));
         pass.set_bind_group(0, &self.blit_bind_group, &[]);
         pass.draw(0..3, 0..1);
         drop(pass);

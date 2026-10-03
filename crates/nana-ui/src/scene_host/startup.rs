@@ -611,10 +611,7 @@ fn spawn_device_request(
                 pollster::block_on(request.acquire()).map_err(|error| error.to_string())
             };
             let painter = device.as_ref().ok().map(|device| {
-                SceneWgpuPainter::new(
-                    device.gpu(),
-                    nana_gpu::__framework::format_from_wgpu(device.format()),
-                )
+                SceneWgpuPainter::new_with_presentation(device.gpu(), device.scene_profile())
             });
             if let Err(unsent) = sender.send(DeviceStart { device, painter }) {
                 // The host went away. The surface holds a reference to its

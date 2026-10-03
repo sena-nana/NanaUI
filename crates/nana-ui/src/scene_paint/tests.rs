@@ -116,6 +116,7 @@ impl SceneGpuRenderer for FillClipRenderer {
         let pass_context = SceneGpuPassContext {
             gpu: context.gpu,
             target_format: context.target_format,
+            presentation: context.presentation,
             bounds: context.bounds,
             clip: context.clip,
             dest_size: context.dest_size,
@@ -11196,6 +11197,33 @@ fn gamma_encoding_stores_what_a_window_compositor_blends() {
     assert_eq!(stored_pixel(quarter_white, Gamma), [64, 64, 64, 64]);
     let gray = [0.5, 0.5, 0.5, 1.0];
     assert_eq!(stored_pixel(gray, Linear), stored_pixel(gray, Gamma));
+}
+
+#[test]
+fn presentation_profiles_keep_sdr_direct_and_wide_working_targets_distinct() {
+    let sdr = super::ScenePresentationProfile::sdr(nana_gpu::GpuTextureFormat::RGBA8_UNORM_SRGB);
+    assert_eq!(
+        sdr.working_format(),
+        nana_gpu::GpuTextureFormat::RGBA8_UNORM_SRGB
+    );
+    assert!(!sdr.requires_float_working_target());
+
+    let p3 = super::ScenePresentationProfile::new(
+        nana_gpu::GpuTextureFormat::RGBA8_UNORM,
+        super::ScenePresentationColorSpace::DisplayP3,
+    );
+    assert_eq!(
+        p3.working_format(),
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT
+    );
+    assert!(p3.requires_float_working_target());
+
+    let hdr_fallback = sdr.with_force_float_working();
+    assert_eq!(
+        hdr_fallback.working_format(),
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT
+    );
+    assert!(hdr_fallback.force_float_working);
 }
 
 /// Black text on a white ground, optionally inside a painter layer, painted

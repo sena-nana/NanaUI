@@ -56,7 +56,8 @@ impl PaintScript {
     ///   （比例是第一个角色的份量）或 `{ "alpha": [角色, 不透明度] }`。
     /// - 上色：颜色，或渐变 `{ "linear": [x0, y0, x1, y1] | "radial": [cx, cy, r]
     ///   | "conic": [cx, cy, 起始弧度], "stops": [[偏移, 颜色], …], "extend":
-    ///   "pad" | "repeat" | "reflect" }`，色标在 premultiplied sRGB 里插值。
+    ///   "pad" | "repeat" | "reflect" }`，色标进入 Scene 后在 linear scRGB 中按
+    ///   premultiplied 方式插值。
     /// - 路径：SVG path 字符串（`M L H V C S Q T A Z`，大小写均可），或分段数组
     ///   `[["M", x, y], ["L", x, y], ["Q", cx, cy, x, y], ["C", …6], ["arcTo",
     ///   拐角x, 拐角y, 终点x, 终点y, r], ["arc", cx, cy, r, 起始, 扫过], ["rect",

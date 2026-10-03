@@ -243,7 +243,8 @@ slots / overlay 组装接口。`mount` 仍用于按 key 构造并销毁缺席组
   `bounds`、`transformed`。`cx.fill_path` / `cx.stroke_path` 带抗锯齿。
 - 上色：填充、描边、圆角矩形、文字和图标都接受纯色或 `Gradient`（`linear` /
   `radial` / `conic`。任意多个色标。`Pad` / `Repeat` / `Reflect`）。渐变逐像素
-  求值。色标在 premultiplied sRGB 里插值（与 CSS 一致）。超过 16 个色标时重采样。
+  求值。色标进入 Scene 后在 linear scRGB 中按 premultiplied 方式插值；sRGB 输入只
+  解码一次。超过 16 个色标时重采样。
 - 描边：`StrokeStyle` 设宽度、线帽、连接、尖角限制（Canvas `miterLimit`）。
   缺省与 Canvas 一致：平头线帽、尖角连接、限制 10。
   `.dash(pattern, offset)` 是 Canvas `setLineDash` / `lineDashOffset` 语义。

@@ -22,6 +22,7 @@ use crate::scene_gpu::{
     SceneGpuPrepareContext, SceneGpuRenderContext, SceneGpuRenderer, SceneGpuRendererRegistry,
     ScenePass,
 };
+use crate::scene_paint::pack_linear;
 
 /// Scene painter for [`GPU_VIEW_RENDERER`] (`"gpu-view"`).
 ///
@@ -187,8 +188,12 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         let palette = self.node_palette(&node.custom);
         let instance = GpuViewInstance {
             rect,
-            color_a: palette.background,
-            color_b: palette.accent,
+            // Runtime palettes are authoring sRGB values, just like the
+            // theme colours used by ordinary quads. Embedded GPU content
+            // joins the retained linear-scRGB working target at this point;
+            // the host presentation pass owns the only later transfer.
+            color_a: pack_linear(palette.background),
+            color_b: pack_linear(palette.accent),
             parameters: [self.node_seed(&node.custom), 0.0, 0.0, 0.0],
         };
         prepared.dest_size = context.dest_size;
@@ -202,6 +207,7 @@ impl SceneGpuRenderer for DefaultGpuViewRenderer {
         let pass_context = SceneGpuPassContext {
             gpu: context.gpu,
             target_format: context.target_format,
+            presentation: context.presentation,
             bounds: context.bounds,
             clip: context.clip,
             dest_size: context.dest_size,
@@ -604,6 +610,7 @@ mod tests {
             SceneGpuPrepareContext {
                 gpu,
                 target_format: format,
+                presentation: crate::ScenePresentationProfile::sdr(format),
                 bounds: crate::LogicalRect {
                     x: 0.0,
                     y: 0.0,

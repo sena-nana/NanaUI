@@ -1,13 +1,14 @@
 //! sRGB packing adapted from historical Iced (MIT).
 
-/// Converts an sRGB Scene color to linear RGBA packed into quad/mesh
-/// instances when gamma correction is enabled.
+/// Converts an authoring sRGB color to the Scene's linear scRGB instance
+/// representation. Presentation transfer is applied only at the final target
+/// boundary; explicit extended colors use [`pack_paint_color`].
 pub(crate) fn pack_linear([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     [
-        linear_component(r),
-        linear_component(g),
-        linear_component(b),
-        a,
+        finite_or_zero(linear_component(r)),
+        finite_or_zero(linear_component(g)),
+        finite_or_zero(linear_component(b)),
+        normalized_alpha(a),
     ]
 }
 
@@ -16,7 +17,24 @@ pub(crate) fn pack_linear([r, g, b, a]: [f32; 4]) -> [f32; 4] {
 /// presentation/gamut stage instead of being clamped here.
 pub(crate) fn pack_paint_color(color: nana_ui_core::PaintColor) -> [f32; 4] {
     let (channels, alpha) = color.to_linear_sc_rgb();
-    [channels[0], channels[1], channels[2], alpha]
+    [
+        finite_or_zero(channels[0]),
+        finite_or_zero(channels[1]),
+        finite_or_zero(channels[2]),
+        normalized_alpha(alpha),
+    ]
+}
+
+fn finite_or_zero(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
+fn normalized_alpha(alpha: f32) -> f32 {
+    if alpha.is_finite() {
+        alpha.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 pub(super) fn with_opacity([r, g, b, a]: [f32; 4], opacity: f32) -> [f32; 4] {

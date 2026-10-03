@@ -118,6 +118,8 @@ fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
 
 `HostTexture` 用稳定 slot 和 generation 包住可采样的 `GpuTexture`。宿主替换或改尺寸时加 generation。NanaUI 只重建绑定。不拆布局。`revision` 的高 32 位是 generation、低 32 位是内容 version（`pack_gpu_revision`）。`HostTexture::device_generation()` 是纹理所在设备。它与 painter 的设备不同时（设备替换后没有在 `rebuild_gpu` 里重建），整帧以 `ScenePaintError::StaleHostTexture` 拒绝。不会把旧设备的纹理交给后端。
 
+HostTexture 的像素在进入 Scene 时必须已经是 premultiplied linear scRGB；如果源是普通 sRGB 图片，使用 sRGB-typed texture 让采样器解码（只适合 straight/opaque 颜色），不要把 gamma-premultiplied 字节标成 sRGB。带透明度的 premultiplied 内容使用线性 UNORM 或浮点格式。这样纹理、背景、文字和自定义 GPU 节点都在同一个线性工作空间混合。
+
 `HostTexture::instance_identity()` 区分使用相同公开 id 的不同 handle。克隆共享该身份。自接事件循环使用 URL 图片时，给 `SceneWgpuPainter::set_image_waker` 安装唤醒回调。完成通知后请求重绘。内建宿主已接入。离屏工具可用 `has_pending_images()` 等待资源后再次绘制。HTTP 获取与解码在后台进行。纹理上传仍使用宿主设备。Quad 与 HostTexture 蒙版共用缓存实现。每个缓存最多同时获取 4 个 HTTP 资源。闲置纹理最多保留 256 项／64 MiB。120 个绘制帧未使用后释放。当前帧工作集按需保留。栅格图片解码限制为 4096 像素边长和 64 MiB 分配预算。SVG 沿用 2048 像素边长上限。URL 图片默认按实际绘制的设备像素在后台重采样成单层纹理。`ImageSampling::Mipmap` 改为解码尺寸加 mip 链、三线性采样。见 [应用 API · 图片采样](application-api.md#图片采样)。
 
 合成顺序就是文档顺序。`"nana.host-texture"` 在主 pass 里、在这个节点该出现的位置采样。不攒到帧尾。多层就是相邻的几张 `GpuTextureView`。不要绕过界面树去直写窗口 Surface。
@@ -197,11 +199,13 @@ fn window_frame_presented(..) -> RuntimeProgramUpdate {
 
 `SceneGpuRenderer` 的合同里没有 wgpu 类型：
 
-- `prepare` 收 `SceneGpuPrepareContext { gpu: &GpuContext, target_format: GpuTextureFormat, bounds, scale_factor, dest_size, gpu_work }`。
-- `draw_in_pass` / `draw_batch_in_pass` 收 painter 正开着的 `ScenePass`（`dest_size`、`set_scissor`、`set_viewport`、`restore_viewport`）和同样带 `gpu`、`target_format` 的上下文。
+- `prepare` 收 `SceneGpuPrepareContext { gpu: &GpuContext, target_format: GpuTextureFormat, presentation, bounds, scale_factor, dest_size, gpu_work }`。`target_format` 是当前 Scene 的线性 scRGB 工作目标；P3/HDR 通常是 `RGBA16Float`。`presentation` 描述最终 surface 的色域/传递函数。
+- `draw_in_pass` / `draw_batch_in_pass` 收 painter 正开着的 `ScenePass`（`dest_size`、`set_scissor`、`set_viewport`、`restore_viewport`）和同样带 `gpu`、`target_format`、`presentation` 的上下文。
 - `render`（独立 pass）收 `SceneGpuRenderContext`，用 `with_pass(label, |pass| ..)` 在当前目标上开一个 Load/Store 的 pass，viewport 是整个目标、scissor 是节点的 clip。
 
-在 Nana 有自己的 shader ABI（#185）之前，录 draw 仍要经 `wgpu-interop`。`context.gpu.wgpu().device()` 建管线。`pass.wgpu()` 录 draw。按设备建的缓存以 `(context.gpu.generation(), context.target_format)` 为键。跨设备替换保留下来的 registry 不会拿旧设备的管线去画。不同格式的窗口交替也不必重建。内置的 `DefaultGpuViewRenderer` 就这样做。
+自定义 renderer 写入的 RGB 和 alpha 必须是 premultiplied linear scRGB；不要在节点 shader 中做 sRGB/P3/HDR 转换，也不要把最终 surface format 当作工作 format。所有节点最后由 painter 的一个 presentation blit 统一完成传递函数、P3 矩阵和 HDR→SDR shoulder。缓存管线时按 `(context.gpu.generation(), context.target_format, context.presentation)` 建键。
+
+在 Nana 有自己的 shader ABI（#185）之前，录 draw 仍要经 `wgpu-interop`。`context.gpu.wgpu().device()` 建管线。`pass.wgpu()` 录 draw。按设备建的缓存以 `(context.gpu.generation(), context.target_format, context.presentation)` 为键。跨设备替换保留下来的 registry 不会拿旧设备的管线去画。不同格式的窗口交替也不必重建。内置的 `DefaultGpuViewRenderer` 就这样做。
 
 ### 批绘制
 

@@ -21,6 +21,7 @@
 //! durably afterwards. Everything below that says "before the window exists"
 //! says it for this reason.
 
+use crate::{ScenePresentationColorSpace, ScenePresentationProfile};
 use nana_ui_platform::{WindowDescriptor, WindowSurfacePreference};
 use nana_window::{MaterialEffect, MaterialFallback, MaterialOutcome, NonClientRenderingStrategy};
 
@@ -58,8 +59,8 @@ pub enum SurfaceProfileFallback {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResolvedSurfaceProfile {
     pub requested: SurfacePresentationPolicy,
-    pub format: wgpu::TextureFormat,
-    pub color_space: wgpu::SurfaceColorSpace,
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) color_space: wgpu::SurfaceColorSpace,
     pub fallback: Option<SurfaceProfileFallback>,
 }
 
@@ -74,14 +75,47 @@ impl ResolvedSurfaceProfile {
         )
     }
 
+    pub const fn fallback(self) -> Option<SurfaceProfileFallback> {
+        self.fallback
+    }
+
+    /// Raw surface format for hosts that explicitly opt into WGPU interop.
+    #[cfg(feature = "wgpu-interop")]
     pub const fn format(self) -> wgpu::TextureFormat {
         self.format
     }
+
+    /// Raw surface colour space for hosts that explicitly opt into WGPU
+    /// interop.
+    #[cfg(feature = "wgpu-interop")]
     pub const fn color_space(self) -> wgpu::SurfaceColorSpace {
         self.color_space
     }
-    pub const fn fallback(self) -> Option<SurfaceProfileFallback> {
-        self.fallback
+
+    /// Translate the host surface contract into the Scene painter contract.
+    /// The painter must see the color space as well as the format: a P3
+    /// `Bgra8Unorm` surface cannot share an sRGB painter's direct path.
+    pub fn scene_profile(self) -> ScenePresentationProfile {
+        let color_space = match self.color_space {
+            wgpu::SurfaceColorSpace::DisplayP3 => ScenePresentationColorSpace::DisplayP3,
+            wgpu::SurfaceColorSpace::ExtendedSrgbLinear => {
+                ScenePresentationColorSpace::ExtendedSrgbLinear
+            }
+            wgpu::SurfaceColorSpace::ExtendedSrgb => ScenePresentationColorSpace::ExtendedSrgb,
+            wgpu::SurfaceColorSpace::ExtendedDisplayP3 => {
+                ScenePresentationColorSpace::ExtendedDisplayP3
+            }
+            _ => ScenePresentationColorSpace::Srgb,
+        };
+        let profile = ScenePresentationProfile::new(
+            nana_gpu::__framework::format_from_wgpu(self.format),
+            color_space,
+        );
+        if matches!(self.requested, SurfacePresentationPolicy::Hdr) && !self.is_hdr() {
+            profile.with_force_float_working()
+        } else {
+            profile
+        }
     }
 }
 
