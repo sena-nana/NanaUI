@@ -5758,6 +5758,55 @@ fn focused_icon_does_not_paint_an_external_ring() {
 }
 
 #[test]
+fn focused_list_item_paints_an_external_keyboard_ring() {
+    let mut item = node(1, None, &[]);
+    item.layout = LayoutBox {
+        x: 10.0,
+        y: 20.0,
+        width: 120.0,
+        height: 32.0,
+    };
+    item.focused = true;
+    item.standard_visual = Some(StandardVisual::ListItem {
+        leading: None,
+        content: None,
+        trailing: None,
+        detail: None,
+    });
+    item.standard_visual_foreground = Some([0.2, 0.6, 1.0, 1.0]);
+    item.text = Some(TextContent {
+        value: "Open".into(),
+    });
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([item], []);
+
+    let ring = scene
+        .primitive(PrimitiveId {
+            node: id(1),
+            slot: 7,
+        })
+        .expect("a focused list item must expose a keyboard focus ring");
+    assert!(matches!(
+        ring.kind,
+        ScenePrimitiveKind::Quad {
+            border_color: Some([0.2, 0.6, 1.0, 1.0]),
+            border_width: 2.0,
+            ..
+        }
+    ));
+    assert_eq!(
+        ring.bounds,
+        SceneRect {
+            x: 7.0,
+            y: 17.0,
+            width: 126.0,
+            height: 38.0,
+        }
+    );
+}
+
+#[test]
 fn compact_leading_icon_centers_on_the_parent_text_line() {
     let mut row = node(1, None, &[2]);
     row.layout = LayoutBox {
