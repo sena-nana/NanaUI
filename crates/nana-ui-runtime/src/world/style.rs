@@ -712,7 +712,20 @@ impl UiWorld {
             self.reresolve_layout_intent(&ids);
         }
         for id in ids {
-            self.mark(id, bits);
+            if metrics_changed {
+                self.record_layout_invalidation(
+                    id,
+                    nana_ui_core::LayoutInvalidation::new(
+                        nana_ui_core::LayoutInvalidationSource::Resource,
+                        nana_ui_core::InvalidationReason::RESOURCE,
+                        nana_ui_core::InvalidationKind::MEASURE
+                            .union(nana_ui_core::InvalidationKind::PLACEMENT),
+                        nana_ui_core::LayoutFieldMask::ALL,
+                        nana_ui_core::LayoutDependencyFootprint::ALL,
+                    ),
+                );
+            }
+            self.mark(id, bits & !DirtyMask::LAYOUT);
         }
     }
 }

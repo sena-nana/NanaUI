@@ -429,11 +429,11 @@ fn paint_only_cascade_does_not_seed_containing_block_work() {
     );
     bridge.inject_stylesheet(".paint { display: flex; color: red; }");
     bridge.reapply_layout_for(1);
-    bridge.layout_dirty.clear();
+    bridge.changes.layout_invalidations.clear();
 
     bridge.patch_prop(1, "style", &HostValue::string("color: blue"));
     assert!(
-        bridge.layout_dirty.is_empty(),
+        bridge.changes.layout_invalidations.is_empty(),
         "paint-only updates must not seed containing-block propagation"
     );
 }
@@ -453,14 +453,64 @@ fn paint_only_cascade_is_zero_layout_work_at_2k_and_8k_scale() {
             );
         }
         bridge.inject_stylesheet(".paint-scale { display: flex; color: red; }");
-        bridge.layout_dirty.clear();
+        bridge.changes.layout_invalidations.clear();
 
         bridge.patch_prop(count, "style", &HostValue::string("color: blue"));
         assert!(
-            bridge.layout_dirty.is_empty(),
+            bridge.changes.layout_invalidations.is_empty(),
             "paint-only update seeded layout work at {count} nodes"
         );
     }
+}
+
+#[test]
+fn containing_block_seed_is_consumed_by_full_viewport_sync() {
+    let mut bridge = MessageBridge::new();
+    bridge.register(1, WidgetKind::Column, WidgetProps::default());
+    bridge.take_snapshot_changes();
+
+    bridge.set_containing_block(1, Some(400.0), Some(300.0));
+    assert_eq!(bridge.changes.layout_invalidations.len(), 1);
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+
+    assert!(
+        bridge.changes.layout_invalidations.is_empty(),
+        "full viewport propagation must consume its runtime containing-block seed"
+    );
+}
+
+#[test]
+fn text_mutation_emits_intrinsic_typed_seed_even_when_style_is_stable() {
+    let mut bridge = MessageBridge::new();
+    bridge.register(
+        1,
+        WidgetKind::Text,
+        WidgetProps {
+            label: "before".into(),
+            ..WidgetProps::default()
+        },
+    );
+    bridge.take_snapshot_changes();
+
+    bridge.set_label(1, "after");
+    let changes = bridge.take_snapshot_changes();
+    let seed = changes
+        .layout_invalidations()
+        .get(&1)
+        .copied()
+        .expect("text seed");
+    assert!(
+        seed.reason
+            .intersects(nana_ui_core::InvalidationReason::TEXT)
+    );
+    assert!(
+        seed.changed_inputs
+            .intersects(nana_ui_core::LayoutFieldMask::INTRINSIC)
+    );
+    assert!(
+        seed.affected_axes
+            .intersects(nana_ui_core::LayoutDependencyFootprint::EXPORTS_BASELINE)
+    );
 }
 
 #[test]
@@ -1131,6 +1181,73 @@ fn set_containing_block_feeds_style_percent_base() {
     assert_eq!(layout.gap, Some(LengthSpec::Percent(5.0)));
     assert_eq!(layout.resolved_margin_against(Some(400.0)).top, 40.0);
     assert_eq!(layout.resolved_column_gap_against(Some(400.0)), 20.0);
+}
+
+#[test]
+fn direct_containing_block_write_seeds_descendant_walk() {
+    let mut bridge = MessageBridge::new();
+    let mut root = WidgetProps::default();
+    root.layout.width = Some(LengthSpec::Fill);
+    root.layout.height = Some(LengthSpec::Fill);
+    bridge.register(1, WidgetKind::Column, root);
+    let mut child = WidgetProps::default();
+    child.layout.width = Some(LengthSpec::Fill);
+    child.layout.height = Some(LengthSpec::Fill);
+    bridge.register(2, WidgetKind::Column, child);
+    bridge.insert_child(2, 1, None);
+    bridge.register(3, WidgetKind::Box, WidgetProps::default());
+    bridge.insert_child(3, 2, None);
+
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+    let _ = bridge.snapshot();
+    assert_eq!(
+        bridge.get(3).unwrap().props.containing_block_width,
+        Some(400.0)
+    );
+
+    // A host write updates the direct child immediately. The next refresh must
+    // consume the dedicated seed and carry the new content box to the leaf.
+    bridge.set_containing_block(1, Some(200.0), Some(300.0));
+    assert_eq!(
+        bridge.get(2).unwrap().props.containing_block_width,
+        Some(200.0)
+    );
+    assert_eq!(
+        bridge.get(3).unwrap().props.containing_block_width,
+        Some(400.0)
+    );
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+    assert_eq!(
+        bridge.get(3).unwrap().props.containing_block_width,
+        Some(200.0)
+    );
+}
+
+#[test]
+fn stable_seed_still_recomputes_children_after_own_layout_change() {
+    let mut bridge = MessageBridge::new();
+    let mut root = WidgetProps::default();
+    root.layout.width = Some(LengthSpec::Fill);
+    root.layout.height = Some(LengthSpec::Fill);
+    bridge.register(1, WidgetKind::Column, root);
+    bridge.register(2, WidgetKind::Box, WidgetProps::default());
+    bridge.insert_child(2, 1, None);
+
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+    let _ = bridge.snapshot();
+    assert_eq!(
+        bridge.get(2).unwrap().props.containing_block_width,
+        Some(400.0)
+    );
+
+    // The root's incoming CB remains 400px, but its own width declaration
+    // changes its content box. `seed_roots` must keep this stable seed alive.
+    bridge.patch_prop(1, "style", &HostValue::string("width: 200px"));
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+    assert_eq!(
+        bridge.get(2).unwrap().props.containing_block_width,
+        Some(200.0)
+    );
 }
 
 #[test]
@@ -4111,6 +4228,59 @@ fn media_min_width_recascades_when_viewport_changes() {
 }
 
 #[test]
+fn containing_block_viewport_cache_clears_when_host_viewport_becomes_unknown() {
+    let mut bridge = MessageBridge::new();
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(800.0, 600.0));
+    assert_eq!(bridge.cascade.layout_viewport, Some((800.0, 600.0)));
+
+    // A host can temporarily have only an indeterminate/partial viewport
+    // during surface recreation. The old cache kept 800×600 here, causing
+    // viewport media/lengths to resolve against stale dimensions.
+    bridge.sync_layout_containing_blocks(ParentBox::default());
+    assert_eq!(bridge.cascade.layout_viewport, None);
+}
+
+#[test]
+fn unknown_viewport_transition_recascades_media_queries() {
+    let mut bridge = MessageBridge::new();
+    let mut props = WidgetProps::default();
+    props.class_names = vec!["wide-unknown".into()];
+    bridge.register(1, WidgetKind::Column, props);
+    bridge.inject_stylesheet("@media (min-width: 1000px) { .wide-unknown { width: 100px; } }");
+
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(1200.0, 600.0));
+    assert_eq!(
+        bridge.get(1).unwrap().props.layout.width,
+        Some(LengthSpec::Px(100.0))
+    );
+    bridge.sync_layout_containing_blocks(ParentBox::default());
+    assert_eq!(bridge.cascade.layout_viewport, None);
+    assert_eq!(bridge.get(1).unwrap().props.layout.width, None);
+}
+
+#[test]
+fn containing_block_walk_does_not_seed_html_scaffold_above_mount_root() {
+    let mut bridge = MessageBridge::new();
+    bridge.ensure_document_roots(1, 2);
+    bridge.register(3, WidgetKind::Box, WidgetProps::default());
+    bridge.insert_child(3, 2, None);
+    let _ = bridge.snapshot();
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+    let before = bridge.get(3).unwrap().props.containing_block_width;
+    assert_eq!(before, Some(400.0));
+
+    // `html` is cascade scaffolding and is intentionally not in `roots`; a
+    // style mutation there must not overwrite the mounted body's viewport CB.
+    bridge.patch_prop(1, "style", &HostValue::string("padding: 10px"));
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(400.0, 300.0));
+    assert_eq!(
+        bridge.get(3).unwrap().props.containing_block_width,
+        before,
+        "scaffold mutation must not walk/seed the mounted layout forest"
+    );
+}
+
+#[test]
 fn transition_duration_from_stylesheet_is_nonzero() {
     let mut bridge = MessageBridge::new();
     bridge.register(
@@ -5148,7 +5318,7 @@ fn hover_retarget_mid_transition_uses_unhovered_target() {
 }
 
 #[test]
-fn px_width_transition_dirties_layout() {
+fn px_width_transition_updates_runtime_layout() {
     use nana_ui_core::LengthSpec;
     use nana_ui_runtime::StableNodeId;
     use std::time::Duration;
@@ -5177,12 +5347,11 @@ fn px_width_transition_dirties_layout() {
     doc.set_runtime_clock_for_test(Duration::from_millis(100));
     assert!(bridge.tick_css_animations(&mut doc));
     let node = StableNodeId::new(box_el.0).expect("box id");
-    let dirty = doc.world().pending_layout_dirty();
-    assert!(
-        dirty.contains(&node),
-        "px width transition must dirty LAYOUT, got {dirty:?}"
-    );
     doc.flush_host_frame();
+    assert!(
+        doc.world().last_work_counters().layout_frontier_seeds > 0,
+        "px width transition must publish typed layout work"
+    );
     let style = doc.world().node_style(node).expect("box runtime style");
     let width = match style.layout.width {
         Some(LengthSpec::Px(px)) => px,

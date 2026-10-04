@@ -58,6 +58,24 @@ pub struct WorkCounters {
     pub style_processed: usize,
     pub text_shaped: usize,
     pub layout_nodes: usize,
+    /// Typed layout seeds handed to the dependency-aware frontier builder.
+    pub layout_frontier_seeds: usize,
+    /// Seeds merged because they reached the same node in one frame.
+    pub layout_frontier_seed_merges: usize,
+    /// Nodes that entered the measure frontier.
+    pub layout_frontier_nodes_measure: usize,
+    /// Nodes that entered the placement frontier.
+    pub layout_frontier_nodes_placement: usize,
+    /// Formatting contexts that ran a local solve.
+    pub layout_frontier_contexts: usize,
+    /// Dependency edges inspected while building/propagating the frontier.
+    pub layout_dependency_edges_visited: usize,
+    /// Propagation stopped because the exported metric delta was stable.
+    pub layout_propagations_stopped: usize,
+    /// Bounded local subtree fallbacks used for an unsupported context.
+    pub layout_local_subtree_fallbacks: usize,
+    /// Full-document fallbacks. Normal product paths should keep this zero.
+    pub layout_full_document_fallbacks: usize,
     pub hit_test_candidates: usize,
     /// Unique live pointer hover, press, capture, and focus nodes this drain.
     pub input_targets: usize,
@@ -243,6 +261,33 @@ impl WorkCounters {
         self.style_processed = self.style_processed.saturating_add(other.style_processed);
         self.text_shaped = self.text_shaped.saturating_add(other.text_shaped);
         self.layout_nodes = self.layout_nodes.saturating_add(other.layout_nodes);
+        self.layout_frontier_seeds = self
+            .layout_frontier_seeds
+            .saturating_add(other.layout_frontier_seeds);
+        self.layout_frontier_seed_merges = self
+            .layout_frontier_seed_merges
+            .saturating_add(other.layout_frontier_seed_merges);
+        self.layout_frontier_nodes_measure = self
+            .layout_frontier_nodes_measure
+            .saturating_add(other.layout_frontier_nodes_measure);
+        self.layout_frontier_nodes_placement = self
+            .layout_frontier_nodes_placement
+            .saturating_add(other.layout_frontier_nodes_placement);
+        self.layout_frontier_contexts = self
+            .layout_frontier_contexts
+            .saturating_add(other.layout_frontier_contexts);
+        self.layout_dependency_edges_visited = self
+            .layout_dependency_edges_visited
+            .saturating_add(other.layout_dependency_edges_visited);
+        self.layout_propagations_stopped = self
+            .layout_propagations_stopped
+            .saturating_add(other.layout_propagations_stopped);
+        self.layout_local_subtree_fallbacks = self
+            .layout_local_subtree_fallbacks
+            .saturating_add(other.layout_local_subtree_fallbacks);
+        self.layout_full_document_fallbacks = self
+            .layout_full_document_fallbacks
+            .saturating_add(other.layout_full_document_fallbacks);
         self.hit_test_candidates = self
             .hit_test_candidates
             .saturating_add(other.hit_test_candidates);
@@ -412,6 +457,47 @@ impl WorkCounters {
         self.cross_context_measure_misses = self
             .cross_context_measure_misses
             .saturating_add(cross_context_misses);
+    }
+
+    /// Record one dependency-aware frontier build.  The caller supplies the
+    /// structural observations from the retained scheduler; timing remains in
+    /// Runtime's frame profiler.  Keeping this as one operation prevents a
+    /// partially filled snapshot when a pass exits early.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_layout_frontier(
+        &mut self,
+        seeds: usize,
+        seed_merges: usize,
+        nodes_measure: usize,
+        nodes_placement: usize,
+        contexts: usize,
+        edges_visited: usize,
+        propagations_stopped: usize,
+        local_subtree_fallbacks: usize,
+        full_document_fallbacks: usize,
+    ) {
+        self.layout_frontier_seeds = self.layout_frontier_seeds.saturating_add(seeds);
+        self.layout_frontier_seed_merges =
+            self.layout_frontier_seed_merges.saturating_add(seed_merges);
+        self.layout_frontier_nodes_measure = self
+            .layout_frontier_nodes_measure
+            .saturating_add(nodes_measure);
+        self.layout_frontier_nodes_placement = self
+            .layout_frontier_nodes_placement
+            .saturating_add(nodes_placement);
+        self.layout_frontier_contexts = self.layout_frontier_contexts.saturating_add(contexts);
+        self.layout_dependency_edges_visited = self
+            .layout_dependency_edges_visited
+            .saturating_add(edges_visited);
+        self.layout_propagations_stopped = self
+            .layout_propagations_stopped
+            .saturating_add(propagations_stopped);
+        self.layout_local_subtree_fallbacks = self
+            .layout_local_subtree_fallbacks
+            .saturating_add(local_subtree_fallbacks);
+        self.layout_full_document_fallbacks = self
+            .layout_full_document_fallbacks
+            .saturating_add(full_document_fallbacks);
     }
 
     /// Record `TextLayoutCache` FIFO evictions. Does not invent glyph evictions.
@@ -726,6 +812,15 @@ mod tests {
         assert_eq!(WorkCounters::default(), WorkCounters::default());
         assert_eq!(WorkCounters::default().allocations, 0);
         assert_eq!(WorkCounters::default().allocated_bytes, 0);
+        assert_eq!(WorkCounters::default().layout_frontier_seeds, 0);
+        assert_eq!(WorkCounters::default().layout_frontier_seed_merges, 0);
+        assert_eq!(WorkCounters::default().layout_frontier_nodes_measure, 0);
+        assert_eq!(WorkCounters::default().layout_frontier_nodes_placement, 0);
+        assert_eq!(WorkCounters::default().layout_frontier_contexts, 0);
+        assert_eq!(WorkCounters::default().layout_dependency_edges_visited, 0);
+        assert_eq!(WorkCounters::default().layout_propagations_stopped, 0);
+        assert_eq!(WorkCounters::default().layout_local_subtree_fallbacks, 0);
+        assert_eq!(WorkCounters::default().layout_full_document_fallbacks, 0);
         assert_eq!(WorkCounters::default().text_shaped_runs, 0);
         assert_eq!(WorkCounters::default().text_layout_cache_hits, 0);
         assert_eq!(WorkCounters::default().text_layout_cache_misses, 0);
@@ -806,6 +901,34 @@ mod tests {
         counters.accumulate(next);
         assert_eq!(counters.layout_foundation.layout_nodes_placed, 6);
         assert_eq!(counters.layout_foundation.replaced_resource_rebinds, 4);
+    }
+
+    #[test]
+    fn frontier_counters_record_and_accumulate_structural_work() {
+        let mut first = WorkCounters::default();
+        first.record_layout_frontier(3, 1, 5, 7, 2, 11, 1, 0, 0);
+        assert_eq!(first.layout_frontier_seeds, 3);
+        assert_eq!(first.layout_frontier_seed_merges, 1);
+        assert_eq!(first.layout_frontier_nodes_measure, 5);
+        assert_eq!(first.layout_frontier_nodes_placement, 7);
+        assert_eq!(first.layout_frontier_contexts, 2);
+        assert_eq!(first.layout_dependency_edges_visited, 11);
+        assert_eq!(first.layout_propagations_stopped, 1);
+        assert_eq!(first.layout_local_subtree_fallbacks, 0);
+        assert_eq!(first.layout_full_document_fallbacks, 0);
+
+        let mut second = WorkCounters::default();
+        second.record_layout_frontier(2, 4, 1, 0, 1, 3, 2, 1, 1);
+        first.accumulate(second);
+        assert_eq!(first.layout_frontier_seeds, 5);
+        assert_eq!(first.layout_frontier_seed_merges, 5);
+        assert_eq!(first.layout_frontier_nodes_measure, 6);
+        assert_eq!(first.layout_frontier_nodes_placement, 7);
+        assert_eq!(first.layout_frontier_contexts, 3);
+        assert_eq!(first.layout_dependency_edges_visited, 14);
+        assert_eq!(first.layout_propagations_stopped, 3);
+        assert_eq!(first.layout_local_subtree_fallbacks, 1);
+        assert_eq!(first.layout_full_document_fallbacks, 1);
     }
 
     #[test]

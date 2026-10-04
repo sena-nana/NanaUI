@@ -32,8 +32,10 @@ use std::{
 };
 
 use nana_ui_core::{
-    AppearanceSettings, BackdropTarget, ButtonKind, CardKind, ControlSize, Icon,
-    SwitchControlPosition, ThemeAppearance, ThemeId, ThemeRegistry, WindowMaterialMode,
+    AppearanceSettings, BackdropTarget, ButtonKind, CardKind, ControlSize, Icon, InvalidationKind,
+    InvalidationReason, LayoutDependencyFootprint, LayoutFieldMask, LayoutInvalidation,
+    LayoutInvalidationSource, SwitchControlPosition, ThemeAppearance, ThemeId, ThemeRegistry,
+    WindowMaterialMode,
 };
 
 pub use crate::widget_map::resolve_kind_from_hints;
@@ -95,10 +97,6 @@ pub struct MessageBridge {
     revision: u64,
     /// Mutation footprint since the previous snapshot (incremental sync).
     changes: SnapshotChanges,
-    /// Nodes whose cascaded layout changed since the last containing-block
-    /// refresh. This is narrower than `changes.dirty`: paint, interaction,
-    /// and text updates do not require a containing-block walk.
-    layout_dirty: HashSet<WidgetId>,
     /// Author-side layout intent groups for the latest cascade result. This
     /// is consumed by the retained projection when a component owns only a
     /// subset of its layout fields.
@@ -168,7 +166,6 @@ impl MessageBridge {
             pending: VecDeque::new(),
             revision: 0,
             changes: SnapshotChanges::default(),
-            layout_dirty: HashSet::new(),
             layout_author_masks: HashMap::new(),
             theme_id: ThemeId::new("nana.light"),
             theme_tokens: nana_ui_core::builtin_theme_arc(ThemeAppearance::Light),
@@ -1564,11 +1561,69 @@ impl MessageBridge {
         }
     }
 
+    /// Add a typed layout seed. Layout invalidations are the sole layout
+    /// scheduling input; semantic `dirty` remains reserved for ordinary
+    /// projection mutations.
+    pub(crate) fn queue_layout_invalidation(
+        &mut self,
+        id: WidgetId,
+        invalidation: LayoutInvalidation,
+    ) {
+        self.changes.record_layout_invalidation(id, invalidation);
+    }
+
+    fn containing_block_invalidation() -> LayoutInvalidation {
+        LayoutInvalidation::new(
+            LayoutInvalidationSource::Runtime,
+            InvalidationReason::CONTAINING_BLOCK,
+            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+            LayoutFieldMask::SIZING,
+            LayoutDependencyFootprint::parent_constraints()
+                .union(LayoutDependencyFootprint::DEPENDS_ON_CONTAINING_BLOCK)
+                .union(LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS),
+        )
+    }
+
+    fn is_containing_block_seed(invalidation: LayoutInvalidation) -> bool {
+        invalidation.source == LayoutInvalidationSource::Runtime
+            && invalidation.reason.bits() == InvalidationReason::CONTAINING_BLOCK.bits()
+    }
+
+    fn text_layout_invalidation() -> LayoutInvalidation {
+        LayoutInvalidation::new(
+            LayoutInvalidationSource::Text,
+            InvalidationReason::TEXT,
+            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+            LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+            LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
+                .union(LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
+                .union(LayoutDependencyFootprint::EXPORTS_BASELINE)
+                .union(LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS)
+                .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
+                .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+        )
+    }
+
+    pub(super) fn style_layout_invalidation() -> LayoutInvalidation {
+        LayoutInvalidation::new(
+            LayoutInvalidationSource::Author,
+            InvalidationReason::STYLE,
+            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+            LayoutFieldMask::ALL,
+            LayoutDependencyFootprint::ALL,
+        )
+    }
+
     /// Host / Scene 回写最近布局得到的包含块尺寸（供后续 `style` `%` 解析）。
     pub fn set_containing_block(&mut self, id: WidgetId, width: Option<f32>, height: Option<f32>) {
         if !self.write_containing_block(id, width, height) {
             return;
         }
+        // The host-written input is a seed, while direct children whose
+        // containing block is immediately updated carry the next propagation
+        // boundary. The latter keeps a root write authoritative when the host
+        // viewport itself is unchanged.
+        self.queue_layout_invalidation(id, Self::containing_block_invalidation());
         let children = self
             .widgets
             .get(&id)
@@ -1576,7 +1631,22 @@ impl MessageBridge {
             .unwrap_or_default();
         self.bump();
         for child in children {
+            let before = self.widgets.get(&child).map(|widget| {
+                (
+                    widget.props.containing_block_width,
+                    widget.props.containing_block_height,
+                )
+            });
             self.sync_containing_block_from_parent(child);
+            let after = self.widgets.get(&child).map(|widget| {
+                (
+                    widget.props.containing_block_width,
+                    widget.props.containing_block_height,
+                )
+            });
+            if before != after {
+                self.queue_layout_invalidation(child, Self::containing_block_invalidation());
+            }
         }
     }
 
@@ -1584,14 +1654,17 @@ impl MessageBridge {
     ///
     /// 与 [`LayoutStyle::resolve_content_box`] 一致；稳定时不 bump。
     pub fn sync_layout_containing_blocks(&mut self, viewport: ParentBox) {
-        let mut viewport_changed = false;
-        if let (Some(w), Some(h)) = (viewport.width, viewport.height) {
-            let next = Some((w, h));
-            if self.cascade.layout_viewport != next {
-                self.cascade.layout_viewport = next;
-                viewport_changed = true;
-            }
-        }
+        // Keep the cached viewport identity in lockstep with the input,
+        // including an unknown/partial viewport. The previous `if let`
+        // retained stale `(w, h)` values when a host transitioned to an
+        // indeterminate viewport, so `vw`/`vh` declarations kept resolving
+        // against dimensions that no longer applied.
+        let next_viewport = match (viewport.width, viewport.height) {
+            (Some(width), Some(height)) => Some((width, height)),
+            _ => None,
+        };
+        let viewport_changed = self.cascade.layout_viewport != next_viewport;
+        self.cascade.layout_viewport = next_viewport;
         let roots = self.roots.clone();
         if roots.is_empty() {
             return;
@@ -1601,13 +1674,17 @@ impl MessageBridge {
         let vp = self.cascade.layout_viewport;
         let structural = self.changes.structure_changed;
         if viewport_changed || structural {
-            self.layout_dirty.clear();
+            let mut visited = HashSet::new();
             for root in roots {
                 self.propagate_layout_containing_blocks(
                     root,
                     viewport.width,
                     viewport.height,
                     vp,
+                    &HashSet::new(),
+                    &HashSet::new(),
+                    &mut visited,
+                    true,
                     &mut changed,
                     &mut affected,
                 );
@@ -1617,7 +1694,57 @@ impl MessageBridge {
             // own descendants. Start from the changed node's existing parent
             // box and let the worklist stop naturally when values are stable.
             // Paint-only and interaction-only updates leave this set empty.
-            let seeds: Vec<_> = self.layout_dirty.drain().collect();
+            // Typed containing-block invalidations are the only seeds for
+            // this worklist. Paint, interaction, and text-only seeds stay in
+            // the semantic mutation batch and do not force a CB walk.
+            let mut seeds: Vec<_> = self
+                .changes
+                .layout_invalidations
+                .iter()
+                .filter(|(_, invalidation)| {
+                    invalidation
+                        .affected_axes
+                        .intersects(LayoutDependencyFootprint::DEPENDS_ON_CONTAINING_BLOCK)
+                })
+                .map(|(&id, _)| id)
+                .collect();
+            // Keep the walk inside the mounted layout forest. In a
+            // scaffolded document `html` is above the published `body`
+            // root; an html seed would otherwise write an unknown CB over
+            // the live root and make the whole subtree appear changed.
+            seeds.retain(|id| self.is_layout_forest_member(*id));
+            seeds.sort_unstable();
+            seeds.dedup();
+            let seed_set: HashSet<_> = seeds.iter().copied().collect();
+            let mut seed_paths = HashSet::with_capacity(seeds.len());
+            for &seed in &seeds {
+                let mut current = Some(seed);
+                while let Some(id) = current {
+                    if !seed_paths.insert(id) || roots.contains(&id) {
+                        break;
+                    }
+                    current = self.widgets.get(&id).and_then(|widget| widget.parent);
+                }
+            }
+            // An ancestor seed reaches a descendant seed in the same walk.
+            // Drop nested seeds so overlapping mutations never traverse their
+            // shared subtree twice.
+            seeds.retain(|id| {
+                let mut current = self.widgets.get(id).and_then(|widget| widget.parent);
+                while let Some(parent) = current {
+                    if seed_set.contains(&parent) {
+                        return false;
+                    }
+                    current = self.widgets.get(&parent).and_then(|widget| widget.parent);
+                }
+                true
+            });
+            // A stable seed still represents a changed declaration. Its
+            // descendants must be checked even when the incoming containing
+            // block value is unchanged; `seed_paths` only keeps the ancestor
+            // route reachable and does not describe this descendant branch.
+            let seed_roots: HashSet<_> = seeds.iter().copied().collect();
+            let mut visited = HashSet::with_capacity(seeds.len());
             for id in seeds {
                 let (width, height) = self
                     .widgets
@@ -1634,6 +1761,10 @@ impl MessageBridge {
                     width,
                     height,
                     vp,
+                    &seed_paths,
+                    &seed_roots,
+                    &mut visited,
+                    false,
                     &mut changed,
                     &mut affected,
                 );
@@ -1661,6 +1792,12 @@ impl MessageBridge {
             // semantic projection can re-cascade only the affected closure.
             self.bump();
         }
+        // A containing-block write is consumed by this worklist. Keep other
+        // typed causes for semantic projection, but do not retain the one-shot
+        // runtime input for the next sync before the snapshot drains it.
+        self.changes
+            .layout_invalidations
+            .retain(|_, invalidation| !Self::is_containing_block_seed(*invalidation));
     }
 
     /// Flush RuntimeLayoutEngine. CSS measure is not written over engine boxes.
@@ -1755,11 +1892,25 @@ impl MessageBridge {
         }
         w.props.containing_block_width = next_w;
         w.props.containing_block_height = next_h;
+        // Keep this low-level write usable by recursive parent-to-child
+        // propagation. Direct host writes queue their typed seed in
+        // `set_containing_block`; descendants remain ordinary dirty outputs.
         self.changes.dirty.insert(id);
         true
     }
 
-    /// Push a containing block down from `id` through its whole subtree.
+    fn is_layout_forest_member(&self, id: WidgetId) -> bool {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            if self.roots.contains(&id) {
+                return true;
+            }
+            current = self.widgets.get(&id).and_then(|widget| widget.parent);
+        }
+        false
+    }
+
+    /// Push a containing block down from `id` through its affected subtree.
     ///
     /// A worklist rather than recursion, and it does one map lookup per node
     /// rather than two. The recursive form cloned `widget.children` at every
@@ -1788,11 +1939,18 @@ impl MessageBridge {
         width: Option<f32>,
         height: Option<f32>,
         viewport: Option<(f32, f32)>,
+        seed_paths: &HashSet<WidgetId>,
+        seed_roots: &HashSet<WidgetId>,
+        visited: &mut HashSet<WidgetId>,
+        force_all: bool,
         changed: &mut bool,
         affected: &mut Vec<WidgetId>,
     ) {
         let mut pending: Vec<(WidgetId, Option<f32>, Option<f32>)> = vec![(id, width, height)];
         while let Some((id, width, height)) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
             let Some(widget) = self.widgets.get_mut(&id) else {
                 continue;
             };
@@ -1804,6 +1962,18 @@ impl MessageBridge {
                 widget.props.containing_block_width = next_w;
                 widget.props.containing_block_height = next_h;
             }
+            if moved {
+                // Disjoint field borrow: `widgets` above, `changes` here.
+                self.changes.dirty.insert(id);
+                *changed = true;
+                affected.push(id);
+            }
+            // A seed may have changed its own style with an equal incoming CB.
+            // Seed paths keep that work reachable across stable intermediate
+            // boxes; elsewhere equal input means descendants' CBs are stable.
+            if !force_all && !moved && !seed_paths.contains(&id) && !seed_roots.contains(&id) {
+                continue;
+            }
             let content = widget
                 .props
                 .layout
@@ -1814,12 +1984,6 @@ impl MessageBridge {
                     .iter()
                     .map(|child| (*child, content.width, content.height)),
             );
-            if moved {
-                // Disjoint field borrow: `widgets` above, `changes` here.
-                self.changes.dirty.insert(id);
-                *changed = true;
-                affected.push(id);
-            }
         }
     }
 
@@ -1829,6 +1993,12 @@ impl MessageBridge {
             Some(p) => p,
             None => return,
         };
+        // In a scaffolded bridge, html is cascade scaffolding and body is the
+        // published layout root. A style edit on html must not replace the
+        // body's viewport containing block with html's unresolved auto box.
+        if self.scaffolded && !self.is_layout_forest_member(parent_id) {
+            return;
+        }
         let (cw, ch) = self.estimate_content_box(parent_id);
         let _ = self.write_containing_block(id, cw, ch);
     }
@@ -2369,10 +2539,12 @@ impl MessageBridge {
         ) {
             self.reapply_following_siblings(id);
         }
-        if matches!(key_n.as_str(), "label" | "text" | "title" | "value")
-            && let Some(pid) = self.widgets.get(&id).and_then(|w| w.parent)
-        {
-            self.reapply_layout_for(pid);
+        if matches!(key_n.as_str(), "label" | "text" | "title" | "value") {
+            self.queue_layout_invalidation(id, Self::text_layout_invalidation());
+            if let Some(pid) = self.widgets.get(&id).and_then(|w| w.parent) {
+                self.queue_layout_invalidation(pid, Self::text_layout_invalidation());
+                self.reapply_layout_for(pid);
+            }
         }
         self.strip_deferred_position_on_overlay(id);
         self.changed_widget(id);
@@ -2386,7 +2558,9 @@ impl MessageBridge {
             return;
         }
         self.reapply_layout_for(id);
+        self.queue_layout_invalidation(id, Self::text_layout_invalidation());
         if let Some(pid) = parent {
+            self.queue_layout_invalidation(pid, Self::text_layout_invalidation());
             self.reapply_layout_for(pid);
         }
         self.changed_widget(id);
@@ -2521,7 +2695,7 @@ impl MessageBridge {
     }
 
     pub fn snapshot(&mut self) -> SemanticSnapshot {
-        let changes = std::mem::take(&mut self.changes);
+        let changes = self.take_snapshot_changes();
         self.peek_snapshot_with(changes)
     }
 

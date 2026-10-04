@@ -10,7 +10,7 @@ fn flush(document: &mut RuntimeDocument) {
     let id = document.document();
     document
         .flush_with(|context, work| {
-            if !work.layout.is_empty() {
+            if !work.layout_frontier_seeds.is_empty() {
                 context.layout_document(id, LayoutViewport::new(600.0, 700.0))?;
             }
             Ok(())

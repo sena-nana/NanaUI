@@ -27,6 +27,7 @@ use nana_ui_core::{
     resolve_grid_track_sizes,
 };
 
+use crate::layout_frontier::{LayoutFrontier, LayoutFrontierSeed, LayoutFrontierStats};
 use crate::{
     DocumentId, LayoutBox, LayoutInput, MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld,
     UiWorldError,
@@ -485,23 +486,17 @@ impl RuntimeLayoutEngine {
             .collect())
     }
 
-    /// Incremental variant of [`Self::layout_document`].
+    /// Incremental retained layout driven by typed invalidation seeds.
     ///
-    /// `dirty` lists layout-dirty nodes; their ancestor closure (`affected`)
-    /// is exactly the set of nodes whose subtree contains a change. Subtrees
-    /// outside `affected` reuse the retained intrinsic size, and placement
-    /// recursion prunes as soon as a recomputed child box is bit-identical to
-    /// the retained one (same origin and size ⇒ identical internal layout,
-    /// because subtree layout depends only on its own box and content). The
-    /// returned vec contains only recomputed nodes; callers diff exactly
-    /// those. `force_full` disables pruning (viewport semantics changed) and
-    /// rebuilds the retained cache.
-    pub fn layout_document_scoped(
+    /// `force_full` disables pruning (viewport semantics changed) and
+    /// rebuilds the retained cache. Otherwise the dependency graph expands
+    /// each typed seed only across edges whose footprint consumes its metric.
+    pub fn layout_document_with_frontier(
         self,
         world: &UiWorld,
         document: DocumentId,
         viewport: LayoutViewport,
-        dirty: &[StableNodeId],
+        typed_seeds: &[LayoutFrontierSeed],
         retained: &mut RetainedLayoutCache,
         force_full: bool,
     ) -> Result<Vec<(StableNodeId, LayoutBox)>, UiWorldError> {
@@ -519,27 +514,30 @@ impl RuntimeLayoutEngine {
             let order = world.document_order(document);
             nodes.prefetch(&order)?;
         }
-        let mut affected = HashSet::new();
-        if !force_full {
-            for &id in dirty {
-                if world.document_of(id) != Some(document) {
-                    continue;
-                }
-                let mut cursor = Some(id);
-                while let Some(id) = cursor {
-                    if !affected.insert(id) {
-                        break;
-                    }
-                    if world.layout_isolated(id) && retained.boxes.contains_key(&id) {
-                        break;
-                    }
-                    cursor = world.parent_id(id);
-                }
-            }
-        }
+        let frontier = if force_full {
+            LayoutFrontier::default()
+        } else {
+            // Typed mutation authority path: use the retained dependency index
+            // so parent constraints, containing blocks and local formatting
+            // contexts participate in one deduplicated closure.
+            let graph = world.layout_dependency_graph_for_seeds(document, typed_seeds);
+            LayoutFrontier::from_dependency_graph(
+                typed_seeds
+                    .iter()
+                    .copied()
+                    .filter(|seed| world.document_of(seed.node) == Some(document)),
+                &graph,
+            )
+        };
+        let affected = if force_full {
+            HashSet::new()
+        } else {
+            frontier.nodes().clone()
+        };
+        retained.frontier_stats = LayoutFrontierStats::from_frontier(&frontier);
         // A content/style change invalidates every previous constraint for
         // the node, including constraints that are not measured this frame.
-        for id in &affected {
+        for id in frontier.measure_nodes() {
             retained.intrinsics.remove(id);
             retained
                 .intrinsic_metrics
@@ -553,9 +551,12 @@ impl RuntimeLayoutEngine {
             .generation_bumps
             .saturating_add(affected.len());
         #[cfg(any(test, feature = "benchmark"))]
-        plan_stats::note_scope(dirty.len(), affected.len());
+        plan_stats::note_scope(typed_seeds.len(), affected.len());
+        #[cfg(any(test, feature = "benchmark"))]
+        plan_stats::note_frontier(&frontier, force_full);
         let scope = ScopeContext {
             affected: &affected,
+            measure: frontier.measure_nodes(),
             retained: &*retained,
         };
         let scope_ref = (!force_full).then_some(&scope);
@@ -569,10 +570,14 @@ impl RuntimeLayoutEngine {
                 .iter()
                 .copied()
                 .filter(|id| {
-                    world.layout_isolated(*id)
-                        && world
-                            .parent_id(*id)
-                            .is_some_and(|parent| !affected.contains(&parent))
+                    // A dependency boundary may be a fixed-size ordinary
+                    // ancestor as well as an explicit isolation context. Use
+                    // the retained placement as the local layout root so a
+                    // child can be recomputed without pulling that stable
+                    // ancestor into the measure frontier.
+                    world
+                        .parent_id(*id)
+                        .is_some_and(|parent| !affected.contains(&parent))
                         && retained.placements.contains_key(id)
                         && retained.boxes.contains_key(id)
                 })
@@ -580,11 +585,24 @@ impl RuntimeLayoutEngine {
         };
         for &root in &islands {
             let (origin, containing, font) = retained.placements[&root];
-            let box_ = retained.boxes[&root];
+            // An island boundary normally has a stable used size, but an
+            // affected content-sized child can grow inside a fixed ancestor.
+            // Re-measure the island itself so its retained box does not freeze
+            // the new intrinsic size before placement reaches its descendants.
+            let root_size = intrinsic_size_scoped(
+                root,
+                containing,
+                None,
+                viewport,
+                font,
+                &mut nodes,
+                &mut intrinsic,
+                scope_ref,
+            )?;
             place_node_scoped(
                 root,
                 origin,
-                Size::new(box_.width, box_.height),
+                root_size,
                 containing,
                 viewport,
                 font,
@@ -858,6 +876,14 @@ impl RetainedLayoutCache {
         }
     }
 
+    /// Structural counters from the most recent pass for `document`.
+    pub(crate) fn frontier_stats(&self, document: DocumentId) -> LayoutFrontierStats {
+        self.documents
+            .get(&document)
+            .map(|cache| cache.frontier_stats)
+            .unwrap_or_default()
+    }
+
     /// Which page axes the last placement of `id` laid its children out
     /// from the far (right / bottom) end: `[horizontal, vertical]`.
     pub(crate) fn far_start(&self, document: DocumentId, id: StableNodeId) -> Option<[bool; 2]> {
@@ -922,6 +948,7 @@ struct DocumentLayoutCache {
     /// Cached intrinsic measurement per content-sized container. See
     /// [`MeasurePlan`].
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
+    frontier_stats: LayoutFrontierStats,
 }
 
 impl DocumentLayoutCache {
@@ -970,6 +997,7 @@ impl DocumentLayoutCache {
         self.far_start.clear();
         self.container_plans.clear();
         self.measure_plans.clear();
+        self.frontier_stats = LayoutFrontierStats::default();
         self.materialized_inputs = 0;
     }
 }
@@ -980,7 +1008,9 @@ impl DocumentLayoutCache {
 /// it is cheap. Without them a "fix" that quietly relayouts every sibling still
 /// passes every equivalence test.
 #[cfg(any(test, feature = "benchmark"))]
+#[allow(dead_code)]
 pub mod plan_stats {
+    use super::LayoutFrontier;
     use std::cell::Cell;
 
     thread_local! {
@@ -992,6 +1022,15 @@ pub mod plan_stats {
         static DIRTY_SEEDS: Cell<usize> = const { Cell::new(0) };
         static AFFECTED: Cell<usize> = const { Cell::new(0) };
         static RETAIN_SWEEPS: Cell<usize> = const { Cell::new(0) };
+        static FRONTIER_SEEDS: Cell<usize> = const { Cell::new(0) };
+        static FRONTIER_SEED_MERGES: Cell<usize> = const { Cell::new(0) };
+        static FRONTIER_NODES_MEASURE: Cell<usize> = const { Cell::new(0) };
+        static FRONTIER_NODES_PLACEMENT: Cell<usize> = const { Cell::new(0) };
+        static FRONTIER_CONTEXTS: Cell<usize> = const { Cell::new(0) };
+        static FRONTIER_EDGES: Cell<usize> = const { Cell::new(0) };
+        static FRONTIER_STOPPED: Cell<usize> = const { Cell::new(0) };
+        static FRONTIER_LOCAL_FALLBACKS: Cell<usize> = const { Cell::new(0) };
+        static FRONTIER_FULL_FALLBACKS: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn note_scope(dirty: usize, affected: usize) {
@@ -999,11 +1038,32 @@ pub mod plan_stats {
         AFFECTED.with(|cell| cell.set(cell.get() + affected));
     }
 
+    pub(crate) fn note_frontier(frontier: &LayoutFrontier, force_full: bool) {
+        FRONTIER_SEEDS.with(|cell| cell.set(cell.get() + frontier.seeds()));
+        FRONTIER_SEED_MERGES.with(|cell| cell.set(cell.get() + frontier.seed_merges()));
+        FRONTIER_NODES_MEASURE.with(|cell| cell.set(cell.get() + frontier.measure_nodes().len()));
+        FRONTIER_NODES_PLACEMENT
+            .with(|cell| cell.set(cell.get() + frontier.placement_nodes().len()));
+        FRONTIER_CONTEXTS.with(|cell| cell.set(cell.get() + frontier.context_nodes().len()));
+        FRONTIER_EDGES.with(|cell| cell.set(cell.get() + frontier.dependency_edges_visited()));
+        FRONTIER_STOPPED.with(|cell| cell.set(cell.get() + frontier.propagations_stopped()));
+        FRONTIER_LOCAL_FALLBACKS
+            .with(|cell| cell.set(cell.get() + frontier.local_subtree_fallbacks()));
+        if force_full {
+            // A deliberate viewport/full rebuild is not a correctness
+            // fallback. Keep the fallback counter reserved for unsupported
+            // contexts that escape the bounded frontier.
+            return;
+        }
+        FRONTIER_FULL_FALLBACKS
+            .with(|cell| cell.set(cell.get() + frontier.full_document_fallbacks()));
+    }
+
     pub(crate) fn note_retain_sweep() {
         RETAIN_SWEEPS.with(|cell| cell.set(cell.get() + 1));
     }
 
-    /// Nodes handed to `layout_document_scoped` as the change closure seed.
+    /// Nodes handed to `layout_document_with_frontier` as the change closure seed.
     #[cfg(feature = "benchmark")]
     pub fn dirty_seeds() -> usize {
         DIRTY_SEEDS.with(Cell::get)
@@ -1030,6 +1090,15 @@ pub mod plan_stats {
         DIRTY_SEEDS.with(|cell| cell.set(0));
         AFFECTED.with(|cell| cell.set(0));
         RETAIN_SWEEPS.with(|cell| cell.set(0));
+        FRONTIER_SEEDS.with(|cell| cell.set(0));
+        FRONTIER_SEED_MERGES.with(|cell| cell.set(0));
+        FRONTIER_NODES_MEASURE.with(|cell| cell.set(0));
+        FRONTIER_NODES_PLACEMENT.with(|cell| cell.set(0));
+        FRONTIER_CONTEXTS.with(|cell| cell.set(0));
+        FRONTIER_EDGES.with(|cell| cell.set(0));
+        FRONTIER_STOPPED.with(|cell| cell.set(0));
+        FRONTIER_LOCAL_FALLBACKS.with(|cell| cell.set(0));
+        FRONTIER_FULL_FALLBACKS.with(|cell| cell.set(0));
     }
 
     pub(crate) fn note_plan_reused() {
@@ -1083,6 +1152,42 @@ pub mod plan_stats {
     /// and the measure-side half of it is invisible unless both are counted.
     pub fn children_measured() -> usize {
         CHILDREN_MEASURED.with(Cell::get)
+    }
+
+    pub fn frontier_seeds() -> usize {
+        FRONTIER_SEEDS.with(Cell::get)
+    }
+
+    pub fn frontier_seed_merges() -> usize {
+        FRONTIER_SEED_MERGES.with(Cell::get)
+    }
+
+    pub fn frontier_nodes_measure() -> usize {
+        FRONTIER_NODES_MEASURE.with(Cell::get)
+    }
+
+    pub fn frontier_nodes_placement() -> usize {
+        FRONTIER_NODES_PLACEMENT.with(Cell::get)
+    }
+
+    pub fn frontier_contexts() -> usize {
+        FRONTIER_CONTEXTS.with(Cell::get)
+    }
+
+    pub fn dependency_edges_visited() -> usize {
+        FRONTIER_EDGES.with(Cell::get)
+    }
+
+    pub fn propagations_stopped() -> usize {
+        FRONTIER_STOPPED.with(Cell::get)
+    }
+
+    pub fn local_subtree_fallbacks() -> usize {
+        FRONTIER_LOCAL_FALLBACKS.with(Cell::get)
+    }
+
+    pub fn full_document_fallbacks() -> usize {
+        FRONTIER_FULL_FALLBACKS.with(Cell::get)
     }
 }
 
@@ -1314,7 +1419,7 @@ struct MeasuredChild {
 /// scratch, and neither needs the order.
 ///
 /// This is a cache of its own, NOT a relaxation of the
-/// `retained.intrinsics.remove` in `layout_document_scoped`. That removal is
+/// `retained.intrinsics.remove` in `layout_document_with_frontier`. That removal is
 /// still right and still happens: an affected node's memo holds entries for
 /// constraint combinations this frame will not measure, and those really are
 /// stale. What a plan caches is the container's result under ONE recorded
@@ -1452,7 +1557,7 @@ struct LayoutInputMap<'a> {
     /// field read; it is several hash lookups plus an `Arc` clone, and a
     /// hidden or overlay-hosted node also pays an `Arc::make_mut` clone of the
     /// whole `LayoutStyle`. Resolving that once per node per pass is exact,
-    /// not an approximation: `layout_document_scoped` borrows the world
+    /// not an approximation: `layout_document_with_frontier` borrows the world
     /// immutably for the entire pass, so no resolution can change underneath
     /// this map.
     styles: RefCell<HashMap<StableNodeId, Option<Arc<nana_ui_core::LayoutStyle>>>>,
@@ -1689,6 +1794,7 @@ impl<'a> LayoutInputMap<'a> {
 
 struct ScopeContext<'a> {
     affected: &'a HashSet<StableNodeId>,
+    measure: &'a HashSet<StableNodeId>,
     retained: &'a DocumentLayoutCache,
 }
 

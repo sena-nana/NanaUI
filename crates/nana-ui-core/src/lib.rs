@@ -23,6 +23,7 @@ mod icon_data;
 pub mod layout;
 pub mod layout_authority;
 pub mod layout_foundation;
+pub mod layout_frontier;
 mod layout_style_api;
 pub mod menu;
 pub mod menu_bar;
@@ -104,6 +105,10 @@ pub use layout_foundation::{
     LayoutBehavior, LayoutFoundation, LayoutFoundationCounters, LayoutFragment, LayoutNode,
     LayoutNodeId, LayoutPlacement, LayoutRect, LayoutResult, LayoutSize, ObjectFit, Participation,
     PlacementMode, ReplacedContent, UsedSize,
+};
+pub use layout_frontier::{
+    InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutInvalidation,
+    LayoutInvalidationSource, LayoutMetricDelta,
 };
 pub use menu::{MenuConfirmation, MenuSelection};
 pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};

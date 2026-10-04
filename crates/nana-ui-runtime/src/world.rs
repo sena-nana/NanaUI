@@ -27,9 +27,10 @@ use std::{
 };
 
 use nana_ui_core::{
-    ControlSize, LayoutStyle, LengthSpec, PointerEventsSpec, PositionSpec, SemanticColorRole,
-    SemanticPalette, StyleModelRef, SwitchControlPosition, ThemeAppearance, ThemeWorkCounters,
-    icon_y_on_text_glyph_center,
+    ControlSize, InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutFieldMask,
+    LayoutInvalidation, LayoutInvalidationSource, LayoutStyle, LengthSpec, PointerEventsSpec,
+    PositionSpec, SemanticColorRole, SemanticPalette, StyleModelRef, SwitchControlPosition,
+    ThemeAppearance, ThemeWorkCounters, icon_y_on_text_glyph_center,
 };
 
 #[cfg(feature = "calendar")]
@@ -590,6 +591,10 @@ pub struct UiWorld {
     nodes: NodeStore,
     retired: RetiredIds,
     dirty_entities: HashSet<StableNodeId, BuildIdHasher>,
+    /// Typed layout causes accumulated by the mutation authority. This
+    /// pending queue carries each dependency footprint through the drain so
+    /// retained layout can avoid widening every seed to `ALL`.
+    pending_layout_invalidations: NodeMap<LayoutInvalidation>,
     /// Monotonic, non-consuming invalidation epoch. Input routing uses this
     /// to report whether dispatch scheduled work without scanning or draining
     /// the retained work queues.
@@ -829,6 +834,7 @@ impl UiWorld {
             nodes: NodeStore::new(),
             retired: RetiredIds::default(),
             dirty_entities: HashSet::default(),
+            pending_layout_invalidations: NodeMap::default(),
             pending_work_revision: 0,
             hit_test_index: HashMap::default(),
             scroll_hit_updates: Vec::new(),
@@ -933,8 +939,104 @@ impl UiWorld {
 
     pub(crate) fn mark_layout(&mut self, id: StableNodeId) {
         if self.nodes.contains(id) {
-            self.invalidate_layout_result(id);
-            let _ = self.mark(id, crate::schedule::DirtyMask::LAYOUT);
+            self.record_layout_invalidation(
+                id,
+                LayoutInvalidation::new(
+                    LayoutInvalidationSource::Runtime,
+                    InvalidationReason::UNKNOWN,
+                    InvalidationKind::ALL,
+                    LayoutFieldMask::ALL,
+                    LayoutDependencyFootprint::ALL,
+                ),
+            );
+        }
+    }
+
+    /// Record a typed layout cause at a mutation boundary. The ordinary dirty
+    /// bit schedules the entity for the next drain; this pending queue carries
+    /// the layout payload consumed by the frame scheduler.
+    pub(crate) fn record_layout_invalidation(
+        &mut self,
+        id: StableNodeId,
+        invalidation: LayoutInvalidation,
+    ) {
+        if !self.nodes.contains(id) || invalidation.is_empty() {
+            return;
+        }
+        self.pending_layout_invalidations
+            .entry(id)
+            .and_modify(|previous| *previous = previous.merge(invalidation))
+            .or_insert(invalidation);
+        self.invalidate_layout_result(id);
+        let _ = self.mark_scroll_compatible(id, crate::schedule::DirtyMask::LAYOUT);
+    }
+
+    /// Publish the structural layout cause for a retained parent whose child
+    /// list changed. The removed child may leave the live document before the
+    /// next drain, so the parent is the durable frontier seed.
+    pub(crate) fn record_topology_invalidation(&mut self, id: StableNodeId) {
+        self.record_layout_invalidation(
+            id,
+            LayoutInvalidation::new(
+                LayoutInvalidationSource::Structure,
+                InvalidationReason::TOPOLOGY,
+                InvalidationKind::TOPOLOGY
+                    .union(InvalidationKind::MEASURE)
+                    .union(InvalidationKind::PLACEMENT),
+                LayoutFieldMask::FLOW,
+                LayoutDependencyFootprint::ALL,
+            ),
+        );
+    }
+
+    /// Drain typed seeds for one document after the coarse system-work drain.
+    /// Entries from other documents stay queued for their own layout pass.
+    pub(crate) fn take_layout_frontier_seeds(
+        &mut self,
+        document: DocumentId,
+    ) -> Vec<crate::LayoutFrontierSeed> {
+        let mut ids = self
+            .pending_layout_invalidations
+            .keys()
+            .copied()
+            .filter(|id| self.document_of(*id) == Some(document))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        let mut seeds = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(invalidation) = self.pending_layout_invalidations.remove(&id) {
+                seeds.push(crate::LayoutFrontierSeed::new(id, invalidation));
+            }
+        }
+        seeds
+    }
+
+    pub(crate) fn clear_layout_frontier_seeds(&mut self, document: DocumentId) {
+        let ids = self
+            .pending_layout_invalidations
+            .keys()
+            .copied()
+            .filter(|id| self.document_of(*id) == Some(document))
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.pending_layout_invalidations.remove(&id);
+        }
+    }
+
+    pub(crate) fn restore_layout_frontier_seeds(&mut self, seeds: &[crate::LayoutFrontierSeed]) {
+        for seed in seeds {
+            if !self.nodes.contains(seed.node) || seed.invalidation.is_empty() {
+                continue;
+            }
+            self.pending_layout_invalidations
+                .entry(seed.node)
+                .and_modify(|previous| *previous = previous.merge(seed.invalidation))
+                .or_insert(seed.invalidation);
+            self.invalidate_layout_result(seed.node);
+            if self.record_mut(seed.node).dirty.insert(DirtyMask::LAYOUT) {
+                self.dirty_entities.insert(seed.node);
+                self.pending_work_revision = self.pending_work_revision.saturating_add(1);
+            }
         }
     }
 
@@ -1458,6 +1560,24 @@ impl UiWorld {
         });
     }
 
+    /// Fold structural layout-frontier observations from the retained engine
+    /// into the same frame counters as the coarse dirty drain.
+    pub(crate) fn record_layout_frontier(&mut self, stats: crate::LayoutFrontierStats) {
+        self.bump_last_counters(|counters| {
+            counters.record_layout_frontier(
+                stats.seeds,
+                stats.seed_merges,
+                stats.nodes_measure,
+                stats.nodes_placement,
+                stats.contexts,
+                stats.dependency_edges_visited,
+                stats.propagations_stopped,
+                stats.local_subtree_fallbacks,
+                stats.full_document_fallbacks,
+            )
+        });
+    }
+
     fn record_id_list_alloc(&self, len: usize) {
         if len == 0 {
             return;
@@ -1515,7 +1635,7 @@ impl UiWorld {
             style: Vec::new(),
             state: Vec::new(),
             text: Vec::new(),
-            layout: Vec::new(),
+            layout_frontier_seeds: Vec::new(),
             transform: Vec::new(),
             input_hit_test: Vec::new(),
             focus_ime: Vec::new(),
@@ -1562,6 +1682,15 @@ impl UiWorld {
             if !self.presence_live(id) {
                 continue;
             }
+            // Layout payloads are drained exclusively from the typed side
+            // table. The private LAYOUT bit only causes this entity to be
+            // visited by the drain.
+            if bits & DirtyMask::LAYOUT != 0 {
+                if let Some(invalidation) = self.pending_layout_invalidations.remove(&id) {
+                    work.layout_frontier_seeds
+                        .push(crate::LayoutFrontierSeed::new(id, invalidation));
+                }
+            }
             let has_text = matches!(self.record(id).kind.as_ref(), NodeKind::Text)
                 || !self.record(id).text.value.is_empty()
                 || matches!(
@@ -1579,6 +1708,19 @@ impl UiWorld {
             }
             push_work(&mut work, id, bits);
         }
+        // Retain any typed entry queued by a post-drain authority. Sorting
+        // keeps the public work batch deterministic.
+        let pending = self
+            .pending_layout_invalidations
+            .drain()
+            .collect::<Vec<_>>();
+        let mut remaining = pending
+            .into_iter()
+            .filter(|(id, _)| self.presence_live(*id))
+            .map(|(id, invalidation)| crate::LayoutFrontierSeed::new(id, invalidation))
+            .collect::<Vec<_>>();
+        remaining.sort_unstable_by_key(|seed| seed.node);
+        work.layout_frontier_seeds.extend(remaining);
         work.render_nodes_changed = work.render_extraction.len();
         work.render_nodes_extracted = work.render_extraction.len();
         let mut drain_allocs = 0usize;
@@ -1594,7 +1736,7 @@ impl UiWorld {
         bump_list(work.style.len());
         bump_list(work.state.len());
         bump_list(work.text.len());
-        bump_list(work.layout.len());
+        bump_list(work.layout_frontier_seeds.len());
         bump_list(work.transform.len());
         bump_list(work.input_hit_test.len());
         bump_list(work.focus_ime.len());
@@ -1643,11 +1785,11 @@ impl UiWorld {
     /// idempotent, so retrying the complete transaction is safer than losing
     /// accessibility or render invalidations from an earlier pass.
     pub fn restore_system_work(&mut self, work: SystemWork) {
+        self.restore_layout_frontier_seeds(&work.layout_frontier_seeds);
         for (ids, bit) in [
             (work.style, DirtyMask::STYLE),
             (work.state, DirtyMask::STATE),
             (work.text, DirtyMask::TEXT),
-            (work.layout, DirtyMask::LAYOUT),
             (work.transform, DirtyMask::TRANSFORM),
             (work.input_hit_test, DirtyMask::INPUT),
             (work.focus_ime, DirtyMask::FOCUS_IME),
@@ -3142,6 +3284,259 @@ impl UiWorld {
         order
     }
 
+    /// Build only the dependency closure needed by typed seeds. Parent links
+    /// are walked upward for exported metrics; descendants and formatting
+    /// contexts are expanded only when the seed footprint consumes those
+    /// dependencies. This keeps frontier scratch independent of unrelated
+    /// document branches.
+    pub(crate) fn layout_dependency_graph_for_seeds(
+        &self,
+        document: DocumentId,
+        seeds: &[crate::LayoutFrontierSeed],
+    ) -> crate::LayoutDependencyGraph {
+        use std::collections::VecDeque;
+
+        let mut graph = crate::LayoutDependencyGraph::default();
+        let upward = LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS
+            .union(LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE)
+            .union(LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
+            .union(LayoutDependencyFootprint::EXPORTS_BASELINE);
+        let downward = LayoutDependencyFootprint::parent_constraints()
+            .union(LayoutDependencyFootprint::DEPENDS_ON_CONTAINING_BLOCK)
+            .union(LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT);
+        let lateral = LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX
+            .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING);
+        let mut up_seen = HashSet::new();
+        let mut down_seen = HashSet::new();
+        let mut context_seen = HashSet::new();
+        let mut pending = VecDeque::new();
+
+        for seed in seeds {
+            if self.document_of(seed.node) != Some(document) {
+                continue;
+            }
+            let axes = seed.invalidation.affected_axes;
+            let force_all = axes == LayoutDependencyFootprint::ALL
+                || seed
+                    .invalidation
+                    .kind
+                    .intersects(InvalidationKind::TOPOLOGY);
+            pending.push_back((
+                seed.node,
+                axes,
+                force_all || axes.intersects(downward),
+                force_all || axes.intersects(lateral),
+                force_all,
+            ));
+        }
+
+        while let Some((node, axes, expand_down, expand_context, force_all)) = pending.pop_front() {
+            if self.document_of(node) != Some(document) {
+                continue;
+            }
+            if self.layout_isolated(node) {
+                graph.isolate(node);
+            }
+            // Every typed seed needs its exported metric path. An isolated
+            // node owns its subtree metrics, so its parent edge is a boundary.
+            if up_seen.insert(node) && !self.layout_isolated(node) {
+                if let Some(parent) = self.parent_id(node) {
+                    if self.document_of(parent) == Some(document) {
+                        let Some(parent_record) = self.nodes.get(parent) else {
+                            continue;
+                        };
+                        let parent_display = parent_record.resolved_layout.display;
+                        let is_formatting_context = parent_display.is_some_and(|display| {
+                            display.is_flex_container()
+                                || display.is_grid_container()
+                                || display.is_inline_level()
+                        });
+                        let has_definite_size =
+                            matches!(
+                                parent_record.resolved_layout.width,
+                                Some(nana_ui_core::LengthSpec::Px(value))
+                                    if value.is_finite() && value >= 0.0
+                            ) && matches!(
+                                parent_record.resolved_layout.height,
+                                Some(nana_ui_core::LengthSpec::Px(value))
+                                    if value.is_finite() && value >= 0.0
+                            ) && parent_record.resolved_layout.min_width.is_none()
+                                && parent_record.resolved_layout.max_width.is_none()
+                                && parent_record.resolved_layout.min_height.is_none()
+                                && parent_record.resolved_layout.max_height.is_none();
+                        // A fixed-size ordinary box does not consume a
+                        // child's intrinsic size. Keep its edge available for
+                        // topology/ALL seeds, but do not route an intrinsic
+                        // metric through it. Formatting contexts remain
+                        // consumers even when their outer box is definite.
+                        let upward_for_parent = if force_all {
+                            LayoutDependencyFootprint::ALL
+                        } else if has_definite_size && !is_formatting_context {
+                            // A fixed outer size still leaves sibling
+                            // placement inside the block flow dependent on a
+                            // child's prefix metrics. Keep a lateral edge to
+                            // re-run that local context while stopping the
+                            // child's intrinsic export at the fixed boundary.
+                            lateral
+                        } else if is_formatting_context {
+                            // Flex/grid/inline parents solve sibling positions
+                            // from child metrics. A text or baseline change
+                            // whose footprint is lateral must therefore reach
+                            // the formatting context even when its outer box
+                            // is definite.
+                            upward.union(lateral)
+                        } else {
+                            upward
+                        };
+                        // A zero footprint is a hard dependency boundary. A
+                        // structural edge is retained only when the target is
+                        // content-sized and needs its direct placement replay;
+                        // fixed ancestors stop here instead of widening the
+                        // frontier to their whole subtree.
+                        if !upward_for_parent.is_empty() {
+                            let follows_metrics = force_all || axes.intersects(upward_for_parent);
+                            let edge_structural = !follows_metrics;
+                            // A fixed intermediate box can still need its
+                            // direct child replayed, while its own parent
+                            // must not be measured from that child's metrics.
+                            // Keep that boundary as a placement-only edge and
+                            // stop the upward walk there.
+                            let edge_upward = if edge_structural {
+                                LayoutDependencyFootprint::NONE
+                            } else {
+                                upward_for_parent
+                            };
+                            let edge_downward = if edge_structural {
+                                LayoutDependencyFootprint::NONE
+                            } else if force_all {
+                                LayoutDependencyFootprint::ALL
+                            } else {
+                                downward
+                            };
+                            let parent_is_document =
+                                matches!(parent_record.kind.as_ref(), NodeKind::Document);
+                            // Preserve a zero-footprint boundary when the
+                            // target ancestor is content-sized. The child
+                            // metric must not escape a fixed card, but a
+                            // hugging parent still has to be replayed so its
+                            // retained container plan can place the changed
+                            // child. Fixed ancestors intentionally omit the
+                            // edge to keep metric frontiers bounded.
+                            if !edge_structural || (!parent_is_document && !has_definite_size) {
+                                graph.add_parent_dependency_split(
+                                    parent,
+                                    node,
+                                    edge_upward,
+                                    edge_downward,
+                                );
+                            }
+                            if !edge_structural && !parent_is_document {
+                                pending.push_back((
+                                    parent,
+                                    upward_for_parent,
+                                    force_all
+                                        || (axes.intersects(lateral)
+                                            && parent_record.hierarchy.children.len() <= 1),
+                                    force_all,
+                                    force_all,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if expand_down && down_seen.insert(node) {
+                let children = self
+                    .nodes
+                    .get(node)
+                    .map(|record| record.hierarchy.children.clone())
+                    .unwrap_or_default();
+                for child in children.iter().copied() {
+                    if self.document_of(child) != Some(document) {
+                        continue;
+                    }
+                    graph.add_parent_dependency_split(
+                        node,
+                        child,
+                        if force_all {
+                            LayoutDependencyFootprint::ALL
+                        } else {
+                            upward
+                        },
+                        if force_all {
+                            LayoutDependencyFootprint::ALL
+                        } else {
+                            downward
+                        },
+                    );
+                    pending.push_back((
+                        child,
+                        if force_all {
+                            LayoutDependencyFootprint::ALL
+                        } else {
+                            downward
+                        },
+                        true,
+                        expand_context,
+                        force_all,
+                    ));
+                }
+            }
+
+            if expand_context && context_seen.insert(node) {
+                let Some(parent) = self.parent_id(node) else {
+                    continue;
+                };
+                let Some(parent_record) = self.nodes.get(parent) else {
+                    continue;
+                };
+                let explicit_context =
+                    parent_record
+                        .resolved_layout
+                        .display
+                        .is_some_and(|display| {
+                            display.is_flex_container()
+                                || display.is_grid_container()
+                                || display.is_inline_level()
+                        });
+                let is_context = explicit_context || parent_record.hierarchy.children.len() > 1;
+                if !is_context {
+                    continue;
+                }
+                let siblings = parent_record.hierarchy.children.as_ref();
+                if explicit_context {
+                    for pair in siblings.windows(2) {
+                        graph.add_context_dependency(pair[0], pair[1], lateral);
+                    }
+                } else if let Some(index) = siblings.iter().position(|sibling| *sibling == node) {
+                    for &following in &siblings[index.saturating_add(1)..] {
+                        graph.add_context_dependency_forward(node, following, lateral);
+                    }
+                }
+                // Include the formatting-context siblings as seeds in the
+                // local graph; their own parent links let a lateral change
+                // reach the shared container without scanning descendants.
+                let pending_siblings: &[StableNodeId] = if explicit_context {
+                    siblings.as_slice()
+                } else if let Some(index) = siblings.iter().position(|sibling| *sibling == node) {
+                    &siblings[index.saturating_add(1)..]
+                } else {
+                    &[]
+                };
+                for &sibling in pending_siblings {
+                    if sibling != node && self.document_of(sibling) == Some(document) {
+                        // A sibling-prefix change can move each sibling's
+                        // descendants along with it; retain their child
+                        // edges when the frontier consumes this context.
+                        pending.push_back((sibling, lateral, true, false, force_all));
+                    }
+                }
+            }
+        }
+        graph
+    }
+
     fn hierarchy_mut(&mut self, id: StableNodeId) -> &mut Hierarchy {
         &mut self.record_mut(id).hierarchy
     }
@@ -3149,6 +3544,20 @@ impl UiWorld {
     fn mark(&mut self, id: StableNodeId, bits: u16) -> bool {
         if bits & DirtyMask::INPUT != 0 {
             self.non_scroll_hit_dirty.insert(id);
+        }
+        // Internal callers that only have a dirty bit still publish an
+        // explicit runtime-wide invalidation. Typed mutation authorities have
+        // already installed a narrower entry, which this branch preserves.
+        if bits & DirtyMask::LAYOUT != 0 {
+            self.pending_layout_invalidations
+                .entry(id)
+                .or_insert(LayoutInvalidation::new(
+                    LayoutInvalidationSource::Runtime,
+                    InvalidationReason::UNKNOWN,
+                    InvalidationKind::ALL,
+                    LayoutFieldMask::ALL,
+                    LayoutDependencyFootprint::ALL,
+                ));
         }
         self.mark_scroll_compatible(id, bits)
     }
@@ -3164,11 +3573,20 @@ impl UiWorld {
     }
 
     fn mark_subtree(&mut self, root: StableNodeId, bits: u16) {
+        // Layout invalidation is a typed frontier seed. Keep the ordinary
+        // dirty bit on the root only: the frontier expands its dependency
+        // closure to descendants, while marking every descendant here would
+        // synthesize broad Runtime/UNKNOWN seeds and defeat retained plans.
+        let subtree_bits = bits & !DirtyMask::LAYOUT;
+        let root_layout = bits & DirtyMask::LAYOUT;
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
             let children = self.node(id).expect("hierarchy node must exist").children;
             stack.extend(children.iter().rev().copied());
-            let _ = self.mark(id, bits);
+            let _ = self.mark(
+                id,
+                subtree_bits | (id == root).then_some(root_layout).unwrap_or(0),
+            );
         }
     }
 
@@ -3197,6 +3615,11 @@ impl UiWorld {
         let Some(parent) = self.node(id).expect("validated node must exist").parent else {
             return false;
         };
+        // Removing a child changes the parent's flow and exported metrics even
+        // when the removed subtree itself is no longer live. Keep the live
+        // parent in the typed frontier so the retained layout cannot preserve
+        // the old child placement.
+        self.record_topology_invalidation(parent);
         let hierarchy = self.hierarchy_mut(parent);
         Arc::make_mut(&mut hierarchy.children).retain(|child| *child != id);
         intern_empty_children(&mut hierarchy.children);
@@ -3292,14 +3715,21 @@ impl UiWorld {
         })
     }
 
-    fn mark_ancestors(&mut self, start: StableNodeId, mut bits: u16) {
+    fn mark_ancestors(&mut self, start: StableNodeId, bits: u16) {
+        // Layout propagation is represented by typed frontier seeds. Ancestor
+        // dirty masks still carry render/input/accessibility work, but they do
+        // not synthesize a second coarse layout channel.
+        let mut bits = bits & !DirtyMask::LAYOUT;
         let mut current = Some(start);
         while let Some(id) = current {
             current = self
                 .identity_and_parent(id)
                 .expect("hierarchy node must exist")
                 .1;
-            if !self.mark(id, bits) {
+            if bits & DirtyMask::INPUT != 0 {
+                self.non_scroll_hit_dirty.insert(id);
+            }
+            if !self.mark_scroll_compatible(id, bits) {
                 break;
             }
             if self.layout_isolated(id) {
@@ -3312,9 +3742,40 @@ impl UiWorld {
     }
 
     fn propagate_layout_from_node(&mut self, id: StableNodeId) {
-        self.invalidate_layout_result(id);
-        self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
+        self.record_layout_invalidation(
+            id,
+            LayoutInvalidation::new(
+                LayoutInvalidationSource::Text,
+                InvalidationReason::TEXT,
+                InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+                LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+                LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
+                    .union(LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
+                    .union(LayoutDependencyFootprint::EXPORTS_BASELINE)
+                    .union(LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS)
+                    .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
+                    .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+            ),
+        );
+        // Keep the original paint invalidation for the node whose shaped
+        // metrics changed; the typed layout cause above remains narrow.
+        self.mark_scroll_compatible(id, DirtyMask::RENDER);
         if let Some(parent) = self.parent_id(id) {
+            // The child seed describes what it exports. The immediate parent
+            // is itself a layout participant, even when the ancestor walk
+            // starts above it; publish that participant explicitly so a
+            // baseline/inline consumer is never skipped.
+            self.record_layout_invalidation(
+                parent,
+                LayoutInvalidation::new(
+                    LayoutInvalidationSource::Text,
+                    InvalidationReason::TEXT,
+                    InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+                    LayoutFieldMask::INTRINSIC.union(LayoutFieldMask::FLOW),
+                    LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS
+                        .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+                ),
+            );
             self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
         }
     }
@@ -3431,7 +3892,11 @@ fn is_triggered_menu_overlay(visual: Option<&StandardVisual>) -> bool {
 }
 
 fn text_intrinsic_changed(previous: TextMetrics, next: TextMetrics) -> bool {
-    previous.width != next.width || previous.height != next.height
+    // Baseline is an exported metric consumed by baseline-aligned parents.
+    // Width/height-only comparison lets a baseline-only shape update leave a
+    // retained placement plan stale even though the child still needs to
+    // participate in the parent's formatting-context solve.
+    previous.width != next.width || previous.height != next.height || previous.ascent != next.ascent
 }
 
 fn intersect_layout_boxes(left: LayoutBox, right: LayoutBox) -> Option<LayoutBox> {
@@ -3535,7 +4000,15 @@ fn layout_semantics_changed(
     previous: &nana_ui_core::LayoutStyle,
     next: &nana_ui_core::LayoutStyle,
 ) -> bool {
-    previous.direction != next.direction
+    // `None` is the default column axis throughout the layout engine. Treat
+    // it like `Some(Column)` at the mutation boundary so spelling changes do
+    // not retire retained measure plans or schedule a needless frontier.
+    previous
+        .direction
+        .unwrap_or(nana_ui_core::FlexDirection::Column)
+        != next
+            .direction
+            .unwrap_or(nana_ui_core::FlexDirection::Column)
         || previous.dir != next.dir
         || previous.flex_reverse != next.flex_reverse
         || previous.order != next.order
@@ -3615,6 +4088,182 @@ fn layout_semantics_changed(
         || previous.border_right_style != next.border_right_style
         || previous.border_bottom_style != next.border_bottom_style
         || previous.border_left_style != next.border_left_style
+}
+
+/// Classify a style mutation at the layout authority boundary. The boolean
+/// `layout_semantics_changed` predicate remains the coverage guard while this
+/// function publishes the narrower dependency classes consumed by the
+/// retained frontier.
+fn layout_style_invalidation(
+    previous: &nana_ui_core::LayoutStyle,
+    next: &nana_ui_core::LayoutStyle,
+) -> LayoutInvalidation {
+    if !layout_semantics_changed(previous, next) {
+        return LayoutInvalidation::none();
+    }
+    let direction_changed = previous
+        .direction
+        .unwrap_or(nana_ui_core::FlexDirection::Column)
+        != next
+            .direction
+            .unwrap_or(nana_ui_core::FlexDirection::Column);
+    let writing =
+        direction_changed || previous.dir != next.dir || previous.writing_mode != next.writing_mode;
+    let spacing = previous.gap != next.gap
+        || previous.row_gap != next.row_gap
+        || previous.column_gap != next.column_gap
+        || previous.padding != next.padding
+        || previous.padding_top != next.padding_top
+        || previous.padding_right != next.padding_right
+        || previous.padding_bottom != next.padding_bottom
+        || previous.padding_left != next.padding_left
+        || previous.margin != next.margin
+        || previous.margin_top != next.margin_top
+        || previous.margin_right != next.margin_right
+        || previous.margin_bottom != next.margin_bottom
+        || previous.margin_left != next.margin_left;
+    let sizing = previous.width != next.width
+        || previous.height != next.height
+        || previous.min_width != next.min_width
+        || previous.max_width != next.max_width
+        || previous.min_height != next.min_height
+        || previous.max_height != next.max_height
+        || previous.box_sizing != next.box_sizing
+        || previous.aspect_ratio != next.aspect_ratio;
+    let position = previous.position != next.position
+        || previous.offset_top != next.offset_top
+        || previous.offset_right != next.offset_right
+        || previous.offset_bottom != next.offset_bottom
+        || previous.offset_left != next.offset_left
+        || previous.float != next.float
+        || previous.clear != next.clear;
+    let flow = previous.display != next.display
+        || previous.flex_reverse != next.flex_reverse
+        || previous.order != next.order
+        || previous.flex_wrap != next.flex_wrap
+        || previous.flex_grow != next.flex_grow
+        || previous.flex_shrink != next.flex_shrink
+        || previous.flex_basis != next.flex_basis
+        || previous.grid_template_areas != next.grid_template_areas
+        || previous.grid_column_line_names != next.grid_column_line_names
+        || previous.grid_row_line_names != next.grid_row_line_names
+        || previous.grid_columns != next.grid_columns
+        || previous.grid_rows != next.grid_rows
+        || previous.grid_columns_unsupported != next.grid_columns_unsupported
+        || previous.grid_rows_unsupported != next.grid_rows_unsupported
+        || previous.grid_auto_columns != next.grid_auto_columns
+        || previous.grid_auto_rows != next.grid_auto_rows
+        || previous.grid_auto_flow != next.grid_auto_flow
+        || previous.grid_columns_repeat != next.grid_columns_repeat
+        || previous.grid_rows_repeat != next.grid_rows_repeat
+        || previous.grid_placement != next.grid_placement;
+    let alignment = previous.align_items != next.align_items
+        || previous.align_self != next.align_self
+        || previous.align_content != next.align_content
+        || previous.justify_content != next.justify_content
+        || previous.justify_items != next.justify_items
+        || previous.justify_self != next.justify_self;
+    let typography = previous.font_italic != next.font_italic
+        || previous.text_align != next.text_align
+        || previous.word_break != next.word_break
+        || previous.line_break != next.line_break
+        || previous.white_space_nowrap != next.white_space_nowrap
+        || previous.white_space != next.white_space
+        || previous.overflow_wrap != next.overflow_wrap
+        || previous.text_overflow_ellipsis != next.text_overflow_ellipsis
+        || previous.line_clamp != next.line_clamp;
+    let scroll = previous.overflow_x != next.overflow_x || previous.overflow_y != next.overflow_y;
+
+    let mut fields = LayoutFieldMask::NONE;
+    if flow {
+        fields = fields.union(LayoutFieldMask::FLOW);
+    }
+    if sizing {
+        fields = fields.union(LayoutFieldMask::SIZING);
+    }
+    if spacing {
+        fields = fields.union(LayoutFieldMask::SPACING);
+    }
+    if position {
+        fields = fields.union(LayoutFieldMask::POSITION);
+    }
+    if alignment {
+        fields = fields.union(LayoutFieldMask::ALIGNMENT);
+    }
+    if previous.grid_template_areas != next.grid_template_areas
+        || previous.grid_columns != next.grid_columns
+        || previous.grid_rows != next.grid_rows
+        || previous.grid_placement != next.grid_placement
+    {
+        fields = fields.union(LayoutFieldMask::GRID);
+    }
+    if typography || writing {
+        fields = fields.union(LayoutFieldMask::TYPOGRAPHY);
+    }
+    if scroll {
+        fields = fields.union(LayoutFieldMask::SCROLL);
+    }
+    if fields == LayoutFieldMask::NONE {
+        // Future LayoutStyle fields must remain safe until their group is
+        // explicitly classified here.
+        fields = LayoutFieldMask::ALL;
+    }
+
+    let mut kind = if position
+        && !sizing
+        && !spacing
+        && !flow
+        && !alignment
+        && !typography
+        && !writing
+        && !scroll
+    {
+        InvalidationKind::PLACEMENT
+    } else {
+        InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT)
+    };
+    if writing {
+        kind = kind.union(InvalidationKind::WRITING_CONTEXT);
+    }
+    if scroll {
+        kind = kind.union(InvalidationKind::SCROLL_OVERFLOW);
+    }
+    let mut footprint = LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS
+        .union(LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE)
+        .union(LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK);
+    if typography {
+        footprint = footprint
+            .union(LayoutDependencyFootprint::EXPORTS_BASELINE)
+            .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
+            .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING);
+    }
+    if sizing || spacing || flow || alignment {
+        footprint = footprint
+            .union(LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT)
+            .union(LayoutDependencyFootprint::CONSUMES_PARENT_BLOCK_CONSTRAINT)
+            .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
+            .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING);
+    }
+    if position {
+        footprint = footprint.union(LayoutDependencyFootprint::DEPENDS_ON_CONTAINING_BLOCK);
+    }
+    if writing {
+        footprint = footprint.union(LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT);
+    }
+    let mut reason = InvalidationReason::STYLE;
+    if writing {
+        reason = reason.union(InvalidationReason::WRITING);
+    }
+    if scroll {
+        reason = reason.union(InvalidationReason::SCROLL);
+    }
+    LayoutInvalidation::new(
+        LayoutInvalidationSource::Author,
+        reason,
+        kind,
+        fields,
+        footprint,
+    )
 }
 
 #[cfg(test)]

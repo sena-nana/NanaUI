@@ -888,15 +888,16 @@ impl MessageBridge {
         };
         crate::css_map::with_active_color_scheme_dark(dark, run);
         self.strip_deferred_position_on_overlay(id);
-        let layout_changed = match (previous_layout, self.widgets.get(&id)) {
+        let invalidation = match (previous_layout.as_ref(), self.widgets.get(&id)) {
             (Some(previous), Some(widget)) => {
-                layout_affects_containing_block(&previous, &widget.props.layout)
+                layout_affects_containing_block(previous, &widget.props.layout)
+                    .then(super::MessageBridge::style_layout_invalidation)
             }
-            (None, Some(_)) => true,
-            _ => false,
+            (None, Some(_)) => Some(super::MessageBridge::style_layout_invalidation()),
+            _ => None,
         };
-        if layout_changed {
-            self.layout_dirty.insert(id);
+        if let Some(invalidation) = invalidation {
+            self.queue_layout_invalidation(id, invalidation);
         }
     }
 }

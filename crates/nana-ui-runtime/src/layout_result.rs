@@ -192,6 +192,134 @@ impl LayoutResult {
             && self.containing_block == other.containing_block
             && self.dependencies == other.dependencies
     }
+
+    /// Classify the externally visible result change for dependency-aware
+    /// propagation.  The revision/source stamps and paint-only scroll offset
+    /// are intentionally ignored: scrolling moves the retained projection but
+    /// does not change the node's intrinsic or formatting metrics.
+    pub fn metric_delta(&self, other: &Self) -> nana_ui_core::LayoutMetricDelta {
+        use nana_ui_core::LayoutMetricDelta as Delta;
+
+        let mut delta = Delta::NONE;
+        if self.content_box.width != other.content_box.width {
+            delta = delta.union(Delta::INTRINSIC_INLINE);
+        }
+        if self.content_box.height != other.content_box.height {
+            delta = delta.union(Delta::INTRINSIC_BLOCK);
+        }
+        if self.first_baseline != other.first_baseline || self.last_baseline != other.last_baseline
+        {
+            delta = delta.union(Delta::BASELINE);
+        }
+        // Position is a separate exported metric. Comparing whole boxes here
+        // would classify an otherwise placement-only move as USED_SIZE and
+        // make the parent remeasure unnecessarily.
+        if self.bounds.width != other.bounds.width
+            || self.bounds.height != other.bounds.height
+            || self.border_box.width != other.border_box.width
+            || self.border_box.height != other.border_box.height
+            || self.padding_box.width != other.padding_box.width
+            || self.padding_box.height != other.padding_box.height
+        {
+            delta = delta.union(Delta::USED_SIZE);
+        }
+        if self.bounds.x != other.bounds.x
+            || self.bounds.y != other.bounds.y
+            || self.border_box.x != other.border_box.x
+            || self.border_box.y != other.border_box.y
+            || self.padding_box.x != other.padding_box.x
+            || self.padding_box.y != other.padding_box.y
+            || self.content_box.x != other.content_box.x
+            || self.content_box.y != other.content_box.y
+        {
+            delta = delta.union(Delta::PLACEMENT);
+        }
+        // A container can keep its own box while changing the placement of a
+        // direct child, fragment, or semantic part. Those nested geometries
+        // are part of the retained result and must not be mistaken for a
+        // stable boundary. Size changes also affect the container's exported
+        // child metrics, while an origin-only change remains placement-only.
+        let mut nested_placement = false;
+        let mut nested_used_size = false;
+        for (left, right) in self
+            .child_placements
+            .iter()
+            .zip(other.child_placements.iter())
+        {
+            if left.bounds.x != right.bounds.x || left.bounds.y != right.bounds.y {
+                nested_placement = true;
+            }
+            if left.bounds.width != right.bounds.width || left.bounds.height != right.bounds.height
+            {
+                nested_used_size = true;
+            }
+        }
+        for (left, right) in self.fragments.iter().zip(other.fragments.iter()) {
+            if left.bounds.x != right.bounds.x || left.bounds.y != right.bounds.y {
+                nested_placement = true;
+            }
+            if left.bounds.width != right.bounds.width || left.bounds.height != right.bounds.height
+            {
+                nested_used_size = true;
+            }
+            if left.first_baseline != right.first_baseline
+                || left.last_baseline != right.last_baseline
+            {
+                delta = delta.union(Delta::BASELINE);
+            }
+        }
+        for (left, right) in self.parts.iter().zip(other.parts.iter()) {
+            if left.bounds.x != right.bounds.x || left.bounds.y != right.bounds.y {
+                nested_placement = true;
+            }
+            if left.bounds.width != right.bounds.width || left.bounds.height != right.bounds.height
+            {
+                nested_used_size = true;
+            }
+        }
+        if nested_placement {
+            delta = delta.union(Delta::PLACEMENT);
+        }
+        if nested_used_size {
+            delta = delta.union(Delta::USED_SIZE);
+        }
+        if self.overflow != other.overflow {
+            delta = delta.union(Delta::OVERFLOW);
+        }
+        if self.scroll_extent != other.scroll_extent {
+            delta = delta.union(Delta::SCROLL_EXTENT);
+        }
+        let child_topology_changed = self.child_placements.len() != other.child_placements.len()
+            || self
+                .child_placements
+                .iter()
+                .zip(other.child_placements.iter())
+                .any(|(left, right)| left.node != right.node || left.index != right.index);
+        let fragment_topology_changed = self.fragments.len() != other.fragments.len()
+            || self
+                .fragments
+                .iter()
+                .zip(other.fragments.iter())
+                .any(|(left, right)| {
+                    left.kind != right.kind || left.node != right.node || left.index != right.index
+                });
+        let part_topology_changed = self.parts.len() != other.parts.len()
+            || self
+                .parts
+                .iter()
+                .zip(other.parts.iter())
+                .any(|(left, right)| left.kind != right.kind || left.node != right.node);
+        if self.clip != other.clip
+            || self.containing_block != other.containing_block
+            || self.dependencies != other.dependencies
+            || child_topology_changed
+            || fragment_topology_changed
+            || part_topology_changed
+        {
+            delta = delta.union(Delta::TOPOLOGY);
+        }
+        delta
+    }
 }
 
 fn inset(box_: LayoutBox, top: f32, right: f32, bottom: f32, left: f32) -> LayoutBox {
@@ -204,5 +332,79 @@ fn inset(box_: LayoutBox, top: f32, right: f32, bottom: f32, left: f32) -> Layou
         y: box_.y + top,
         width: (box_.width - left - right).max(0.0),
         height: (box_.height - top - bottom).max(0.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nana_ui_core::LayoutMetricDelta;
+
+    fn result() -> LayoutResult {
+        LayoutResult::from_box(
+            LayoutBox {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 40.0,
+            },
+            nana_ui_core::PaddingSpec::default(),
+            nana_ui_core::PaddingSpec::default(),
+        )
+    }
+
+    #[test]
+    fn placement_change_does_not_request_measure() {
+        let mut moved = result();
+        moved.bounds.x += 3.0;
+        assert_eq!(result().metric_delta(&moved), LayoutMetricDelta::PLACEMENT);
+
+        let mut inset_moved = result();
+        inset_moved.padding_box.x += 2.0;
+        assert_eq!(
+            result().metric_delta(&inset_moved),
+            LayoutMetricDelta::PLACEMENT
+        );
+
+        let mut child_moved = result();
+        child_moved.child_placements = Arc::from([LayoutChildPlacement {
+            node: StableNodeId::new(7).unwrap(),
+            bounds: LayoutBox {
+                x: 4.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            index: 0,
+        }]);
+        let mut child_moved_again = child_moved.clone();
+        child_moved_again.child_placements = Arc::from([LayoutChildPlacement {
+            node: StableNodeId::new(7).unwrap(),
+            bounds: LayoutBox {
+                x: 8.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            index: 0,
+        }]);
+        assert_eq!(
+            child_moved.metric_delta(&child_moved_again),
+            LayoutMetricDelta::PLACEMENT
+        );
+    }
+
+    #[test]
+    fn baseline_change_is_exported_and_scroll_offset_is_paint_only() {
+        let mut baseline = result();
+        baseline.first_baseline = Some(12.0);
+        assert_eq!(
+            result().metric_delta(&baseline),
+            LayoutMetricDelta::BASELINE
+        );
+
+        let mut scrolled = result();
+        scrolled.scroll_offset.x = 2.0;
+        assert_eq!(result().metric_delta(&scrolled), LayoutMetricDelta::NONE);
     }
 }

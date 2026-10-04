@@ -1195,6 +1195,7 @@ impl UiWorld {
                     *id,
                     NodeRecord::new(*document, kind, initial_interaction(kind)),
                 );
+                self.record_topology_invalidation(*id);
                 self.dirty_entities.insert(*id);
                 self.pending_work_revision = self.pending_work_revision.saturating_add(1);
                 self.spawned_since_drain += 1;
@@ -1212,6 +1213,10 @@ impl UiWorld {
                     .1;
                 if old_parent == Some(*parent) && *before == Some(*child) {
                     return;
+                }
+                self.record_topology_invalidation(*parent);
+                if old_parent != Some(*parent) {
+                    self.record_topology_invalidation(*child);
                 }
                 self.clear_layout_results_subtree(*child);
                 self.clear_layout_result_ancestors(*parent);
@@ -1250,11 +1255,13 @@ impl UiWorld {
                     *parent,
                     DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
+                self.record_topology_invalidation(*parent);
                 if let Some(old_parent) = old_parent {
                     self.mark_ancestors(
                         old_parent,
                         DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                     );
+                    self.record_topology_invalidation(old_parent);
                 }
                 if old_parent.is_some() {
                     report.reparented += 1;
@@ -1271,6 +1278,7 @@ impl UiWorld {
                 }
             }
             UiMutation::Detach { id } => {
+                self.record_topology_invalidation(*id);
                 self.clear_layout_result_ancestors(*id);
                 self.clear_layout_results_subtree(*id);
                 if self.unlink_from_parent(*id) {
@@ -1280,6 +1288,7 @@ impl UiWorld {
                 self.refresh_root_membership(*id);
             }
             UiMutation::ParkSubtree { root } => {
+                self.record_topology_invalidation(*root);
                 self.clear_layout_result_ancestors(*root);
                 self.clear_layout_results_subtree(*root);
                 self.unlink_from_parent(*root);
@@ -1288,8 +1297,10 @@ impl UiWorld {
                 self.refresh_root_membership(*root);
             }
             UiMutation::DespawnSubtree { root } => {
+                self.record_topology_invalidation(*root);
                 let root_snapshot = self.node(*root).expect("validated root must exist");
                 if let Some(parent) = root_snapshot.parent {
+                    self.record_topology_invalidation(parent);
                     self.clear_layout_result_ancestors(parent);
                     let hierarchy = self.hierarchy_mut(parent);
                     Arc::make_mut(&mut hierarchy.children).retain(|child| child != root);
@@ -1425,6 +1436,8 @@ impl UiWorld {
                     || previous.layout.isolation != style.layout.isolation;
                 let layout_changed =
                     layout_semantics_changed(previous.layout.as_ref(), style.layout.as_ref());
+                let style_layout_invalidation =
+                    layout_style_invalidation(previous.layout.as_ref(), style.layout.as_ref());
                 if !super::text::same_text_constraint_inputs(&previous, style) {
                     self.nodes
                         .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
@@ -1445,6 +1458,24 @@ impl UiWorld {
                 self.write_node_style(*id, style.clone());
                 self.release_rewritten_holds(*id, &previous.layout, &style.layout);
                 self.sync_node_presence(*id);
+
+                if !style_layout_invalidation.is_empty() {
+                    self.record_layout_invalidation(*id, style_layout_invalidation);
+                }
+                if omits_box_changed {
+                    self.record_layout_invalidation(
+                        *id,
+                        LayoutInvalidation::new(
+                            LayoutInvalidationSource::Structure,
+                            InvalidationReason::TOPOLOGY,
+                            InvalidationKind::TOPOLOGY
+                                .union(InvalidationKind::MEASURE)
+                                .union(InvalidationKind::PLACEMENT),
+                            LayoutFieldMask::FLOW.union(LayoutFieldMask::VISIBILITY),
+                            LayoutDependencyFootprint::ALL,
+                        ),
+                    );
+                }
 
                 if !style_excluding_transform_and_cursor_eq(&previous, style) {
                     self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
@@ -1480,7 +1511,6 @@ impl UiWorld {
                     self.mark_subtree(
                         *id,
                         DirtyMask::STYLE
-                            | DirtyMask::LAYOUT
                             | DirtyMask::INPUT
                             | DirtyMask::FOCUS_IME
                             | DirtyMask::ACCESSIBILITY
@@ -1535,16 +1565,13 @@ impl UiWorld {
                 if layout_changed {
                     self.mark_subtree(
                         *id,
-                        DirtyMask::LAYOUT
-                            | DirtyMask::INPUT
-                            | DirtyMask::ACCESSIBILITY
-                            | DirtyMask::RENDER,
+                        DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,
                     );
                 }
                 if (layout_changed || inherited_text_changed || omits_box_changed)
                     && let Some(parent) = self.parent_id(*id)
                 {
-                    self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
+                    self.mark_ancestors(parent, DirtyMask::RENDER);
                 }
             }
             UiMutation::SetPresetTheme { mode } => {
@@ -1556,7 +1583,8 @@ impl UiWorld {
             UiMutation::SetText { id, text } => {
                 // Re-setting the same text is not a content change: nothing
                 // about the node's shaping or layout moved.
-                if self.record(*id).text != *text {
+                let text_changed = self.record(*id).text != *text;
+                if text_changed {
                     self.record_mut(*id).text = text.clone();
                     self.invalidate_text_content(*id);
                 }
@@ -1798,19 +1826,44 @@ impl UiWorld {
                     };
                     self.reconcile_text_fold_offered(*id, offered);
                 }
+                let visual_layout_changed = button_layout_changed
+                    || text_input_presentation_changed
+                    || empty_state_presentation_changed
+                    || modal_presentation_changed;
+                if visual_layout_changed {
+                    self.record_layout_invalidation(
+                        *id,
+                        LayoutInvalidation::new(
+                            LayoutInvalidationSource::Component,
+                            InvalidationReason::CONTEXT,
+                            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+                            LayoutFieldMask::INTRINSIC.union(LayoutFieldMask::FLOW),
+                            LayoutDependencyFootprint::intrinsic_container(),
+                        ),
+                    );
+                }
+                if menu_state_changed {
+                    self.record_layout_invalidation(
+                        *id,
+                        LayoutInvalidation::new(
+                            LayoutInvalidationSource::Component,
+                            InvalidationReason::CONTEXT,
+                            InvalidationKind::TOPOLOGY
+                                .union(InvalidationKind::MEASURE)
+                                .union(InvalidationKind::PLACEMENT),
+                            LayoutFieldMask::FLOW,
+                            LayoutDependencyFootprint::ALL,
+                        ),
+                    );
+                }
                 self.mark(
                     *id,
                     DirtyMask::RENDER
-                        | if button_layout_changed {
-                            DirtyMask::LAYOUT
-                        } else {
-                            0
-                        }
                         | if text_input_presentation_changed
                             || empty_state_presentation_changed
                             || modal_presentation_changed
                         {
-                            DirtyMask::TEXT | DirtyMask::LAYOUT
+                            DirtyMask::TEXT
                         } else {
                             0
                         },
@@ -1830,13 +1883,12 @@ impl UiWorld {
                     self.mark_subtree(
                         *id,
                         DirtyMask::STYLE
-                            | DirtyMask::LAYOUT
                             | DirtyMask::INPUT
                             | DirtyMask::FOCUS_IME
                             | DirtyMask::ACCESSIBILITY
                             | DirtyMask::RENDER,
                     );
-                    self.mark_ancestors(*id, DirtyMask::LAYOUT | DirtyMask::RENDER);
+                    self.mark_ancestors(*id, DirtyMask::RENDER);
                 }
                 if menu_accessibility_changed && !menu_state_changed {
                     self.mark_subtree(*id, DirtyMask::ACCESSIBILITY);
@@ -1917,6 +1969,18 @@ impl UiWorld {
                     .collect::<HashSet<_>>();
                 for root in changed_roots {
                     self.invalidate_layout_result(root);
+                    self.record_layout_invalidation(
+                        root,
+                        LayoutInvalidation::new(
+                            LayoutInvalidationSource::Component,
+                            InvalidationReason::CONTEXT,
+                            InvalidationKind::TOPOLOGY
+                                .union(InvalidationKind::MEASURE)
+                                .union(InvalidationKind::PLACEMENT),
+                            LayoutFieldMask::FLOW,
+                            LayoutDependencyFootprint::ALL,
+                        ),
+                    );
                     self.mark_subtree(
                         root,
                         DirtyMask::STYLE

@@ -315,7 +315,8 @@ fn measure_node(
     // intrinsic size under the same constraints is unchanged.
     if unforced
         && let Some(scope) = scope
-        && !scope.affected.contains(&id)
+        && (!scope.measure.contains(&id)
+            && !(scope.affected.contains(&id) && scope.retained.measure_plans.contains_key(&id)))
         && let Some(size) = scope
             .retained
             .intrinsics

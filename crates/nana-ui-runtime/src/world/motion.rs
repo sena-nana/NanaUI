@@ -808,7 +808,7 @@ mod tests {
         cx.set_pointer_hover_at(doc, 1, None, Duration::from_millis(60))
             .unwrap();
         let work = cx.take_system_work();
-        assert!(work.layout.is_empty());
+        assert!(work.layout_frontier_seeds.is_empty());
         cx.resolve_styles(&work.style).unwrap();
         assert_eq!(cx.world().computed_style(id).unwrap().background, middle);
         tick(&mut cx, 180);
@@ -856,7 +856,7 @@ mod tests {
             let work = world.take_system_work();
             assert!(work.style.contains(&child));
             assert!(work.render_extraction.contains(&child));
-            assert!(work.layout.is_empty());
+            assert!(work.layout_frontier_seeds.is_empty());
             world.resolve_styles(&work.style).unwrap();
             assert_eq!(
                 world.computed_style(child).unwrap().color,
@@ -961,7 +961,7 @@ mod tests {
         cx.resolve_styles(&work.style).unwrap();
         cx.advance_animations(Duration::from_millis(50));
         let work = cx.take_system_work();
-        assert!(work.layout.is_empty() && work.style.is_empty());
+        assert!(work.layout_frontier_seeds.is_empty() && work.style.is_empty());
         assert_eq!(alpha(&cx, id), 0.25);
         assert_eq!(logical_opacity(&cx, id), None);
         assert_eq!(cx.next_animation_deadline(), None);
@@ -1249,7 +1249,12 @@ mod tests {
             let work = world.take_system_work();
             for id in [paragraph, text] {
                 assert!(work.style.contains(&id), "{ms}ms: style");
-                assert!(work.layout.contains(&id), "{ms}ms: layout");
+                assert!(
+                    work.layout_frontier_seeds
+                        .iter()
+                        .any(|seed| seed.node == id),
+                    "{ms}ms: layout"
+                );
             }
             assert!(work.text.contains(&text), "{ms}ms: text");
             world.resolve_styles(&work.style).unwrap();

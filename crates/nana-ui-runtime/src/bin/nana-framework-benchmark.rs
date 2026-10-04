@@ -353,6 +353,15 @@ struct ScaleWork {
     style_processed: usize,
     text_shaped: usize,
     layout_nodes: usize,
+    layout_frontier_seeds: usize,
+    layout_frontier_seed_merges: usize,
+    layout_frontier_nodes_measure: usize,
+    layout_frontier_nodes_placement: usize,
+    layout_frontier_contexts: usize,
+    layout_dependency_edges_visited: usize,
+    layout_propagations_stopped: usize,
+    layout_local_subtree_fallbacks: usize,
+    layout_full_document_fallbacks: usize,
     hit_test_candidates: usize,
     input_targets: usize,
     accessibility_nodes_updated: usize,
@@ -424,6 +433,15 @@ impl From<WorkCounters> for ScaleWork {
             style_processed: counters.style_processed,
             text_shaped: counters.text_shaped,
             layout_nodes: counters.layout_nodes,
+            layout_frontier_seeds: counters.layout_frontier_seeds,
+            layout_frontier_seed_merges: counters.layout_frontier_seed_merges,
+            layout_frontier_nodes_measure: counters.layout_frontier_nodes_measure,
+            layout_frontier_nodes_placement: counters.layout_frontier_nodes_placement,
+            layout_frontier_contexts: counters.layout_frontier_contexts,
+            layout_dependency_edges_visited: counters.layout_dependency_edges_visited,
+            layout_propagations_stopped: counters.layout_propagations_stopped,
+            layout_local_subtree_fallbacks: counters.layout_local_subtree_fallbacks,
+            layout_full_document_fallbacks: counters.layout_full_document_fallbacks,
             hit_test_candidates: counters.hit_test_candidates,
             input_targets: counters.input_targets,
             accessibility_nodes_updated: counters.accessibility_nodes_updated,
@@ -763,7 +781,7 @@ fn main() {
         // Scroll hit/extract is the scroller; Scene recomposes the mounted window.
         assert_eq!(scroll_work.input_hit_test.len(), 1);
         assert_eq!(scroll_work.render_extraction.len(), 1);
-        assert!(scroll_work.layout.is_empty());
+        assert!(scroll_work.layout_frontier_seeds.is_empty());
         let viewport_width = if iteration.is_multiple_of(2) {
             1_280.0
         } else {

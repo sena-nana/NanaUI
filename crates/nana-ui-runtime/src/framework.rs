@@ -1055,7 +1055,7 @@ pub struct AppContext {
     frame_profiler: FrameProfiler,
     last_profile: FrameProfile,
     profiling: bool,
-    /// Cross-frame layout memo for [`Self::layout_document_scoped`].
+    /// Cross-frame layout memo for [`Self::layout_document_with_frontier`].
     layout_cache: crate::RetainedLayoutCache,
     /// Nodes recomputed by the last layout pass (relayout + shape scope).
     last_layout_scope: Vec<StableNodeId>,

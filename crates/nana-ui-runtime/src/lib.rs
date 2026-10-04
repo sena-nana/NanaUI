@@ -52,6 +52,7 @@ mod image_viewer;
 pub mod intrinsic_cache;
 mod key_layers;
 mod layout_engine;
+mod layout_frontier;
 mod layout_result;
 /// Benchmark-only view of whether scoped layout actually reused its cached
 /// container placements. Hosts use it to tell "the dirty set is small" apart
@@ -256,6 +257,9 @@ pub use key_layers::{
 };
 pub use layout_engine::{
     LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine, StyleLayoutNode,
+};
+pub use layout_frontier::{
+    LayoutDependencyGraph, LayoutFrontier, LayoutFrontierSeed, LayoutFrontierStats,
 };
 pub use layout_result::{
     LayoutChildPlacement, LayoutFragment, LayoutFragmentKind, LayoutPart, LayoutPartKind,

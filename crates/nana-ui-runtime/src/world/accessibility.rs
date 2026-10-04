@@ -481,7 +481,7 @@ impl UiWorld {
         // Scheduled-layout nodes are deliberately NOT seeds, for the same
         // reason `RuntimeDocument::apply_hit_test_work` refuses them: layout
         // invalidation propagates to ancestors, so any leaf resize puts the
-        // document root in `work.layout`, and expanding a root seed walks the
+        // document root in `work.layout_frontier_seeds`, and expanding a root seed walks the
         // whole document. The nodes whose box actually moved are already here
         // by a different route -- layout writeback commits `WriteLayout`,
         // which marks INPUT | RENDER | ACCESSIBILITY on exactly those nodes,

@@ -1287,7 +1287,9 @@ impl NanaTreeDocument {
         // A structural change, a whole-document invalidation, or an empty
         // footprint with a bumped revision (footprint drained by another
         // consumer) falls back to the full preorder pass.
-        let full_pass = snapshot.changes.needs_full_pass() || snapshot.changes.dirty.is_empty();
+        let full_pass = snapshot.changes.needs_full_pass()
+            || (snapshot.changes.dirty.is_empty()
+                && snapshot.changes.layout_invalidations.is_empty());
         let mut mutations = MutationQueue::new();
         let mut pending = PendingAssembly::default();
         let mut component_owned_layout = HashMap::new();

@@ -217,17 +217,17 @@ fn button_slot_changes_invalidate_layout_but_spinner_phase_only_repaints() {
     changes.set_standard_visual(button.stable_id(), Some(visual));
     cx.commit_mutations(changes).unwrap();
     let work = cx.take_system_work();
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert!(work.text.is_empty());
     cx.update_component(button, |view, _| {
         view.loading = false;
         view.icon = None;
     })
     .unwrap();
+    let work = cx.compat_world_mut().take_system_work();
     assert!(
-        cx.compat_world_mut()
-            .take_system_work()
-            .layout
-            .contains(&button.stable_id())
+        work.layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == button.stable_id())
     );
 }

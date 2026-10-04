@@ -113,16 +113,16 @@ impl RuntimeDocument {
         let update = self.flush_loop(viewport_changed, |context, work| {
             context.compat_world_mut().reconcile_focus(&work.focus_ime);
             context.shape_text(&work.text, shaper)?;
-            if force_layout || !work.layout.is_empty() {
+            // Text shaping can discover an intrinsic metric change and emit a
+            // typed seed after the work batch was drained. Merge those seeds
+            // before deciding whether this pass needs layout.
+            let mut seeds = work.layout_frontier_seeds.clone();
+            seeds.extend(context.take_layout_frontier_seeds(document));
+            if force_layout || !seeds.is_empty() {
                 if force_layout {
                     context.layout_document_for_viewport(document, viewport)?;
                 } else {
-                    // `shape_text` may have marked additional LAYOUT nodes
-                    // (intrinsic changes propagate) after the drain; include
-                    // them so scoped layout sees the full change set.
-                    let mut dirty = work.layout.clone();
-                    dirty.extend(context.pending_layout_dirty());
-                    context.layout_document_scoped(document, viewport, &dirty)?;
+                    context.layout_document_with_frontier(document, viewport, &seeds)?;
                 }
                 // Re-shape only the relayout scope: nodes outside it keep
                 // shapes that already match their unchanged boxes.
@@ -131,11 +131,32 @@ impl RuntimeDocument {
                     // Shaping re-dirtied layout (empty-state padding, modal
                     // presentations); relayout that closure plus the scope
                     // whose boxes may have shifted again.
-                    let mut redirty = context.pending_layout_dirty();
-                    redirty.append(&mut shape_scope);
-                    redirty.sort_unstable();
-                    redirty.dedup();
-                    context.layout_document_scoped(document, viewport, &redirty)?;
+                    let mut seeds = context.take_layout_frontier_seeds(document);
+                    seeds.extend(
+                        shape_scope
+                            .drain(..)
+                            .map(nana_ui_runtime::LayoutFrontierSeed::layout),
+                    );
+                    seeds.sort_unstable_by_key(|seed| seed.node);
+                    // A node may be present in both the post-shape authority
+                    // queue and the conservative layout scope. Merge the
+                    // typed causes so the broad scope cannot be lost to a
+                    // key-only deduplication.
+                    let mut merged: Vec<nana_ui_runtime::LayoutFrontierSeed> =
+                        Vec::with_capacity(seeds.len());
+                    for seed in seeds {
+                        if let Some(previous) = merged.last_mut()
+                            && previous.node == seed.node
+                        {
+                            previous.invalidation = previous.invalidation.merge(seed.invalidation);
+                        } else {
+                            merged.push(seed);
+                        }
+                    }
+                    let seeds = merged;
+                    if !seeds.is_empty() {
+                        context.layout_document_with_frontier(document, viewport, &seeds)?;
+                    }
                 }
                 force_layout = false;
             }
@@ -211,14 +232,13 @@ impl RuntimeDocument {
             hit_scroll_updates.extend(self.context.take_scroll_hit_updates());
             hit_dirty.extend(work.input_hit_test.iter().copied());
             hit_geometry_changed |= !work.style.is_empty()
-                || !work.layout.is_empty()
+                || !work.layout_frontier_seeds.is_empty()
                 || !work.transform.is_empty()
                 || !work.state.is_empty();
             // Same seed rule as `project_accessibility_delta`: hit-test and
             // transform subtrees moved in viewport space, scheduled-layout
-            // nodes did not. `work.layout` reaches the document root for any
-            // leaf resize, so seeding from it expands to the whole document
-            // while the nodes that actually moved arrive via `WriteLayout`.
+            // nodes did not. The retained layout writer supplies the exact
+            // moved nodes through `WriteLayout`.
             accessibility_subtrees
                 .extend(work.input_hit_test.iter().chain(&work.transform).copied());
 

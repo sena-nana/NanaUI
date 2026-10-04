@@ -411,14 +411,14 @@ fn accessible_projection_uses_committed_transforms_before_hit_rebuild() {
 /// The accessibility delta must be seeded by the nodes whose box actually
 /// MOVED, never by the scheduled-layout set.
 ///
-/// Layout invalidation propagates to ancestors, so resizing any single row puts
-/// the document root in `work.layout`. Seeding the subtree expansion from that
-/// set therefore walks the entire document and re-projects every node, for a
-/// one-row change, on every layout-touching frame. The work counters cannot see
-/// it: `accessibility_nodes_updated` reports the scheduled ACCESSIBILITY set
-/// (`schedule.rs`), which stays at 1 while the projection does N.
+/// Typed layout invalidation records the changed row and its label directly;
+/// the dependency graph expands that seed during layout without making the
+/// accessibility projection walk the document root. The work counters cannot
+/// see the layout closure: `accessibility_nodes_updated` reports the scheduled
+/// ACCESSIBILITY set (`schedule.rs`), which stays at 1 while the projection
+/// updates only moved boxes.
 ///
-/// `RuntimeDocument::apply_hit_test_work` already refuses `work.layout` for
+/// `RuntimeDocument::apply_hit_test_work` already refuses `work.layout_frontier_seeds` for
 /// exactly this reason; this is the same rule for the accessibility seed.
 #[test]
 fn accessibility_delta_seeds_from_moved_boxes_not_scheduled_layout() {
@@ -457,13 +457,22 @@ fn accessibility_delta_seeds_from_moved_boxes_not_scheduled_layout() {
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
 
-    // Precondition: the scheduled-layout set really does reach the root, so
-    // this test would be vacuous if it did not.
+    // The typed producer records the changed row itself. Ancestors are
+    // discovered by the layout dependency graph, not projected as a broad
+    // accessibility seed.
     assert!(
-        work.layout.contains(&node(1)),
-        "layout invalidation must propagate to the document root for this to \
-         be the seed that matters; got {:?}",
-        work.layout
+        work.layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == last_row),
+        "layout invalidation must retain the changed row as a typed seed; got {:?}",
+        work.layout_frontier_seeds
+    );
+    assert!(
+        !work
+            .layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == node(1)),
+        "typed layout seeds must not broaden to the document root"
     );
 
     let delta = world.project_accessibility_delta(&work);

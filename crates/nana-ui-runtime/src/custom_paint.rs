@@ -2215,7 +2215,10 @@ mod tests {
             }),
         );
         let work = commit(&mut world, queue);
-        assert!(work.layout.is_empty(), "a colour role is paint, not layout");
+        assert!(
+            work.layout_frontier_seeds.is_empty(),
+            "a colour role is paint, not layout"
+        );
         assert_eq!(work.render_extraction, vec![node()]);
         let (color, _) = filled(&world);
         assert_eq!(color, SemanticPalette::dark().accent.as_rgba_array());

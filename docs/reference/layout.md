@@ -28,6 +28,22 @@ viewport 等依赖会进入约束或输入身份。内容、形状样式、边�
 metadata、scale/font 和子树 metrics 的变化才会 bump generation；颜色、opacity、
 transform、hover 和 accessibility 更新不会 bump。
 
+## Incremental reflow frontier
+
+Runtime 的增量布局把一次布局失效表示为 `LayoutInvalidation`：它同时记录
+`InvalidationKind`、变更字段和 `LayoutDependencyFootprint`。保留布局可以把同一帧
+的多个 seed 合并成 measure、placement、writing-context 和 scroll/overflow 各自的
+frontier，并记录 `layout_frontier_*` 与 `layout_dependency_edges_visited` 等工作
+计数。结果只改变位置时，父级只进入 placement frontier；`LayoutMetricDelta::NONE`
+则停止向上传播。
+
+有依赖索引的格式化上下文可以使用 `LayoutDependencyGraph` 表达父约束、包含块、
+写作方向和 flex/grid/inline 的局部耦合。Runtime mutation authority 和产品帧统一发布
+按节点合并的 typed seeds；Vue bridge 维护
+`SnapshotChanges::layout_invalidations`，而普通 semantic `dirty` 仍负责属性和
+投影同步。布局调度直接消费 typed seeds。
+不确定的 viewport 或结构变化保留根级重算边界。
+
 ## 能用的
 
 **Flex。** 你可以用 `flex-direction`、`flex-wrap`、`gap`、`align-items`、`align-self`、`justify-content`。多行换行时还有 `align-content`。`stretch` 和 `normal` 把剩余的交叉空间均分给各行。还有 `order`、`flex-grow`、`flex-shrink`、`flex-basis`。侧栏加主区，用这一套就够。

@@ -1394,6 +1394,11 @@ pub(super) fn is_framework_native_prop(key: &str) -> bool {
 pub struct SnapshotChanges {
     /// Widgets whose props/kind/label changed, plus affected subtrees.
     pub(crate) dirty: std::collections::BTreeSet<WidgetId>,
+    /// Typed layout invalidations emitted by the bridge. The map is keyed by
+    /// widget and multiple causes for one node are unioned with
+    /// `LayoutInvalidation::merge`.
+    pub(crate) layout_invalidations:
+        std::collections::BTreeMap<WidgetId, nana_ui_core::LayoutInvalidation>,
     /// Tree shape changed (insert / remove / reparent / roots).
     pub(crate) structure_changed: bool,
     /// Whole-document invalidation (theme, global cascade, viewport CB).
@@ -1401,6 +1406,33 @@ pub struct SnapshotChanges {
 }
 
 impl SnapshotChanges {
+    /// Record a layout seed. Layout consumers read this map directly; the
+    /// ordinary semantic `dirty` set is intentionally left untouched.
+    pub(crate) fn record_layout_invalidation(
+        &mut self,
+        id: WidgetId,
+        invalidation: nana_ui_core::LayoutInvalidation,
+    ) {
+        self.layout_invalidations
+            .entry(id)
+            .and_modify(|current| *current = current.merge(invalidation))
+            .or_insert(invalidation);
+    }
+
+    /// Number of distinct typed layout seeds in this mutation batch.
+    pub fn layout_seed_count(&self) -> usize {
+        self.layout_invalidations.len()
+    }
+
+    /// Typed layout seeds, keyed by the stable widget id. The returned map is
+    /// intentionally borrowed so a Runtime adapter can consume the seeds
+    /// without duplicating the ordinary semantic dirty set.
+    pub fn layout_invalidations(
+        &self,
+    ) -> &std::collections::BTreeMap<WidgetId, nana_ui_core::LayoutInvalidation> {
+        &self.layout_invalidations
+    }
+
     /// `true` when the sync must project every widget.
     pub fn needs_full_pass(&self) -> bool {
         self.all || self.structure_changed

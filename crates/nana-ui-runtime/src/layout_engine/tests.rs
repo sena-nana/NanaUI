@@ -18,6 +18,13 @@ fn id(value: u64) -> StableNodeId {
     StableNodeId::new(value).unwrap()
 }
 
+fn seeds(ids: &[StableNodeId]) -> Vec<crate::LayoutFrontierSeed> {
+    ids.iter()
+        .copied()
+        .map(crate::LayoutFrontierSeed::layout)
+        .collect()
+}
+
 #[test]
 fn foundation_adapter_publishes_stable_runtime_results() {
     let (mut world, document) = column_tree(1);
@@ -149,7 +156,7 @@ fn isolated_leaf_preserves_relative_position_and_resolved_padding() {
     let before = context.world().layout_box(leaf.stable_id()).unwrap();
     assert_eq!((before.x, before.width, before.height), (7.0, 100.0, 80.0));
     context
-        .layout_document_scoped(document, viewport, &[leaf.stable_id()])
+        .layout_document_with_frontier(document, viewport, &seeds(&[leaf.stable_id()]))
         .unwrap();
     assert_eq!(
         context.world().layout_box(leaf.stable_id()).unwrap(),
@@ -166,7 +173,7 @@ fn isolated_leaf_preserves_relative_position_and_resolved_padding() {
         })
         .unwrap();
     context
-        .layout_document_scoped(document, viewport, &[root.stable_id()])
+        .layout_document_with_frontier(document, viewport, &seeds(&[root.stable_id()]))
         .unwrap();
     assert_eq!(
         context.world().layout_box(leaf.stable_id()).unwrap(),
@@ -206,7 +213,7 @@ fn scoped_layout_ignores_isolated_dirty_nodes_from_another_document() {
     let engine = RuntimeLayoutEngine;
     let mut cache = RetainedLayoutCache::default();
     engine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             second,
             LayoutViewport::new(800.0, 600.0),
@@ -217,11 +224,11 @@ fn scoped_layout_ignores_isolated_dirty_nodes_from_another_document() {
         .unwrap();
     let previous = cache.documents[&second].boxes[&id(11)];
     let emitted = engine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             first,
             LayoutViewport::new(320.0, 240.0),
-            &[id(11)],
+            &seeds(&[id(11)]),
             &mut cache,
             false,
         )
@@ -233,7 +240,7 @@ fn scoped_layout_ignores_isolated_dirty_nodes_from_another_document() {
     );
     assert_eq!(cache.documents[&second].boxes[&id(11)], previous);
     engine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             first,
             LayoutViewport::new(320.0, 240.0),
@@ -244,11 +251,11 @@ fn scoped_layout_ignores_isolated_dirty_nodes_from_another_document() {
         .unwrap();
     assert_eq!(cache.documents[&second].boxes[&id(11)], previous);
     let isolated = engine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             second,
             LayoutViewport::new(800.0, 600.0),
-            &[id(11)],
+            &seeds(&[id(11)]),
             &mut cache,
             false,
         )
@@ -260,7 +267,7 @@ fn scoped_layout_ignores_isolated_dirty_nodes_from_another_document() {
     let empty = DocumentId::new(3).unwrap();
     assert!(
         engine
-            .layout_document_scoped(
+            .layout_document_with_frontier(
                 &world,
                 empty,
                 LayoutViewport::new(800.0, 600.0),
@@ -369,7 +376,7 @@ fn returning_to_old_viewport_does_not_restore_sizes_from_before_a_content_change
     let smaller = LayoutViewport::new(300.0, 600.0);
     let engine = RuntimeLayoutEngine;
     let boxes = engine
-        .layout_document_scoped(&world, document, original, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, original, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &boxes);
     let mut label_style = world.node_style(id(4)).unwrap().clone();
@@ -378,11 +385,25 @@ fn returning_to_old_viewport_does_not_restore_sizes_from_before_a_content_change
     mutations.set_style(id(4), label_style);
     world.commit(mutations).unwrap();
     let boxes = engine
-        .layout_document_scoped(&world, document, smaller, &[id(4)], &mut retained, false)
+        .layout_document_with_frontier(
+            &world,
+            document,
+            smaller,
+            &seeds(&[id(4)]),
+            &mut retained,
+            false,
+        )
         .unwrap();
     write_changed_boxes(&mut world, &boxes);
     engine
-        .layout_document_scoped(&world, document, original, &[id(1)], &mut retained, false)
+        .layout_document_with_frontier(
+            &world,
+            document,
+            original,
+            &seeds(&[id(1)]),
+            &mut retained,
+            false,
+        )
         .unwrap();
     assert_eq!(
         retained.documents[&document].boxes,
@@ -398,11 +419,11 @@ fn repeated_viewport_resize_keeps_intrinsic_history_bounded() {
     for step in 0..256 {
         let viewport = LayoutViewport::new(300.0 + step as f32, 800.0 + step as f32);
         engine
-            .layout_document_scoped(
+            .layout_document_with_frontier(
                 &world,
                 document,
                 viewport,
-                &[id(1)],
+                &seeds(&[id(1)]),
                 &mut retained,
                 step == 0,
             )
@@ -466,7 +487,7 @@ fn fixed_layout_island_reuses_outer_layout_and_resizing_reaches_siblings() {
     world.take_system_work();
     let mut retained = RetainedLayoutCache::default();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &emitted);
     world.take_system_work();
@@ -479,13 +500,18 @@ fn fixed_layout_island_reuses_outer_layout_and_resizing_reaches_siblings() {
     );
     world.commit(queue).unwrap();
     let work = world.take_system_work();
-    assert!(!work.layout.contains(&id(2)));
+    assert!(
+        !work
+            .layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == id(2))
+    );
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             document,
             viewport,
-            &work.layout,
+            &work.layout_frontier_seeds,
             &mut retained,
             false,
         )
@@ -502,13 +528,17 @@ fn fixed_layout_island_reuses_outer_layout_and_resizing_reaches_siblings() {
     queue.set_style(island, style);
     world.commit(queue).unwrap();
     let work = world.take_system_work();
-    assert!(work.layout.contains(&id(2)));
+    assert!(
+        work.layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == island)
+    );
     RuntimeLayoutEngine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             document,
             viewport,
-            &work.layout,
+            &work.layout_frontier_seeds,
             &mut retained,
             false,
         )
@@ -533,7 +563,7 @@ fn auto_sized_isolation_request_preserves_parent_layout_dependency() {
     world.take_system_work();
     let mut retained = RetainedLayoutCache::default();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &emitted);
     world.take_system_work();
@@ -544,15 +574,17 @@ fn auto_sized_isolation_request_preserves_parent_layout_dependency() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     assert!(
-        work.layout.contains(&id(2)),
-        "auto size must reach its parent"
+        work.layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == id(4)),
+        "auto-size edit must remain a typed seed"
     );
     RuntimeLayoutEngine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             document,
             viewport,
-            &work.layout,
+            &work.layout_frontier_seeds,
             &mut retained,
             false,
         )
@@ -575,7 +607,7 @@ fn scoped_layout_touches_only_the_change_closure_and_matches_full_recompute() {
 
     // Bootstrap: full pass populates the retained cache with every box.
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     assert_eq!(emitted.len(), 802, "full pass emits every node");
     write_changed_boxes(&mut world, &emitted);
@@ -585,13 +617,13 @@ fn scoped_layout_touches_only_the_change_closure_and_matches_full_recompute() {
     // must recompute only that row's ancestor chain.
     resize_row(&mut world, 399, 26.0);
     let work = world.take_system_work();
-    assert!(!work.layout.is_empty());
+    assert!(!work.layout_frontier_seeds.is_empty());
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             document,
             viewport,
-            &work.layout,
+            &work.layout_frontier_seeds,
             &mut retained,
             false,
         )
@@ -617,11 +649,11 @@ fn scoped_layout_touches_only_the_change_closure_and_matches_full_recompute() {
     resize_row(&mut world, 200, 32.0);
     let work = world.take_system_work();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             document,
             viewport,
-            &work.layout,
+            &work.layout_frontier_seeds,
             &mut retained,
             false,
         )
@@ -673,7 +705,7 @@ fn scoped_layout_materializes_far_fewer_inputs_than_the_document_for_a_tail_row(
     let _ = world.take_system_work();
 
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     assert_eq!(emitted.len(), 802);
     assert_eq!(retained.documents[&document].materialized_inputs, 802);
@@ -683,11 +715,11 @@ fn scoped_layout_materializes_far_fewer_inputs_than_the_document_for_a_tail_row(
     resize_row(&mut world, 399, 26.0);
     let work = world.take_system_work();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             document,
             viewport,
-            &work.layout,
+            &work.layout_frontier_seeds,
             &mut retained,
             false,
         )
@@ -4342,7 +4374,7 @@ fn spacing_fixed_box_reflows_percent_padding_when_parent_resizes() {
         })
         .unwrap();
     context
-        .layout_document_scoped(document, viewport, &[root.stable_id()])
+        .layout_document_with_frontier(document, viewport, &seeds(&[root.stable_id()]))
         .unwrap();
     assert_eq!(
         context.world().layout_box(child.stable_id()).unwrap(),
@@ -4734,7 +4766,14 @@ fn scoped_step_matches_full(
     world.resolve_styles(&work.style).unwrap();
     super::plan_stats::reset();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(world, document, viewport, &work.layout, retained, false)
+        .layout_document_with_frontier(
+            world,
+            document,
+            viewport,
+            &work.layout_frontier_seeds,
+            retained,
+            false,
+        )
         .unwrap();
     let step = ScopedStep {
         emitted: emitted.len(),
@@ -4785,7 +4824,7 @@ fn reversed_axes_keep_the_sequential_replay() {
         let mut retained = RetainedLayoutCache::default();
         let _ = world.take_system_work();
         let emitted = RuntimeLayoutEngine
-            .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
             .unwrap();
         write_changed_boxes(&mut world, &emitted);
         let _ = world.take_system_work();
@@ -4805,11 +4844,11 @@ fn reversed_axes_keep_the_sequential_replay() {
             super::plan_stats::reset();
             let work = world.take_system_work();
             let emitted = RuntimeLayoutEngine
-                .layout_document_scoped(
+                .layout_document_with_frontier(
                     &world,
                     document,
                     viewport,
-                    &work.layout,
+                    &work.layout_frontier_seeds,
                     &mut retained,
                     false,
                 )
@@ -4866,7 +4905,7 @@ fn an_inherited_direction_change_retires_a_descendant_containers_plan() {
     let mut retained = RetainedLayoutCache::default();
     let _ = world.take_system_work();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &emitted);
     let _ = world.take_system_work();
@@ -4929,7 +4968,7 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
         let _ = world.take_system_work();
         // Bootstrap exactly like the driver's first frame.
         let emitted = RuntimeLayoutEngine
-            .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
             .unwrap();
         write_changed_boxes(&mut world, &emitted);
         let _ = world.take_system_work();
@@ -5152,12 +5191,17 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
             );
         }
 
-        assert!(
-            measure_plans_reused > 0,
-            "{}: the measure plan was never reused, so this shape did not \
-             exercise it",
-            shape.name
-        );
+        // Definite-size containers take the intrinsic-size short circuit and
+        // never create a MeasurePlan. Only content-sized shapes exercise the
+        // plan reuse path guarded by this differential harness.
+        if shape.container.width.is_none() || shape.container.height.is_none() {
+            assert!(
+                measure_plans_reused > 0,
+                "{}: the measure plan was never reused, so this shape did not \
+                 exercise it",
+                shape.name
+            );
+        }
     }
 }
 
@@ -5251,7 +5295,7 @@ fn content_growth_under_a_child_moves_its_siblings_with(container_height: Option
 
     let mut retained = RetainedLayoutCache::default();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &emitted);
     shape(&mut world);
@@ -5381,7 +5425,7 @@ fn contained_edit_stays_flat(container_height: Option<LengthSpec>, parked_row: b
         let mut retained = RetainedLayoutCache::default();
         let _ = world.take_system_work();
         let emitted = RuntimeLayoutEngine
-            .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
             .unwrap();
         write_changed_boxes(&mut world, &emitted);
         let _ = world.take_system_work();
@@ -5625,7 +5669,7 @@ fn a_cached_row_rechecks_an_item_at_its_used_width() {
     );
     let mut retained = RetainedLayoutCache::default();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &emitted);
     let _ = world.take_system_work();
@@ -5684,7 +5728,7 @@ fn flipping_a_container_to_a_row_remeasures_children_that_depend_on_the_directio
     );
     let mut retained = RetainedLayoutCache::default();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &emitted);
     let _ = world.take_system_work();
@@ -5762,7 +5806,7 @@ fn a_display_contents_child_keeps_its_container_off_the_cached_plans() {
     );
     let mut retained = RetainedLayoutCache::default();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &emitted);
     let _ = world.take_system_work();
@@ -5910,7 +5954,7 @@ fn a_container_whose_own_text_grows_remeasures_itself() {
 
     let mut retained = RetainedLayoutCache::default();
     let emitted = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &emitted);
     shape(&mut world);
@@ -5987,7 +6031,7 @@ fn a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_retires
         let (mut world, document) = hugging_container_world(&rows, hug.clone());
         let mut retained = RetainedLayoutCache::default();
         let emitted = RuntimeLayoutEngine
-            .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
             .unwrap();
         write_changed_boxes(&mut world, &emitted);
         let _ = world.take_system_work();
@@ -6071,7 +6115,7 @@ fn scoped_layout_reveals_hidden_branch_with_new_positioned_children() {
     world.commit(queue).unwrap();
     let mut retained = RetainedLayoutCache::default();
     let full = RuntimeLayoutEngine
-        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
         .unwrap();
     write_changed_boxes(&mut world, &full);
     let _ = world.take_system_work();
@@ -6088,11 +6132,11 @@ fn scoped_layout_reveals_hidden_branch_with_new_positioned_children() {
     world.commit(queue).unwrap();
     let work = world.take_system_work();
     let hidden_boxes = RuntimeLayoutEngine
-        .layout_document_scoped(
+        .layout_document_with_frontier(
             &world,
             document,
             viewport,
-            &work.layout,
+            &work.layout_frontier_seeds,
             &mut retained,
             false,
         )

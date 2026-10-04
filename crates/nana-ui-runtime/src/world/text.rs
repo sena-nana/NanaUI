@@ -3758,7 +3758,24 @@ impl UiWorld {
         if style.layout.padding_top != Some(padding_top) {
             Arc::make_mut(&mut style.layout).padding_top = Some(padding_top);
             self.write_node_style(id, style);
-            self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
+            self.record_layout_invalidation(
+                id,
+                nana_ui_core::LayoutInvalidation::new(
+                    nana_ui_core::LayoutInvalidationSource::Text,
+                    nana_ui_core::InvalidationReason::TEXT,
+                    nana_ui_core::InvalidationKind::MEASURE
+                        .union(nana_ui_core::InvalidationKind::PLACEMENT),
+                    nana_ui_core::LayoutFieldMask::INTRINSIC
+                        .union(nana_ui_core::LayoutFieldMask::SPACING),
+                    nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
+                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
+                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_BASELINE)
+                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS)
+                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
+                        .union(nana_ui_core::LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+                ),
+            );
+            self.mark(id, DirtyMask::RENDER);
             if let Some(parent) = self.parent_id(id) {
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
             }
@@ -3965,11 +3982,20 @@ impl UiWorld {
         self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
         let mut changed = !shaped.is_empty() || !modal_shaped.is_empty();
         for (id, metrics, natural, presentation) in shaped {
+            let previous = self.record(id).text_metrics;
+            let previous_natural = self.text_natural_width(id);
             self.record_mut(id).text_metrics = metrics;
             self.nodes.set_text_natural_width(id, natural);
             if let Some(presentation) = presentation {
                 self.nodes
                     .set_text_input_presentation(id, Some(presentation));
+            }
+            // Scoped shaping runs after a layout pass. Publish the same typed
+            // metric seed as the initial shaping path so a wrapping change is
+            // not lost when another node has a pending typed seed in the same
+            // post-layout drain.
+            if text_intrinsic_changed(previous, metrics) || previous_natural != natural {
+                self.propagate_layout_from_node(id);
             }
         }
         for (id, presentation) in empty_shaped {
@@ -3977,7 +4003,23 @@ impl UiWorld {
         }
         for (id, presentation) in modal_shaped {
             self.nodes.set_modal_text(id, Some(presentation));
-            self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
+            self.record_layout_invalidation(
+                id,
+                nana_ui_core::LayoutInvalidation::new(
+                    nana_ui_core::LayoutInvalidationSource::Text,
+                    nana_ui_core::InvalidationReason::TEXT,
+                    nana_ui_core::InvalidationKind::MEASURE
+                        .union(nana_ui_core::InvalidationKind::PLACEMENT),
+                    nana_ui_core::LayoutFieldMask::INTRINSIC,
+                    nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
+                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
+                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_BASELINE)
+                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS)
+                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
+                        .union(nana_ui_core::LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+                ),
+            );
+            self.mark(id, DirtyMask::RENDER);
         }
         let (hits, misses, evictions) = cache.take_counters();
         if host_keys > 0 {
@@ -4258,7 +4300,24 @@ impl UiWorld {
         for id in stale {
             self.nodes
                 .invalidate_text(id, crate::text_node::TextDirty::FONT);
-            self.mark(id, DirtyMask::TEXT | DirtyMask::LAYOUT | DirtyMask::RENDER);
+            self.record_layout_invalidation(
+                id,
+                nana_ui_core::LayoutInvalidation::new(
+                    nana_ui_core::LayoutInvalidationSource::Font,
+                    nana_ui_core::InvalidationReason::FONT,
+                    nana_ui_core::InvalidationKind::MEASURE
+                        .union(nana_ui_core::InvalidationKind::PLACEMENT),
+                    nana_ui_core::LayoutFieldMask::TYPOGRAPHY
+                        .union(nana_ui_core::LayoutFieldMask::INTRINSIC),
+                    nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
+                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
+                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_BASELINE)
+                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS)
+                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
+                        .union(nana_ui_core::LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+                ),
+            );
+            self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
         }
         // A painter that measured text re-records against the new backend;
         // one that did not is untouched.
@@ -4405,26 +4464,6 @@ impl PlainTextBackend {
                 engine: None,
             },
         }
-    }
-}
-
-impl UiWorld {
-    /// Nodes currently carrying a LAYOUT-dirty bit that has not been drained
-    /// by [`Self::take_system_work`] — e.g. marked by a shaping pass between
-    /// drains. Sorted for determinism.
-    pub fn pending_layout_dirty(&self) -> Vec<StableNodeId> {
-        let mut ids = self
-            .dirty_entities
-            .iter()
-            .copied()
-            .filter(|id| {
-                self.nodes
-                    .get(*id)
-                    .is_some_and(|node| node.dirty.has(DirtyMask::LAYOUT))
-            })
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids
     }
 }
 

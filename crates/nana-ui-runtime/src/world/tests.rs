@@ -1,12 +1,12 @@
 #[cfg(feature = "graph-canvas")]
 use super::geometry::*;
 use super::*;
-use crate::TextInputState;
 use crate::{
     AnimatableProperty, AnimationClass, AnimationEventKind, AnimationFillMode, AnimationId,
     AnimationPlayback, AnimationSpec, Easing, MeasureTextShaper, MotionCurve,
     MotionEvaluatorBackend, MotionInterrupt, MotionTo, MotionValue,
 };
+use crate::{LayoutFrontier, LayoutFrontierSeed, TextInputState};
 use nana_ui_core::{
     CursorSpec, LayoutStyle, LengthSpec, OverflowSpec, PaintMat4, PaintTransform,
     PointerEventsSpec, SemanticColorRole,
@@ -14,6 +14,10 @@ use nana_ui_core::{
 
 fn node(value: u64) -> StableNodeId {
     StableNodeId::new(value).unwrap()
+}
+
+fn seed_nodes(seeds: &[LayoutFrontierSeed]) -> Vec<StableNodeId> {
+    seeds.iter().map(|seed| seed.node).collect()
 }
 
 fn document(value: u64) -> DocumentId {
@@ -85,6 +89,45 @@ fn batch_builds_reparents_and_detaches_hierarchy() {
     world.commit(attach).unwrap();
     assert_eq!(world.node(node(4)).unwrap().parent, Some(node(1)));
     assert!(world.document_order(document(1)).contains(&node(4)));
+}
+
+#[test]
+fn detaching_live_child_emits_topology_seed_for_parent() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element {
+            tag: "parent".into(),
+        },
+    );
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element {
+            tag: "child".into(),
+        },
+    );
+    queue.insert(node(1), node(2), None);
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    let mut detach = MutationQueue::new();
+    detach.detach(node(2));
+    world.commit(detach).unwrap();
+    let work = world.take_system_work();
+    let parent = work
+        .layout_frontier_seeds
+        .iter()
+        .find(|seed| seed.node == node(1))
+        .expect("detaching a child must invalidate its live parent");
+    assert!(
+        parent
+            .invalidation
+            .kind
+            .intersects(InvalidationKind::TOPOLOGY)
+    );
 }
 
 #[test]
@@ -713,7 +756,7 @@ fn scoped_hit_patch_handles_visibility_insertion_and_removal() {
     world.commit(hide).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    let mut dirty = work.layout.clone();
+    let mut dirty = seed_nodes(&work.layout_frontier_seeds);
     dirty.extend(work.input_hit_test.iter().copied());
     dirty.extend(work.style.iter().copied());
     dirty.sort_unstable();
@@ -741,7 +784,7 @@ fn scoped_hit_patch_handles_visibility_insertion_and_removal() {
     world.commit(insert).unwrap();
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    let mut dirty = work.layout.clone();
+    let mut dirty = seed_nodes(&work.layout_frontier_seeds);
     dirty.extend(work.input_hit_test.iter().copied());
     dirty.sort_unstable();
     dirty.dedup();
@@ -760,7 +803,7 @@ fn scoped_hit_patch_handles_visibility_insertion_and_removal() {
     despawn.despawn_subtree(inserted);
     world.commit(despawn).unwrap();
     let work = world.take_system_work();
-    let mut dirty = work.layout.clone();
+    let mut dirty = seed_nodes(&work.layout_frontier_seeds);
     dirty.extend(work.input_hit_test.iter().copied());
     dirty.sort_unstable();
     dirty.dedup();
@@ -1157,7 +1200,7 @@ fn parked_subtree_leaves_every_document_projection_and_remounts_intact() {
         Some(OverlayHostState::default())
     );
     let work = world.take_system_work();
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert!(work.render_extraction.is_empty());
     assert_eq!(work.render_removals, vec![node(1), node(2), node(3)]);
     assert_eq!(work.accessibility_removals, vec![node(1), node(2), node(3)]);
@@ -1470,7 +1513,7 @@ fn pointer_events_none_inherits_unless_child_is_explicit_auto() {
     world.commit(skip).unwrap();
     let work = world.take_system_work();
     assert!(
-        work.layout.is_empty(),
+        work.layout_frontier_seeds.is_empty(),
         "pointer-events is not a layout dirty"
     );
     assert!(work.input_hit_test.contains(&node(3)));
@@ -1559,7 +1602,10 @@ fn cursor_inherits_and_explicit_child_value_wins() {
     mutation.set_style(node(2), update);
     world.commit(mutation).unwrap();
     let work = world.take_system_work();
-    assert!(work.layout.is_empty(), "cursor changes do not relayout");
+    assert!(
+        work.layout_frontier_seeds.is_empty(),
+        "cursor changes do not relayout"
+    );
     assert!(
         work.input_hit_test.is_empty(),
         "cursor changes do not rebuild hit test"
@@ -7015,8 +7061,14 @@ fn dirty_work_is_incremental_and_static_world_stays_idle() {
     assert_eq!(work.style, vec![node(3), node(4)]);
     assert_eq!(work.text, vec![node(3), node(4)]);
     assert_eq!(work.focus_ime, vec![node(3), node(4)]);
-    assert_eq!(work.layout, vec![node(1), node(2), node(3), node(4)]);
-    assert_eq!(work.render_extraction, work.layout);
+    assert_eq!(
+        seed_nodes(&work.layout_frontier_seeds),
+        vec![node(1), node(2), node(3)]
+    );
+    assert_eq!(
+        work.render_extraction,
+        vec![node(1), node(2), node(3), node(4)]
+    );
     assert!(world.take_system_work().is_empty());
 }
 
@@ -7160,7 +7212,7 @@ fn sibling_reorder_does_not_recompute_unchanged_descendant_styles() {
     assert!(work.text.is_empty());
     assert!(work.focus_ime.is_empty());
     assert_eq!(work.input_hit_test, vec![node(3)]);
-    assert_eq!(work.layout, vec![node(1)]);
+    assert_eq!(seed_nodes(&work.layout_frontier_seeds), vec![node(1)]);
     assert_eq!(work.render_extraction, vec![node(1), node(3)]);
 }
 
@@ -7240,7 +7292,7 @@ fn turning_a_container_moves_its_subtree_without_re_extracting_it() {
     // and are projected by the chain above it, which the scene re-projects
     // from the retained node rather than rebuilding.
     assert_eq!(work.render_extraction, vec![node(1)]);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
 }
 
 #[test]
@@ -7276,7 +7328,7 @@ fn fading_a_container_resolves_its_subtree_without_re_extracting_it() {
     // the group rather than reaching each descendant's primitive. Extracting
     // them again would rebuild the same bytes, every frame of the fade.
     assert_eq!(work.render_extraction, vec![node(1)]);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     world.resolve_styles(&work.style).unwrap();
     assert_eq!(
         world.extract_nodes(&[node(3)])[0].style.opacity,
@@ -7319,7 +7371,7 @@ fn paint_only_style_change_does_not_schedule_subtree_layout() {
     assert!(work.state.is_empty());
     assert!(work.transform.is_empty());
     assert!(work.text.is_empty());
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert!(work.input_hit_test.is_empty());
     assert_eq!(work.render_extraction, vec![node(1), node(2), node(3)]);
 
@@ -7340,7 +7392,7 @@ fn paint_only_style_change_does_not_schedule_subtree_layout() {
     );
     world.commit(layout).unwrap();
     let work = world.take_system_work();
-    assert_eq!(work.layout, vec![node(1), node(2), node(3)]);
+    assert_eq!(seed_nodes(&work.layout_frontier_seeds), vec![node(2)]);
     assert_eq!(work.input_hit_test, vec![node(2), node(3)]);
 }
 
@@ -7380,14 +7432,24 @@ fn text_change_with_unchanged_intrinsic_does_not_propagate_layout() {
     let work = world.take_system_work();
     assert_eq!(work.text, vec![node(3)]);
     assert_eq!(work.render_extraction, vec![node(3)]);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     world.resolve_styles(&work.style).unwrap();
     world.shape_text(&work.text, &mut shaper).unwrap();
     let after_shape = world.take_system_work();
-    assert!(after_shape.layout.is_empty());
+    assert!(after_shape.layout_frontier_seeds.is_empty());
     assert!(!after_shape.text.contains(&node(1)));
-    assert!(!after_shape.layout.contains(&node(1)));
-    assert!(!after_shape.layout.contains(&node(2)));
+    assert!(
+        !after_shape
+            .layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == node(1))
+    );
+    assert!(
+        !after_shape
+            .layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == node(2))
+    );
 }
 
 #[test]
@@ -7425,11 +7487,14 @@ fn text_change_that_changes_intrinsic_propagates_layout() {
     world.commit(longer).unwrap();
     let work = world.take_system_work();
     assert_eq!(work.text, vec![node(3)]);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     world.resolve_styles(&work.style).unwrap();
     world.shape_text(&work.text, &mut shaper).unwrap();
     let after_shape = world.take_system_work();
-    assert_eq!(after_shape.layout, vec![node(1), node(2), node(3)]);
+    assert_eq!(
+        seed_nodes(&after_shape.layout_frontier_seeds),
+        vec![node(2), node(3)]
+    );
 }
 
 #[test]
@@ -7492,13 +7557,14 @@ fn wrapping_text_same_unconstrained_width_propagates_layout_when_wrap_height_cha
     world.commit(wrapped).unwrap();
     let work = world.take_system_work();
     assert_eq!(work.text, vec![node(3)]);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     world.resolve_styles(&work.style).unwrap();
     world.shape_text(&work.text, &mut shaper).unwrap();
     let after_shape = world.take_system_work();
-    assert!(after_shape.layout.contains(&node(1)));
-    assert!(after_shape.layout.contains(&node(2)));
-    assert!(after_shape.layout.contains(&node(3)));
+    assert_eq!(
+        seed_nodes(&after_shape.layout_frontier_seeds),
+        vec![node(2), node(3)]
+    );
 }
 
 #[test]
@@ -7676,7 +7742,8 @@ fn hot_path_allocations_and_text_shape_are_idle_zero_and_rise_on_mutation() {
     assert_eq!(after_shape.text_layout_cache_hits, 0);
     assert!(after_shape.allocations > 0);
 
-    let _ = world.layout_inputs(&work.layout).unwrap();
+    let ids = seed_nodes(&work.layout_frontier_seeds);
+    let _ = world.layout_inputs(&ids).unwrap();
     let after_layout = world.last_work_counters();
     assert!(after_layout.allocations >= after_shape.allocations);
 
@@ -8247,7 +8314,7 @@ fn transform_and_a11y_mutations_do_not_schedule_layout() {
     let work = world.take_system_work();
     assert!(work.style.is_empty());
     assert!(work.state.is_empty());
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert_eq!(work.counters().style_processed, 0);
     assert_eq!(work.counters().layout_nodes, 0);
     assert_eq!(work.transform, vec![node(4)]);
@@ -8257,7 +8324,7 @@ fn transform_and_a11y_mutations_do_not_schedule_layout() {
     let restored = world.take_system_work();
     assert_eq!(restored.transform, work.transform);
     assert!(restored.style.is_empty());
-    assert!(restored.layout.is_empty());
+    assert!(restored.layout_frontier_seeds.is_empty());
 
     let mut accessibility = MutationQueue::new();
     accessibility.set_accessibility(
@@ -8270,7 +8337,7 @@ fn transform_and_a11y_mutations_do_not_schedule_layout() {
     );
     world.commit(accessibility).unwrap();
     let work = world.take_system_work();
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert_eq!(work.accessibility, vec![node(3)]);
 }
 
@@ -8292,11 +8359,12 @@ fn frame_profiler_times_separable_runtime_stages() {
             .shape_text(&work.text, &mut FunctionalShaper::default())
             .unwrap();
     });
-    if work.layout.is_empty() {
+    if work.layout_frontier_seeds.is_empty() {
         profiler.skip(crate::FrameStage::Layout);
     } else {
         profiler.time(crate::FrameStage::Layout, || {
-            world.layout_inputs(&work.layout).unwrap();
+            let ids = seed_nodes(&work.layout_frontier_seeds);
+            world.layout_inputs(&ids).unwrap();
         });
     }
     profiler.time(crate::FrameStage::Extract, || {
@@ -8656,7 +8724,7 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
         work.style.is_empty(),
         "SetTheme schedules RENDER, not STYLE"
     );
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     world.resolve_styles(&work.style).unwrap();
     let counters = world.last_theme_work_counters();
     assert_eq!(
@@ -8914,7 +8982,7 @@ fn set_theme_marks_render_not_style_when_only_palette_roles_change() {
     world.commit(theme).unwrap();
     let work = world.take_system_work();
     assert!(work.style.is_empty());
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert_eq!(work.render_extraction, vec![node(1)]);
     assert_eq!(
         world.extract_nodes(&work.render_extraction)[0]
@@ -9267,7 +9335,8 @@ fn style_text_layout_input_focus_ime_hit_test_and_extraction_form_one_pipeline()
     let mut shaper = FunctionalShaper::default();
     world.shape_text(&work.text, &mut shaper).unwrap();
     assert_eq!(shaper.calls, vec![node(3)]);
-    let layout = world.layout_inputs(&work.layout).unwrap();
+    let ids = seed_nodes(&work.layout_frontier_seeds);
+    let layout = world.layout_inputs(&ids).unwrap();
     let text = layout.iter().find(|input| input.id == node(3)).unwrap();
     assert_eq!(text.parent, Some(node(2)));
     assert_eq!(text.text_metrics.unwrap().width, 40.0);
@@ -9470,7 +9539,7 @@ fn accessibility_projection_uses_runtime_hierarchy_focus_and_geometry() {
     let work = world.take_system_work();
     assert_eq!(work.accessibility, vec![node(1)]);
     assert!(work.style.is_empty());
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
 }
 
 #[test]
@@ -9790,7 +9859,7 @@ fn pointer_hover_and_press_are_runtime_owned_and_targeted() {
     let work = world.take_system_work();
     assert_eq!(work.state, vec![node(2)]);
     assert_eq!(work.style, vec![node(2)]);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert!(work.transform.is_empty());
     assert!(work.input_hit_test.is_empty());
     world.advance_animations(nana_ui_core::motion::HOVER_COLOR);
@@ -9861,7 +9930,7 @@ fn pointer_hover_without_interaction_style_dirties_state_not_style() {
     let work = world.take_system_work();
     assert_eq!(work.state, vec![node(2)]);
     assert!(work.style.is_empty());
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert!(work.transform.is_empty());
     assert!(work.render_extraction.is_empty());
     assert_eq!(work.counters().style_processed, 0);
@@ -9954,7 +10023,7 @@ fn request_focus_dirties_state_without_requiring_style() {
     assert_eq!(work.state, vec![node(2)]);
     assert!(work.style.is_empty());
     assert!(work.transform.is_empty());
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert_eq!(work.focus_ime, vec![node(2)]);
     assert_eq!(work.render_extraction, vec![node(2)]);
 }
@@ -10038,7 +10107,7 @@ fn scroll_offset_moves_descendant_hit_testing_without_rewriting_layout() {
     // Scroller-only hit/extract; Scene recomposes descendants from offset.
     assert_eq!(work.input_hit_test, vec![node(2)]);
     assert_eq!(work.render_extraction, vec![node(2)]);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     let scroll_updates = world.take_scroll_hit_updates();
     assert!(world.hit_test_work_is_scroll_only(&work.input_hit_test, &scroll_updates));
     for (scroller, delta) in scroll_updates {
@@ -10094,7 +10163,7 @@ fn scroll_offset_moves_descendant_hit_testing_without_rewriting_layout() {
     // The metrics clamp re-anchors the offset; the scroller-only input
     // mark plus the recorded delta cover the hit index update.
     assert_eq!(work.input_hit_test, vec![node(2)]);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
 
     let generation = world.generation();
     let mut invalid = MutationQueue::new();
@@ -10212,7 +10281,7 @@ fn write_layout_does_not_extract_bit_identical_descendants() {
         !work.render_extraction.contains(&node(6)),
         "bit-identical middle-row label must not be extracted because its ancestor was written"
     );
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert_eq!(work.input_hit_test, work.render_extraction);
     assert_eq!(work.accessibility, work.render_extraction);
 }
@@ -11568,4 +11637,296 @@ fn a_fresh_world_caches_the_style_slice_of_the_theme_it_installed() {
         world.take_system_work().style.is_empty(),
         "re-installing the theme already in place must do no work"
     );
+}
+
+#[test]
+fn typed_layout_seed_stays_narrow_when_coarse_ancestor_bits_are_propagated() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "root".into() },
+    );
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "leaf".into() },
+    );
+    queue.insert(node(1), node(2), None);
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    world.record_layout_invalidation(
+        node(2),
+        LayoutInvalidation::new(
+            LayoutInvalidationSource::Text,
+            InvalidationReason::TEXT,
+            InvalidationKind::MEASURE,
+            LayoutFieldMask::INTRINSIC,
+            LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
+        ),
+    );
+    world.mark_ancestors(node(2), DirtyMask::LAYOUT | DirtyMask::RENDER);
+    let work = world.take_system_work();
+
+    assert_eq!(work.layout_frontier_seeds.len(), 1);
+    assert_eq!(work.layout_frontier_seeds[0].node, node(2));
+    assert_eq!(
+        work.layout_frontier_seeds[0].invalidation.affected_axes,
+        LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
+    );
+}
+
+#[test]
+fn typed_dependency_graph_does_not_scan_unrelated_siblings() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "root".into() },
+    );
+    // Keep a large set of siblings in the retained document. A text metric
+    // seed on one leaf only needs its exported parent chain; constructing the
+    // graph must not enumerate this unrelated branch.
+    for id in 2..=201 {
+        queue.create(
+            node(id),
+            document(1),
+            NodeKind::Element {
+                tag: "label".into(),
+            },
+        );
+        queue.insert(node(1), node(id), None);
+    }
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    let seed = LayoutFrontierSeed::new(
+        node(2),
+        LayoutInvalidation::new(
+            LayoutInvalidationSource::Text,
+            InvalidationReason::TEXT,
+            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+            LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+            LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
+        ),
+    );
+    let graph = world.layout_dependency_graph_for_seeds(document(1), &[seed]);
+    let frontier = LayoutFrontier::from_dependency_graph([seed], &graph);
+
+    assert!(frontier.contains(node(1)));
+    assert!(!frontier.contains(node(201)));
+    assert_eq!(frontier.dependency_edges_visited(), 1);
+}
+
+#[test]
+fn typed_metric_seed_stops_at_fixed_card_boundary() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    for id in 1..=4 {
+        queue.create(
+            node(id),
+            document(1),
+            NodeKind::Element {
+                tag: if id == 2 { "card" } else { "label" }.into(),
+            },
+        );
+    }
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    queue.insert(node(2), node(4), None);
+    queue.set_style(
+        node(2),
+        NodeStyle {
+            layout: std::sync::Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(240.0)),
+                height: Some(LengthSpec::Px(120.0)),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    let seed = LayoutFrontierSeed::new(
+        node(3),
+        LayoutInvalidation::new(
+            LayoutInvalidationSource::Text,
+            InvalidationReason::TEXT,
+            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+            LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+            LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
+        ),
+    );
+    let graph = world.layout_dependency_graph_for_seeds(document(1), &[seed]);
+    let frontier = LayoutFrontier::from_dependency_graph([seed], &graph);
+
+    assert!(frontier.contains(node(3)));
+    assert!(!frontier.contains(node(2)));
+    assert!(!frontier.contains(node(4)));
+    assert!(!frontier.contains(node(1)));
+    assert_eq!(frontier.dependency_edges_visited(), 0);
+}
+
+#[test]
+fn lateral_metric_seed_reaches_fixed_formatting_context() {
+    use nana_ui_core::DisplaySpec;
+
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    for id in 1..=4 {
+        queue.create(
+            node(id),
+            document(1),
+            NodeKind::Element {
+                tag: if id == 2 { "row" } else { "item" }.into(),
+            },
+        );
+    }
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    queue.insert(node(2), node(4), None);
+    queue.set_style(
+        node(2),
+        NodeStyle {
+            layout: std::sync::Arc::new(LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                width: Some(LengthSpec::Px(240.0)),
+                height: Some(LengthSpec::Px(120.0)),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    let seed = LayoutFrontierSeed::new(
+        node(3),
+        LayoutInvalidation::new(
+            LayoutInvalidationSource::Text,
+            InvalidationReason::TEXT,
+            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+            LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+            LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
+                .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX),
+        ),
+    );
+    let graph = world.layout_dependency_graph_for_seeds(document(1), &[seed]);
+    let frontier = LayoutFrontier::from_dependency_graph([seed], &graph);
+
+    assert!(frontier.contains(node(2)));
+    assert!(frontier.contains(node(4)));
+}
+
+#[test]
+fn independent_parent_and_child_typed_seeds_survive_one_drain() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element {
+            tag: "parent".into(),
+        },
+    );
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element {
+            tag: "child".into(),
+        },
+    );
+    queue.insert(node(1), node(2), None);
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    world.record_layout_invalidation(
+        node(1),
+        LayoutInvalidation::new(
+            LayoutInvalidationSource::Author,
+            InvalidationReason::STYLE,
+            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+            LayoutFieldMask::ALL,
+            LayoutDependencyFootprint::ALL,
+        ),
+    );
+    world.record_layout_invalidation(
+        node(2),
+        LayoutInvalidation::new(
+            LayoutInvalidationSource::Text,
+            InvalidationReason::TEXT,
+            InvalidationKind::MEASURE,
+            LayoutFieldMask::INTRINSIC,
+            LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
+        ),
+    );
+
+    let work = world.take_system_work();
+    assert_eq!(work.layout_frontier_seeds.len(), 2);
+    assert!(
+        work.layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == node(1)
+                && seed.invalidation.affected_axes == LayoutDependencyFootprint::ALL)
+    );
+    assert!(work.layout_frontier_seeds.iter().any(|seed| {
+        seed.node == node(2)
+            && seed.invalidation.affected_axes
+                == LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
+    }));
+}
+
+#[test]
+fn typed_layout_seed_restore_preserves_each_document_and_typed_cause() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element {
+            tag: "first".into(),
+        },
+    );
+    queue.create(
+        node(2),
+        document(2),
+        NodeKind::Element {
+            tag: "second".into(),
+        },
+    );
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    let text = LayoutInvalidation::new(
+        LayoutInvalidationSource::Text,
+        InvalidationReason::TEXT,
+        InvalidationKind::MEASURE,
+        LayoutFieldMask::INTRINSIC,
+        LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE,
+    );
+    let writing = LayoutInvalidation::new(
+        LayoutInvalidationSource::Author,
+        InvalidationReason::WRITING,
+        InvalidationKind::WRITING_CONTEXT,
+        LayoutFieldMask::TYPOGRAPHY,
+        LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT,
+    );
+    world.record_layout_invalidation(node(1), text);
+    world.record_layout_invalidation(node(2), writing);
+    let work = world.take_system_work();
+    assert_eq!(work.layout_frontier_seeds.len(), 2);
+    world.restore_system_work(work);
+
+    let first = world.take_layout_frontier_seeds(document(1));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].node, node(1));
+    assert_eq!(first[0].invalidation, text);
+    let second = world.take_layout_frontier_seeds(document(2));
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].node, node(2));
+    assert_eq!(second[0].invalidation, writing);
 }

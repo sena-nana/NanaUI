@@ -129,6 +129,15 @@ struct WorkSnapshot {
     style_processed: usize,
     text_shaped: usize,
     layout_nodes: usize,
+    layout_frontier_seeds: usize,
+    layout_frontier_seed_merges: usize,
+    layout_frontier_nodes_measure: usize,
+    layout_frontier_nodes_placement: usize,
+    layout_frontier_contexts: usize,
+    layout_dependency_edges_visited: usize,
+    layout_propagations_stopped: usize,
+    layout_local_subtree_fallbacks: usize,
+    layout_full_document_fallbacks: usize,
     hit_test_candidates: usize,
     input_targets: usize,
     accessibility_nodes_updated: usize,
@@ -341,7 +350,7 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         let local_paint_schedule_elapsed = started.elapsed();
         assert_eq!(paint_work.style.len(), 1);
         assert_eq!(paint_work.render_extraction.len(), 1);
-        assert!(paint_work.layout.is_empty());
+        assert!(paint_work.layout_frontier_seeds.is_empty());
         assert!(paint_work.input_hit_test.is_empty());
         let started = Instant::now();
         run_systems(&mut steady_world, document, &paint_work);
@@ -500,7 +509,7 @@ fn bench_construction(
         let paint_work = steady_world.take_system_work();
         assert_eq!(paint_work.style.len(), 1);
         assert_eq!(paint_work.render_extraction.len(), 1);
-        assert!(paint_work.layout.is_empty());
+        assert!(paint_work.layout_frontier_seeds.is_empty());
         let paint_snapshot = work_snapshot(&paint_work, &steady_world);
         let started = Instant::now();
         let idle = steady_world.take_system_work();
@@ -693,6 +702,15 @@ impl From<WorkCounters> for WorkSnapshot {
             style_processed: counters.style_processed,
             text_shaped: counters.text_shaped,
             layout_nodes: counters.layout_nodes,
+            layout_frontier_seeds: counters.layout_frontier_seeds,
+            layout_frontier_seed_merges: counters.layout_frontier_seed_merges,
+            layout_frontier_nodes_measure: counters.layout_frontier_nodes_measure,
+            layout_frontier_nodes_placement: counters.layout_frontier_nodes_placement,
+            layout_frontier_contexts: counters.layout_frontier_contexts,
+            layout_dependency_edges_visited: counters.layout_dependency_edges_visited,
+            layout_propagations_stopped: counters.layout_propagations_stopped,
+            layout_local_subtree_fallbacks: counters.layout_local_subtree_fallbacks,
+            layout_full_document_fallbacks: counters.layout_full_document_fallbacks,
             hit_test_candidates: counters.hit_test_candidates,
             input_targets: counters.input_targets,
             accessibility_nodes_updated: counters.accessibility_nodes_updated,
@@ -852,7 +870,12 @@ fn run_systems_with_style_resolver(
     completed("focus");
     let _ = world.project_accessibility_nodes(&work.accessibility);
     completed("accessibility");
-    let _ = world.layout_inputs(&work.layout).unwrap();
+    let layout_ids = work
+        .layout_frontier_seeds
+        .iter()
+        .map(|seed| seed.node)
+        .collect::<Vec<_>>();
+    let _ = world.layout_inputs(&layout_ids).unwrap();
     completed("layout_inputs");
     // Mirror RuntimeDocument: patch the subtrees whose geometry changed and fall
     // back to a full rebuild only when the change is structural. Always

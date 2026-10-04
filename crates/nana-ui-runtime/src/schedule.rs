@@ -1,6 +1,6 @@
 use nana_ui_core::WorkCounters;
 
-use crate::{ExtractedNode, StableNodeId};
+use crate::{ExtractedNode, StableNodeId, layout_frontier::LayoutFrontierSeed};
 
 /// Per-entity invalidation mask. Widened from `u8` because Issue #8 §6.2 STATE
 /// and TRANSFORM are independent bits; packing them into the last unused `u8`
@@ -48,8 +48,8 @@ impl DirtyMask {
         std::mem::take(&mut self.0)
     }
 
-    /// Whether every bit in `bits` is set.
-    pub(crate) fn has(&self, bits: u16) -> bool {
+    #[cfg(test)]
+    pub(crate) const fn has(self, bits: u16) -> bool {
         self.0 & bits == bits
     }
 }
@@ -69,7 +69,8 @@ pub struct SystemWork {
     /// drain non-empty. See [`Self::is_empty`].
     pub state: Vec<StableNodeId>,
     pub text: Vec<StableNodeId>,
-    pub layout: Vec<StableNodeId>,
+    /// Typed layout invalidations emitted by the mutation authority.
+    pub layout_frontier_seeds: Vec<LayoutFrontierSeed>,
     /// Paint-transform targets. Empty layout is valid; extract still uses RENDER.
     /// Observability only, like [`Self::state`]. See [`Self::is_empty`].
     pub transform: Vec<StableNodeId>,
@@ -145,7 +146,7 @@ impl SystemWork {
     pub fn is_empty(&self) -> bool {
         self.style.is_empty()
             && self.text.is_empty()
-            && self.layout.is_empty()
+            && self.layout_frontier_seeds.is_empty()
             && self.input_hit_test.is_empty()
             && self.focus_ime.is_empty()
             && self.accessibility.is_empty()
@@ -163,7 +164,20 @@ impl SystemWork {
             entities_despawned: self.entities_despawned,
             style_processed: self.style.len(),
             text_shaped: self.text.len(),
-            layout_nodes: self.layout.len(),
+            layout_nodes: self.layout_frontier_seeds.len(),
+            // Frontier counters are emitted by the retained layout pass, not
+            // by this coarse dirty-bit drain. Keep them zero here so a
+            // scheduler snapshot cannot claim that every LAYOUT bit became a
+            // frontier node before dependency classification runs.
+            layout_frontier_seeds: 0,
+            layout_frontier_seed_merges: 0,
+            layout_frontier_nodes_measure: 0,
+            layout_frontier_nodes_placement: 0,
+            layout_frontier_contexts: 0,
+            layout_dependency_edges_visited: 0,
+            layout_propagations_stopped: 0,
+            layout_local_subtree_fallbacks: 0,
+            layout_full_document_fallbacks: 0,
             hit_test_candidates: self.input_hit_test.len(),
             input_targets: self.input_targets,
             accessibility_nodes_updated: self.accessibility.len(),
@@ -292,9 +306,6 @@ pub(crate) fn push_work(work: &mut SystemWork, id: StableNodeId, bits: u16) {
     if bits & DirtyMask::TEXT != 0 {
         work.text.push(id);
     }
-    if bits & DirtyMask::LAYOUT != 0 {
-        work.layout.push(id);
-    }
     if bits & DirtyMask::TRANSFORM != 0 {
         work.transform.push(id);
     }
@@ -316,10 +327,9 @@ pub(crate) fn push_work(work: &mut SystemWork, id: StableNodeId, bits: u16) {
 mod tests {
     use super::*;
 
-    const NAMED_BITS: [(&str, u16); 9] = [
+    const NAMED_BITS: [(&str, u16); 8] = [
         ("STYLE", DirtyMask::STYLE),
         ("TEXT", DirtyMask::TEXT),
-        ("LAYOUT", DirtyMask::LAYOUT),
         ("INPUT", DirtyMask::INPUT),
         ("FOCUS_IME", DirtyMask::FOCUS_IME),
         ("RENDER", DirtyMask::RENDER),
@@ -339,7 +349,6 @@ mod tests {
             ("style", &work.style),
             ("state", &work.state),
             ("text", &work.text),
-            ("layout", &work.layout),
             ("transform", &work.transform),
             ("input_hit_test", &work.input_hit_test),
             ("focus_ime", &work.focus_ime),
@@ -362,7 +371,11 @@ mod tests {
             }
         }
         let union = NAMED_BITS.iter().fold(0, |acc, (_, bit)| acc | bit);
-        assert_eq!(union, DirtyMask::ALL, "ALL must be exactly the named bits");
+        assert_eq!(
+            union | DirtyMask::LAYOUT,
+            DirtyMask::ALL,
+            "ALL must include the typed layout lane"
+        );
         assert!(DirtyMask::all().has(DirtyMask::ALL));
     }
 
@@ -392,7 +405,6 @@ mod tests {
             (DirtyMask::STYLE, "style"),
             (DirtyMask::STATE, "state"),
             (DirtyMask::TEXT, "text"),
-            (DirtyMask::LAYOUT, "layout"),
             (DirtyMask::TRANSFORM, "transform"),
             (DirtyMask::INPUT, "input_hit_test"),
             (DirtyMask::FOCUS_IME, "focus_ime"),
@@ -417,11 +429,11 @@ mod tests {
     #[test]
     fn push_work_preserves_drain_order_per_list() {
         let mut work = SystemWork::default();
-        push_work(&mut work, node(3), DirtyMask::LAYOUT);
-        push_work(&mut work, node(1), DirtyMask::LAYOUT | DirtyMask::STYLE);
-        push_work(&mut work, node(2), DirtyMask::LAYOUT);
-        assert_eq!(work.layout, vec![node(3), node(1), node(2)]);
-        assert_eq!(work.style, vec![node(1)]);
+        push_work(&mut work, node(3), DirtyMask::STYLE);
+        push_work(&mut work, node(1), DirtyMask::STYLE | DirtyMask::TEXT);
+        push_work(&mut work, node(2), DirtyMask::STYLE);
+        assert_eq!(work.style, vec![node(3), node(1), node(2)]);
+        assert_eq!(work.text, vec![node(1)]);
     }
 
     #[test]
@@ -459,7 +471,11 @@ mod tests {
     fn counters_report_list_lengths_without_inventing_gpu_numbers() {
         let mut work = SystemWork::default();
         push_work(&mut work, node(1), DirtyMask::ALL);
-        push_work(&mut work, node(2), DirtyMask::LAYOUT | DirtyMask::STATE);
+        work.layout_frontier_seeds
+            .push(LayoutFrontierSeed::layout(node(1)));
+        work.layout_frontier_seeds
+            .push(LayoutFrontierSeed::layout(node(2)));
+        push_work(&mut work, node(2), DirtyMask::STATE);
         work.render_nodes_changed = work.render_extraction.len();
 
         let counters = work.counters();

@@ -183,20 +183,17 @@ impl AppContext {
         self.layout_document_impl(document, viewport, &[], true)
     }
 
-    /// [`Self::layout_document`] restricted to the ancestor closure of
-    /// `dirty`. Clean subtrees reuse the retained cache, so the cost scales
-    /// with the change, not the document. [`Self::take_last_layout_scope`]
+    /// Incremental layout driven by typed invalidation seeds. Clean subtrees
+    /// reuse the retained cache, so the cost scales with the dependency
+    /// frontier rather than the document. [`Self::take_last_layout_scope`]
     /// reports the recomputed set for scoped text re-shaping.
-    pub fn layout_document_scoped(
+    pub fn layout_document_with_frontier(
         &mut self,
         document: DocumentId,
         viewport: crate::LayoutViewport,
-        dirty: &[StableNodeId],
+        seeds: &[crate::LayoutFrontierSeed],
     ) -> Result<crate::CommitReport, FrameworkError> {
-        let mut dirty = dirty.to_vec();
-        dirty.sort_unstable();
-        dirty.dedup();
-        self.layout_document_impl(document, viewport, &dirty, false)
+        self.layout_document_impl_with_seeds(document, viewport, &[], false, Some(seeds))
     }
 
     /// Relayout after a viewport change. Document roots plus any live
@@ -209,7 +206,16 @@ impl AppContext {
     ) -> Result<crate::CommitReport, FrameworkError> {
         let mut dirty = self.world.document_roots(document);
         dirty.extend(self.world.viewport_basis_ids_for(document));
-        self.layout_document_impl(document, viewport, &dirty, false)
+        // Viewport roots/basis nodes are the root boundary for this pass. They
+        // remain in the typed graph even when text shaping queued another
+        // invalidation in the same frame; conservative seeds preserve the
+        // viewport closure.
+        let seeds = dirty
+            .iter()
+            .copied()
+            .map(crate::LayoutFrontierSeed::layout)
+            .collect::<Vec<_>>();
+        self.layout_document_impl_with_seeds(document, viewport, &dirty, false, Some(&seeds))
     }
 
     /// Nodes recomputed by the most recent layout pass; drains on read.
@@ -217,10 +223,13 @@ impl AppContext {
         std::mem::take(&mut self.last_layout_scope)
     }
 
-    /// Nodes carrying an undrained LAYOUT-dirty bit (e.g. set by a shaping
-    /// pass after the work drain). Sorted for determinism.
-    pub fn pending_layout_dirty(&mut self) -> Vec<StableNodeId> {
-        self.world.pending_layout_dirty()
+    /// Drain typed layout seeds emitted after the current work batch, such as
+    /// intrinsic changes discovered while shaping text.
+    pub fn take_layout_frontier_seeds(
+        &mut self,
+        document: DocumentId,
+    ) -> Vec<crate::LayoutFrontierSeed> {
+        self.world.take_layout_frontier_seeds(document)
     }
 
     /// Full (`force_full`) layout passes, which discard the retained cache.
@@ -240,10 +249,37 @@ impl AppContext {
         dirty: &[StableNodeId],
         force_full: bool,
     ) -> Result<crate::CommitReport, FrameworkError> {
-        #[cfg(not(feature = "benchmark"))]
-        {
-            self.layout_document_observed(document, viewport, dirty, force_full, |_| {})
+        self.layout_document_impl_with_seeds(document, viewport, dirty, force_full, None)
+    }
+
+    fn layout_document_impl_with_seeds(
+        &mut self,
+        document: DocumentId,
+        viewport: crate::LayoutViewport,
+        dirty: &[StableNodeId],
+        force_full: bool,
+        supplied_seeds: Option<&[crate::LayoutFrontierSeed]>,
+    ) -> Result<crate::CommitReport, FrameworkError> {
+        let mut typed_seeds = if force_full {
+            self.world.clear_layout_frontier_seeds(document);
+            Vec::new()
+        } else {
+            supplied_seeds
+                .map(|seeds| seeds.to_vec())
+                .unwrap_or_default()
+        };
+        if !force_full {
+            typed_seeds.extend(self.world.take_layout_frontier_seeds(document));
         }
+        #[cfg(not(feature = "benchmark"))]
+        let result = self.layout_document_observed(
+            document,
+            viewport,
+            dirty,
+            &typed_seeds,
+            force_full,
+            |_| {},
+        );
         // Time the production path itself rather than a benchmark-only
         // reimplementation of it: the sub-stage clocks are the same
         // `completed` hook the full-layout benchmark already uses.
@@ -251,16 +287,31 @@ impl AppContext {
         {
             let mut substages = [Duration::ZERO; 4];
             let mut started = Instant::now();
-            let result =
-                self.layout_document_observed(document, viewport, dirty, force_full, |stage| {
+            let result = self.layout_document_observed(
+                document,
+                viewport,
+                dirty,
+                &typed_seeds,
+                force_full,
+                |stage| {
                     substages[stage] = started.elapsed();
                     started = Instant::now();
-                });
+                },
+            );
             for (total, elapsed) in self.layout_substage_totals.iter_mut().zip(substages) {
                 *total += elapsed;
             }
-            result
+            if result.is_err() {
+                self.world.restore_layout_frontier_seeds(&typed_seeds);
+            }
+            return result;
         }
+        #[cfg(not(feature = "benchmark"))]
+        if result.is_err() {
+            self.world.restore_layout_frontier_seeds(&typed_seeds);
+        }
+        #[cfg(not(feature = "benchmark"))]
+        result
     }
 
     /// Drain the per-sub-stage totals accumulated inside the Layout stage:
@@ -280,7 +331,7 @@ impl AppContext {
     ) -> Result<[Duration; 4], FrameworkError> {
         let mut timings = [Duration::ZERO; 4];
         let mut started = Instant::now();
-        self.layout_document_observed(document, viewport, &[], true, |stage| {
+        self.layout_document_observed(document, viewport, &[], &[], true, |stage| {
             timings[stage] = started.elapsed();
             started = Instant::now();
         })?;
@@ -292,6 +343,7 @@ impl AppContext {
         document: DocumentId,
         viewport: crate::LayoutViewport,
         dirty: &[StableNodeId],
+        typed_seeds: &[crate::LayoutFrontierSeed],
         force_full: bool,
         mut completed: impl FnMut(usize),
     ) -> Result<crate::CommitReport, FrameworkError> {
@@ -307,17 +359,19 @@ impl AppContext {
         let result = (|| {
             self.position_open_tooltips(document)?;
             completed(0);
-            let layouts = crate::RuntimeLayoutEngine.layout_document_scoped(
+            let layouts = crate::RuntimeLayoutEngine.layout_document_with_frontier(
                 &self.world,
                 document,
                 viewport,
-                dirty,
+                typed_seeds,
                 &mut self.layout_cache,
                 force_full,
             )?;
             let intrinsic_counters = self.layout_cache.take_intrinsic_counters();
             self.world
                 .record_intrinsic_measure_counters(intrinsic_counters);
+            self.world
+                .record_layout_frontier(self.layout_cache.frontier_stats(document));
             completed(1);
             let mut mutations = MutationQueue::new();
             let mut scope = Vec::with_capacity(layouts.len());
@@ -356,8 +410,8 @@ impl AppContext {
             }
             let report = self.commit_mutations(mutations)?;
             // Publish one coherent canonical Result snapshot only after every
-            // sibling box in the scope has been committed. Compatibility
-            // LayoutBox writes published during commit are replaced with the
+            // sibling box in the scope has been committed. Interim LayoutBox
+            // writes published during commit are replaced with the
             // RuntimeLayout provenance here.
             self.world
                 .publish_layout_results(&scope, crate::LayoutResultSource::RuntimeLayout);

@@ -590,9 +590,14 @@ fn run_systems(context: &mut AppContext, document: DocumentId, work: &SystemWork
     let _ = context
         .compat_world_mut()
         .project_accessibility_nodes(&work.accessibility);
+    let layout_ids = work
+        .layout_frontier_seeds
+        .iter()
+        .map(|seed| seed.node)
+        .collect::<Vec<_>>();
     let _ = context
         .compat_world_mut()
-        .layout_inputs(&work.layout)
+        .layout_inputs(&layout_ids)
         .unwrap();
     if !work.input_hit_test.is_empty()
         && !context

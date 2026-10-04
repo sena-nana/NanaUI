@@ -20,6 +20,13 @@ use crate::{
     TextChanged, TextCodeFold, TextContent, TextInlay, TextInput, TextSelection, ToggleChanged,
 };
 
+fn seeds(ids: &[StableNodeId]) -> Vec<crate::LayoutFrontierSeed> {
+    ids.iter()
+        .copied()
+        .map(crate::LayoutFrontierSeed::layout)
+        .collect()
+}
+
 #[test]
 fn content_sized_checkbox_reserves_indicator_and_label_width() {
     let mut context = AppContext::new();
@@ -126,7 +133,7 @@ fn scoped_layout_shrink_clamps_scroll_and_anchor_restore_requests_layout() {
     }
     context.commit_mutations(mutations).unwrap();
     context
-        .layout_document_scoped(document, viewport, &rows)
+        .layout_document_with_frontier(document, viewport, &seeds(&rows))
         .unwrap();
     assert_eq!(context.world.scroll_offset(scroll.id).unwrap().y, 0.0);
     assert_eq!(
@@ -144,9 +151,13 @@ fn scoped_layout_shrink_clamps_scroll_and_anchor_restore_requests_layout() {
         .unwrap();
     context.restore_scroll_anchor(scroll, anchor).unwrap();
     let work = context.take_system_work();
-    assert!(work.layout.contains(&scroll.id));
+    assert!(
+        work.layout_frontier_seeds
+            .iter()
+            .any(|seed| seed.node == scroll.id)
+    );
     context
-        .layout_document_scoped(document, viewport, &work.layout)
+        .layout_document_with_frontier(document, viewport, &work.layout_frontier_seeds)
         .unwrap();
     assert!(
         context
@@ -3344,7 +3355,7 @@ fn native_scroll_view_projects_axes_and_typed_runtime_offset() {
     let work = context.compat_world_mut().take_system_work();
     assert_eq!(work.input_hit_test, vec![scroll.stable_id()]);
     assert_eq!(work.render_extraction, vec![scroll.stable_id()]);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert!(
         context
             .set_scroll_metrics(
@@ -5446,7 +5457,7 @@ fn scroll_view_with_forty_rows_dirties_forty_one_hit_targets() {
     // Scroller-only hit/extract; Scene recomposes descendants from offset.
     assert_eq!(work.input_hit_test.len(), 1);
     assert_eq!(work.render_extraction.len(), 1);
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     let updates = context.take_scroll_hit_updates();
     assert!(
         context.hit_test_work_is_scroll_only(&work.input_hit_test, &updates),
@@ -5542,7 +5553,7 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
     assert!(context.set_preset_theme(ThemeAppearance::Light).unwrap());
     let work = context.compat_world_mut().take_system_work();
     assert!(work.style.is_empty());
-    assert!(work.layout.is_empty());
+    assert!(work.layout_frontier_seeds.is_empty());
     assert!(work.render_extraction.contains(&button.stable_id()));
     let light = context
         .world()

@@ -1039,6 +1039,18 @@ WORK_COUNTER_KEYS = (
     "style_processed",
     "text_shaped",
     "layout_nodes",
+    # Issue #256 dependency-aware retained-layout frontier counters. They are
+    # emitted by current Runtime reports alongside the ordinary dirty-work
+    # counters; invariants decide explicitly when a scenario requires them.
+    "layout_frontier_seeds",
+    "layout_frontier_seed_merges",
+    "layout_frontier_nodes_measure",
+    "layout_frontier_nodes_placement",
+    "layout_frontier_contexts",
+    "layout_dependency_edges_visited",
+    "layout_propagations_stopped",
+    "layout_local_subtree_fallbacks",
+    "layout_full_document_fallbacks",
     "hit_test_candidates",
     "input_targets",
     "accessibility_nodes_updated",

@@ -134,7 +134,10 @@ impl<'a> SemanticRead<'a> {
             Source::Snapshot { snapshot, .. } => snapshot
                 .widgets
                 .iter()
-                .filter(|widget| full || self.changes.dirty.contains(&widget.id))
+                .filter(|widget| {
+                    full || self.changes.dirty.contains(&widget.id)
+                        || self.changes.layout_invalidations.contains_key(&widget.id)
+                })
                 .map(|widget| widget.id)
                 .collect(),
             Source::Bridge { bridge, document } => {
@@ -152,7 +155,8 @@ impl<'a> SemanticRead<'a> {
                 }
                 let mut seen = HashSet::new();
                 let mut ids = Vec::new();
-                for dirty in &self.changes.dirty {
+                let layout_ids = self.changes.layout_invalidations.keys();
+                for dirty in self.changes.dirty.iter().chain(layout_ids) {
                     let mut chain = Vec::new();
                     let mut current = Some(*dirty);
                     while let Some(id) = current {
