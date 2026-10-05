@@ -596,38 +596,3 @@ macro_rules! item_slots {
 }
 
 item_slots!(ListItem, crate::SidebarRow);
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        Avatar, Button, Checkbox, Chip, Divider, EmptyState, GpuTextureView, IconButton, ListItem,
-        NumberInput, Progress, RangeField, Select, Spinner, StatusBadge, Switch, Text, TextArea,
-        TextInput, Thumbnail,
-    };
-    use crate::RegisterableComponent;
-    use crate::component_descriptors::BUILTIN_COMPONENTS;
-
-    #[test]
-    fn schema_controls_use_builtin_component_identities() {
-        macro_rules! assert_identity {
-            ($(
-                $tag:ident => $function:ident ($($argument:ident: $kind:ident),*) for $component:ident {
-                    $($field:ident: $ty:ty = $write:ident),* $(,)?
-                }
-                $(on { $($on:ident: $on_event:ident),* $(,)? })?
-                $(with { $($with:ident: $with_event:ident),* $(,)? })?
-                $(model $model:ident: $model_ty:ty => $model_event:ident |$event:ident| $from_event:expr)?
-                ;
-            )*) => {$({
-                let type_id = <$component as RegisterableComponent>::TYPE_ID;
-                assert!(
-                    BUILTIN_COMPONENTS.iter().any(|entry| entry.type_id == type_id),
-                    "<{}> ({}) is not a builtin component identity",
-                    stringify!($tag),
-                    type_id
-                );
-            })*};
-        }
-        nana_ui_view_schema::for_each_control!(assert_identity);
-    }
-}

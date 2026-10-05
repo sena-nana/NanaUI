@@ -110,9 +110,6 @@ Android、XR 与 accessibility provider 的设备验收。
 | 事件订阅 | 宿主自己的 stream | `Subscription<T>`（`doc(hidden)` + deprecated） | 无产品调用后删除。本仓库的新 `Subscription::new` 由同一脚本拒绝 |
 | GPU surface | `HostedGpuShared::resize_surface` / `prepare_surface_frame` | `HostedGpuSurface::resize` / `prepare_frame`（`doc(hidden)` advanced） | 仍有宿主把 surface 与 device 拆开持有时保留 |
 | 默认 GPU renderer | `scene_gpu_renderers`：`None` 与空表都不安装演示 renderer。需要时显式返回 `default_scene_gpu_renderers()` | 无隐式 `"gpu-view"` | 演示 painter 保持 opt-in |
-| Menu id 与 ActionId | #287 | `MenuEntry.id: u32` 与字符串 `ActionId` 分属菜单栏和 action registry | 本页不增加第三套 registry |
-| Theme | #108 / #110 | 现有 `ThemeDefinition` 路径 | 本页不做 Theme cutover |
-| 推荐 API 文档 | #291 | 本页记录兼容入口和上表 | 本页不重写迁移指南 |
 
 `ActionDescriptor` 只有一个。定义在 Runtime（`nana_ui::runtime`。`nana_ui` 再导出同一个类型）：keymap 读 `id` / `enabled` / `when`。命令面板另外读 `label` / `category` / `keywords`。只绑快捷键的宿主用 `ActionDescriptor::new(id)`。要进面板的用 `ActionDescriptor::labeled(id, label)`。`ActionRegistry` 同样只有一个。按注册顺序保序。`search` / `available` 供面板检索。
 
