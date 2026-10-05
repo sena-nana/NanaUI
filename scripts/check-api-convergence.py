@@ -51,6 +51,21 @@ REMOVED_ROOT_NAMES = frozenset(
 SCANNED_ROOTS = ("crates", "examples", "platform", "packages", "tools", "docs")
 SCANNED_SUFFIXES = {".rs", ".md", ".vue", ".ts", ".js"}
 SKIPPED_PARTS = {"target", "node_modules", "dist", ".git"}
+# Legacy unplaced virtualizers and the unused Subscription wrapper may keep
+# their definitions and the tests that pin that compatibility behavior.
+# Product code uses the retained materializers and the host's own stream.
+LEGACY_MATERIALIZE_FILES = {
+    "crates/nana-ui-runtime/src/framework/virtualize.rs",
+    "crates/nana-ui-runtime/src/framework/tests.rs",
+}
+LEGACY_SUBSCRIPTION_FILES = {
+    "crates/nana-ui-runtime/src/framework/tests.rs",
+}
+LEGACY_MATERIALIZE = re.compile(
+    r"\bmaterialize_virtual_(?:list|table|tree)(?:_in)?(?!_retained)\b"
+)
+LEGACY_SUBSCRIPTION = re.compile(r"\bSubscription::new\b")
+RUST_SCAN_ROOTS = ("crates", "examples", "platform", "packages", "tools")
 
 
 def stale_root_paths() -> list[str]:
@@ -74,6 +89,26 @@ def stale_root_paths() -> list[str]:
                     if match.group(1) in REMOVED_ROOT_NAMES:
                         rel = path.relative_to(ROOT)
                         hits.append(f"{rel}:{number}: nana_ui::{match.group(1)}")
+    return hits
+
+
+def legacy_compat_calls(root: Path) -> list[str]:
+    """Return new callers of the legacy virtualizers and Subscription::new."""
+    hits = []
+    for top in RUST_SCAN_ROOTS:
+        base = root / top
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*.rs"):
+            if not path.is_file() or SKIPPED_PARTS.intersection(path.parts):
+                continue
+            rel = path.relative_to(root).as_posix()
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for number, line in enumerate(text.splitlines(), 1):
+                if LEGACY_MATERIALIZE.search(line) and rel not in LEGACY_MATERIALIZE_FILES:
+                    hits.append(f"{rel}:{number}: legacy virtual materializer")
+                if LEGACY_SUBSCRIPTION.search(line) and rel not in LEGACY_SUBSCRIPTION_FILES:
+                    hits.append(f"{rel}:{number}: Subscription::new")
     return hits
 
 
@@ -123,6 +158,13 @@ def main() -> int:
         fail(
             "removed root names must be referenced via nana_ui::runtime:\n  "
             + "\n  ".join(stale)
+        )
+
+    legacy = legacy_compat_calls(ROOT)
+    if legacy:
+        fail(
+            "legacy virtual materializers and Subscription::new must not gain callers:\n  "
+            + "\n  ".join(legacy)
         )
 
     print("API convergence: OK")

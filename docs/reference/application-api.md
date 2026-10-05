@@ -96,6 +96,24 @@ Android、XR 与 accessibility provider 的设备验收。
 `world_mut` 与 `Textarea` 兼容入口已删除。后续新增能力只能进入 `runtime`
 或明确的宿主兼容模块。
 
+### 能力权威
+
+每项只有一个 owner 和一条推荐调用。Menu/Action 的转换与 dispatch 由 #287 验收，Theme 由 #108 / #110 验收，推荐写法的迁移指南由 #291 验收。
+
+| 能力 | Owner 与推荐调用 | 保留入口 | 删除条件 |
+| --- | --- | --- | --- |
+| 组件更新 | `update_component` / `set_component` / `create_component` | `create_view`（`doc(hidden)` host primitive，不跑 component project） | 宿主适配器不再需要未投影的占位节点 |
+| CSS 颜色 | `nana-ui-css` 解析字符串。PaintScript 只接受 semantic role 与 typed RGBA | 调用方传入的 color parser | 不在 Runtime 再写一套 CSS parser |
+| 虚拟列表 / 表 / 树 | `materialize_virtual_*_retained_in` | legacy `materialize_virtual_*`（`doc(hidden)` + deprecated，不与 retained 混用） | 仓库外不再有未放置调用。本仓库的新调用由 `scripts/check-api-convergence.py` 拒绝 |
+| 查询编辑 | `TextInputState`，经 `query_text()` / `set_query()` | 无第二份 query 字段 | 查询权威保持这一份 |
+| 虚拟行身份 | `each_virtual::Unit::Row { columns, keys }` | 无哈希身份 | 行身份保持结构化 key |
+| 事件订阅 | 宿主自己的 stream | `Subscription<T>`（`doc(hidden)` + deprecated） | 无产品调用后删除。本仓库的新 `Subscription::new` 由同一脚本拒绝 |
+| GPU surface | `HostedGpuShared::resize_surface` / `prepare_surface_frame` | `HostedGpuSurface::resize` / `prepare_frame`（`doc(hidden)` advanced） | 仍有宿主把 surface 与 device 拆开持有时保留 |
+| 默认 GPU renderer | `scene_gpu_renderers`：`None` 与空表都不安装演示 renderer。需要时显式返回 `default_scene_gpu_renderers()` | 无隐式 `"gpu-view"` | 演示 painter 保持 opt-in |
+| Menu id 与 ActionId | #287 | `MenuEntry.id: u32` 与字符串 `ActionId` 分属菜单栏和 action registry | 本页不增加第三套 registry |
+| Theme | #108 / #110 | 现有 `ThemeDefinition` 路径 | 本页不做 Theme cutover |
+| 推荐 API 文档 | #291 | 本页记录兼容入口和上表 | 本页不重写迁移指南 |
+
 `ActionDescriptor` 只有一个。定义在 Runtime（`nana_ui::runtime`。`nana_ui` 再导出同一个类型）：keymap 读 `id` / `enabled` / `when`。命令面板另外读 `label` / `category` / `keywords`。只绑快捷键的宿主用 `ActionDescriptor::new(id)`。要进面板的用 `ActionDescriptor::labeled(id, label)`。`ActionRegistry` 同样只有一个。按注册顺序保序。`search` / `available` 供面板检索。
 
 Vue 产品窗口需要 `nana-ui-vue` 的 `hosted`（隐含 `scene-view`。把 UiScene 交给 `SceneWgpuPainter`）。没有 `scene-view` 的构建只做 flush / 对照。不画产品帧。
@@ -111,7 +129,7 @@ Vue 产品窗口需要 `nana-ui-vue` 的 `hosted`（隐含 `scene-view`。把 Ui
 | `bundled-fonts` | 嵌入 Noto Sans SC |
 | `components` | 下面组件族的聚合 |
 | `full` | fonts + components + hosted + syntax-highlighting |
-| `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `rich-text` | 适配器再导出。历史 no-op 别名（`overlays`、`selects`、`qr-code` 等）已删除，改用 `components` / `full` |
+| `calendar` / `charts` / `controls` / `graph-canvas` / `image-viewer` / `rich-text` | 打开对应 runtime/scene `cfg` 并再导出该族。未启用则该族不参与编译。历史 no-op 别名（`overlays`、`selects`、`qr-code` 等）已删除，改用 `components` / `full` |
 | `syntax-highlighting` | `TextArea` 的 `"highlight"` presenter |
 | `accesskit-tree` | `AccessTreeProjector` 的 TreeUpdate 投影导出，给自接平台适配器的宿主（如 Android `accesskit_android`）；`hosted` 已隐含 |
 

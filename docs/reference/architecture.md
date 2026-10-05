@@ -188,12 +188,6 @@ Runtime 节点仍拥有布局、可访问性、可见性和生命周期锚点。
 
 ## 编译边界
 
-`nana-ui` 默认打开 `wgpu-backends`（仅在启用 `gpu` 时生效）。你仍要显式打开
-`hosted`、`bundled-fonts` 和各控件族；需要自选图形后端时使用
-`default-features = false`。
+`nana-ui` 的 default feature 只有 `wgpu-backends`，而且只在启用 `gpu` 时选择图形后端。它不创建第二套 host，也不创建第二套 GPU owner。要出窗口仍需显式打开 `hosted`；需要自选后端时使用 `default-features = false`。
 
-`gpu` 和字体是独立的上层边界。`hosted` 和 `gpu` 确实控制 `mod` 是否编译。
-
-控件族 feature（`calendar`、`charts`、`controls`、`graph-canvas` 等）是空 feature。它们只切 `nana-ui` 的再导出，以及 `ComponentSupport::compiled`。
-
-控件本体在 `nana-ui-runtime`。`nana_ui::runtime` 的全量再导出让它们始终可达，也始终参与编译。见 [应用 API](application-api.md)。
+`hosted` 和 `gpu` 控制对应模块是否编译。控件族 feature（`calendar`、`charts`、`controls`、`graph-canvas`、`image-viewer`、`rich-text`）打开 `nana-ui-runtime` 与 `nana-ui-scene` 的 `cfg`，并决定 `ComponentSupport::compiled`。未打开的族不参与该次编译。`nana_ui::runtime` 再导出的是这次构建里实际编进来的控件。细节见 [应用 API](application-api.md)。

@@ -496,8 +496,8 @@ pub(crate) fn fill_layout(style: &NodeStyle) -> NodeStyle {
 }
 
 impl RegisterableComponent for GpuTextureView {
-    const TYPE_ID: &'static str = "nana.gpu";
-    const TAGS: &'static [&'static str] = &["gpu"];
+    const TYPE_ID: &'static str = crate::component_descriptors::GPU_TEXTURE_VIEW.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::GPU_TEXTURE_VIEW.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let slot = spec
             .attr("data-nana-gpu")

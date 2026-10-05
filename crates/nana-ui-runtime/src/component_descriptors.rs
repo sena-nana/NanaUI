@@ -108,6 +108,7 @@ descriptors! {
     PANE_CHROME => { type_id: "nana.pane-chrome", tags: &["pane-chrome"] },
     SIDEBAR_SECTION => { type_id: "nana.sidebar-section", tags: &["sidebar-section"] },
     SIDEBAR_FOOTER => { type_id: "nana.sidebar-footer", tags: &["sidebar-footer"] },
+    GPU_TEXTURE_VIEW => { type_id: "nana.gpu", tags: &["gpu"] },
 }
 /// Looks up a declared tag even when its implementation is compiled out.
 pub fn builtin_component(tag: &str) -> Option<&'static ComponentDescriptor> {
