@@ -12,6 +12,6 @@ nana-ui-css.workspace = true
 nana-ui-core.workspace = true
 serde_json.workspace = true
 nana-ui-view-schema = { path = "../nana-ui-view-schema" }
-proc-macro2 = "1"
+proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
 syn = { version = "2", features = ["full"] }

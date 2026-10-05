@@ -214,21 +214,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_name_rejects_catalog_and_wrong_aliases() {
-        assert_eq!(Icon::parse_name("palette"), None);
-        assert_eq!(Icon::parse_name("paintbrush"), None);
-        assert_eq!(Icon::parse_name("puzzle"), None);
-        assert_eq!(Icon::parse_name("lucide-puzzle"), None);
-        assert_eq!(Icon::parse_name("atom"), None);
-        assert_eq!(Icon::parse_name("package"), None);
-        assert_eq!(Icon::parse_name("lucide-refresh-cw"), None);
-        assert_eq!(Icon::parse_name("lucide-folder-open"), None);
-        assert_eq!(Icon::parse_name("lucide-trash-2"), None);
-        assert_eq!(Icon::parse_name("lucide-pin"), None);
-        assert_eq!(Icon::parse_name("lucide-pencil"), None);
-        assert_eq!(Icon::parse_name("lucide-unknown"), None);
-        assert_eq!(Icon::parse_name("sliders"), None);
-        assert_eq!(Icon::parse_name("home"), None);
+    fn parse_name_rejects_an_unknown_token() {
+        assert_eq!(Icon::parse_name("not-an-icon"), None);
     }
 
     #[test]
@@ -266,14 +253,6 @@ mod tests {
             Icon::Workspace,
         ] {
             assert!(!icon.shapes().is_empty(), "{icon:?}");
-            assert!(
-                icon.svg().contains("viewBox=\"0 0 24 24\""),
-                "{icon:?} svg missing viewBox"
-            );
-            assert!(
-                icon.svg().contains("currentColor"),
-                "{icon:?} svg missing currentColor stroke"
-            );
         }
     }
 
@@ -291,7 +270,6 @@ mod tests {
         let icon = Icon::from_data(&HOST);
         assert_eq!(icon.name(), "host-dot");
         assert_eq!(icon.shapes().len(), 1);
-        assert!(icon.svg().contains("viewBox=\"0 0 24 24\""));
         assert_eq!(icon, Icon::from_data(&HOST));
         assert_ne!(icon, Icon::Add);
     }

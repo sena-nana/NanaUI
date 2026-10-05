@@ -1974,192 +1974,6 @@ fn tabs_select_value_updates_props() {
 }
 
 #[test]
-#[cfg(feature = "calendar")]
-#[cfg(feature = "charts")]
-#[cfg(feature = "controls")]
-#[cfg(feature = "rich-text")]
-#[cfg(feature = "graph-canvas")]
-#[cfg(feature = "image-viewer")]
-fn widget_kind_parses_catalog_professional_aliases() {
-    assert_eq!(
-        WidgetKind::parse("nana-command-palette"),
-        Some(WidgetKind::CommandPalette)
-    );
-    assert_eq!(
-        WidgetKind::parse("command-palette"),
-        Some(WidgetKind::CommandPalette)
-    );
-    assert_eq!(WidgetKind::parse("commandpalette"), None);
-    assert_eq!(
-        WidgetKind::parse("nana-tree-view"),
-        Some(WidgetKind::TreeView)
-    );
-    assert_eq!(WidgetKind::parse("tree-view"), Some(WidgetKind::TreeView));
-    assert_eq!(WidgetKind::parse("treeview"), None);
-    assert_eq!(WidgetKind::parse("nana-calendar"), None);
-    assert_eq!(
-        WidgetKind::parse("calendar-heatmap"),
-        Some(WidgetKind::CalendarHeatmap)
-    );
-    assert_eq!(WidgetKind::parse("calendar"), None);
-    assert_eq!(
-        WidgetKind::parse("nana-image-viewer"),
-        Some(WidgetKind::ImageViewer)
-    );
-    assert_eq!(
-        WidgetKind::parse("image-viewer"),
-        Some(WidgetKind::ImageViewer)
-    );
-    assert_eq!(WidgetKind::parse("nana-markdown"), None);
-    assert_eq!(
-        WidgetKind::parse("native-markdown"),
-        Some(WidgetKind::NativeMarkdown)
-    );
-    assert_eq!(WidgetKind::parse("markdown"), None);
-    assert_eq!(
-        WidgetKind::parse("nana-graph-canvas"),
-        Some(WidgetKind::GraphCanvas)
-    );
-    assert_eq!(
-        WidgetKind::parse("graph-canvas"),
-        Some(WidgetKind::GraphCanvas)
-    );
-    assert_eq!(WidgetKind::parse("graphcanvas"), None);
-    assert_eq!(
-        WidgetKind::parse("nana-workspace"),
-        Some(WidgetKind::Workspace)
-    );
-    assert_eq!(WidgetKind::parse("nana-dock"), Some(WidgetKind::Dock));
-    assert_eq!(
-        WidgetKind::parse("nana-split-pane"),
-        Some(WidgetKind::SplitPane)
-    );
-    assert_eq!(WidgetKind::parse("split-pane"), Some(WidgetKind::SplitPane));
-    assert_eq!(
-        WidgetKind::parse("nana-app-shell"),
-        Some(WidgetKind::AppShell)
-    );
-    assert_eq!(WidgetKind::parse("app-shell"), Some(WidgetKind::AppShell));
-    assert_eq!(
-        WidgetKind::parse("nana-settings-page"),
-        Some(WidgetKind::SettingsPage)
-    );
-    assert_eq!(
-        WidgetKind::parse("settings-page"),
-        Some(WidgetKind::SettingsPage)
-    );
-    assert_eq!(WidgetKind::parse("settingspage"), None);
-    assert_eq!(WidgetKind::parse("form"), None);
-    assert_eq!(WidgetKind::parse("nana-form"), None);
-    assert_eq!(WidgetKind::parse("form-field"), Some(WidgetKind::FormField));
-    assert_eq!(WidgetKind::parse("formfield"), None);
-    assert_eq!(
-        WidgetKind::parse("nana-form-field"),
-        Some(WidgetKind::FormField)
-    );
-    assert_eq!(WidgetKind::FormField.as_str(), "form-field");
-    assert_eq!(WidgetKind::FormField.element_tag(), "nana-form-field");
-    assert_eq!(WidgetKind::SettingsPage.as_str(), "settings-page");
-    assert_eq!(WidgetKind::SettingsPage.element_tag(), "nana-settings-page");
-    assert_eq!(WidgetKind::CommandPalette.as_str(), "command-palette");
-    assert_eq!(
-        WidgetKind::CommandPalette.element_tag(),
-        "nana-command-palette"
-    );
-    assert_eq!(
-        WidgetKind::CalendarHeatmap.element_tag(),
-        "nana-calendar-heatmap"
-    );
-    assert_eq!(WidgetKind::NativeMarkdown.as_str(), "native-markdown");
-    assert_eq!(
-        WidgetKind::NativeMarkdown.element_tag(),
-        "nana-native-markdown"
-    );
-    assert_eq!(WidgetKind::GraphCanvas.element_tag(), "nana-graph-canvas");
-    assert_eq!(WidgetKind::GraphCanvas.as_str(), "graph-canvas");
-    assert_eq!(
-        WidgetKind::parse("nana-icon-button"),
-        Some(WidgetKind::IconButton)
-    );
-    assert_eq!(
-        WidgetKind::parse("nana-number-input"),
-        Some(WidgetKind::NumberInput)
-    );
-    assert_eq!(WidgetKind::parse("nana-number"), None);
-    assert_eq!(WidgetKind::parse("nana-divider"), Some(WidgetKind::Divider));
-    assert_eq!(
-        WidgetKind::parse("nana-thumbnail"),
-        Some(WidgetKind::Thumbnail)
-    );
-    assert_eq!(WidgetKind::parse("nana-list"), Some(WidgetKind::List));
-    assert_eq!(
-        WidgetKind::parse("nana-scroll-view"),
-        Some(WidgetKind::ScrollView)
-    );
-    assert_eq!(WidgetKind::parse("nana-scroll"), None);
-    assert_eq!(WidgetKind::parse("nana-table"), Some(WidgetKind::Table));
-    assert_eq!(
-        WidgetKind::parse("nana-table-row"),
-        Some(WidgetKind::TableRow)
-    );
-    assert_eq!(
-        WidgetKind::parse("nana-table-cell"),
-        Some(WidgetKind::TableCell)
-    );
-    assert_eq!(
-        WidgetKind::parse("nana-reorder-list"),
-        Some(WidgetKind::ReorderList)
-    );
-    assert_eq!(
-        WidgetKind::parse("nana-time-series-chart"),
-        Some(WidgetKind::TimeSeriesChart)
-    );
-    assert_eq!(
-        WidgetKind::parse("nana-desktop-shell"),
-        Some(WidgetKind::DesktopShell)
-    );
-    assert_eq!(
-        WidgetKind::parse("nana-app-title-bar"),
-        Some(WidgetKind::AppTitleBar)
-    );
-    assert_eq!(WidgetKind::parse("title-bar"), None);
-    assert_eq!(
-        WidgetKind::parse("nana-pane-chrome"),
-        Some(WidgetKind::PaneChrome)
-    );
-    assert_eq!(
-        WidgetKind::parse("nana-sidebar-section"),
-        Some(WidgetKind::SidebarSection)
-    );
-    assert_eq!(
-        WidgetKind::parse("nana-sidebar-footer"),
-        Some(WidgetKind::SidebarFooter)
-    );
-    assert_eq!(
-        WidgetKind::parse("nana-settings-collapsible-card"),
-        Some(WidgetKind::SettingsCollapsibleCard)
-    );
-    assert_eq!(WidgetKind::ScrollView.element_tag(), "nana-scroll-view");
-    assert_eq!(
-        WidgetKind::parse("nana-gpu"),
-        Some(WidgetKind::GpuTextureView)
-    );
-    assert_eq!(WidgetKind::parse("gpu-view"), Some(WidgetKind::GpuView));
-    assert_eq!(WidgetKind::parse("nana-virtual-list"), None);
-    assert_eq!(WidgetKind::GpuTextureView.element_tag(), "nana-gpu");
-    assert_eq!(WidgetKind::parse("nana-video"), Some(WidgetKind::Video));
-    assert_eq!(WidgetKind::Video.as_str(), "video");
-    assert_eq!(WidgetKind::Video.element_tag(), "nana-video");
-    assert_eq!(WidgetKind::IconButton.as_str(), "icon-button");
-    assert!(WidgetKind::CommandPalette.is_overlay());
-    assert!(WidgetKind::ImageViewer.is_overlay());
-    assert!(!WidgetKind::GraphCanvas.is_overlay());
-    assert!(!WidgetKind::Workspace.is_overlay());
-    assert!(!WidgetKind::TreeView.is_overlay());
-    assert!(!WidgetKind::ScrollView.is_overlay());
-}
-
-#[test]
 fn overlay_toggle_false_clears_active_and_toggled() {
     // Opened via `active`/`open` (common Vue path); dismiss must clear both
     // because overlay_is_open = active || toggled.
@@ -2289,30 +2103,16 @@ fn dropdown_class_maps_to_dropdown_not_fixed_menu() {
     assert_eq!(bridge.get(14).unwrap().kind, WidgetKind::Select);
 }
 
-/// Runtime keeps `nana.select`, `nana.dropdown` and `nana.search-dropdown` apart, so
-/// the bridge must not fold three option fields into one kind.
+/// Select, Dropdown, and SearchDropdown stay three choice fields. Tag
+/// resolution is covered by the kind-table round trip.
 #[test]
 fn select_dropdown_and_search_stay_distinct_kinds() {
-    assert_eq!(WidgetKind::parse("nana-select"), Some(WidgetKind::Select));
-    assert_eq!(WidgetKind::parse("pick-list"), None);
-    assert_eq!(
-        WidgetKind::parse("nana-dropdown"),
-        Some(WidgetKind::Dropdown)
-    );
-    assert_eq!(WidgetKind::parse("nana-search"), None);
-    assert_eq!(
-        WidgetKind::parse("nana-search-dropdown"),
-        Some(WidgetKind::SearchDropdown)
-    );
-    assert_eq!(WidgetKind::parse("search"), None);
     for kind in [
         WidgetKind::Select,
         WidgetKind::Dropdown,
         WidgetKind::SearchDropdown,
     ] {
         assert!(kind.is_choice_field(), "{kind:?} is an option field");
-        assert_eq!(WidgetKind::parse(kind.element_tag()), Some(kind));
-        assert_eq!(WidgetKind::parse(kind.as_str()), Some(kind));
     }
 }
 

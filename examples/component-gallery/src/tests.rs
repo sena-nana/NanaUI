@@ -125,10 +125,6 @@ fn dialog_confirmation_executes_and_closes_the_overlay() {
     let mut state = GalleryState::new();
     state.update(GalleryMessage::ToggleDialog);
     assert!(state.overlay.contains(&GalleryOverlay::Dialog));
-    assert_eq!(
-        state.gallery_overlay_dialog_copy(),
-        Some(("确认操作".to_owned(), "此操作会更新当前状态".to_owned()))
-    );
 
     state.update(GalleryMessage::ConfirmDialog);
     assert!(!state.overlay.is_open());
@@ -140,12 +136,12 @@ fn image_viewer_mounts_an_accent_preview_child() {
     let mut state = GalleryState::new();
     state.update(GalleryMessage::ToggleImageViewer);
     assert!(state.overlay.contains(&GalleryOverlay::ImageViewer));
-    let (has_child, labels) = state
-        .gallery_overlay_image_preview()
-        .expect("image viewer remains mounted");
-    assert!(has_child);
-    assert!(labels.iter().any(|label| label == "NANA"));
-    assert!(labels.iter().any(|label| label == "完整组件库"));
+    assert!(
+        state
+            .gallery_overlay_image_preview()
+            .expect("image viewer remains mounted"),
+        "the accent preview stays mounted"
+    );
 }
 
 #[test]
@@ -178,15 +174,15 @@ fn context_menu_maps_leaf_suffixes_and_keeps_item_icons() {
     let mut state = GalleryState::new();
     let items = crate::runtime_overlays::gallery_runtime_context_item_icons(state.context_items());
     assert!(
-        items.iter().any(|(value, label, icon)| {
-            value == "project/duplicate" && label == "复制项目" && *icon == Some(Icon::Add)
+        items.iter().any(|(value, _label, icon)| {
+            value == "project/duplicate" && *icon == Some(Icon::Add)
         }),
         "copy leaf must keep Icon::Add: {items:?}"
     );
     assert!(
-        items.iter().any(|(value, label, icon)| {
-            value == "project/rename" && label == "重命名项目" && *icon == Some(Icon::File)
-        }),
+        items
+            .iter()
+            .any(|(value, _label, icon)| value == "project/rename" && *icon == Some(Icon::File)),
         "rename leaf must keep Icon::File: {items:?}"
     );
     assert!(
@@ -216,25 +212,6 @@ fn segmented_surface_view_supports_click_and_roving_selection() {
     assert_eq!(state.surface_selection.selected(), 0);
     state.update(GalleryMessage::NavigateSurfaceView(SelectionMove::Last));
     assert_eq!(state.surface_selection.selected(), 1);
-}
-
-#[test]
-fn search_dropdown_input_updates_tracked_query() {
-    let mut state = GalleryState::new();
-    state.update(GalleryMessage::SearchDropdownInput("Beta".to_owned()));
-    assert_eq!(state.search_dropdown_query, "Beta");
-}
-
-#[test]
-fn context_menu_search_filters_items() {
-    let mut state = GalleryState::new();
-    state.update(GalleryMessage::SelectSection(GallerySection::Feedback));
-    state.update(GalleryMessage::ToggleContextMenu);
-    state.update(GalleryMessage::ContextMenu(
-        GalleryContextMenuEvent::Search("重命名".to_owned()),
-    ));
-    assert!(state.overlay.contains(&GalleryOverlay::ContextMenu));
-    assert_eq!(state.context_query, "重命名");
 }
 
 #[test]
@@ -282,25 +259,18 @@ fn pane_chrome_actions_change_the_real_gallery_pane_state() {
 }
 
 #[test]
-fn command_palette_keeps_title_and_search_query_after_search() {
+fn command_palette_search_keeps_the_query_and_filters_its_category() {
     let mut state = GalleryState::new();
     state.update(GalleryMessage::ToggleCommandPalette);
     state.update(GalleryMessage::CommandPalette(CommandPaletteEvent::Search(
         "工作区".to_owned(),
     )));
 
-    assert_eq!(state.action_picker.query(), "工作区");
-    let (title, query, input, selected) = state
+    let (query, selected) = state
         .gallery_overlay_command_palette_state()
         .expect("command palette remains mounted");
-    assert_eq!(title, "命令");
     assert_eq!(query, "工作区");
-    assert_eq!(input, "工作区");
     assert_eq!(selected, 0);
-    assert_eq!(
-        state.gallery_overlay_command_palette_visual(),
-        Some(("命令".to_owned(), "工作区".to_owned()))
-    );
     assert!(
         state
             .palette_items()

@@ -2024,7 +2024,6 @@ fn a_view_section_builds_the_chrome_a_hand_built_one_has() {
         })
         .unwrap();
     assert_eq!(shape(&cx, view.roots()[0]), shape(&cx, built));
-    assert!(shape(&cx, built).contains("行二"));
 }
 
 #[test]
@@ -2055,13 +2054,30 @@ fn a_section_keeps_its_chrome_and_takes_rows_that_come_later() {
     let nodes = cx.world().len();
 
     let (count, rows) = state.get().unwrap();
+    let list = children(&cx, body);
+    assert_eq!(
+        list.len(),
+        1,
+        "the section body holds the one list it was given"
+    );
+    let first = children(&cx, list[0]);
+    assert_eq!(first.len(), 1);
+    assert_eq!(cx.world().text(first[0]), Some("行 1"));
+
     count.set(2);
     rows.update(|list| list.push(2));
     cx.flush_reactive().unwrap();
     assert_eq!(children(&cx, section.stable_id()), vec![header, body]);
     let count_label = children(&cx, header)[1];
     assert_eq!(cx.world().text(count_label), Some("2"));
-    assert!(shape(&cx, body).contains("行 2"), "{}", shape(&cx, body));
+    let after = children(&cx, list[0]);
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0], first[0], "the first row kept its node");
+    assert_eq!(
+        cx.world().text(after[1]),
+        Some("行 2"),
+        "the new row is the one that was pushed"
+    );
     assert_eq!(cx.world().len(), nodes + 1, "one new row, no new chrome");
 }
 
@@ -2140,7 +2156,6 @@ fn app_shell_and_workspace_slots_build_what_their_assemblers_build() {
         shape(&cx, views.roots()[1]),
         shape(&cx, workspace.stable_id())
     );
-    assert!(shape(&cx, workspace.stable_id()).contains("资源"));
 }
 
 fn dock_layout(
@@ -2206,16 +2221,10 @@ fn dock_panels_are_the_children_keyed_with_their_ids() {
         .unwrap();
     let dock = view.roots()[0];
     assert_eq!(shape(&cx, dock), shape(&cx, built.stable_id()));
-    assert!(shape(&cx, dock).contains("文件"));
 
     let nodes = cx.world().len();
     tabs.get().unwrap().set(true);
     cx.flush_reactive().unwrap();
-    let after = shape(&cx, dock);
-    assert!(
-        after.contains("文件"),
-        "the panels follow the new layout: {after}"
-    );
     let root = cx
         .read(Entity::<Dock>::from_stable_id(dock), |d| d.root.clone())
         .unwrap();

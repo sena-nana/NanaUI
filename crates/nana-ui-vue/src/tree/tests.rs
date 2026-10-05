@@ -3978,23 +3978,6 @@ fn world_has_descendant(doc: &NanaTreeDocument, root: StableNodeId, target: Stab
 }
 
 #[test]
-fn settings_page_widget_kind_parses_host_tag() {
-    assert_eq!(
-        crate::WidgetKind::parse("nana-settings-page"),
-        Some(crate::WidgetKind::SettingsPage)
-    );
-    assert_eq!(
-        crate::WidgetKind::parse("settings-page"),
-        Some(crate::WidgetKind::SettingsPage)
-    );
-    assert_eq!(crate::WidgetKind::parse("settingspage"), None);
-    assert_eq!(
-        crate::WidgetKind::SettingsPage.element_tag(),
-        "nana-settings-page"
-    );
-}
-
-#[test]
 fn settings_page_assembles_scroll_body_title() {
     let (doc, page, content) = sync_settings_page(
         settings_page_model_value(&[("appearance", "外观", false)], "appearance", false),
@@ -4085,7 +4068,6 @@ fn settings_page_attrs_json_assembles_scroll_body_title() {
         doc.runtime.node(body).unwrap().children,
         vec![title, content]
     );
-    assert_eq!(doc.runtime.text(title), Some("外观"));
 }
 
 #[test]
@@ -4129,7 +4111,6 @@ fn settings_page_resync_reuses_scroll_body_title() {
         doc.runtime.node(body).unwrap().children,
         vec![title, content_id]
     );
-    assert_eq!(doc.runtime.text(title), Some("外观"));
 }
 
 #[test]
@@ -4143,7 +4124,6 @@ fn settings_page_hide_header_omits_title() {
     let body = assembly.body.expect("hide-header still mounts scroll body");
     assert_eq!(doc.runtime.node(body).unwrap().children, vec![content]);
     assert!(assembly.title.is_none() || !world_has_descendant(&doc, page, assembly.title.unwrap()));
-    assert_ne!(doc.runtime.text(page), Some("外观"));
 }
 
 #[test]

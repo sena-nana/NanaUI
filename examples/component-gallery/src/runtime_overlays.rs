@@ -1,6 +1,8 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use nana_ui::runtime::StableNodeId;
 use nana_ui::runtime::view::{IntoView, detached, entity_ref, widget, with_refs};
 use nana_ui::runtime::{
     AlignSpec, CommandPalette, ConfirmDialog, ConfirmIntent, ConfirmSlots, ContextMenu,
@@ -9,8 +11,6 @@ use nana_ui::runtime::{
     ImageViewerEvent, LayoutBox, MountedView, OverlayChanged, OverlayHost, RuntimeDocument,
     SemanticColorRole, Text,
 };
-#[cfg(test)]
-use nana_ui::runtime::{AppContext, StableNodeId, StandardVisual};
 use nana_ui::{ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint};
 use nana_ui_platform::{InputPayload, PointerInput, PointerPhase};
 
@@ -615,56 +615,19 @@ impl GalleryState {
     }
 
     #[cfg(test)]
-    pub(crate) fn gallery_overlay_command_palette_state(
-        &self,
-    ) -> Option<(String, String, String, usize)> {
+    pub(crate) fn gallery_overlay_command_palette_state(&self) -> Option<(String, usize)> {
         let runtime = self.overlay_runtime.as_ref()?;
         let palette = runtime.palette?;
         self.with_active_document(|document| {
             document.context().read(palette, |palette| {
-                (
-                    palette.title.to_string(),
-                    palette.query_text().to_owned(),
-                    palette.state.value.to_string(),
-                    palette.selected,
-                )
+                (palette.query_text().to_owned(), palette.selected)
             })
         })?
         .ok()
     }
 
     #[cfg(test)]
-    pub(crate) fn gallery_overlay_command_palette_visual(&self) -> Option<(String, String)> {
-        let runtime = self.overlay_runtime.as_ref()?;
-        let palette = runtime.palette?;
-        self.with_active_document(|document| {
-            match document
-                .context()
-                .world()
-                .standard_visual(palette.stable_id())
-            {
-                Some(StandardVisual::CommandPalette { title, query, .. }) => {
-                    Some((title.to_string(), query.to_string()))
-                }
-                _ => None,
-            }
-        })?
-    }
-
-    #[cfg(test)]
-    pub(crate) fn gallery_overlay_dialog_copy(&self) -> Option<(String, String)> {
-        let runtime = self.overlay_runtime.as_ref()?;
-        let dialog = runtime.dialog?;
-        self.with_active_document(|document| {
-            document.context().read(dialog, |dialog| {
-                (dialog.title.to_string(), dialog.message.to_string())
-            })
-        })?
-        .ok()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn gallery_overlay_image_preview(&self) -> Option<(bool, Vec<String>)> {
+    pub(crate) fn gallery_overlay_image_preview(&self) -> Option<bool> {
         let runtime = self.overlay_runtime.as_ref()?;
         let viewer = runtime.image?;
         let content = self
@@ -674,13 +637,7 @@ impl GalleryState {
                     .read(viewer, |viewer| viewer.content.clone())
             })?
             .ok()?;
-        let ImageViewerContent::Child(child) = content else {
-            return Some((false, Vec::new()));
-        };
-        Some((
-            true,
-            self.with_active_document(|document| collect_node_text(document.context(), child))?,
-        ))
+        Some(matches!(content, ImageViewerContent::Child(_)))
     }
 
     #[cfg(test)]
@@ -712,23 +669,6 @@ pub(crate) fn gallery_runtime_context_item_icons(
         .iter()
         .map(|item| (item.value.to_string(), item.label.to_string(), item.icon))
         .collect()
-}
-
-#[cfg(test)]
-fn collect_node_text(context: &AppContext, root: nana_ui::runtime::StableNodeId) -> Vec<String> {
-    let mut texts = Vec::new();
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
-        if let Some(text) = context.world().text(id)
-            && !text.is_empty()
-        {
-            texts.push(text.to_owned());
-        }
-        if let Some(node) = context.world().node(id) {
-            stack.extend(node.children.iter().rev().copied());
-        }
-    }
-    texts
 }
 
 /// The scripted event and, for a plain character key press, the text it

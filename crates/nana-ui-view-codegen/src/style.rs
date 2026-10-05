@@ -939,6 +939,57 @@ mod tests {
     }
 
     #[test]
+    fn cascade_order_drops_unknown_properties_and_keeps_opacity_motion() {
+        let sheet = parse(
+            ".card { padding: 12px; opacity: 1; transition: opacity 150ms linear; }\n\
+             .card.done { opacity: 0.5; }\n\
+             .title { opacity: 0.9 !important; }\n\
+             .title { opacity: 0.2; }\n\
+             .card:hover { opacity: 0.7; }\n\
+             .card > .title { padding: 2px; }\n\
+             .card { frobnicate: 3; }",
+        );
+        let mut rules: Vec<&Rule> = sheet.rules.iter().collect();
+        rules.sort_by_key(|rule| rule.rank);
+        let classes: Vec<Vec<&str>> = rules
+            .iter()
+            .map(|rule| rule.classes.iter().map(String::as_str).collect())
+            .collect();
+        assert_eq!(
+            classes,
+            vec![
+                vec!["card"],
+                vec!["title"],
+                vec!["card", "done"],
+                vec!["title"],
+            ]
+        );
+        assert!(
+            !rules[1].rank.0,
+            "the later normal title stays below important"
+        );
+        assert!(rules[3].rank.0, "the important title is last");
+        assert!(
+            rules.iter().all(|rule| !rule.patch.contains("frobnicate")),
+            "an unknown property is not a patch"
+        );
+        let mut transitions: Vec<&TransitionRule> = sheet.transitions.iter().collect();
+        transitions.sort_by_key(|rule| rule.rank);
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].classes, ["card"]);
+        assert!(
+            transitions[0]
+                .items
+                .iter()
+                .any(|(property, millis, easing)| {
+                    *property == "Opacity" && *millis == 150.0 && matches!(easing, Easing::Linear)
+                }),
+            "{:?}",
+            transitions[0].items
+        );
+    }
+
+    #[test]
     fn a_clean_sheet_warns_of_nothing() {
         let css =
             ".a { padding: 4px 8px; background: url(\"x;{y}.png\"); }\n.a.b { opacity: 0.5; }";

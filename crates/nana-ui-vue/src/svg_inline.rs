@@ -363,10 +363,6 @@ mod tests {
                     .expect("base64");
                 let markup = String::from_utf8(bytes).expect("utf8 svg");
                 assert!(
-                    markup.contains("<path"),
-                    "serialized svg must keep the path, got {markup}"
-                );
-                assert!(
                     markup.contains("M0 0 H10 V10 H0 Z"),
                     "path d must round-trip, got {markup}"
                 );

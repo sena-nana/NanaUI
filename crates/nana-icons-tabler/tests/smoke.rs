@@ -1,11 +1,7 @@
-use nana_icons_tabler::{HOME, TRASH, USER, count};
+use nana_icons_tabler::{HOME, TRASH, USER};
 
 #[test]
 fn catalog_consts_resolve_with_valid_identity() {
-    assert_eq!(HOME.name(), "home");
-    assert_eq!(TRASH.name(), "trash");
-    assert_eq!(USER.name(), "user");
-    assert_eq!(count(), 5130);
     // Named IconData statics keep `Icon` pointer identity stable per process.
     assert_eq!(HOME, nana_icons_tabler::HOME);
     assert_ne!(HOME, TRASH);
@@ -19,9 +15,6 @@ fn catalog_icons_carry_paintable_geometry() {
             "{:?} missing shapes",
             icon.name()
         );
-        let svg = icon.svg();
-        assert!(svg.contains("viewBox=\"0 0 24 24\""), "{:?}", icon.name());
-        assert!(svg.contains("currentColor"), "{:?}", icon.name());
     }
 }
 

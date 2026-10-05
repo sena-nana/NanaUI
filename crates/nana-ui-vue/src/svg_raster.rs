@@ -173,12 +173,10 @@ mod tests {
 
     #[test]
     fn serializes_viewbox_and_path_children() {
-        let markup = serialize_svg(&rect_svg());
-        assert!(markup.contains("<svg"));
-        assert!(markup.contains("viewBox=\"0 0 32 32\""));
-        assert!(markup.contains("xmlns=\"http://www.w3.org/2000/svg\""));
-        assert!(markup.contains("<rect"));
-        assert!(markup.contains("fill=\"#ff0000\""));
+        assert_eq!(
+            serialize_svg(&rect_svg()),
+            "<svg viewBox=\"0 0 32 32\" width=\"32\" height=\"32\" xmlns=\"http://www.w3.org/2000/svg\"><rect x=\"4\" y=\"4\" width=\"24\" height=\"24\" fill=\"#ff0000\"/></svg>"
+        );
     }
 
     #[test]
