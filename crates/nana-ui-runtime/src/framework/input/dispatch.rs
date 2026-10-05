@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use nana_ui_core::TableNavigation;
 use nana_ui_input::{
-    CompositionInput, HostServices, InputDisposition, InputModifiers, PointerInput, PointerPhase,
-    WheelInput, WheelUnit,
+    CompositionInput, HostServices, InputDisposition, InputModifiers, KeyInput, PointerInput,
+    PointerPhase, WheelInput, WheelUnit,
 };
 
 use crate::{
@@ -58,6 +58,8 @@ pub(super) struct KeyStroke<'a> {
     pub(super) text: Option<&'a str>,
     pub(super) repeat: bool,
     pub(super) modifiers: InputModifiers,
+    /// The canonical key this stroke came from. Text-only strokes have none.
+    pub(super) canonical: Option<&'a KeyInput>,
 }
 
 impl<'a> KeyStroke<'a> {
@@ -68,6 +70,7 @@ impl<'a> KeyStroke<'a> {
             text: Some(text),
             repeat: false,
             modifiers: InputModifiers::default(),
+            canonical: None,
         }
     }
 
@@ -698,6 +701,8 @@ impl AppContext {
             text,
             repeat,
             modifiers,
+            canonical,
+            ..
         } = stroke;
         let keyboard_barrier = self.has_blocking_runtime_overlay(document);
         if pressed && !modifiers.alt && !modifiers.control && !modifiers.meta {
@@ -745,15 +750,7 @@ impl AppContext {
             && !keyboard_barrier
             && self.dispatch_focused_key(
                 document,
-                &crate::KeyInput::new(
-                    pressed,
-                    key,
-                    modifiers.alt,
-                    modifiers.control,
-                    modifiers.shift,
-                    modifiers.meta,
-                    repeat,
-                ),
+                canonical.expect("a key transition keeps its canonical key"),
             )
         {
             return Ok(CONSUMED);

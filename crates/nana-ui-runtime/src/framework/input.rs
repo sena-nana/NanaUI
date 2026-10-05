@@ -492,10 +492,11 @@ impl AppContext {
                     document,
                     KeyStroke {
                         pressed: key.state == KeyState::Pressed,
-                        key: &key.logical.0,
+                        key: key.logical.0.as_ref(),
                         text: None,
                         repeat: key.repeat,
                         modifiers: key.modifiers,
+                        canonical: Some(key),
                     },
                     services,
                     text_shaper,

@@ -11,7 +11,8 @@
 //! - moves that cross rows, changing hover on every event.
 //!
 //! Each uncaptured move also costs exactly one hit query and a captured one
-//! none, read from the world's own count.
+//! none, read from the world's own count. A thousand moves on a warm
+//! document schedule no layout frontier and no scene extract.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -21,7 +22,7 @@ use nana_ui_input::{InputPayload, PointerInput, PointerPhase};
 use nana_ui_runtime::view::widget;
 use nana_ui_runtime::{
     AppContext, DocumentId, HeadlessInput, LayoutViewport, MeasureTextShaper, MutationQueue,
-    StableNodeId, Stack, Text,
+    StableNodeId, Stack, SystemWork, Text,
 };
 
 thread_local! {
@@ -155,6 +156,36 @@ fn counted(run: impl FnOnce()) -> u64 {
     ALLOCATIONS.with(Cell::get)
 }
 
+/// Work scheduled by `count` moves after the mount and the first hover have
+/// already been drained.
+fn moves_after_warmup(
+    context: &mut AppContext,
+    document: DocumentId,
+    count: usize,
+    across: bool,
+) -> SystemWork {
+    let mut input = HeadlessInput::bind(context, document);
+    moves(&mut input, context, 0, 48, across);
+    let _ = context.take_system_work();
+    moves(&mut input, context, 48, count, across);
+    context.take_system_work()
+}
+
+fn assert_no_frame_work(work: &SystemWork) {
+    assert!(
+        work.is_empty(),
+        "style {} text {} layout {} hit {} focus {} a11y {} extract {} removals {}",
+        work.style.len(),
+        work.text.len(),
+        work.layout_frontier_seeds.len(),
+        work.input_hit_test.len(),
+        work.focus_ime.len(),
+        work.accessibility.len(),
+        work.render_extraction.len(),
+        work.render_removals.len(),
+    );
+}
+
 /// Allocations and hit queries a run of `count` moves along one row costs,
 /// after a warm-up.
 fn steady_moves(context: &mut AppContext, document: DocumentId, count: usize) -> (u64, u64) {
@@ -215,6 +246,20 @@ fn steady_pointer_moves_allocate_nothing_and_hit_test_once() {
         (0, 0),
         "captured moves: (allocations, hit queries)"
     );
+}
+
+/// 1000 synthetic moves. Same row: no state and no frame work. Crossing rows
+/// changes hover, and that still schedules no frame work.
+#[test]
+fn a_thousand_pointer_moves_schedule_no_layout_or_scene_extract() {
+    let (mut context, document) = column(false);
+    let steady = moves_after_warmup(&mut context, document, 1000, false);
+    assert!(steady.state.is_empty());
+    assert_no_frame_work(&steady);
+
+    let (mut context, document) = column(false);
+    let crossing = moves_after_warmup(&mut context, document, 1000, true);
+    assert_no_frame_work(&crossing);
 }
 
 /// Crossing rows changes hover on every move: hover state, the tooltip,

@@ -377,7 +377,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return nana_ui_platform::InputDisposition::default();
         }
         let disposition = if deferred {
-            self.request_redraw(id);
+            // The turn ends in `about_to_wait`, which drains this sample.
+            // That drain asks for a frame only when the route invalidated work.
             nana_ui_platform::InputDisposition::default()
         } else {
             self.drain_window_input(event_loop, id)

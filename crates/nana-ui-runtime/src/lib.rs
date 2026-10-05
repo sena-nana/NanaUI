@@ -252,8 +252,7 @@ pub use intrinsic_cache::{
 };
 pub use key_layers::{
     ActionDescriptor, ActionMatch, ActionRegistry, ActionRegistryError, CapturedStroke, KeyBinding,
-    KeyCaptureEvent, KeyCaptureLayer, KeyInput, KeyModifiers, Keymap, KeymapLayer, KeymapMatch,
-    KeymapState,
+    KeyCaptureEvent, KeyCaptureLayer, KeyModifiers, Keymap, KeymapLayer, KeymapMatch, KeymapState,
 };
 pub use layout_engine::{
     LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine, StyleLayoutNode,

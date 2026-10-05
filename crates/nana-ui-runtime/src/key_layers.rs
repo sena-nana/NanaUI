@@ -2,9 +2,9 @@
 //!
 //! Host-facing command-palette `KeyStroke` / `Keymap` / `ActionRegistry` live in
 //! `nana-ui::command`. This module uses [`CapturedStroke`] and a thin
-//! enabled-state registry — not a second command palette. The input router
-//! maps a canonical key press (or a Vue `KeyboardEvent`) into [`KeyInput`];
-//! this file itself stays free of platform types.
+//! enabled-state registry — not a second command palette. Live keys are
+//! [`nana_ui_input::KeyInput`]; stored chords copy that event's logical key
+//! and modifier bits. This file stays free of platform types.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -20,13 +20,12 @@ use crate::{
 
 /// Modifier bits for a backend-neutral key event.
 ///
-/// Fields match `nana_ui_input::InputModifiers` 1:1:
+/// Stored-chord modifiers. Live events use [`nana_ui_input::InputModifiers`];
+/// [`Self::from_input`] copies the four bits in the same order:
 /// - `alt` ← `InputModifiers::alt`
 /// - `control` ← `InputModifiers::control`
 /// - `meta` ← `InputModifiers::meta` / `nana_ui::command::KeyModifiers::logo`
 /// - `shift` ← `InputModifiers::shift`
-///
-/// This crate does not depend on platform types; hosts copy the bits.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct KeyModifiers {
     pub alt: bool,
@@ -72,58 +71,25 @@ impl KeyModifiers {
             shift,
         }
     }
-}
 
-/// Host-normalized key press or release.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeyInput {
-    pub pressed: bool,
-    pub key: Arc<str>,
-    pub modifiers: KeyModifiers,
-    pub repeat: bool,
-}
-
-impl KeyInput {
-    /// Host-normalized keyboard event from platform fields.
-    ///
-    /// Map `nana_ui_input::InputEvent::Keyboard` as
-    /// `(pressed, key, modifiers.alt, modifiers.control, modifiers.shift,
-    /// modifiers.meta, repeat)`. Vue `KeyboardEvent` uses the same flag names
-    /// (`altKey`/`ctrlKey`/`shiftKey`/`metaKey`).
-    pub fn new(
-        pressed: bool,
-        key: &str,
-        alt: bool,
-        control: bool,
-        shift: bool,
-        meta: bool,
-        repeat: bool,
-    ) -> Self {
+    /// Copy the four bits of a live [`nana_ui_input::InputModifiers`].
+    /// The names stay in the same order: alt, control, meta, shift.
+    pub const fn from_input(modifiers: nana_ui_input::InputModifiers) -> Self {
         Self {
-            pressed,
-            key: Arc::from(key),
-            modifiers: KeyModifiers {
-                alt,
-                control,
-                meta,
-                shift,
-            },
-            repeat,
+            alt: modifiers.alt,
+            control: modifiers.control,
+            meta: modifiers.meta,
+            shift: modifiers.shift,
         }
     }
 
-    pub fn press(key: impl Into<Arc<str>>, modifiers: KeyModifiers) -> Self {
-        Self {
-            pressed: true,
-            key: key.into(),
-            modifiers,
-            repeat: false,
+    pub const fn to_input(self) -> nana_ui_input::InputModifiers {
+        nana_ui_input::InputModifiers {
+            alt: self.alt,
+            control: self.control,
+            meta: self.meta,
+            shift: self.shift,
         }
-    }
-
-    pub fn with_repeat(mut self, repeat: bool) -> Self {
-        self.repeat = repeat;
-        self
     }
 }
 
@@ -142,8 +108,11 @@ impl CapturedStroke {
         }
     }
 
-    fn from_input(event: &KeyInput) -> Option<Self> {
-        let stroke = Self::new(Arc::clone(&event.key), event.modifiers);
+    fn from_canonical(event: &nana_ui_input::KeyInput) -> Option<Self> {
+        let stroke = Self::new(
+            event.logical.0.as_ref(),
+            KeyModifiers::from_input(event.modifiers),
+        );
         (!stroke.key.is_empty()).then_some(stroke)
     }
 
@@ -220,40 +189,43 @@ impl KeyCaptureLayer {
     }
 
     /// True when a press must not reach content or the application keymap.
-    pub fn should_consume(&self, event: &KeyInput) -> bool {
-        self.recording && event.pressed && !is_named(event.key.as_ref(), "Tab")
+    pub fn should_consume(&self, event: &nana_ui_input::KeyInput) -> bool {
+        self.recording && event.is_pressed() && !is_named(event.logical.0.as_ref(), "Tab")
     }
 
-    pub fn handle_key(&mut self, event: &KeyInput) -> Option<KeyCaptureEvent> {
+    pub fn handle_key(&mut self, event: &nana_ui_input::KeyInput) -> Option<KeyCaptureEvent> {
         if !self.recording {
             self.pending_modifiers = KeyModifiers::empty();
             return None;
         }
-        if !event.pressed {
-            if is_modifier_key(event.key.as_ref()) {
-                self.pending_modifiers = event.modifiers;
+        let modifiers = KeyModifiers::from_input(event.modifiers);
+        if !event.is_pressed() {
+            if is_modifier_key(event.logical.0.as_ref()) {
+                self.pending_modifiers = modifiers;
             }
             return None;
         }
         if event.repeat {
             return None;
         }
-        if is_named(event.key.as_ref(), "Tab") {
+        if is_named(event.logical.0.as_ref(), "Tab") {
             return None;
         }
-        if is_named(event.key.as_ref(), "Escape") {
+        if is_named(event.logical.0.as_ref(), "Escape") {
             self.pending_modifiers = KeyModifiers::empty();
             return Some(KeyCaptureEvent::Cancelled);
         }
-        if is_named(event.key.as_ref(), "Delete") || is_named(event.key.as_ref(), "Backspace") {
+        if is_named(event.logical.0.as_ref(), "Delete")
+            || is_named(event.logical.0.as_ref(), "Backspace")
+        {
             self.pending_modifiers = KeyModifiers::empty();
             return Some(KeyCaptureEvent::Cleared);
         }
-        if is_modifier_key(event.key.as_ref()) {
-            self.pending_modifiers = event.modifiers;
+        if is_modifier_key(event.logical.0.as_ref()) {
+            self.pending_modifiers = modifiers;
             return None;
         }
-        let stroke = CapturedStroke::from_input(event)?;
+        let stroke = CapturedStroke::from_canonical(event)?;
         self.pending_modifiers = KeyModifiers::empty();
         Some(KeyCaptureEvent::Captured(stroke))
     }
@@ -712,18 +684,18 @@ impl KeymapLayer {
     }
 
     /// Resolve including chord [`KeymapMatch::Pending`].
-    pub fn resolve_key(&mut self, event: &KeyInput) -> KeymapMatch {
-        if !event.pressed {
+    pub fn resolve_key(&mut self, event: &nana_ui_input::KeyInput) -> KeymapMatch {
+        if !event.is_pressed() {
             return KeymapMatch::NoMatch;
         }
-        let Some(stroke) = CapturedStroke::from_input(event) else {
+        let Some(stroke) = CapturedStroke::from_canonical(event) else {
             return KeymapMatch::NoMatch;
         };
         self.keymap
             .resolve(&mut self.state, stroke, &self.context, &self.registry)
     }
 
-    pub fn handle_key(&mut self, event: &KeyInput) -> Option<ActionId> {
+    pub fn handle_key(&mut self, event: &nana_ui_input::KeyInput) -> Option<ActionId> {
         match self.resolve_key(event) {
             KeymapMatch::Dispatch(action) => Some(action),
             KeymapMatch::Pending | KeymapMatch::NoMatch => None,
@@ -793,6 +765,8 @@ mod tests {
     use super::*;
     use crate::DocumentId;
     use crate::framework::AppContext;
+    use nana_ui_input::{InputModifiers, KeyInput, KeyState, LogicalKey, PhysicalKey};
+    use std::borrow::Cow;
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -805,38 +779,48 @@ mod tests {
         }
     }
 
-    fn press(key: &str, modifiers: KeyModifiers) -> KeyInput {
-        KeyInput::press(key, modifiers)
+    fn press(key: &'static str, modifiers: KeyModifiers) -> KeyInput {
+        KeyInput::named(key, key, KeyState::Pressed, modifiers.to_input())
     }
 
     #[test]
-    fn key_input_maps_platform_modifier_fields() {
-        let event = KeyInput::new(true, "K", true, true, true, true, true);
-        assert_eq!(
-            event,
-            KeyInput {
-                pressed: true,
-                key: Arc::from("K"),
-                modifiers: KeyModifiers {
-                    alt: true,
-                    control: true,
-                    meta: true,
-                    shift: true,
-                },
-                repeat: true,
-            }
+    fn keymap_keeps_the_physical_key_and_copies_modifier_bits() {
+        let event = KeyInput {
+            physical: PhysicalKey(Cow::Borrowed("KeyK")),
+            logical: LogicalKey(Cow::Borrowed("k")),
+            state: KeyState::Pressed,
+            repeat: true,
+            modifiers: InputModifiers {
+                alt: true,
+                control: true,
+                meta: true,
+                shift: true,
+            },
+        };
+        let stored = KeyModifiers::from_input(event.modifiers);
+        assert_eq!(stored.to_input(), event.modifiers);
+        let stroke = CapturedStroke::from_canonical(&event).expect("logical key");
+        assert_eq!(stroke.key.as_ref(), "k");
+        assert_eq!(stroke.modifiers, stored);
+        assert_eq!(event.physical.0.as_ref(), "KeyK");
+
+        let release = KeyInput::named(
+            "Escape",
+            "Escape",
+            KeyState::Released,
+            InputModifiers {
+                control: true,
+                ..InputModifiers::default()
+            },
         );
-        let release = KeyInput::new(false, "Escape", false, true, false, false, false);
-        assert!(!release.pressed);
-        assert_eq!(release.key.as_ref(), "Escape");
+        assert!(!release.is_pressed());
         assert_eq!(
-            release.modifiers,
+            KeyModifiers::from_input(release.modifiers),
             KeyModifiers {
                 control: true,
                 ..KeyModifiers::empty()
             }
         );
-        assert!(!release.repeat);
     }
 
     fn palette_registry() -> ActionRegistry {
@@ -909,6 +893,14 @@ mod tests {
             layer.resolve_key(&press("x", KeyModifiers::empty())),
             KeymapMatch::NoMatch
         );
+        let mut typed = press("k", ctrl());
+        typed.physical = PhysicalKey(std::borrow::Cow::Borrowed("KeyK"));
+        assert_eq!(
+            layer.handle_key(&typed),
+            Some(ActionId::new("workspace.palette"))
+        );
+        typed.state = KeyState::Released;
+        assert_eq!(layer.resolve_key(&typed), KeymapMatch::NoMatch);
     }
 
     #[test]

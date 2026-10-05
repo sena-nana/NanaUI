@@ -1299,7 +1299,7 @@ fn an_application_key_policy_runs_before_the_clipboard() {
     let observed = seen.clone();
     context
         .on_key(editor, move |key| {
-            if &*key.key == "c" && key.modifiers.control {
+            if key.is_pressed() && key.logical.0 == "c" && key.modifiers.control {
                 *observed.lock().unwrap() += 1;
                 return true;
             }
@@ -1314,6 +1314,50 @@ fn an_application_key_policy_runs_before_the_clipboard() {
     );
     assert_eq!(*seen.lock().unwrap(), 1);
     assert_eq!(input.services().clipboard(), None);
+}
+
+/// A host key keeps its physical code, logical name, repeat and modifier
+/// bits when the application policy reads it. The keymap matches the logical
+/// name; this is the policy's copy of the same event.
+#[test]
+fn the_key_policy_sees_the_physical_key_and_the_same_modifiers() {
+    let mut context = AppContext::new();
+    let doc = document(23);
+    let mut input = HeadlessInput::bind(&mut context, doc);
+    let editor = focused_editor(&mut context, doc, "keep");
+    let seen = Arc::new(Mutex::new(None));
+    let observed = seen.clone();
+    context
+        .on_key(editor, move |key| {
+            *observed.lock().unwrap() = Some((
+                key.physical.0.to_string(),
+                key.logical.0.to_string(),
+                key.modifiers,
+                key.repeat,
+                key.state,
+            ));
+            true
+        })
+        .unwrap();
+    let mut key = KeyInput::named(
+        "KeyA",
+        "a",
+        KeyState::Pressed,
+        InputModifiers {
+            alt: true,
+            control: true,
+            meta: true,
+            shift: true,
+        },
+    );
+    key.repeat = true;
+    assert!(input.press(&mut context, key, None, None).unwrap().handled);
+    let (physical, logical, modifiers, repeat, state) = seen.lock().unwrap().clone().unwrap();
+    assert_eq!(physical, "KeyA");
+    assert_eq!(logical, "a");
+    assert!(modifiers.alt && modifiers.control && modifiers.meta && modifiers.shift);
+    assert!(repeat);
+    assert_eq!(state, KeyState::Pressed);
 }
 
 /// Two sources driving two documents of one context keep separate text

@@ -477,6 +477,26 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn a_static_window_polled_at_240hz_presents_nothing() {
+        let mut schedule = FrameSchedule::default();
+        let start = Instant::now();
+        let step = Duration::from_nanos(1_000_000_000 / 240);
+        let demand = FrameDemand::OnDemand;
+        for index in 0u32..240 {
+            let now = start + step * index;
+            let tick = frame_tick(true, schedule.due(demand, now), true);
+            assert_eq!(tick, FrameTick::None);
+            let deadline = schedule.arm(demand, now);
+            assert_eq!(frame_wait_target(tick, deadline, now), None);
+        }
+        let one_second = start + Duration::from_secs(1);
+        assert_eq!(
+            frame_tick(true, schedule.due(demand, one_second), true),
+            FrameTick::None
+        );
+    }
+
+    #[test]
     fn demand_ticks_only_present_with_a_drawable_visible_surface() {
         let now = Instant::now();
         for (visible, drawable, expected) in [

@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) type KeyHandler = Box<dyn FnMut(&dyn Any, &crate::KeyInput) -> bool + Send>;
+pub(super) type KeyHandler = Box<dyn FnMut(&dyn Any, &nana_ui_input::KeyInput) -> bool + Send>;
 
 impl AppContext {
     /// Set the focused control's keyboard policy before default editing.
@@ -8,7 +8,7 @@ impl AppContext {
     pub fn on_key<V: View>(
         &mut self,
         entity: Entity<V>,
-        mut handler: impl FnMut(&crate::KeyInput) -> bool + Send + 'static,
+        mut handler: impl FnMut(&nana_ui_input::KeyInput) -> bool + Send + 'static,
     ) -> Result<(), FrameworkError> {
         self.on_view_key(entity, move |_, key| handler(key))
     }
@@ -17,7 +17,7 @@ impl AppContext {
     pub fn on_view_key<V: View>(
         &mut self,
         entity: Entity<V>,
-        mut handler: impl FnMut(&V, &crate::KeyInput) -> bool + Send + 'static,
+        mut handler: impl FnMut(&V, &nana_ui_input::KeyInput) -> bool + Send + 'static,
     ) -> Result<(), FrameworkError> {
         self.read(entity, |_| ())?;
         self.key_handlers.insert(
@@ -32,7 +32,11 @@ impl AppContext {
 
     /// Dispatch to the eligible focused control. IME composition retains its
     /// keys and never invokes an application submit or clipboard policy.
-    pub fn dispatch_focused_key(&mut self, document: DocumentId, key: &crate::KeyInput) -> bool {
+    pub fn dispatch_focused_key(
+        &mut self,
+        document: DocumentId,
+        key: &nana_ui_input::KeyInput,
+    ) -> bool {
         let Some(target) = self.world.focused(document) else {
             return false;
         };
@@ -70,11 +74,16 @@ mod tests {
         let sink = Arc::clone(&seen);
         cx.on_view_key(area, move |view, key| {
             sink.lock().unwrap().push(view.state.value.clone());
-            key.pressed && key.key.as_ref() == "Enter"
+            key.is_pressed() && key.logical.0.as_ref() == "Enter"
         })
         .unwrap();
         cx.focus_node(document, area.id).unwrap();
-        let enter = crate::KeyInput::new(true, "Enter", false, false, false, false, false);
+        let enter = nana_ui_input::KeyInput::named(
+            "Enter",
+            "Enter",
+            nana_ui_input::KeyState::Pressed,
+            nana_ui_input::InputModifiers::default(),
+        );
         assert!(cx.dispatch_focused_key(document, &enter));
         cx.update_component(area, |view, _| {
             view.state.replace_value("second");
@@ -108,7 +117,12 @@ mod tests {
         cx.on_key(area, |_| true).unwrap();
         assert!(cx.dispatch_focused_key(
             document,
-            &crate::KeyInput::new(true, "Enter", false, false, false, false, false)
+            &nana_ui_input::KeyInput::named(
+                "Enter",
+                "Enter",
+                nana_ui_input::KeyState::Pressed,
+                nana_ui_input::InputModifiers::default(),
+            )
         ));
         cx.remove_view(area).unwrap();
         assert!(!cx.key_handlers.contains_key(&area.id));

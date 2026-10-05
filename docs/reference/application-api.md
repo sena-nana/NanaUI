@@ -33,7 +33,10 @@
   `code`。如 `KeyA`。逻辑键为布局解析后的名称）、`Text(CommittedText)`、`Composition`、
   `Focus` 以及设备与 source 的连接/断开。一次按键和它输入的文本是两个事件。文本带着按键的
   sequence：按键被控件处理（快捷键、焦点切换、提交表单、终端已发出字节）时。路由丢弃这段
-  文本。不会再插入。IME 组字只经 `Composition`。从不由按键名推导。`FileDrag(FileDragInput)`
+  文本。不会再插入。IME 组字只经 `Composition`。从不由按键名推导。应用按键策略
+  （`AppContext::on_key`）和 keymap（`KeymapLayer::resolve_key`）读的就是这一份
+  `KeyInput`：物理键留在 `physical`，快捷键按 `logical` 匹配，修饰键四位原样抄进
+  存储用的 `KeyModifiers`。公开的键盘事件只有这一份。`FileDrag(FileDragInput)`
   是从窗口外拖入的文件（悬停、放下、取消）。由路由交给登记的放置目标。
   `RoutedInput::pointer_hit` 是它所在或落下的目标。程序想在整个窗口接收文件。就在
   `input_event` 里读 `FileDragKind::Drop` 的路径。
