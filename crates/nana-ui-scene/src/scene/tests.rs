@@ -5508,6 +5508,7 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
         unit: None,
         size: nana_ui_core::ControlSize::Medium,
         ratio: 0.25,
+        markers: Arc::from([]),
         invalid: false,
     });
     style_mut(&mut slider).background = Some([0.2, 0.5, 0.9, 1.0]);
@@ -5956,6 +5957,7 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
             unit: None,
             size: nana_ui_core::ControlSize::Medium,
             ratio: 0.5,
+            markers: Arc::from([]),
             invalid: false,
         });
         style_mut(&mut range).border_color = Some([0.4, 0.4, 0.45, 1.0]);
@@ -6016,6 +6018,40 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
         } => {}
         other => panic!("rail must stay on the base border colour, got {other:?}"),
     }
+}
+
+#[test]
+fn a_range_marker_paints_on_the_track_under_the_thumb() {
+    let mut range = node(1, None, &[]);
+    range.standard_visual = Some(StandardVisual::Range {
+        label: None,
+        value: Arc::from("50"),
+        unit: None,
+        size: nana_ui_core::ControlSize::Medium,
+        ratio: 0.5,
+        markers: Arc::from([0.25]),
+        invalid: false,
+    });
+    style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
+    style_mut(&mut range).border_color = Some([0.4, 0.4, 0.45, 1.0]);
+    let mut scene = UiScene::new();
+    scene.apply_delta([range], []);
+    let tick = scene
+        .primitive(PrimitiveId {
+            node: id(1),
+            slot: 5,
+        })
+        .expect("marker");
+    assert!(tick.bounds.width > 0.0 && tick.bounds.height > 4.0);
+    assert!(
+        scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 6,
+            })
+            .is_some(),
+        "the thumb moves past the marker slots"
+    );
 }
 
 #[test]
@@ -6096,6 +6132,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         unit: Some(Arc::from("%")),
         size: nana_ui_core::ControlSize::Medium,
         ratio: 0.25,
+        markers: Arc::from([]),
         invalid: false,
     });
     range.component_geometry = Some(Box::new(ComponentGeometry::Range {

@@ -396,6 +396,12 @@ impl UiWorld {
     }
 
     pub(super) fn extracted_compositor(&self, id: StableNodeId) -> crate::ExtractedCompositor {
+        if self.presentation.is_empty() && self.compositor_layer_requests.is_empty() {
+            return crate::ExtractedCompositor {
+                bindings: Vec::new(),
+                request_layer: false,
+            };
+        }
         let mut bindings = Vec::new();
         if let Some(target) = MotionTargetId::new(id.get()) {
             for property in [

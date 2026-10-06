@@ -819,6 +819,8 @@ pub enum StandardVisual {
         unit: Option<Arc<str>>,
         size: ControlSize,
         ratio: f32,
+        /// Positions along the track, each in `0.0..=1.0`.
+        markers: Arc<[f32]>,
         invalid: bool,
     },
     /// Scroll container chrome. Carries policy only: the track and thumb boxes
@@ -1766,6 +1768,19 @@ impl PartialEq for NodeStyle {
 }
 
 impl NodeStyle {
+    /// Authored style that does not override any inherited computed field.
+    ///
+    /// Radius tiers and the other design-intent fields land in
+    /// `resolved_layout`, not in [`ComputedStyle`], so they stay out of this
+    /// check. A node that passes it resolves to its parent's computed style.
+    pub(crate) fn computed_style_is_inherited(&self) -> bool {
+        Arc::ptr_eq(&self.layout, &DEFAULT_LAYOUT_STYLE)
+            && self.foreground.is_none()
+            && self.background.is_none()
+            && self.border.is_none()
+            && self.interaction.is_empty()
+    }
+
     pub fn visible() -> Self {
         Self {
             layout: Arc::clone(&DEFAULT_LAYOUT_STYLE),

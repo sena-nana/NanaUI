@@ -3946,6 +3946,27 @@ impl ComponentView for Switch {
     }
 }
 
+/// A mark on a [`RangeField`] track. `value` uses the range's own units.
+/// An empty `label` draws the mark without a name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RangeMarker {
+    pub value: f64,
+    pub label: Arc<str>,
+}
+
+impl RangeMarker {
+    pub fn new(value: f64, label: impl Into<Arc<str>>) -> Self {
+        Self {
+            value,
+            label: label.into(),
+        }
+    }
+}
+
+/// How close a pointer must be, in logical pixels, before a press or drag
+/// lands on a marker instead of the proportional position.
+const RANGE_MARKER_SNAP_PX: f32 = 6.0;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RangeField {
     pub value: f64,
@@ -3953,6 +3974,9 @@ pub struct RangeField {
     pub maximum: f64,
     pub step: f64,
     pub page_step: f64,
+    /// Marks drawn on the track. A value outside the range is neither drawn
+    /// nor hittable. The volume slider leaves this empty.
+    pub markers: Arc<[RangeMarker]>,
     pub label: Option<Arc<str>>,
     pub unit: Option<Arc<str>>,
     /// When false, the current-value (and unit) readout is omitted so the track
@@ -4036,6 +4060,7 @@ impl RangeField {
             maximum,
             step,
             page_step: step * 10.0,
+            markers: Arc::from([]),
             label: None,
             unit: None,
             show_value: true,
@@ -4050,6 +4075,10 @@ impl RangeField {
         field
     }
 
+    pub fn markers(mut self, markers: impl Into<Arc<[RangeMarker]>>) -> Self {
+        self.markers = markers.into();
+        self
+    }
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.label = Some(label.into());
         self
@@ -4096,6 +4125,60 @@ impl RangeField {
         let steps = ((value.clamp(self.minimum, self.maximum) - self.minimum) / self.step).round();
         (self.minimum + steps * self.step).clamp(self.minimum, self.maximum)
     }
+
+    /// The value a pointer at `x` selects. Within [`RANGE_MARKER_SNAP_PX`] of
+    /// a marker, that marker wins over the proportional position.
+    pub fn value_at(&self, track_x: f32, track_width: f32, x: f32) -> f64 {
+        let span = self.maximum - self.minimum;
+        let ratio = if track_width > 0.0 {
+            ((x - track_x) / track_width).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let proportional = self.minimum + f64::from(ratio) * span;
+        let mut best: Option<(f32, f64)> = None;
+        if span.is_finite() && span > 0.0 {
+            for marker in self.markers.iter() {
+                if !marker.value.is_finite()
+                    || marker.value < self.minimum
+                    || marker.value > self.maximum
+                {
+                    continue;
+                }
+                let marker_ratio = ((marker.value - self.minimum) / span) as f32;
+                let marker_x = track_x + track_width * marker_ratio;
+                let distance = (marker_x - x).abs();
+                if distance <= RANGE_MARKER_SNAP_PX
+                    && best.is_none_or(|(nearest, _)| distance < nearest)
+                {
+                    best = Some((distance, marker.value));
+                }
+            }
+        }
+        best.map_or(proportional, |(_, value)| value)
+    }
+
+    fn marker_ratios(&self) -> Arc<[f32]> {
+        let span = self.maximum - self.minimum;
+        if !(span.is_finite() && span > 0.0) {
+            return Arc::from([]);
+        }
+        Arc::from(
+            self.markers
+                .iter()
+                .filter_map(|marker| {
+                    if !marker.value.is_finite()
+                        || marker.value < self.minimum
+                        || marker.value > self.maximum
+                    {
+                        return None;
+                    }
+                    let ratio = ((marker.value - self.minimum) / span) as f32;
+                    (0.0..=1.0).contains(&ratio).then_some(ratio)
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
 }
 
 impl ComponentView for RangeField {
@@ -4127,6 +4210,7 @@ impl ComponentView for RangeField {
             },
             size: self.size,
             ratio: self.ratio(),
+            markers: self.marker_ratios(),
             invalid: self.invalid,
         };
         if world.standard_visual(id) != Some(visual.clone()) {

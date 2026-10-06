@@ -132,9 +132,9 @@ fn list_live_entity_bound(list: ListWindow) -> usize {
     list.live_entity_bound()
 }
 
-/// Retained lists keep one placement container beside each mounted item.
-/// Count descendants instead of only the List's direct children so the
-/// benchmark reports the actual retained-tree footprint.
+/// Descendants under a retained list: one framework placement container plus
+/// the mounted component. The catalog `live_ui_entities` field is the mounted
+/// window (`range.len()`), which is what the geometric cap of 58 bounds.
 fn retained_list_live_entity_count(context: &AppContext, list: StableNodeId) -> usize {
     let mut stack = context
         .world()
@@ -149,10 +149,6 @@ fn retained_list_live_entity_count(context: &AppContext, list: StableNodeId) -> 
         }
     }
     count
-}
-
-fn retained_list_live_entity_bound(list: ListWindow) -> usize {
-    list_live_entity_bound(list).saturating_mul(2)
 }
 
 fn table_column_cap(table: TableWindow) -> usize {
@@ -624,21 +620,22 @@ fn main() {
             .unwrap();
         let virtual_list_materialize_elapsed = started.elapsed();
         let live_list = retained_list_live_entity_count(&context, materialized_list.stable_id());
+        let mounted_list = materialized.range.len();
         let visible_list = virtual_list
             .window(materialize_offset, list.viewport, 0.0)
             .range
             .len();
-        let overscan_list = materialized.range.len().saturating_sub(visible_list);
-        let list_bound = retained_list_live_entity_bound(list);
-        assert_eq!(live_list, materialized.range.len() * 2);
+        let overscan_list = mounted_list.saturating_sub(visible_list);
+        let list_bound = list_live_entity_bound(list);
+        assert_eq!(live_list, mounted_list * 2);
         assert!(
-            live_list <= list_bound,
-            "virtual list live entities {live_list} exceed geometric bound {list_bound}"
+            mounted_list <= list_bound,
+            "virtual list mounted items {mounted_list} exceed geometric bound {list_bound}"
         );
         if iteration >= WARMUP_ITERATIONS {
             last_list_visible = visible_list;
             last_list_overscan = overscan_list;
-            last_list_live = live_list;
+            last_list_live = mounted_list;
         }
         let _ = context.take_system_work();
         let started = Instant::now();
@@ -981,8 +978,18 @@ fn layout_fixture() -> (AppContext, DocumentId) {
 fn profile_layout() {
     let (mut context, document) = layout_fixture();
     context.take_system_work();
+    let samples_n = std::env::var("NANA_LAYOUT_PROFILE_ITERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|count| *count > 0)
+        .unwrap_or(ITERATIONS);
+    let warmup_n = if std::env::var_os("NANA_LAYOUT_PROFILE_ITERS").is_some() {
+        5
+    } else {
+        WARMUP_ITERATIONS
+    };
     let mut samples: [Vec<Duration>; 4] = std::array::from_fn(|_| Vec::new());
-    for iteration in 0..(WARMUP_ITERATIONS + ITERATIONS) {
+    for iteration in 0..(warmup_n + samples_n) {
         let width = if iteration.is_multiple_of(2) {
             1_280.0
         } else {
@@ -992,7 +999,10 @@ fn profile_layout() {
             .benchmark_layout_document(document, LayoutViewport::new(width, 800.0))
             .unwrap();
         context.take_system_work();
-        if iteration >= WARMUP_ITERATIONS {
+        if iteration == warmup_n {
+            let _ = nana_ui_runtime::plan_stats::take_phases_ns();
+        }
+        if iteration >= warmup_n {
             for (samples, elapsed) in samples.iter_mut().zip(timings) {
                 samples.push(elapsed);
             }
@@ -1002,6 +1012,36 @@ fn profile_layout() {
         .into_iter()
         .zip(samples.iter().map(|samples| summarize(samples)))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let phases = nana_ui_runtime::plan_stats::take_phases_ns();
+    let phase_names = [
+        "prefetch",
+        "root_measure",
+        "root_place",
+        "engine_tail",
+        "measure_children",
+        "measure_fold",
+        "place_remeasure",
+        "place_pack",
+        "publish_build",
+        "publish_store",
+        "writeback_compare",
+        "writeback_views",
+        "writeback_commit",
+        "writeback_publish",
+        "leaf_content",
+        "leaf_baseline",
+        "leaf_metrics",
+    ];
+    let phase_ms = phase_names
+        .into_iter()
+        .zip(phases)
+        .map(|(name, nanos)| (name, nanos as f64 / samples_n as f64 / 1_000_000.0))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let report = serde_json::json!({
+        "stages": report,
+        "phase_mean_ms": phase_ms,
+        "samples": samples_n,
+    });
     let json = serde_json::to_string_pretty(&report).unwrap();
     if let Some(path) = std::env::args().skip_while(|arg| arg != "--output").nth(1) {
         std::fs::write(path, json).unwrap();
@@ -1248,7 +1288,7 @@ fn bench_virtual_list_scale(
     let mut last_visible = 0;
     let mut last_overscan = 0;
     let mut last_live = 0;
-    let list_bound = retained_list_live_entity_bound(list_window);
+    let list_bound = list_live_entity_bound(list_window);
     for iteration in 0..(warmup + iterations) {
         if timeout.is_some_and(|limit| loop_started.elapsed() > limit) {
             return skipped_scale(
@@ -1278,12 +1318,13 @@ fn bench_virtual_list_scale(
             .unwrap();
         let materialize_elapsed = materialize_started.elapsed();
         let live = retained_list_live_entity_count(&context, list.stable_id());
+        let mounted = materialized.range.len();
         let visible = layout.window(scroll, list_window.viewport, 0.0).range.len();
-        let overscan = materialized.range.len().saturating_sub(visible);
-        assert_eq!(live, materialized.range.len() * 2);
+        let overscan = mounted.saturating_sub(visible);
+        assert_eq!(live, mounted * 2);
         assert!(
-            live <= list_bound,
-            "virtual list live entities {live} exceed geometric bound {list_bound}"
+            mounted <= list_bound,
+            "virtual list mounted items {mounted} exceed geometric bound {list_bound}"
         );
         let _ = context.take_system_work();
         if iteration >= warmup {
@@ -1291,7 +1332,7 @@ fn bench_virtual_list_scale(
             materializations.push(materialize_elapsed);
             last_visible = visible;
             last_overscan = overscan;
-            last_live = live;
+            last_live = mounted;
         }
     }
     VirtualScaleCase {
@@ -1539,7 +1580,7 @@ fn bench_virtual_tree_scale(
     let mut last_visible = 0;
     let mut last_overscan = 0;
     let mut last_live = 0;
-    let tree_bound = retained_list_live_entity_bound(list_window);
+    let tree_bound = list_live_entity_bound(list_window);
     for iteration in 0..(warmup + iterations) {
         if timeout.is_some_and(|limit| loop_started.elapsed() > limit) {
             return skipped_scale(
@@ -1569,12 +1610,13 @@ fn bench_virtual_tree_scale(
             .unwrap();
         let materialize_elapsed = materialize_started.elapsed();
         let live = retained_list_live_entity_count(&context, tree.stable_id());
+        let mounted = materialized.range.len();
         let visible = layout.window(scroll, list_window.viewport, 0.0).range.len();
-        let overscan = materialized.range.len().saturating_sub(visible);
-        assert_eq!(live, materialized.range.len() * 2);
+        let overscan = mounted.saturating_sub(visible);
+        assert_eq!(live, mounted * 2);
         assert!(
-            live <= tree_bound,
-            "virtual tree live entities {live} exceed geometric bound {tree_bound}"
+            mounted <= tree_bound,
+            "virtual tree mounted items {mounted} exceed geometric bound {tree_bound}"
         );
         assert_eq!(layout.visible_len(), logical_rows);
         let _ = context.take_system_work();
@@ -1583,7 +1625,7 @@ fn bench_virtual_tree_scale(
             materializations.push(materialize_elapsed);
             last_visible = visible;
             last_overscan = overscan;
-            last_live = live;
+            last_live = mounted;
         }
     }
     VirtualScaleCase {

@@ -344,9 +344,7 @@ impl AppContext {
             return Ok(false);
         }
         let value = self.read(Entity::<RangeField>::from_stable_id(target), |range| {
-            range.minimum
-                + f64::from(((x - track.x) / track.width).clamp(0.0, 1.0))
-                    * (range.maximum - range.minimum)
+            range.value_at(track.x, track.width, x)
         })?;
         self.write_range_value(Entity::from_stable_id(target), value, false)
     }

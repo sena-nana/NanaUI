@@ -63,6 +63,14 @@ pub enum UiMutation {
         id: StableNodeId,
         layout: LayoutBox,
     },
+    /// Move an absolute placement container. Only `offset_top` and `height`
+    /// change; the rest of the authored style stays. `height: None` clears
+    /// an imposed row height so a measured row can size to its content.
+    PatchPlacement {
+        id: StableNodeId,
+        top: f32,
+        height: Option<f32>,
+    },
     SetScrollOffset {
         id: StableNodeId,
         offset: ScrollOffset,
@@ -299,6 +307,12 @@ impl MutationQueue {
     /// Vue CSS measure is not a second product layout writer.
     pub fn write_layout(&mut self, id: StableNodeId, layout: LayoutBox) {
         self.mutations.push(UiMutation::WriteLayout { id, layout });
+    }
+
+    /// Queue [`UiMutation::PatchPlacement`].
+    pub fn patch_placement(&mut self, id: StableNodeId, top: f32, height: Option<f32>) {
+        self.mutations
+            .push(UiMutation::PatchPlacement { id, top, height });
     }
 
     pub fn set_scroll_offset(&mut self, id: StableNodeId, offset: ScrollOffset) {

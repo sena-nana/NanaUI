@@ -3316,6 +3316,9 @@ impl UiWorld {
     /// a whole presentation (display text, decorations and all) to learn two
     /// booleans is O(document) per key press.
     pub(super) fn text_input_kind(&self, id: StableNodeId) -> Option<bool> {
+        if !self.nodes.has_visuals() {
+            return None;
+        }
         if !matches!(
             self.nodes.visual(id),
             Some(StandardVisual::TextInput { .. })
@@ -4287,6 +4290,7 @@ impl UiWorld {
         let previous = self.text_backend.replace(epoch);
         if previous != Some(epoch) {
             self.text_backend_changed = true;
+            self.note_layout_source_change();
         }
         if previous.is_none_or(|previous| previous == epoch) {
             return;

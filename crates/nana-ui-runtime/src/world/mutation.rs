@@ -297,6 +297,14 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::InvalidLayout(*id));
                     }
                 }
+                UiMutation::PatchPlacement { id, top, height } => {
+                    self.require_exists(*id)?;
+                    if !top.is_finite()
+                        || height.is_some_and(|height| !height.is_finite() || height < 0.0)
+                    {
+                        return Err(UiWorldError::InvalidStyle(*id));
+                    }
+                }
                 UiMutation::SetScrollOffset { id, offset } => {
                     self.require_exists(*id)?;
                     // Negative on an axis whose scroll origin is the right /
@@ -350,8 +358,14 @@ impl<'a> ValidationPlan<'a> {
                 UiMutation::SetStandardVisual { id, visual } => {
                     self.require_exists(*id)?;
                     let invalid_ratio = match visual {
-                        Some(StandardVisual::Range { ratio, .. })
-                        | Some(StandardVisual::Progress {
+                        Some(StandardVisual::Range { ratio, markers, .. }) => {
+                            !ratio.is_finite()
+                                || !(0.0..=1.0).contains(ratio)
+                                || markers.iter().any(|marker| {
+                                    !marker.is_finite() || !(0.0..=1.0).contains(marker)
+                                })
+                        }
+                        Some(StandardVisual::Progress {
                             value_ratio: ratio, ..
                         })
                         | Some(StandardVisual::LevelMeter {
@@ -1637,6 +1651,37 @@ impl UiWorld {
                     DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
             }
+            UiMutation::PatchPlacement { id, top, height } => {
+                let Some(current) = self.node_style(*id).cloned() else {
+                    return;
+                };
+                if placement_already(current.layout.as_ref(), *top, *height) {
+                    return;
+                }
+                let height_changed = match (current.layout.height, *height) {
+                    (None, None) => false,
+                    (Some(nana_ui_core::LengthSpec::Px(current_height)), Some(next)) => {
+                        current_height.to_bits() != next.to_bits()
+                    }
+                    _ => true,
+                };
+                let mut style = current;
+                {
+                    let layout = std::sync::Arc::make_mut(&mut style.layout);
+                    layout.offset_top = Some(nana_ui_core::LengthSpec::Px(*top));
+                    layout.height = height.map(nana_ui_core::LengthSpec::Px);
+                }
+                self.write_node_style(*id, style);
+                self.record_layout_invalidation(*id, placement_invalidation(height_changed));
+                self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                self.mark_subtree(
+                    *id,
+                    DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,
+                );
+                if let Some(parent) = self.parent_id(*id) {
+                    self.mark_ancestors(parent, DirtyMask::RENDER);
+                }
+            }
             UiMutation::SetScrollOffset { id, offset } => {
                 self.scroll_to_clamped(*id, *offset);
                 // Clamped again once the commit's boxes are measured, so an
@@ -2534,6 +2579,9 @@ impl UiWorld {
                 self.unlinked_root(*root) && self.mount_state(*root) == Some(MountState::Parked)
             }
             UiMutation::Detach { id } => self.unlinked_root(*id),
+            UiMutation::PatchPlacement { id, top, height } => self
+                .node_style(*id)
+                .is_some_and(|style| placement_already(style.layout.as_ref(), *top, *height)),
             _ => false,
         }
     }
@@ -2654,6 +2702,7 @@ impl UiWorld {
         // A skipped no-op changes nothing, so the generation moves with the
         // first mutation that does; a batch of nothing but no-ops keeps it.
         let mut applied = false;
+        let mut layout_inputs_changed = false;
         let mut layout_result_ids = Vec::new();
         for mutation in queue.as_slice() {
             if self.is_structural_noop(mutation) {
@@ -2664,6 +2713,9 @@ impl UiWorld {
                 self.close_prior_animation_event_frame();
                 self.generation = self.generation.wrapping_add(1);
                 report.generation = self.generation;
+            }
+            if !matches!(mutation, UiMutation::WriteLayout { .. }) {
+                layout_inputs_changed = true;
             }
             let layout_result_id = match mutation {
                 UiMutation::WriteLayout { id, .. }
@@ -2697,6 +2749,9 @@ impl UiWorld {
             &layout_result_ids,
             crate::LayoutResultSource::CompatibilityWrite,
         );
+        if layout_inputs_changed {
+            self.note_layout_source_change();
+        }
         Ok(report)
     }
 
@@ -2899,6 +2954,48 @@ impl UiWorld {
         }
         Ok((report, parked, inserted))
     }
+}
+
+fn placement_already(style: &nana_ui_core::LayoutStyle, top: f32, height: Option<f32>) -> bool {
+    let top_matches = matches!(
+        style.offset_top,
+        Some(nana_ui_core::LengthSpec::Px(current)) if current.to_bits() == top.to_bits()
+    );
+    let height_matches = match (style.height, height) {
+        (None, None) => true,
+        (Some(nana_ui_core::LengthSpec::Px(current)), Some(next)) => {
+            current.to_bits() == next.to_bits()
+        }
+        _ => false,
+    };
+    top_matches && height_matches
+}
+
+/// Same field groups a style write emits when only the absolute top, or the
+/// top and the imposed height, move.
+fn placement_invalidation(height_changed: bool) -> nana_ui_core::LayoutInvalidation {
+    let mut fields = nana_ui_core::LayoutFieldMask::POSITION;
+    let mut kind = nana_ui_core::InvalidationKind::PLACEMENT;
+    let mut footprint = nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS
+        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE)
+        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
+        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CONTAINING_BLOCK);
+    if height_changed {
+        fields = fields.union(nana_ui_core::LayoutFieldMask::SIZING);
+        kind = kind.union(nana_ui_core::InvalidationKind::MEASURE);
+        footprint = footprint
+            .union(nana_ui_core::LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT)
+            .union(nana_ui_core::LayoutDependencyFootprint::CONSUMES_PARENT_BLOCK_CONSTRAINT)
+            .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
+            .union(nana_ui_core::LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING);
+    }
+    nana_ui_core::LayoutInvalidation::new(
+        nana_ui_core::LayoutInvalidationSource::Author,
+        nana_ui_core::InvalidationReason::STYLE,
+        kind,
+        fields,
+        footprint,
+    )
 }
 
 /// Replaces the text of every selection with `text` as one edit, a caret

@@ -343,6 +343,147 @@ fn column_tree(rows: u64) -> (UiWorld, DocumentId) {
     (world, document)
 }
 
+#[test]
+fn percent_height_child_resolves_against_the_used_content_box() {
+    let document = DocumentId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(id(1), document, NodeKind::Element { tag: "div".into() });
+    queue.create(id(2), document, NodeKind::Element { tag: "div".into() });
+    queue.insert(id(1), id(2), None);
+    queue.set_style(
+        id(1),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(100.0)),
+                direction: Some(FlexDirection::Column),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    queue.set_style(
+        id(2),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                width: Some(LengthSpec::Px(40.0)),
+                height: Some(LengthSpec::Percent(50.0)),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    let layouts = RuntimeLayoutEngine
+        .layout_document(&world, document, LayoutViewport::new(100.0, 200.0))
+        .unwrap();
+    let parent = layouts
+        .iter()
+        .find(|(node_id, _)| *node_id == id(1))
+        .expect("parent box")
+        .1;
+    let child = layouts
+        .iter()
+        .find(|(node_id, _)| *node_id == id(2))
+        .expect("child box")
+        .1;
+    assert_eq!(parent.width, 100.0);
+    assert_eq!(parent.height, 100.0);
+    assert_eq!(child.width, 40.0);
+    assert_eq!(child.height, 50.0);
+}
+
+#[test]
+fn childless_text_leaf_resolves_to_its_metrics() {
+    let document = DocumentId::new(1).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(id(1), document, NodeKind::Element { tag: "div".into() });
+    queue.create(id(2), document, NodeKind::Text);
+    queue.create(id(3), document, NodeKind::Text);
+    queue.insert(id(1), id(2), None);
+    queue.insert(id(1), id(3), None);
+    queue.set_style(
+        id(1),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                direction: Some(FlexDirection::Column),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    queue.set_text(
+        id(2),
+        TextContent {
+            value: "row".into(),
+        },
+    );
+    queue.set_text(
+        id(3),
+        TextContent {
+            value: "pad".into(),
+        },
+    );
+    queue.set_style(
+        id(3),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                padding: Some(LengthSpec::Px(4.0)),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+
+    struct Metrics;
+    impl TextShaper for Metrics {
+        fn shape(
+            &mut self,
+            node: StableNodeId,
+            _text: &TextContent,
+            _style: &ComputedStyle,
+            _constraints: crate::TextShapeConstraints,
+        ) -> TextMetrics {
+            if node == id(2) {
+                TextMetrics {
+                    width: 48.0,
+                    height: 12.0,
+                    ascent: Some(9.0),
+                }
+            } else {
+                TextMetrics {
+                    width: 20.0,
+                    height: 10.0,
+                    ascent: Some(8.0),
+                }
+            }
+        }
+    }
+    world.shape_text(&[id(2), id(3)], &mut Metrics).unwrap();
+
+    let layouts = RuntimeLayoutEngine
+        .layout_document(&world, document, LayoutViewport::new(200.0, 100.0))
+        .unwrap();
+    let box_of = |node| {
+        layouts
+            .iter()
+            .find(|(node_id, _)| *node_id == node)
+            .expect("laid out")
+            .1
+    };
+    let plain = box_of(id(2));
+    let padded = box_of(id(3));
+    let parent = box_of(id(1));
+    assert_eq!(plain.width, 48.0);
+    assert_eq!(plain.height, 12.0);
+    assert_eq!(padded.width, 28.0);
+    assert_eq!(padded.height, 18.0);
+    assert_eq!(parent.width, 200.0);
+    assert_eq!(parent.height, 30.0);
+}
+
 fn resize_row(world: &mut UiWorld, row: u64, height: f32) {
     let mut queue = MutationQueue::new();
     queue.set_style(

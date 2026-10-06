@@ -551,6 +551,8 @@ pub(super) fn place_node_scoped(
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
     let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
     let mut child_sizes = Vec::with_capacity(flow.len());
+    #[cfg(feature = "benchmark")]
+    let mut child_phase = (flow.len() > 64).then(super::plan_stats::PhaseClock::start);
     for child in &flow {
         // Resolving the child style is a map lookup plus an `Arc` clone, so keep
         // it behind the grid check rather than filtering it away afterwards.
@@ -574,6 +576,10 @@ pub(super) fn place_node_scoped(
             intrinsic,
             scope,
         )?);
+    }
+    #[cfg(feature = "benchmark")]
+    if let Some(clock) = child_phase.as_mut() {
+        clock.lap(6);
     }
     // Only the plain in-flow path is cacheable. Grids, inline formatting,
     // floats, out-of-flow children and triggered menu overlays each add
@@ -1090,6 +1096,10 @@ pub(super) fn place_node_scoped(
             }
             cross_cursor += line_cross + extra_cross_gap;
         }
+    }
+    #[cfg(feature = "benchmark")]
+    if let Some(clock) = child_phase.as_mut() {
+        clock.lap(7);
     }
     if let Some(entries) = plan_entries {
         nodes.container_plans.insert(

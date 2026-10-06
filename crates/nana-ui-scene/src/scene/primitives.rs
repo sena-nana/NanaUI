@@ -1601,7 +1601,12 @@ impl UiScene {
                         ));
                     }
                 }
-                Some(StandardVisual::Range { ratio, size, .. }) => {
+                Some(StandardVisual::Range {
+                    ratio,
+                    size,
+                    markers,
+                    ..
+                }) => {
                     let ratio = ratio.clamp(0.0, 1.0);
                     let track_band = match node.component_geometry.as_deref() {
                         Some(ComponentGeometry::Range { track, .. }) => scene_rect(*track),
@@ -1657,6 +1662,33 @@ impl UiScene {
                         node.style.paint_colors.background,
                         None,
                     ));
+                    // Marker slots sit between the fill (4) and the thumb.
+                    // With none of them, the thumb stays on slot 5 and the
+                    // focus ring on slot 6.
+                    let marker_count = markers.len() as u64;
+                    for (index, marker) in markers.iter().copied().enumerate() {
+                        let marker = marker.clamp(0.0, 1.0);
+                        let tick = SceneRect {
+                            x: track_band.x + track_band.width * marker - 1.5,
+                            y: rail.y - 2.0,
+                            width: 3.0,
+                            height: rail.height + 4.0,
+                        };
+                        self.insert_primitive(visual_quad_with_paint(
+                            &visual_context,
+                            5 + index as u64,
+                            tick,
+                            VisualQuadStyle {
+                                background: node.style.background,
+                                border_color: node.style.border_color,
+                                border_width: 1.0,
+                                corner_radius: corner_radii(1.0),
+                            },
+                            node.style.paint_colors.background,
+                            node.style.paint_colors.border,
+                        ));
+                    }
+                    let thumb_slot = 5 + marker_count;
                     let thumb_rect = SceneRect {
                         x: track_band.x + track_band.width * ratio - thumb_extent / 2.0,
                         y: track_band.y + (track_band.height - thumb_extent) / 2.0,
@@ -1665,7 +1697,7 @@ impl UiScene {
                     };
                     self.insert_primitive(visual_quad_with_paint(
                         &visual_context,
-                        5,
+                        thumb_slot,
                         thumb_rect,
                         VisualQuadStyle {
                             background: node.style.background,
@@ -1687,7 +1719,7 @@ impl UiScene {
                         };
                         self.insert_primitive(visual_quad_with_paint(
                             &visual_context,
-                            6,
+                            thumb_slot + 1,
                             ring,
                             VisualQuadStyle {
                                 background: None,

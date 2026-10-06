@@ -3,6 +3,71 @@
 use super::*;
 
 impl UiWorld {
+    /// A node with no local computed overrides publishes its parent's style.
+    ///
+    /// Building a `ComputedStyle` reads a 4.8 KB layout just to discover the
+    /// result already lives on the parent. Sharing that `Arc` is the same
+    /// answer the full resolver reaches when every authored field inherits.
+    /// Returns `Ok(true)` when this node is finished.
+    fn publish_inherited_computed_style(
+        &mut self,
+        id: StableNodeId,
+        parent: Option<StableNodeId>,
+        work: &mut ThemeWorkCounters,
+    ) -> Result<bool, UiWorldError> {
+        let Some(parent) = parent else {
+            return Ok(false);
+        };
+        if !self.layout_length_tracks.is_empty()
+            || !self.overlay_host_nodes.is_empty()
+            || self.nodes.has_visuals()
+            || !self.presentation.is_empty()
+            || self.hover_transitions.contains_key(&id)
+            || self.record(parent).resolved.1 != self.palette_epoch
+            || !self.record(id).style.computed_style_is_inherited()
+        {
+            return Ok(false);
+        }
+        let parent_style = Arc::clone(&self.record(parent).resolved.0);
+        let writing_mode = parent_style.writing_mode;
+        let direction = parent_style.direction;
+        let text_orientation = parent_style.text_orientation;
+        {
+            let record = self.record_mut(id);
+            record.inherited_writing = nana_ui_core::WritingContext::new(writing_mode, direction);
+            record.inherited_orientation = text_orientation;
+        }
+        if Arc::ptr_eq(&self.record(id).resolved.0, &parent_style)
+            && self.record(id).resolved.1 == self.palette_epoch
+        {
+            work.record_skipped();
+            return Ok(true);
+        }
+        let has_text = {
+            let record = self.record(id);
+            !record.text.value.is_empty() || matches!(record.kind.as_ref(), NodeKind::Text)
+        };
+        if has_text {
+            let dirty = crate::text_node::classify_computed_style_change(
+                &self.record(id).resolved.0,
+                &parent_style,
+            );
+            let text_work = dirty.work();
+            if text_work.intersects(crate::text_node::TextWork::SHAPE)
+                || text_work.intersects(crate::text_node::TextWork::LAYOUT)
+            {
+                work.record_text_invalidation(1);
+            }
+            self.nodes.invalidate_text(id, dirty);
+        }
+        if !self.record(id).resolved.0.visible && parent_style.visible {
+            self.text_shown.push(id);
+        }
+        work.record_resolved();
+        self.record_mut(id).resolved = ResolvedStyle(parent_style, self.palette_epoch);
+        Ok(true)
+    }
+
     fn resolve_style<const SHARE: bool>(
         &mut self,
         id: StableNodeId,
@@ -18,6 +83,9 @@ impl UiWorld {
         let parent = self.record(id).hierarchy.parent;
         if let Some(parent) = parent {
             self.resolve_style::<SHARE>(parent, resolved, work)?;
+        }
+        if SHARE && self.publish_inherited_computed_style(id, parent, work)? {
+            return Ok(());
         }
         let layout = self.motion_layout(id, &self.record(id).style.layout);
         // Only a handful of fields are read out of the parent, so share its Arc
@@ -369,6 +437,7 @@ impl UiWorld {
         record.style = style;
         record.resolved_layout = resolved;
         record.layout_depends_on_viewport = depends_on_viewport;
+        self.note_layout_source_change();
     }
 
     /// Re-resolve one node's layout after its authored layout was mutated in
@@ -381,11 +450,13 @@ impl UiWorld {
             self.layouts.intern(&mut resolved);
         }
         self.record_mut(id).resolved_layout = resolved;
+        self.note_layout_source_change();
     }
 
     /// Re-resolve every node's layout intent after a metrics install.
     fn reresolve_layout_intent(&mut self, ids: &[StableNodeId]) {
         let metrics = self.style_model.metrics;
+        let mut changed = false;
         for &id in ids {
             let style = &self.record(id).style;
             if style.radius.is_none()
@@ -405,6 +476,10 @@ impl UiWorld {
                 self.layouts.intern(&mut resolved);
             }
             self.record_mut(id).resolved_layout = resolved;
+            changed = true;
+        }
+        if changed {
+            self.note_layout_source_change();
         }
     }
 

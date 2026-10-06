@@ -12,8 +12,9 @@
 //! shared by contexts and documents as long as the producer gives content and
 //! style identities that have the same lifetime.
 
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+
+use hashbrown::HashMap;
 
 /// A finite size in the intrinsic/used-size contract.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

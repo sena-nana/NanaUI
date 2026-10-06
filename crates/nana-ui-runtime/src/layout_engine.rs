@@ -506,14 +506,49 @@ impl RuntimeLayoutEngine {
             return Ok(Vec::new());
         }
         let retained = retained.documents.entry(document).or_default();
+        if force_full && world.layout_source_reusable() {
+            let viewport_width = viewport.width.to_bits();
+            let viewport_height = viewport.height.to_bits();
+            let epoch = world.layout_source_epoch();
+            let reused = retained.full_snapshots.iter().find_map(|snapshot| {
+                let snapshot = snapshot.as_ref()?;
+                (snapshot.epoch == epoch
+                    && snapshot.viewport_width == viewport_width
+                    && snapshot.viewport_height == viewport_height)
+                    .then(|| {
+                        (
+                            snapshot.emitted.clone(),
+                            snapshot.used_padding.clone(),
+                            snapshot.far_start.clone(),
+                        )
+                    })
+            });
+            if let Some((emitted, used_padding, far_start)) = reused {
+                retained.boxes.clear();
+                retained.boxes.extend(emitted.iter().copied());
+                retained.used_padding = used_padding;
+                retained.far_start = far_start;
+                retained.intrinsics.clear();
+                retained.intrinsic_metrics.clear();
+                retained.placements.clear();
+                retained.container_plans.clear();
+                retained.measure_plans.clear();
+                retained.materialized_inputs = emitted.len();
+                return Ok(emitted);
+            }
+        }
         if force_full {
             retained.clear();
         }
         let mut nodes = LayoutInputMap::new(world);
+        #[cfg(feature = "benchmark")]
+        let mut phase = plan_stats::PhaseClock::start();
         if force_full {
             let order = world.document_order(document);
             nodes.prefetch(&order)?;
         }
+        #[cfg(feature = "benchmark")]
+        phase.lap(0);
         let frontier = if force_full {
             LayoutFrontier::default()
         } else {
@@ -627,6 +662,8 @@ impl RuntimeLayoutEngine {
                 &mut intrinsic,
                 scope_ref,
             )?;
+            #[cfg(feature = "benchmark")]
+            phase.lap(1);
             place_node_scoped(
                 root,
                 Point::ZERO,
@@ -640,6 +677,8 @@ impl RuntimeLayoutEngine {
                 scope_ref,
                 None,
             )?;
+            #[cfg(feature = "benchmark")]
+            phase.lap(2);
         }
         // Publish recomputed boxes from the placed set; no document_order walk.
         let mut emitted = output.into_iter().collect::<Vec<_>>();
@@ -677,7 +716,7 @@ impl RuntimeLayoutEngine {
         }
         let intrinsic_counters = intrinsic.counters();
         let universe = if force_full { nodes.len() } else { world.len() };
-        for (key, size) in intrinsic.new_entries {
+        for (key, size) in intrinsic.used {
             retained
                 .intrinsics
                 .entry(key.id)
@@ -711,6 +750,20 @@ impl RuntimeLayoutEngine {
             retained.intrinsic_metrics.retain(|key, _| {
                 StableNodeId::new(key.content).is_some_and(|id| world.contains(id))
             });
+        }
+        #[cfg(feature = "benchmark")]
+        phase.lap(3);
+        if force_full && world.layout_source_reusable() {
+            let snapshot = FullLayoutSnapshot {
+                viewport_width: viewport.width.to_bits(),
+                viewport_height: viewport.height.to_bits(),
+                epoch: world.layout_source_epoch(),
+                emitted: emitted.clone(),
+                used_padding: retained.used_padding.clone(),
+                far_start: retained.far_start.clone(),
+            };
+            retained.full_snapshots[1] = retained.full_snapshots[0].take();
+            retained.full_snapshots[0] = Some(snapshot);
         }
         Ok(emitted)
     }
@@ -949,6 +1002,19 @@ struct DocumentLayoutCache {
     /// [`MeasurePlan`].
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
     frontier_stats: LayoutFrontierStats,
+    /// Last two full-layout results for this document, keyed by viewport and
+    /// layout-input epoch. `clear` keeps them: a full pass is what consults
+    /// them, and clearing first would drop the hit.
+    full_snapshots: [Option<FullLayoutSnapshot>; 2],
+}
+
+struct FullLayoutSnapshot {
+    viewport_width: u32,
+    viewport_height: u32,
+    epoch: u64,
+    emitted: Vec<(StableNodeId, LayoutBox)>,
+    used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
+    far_start: HashMap<StableNodeId, [bool; 2]>,
 }
 
 impl DocumentLayoutCache {
@@ -1188,6 +1254,49 @@ pub mod plan_stats {
 
     pub fn full_document_fallbacks() -> usize {
         FRONTIER_FULL_FALLBACKS.with(Cell::get)
+    }
+
+    /// Coarse clocks for `--profile-layout`. Slots:
+    /// prefetch, root measure, root place, engine tail,
+    /// large-container child measure, large-container measure fold,
+    /// large-container place remeasure, large-container place pack,
+    /// result build, result store,
+    /// writeback compare, view scan, commit, publish,
+    /// plain-leaf content, plain-leaf baseline, plain-leaf metric record.
+    const PHASES: usize = 17;
+
+    thread_local! {
+        static PHASE_NS: Cell<[u64; 17]> = const { Cell::new([0; 17]) };
+    }
+
+    pub(crate) fn add_phase(slot: usize, elapsed: std::time::Duration) {
+        PHASE_NS.with(|cell| {
+            let mut slots = cell.get();
+            slots[slot] = slots[slot].saturating_add(elapsed.as_nanos() as u64);
+            cell.set(slots);
+        });
+    }
+
+    pub fn take_phases_ns() -> [u64; PHASES] {
+        PHASE_NS.with(|cell| cell.replace([0; PHASES]))
+    }
+
+    pub(crate) struct PhaseClock {
+        start: std::time::Instant,
+    }
+
+    impl PhaseClock {
+        pub(crate) fn start() -> Self {
+            Self {
+                start: std::time::Instant::now(),
+            }
+        }
+
+        pub(crate) fn lap(&mut self, slot: usize) {
+            let now = std::time::Instant::now();
+            add_phase(slot, now.saturating_duration_since(self.start));
+            self.start = now;
+        }
     }
 }
 
@@ -1983,12 +2092,10 @@ struct PassIntrinsicCache {
     /// fill, or stretch result is a resolution against one containing block;
     /// it must never become the preferred value in the shared authority.
     cache: crate::IntrinsicCache,
-    /// Used-size memo for this pass. Its key contains the concrete available
+    /// Used-size memo for this pass, and the writeback list merged into the
+    /// retained cache at the end. Its key contains the concrete available
     /// size because that is exactly what the placement algorithm resolves.
     used: HashMap<MeasurementKey, Size>,
-    /// Writeback list for the retained used-size memo. This is deliberately
-    /// not an intrinsic cache.
-    new_entries: HashMap<MeasurementKey, Size>,
     new_metrics: HashMap<crate::IntrinsicCacheKey, crate::IntrinsicMetrics>,
     latest_intrinsic_keys: HashMap<StableNodeId, crate::IntrinsicCacheKey>,
     seeded_intrinsic: HashSet<crate::IntrinsicCacheKey>,
@@ -2006,7 +2113,6 @@ impl PassIntrinsicCache {
                 max_bytes: usize::MAX,
             }),
             used: HashMap::with_capacity(capacity),
-            new_entries: HashMap::with_capacity(capacity),
             new_metrics: HashMap::with_capacity(capacity),
             latest_intrinsic_keys: HashMap::with_capacity(capacity),
             seeded_intrinsic: HashSet::with_capacity(capacity),
@@ -2015,17 +2121,13 @@ impl PassIntrinsicCache {
     }
 
     fn get(&mut self, key: &MeasurementKey) -> Option<Size> {
-        let value = self.used.get(key).copied();
-        // Used-size memoization is deliberately separate from intrinsic
-        // metrics. It must not inflate intrinsic measure requests or
-        // cross-context counters; the canonical cache lookup above owns those
-        // counters and is performed even when this memo hits.
-        value
+        // A hit answers the query. Intrinsic accounting stays on the miss
+        // path; this memo must not increment those counters.
+        self.used.get(key).copied()
     }
 
     fn insert(&mut self, key: MeasurementKey, size: Size) {
         self.used.insert(key, size);
-        self.new_entries.insert(key, size);
     }
 
     /// Publish content-derived facts. `preferred` is the natural border-box
@@ -2062,6 +2164,37 @@ impl PassIntrinsicCache {
         self.cache.insert(cache_key, metrics, context);
         self.new_metrics.insert(cache_key, metrics);
         self.latest_intrinsic_keys.insert(key.id, cache_key);
+    }
+
+    /// Record facts for the retained cache without the in-pass LRU.
+    ///
+    /// Placement reads a baseline from that LRU only for `align-items:
+    /// baseline`; every other alignment recomputes from the node. A plain
+    /// leaf still publishes the same metrics the general insert would have
+    /// written to `new_metrics`.
+    fn remember_intrinsic_bounds(
+        &mut self,
+        key: MeasurementKey,
+        min_inline: f32,
+        max_inline: f32,
+        min_block: f32,
+        max_block: Option<f32>,
+        preferred: Size,
+        first_baseline: Option<f32>,
+        last_baseline: Option<f32>,
+        aspect_ratio: Option<f32>,
+    ) {
+        let cache_key = Self::intrinsic_key(key);
+        let metrics = crate::IntrinsicMetrics::new(
+            min_inline,
+            max_inline,
+            min_block,
+            max_block,
+            crate::UsedSize::new(preferred.width, preferred.height),
+        )
+        .with_baselines(first_baseline, last_baseline)
+        .with_aspect_ratio(aspect_ratio);
+        self.new_metrics.insert(cache_key, metrics);
     }
 
     fn seed_intrinsic(

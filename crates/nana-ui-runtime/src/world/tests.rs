@@ -290,6 +290,62 @@ fn layout_result_is_the_shared_geometry_snapshot_and_survives_paint_only_work() 
 }
 
 #[test]
+fn unchanged_child_keeps_its_layout_generation_when_the_parent_box_changes() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    create.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    create.insert(node(1), node(2), None);
+    world.commit(create).unwrap();
+
+    let mut layout = MutationQueue::new();
+    layout.write_layout(node(1), box_at(0.0, 0.0, 100.0, 40.0));
+    layout.write_layout(node(2), box_at(0.0, 0.0, 100.0, 20.0));
+    world.commit(layout).unwrap();
+    world.publish_layout_results(
+        &[node(1), node(2)],
+        crate::LayoutResultSource::RuntimeLayout,
+    );
+    let child_generation = world.layout_result(node(2)).expect("child").generation;
+    let child_bounds = world.layout_result(node(2)).expect("child").bounds;
+    assert_eq!(child_generation, world.layout_generation());
+
+    let mut parent_only = MutationQueue::new();
+    parent_only.write_layout(node(1), box_at(0.0, 0.0, 180.0, 40.0));
+    world.commit(parent_only).unwrap();
+    assert!(child_generation < world.layout_generation());
+    assert_eq!(
+        world.layout_result(node(2)).expect("child").generation,
+        child_generation
+    );
+    assert_eq!(
+        world.layout_result(node(2)).expect("child").bounds,
+        child_bounds
+    );
+
+    world.publish_layout_results(
+        &[node(1), node(2)],
+        crate::LayoutResultSource::RuntimeLayout,
+    );
+    let child = world.layout_result(node(2)).expect("child");
+    assert_eq!(child.generation, child_generation);
+    assert_eq!(child.bounds, child_bounds);
+    assert_eq!(child.source, crate::LayoutResultSource::RuntimeLayout);
+    let parent = world.layout_result(node(1)).expect("parent");
+    assert_eq!(parent.generation, world.layout_generation());
+    assert_eq!(parent.bounds, box_at(0.0, 0.0, 180.0, 40.0));
+    assert_eq!(parent.child_placements[0].bounds, child_bounds);
+}
+
+#[test]
 fn layout_result_uses_each_border_edge_for_content_geometry() {
     let mut world = UiWorld::new();
     let mut create = MutationQueue::new();

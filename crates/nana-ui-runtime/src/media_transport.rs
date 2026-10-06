@@ -37,8 +37,8 @@ use nana_ui_core::{
 
 use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::view_components::{
-    Activate, IconButton, RangeChanged, RangeDragging, RangeField, RangeInput, Stack, Text,
-    project_common,
+    Activate, IconButton, RangeChanged, RangeDragging, RangeField, RangeInput, RangeMarker, Stack,
+    Text, project_common,
 };
 use crate::{
     AccessibilityRole, AccessibilityState, ActionMenu, AppContext, ComponentView, Divider, Entity,
@@ -180,6 +180,8 @@ pub struct MediaTransportBar {
     pub seekable: bool,
     pub position: f64,
     pub duration: f64,
+    /// Marks copied onto the seek range. The volume range never receives them.
+    pub markers: Arc<[RangeMarker]>,
     pub volume: f64,
     pub max_width: f32,
     pub density: MediaTransportDensity,
@@ -219,6 +221,7 @@ impl MediaTransportBar {
             seekable: true,
             position: 0.0,
             duration: 0.0,
+            markers: Arc::from([]),
             volume: 100.0,
             max_width: BAR_MAX_WIDTH,
             density: MediaTransportDensity::Regular,
@@ -1008,6 +1011,7 @@ impl AppContext {
                     || range.disabled != disabled
                     || range.minimum != 0.0
                     || range.maximum != maximum
+                    || range.markers != snapshot.markers
                     || (scrub.is_none() && range.value != position)
             })?;
             if stale {
@@ -1016,6 +1020,7 @@ impl AppContext {
                     range.disabled = disabled;
                     range.minimum = 0.0;
                     range.maximum = maximum;
+                    range.markers = Arc::clone(&snapshot.markers);
                     if scrub.is_none() {
                         range.value = position;
                     }
@@ -1883,6 +1888,55 @@ mod tests {
             .unwrap();
         stage.cx.sync_media_transport_bar(stage.bar).unwrap();
         assert!(!stage.cx.read(seek, |range| range.disabled).unwrap());
+    }
+
+    #[test]
+    fn seek_markers_reach_the_progress_range_and_not_the_volume_range() {
+        let document = document();
+        let mut stage = Stage::new(document, MediaTransportBar::new());
+        let slots = stage.slots();
+        let seek = Entity::<RangeField>::from_stable_id(slots.seek.unwrap());
+        let volume = Entity::<RangeField>::from_stable_id(slots.volume.unwrap());
+        let markers: Arc<[RangeMarker]> = Arc::from([RangeMarker::new(40.0, "章节")]);
+        stage
+            .cx
+            .update_component(stage.bar, |bar, _| {
+                bar.duration = 100.0;
+                bar.position = 10.0;
+                bar.markers = Arc::clone(&markers);
+            })
+            .unwrap();
+        stage.cx.sync_media_transport_bar(stage.bar).unwrap();
+        assert_eq!(
+            stage.cx.read(seek, |range| range.markers.clone()).unwrap(),
+            markers
+        );
+        assert!(
+            stage
+                .cx
+                .read(volume, |range| range.markers.is_empty())
+                .unwrap()
+        );
+        let Some(crate::ComponentGeometry::Range { track, .. }) =
+            stage.cx.world().component_geometry(seek.stable_id())
+        else {
+            panic!("seek geometry");
+        };
+        stage
+            .cx
+            .begin_range_drag(document, 3, seek.stable_id(), track.x + track.width * 0.5)
+            .unwrap();
+        let preview = stage.cx.read(seek, |range| range.value).unwrap();
+        stage.cx.sync_media_transport_bar(stage.bar).unwrap();
+        assert_eq!(
+            stage.cx.read(seek, |range| range.value).unwrap(),
+            preview,
+            "a tick with the same markers leaves the drag preview in place"
+        );
+        assert_eq!(
+            stage.cx.read(seek, |range| range.markers.clone()).unwrap(),
+            markers
+        );
     }
 
     #[test]

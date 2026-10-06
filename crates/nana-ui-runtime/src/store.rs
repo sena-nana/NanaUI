@@ -404,6 +404,18 @@ impl NodeStore {
         self.visuals.get(&id)
     }
 
+    pub(crate) fn has_visuals(&self) -> bool {
+        !self.visuals.is_empty()
+    }
+
+    pub(crate) fn has_text_inputs(&self) -> bool {
+        !self.editors.is_empty()
+    }
+
+    pub(crate) fn has_custom_render(&self) -> bool {
+        !self.custom_render.is_empty()
+    }
+
     /// Sets a node's visual. A visual change that moves what plain text
     /// resolution reads — which path the text takes, or the inset a leading
     /// indicator takes from its box — is a constraint change for its text;

@@ -68,9 +68,19 @@ cp "${SO}" "${STAGED_SO}"
 # Strip unconditionally. This is the only gate on the path from a .so to an
 # installable APK, and it has to hold when someone hands us a hand-built or
 # dev-profile artifact via PACKAGE_SO.
-LLVM_STRIP="${LLVM_STRIP:-${ANDROID_NDK_HOME:-}/toolchains/llvm/prebuilt/$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64/bin/llvm-strip}"
+# Git Bash reports uname as MINGW*, so the NDK's windows-x86_64 prebuilt is
+# the one that actually exists on this host. android-env.sh already put that
+# bin directory on PATH.
+if [[ -z "${LLVM_STRIP:-}" ]]; then
+  _NDK_BIN="${ANDROID_NDK_HOME:-}/toolchains/llvm/prebuilt/windows-x86_64/bin"
+  if [[ -x "${_NDK_BIN}/llvm-strip.exe" ]]; then
+    LLVM_STRIP="${_NDK_BIN}/llvm-strip.exe"
+  else
+    LLVM_STRIP="${ANDROID_NDK_HOME:-}/toolchains/llvm/prebuilt/$(uname -s | tr '[:upper:]' '[:lower:]')-x86_64/bin/llvm-strip"
+  fi
+fi
 if [[ ! -x "${LLVM_STRIP}" ]]; then
-  LLVM_STRIP="$(command -v llvm-strip || true)"
+  LLVM_STRIP="$(command -v llvm-strip || command -v llvm-strip.exe || true)"
 fi
 if [[ -z "${LLVM_STRIP}" || ! -x "${LLVM_STRIP}" ]]; then
   echo "package-android-host-apk: llvm-strip not found" >&2

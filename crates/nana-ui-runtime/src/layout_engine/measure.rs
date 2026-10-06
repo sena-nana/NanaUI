@@ -60,6 +60,46 @@ fn resolved_size_specs(
     (width, height)
 }
 
+/// Whether a childless node's used block size can change when only the
+/// containing block's block size changes. Percent, fill, fit-content, and
+/// calc stay sensitive. Reporting `false` for one of those republishes a
+/// stale size from the first measurement.
+fn block_containing_size_affects_leaf(
+    style: &nana_ui_core::LayoutStyle,
+    writing: nana_ui_core::WritingContext,
+) -> bool {
+    if writing.is_vertical()
+        || style
+            .aspect_ratio
+            .is_some_and(|ratio| ratio.is_finite() && ratio > 0.0)
+    {
+        return true;
+    }
+    !length_ignores_block_containing_size(style.height)
+        || !length_ignores_block_containing_size(style.min_height)
+        || !length_ignores_block_containing_size(style.max_height)
+}
+
+fn length_ignores_block_containing_size(spec: Option<LengthSpec>) -> bool {
+    match spec {
+        None => true,
+        Some(spec) => matches!(
+            spec,
+            LengthSpec::Px(_)
+                | LengthSpec::Em(_)
+                | LengthSpec::Rem(_)
+                | LengthSpec::CalcEmOffset { .. }
+                | LengthSpec::CalcRemOffset { .. }
+                | LengthSpec::Viewport { .. }
+                | LengthSpec::CalcViewportOffset { .. }
+                | LengthSpec::Auto
+                | LengthSpec::Shrink
+                | LengthSpec::MinContent
+                | LengthSpec::MaxContent
+        ),
+    }
+}
+
 /// A definite declaration can still resolve against a containing block. Such
 /// used values are valid only for the current query and must not be published
 /// as intrinsic facts.
@@ -238,6 +278,168 @@ pub(super) fn cross_follows_used_main(
         && (main_extent(measured, direction) - main_extent(used, direction)).abs() > 0.01
 }
 
+/// A childless box whose own specs cannot move its border box off its text.
+///
+/// Grid tracks, padding, border, min/max, and aspect ratio all can. Margin
+/// does not: the border box returned below never includes it. Logical edges
+/// stay on the general path because their physical padding depends on the
+/// writing context.
+fn plain_childless_content(style: &nana_ui_core::LayoutStyle) -> bool {
+    if style.omits_box()
+        || style
+            .display
+            .is_some_and(|display| display.is_grid_container())
+        || style.active_grid_columns().is_some()
+        || style.active_grid_rows().is_some()
+        || style.has_logical_box_edges()
+        || style
+            .aspect_ratio
+            .is_some_and(|ratio| ratio.is_finite() && ratio > 0.0)
+    {
+        return false;
+    }
+    style.width.is_none()
+        && style.height.is_none()
+        && style.min_width.is_none()
+        && style.min_height.is_none()
+        && style.max_width.is_none()
+        && style.max_height.is_none()
+        && style.padding.is_none()
+        && style.padding_top.is_none()
+        && style.padding_right.is_none()
+        && style.padding_bottom.is_none()
+        && style.padding_left.is_none()
+        && style.border_width.is_none()
+        && style.border_top_width.is_none()
+        && style.border_right_width.is_none()
+        && style.border_bottom_width.is_none()
+        && style.border_left_width.is_none()
+}
+
+/// Used border box of a [`plain_childless_content`] node.
+///
+/// The text limit is the available inline size: with no chrome and no
+/// width spec, that is the content box the general path would measure in.
+/// Published min-content still follows the flow direction, matching the
+/// empty-child fold.
+fn measure_plain_childless(
+    id: StableNodeId,
+    cache_key: MeasurementKey,
+    style: &nana_ui_core::LayoutStyle,
+    text_metrics: Option<crate::TextMetrics>,
+    writing: nana_ui_core::WritingContext,
+    available: Size,
+    parent_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+) -> Result<Size, UiWorldError> {
+    cache.record_full_subtree();
+    #[cfg(feature = "benchmark")]
+    let mut clock = super::plan_stats::PhaseClock::start();
+    let text_natural_width = text_metrics.and_then(|_| nodes.world.text_natural_width(id));
+    let text = text_metrics.unwrap_or_default();
+    let limit = available.width.max(0.0);
+    let text_width =
+        text_natural_width.map_or(text.width, |natural| text.width.max(natural.min(limit)));
+    let content_w = 0.0f32.max(text_width);
+    let mut content_h = 0.0f32.max(text.height);
+    if text_metrics.is_none()
+        && let Some(font_px) = style.font_size.filter(|value| *value > 0.0)
+    {
+        content_h = content_h.max(text_line_box_height_px(font_px, style.line_height));
+    }
+    let content = Size::new(content_w, content_h);
+    let direction = used_flow_direction(style, writing, false);
+    let wrapping = match direction {
+        FlexDirection::Row => matches!(style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse),
+        FlexDirection::Column => {
+            matches!(style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
+                && available.height > 0.5
+        }
+    };
+    let min_content_w = if wrapping || direction.is_column() {
+        0.0
+    } else {
+        content.width
+    };
+    cache.insert(cache_key, content);
+    #[cfg(feature = "benchmark")]
+    clock.lap(14);
+    let fonts = fonts_of(style, parent_font_px);
+    let baseline = plain_leaf_baseline(
+        id,
+        style,
+        text_metrics,
+        fonts.element_px,
+        writing.inline_size(available.width, available.height),
+        content,
+        nodes,
+    );
+    #[cfg(feature = "benchmark")]
+    clock.lap(15);
+    cache.remember_intrinsic_bounds(
+        cache_key,
+        min_content_w.min(content.width),
+        content.width,
+        0.0,
+        Some(content.height),
+        content,
+        baseline.first,
+        baseline.last,
+        None,
+    );
+    #[cfg(feature = "benchmark")]
+    clock.lap(16);
+    Ok(content)
+}
+
+/// Baseline of a plain leaf. Chrome is zero: the predicate already rejected
+/// padding and border. A shaped `nana-text` line keeps its own baseline.
+/// A replaced box defers to the shared authority.
+fn plain_leaf_baseline(
+    id: StableNodeId,
+    style: &nana_ui_core::LayoutStyle,
+    text_metrics: Option<crate::TextMetrics>,
+    font_px: f32,
+    inline_base: f32,
+    used: Size,
+    nodes: &LayoutInputMap<'_>,
+) -> BaselineMetrics {
+    let replaced = style.paint.content_image.is_some()
+        || style.paint.skipped_replaced.is_some()
+        || nodes.world.custom_render(id).is_some()
+        || {
+            #[cfg(feature = "image-viewer")]
+            {
+                matches!(
+                    nodes.world.standard_visual_ref(id),
+                    Some(crate::StandardVisual::ImageViewer { .. })
+                )
+            }
+            #[cfg(not(feature = "image-viewer"))]
+            {
+                false
+            }
+        };
+    if replaced {
+        return nodes.baseline_metrics(id, font_px, Some(inline_base), Some(used));
+    }
+    if let Some((_, layout)) = nodes.world.text_layout(id)
+        && !layout.is_vertical()
+        && !layout.lines.is_empty()
+    {
+        let first = layout.lines.first().map(|line| line.metrics.baseline_y_px);
+        let last = layout.lines.last().map(|line| line.metrics.baseline_y_px);
+        return BaselineMetrics { first, last };
+    }
+    let ascent = text_metrics
+        .and_then(|metrics| metrics.ascent)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(font_px * nana_ui_core::TEXT_APPROX_ASCENT_EM);
+    let first = Some(ascent);
+    BaselineMetrics { first, last: first }
+}
+
 /// [`intrinsic_size_scoped`], or with `forced` for the node's own style (a
 /// flex item at its used main size): a forced measurement is not cached or
 /// planned, since neither is keyed by it; its descendants are measured as
@@ -265,15 +467,26 @@ fn measure_node(
     let direction_sensitive = parent_direction.is_none()
         && !node.children.is_empty()
         && !node.style.width.is_some_and(LengthSpec::is_content_sized);
+    // Place remeasures a child against the used content box. That block size
+    // differs from the viewport budget used while measuring, so a leaf whose
+    // block specs ignore the containing block would miss and be measured
+    // twice. Only the key drops the axis; the measure below still uses
+    // `available`.
+    let mut keyed_available = available;
+    if node.children.is_empty()
+        && !block_containing_size_affects_leaf(node.style.as_ref(), node.writing)
+    {
+        keyed_available.height = 0.0;
+    }
     let cache_key = MeasurementKey::new(
         id,
-        available,
+        keyed_available,
         parent_direction,
         viewport,
         parent_font_px,
         node.writing,
         node.containing_writing,
-        measurement_constraint_class(node.style.as_ref(), available),
+        measurement_constraint_class(node.style.as_ref(), keyed_available),
         direction_sensitive,
     );
     let context = parent_direction.map(|direction| {
@@ -300,17 +513,46 @@ fn measure_node(
             context,
         );
     }
-    // The used-size memo is separate from intrinsic metrics and has no work
-    // counter of its own. Query the canonical facts first so a cross-context
-    // reuse is observable even when the concrete used size is already memoed.
+    // The used-size memo answers this query. Intrinsic facts are read only
+    // on a miss: a hit has nothing left to resolve, and the lookup existed
+    // only so a counter could observe a reuse the caller did not use.
+    if unforced && let Some(size) = cache.get(&cache_key) {
+        return Ok(size);
+    }
+    // Copy the node facts out before any further world lookup. `node` borrows
+    // the input map, and the style closure below is that borrow's last use.
+    let style_arc = forced.unwrap_or_else(|| Arc::clone(&node.style));
+    let child_ids = Arc::clone(&node.children);
+    let text_metrics = node.text_metrics;
+    let (writing, containing_writing) = (node.writing, node.containing_writing);
+    // A full pass measures every childless text row through the container
+    // path: empty flow, then the same unset padding, border, and min/max
+    // specs. Those specs do not change the border box, so the text box is
+    // the result. A scoped pass still takes the general path; it records a
+    // measure plan this shortcut does not.
+    if unforced
+        && scope.is_none()
+        && child_ids.is_empty()
+        && plain_childless_content(style_arc.as_ref())
+        && nodes.world.standard_visual_ref(id).is_none()
+    {
+        return measure_plain_childless(
+            id,
+            cache_key,
+            style_arc.as_ref(),
+            text_metrics,
+            writing,
+            available,
+            parent_font_px,
+            nodes,
+            cache,
+        );
+    }
     let cached_intrinsic = if unforced {
         cache.get_intrinsic(cache_key, context)
     } else {
         None
     };
-    if unforced && let Some(size) = cache.get(&cache_key) {
-        return Ok(size);
-    }
     // A subtree outside the affected closure has no change inside it, so its
     // intrinsic size under the same constraints is unchanged.
     if unforced
@@ -326,10 +568,6 @@ fn measure_node(
         cache.insert(cache_key, size);
         return Ok(size);
     }
-    let style_arc = forced.unwrap_or_else(|| node.style.clone());
-    let child_ids = node.children.clone();
-    let text_metrics = node.text_metrics;
-    let (writing, containing_writing) = (node.writing, node.containing_writing);
     let text_natural_width = text_metrics.and_then(|_| nodes.world.text_natural_width(id));
     let style = style_arc.as_ref();
     if style.omits_box() {
@@ -535,6 +773,8 @@ fn measure_node(
         sort_by_order(&mut flow_children, nodes);
     }
     let mut child_sizes = Vec::with_capacity(flow_children.len());
+    #[cfg(feature = "benchmark")]
+    let mut child_phase = (flow_children.len() > 64).then(super::plan_stats::PhaseClock::start);
     for child in &flow_children {
         // Resolving the child style is a map lookup plus an `Arc` clone, so keep
         // it behind the grid check rather than filtering it away afterwards.
@@ -560,6 +800,10 @@ fn measure_node(
             cache,
             scope,
         )?);
+    }
+    #[cfg(feature = "benchmark")]
+    if let Some(clock) = child_phase.as_mut() {
+        clock.lap(4);
     }
     let parent_box = gap_containing_block(style, content_available);
     let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
@@ -705,6 +949,10 @@ fn measure_node(
             FlexDirection::Column => Size::new(cross, main.max(0.0)),
         }
     };
+    #[cfg(feature = "benchmark")]
+    if let Some(clock) = child_phase.as_mut() {
+        clock.lap(5);
+    }
     let text = text_metrics.unwrap_or_default();
     // Text that wrapped is as wide as the lines it wrapped to. The width it
     // asks for is its lines unwrapped, as far as this box gives it room: a

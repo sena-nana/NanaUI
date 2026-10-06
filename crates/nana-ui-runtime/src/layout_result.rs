@@ -322,7 +322,7 @@ impl LayoutResult {
     }
 }
 
-fn inset(box_: LayoutBox, top: f32, right: f32, bottom: f32, left: f32) -> LayoutBox {
+pub(crate) fn inset(box_: LayoutBox, top: f32, right: f32, bottom: f32, left: f32) -> LayoutBox {
     let top = top.max(0.0);
     let right = right.max(0.0);
     let bottom = bottom.max(0.0);

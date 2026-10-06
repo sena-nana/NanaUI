@@ -116,7 +116,11 @@ impl UiWorld {
                 style.border_color = border_color;
             }
         }
-        let mut standard_visual = self.nodes.visual(id).cloned();
+        let mut standard_visual = if self.nodes.has_visuals() {
+            self.nodes.visual(id).cloned()
+        } else {
+            None
+        };
         if let Some((busy, danger, is_confirm)) = self.confirm_action_effect(id) {
             if busy && !is_confirm {
                 Arc::make_mut(&mut style).color =
@@ -238,7 +242,11 @@ impl UiWorld {
             component_geometry,
             standard_visual_foreground,
             chrome_radii: self.style_model.metrics.into(),
-            custom_render: self.nodes.custom_render(id).cloned(),
+            custom_render: self
+                .nodes
+                .has_custom_render()
+                .then(|| self.nodes.custom_render(id).cloned())
+                .flatten(),
             drop_hover: (self.drop_hover.map(|(hover, _)| hover) == Some(id)).then(|| {
                 crate::DropHoverOverlay {
                     fill: self.style_model.palette.accent_soft.as_rgba_array(),

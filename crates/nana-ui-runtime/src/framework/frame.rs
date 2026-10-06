@@ -373,6 +373,8 @@ impl AppContext {
             self.world
                 .record_layout_frontier(self.layout_cache.frontier_stats(document));
             completed(1);
+            #[cfg(feature = "benchmark")]
+            let mut phase = crate::layout_engine::plan_stats::PhaseClock::start();
             let mut mutations = MutationQueue::new();
             let mut scope = Vec::with_capacity(layouts.len());
             for (id, layout) in layouts {
@@ -393,6 +395,8 @@ impl AppContext {
                     mutations.write_layout(id, layout);
                 }
             }
+            #[cfg(feature = "benchmark")]
+            phase.lap(10);
             let mut settings_rows = Vec::new();
             let mut terminal_sizes = Vec::new();
             for id in &scope {
@@ -408,13 +412,19 @@ impl AppContext {
                     settings_rows.push(*id);
                 }
             }
+            #[cfg(feature = "benchmark")]
+            phase.lap(11);
             let report = self.commit_mutations(mutations)?;
+            #[cfg(feature = "benchmark")]
+            phase.lap(12);
             // Publish one coherent canonical Result snapshot only after every
             // sibling box in the scope has been committed. Interim LayoutBox
             // writes published during commit are replaced with the
             // RuntimeLayout provenance here.
             self.world
                 .publish_layout_results(&scope, crate::LayoutResultSource::RuntimeLayout);
+            #[cfg(feature = "benchmark")]
+            phase.lap(13);
             self.last_layout_scope = scope;
             for id in settings_rows {
                 self.refresh_settings_row_layout(id)?;

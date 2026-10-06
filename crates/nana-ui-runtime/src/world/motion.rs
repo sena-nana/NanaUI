@@ -231,6 +231,9 @@ impl UiWorld {
         id: StableNodeId,
         source: &Arc<LayoutStyle>,
     ) -> Arc<LayoutStyle> {
+        if self.layout_length_tracks.is_empty() {
+            return Arc::clone(source);
+        }
         let Some(overlay) = self.layout_class_overlay(id) else {
             return Arc::clone(source);
         };
@@ -319,6 +322,9 @@ impl UiWorld {
     /// not name it samples as NaN): it is dropped from the computed axes, so
     /// the face's default applies.
     pub(super) fn font_axis_overlay(&self, id: StableNodeId) -> Vec<([u8; 4], Option<f32>)> {
+        if self.presentation.is_empty() {
+            return Vec::new();
+        }
         let Some(target) = MotionTargetId::new(id.get()) else {
             return Vec::new();
         };

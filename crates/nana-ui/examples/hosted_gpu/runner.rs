@@ -164,8 +164,27 @@ pub fn run(started_at: Instant) -> Result<(), HostedRunError> {
         .initial_size(1100.0, 720.0)
         .minimum_size(760.0, 520.0)
         .system_caption(true);
+    if let Some(position) = window_position_from_args() {
+        settings.initial_position = Some(position);
+    }
     settings.transparent = true;
     run_runtime::<DemoProgram>(settings)
+}
+
+/// `--window-position x,y` places the demo in `WindowDescriptor` logical
+/// coordinates. Without the flag the host chooses the position.
+fn window_position_from_args() -> Option<(f64, f64)> {
+    let args = std::env::args().collect::<Vec<_>>();
+    let index = args.iter().position(|arg| arg == "--window-position")?;
+    let value = args.get(index + 1).expect("--window-position needs x,y");
+    let (x, y) = value.split_once(',').expect("--window-position needs x,y");
+    let x = x.parse::<f64>().expect("invalid window x");
+    let y = y.parse::<f64>().expect("invalid window y");
+    assert!(
+        x.is_finite() && y.is_finite(),
+        "window position must be finite"
+    );
+    Some((x, y))
 }
 
 struct DemoProgram {

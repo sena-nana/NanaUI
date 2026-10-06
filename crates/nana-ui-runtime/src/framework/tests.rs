@@ -13,11 +13,12 @@ use std::{
 
 use crate::{
     Activate, AnimationId, AnimationSpec, Button, Card, Checkbox, Easing, IconButton, List,
-    ListItem, NodeStyle, RangeAdjustment, RangeChanged, RangeField, RangeInput, ScrollAxes,
-    ScrollChanged, ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested,
-    Select, SelectOption, Stack, StandardVisual, Switch, TabOption, Table, TableCell,
-    TableCellFocused, TableNavigation, TableRow, Tabs, Text, TextArea, TextCaretIntent,
-    TextChanged, TextCodeFold, TextContent, TextInlay, TextInput, TextSelection, ToggleChanged,
+    ListItem, NodeStyle, RangeAdjustment, RangeChanged, RangeField, RangeInput, RangeMarker,
+    ScrollAxes, ScrollChanged, ScrollView, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, Select, SelectOption, Stack, StandardVisual, Switch, TabOption,
+    Table, TableCell, TableCellFocused, TableNavigation, TableRow, Tabs, Text, TextArea,
+    TextCaretIntent, TextChanged, TextCodeFold, TextContent, TextInlay, TextInput, TextSelection,
+    ToggleChanged,
 };
 
 fn seeds(ids: &[StableNodeId]) -> Vec<crate::LayoutFrontierSeed> {
@@ -1607,6 +1608,7 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
             unit: None,
             size: nana_ui_core::ControlSize::Medium,
             ratio: 1.0,
+            markers: Arc::from([]),
             invalid: false,
         })
     );
@@ -6391,6 +6393,45 @@ fn a_range_drag_previews_with_input_and_commits_once_on_release() {
 }
 
 #[test]
+fn a_press_near_a_range_marker_lands_on_that_marker() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let (range, x, width) = laid_out_range(&mut context, document);
+    context
+        .update_component(range, |range, _| {
+            range.markers = Arc::from([RangeMarker::new(40.0, "章节")]);
+        })
+        .unwrap();
+    // 5px left of the marker is 2.5 units away, which quantizes to 38.
+    let marker_x = x + width * 0.4;
+    context
+        .begin_range_drag(document, 7, range.stable_id(), marker_x - 5.0)
+        .unwrap();
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 40.0);
+    context.end_range_drag(document, 7, true).unwrap();
+
+    context
+        .begin_range_drag(document, 8, range.stable_id(), marker_x - 10.0)
+        .unwrap();
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 35.0);
+    context.end_range_drag(document, 8, true).unwrap();
+
+    context
+        .update_component(range, |range, _| {
+            range.markers = Arc::from([RangeMarker::new(150.0, "")]);
+        })
+        .unwrap();
+    context
+        .begin_range_drag(document, 9, range.stable_id(), x + width * 0.4)
+        .unwrap();
+    assert_eq!(
+        context.read(range, |range| range.value).unwrap(),
+        40.0,
+        "a marker outside the range does not steal the press"
+    );
+}
+
+#[test]
 fn a_cancelled_or_disabled_range_drag_restores_without_committing() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
@@ -6578,6 +6619,7 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
                 unit: Some(Arc::from("%")),
                 size,
                 ratio: 0.7,
+                markers: Arc::from([]),
                 invalid: false,
             })
         );
@@ -6748,6 +6790,7 @@ fn range_field_can_hide_the_value_readout_and_still_expose_the_numeric_value() {
             unit: None,
             size: nana_ui_core::ControlSize::Medium,
             ratio: 0.4,
+            markers: Arc::from([]),
             invalid: false,
         })
     );

@@ -900,6 +900,7 @@ fn profile_initial_systems(document: DocumentId) {
             world.commit(tree_mutations(nodes, document)).unwrap();
             let work = world.take_system_work();
             let mut started = Instant::now();
+            let total_started = started;
             run_systems_observed(&mut world, document, &work, |stage| {
                 let elapsed = started.elapsed();
                 if iteration >= 10 {
@@ -907,6 +908,12 @@ fn profile_initial_systems(document: DocumentId) {
                 }
                 started = Instant::now();
             });
+            if iteration >= 10 {
+                samples
+                    .entry("total")
+                    .or_default()
+                    .push(total_started.elapsed());
+            }
         }
         report.insert(
             nodes,

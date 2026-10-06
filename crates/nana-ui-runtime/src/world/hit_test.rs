@@ -177,10 +177,22 @@ fn hit_bounds(entry: &HitEntry) -> Bounds {
     if entry.persp != [0.0, 0.0] {
         return Bounds::Unknown;
     }
+    let [a, bm, c, d, e, f] = entry.transform;
+    if entry.menu.is_none() && a == 1.0 && bm == 0.0 && c == 0.0 && d == 1.0 && e == 0.0 && f == 0.0
+    {
+        let bounds = entry.layout;
+        if bounds.x.is_finite()
+            && bounds.y.is_finite()
+            && bounds.width.is_finite()
+            && bounds.height.is_finite()
+        {
+            return Bounds::Known(bounds);
+        }
+        return Bounds::Unknown;
+    }
     let b = entry
         .menu
         .map_or(entry.layout, |menu| union_bounds(entry.layout, menu));
-    let [a, bm, c, d, e, f] = entry.transform;
     let points = [
         (b.x, b.y),
         (b.x + b.width, b.y),
@@ -1450,6 +1462,17 @@ impl UiWorld {
 impl UiWorld {
     /// Overlay children receive `position: fixed` only from [`Self::effective_layout_style`].
     pub(super) fn hit_motion_layout(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
+        if self.layout_length_tracks.is_empty()
+            && self.overlay_host_nodes.is_empty()
+            && self.z_index_nodes == 0
+            && self.detached_mounted.is_empty()
+            && !self.nodes.has_visuals()
+        {
+            let style = &self.record(id).resolved_layout;
+            if self.is_mounted(id) && !style.omits_box() && !style.has_logical_box_edges() {
+                return Arc::clone(style);
+            }
+        }
         self.motion_layout(id, &self.effective_layout_style(id))
     }
 
@@ -1503,6 +1526,7 @@ impl UiWorld {
             .collect::<Vec<_>>();
         let mut built: Vec<BuiltHit> = Vec::new();
         let mut memo = AncestorMemo::default();
+        let visuals = self.nodes.has_visuals();
         while let Some((id, parent_hit, parent, position, parent_used_pe, parent_blocks_3d)) =
             stack.pop()
         {
@@ -1550,14 +1574,15 @@ impl UiWorld {
             if let Some((x, y, w, h)) =
                 node_style.overflow_clip_box(layout.x, layout.y, layout.width, layout.height)
             {
-                let overlay_menu = matches!(
-                    self.nodes.visual(id),
-                    Some(StandardVisual::MenuSurface {
-                        open: true,
-                        overlay: Some(_),
-                        ..
-                    })
-                );
+                let overlay_menu = visuals
+                    && matches!(
+                        self.nodes.visual(id),
+                        Some(StandardVisual::MenuSurface {
+                            open: true,
+                            overlay: Some(_),
+                            ..
+                        })
+                    );
                 if !overlay_menu {
                     child_clips.push((
                         LayoutBox {
@@ -1570,7 +1595,7 @@ impl UiWorld {
                     ));
                 }
             }
-            if self.clip_visuals != 0 {
+            if visuals && self.clip_visuals != 0 {
                 if matches!(
                     self.nodes.visual(id),
                     Some(StandardVisual::EmptyState { .. })
@@ -1604,7 +1629,7 @@ impl UiWorld {
                 && used_pe.hittable()
                 && style.pointer_events.hittable()
                 && !confirm_busy;
-            let menu = hittable
+            let menu = (visuals && hittable)
                 .then(|| {
                     self.component_geometry(id)
                         .and_then(|geometry| match geometry {

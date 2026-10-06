@@ -176,30 +176,27 @@ impl AppContext {
         // Items created by this pass, reported to `on_mount` after the commit.
         let mut mounted_now: Vec<(StableNodeId, usize, K)> = Vec::new();
         let mut staged_containers = Vec::new();
+        // Existing rows whose placement moved. Their views share the authored
+        // layout arc after commit so a later reproject does not restore the
+        // previous top.
+        let mut patched_containers = Vec::new();
         for (index, key) in indices.zip(&plan.order) {
             let top = layout.extent(0..index);
             let height = layout.extent(index..index + 1);
             // A measured row sizes to its content; its extent is read back
             // after layout instead of imposed on it.
-            let container = Stack::column(0.0).style(crate::NodeStyle {
-                layout: Arc::new(nana_ui_core::LayoutStyle {
-                    position: PositionSpec::Absolute,
-                    offset_top: Some(LengthSpec::Px(top)),
-                    offset_left: Some(LengthSpec::Px(0.0)),
-                    width: Some(LengthSpec::Percent(100.0)),
-                    height: (!items.measured).then_some(LengthSpec::Px(height)),
-                    flex_shrink: Some(0.0),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            });
+            let imposed_height = (!items.measured).then_some(height);
             if let Some(entity) = next_containers.get(key).copied() {
-                if self.read(entity, |old| old != &container)? {
-                    container.project(entity.id, &self.world, &mut mutations);
-                    staged_containers.push((entity.id, container));
+                let unchanged = self.world.node_style(entity.id).is_some_and(|style| {
+                    placement_matches(style.layout.as_ref(), top, imposed_height)
+                });
+                if !unchanged {
+                    mutations.patch_placement(entity.id, top, imposed_height);
+                    patched_containers.push(entity.id);
                     items.pending_measure |= items.measured;
                 }
             } else {
+                let container = placement_container(top, imposed_height);
                 items.pending_measure |= items.measured;
                 let component = build(index, key);
                 let container_id = self.allocate_id();
@@ -250,6 +247,22 @@ impl AppContext {
         }
         for (id, container) in staged_containers {
             self.install_view(id, container);
+        }
+        for id in patched_containers {
+            let Some(layout) = self
+                .world
+                .node_style(id)
+                .map(|style| Arc::clone(&style.layout))
+            else {
+                continue;
+            };
+            if let Some(stack) = self
+                .views
+                .get_mut(&id)
+                .and_then(|view| view.downcast_mut::<Stack>())
+            {
+                stack.style_mut().layout = layout;
+            }
         }
         items.entities = next_entities;
         items.containers = next_containers;
@@ -970,6 +983,34 @@ impl AppContext {
         }
         Ok(())
     }
+}
+
+fn placement_container(top: f32, height: Option<f32>) -> Stack {
+    Stack::column(0.0).style(crate::NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            position: PositionSpec::Absolute,
+            offset_top: Some(LengthSpec::Px(top)),
+            offset_left: Some(LengthSpec::Px(0.0)),
+            width: Some(LengthSpec::Percent(100.0)),
+            height: height.map(LengthSpec::Px),
+            flex_shrink: Some(0.0),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+fn placement_matches(layout: &nana_ui_core::LayoutStyle, top: f32, height: Option<f32>) -> bool {
+    let top_matches = matches!(
+        layout.offset_top,
+        Some(LengthSpec::Px(current)) if current.to_bits() == top.to_bits()
+    );
+    let height_matches = match (layout.height, height) {
+        (None, None) => true,
+        (Some(LengthSpec::Px(current)), Some(next)) => current.to_bits() == next.to_bits(),
+        _ => false,
+    };
+    top_matches && height_matches
 }
 
 fn clamp_virtual_table_viewport(
