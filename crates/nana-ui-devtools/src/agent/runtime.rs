@@ -1,6 +1,5 @@
 //! L3 Runtime agent session. Vue-free: no JS engine, no Vue renderer.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -20,7 +19,7 @@ use super::protocol::{
     HitDump, KeyStroke, PixelStats, PointerGesture, SceneProbeDump, SessionInfo, ThemeName,
 };
 use super::session::AgentSession;
-use super::{AccessibilityDumpNode, AgentError, dump_accessibility_node_with, scene_probe};
+use super::{AccessibilityDumpNode, AgentError, scene_probe};
 use crate::offscreen::{self, OffscreenSnapshots, Size};
 
 /// L3 Runtime document driven without a winit window.
@@ -168,18 +167,7 @@ impl RuntimeAgentSession {
     }
 
     pub fn accessibility_dump(&self) -> Vec<AccessibilityDumpNode> {
-        let context = self.document.context();
-        let nodes = context
-            .world()
-            .project_accessibility(self.document.document());
-        let paths: BTreeMap<u64, String> = nodes
-            .iter()
-            .filter_map(|node| Some((node.id.get(), context.assembly_path(node.id)?)))
-            .collect();
-        nodes
-            .into_iter()
-            .map(|node| dump_accessibility_node_with(node, &BTreeMap::new(), &paths))
-            .collect()
+        super::accessibility_dump(&self.document)
     }
 
     pub fn click_xy(&mut self, x: f32, y: f32) -> Result<bool, AgentError> {

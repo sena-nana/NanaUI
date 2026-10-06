@@ -158,6 +158,26 @@ fn dump_accessibility_node(
     dump_accessibility_node_with(node, agent_ids, &BTreeMap::new())
 }
 
+/// Project one document into the Agent accessibility wire shape.
+///
+/// The main session dump and a product that owns another `RuntimeDocument`
+/// (a popped-out card, for example) share this so the role names and omitted
+/// defaults stay one implementation.
+pub fn accessibility_dump(
+    document: &nana_ui::runtime::RuntimeDocument,
+) -> Vec<AccessibilityDumpNode> {
+    let context = document.context();
+    let nodes = context.world().project_accessibility(document.document());
+    let paths: BTreeMap<u64, String> = nodes
+        .iter()
+        .filter_map(|node| Some((node.id.get(), context.assembly_path(node.id)?)))
+        .collect();
+    nodes
+        .into_iter()
+        .map(|node| dump_accessibility_node_with(node, &BTreeMap::new(), &paths))
+        .collect()
+}
+
 fn dump_accessibility_node_with(
     node: AccessibilityNode,
     agent_ids: &BTreeMap<u64, String>,
