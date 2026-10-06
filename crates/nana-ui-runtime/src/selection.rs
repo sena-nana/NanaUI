@@ -597,7 +597,10 @@ impl ComponentView for SegmentedOption {
                 },
                 label: Some(Arc::clone(&self.label)),
                 disabled: self.disabled,
-                selected: matches!(self.chrome, SelectionChrome::Tabs).then_some(self.selected),
+                // Segmented and radio chrome both announce as radio. A radio
+                // needs `selected` as well as `checked`; a tab needs `selected`
+                // and does not carry a checked state.
+                selected: Some(self.selected),
                 checked: (!matches!(self.chrome, SelectionChrome::Tabs)).then_some(self.selected),
                 ..AccessibilityState::default()
             },
@@ -820,6 +823,20 @@ mod tests {
         assert_eq!(
             context
                 .world()
+                .accessibility(manual.stable_id())
+                .and_then(|state| state.selected),
+            Some(false)
+        );
+        assert_eq!(
+            context
+                .world()
+                .accessibility(automatic.stable_id())
+                .and_then(|state| state.selected),
+            Some(true)
+        );
+        assert_eq!(
+            context
+                .world()
                 .accessibility(group.stable_id())
                 .and_then(|state| state.orientation),
             Some(SelectionOrientation::Vertical)
@@ -860,5 +877,47 @@ mod tests {
             nana_ui_core::RADIO_ROW_INSET,
             "ring hugs the row inset"
         );
+    }
+
+    #[test]
+    fn every_selection_chrome_publishes_selected() {
+        for chrome in [
+            SelectionChrome::Segmented,
+            SelectionChrome::Radio,
+            SelectionChrome::Tabs,
+        ] {
+            let mut context = crate::AppContext::new();
+            let document = crate::DocumentId::new(1).unwrap();
+            let on = context
+                .create_component(
+                    document,
+                    SegmentedOption::new("On")
+                        .surface(ControlSize::Small, chrome, false)
+                        .with_selected(true),
+                )
+                .unwrap();
+            let off = context
+                .create_component(
+                    document,
+                    SegmentedOption::new("Off")
+                        .surface(ControlSize::Small, chrome, false)
+                        .with_selected(false),
+                )
+                .unwrap();
+            for (option, selected) in [(on, true), (off, false)] {
+                let state = context
+                    .world()
+                    .accessibility(option.stable_id())
+                    .expect("selection option semantics");
+                assert_eq!(state.selected, Some(selected), "{chrome:?}");
+                if chrome == SelectionChrome::Tabs {
+                    assert_eq!(state.role, AccessibilityRole::Tab);
+                    assert_eq!(state.checked, None);
+                } else {
+                    assert_eq!(state.role, AccessibilityRole::Radio);
+                    assert_eq!(state.checked, Some(selected));
+                }
+            }
+        }
     }
 }

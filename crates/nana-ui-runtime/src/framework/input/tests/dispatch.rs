@@ -6256,3 +6256,84 @@ fn arrow_keys_step_through_an_image_viewer_gallery() {
         [ImageViewerEvent::Next, ImageViewerEvent::Previous]
     );
 }
+
+#[test]
+fn arrow_keys_move_an_open_context_menu_and_enter_activates_it() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let trigger = context
+        .create_component(document, Button::new("窗口"))
+        .unwrap();
+    context.focus_node(document, trigger.stable_id()).unwrap();
+    let host = context
+        .create_component(document, OverlayHost::new())
+        .unwrap();
+    let menu = context
+        .create_component(
+            document,
+            crate::ContextMenu::new(8.0, 12.0)
+                .items([
+                    crate::ContextMenuItem::new("pin", "取消窗口置顶").disabled(true),
+                    crate::ContextMenuItem::new("full", "全屏"),
+                    crate::ContextMenuItem::new("close", "关闭"),
+                ])
+                .open(true),
+        )
+        .unwrap();
+    context.append_child(host, menu).unwrap();
+    context.activate_overlay(host, menu).unwrap();
+    assert_eq!(
+        context.active_runtime_overlay(document).unwrap().kind,
+        crate::RuntimeOverlayKind::Menu
+    );
+
+    let mut input = TestInput::default();
+    let press = |context: &mut AppContext, input: &mut TestInput, key: &str| {
+        input
+            .dispatch(context, document, &plain_key(key))
+            .unwrap()
+            .handled
+    };
+    assert!(press(&mut context, &mut input, "ArrowDown"));
+    assert_eq!(
+        context.read(menu, |menu| menu.highlighted).unwrap(),
+        Some(1)
+    );
+    assert_eq!(context.world().focused(document), Some(trigger.stable_id()));
+    let focused_label = context
+        .world()
+        .project_accessibility(document)
+        .into_iter()
+        .find(|node| node.role == crate::AccessibilityRole::MenuItem && node.focused)
+        .and_then(|node| node.label.map(|label| label.to_string()));
+    assert_eq!(focused_label.as_deref(), Some("全屏"));
+
+    assert!(press(&mut context, &mut input, "ArrowDown"));
+    assert_eq!(
+        context.read(menu, |menu| menu.highlighted).unwrap(),
+        Some(2)
+    );
+    assert!(press(&mut context, &mut input, "ArrowDown"));
+    assert_eq!(
+        context.read(menu, |menu| menu.highlighted).unwrap(),
+        Some(1)
+    );
+    assert!(press(&mut context, &mut input, "ArrowUp"));
+    assert_eq!(
+        context.read(menu, |menu| menu.highlighted).unwrap(),
+        Some(2)
+    );
+    assert!(press(&mut context, &mut input, "Home"));
+    assert_eq!(
+        context.read(menu, |menu| menu.highlighted).unwrap(),
+        Some(1)
+    );
+    assert!(press(&mut context, &mut input, "End"));
+    assert_eq!(
+        context.read(menu, |menu| menu.highlighted).unwrap(),
+        Some(2)
+    );
+    assert!(press(&mut context, &mut input, "Enter"));
+    assert!(!context.read(menu, |menu| menu.open).unwrap());
+    assert!(context.active_runtime_overlay(document).is_none());
+}

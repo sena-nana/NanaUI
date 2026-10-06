@@ -744,6 +744,12 @@ impl AppContext {
             {
                 return Ok(CONSUMED);
             }
+            // Context-menu rows are virtual. Claim arrows and confirmation
+            // before a text field or the focused control underneath sees them,
+            // including while this menu is a blocking overlay.
+            if self.navigate_open_context_menu(document, key, repeat)? {
+                return Ok(CONSUMED);
+            }
         }
         // The application's key policy sees keys, not text.
         if !stroke.is_text()

@@ -854,4 +854,106 @@ impl AppContext {
             true
         })
     }
+
+    /// Keys for an open context menu. Its rows are virtual, so they are not
+    /// focus stops and arrow keys would otherwise move the control underneath.
+    /// The key is consumed even when the highlight does not change.
+    pub(crate) fn navigate_open_context_menu(
+        &mut self,
+        document: DocumentId,
+        key: &str,
+        repeat: bool,
+    ) -> Result<bool, FrameworkError> {
+        let Some(overlay) = self.active_runtime_overlay(document) else {
+            return Ok(false);
+        };
+        if overlay.kind != RuntimeOverlayKind::Menu {
+            return Ok(false);
+        }
+        let Some(entity) = self.view_entity::<ContextMenu>(overlay.root) else {
+            return Ok(false);
+        };
+        let (open, enabled, highlighted, searchable) = self.read(entity, |menu| {
+            (
+                menu.open,
+                menu.visible_items()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| !item.disabled)
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>(),
+                menu.highlighted,
+                menu.searchable,
+            )
+        })?;
+        if !open {
+            return Ok(false);
+        }
+        if let Some(movement) = ContextMenuMove::from_key(key) {
+            if let Some(index) = context_menu_enabled_index(&enabled, highlighted, movement) {
+                let _ = self.focus_context_menu_index(entity, index)?;
+            }
+            return Ok(true);
+        }
+        let space = matches!(key, " " | "Space");
+        if key == "Enter" || space {
+            // A searchable menu that already holds focus types spaces into its
+            // query. Every other Space or Enter chooses a row.
+            if space && searchable && self.world.focused(document) == Some(overlay.root) {
+                return Ok(false);
+            }
+            if !repeat {
+                let index = highlighted
+                    .filter(|index| enabled.contains(index))
+                    .or_else(|| enabled.first().copied());
+                if let Some(index) = index {
+                    let _ = self.activate_context_menu_index(entity, index)?;
+                }
+            }
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+enum ContextMenuMove {
+    Next,
+    Previous,
+    First,
+    Last,
+}
+
+impl ContextMenuMove {
+    fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "ArrowDown" => Some(Self::Next),
+            "ArrowUp" => Some(Self::Previous),
+            "Home" => Some(Self::First),
+            "End" => Some(Self::Last),
+            _ => None,
+        }
+    }
+}
+
+/// `None` and a highlight on a disabled row start at the first enabled row
+/// for Down and the last for Up. Movement wraps inside the enabled rows.
+fn context_menu_enabled_index(
+    enabled: &[usize],
+    highlighted: Option<usize>,
+    movement: ContextMenuMove,
+) -> Option<usize> {
+    let len = enabled.len();
+    if len == 0 {
+        return None;
+    }
+    let position = highlighted.and_then(|index| enabled.iter().position(|item| *item == index));
+    let next = match movement {
+        ContextMenuMove::First => 0,
+        ContextMenuMove::Last => len - 1,
+        ContextMenuMove::Next => position.map(|index| (index + 1) % len).unwrap_or(0),
+        ContextMenuMove::Previous => position
+            .map(|index| (index + len - 1) % len)
+            .unwrap_or(len - 1),
+    };
+    Some(enabled[next])
 }
