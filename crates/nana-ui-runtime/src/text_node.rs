@@ -256,6 +256,15 @@ impl TextNodeState {
         }
     }
 
+    /// True when only the constraint revision moved since the stamp.
+    pub(crate) fn constraint_moved_without_reshaping(&self) -> bool {
+        self.stamp.is_some_and(|stamp| {
+            stamp.content == self.revisions.content
+                && stamp.shape == self.revisions.shape
+                && stamp.constraint != self.revisions.constraint
+        })
+    }
+
     /// True when the node was resolved by `backend` at its current content,
     /// shape and constraint revisions. O(1), reads no text.
     pub fn is_current(&self, backend: TextBackendEpoch) -> bool {

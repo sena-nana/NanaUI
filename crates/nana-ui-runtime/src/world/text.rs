@@ -4192,6 +4192,9 @@ impl UiWorld {
             }
             None => {
                 let runs = shaper.runs;
+                let constraint_only = self.nodes.text_node(id).is_some_and(
+                    crate::text_node::TextNodeState::constraint_moved_without_reshaping,
+                );
                 let mut metrics = shaper.shape(id, &self.record(id).text, &style, constraints);
                 if cut_to_its_box(&constraints)
                     && constraints
@@ -4214,6 +4217,10 @@ impl UiWorld {
                             .width
                     })
                     .filter(|natural| *natural > metrics.width);
+                if constraint_only {
+                    // `shape` still runs; a width constraint is not a new shaped run.
+                    shaper.runs = runs;
+                }
                 node_work.record_text_pass(1, usize::from(shaper.runs > runs));
                 // No layout: one from an engine this host no longer offers is
                 // not what the host measures now.

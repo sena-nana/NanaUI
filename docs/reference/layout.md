@@ -35,7 +35,11 @@ Runtime 的增量布局把一次布局失效表示为 `LayoutInvalidation`：它
 的多个 seed 合并成 measure、placement、writing-context 和 scroll/overflow 各自的
 frontier，并记录 `layout_frontier_*` 与 `layout_dependency_edges_visited` 等工作
 计数。结果只改变位置时，父级只进入 placement frontier；`LayoutMetricDelta::NONE`
-则停止向上传播。
+则停止向上传播。父约束只把消费该轴的子节点送进 measure；只改位置的后代留在 placement。
+固定边框且导出尺寸不变的盒子挡住子内容：祖先不再进入 measure，外侧兄弟不再进入
+placement。顺序容器只对进入 measure frontier 的子项重新测量，后缀 placement 沿用
+已测尺寸。一次重算若 `LayoutResult` 与已发布结果逐位相同，则不推进 layout
+generation，已发布的结果对象保持不变。
 
 有依赖索引的格式化上下文可以使用 `LayoutDependencyGraph` 表达父约束、包含块、
 写作方向和 flex/grid/inline 的局部耦合。Runtime mutation authority 和产品帧统一发布

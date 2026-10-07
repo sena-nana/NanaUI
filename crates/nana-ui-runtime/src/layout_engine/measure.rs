@@ -80,7 +80,7 @@ fn block_containing_size_affects_leaf(
         || !length_ignores_block_containing_size(style.max_height)
 }
 
-fn length_ignores_block_containing_size(spec: Option<LengthSpec>) -> bool {
+pub(crate) fn length_ignores_block_containing_size(spec: Option<LengthSpec>) -> bool {
     match spec {
         None => true,
         Some(spec) => matches!(
@@ -103,7 +103,7 @@ fn length_ignores_block_containing_size(spec: Option<LengthSpec>) -> bool {
 /// A definite declaration can still resolve against a containing block. Such
 /// used values are valid only for the current query and must not be published
 /// as intrinsic facts.
-fn depends_on_used_basis(spec: Option<LengthSpec>) -> bool {
+pub(crate) fn depends_on_used_basis(spec: Option<LengthSpec>) -> bool {
     spec.is_some_and(|spec| {
         !matches!(
             spec,
@@ -114,6 +114,11 @@ fn depends_on_used_basis(spec: Option<LengthSpec>) -> bool {
                 | LengthSpec::CalcRemOffset { .. }
         )
     })
+}
+
+/// Percent, fill, fit-content, and calc that read a containing block.
+pub(crate) fn spec_tracks_containing_block(spec: Option<LengthSpec>) -> bool {
+    depends_on_used_basis(spec) && !length_ignores_block_containing_size(spec)
 }
 
 /// Compose the used size once the content-derived defaults are known.
@@ -729,12 +734,20 @@ fn measure_node(
         // the child (overlay hosting, an open menu surface), which would move
         // the measurement with every per-child input still comparing equal.
         && nodes.world.children_layout_style_is_local(id)
-        && measure_plan_children_unchanged(plan, viewport, child_font_px, nodes, cache, scope)?
     {
-        #[cfg(any(test, feature = "benchmark"))]
-        super::plan_stats::note_measure_plan_reused();
-        cache.insert(cache_key, plan.size);
-        return Ok(plan.size);
+        let reused =
+            if measure_plan_children_unchanged(plan, viewport, child_font_px, nodes, cache, scope)?
+            {
+                Some(plan.size)
+            } else {
+                sequential_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
+            };
+        if let Some(size) = reused {
+            #[cfg(any(test, feature = "benchmark"))]
+            super::plan_stats::note_measure_plan_reused();
+            cache.insert(cache_key, size);
+            return Ok(size);
+        }
     }
 
     // We reached the actual child traversal. Fixed-size nodes, retained used
@@ -1077,11 +1090,33 @@ fn measure_node(
         // that because `auto_track_contributions` measures children against
         // constraints OTHER than `content_available`, and the plan re-checks a
         // child only against the one it recorded.
+        let plain_main = match direction {
+            FlexDirection::Column => {
+                style.height.is_none() && style.min_height.is_none() && style.max_height.is_none()
+            }
+            FlexDirection::Row => {
+                style.width.is_none() && style.min_width.is_none() && style.max_width.is_none()
+            }
+        };
         let cacheable = !descendant_dependent_flow
             && !grid_measure
             && !ifc
             && grid_tracks.is_none_or(|tracks| tracks.is_empty())
             && nodes.world.children_layout_style_is_local(id);
+        let sequential = cacheable
+            && plain_main
+            && !wrapping
+            && hypothetical.is_empty()
+            && style.justify_content == JustifySpec::Start
+            && style.aspect_ratio.is_none()
+            && text_metrics.is_none()
+            && nodes.world.standard_visual_ref(id).is_none()
+            && flow_children.iter().all(|child| {
+                nodes.style(*child).is_some_and(|child_style| {
+                    child_style.flex_grow.unwrap_or(0.0) <= 0.0
+                        && child_style.flex_shrink.unwrap_or(0.0) <= 0.0
+                })
+            });
         let recorded = cacheable.then(|| {
             // `flow_children` is a subsequence of `child_ids` -- that is what
             // `descendant_dependent_flow` being false means -- so one cursor
@@ -1122,6 +1157,7 @@ fn measure_node(
                 child_direction: direction,
                 entries,
                 size,
+                sequential,
             }
         });
         let slots = nodes.measure_plans.entry(id).or_default();
@@ -1185,17 +1221,11 @@ fn measure_plan_children_unchanged(
         let Some(entry) = plan.entry(affected) else {
             continue;
         };
-        // Pointer first, value second -- the value compare only ever runs for
-        // children in the change closure, so it stays off the per-sibling path.
-        let matches = match (&nodes.style(entry.child), &entry.style) {
-            (None, None) => true,
-            (Some(current), Some(cached)) => {
-                Arc::ptr_eq(current, cached) || layout_inputs_equal(current, cached)
-            }
-            _ => false,
-        };
-        if !matches {
+        if !retained_style_matches(&nodes.style(entry.child), &entry.style) {
             return Ok(false);
+        }
+        if !scope.measure.contains(&affected) {
+            continue;
         }
         // A child the flow collection dropped contributes nothing, and its
         // style just compared equal, so it is still dropped.
@@ -1234,4 +1264,117 @@ fn measure_plan_children_unchanged(
         }
     }
     Ok(true)
+}
+
+fn retained_style_matches(
+    current: &Option<Arc<nana_ui_core::LayoutStyle>>,
+    cached: &Option<Arc<nana_ui_core::LayoutStyle>>,
+) -> bool {
+    match (current, cached) {
+        (None, None) => true,
+        (Some(current), Some(cached)) => {
+            Arc::ptr_eq(current, cached) || layout_inputs_equal(current, cached)
+        }
+        _ => false,
+    }
+}
+
+fn main_and_cross_margin(
+    style: &nana_ui_core::LayoutStyle,
+    edge_base: f32,
+    font_px: f32,
+    direction: FlexDirection,
+) -> (f32, f32) {
+    let margin = style.resolved_margin_against_fonts(Some(edge_base), fonts_of(style, font_px));
+    (
+        main_start_margin(margin, direction) + main_end_margin(margin, direction),
+        cross_margin(margin, direction),
+    )
+}
+
+/// Apply one measured child's main-size delta to a sequential container.
+///
+/// Returns `None` when the cached sum is not a safe description of the used
+/// size. Placement-only siblings keep their cached intrinsic.
+fn sequential_measure_delta(
+    id: StableNodeId,
+    plan: &MeasurePlan,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: &ScopeContext<'_>,
+) -> Result<Option<Size>, UiWorldError> {
+    if !plan.sequential {
+        return Ok(None);
+    }
+    let direction = plan.child_direction;
+    let edge_base = plan
+        .writing
+        .logical_size(plan.child_available.width, plan.child_available.height)
+        .0;
+    let mut main_delta = 0.0f32;
+    let mut patches: Vec<(StableNodeId, Size, Option<Arc<nana_ui_core::LayoutStyle>>)> = Vec::new();
+    for affected in scope.affected.iter().copied() {
+        let Some(entry) = plan.entry(affected) else {
+            continue;
+        };
+        let Some(old) = entry.intrinsic else {
+            continue;
+        };
+        let current_style = nodes.style(entry.child);
+        if !scope.measure.contains(&affected) {
+            if !retained_style_matches(&current_style, &entry.style) {
+                return Ok(None);
+            }
+            continue;
+        }
+        let measured = intrinsic_size_scoped(
+            entry.child,
+            plan.child_available,
+            Some(direction),
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            Some(scope),
+        )?;
+        let (old_margin, old_cross) = entry.style.as_ref().map_or((0.0, 0.0), |style| {
+            main_and_cross_margin(style, edge_base, child_font_px, direction)
+        });
+        let (new_margin, new_cross) = current_style.as_ref().map_or((0.0, 0.0), |style| {
+            main_and_cross_margin(style, edge_base, child_font_px, direction)
+        });
+        if (cross_extent(measured, direction) + new_cross)
+            != (cross_extent(old, direction) + old_cross)
+        {
+            return Ok(None);
+        }
+        main_delta += (main_extent(measured, direction) + new_margin)
+            - (main_extent(old, direction) + old_margin);
+        patches.push((entry.child, measured, current_style));
+    }
+    if patches.is_empty() {
+        return Ok(None);
+    }
+    let mut size = plan.size;
+    match direction {
+        FlexDirection::Column => size.height += main_delta,
+        FlexDirection::Row => size.width += main_delta,
+    }
+    let mut updated = plan.clone();
+    updated.size = size;
+    for (child, intrinsic, style) in patches {
+        if let Ok(slot) = updated
+            .entries
+            .binary_search_by_key(&child, |entry| entry.child)
+        {
+            updated.entries[slot].intrinsic = Some(intrinsic);
+            if let Some(style) = style {
+                updated.entries[slot].style = Some(style);
+            }
+        }
+    }
+    nodes.measure_plans.entry(id).or_default().insert(updated);
+    Ok(Some(size))
 }

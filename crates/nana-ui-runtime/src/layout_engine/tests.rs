@@ -5636,12 +5636,11 @@ fn contained_edit_stays_flat(container_height: Option<LengthSpec>, parked_row: b
         world.commit(queue).unwrap();
         let resized =
             scoped_step_matches_full(&mut world, document, viewport, &mut retained, "tail resize");
-        // Resizing the last row changes a HUGGING container's own height, so
-        // its measure plan is correctly rejected and it re-measures every
-        // child. That is a real remaining gap -- the measure-side analogue of
-        // `replay_sequential_suffix`, which does not exist -- not something
-        // this gate should assert away, so it only holds the fixed-height
-        // container to the flat tail resize.
+        // Resizing the last row changes a HUGGING container's own height.
+        // Placement replays the suffix, but the measure of that container
+        // still walks its children. This gate does not treat that walk as
+        // the flatness signal; it only holds the fixed-height container,
+        // and the contained edit, to a document-independent cost.
         let measured = if hugging {
             contained.children_measured
         } else {

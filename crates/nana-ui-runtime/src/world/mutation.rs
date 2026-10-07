@@ -1516,7 +1516,9 @@ impl UiWorld {
                     self.mark_subtree(*id, DirtyMask::STYLE);
                 }
                 if inherited_text_changed || omits_box_changed || layout_changed {
-                    self.invalidate_layout_result(*id);
+                    // Keep the Arc so a bit-equivalent recompute can reuse it.
+                    self.suppress_layout_results_subtree(*id);
+                    self.suppress_layout_result_chain(*id, true);
                 }
                 if inherited_text_changed {
                     self.mark_subtree(*id, super::motion::INHERITED_TEXT_DIRTY);

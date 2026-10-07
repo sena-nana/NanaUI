@@ -39,6 +39,36 @@ enum PlanCheck {
     ChangedFrom(usize),
 }
 
+/// Direct children of `container` that the closure reaches, including a child
+/// that only contains an affected descendant. A fixed row can stay out of its
+/// parent's frontier while the label inside it still has to be placed.
+fn children_reaching_affected(
+    container: StableNodeId,
+    plan: &ContainerPlan,
+    scope: &ScopeContext<'_>,
+    nodes: &LayoutInputMap<'_>,
+) -> Vec<u32> {
+    let mut indices = plan.affected_entries(scope);
+    for &id in scope.affected {
+        let mut node = id;
+        while let Some(parent) = nodes.world.parent_id(node) {
+            if parent == container {
+                if let Ok(slot) = plan
+                    .by_child
+                    .binary_search_by_key(&node, |(child, _)| *child)
+                {
+                    indices.push(plan.by_child[slot].1);
+                }
+                break;
+            }
+            node = parent;
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
 /// Re-check only the children the change closure reaches.
 ///
 /// Everything outside it is unchanged by construction: a layout-affecting
@@ -83,32 +113,38 @@ fn check_plan_children(
         // stays off the per-sibling path.
         let style_moved =
             !Arc::ptr_eq(&current, &cached_style) && !layout_inputs_equal(&current, &cached_style);
-        let measured = intrinsic_size_scoped(
-            child,
-            plan.child_available,
-            Some(plan.main_direction),
-            viewport,
-            plan.child_font_px,
-            nodes,
-            intrinsic,
-            Some(scope),
-        )?;
-        let at_main_moved = match at_main {
-            Some((main, cached)) => {
-                intrinsic_size_at_main(
-                    child,
-                    main,
-                    plan.main_direction,
-                    plan.child_available,
-                    viewport,
-                    plan.child_font_px,
-                    nodes,
-                    intrinsic,
-                    Some(scope),
-                )? != cached
-            }
-            None => false,
+        let on_measure = scope.measure.contains(&child);
+        let measured = if on_measure {
+            intrinsic_size_scoped(
+                child,
+                plan.child_available,
+                Some(plan.main_direction),
+                viewport,
+                plan.child_font_px,
+                nodes,
+                intrinsic,
+                Some(scope),
+            )?
+        } else {
+            cached_intrinsic
         };
+        let at_main_moved = on_measure
+            && match at_main {
+                Some((main, cached)) => {
+                    intrinsic_size_at_main(
+                        child,
+                        main,
+                        plan.main_direction,
+                        plan.child_available,
+                        viewport,
+                        plan.child_font_px,
+                        nodes,
+                        intrinsic,
+                        Some(scope),
+                    )? != cached
+                }
+                None => false,
+            };
         if style_moved || measured != cached_intrinsic || at_main_moved {
             first_changed = Some(first_changed.map_or(index, |current| current.min(index)));
         }
@@ -160,7 +196,7 @@ fn replay_sequential_suffix(
         };
         // Outside the closure nothing can have moved, so reuse the cached
         // measurement; inside it, both were already refreshed by the check.
-        let (style_arc, child_intrinsic) = if scope.affected.contains(&child) {
+        let (style_arc, child_intrinsic) = if scope.measure.contains(&child) {
             let Some(style) = nodes.style(child) else {
                 return Ok(false);
             };
@@ -175,6 +211,9 @@ fn replay_sequential_suffix(
                 Some(scope),
             )?;
             (style, measured)
+        } else if scope.affected.contains(&child) {
+            let style = nodes.style(child).unwrap_or(cached_style);
+            (style, cached_intrinsic)
         } else {
             (cached_style, cached_intrinsic)
         };
@@ -440,7 +479,11 @@ pub(super) fn place_node_scoped(
             PlanCheck::Unchanged => {
                 #[cfg(any(test, feature = "benchmark"))]
                 super::plan_stats::note_plan_reused();
-                for index in plan.affected_entries(scope) {
+                // A fixed intermediate box can stay out of the frontier while
+                // a descendant inside it is affected. Re-enter the direct
+                // child that contains that descendant; its own plan places
+                // only the closure.
+                for index in children_reaching_affected(id, plan, scope, nodes) {
                     let (child, origin, size) = {
                         let entries = plan.entries.borrow();
                         let entry = &entries[index as usize];

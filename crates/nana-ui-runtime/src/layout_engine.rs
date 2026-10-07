@@ -4,6 +4,7 @@ mod flow;
 use flow::*;
 mod measure;
 use measure::*;
+pub(crate) use measure::{depends_on_used_basis, spec_tracks_containing_block};
 mod placement;
 use placement::*;
 mod inline;
@@ -1414,12 +1415,27 @@ impl ContainerPlan {
     ) -> bool {
         self.writing == writing
             && self.origin == origin
-            && self.size == size
+            && self.size_compatible(size)
             && self.containing == containing
             && self.parent_font_px == parent_font_px
             && self.viewport == viewport
             && Arc::ptr_eq(&self.style, style)
             && Arc::ptr_eq(&self.children, children)
+    }
+
+    /// A sequential plan places from the start edge. Its main size can grow
+    /// with a child without moving the cross axis or the prefix.
+    fn size_compatible(&self, size: Size) -> bool {
+        if self.size == size {
+            return true;
+        }
+        if !self.sequential || self.main_reversed {
+            return false;
+        }
+        match self.main_direction {
+            FlexDirection::Column => self.size.width.to_bits() == size.width.to_bits(),
+            FlexDirection::Row => self.size.height.to_bits() == size.height.to_bits(),
+        }
     }
 
     fn child_count(&self) -> usize {
@@ -1480,6 +1496,7 @@ fn layout_inputs_equal(a: &nana_ui_core::LayoutStyle, b: &nana_ui_core::LayoutSt
 }
 
 /// One child's contribution to a cached container measurement.
+#[derive(Clone)]
 struct MeasuredChild {
     child: StableNodeId,
     /// The child's effective layout style at plan time, or `None` when the node
@@ -1534,6 +1551,7 @@ struct MeasuredChild {
 /// stale. What a plan caches is the container's result under ONE recorded
 /// constraint, re-validated against the closure before it is used, so the two
 /// do not overlap.
+#[derive(Clone)]
 struct MeasurePlan {
     /// Constraint the container was measured against. This is the part of the
     /// per-pass cache key that the plan, keyed by id alone, has to carry.
@@ -1565,6 +1583,8 @@ struct MeasurePlan {
     entries: Vec<MeasuredChild>,
     /// What the measurement produced.
     size: Size,
+    /// Main size is the sum of child border boxes, margins, and gaps.
+    sequential: bool,
 }
 
 /// The measure plans retained for one container.

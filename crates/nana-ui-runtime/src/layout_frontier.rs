@@ -285,6 +285,26 @@ impl LayoutFrontierStats {
     }
 }
 
+/// Child edges add measure when the carried footprint consumes a parent
+/// constraint. Context edges place the neighbour and add measure only by
+/// leaving an existing measure bit in place.
+fn descend_kind(
+    kind: InvalidationKind,
+    measure_edge: bool,
+    context_edge: bool,
+) -> InvalidationKind {
+    let mut kind = kind.union(InvalidationKind::PLACEMENT);
+    if context_edge {
+        kind = kind.union(InvalidationKind::CONTEXT_REFLOW);
+    }
+    if measure_edge && !context_edge {
+        kind = kind.union(InvalidationKind::MEASURE);
+    } else if !measure_edge {
+        kind = kind.without(InvalidationKind::MEASURE);
+    }
+    kind
+}
+
 impl LayoutFrontier {
     /// Build the bottom-up ancestor frontier.  `parent_of` and `is_isolated`
     /// are O(1) retained-tree queries.  A shared edge is visited once per
@@ -344,6 +364,12 @@ impl LayoutFrontier {
         // Each queue item represents one merged dependency class. A class is
         // visited once, while distinct metric/context classes can still share
         // the same node and edge safely.
+        // Parent-constraint and writing edges measure. Sibling-prefix and
+        // origin movement only place.
+        let measure_down = LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT
+            .union(LayoutDependencyFootprint::CONSUMES_PARENT_BLOCK_CONSTRAINT)
+            .union(LayoutDependencyFootprint::DEPENDS_ON_CONTAINING_BLOCK)
+            .union(LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT);
         let mut visited = HashSet::new();
         while let Some((node, invalidation)) = pending.pop_front() {
             let key = (
@@ -448,14 +474,7 @@ impl LayoutFrontier {
             }
 
             let follow_down = axes.intersects(
-                LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT
-                    .union(LayoutDependencyFootprint::CONSUMES_PARENT_BLOCK_CONSTRAINT)
-                    .union(LayoutDependencyFootprint::DEPENDS_ON_CONTAINING_BLOCK)
-                    .union(LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT)
-                    // A sibling-prefix/context change can move the current
-                    // node without changing its own size. Its descendants'
-                    // placements still move with it, so retain that subtree
-                    // in the placement frontier.
+                measure_down
                     .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
                     .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
             ) || follow_all;
@@ -466,12 +485,23 @@ impl LayoutFrontier {
                     if !follow_all && !axes.intersects(link.footprint) {
                         continue;
                     }
+                    let carried = if follow_all {
+                        link.footprint
+                    } else {
+                        axes.intersection(link.footprint)
+                    };
+                    let measure_edge = follow_all || carried.intersects(measure_down);
                     let mut child_invalidation = invalidation;
-                    child_invalidation.kind = child_invalidation
-                        .kind
-                        .union(InvalidationKind::MEASURE)
-                        .union(InvalidationKind::PLACEMENT);
-                    if axes.intersects(LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT) {
+                    child_invalidation.kind =
+                        descend_kind(child_invalidation.kind, measure_edge, false);
+                    if !follow_all {
+                        child_invalidation.affected_axes = carried;
+                    }
+                    if carried.intersects(LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT)
+                        || (follow_all
+                            && axes
+                                .intersects(LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT))
+                    {
                         child_invalidation.kind = child_invalidation
                             .kind
                             .union(InvalidationKind::WRITING_CONTEXT);
@@ -502,11 +532,18 @@ impl LayoutFrontier {
                     if !follow_all && !axes.intersects(link.footprint) {
                         continue;
                     }
+                    let carried = if follow_all {
+                        link.footprint
+                    } else {
+                        axes.intersection(link.footprint)
+                    };
                     let mut context_invalidation = invalidation;
-                    context_invalidation.kind = context_invalidation
-                        .kind
-                        .union(InvalidationKind::PLACEMENT)
-                        .union(InvalidationKind::CONTEXT_REFLOW);
+                    let measure_edge = follow_all || carried.intersects(measure_down);
+                    context_invalidation.kind =
+                        descend_kind(context_invalidation.kind, measure_edge, true);
+                    if !follow_all {
+                        context_invalidation.affected_axes = carried;
+                    }
                     let existed = frontier.entries.contains_key(&link.target);
                     let changed = frontier.insert_entry(link.target, context_invalidation);
                     if existed {
