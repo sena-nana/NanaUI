@@ -67,6 +67,8 @@ impl UiWorld {
             text,
             text_metrics,
             document,
+            layout_padding,
+            preserve_newlines,
         ) = {
             let node = self.nodes.get(id)?;
             let kind = Arc::clone(&node.kind);
@@ -85,6 +87,8 @@ impl UiWorld {
                 has_text.then(|| node.text.clone()),
                 has_text.then_some(node.text_metrics),
                 node.document,
+                node.layout_padding,
+                node.style.layout.white_space.preserve_newlines(),
             )
         };
         // Extraction also runs during retained writeback, before the next
@@ -165,11 +169,18 @@ impl UiWorld {
         self.triggered_overlay_layout(id, &mut source_style.layout);
         // Scene receives the layout-resolved padding; it must not resolve %
         // against the painted node's own width. Authored world style stays intact.
-        let padding = self.used_layout_padding(id);
-        if source_style
-            .layout
-            .resolved_padding_against(Some(layout.width))
-            != padding
+        // With no length animation, used padding is the layout pass value or
+        // the resolved style itself, so an unset pass cannot disagree.
+        let padding = if self.layout_length_tracks.is_empty() {
+            layout_padding
+        } else {
+            Some(self.used_layout_padding(id))
+        };
+        if let Some(padding) = padding
+            && source_style
+                .layout
+                .resolved_padding_against(Some(layout.width))
+                != padding
         {
             let layout = Arc::make_mut(&mut source_style.layout);
             layout.padding = None;
@@ -232,11 +243,15 @@ impl UiWorld {
             // Not gated on `has_text`: an editor's displayed value is built
             // by its presentation, not held in `text`, and it is exactly the
             // node whose newlines must survive.
-            text_preserve_lines: self.text_preserves_lines(id),
+            text_preserve_lines: if self.nodes.has_visuals() {
+                self.text_preserves_lines(id)
+            } else {
+                preserve_newlines
+            },
             // Paint's question, so paint's answer: a control put into focus
             // by a click is focused and does not draw a ring about it.
             focused: self.focus_visible(document) == Some(id),
-            editable: self.nodes.text_input(id).is_some(),
+            editable: self.nodes.has_text_inputs() && self.nodes.text_input(id).is_some(),
             text_spans,
             standard_visual,
             component_geometry,

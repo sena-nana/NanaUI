@@ -2587,6 +2587,11 @@ impl UiWorld {
     /// Drop focus and composition when dirty visual or interaction state makes
     /// the focused node ineligible.
     pub fn reconcile_focus(&mut self, ids: &[StableNodeId]) {
+        // A settled document has no focused node. Building a membership set
+        // of every style-dirty id just to discover that is the whole cost.
+        if self.input.focused.is_empty() {
+            return;
+        }
         let dirty = ids.iter().copied().collect::<HashSet<_>>();
         let invalid_focus = self
             .input
@@ -2615,15 +2620,34 @@ impl UiWorld {
 
     /// Project a single layout input without allocating a batch container.
     pub(crate) fn layout_input(&self, id: StableNodeId) -> Result<LayoutInput, UiWorldError> {
-        let record = self.nodes.get(id).ok_or(UiWorldError::MissingNode(id))?;
-        let has_text =
-            matches!(record.kind.as_ref(), NodeKind::Text) || !record.text.value.is_empty();
-        let writing = record_writing(record);
-        let containing_writing = record_containing_writing(record);
-        let parent = record.hierarchy.parent;
-        let children = Arc::clone(&record.hierarchy.children);
-        let text_metrics = has_text.then_some(record.text_metrics);
-        let style = self.hit_motion_layout(id);
+        let plain_world = self.layout_length_tracks.is_empty()
+            && self.overlay_host_nodes.is_empty()
+            && self.z_index_nodes == 0
+            && self.detached_mounted.is_empty()
+            && !self.nodes.has_visuals();
+        let (writing, containing_writing, parent, children, text_metrics, resolved_layout, mounted) = {
+            let record = self.nodes.get(id).ok_or(UiWorldError::MissingNode(id))?;
+            let has_text =
+                matches!(record.kind.as_ref(), NodeKind::Text) || !record.text.value.is_empty();
+            (
+                record_writing(record),
+                record_containing_writing(record),
+                record.hierarchy.parent,
+                Arc::clone(&record.hierarchy.children),
+                has_text.then_some(record.text_metrics),
+                Arc::clone(&record.resolved_layout),
+                record.mount,
+            )
+        };
+        let style = if plain_world
+            && mounted == MountState::Mounted
+            && !resolved_layout.omits_box()
+            && !resolved_layout.has_logical_box_edges()
+        {
+            resolved_layout
+        } else {
+            self.hit_motion_layout(id)
+        };
         Ok(LayoutInput {
             id,
             parent,

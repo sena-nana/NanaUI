@@ -32,6 +32,10 @@ pub use nana_text::Affinity as TextAffinity;
 static DEFAULT_LAYOUT_STYLE: LazyLock<Arc<LayoutStyle>> =
     LazyLock::new(|| Arc::new(LayoutStyle::default()));
 
+pub(crate) fn layout_style_is_default(style: &Arc<LayoutStyle>) -> bool {
+    Arc::ptr_eq(style, &DEFAULT_LAYOUT_STYLE)
+}
+
 /// Effective retained-document presence for a node.
 ///
 /// Parked nodes keep their stable identity and application-owned view state,
@@ -1774,7 +1778,7 @@ impl NodeStyle {
     /// `resolved_layout`, not in [`ComputedStyle`], so they stay out of this
     /// check. A node that passes it resolves to its parent's computed style.
     pub(crate) fn computed_style_is_inherited(&self) -> bool {
-        Arc::ptr_eq(&self.layout, &DEFAULT_LAYOUT_STYLE)
+        layout_style_is_default(&self.layout)
             && self.foreground.is_none()
             && self.background.is_none()
             && self.border.is_none()

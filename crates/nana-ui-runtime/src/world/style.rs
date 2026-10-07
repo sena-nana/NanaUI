@@ -23,30 +23,43 @@ impl UiWorld {
             || self.nodes.has_visuals()
             || !self.presentation.is_empty()
             || self.hover_transitions.contains_key(&id)
-            || self.record(parent).resolved.1 != self.palette_epoch
-            || !self.record(id).style.computed_style_is_inherited()
         {
             return Ok(false);
         }
-        let parent_style = Arc::clone(&self.record(parent).resolved.0);
+        let parent_style = {
+            let parent_record = self.record(parent);
+            if parent_record.resolved.1 != self.palette_epoch {
+                return Ok(false);
+            }
+            Arc::clone(&parent_record.resolved.0)
+        };
         let writing_mode = parent_style.writing_mode;
         let direction = parent_style.direction;
         let text_orientation = parent_style.text_orientation;
+        let (inherited, same, has_text, show_text) = {
+            let record = self.record(id);
+            let inherited = record.style.computed_style_is_inherited();
+            (
+                inherited,
+                inherited
+                    && Arc::ptr_eq(&record.resolved.0, &parent_style)
+                    && record.resolved.1 == self.palette_epoch,
+                !record.text.value.is_empty() || matches!(record.kind.as_ref(), NodeKind::Text),
+                !record.resolved.0.visible && parent_style.visible,
+            )
+        };
+        if !inherited {
+            return Ok(false);
+        }
         {
             let record = self.record_mut(id);
             record.inherited_writing = nana_ui_core::WritingContext::new(writing_mode, direction);
             record.inherited_orientation = text_orientation;
         }
-        if Arc::ptr_eq(&self.record(id).resolved.0, &parent_style)
-            && self.record(id).resolved.1 == self.palette_epoch
-        {
+        if same {
             work.record_skipped();
             return Ok(true);
         }
-        let has_text = {
-            let record = self.record(id);
-            !record.text.value.is_empty() || matches!(record.kind.as_ref(), NodeKind::Text)
-        };
         if has_text {
             let dirty = crate::text_node::classify_computed_style_change(
                 &self.record(id).resolved.0,
@@ -60,7 +73,7 @@ impl UiWorld {
             }
             self.nodes.invalidate_text(id, dirty);
         }
-        if !self.record(id).resolved.0.visible && parent_style.visible {
+        if show_text {
             self.text_shown.push(id);
         }
         work.record_resolved();

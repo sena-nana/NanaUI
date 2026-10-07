@@ -313,69 +313,115 @@ impl HitIndex {
     }
 
     fn from_entries(built: Vec<BuiltHit>) -> Self {
+        let n = built.len();
         let ids = built.iter().map(|node| node.entry.id).collect::<Vec<_>>();
-        let mut index = Self {
-            entries: hashbrown::HashMap::with_capacity(built.len()),
-            ..Default::default()
-        };
-        for node in built {
+        // One child table for the whole forest. Visit order already pops the
+        // first sibling first, so a group stays in sibling order until a
+        // z-index reorders that range.
+        let mut child_counts = vec![0u32; n];
+        let mut root_count = 0usize;
+        let mut reorder = false;
+        for node in &built {
+            reorder |= node.entry.z_index != 0;
+            if let Some(parent) = node.parent {
+                child_counts[parent] += 1;
+            } else {
+                root_count += 1;
+            }
+        }
+        let mut offsets = vec![0u32; n + 1];
+        for index in 0..n {
+            offsets[index + 1] = offsets[index] + child_counts[index];
+        }
+        let mut cursor = offsets.clone();
+        let mut child_index = vec![0usize; offsets[n] as usize];
+        let mut roots = Vec::with_capacity(root_count);
+        for (index, node) in built.iter().enumerate() {
+            if let Some(parent) = node.parent {
+                let slot = cursor[parent];
+                cursor[parent] += 1;
+                child_index[slot as usize] = index;
+            } else {
+                roots.push(index);
+            }
+        }
+        if reorder {
+            let by_paint = |index: &usize| {
+                let entry = &built[*index].entry;
+                (entry.z_index, entry.order)
+            };
+            for index in 0..n {
+                let start = offsets[index] as usize;
+                let end = offsets[index + 1] as usize;
+                if end - start > 1 {
+                    child_index[start..end].sort_by_key(by_paint);
+                }
+            }
+            if roots.len() > 1 {
+                roots.sort_by_key(by_paint);
+            }
+        }
+        let mut bounds = built
+            .iter()
+            .map(|node| hit_bounds(&node.entry))
+            .collect::<Vec<_>>();
+        let mut trees = Vec::with_capacity(n);
+        trees.resize_with(n, BoundsTree::default);
+        for index in (0..n).rev() {
+            let start = offsets[index] as usize;
+            let end = offsets[index + 1] as usize;
+            if start == end {
+                continue;
+            }
+            let tree = BoundsTree::new(
+                child_index[start..end]
+                    .iter()
+                    .copied()
+                    .map(|child| bounds[child]),
+            );
+            bounds[index] = bounds[index].merge(tree.bounds());
+            trees[index] = tree;
+        }
+        let root_bounds = BoundsTree::new(roots.iter().copied().map(|child| bounds[child]));
+        let mut sibling_slot = vec![0usize; n];
+        for index in 0..n {
+            let start = offsets[index] as usize;
+            let end = offsets[index + 1] as usize;
+            for (slot, &child) in child_index[start..end].iter().enumerate() {
+                sibling_slot[child] = slot;
+            }
+        }
+        for (slot, &child) in roots.iter().enumerate() {
+            sibling_slot[child] = slot;
+        }
+        let mut entries = hashbrown::HashMap::with_capacity(n);
+        for (index, node) in built.into_iter().enumerate() {
             let id = node.entry.id;
             let parent = node.parent.map(|position| ids[position]);
-            index.entries.insert(
+            let start = offsets[index] as usize;
+            let end = offsets[index + 1] as usize;
+            let children = child_index[start..end]
+                .iter()
+                .map(|&child| Some(ids[child]))
+                .collect::<Vec<_>>();
+            entries.insert(
                 id,
                 IndexedHit {
-                    bounds: hit_bounds(&node.entry),
+                    bounds: bounds[index],
                     entry: node.entry,
                     parent,
-                    children: Vec::new(),
+                    children,
                     shift: [0.0, 0.0],
-                    child_bounds: BoundsTree::default(),
-                    sibling_slot: 0,
+                    child_bounds: std::mem::take(&mut trees[index]),
+                    sibling_slot: sibling_slot[index],
                 },
             );
-            if let Some(parent) = parent {
-                index
-                    .entries
-                    .get_mut(&parent)
-                    .expect("preorder parent")
-                    .children
-                    .push(Some(id));
-            } else {
-                index.roots.push(Some(id));
-            }
         }
-        // Child aggregates are ready before their parent. No temporary recursive
-        // HitEntry tree or ancestor refits are needed during initial construction.
-        for id in ids.into_iter().rev() {
-            index.initialize_children(Some(id));
-        }
-        index.initialize_children(None);
-        index
-    }
-
-    fn initialize_children(&mut self, parent: Option<StableNodeId>) {
-        let mut children = match parent {
-            Some(id) => std::mem::take(&mut self.entries.get_mut(&id).unwrap().children),
-            None => std::mem::take(&mut self.roots),
-        };
-        children.sort_by_key(|id| {
-            let entry = &self.entries[&id.unwrap()].entry;
-            (entry.z_index, entry.order)
-        });
-        let bounds = BoundsTree::new(children.iter().map(|id| self.entries[&id.unwrap()].bounds));
-        for (slot, id) in children.iter().enumerate() {
-            self.entries.get_mut(&id.unwrap()).unwrap().sibling_slot = slot;
-        }
-        if let Some(parent) = parent {
-            let node = self.entries.get_mut(&parent).unwrap();
-            if !children.is_empty() {
-                node.bounds = node.bounds.merge(bounds.bounds());
-            }
-            node.children = children;
-            node.child_bounds = bounds;
-        } else {
-            self.roots = children;
-            self.root_bounds = bounds;
+        Self {
+            roots: roots.into_iter().map(|index| Some(ids[index])).collect(),
+            entries,
+            root_bounds,
+            viewport_roots: HashSet::new(),
         }
     }
 
@@ -1468,9 +1514,12 @@ impl UiWorld {
             && self.detached_mounted.is_empty()
             && !self.nodes.has_visuals()
         {
-            let style = &self.record(id).resolved_layout;
-            if self.is_mounted(id) && !style.omits_box() && !style.has_logical_box_edges() {
-                return Arc::clone(style);
+            let record = self.record(id);
+            if record.mount == crate::MountState::Mounted
+                && !record.resolved_layout.omits_box()
+                && !record.resolved_layout.has_logical_box_edges()
+            {
+                return Arc::clone(&record.resolved_layout);
             }
         }
         self.motion_layout(id, &self.effective_layout_style(id))
@@ -1527,20 +1576,116 @@ impl UiWorld {
         let mut built: Vec<BuiltHit> = Vec::new();
         let mut memo = AncestorMemo::default();
         let visuals = self.nodes.has_visuals();
+        let plain_layout = self.layout_length_tracks.is_empty()
+            && self.overlay_host_nodes.is_empty()
+            && self.z_index_nodes == 0
+            && self.detached_mounted.is_empty()
+            && !visuals;
+        let retained_boxes = self.layout_results.is_empty();
         while let Some((id, parent_hit, parent, position, parent_used_pe, parent_blocks_3d)) =
             stack.pop()
         {
             if self.motion_blocks_input(id) {
                 continue;
             }
-            let style = self.record(id).resolved.0.as_ref();
-            if !self.node_has_hit_box(id) {
-                continue;
-            }
-            let Some(layout) = self.component_layout_box(id) else {
+            let (
+                visible,
+                computed_pointer,
+                retained_layout,
+                resolved_layout,
+                default_box,
+                scroll,
+                children,
+                interaction,
+                painted,
+            ) = {
+                let record = self.record(id);
+                let computed = record.resolved.0.as_ref();
+                let has_box = computed.box_visible
+                    && (computed.visible || !record.hierarchy.children.is_empty());
+                if !has_box {
+                    continue;
+                }
+                let default_box = plain_layout
+                    && record.mount == crate::MountState::Mounted
+                    && crate::components::layout_style_is_default(&record.resolved_layout);
+                let plain_style = !default_box
+                    && plain_layout
+                    && record.mount == crate::MountState::Mounted
+                    && !record.resolved_layout.omits_box()
+                    && !record.resolved_layout.has_logical_box_edges();
+                (
+                    computed.visible,
+                    computed.pointer_events,
+                    record.layout,
+                    plain_style.then(|| Arc::clone(&record.resolved_layout)),
+                    default_box,
+                    record.scroll_offset,
+                    Arc::clone(&record.hierarchy.children),
+                    record.interaction,
+                    record.style.painter.is_some() || !self.painter_overrides.is_empty(),
+                )
+            };
+            let Some(layout) = (if retained_boxes {
+                Some(retained_layout)
+            } else {
+                self.component_layout_box(id)
+            }) else {
                 continue;
             };
-            let motion_layout = self.hit_motion_layout(id);
+            // A mounted default box under an identity ancestor has no transform,
+            // clip, scroll, or overlay. Skip the style arc and the geometry
+            // helpers; descendant seeds stay on the same identity transform.
+            if default_box
+                && retained_boxes
+                && scroll == crate::ScrollOffset::default()
+                && parent_hit.0 == IDENTITY_AFFINE
+                && parent_hit.1 == [0.0, 0.0]
+                && !parent_blocks_3d
+                && !painted
+                && self.confirm_modals == 0
+            {
+                let hittable = visible
+                    && interaction.pointer_events
+                    && parent_used_pe.hittable()
+                    && computed_pointer.hittable();
+                let index = built.len();
+                built.push(BuiltHit {
+                    entry: HitEntry {
+                        id,
+                        source_children: Arc::clone(&children),
+                        layout,
+                        transform: IDENTITY_AFFINE,
+                        persp: [0.0, 0.0],
+                        self_clips: Vec::new(),
+                        child_clips: Vec::new(),
+                        path_clips: Vec::new(),
+                        z_index: 0,
+                        order: position,
+                        hittable,
+                        menu: None,
+                        painter: None,
+                        children: Vec::new(),
+                    },
+                    parent,
+                });
+                stack.extend(children.iter().enumerate().rev().map(|(position, child)| {
+                    (
+                        *child,
+                        parent_hit,
+                        Some(index),
+                        position,
+                        parent_used_pe,
+                        false,
+                    )
+                }));
+                continue;
+            }
+            let motion_layout = if let Some(style) = resolved_layout {
+                style
+            } else {
+                self.hit_motion_layout(id)
+            };
             let node_style = motion_layout.as_ref();
             // This is a projection root, not a Runtime reparent. Fixed layout
             // is viewport-relative; ancestors still control lifecycle and
@@ -1559,13 +1704,11 @@ impl UiWorld {
                     .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
             };
             let (transform, persp) = then_hit(parent_hit, local);
-            let scroll = self.record(id).scroll_offset;
             let child_transform = then_hit(
                 (transform, persp),
                 ([1.0, 0.0, 0.0, 1.0, -scroll.x, -scroll.y], [0.0, 0.0]),
             );
             let child_blocks_3d = parent_blocks_3d || node_style.fails_closed_3d_context();
-            let children = Arc::clone(&self.record(id).hierarchy.children);
             let used_pe =
                 PointerEventsSpec::inherit_from(node_style.pointer_events, parent_used_pe);
             let mut self_clips = Vec::new();
@@ -1617,17 +1760,13 @@ impl UiWorld {
                     self_clips.push((body, parent_hit.0));
                 }
             }
-            let record = self.record(id);
-            let interaction = record.interaction;
-            // Checked on the record in hand: an unpainted tree does no lookup.
-            let painted = record.style.painter.is_some() || !self.painter_overrides.is_empty();
             let confirm_busy = self
                 .confirm_action_effect(id)
                 .is_some_and(|effect| effect.0);
-            let hittable = style.visible
+            let hittable = visible
                 && interaction.pointer_events
                 && used_pe.hittable()
-                && style.pointer_events.hittable()
+                && computed_pointer.hittable()
                 && !confirm_busy;
             let menu = (visuals && hittable)
                 .then(|| {

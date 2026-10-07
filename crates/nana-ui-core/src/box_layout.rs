@@ -3669,6 +3669,9 @@ impl LayoutStyle {
         width: f32,
         height: f32,
     ) -> Option<([f32; 6], [f32; 2])> {
+        if self.transform.is_none() && self.transform_3d.is_none() {
+            return None;
+        }
         let [ox, oy] = self.resolved_transform_origin(width, height);
         if let Some(mat4) = self.transform_3d {
             return mat4.around_origin(x, y, ox, oy).planar_homography();

@@ -289,15 +289,54 @@ impl UiWorld {
             })
     }
 
+    /// Every retained node is a mounted, visible, untransformed box. Viewport
+    /// bounds are the layout box, and every structural child stays in the
+    /// accessibility tree. One scan, then the per-node walk does not re-check
+    /// ancestors. A single scrolled or transformed node keeps the normal path.
+    fn accessibility_tree_is_plain(&self) -> bool {
+        if !self.layout_length_tracks.is_empty()
+            || !self.presentation.is_empty()
+            || self.z_index_nodes != 0
+            || self.nodes.has_visuals()
+            || !self.overlay_host_nodes.is_empty()
+            || self.clip_visuals != 0
+            || !self.detached_mounted.is_empty()
+        {
+            return false;
+        }
+        self.nodes.records().all(|node| {
+            node.mount == crate::MountState::Mounted
+                && node.scroll_offset == crate::ScrollOffset::default()
+                && !node.accessibility.hidden
+                && node.resolved.0.visible
+                && node.resolved.0.box_visible
+                && !matches!(node.kind.as_ref(), NodeKind::Comment)
+                && crate::components::layout_style_is_default(&node.resolved_layout)
+        })
+    }
+
     fn project_accessibility_node(
         &self,
         id: StableNodeId,
+        plain: bool,
         memo: &mut ProjectionMemo,
     ) -> Option<AccessibilityNode> {
-        if !self.is_mounted(id) || self.accessibility_hidden(id, memo) {
+        if !plain && (!self.is_mounted(id) || self.accessibility_hidden(id, memo)) {
             return None;
         }
-        let (parent, children, kind, state, text_value, document, visible, box_visible, writing) = {
+        let (
+            parent,
+            children,
+            kind,
+            state,
+            text_value,
+            document,
+            visible,
+            box_visible,
+            writing,
+            scrolls,
+            layout_box,
+        ) = {
             let node = self.nodes.get(id)?;
             (
                 node.hierarchy.parent,
@@ -317,6 +356,8 @@ impl UiWorld {
                 node.resolved.0.visible,
                 node.resolved.0.box_visible,
                 node.resolved.0.writing_context(),
+                node.style.layout.overflow_x.scrolls() || node.style.layout.overflow_y.scrolls(),
+                node.layout,
             )
         };
         // Keep a neutral structural container so visible descendants never
@@ -346,7 +387,7 @@ impl UiWorld {
         // second visual-only state. Publish an axis only when the retained
         // geometry says it can actually move; this keeps ordinary containers
         // from advertising meaningless scroll actions.
-        let scroll_metrics = visible
+        let scroll_metrics = (visible && (scrolls || self.nodes.has_visuals()))
             .then(|| {
                 self.is_scroll_container(id)
                     .then(|| self.scroll_metrics(id))
@@ -358,7 +399,10 @@ impl UiWorld {
         // switch) keeps a label of its own first, as `aria-label` wins over
         // `aria-labelledby`; an empty one names nothing. Its own text (a
         // select's shown option) is its value then, not its name.
-        let label = match self.labelled_by(id) {
+        let label = match (!self.labelled_by.is_empty())
+            .then(|| self.labelled_by(id))
+            .flatten()
+        {
             Some(source) if visible => state
                 .label
                 .clone()
@@ -369,25 +413,31 @@ impl UiWorld {
                 (!secure && !text_value.is_empty()).then(|| Arc::<str>::from(text_value.as_str()))
             }),
         };
-        let bounds = if self.axis_aligned(id, memo) {
+        let bounds = if plain && self.layout_results.is_empty() {
+            layout_box
+        } else if plain || self.axis_aligned(id, memo) {
             self.component_layout_box(id)?
         } else {
             self.visible_accessibility_bounds(id, memo)?
         };
-        let mut children = children
-            .iter()
-            .copied()
-            .filter(|child| {
-                let child_id = *child;
-                self.nodes.get(child_id).is_some_and(|node| {
-                    node.resolved.0.box_visible
-                        && (node.resolved.0.visible || !node.hierarchy.children.is_empty())
-                        && !matches!(node.kind.as_ref(), NodeKind::Comment)
-                }) && !self.accessibility_hidden(child_id, memo)
-                    && (self.axis_aligned(child_id, memo)
-                        || self.visible_accessibility_bounds(child_id, memo).is_some())
-            })
-            .collect::<Vec<_>>();
+        let mut children = if plain {
+            children.as_ref().clone()
+        } else {
+            children
+                .iter()
+                .copied()
+                .filter(|child| {
+                    let child_id = *child;
+                    self.nodes.get(child_id).is_some_and(|node| {
+                        node.resolved.0.box_visible
+                            && (node.resolved.0.visible || !node.hierarchy.children.is_empty())
+                            && !matches!(node.kind.as_ref(), NodeKind::Comment)
+                    }) && !self.accessibility_hidden(child_id, memo)
+                        && (self.axis_aligned(child_id, memo)
+                            || self.visible_accessibility_bounds(child_id, memo).is_some())
+                })
+                .collect::<Vec<_>>()
+        };
         if self.nodes.has_visuals()
             && let Some(StandardVisual::MenuSurface {
                 kind: crate::MenuSurfaceKind::ContextMenu,
@@ -532,19 +582,21 @@ impl UiWorld {
     fn project_accessibility_entries(
         &self,
         id: StableNodeId,
+        plain: bool,
         memo: &mut ProjectionMemo,
     ) -> Vec<AccessibilityNode> {
-        let Some(node) = self.project_accessibility_node(id, memo) else {
+        let Some(node) = self.project_accessibility_node(id, plain, memo) else {
             return Vec::new();
         };
-        let open_context_menu = matches!(
-            self.nodes.visual(id),
-            Some(StandardVisual::MenuSurface {
-                kind: crate::MenuSurfaceKind::ContextMenu,
-                open: true,
-                ..
-            })
-        );
+        let open_context_menu = self.nodes.has_visuals()
+            && matches!(
+                self.nodes.visual(id),
+                Some(StandardVisual::MenuSurface {
+                    kind: crate::MenuSurfaceKind::ContextMenu,
+                    open: true,
+                    ..
+                })
+            );
         if !open_context_menu {
             return vec![node];
         }
@@ -603,9 +655,10 @@ impl UiWorld {
         affected.dedup();
         let mut removed = work.accessibility_removals.clone();
         let mut memo = ProjectionMemo::default();
+        let plain = affected.len() >= 64 && self.accessibility_tree_is_plain();
         let mut updated = Vec::new();
         for id in affected {
-            let entries = self.project_accessibility_entries(id, &mut memo);
+            let entries = self.project_accessibility_entries(id, plain, &mut memo);
             if entries.is_empty() {
                 if self.nodes.contains(id) {
                     removed.push(id);
@@ -628,9 +681,10 @@ impl UiWorld {
     /// Project only accessibility nodes named by scheduled dirty work.
     pub fn project_accessibility_nodes(&self, ids: &[StableNodeId]) -> Vec<AccessibilityNode> {
         let mut memo = ProjectionMemo::default();
+        let plain = ids.len() >= 64 && self.accessibility_tree_is_plain();
         let mut projected = Vec::with_capacity(ids.len());
         for &id in ids {
-            projected.extend(self.project_accessibility_entries(id, &mut memo));
+            projected.extend(self.project_accessibility_entries(id, plain, &mut memo));
         }
         projected
     }

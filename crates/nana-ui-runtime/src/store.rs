@@ -274,9 +274,94 @@ impl EditorRecord {
     }
 }
 
+/// Ids at or below this value live in a contiguous table. A jump of more than
+/// [`DENSE_GAP`] empty slots, or any larger id, stays in the overflow map so a
+/// sparse handle cannot allocate a multi-megabyte hole.
+const DENSE_LIMIT: u64 = 65_536;
+const DENSE_GAP: usize = 1024;
+
+#[derive(Default)]
+struct NodeTable {
+    dense: Vec<Option<NodeRecord>>,
+    overflow: HashMap<StableNodeId, NodeRecord>,
+    len: usize,
+}
+
+impl NodeTable {
+    fn get(&self, id: StableNodeId) -> Option<&NodeRecord> {
+        let index = id.get() as usize;
+        if let Some(Some(record)) = self.dense.get(index) {
+            return Some(record);
+        }
+        self.overflow.get(&id)
+    }
+
+    fn get_mut(&mut self, id: StableNodeId) -> Option<&mut NodeRecord> {
+        let index = id.get() as usize;
+        if let Some(Some(record)) = self.dense.get_mut(index) {
+            return Some(record);
+        }
+        self.overflow.get_mut(&id)
+    }
+
+    fn contains(&self, id: StableNodeId) -> bool {
+        self.get(id).is_some()
+    }
+
+    fn insert(&mut self, id: StableNodeId, record: NodeRecord) {
+        let raw = id.get();
+        let index = raw as usize;
+        let dense = raw <= DENSE_LIMIT && index <= self.dense.len().saturating_add(DENSE_GAP);
+        if dense {
+            if index >= self.dense.len() {
+                self.dense.resize_with(index + 1, || None);
+            }
+            let replaced_overflow =
+                !self.overflow.is_empty() && self.overflow.remove(&id).is_some();
+            let replaced_dense = self.dense[index].replace(record).is_some();
+            if !replaced_overflow && !replaced_dense {
+                self.len += 1;
+            }
+        } else {
+            let replaced_dense = index < self.dense.len() && self.dense[index].take().is_some();
+            let replaced_overflow = self.overflow.insert(id, record).is_some();
+            if !replaced_dense && !replaced_overflow {
+                self.len += 1;
+            }
+        }
+    }
+
+    fn remove(&mut self, id: StableNodeId) -> Option<NodeRecord> {
+        let index = id.get() as usize;
+        let record = if index < self.dense.len() {
+            self.dense[index].take()
+        } else {
+            None
+        }
+        .or_else(|| self.overflow.remove(&id))?;
+        self.len -= 1;
+        Some(record)
+    }
+
+    fn records(&self) -> impl Iterator<Item = &NodeRecord> + '_ {
+        self.dense
+            .iter()
+            .filter_map(Option::as_ref)
+            .chain(self.overflow.values())
+    }
+
+    fn keys(&self) -> impl Iterator<Item = StableNodeId> + '_ {
+        self.dense
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| slot.as_ref().and_then(|_| StableNodeId::new(index as u64)))
+            .chain(self.overflow.keys().copied())
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct NodeStore {
-    nodes: HashMap<StableNodeId, NodeRecord>,
+    nodes: NodeTable,
     visuals: HashMap<StableNodeId, StandardVisual>,
     custom_render: HashMap<StableNodeId, CustomRenderNode>,
     event_listeners: HashMap<StableNodeId, EventListeners>,
@@ -336,27 +421,31 @@ impl NodeStore {
     }
 
     pub fn len(&self) -> usize {
-        self.nodes.len()
+        self.nodes.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.nodes.is_empty()
+        self.nodes.len == 0
     }
 
     pub fn contains(&self, id: StableNodeId) -> bool {
-        self.nodes.contains_key(&id)
+        self.nodes.contains(id)
     }
 
     pub fn get(&self, id: StableNodeId) -> Option<&NodeRecord> {
-        self.nodes.get(&id)
+        self.nodes.get(id)
     }
 
     pub fn get_mut(&mut self, id: StableNodeId) -> Option<&mut NodeRecord> {
-        self.nodes.get_mut(&id)
+        self.nodes.get_mut(id)
     }
 
     pub fn keys(&self) -> impl Iterator<Item = StableNodeId> + '_ {
-        self.nodes.keys().copied()
+        self.nodes.keys()
+    }
+
+    pub(crate) fn records(&self) -> impl Iterator<Item = &NodeRecord> + '_ {
+        self.nodes.records()
     }
 
     /// 持有 hover 浮窗状态的节点（稀疏表直接迭代，命中测试路由用）。
@@ -372,7 +461,7 @@ impl NodeStore {
 
     /// Drop the dense record and every sparse entry. The only despawn path.
     pub fn remove(&mut self, id: StableNodeId) -> Option<NodeRecord> {
-        let record = self.nodes.remove(&id)?;
+        let record = self.nodes.remove(id)?;
         self.visuals.remove(&id);
         self.custom_render.remove(&id);
         self.event_listeners.remove(&id);
@@ -592,7 +681,7 @@ impl NodeStore {
         backend: crate::text_node::TextBackendEpoch,
         constraints: Option<crate::TextShapeConstraints>,
     ) {
-        let Some(record) = self.nodes.get(&id) else {
+        let Some(record) = self.nodes.get(id) else {
             return;
         };
         let text_node = !record.text.value.is_empty()
@@ -610,7 +699,7 @@ impl NodeStore {
         &mut self,
         id: StableNodeId,
     ) -> Option<(&nana_text::TextSource, bool)> {
-        let text = &self.nodes.get(&id)?.text;
+        let text = &self.nodes.get(id)?.text;
         Some(self.text_nodes.get_mut(&id)?.source_for(&text.value))
     }
 
@@ -783,5 +872,40 @@ mod tests {
         store.set_overlay_host(id, None);
         assert!(store.overlay_host(id).is_none());
         assert!(store.contains(id));
+    }
+
+    #[test]
+    fn dense_ids_and_overflow_ids_round_trip() {
+        let mut store = NodeStore::new();
+        let record = || {
+            NodeRecord::new(
+                document(1),
+                &NodeKind::Text,
+                InteractionState {
+                    pointer_events: true,
+                    focusable: false,
+                },
+            )
+        };
+        store.insert(node(1), record());
+        store.insert(node(2), record());
+        // A hole large enough to stay out of the contiguous table.
+        store.insert(node(20_000), record());
+        store.insert(node(80_000), record());
+        assert_eq!(store.len(), 4);
+        assert!(store.contains(node(1)));
+        assert!(store.contains(node(20_000)));
+        assert!(store.contains(node(80_000)));
+        assert!(!store.contains(node(3)));
+        let mut keys = store.keys().map(|id| id.get()).collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, vec![1, 2, 20_000, 80_000]);
+        assert!(store.remove(node(20_000)).is_some());
+        assert!(store.remove(node(1)).is_some());
+        assert_eq!(store.len(), 2);
+        store.insert(node(1), record());
+        assert!(store.get(node(1)).is_some());
+        assert!(store.get(node(80_000)).is_some());
+        assert_eq!(store.len(), 3);
     }
 }
