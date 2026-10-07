@@ -101,11 +101,14 @@ objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
 objc2-foundation = { version = "0.3.2", default-features = false }
 objc2-metal = "0.3.2"
-accesskit = "0.25.0"
-accesskit_android = "0.8.0"
-accesskit_macos = "0.27.0"
-accesskit_windows = "0.35.0"
-accesskit_unix = { version = "0.23.0", default-features = false, features = ["async-io"] }
+# Unmerged AccessKit PR 816 (localized Switch + ScrollPattern). Pin the fork
+# commit, not a branch name and not crates.io 0.35.0/0.35.1.
+# https://github.com/AccessKit/accesskit/pull/816
+accesskit = { git = "https://github.com/sena-nana/accesskit", rev = "29f2ec503e98f1afcbbd1a26d11a1986b5198d5e" }
+accesskit_android = { git = "https://github.com/sena-nana/accesskit", rev = "29f2ec503e98f1afcbbd1a26d11a1986b5198d5e" }
+accesskit_macos = { git = "https://github.com/sena-nana/accesskit", rev = "29f2ec503e98f1afcbbd1a26d11a1986b5198d5e" }
+accesskit_windows = { git = "https://github.com/sena-nana/accesskit", rev = "29f2ec503e98f1afcbbd1a26d11a1986b5198d5e" }
+accesskit_unix = { git = "https://github.com/sena-nana/accesskit", rev = "29f2ec503e98f1afcbbd1a26d11a1986b5198d5e", default-features = false, features = ["async-io"] }
 # Issue #226 packaging. The runtime reader (`nana-package`) stays pure Rust:
 # `blake3` without its C/asm backends, the RustCrypto AEAD and signature
 # crates without their RNG features, and the pure-Rust zstd decoder. Only the

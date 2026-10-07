@@ -20,18 +20,16 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
 name = "accesskit"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "438a7081a65b95c668db56591a4fef9bc5dad275f448bd6223fc6949d823db38"
+version = "0.25.1"
+source = "git+https://github.com/sena-nana/accesskit?rev=29f2ec503e98f1afcbbd1a26d11a1986b5198d5e#29f2ec503e98f1afcbbd1a26d11a1986b5198d5e"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "accesskit_android"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "929aff36b0d3dd22ddb59191989d5293ed958294d7728bd6c2ec9778f73414aa"
+version = "0.9.0"
+source = "git+https://github.com/sena-nana/accesskit?rev=29f2ec503e98f1afcbbd1a26d11a1986b5198d5e#29f2ec503e98f1afcbbd1a26d11a1986b5198d5e"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -41,9 +39,8 @@ dependencies = [
 
 [[package]]
 name = "accesskit_atspi_common"
-version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9d47ad644916f6cb7e432a5ca0dbd7cc78281a9772881057bb72d4aadb93257"
+version = "0.21.0"
+source = "git+https://github.com/sena-nana/accesskit?rev=29f2ec503e98f1afcbbd1a26d11a1986b5198d5e#29f2ec503e98f1afcbbd1a26d11a1986b5198d5e"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -55,9 +52,8 @@ dependencies = [
 
 [[package]]
 name = "accesskit_consumer"
-version = "0.39.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc882fa0c9c24c53649e256311b51046cf36eca9a8f7e54ff4ef682160b0cb27"
+version = "0.39.1"
+source = "git+https://github.com/sena-nana/accesskit?rev=29f2ec503e98f1afcbbd1a26d11a1986b5198d5e#29f2ec503e98f1afcbbd1a26d11a1986b5198d5e"
 dependencies = [
  "accesskit",
  "hashbrown 0.17.1",
@@ -65,9 +61,8 @@ dependencies = [
 
 [[package]]
 name = "accesskit_macos"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3f278988416e5fb600f24d0cfffe31a249ebbff980fb9c5a3b5fbed2c579f73"
+version = "0.27.1"
+source = "git+https://github.com/sena-nana/accesskit?rev=29f2ec503e98f1afcbbd1a26d11a1986b5198d5e#29f2ec503e98f1afcbbd1a26d11a1986b5198d5e"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -79,9 +74,8 @@ dependencies = [
 
 [[package]]
 name = "accesskit_unix"
-version = "0.23.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "665c9079b7325a8168a6793437a172dda44b19a05af8ed52d7e32abaada996fe"
+version = "0.24.0"
+source = "git+https://github.com/sena-nana/accesskit?rev=29f2ec503e98f1afcbbd1a26d11a1986b5198d5e#29f2ec503e98f1afcbbd1a26d11a1986b5198d5e"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
@@ -97,9 +91,8 @@ dependencies = [
 
 [[package]]
 name = "accesskit_windows"
-version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a59e8d7160cbac991c1345c99153783ab96423644ccb1f20617cf80c97596aa1"
+version = "0.35.1"
+source = "git+https://github.com/sena-nana/accesskit?rev=29f2ec503e98f1afcbbd1a26d11a1986b5198d5e#29f2ec503e98f1afcbbd1a26d11a1986b5198d5e"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
