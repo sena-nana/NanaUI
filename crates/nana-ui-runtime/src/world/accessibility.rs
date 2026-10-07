@@ -456,6 +456,7 @@ impl UiWorld {
             role,
             label,
             description: state.description.clone(),
+            role_description: state.role_description.clone(),
             value: if !visible || secure {
                 None
             } else if self.nodes.has_text_inputs() {
@@ -554,6 +555,7 @@ impl UiWorld {
                     label: Some(Arc::clone(&row.label)),
                     value: None,
                     description: row.hint.clone(),
+                    role_description: None,
                     disabled: row.disabled,
                     checked: None,
                     mixed: false,

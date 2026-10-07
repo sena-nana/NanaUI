@@ -1519,14 +1519,16 @@ impl NanaTreeDocument {
                 mutations.set_interaction(id, interaction);
             }
             let accessible_name = self.semantic_accessible_name(widget);
+            let role = accessibility_role(
+                widget.kind,
+                &widget.props.role,
+                &widget.props.element_tag,
+                accessible_name.as_deref(),
+                self.landmark_is_top_level(NodeHandle(widget.id), &widget.props.element_tag),
+            );
             let accessibility = AccessibilityState {
-                role: accessibility_role(
-                    widget.kind,
-                    &widget.props.role,
-                    &widget.props.element_tag,
-                    accessible_name.as_deref(),
-                    self.landmark_is_top_level(NodeHandle(widget.id), &widget.props.element_tag),
-                ),
+                role,
+                role_description: role.role_description().map(Arc::from),
                 label: accessible_name.map(Arc::<str>::from),
                 value: (!widget.props.value.is_empty())
                     .then(|| Arc::<str>::from(widget.props.value.as_str())),

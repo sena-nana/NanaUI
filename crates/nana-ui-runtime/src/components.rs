@@ -2869,12 +2869,26 @@ pub enum AccessibilityRole {
     Generic,
 }
 
+impl AccessibilityRole {
+    /// Spoken control type when the platform maps this role onto a different
+    /// control type. `accesskit_windows` 0.35 copies `role_description` into
+    /// UIA LocalizedControlType, and `Role::Switch` is still a button there.
+    pub const fn role_description(self) -> Option<&'static str> {
+        match self {
+            Self::Switch => Some("开关"),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AccessibilityState {
     pub role: AccessibilityRole,
     pub label: Option<Arc<str>>,
     pub value: Option<Arc<str>>,
     pub description: Option<Arc<str>>,
+    /// Localized control type. See [`AccessibilityRole::role_description`].
+    pub role_description: Option<Arc<str>>,
     /// Remove this node and its descendants from the projected accessibility
     /// tree while keeping them painted and laid out. This is the runtime
     /// equivalent of `aria-hidden="true"` for decorative subtrees.
@@ -2906,6 +2920,7 @@ pub struct AccessibilityNode {
     pub label: Option<Arc<str>>,
     pub value: Option<TextValue>,
     pub description: Option<Arc<str>>,
+    pub role_description: Option<Arc<str>>,
     pub disabled: bool,
     pub checked: Option<bool>,
     pub mixed: bool,

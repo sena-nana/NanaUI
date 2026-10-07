@@ -984,6 +984,9 @@ fn project_node(
     if let Some(description) = &node.description {
         projected.set_description(description.to_string());
     }
+    if let Some(role_description) = &node.role_description {
+        projected.set_role_description(role_description.to_string());
+    }
     let mut children = node
         .children
         .iter()
@@ -1285,6 +1288,26 @@ mod tests {
         assert_eq!(update.nodes[0].1.value(), Some("Value-only text"));
     }
 
+    #[test]
+    fn switch_role_description_reaches_the_accesskit_node() {
+        let mut control = node(2, Some(1), &[]);
+        control.role = AccessibilityRole::Switch;
+        control.label = Some("辉光".into());
+        control.role_description = Some("开关".into());
+        control.checked = Some(false);
+        let (_projector, initial) =
+            AccessibilityProjector::new(vec![node(1, None, &[2]), control], true, 1.0);
+        let switch = initial
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == NodeId(2))
+            .map(|(_, node)| node)
+            .expect("switch node");
+        assert_eq!(switch.role(), Role::Switch);
+        assert_eq!(switch.role_description(), Some("开关"));
+        assert_eq!(switch.label(), Some("辉光"));
+    }
+
     #[cfg(all(feature = "hosted", not(target_os = "android")))]
     #[test]
     fn unpublished_window_exposes_only_its_root_until_the_first_publication() {
@@ -1333,6 +1356,7 @@ mod tests {
             role: AccessibilityRole::Generic,
             label: None,
             description: None,
+            role_description: None,
             value: None,
             disabled: false,
             checked: None,
