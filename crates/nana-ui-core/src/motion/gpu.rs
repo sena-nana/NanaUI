@@ -16,7 +16,7 @@ use super::{
 use crate::PaintTransform;
 
 pub const MOTION_GPU_VALUE_SIZE: usize = 48;
-pub const MOTION_GPU_DESCRIPTOR_SIZE: usize = 272;
+pub const MOTION_GPU_DESCRIPTOR_SIZE: usize = 288;
 pub const MOTION_GPU_KEYFRAME_SIZE: usize = 80;
 pub const MOTION_GPU_TIME_SIZE: usize = 16;
 
@@ -62,28 +62,33 @@ impl MotionGpuValue {
 
 /// Shared presentation clock. Product frames write this without touching
 /// the descriptor storage buffer.
+///
+/// Seconds and a fraction in `[0, 1)`. The shader subtracts integers before
+/// converting the elapsed interval to `f32`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MotionGpuTime {
-    pub now: f32,
+    pub now_secs: u32,
+    pub now_subsec: f32,
     pub eval_motion_id: u32,
-    pub _pad: [u32; 2],
+    pub _pad: u32,
 }
 
 impl MotionGpuTime {
     pub fn new(now: Duration) -> Self {
+        let (now_secs, now_subsec) = pack_instant(now);
         Self {
-            now: duration_secs(now),
+            now_secs,
+            now_subsec,
             eval_motion_id: 0,
-            _pad: [0; 2],
+            _pad: 0,
         }
     }
 
     pub fn with_eval(now: Duration, motion_id: u32) -> Self {
         Self {
-            now: duration_secs(now),
             eval_motion_id: motion_id,
-            _pad: [0; 2],
+            ..Self::new(now)
         }
     }
 }
@@ -123,10 +128,15 @@ pub struct MotionGpuDescriptor {
     pub track_hi: u32,
     pub target_lo: u32,
     pub target_hi: u32,
-    pub start: f32,
+    pub start_secs: u32,
+    pub start_subsec: f32,
     pub delay: f32,
     pub duration: f32,
-    pub paused_at: f32,
+    pub paused_secs: u32,
+    pub paused_subsec: f32,
+    /// `1` when a pause timestamp is packed. `0` keeps the shared clock.
+    pub paused_present: u32,
+    pub _time_pad: u32,
     pub iteration: u32,
     pub direction: u32,
     pub fill: u32,
@@ -151,6 +161,8 @@ const _: () = assert!(std::mem::size_of::<MotionGpuDescriptor>() == MOTION_GPU_D
 const _: () = assert!(std::mem::size_of::<MotionGpuKeyframe>() == MOTION_GPU_KEYFRAME_SIZE);
 const _: () = assert!(std::mem::size_of::<MotionGpuTime>() == MOTION_GPU_TIME_SIZE);
 const _: () = assert!(std::mem::align_of::<MotionGpuDescriptor>() <= 16);
+const _: () = assert!(std::mem::offset_of!(MotionGpuDescriptor, start_secs) == 32);
+const _: () = assert!(std::mem::offset_of!(MotionGpuDescriptor, bezier) == 96);
 
 impl MotionGpuDescriptor {
     pub fn vacant(generation: u32) -> Self {
@@ -163,10 +175,14 @@ impl MotionGpuDescriptor {
             track_hi: 0,
             target_lo: 0,
             target_hi: 0,
-            start: 0.0,
+            start_secs: 0,
+            start_subsec: 0.0,
             delay: 0.0,
             duration: 0.0,
-            paused_at: -1.0,
+            paused_secs: 0,
+            paused_subsec: 0.0,
+            paused_present: 0,
+            _time_pad: 0,
             iteration: 1,
             direction: 0,
             fill: 0,
@@ -286,10 +302,14 @@ pub fn pack_descriptor(
         pack_curve(descriptor.curve);
     let track = descriptor.track_id.get();
     let target = descriptor.slot.target.get();
-    let paused_at = match descriptor.playback.paused_at {
-        Some(at) => duration_secs(at),
-        None => -1.0,
+    let (paused_secs, paused_subsec, paused_present) = match descriptor.playback.paused_at {
+        Some(at) => {
+            let (secs, subsec) = pack_instant(at);
+            (secs, subsec, 1)
+        }
+        None => (0, 0.0, 0),
     };
+    let (start_secs, start_subsec) = pack_instant(descriptor.timing.start);
     let iteration = match descriptor.playback.iteration_count {
         AnimationIteration::Infinite => 0,
         AnimationIteration::Count(count) => count,
@@ -303,10 +323,14 @@ pub fn pack_descriptor(
         track_hi: (track >> 32) as u32,
         target_lo: target as u32,
         target_hi: (target >> 32) as u32,
-        start: duration_secs(descriptor.timing.start),
+        start_secs,
+        start_subsec,
         delay: duration_secs(descriptor.timing.delay),
         duration: duration_secs(descriptor.timing.duration),
-        paused_at,
+        paused_secs,
+        paused_subsec,
+        paused_present,
+        _time_pad: 0,
         iteration,
         direction: pack_direction(descriptor.playback.direction),
         fill: pack_fill(descriptor.playback.fill_mode),
@@ -332,6 +356,15 @@ pub fn pack_descriptor(
 
 pub fn duration_secs(duration: Duration) -> f32 {
     duration.as_secs_f32()
+}
+
+/// Whole seconds plus a fraction in `[0, 1)`. Clamp so a nanosecond count that
+/// `f32` rounds up does not carry a second the [`Duration`] does not have.
+fn pack_instant(duration: Duration) -> (u32, f32) {
+    let secs = u32::try_from(duration.as_secs()).unwrap_or(u32::MAX);
+    let subsec =
+        (duration.subsec_nanos() as f32 / 1_000_000_000.0).min(f32::from_bits(0x3f7f_ffff));
+    (secs, subsec)
 }
 
 pub fn as_bytes<T>(slice: &[T]) -> &[u8] {
@@ -502,5 +535,35 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(matches!(track.to, MotionTo::Value(_)));
+    }
+
+    #[test]
+    fn paused_instant_is_packed_separately_from_the_shared_clock() {
+        let registry = MotionCodecRegistry::builtin();
+        let paused_at = Duration::from_secs(86_400) + Duration::from_millis(25);
+        let mut playback = crate::motion::AnimationPlayback::default();
+        playback.play_state = AnimationPlayState::Paused;
+        playback.paused_at = Some(paused_at);
+        let track = MotionTrack::transition(
+            MotionTrackId::new(1).unwrap(),
+            MotionTargetId::new(1).unwrap(),
+            AnimatableProperty::Opacity,
+            MotionValue::Scalar(0.0),
+            MotionValue::Scalar(1.0),
+            MotionTiming::new(
+                Duration::from_secs(86_400),
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+            ),
+            MotionCurve::Easing(Easing::Linear),
+            playback,
+        );
+        let compiled = compile_motion_descriptor(&track, &registry, None).expect("compile");
+        let packed = pack_descriptor(&compiled.descriptor, 1, 0);
+        let (secs, subsec) = pack_instant(paused_at);
+        assert_eq!(packed.paused_present, 1);
+        assert_eq!(packed.paused_secs, secs);
+        assert_eq!(packed.paused_subsec, subsec);
+        assert_eq!(packed.start_secs, 86_400);
     }
 }

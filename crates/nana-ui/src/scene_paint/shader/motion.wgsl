@@ -37,10 +37,14 @@ struct MotionGpuDescriptor {
     track_hi: u32,
     target_lo: u32,
     target_hi: u32,
-    start: f32,
+    start_secs: u32,
+    start_subsec: f32,
     delay: f32,
     duration: f32,
-    paused_at: f32,
+    paused_secs: u32,
+    paused_subsec: f32,
+    paused_present: u32,
+    _time_pad: u32,
     iteration: u32,
     direction: u32,
     fill: u32,
@@ -69,9 +73,15 @@ struct MotionGpuKeyframe {
 }
 
 struct MotionGpuTime {
-    now: f32,
+    now_secs: u32,
+    now_subsec: f32,
     eval_motion_id: u32,
-    _pad: vec2<u32>,
+    _pad: u32,
+}
+
+struct MotionInstant {
+    secs: u32,
+    subsec: f32,
 }
 
 struct MotionGpuSample {
@@ -89,14 +99,60 @@ var<storage, read> motion_keyframes: array<MotionGpuKeyframe>;
 @group(1) @binding(2)
 var<uniform> motion_time: MotionGpuTime;
 
-fn motion_clock(desc: MotionGpuDescriptor, now: f32) -> f32 {
-    if (desc.play_state == 1u) {
-        if (desc.paused_at >= 0.0) {
-            return desc.paused_at;
-        }
-        return now;
+fn motion_instant(secs: u32, subsec: f32) -> MotionInstant {
+    var instant: MotionInstant;
+    instant.secs = secs;
+    instant.subsec = subsec;
+    return instant;
+}
+
+fn motion_before(left: MotionInstant, right: MotionInstant) -> bool {
+    if (left.secs != right.secs) {
+        return left.secs < right.secs;
     }
-    return now;
+    return left.subsec < right.subsec;
+}
+
+fn motion_add_seconds(secs: u32, subsec: f32, delta: f32) -> MotionInstant {
+    if (delta <= 0.0) {
+        return motion_instant(secs, subsec);
+    }
+    let whole = u32(floor(delta));
+    let frac = delta - f32(whole);
+    var out_secs = secs + whole;
+    var out_sub = subsec + frac;
+    if (out_sub >= 1.0) {
+        out_secs = out_secs + 1u;
+        out_sub = out_sub - 1.0;
+    }
+    return motion_instant(out_secs, out_sub);
+}
+
+fn motion_elapsed(later: MotionInstant, earlier: MotionInstant) -> f32 {
+    if (motion_before(later, earlier)) {
+        return 0.0;
+    }
+    var secs = later.secs - earlier.secs;
+    var sub = later.subsec - earlier.subsec;
+    if (sub < 0.0) {
+        if (secs == 0u) {
+            return 0.0;
+        }
+        secs = secs - 1u;
+        sub = sub + 1.0;
+    }
+    return f32(secs) + sub;
+}
+
+fn motion_effective_start(desc: MotionGpuDescriptor) -> MotionInstant {
+    return motion_add_seconds(desc.start_secs, desc.start_subsec, desc.delay);
+}
+
+fn motion_clock(desc: MotionGpuDescriptor) -> MotionInstant {
+    if (desc.play_state == 1u && desc.paused_present != 0u) {
+        return motion_instant(desc.paused_secs, desc.paused_subsec);
+    }
+    return motion_instant(motion_time.now_secs, motion_time.now_subsec);
 }
 
 fn motion_fill_backwards(fill: u32) -> bool {
@@ -333,22 +389,17 @@ struct MotionTimed {
     applies: bool,
 }
 
-fn motion_timed_progress(desc: MotionGpuDescriptor, now: f32) -> MotionTimed {
+fn motion_timed_progress(desc: MotionGpuDescriptor, now: MotionInstant) -> MotionTimed {
     var out: MotionTimed;
-    let start = desc.start + desc.delay;
-    if (!(start == start)) {
-        out.linear = motion_end_progress(desc.direction, 0u);
-        out.finished = true;
-        out.applies = motion_fill_forwards(desc.fill);
-        return out;
-    }
-    if (now < start) {
+    let start = motion_effective_start(desc);
+    if (motion_before(now, start)) {
         let hold = motion_fill_backwards(desc.fill);
         out.linear = select(0.0, motion_start_progress(desc.direction), hold);
         out.finished = false;
         out.applies = hold;
         return out;
     }
+    let elapsed = motion_elapsed(now, start);
     if (desc.iteration == 0u) {
         let duration = desc.duration;
         if (duration <= 0.0) {
@@ -357,7 +408,7 @@ fn motion_timed_progress(desc: MotionGpuDescriptor, now: f32) -> MotionTimed {
             out.applies = true;
             return out;
         }
-        let t = (now - start) / duration;
+        let t = elapsed / duration;
         let iteration_index = u32(floor(t));
         let linear = clamp(t - f32(iteration_index), 0.0, 1.0);
         out.linear = motion_map_progress(desc.direction, iteration_index, linear);
@@ -365,15 +416,15 @@ fn motion_timed_progress(desc: MotionGpuDescriptor, now: f32) -> MotionTimed {
         out.applies = true;
         return out;
     }
-    let end = start + desc.duration * f32(desc.iteration);
-    if (now > end) {
+    let span = desc.duration * f32(desc.iteration);
+    if (elapsed > span) {
         let hold = motion_fill_forwards(desc.fill);
         out.linear = select(0.0, motion_end_progress(desc.direction, desc.iteration), hold);
         out.finished = true;
         out.applies = hold;
         return out;
     }
-    if (now == end) {
+    if (elapsed == span) {
         out.linear = motion_end_progress(desc.direction, desc.iteration);
         out.finished = true;
         out.applies = true;
@@ -386,7 +437,7 @@ fn motion_timed_progress(desc: MotionGpuDescriptor, now: f32) -> MotionTimed {
         out.applies = motion_fill_forwards(desc.fill);
         return out;
     }
-    let t = (now - start) / duration;
+    let t = elapsed / duration;
     let last = desc.iteration - 1u;
     let iteration_index = min(u32(floor(t)), last);
     let linear = clamp(t - f32(iteration_index), 0.0, 1.0);
@@ -584,17 +635,17 @@ fn motion_physics_state(
     return MotionPhysicsState(rest, motion_zero_velocity(rest));
 }
 
-fn motion_evaluate_physics(desc: MotionGpuDescriptor, now: f32, decay: bool) -> MotionGpuSample {
+fn motion_evaluate_physics(desc: MotionGpuDescriptor, now: MotionInstant, decay: bool) -> MotionGpuSample {
     var sample: MotionGpuSample;
-    let start = desc.start + desc.delay;
-    if (now < start) {
+    let start = motion_effective_start(desc);
+    if (motion_before(now, start)) {
         sample.value = desc.from_value;
         sample.progress = 0.0;
         sample.finished = 0u;
         sample.applies = select(0u, 1u, motion_fill_backwards(desc.fill));
         return sample;
     }
-    let t = max(now - start, 0.0);
+    let t = max(motion_elapsed(now, start), 0.0);
     // A decay has no target: it settles at its own asymptote, x0 + v0 * tau,
     // which is what `evaluate_decay` measures against. Measuring against
     // `to_value` (which a decay track never sets) leaves `finished` and
@@ -612,7 +663,7 @@ fn motion_evaluate_physics(desc: MotionGpuDescriptor, now: f32, decay: bool) -> 
     return sample;
 }
 
-fn motion_evaluate_timed(desc: MotionGpuDescriptor, now: f32) -> MotionGpuSample {
+fn motion_evaluate_timed(desc: MotionGpuDescriptor, now: MotionInstant) -> MotionGpuSample {
     let phase = motion_timed_progress(desc, now);
     let linear = clamp(phase.linear, 0.0, 1.0);
     let progress = motion_sample_progress(desc, linear);
@@ -656,7 +707,7 @@ fn motion_evaluate_id(motion_id: u32, expected_generation: u32) -> MotionGpuSamp
     if (expected_generation != 0u && desc.generation != expected_generation) {
         return sample;
     }
-    let now = motion_clock(desc, motion_time.now);
+    let now = motion_clock(desc);
     if (desc.curve_kind == MOTION_CURVE_SPRING) {
         return motion_evaluate_physics(desc, now, false);
     }

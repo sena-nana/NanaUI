@@ -336,7 +336,7 @@ impl QuadPipeline {
         let motion_layout = super::motion::motion_bind_layout_with_policy(device, policy);
         let dummy_desc = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("nana-ui.scene.quad.motion.descriptors"),
-            size: 272,
+            size: nana_ui_core::MOTION_GPU_DESCRIPTOR_SIZE as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });

@@ -706,8 +706,9 @@ mod tests {
     use nana_ui_core::{
         LayoutStyle, PaintMat4, PaintTransform,
         motion::{
-            AnimatableProperty, DecayParams, Easing, Keyframe, MotionCurve, MotionHandle,
-            MotionSample, MotionTo, MotionTrack, MotionValue, SpringParams, StepJump,
+            AnimatableProperty, AnimationDirection, AnimationFillMode, AnimationIteration,
+            AnimationPlayState, AnimationPlayback, DecayParams, Easing, Keyframe, MotionCurve,
+            MotionHandle, MotionSample, MotionTo, MotionTrack, MotionValue, SpringParams, StepJump,
             evaluate_track,
         },
     };
@@ -1127,6 +1128,82 @@ mod tests {
             .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         queue.submit(Some(encoder.finish()));
+    }
+
+    #[test]
+    fn gpu_evaluate_matches_cpu_after_a_long_epoch() {
+        let (device, queue) = test_device();
+        let start = Duration::from_secs(5 * 24 * 60 * 60) + Duration::from_millis(950);
+        let duration = Duration::from_millis(400);
+        let delay = Duration::from_millis(40);
+        let spec = AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            id(1),
+            start,
+            duration,
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Opacity)
+        .with_delay(delay)
+        .with_range(
+            MotionValue::Scalar(0.0),
+            MotionTo::Value(MotionValue::Scalar(1.0)),
+        );
+        let active = start + delay + Duration::from_millis(100);
+        let (world, scene, handle, track) = compositor_motion_scene(spec, active);
+        assert_cpu_gpu_eval_parity(
+            &device,
+            &queue,
+            &world,
+            &scene,
+            handle,
+            &track,
+            &[
+                start + Duration::from_millis(20),
+                active,
+                start + delay + duration,
+            ],
+            "long-epoch",
+        );
+    }
+
+    #[test]
+    fn gpu_paused_clock_matches_cpu_after_a_long_epoch() {
+        let (device, queue) = test_device();
+        let start = Duration::from_secs(5 * 24 * 60 * 60) + Duration::from_millis(950);
+        let paused_at = start + Duration::from_millis(100);
+        let spec = AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            id(1),
+            start,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Opacity)
+        .with_range(
+            MotionValue::Scalar(0.0),
+            MotionTo::Value(MotionValue::Scalar(1.0)),
+        )
+        .with_playback(AnimationPlayback {
+            iteration_count: AnimationIteration::ONCE,
+            direction: AnimationDirection::Normal,
+            fill_mode: AnimationFillMode::None,
+            play_state: AnimationPlayState::Paused,
+            paused_at: Some(paused_at),
+        });
+        let (world, scene, handle, track) = compositor_motion_scene(spec, paused_at);
+        assert_cpu_gpu_eval_parity(
+            &device,
+            &queue,
+            &world,
+            &scene,
+            handle,
+            &track,
+            &[paused_at + Duration::from_secs(2)],
+            "long-epoch-paused",
+        );
     }
 
     #[test]
