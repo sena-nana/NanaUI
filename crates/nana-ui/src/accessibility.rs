@@ -965,7 +965,7 @@ fn project_node(
     interactive: bool,
     scale_factor: f32,
 ) -> Vec<(NodeId, Node)> {
-    let mut projected = Node::new(project_role(node.role, node.multiline));
+    let mut projected = Node::new(projected_role(node));
     // AccessKit Label nodes expose their text through value (including the
     // native UIA Name property), unlike controls whose accessible name is label.
     if node.role != AccessibilityRole::Text
@@ -1218,6 +1218,19 @@ fn character_index_to_byte(value: &str, character_index: usize) -> Option<usize>
 
 const fn node_id(id: StableNodeId) -> NodeId {
     NodeId(id.get())
+}
+
+/// AccessKit's platform filter drops `GenericContainer` before it asks about
+/// ScrollPattern. A generic box that can actually move has to stay in the
+/// tree as `ScrollView`. A role that already names a control keeps that role,
+/// and a generic box with no positive range stays generic.
+fn projected_role(node: &AccessibilityNode) -> Role {
+    let role = project_role(node.role, node.multiline);
+    if role == Role::GenericContainer && (node.scroll_x.is_some() || node.scroll_y.is_some()) {
+        Role::ScrollView
+    } else {
+        role
+    }
 }
 
 const fn project_role(role: AccessibilityRole, multiline: bool) -> Role {
@@ -2188,6 +2201,7 @@ mod tests {
             minimum: 0.0,
             maximum: 240.0,
         });
+        let vertical = scroll.scroll_y;
         let (projector, update) = AccessibilityProjector::new(vec![root, scroll], true, 1.0);
         let projected = &update
             .nodes
@@ -2195,11 +2209,29 @@ mod tests {
             .find(|(id, _)| *id == NodeId(2))
             .expect("projected scroll container")
             .1;
+        assert_eq!(projected.role(), Role::ScrollView);
         assert_eq!(projected.scroll_y(), Some(12.0));
         assert_eq!(projected.scroll_y_min(), Some(0.0));
         assert_eq!(projected.scroll_y_max(), Some(240.0));
+        assert!(projected.scroll_y_max().unwrap() > projected.scroll_y_min().unwrap());
         assert!(projected.supports_action(Action::ScrollUp));
         assert!(projected.supports_action(Action::ScrollDown));
+        let plain = node(4, Some(1), &[]);
+        let mut list = node(5, Some(1), &[]);
+        list.role = AccessibilityRole::List;
+        list.scroll_y = vertical;
+        let (_projector, kept) =
+            AccessibilityProjector::new(vec![node(1, None, &[4, 5]), plain, list], true, 1.0);
+        let role_of = |id: u64| {
+            kept.nodes
+                .iter()
+                .find(|(node_id, _)| *node_id == NodeId(id))
+                .expect("projected node")
+                .1
+                .role()
+        };
+        assert_eq!(role_of(4), Role::GenericContainer);
+        assert_eq!(role_of(5), Role::List);
         for (action, expected) in [
             (
                 Action::ScrollUp,

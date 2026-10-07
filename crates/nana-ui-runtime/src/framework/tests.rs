@@ -3592,6 +3592,90 @@ fn focusing_a_descendant_below_the_viewport_scrolls_it_into_view() {
     assert!(offset > 0.0);
 }
 
+/// Hidden scrollbars still clip overflow. The accessibility node has to carry
+/// the real viewport offset and a positive range, and focusing a row that is
+/// already inside the clip must not move that offset.
+#[test]
+fn hidden_overflow_publishes_the_viewport_offset_and_keeps_a_visible_row() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut viewport = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut viewport.layout);
+        layout.width = Some(LengthSpec::Px(200.0));
+        layout.height = Some(LengthSpec::Px(120.0));
+    }
+    let scroll = context
+        .create_component(
+            document,
+            ScrollView::new(ScrollAxes::Vertical)
+                .scrollbars(nana_ui_core::ScrollbarVisibility::Hidden)
+                .label("页面内容")
+                .style(viewport),
+        )
+        .unwrap();
+    let mut rows = Vec::new();
+    for index in 0..5 {
+        let mut row = Button::new(format!("Row {index}"));
+        {
+            let layout = Arc::make_mut(&mut row.style.layout);
+            layout.width = Some(LengthSpec::Fill);
+            layout.height = Some(LengthSpec::Px(40.0));
+            layout.min_height = Some(LengthSpec::Px(40.0));
+            layout.max_height = Some(LengthSpec::Px(40.0));
+        }
+        row.style.control_height = None;
+        let row = context.create_component(document, row).unwrap();
+        context.append_child(scroll, row).unwrap();
+        rows.push(row);
+    }
+    context
+        .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+        .unwrap();
+
+    let axis_of = |context: &AppContext| {
+        context
+            .world()
+            .project_accessibility(document)
+            .into_iter()
+            .find(|node| node.id == scroll.stable_id())
+            .and_then(|node| node.scroll_y)
+            .expect("hidden overflow publishes a vertical scroll range")
+    };
+    let axis = axis_of(&context);
+    assert!(
+        axis.maximum > axis.minimum,
+        "scroll range must be positive, got {axis:?}"
+    );
+    assert_eq!(axis.value, 0.0);
+    assert!(
+        context
+            .world()
+            .project_accessibility(document)
+            .into_iter()
+            .find(|node| node.id == scroll.stable_id())
+            .is_some_and(|node| node.scroll_x.is_none()),
+        "a vertical clip does not publish a horizontal range"
+    );
+
+    assert!(context.focus_node(document, rows[1].stable_id()).unwrap());
+    assert_eq!(
+        context.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        0.0,
+        "a row already inside the clip does not move the scrollport"
+    );
+
+    assert!(
+        context
+            .scroll_by(scroll, ScrollOffset { x: 0.0, y: 40.0 })
+            .unwrap()
+    );
+    let offset = f64::from(context.world().scroll_offset(scroll.stable_id()).unwrap().y);
+    let axis = axis_of(&context);
+    assert_eq!(axis.value, offset);
+    assert!(axis.maximum > axis.minimum);
+}
+
 #[test]
 fn scroll_into_view_reports_a_missing_target() {
     let mut context = AppContext::new();
