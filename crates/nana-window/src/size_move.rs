@@ -125,6 +125,7 @@ mod windows_hook {
         // system setting broadcasts NanaUI reports to programs.
         if message == WM_SETTINGCHANGE {
             crate::motion_preference::observe_setting_change(wparam);
+            crate::contrast_preference::observe_setting_change(wparam);
         }
         if matches!(message, WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE) {
             // SAFETY: ref_data is the live HookState installed with this subclass.

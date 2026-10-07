@@ -298,6 +298,8 @@ struct WindowManager<Program: RuntimeProgram> {
     last_theme: crate::ThemeAppearance,
     /// System reduce-motion preference, as last delivered to the program.
     reduced_motion: bool,
+    /// System high-contrast flag, as last delivered to the program.
+    high_contrast: bool,
     settings: WindowDescriptor,
     chrome: HashMap<WindowId, WindowChromeSession>,
     bind_after_present: HashSet<WindowId>,
@@ -1114,6 +1116,7 @@ fn complete_startup<Program: RuntimeProgram>(
     }
     let geometry = window_geometry(window.as_ref());
     let reduced_motion = nana_window::system_reduced_motion().unwrap_or(false);
+    let high_contrast = nana_window::system_high_contrast().unwrap_or(false);
     let context = program_context(
         message_tx.clone(),
         Arc::clone(&host_work),
@@ -1129,6 +1132,7 @@ fn complete_startup<Program: RuntimeProgram>(
     .with_windows(&windows)
     .with_window_tag(settings.tag.clone())
     .with_reduced_motion(reduced_motion)
+    .with_high_contrast(high_contrast)
     .with_store(nana_ui_core::ProgramStore::share(Arc::clone(&store)));
     host_startup.ui_ready_begins();
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
@@ -1264,6 +1268,7 @@ fn complete_startup<Program: RuntimeProgram>(
         render_suspended: false,
         last_theme,
         reduced_motion,
+        high_contrast,
         settings,
         chrome: HashMap::new(),
         bind_after_present: HashSet::new(),
@@ -1391,6 +1396,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .and_then(|host| host.settings.tag.clone()),
         )
         .with_reduced_motion(self.reduced_motion)
+        .with_high_contrast(self.high_contrast)
         .with_store(Arc::clone(&self.program_store))
     }
 

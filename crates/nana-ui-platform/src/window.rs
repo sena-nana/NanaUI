@@ -163,6 +163,12 @@ pub enum WindowEvent {
         id: WindowId,
         reduced: bool,
     },
+    /// The system high-contrast flag changed. Sent to every window; read the
+    /// current value from `RuntimeProgramContext::high_contrast`.
+    HighContrastChanged {
+        id: WindowId,
+        high_contrast: bool,
+    },
     PointerPresenceChanged {
         id: WindowId,
         inside: bool,

@@ -570,6 +570,60 @@ impl SemanticPalette {
         }
     }
 
+    /// Black, white, yellow and cyan. Opaque, so a high-contrast theme does
+    /// not wash out against the desktop the way a translucent accent does.
+    ///
+    /// Text, muted and faint stay white on black. The accent is yellow with
+    /// black glyphs. Selection is a solid blue that still clears white text.
+    pub const fn high_contrast() -> Self {
+        let black = SemanticColor::rgb8(0, 0, 0);
+        let white = SemanticColor::rgb8(255, 255, 255);
+        let yellow = SemanticColor::rgb8(255, 255, 0);
+        Self {
+            background: black,
+            surface: black,
+            subtle: black,
+            hover: SemanticColor::rgb8(32, 32, 32),
+            active: SemanticColor::rgb8(64, 64, 64),
+            selected: SemanticColor::rgb8(0, 0, 170),
+            selected_hover: SemanticColor::rgb8(0, 0, 210),
+            selected_pressed: SemanticColor::rgb8(0, 0, 130),
+            border: white,
+            border_soft: white,
+            border_strong: white,
+            text: white,
+            muted: white,
+            faint: white,
+            accent: yellow,
+            accent_strong: yellow,
+            accent_soft: SemanticColor::rgb8(64, 64, 0),
+            accent_soft_hover: SemanticColor::rgb8(96, 96, 0),
+            accent_soft_pressed: SemanticColor::rgb8(48, 48, 0),
+            accent_on_soft: yellow,
+            accent_text: black,
+            focus_surface: yellow,
+            focus_border: yellow,
+            focus_text: black,
+            highlight: SemanticColor::rgb8(0, 255, 255),
+            highlight_hover: SemanticColor::rgb8(0, 220, 220),
+            highlight_pressed: SemanticColor::rgb8(0, 180, 180),
+            highlight_text: black,
+            success: SemanticColor::rgb8(0, 255, 0),
+            warning: yellow,
+            danger: SemanticColor::rgb8(255, 64, 64),
+        }
+    }
+
+    /// The palette to paint. `high_contrast` replaces the caller's colours
+    /// with [`Self::high_contrast`]; otherwise the caller's palette is kept.
+    pub const fn for_system_contrast(self, high_contrast: bool) -> Self {
+        if high_contrast {
+            Self::high_contrast()
+        } else {
+            self
+        }
+    }
+
     /// Re-derive the whole accent family from one ramp.
     ///
     /// Setting `accent` alone leaves `accent_soft` / `accent_soft_hover` /
@@ -1054,6 +1108,64 @@ mod tests {
                 label >= 4.5 || label >= on_accent - 0.01,
                 "{mode:?} focus text is {label:.2}:1 on the focus surface, \
                  under both 4.5:1 and this palette's {on_accent:.2}:1 for text on accent"
+            );
+        }
+    }
+
+    /// Forcing the high-contrast flag replaces a light or dark palette and
+    /// keeps body text, the accent pair, selection and the focus fill at the
+    /// contrast floors the accessibility contract asks for.
+    #[test]
+    fn high_contrast_replaces_the_palette_and_keeps_text_contrast() {
+        fn channel(value: f32) -> f64 {
+            let value = f64::from(value);
+            if value <= 0.040_45 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        fn luminance(color: SemanticColor) -> f64 {
+            0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+        }
+        fn contrast(a: SemanticColor, b: SemanticColor) -> f64 {
+            let (a, b) = (luminance(a), luminance(b));
+            let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+            (hi + 0.05) / (lo + 0.05)
+        }
+
+        let forced = SemanticPalette::light().for_system_contrast(true);
+        assert_eq!(forced, SemanticPalette::high_contrast());
+        assert_ne!(forced.surface, SemanticPalette::light().surface);
+        assert_ne!(forced.surface, SemanticPalette::dark().surface);
+        assert_eq!(
+            SemanticPalette::dark().for_system_contrast(false),
+            SemanticPalette::dark()
+        );
+        assert!(
+            forced.background.r < 0.5,
+            "high contrast stays on the dark recipe"
+        );
+
+        let pairs = [
+            (forced.text, forced.surface, 4.5),
+            (forced.text, forced.background, 4.5),
+            (forced.muted, forced.surface, 4.5),
+            (forced.faint, forced.surface, 4.5),
+            (forced.accent_text, forced.accent, 4.5),
+            (forced.text, forced.selected, 4.5),
+            (forced.accent_on_soft, forced.selected, 4.5),
+            (forced.accent_on_soft, forced.accent_soft, 4.5),
+            (forced.focus_text, forced.focus_surface, 4.5),
+            (forced.highlight_text, forced.highlight, 4.5),
+            (forced.border, forced.surface, 3.0),
+            (forced.focus_border, forced.surface, 3.0),
+        ];
+        for (fg, bg, floor) in pairs {
+            let ratio = contrast(fg, bg);
+            assert!(
+                ratio >= floor,
+                "high contrast {ratio:.2}:1 is below {floor}:1"
             );
         }
     }

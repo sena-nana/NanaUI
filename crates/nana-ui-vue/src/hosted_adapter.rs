@@ -588,6 +588,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 | WindowEvent::MousePassthroughChanged { .. }
                 | WindowEvent::SkipTaskbarChanged { .. }
                 | WindowEvent::AppearanceChanged { .. }
+                | WindowEvent::HighContrastChanged { .. }
                 | WindowEvent::FileDialogRejected { .. }
                 | WindowEvent::FileDialogCompleted { .. }
         );
@@ -705,7 +706,8 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             WindowEvent::MousePassthroughChanged { .. }
             | WindowEvent::SkipTaskbarChanged { .. }
             | WindowEvent::PointerPresenceChanged { .. }
-            | WindowEvent::ReducedMotionChanged { .. } => {}
+            | WindowEvent::ReducedMotionChanged { .. }
+            | WindowEvent::HighContrastChanged { .. } => {}
             WindowEvent::ModeChanged { id, mode } => {
                 self.vue.record_platform_mode(VueWindowId(id.0), &mode)?;
             }

@@ -46,6 +46,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     tasks: SyncSender<Task<Message>>,
     system_appearance: Option<SystemAppearance>,
     reduced_motion: bool,
+    high_contrast: bool,
     store: SharedStore,
     startup: crate::StartupHandle,
 }
@@ -66,6 +67,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
             tasks: self.tasks.clone(),
             system_appearance: self.system_appearance,
             reduced_motion: self.reduced_motion,
+            high_contrast: self.high_contrast,
             store: Arc::clone(&self.store),
             startup: self.startup.clone(),
         }
@@ -100,6 +102,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             tasks,
             system_appearance,
             reduced_motion: false,
+            high_contrast: false,
             store: memory_store(),
             startup,
         }
@@ -107,6 +110,11 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
 
     pub(crate) fn with_reduced_motion(mut self, reduced: bool) -> Self {
         self.reduced_motion = reduced;
+        self
+    }
+
+    pub(crate) fn with_high_contrast(mut self, high_contrast: bool) -> Self {
+        self.high_contrast = high_contrast;
         self
     }
 
@@ -154,6 +162,12 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     /// report it; changes arrive as `WindowEvent::ReducedMotionChanged`.
     pub const fn reduced_motion(&self) -> bool {
         self.reduced_motion
+    }
+
+    /// The system high-contrast flag. `false` when the platform does not
+    /// report it; changes arrive as `WindowEvent::HighContrastChanged`.
+    pub const fn high_contrast(&self) -> bool {
+        self.high_contrast
     }
 
     pub const fn geometry(&self) -> WindowGeometry {

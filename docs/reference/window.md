@@ -407,6 +407,14 @@ fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramCont
 - macOS：读取「减少动态效果」（`NSWorkspace.accessibilityDisplayShouldReduceMotion`）。只在创建时读取。运行中切换不发送事件。
 - Linux：暂不上报。恒为 `false`。不发送事件。
 
+### 系统高对比
+
+`RuntimeProgramContext::high_contrast()` 返回系统高对比是否打开。窗口创建时读取。用户在运行中切换时，宿主向每扇窗口发送 `WindowEvent::HighContrastChanged { id, high_contrast }`。之后的回调上下文读到新值。应用把自己的 `SemanticPalette` 交给 `SemanticPalette::for_system_contrast`；为真时换成 `SemanticPalette::high_contrast()`。NanaUI 不改写应用已经装上的主题，除非应用自己重装。
+
+- Windows：读取 `SPI_GETHIGHCONTRAST` 的 `HCF_HIGHCONTRASTON`。宿主窗口子类收到 `WM_SETTINGCHANGE`（`SPI_SETHIGHCONTRAST`）后在下一次 `about_to_wait` 重新读取。只在值变化时发送事件。这不是 DirectWrite 的文字 gamma。
+- macOS 与 Linux：暂不上报。恒为 `false`。不发送事件。
+- 测试用 `nana_window::force_high_contrast(Some(true))` 强制该标志，`None` 回到平台读取。
+
 ### 显示器与全屏
 
 `WindowService::displays()`（嵌入式宿主用 `EmbeddedRuntime::displays(event_loop)`）在窗口线程枚举当前连接的显示器。返回 `DisplayInfo`：id、名称、物理位置/尺寸、缩放、刷新率、是否主屏。Wayland 不上报主屏。`DisplayInfo::logical_bounds()` 把物理矩形换算成 `WindowDescriptor::initial_position` 使用的全局逻辑坐标。没有位置或尺寸时返回 `None`。

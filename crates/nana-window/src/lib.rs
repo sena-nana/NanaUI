@@ -7,6 +7,7 @@ pub use browser::{
     BrowserCommand, BrowserCompletion, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState,
     NativeBrowser,
 };
+mod contrast_preference;
 #[cfg(target_os = "windows")]
 mod dcomp;
 mod file_dialog;
@@ -35,6 +36,9 @@ pub use chrome::set_present_transaction;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::{FrameGrab, LiveFrameMove};
 pub use chrome::{FrameResizeEdge, NonClientRenderingStrategy};
+pub use contrast_preference::{
+    force_high_contrast, system_high_contrast, take_high_contrast_change,
+};
 pub use file_dialog::{
     FileDialogError, FileDialogHandle, FileDialogKind, FileDialogRequest, FileDialogResult,
     FileDialogSupport, FileFilter, describe_configured_dialog, file_dialog_support,

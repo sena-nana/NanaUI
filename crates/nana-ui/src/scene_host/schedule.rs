@@ -130,6 +130,27 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
     }
 
+    /// Deliver a system high-contrast change recorded by the window subclass.
+    fn sync_high_contrast(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if !nana_window::take_high_contrast_change() {
+            return;
+        }
+        let Some(high_contrast) = nana_window::system_high_contrast() else {
+            return;
+        };
+        if high_contrast == self.high_contrast {
+            return;
+        }
+        self.high_contrast = high_contrast;
+        for id in self.known_window_ids() {
+            let update = self.program.window_event(
+                WindowEvent::HighContrastChanged { id, high_contrast },
+                &self.context_for(id),
+            );
+            self.apply_update(event_loop, update, None);
+        }
+    }
+
     pub(super) fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         // Pointer moves and wheel deltas merged through this turn route once.
         self.drain_deferred_input(event_loop);
@@ -162,6 +183,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let startup_latch = self.poll_startup_latch(event_loop);
         self.sample_passthrough_forward(event_loop);
         self.sync_reduced_motion(event_loop);
+        self.sync_high_contrast(event_loop);
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
             self.wake(event_loop, now);
         }
