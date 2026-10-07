@@ -354,17 +354,24 @@ impl AccessibilityProjector {
     }
 
     fn focused_node_id(&self) -> NodeId {
-        self.focused
-            .first()
-            .copied()
-            .map(node_id)
-            .unwrap_or_else(|| {
-                if self.window_root {
-                    FOREST_ROOT_ID
-                } else {
-                    self.roots.first().copied().map_or(FOREST_ROOT_ID, node_id)
-                }
-            })
+        // AccessKit has one focus id. A context-menu row is a virtual
+        // descendant: keyboard focus stays on the trigger, and the highlighted
+        // row is also marked focused. Virtual ids sort after retained ids, so
+        // the lowest id would leave the platform focus on the trigger.
+        let id = self
+            .focused
+            .iter()
+            .rev()
+            .find(|id| nana_ui_runtime::decode_virtual_menu_item(**id).is_some())
+            .or_else(|| self.focused.first())
+            .copied();
+        id.map(node_id).unwrap_or_else(|| {
+            if self.window_root {
+                FOREST_ROOT_ID
+            } else {
+                self.roots.first().copied().map_or(FOREST_ROOT_ID, node_id)
+            }
+        })
     }
 
     fn reconcile_text_runs(&mut self) {
@@ -1387,6 +1394,49 @@ mod tests {
         assert_eq!(removed.focus, FOREST_ROOT_ID);
         assert_eq!(removed.nodes.len(), 1);
         assert!(projector.focused.is_empty());
+    }
+
+    #[test]
+    fn virtual_menu_row_wins_platform_focus_over_its_trigger() {
+        let menu_id = 5u64;
+        let row =
+            nana_ui_runtime::virtual_menu_item_id(StableNodeId::new(menu_id).unwrap(), 0).unwrap();
+        let mut trigger = node(4, Some(1), &[]);
+        trigger.role = AccessibilityRole::ListItem;
+        trigger.label = Some("窗口".into());
+        trigger.focused = true;
+        let mut menu = node(menu_id, Some(1), &[row.get()]);
+        menu.role = AccessibilityRole::Menu;
+        let mut item = node(row.get(), Some(menu_id), &[]);
+        item.role = AccessibilityRole::MenuItem;
+        item.label = Some("取消窗口置顶".into());
+        item.focused = true;
+        item.selected = Some(true);
+        let mut projector = AccessibilityProjector::retain(
+            vec![
+                node(1, None, &[4, menu_id]),
+                trigger.clone(),
+                menu,
+                item.clone(),
+            ],
+            true,
+            1.0,
+            Some(0),
+            true,
+        );
+        assert_eq!(projector.full_update().focus, NodeId(row.get()));
+
+        item.focused = false;
+        item.selected = Some(false);
+        let update = projector
+            .apply_delta(AccessibilityDelta {
+                generation: 1,
+                updated: vec![item],
+                removed: vec![],
+            })
+            .unwrap();
+        assert_eq!(update.focus, NodeId(4));
+        assert!(trigger.focused);
     }
 
     #[test]
