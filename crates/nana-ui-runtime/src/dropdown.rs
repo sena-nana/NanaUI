@@ -49,6 +49,8 @@ impl DropdownOption {
             disabled: self.disabled,
             checked: false,
             icon: None,
+            accessible_name: None,
+            mark: crate::MenuItemMark::Command,
         })
     }
 }
@@ -292,6 +294,8 @@ impl Dropdown {
                     DropdownSelection::Single(_) => false,
                 },
                 icon: None,
+                accessible_name: None,
+                mark: crate::MenuItemMark::Command,
             })
             .collect()
     }

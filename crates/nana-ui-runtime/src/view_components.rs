@@ -1055,6 +1055,7 @@ fn kind_colors(kind: nana_ui_core::ButtonKind, selected: bool, style: &mut NodeS
 pub struct IconGlyph {
     pub icon: nana_ui_core::Icon,
     pub size: f32,
+    pub decorative: bool,
     pub style: NodeStyle,
 }
 
@@ -1063,6 +1064,7 @@ impl IconGlyph {
         Self {
             icon,
             size: nana_ui_core::ControlSize::Small.icon_size(),
+            decorative: false,
             style: NodeStyle {
                 foreground: Some(nana_ui_core::SemanticColorRole::Muted),
                 ..NodeStyle::default()
@@ -1072,6 +1074,12 @@ impl IconGlyph {
 
     pub fn size(mut self, size: f32) -> Self {
         self.size = size.max(0.0);
+        self
+    }
+
+    /// Keep the glyph painted and drop it from the accessibility tree.
+    pub const fn decorative(mut self) -> Self {
+        self.decorative = true;
         self
     }
 
@@ -1139,7 +1147,10 @@ impl ComponentView for IconGlyph {
                 pointer_events: false,
                 focusable: false,
             },
-            AccessibilityState::default(),
+            AccessibilityState {
+                hidden: self.decorative,
+                ..AccessibilityState::default()
+            },
         );
     }
 }

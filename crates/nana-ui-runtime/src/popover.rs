@@ -59,6 +59,8 @@ pub struct Popover {
     /// Text trigger label, or the accessible name when [`Popover::trigger_icon`]
     /// or [`Popover::trigger_content`] draws the trigger instead.
     pub trigger: Arc<str>,
+    /// Spoken name when [`Self::trigger`] is too short. Empty keeps the trigger.
+    pub accessible_name: Arc<str>,
     pub trigger_icon: Option<Icon>,
     /// A child that draws the trigger. It stays shown while the surface is
     /// closed and is not one of the surface's items; it is display only (the
@@ -82,6 +84,7 @@ impl Popover {
     pub fn new() -> Self {
         Self {
             trigger: Arc::from(""),
+            accessible_name: Arc::from(""),
             trigger_icon: None,
             trigger_content: None,
             open: false,
@@ -98,6 +101,12 @@ impl Popover {
 
     pub fn trigger(mut self, trigger: impl Into<Arc<str>>) -> Self {
         self.trigger = trigger.into();
+        self
+    }
+
+    /// Speak `name` while the trigger still paints [`Self::trigger`].
+    pub fn accessible_name(mut self, name: impl Into<Arc<str>>) -> Self {
+        self.accessible_name = name.into();
         self
     }
 
@@ -208,6 +217,7 @@ impl crate::ComponentView for Popover {
             self.alignment,
             "popover",
             self.bare_trigger,
+            &self.accessible_name,
         );
     }
 }
@@ -231,6 +241,12 @@ impl ActionMenu {
 
     pub fn trigger(mut self, trigger: impl Into<Arc<str>>) -> Self {
         self.popover = self.popover.trigger(trigger);
+        self
+    }
+
+    /// Speak `name` while the trigger still paints its visible label.
+    pub fn accessible_name(mut self, name: impl Into<Arc<str>>) -> Self {
+        self.popover = self.popover.accessible_name(name);
         self
     }
 
@@ -303,6 +319,7 @@ impl crate::ComponentView for ActionMenu {
             self.popover.alignment,
             "action-menu",
             self.popover.bare_trigger,
+            &self.popover.accessible_name,
         );
     }
 }
@@ -323,6 +340,7 @@ pub(crate) fn project_menu_surface(
     alignment: PopoverAlignment,
     label: &str,
     bare_trigger: bool,
+    accessible_name: &Arc<str>,
 ) {
     let open = world.project_menu_presence(id, open, mutations);
     // A child that draws the trigger only counts while it is one.
@@ -400,7 +418,11 @@ pub(crate) fn project_menu_surface(
         },
         AccessibilityState {
             role: AccessibilityRole::Menu,
-            label: Some(trigger.unwrap_or_else(|| Arc::from(label))),
+            label: Some(if accessible_name.is_empty() {
+                trigger.unwrap_or_else(|| Arc::from(label))
+            } else {
+                Arc::clone(accessible_name)
+            }),
             ..AccessibilityState::default()
         },
     );

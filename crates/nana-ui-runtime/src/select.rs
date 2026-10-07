@@ -346,6 +346,8 @@ impl crate::ComponentView for Select {
                     disabled: option.disabled,
                     checked: false,
                     icon: None,
+                    accessible_name: None,
+                    mark: crate::MenuItemMark::Command,
                 })
                 .collect(),
             highlighted: self.highlighted,

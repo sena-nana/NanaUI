@@ -24,12 +24,15 @@ const ICON_GAP: f32 = nana_ui_core::space::MD;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActionMenuItem {
     pub label: Arc<str>,
+    /// Spoken name when [`Self::label`] is ambiguous. Empty keeps the label.
+    pub accessible_name: Arc<str>,
     pub hint: Option<Arc<str>>,
     pub leading: Option<Icon>,
     pub size: ControlSize,
     pub active: bool,
     pub danger: bool,
     pub disabled: bool,
+    pub mark: crate::MenuItemMark,
     pub style: NodeStyle,
 }
 
@@ -46,14 +49,34 @@ impl ActionMenuItem {
         let size = ControlSize::Small;
         Self {
             label: label.into(),
+            accessible_name: Arc::from(""),
             hint: None,
             leading: None,
             size,
             active: false,
             danger: false,
             disabled: false,
+            mark: crate::MenuItemMark::Command,
             style: item_style(size),
         }
+    }
+
+    /// Speak `name` while the row still paints [`Self::label`].
+    pub fn accessible_name(mut self, name: impl Into<Arc<str>>) -> Self {
+        self.accessible_name = name.into();
+        self
+    }
+
+    /// Independent on/off. Projects as a checkbox, which exposes Toggle.
+    pub fn check(mut self, on: bool) -> Self {
+        self.mark = crate::MenuItemMark::Check(on);
+        self
+    }
+
+    /// One of a mutually exclusive set. The current row projects as a radio.
+    pub fn radio(mut self, current: bool) -> Self {
+        self.mark = crate::MenuItemMark::Radio(current);
+        self
     }
 
     pub fn hint(mut self, hint: impl Into<Arc<str>>) -> Self {
@@ -159,6 +182,7 @@ impl crate::ComponentView for ActionMenuItem {
                 },
             );
         }
+        let spoken = menu_spoken_name(&self.label, Some(&self.accessible_name));
         project_common(
             id,
             world,
@@ -169,11 +193,12 @@ impl crate::ComponentView for ActionMenuItem {
                 focusable: !self.disabled,
             },
             AccessibilityState {
-                role: AccessibilityRole::MenuItem,
-                label: Some(Arc::clone(&self.label)),
+                role: self.mark.role(),
+                label: Some(spoken),
                 description: self.hint.clone(),
                 disabled: self.disabled,
-                selected: Some(self.active),
+                checked: self.mark.checked(),
+                selected: self.mark.selected(),
                 ..AccessibilityState::default()
             },
         );
@@ -298,10 +323,13 @@ impl crate::ComponentView for AnchoredActionMenu {
 pub struct ContextMenuItem {
     pub value: Arc<str>,
     pub label: Arc<str>,
+    /// Spoken name when [`Self::label`] is too short to stand alone.
+    pub accessible_name: Option<Arc<str>>,
     pub hint: Option<Arc<str>>,
     pub icon: Option<Icon>,
     pub disabled: bool,
     pub danger: bool,
+    pub mark: crate::MenuItemMark,
 }
 
 impl ContextMenuItem {
@@ -309,11 +337,33 @@ impl ContextMenuItem {
         Self {
             value: value.into(),
             label: label.into(),
+            accessible_name: None,
             hint: None,
             icon: None,
             disabled: false,
             danger: false,
+            mark: crate::MenuItemMark::Command,
         }
+    }
+
+    /// Speak `name` while the row still paints [`Self::label`].
+    pub fn named(mut self, name: impl Into<Arc<str>>) -> Self {
+        let name = name.into();
+        self.accessible_name = (!name.is_empty()).then_some(name);
+        self
+    }
+
+    /// Independent on/off. Projects as a checkbox, which exposes Toggle.
+    pub fn check(mut self, on: bool) -> Self {
+        self.mark = crate::MenuItemMark::Check(on);
+        self
+    }
+
+    /// One of a mutually exclusive set. The current row projects as a radio
+    /// button, which exposes SelectionItem.
+    pub fn radio(mut self, current: bool) -> Self {
+        self.mark = crate::MenuItemMark::Radio(current);
+        self
     }
 
     pub fn hint(mut self, hint: impl Into<Arc<str>>) -> Self {
@@ -602,8 +652,10 @@ impl crate::ComponentView for ContextMenu {
                 label: item.label,
                 hint: item.hint,
                 disabled: item.disabled,
-                checked: false,
+                checked: item.mark.shows_mark(),
                 icon: item.icon,
+                accessible_name: item.accessible_name,
+                mark: item.mark,
             })
             .collect();
         if open {
@@ -791,6 +843,13 @@ fn context_menu_height(
     }
 }
 
+fn menu_spoken_name(label: &Arc<str>, accessible_name: Option<&Arc<str>>) -> Arc<str> {
+    accessible_name
+        .filter(|name| !name.is_empty())
+        .cloned()
+        .unwrap_or_else(|| Arc::clone(label))
+}
+
 pub(crate) fn context_menu_geometry(
     bounds: LayoutBox,
     query: Option<&Arc<str>>,
@@ -833,6 +892,11 @@ pub(crate) fn context_menu_geometry(
     };
     let item_height = ControlSize::Small.height_in(metrics);
     let size = ControlSize::Small;
+    let check_reserve = if rows.iter().any(|row| row.mark.reserves_lane()) {
+        nana_ui_core::type_scale::LINE
+    } else {
+        0.0
+    };
     let options = rows
         .iter()
         .enumerate()
@@ -845,12 +909,17 @@ pub(crate) fn context_menu_geometry(
                 width: (bounds.width - MENU_PADDING * 2.0).max(0.0),
                 height: item_height,
             };
+            let content = LayoutBox {
+                x: row.x + check_reserve,
+                width: (row.width - check_reserve).max(0.0),
+                ..row
+            };
             let icon_color = if option.disabled {
                 palette.faint.as_rgba_array()
             } else {
                 palette.muted.as_rgba_array()
             };
-            let (label_x, icon) = menu_option_icon(row, option.icon, size, icon_color, metrics);
+            let (label_x, icon) = menu_option_icon(content, option.icon, size, icon_color, metrics);
             let label_right = row.x + row.width - size.padding_x_in(metrics);
             crate::SelectOptionGeometry {
                 bounds: row,
@@ -1249,6 +1318,53 @@ mod tests {
     }
 
     #[test]
+    fn marked_menu_rows_project_name_role_checked_and_selected() {
+        let mut context = AppContext::new();
+        let mut menu = ContextMenu::new(8.0, 12.0)
+            .items([
+                ContextMenuItem::new("pin", "取消窗口置顶").check(true),
+                ContextMenuItem::new("stage-a", "场景 1").radio(true),
+                ContextMenuItem::new("stage-b", "场景 2").radio(false),
+                ContextMenuItem::new("spout", "Spout").named("输出 Spout"),
+            ])
+            .open(true);
+        menu.highlighted = Some(3);
+        let menu = context.create_component(document(), menu).unwrap();
+        let nodes = context.world().project_accessibility(document());
+        let root = nodes
+            .iter()
+            .find(|node| node.id == menu.stable_id())
+            .expect("context menu");
+        let row = |index: usize| {
+            nodes
+                .iter()
+                .find(|node| node.id == root.children[index])
+                .expect("menu row")
+        };
+        let pin = row(0);
+        assert_eq!(pin.role, AccessibilityRole::Checkbox);
+        assert_eq!(pin.label.as_deref(), Some("取消窗口置顶"));
+        assert_eq!(pin.checked, Some(true));
+        assert_eq!(pin.selected, None);
+        let current = row(1);
+        assert_eq!(current.role, AccessibilityRole::Radio);
+        assert_eq!(current.label.as_deref(), Some("场景 1"));
+        assert_eq!(current.checked, Some(true));
+        assert_eq!(current.selected, Some(true));
+        let other = row(2);
+        assert_eq!(other.role, AccessibilityRole::Radio);
+        assert_eq!(other.checked, Some(false));
+        assert_eq!(other.selected, None);
+        let command = row(3);
+        assert_eq!(command.role, AccessibilityRole::MenuItem);
+        assert_eq!(command.label.as_deref(), Some("输出 Spout"));
+        assert_eq!(command.checked, None);
+        assert_eq!(command.selected, None);
+        assert!(command.focused);
+        assert!(!pin.focused);
+    }
+
+    #[test]
     fn accessibility_click_activates_context_menu_virtual_item() {
         let mut context = AppContext::new();
         let menu = context
@@ -1492,6 +1608,8 @@ mod tests {
                 disabled: false,
                 checked: false,
                 icon: Some(Icon::Add),
+                accessible_name: None,
+                mark: crate::MenuItemMark::Command,
             },
             SelectOptionData {
                 label: Arc::from("Rename"),
@@ -1499,6 +1617,8 @@ mod tests {
                 disabled: false,
                 checked: false,
                 icon: None,
+                accessible_name: None,
+                mark: crate::MenuItemMark::Command,
             },
         ];
         let ComponentGeometry::MenuSurface { options, .. } = context_menu_geometry(

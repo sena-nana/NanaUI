@@ -1064,6 +1064,61 @@ pub enum StandardVisual {
     KeymapLayer,
 }
 
+/// How a menu row participates in selection.
+///
+/// AccessKit already maps a checkbox to Toggle and a radio button to
+/// SelectionItem. A command stays a plain menu item: keyboard highlight is
+/// focus, not a selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuItemMark {
+    #[default]
+    Command,
+    /// Independent on/off. Projects as a checkbox.
+    Check(bool),
+    /// One choice in a group. The `true` row is the current selection and
+    /// projects as a radio button.
+    Radio(bool),
+}
+
+impl MenuItemMark {
+    pub const fn role(self) -> AccessibilityRole {
+        match self {
+            Self::Command => AccessibilityRole::MenuItem,
+            Self::Check(_) => AccessibilityRole::Checkbox,
+            Self::Radio(_) => AccessibilityRole::Radio,
+        }
+    }
+
+    /// `None` for a command. Checkbox and radio rows always publish a toggled
+    /// state, including the off / not-current rows.
+    pub const fn checked(self) -> Option<bool> {
+        match self {
+            Self::Command => None,
+            Self::Check(on) | Self::Radio(on) => Some(on),
+        }
+    }
+
+    /// Draw the check glyph only for the on / current row.
+    pub const fn shows_mark(self) -> bool {
+        matches!(self, Self::Check(true) | Self::Radio(true))
+    }
+
+    /// Keep a lane for the glyph on every row of a checkable or radio menu,
+    /// so turning one row on does not shift the others.
+    pub const fn reserves_lane(self) -> bool {
+        !matches!(self, Self::Command)
+    }
+
+    /// Selection applies to the current radio. Commands and checkboxes do not
+    /// claim `aria-selected`.
+    pub const fn selected(self) -> Option<bool> {
+        match self {
+            Self::Radio(true) => Some(true),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectOptionData {
     pub label: Arc<str>,
@@ -1071,6 +1126,9 @@ pub struct SelectOptionData {
     pub disabled: bool,
     pub checked: bool,
     pub icon: Option<Icon>,
+    /// Spoken name when [`Self::label`] is ambiguous. `None` keeps the label.
+    pub accessible_name: Option<Arc<str>>,
+    pub mark: MenuItemMark,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

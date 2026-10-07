@@ -955,6 +955,8 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
                 disabled: false,
                 checked: false,
                 icon: Some(nana_ui_core::Icon::Add),
+                accessible_name: None,
+                mark: nana_ui_runtime::MenuItemMark::Command,
             },
             nana_ui_runtime::SelectOptionData {
                 label: Arc::from("Rename"),
@@ -962,6 +964,8 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
                 disabled: false,
                 checked: false,
                 icon: None,
+                accessible_name: None,
+                mark: nana_ui_runtime::MenuItemMark::Command,
             },
         ]),
         highlighted: None,

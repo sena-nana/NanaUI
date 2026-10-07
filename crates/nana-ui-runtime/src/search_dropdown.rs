@@ -170,6 +170,8 @@ impl SearchDropdown {
                     disabled: false,
                     checked: false,
                     icon: None,
+                    accessible_name: None,
+                    mark: crate::MenuItemMark::Command,
                 }),
                 false,
             );
@@ -294,6 +296,8 @@ impl SearchDropdown {
                     disabled: false,
                     checked: false,
                     icon: None,
+                    accessible_name: None,
+                    mark: crate::MenuItemMark::Command,
                 }
             })
             .collect()

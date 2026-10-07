@@ -433,7 +433,7 @@ impl AccessibilityProjector {
             return None;
         }
         if let Some((menu, index)) = nana_ui_runtime::decode_virtual_menu_item(target) {
-            if node.role != AccessibilityRole::MenuItem {
+            if !is_menu_row(node.role) {
                 return None;
             }
             let action = match request.action {
@@ -1118,6 +1118,16 @@ const fn text_direction(writing: nana_ui_core::WritingContext) -> TextDirection 
         nana_ui_core::PhysicalEdge::Top => TextDirection::TopToBottom,
         nana_ui_core::PhysicalEdge::Bottom => TextDirection::BottomToTop,
     }
+}
+
+/// Commands stay menu items. Checkable rows are checkboxes (Toggle) and the
+/// current choice in a group is a radio (SelectionItem). AccessKit does not
+/// put SelectionItem on a plain menu item.
+const fn is_menu_row(role: AccessibilityRole) -> bool {
+    matches!(
+        role,
+        AccessibilityRole::MenuItem | AccessibilityRole::Checkbox | AccessibilityRole::Radio
+    )
 }
 
 const fn supports_click(role: AccessibilityRole) -> bool {
@@ -1950,6 +1960,50 @@ mod tests {
     }
 
     #[test]
+    fn menu_item_marks_project_name_role_and_selection() {
+        let project = |role, label: &str, checked, selected| {
+            let mut item = node(2, Some(1), &[]);
+            item.role = role;
+            item.label = Some(label.into());
+            item.checked = checked;
+            item.selected = selected;
+            project_node(&item, None, true, 1.0)
+                .into_iter()
+                .next()
+                .unwrap()
+                .1
+        };
+
+        let pinned = project(
+            AccessibilityRole::Checkbox,
+            "取消窗口置顶",
+            Some(true),
+            None,
+        );
+        assert_eq!(pinned.role(), Role::CheckBox);
+        assert_eq!(pinned.label(), Some("取消窗口置顶"));
+        assert_eq!(pinned.toggled(), Some(Toggled::True));
+        assert_eq!(pinned.is_selected(), None);
+
+        let current = project(AccessibilityRole::Radio, "场景 1", Some(true), Some(true));
+        assert_eq!(current.role(), Role::RadioButton);
+        assert_eq!(current.label(), Some("场景 1"));
+        assert_eq!(current.toggled(), Some(Toggled::True));
+        assert_eq!(current.is_selected(), Some(true));
+
+        let other = project(AccessibilityRole::Radio, "场景 2", Some(false), None);
+        assert_eq!(other.role(), Role::RadioButton);
+        assert_eq!(other.toggled(), Some(Toggled::False));
+        assert_eq!(other.is_selected(), None);
+
+        let command = project(AccessibilityRole::MenuItem, "输出 Spout", None, None);
+        assert_eq!(command.role(), Role::MenuItem);
+        assert_eq!(command.label(), Some("输出 Spout"));
+        assert_eq!(command.toggled(), None);
+        assert_eq!(command.is_selected(), None);
+    }
+
+    #[test]
     fn virtual_menu_items_project_click_and_focus_actions() {
         let menu = StableNodeId::new(2).unwrap();
         let item = nana_ui_runtime::virtual_menu_item_id(menu, 0).unwrap();
@@ -1985,6 +2039,33 @@ mod tests {
                     | nana_ui_runtime::AccessibilityAction::Focus
             ));
         }
+    }
+
+    #[test]
+    fn a_checkable_virtual_menu_row_still_activates_on_click() {
+        let menu = StableNodeId::new(2).unwrap();
+        let item = nana_ui_runtime::virtual_menu_item_id(menu, 0).unwrap();
+        let mut virtual_item = node(item.get(), Some(menu.get()), &[]);
+        virtual_item.role = AccessibilityRole::Checkbox;
+        virtual_item.label = Some("取消窗口置顶".into());
+        virtual_item.checked = Some(true);
+        let (projector, _) = AccessibilityProjector::new(
+            vec![node(menu.get(), None, &[item.get()]), virtual_item],
+            true,
+            1.0,
+        );
+        let request = projector
+            .project_action_request(ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: NodeId(item.get()),
+                data: None,
+            })
+            .expect("checkbox menu row click");
+        assert!(matches!(
+            request.action,
+            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { index: 0, .. }
+        ));
     }
 
     #[test]

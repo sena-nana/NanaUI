@@ -551,16 +551,21 @@ impl UiWorld {
                     id,
                     parent: Some(menu.id),
                     children: Vec::new(),
-                    role: AccessibilityRole::MenuItem,
-                    label: Some(Arc::clone(&row.label)),
+                    role: row.mark.role(),
+                    label: Some(
+                        row.accessible_name
+                            .clone()
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| Arc::clone(&row.label)),
+                    ),
                     value: None,
                     description: row.hint.clone(),
                     role_description: None,
                     disabled: row.disabled,
-                    checked: None,
+                    checked: row.mark.checked(),
                     mixed: false,
                     orientation: None,
-                    selected: Some(*highlighted == Some(index)),
+                    selected: row.mark.selected(),
                     multiline: false,
                     editable: false,
                     selection: None,
