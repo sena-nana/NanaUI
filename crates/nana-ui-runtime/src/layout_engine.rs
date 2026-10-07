@@ -10,6 +10,8 @@ use placement::*;
 mod inline;
 use inline::*;
 mod flex;
+#[cfg(test)]
+mod inline_scope;
 use flex::*;
 // These caches use internal numeric identities/constraint bits, not external text keys.
 use hashbrown::HashMap;
@@ -594,25 +596,41 @@ impl RuntimeLayoutEngine {
         let islands = if force_full {
             Vec::new()
         } else {
-            affected
-                .iter()
-                .copied()
-                .filter(|id| {
-                    // A dependency boundary may be a fixed-size ordinary
-                    // ancestor as well as an explicit isolation context. Use
-                    // the retained placement as the local layout root so a
-                    // child can be recomputed without pulling that stable
-                    // ancestor into the measure frontier.
-                    world
-                        .parent_id(*id)
-                        .is_some_and(|parent| !affected.contains(&parent))
-                        && retained.placements.contains_key(id)
-                        && retained.boxes.contains_key(id)
-                })
-                .collect::<Vec<_>>()
+            let mut islands = Vec::new();
+            for id in affected.iter().copied() {
+                // A dependency boundary may be a fixed-size ordinary ancestor
+                // as well as an explicit isolation context. Use the retained
+                // placement as the local layout root so a child can be
+                // recomputed without pulling that stable ancestor into the
+                // measure frontier. A fixed inline-block has the same role
+                // for an inline formatting context: its border box is the
+                // island, and the outer line is not packed again.
+                let Some(parent) = world.parent_id(id) else {
+                    continue;
+                };
+                if affected.contains(&parent) {
+                    continue;
+                }
+                if retained.placements.contains_key(&id) && retained.boxes.contains_key(&id) {
+                    let (origin, containing, font) = retained.placements[&id];
+                    islands.push((id, origin, containing, font));
+                    continue;
+                }
+                let (Some(border), Some(parent_box)) = (
+                    retained.boxes.get(&id).copied(),
+                    retained.boxes.get(&parent).copied(),
+                ) else {
+                    continue;
+                };
+                if let Some((origin, containing, font)) =
+                    fixed_inline_block_island(world, id, border, parent_box)
+                {
+                    islands.push((id, origin, containing, font));
+                }
+            }
+            islands
         };
-        for &root in &islands {
-            let (origin, containing, font) = retained.placements[&root];
+        for &(root, origin, containing, font) in &islands {
             // An island boundary normally has a stable used size, but an
             // affected content-sized child can grow inside a fixed ancestor.
             // Re-measure the island itself so its retained box does not freeze
@@ -684,7 +702,11 @@ impl RuntimeLayoutEngine {
         retained.placements.extend(nodes.placements.drain());
         for (id, plan) in nodes.container_plans.drain() {
             match plan {
-                Some(plan) => {
+                Some(mut plan) => {
+                    // Gate E: one plan per container, entries are the direct
+                    // participants recorded this pass. A repeat edit replaces
+                    // the previous plan instead of appending another.
+                    bound_container_plan(&mut plan);
                     retained.container_plans.insert(id, plan);
                 }
                 None => {
@@ -701,9 +723,11 @@ impl RuntimeLayoutEngine {
             // two constraints per pass but only RE-measured under one of them:
             // the other is answered from its cached plan, which records nothing.
             // Replacing would drop that constraint's plan, so the two slots
-            // would alternate instead of holding both.
+            // would alternate instead of holding both. The slot array evicts
+            // any older constraint for this same container.
             let slots = retained.measure_plans.entry(id).or_default();
-            for plan in plans.into_plans().collect::<Vec<_>>().into_iter().rev() {
+            for mut plan in plans.into_plans().collect::<Vec<_>>().into_iter().rev() {
+                bound_measure_plan(&mut plan);
                 slots.insert(plan);
             }
         }
@@ -1096,6 +1120,34 @@ impl DocumentLayoutCache {
             self.intrinsic_counters.evictions.saturating_add(evicted);
     }
 
+    /// Direct participants and tracks stored on this document's context plans.
+    ///
+    /// Mutation history does not add entries: a later pass replaces the plan
+    /// for the same container. See [`bound_container_plan`].
+    fn retained_plan_entries(&self) -> usize {
+        let mut count = 0usize;
+        for plan in self.container_plans.values() {
+            count = count.saturating_add(plan.entries.borrow().len());
+            count = count.saturating_add(plan.overlay.len());
+            if let Some(grid) = &plan.grid {
+                count = count.saturating_add(grid.items.len());
+                count = count.saturating_add(grid.col_sizes.len());
+                count = count.saturating_add(grid.row_sizes.len());
+            }
+        }
+        for slots in self.measure_plans.values() {
+            for plan in slots.slots.iter().flatten() {
+                count = count.saturating_add(plan.entries.len());
+                if let Some(grid) = &plan.grid {
+                    count = count.saturating_add(grid.items.len());
+                    count = count.saturating_add(grid.col_sizes.len());
+                    count = count.saturating_add(grid.row_sizes.len());
+                }
+            }
+        }
+        count
+    }
+
     fn clear(&mut self) {
         self.intrinsics.clear();
         self.intrinsic_metrics.clear();
@@ -1247,6 +1299,13 @@ pub mod plan_stats {
         CONTAINERS_UNCACHEABLE.with(|cell| cell.set(cell.get() + 1));
     }
 
+    /// The positioned formatting context could not be applied incrementally,
+    /// so this pass laid out that context's positioned children and stopped
+    /// there. This is not a document fallback.
+    pub(crate) fn note_local_context_fallback() {
+        FRONTIER_LOCAL_FALLBACKS.with(|cell| cell.set(cell.get() + 1));
+    }
+
     #[cfg(feature = "benchmark")]
     pub fn containers_uncacheable() -> usize {
         CONTAINERS_UNCACHEABLE.with(Cell::get)
@@ -1344,6 +1403,30 @@ pub mod plan_stats {
     }
 }
 
+/// One positioned child of a cached container. The list is the direct
+/// participants of that positioned formatting context, replaced when the
+/// container is recorded again.
+#[derive(Clone)]
+struct PlannedOverlay {
+    child: StableNodeId,
+    /// Retained style and used box for this participant. A later pass replaces
+    /// the record; the fields are the cached placement, not a second authority.
+    #[allow(dead_code)]
+    style: Arc<nana_ui_core::LayoutStyle>,
+    fixed: bool,
+    /// The used box reads the containing block's size (percentage, fill,
+    /// or both insets). A fixed child reads the viewport instead.
+    tracks_containing_block: bool,
+    #[allow(dead_code)]
+    base: Size,
+    #[allow(dead_code)]
+    base_origin: Point,
+    #[allow(dead_code)]
+    origin: Point,
+    #[allow(dead_code)]
+    size: Size,
+}
+
 /// One child's contribution to a cached container placement.
 #[derive(Clone)]
 struct PlannedChild {
@@ -1365,6 +1448,127 @@ struct PlannedChild {
     /// preceding child's outer main extent plus gaps. Lets a suffix replay
     /// start at any index in O(1) instead of re-accumulating from zero.
     cursor_before: f32,
+}
+
+/// One grid item's occupied tracks and the intrinsic contribution those
+/// tracks were solved from. Spans are the placement result, not a second
+/// copy of the child's style.
+#[derive(Clone)]
+struct GridItemPlan {
+    child: StableNodeId,
+    col: u32,
+    row: u32,
+    col_span: u32,
+    row_span: u32,
+    contribution: Size,
+}
+
+/// Resolved grid tracks plus the contribution that produced them.
+///
+/// A later pass re-solves every track from these contributions. Items whose
+/// contribution and cell constraint are unchanged are not measured again.
+/// Subgrid, a child entering or leaving flow, and a container whose own
+/// content-sized keywords this record cannot finish fall back to measuring
+/// this grid, not the document.
+#[derive(Clone)]
+struct GridTrackPlan {
+    items: Vec<GridItemPlan>,
+    col_sizes: Vec<f32>,
+    row_sizes: Vec<f32>,
+    col_gap: f32,
+    row_gap: f32,
+}
+
+impl GridTrackPlan {
+    fn from_layout(grid: &Grid2DLayout) -> Self {
+        Self {
+            items: grid
+                .items
+                .iter()
+                .map(|item| GridItemPlan {
+                    child: item.id,
+                    col: item.col as u32,
+                    row: item.row as u32,
+                    col_span: item.col_span as u32,
+                    row_span: item.row_span as u32,
+                    contribution: item.intrinsic,
+                })
+                .collect(),
+            col_sizes: grid.col_sizes.clone(),
+            row_sizes: grid.row_sizes.clone(),
+            col_gap: grid.col_gap,
+            row_gap: grid.row_gap,
+        }
+    }
+
+    fn item(&self, child: StableNodeId) -> Option<&GridItemPlan> {
+        self.items.iter().find(|item| item.child == child)
+    }
+
+    fn cell(&self, item: &GridItemPlan) -> (f32, f32) {
+        (
+            grid_span_extent(
+                &self.col_sizes,
+                item.col as usize,
+                item.col_span as usize,
+                self.col_gap,
+            ),
+            grid_span_extent(
+                &self.row_sizes,
+                item.row as usize,
+                item.row_span as usize,
+                self.row_gap,
+            ),
+        )
+    }
+}
+
+fn grid_child_in_flow(style: &LayoutStyle) -> bool {
+    !style.omits_box()
+        && !style.position.is_out_of_flow()
+        && !style.display.is_some_and(DisplaySpec::is_contents)
+}
+
+/// Both axes are a length that does not read the grid content box, so a
+/// sibling-driven change of that box does not change this item's contribution.
+fn grid_contribution_ignores_content_box(style: &LayoutStyle) -> bool {
+    fn fixed(spec: Option<LengthSpec>) -> bool {
+        matches!(
+            spec,
+            Some(
+                LengthSpec::Px(_)
+                    | LengthSpec::Em(_)
+                    | LengthSpec::Rem(_)
+                    | LengthSpec::CalcEmOffset { .. }
+                    | LengthSpec::CalcRemOffset { .. }
+            )
+        )
+    }
+    style.aspect_ratio.is_none()
+        && fixed(style.width)
+        && fixed(style.height)
+        && style.min_width.is_none_or(|spec| fixed(Some(spec)))
+        && style.min_height.is_none_or(|spec| fixed(Some(spec)))
+        && style.max_width.is_none_or(|spec| fixed(Some(spec)))
+        && style.max_height.is_none_or(|spec| fixed(Some(spec)))
+}
+
+fn sort_ids_with_sizes(ids: &mut [StableNodeId], sizes: &mut [Size], nodes: &LayoutInputMap<'_>) {
+    if ids.len() != sizes.len() {
+        return;
+    }
+    let order_of = |id: StableNodeId| nodes.style(id).map(|style| style.order).unwrap_or(0);
+    if ids.iter().copied().all(|id| order_of(id) == 0) {
+        return;
+    }
+    let mut order: Vec<usize> = (0..ids.len()).collect();
+    order.sort_by_key(|&index| order_of(ids[index]));
+    let old_ids = ids.to_vec();
+    let old_sizes = sizes.to_vec();
+    for (slot, index) in order.into_iter().enumerate() {
+        ids[slot] = old_ids[index];
+        sizes[slot] = old_sizes[index];
+    }
 }
 
 /// A container's placement of its in-flow children, cached across passes.
@@ -1439,9 +1643,40 @@ struct ContainerPlan {
     /// Direct children excluded from flow when the plan was recorded. A change
     /// here can introduce a new entry without changing the retained child list.
     omitted_children: HashSet<StableNodeId>,
+    /// Occupied tracks, contributions, and the resolved track sizes. `None`
+    /// on every flex and block plan.
+    grid: Option<GridTrackPlan>,
+    /// No in-flow child reads this container's cross size, so a containing
+    /// block change on that axis refreshes positioned children only.
+    cross_independent: bool,
+    /// Positioned participants of this container. Empty on a flow-only plan.
+    overlay: Vec<PlannedOverlay>,
 }
 
 impl ContainerPlan {
+    /// Everything the container's own placement depends on, other than its
+    /// children and its used border-box size. A mismatch here means the plan
+    /// is about a different layout.
+    #[allow(clippy::too_many_arguments)]
+    fn flow_identity_holds(
+        &self,
+        origin: Point,
+        containing: Size,
+        parent_font_px: f32,
+        viewport: LayoutViewport,
+        style: &Arc<nana_ui_core::LayoutStyle>,
+        children: &Arc<Vec<StableNodeId>>,
+        writing: nana_ui_core::WritingContext,
+    ) -> bool {
+        self.writing == writing
+            && self.origin == origin
+            && self.containing_compatible(containing)
+            && self.parent_font_px == parent_font_px
+            && self.viewport == viewport
+            && Arc::ptr_eq(&self.style, style)
+            && Arc::ptr_eq(&self.children, children)
+    }
+
     /// Everything the container's own placement depends on, other than its
     /// children. A mismatch here means the plan is about a different layout.
     #[allow(clippy::too_many_arguments)]
@@ -1456,20 +1691,74 @@ impl ContainerPlan {
         children: &Arc<Vec<StableNodeId>>,
         writing: nana_ui_core::WritingContext,
     ) -> bool {
-        self.writing == writing
-            && self.origin == origin
-            && self.size_compatible(size)
-            && self.containing_compatible(containing)
-            && self.parent_font_px == parent_font_px
-            && self.viewport == viewport
-            && Arc::ptr_eq(&self.style, style)
-            && Arc::ptr_eq(&self.children, children)
+        self.flow_identity_holds(
+            origin,
+            containing,
+            parent_font_px,
+            viewport,
+            style,
+            children,
+            writing,
+        ) && self.size_compatible(size)
+    }
+
+    /// In-flow start edges stay put when this container's cross size changes
+    /// and no child stretches to it. Positioned children that read the
+    /// containing block are refreshed separately.
+    fn flow_stable_under_own_size(&self, content_origin: Point) -> bool {
+        self.cross_independent
+            && self.sequential
+            && self.grid.is_none()
+            && !self.main_reversed
+            && !self.cross_reversed
+            && self.content_origin == content_origin
+    }
+
+    /// Flow reuse, including a containing-block size change that does not
+    /// move in-flow children.
+    #[allow(clippy::too_many_arguments)]
+    fn can_reuse_flow(
+        &self,
+        origin: Point,
+        size: Size,
+        containing: Size,
+        content_origin: Point,
+        parent_font_px: f32,
+        viewport: LayoutViewport,
+        style: &Arc<nana_ui_core::LayoutStyle>,
+        children: &Arc<Vec<StableNodeId>>,
+        writing: nana_ui_core::WritingContext,
+    ) -> bool {
+        self.inputs_match(
+            origin,
+            size,
+            containing,
+            parent_font_px,
+            viewport,
+            style,
+            children,
+            writing,
+        ) || (self.flow_identity_holds(
+            origin,
+            containing,
+            parent_font_px,
+            viewport,
+            style,
+            children,
+            writing,
+        ) && self.flow_stable_under_own_size(content_origin))
     }
 
     /// A sequential plan places from the start edge. Its main size can grow
     /// with a child without moving the cross axis or the prefix.
     fn size_compatible(&self, size: Size) -> bool {
         if self.size == size {
+            return true;
+        }
+        // Track sizes are solved again from the recorded contributions, so
+        // the used border box may grow with a row or a column. A pass whose
+        // children did not change still re-solves when this size moved.
+        if self.grid.is_some() {
             return true;
         }
         if self.sequential && !self.main_reversed {
@@ -1499,6 +1788,9 @@ impl ContainerPlan {
     /// can grow with this container without changing that budget.
     fn containing_compatible(&self, containing: Size) -> bool {
         if self.containing == containing {
+            return true;
+        }
+        if self.grid.is_some() {
             return true;
         }
         if !flex_line_local_style(self.style.as_ref()) || self.main_reversed || self.cross_reversed
@@ -1688,9 +1980,10 @@ struct MeasurePlan {
     text_metrics: Option<crate::TextMetrics>,
     /// That text's unwrapped width, when it wrapped narrower.
     text_natural_width: Option<f32>,
-    /// Available size every in-flow child was measured against. One value for
-    /// all of them: the per-child variant only arises on the grid paths, which
-    /// are not cached.
+    /// Available size in-flow children were measured against. Flex uses one
+    /// value for every child. A grid stores the content box here; each item's
+    /// contribution lives on [`GridTrackPlan`], and a fill axis is applied
+    /// only when that contribution is remeasured.
     child_available: Size,
     /// Flow direction handed to each child as its `parent_direction`.
     child_direction: FlexDirection,
@@ -1700,6 +1993,8 @@ struct MeasurePlan {
     size: Size,
     /// Main size is the sum of child border boxes, margins, and gaps.
     sequential: bool,
+    /// Present when this measurement is a grid track solution.
+    grid: Option<GridTrackPlan>,
 }
 
 /// The measure plans retained for one container.
@@ -2844,6 +3139,38 @@ fn cross_margin(margin: nana_ui_core::PaddingSpec, direction: FlexDirection) -> 
     cross_start_margin(margin, direction) + cross_end_margin(margin, direction)
 }
 
+/// Drop a repeated child row. Plans store one entry per direct participant;
+/// a later record for the same child replaces the stale one.
+fn dedupe_plan_rows<T: Clone>(rows: &mut Vec<T>, child_of: impl Fn(&T) -> StableNodeId) {
+    let mut seen = HashSet::with_capacity(rows.len());
+    if rows.iter().all(|row| seen.insert(child_of(row))) {
+        return;
+    }
+    seen.clear();
+    let mut kept = Vec::with_capacity(rows.len());
+    for row in rows.drain(..) {
+        if seen.insert(child_of(&row)) {
+            kept.push(row);
+        }
+    }
+    *rows = kept;
+}
+
+fn bound_container_plan(plan: &mut ContainerPlan) {
+    dedupe_plan_rows(&mut plan.entries.borrow_mut(), |entry| entry.child);
+    dedupe_plan_rows(&mut plan.overlay, |entry| entry.child);
+    if let Some(grid) = plan.grid.as_mut() {
+        dedupe_plan_rows(&mut grid.items, |item| item.child);
+    }
+}
+
+fn bound_measure_plan(plan: &mut MeasurePlan) {
+    dedupe_plan_rows(&mut plan.entries, |entry| entry.child);
+    if let Some(grid) = plan.grid.as_mut() {
+        dedupe_plan_rows(&mut grid.items, |item| item.child);
+    }
+}
+
 fn finite_extent(value: f32) -> f32 {
     if value.is_finite() {
         value.max(0.0)
@@ -2852,5 +3179,7 @@ fn finite_extent(value: f32) -> f32 {
     }
 }
 
+#[cfg(test)]
+mod issue258;
 #[cfg(test)]
 mod tests;

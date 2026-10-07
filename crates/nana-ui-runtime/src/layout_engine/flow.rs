@@ -68,7 +68,9 @@ pub(super) fn collect_flow_children_into(
         if style.position.is_out_of_flow() {
             continue;
         }
-        if parent_unboxes_inline(parent_display) && style.is_inline_level() {
+        // `inline-block` is an atomic box. Only a non-atomic `inline` hoists a
+        // block descendant into the parent formatting context.
+        if parent_unboxes_inline(parent_display) && style.display == Some(DisplaySpec::Inline) {
             // Whichever way the test goes, the answer came from the child's
             // subtree, so a plan over this container cannot be re-checked from
             // the direct child list alone.
@@ -108,7 +110,9 @@ pub(super) fn inline_contains_block(
         if style.omits_box() || style.position.is_out_of_flow() {
             continue;
         }
-        if style.display.is_some_and(DisplaySpec::is_contents) || style.is_inline_level() {
+        if style.display.is_some_and(DisplaySpec::is_contents)
+            || style.display == Some(DisplaySpec::Inline)
+        {
             if inline_contains_block(grandchild, nodes)? {
                 return Ok(true);
             }

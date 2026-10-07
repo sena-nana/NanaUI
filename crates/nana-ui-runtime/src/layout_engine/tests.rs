@@ -5751,6 +5751,105 @@ fn flex_line_intrinsic_change_does_not_measure_unaffected_lines() {
     );
 }
 
+/// Issue #258: one grid cell's intrinsic contribution is remeasured, and cells
+/// whose tracks did not change are not. A cold layout of the same grid matches.
+#[test]
+fn grid_cell_intrinsic_change_does_not_measure_unaffected_cells() {
+    let viewport = LayoutViewport::new(400.0, 800.0);
+    let columns = 3usize;
+    let container = LayoutStyle {
+        display: Some(DisplaySpec::Grid),
+        width: Some(LengthSpec::Px(180.0)),
+        grid_columns: Some(vec![GridTrack::Auto, GridTrack::Auto, GridTrack::Auto]),
+        align_items: AlignSpec::Start,
+        justify_items: Some(AlignSpec::Start),
+        justify_content: JustifySpec::Start,
+        ..LayoutStyle::default()
+    };
+    let cell = LayoutStyle {
+        width: Some(LengthSpec::Px(40.0)),
+        height: Some(LengthSpec::Px(20.0)),
+        ..LayoutStyle::default()
+    };
+    let mut measured = Vec::new();
+    for rows in [2usize, 6] {
+        let items = (0..rows * columns)
+            .map(|index| (10 + index as u64, cell.clone(), Vec::new()))
+            .collect::<Vec<_>>();
+        let (mut world, document) = hugging_container_world(&items, container.clone());
+        let mut retained = RetainedLayoutCache::default();
+        let _ = world.take_system_work();
+        let emitted = RuntimeLayoutEngine
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
+        prime_measure_plans(&mut world, document, viewport, &mut retained, id(10));
+
+        let mut grown = cell.clone();
+        grown.height = Some(LengthSpec::Px(40.0));
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            id(10),
+            NodeStyle {
+                layout: Arc::new(grown),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let step = scoped_step_matches_full(
+            &mut world,
+            document,
+            viewport,
+            &mut retained,
+            "grid cell cross size",
+        );
+        assert_eq!(
+            super::plan_stats::full_document_fallbacks(),
+            0,
+            "{rows} rows fell back to the document"
+        );
+        let changed = world.layout_box(id(10)).expect("changed cell");
+        let next_row = world
+            .layout_box(id(10 + columns as u64))
+            .expect("first cell of the next row");
+        assert_eq!(changed.height, 40.0);
+        assert_eq!(next_row.height, 20.0);
+        assert!(
+            (next_row.y - 40.0).abs() < 0.01,
+            "{rows} rows: the next row stayed at y {}",
+            next_row.y
+        );
+        assert!(
+            step.children_measured < rows * columns,
+            "{rows} rows measured {} children, including an unaffected cell",
+            step.children_measured
+        );
+        measured.push(step.children_measured);
+
+        let mut painted = cell.clone();
+        painted.opacity = Some(0.4);
+        let mut paint = MutationQueue::new();
+        paint.set_style(
+            id(11),
+            NodeStyle {
+                layout: Arc::new(painted),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(paint).unwrap();
+        let work = world.take_system_work();
+        assert!(
+            work.layout_frontier_seeds.is_empty(),
+            "{rows} rows: paint-only on one cell scheduled layout"
+        );
+    }
+    assert_eq!(
+        measured[0], measured[1],
+        "unaffected grid cells must not add measure work as rows are added: {measured:?}"
+    );
+}
+
 /// Run the scoped passes that leave every plan recorded and current.
 ///
 /// A full pass records no measure plans, so the first scoped pass after one is

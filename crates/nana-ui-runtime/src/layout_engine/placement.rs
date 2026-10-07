@@ -218,6 +218,12 @@ fn replay_sequential_suffix(
             (cached_style, cached_intrinsic)
         };
         let child_style = style_arc.as_ref();
+        // Leaving the flow (or being omitted) changes sibling coupling the
+        // suffix arithmetic does not model. The caller lays the container out
+        // again, still inside this formatting context.
+        if child_style.position.is_out_of_flow() || child_style.omits_box() {
+            return Ok(false);
+        }
         // A newly arrived auto margin or exotic alignment makes this container
         // no longer sequential; the caller must relayout it properly.
         let auto_main = match direction {
@@ -516,6 +522,156 @@ fn replay_wrapped_flex_line(
     Ok(true)
 }
 
+/// Re-solve this grid's tracks from cached contributions.
+///
+/// Items whose contribution and cell constraint are unchanged keep their used
+/// size. Anything the record cannot describe returns `false`, and the caller
+/// lays out this grid formatting context from scratch.
+#[allow(clippy::too_many_arguments)]
+fn replay_grid(
+    id: StableNodeId,
+    plan: &ContainerPlan,
+    origin: Point,
+    size: Size,
+    content_origin: Point,
+    content: Size,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) -> Result<bool, UiWorldError> {
+    let Some(old_grid) = plan.grid.clone() else {
+        return Ok(false);
+    };
+    let style = plan.style.as_ref();
+    if style.is_subgrid_columns() || style.is_subgrid_rows() {
+        return Ok(false);
+    }
+    let entries = plan.entries.borrow().clone();
+    let mut flow = Vec::new();
+    let mut sizes = Vec::new();
+    let content_changed = plan.content != content;
+    for child in plan.children.iter().copied() {
+        let Some(child_style) = nodes.style(child) else {
+            continue;
+        };
+        if !grid_child_in_flow(child_style.as_ref()) {
+            continue;
+        }
+        let Some(entry) = entries.iter().find(|entry| entry.child == child) else {
+            return Ok(false);
+        };
+        let remeasure = scope.measure.contains(&child)
+            || (content_changed && !grid_contribution_ignores_content_box(child_style.as_ref()));
+        let contribution = if remeasure {
+            let available = grid_item_measure_available(child_style.as_ref(), content);
+            intrinsic_size_scoped(
+                child,
+                available,
+                Some(plan.main_direction),
+                viewport,
+                plan.child_font_px,
+                nodes,
+                intrinsic,
+                Some(scope),
+            )?
+        } else {
+            entry.intrinsic
+        };
+        flow.push(child);
+        sizes.push(contribution);
+    }
+    if flow.is_empty() {
+        return Ok(false);
+    }
+    sort_ids_with_sizes(&mut flow, &mut sizes, nodes);
+    let fonts = fonts_of(style, plan.parent_font_px);
+    let solved = layout_grid_2d(
+        style,
+        plan.writing,
+        &flow,
+        &sizes,
+        content,
+        fonts,
+        nodes,
+        None,
+    );
+    let mut reuse = HashMap::new();
+    for item in &solved.items {
+        let Some(previous) = old_grid.item(item.id).cloned() else {
+            continue;
+        };
+        if previous.col != item.col as u32
+            || previous.row != item.row as u32
+            || previous.col_span != item.col_span as u32
+            || previous.row_span != item.row_span as u32
+            || previous.contribution != item.intrinsic
+        {
+            continue;
+        }
+        let (old_inline, old_block) = old_grid.cell(&previous);
+        let new_inline =
+            grid_span_extent(&solved.col_sizes, item.col, item.col_span, solved.col_gap);
+        let new_block =
+            grid_span_extent(&solved.row_sizes, item.row, item.row_span, solved.row_gap);
+        if old_inline.to_bits() != new_inline.to_bits()
+            || old_block.to_bits() != new_block.to_bits()
+        {
+            continue;
+        }
+        if scope.measure.contains(&item.id) {
+            continue;
+        }
+        let Some(entry) = entries.iter().find(|entry| entry.child == item.id) else {
+            continue;
+        };
+        let current = nodes.style(item.id);
+        let cached = Some(Arc::clone(&entry.style));
+        if !retained_style_matches(&current, &cached) || entry.style.aspect_ratio.is_some() {
+            continue;
+        }
+        reuse.insert(item.id, entry.size);
+    }
+    let mut recorded = Vec::with_capacity(solved.items.len());
+    place_grid_2d_items(
+        &solved,
+        plan.writing,
+        content_origin,
+        content,
+        style,
+        viewport,
+        plan.child_font_px,
+        nodes,
+        intrinsic,
+        output,
+        Some(scope),
+        Some(&reuse),
+        Some(&mut recorded),
+    )?;
+    if recorded.len() != solved.items.len() {
+        return Ok(false);
+    }
+    let mut updated = plan.clone();
+    updated.origin = origin;
+    updated.size = size;
+    updated.content = content;
+    updated.content_origin = content_origin;
+    updated.grid = Some(GridTrackPlan::from_layout(&solved));
+    updated.by_child = {
+        let mut by_child: Vec<(StableNodeId, u32)> = recorded
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.child, index as u32))
+            .collect();
+        by_child.sort_unstable_by_key(|(child, _)| *child);
+        by_child
+    };
+    updated.entries = RefCell::new(recorded);
+    nodes.container_plans.insert(id, Some(updated));
+    Ok(true)
+}
+
 pub(super) fn place_node_scoped(
     id: StableNodeId,
     origin: Point,
@@ -639,10 +795,11 @@ pub(super) fn place_node_scoped(
     if let Some(scope) = scope
         && inherited_grid.is_none()
         && let Some(plan) = scope.retained.container_plans.get(&id)
-        && plan.inputs_match(
+        && plan.can_reuse_flow(
             origin,
             size,
             containing,
+            content_origin,
             parent_font_px,
             viewport,
             &style_arc,
@@ -656,10 +813,10 @@ pub(super) fn place_node_scoped(
         && nodes.world.children_layout_style_is_local(id)
         && triggered_menu_overlay(nodes.world, id).is_none()
     {
+        let grid_geometry_moved =
+            plan.grid.is_some() && (plan.size != size || plan.content != content);
         match check_plan_children(plan, viewport, nodes, intrinsic, scope)? {
-            PlanCheck::Unchanged => {
-                #[cfg(any(test, feature = "benchmark"))]
-                super::plan_stats::note_plan_reused();
+            PlanCheck::Unchanged if !grid_geometry_moved => {
                 // A fixed intermediate box can stay out of the frontier while
                 // a descendant inside it is affected. Re-enter the direct
                 // child that contains that descendant; its own plan places
@@ -684,6 +841,23 @@ pub(super) fn place_node_scoped(
                         None,
                     )?;
                 }
+                finish_positioned_overlay(
+                    id,
+                    plan,
+                    origin,
+                    size,
+                    content_origin,
+                    content,
+                    viewport,
+                    child_font_px,
+                    writing,
+                    nodes,
+                    intrinsic,
+                    output,
+                    scope,
+                )?;
+                #[cfg(any(test, feature = "benchmark"))]
+                super::plan_stats::note_plan_reused();
                 return Ok(());
             }
             // Something the closure reaches resized or restyled. Children
@@ -693,6 +867,21 @@ pub(super) fn place_node_scoped(
                 if replay_sequential_suffix(
                     id, plan, from, viewport, nodes, intrinsic, output, scope,
                 )? {
+                    finish_positioned_overlay(
+                        id,
+                        plan,
+                        origin,
+                        size,
+                        content_origin,
+                        content,
+                        viewport,
+                        child_font_px,
+                        writing,
+                        nodes,
+                        intrinsic,
+                        output,
+                        scope,
+                    )?;
                     #[cfg(any(test, feature = "benchmark"))]
                     {
                         super::plan_stats::note_plan_reused();
@@ -701,8 +890,57 @@ pub(super) fn place_node_scoped(
                     return Ok(());
                 }
             }
-            PlanCheck::ChangedFrom(_) => {
-                if replay_wrapped_flex_line(plan, viewport, nodes, intrinsic, output, scope)? {
+            PlanCheck::Unchanged | PlanCheck::ChangedFrom(_) => {
+                if !grid_geometry_moved
+                    && replay_wrapped_flex_line(plan, viewport, nodes, intrinsic, output, scope)?
+                {
+                    finish_positioned_overlay(
+                        id,
+                        plan,
+                        origin,
+                        size,
+                        content_origin,
+                        content,
+                        viewport,
+                        child_font_px,
+                        writing,
+                        nodes,
+                        intrinsic,
+                        output,
+                        scope,
+                    )?;
+                    #[cfg(any(test, feature = "benchmark"))]
+                    super::plan_stats::note_plan_reused();
+                    return Ok(());
+                }
+                if replay_grid(
+                    id,
+                    plan,
+                    origin,
+                    size,
+                    content_origin,
+                    content,
+                    viewport,
+                    nodes,
+                    intrinsic,
+                    output,
+                    scope,
+                )? {
+                    finish_positioned_overlay(
+                        id,
+                        plan,
+                        origin,
+                        size,
+                        content_origin,
+                        content,
+                        viewport,
+                        child_font_px,
+                        writing,
+                        nodes,
+                        intrinsic,
+                        output,
+                        scope,
+                    )?;
                     #[cfg(any(test, feature = "benchmark"))]
                     super::plan_stats::note_plan_reused();
                     return Ok(());
@@ -811,11 +1049,13 @@ pub(super) fn place_node_scoped(
     if let Some(clock) = child_phase.as_mut() {
         clock.lap(6);
     }
-    // Only the plain in-flow path is cacheable. Grids, inline formatting,
-    // floats, out-of-flow children and triggered menu overlays each add
-    // placement inputs the plan does not model, and
-    // `children_layout_style_is_local` rules out the cases where an ancestor
-    // could change a child's style without marking the child dirty.
+    // Plain in-flow containers and 2D grids are cacheable. Positioned
+    // children are recorded beside the flow plan and do not by themselves
+    // make the container uncacheable. Inline formatting, floats, subgrids
+    // and triggered menu overlays each add placement inputs the plan does
+    // not model, and `children_layout_style_is_local` rules out the cases
+    // where an ancestor could change a child's style without marking the
+    // child dirty.
     // `descendant_dependent_flow` rules out the containers whose flow list is
     // not decided by the direct children's own styles: `display:contents`
     // splices grandchildren in, and an inline-level child is unboxed or not
@@ -823,18 +1063,22 @@ pub(super) fn place_node_scoped(
     // cannot answer "is this affected id one of my entries?".
     // Recorded on full passes too, so the first scoped pass after a mount or a
     // viewport change already has a plan to reuse.
+    let grid_recordable = grid_2d
+        && inherited_grid.is_none()
+        && !style.is_subgrid_columns()
+        && !style.is_subgrid_rows();
     let cacheable = inherited_grid.is_none()
         && !descendant_dependent_flow
-        && !grid_2d
+        && (grid_recordable || !grid_2d)
         && !ifc
         && floated.is_empty()
-        && positioned.is_empty()
         && triggered_menu_overlay(nodes.world, id).is_none()
         && nodes.world.children_layout_style_is_local(id);
     let mut plan_entries: Option<Vec<PlannedChild>> =
         cacheable.then(|| Vec::with_capacity(flow.len()));
     // Narrowed to false by anything the suffix replay cannot express.
     let mut plan_sequential = cacheable;
+    let mut cross_independent = cacheable;
     let plan_intrinsics: Option<HashMap<StableNodeId, Size>> = cacheable.then(|| {
         flow.iter()
             .copied()
@@ -848,6 +1092,7 @@ pub(super) fn place_node_scoped(
         nodes.container_plans.insert(id, None);
     }
 
+    let mut recorded_grid = None;
     if grid_2d {
         let grid = layout_grid_2d(
             style,
@@ -859,6 +1104,12 @@ pub(super) fn place_node_scoped(
             nodes,
             inherited_grid,
         );
+        if grid_recordable {
+            recorded_grid = Some(GridTrackPlan::from_layout(&grid));
+        }
+        // Grid placement is not a sequential cursor. Keep the recorded entries
+        // so a later pass can re-solve tracks without measuring every cell.
+        plan_sequential = false;
         place_grid_2d_items(
             &grid,
             writing,
@@ -871,6 +1122,8 @@ pub(super) fn place_node_scoped(
             intrinsic,
             output,
             scope,
+            None,
+            plan_entries.as_mut(),
         )?;
     } else {
         let wrap = if ifc { FlexWrap::Wrap } else { style.flex_wrap };
@@ -1271,6 +1524,7 @@ pub(super) fn place_node_scoped(
                     // data rather than from the style: if the used main size
                     // still equals the intrinsic, no free space was
                     // redistributed.
+                    let align = child_style.resolved_align_self(style.align_items);
                     plan_sequential &= line_count == 1
                         && auto_main == 0
                         && main_extent(child_size, direction)
@@ -1281,10 +1535,10 @@ pub(super) fn place_node_scoped(
                         // the replay does not model that, so exclude it now.
                         && child_style.flex_grow.unwrap_or(0.0) <= 0.0
                         && child_style.flex_shrink.unwrap_or(0.0) <= 0.0
-                        && matches!(
-                            child_style.resolved_align_self(style.align_items),
-                            AlignSpec::Start | AlignSpec::Stretch
-                        );
+                        && matches!(align, AlignSpec::Start | AlignSpec::Stretch);
+                    cross_independent &= align == AlignSpec::Start
+                        || (align == AlignSpec::Stretch
+                            && cross_axis_is_definite(child_style, direction));
                     entries.push(PlannedChild {
                         child,
                         style: Arc::clone(&child_style_arc),
@@ -1338,17 +1592,18 @@ pub(super) fn place_node_scoped(
                 content_origin,
                 gap,
                 sequential: plan_sequential,
-                omitted_children: if entries.len() == child_ids.len() {
-                    HashSet::new()
-                } else {
+                omitted_children: {
                     let placed = entries
                         .iter()
                         .map(|entry| entry.child)
                         .collect::<HashSet<_>>();
+                    // Positioned children live on `overlay`, filled after they
+                    // are placed. They are not flow omissions.
+                    let positioned_ids = positioned.iter().copied().collect::<HashSet<_>>();
                     child_ids
                         .iter()
                         .copied()
-                        .filter(|child| !placed.contains(child))
+                        .filter(|child| !placed.contains(child) && !positioned_ids.contains(child))
                         .collect()
                 },
                 by_child: {
@@ -1375,6 +1630,9 @@ pub(super) fn place_node_scoped(
                 main_reversed,
                 cross_reversed,
                 entries: RefCell::new(entries),
+                grid: recorded_grid,
+                cross_independent,
+                overlay: Vec::new(),
             }),
         );
     }
@@ -1429,122 +1687,366 @@ pub(super) fn place_node_scoped(
         )?;
         return Ok(());
     }
+    let mut recorded_overlay = Vec::with_capacity(positioned.len());
     for child in positioned {
-        let Some(child_style) = nodes.style(child) else {
-            continue;
-        };
-        let child_style = child_style.as_ref();
-        let base = if child_style.position == PositionSpec::Fixed {
-            Size::new(viewport.width, viewport.height)
-        } else {
-            content
-        };
-        let base_origin = if child_style.position == PositionSpec::Fixed {
-            Point::ZERO
-        } else {
-            content_origin
-        };
-        let child_fonts = fonts_of(child_style, child_font_px);
-        // An auto height is the content's (CSS shrink-to-fit): what inside it
-        // fills or takes a percentage of its height has nothing definite to
-        // resolve against, rather than the containing block's height --
-        // which a box that sizes the containing block (a measured virtual
-        // row) would feed back into itself.
-        let auto_height = child_style
-            .height
-            .is_none_or(|height| height == LengthSpec::Auto || height.is_content_sized())
-            && !(child_style.offset_top.is_some() && child_style.offset_bottom.is_some());
-        let measure_base = if auto_height {
-            Size::new(base.width, 0.0)
-        } else {
-            base
-        };
-        let mut child_size = intrinsic_size_scoped(
+        if let Some(entry) = place_positioned_child(
             child,
-            measure_base,
-            None,
+            content_origin,
+            content,
             viewport,
             child_font_px,
+            writing,
             nodes,
             intrinsic,
+            output,
             scope,
-        )?;
-        let left =
-            LayoutStyle::resolve_inset_fonts(child_style.offset_left, base.width, child_fonts);
-        let right =
-            LayoutStyle::resolve_inset_fonts(child_style.offset_right, base.width, child_fonts);
-        let top =
-            LayoutStyle::resolve_inset_fonts(child_style.offset_top, base.height, child_fonts);
-        let bottom =
-            LayoutStyle::resolve_inset_fonts(child_style.offset_bottom, base.height, child_fonts);
-        if let (Some(left), Some(right)) = (left, right)
-            && !child_style
-                .width
-                .is_some_and(LengthSpec::is_definite_declared)
-        {
-            child_size.width = (base.width - left - right).max(0.0);
+        )? {
+            recorded_overlay.push(entry);
         }
-        if let (Some(top), Some(bottom)) = (top, bottom)
-            && !child_style
-                .height
-                .is_some_and(LengthSpec::is_definite_declared)
-        {
-            child_size.height = (base.height - top - bottom).max(0.0);
-        }
-        let vp = Some((viewport.width, viewport.height));
-        child_size.width = child_size.width.max(child_style.resolved_min_width_fonts(
-            Some(base.width),
-            vp,
-            child_fonts,
-        ));
-        if let Some(max) = child_style.resolved_max_width_fonts(Some(base.width), vp, child_fonts) {
-            child_size.width = child_size.width.min(max);
-        }
-        child_size.height = child_size.height.max(child_style.resolved_min_height_fonts(
-            Some(base.height),
-            vp,
-            child_fonts,
-        ));
-        if let Some(max) = child_style.resolved_max_height_fonts(Some(base.height), vp, child_fonts)
-        {
-            child_size.height = child_size.height.min(max);
-        }
-        let child_origin = Point {
-            x: base_origin.x
-                + left.unwrap_or_else(|| {
-                    right.map_or(0.0, |value| base.width - value - child_size.width)
-                }),
-            y: base_origin.y
-                + top.unwrap_or_else(|| {
-                    bottom.map_or(0.0, |value| base.height - value - child_size.height)
-                }),
-        };
-        if !subtree_unchanged(
+    }
+    if let Some(Some(plan)) = nodes.container_plans.get_mut(&id) {
+        plan.overlay = recorded_overlay;
+    }
+    Ok(())
+}
+
+/// Place one absolute or fixed child against its containing block.
+///
+/// The full container path and the overlay replay share this so a
+/// containing-block change and a content change cannot drift apart.
+#[allow(clippy::too_many_arguments)]
+fn place_positioned_child(
+    child: StableNodeId,
+    content_origin: Point,
+    content: Size,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    writing: nana_ui_core::WritingContext,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Option<PlannedOverlay>, UiWorldError> {
+    let Some(child_style_arc) = nodes.style(child) else {
+        return Ok(None);
+    };
+    let child_style = child_style_arc.as_ref();
+    if !child_style.position.is_out_of_flow() {
+        return Ok(None);
+    }
+    let fixed = child_style.position == PositionSpec::Fixed;
+    let base = if fixed {
+        Size::new(viewport.width, viewport.height)
+    } else {
+        content
+    };
+    let base_origin = if fixed { Point::ZERO } else { content_origin };
+    let child_fonts = fonts_of(child_style, child_font_px);
+    // An auto height is the content's (CSS shrink-to-fit): what inside it
+    // fills or takes a percentage of its height has nothing definite to
+    // resolve against, rather than the containing block's height --
+    // which a box that sizes the containing block (a measured virtual
+    // row) would feed back into itself.
+    let auto_height = child_style
+        .height
+        .is_none_or(|height| height == LengthSpec::Auto || height.is_content_sized())
+        && !(child_style.offset_top.is_some() && child_style.offset_bottom.is_some());
+    let measure_base = if auto_height {
+        Size::new(base.width, 0.0)
+    } else {
+        base
+    };
+    let mut child_size = intrinsic_size_scoped(
+        child,
+        measure_base,
+        None,
+        viewport,
+        child_font_px,
+        nodes,
+        intrinsic,
+        scope,
+    )?;
+    let left = LayoutStyle::resolve_inset_fonts(child_style.offset_left, base.width, child_fonts);
+    let right = LayoutStyle::resolve_inset_fonts(child_style.offset_right, base.width, child_fonts);
+    let top = LayoutStyle::resolve_inset_fonts(child_style.offset_top, base.height, child_fonts);
+    let bottom =
+        LayoutStyle::resolve_inset_fonts(child_style.offset_bottom, base.height, child_fonts);
+    if let (Some(left), Some(right)) = (left, right)
+        && !child_style
+            .width
+            .is_some_and(LengthSpec::is_definite_declared)
+    {
+        child_size.width = (base.width - left - right).max(0.0);
+    }
+    if let (Some(top), Some(bottom)) = (top, bottom)
+        && !child_style
+            .height
+            .is_some_and(LengthSpec::is_definite_declared)
+    {
+        child_size.height = (base.height - top - bottom).max(0.0);
+    }
+    let vp = Some((viewport.width, viewport.height));
+    child_size.width = child_size.width.max(child_style.resolved_min_width_fonts(
+        Some(base.width),
+        vp,
+        child_fonts,
+    ));
+    if let Some(max) = child_style.resolved_max_width_fonts(Some(base.width), vp, child_fonts) {
+        child_size.width = child_size.width.min(max);
+    }
+    child_size.height = child_size.height.max(child_style.resolved_min_height_fonts(
+        Some(base.height),
+        vp,
+        child_fonts,
+    ));
+    if let Some(max) = child_style.resolved_max_height_fonts(Some(base.height), vp, child_fonts) {
+        child_size.height = child_size.height.min(max);
+    }
+    let child_origin = Point {
+        x: base_origin.x
+            + left.unwrap_or_else(|| {
+                right.map_or(0.0, |value| base.width - value - child_size.width)
+            }),
+        y: base_origin.y
+            + top.unwrap_or_else(|| {
+                bottom.map_or(0.0, |value| base.height - value - child_size.height)
+            }),
+    };
+    if !subtree_unchanged(
+        child,
+        child_origin,
+        child_size,
+        base,
+        child_style,
+        child_fonts,
+        writing,
+        scope,
+    ) {
+        place_node_scoped(
             child,
             child_origin,
             child_size,
             base,
-            child_style,
-            child_fonts,
-            writing,
+            viewport,
+            child_font_px,
+            nodes,
+            intrinsic,
+            output,
             scope,
-        ) {
-            place_node_scoped(
+            None,
+        )?;
+    }
+    let tracks_containing_block = positioned_tracks_containing_block(child_style);
+    Ok(Some(PlannedOverlay {
+        child,
+        style: child_style_arc,
+        fixed,
+        tracks_containing_block,
+        base,
+        base_origin,
+        origin: child_origin,
+        size: child_size,
+    }))
+}
+
+fn positioned_tracks_containing_block(style: &LayoutStyle) -> bool {
+    fn tracks(spec: Option<LengthSpec>) -> bool {
+        spec_tracks_containing_block(spec)
+    }
+    tracks(style.width)
+        || tracks(style.height)
+        || tracks(style.min_width)
+        || tracks(style.max_width)
+        || tracks(style.min_height)
+        || tracks(style.max_height)
+        || tracks(style.offset_left)
+        || tracks(style.offset_right)
+        || tracks(style.offset_top)
+        || tracks(style.offset_bottom)
+        || (style.offset_left.is_some()
+            && style.offset_right.is_some()
+            && !style.width.is_some_and(LengthSpec::is_definite_declared))
+        || (style.offset_top.is_some()
+            && style.offset_bottom.is_some()
+            && !style.height.is_some_and(LengthSpec::is_definite_declared))
+}
+
+fn overlay_child_affected(
+    child: StableNodeId,
+    container: StableNodeId,
+    scope: &ScopeContext<'_>,
+    nodes: &LayoutInputMap<'_>,
+) -> bool {
+    if scope.affected.contains(&child) {
+        return true;
+    }
+    for &id in scope.affected {
+        let mut cursor = id;
+        while let Some(parent) = nodes.world.parent_id(cursor) {
+            if parent == child {
+                return true;
+            }
+            if parent == container {
+                break;
+            }
+            cursor = parent;
+        }
+    }
+    false
+}
+
+fn overlay_depends_on_block(
+    entry: &PlannedOverlay,
+    plan: &ContainerPlan,
+    content_origin: Point,
+    content: Size,
+    viewport: LayoutViewport,
+) -> bool {
+    if entry.fixed {
+        return plan.viewport.width.to_bits() != viewport.width.to_bits()
+            || plan.viewport.height.to_bits() != viewport.height.to_bits();
+    }
+    if plan.content_origin != content_origin {
+        return true;
+    }
+    (plan.content.width.to_bits() != content.width.to_bits()
+        || plan.content.height.to_bits() != content.height.to_bits())
+        && entry.tracks_containing_block
+}
+
+/// Place the positioned children that this pass actually depends on.
+///
+/// A content change of one positioned child does not place in-flow siblings.
+/// A containing-block change places only the positioned children that read
+/// that block. If the recorded participants no longer describe the context,
+/// every positioned child of this container is placed and the walk stops
+/// there — still inside that formatting context, not the document.
+#[allow(clippy::too_many_arguments)]
+fn finish_positioned_overlay(
+    id: StableNodeId,
+    plan: &ContainerPlan,
+    origin: Point,
+    size: Size,
+    content_origin: Point,
+    content: Size,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    writing: nana_ui_core::WritingContext,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) -> Result<(), UiWorldError> {
+    let stale = plan.overlay.iter().any(|entry| {
+        nodes
+            .style(entry.child)
+            .is_none_or(|style| !style.position.is_out_of_flow())
+    });
+    let mut placed: Vec<PlannedOverlay> = Vec::new();
+    if stale {
+        #[cfg(any(test, feature = "benchmark"))]
+        super::plan_stats::note_local_context_fallback();
+        let live = collect_positioned_children(&plan.children, nodes)?;
+        for child in live {
+            if let Some(entry) = place_positioned_child(
                 child,
-                child_origin,
-                child_size,
-                base,
+                content_origin,
+                content,
                 viewport,
                 child_font_px,
+                writing,
                 nodes,
                 intrinsic,
                 output,
-                scope,
-                None,
-            )?;
+                Some(scope),
+            )? {
+                placed.push(entry);
+            }
+        }
+    } else {
+        let dependents: Vec<StableNodeId> = plan
+            .overlay
+            .iter()
+            .filter(|entry| {
+                overlay_child_affected(entry.child, id, scope, nodes)
+                    || overlay_depends_on_block(entry, plan, content_origin, content, viewport)
+            })
+            .map(|entry| entry.child)
+            .collect();
+        for child in dependents {
+            if let Some(entry) = place_positioned_child(
+                child,
+                content_origin,
+                content,
+                viewport,
+                child_font_px,
+                writing,
+                nodes,
+                intrinsic,
+                output,
+                Some(scope),
+            )? {
+                placed.push(entry);
+            }
         }
     }
+    let geometry_moved = plan.origin != origin
+        || plan.size != size
+        || plan.content != content
+        || plan.content_origin != content_origin;
+    if geometry_moved || !placed.is_empty() || stale {
+        publish_overlay_plan(
+            id,
+            plan,
+            origin,
+            size,
+            content_origin,
+            content,
+            &placed,
+            stale,
+            nodes,
+        );
+    }
     Ok(())
+}
+
+fn publish_overlay_plan(
+    id: StableNodeId,
+    plan: &ContainerPlan,
+    origin: Point,
+    size: Size,
+    content_origin: Point,
+    content: Size,
+    placed: &[PlannedOverlay],
+    replace_overlay: bool,
+    nodes: &mut LayoutInputMap<'_>,
+) {
+    let write = |target: &mut ContainerPlan| {
+        target.origin = origin;
+        target.size = size;
+        target.content = content;
+        target.content_origin = content_origin;
+        if replace_overlay || target.overlay.is_empty() {
+            target.overlay = placed.to_vec();
+            return;
+        }
+        for update in placed {
+            if let Some(slot) = target
+                .overlay
+                .iter_mut()
+                .find(|entry| entry.child == update.child)
+            {
+                *slot = update.clone();
+            }
+        }
+    };
+    if let Some(Some(existing)) = nodes.container_plans.get_mut(&id) {
+        write(existing);
+        return;
+    }
+    let mut updated = plan.clone();
+    write(&mut updated);
+    nodes.container_plans.insert(id, Some(updated));
 }
 
 fn triggered_menu_overlay(

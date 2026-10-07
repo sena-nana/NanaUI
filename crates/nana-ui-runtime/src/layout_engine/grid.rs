@@ -824,6 +824,9 @@ pub(super) fn place_grid_2d_items(
     intrinsic: &mut PassIntrinsicCache,
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
+    // Used border box for an item whose contribution and cell size are unchanged.
+    reuse_used: Option<&HashMap<StableNodeId, Size>>,
+    mut record: Option<&mut Vec<PlannedChild>>,
 ) -> Result<(), UiWorldError> {
     let col_off = grid_track_offsets(&grid.col_sizes, grid.col_gap);
     let row_off = grid_track_offsets(&grid.row_sizes, grid.row_gap);
@@ -854,16 +857,23 @@ pub(super) fn place_grid_2d_items(
             grid_span_extent(&grid.row_sizes, item.row, item.row_span, grid.row_gap);
         let (_, cell) = page((cell_inline, cell_block, cell_inline_size, cell_block_size));
         // Final tracks are the containing block for item padding and descendants.
-        let measured = intrinsic_size_scoped(
-            item.id,
-            cell,
-            Some(FlexDirection::Row),
-            viewport,
-            child_font_px,
-            nodes,
-            intrinsic,
-            scope,
-        )?;
+        // A reused size already came from this cell; measuring it again would
+        // walk an item the track solution did not touch.
+        let measured = if let Some(used) = reuse_used.and_then(|reuse| reuse.get(&item.id)).copied()
+        {
+            used
+        } else {
+            intrinsic_size_scoped(
+                item.id,
+                cell,
+                Some(FlexDirection::Row),
+                viewport,
+                child_font_px,
+                nodes,
+                intrinsic,
+                scope,
+            )?
+        };
         let margin = child_style.resolved_margin_against_fonts(
             Some(writing.inline_size(cell.width, cell.height)),
             child_fonts,
@@ -922,6 +932,19 @@ pub(super) fn place_grid_2d_items(
             x: content_origin.x + offset.x,
             y: content_origin.y + offset.y,
         };
+        if let Some(record) = record.as_mut()
+            && let Some(style_arc) = nodes.style(item.id)
+        {
+            record.push(PlannedChild {
+                child: item.id,
+                style: style_arc,
+                intrinsic: item.intrinsic,
+                at_main: None,
+                origin: child_origin,
+                size: child_size,
+                cursor_before: 0.0,
+            });
+        }
         if !subtree_unchanged(
             item.id,
             child_origin,

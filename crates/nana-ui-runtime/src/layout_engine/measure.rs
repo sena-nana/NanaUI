@@ -747,8 +747,16 @@ fn measure_node(
                 sequential_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
             {
                 Some(size)
-            } else {
+            } else if let Some(size) =
                 flex_line_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
+            {
+                Some(size)
+            } else if let Some(size) =
+                ifc_line_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
+            {
+                Some(size)
+            } else {
+                grid_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
             };
         if let Some(size) = reused {
             #[cfg(any(test, feature = "benchmark"))]
@@ -852,6 +860,7 @@ fn measure_node(
     // Items measured again at the main size their line gave them:
     // `(child, used main, size)`, re-checked by a measure plan.
     let mut hypothetical: Vec<(StableNodeId, f32, Size)> = Vec::new();
+    let mut recorded_grid = None;
     let children = if uses_2d_grid(style, &flow_children, nodes) {
         let grid = layout_grid_2d(
             style,
@@ -863,6 +872,11 @@ fn measure_node(
             nodes,
             None,
         );
+        // Subgrid tracks belong to the parent. Re-solving them from this
+        // container's template would invent a different grid.
+        if !style.is_subgrid_columns() && !style.is_subgrid_rows() {
+            recorded_grid = Some(GridTrackPlan::from_layout(&grid));
+        }
         // Columns run along the inline axis, rows along the block one.
         let (width, height) = writing.physical_size(
             grid_axis_extent(&grid.col_sizes, grid.col_gap),
@@ -1098,11 +1112,10 @@ fn measure_node(
     // away entirely, and `force_full` has just cleared the retained cache, so
     // in both cases the plans would be built for nobody.
     if unforced && scope.is_some() {
-        // Only the plain in-flow path is cacheable, for the same reasons the
-        // placement plan is narrow. The grid-track path is excluded on top of
-        // that because `auto_track_contributions` measures children against
-        // constraints OTHER than `content_available`, and the plan re-checks a
-        // child only against the one it recorded.
+        // The plain in-flow path and a 2D grid are cacheable. One-axis grid
+        // tracks stay out: `auto_track_contributions` measures children
+        // against constraints other than `content_available`. A subgrid is
+        // not recorded above, so it keeps measuring its own formatting context.
         let plain_main = match direction {
             FlexDirection::Column => {
                 style.height.is_none() && style.min_height.is_none() && style.max_height.is_none()
@@ -1111,12 +1124,21 @@ fn measure_node(
                 style.width.is_none() && style.min_width.is_none() && style.max_width.is_none()
             }
         };
-        let cacheable = !descendant_dependent_flow
-            && !grid_measure
-            && !ifc
+        // A simple horizontal IFC of atomic inline children records the same
+        // measure plan. Line membership is recomputed from those intrinsics.
+        // Floats, unboxing, and a non-local child fall through and measure
+        // this formatting context only.
+        let ifc_local = ifc
+            && text_metrics.is_none()
+            && nodes.world.standard_visual_ref(id).is_none()
+            && ifc_local_measure(style, writing, &flow_children, child_ids.as_slice(), nodes)?;
+        let cacheable = (!descendant_dependent_flow || ifc_local)
+            && (!grid_measure || recorded_grid.is_some())
+            && (!ifc || ifc_local)
             && grid_tracks.is_none_or(|tracks| tracks.is_empty())
             && nodes.world.children_layout_style_is_local(id);
         let sequential = cacheable
+            && recorded_grid.is_none()
             && plain_main
             && !wrapping
             && hypothetical.is_empty()
@@ -1171,6 +1193,7 @@ fn measure_node(
                 entries,
                 size,
                 sequential,
+                grid: recorded_grid,
             }
         });
         let slots = nodes.measure_plans.entry(id).or_default();
@@ -1279,7 +1302,7 @@ fn measure_plan_children_unchanged(
     Ok(true)
 }
 
-fn retained_style_matches(
+pub(super) fn retained_style_matches(
     current: &Option<Arc<nana_ui_core::LayoutStyle>>,
     cached: &Option<Arc<nana_ui_core::LayoutStyle>>,
 ) -> bool {
@@ -1573,6 +1596,166 @@ fn flex_line_measure_delta(
     }
     let mut updated = plan.clone();
     updated.size = size;
+    for (child, measured) in flow.into_iter().zip(sizes) {
+        let Ok(slot) = updated
+            .entries
+            .binary_search_by_key(&child, |entry| entry.child)
+        else {
+            continue;
+        };
+        updated.entries[slot].intrinsic = Some(measured);
+        if let Some(child_style) = nodes.style(child) {
+            updated.entries[slot].style = Some(child_style);
+        }
+    }
+    nodes.measure_plans.entry(id).or_default().insert(updated);
+    Ok(Some(size))
+}
+
+/// Re-solve a grid from cached contributions, measuring only items whose
+/// contribution this pass can change.
+///
+/// Returns `None` when the cached contributions are not a complete description
+/// of the grid (subgrid, a child entering flow, content-sized keywords on the
+/// container). The caller then measures this grid formatting context.
+fn grid_measure_delta(
+    id: StableNodeId,
+    plan: &MeasurePlan,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: &ScopeContext<'_>,
+) -> Result<Option<Size>, UiWorldError> {
+    if plan.grid.is_none() {
+        return Ok(None);
+    }
+    let style = plan.style.as_ref();
+    if style.is_subgrid_columns() || style.is_subgrid_rows() {
+        return Ok(None);
+    }
+    if plan.text_metrics.is_some() || nodes.world.standard_visual_ref(id).is_some() {
+        return Ok(None);
+    }
+    if style.width.is_some_and(LengthSpec::is_content_sized)
+        || style.height.is_some_and(LengthSpec::is_content_sized)
+    {
+        return Ok(None);
+    }
+    let mut flow = Vec::new();
+    let mut sizes = Vec::new();
+    let mut patched = false;
+    for child in plan.children.iter().copied() {
+        let Some(child_style) = nodes.style(child) else {
+            continue;
+        };
+        if !grid_child_in_flow(child_style.as_ref()) {
+            continue;
+        }
+        let Some(entry) = plan.entry(child) else {
+            return Ok(None);
+        };
+        if entry.intrinsic.is_none() && !scope.measure.contains(&child) {
+            return Ok(None);
+        }
+        flow.push(child);
+        sizes.push(entry.intrinsic.unwrap_or_default());
+    }
+    if flow.is_empty() {
+        return Ok(None);
+    }
+    for index in 0..flow.len() {
+        let child = flow[index];
+        if !scope.affected.contains(&child) {
+            continue;
+        }
+        let current = nodes.style(child);
+        let style_same = plan
+            .entry(child)
+            .is_some_and(|entry| retained_style_matches(&current, &entry.style));
+        if !scope.measure.contains(&child) {
+            if !style_same {
+                patched = true;
+            }
+            continue;
+        }
+        let available = current
+            .as_ref()
+            .map_or(plan.child_available, |child_style| {
+                grid_item_measure_available(child_style.as_ref(), plan.child_available)
+            });
+        let measured = intrinsic_size_scoped(
+            child,
+            available,
+            Some(plan.child_direction),
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            Some(scope),
+        )?;
+        if measured != sizes[index] || !style_same {
+            sizes[index] = measured;
+            patched = true;
+        }
+    }
+    if !patched {
+        return Ok(None);
+    }
+    sort_ids_with_sizes(&mut flow, &mut sizes, nodes);
+    let fonts = fonts_of(style, plan.parent_font_px);
+    let solved = layout_grid_2d(
+        style,
+        plan.writing,
+        &flow,
+        &sizes,
+        plan.child_available,
+        fonts,
+        nodes,
+        None,
+    );
+    let containing_writing = match nodes.get(id)? {
+        Some(node) => node.containing_writing,
+        None => return Ok(None),
+    };
+    let edge_base = containing_writing.inline_size(plan.available.width, plan.available.height);
+    let padding = style.resolved_padding_against_fonts(Some(edge_base), fonts);
+    let border = style.resolved_border_edges();
+    let chrome = Size::new(
+        padding.left + padding.right + border.left + border.right,
+        padding.top + padding.bottom + border.top + border.bottom,
+    );
+    let (width, height) = plan.writing.physical_size(
+        grid_axis_extent(&solved.col_sizes, solved.col_gap),
+        grid_axis_extent(&solved.row_sizes, solved.row_gap),
+    );
+    let content = Size::new(width, height);
+    // A root with no parent flow stretches to the available width. Every other
+    // container uses the track extent plus chrome, matching the full measure.
+    let default_width = if plan.parent_direction.is_none() {
+        plan.available.width
+    } else {
+        content.width + chrome.width
+    };
+    let size = finish_intrinsic_size(
+        style,
+        fonts,
+        plan.viewport,
+        plan.available,
+        edge_base,
+        chrome,
+        plan.parent_direction,
+        default_width,
+        content.height + chrome.height,
+    );
+    let mut updated = plan.clone();
+    updated.size = size;
+    updated.grid = Some(GridTrackPlan::from_layout(&solved));
+    for entry in &mut updated.entries {
+        if entry.intrinsic.is_some() && !flow.iter().any(|child| *child == entry.child) {
+            entry.intrinsic = None;
+        }
+    }
     for (child, measured) in flow.into_iter().zip(sizes) {
         let Ok(slot) = updated
             .entries

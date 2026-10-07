@@ -3859,13 +3859,19 @@ impl UiWorld {
                             continue;
                         };
                         let parent_display = parent_record.resolved_layout.display;
-                        let is_formatting_context = parent_display.is_some_and(|display| {
-                            display.is_flex_container()
-                                || display.is_grid_container()
-                                || display.is_inline_level()
-                        });
                         let has_definite_size =
                             definite_fixed_border(parent_record.resolved_layout.as_ref());
+                        // A fixed inline-block is an atomic box. Inner metrics
+                        // stop at its border; the outer inline formatting
+                        // context does not reflow.
+                        let atomic_border = has_definite_size
+                            && parent_display == Some(nana_ui_core::DisplaySpec::InlineBlock);
+                        let is_formatting_context = !atomic_border
+                            && parent_display.is_some_and(|display| {
+                                display.is_flex_container()
+                                    || display.is_grid_container()
+                                    || display.is_inline_level()
+                            });
                         // Fixed ordinary boxes stop intrinsic export and keep a
                         // lateral edge. Formatting contexts still consume metrics.
                         let upward_for_parent = if force_all {
@@ -4016,6 +4022,12 @@ impl UiWorld {
             }
 
             if expand_context && context_seen.insert(node) {
+                // Absolute and fixed boxes do not participate in sibling flow.
+                // A content change stays on the positioned child; the containing
+                // block reaches it through the parent edge, not through siblings.
+                if !force_all && self.positioned_out_of_flow(node) {
+                    continue;
+                }
                 let Some(parent) = self.parent_id(node) else {
                     continue;
                 };
@@ -4036,12 +4048,26 @@ impl UiWorld {
                     continue;
                 }
                 let siblings = parent_record.hierarchy.children.as_ref();
+                let filtered;
+                let flow_siblings: &[StableNodeId] =
+                    if siblings.iter().any(|id| self.positioned_out_of_flow(*id)) {
+                        filtered = siblings
+                            .iter()
+                            .copied()
+                            .filter(|id| !self.positioned_out_of_flow(*id))
+                            .collect::<Vec<_>>();
+                        filtered.as_slice()
+                    } else {
+                        siblings
+                    };
                 if explicit_context {
-                    for pair in siblings.windows(2) {
+                    for pair in flow_siblings.windows(2) {
                         graph.add_context_dependency(pair[0], pair[1], lateral);
                     }
-                } else if let Some(index) = siblings.iter().position(|sibling| *sibling == node) {
-                    for &following in &siblings[index.saturating_add(1)..] {
+                } else if let Some(index) =
+                    flow_siblings.iter().position(|sibling| *sibling == node)
+                {
+                    for &following in &flow_siblings[index.saturating_add(1)..] {
                         graph.add_context_dependency_forward(node, following, lateral);
                     }
                 }
@@ -4049,9 +4075,11 @@ impl UiWorld {
                 // local graph; their own parent links let a lateral change
                 // reach the shared container without scanning descendants.
                 let pending_siblings: &[StableNodeId] = if explicit_context {
-                    siblings.as_slice()
-                } else if let Some(index) = siblings.iter().position(|sibling| *sibling == node) {
-                    &siblings[index.saturating_add(1)..]
+                    flow_siblings
+                } else if let Some(index) =
+                    flow_siblings.iter().position(|sibling| *sibling == node)
+                {
+                    &flow_siblings[index.saturating_add(1)..]
                 } else {
                     &[]
                 };
@@ -4229,6 +4257,12 @@ impl UiWorld {
         // it here, once per removed subtree, made dropping n rows O(n² log n).
     }
 
+    fn positioned_out_of_flow(&self, id: StableNodeId) -> bool {
+        self.nodes
+            .get(id)
+            .is_some_and(|record| record.resolved_layout.position.is_out_of_flow())
+    }
+
     pub(crate) fn layout_isolated(&self, id: StableNodeId) -> bool {
         self.node_style(id).is_some_and(|node| {
             let style=&node.layout;
@@ -4270,6 +4304,26 @@ impl UiWorld {
     }
 
     fn propagate_layout_from_node(&mut self, id: StableNodeId) {
+        // A fixed inline-block's shaped text does not change the border box
+        // the outer line packed. Keep the seed on the atomic.
+        let fixed_atomic = self.is_fixed_metric_boundary(id)
+            && self.nodes.get(id).is_some_and(|record| {
+                record.resolved_layout.display == Some(nana_ui_core::DisplaySpec::InlineBlock)
+            });
+        if fixed_atomic {
+            self.record_layout_invalidation(
+                id,
+                LayoutInvalidation::new(
+                    LayoutInvalidationSource::Text,
+                    InvalidationReason::TEXT,
+                    InvalidationKind::PLACEMENT,
+                    LayoutFieldMask::TYPOGRAPHY,
+                    LayoutDependencyFootprint::NONE,
+                ),
+            );
+            self.mark_scroll_compatible(id, DirtyMask::RENDER);
+            return;
+        }
         self.record_layout_invalidation(
             id,
             LayoutInvalidation::new(
