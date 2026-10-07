@@ -2634,6 +2634,7 @@ impl AppContext {
                 mutations.request_focus(document, Some(target));
                 self.commit_mutations(mutations)?;
                 self.views.insert(parent, Box::new(next));
+                self.reveal_focused_target(target)?;
                 return Ok(true);
             }
             if self
@@ -2657,6 +2658,7 @@ impl AppContext {
                 mutations.request_focus(document, Some(target));
                 self.commit_mutations(mutations)?;
                 self.views.insert(parent, Box::new(next));
+                self.reveal_focused_target(target)?;
                 return Ok(true);
             }
             return Ok(false);
@@ -2667,6 +2669,7 @@ impl AppContext {
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, Some(target));
         self.commit_mutations(mutations)?;
+        self.reveal_focused_target(target)?;
         Ok(true)
     }
 

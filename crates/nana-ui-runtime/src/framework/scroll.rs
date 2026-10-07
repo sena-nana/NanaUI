@@ -196,19 +196,97 @@ impl AppContext {
     ///
     /// `margin` keeps that many logical pixels of context on the leading and
     /// trailing edge where the container has room for it.
+    ///
+    /// Focusing a node also reveals it: [`AppContext::focus_node`] scrolls each
+    /// ancestor scrollport by the minimum distance, with no extra margin.
     pub fn scroll_into_view(
         &mut self,
         scroll: Entity<ScrollView>,
         target: StableNodeId,
         margin: f32,
     ) -> Result<bool, FrameworkError> {
+        let next = self.scroll_offset_for_target(scroll.id, target, margin)?;
+        self.scroll_to(scroll, next)
+    }
+
+    /// After focus lands on `target`, bring it inside every ancestor scrollport.
+    ///
+    /// A scrollport between the target and an outer one contributes its own
+    /// viewport. The outer content holds that viewport, not the unscrolled
+    /// layout position of a descendant clipped inside it. Text editors keep
+    /// their own caret reveal and are revealed as a whole.
+    pub(super) fn reveal_focused_target(
+        &mut self,
+        target: StableNodeId,
+    ) -> Result<(), FrameworkError> {
+        let mut revealed = target;
+        let mut current = self.world.parent_id(target);
+        while let Some(id) = current {
+            let parent = self.world.parent_id(id);
+            if self.owns_text_scroll(id) {
+                revealed = id;
+            } else if self.is_scroll_view(id) || self.overflow_scrolls(id) {
+                match self.scroll_node_into_view(id, revealed, 0.0) {
+                    Ok(_) => {}
+                    Err(FrameworkError::MissingView(_)) => {}
+                    Err(error) => return Err(error),
+                }
+                revealed = id;
+            }
+            current = parent;
+        }
+        Ok(())
+    }
+
+    fn owns_text_scroll(&self, id: StableNodeId) -> bool {
+        self.views
+            .get(&id)
+            .is_some_and(|view| view.is::<TextArea>() || view.is::<TextInput>())
+    }
+
+    fn scroll_node_into_view(
+        &mut self,
+        scroll: StableNodeId,
+        target: StableNodeId,
+        margin: f32,
+    ) -> Result<bool, FrameworkError> {
+        let next = self.scroll_offset_for_target(scroll, target, margin)?;
+        if self.is_scroll_view(scroll) {
+            return self.scroll_to(Entity::from_stable_id(scroll), next);
+        }
+        let Some((scrolls_x, scrolls_y)) = self.overflow_axes(scroll) else {
+            return Ok(false);
+        };
+        let current = self.world.scroll_offset(scroll).unwrap_or_default();
+        let next = self.world.clamp_scroll_offset(
+            scroll,
+            ScrollOffset {
+                x: if scrolls_x { next.x } else { current.x },
+                y: if scrolls_y { next.y } else { current.y },
+            },
+        );
+        if self.world.scroll_offset(scroll) == Some(next) {
+            return Ok(false);
+        }
+        let mut mutations = MutationQueue::new();
+        mutations.set_scroll_offset(scroll, next);
+        self.world.commit(mutations)?;
+        Ok(true)
+    }
+
+    fn scroll_offset_for_target(
+        &self,
+        scroll: StableNodeId,
+        target: StableNodeId,
+        margin: f32,
+    ) -> Result<ScrollOffset, FrameworkError> {
         let Some(target_box) = self.world.component_layout_box(target) else {
             return Err(FrameworkError::MissingView(target));
         };
-        let Some(view_box) = self.world.component_layout_box(scroll.id) else {
-            return Err(FrameworkError::MissingView(scroll.id));
+        let Some(view_box) = self.world.component_layout_box(scroll) else {
+            return Err(FrameworkError::MissingView(scroll));
         };
-        let offset = self.world.scroll_offset(scroll.id).unwrap_or_default();
+        let offset = self.world.scroll_offset(scroll).unwrap_or_default();
         let margin = if margin.is_finite() {
             margin.max(0.0)
         } else {
@@ -236,7 +314,7 @@ impl AppContext {
             }
         };
 
-        let next = ScrollOffset {
+        Ok(ScrollOffset {
             x: axis(
                 target_box.x,
                 target_box.width,
@@ -251,8 +329,7 @@ impl AppContext {
                 view_box.height,
                 offset.y,
             ),
-        };
-        self.scroll_to(scroll, next)
+        })
     }
 
     /// Publish measured scroll geometry and clamp an existing offset when the

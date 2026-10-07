@@ -3520,6 +3520,78 @@ fn scroll_into_view_moves_the_minimum_distance_and_leaves_visible_targets_alone(
 }
 
 #[test]
+fn focusing_a_descendant_below_the_viewport_scrolls_it_into_view() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut viewport = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut viewport.layout);
+        layout.width = Some(LengthSpec::Px(200.0));
+        layout.height = Some(LengthSpec::Px(120.0));
+    }
+    let scroll = context
+        .create_component(
+            document,
+            ScrollView::new(ScrollAxes::Vertical).style(viewport),
+        )
+        .unwrap();
+    let mut rows = Vec::new();
+    for index in 0..5 {
+        let mut row = Button::new(format!("Row {index}"));
+        {
+            let layout = Arc::make_mut(&mut row.style.layout);
+            layout.width = Some(LengthSpec::Fill);
+            layout.height = Some(LengthSpec::Px(40.0));
+            layout.min_height = Some(LengthSpec::Px(40.0));
+            layout.max_height = Some(LengthSpec::Px(40.0));
+        }
+        row.style.control_height = None;
+        let row = context.create_component(document, row).unwrap();
+        context.append_child(scroll, row).unwrap();
+        rows.push(row);
+    }
+    context
+        .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+        .unwrap();
+
+    let contained = |context: &AppContext, row: StableNodeId, offset_y: f32| {
+        let target = context.world().component_layout_box(row).unwrap();
+        let view = context
+            .world()
+            .component_layout_box(scroll.stable_id())
+            .unwrap();
+        let top = target.y - view.y;
+        let bottom = top + target.height;
+        top + 0.01 >= offset_y && bottom <= offset_y + view.height + 0.01
+    };
+    let last = rows[4].stable_id();
+    assert!(
+        !contained(&context, last, 0.0),
+        "the last row starts below the 120px clip"
+    );
+    assert_eq!(
+        context.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        0.0
+    );
+
+    assert!(context.focus_node(document, rows[1].stable_id()).unwrap());
+    assert_eq!(
+        context.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        0.0,
+        "a row already inside the clip does not move the scrollport"
+    );
+
+    assert!(context.focus_node(document, last).unwrap());
+    assert_eq!(context.world().focused(document), Some(last));
+    let offset = context.world().scroll_offset(scroll.stable_id()).unwrap().y;
+    assert!(
+        contained(&context, last, offset),
+        "focus must scroll the row into the viewport, offset {offset}"
+    );
+    assert!(offset > 0.0);
+}
+
+#[test]
 fn scroll_into_view_reports_a_missing_target() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
