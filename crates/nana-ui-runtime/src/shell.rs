@@ -55,10 +55,10 @@ impl WindowChromeAction {
 
     pub fn label(self, maximized: bool) -> &'static str {
         match self {
-            Self::Minimize => "Minimize",
-            Self::ToggleMaximize if maximized => "Restore",
-            Self::ToggleMaximize => "Maximize",
-            Self::Close => "Close",
+            Self::Minimize => "最小化",
+            Self::ToggleMaximize if maximized => "还原",
+            Self::ToggleMaximize => "最大化",
+            Self::Close => "关闭",
         }
     }
 }
@@ -2471,6 +2471,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn caption_buttons_project_chinese_accessible_names() {
+        let mut context = AppContext::new();
+        let bar = context
+            .create_component(document(), AppTitleBar::new("Nana").native_controls(false))
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        let controls = context.read(bar, |bar| bar.controls).unwrap().unwrap();
+        let buttons = context.world().node(controls).unwrap().children.clone();
+        assert_eq!(buttons.len(), 3);
+
+        let spoken = |context: &AppContext, id| {
+            context
+                .world()
+                .accessibility(id)
+                .and_then(|state| state.label.as_deref().map(str::to_owned))
+        };
+        assert_eq!(spoken(&context, buttons[0]).as_deref(), Some("最小化"));
+        assert_eq!(spoken(&context, buttons[1]).as_deref(), Some("最大化"));
+        assert_eq!(spoken(&context, buttons[2]).as_deref(), Some("关闭"));
+        for id in &buttons {
+            assert_eq!(context.world().text(*id).unwrap_or(""), "");
+        }
+
+        context
+            .update_component(bar, |bar, _| {
+                bar.maximized = true;
+            })
+            .unwrap();
+        assert_eq!(spoken(&context, buttons[0]).as_deref(), Some("最小化"));
+        assert_eq!(spoken(&context, buttons[1]).as_deref(), Some("还原"));
+        assert_eq!(spoken(&context, buttons[2]).as_deref(), Some("关闭"));
+        for id in &buttons {
+            assert_eq!(context.world().text(*id).unwrap_or(""), "");
+        }
+    }
+
     fn native_title_bar(
         context: &mut AppContext,
         style: NodeStyle,
@@ -2978,7 +3015,7 @@ mod tests {
                 .unwrap()
                 .label
                 .as_deref(),
-            Some("Maximize")
+            Some("最大化")
         );
 
         context
@@ -2997,7 +3034,7 @@ mod tests {
                 .unwrap()
                 .label
                 .as_deref(),
-            Some("Restore")
+            Some("还原")
         );
         assert_eq!(
             icon_of(context.world().standard_visual(minimize.stable_id())),
