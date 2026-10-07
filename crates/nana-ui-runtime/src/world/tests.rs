@@ -338,7 +338,7 @@ fn unchanged_child_keeps_its_layout_generation_when_the_parent_box_changes() {
     let child = world.layout_result(node(2)).expect("child");
     assert_eq!(child.generation, child_generation);
     assert_eq!(child.bounds, child_bounds);
-    assert_eq!(child.source, crate::LayoutResultSource::RuntimeLayout);
+    assert_eq!(child.source, crate::LayoutResultSource::CompatibilityWrite);
     let parent = world.layout_result(node(1)).expect("parent");
     assert_eq!(parent.generation, world.layout_generation());
     assert_eq!(parent.bounds, box_at(0.0, 0.0, 180.0, 40.0));
@@ -7449,7 +7449,9 @@ fn paint_only_style_change_does_not_schedule_subtree_layout() {
     world.commit(layout).unwrap();
     let work = world.take_system_work();
     assert_eq!(seed_nodes(&work.layout_frontier_seeds), vec![node(2)]);
-    assert_eq!(work.input_hit_test, vec![node(2), node(3)]);
+    assert!(work.input_hit_test.is_empty());
+    assert!(work.accessibility.is_empty());
+    assert!(work.render_extraction.is_empty());
 }
 
 #[test]

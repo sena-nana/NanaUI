@@ -41,6 +41,8 @@ placement。顺序容器只对进入 measure frontier 的子项重新测量，�
 已测尺寸。一次重算若 `LayoutResult` 与已发布结果逐位相同，则不推进 layout
 generation，已发布的结果对象保持不变。
 
+执行计数和 frontier 计数是同一份 `WorkCounters`。`layout_measure_nodes` 只计真正算出 used size 的节点；retained used-size 与 measure plan 的命中记在 `layout_measure_cache_hits`，未命中后重算记在 `layout_measure_cache_misses`。Intrinsic metrics 的命中仍是 `intrinsic_measure_cache_hits`，不另计一份。`layout_placement_nodes` 是这次 placement 写下的盒子，不是 frontier 成员数；Foundation 的 `layout_nodes_placed` 只统计 adapter 的 `publish_result`。`layout_origin_only_updates` 是尺寸没变、只改了原点的写入。`layout_result_reused` / `layout_result_changed` 来自结果发布：几何相同就留着原来的对象，几何变了才替换。`layout_delta_commits` 是真正写下变更结果的那一次发布。`layout_context_local_solves` 不单列，它就是已排进 frontier 的 `layout_frontier_contexts`。
+
 有依赖索引的格式化上下文可以使用 `LayoutDependencyGraph` 表达父约束、包含块、
 写作方向和 flex/grid/inline 的局部耦合。Runtime mutation authority 和产品帧统一发布
 按节点合并的 typed seeds；Vue bridge 维护

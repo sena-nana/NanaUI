@@ -338,6 +338,7 @@ fn measure_plain_childless(
     nodes: &mut LayoutInputMap<'_>,
     cache: &mut PassIntrinsicCache,
 ) -> Result<Size, UiWorldError> {
+    cache.note_measure_node();
     cache.record_full_subtree();
     #[cfg(feature = "benchmark")]
     let mut clock = super::plan_stats::PhaseClock::start();
@@ -522,6 +523,7 @@ fn measure_node(
     // on a miss: a hit has nothing left to resolve, and the lookup existed
     // only so a counter could observe a reuse the caller did not use.
     if unforced && let Some(size) = cache.get(&cache_key) {
+        cache.note_measure_cache_hit();
         return Ok(size);
     }
     // Copy the node facts out before any further world lookup. `node` borrows
@@ -570,6 +572,7 @@ fn measure_node(
             .get(&id)
             .and_then(|memo| memo.get(cache_key))
     {
+        cache.note_measure_cache_hit();
         cache.insert(cache_key, size);
         return Ok(size);
     }
@@ -706,6 +709,7 @@ fn measure_node(
                 );
             }
         }
+        cache.note_measure_node();
         return Ok(size);
     }
 
@@ -745,6 +749,7 @@ fn measure_node(
         if let Some(size) = reused {
             #[cfg(any(test, feature = "benchmark"))]
             super::plan_stats::note_measure_plan_reused();
+            cache.note_measure_cache_hit();
             cache.insert(cache_key, size);
             return Ok(size);
         }
@@ -753,6 +758,10 @@ fn measure_node(
     // We reached the actual child traversal. Fixed-size nodes, retained used
     // sizes, measure plans, and shared intrinsic facts all return above this
     // point and therefore do not count as full-subtree work.
+    cache.note_measure_node();
+    if scope.is_some() {
+        cache.note_measure_cache_miss();
+    }
     cache.record_full_subtree();
     let (mut flow_children, descendant_dependent_flow) =
         collect_flow_children_reporting(&child_ids, nodes, style.display)?;

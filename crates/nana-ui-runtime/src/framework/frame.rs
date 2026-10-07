@@ -372,6 +372,8 @@ impl AppContext {
                 .record_intrinsic_measure_counters(intrinsic_counters);
             self.world
                 .record_layout_frontier(self.layout_cache.frontier_stats(document));
+            self.world
+                .record_layout_execution(self.layout_cache.execution_stats(document));
             completed(1);
             #[cfg(feature = "benchmark")]
             let mut phase = crate::layout_engine::plan_stats::PhaseClock::start();

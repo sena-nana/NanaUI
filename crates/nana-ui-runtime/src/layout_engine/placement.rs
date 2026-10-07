@@ -404,6 +404,16 @@ pub(super) fn place_node_scoped(
         x: origin.x + relative_x,
         y: origin.y + relative_y,
     };
+    if let Some(scope) = scope
+        && !scope.measure.contains(&id)
+        && let Some(previous) = scope.retained.boxes.get(&id)
+        && previous.width == size.width
+        && previous.height == size.height
+        && (previous.x != origin.x || previous.y != origin.y)
+    {
+        intrinsic.note_origin_only();
+    }
+    intrinsic.note_placement_node();
     output.insert(
         id,
         LayoutBox {

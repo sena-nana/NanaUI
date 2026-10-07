@@ -66,7 +66,8 @@ pub struct WorkCounters {
     pub layout_frontier_nodes_measure: usize,
     /// Nodes that entered the placement frontier.
     pub layout_frontier_nodes_placement: usize,
-    /// Formatting contexts that ran a local solve.
+    /// Formatting contexts scheduled for a local solve.
+    /// `layout_context_local_solves` is this field.
     pub layout_frontier_contexts: usize,
     /// Dependency edges inspected while building/propagating the frontier.
     pub layout_dependency_edges_visited: usize,
@@ -76,6 +77,22 @@ pub struct WorkCounters {
     pub layout_local_subtree_fallbacks: usize,
     /// Full-document fallbacks. Normal product paths should keep this zero.
     pub layout_full_document_fallbacks: usize,
+    /// Nodes that computed a used size. Retained used-size and measure-plan hits do not count.
+    pub layout_measure_nodes: usize,
+    /// Retained used-size and measure-plan hits. Intrinsic-metric hits stay on `intrinsic_measure_cache_hits`.
+    pub layout_measure_cache_hits: usize,
+    /// Scoped lookups that missed retained used size or a measure plan, then computed a size.
+    pub layout_measure_cache_misses: usize,
+    /// Nodes whose placement pass wrote a box. Frontier membership is `layout_frontier_nodes_placement`.
+    pub layout_placement_nodes: usize,
+    /// Published results kept because geometry still matched.
+    pub layout_result_reused: usize,
+    /// Published results replaced because geometry changed.
+    pub layout_result_changed: usize,
+    /// Placement writes that moved the origin and kept the measured size.
+    pub layout_origin_only_updates: usize,
+    /// Publish batches that wrote at least one changed layout result.
+    pub layout_delta_commits: usize,
     pub hit_test_candidates: usize,
     /// Unique live pointer hover, press, capture, and focus nodes this drain.
     pub input_targets: usize,
@@ -288,6 +305,30 @@ impl WorkCounters {
         self.layout_full_document_fallbacks = self
             .layout_full_document_fallbacks
             .saturating_add(other.layout_full_document_fallbacks);
+        self.layout_measure_nodes = self
+            .layout_measure_nodes
+            .saturating_add(other.layout_measure_nodes);
+        self.layout_measure_cache_hits = self
+            .layout_measure_cache_hits
+            .saturating_add(other.layout_measure_cache_hits);
+        self.layout_measure_cache_misses = self
+            .layout_measure_cache_misses
+            .saturating_add(other.layout_measure_cache_misses);
+        self.layout_placement_nodes = self
+            .layout_placement_nodes
+            .saturating_add(other.layout_placement_nodes);
+        self.layout_result_reused = self
+            .layout_result_reused
+            .saturating_add(other.layout_result_reused);
+        self.layout_result_changed = self
+            .layout_result_changed
+            .saturating_add(other.layout_result_changed);
+        self.layout_origin_only_updates = self
+            .layout_origin_only_updates
+            .saturating_add(other.layout_origin_only_updates);
+        self.layout_delta_commits = self
+            .layout_delta_commits
+            .saturating_add(other.layout_delta_commits);
         self.hit_test_candidates = self
             .hit_test_candidates
             .saturating_add(other.hit_test_candidates);
@@ -498,6 +539,39 @@ impl WorkCounters {
         self.layout_full_document_fallbacks = self
             .layout_full_document_fallbacks
             .saturating_add(full_document_fallbacks);
+    }
+
+    pub fn record_layout_execution(
+        &mut self,
+        measure_nodes: usize,
+        measure_cache_hits: usize,
+        measure_cache_misses: usize,
+        placement_nodes: usize,
+        origin_only_updates: usize,
+    ) {
+        self.layout_measure_nodes = self.layout_measure_nodes.saturating_add(measure_nodes);
+        self.layout_measure_cache_hits = self
+            .layout_measure_cache_hits
+            .saturating_add(measure_cache_hits);
+        self.layout_measure_cache_misses = self
+            .layout_measure_cache_misses
+            .saturating_add(measure_cache_misses);
+        self.layout_placement_nodes = self.layout_placement_nodes.saturating_add(placement_nodes);
+        self.layout_origin_only_updates = self
+            .layout_origin_only_updates
+            .saturating_add(origin_only_updates);
+    }
+
+    /// `delta_commits` is 1 only when at least one result object was replaced.
+    pub fn record_layout_result_publish(
+        &mut self,
+        reused: usize,
+        changed: usize,
+        delta_commits: usize,
+    ) {
+        self.layout_result_reused = self.layout_result_reused.saturating_add(reused);
+        self.layout_result_changed = self.layout_result_changed.saturating_add(changed);
+        self.layout_delta_commits = self.layout_delta_commits.saturating_add(delta_commits);
     }
 
     /// Record `TextLayoutCache` FIFO evictions. Does not invent glyph evictions.
@@ -821,6 +895,14 @@ mod tests {
         assert_eq!(WorkCounters::default().layout_propagations_stopped, 0);
         assert_eq!(WorkCounters::default().layout_local_subtree_fallbacks, 0);
         assert_eq!(WorkCounters::default().layout_full_document_fallbacks, 0);
+        assert_eq!(WorkCounters::default().layout_measure_nodes, 0);
+        assert_eq!(WorkCounters::default().layout_measure_cache_hits, 0);
+        assert_eq!(WorkCounters::default().layout_measure_cache_misses, 0);
+        assert_eq!(WorkCounters::default().layout_placement_nodes, 0);
+        assert_eq!(WorkCounters::default().layout_result_reused, 0);
+        assert_eq!(WorkCounters::default().layout_result_changed, 0);
+        assert_eq!(WorkCounters::default().layout_origin_only_updates, 0);
+        assert_eq!(WorkCounters::default().layout_delta_commits, 0);
         assert_eq!(WorkCounters::default().text_shaped_runs, 0);
         assert_eq!(WorkCounters::default().text_layout_cache_hits, 0);
         assert_eq!(WorkCounters::default().text_layout_cache_misses, 0);
@@ -929,6 +1011,34 @@ mod tests {
         assert_eq!(first.layout_propagations_stopped, 3);
         assert_eq!(first.layout_local_subtree_fallbacks, 1);
         assert_eq!(first.layout_full_document_fallbacks, 1);
+    }
+
+    #[test]
+    fn execution_counters_record_and_accumulate_layout_work() {
+        let mut first = WorkCounters::default();
+        first.record_layout_execution(4, 3, 2, 6, 5);
+        first.record_layout_result_publish(8, 1, 1);
+        assert_eq!(first.layout_measure_nodes, 4);
+        assert_eq!(first.layout_measure_cache_hits, 3);
+        assert_eq!(first.layout_measure_cache_misses, 2);
+        assert_eq!(first.layout_placement_nodes, 6);
+        assert_eq!(first.layout_origin_only_updates, 5);
+        assert_eq!(first.layout_result_reused, 8);
+        assert_eq!(first.layout_result_changed, 1);
+        assert_eq!(first.layout_delta_commits, 1);
+
+        let mut second = WorkCounters::default();
+        second.record_layout_execution(1, 0, 1, 2, 2);
+        second.record_layout_result_publish(1, 0, 0);
+        first.accumulate(second);
+        assert_eq!(first.layout_measure_nodes, 5);
+        assert_eq!(first.layout_measure_cache_hits, 3);
+        assert_eq!(first.layout_measure_cache_misses, 3);
+        assert_eq!(first.layout_placement_nodes, 8);
+        assert_eq!(first.layout_origin_only_updates, 7);
+        assert_eq!(first.layout_result_reused, 9);
+        assert_eq!(first.layout_result_changed, 1);
+        assert_eq!(first.layout_delta_commits, 1);
     }
 
     #[test]

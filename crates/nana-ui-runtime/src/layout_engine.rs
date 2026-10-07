@@ -507,6 +507,8 @@ impl RuntimeLayoutEngine {
             return Ok(Vec::new());
         }
         let retained = retained.documents.entry(document).or_default();
+        // Reset before the full-layout reuse return, which runs no measure or placement.
+        retained.execution_stats = LayoutExecutionStats::default();
         if force_full && world.layout_source_reusable() {
             let viewport_width = viewport.width.to_bits();
             let viewport_height = viewport.height.to_bits();
@@ -571,21 +573,11 @@ impl RuntimeLayoutEngine {
             frontier.nodes().clone()
         };
         retained.frontier_stats = LayoutFrontierStats::from_frontier(&frontier);
-        // A content/style change invalidates every previous constraint for
-        // the node, including constraints that are not measured this frame.
+        // Used-size memos on the measure frontier are stale. Intrinsic facts
+        // stay until publication so an identical recompute does not bump generation.
         for id in frontier.measure_nodes() {
             retained.intrinsics.remove(id);
-            retained
-                .intrinsic_metrics
-                .retain(|key, _| key.content != id.get());
         }
-        // A scoped layout dirty seed represents a geometry-affecting source
-        // change. Paint/opacity/transform mutations never enter this path,
-        // so they do not bump intrinsic generations.
-        retained.intrinsic_counters.generation_bumps = retained
-            .intrinsic_counters
-            .generation_bumps
-            .saturating_add(affected.len());
         #[cfg(any(test, feature = "benchmark"))]
         plan_stats::note_scope(typed_seeds.len(), affected.len());
         #[cfg(any(test, feature = "benchmark"))]
@@ -716,6 +708,7 @@ impl RuntimeLayoutEngine {
             }
         }
         let intrinsic_counters = intrinsic.counters();
+        retained.execution_stats = intrinsic.execution_stats;
         let universe = if force_full { nodes.len() } else { world.len() };
         for (key, size) in intrinsic.used {
             retained
@@ -930,6 +923,13 @@ impl RetainedLayoutCache {
         }
     }
 
+    pub(crate) fn execution_stats(&self, document: DocumentId) -> LayoutExecutionStats {
+        self.documents
+            .get(&document)
+            .map(|cache| cache.execution_stats)
+            .unwrap_or_default()
+    }
+
     /// Structural counters from the most recent pass for `document`.
     pub(crate) fn frontier_stats(&self, document: DocumentId) -> LayoutFrontierStats {
         self.documents
@@ -1003,6 +1003,7 @@ struct DocumentLayoutCache {
     /// [`MeasurePlan`].
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
     frontier_stats: LayoutFrontierStats,
+    execution_stats: LayoutExecutionStats,
     /// Last two full-layout results for this document, keyed by viewport and
     /// layout-input epoch. `clear` keeps them: a full pass is what consults
     /// them, and clearing first would drop the hit.
@@ -1018,6 +1019,15 @@ struct FullLayoutSnapshot {
     far_start: HashMap<StableNodeId, [bool; 2]>,
 }
 
+fn intrinsic_facts_changed(
+    mut existing: crate::IntrinsicMetrics,
+    mut incoming: crate::IntrinsicMetrics,
+) -> bool {
+    existing.generation = 0;
+    incoming.generation = 0;
+    existing != incoming
+}
+
 impl DocumentLayoutCache {
     fn record_intrinsic_counters(&mut self, counters: crate::IntrinsicCacheCounters) {
         self.intrinsic_counters.accumulate(counters);
@@ -1028,7 +1038,39 @@ impl DocumentLayoutCache {
         metrics: HashMap<crate::IntrinsicCacheKey, crate::IntrinsicMetrics>,
         max_entries: usize,
     ) {
-        self.intrinsic_metrics.extend(metrics);
+        let mut changed = HashSet::new();
+        for (key, incoming) in &metrics {
+            let differs = self
+                .intrinsic_metrics
+                .get(key)
+                .is_none_or(|existing| intrinsic_facts_changed(*existing, *incoming));
+            if differs {
+                changed.insert(key.content);
+            }
+        }
+        let mut next_generation = HashMap::new();
+        if !changed.is_empty() {
+            for (key, existing) in &self.intrinsic_metrics {
+                if changed.contains(&key.content) {
+                    let slot = next_generation.entry(key.content).or_insert(0);
+                    *slot = (*slot).max(existing.generation);
+                }
+            }
+            self.intrinsic_metrics
+                .retain(|key, _| !changed.contains(&key.content));
+        }
+        for (key, mut incoming) in metrics {
+            if !changed.contains(&key.content) {
+                continue;
+            }
+            let previous = next_generation.get(&key.content).copied().unwrap_or(0);
+            incoming.generation = previous.saturating_add(1).max(1);
+            self.intrinsic_metrics.insert(key, incoming);
+        }
+        self.intrinsic_counters.generation_bumps = self
+            .intrinsic_counters
+            .generation_bumps
+            .saturating_add(changed.len());
         // The per-pass authority enforces the full byte budget. The retained
         // mirror has a fixed-size value, so apply the same budget class here
         // instead of allowing every viewport/constraint variant to accumulate
@@ -1065,6 +1107,7 @@ impl DocumentLayoutCache {
         self.container_plans.clear();
         self.measure_plans.clear();
         self.frontier_stats = LayoutFrontierStats::default();
+        self.execution_stats = LayoutExecutionStats::default();
         self.materialized_inputs = 0;
     }
 }
@@ -2101,6 +2144,16 @@ fn measurement_constraint_class(
     }
 }
 
+/// Work a layout pass ran. Frontier membership is recorded separately.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LayoutExecutionStats {
+    pub measure_nodes: usize,
+    pub measure_cache_hits: usize,
+    pub measure_cache_misses: usize,
+    pub placement_nodes: usize,
+    pub origin_only_updates: usize,
+}
+
 /// Per-pass used-size memo.  The public [`crate::IntrinsicCache`] owns the
 /// generation-aware intrinsic contract; this tiny adapter keeps the existing
 /// layout algorithm's physical-size representation while exposing the same
@@ -2120,6 +2173,7 @@ struct PassIntrinsicCache {
     latest_intrinsic_keys: HashMap<StableNodeId, crate::IntrinsicCacheKey>,
     seeded_intrinsic: HashSet<crate::IntrinsicCacheKey>,
     extra_counters: crate::IntrinsicCacheCounters,
+    execution_stats: LayoutExecutionStats,
 }
 
 impl PassIntrinsicCache {
@@ -2137,7 +2191,32 @@ impl PassIntrinsicCache {
             latest_intrinsic_keys: HashMap::with_capacity(capacity),
             seeded_intrinsic: HashSet::with_capacity(capacity),
             extra_counters: crate::IntrinsicCacheCounters::default(),
+            execution_stats: LayoutExecutionStats::default(),
         }
+    }
+
+    fn note_measure_cache_hit(&mut self) {
+        self.execution_stats.measure_cache_hits =
+            self.execution_stats.measure_cache_hits.saturating_add(1);
+    }
+
+    fn note_measure_cache_miss(&mut self) {
+        self.execution_stats.measure_cache_misses =
+            self.execution_stats.measure_cache_misses.saturating_add(1);
+    }
+
+    fn note_measure_node(&mut self) {
+        self.execution_stats.measure_nodes = self.execution_stats.measure_nodes.saturating_add(1);
+    }
+
+    fn note_placement_node(&mut self) {
+        self.execution_stats.placement_nodes =
+            self.execution_stats.placement_nodes.saturating_add(1);
+    }
+
+    fn note_origin_only(&mut self) {
+        self.execution_stats.origin_only_updates =
+            self.execution_stats.origin_only_updates.saturating_add(1);
     }
 
     fn get(&mut self, key: &MeasurementKey) -> Option<Size> {

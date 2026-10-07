@@ -1492,7 +1492,10 @@ impl UiWorld {
                 }
 
                 if !style_excluding_transform_and_cursor_eq(&previous, style) {
-                    self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                    self.mark(*id, DirtyMask::STYLE);
+                    if !style_change_is_layout_geometry_only(&previous, style) {
+                        self.mark(*id, DirtyMask::RENDER);
+                    }
                 }
                 if previous.painter != style.painter {
                     // The hit index entry holds the painter (Issue #217).
@@ -1578,13 +1581,7 @@ impl UiWorld {
                 } else if stacking_changed {
                     self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
                 }
-                if layout_changed {
-                    self.mark_subtree(
-                        *id,
-                        DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,
-                    );
-                }
-                if (layout_changed || inherited_text_changed || omits_box_changed)
+                if (inherited_text_changed || omits_box_changed)
                     && let Some(parent) = self.parent_id(*id)
                 {
                     self.mark_ancestors(parent, DirtyMask::RENDER);
@@ -1645,13 +1642,14 @@ impl UiWorld {
                     self.nodes
                         .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
                 }
-                // Scoped layout already emits every recomputed box, including
-                // shifted descendants. Mark only this node so a bit-identical
-                // child is not extracted solely because an ancestor was written.
-                self.mark(
-                    *id,
-                    DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
-                );
+                // Padding and fragment changes that keep this border box are
+                // scheduled when their result publishes.
+                if resized || moved {
+                    self.mark(
+                        *id,
+                        DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                    );
+                }
             }
             UiMutation::PatchPlacement { id, top, height } => {
                 let Some(current) = self.node_style(*id).cloned() else {

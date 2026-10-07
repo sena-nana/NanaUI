@@ -1249,12 +1249,20 @@ impl UiWorld {
         }
         unique.sort_unstable();
         unique.dedup();
+        // Ancestors are republished with the batch. Downstream geometry is
+        // scheduled only for a caller node whose own box, padding, fragment
+        // or clip changed.
+        let mut requested = ids.to_vec();
+        requested.sort_unstable();
+        requested.dedup();
         #[cfg(feature = "benchmark")]
         let mut phase = crate::layout_engine::plan_stats::PhaseClock::start();
         let mut built = Vec::new();
+        let mut reused = 0usize;
         for &id in &unique {
             if self.layout_result_geometry_current(id, source) {
                 self.layout_results_suppressed.remove(&id);
+                reused = reused.saturating_add(1);
                 continue;
             }
             if let Some(result) = self.build_layout_result(id, source) {
@@ -1263,34 +1271,43 @@ impl UiWorld {
         }
         #[cfg(feature = "benchmark")]
         phase.lap(8);
-        if built.is_empty() {
-            return;
-        }
-        // Building a result is not a publish. A bit-equivalent recompute keeps
-        // the retained Arc and its generation, so scene, hit testing and
-        // accessibility keep the geometry they already observed.
         let mut published = Vec::new();
-        for (id, result) in built.drain(..) {
+        for (id, result) in built {
             if self
                 .layout_results
                 .get(&id)
                 .is_some_and(|previous| previous.geometry_eq(&result))
             {
                 self.layout_results_suppressed.remove(&id);
+                reused = reused.saturating_add(1);
                 continue;
             }
             published.push((id, result));
         }
         if published.is_empty() {
+            self.note_layout_result_publish(reused, 0, 0);
             return;
         }
+        let changed = published.len();
+        self.note_layout_result_publish(reused, changed, 1);
         self.layout_generation = self.layout_generation.wrapping_add(1);
         let generation = self.layout_generation;
         for (id, mut result) in published {
+            let project = requested.binary_search(&id).is_ok()
+                && self
+                    .layout_results
+                    .get(&id)
+                    .is_none_or(|previous| layout_result_projects_new_geometry(previous, &result));
             result.generation = generation;
             result.dependency_generation = generation;
             self.layout_results_suppressed.remove(&id);
             self.layout_results.insert(id, Arc::new(result));
+            if project {
+                self.mark(
+                    id,
+                    DirtyMask::INPUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+                );
+            }
         }
         #[cfg(feature = "benchmark")]
         phase.lap(9);
@@ -1866,6 +1883,27 @@ impl UiWorld {
 
     /// Fold structural layout-frontier observations from the retained engine
     /// into the same frame counters as the coarse dirty drain.
+    pub(crate) fn record_layout_execution(
+        &mut self,
+        stats: crate::layout_engine::LayoutExecutionStats,
+    ) {
+        self.bump_last_counters(|counters| {
+            counters.record_layout_execution(
+                stats.measure_nodes,
+                stats.measure_cache_hits,
+                stats.measure_cache_misses,
+                stats.placement_nodes,
+                stats.origin_only_updates,
+            )
+        });
+    }
+
+    fn note_layout_result_publish(&mut self, reused: usize, changed: usize, delta_commits: usize) {
+        self.bump_last_counters(|counters| {
+            counters.record_layout_result_publish(reused, changed, delta_commits);
+        });
+    }
+
     pub(crate) fn record_layout_frontier(&mut self, stats: crate::LayoutFrontierStats) {
         self.bump_last_counters(|counters| {
             counters.record_layout_frontier(
@@ -4616,7 +4654,7 @@ fn validate_text_metrics(id: StableNodeId, metrics: TextMetrics) -> Result<(), U
     Ok(())
 }
 
-fn style_excluding_transform_and_cursor_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
+fn node_presentation_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
     left.foreground == right.foreground
         && left.background == right.background
         && left.border == right.border
@@ -4624,6 +4662,10 @@ fn style_excluding_transform_and_cursor_eq(left: &NodeStyle, right: &NodeStyle) 
         && left.text_horizontal_alignment == right.text_horizontal_alignment
         && left.text_vertical_alignment == right.text_vertical_alignment
         && left.painter == right.painter
+}
+
+fn style_excluding_transform_and_cursor_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
+    node_presentation_eq(left, right)
         && (std::sync::Arc::ptr_eq(&left.layout, &right.layout)
             || layout_excluding_transform_and_cursor_eq(
                 left.layout.as_ref(),
@@ -4660,6 +4702,117 @@ fn layout_excluding_transform_and_cursor_eq(
     left.cursor = right.cursor;
     left.user_select = right.user_select;
     left == *right
+}
+
+/// True when the write changes only fields layout resolves into a box.
+fn style_change_is_layout_geometry_only(previous: &NodeStyle, next: &NodeStyle) -> bool {
+    if !node_presentation_eq(previous, next)
+        || !layout_semantics_changed(previous.layout.as_ref(), next.layout.as_ref())
+    {
+        return false;
+    }
+    let overlaid = layout_with_semantics_of(previous.layout.as_ref(), next.layout.as_ref());
+    layout_excluding_transform_and_cursor_eq(&overlaid, next.layout.as_ref())
+}
+
+fn layout_with_semantics_of(
+    base: &nana_ui_core::LayoutStyle,
+    semantics: &nana_ui_core::LayoutStyle,
+) -> nana_ui_core::LayoutStyle {
+    let mut overlaid = base.clone();
+    overlaid.direction = semantics.direction;
+    overlaid.dir = semantics.dir;
+    overlaid.flex_reverse = semantics.flex_reverse;
+    overlaid.order = semantics.order;
+    overlaid.flex_wrap = semantics.flex_wrap;
+    overlaid.display = semantics.display;
+    overlaid.box_sizing = semantics.box_sizing;
+    overlaid.position = semantics.position;
+    overlaid.gap = semantics.gap;
+    overlaid.row_gap = semantics.row_gap;
+    overlaid.column_gap = semantics.column_gap;
+    overlaid.padding = semantics.padding;
+    overlaid.padding_top = semantics.padding_top;
+    overlaid.padding_right = semantics.padding_right;
+    overlaid.padding_bottom = semantics.padding_bottom;
+    overlaid.padding_left = semantics.padding_left;
+    overlaid.margin = semantics.margin;
+    overlaid.margin_top = semantics.margin_top;
+    overlaid.margin_right = semantics.margin_right;
+    overlaid.margin_bottom = semantics.margin_bottom;
+    overlaid.margin_left = semantics.margin_left;
+    overlaid.offset_top = semantics.offset_top;
+    overlaid.offset_right = semantics.offset_right;
+    overlaid.offset_bottom = semantics.offset_bottom;
+    overlaid.offset_left = semantics.offset_left;
+    overlaid.width = semantics.width;
+    overlaid.height = semantics.height;
+    overlaid.min_width = semantics.min_width;
+    overlaid.max_width = semantics.max_width;
+    overlaid.min_height = semantics.min_height;
+    overlaid.max_height = semantics.max_height;
+    overlaid.allow_shrink = semantics.allow_shrink;
+    overlaid.align_items = semantics.align_items;
+    overlaid.align_self = semantics.align_self;
+    overlaid.align_content = semantics.align_content;
+    overlaid.justify_content = semantics.justify_content;
+    overlaid.justify_items = semantics.justify_items;
+    overlaid.justify_self = semantics.justify_self;
+    overlaid.flex_grow = semantics.flex_grow;
+    overlaid.flex_shrink = semantics.flex_shrink;
+    overlaid.flex_basis = semantics.flex_basis;
+    overlaid.overflow_x = semantics.overflow_x;
+    overlaid.overflow_y = semantics.overflow_y;
+    overlaid.text_overflow_ellipsis = semantics.text_overflow_ellipsis;
+    overlaid.line_clamp = semantics.line_clamp;
+    overlaid.white_space_nowrap = semantics.white_space_nowrap;
+    overlaid.white_space = semantics.white_space;
+    overlaid.word_break = semantics.word_break;
+    overlaid.overflow_wrap = semantics.overflow_wrap;
+    overlaid.aspect_ratio = semantics.aspect_ratio;
+    overlaid.font_italic = semantics.font_italic;
+    overlaid.text_align = semantics.text_align;
+    overlaid.line_break = semantics.line_break;
+    overlaid.float = semantics.float;
+    overlaid.clear = semantics.clear;
+    overlaid.writing_mode = semantics.writing_mode;
+    overlaid.grid_template_areas = semantics.grid_template_areas.clone();
+    overlaid.grid_column_line_names = semantics.grid_column_line_names.clone();
+    overlaid.grid_row_line_names = semantics.grid_row_line_names.clone();
+    overlaid.grid_columns = semantics.grid_columns.clone();
+    overlaid.grid_rows = semantics.grid_rows.clone();
+    overlaid.grid_columns_unsupported = semantics.grid_columns_unsupported.clone();
+    overlaid.grid_rows_unsupported = semantics.grid_rows_unsupported.clone();
+    overlaid.grid_auto_columns = semantics.grid_auto_columns.clone();
+    overlaid.grid_auto_rows = semantics.grid_auto_rows.clone();
+    overlaid.grid_auto_flow = semantics.grid_auto_flow;
+    overlaid.grid_columns_repeat = semantics.grid_columns_repeat.clone();
+    overlaid.grid_rows_repeat = semantics.grid_rows_repeat.clone();
+    overlaid.grid_placement = semantics.grid_placement.clone();
+    overlaid.border_width = semantics.border_width;
+    overlaid.border_top_width = semantics.border_top_width;
+    overlaid.border_right_width = semantics.border_right_width;
+    overlaid.border_bottom_width = semantics.border_bottom_width;
+    overlaid.border_left_width = semantics.border_left_width;
+    overlaid.border_style = semantics.border_style;
+    overlaid.border_top_style = semantics.border_top_style;
+    overlaid.border_right_style = semantics.border_right_style;
+    overlaid.border_bottom_style = semantics.border_bottom_style;
+    overlaid.border_left_style = semantics.border_left_style;
+    overlaid
+}
+
+/// Own box, padding, fragment, and clip. Child placements stay on the children,
+/// so a parent republished only for those must not patch hit testing from the root.
+fn layout_result_projects_new_geometry(
+    previous: &crate::LayoutResult,
+    next: &crate::LayoutResult,
+) -> bool {
+    let mut previous = previous.clone();
+    previous.child_placements = std::sync::Arc::clone(&next.child_placements);
+    previous.containing_block = next.containing_block;
+    previous.dependencies = std::sync::Arc::clone(&next.dependencies);
+    !previous.geometry_eq(next)
 }
 
 fn layout_semantics_changed(

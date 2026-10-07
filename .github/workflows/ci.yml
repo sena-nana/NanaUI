@@ -233,7 +233,8 @@ jobs:
             scroll_view_with_forty_rows_dirties_forty_one_hit_targets \
             virtual_list_materializes_only_visible_items_and_reuses_overlap \
             virtual_table_materializes_a_bounded_grid_and_reuses_both_axes \
-            virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_expand
+            virtual_tree_materializes_only_visible_rows_and_reuses_overlap_on_scroll_and_expand \
+            issue257
           do
             cargo test -p nana-ui-runtime --lib --locked "$name"
           done

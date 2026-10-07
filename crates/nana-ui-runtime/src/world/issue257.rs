@@ -347,11 +347,45 @@ fn shape_document(world: &mut UiWorld, shaper: &mut NanaTextEngineShaper) {
     world.shape_text(&work.text, shaper).unwrap();
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExecutionDelta {
+    measure_nodes: usize,
+    measure_cache_hits: usize,
+    measure_cache_misses: usize,
+    placement_nodes: usize,
+    origin_only_updates: usize,
+}
+
+fn execution_delta(
+    before: nana_ui_core::WorkCounters,
+    after: nana_ui_core::WorkCounters,
+) -> ExecutionDelta {
+    ExecutionDelta {
+        measure_nodes: after
+            .layout_measure_nodes
+            .saturating_sub(before.layout_measure_nodes),
+        measure_cache_hits: after
+            .layout_measure_cache_hits
+            .saturating_sub(before.layout_measure_cache_hits),
+        measure_cache_misses: after
+            .layout_measure_cache_misses
+            .saturating_sub(before.layout_measure_cache_misses),
+        placement_nodes: after
+            .layout_placement_nodes
+            .saturating_sub(before.layout_placement_nodes),
+        origin_only_updates: after
+            .layout_origin_only_updates
+            .saturating_sub(before.layout_origin_only_updates),
+    }
+}
+
 struct GateACounts {
     ancestor_measure: usize,
     sibling_placement: usize,
     full_document_fallbacks: usize,
     card_measured: bool,
+    metric_generation_bumps: usize,
+    execution: ExecutionDelta,
 }
 
 fn contained_label_edit(count: u64) -> GateACounts {
@@ -363,6 +397,7 @@ fn contained_label_edit(count: u64) -> GateACounts {
     let mut retained = RetainedLayoutCache::default();
     let emitted = layout_with_seeds(&world, viewport, &[], &mut retained, true);
     write_boxes(&mut world, &emitted);
+    let _ = retained.take_intrinsic_counters();
     let _ = world.take_system_work();
     shape_document(&mut world, &mut shaper);
     let _ = world.take_system_work();
@@ -390,6 +425,8 @@ fn contained_label_edit(count: u64) -> GateACounts {
     );
     let stats = retained.frontier_stats(document(1));
     world.record_layout_frontier(stats);
+    world.record_layout_execution(retained.execution_stats(document(1)));
+    let metric_generation_bumps = retained.take_intrinsic_counters().generation_bumps;
     let after = world.last_work_counters();
     assert_eq!(
         after.layout_full_document_fallbacks - before.layout_full_document_fallbacks,
@@ -418,6 +455,8 @@ fn contained_label_edit(count: u64) -> GateACounts {
         sibling_placement,
         full_document_fallbacks: stats.full_document_fallbacks,
         card_measured: frontier.measure_nodes().contains(&card),
+        metric_generation_bumps,
+        execution: execution_delta(before, after),
     }
 }
 
@@ -443,7 +482,17 @@ fn fixed_card_label_edit_does_not_measure_ancestors_or_place_siblings() {
             gate.ancestor_measure,
             gate.sibling_placement,
             gate.full_document_fallbacks,
+            gate.metric_generation_bumps,
+            gate.execution,
         ));
+        assert!(
+            gate.execution.measure_nodes + gate.execution.placement_nodes > 0,
+            "{count} cards: the edit produced no measure or placement work"
+        );
+        assert!(
+            gate.metric_generation_bumps > 0,
+            "{count} cards: the label's new metrics did not bump generation"
+        );
     }
     assert_eq!(
         counts[0], counts[1],
@@ -488,6 +537,7 @@ struct GateBCounts {
     following_measured: usize,
     prefix_emitted: bool,
     full_document_fallbacks: usize,
+    execution: ExecutionDelta,
 }
 
 fn late_row_height(count: u64) -> GateBCounts {
@@ -537,6 +587,7 @@ fn late_row_height(count: u64) -> GateBCounts {
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
     let frontier = frontier_for(&world, &work.layout_frontier_seeds);
+    let before = world.last_work_counters();
     let emitted = layout_with_seeds(
         &world,
         viewport,
@@ -545,6 +596,9 @@ fn late_row_height(count: u64) -> GateBCounts {
         false,
     );
     let stats = retained.frontier_stats(document(1));
+    world.record_layout_frontier(stats);
+    world.record_layout_execution(retained.execution_stats(document(1)));
+    let execution = execution_delta(before, world.last_work_counters());
     let following_measured = (edited_index + 1..count)
         .filter(|index| frontier.measure_nodes().contains(&node(3_000 + index)))
         .count();
@@ -566,6 +620,7 @@ fn late_row_height(count: u64) -> GateBCounts {
         following_measured,
         prefix_emitted,
         full_document_fallbacks: stats.full_document_fallbacks,
+        execution,
     }
 }
 
@@ -592,7 +647,15 @@ fn late_row_height_replays_suffix_without_measuring_followers() {
             "{count} rows: unaffected children were measured ({})",
             gate.children_measured
         );
-        measured.push(gate.children_measured);
+        assert!(
+            gate.execution.origin_only_updates > 0,
+            "{count} rows: the suffix move did not record an origin-only placement"
+        );
+        assert!(
+            gate.execution.placement_nodes > 0,
+            "{count} rows: placement wrote no boxes"
+        );
+        measured.push((gate.children_measured, gate.execution));
     }
     assert_eq!(
         measured[0], measured[1],
@@ -639,6 +702,7 @@ fn equivalent_recompute_does_not_publish_layout_geometry() {
     let mut retained = RetainedLayoutCache::default();
     let emitted = layout_with_seeds(&world, viewport, &[], &mut retained, true);
     write_boxes(&mut world, &emitted);
+    let _ = retained.take_intrinsic_counters();
     let _ = world.take_system_work();
     let ids = emitted.iter().map(|(id, _)| *id).collect::<Vec<_>>();
     world.publish_layout_results(&ids, crate::LayoutResultSource::RuntimeLayout);
@@ -668,11 +732,18 @@ fn equivalent_recompute_does_not_publish_layout_geometry() {
         &mut retained,
         false,
     );
+    assert_eq!(
+        retained.take_intrinsic_counters().generation_bumps,
+        0,
+        "a bit-equivalent recompute must not bump retained metric generation"
+    );
     write_boxes(&mut world, &emitted);
     let _ = world.take_system_work();
     let ids = emitted.iter().map(|(id, _)| *id).collect::<Vec<_>>();
     let before = world.layout_box(node(2));
+    let counters_before = world.last_work_counters();
     world.publish_layout_results(&ids, crate::LayoutResultSource::RuntimeLayout);
+    let counters_after = world.last_work_counters();
 
     assert_eq!(
         (world.layout_generation(), world.layout_box(node(2))),
@@ -691,13 +762,36 @@ fn equivalent_recompute_does_not_publish_layout_geometry() {
     );
     assert!(world.layout_result(node(2)).is_some());
     assert_eq!(world.layout_result(node(2)).unwrap().bounds.width, 120.0);
+    assert_eq!(
+        counters_after.layout_result_changed, counters_before.layout_result_changed,
+        "a bit-equivalent recompute must not count a changed layout result"
+    );
+    assert_eq!(
+        counters_after.layout_delta_commits, counters_before.layout_delta_commits,
+        "a bit-equivalent recompute must not commit a layout delta"
+    );
+    assert!(
+        counters_after.layout_result_reused > counters_before.layout_result_reused,
+        "keeping the published object must count as reuse"
+    );
 
     // position:fixed always misses the cheap geometry check. Publishing the
     // same boxes again must still keep the Arc.
+    let fixed_before = world.last_work_counters();
     world.publish_layout_results(&[node(3)], crate::LayoutResultSource::RuntimeLayout);
+    let fixed_after = world.last_work_counters();
     assert_eq!(world.layout_generation(), generation);
     assert_eq!(
         world.layout_results.get(&node(3)).map(Arc::as_ptr),
         Some(fixed_ptr)
     );
+    assert_eq!(
+        fixed_after.layout_result_changed,
+        fixed_before.layout_result_changed
+    );
+    assert_eq!(
+        fixed_after.layout_delta_commits,
+        fixed_before.layout_delta_commits
+    );
+    assert!(fixed_after.layout_result_reused > fixed_before.layout_result_reused);
 }

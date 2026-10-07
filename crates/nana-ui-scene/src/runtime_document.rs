@@ -2170,4 +2170,197 @@ mod tests {
         assert!(!retried.is_idle());
         assert_eq!(retried.scene.primitive_count, 2);
     }
+
+    #[test]
+    fn equivalent_layout_recompute_does_not_rebuild_scene_hit_or_accessibility() {
+        struct IdleShaper;
+        impl nana_ui_runtime::TextShaper for IdleShaper {
+            fn shape(
+                &mut self,
+                _id: StableNodeId,
+                _text: &TextContent,
+                _style: &ComputedStyle,
+                _constraints: nana_ui_runtime::TextShapeConstraints,
+            ) -> TextMetrics {
+                TextMetrics {
+                    width: 0.0,
+                    height: 0.0,
+                    ascent: None,
+                }
+            }
+        }
+
+        let document = DocumentId::new(1).unwrap();
+        let root = StableNodeId::new(1).unwrap();
+        let section = StableNodeId::new(2).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let mut queue = MutationQueue::new();
+        queue.create(root, document, NodeKind::Document);
+        queue.create(
+            section,
+            document,
+            NodeKind::Element {
+                tag: "section".into(),
+            },
+        );
+        queue.insert(root, section, None);
+        queue.set_style(
+            section,
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(120.0)),
+                    height: Some(LengthSpec::Px(32.0)),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_interaction(
+            section,
+            nana_ui_runtime::InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        let mut shaper = IdleShaper;
+        let viewport = LayoutViewport::new(200.0, 100.0);
+        runtime.flush(viewport, &mut shaper).unwrap();
+
+        let generation = runtime.context().world().layout_generation();
+        let before = runtime.context().world().layout_box(section).unwrap();
+        assert_eq!(before.width, 120.0);
+        assert_eq!(
+            runtime
+                .scene()
+                .node_bounds(section)
+                .map(|bounds| bounds.width),
+            Some(120.0)
+        );
+        let inside = (before.x + 4.0, before.y + 4.0);
+        let outside = (before.x + before.width + 8.0, before.y + 4.0);
+        assert_eq!(
+            runtime
+                .context()
+                .world()
+                .hit_test(document, inside.0, inside.1),
+            Some(section)
+        );
+        assert_ne!(
+            runtime
+                .context()
+                .world()
+                .hit_test(document, outside.0, outside.1),
+            Some(section)
+        );
+
+        let mut restyle = runtime
+            .context()
+            .world()
+            .node_style(section)
+            .unwrap()
+            .clone();
+        Arc::make_mut(&mut restyle.layout).min_width = Some(LengthSpec::Px(10.0));
+        let mut queue = MutationQueue::new();
+        queue.set_style(section, restyle);
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        let noop = runtime.flush(viewport, &mut shaper).unwrap();
+        assert!(
+            !noop.is_idle(),
+            "the min-width write must still run a layout pass"
+        );
+        assert_eq!(noop.layout_generation, generation);
+        assert_eq!(noop.scene.updated_nodes, 0);
+        assert!(noop.accessibility.updated.is_empty());
+        assert_eq!(hit_entries_built(&runtime), 0);
+        assert_eq!(
+            runtime
+                .scene()
+                .node_bounds(section)
+                .map(|bounds| bounds.width),
+            Some(120.0)
+        );
+        assert_eq!(
+            runtime
+                .context()
+                .world()
+                .hit_test(document, inside.0, inside.1),
+            Some(section)
+        );
+
+        let mut paint = runtime
+            .context()
+            .world()
+            .node_style(section)
+            .unwrap()
+            .clone();
+        Arc::make_mut(&mut paint.layout).background = Some([0.2, 0.4, 0.8, 1.0]);
+        let mut queue = MutationQueue::new();
+        queue.set_style(section, paint);
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        let painted = runtime.flush(viewport, &mut shaper).unwrap();
+        assert_eq!(painted.layout_generation, generation);
+        assert!(painted.scene.updated_nodes >= 1);
+        assert!(painted.accessibility.updated.is_empty());
+        assert_eq!(hit_entries_built(&runtime), 0);
+        assert_eq!(
+            runtime
+                .scene()
+                .node_bounds(section)
+                .map(|bounds| bounds.width),
+            Some(120.0)
+        );
+
+        let mut focus = MutationQueue::new();
+        focus.request_focus(document, Some(section));
+        runtime.context_mut().commit_mutations(focus).unwrap();
+        let focused = runtime.flush(viewport, &mut shaper).unwrap();
+        assert_eq!(focused.layout_generation, generation);
+        assert!(focused.scene.updated_nodes >= 1);
+        assert!(
+            focused
+                .accessibility
+                .updated
+                .iter()
+                .any(|node| node.id == section)
+        );
+        assert_eq!(hit_entries_built(&runtime), 0);
+
+        let mut widen = runtime
+            .context()
+            .world()
+            .node_style(section)
+            .unwrap()
+            .clone();
+        Arc::make_mut(&mut widen.layout).width = Some(LengthSpec::Px(180.0));
+        let mut queue = MutationQueue::new();
+        queue.set_style(section, widen);
+        runtime.context_mut().commit_mutations(queue).unwrap();
+        let moved = runtime.flush(viewport, &mut shaper).unwrap();
+        assert!(moved.layout_generation > generation);
+        assert!(moved.scene.updated_nodes >= 1);
+        assert_eq!(
+            runtime
+                .scene()
+                .node_bounds(section)
+                .map(|bounds| bounds.width),
+            Some(180.0)
+        );
+        assert!(
+            moved
+                .accessibility
+                .updated
+                .iter()
+                .any(|node| node.id == section && (node.bounds.width - 180.0).abs() < 0.01)
+        );
+        assert!(hit_entries_built(&runtime) > 0);
+        assert_eq!(
+            runtime
+                .context()
+                .world()
+                .hit_test(document, outside.0, outside.1),
+            Some(section),
+            "the point just past the old edge must hit the widened section"
+        );
+    }
 }
