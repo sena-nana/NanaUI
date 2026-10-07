@@ -1459,7 +1459,7 @@ impl ContainerPlan {
         self.writing == writing
             && self.origin == origin
             && self.size_compatible(size)
-            && self.containing == containing
+            && self.containing_compatible(containing)
             && self.parent_font_px == parent_font_px
             && self.viewport == viewport
             && Arc::ptr_eq(&self.style, style)
@@ -1472,12 +1472,44 @@ impl ContainerPlan {
         if self.size == size {
             return true;
         }
-        if !self.sequential || self.main_reversed {
+        if self.sequential && !self.main_reversed {
+            return match self.main_direction {
+                FlexDirection::Column => self.size.width.to_bits() == size.width.to_bits(),
+                FlexDirection::Row => self.size.height.to_bits() == size.height.to_bits(),
+            };
+        }
+        // A wrap container's cross size is the sum of its line cross sizes.
+        // The main size is the line budget; if that moved, line membership
+        // has to be solved again by the formatting context.
+        if !flex_line_local_style(self.style.as_ref()) || self.main_reversed || self.cross_reversed
+        {
             return false;
         }
         match self.main_direction {
-            FlexDirection::Column => self.size.width.to_bits() == size.width.to_bits(),
-            FlexDirection::Row => self.size.height.to_bits() == size.height.to_bits(),
+            FlexDirection::Row => {
+                self.style.height.is_none() && self.size.width.to_bits() == size.width.to_bits()
+            }
+            FlexDirection::Column => {
+                self.style.width.is_none() && self.size.height.to_bits() == size.height.to_bits()
+            }
+        }
+    }
+
+    /// The line budget is this container's main size. The parent's cross size
+    /// can grow with this container without changing that budget.
+    fn containing_compatible(&self, containing: Size) -> bool {
+        if self.containing == containing {
+            return true;
+        }
+        if !flex_line_local_style(self.style.as_ref()) || self.main_reversed || self.cross_reversed
+        {
+            return false;
+        }
+        match self.main_direction {
+            FlexDirection::Row => self.containing.width.to_bits() == containing.width.to_bits(),
+            FlexDirection::Column => {
+                self.containing.height.to_bits() == containing.height.to_bits()
+            }
         }
     }
 
@@ -1536,6 +1568,46 @@ fn layout_inputs_equal(a: &nana_ui_core::LayoutStyle, b: &nana_ui_core::LayoutSt
     let mut probe = a.clone();
     probe.direction = b.direction;
     probe == *b
+}
+
+/// Wrap flex whose line breaks depend only on each item's main size.
+fn flex_line_local_style(style: &LayoutStyle) -> bool {
+    style
+        .display
+        .is_some_and(|display| display.is_flex_container())
+        && matches!(style.flex_wrap, FlexWrap::Wrap)
+        && style.justify_content == JustifySpec::Start
+        && style.align_items == AlignSpec::Start
+        && style.align_content == JustifySpec::Start
+        && style.aspect_ratio.is_none()
+        && !style.flex_reverse
+}
+
+fn child_blocks_flex_line_local(style: &LayoutStyle) -> bool {
+    style.flex_grow.unwrap_or(0.0) > 0.0
+        || style.flex_shrink.unwrap_or(0.0) > 0.0
+        || style.order != 0
+        || style.aspect_ratio.is_some()
+        || style.clear != ClearSpec::None
+        || style
+            .align_self
+            .is_some_and(|align| align != AlignSpec::Start)
+        || matches!(
+            style.margin_left,
+            Some(LengthSpec::Auto) | Some(LengthSpec::Percent(_)) | Some(LengthSpec::Fill)
+        )
+        || matches!(
+            style.margin_right,
+            Some(LengthSpec::Auto) | Some(LengthSpec::Percent(_)) | Some(LengthSpec::Fill)
+        )
+        || matches!(
+            style.margin_top,
+            Some(LengthSpec::Auto) | Some(LengthSpec::Percent(_)) | Some(LengthSpec::Fill)
+        )
+        || matches!(
+            style.margin_bottom,
+            Some(LengthSpec::Auto) | Some(LengthSpec::Percent(_)) | Some(LengthSpec::Fill)
+        )
 }
 
 /// One child's contribution to a cached container measurement.

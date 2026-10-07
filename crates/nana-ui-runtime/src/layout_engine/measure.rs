@@ -743,8 +743,12 @@ fn measure_node(
             if measure_plan_children_unchanged(plan, viewport, child_font_px, nodes, cache, scope)?
             {
                 Some(plan.size)
-            } else {
+            } else if let Some(size) =
                 sequential_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
+            {
+                Some(size)
+            } else {
+                flex_line_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
             };
         if let Some(size) = reused {
             #[cfg(any(test, feature = "benchmark"))]
@@ -1382,6 +1386,203 @@ fn sequential_measure_delta(
             if let Some(style) = style {
                 updated.entries[slot].style = Some(style);
             }
+        }
+    }
+    nodes.measure_plans.entry(id).or_default().insert(updated);
+    Ok(Some(size))
+}
+
+/// Recompute a wrapping flex from the lines whose items changed.
+///
+/// Returns `None` when line membership cannot be proved from the cached main
+/// sizes. The caller then measures this flex formatting context, not the document.
+fn flex_line_measure_delta(
+    id: StableNodeId,
+    plan: &MeasurePlan,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: &ScopeContext<'_>,
+) -> Result<Option<Size>, UiWorldError> {
+    let style = plan.style.as_ref();
+    if plan.sequential || !flex_line_local_style(style) {
+        return Ok(None);
+    }
+    if plan.text_metrics.is_some() || nodes.world.standard_visual_ref(id).is_some() {
+        return Ok(None);
+    }
+    let direction = plan.child_direction;
+    match direction {
+        FlexDirection::Row
+            if style.height.is_some()
+                || style.min_height.is_some()
+                || style.max_height.is_some() =>
+        {
+            return Ok(None);
+        }
+        FlexDirection::Column
+            if style.width.is_some() || style.min_width.is_some() || style.max_width.is_some() =>
+        {
+            return Ok(None);
+        }
+        _ => {}
+    }
+    let tracks = match direction {
+        FlexDirection::Row => style.active_grid_columns(),
+        FlexDirection::Column => style.active_grid_rows(),
+    };
+    if tracks.is_some_and(|tracks| !tracks.is_empty()) {
+        return Ok(None);
+    }
+    let mut flow = Vec::new();
+    let mut sizes = Vec::new();
+    for child in plan.children.iter().copied() {
+        let Some(entry) = plan.entry(child) else {
+            return Ok(None);
+        };
+        let Some(intrinsic) = entry.intrinsic else {
+            continue;
+        };
+        let Some(child_style) = entry.style.as_deref() else {
+            return Ok(None);
+        };
+        if child_blocks_flex_line_local(child_style) {
+            return Ok(None);
+        }
+        let cross = match direction {
+            FlexDirection::Row => child_style.height,
+            FlexDirection::Column => child_style.width,
+        };
+        if matches!(cross, Some(LengthSpec::Percent(_)) | Some(LengthSpec::Fill)) {
+            return Ok(None);
+        }
+        flow.push(child);
+        sizes.push(intrinsic);
+    }
+    if flow.is_empty() {
+        return Ok(None);
+    }
+    let old_sizes = sizes.clone();
+    let mut patched = false;
+    for affected in scope.affected.iter().copied() {
+        let Some(index) = flow.iter().position(|child| *child == affected) else {
+            continue;
+        };
+        if !scope.measure.contains(&affected) {
+            let Some(entry) = plan.entry(affected) else {
+                continue;
+            };
+            if !retained_style_matches(&nodes.style(affected), &entry.style) {
+                return Ok(None);
+            }
+            continue;
+        }
+        let measured = intrinsic_size_scoped(
+            affected,
+            plan.child_available,
+            Some(direction),
+            viewport,
+            child_font_px,
+            nodes,
+            cache,
+            Some(scope),
+        )?;
+        if main_extent(measured, direction).to_bits()
+            != main_extent(sizes[index], direction).to_bits()
+        {
+            return Ok(None);
+        }
+        if measured != sizes[index] {
+            sizes[index] = measured;
+            patched = true;
+        }
+    }
+    if !patched {
+        return Ok(None);
+    }
+    let fonts = fonts_of(style, plan.parent_font_px);
+    let parent_box = gap_containing_block(style, plan.child_available);
+    let gap = style.main_gap_against_fonts(direction, parent_box, fonts);
+    let cross_gap = style.cross_gap_against_fonts(direction, parent_box, fonts);
+    let edge_base = plan
+        .writing
+        .logical_size(plan.child_available.width, plan.child_available.height)
+        .0;
+    let old_lines = pack_wrap_lines(
+        &flow,
+        &old_sizes,
+        direction,
+        plan.child_available,
+        edge_base,
+        gap,
+        None,
+        viewport,
+        child_font_px,
+        nodes,
+        false,
+    );
+    let new_lines = pack_wrap_lines(
+        &flow,
+        &sizes,
+        direction,
+        plan.child_available,
+        edge_base,
+        gap,
+        None,
+        viewport,
+        child_font_px,
+        nodes,
+        false,
+    );
+    if old_lines != new_lines {
+        return Ok(None);
+    }
+    let old_content = wrap_intrinsic_size(
+        direction,
+        FlexWrap::Wrap,
+        &flow,
+        &old_sizes,
+        plan.child_available,
+        edge_base,
+        gap,
+        cross_gap,
+        None,
+        viewport,
+        child_font_px,
+        nodes,
+    );
+    let new_content = wrap_intrinsic_size(
+        direction,
+        FlexWrap::Wrap,
+        &flow,
+        &sizes,
+        plan.child_available,
+        edge_base,
+        gap,
+        cross_gap,
+        None,
+        viewport,
+        child_font_px,
+        nodes,
+    );
+    let mut size = plan.size;
+    match direction {
+        FlexDirection::Row => size.height += new_content.height - old_content.height,
+        FlexDirection::Column => size.width += new_content.width - old_content.width,
+    }
+    let mut updated = plan.clone();
+    updated.size = size;
+    for (child, measured) in flow.into_iter().zip(sizes) {
+        let Ok(slot) = updated
+            .entries
+            .binary_search_by_key(&child, |entry| entry.child)
+        else {
+            continue;
+        };
+        updated.entries[slot].intrinsic = Some(measured);
+        if let Some(child_style) = nodes.style(child) {
+            updated.entries[slot].style = Some(child_style);
         }
     }
     nodes.measure_plans.entry(id).or_default().insert(updated);

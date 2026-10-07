@@ -5671,6 +5671,86 @@ fn contained_edit_stays_flat(container_height: Option<LengthSpec>, parked_row: b
     );
 }
 
+/// Issue #258: one flex item's cross size stays on its line, so the other
+/// lines are not measured and the pass does not fall back to the document.
+#[test]
+fn flex_line_intrinsic_change_does_not_measure_unaffected_lines() {
+    let viewport = LayoutViewport::new(400.0, 800.0);
+    let container = LayoutStyle {
+        display: Some(DisplaySpec::Flex),
+        direction: Some(FlexDirection::Row),
+        flex_wrap: FlexWrap::Wrap,
+        width: Some(LengthSpec::Px(200.0)),
+        align_items: AlignSpec::Start,
+        justify_content: JustifySpec::Start,
+        ..LayoutStyle::default()
+    };
+    let item = LayoutStyle {
+        width: Some(LengthSpec::Px(100.0)),
+        height: Some(LengthSpec::Px(20.0)),
+        ..LayoutStyle::default()
+    };
+    let mut measured = Vec::new();
+    for lines in [2usize, 6] {
+        let rows = (0..lines * 2)
+            .map(|index| (10 + index as u64, item.clone(), Vec::new()))
+            .collect::<Vec<_>>();
+        let (mut world, document) = hugging_container_world(&rows, container.clone());
+        let mut retained = RetainedLayoutCache::default();
+        let _ = world.take_system_work();
+        let emitted = RuntimeLayoutEngine
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
+        prime_measure_plans(&mut world, document, viewport, &mut retained, id(10));
+
+        let mut grown = item.clone();
+        grown.height = Some(LengthSpec::Px(40.0));
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            id(10),
+            NodeStyle {
+                layout: Arc::new(grown),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        let step = scoped_step_matches_full(
+            &mut world,
+            document,
+            viewport,
+            &mut retained,
+            "flex line cross size",
+        );
+        assert_eq!(
+            super::plan_stats::full_document_fallbacks(),
+            0,
+            "{lines} lines fell back to the document"
+        );
+        let changed = world.layout_box(id(10)).expect("changed item");
+        let next_line = world
+            .layout_box(id(12))
+            .expect("first item of the next line");
+        assert_eq!(changed.height, 40.0);
+        assert!(
+            (next_line.y - 40.0).abs() < 0.01,
+            "{lines} lines: the next line stayed at y {}",
+            next_line.y
+        );
+        assert!(
+            step.children_measured < lines * 2,
+            "{lines} lines measured {} children, including an unaffected line",
+            step.children_measured
+        );
+        measured.push(step.children_measured);
+    }
+    assert_eq!(
+        measured[0], measured[1],
+        "unaffected flex lines must not add measure work as lines are added: {measured:?}"
+    );
+}
+
 /// Run the scoped passes that leave every plan recorded and current.
 ///
 /// A full pass records no measure plans, so the first scoped pass after one is

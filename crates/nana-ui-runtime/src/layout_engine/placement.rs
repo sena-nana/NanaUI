@@ -345,6 +345,177 @@ fn replay_sequential_suffix(
     Ok(true)
 }
 
+/// Shift later wrap lines when one item's cross size changed and the line
+/// breaks did not. Anything else returns `false` so the caller lays out this
+/// flex container from scratch.
+fn replay_wrapped_flex_line(
+    plan: &ContainerPlan,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) -> Result<bool, UiWorldError> {
+    let style = plan.style.as_ref();
+    if plan.sequential || !flex_line_local_style(style) || plan.main_reversed || plan.cross_reversed
+    {
+        return Ok(false);
+    }
+    let direction = plan.main_direction;
+    let tracks = match direction {
+        FlexDirection::Row => style.active_grid_columns(),
+        FlexDirection::Column => style.active_grid_rows(),
+    };
+    if tracks.is_some_and(|tracks| !tracks.is_empty()) {
+        return Ok(false);
+    }
+    let entries = plan.entries.borrow();
+    let mut flow = Vec::with_capacity(entries.len());
+    let mut old_sizes = Vec::with_capacity(entries.len());
+    for entry in entries.iter() {
+        if child_blocks_flex_line_local(entry.style.as_ref()) {
+            return Ok(false);
+        }
+        let cross = match direction {
+            FlexDirection::Row => entry.style.height,
+            FlexDirection::Column => entry.style.width,
+        };
+        if matches!(cross, Some(LengthSpec::Percent(_)) | Some(LengthSpec::Fill)) {
+            return Ok(false);
+        }
+        flow.push(entry.child);
+        old_sizes.push(entry.intrinsic);
+    }
+    drop(entries);
+    if flow.is_empty() {
+        return Ok(false);
+    }
+    let mut sizes = old_sizes.clone();
+    let mut patched = false;
+    for (index, child) in flow.iter().copied().enumerate() {
+        if !scope.measure.contains(&child) {
+            continue;
+        }
+        let measured = intrinsic_size_scoped(
+            child,
+            plan.child_available,
+            Some(direction),
+            viewport,
+            plan.child_font_px,
+            nodes,
+            intrinsic,
+            Some(scope),
+        )?;
+        if main_extent(measured, direction).to_bits()
+            != main_extent(old_sizes[index], direction).to_bits()
+        {
+            return Ok(false);
+        }
+        if measured != sizes[index] {
+            sizes[index] = measured;
+            patched = true;
+        }
+    }
+    if !patched {
+        return Ok(false);
+    }
+    let edge_base = plan
+        .writing
+        .inline_size(plan.content.width, plan.content.height);
+    let old_lines = pack_wrap_lines(
+        &flow,
+        &old_sizes,
+        direction,
+        plan.content,
+        edge_base,
+        plan.gap,
+        None,
+        viewport,
+        plan.child_font_px,
+        nodes,
+        false,
+    );
+    let new_lines = pack_wrap_lines(
+        &flow,
+        &sizes,
+        direction,
+        plan.content,
+        edge_base,
+        plan.gap,
+        None,
+        viewport,
+        plan.child_font_px,
+        nodes,
+        false,
+    );
+    if old_lines != new_lines {
+        return Ok(false);
+    }
+    let line_cross = |line: &[usize], sizes: &[Size]| -> f32 {
+        let mut cross = 0.0f32;
+        for &index in line {
+            let margin = nodes
+                .style(flow[index])
+                .map(|child_style| {
+                    child_style.resolved_margin_against_fonts(
+                        Some(edge_base),
+                        fonts_of(child_style.as_ref(), plan.child_font_px),
+                    )
+                })
+                .unwrap_or_default();
+            cross =
+                cross.max(cross_extent(sizes[index], direction) + cross_margin(margin, direction));
+        }
+        cross
+    };
+    let mut carried = 0.0f32;
+    let mut jobs = Vec::new();
+    for line in &new_lines {
+        let delta = line_cross(line, &sizes) - line_cross(line, &old_sizes);
+        for &index in line {
+            let moved = sizes[index] != old_sizes[index];
+            if carried == 0.0 && !moved {
+                continue;
+            }
+            let entries = plan.entries.borrow();
+            let mut origin = entries[index].origin;
+            match direction {
+                FlexDirection::Row => origin.y += carried,
+                FlexDirection::Column => origin.x += carried,
+            }
+            jobs.push((flow[index], origin, sizes[index], index));
+        }
+        carried += delta;
+    }
+    for (child, origin, size, _) in &jobs {
+        place_node_scoped(
+            *child,
+            *origin,
+            *size,
+            plan.content,
+            viewport,
+            plan.child_font_px,
+            nodes,
+            intrinsic,
+            output,
+            Some(scope),
+            None,
+        )?;
+    }
+    let mut entries = plan.entries.borrow_mut();
+    for (child, origin, size, index) in jobs {
+        let entry = &mut entries[index];
+        entry.child = child;
+        entry.origin = origin;
+        entry.size = size;
+        entry.intrinsic = size;
+        if let Some(child_style) = nodes.style(child) {
+            entry.style = child_style;
+        }
+    }
+    Ok(true)
+}
+
 pub(super) fn place_node_scoped(
     id: StableNodeId,
     origin: Point,
@@ -530,7 +701,13 @@ pub(super) fn place_node_scoped(
                     return Ok(());
                 }
             }
-            PlanCheck::ChangedFrom(_) => {}
+            PlanCheck::ChangedFrom(_) => {
+                if replay_wrapped_flex_line(plan, viewport, nodes, intrinsic, output, scope)? {
+                    #[cfg(any(test, feature = "benchmark"))]
+                    super::plan_stats::note_plan_reused();
+                    return Ok(());
+                }
+            }
         }
     }
 
