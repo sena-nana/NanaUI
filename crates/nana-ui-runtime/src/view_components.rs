@@ -338,6 +338,8 @@ pub trait ComponentView: Clone + PartialEq + Send + 'static {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Text {
     pub value: String,
+    /// Painted, but omitted from accessibility projection.
+    pub decorative: bool,
     pub style: NodeStyle,
 }
 
@@ -345,8 +347,17 @@ impl Text {
     pub fn new(value: impl Into<String>) -> Self {
         Self {
             value: value.into(),
+            decorative: false,
             style: NodeStyle::default(),
         }
+    }
+
+    /// Keep the glyphs visible while omitting this text from the accessibility
+    /// tree. Use it when an ancestor already exposes the same name, equivalent
+    /// to `aria-hidden="true"`.
+    pub const fn decorative(mut self) -> Self {
+        self.decorative = true;
+        self
     }
 
     pub fn style(mut self, style: NodeStyle) -> Self {
@@ -447,6 +458,7 @@ impl ComponentView for Text {
             },
             AccessibilityState {
                 role: AccessibilityRole::Text,
+                hidden: self.decorative,
                 ..AccessibilityState::default()
             },
         );
@@ -456,6 +468,9 @@ impl ComponentView for Text {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Button {
     pub label: String,
+    /// Spoken name when it must differ from [`Self::label`]. Empty keeps the
+    /// visible label as the accessible name.
+    pub accessible_name: String,
     pub icon: Option<nana_ui_core::Icon>,
     pub trailing_icon: Option<nana_ui_core::Icon>,
     pub icon_size: Option<f32>,
@@ -494,6 +509,7 @@ impl Button {
         layout.white_space_nowrap = true;
         Self {
             label: label.into(),
+            accessible_name: String::new(),
             icon: None,
             trailing_icon: None,
             icon_size: None,
@@ -611,6 +627,13 @@ impl Button {
 
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
+        self
+    }
+
+    /// Spoken name when several controls share one visible word, such as
+    /// "设置" on different rows. Empty keeps [`Self::label`].
+    pub fn accessible_name(mut self, name: impl Into<String>) -> Self {
+        self.accessible_name = name.into();
         self
     }
 
@@ -737,10 +760,17 @@ impl ComponentView for Button {
             effective_style.interaction.focused.border = border;
         }
         // The accessible name reuses the world's copy while it still reads
-        // the same, so an unchanged button allocates nothing here.
+        // the same, so an unchanged button allocates nothing here. A separate
+        // spoken name must not reuse the visible label's arc.
+        let spoken = if self.accessible_name.is_empty() {
+            self.label.as_str()
+        } else {
+            self.accessible_name.as_str()
+        };
         let label = match world.accessibility(id).and_then(|a11y| a11y.label.as_ref()) {
-            Some(current) if **current == *self.label => Arc::clone(current),
-            _ => shared_label(&mut shared, &self.label),
+            Some(current) if **current == *spoken => Arc::clone(current),
+            _ if self.accessible_name.is_empty() => shared_label(&mut shared, spoken),
+            _ => Arc::from(spoken),
         };
         project_common(
             id,
@@ -5361,6 +5391,41 @@ mod stack_preset_tests {
                 pointer_events: false,
                 focusable: false,
             })
+        );
+    }
+
+    fn project_one(component: &impl ComponentView) -> (UiWorld, StableNodeId) {
+        let mut world = UiWorld::new();
+        let id = StableNodeId::new(7).unwrap();
+        let document = DocumentId::new(1).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.create(id, document, component.node_kind());
+        component.project(id, &world, &mut queue);
+        world.commit(queue).unwrap();
+        (world, id)
+    }
+
+    #[test]
+    fn decorative_text_stays_painted_and_leaves_the_accessibility_tree() {
+        let (world, id) = project_one(&Text::new("睡").decorative());
+        assert_eq!(world.text(id), Some("睡"));
+        assert!(world.accessibility(id).unwrap().hidden);
+        let (world, id) = project_one(&Text::new("睡"));
+        assert!(!world.accessibility(id).unwrap().hidden);
+    }
+
+    #[test]
+    fn button_accessible_name_overrides_the_visible_label() {
+        let (world, id) = project_one(&Button::new("设置").accessible_name("设置 独立捕获窗口"));
+        assert_eq!(world.text(id), Some("设置"));
+        assert_eq!(
+            world.accessibility(id).unwrap().label.as_deref(),
+            Some("设置 独立捕获窗口")
+        );
+        let (world, id) = project_one(&Button::new("设置"));
+        assert_eq!(
+            world.accessibility(id).unwrap().label.as_deref(),
+            Some("设置")
         );
     }
 

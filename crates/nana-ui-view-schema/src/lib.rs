@@ -32,9 +32,11 @@ macro_rules! for_each_control {
         $callback! {
             Text => text(value: text) for Text {
                 value: String = set,
+                decorative: bool = set,
             };
             Button => button(label: text) for Button {
                 label: String = set,
+                accessible_name: String = set,
                 disabled: bool = set,
                 loading: bool = set,
             }

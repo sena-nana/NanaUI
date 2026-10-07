@@ -1,6 +1,6 @@
 # Button
 
-按下后发出 `Activate`。标签既是构造参数，也是可访问名称。要的是一枚图标时，用 [IconButton](icon-button.md)。
+按下后发出 `Activate`。可见标签默认也是可访问名称。同一屏上有多枚可见文字相同的按钮时，用 `accessible_name` 写出各自的动作。要的是一枚图标时，用 [IconButton](icon-button.md)。
 
 模板里的标签是 `<Button>`。子文本和 `label` 都会写成这一个字段。
 
@@ -40,7 +40,8 @@ button("保存").disabled(pending).on_activate(save)
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `label` | `String` | 构造参数，也是可访问名称。子文本写入同一字段 |
+| `label` | `String` | 构造参数，也是可见文字。未写 `accessible_name` 时，它同时是可访问名称。子文本写入同一字段 |
+| `accessible_name` | `String` | 可访问名称。空字符串沿用 `label`。可见文字保持 `label`，所以一行里的「设置」可以读成「设置 独立捕获窗口」 |
 | `disabled` | `bool` | 常量、信号或闭包 |
 | `loading` | `bool` | 常量、信号或闭包 |
 

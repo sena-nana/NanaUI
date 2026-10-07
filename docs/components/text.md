@@ -1,6 +1,6 @@
 # Text
 
-`text(value)` 画一段文本。字段只有 `value: String`。模板里的标签是 `<Text>`。
+`text(value)` 画一段文本。模板里的标签是 `<Text>`。
 
 ## 基本用法
 
@@ -50,7 +50,8 @@ text!("共 {count} 项")
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `value` | `String` | 唯一字段。子文本和 `value` 都写它。可以是常量、`Signal<String>` 或闭包。常量在建节点时写进去。信号直接绑定。闭包装箱一次。和 `value="…"` 同时出现时，属性优先 |
+| `value` | `String` | 子文本和 `value` 都写它。可以是常量、`Signal<String>` 或闭包。常量在建节点时写进去。信号直接绑定。闭包装箱一次。和 `value="…"` 同时出现时，属性优先 |
+| `decorative` | `bool` | 仍绘制并参与布局，但从无障碍树中移除。用于重复祖先名称的首字或装饰字形，等价于 `aria-hidden="true"` |
 
 ## 事件
 
