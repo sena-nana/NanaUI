@@ -153,11 +153,27 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         self.high_contrast = high_contrast;
         for id in self.known_window_ids() {
+            self.apply_high_contrast(id);
             let update = self.program.window_event(
                 WindowEvent::HighContrastChanged { id, high_contrast },
                 &self.context_for(id),
             );
             self.apply_update(event_loop, update, None);
+        }
+    }
+
+    /// Hand the window's document the system high-contrast setting: while it
+    /// is on, the installed theme paints with the high-contrast palette.
+    pub(super) fn apply_high_contrast(&mut self, id: WindowId) {
+        let high_contrast = self.high_contrast;
+        let changed = self
+            .program
+            .write_document(id, |document| {
+                document.context_mut().set_high_contrast(high_contrast)
+            })
+            .unwrap_or(false);
+        if changed {
+            self.request_redraw(id);
         }
     }
 

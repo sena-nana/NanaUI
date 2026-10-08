@@ -751,6 +751,38 @@ impl UiWorld {
         Ok(())
     }
 
+    /// Install `theme` as the design system; what paints is it, or its
+    /// high-contrast rendition while the system asks for one.
+    pub(super) fn install_theme(&mut self, theme: Arc<nana_ui_core::CompiledTheme>) {
+        self.installed_theme = theme;
+        self.apply_compiled_theme(self.contrast_rendition());
+    }
+
+    /// Follow the system high-contrast setting. A presentation overlay: the
+    /// installed theme stays as it was and comes back when the setting turns
+    /// off. Whether anything changed.
+    pub fn set_high_contrast(&mut self, high_contrast: bool) -> bool {
+        if self.high_contrast == high_contrast {
+            return false;
+        }
+        self.high_contrast = high_contrast;
+        self.apply_compiled_theme(self.contrast_rendition());
+        true
+    }
+
+    /// The installed theme with the high-contrast palette when it is on: the
+    /// palette of the same lightness, opaque, and a title bar that matches
+    /// its background.
+    fn contrast_rendition(&self) -> Arc<nana_ui_core::CompiledTheme> {
+        if !self.high_contrast {
+            return Arc::clone(&self.installed_theme);
+        }
+        let mut model = self.installed_theme.style_model();
+        model.palette = model.palette.for_system_contrast(true);
+        model.titlebar = model.palette.background;
+        Arc::new((*self.installed_theme).clone().with_style_model(model))
+    }
+
     pub(super) fn apply_compiled_theme(&mut self, next: Arc<nana_ui_core::CompiledTheme>) {
         // Values, not identity. `CompiledTheme::is_same_revision` is the cheap
         // question and it trusts the author's generation bump; an install has

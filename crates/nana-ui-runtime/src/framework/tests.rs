@@ -9258,6 +9258,41 @@ fn a_theme_that_fails_validation_leaves_the_installed_one_alone() {
     );
 }
 
+/// The system high-contrast setting paints the installed theme with the
+/// high-contrast palette of its lightness, keeps that theme to come back to,
+/// and covers a theme installed while it is on.
+#[test]
+fn high_contrast_overlays_the_installed_theme_and_gives_it_back() {
+    use nana_ui_core::{SemanticPalette, ThemeAppearance};
+    let mut context = AppContext::new();
+    context
+        .set_theme_tokens(nana_ui_core::builtin_theme_arc(ThemeAppearance::Light))
+        .unwrap();
+    let light = context.world().theme().clone();
+
+    assert!(context.set_high_contrast(true));
+    assert!(!context.set_high_contrast(true));
+    assert_eq!(
+        context.world().theme().palette(),
+        SemanticPalette::high_contrast_light()
+    );
+    assert_eq!(*context.world().installed_theme(), light);
+
+    context
+        .set_theme_tokens(nana_ui_core::builtin_theme_arc(ThemeAppearance::Dark))
+        .unwrap();
+    assert_eq!(
+        context.world().theme().palette(),
+        SemanticPalette::high_contrast()
+    );
+
+    assert!(context.set_high_contrast(false));
+    assert_eq!(
+        *context.world().theme(),
+        *nana_ui_core::builtin_theme_arc(ThemeAppearance::Dark)
+    );
+}
+
 /// Issue #102: the elevation ramp is a theme token, so a modal's lift follows
 /// the installed theme instead of a `background.r > 0.5` brightness sniff.
 #[test]

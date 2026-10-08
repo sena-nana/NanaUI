@@ -1298,6 +1298,7 @@ fn complete_startup<Program: RuntimeProgram>(
         .program
         .sync_animation_clock(ready.animation_clock.epoch());
     ready.sync_document_reduced_motion(WindowId::PRIMARY);
+    ready.apply_high_contrast(WindowId::PRIMARY);
     match early_painter {
         Some(painter) if painter.presentation() == profile => ready.adopt_painter(profile, painter),
         Some(_) => {

@@ -37,9 +37,10 @@ NanaUI 的默认外观是给桌面产品用的。它有深色和浅色，间距�
 输入框聚焦时加一圈中性描边。底色不改。错误优先用危险色。
 
 不要用任意业务色去改框架 token。主题色走已安装主题的 `SemanticPalette`，
-外观设置只负责 policy overlay。系统高对比打开时，应用用
-`SemanticPalette::for_system_contrast` 把已装调色板换成
-`SemanticPalette::high_contrast()`（黑底、白字、黄强调、青高亮）。浅色和深色选择仍保留，只是这一次绘制不再用它们的颜色。
+外观设置只负责 policy overlay。系统高对比打开时，原生宿主调用
+`AppContext::set_high_contrast(true)`：已装主题改用同明暗的高对比调色板绘制。深色主题换成
+`SemanticPalette::high_contrast()`（黑底、白字、黄强调、青高亮），浅色主题换成
+`SemanticPalette::high_contrast_light()`（白底、黑字、深蓝强调）。muted 和 faint 是与正文区分开的灰，禁用文字不会看起来像可用。已装主题本身不被改写：关掉高对比就原样回来，期间新装的主题也同样被覆盖。
 
 卡片默认没有描边。需要抬起来时用阴影。选中卡片用柔和的选中底，不用强调色包边。
 

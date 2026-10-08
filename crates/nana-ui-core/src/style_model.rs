@@ -577,8 +577,10 @@ impl SemanticPalette {
     /// Black, white, yellow and cyan. Opaque, so a high-contrast theme does
     /// not wash out against the desktop the way a translucent accent does.
     ///
-    /// Text, muted and faint stay white on black. The accent is yellow with
-    /// black glyphs. Selection is a solid blue that still clears white text.
+    /// Text is white on black; muted and faint are lighter greys that still
+    /// clear the text floor, so a disabled label does not read as enabled.
+    /// The accent is yellow with black glyphs. Selection is a solid blue that
+    /// still clears white text.
     pub const fn high_contrast() -> Self {
         let black = SemanticColor::rgb8(0, 0, 0);
         let white = SemanticColor::rgb8(255, 255, 255);
@@ -596,8 +598,8 @@ impl SemanticPalette {
             border_soft: white,
             border_strong: white,
             text: white,
-            muted: white,
-            faint: white,
+            muted: SemanticColor::rgb8(208, 208, 208),
+            faint: SemanticColor::rgb8(176, 176, 176),
             accent: yellow,
             accent_strong: yellow,
             accent_soft: SemanticColor::rgb8(64, 64, 0),
@@ -618,13 +620,61 @@ impl SemanticPalette {
         }
     }
 
+    /// Black on white, for a user whose high-contrast scheme is light.
+    /// Opaque like [`Self::high_contrast`]; the accent and selection are deep
+    /// blues, muted and faint darker greys that still clear the text floor.
+    pub const fn high_contrast_light() -> Self {
+        let black = SemanticColor::rgb8(0, 0, 0);
+        let white = SemanticColor::rgb8(255, 255, 255);
+        let blue = SemanticColor::rgb8(0, 0, 192);
+        Self {
+            background: white,
+            surface: white,
+            subtle: white,
+            hover: SemanticColor::rgb8(228, 228, 228),
+            active: SemanticColor::rgb8(204, 204, 204),
+            selected: SemanticColor::rgb8(179, 215, 255),
+            selected_hover: SemanticColor::rgb8(160, 200, 255),
+            selected_pressed: SemanticColor::rgb8(140, 185, 255),
+            border: black,
+            border_soft: black,
+            border_strong: black,
+            text: black,
+            muted: SemanticColor::rgb8(56, 56, 56),
+            faint: SemanticColor::rgb8(88, 88, 88),
+            accent: blue,
+            accent_strong: blue,
+            accent_soft: SemanticColor::rgb8(220, 220, 255),
+            accent_soft_hover: SemanticColor::rgb8(204, 204, 255),
+            accent_soft_pressed: SemanticColor::rgb8(188, 188, 255),
+            accent_on_soft: SemanticColor::rgb8(0, 0, 160),
+            accent_text: white,
+            focus_surface: blue,
+            focus_border: blue,
+            focus_text: white,
+            highlight: SemanticColor::rgb8(128, 0, 128),
+            highlight_hover: SemanticColor::rgb8(110, 0, 110),
+            highlight_pressed: SemanticColor::rgb8(90, 0, 90),
+            highlight_text: white,
+            success: SemanticColor::rgb8(0, 110, 0),
+            warning: SemanticColor::rgb8(140, 80, 0),
+            danger: SemanticColor::rgb8(190, 0, 0),
+        }
+    }
+
     /// The palette to paint. `high_contrast` replaces the caller's colours
-    /// with [`Self::high_contrast`]; otherwise the caller's palette is kept.
+    /// with the high-contrast palette of the same lightness: a light palette
+    /// takes [`Self::high_contrast_light`], a dark one [`Self::high_contrast`].
+    /// Otherwise the caller's palette is kept.
     pub const fn for_system_contrast(self, high_contrast: bool) -> Self {
-        if high_contrast {
-            Self::high_contrast()
+        if !high_contrast {
+            return self;
+        }
+        let background = self.background;
+        if background.r + background.g + background.b > 1.5 {
+            Self::high_contrast_light()
         } else {
-            self
+            Self::high_contrast()
         }
     }
 
@@ -1152,39 +1202,49 @@ mod tests {
             (hi + 0.05) / (lo + 0.05)
         }
 
-        let forced = SemanticPalette::light().for_system_contrast(true);
-        assert_eq!(forced, SemanticPalette::high_contrast());
-        assert_ne!(forced.surface, SemanticPalette::light().surface);
-        assert_ne!(forced.surface, SemanticPalette::dark().surface);
+        assert_eq!(
+            SemanticPalette::dark().for_system_contrast(true),
+            SemanticPalette::high_contrast()
+        );
+        assert_eq!(
+            SemanticPalette::light().for_system_contrast(true),
+            SemanticPalette::high_contrast_light()
+        );
         assert_eq!(
             SemanticPalette::dark().for_system_contrast(false),
             SemanticPalette::dark()
         );
-        assert!(
-            forced.background.r < 0.5,
-            "high contrast stays on the dark recipe"
-        );
 
-        let pairs = [
-            (forced.text, forced.surface, 4.5),
-            (forced.text, forced.background, 4.5),
-            (forced.muted, forced.surface, 4.5),
-            (forced.faint, forced.surface, 4.5),
-            (forced.accent_text, forced.accent, 4.5),
-            (forced.text, forced.selected, 4.5),
-            (forced.accent_on_soft, forced.selected, 4.5),
-            (forced.accent_on_soft, forced.accent_soft, 4.5),
-            (forced.focus_text, forced.focus_surface, 4.5),
-            (forced.highlight_text, forced.highlight, 4.5),
-            (forced.border, forced.surface, 3.0),
-            (forced.focus_border, forced.surface, 3.0),
-        ];
-        for (fg, bg, floor) in pairs {
-            let ratio = contrast(fg, bg);
-            assert!(
-                ratio >= floor,
-                "high contrast {ratio:.2}:1 is below {floor}:1"
-            );
+        for forced in [
+            SemanticPalette::high_contrast(),
+            SemanticPalette::high_contrast_light(),
+        ] {
+            assert_ne!(forced.surface, SemanticPalette::light().surface);
+            assert_ne!(forced.surface, SemanticPalette::dark().surface);
+            // A disabled or secondary label does not read as body text.
+            assert_ne!(forced.muted, forced.text);
+            assert_ne!(forced.faint, forced.muted);
+            let pairs = [
+                (forced.text, forced.surface, 4.5),
+                (forced.text, forced.background, 4.5),
+                (forced.muted, forced.surface, 4.5),
+                (forced.faint, forced.surface, 4.5),
+                (forced.accent_text, forced.accent, 4.5),
+                (forced.text, forced.selected, 4.5),
+                (forced.accent_on_soft, forced.selected, 4.5),
+                (forced.accent_on_soft, forced.accent_soft, 4.5),
+                (forced.focus_text, forced.focus_surface, 4.5),
+                (forced.highlight_text, forced.highlight, 4.5),
+                (forced.border, forced.surface, 3.0),
+                (forced.focus_border, forced.surface, 3.0),
+            ];
+            for (fg, bg, floor) in pairs {
+                let ratio = contrast(fg, bg);
+                assert!(
+                    ratio >= floor,
+                    "high contrast {ratio:.2}:1 is below {floor}:1"
+                );
+            }
         }
     }
 }

@@ -409,7 +409,7 @@ fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramCont
 
 ### 系统高对比
 
-`RuntimeProgramContext::high_contrast()` 返回系统高对比是否打开。窗口创建时读取。用户在运行中切换时，宿主向每扇窗口发送 `WindowEvent::HighContrastChanged { id, high_contrast }`。之后的回调上下文读到新值。应用把自己的 `SemanticPalette` 交给 `SemanticPalette::for_system_contrast`；为真时换成 `SemanticPalette::high_contrast()`。NanaUI 不改写应用已经装上的主题，除非应用自己重装。
+`RuntimeProgramContext::high_contrast()` 返回系统高对比是否打开。窗口创建时读取。用户在运行中切换时，宿主向每扇窗口发送 `WindowEvent::HighContrastChanged { id, high_contrast }`。之后的回调上下文读到新值。原生宿主在窗口初始化和每次切换时对窗口文档调用 `AppContext::set_high_contrast`，已装主题随之改用同明暗的高对比调色板绘制（见 [外观](look.md)）。这是呈现层覆盖：已装主题不被改写，关闭后原样回来。自己持有 `AppContext` 的嵌入式宿主要自己调用它。
 
 - Windows：读取 `SPI_GETHIGHCONTRAST` 的 `HCF_HIGHCONTRASTON`。宿主窗口子类收到 `WM_SETTINGCHANGE`（`SPI_SETHIGHCONTRAST`）后在下一次 `about_to_wait` 重新读取。只在值变化时发送事件。这不是 DirectWrite 的文字 gamma。
 - macOS 与 Linux：暂不上报。恒为 `false`。不发送事件。

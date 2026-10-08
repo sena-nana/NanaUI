@@ -2072,7 +2072,7 @@ impl AppContext {
         &mut self,
         theme: Arc<nana_ui_core::CompiledTheme>,
     ) -> Result<bool, FrameworkError> {
-        if *self.world.theme() == *theme {
+        if *self.world.installed_theme() == *theme {
             return Ok(false);
         }
         let metrics_changed = self.world.theme_metrics() != theme.metrics();
@@ -2087,6 +2087,15 @@ impl AppContext {
             self.reproject_recipe_views()?;
         }
         Ok(true)
+    }
+
+    /// Follow the system high-contrast setting: while it is on, the installed
+    /// theme paints with the high-contrast palette of its lightness. The
+    /// installed theme is kept and comes back when it turns off; a theme
+    /// installed meanwhile takes the overlay too. Hosts call this from the
+    /// platform signal. Whether anything changed.
+    pub fn set_high_contrast(&mut self, high_contrast: bool) -> bool {
+        self.world.set_high_contrast(high_contrast)
     }
 
     /// Create a low-level retained view node without running a component

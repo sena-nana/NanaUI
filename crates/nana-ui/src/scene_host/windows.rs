@@ -813,6 +813,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         pending_native.0 = None;
         self.sync_document_reduced_motion(id);
         self.window_ids.insert(window.id(), id);
+        self.apply_high_contrast(id);
         let level = if settings.always_on_top {
             WindowLevel::AlwaysOnTop
         } else {

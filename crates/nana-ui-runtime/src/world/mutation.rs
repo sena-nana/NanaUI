@@ -1588,10 +1588,10 @@ impl UiWorld {
                 }
             }
             UiMutation::SetPresetTheme { mode } => {
-                self.apply_compiled_theme(nana_ui_core::builtin_theme_arc(*mode));
+                self.install_theme(nana_ui_core::builtin_theme_arc(*mode));
             }
             UiMutation::SetThemeTokens { theme } => {
-                self.apply_compiled_theme(Arc::clone(theme));
+                self.install_theme(Arc::clone(theme));
             }
             UiMutation::SetText { id, text } => {
                 // Re-setting the same text is not a content change: nothing

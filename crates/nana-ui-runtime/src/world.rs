@@ -665,6 +665,11 @@ pub struct UiWorld {
     /// is its hot slice, cached so per-node resolution does not chase an `Arc`
     /// and copy a kilobyte to read one colour.
     theme: Arc<nana_ui_core::CompiledTheme>,
+    /// The design system as installed, before the system high-contrast
+    /// overlay. `theme` is this one, or its high-contrast rendition while
+    /// `high_contrast` is on; the installed one is never overwritten.
+    installed_theme: Arc<nana_ui_core::CompiledTheme>,
+    high_contrast: bool,
     style_model: StyleModelRef,
     generation: u64,
     /// Monotonic revision of published layout output. This is deliberately
@@ -876,6 +881,8 @@ impl UiWorld {
             hover_transitions: HashMap::default(),
             animation_deadlines: BTreeSet::new(),
             theme: nana_ui_core::builtin_theme_arc(ThemeAppearance::default()),
+            installed_theme: nana_ui_core::builtin_theme_arc(ThemeAppearance::default()),
+            high_contrast: false,
             style_model: StyleModelRef::default(),
             generation: 0,
             layout_generation: 0,
@@ -1977,6 +1984,17 @@ impl UiWorld {
     /// only want a colour or a metric take [`Self::style_model`] instead.
     pub fn theme(&self) -> &nana_ui_core::CompiledTheme {
         &self.theme
+    }
+
+    /// The design system as installed: [`Self::theme`] without the system
+    /// high-contrast overlay.
+    pub fn installed_theme(&self) -> &nana_ui_core::CompiledTheme {
+        &self.installed_theme
+    }
+
+    /// Whether the system high-contrast overlay is on.
+    pub fn high_contrast(&self) -> bool {
+        self.high_contrast
     }
 
     /// Drain this world's dirty components into deterministic system work.
