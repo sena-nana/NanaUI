@@ -54,21 +54,20 @@ use nana_ui_core::{
 #[cfg(test)]
 use crate::Dialog;
 use crate::{
-    AccessibilityAction, AccessibilityActionRequest, AccessibilityScrollDirection, ActionMenu,
-    ActionMenuItem, Activate, AnimationFrame, Button, Checkbox, Chip, CodeEditing, CommandPalette,
-    ComponentView, ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent,
-    FormField, FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton, LabeledValue, List,
-    ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind,
-    NumberChanged, NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed,
-    PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeDragging,
-    RangeField, RangeInput, RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollLaidOut,
-    ScrollMetrics, ScrollOffset, ScrollView, ScrollViewportChanged, SearchDropdown,
-    SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
-    SidebarSection, SizeChanged, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea,
-    TextChanged, TextClamped, TextInput, TextInputState, TextPresenter, TextSelection,
-    ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
-    XYPadEvent,
+    AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
+    AnimationFrame, Button, Checkbox, Chip, CodeEditing, CommandPalette, ComponentView,
+    ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent, FormField,
+    FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton, LabeledValue, List, ListItem,
+    ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
+    NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
+    ProgressCancelled, RangeAdjustment, RangeChanged, RangeDragging, RangeField, RangeInput,
+    RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollMetrics, ScrollOffset,
+    ScrollView, ScrollViewportChanged, SearchDropdown, SearchDropdownEvent, SecondaryPress,
+    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
+    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, SizeChanged,
+    StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextClamped,
+    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
+    UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
     component_registry::{
         ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
         RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
@@ -2898,21 +2897,28 @@ impl AppContext {
                 }
                 Ok(false)
             }
-            AccessibilityAction::Scroll(direction) => {
+            AccessibilityAction::Scroll(direction, unit) => {
                 if !self.world.is_scroll_container(request.target) {
                     return Ok(false);
                 }
                 let metrics = self.world.scroll_metrics(request.target);
-                let (step_x, step_y) = metrics
+                let (width, height) = metrics
                     .map(|metrics| (metrics.viewport_width, metrics.viewport_height))
                     .unwrap_or((40.0, 40.0));
-                let delta = match direction {
-                    AccessibilityScrollDirection::Up => ScrollOffset { x: 0.0, y: -step_y },
-                    AccessibilityScrollDirection::Down => ScrollOffset { x: 0.0, y: step_y },
-                    AccessibilityScrollDirection::Left => ScrollOffset { x: -step_x, y: 0.0 },
-                    AccessibilityScrollDirection::Right => ScrollOffset { x: step_x, y: 0.0 },
-                };
-                self.scroll_node_by(request.target, delta)
+                self.scroll_node_by(request.target, direction.delta(unit, width, height))
+            }
+            AccessibilityAction::SetScrollOffset(offset) => {
+                if !self.world.is_scroll_container(request.target) {
+                    return Ok(false);
+                }
+                let current = self.world.scroll_offset(request.target).unwrap_or_default();
+                self.scroll_node_by(
+                    request.target,
+                    ScrollOffset {
+                        x: offset.x - current.x,
+                        y: offset.y - current.y,
+                    },
+                )
             }
             AccessibilityAction::SetValue(value) => {
                 if let Some(entity) = self.view_entity::<TextInput>(request.target) {

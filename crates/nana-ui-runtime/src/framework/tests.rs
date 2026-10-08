@@ -3490,6 +3490,76 @@ fn layout_publishes_scroll_metrics_and_clamps_wheel_offset() {
     assert_eq!(offset.x, 0.0);
 }
 
+/// A screen reader's small step scrolls a line, its large step a page, and
+/// its scroll percent lands at an offset, clamped.
+#[test]
+fn assistive_scrolling_steps_by_line_or_page_and_sets_an_offset() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut viewport = NodeStyle::default();
+    {
+        let layout = std::sync::Arc::make_mut(&mut viewport.layout);
+        layout.width = Some(LengthSpec::Px(200.0));
+        layout.height = Some(LengthSpec::Px(120.0));
+    }
+    let scroll = context
+        .create_component(
+            document,
+            ScrollView::new(ScrollAxes::Vertical).style(viewport),
+        )
+        .unwrap();
+    for index in 0..20 {
+        let mut row = NodeStyle::default();
+        {
+            let layout = std::sync::Arc::make_mut(&mut row.layout);
+            layout.width = Some(LengthSpec::Fill);
+            layout.height = Some(LengthSpec::Px(40.0));
+        }
+        let row = context
+            .create_component(document, Text::new(format!("Row {index}")).style(row))
+            .unwrap();
+        context.append_child(scroll, row).unwrap();
+    }
+    context
+        .layout_document(document, crate::LayoutViewport::new(200.0, 120.0))
+        .unwrap();
+    let mut act = |action| {
+        context
+            .apply_accessibility_action(
+                document,
+                AccessibilityActionRequest {
+                    target: scroll.stable_id(),
+                    action,
+                },
+            )
+            .unwrap();
+        context.world().scroll_offset(scroll.stable_id()).unwrap().y
+    };
+    use crate::{AccessibilityScrollDirection as Direction, AccessibilityScrollUnit as Unit};
+    assert_eq!(
+        act(AccessibilityAction::Scroll(Direction::Down, Unit::Item)),
+        60.0
+    );
+    assert_eq!(
+        act(AccessibilityAction::Scroll(Direction::Down, Unit::Page)),
+        180.0
+    );
+    assert_eq!(
+        act(AccessibilityAction::SetScrollOffset(ScrollOffset {
+            x: 0.0,
+            y: 400.0
+        })),
+        400.0
+    );
+    assert_eq!(
+        act(AccessibilityAction::SetScrollOffset(ScrollOffset {
+            x: 0.0,
+            y: 10_000.0
+        })),
+        680.0
+    );
+}
+
 /// 200x120 scrollport holding 200px of rows, so the vertical axis overflows
 /// by 80px.
 #[test]

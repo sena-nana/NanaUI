@@ -3059,7 +3059,7 @@ pub enum AccessibilityUpdate {
 }
 
 /// Backend-neutral action requested by a platform accessibility service.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AccessibilityAction {
     Click,
     /// Activate one painted row in a menu surface. The row is a virtual
@@ -3077,9 +3077,13 @@ pub enum AccessibilityAction {
     Expand,
     /// Close an expandable control such as a combobox.
     Collapse,
-    /// Move the target scroll container by one viewport in the requested
-    /// direction. The runtime clamps the result to its published range.
-    Scroll(AccessibilityScrollDirection),
+    /// Move the target scroll container in the requested direction, by a
+    /// line or a viewport. The runtime clamps the result to its published
+    /// range.
+    Scroll(AccessibilityScrollDirection, AccessibilityScrollUnit),
+    /// Scroll the target container to this offset (a screen reader's "set
+    /// scroll percent"), clamped to its published range.
+    SetScrollOffset(ScrollOffset),
     SetValue(String),
     SetSelection(TextSelection),
 }
@@ -3092,7 +3096,54 @@ pub enum AccessibilityScrollDirection {
     Right,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// How far one assistive scroll step goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AccessibilityScrollUnit {
+    /// One line, as a wheel notch scrolls (UIA's small increment).
+    Item,
+    /// One viewport (UIA's large increment, VoiceOver's page scroll).
+    #[default]
+    Page,
+}
+
+/// How far a line step scrolls: a wheel notch's extent.
+pub(crate) const ACCESSIBILITY_LINE_SCROLL: f32 = 60.0;
+
+impl AccessibilityScrollDirection {
+    /// The offset change of one step in this direction over a viewport of
+    /// this size. A line never steps past a whole viewport.
+    pub fn delta(
+        self,
+        unit: AccessibilityScrollUnit,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> ScrollOffset {
+        let step = |viewport: f32| match unit {
+            AccessibilityScrollUnit::Item => ACCESSIBILITY_LINE_SCROLL.min(viewport.max(0.0)),
+            AccessibilityScrollUnit::Page => viewport,
+        };
+        match self {
+            Self::Up => ScrollOffset {
+                x: 0.0,
+                y: -step(viewport_height),
+            },
+            Self::Down => ScrollOffset {
+                x: 0.0,
+                y: step(viewport_height),
+            },
+            Self::Left => ScrollOffset {
+                x: -step(viewport_width),
+                y: 0.0,
+            },
+            Self::Right => ScrollOffset {
+                x: step(viewport_width),
+                y: 0.0,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AccessibilityActionRequest {
     pub target: StableNodeId,
     pub action: AccessibilityAction,

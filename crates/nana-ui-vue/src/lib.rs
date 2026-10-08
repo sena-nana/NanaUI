@@ -779,31 +779,38 @@ impl VueHost {
         &self,
         node: NodeHandle,
         direction: nana_ui_runtime::AccessibilityScrollDirection,
+        unit: nana_ui_runtime::AccessibilityScrollUnit,
+    ) -> bool {
+        let (current, delta) = {
+            let document = self.document.lock().expect("vue doc");
+            let Some(metrics) = document.scroll_metrics(node) else {
+                return false;
+            };
+            (
+                document.scroll_offset(node),
+                direction.delta(unit, metrics.viewport_width, metrics.viewport_height),
+            )
+        };
+        self.accessibility_scroll_to(
+            node,
+            nana_ui_runtime::ScrollOffset {
+                x: current.x + delta.x,
+                y: current.y + delta.y,
+            },
+        )
+    }
+
+    /// Scroll `node` to `next`, clamped. Whether it moved.
+    pub(crate) fn accessibility_scroll_to(
+        &self,
+        node: NodeHandle,
+        next: nana_ui_runtime::ScrollOffset,
     ) -> bool {
         let mut document = self.document.lock().expect("vue doc");
-        let Some(metrics) = document.scroll_metrics(node) else {
+        if document.scroll_metrics(node).is_none() {
             return false;
-        };
+        }
         let current = document.scroll_offset(node);
-        let (step_x, step_y) = (metrics.viewport_width, metrics.viewport_height);
-        let delta = match direction {
-            nana_ui_runtime::AccessibilityScrollDirection::Up => {
-                nana_ui_runtime::ScrollOffset { x: 0.0, y: -step_y }
-            }
-            nana_ui_runtime::AccessibilityScrollDirection::Down => {
-                nana_ui_runtime::ScrollOffset { x: 0.0, y: step_y }
-            }
-            nana_ui_runtime::AccessibilityScrollDirection::Left => {
-                nana_ui_runtime::ScrollOffset { x: -step_x, y: 0.0 }
-            }
-            nana_ui_runtime::AccessibilityScrollDirection::Right => {
-                nana_ui_runtime::ScrollOffset { x: step_x, y: 0.0 }
-            }
-        };
-        let next = nana_ui_runtime::ScrollOffset {
-            x: current.x + delta.x,
-            y: current.y + delta.y,
-        };
         let bridge = self.bridge.lock().expect("vue bridge");
         let applied = set_scroll_offset(
             &mut document,

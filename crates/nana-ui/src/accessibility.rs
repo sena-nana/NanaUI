@@ -5,8 +5,8 @@ use std::collections::VecDeque;
 
 use accesskit::ActionData;
 use accesskit::{
-    Action, Invalid, Node, NodeId, Orientation, Rect, Role, TextDirection, TextPosition,
-    TextSelection as AccessKitTextSelection, Toggled, TreeId, TreeInfo, TreeUpdate,
+    Action, Invalid, Node, NodeId, Orientation, Rect, Role, ScrollUnit, TextDirection,
+    TextPosition, TextSelection as AccessKitTextSelection, Toggled, TreeId, TreeInfo, TreeUpdate,
 };
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
 use nana_ui_runtime::AccessibilityUpdate;
@@ -463,16 +463,42 @@ impl AccessibilityProjector {
                 nana_ui_runtime::AccessibilityAction::Collapse
             }
             Action::ScrollDown if node.scroll_y.is_some() => {
-                nana_ui_runtime::AccessibilityAction::Scroll(AccessibilityScrollDirection::Down)
+                nana_ui_runtime::AccessibilityAction::Scroll(
+                    AccessibilityScrollDirection::Down,
+                    scroll_unit(request.data.as_ref()),
+                )
             }
             Action::ScrollUp if node.scroll_y.is_some() => {
-                nana_ui_runtime::AccessibilityAction::Scroll(AccessibilityScrollDirection::Up)
+                nana_ui_runtime::AccessibilityAction::Scroll(
+                    AccessibilityScrollDirection::Up,
+                    scroll_unit(request.data.as_ref()),
+                )
             }
             Action::ScrollLeft if node.scroll_x.is_some() => {
-                nana_ui_runtime::AccessibilityAction::Scroll(AccessibilityScrollDirection::Left)
+                nana_ui_runtime::AccessibilityAction::Scroll(
+                    AccessibilityScrollDirection::Left,
+                    scroll_unit(request.data.as_ref()),
+                )
             }
             Action::ScrollRight if node.scroll_x.is_some() => {
-                nana_ui_runtime::AccessibilityAction::Scroll(AccessibilityScrollDirection::Right)
+                nana_ui_runtime::AccessibilityAction::Scroll(
+                    AccessibilityScrollDirection::Right,
+                    scroll_unit(request.data.as_ref()),
+                )
+            }
+            Action::SetScrollOffset if node.scroll_x.is_some() || node.scroll_y.is_some() => {
+                let Some(ActionData::SetScrollOffset(point)) = request.data else {
+                    return None;
+                };
+                if !point.x.is_finite() || !point.y.is_finite() {
+                    return None;
+                }
+                nana_ui_runtime::AccessibilityAction::SetScrollOffset(
+                    nana_ui_runtime::ScrollOffset {
+                        x: point.x as f32,
+                        y: point.y as f32,
+                    },
+                )
             }
             Action::SetValue if supports_set_value(node) => match request.data {
                 Some(ActionData::Value(value)) => {
@@ -1044,6 +1070,9 @@ fn project_node(
             projected.add_action(Action::ScrollLeft);
             projected.add_action(Action::ScrollRight);
         }
+        if node.scroll_x.is_some() || node.scroll_y.is_some() {
+            projected.add_action(Action::SetScrollOffset);
+        }
     }
     if node.role == AccessibilityRole::TextInput && !node.editable {
         projected.set_read_only();
@@ -1128,6 +1157,17 @@ const fn is_menu_row(role: AccessibilityRole) -> bool {
         role,
         AccessibilityRole::MenuItem | AccessibilityRole::Checkbox | AccessibilityRole::Radio
     )
+}
+
+/// The step a scroll request asks for: a line (UIA's small increment) or a
+/// page, which is also what a request without one means.
+fn scroll_unit(data: Option<&ActionData>) -> nana_ui_runtime::AccessibilityScrollUnit {
+    match data {
+        Some(ActionData::ScrollUnit(ScrollUnit::Item)) => {
+            nana_ui_runtime::AccessibilityScrollUnit::Item
+        }
+        _ => nana_ui_runtime::AccessibilityScrollUnit::Page,
+    }
 }
 
 const fn supports_click(role: AccessibilityRole) -> bool {
@@ -2301,9 +2341,46 @@ mod tests {
                 .expect("scroll action request");
             assert_eq!(
                 request.action,
-                nana_ui_runtime::AccessibilityAction::Scroll(expected)
+                nana_ui_runtime::AccessibilityAction::Scroll(
+                    expected,
+                    nana_ui_runtime::AccessibilityScrollUnit::Page
+                )
             );
         }
+        // A small increment scrolls a line, not a page.
+        let request = projector
+            .project_action_request(ActionRequest {
+                action: Action::ScrollDown,
+                target_tree: TreeId::ROOT,
+                target_node: NodeId(2),
+                data: Some(ActionData::ScrollUnit(ScrollUnit::Item)),
+            })
+            .expect("line scroll request");
+        assert_eq!(
+            request.action,
+            nana_ui_runtime::AccessibilityAction::Scroll(
+                nana_ui_runtime::AccessibilityScrollDirection::Down,
+                nana_ui_runtime::AccessibilityScrollUnit::Item
+            )
+        );
+        // Set scroll percent arrives as an offset.
+        let request = projector
+            .project_action_request(ActionRequest {
+                action: Action::SetScrollOffset,
+                target_tree: TreeId::ROOT,
+                target_node: NodeId(2),
+                data: Some(ActionData::SetScrollOffset(accesskit::Point::new(
+                    0.0, 120.0,
+                ))),
+            })
+            .expect("set scroll offset request");
+        assert_eq!(
+            request.action,
+            nana_ui_runtime::AccessibilityAction::SetScrollOffset(nana_ui_runtime::ScrollOffset {
+                x: 0.0,
+                y: 120.0
+            })
+        );
     }
 
     #[cfg(all(feature = "hosted", not(target_os = "android")))]

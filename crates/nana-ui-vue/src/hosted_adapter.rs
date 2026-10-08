@@ -279,11 +279,17 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                     .map_err(|error| JsEngineError::new(error.to_string()))?;
                 result.map_err(|error| JsEngineError::new(error.to_string()))
             }
-            nana_ui_runtime::AccessibilityAction::Scroll(direction) => {
+            nana_ui_runtime::AccessibilityAction::Scroll(direction, unit) => {
                 let host = host
                     .lock()
                     .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
-                Ok(host.accessibility_scroll(target, direction))
+                Ok(host.accessibility_scroll(target, direction, unit))
+            }
+            nana_ui_runtime::AccessibilityAction::SetScrollOffset(offset) => {
+                let host = host
+                    .lock()
+                    .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
+                Ok(host.accessibility_scroll_to(target, offset))
             }
             nana_ui_runtime::AccessibilityAction::Focus => {
                 let mut host = host
