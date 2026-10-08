@@ -1501,6 +1501,15 @@ fn flex_line_measure_delta(
             }
             continue;
         }
+        // Restyled beyond its cross size, it moves more than its line.
+        if let Some(entry) = plan.entry(affected)
+            && let Some(cached) = entry.style.as_ref()
+            && !nodes.style(affected).is_some_and(|current| {
+                Arc::ptr_eq(&current, cached) || super::same_but_cross(&current, cached, direction)
+            })
+        {
+            return Ok(None);
+        }
         let measured = intrinsic_size_scoped(
             affected,
             plan.child_available,

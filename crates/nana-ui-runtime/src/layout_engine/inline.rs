@@ -606,11 +606,14 @@ fn affected_edits_are_direct(
 
 /// A fixed inline-block whose parent is outside the frontier. Relayout starts
 /// at its retained border box, so the outer line is not packed again.
+/// `parent_padding`: the padding the parent's last placement used, whose
+/// percentages resolved against the parent's own containing block.
 pub(super) fn fixed_inline_block_island(
     world: &UiWorld,
     id: StableNodeId,
     border: LayoutBox,
     parent_box: LayoutBox,
+    parent_padding: Option<nana_ui_core::PaddingSpec>,
 ) -> Option<(Point, Size, f32)> {
     let style = world.layout_style(id)?;
     let parent = world.parent_id(id)?;
@@ -618,19 +621,28 @@ pub(super) fn fixed_inline_block_island(
     if !fixed_inline_block(style.as_ref(), parent_style.as_ref()) {
         return None;
     }
-    let pad = parent_style.resolved_padding_against(Some(parent_box.width));
+    let pad = parent_padding
+        .unwrap_or_else(|| parent_style.resolved_padding_against(Some(parent_box.width)));
     let edge = parent_style.resolved_border_edges();
     let containing = Size::new(
         (parent_box.width - pad.left - pad.right - edge.left - edge.right).max(0.0),
         (parent_box.height - pad.top - pad.bottom - edge.top - edge.bottom).max(0.0),
     );
+    let font = element_font_px(world, parent);
+    // The kept border box already carries the relative offset, which
+    // placement adds to the origin it is given: hand it the box before it.
+    let (relative_x, relative_y) = style.relative_offset_against_fonts(
+        Some(containing.width),
+        Some(containing.height),
+        nana_ui_core::FontSizeContext::new(super::ROOT_FONT_PX, style.font_size.unwrap_or(font)),
+    );
     Some((
         Point {
-            x: border.x,
-            y: border.y,
+            x: border.x - relative_x,
+            y: border.y - relative_y,
         },
         containing,
-        element_font_px(world, parent),
+        font,
     ))
 }
 

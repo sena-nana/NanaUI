@@ -973,6 +973,10 @@ impl UiWorld {
         if !self.nodes.contains(id) || invalidation.is_empty() {
             return;
         }
+        // Whatever invalidates layout also retires full-layout snapshots: a
+        // text metric written after layout changes the next full layout
+        // without any style write.
+        self.note_layout_source_change();
         self.pending_layout_invalidations
             .entry(id)
             .and_modify(|previous| *previous = previous.merge(invalidation))
@@ -1104,10 +1108,12 @@ impl UiWorld {
         self.layout_source_epoch = self.layout_source_epoch.wrapping_add(1);
     }
 
-    /// Layout-length animations change used sizes without a style write.
-    /// A viewport snapshot must not answer those frames.
+    /// Layout-length animations change used sizes without a style write,
+    /// and an open triggered menu places its items where its trigger shows
+    /// through scroll offsets and transforms (z-index nodes count those
+    /// menus). A viewport snapshot must not answer those frames.
     pub(crate) fn layout_source_reusable(&self) -> bool {
-        self.layout_length_tracks.is_empty()
+        self.layout_length_tracks.is_empty() && self.z_index_nodes == 0
     }
 
     /// Revision of the last published canonical layout snapshot. Unlike the
@@ -3852,6 +3858,7 @@ impl UiWorld {
         let mut constraint_seen = HashSet::new();
         let mut placement_seen = HashSet::new();
         let mut context_seen = HashSet::new();
+        let mut context_parents: HashMap<StableNodeId, LayoutDependencyFootprint> = HashMap::new();
         let mut pending = VecDeque::new();
 
         for seed in seeds {
@@ -4090,30 +4097,29 @@ impl UiWorld {
                     } else {
                         siblings
                     };
-                if explicit_context {
-                    for pair in flow_siblings.windows(2) {
+                // Each sibling domain is built once, as a chain: a change
+                // reaches later siblings through the ones between, so linking
+                // every pair (or every later sibling) is quadratic in a wide
+                // container for nothing.
+                // A later node of the same domain with footprints the chain
+                // lacks widens it; that happens at most once per footprint bit.
+                let linked = context_parents.get(&parent).copied();
+                if linked.is_some_and(|linked| linked.contains(lateral)) {
+                    continue;
+                }
+                let lateral = linked.map_or(lateral, |linked| linked.union(lateral));
+                context_parents.insert(parent, lateral);
+                for pair in flow_siblings.windows(2) {
+                    if explicit_context {
                         graph.add_context_dependency(pair[0], pair[1], lateral);
-                    }
-                } else if let Some(index) =
-                    flow_siblings.iter().position(|sibling| *sibling == node)
-                {
-                    for &following in &flow_siblings[index.saturating_add(1)..] {
-                        graph.add_context_dependency_forward(node, following, lateral);
+                    } else {
+                        graph.add_context_dependency_forward(pair[0], pair[1], lateral);
                     }
                 }
                 // Include the formatting-context siblings as seeds in the
                 // local graph; their own parent links let a lateral change
                 // reach the shared container without scanning descendants.
-                let pending_siblings: &[StableNodeId] = if explicit_context {
-                    flow_siblings
-                } else if let Some(index) =
-                    flow_siblings.iter().position(|sibling| *sibling == node)
-                {
-                    &flow_siblings[index.saturating_add(1)..]
-                } else {
-                    &[]
-                };
-                for &sibling in pending_siblings {
+                for &sibling in flow_siblings {
                     if sibling != node && self.document_of(sibling) == Some(document) {
                         pending.push_back((sibling, lateral, true, false, force_all));
                     }
@@ -4135,22 +4141,29 @@ impl UiWorld {
         // explicit runtime-wide invalidation. Typed mutation authorities have
         // already installed a narrower entry, which this branch preserves.
         if bits & DirtyMask::LAYOUT != 0 {
+            // Merged, not inserted: a narrower typed seed already pending
+            // for this node must not hide a later unclassified one.
+            self.note_layout_source_change();
+            let unknown = LayoutInvalidation::new(
+                LayoutInvalidationSource::Runtime,
+                InvalidationReason::UNKNOWN,
+                InvalidationKind::ALL,
+                LayoutFieldMask::ALL,
+                LayoutDependencyFootprint::ALL,
+            );
             self.pending_layout_invalidations
                 .entry(id)
-                .or_insert(LayoutInvalidation::new(
-                    LayoutInvalidationSource::Runtime,
-                    InvalidationReason::UNKNOWN,
-                    InvalidationKind::ALL,
-                    LayoutFieldMask::ALL,
-                    LayoutDependencyFootprint::ALL,
-                ));
-            self.note_layout_source_change();
+                .and_modify(|previous| *previous = previous.merge(unknown))
+                .or_insert(unknown);
         }
         self.mark_scroll_compatible(id, bits)
     }
 
     /// Record dirtiness without claiming that hit membership or geometry changed.
     fn mark_scroll_compatible(&mut self, id: StableNodeId, bits: u16) -> bool {
+        if bits & DirtyMask::LAYOUT != 0 {
+            self.note_layout_source_change();
+        }
         let changed = self.record_mut(id).dirty.insert(bits);
         if changed {
             self.dirty_entities.insert(id);
@@ -4800,6 +4813,10 @@ fn style_change_is_layout_geometry_only(previous: &NodeStyle, next: &NodeStyle) 
     layout_excluding_transform_and_cursor_eq(&overlaid, next.layout.as_ref())
 }
 
+/// `base` with the fields whose change only moves boxes taken from
+/// `semantics`. A field paint also reads off the style (border widths and
+/// styles, how text breaks, aligns and ends) is not one: changing it alone
+/// may leave every box in place and still change the pixels.
 fn layout_with_semantics_of(
     base: &nana_ui_core::LayoutStyle,
     semantics: &nana_ui_core::LayoutStyle,
@@ -4848,16 +4865,7 @@ fn layout_with_semantics_of(
     overlaid.flex_basis = semantics.flex_basis;
     overlaid.overflow_x = semantics.overflow_x;
     overlaid.overflow_y = semantics.overflow_y;
-    overlaid.text_overflow_ellipsis = semantics.text_overflow_ellipsis;
-    overlaid.line_clamp = semantics.line_clamp;
-    overlaid.white_space_nowrap = semantics.white_space_nowrap;
-    overlaid.white_space = semantics.white_space;
-    overlaid.word_break = semantics.word_break;
-    overlaid.overflow_wrap = semantics.overflow_wrap;
     overlaid.aspect_ratio = semantics.aspect_ratio;
-    overlaid.font_italic = semantics.font_italic;
-    overlaid.text_align = semantics.text_align;
-    overlaid.line_break = semantics.line_break;
     overlaid.float = semantics.float;
     overlaid.clear = semantics.clear;
     overlaid.writing_mode = semantics.writing_mode;
@@ -4874,16 +4882,6 @@ fn layout_with_semantics_of(
     overlaid.grid_columns_repeat = semantics.grid_columns_repeat.clone();
     overlaid.grid_rows_repeat = semantics.grid_rows_repeat.clone();
     overlaid.grid_placement = semantics.grid_placement.clone();
-    overlaid.border_width = semantics.border_width;
-    overlaid.border_top_width = semantics.border_top_width;
-    overlaid.border_right_width = semantics.border_right_width;
-    overlaid.border_bottom_width = semantics.border_bottom_width;
-    overlaid.border_left_width = semantics.border_left_width;
-    overlaid.border_style = semantics.border_style;
-    overlaid.border_top_style = semantics.border_top_style;
-    overlaid.border_right_style = semantics.border_right_style;
-    overlaid.border_bottom_style = semantics.border_bottom_style;
-    overlaid.border_left_style = semantics.border_left_style;
     overlaid
 }
 

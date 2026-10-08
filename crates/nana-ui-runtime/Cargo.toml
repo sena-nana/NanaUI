@@ -16,6 +16,9 @@ rich-text = ["dep:pulldown-cmark", "dep:mermaid-svg", "dep:ratex-parser", "dep:r
 components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
 default = []
 benchmark = []
+# Lay the document out again from nothing after every retained pass and
+# require the same boxes (always on in this crate's tests).
+layout-verify = []
 # Records the reactive causal chain into a preallocated ring for "why did this update".
 reactive-trace = []
 # The `view!` template macro over the view layer (a separate proc-macro crate).

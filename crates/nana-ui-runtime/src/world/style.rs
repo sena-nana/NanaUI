@@ -33,6 +33,12 @@ impl UiWorld {
             }
             Arc::clone(&parent_record.resolved.0)
         };
+        // Sharing hands the child every field of the parent's style. That is
+        // the child's own answer only while the parent sets none of the
+        // non-inherited ones; a child of a painted box resolves its own.
+        if carries_non_inherited_paint(&parent_style) {
+            return Ok(false);
+        }
         let writing_mode = parent_style.writing_mode;
         let direction = parent_style.direction;
         let text_orientation = parent_style.text_orientation;
@@ -954,4 +960,19 @@ impl LayoutInterner {
         self.recent[self.next] = Some(Arc::clone(layout));
         self.next = (self.next + 1) % RECENT_LAYOUTS;
     }
+}
+
+/// Whether `style` sets a property children do not inherit: a background,
+/// a border or an outline color.
+fn carries_non_inherited_paint(style: &ComputedStyle) -> bool {
+    let slots = &style.paint_colors;
+    style.background.is_some()
+        || style.border_color.is_some()
+        || slots.background.is_some()
+        || slots.border.is_some()
+        || slots.border_top.is_some()
+        || slots.border_right.is_some()
+        || slots.border_bottom.is_some()
+        || slots.border_left.is_some()
+        || slots.outline.is_some()
 }

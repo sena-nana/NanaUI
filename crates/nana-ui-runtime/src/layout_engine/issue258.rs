@@ -422,3 +422,44 @@ fn repeated_container_edits_do_not_grow_plan_entries() {
         "plan entries kept growing across repeated edits: {counts:?}"
     );
 }
+
+/// A badge anchored to the far corners moves when the container it is
+/// anchored in grows, though nothing about the badge changed.
+#[test]
+fn a_far_anchored_badge_follows_its_growing_container() {
+    let badge = LayoutStyle {
+        position: PositionSpec::Absolute,
+        offset_right: Some(LengthSpec::Px(8.0)),
+        offset_bottom: Some(LengthSpec::Px(8.0)),
+        width: Some(LengthSpec::Px(16.0)),
+        height: Some(LengthSpec::Px(16.0)),
+        ..LayoutStyle::default()
+    };
+    let (mut world, document) = positioned_world(3, badge);
+    // Content-sized, so a growing row grows the block the badge is in.
+    set_layout(
+        &mut world,
+        nid(3),
+        LayoutStyle {
+            width: Some(LengthSpec::Px(400.0)),
+            direction: Some(FlexDirection::Column),
+            align_items: AlignSpec::Start,
+            ..LayoutStyle::default()
+        },
+    );
+    let viewport = LayoutViewport::new(800.0, 600.0);
+    let mut retained = RetainedLayoutCache::default();
+    prime(&mut world, document, viewport, &mut retained);
+    let before = world.layout_box(nid(90)).unwrap();
+    set_layout(
+        &mut world,
+        nid(11),
+        LayoutStyle {
+            height: Some(LengthSpec::Px(60.0)),
+            ..px(80.0)
+        },
+    );
+    scoped(&mut world, document, viewport, &mut retained);
+    let after = world.layout_box(nid(90)).unwrap();
+    assert_eq!(after.y, before.y + 40.0, "{before:?} -> {after:?}");
+}

@@ -424,3 +424,38 @@ fn inline_line_break_falls_back_to_its_formatting_context_only() {
         step.emitted
     );
 }
+
+/// A relatively offset fixed inline-block keeps its offset, once, when what
+/// is inside it changes; and a percentage padding on its context resolves
+/// against that context's own containing block.
+#[test]
+fn a_relative_fixed_atomic_keeps_its_offset_across_inner_edits() {
+    let viewport = LayoutViewport::new(800.0, 600.0);
+    let (mut world, document) = two_contexts(2, 1, true, None);
+    set_style(
+        &mut world,
+        id(3),
+        LayoutStyle {
+            padding_left: Some(LengthSpec::Percent(10.0)),
+            ..ifc_style(None)
+        },
+    );
+    set_style(
+        &mut world,
+        id(10),
+        LayoutStyle {
+            position: nana_ui_core::PositionSpec::Relative,
+            offset_left: Some(LengthSpec::Px(10.0)),
+            offset_top: Some(LengthSpec::Px(3.0)),
+            ..atomic(80.0)
+        },
+    );
+    let mut retained = RetainedLayoutCache::default();
+    prepare(&mut world, document, viewport, &mut retained);
+    let before = world.layout_box(id(10)).unwrap();
+    for width in [30.0, 40.0, 50.0] {
+        set_style(&mut world, id(9), block_box(width, 10.0));
+        scoped(&mut world, document, viewport, &mut retained);
+        assert_eq!(world.layout_box(id(10)).unwrap(), before, "after {width}");
+    }
+}

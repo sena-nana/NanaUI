@@ -6941,3 +6941,63 @@ fn an_orthogonal_box_resolves_percentage_margins_on_its_parents_inline_axis() {
         "got {horizontal_child}"
     );
 }
+
+/// A flex item restyled beyond its cross size in the same edit (a margin,
+/// `align-self`, `flex-grow`) is laid out with its new style: the line-local
+/// replay only covers a cross-size change.
+#[test]
+fn flex_line_replay_takes_every_change_an_item_brings() {
+    let viewport = LayoutViewport::new(400.0, 800.0);
+    let container = LayoutStyle {
+        display: Some(DisplaySpec::Flex),
+        direction: Some(FlexDirection::Row),
+        flex_wrap: FlexWrap::Wrap,
+        width: Some(LengthSpec::Px(240.0)),
+        align_items: AlignSpec::Start,
+        justify_content: JustifySpec::Start,
+        ..LayoutStyle::default()
+    };
+    let item = LayoutStyle {
+        width: Some(LengthSpec::Px(100.0)),
+        height: Some(LengthSpec::Px(20.0)),
+        ..LayoutStyle::default()
+    };
+    let edits: [fn(&mut LayoutStyle); 3] = [
+        |style| style.margin_left = Some(LengthSpec::Px(12.0)),
+        |style| style.align_self = Some(AlignSpec::End),
+        |style| style.margin_top = Some(LengthSpec::Px(6.0)),
+    ];
+    for edit in edits {
+        let rows = (0..4)
+            .map(|index| (10 + index as u64, item.clone(), Vec::new()))
+            .collect::<Vec<_>>();
+        let (mut world, document) = hugging_container_world(&rows, container.clone());
+        let mut retained = RetainedLayoutCache::default();
+        let _ = world.take_system_work();
+        let emitted = RuntimeLayoutEngine
+            .layout_document_with_frontier(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
+        prime_measure_plans(&mut world, document, viewport, &mut retained, id(10));
+        let mut changed = item.clone();
+        changed.height = Some(LengthSpec::Px(40.0));
+        edit(&mut changed);
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            id(11),
+            NodeStyle {
+                layout: Arc::new(changed),
+                ..NodeStyle::default()
+            },
+        );
+        world.commit(queue).unwrap();
+        scoped_step_matches_full(
+            &mut world,
+            document,
+            viewport,
+            &mut retained,
+            "restyled item",
+        );
+    }
+}

@@ -12134,3 +12134,89 @@ fn typed_layout_seed_restore_preserves_each_document_and_typed_cause() {
     assert_eq!(second[0].node, node(2));
     assert_eq!(second[0].invalidation, writing);
 }
+
+/// A default-styled child of a box with its own background, border and
+/// outline colors resolves to none of them: those do not inherit.
+#[test]
+fn a_child_does_not_inherit_its_parents_background() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    create.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    create.insert(node(1), node(2), None);
+    create.set_style(
+        node(1),
+        NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 0.5]),
+                border_color: Some([0.0, 1.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    world.commit(create).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let parent = world.computed_style(node(1)).unwrap();
+    assert!(parent.background.is_some());
+    let child = world.computed_style(node(2)).unwrap();
+    assert_eq!(child.background, None);
+    assert_eq!(child.border_color, None);
+    assert_eq!(child.paint_colors.background, None);
+}
+
+/// A border going from dashed to solid at the same width moves no box, but
+/// it is drawn differently: the node is extracted again.
+#[test]
+fn a_border_style_change_repaints_without_moving_a_box() {
+    let mut world = UiWorld::new();
+    let dashed = nana_ui_core::LayoutStyle {
+        width: Some(nana_ui_core::LengthSpec::Px(40.0)),
+        height: Some(nana_ui_core::LengthSpec::Px(20.0)),
+        border_width: Some(2.0),
+        border_style: Some(nana_ui_core::BorderStyle::Dashed),
+        ..Default::default()
+    };
+    let mut create = MutationQueue::new();
+    create.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    create.set_style(
+        node(1),
+        NodeStyle {
+            layout: Arc::new(dashed.clone()),
+            ..Default::default()
+        },
+    );
+    world.commit(create).unwrap();
+    let _ = world.take_system_work();
+    let mut restyle = MutationQueue::new();
+    restyle.set_style(
+        node(1),
+        NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                border_style: Some(nana_ui_core::BorderStyle::Solid),
+                ..dashed
+            }),
+            ..Default::default()
+        },
+    );
+    world.commit(restyle).unwrap();
+    let work = world.take_system_work();
+    assert!(
+        work.render_extraction.contains(&node(1)),
+        "{:?}",
+        work.render_extraction
+    );
+}

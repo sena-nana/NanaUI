@@ -3987,6 +3987,11 @@ impl UiWorld {
         for (id, metrics, natural, presentation) in shaped {
             let previous = self.record(id).text_metrics;
             let previous_natural = self.text_natural_width(id);
+            if previous != metrics || previous_natural != natural {
+                // Layout reads every metric, not only those that seed it: a
+                // full-layout snapshot taken before this write is stale.
+                self.note_layout_source_change();
+            }
             self.record_mut(id).text_metrics = metrics;
             self.nodes.set_text_natural_width(id, natural);
             if let Some(presentation) = presentation {
@@ -4664,6 +4669,11 @@ impl UiWorld {
         for (id, metrics, natural, presentation) in shaped {
             let previous = self.record(id).text_metrics;
             let previous_natural = self.text_natural_width(id);
+            if previous != metrics || previous_natural != natural {
+                // Layout reads every metric, not only those that seed it: a
+                // full-layout snapshot taken before this write is stale.
+                self.note_layout_source_change();
+            }
             self.record_mut(id).text_metrics = metrics;
             self.nodes.set_text_natural_width(id, natural);
             if let Some(presentation) = presentation {

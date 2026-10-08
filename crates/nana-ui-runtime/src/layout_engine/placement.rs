@@ -46,27 +46,56 @@ fn children_reaching_affected(
     container: StableNodeId,
     plan: &ContainerPlan,
     scope: &ScopeContext<'_>,
-    nodes: &LayoutInputMap<'_>,
 ) -> Vec<u32> {
     let mut indices = plan.affected_entries(scope);
-    for &id in scope.affected {
-        let mut node = id;
-        while let Some(parent) = nodes.world.parent_id(node) {
-            if parent == container {
-                if let Ok(slot) = plan
-                    .by_child
-                    .binary_search_by_key(&node, |(child, _)| *child)
-                {
-                    indices.push(plan.by_child[slot].1);
-                }
-                break;
-            }
-            node = parent;
-        }
-    }
+    indices.extend(scope.reach.children(container).iter().filter_map(|child| {
+        plan.by_child
+            .binary_search_by_key(child, |(child, _)| *child)
+            .ok()
+            .map(|slot| plan.by_child[slot].1)
+    }));
     indices.sort_unstable();
     indices.dedup();
     indices
+}
+
+/// After a replay that placed only part of `container`, place the children
+/// it did not visit that still lead to an affected node, at their kept
+/// boxes: the replay left them where they were, but not what is inside.
+#[allow(clippy::too_many_arguments)]
+fn place_unvisited_reaching(
+    container: StableNodeId,
+    plan: &ContainerPlan,
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    intrinsic: &mut PassIntrinsicCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) -> Result<(), UiWorldError> {
+    for index in children_reaching_affected(container, plan, scope) {
+        let (child, origin, size) = {
+            let entries = plan.entries.borrow();
+            let entry = &entries[index as usize];
+            (entry.child, entry.origin, entry.size)
+        };
+        if output.contains_key(&child) {
+            continue;
+        }
+        place_node_scoped(
+            child,
+            origin,
+            size,
+            plan.content,
+            viewport,
+            plan.child_font_px,
+            nodes,
+            intrinsic,
+            output,
+            Some(scope),
+            None,
+        )?;
+    }
+    Ok(())
 }
 
 /// Re-check only the children the change closure reaches.
@@ -380,6 +409,14 @@ fn replay_wrapped_flex_line(
     let mut old_sizes = Vec::with_capacity(entries.len());
     for entry in entries.iter() {
         if child_blocks_flex_line_local(entry.style.as_ref()) {
+            return Ok(false);
+        }
+        if scope.affected.contains(&entry.child)
+            && !nodes.style(entry.child).is_some_and(|current| {
+                Arc::ptr_eq(&current, &entry.style)
+                    || super::same_but_cross(&current, &entry.style, direction)
+            })
+        {
             return Ok(false);
         }
         let cross = match direction {
@@ -818,7 +855,7 @@ pub(super) fn place_node_scoped(
                 // a descendant inside it is affected. Re-enter the direct
                 // child that contains that descendant; its own plan places
                 // only the closure.
-                for index in children_reaching_affected(id, plan, scope, nodes) {
+                for index in children_reaching_affected(id, plan, scope) {
                     let (child, origin, size) = {
                         let entries = plan.entries.borrow();
                         let entry = &entries[index as usize];
@@ -864,6 +901,7 @@ pub(super) fn place_node_scoped(
                 if replay_sequential_suffix(
                     id, plan, from, viewport, nodes, intrinsic, output, scope,
                 )? {
+                    place_unvisited_reaching(id, plan, viewport, nodes, intrinsic, output, scope)?;
                     finish_positioned_overlay(
                         id,
                         plan,
@@ -891,6 +929,7 @@ pub(super) fn place_node_scoped(
                 if !grid_geometry_moved
                     && replay_wrapped_flex_line(plan, viewport, nodes, intrinsic, output, scope)?
                 {
+                    place_unvisited_reaching(id, plan, viewport, nodes, intrinsic, output, scope)?;
                     finish_positioned_overlay(
                         id,
                         plan,
@@ -923,6 +962,7 @@ pub(super) fn place_node_scoped(
                     output,
                     scope,
                 )? {
+                    place_unvisited_reaching(id, plan, viewport, nodes, intrinsic, output, scope)?;
                     finish_positioned_overlay(
                         id,
                         plan,
@@ -1918,6 +1958,12 @@ fn positioned_tracks_containing_block(style: &LayoutStyle) -> bool {
         || (style.offset_top.is_some()
             && style.offset_bottom.is_some()
             && !style.height.is_some_and(LengthSpec::is_definite_declared))
+        // Anchored to the far edge: the position is the block's size less
+        // the offset and the box.
+        || (style.offset_right.is_some() && style.offset_left.is_none())
+        || (style.offset_bottom.is_some() && style.offset_top.is_none())
+        // An auto width shrinks to fit the space the block leaves.
+        || style.width.is_none_or(|width| !width.is_definite_declared())
 }
 
 fn overlay_child_affected(
@@ -1926,22 +1972,8 @@ fn overlay_child_affected(
     scope: &ScopeContext<'_>,
     nodes: &LayoutInputMap<'_>,
 ) -> bool {
-    if scope.affected.contains(&child) {
-        return true;
-    }
-    for &id in scope.affected {
-        let mut cursor = id;
-        while let Some(parent) = nodes.world.parent_id(cursor) {
-            if parent == child {
-                return true;
-            }
-            if parent == container {
-                break;
-            }
-            cursor = parent;
-        }
-    }
-    false
+    let _ = (container, nodes);
+    scope.affected.contains(&child) || scope.reach.reaches(child)
 }
 
 fn overlay_depends_on_block(

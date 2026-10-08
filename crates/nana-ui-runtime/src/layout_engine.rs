@@ -503,6 +503,36 @@ impl RuntimeLayoutEngine {
         retained: &mut RetainedLayoutCache,
         force_full: bool,
     ) -> Result<Vec<(StableNodeId, LayoutBox)>, UiWorldError> {
+        let emitted = self.layout_document_with_frontier_unverified(
+            world,
+            document,
+            viewport,
+            typed_seeds,
+            retained,
+            force_full,
+        )?;
+        #[cfg(any(test, feature = "layout-verify"))]
+        verify::retained_matches_full_layout(
+            self,
+            world,
+            document,
+            viewport,
+            retained,
+            typed_seeds,
+            force_full,
+        );
+        Ok(emitted)
+    }
+
+    fn layout_document_with_frontier_unverified(
+        self,
+        world: &UiWorld,
+        document: DocumentId,
+        viewport: LayoutViewport,
+        typed_seeds: &[LayoutFrontierSeed],
+        retained: &mut RetainedLayoutCache,
+        force_full: bool,
+    ) -> Result<Vec<(StableNodeId, LayoutBox)>, UiWorldError> {
         let roots = world.document_roots(document);
         if roots.is_empty() {
             retained.remove_document(document);
@@ -584,12 +614,6 @@ impl RuntimeLayoutEngine {
         plan_stats::note_scope(typed_seeds.len(), affected.len());
         #[cfg(any(test, feature = "benchmark"))]
         plan_stats::note_frontier(&frontier, force_full);
-        let scope = ScopeContext {
-            affected: &affected,
-            measure: frontier.measure_nodes(),
-            retained: &*retained,
-        };
-        let scope_ref = (!force_full).then_some(&scope);
         let mut output = HashMap::with_capacity(nodes.len());
         let mut intrinsic = PassIntrinsicCache::with_capacity(nodes.len());
         let available = Size::new(viewport.width, viewport.height);
@@ -622,9 +646,13 @@ impl RuntimeLayoutEngine {
                 ) else {
                     continue;
                 };
-                if let Some((origin, containing, font)) =
-                    fixed_inline_block_island(world, id, border, parent_box)
-                {
+                if let Some((origin, containing, font)) = fixed_inline_block_island(
+                    world,
+                    id,
+                    border,
+                    parent_box,
+                    retained.used_padding.get(&parent).copied(),
+                ) {
                     islands.push((id, origin, containing, font));
                 }
             }
@@ -634,6 +662,19 @@ impl RuntimeLayoutEngine {
         // its parent places. Such a pass also walks from the document roots,
         // where the parent's retained plan replays the shift.
         let mut island_resized = false;
+        let reach = if force_full {
+            AffectedIndex::default()
+        } else {
+            let covered: HashSet<StableNodeId> = islands.iter().map(|island| island.0).collect();
+            AffectedIndex::new(world, &affected, &covered)
+        };
+        let scope = ScopeContext {
+            affected: &affected,
+            measure: frontier.measure_nodes(),
+            retained: &*retained,
+            reach: &reach,
+        };
+        let scope_ref = (!force_full).then_some(&scope);
         for &(root, origin, containing, font) in &islands {
             // An island boundary normally has a stable used size, but an
             // affected content-sized child can grow inside a fixed ancestor.
@@ -668,7 +709,10 @@ impl RuntimeLayoutEngine {
             )?;
         }
         for root in roots {
-            if !force_full && !islands.is_empty() && !island_resized && !affected.contains(&root) {
+            // With islands laid out on their own, a root pass runs only for
+            // what leads to an affected node outside every island, or for an
+            // island that resized and moves its siblings.
+            if !force_full && !islands.is_empty() && !island_resized && !reach.reaches(root) {
                 continue;
             }
             let root_size = intrinsic_size_scoped(
@@ -698,6 +742,12 @@ impl RuntimeLayoutEngine {
             )?;
             #[cfg(feature = "benchmark")]
             phase.lap(2);
+        }
+        if !force_full {
+            // An affected node that no longer generates a box (hidden, or in
+            // a closed branch) is skipped by its container rather than
+            // placed: collapse what it kept, and everything under it.
+            collapse_omitted_boxes(&affected, &mut nodes, &*retained, &mut output);
         }
         // Publish recomputed boxes from the placed set; no document_order walk.
         let mut emitted = output.into_iter().collect::<Vec<_>>();
@@ -1201,6 +1251,56 @@ pub mod plan_stats {
         static FRONTIER_STOPPED: Cell<usize> = const { Cell::new(0) };
         static FRONTIER_LOCAL_FALLBACKS: Cell<usize> = const { Cell::new(0) };
         static FRONTIER_FULL_FALLBACKS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Every counter, to put back after a pass that must not count (the
+    /// layout guard's own full layout).
+    pub(crate) fn save() -> [usize; 17] {
+        [
+            &PLANS_REUSED,
+            &SUFFIXES_REPLAYED,
+            &MEASURE_PLANS_REUSED,
+            &CHILDREN_MEASURED,
+            &CONTAINERS_UNCACHEABLE,
+            &DIRTY_SEEDS,
+            &AFFECTED,
+            &RETAIN_SWEEPS,
+            &FRONTIER_SEEDS,
+            &FRONTIER_SEED_MERGES,
+            &FRONTIER_NODES_MEASURE,
+            &FRONTIER_NODES_PLACEMENT,
+            &FRONTIER_CONTEXTS,
+            &FRONTIER_EDGES,
+            &FRONTIER_STOPPED,
+            &FRONTIER_LOCAL_FALLBACKS,
+            &FRONTIER_FULL_FALLBACKS,
+        ]
+        .map(|counter| counter.with(Cell::get))
+    }
+
+    pub(crate) fn restore(saved: [usize; 17]) {
+        let counters = [
+            &PLANS_REUSED,
+            &SUFFIXES_REPLAYED,
+            &MEASURE_PLANS_REUSED,
+            &CHILDREN_MEASURED,
+            &CONTAINERS_UNCACHEABLE,
+            &DIRTY_SEEDS,
+            &AFFECTED,
+            &RETAIN_SWEEPS,
+            &FRONTIER_SEEDS,
+            &FRONTIER_SEED_MERGES,
+            &FRONTIER_NODES_MEASURE,
+            &FRONTIER_NODES_PLACEMENT,
+            &FRONTIER_CONTEXTS,
+            &FRONTIER_EDGES,
+            &FRONTIER_STOPPED,
+            &FRONTIER_LOCAL_FALLBACKS,
+            &FRONTIER_FULL_FALLBACKS,
+        ];
+        for (counter, value) in counters.into_iter().zip(saved) {
+            counter.with(|cell| cell.set(value));
+        }
     }
 
     pub(crate) fn note_scope(dirty: usize, affected: usize) {
@@ -1885,6 +1985,22 @@ impl ContainerPlan {
 /// The equality is exact, not a tolerance: it accepts exactly the pairs that
 /// `used_flow_direction` maps to the same axis, and every other field still has
 /// to match outright.
+/// Whether a flex item's `current` style is its `cached` one but for its
+/// cross size: the one change a line-local replay recomputes. Anything else
+/// (a margin, `align-self`, `flex-grow`) moves the line or its neighbours.
+fn same_but_cross(
+    current: &nana_ui_core::LayoutStyle,
+    cached: &nana_ui_core::LayoutStyle,
+    direction: FlexDirection,
+) -> bool {
+    let mut aligned = current.clone();
+    match direction {
+        FlexDirection::Row => aligned.height = cached.height,
+        FlexDirection::Column => aligned.width = cached.width,
+    }
+    layout_inputs_equal(&aligned, cached)
+}
+
 fn layout_inputs_equal(a: &nana_ui_core::LayoutStyle, b: &nana_ui_core::LayoutStyle) -> bool {
     if a == b {
         return true;
@@ -2369,10 +2485,94 @@ impl<'a> LayoutInputMap<'a> {
     }
 }
 
+/// Zero-size every kept box at or under an affected node that omits its box
+/// and was not placed this pass.
+fn collapse_omitted_boxes(
+    affected: &HashSet<StableNodeId>,
+    nodes: &mut LayoutInputMap<'_>,
+    retained: &DocumentLayoutCache,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+) {
+    let collapse = |id: StableNodeId, output: &mut HashMap<StableNodeId, LayoutBox>| {
+        if let Some(kept) = retained.boxes.get(&id)
+            && (kept.width != 0.0 || kept.height != 0.0)
+        {
+            output.entry(id).or_insert(LayoutBox {
+                width: 0.0,
+                height: 0.0,
+                ..*kept
+            });
+        }
+    };
+    for &id in affected {
+        if output.contains_key(&id) || !nodes.style(id).is_some_and(|style| style.omits_box()) {
+            continue;
+        }
+        let mut stack = vec![id];
+        while let Some(node) = stack.pop() {
+            collapse(node, output);
+            if let Some(record) = nodes.world.node(node) {
+                stack.extend(record.children.iter().copied());
+            }
+        }
+    }
+}
+
 struct ScopeContext<'a> {
     affected: &'a HashSet<StableNodeId>,
     measure: &'a HashSet<StableNodeId>,
     retained: &'a DocumentLayoutCache,
+    /// Which boxes lead to an affected node, built once per pass.
+    reach: &'a AffectedIndex,
+}
+
+/// Every node an affected node is in, and per container the direct children
+/// that are affected or contain an affected node. A fixed box may stay out of
+/// the frontier while a node inside it changes; every place that prunes a
+/// subtree or replays part of a container asks this, so the path down to that
+/// node is never cut.
+#[derive(Default)]
+pub(crate) struct AffectedIndex {
+    reach: HashSet<StableNodeId>,
+    reaching: HashMap<StableNodeId, Vec<StableNodeId>>,
+}
+
+impl AffectedIndex {
+    /// From `affected`, leaving out the nodes inside `covered` (island roots,
+    /// laid out on their own).
+    fn new<'a>(
+        world: &UiWorld,
+        affected: impl IntoIterator<Item = &'a StableNodeId>,
+        covered: &HashSet<StableNodeId>,
+    ) -> Self {
+        let mut index = Self::default();
+        for &id in affected {
+            let inside_island = std::iter::successors(Some(id), |id| world.parent_id(*id))
+                .any(|node| covered.contains(&node));
+            if inside_island || !index.reach.insert(id) {
+                continue;
+            }
+            let mut child = id;
+            while let Some(parent) = world.parent_id(child) {
+                index.reaching.entry(parent).or_default().push(child);
+                if !index.reach.insert(parent) {
+                    break;
+                }
+                child = parent;
+            }
+        }
+        index
+    }
+
+    /// Whether `id` is affected or contains an affected node.
+    pub(crate) fn reaches(&self, id: StableNodeId) -> bool {
+        self.reach.contains(&id)
+    }
+
+    /// The direct children of `container` that lead to an affected node.
+    pub(crate) fn children(&self, container: StableNodeId) -> &[StableNodeId] {
+        self.reaching.get(&container).map_or(&[], Vec::as_slice)
+    }
 }
 
 /// Prune a child recursion when the child is outside the affected closure and
@@ -2391,7 +2591,7 @@ fn subtree_unchanged(
     let Some(scope) = scope else {
         return false;
     };
-    if scope.affected.contains(&child) {
+    if scope.affected.contains(&child) || scope.reach.reaches(child) {
         return false;
     }
     let Some(cached) = scope.retained.boxes.get(&child) else {
@@ -3221,3 +3421,90 @@ fn finite_extent(value: f32) -> f32 {
 mod issue258;
 #[cfg(test)]
 mod tests;
+
+/// The recompute-and-compare guard: after every retained pass, lay the
+/// document out again from nothing and require the retained boxes to equal
+/// it. Every test that lays out then also tests what the invalidation rules
+/// skipped. On in tests and with the `layout-verify` feature.
+#[cfg(any(test, feature = "layout-verify"))]
+pub(crate) mod verify {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        static SKIP: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// Run `f` without the guard: for the few tests that look at a pass the
+    /// guard would reject on purpose.
+    #[cfg(test)]
+    pub(crate) fn skip_layout_verify<R>(f: impl FnOnce() -> R) -> R {
+        SKIP.with(|skip| skip.set(skip.get() + 1));
+        let result = f();
+        SKIP.with(|skip| skip.set(skip.get() - 1));
+        result
+    }
+
+    fn same(a: LayoutBox, b: LayoutBox) -> bool {
+        const EPSILON: f32 = 0.01;
+        // An omitted box has no meaningful origin; only its zero extent.
+        if a.width == 0.0 && a.height == 0.0 && b.width == 0.0 && b.height == 0.0 {
+            return true;
+        }
+        (a.x - b.x).abs() <= EPSILON
+            && (a.y - b.y).abs() <= EPSILON
+            && (a.width - b.width).abs() <= EPSILON
+            && (a.height - b.height).abs() <= EPSILON
+    }
+
+    pub(super) fn retained_matches_full_layout(
+        engine: RuntimeLayoutEngine,
+        world: &UiWorld,
+        document: DocumentId,
+        viewport: LayoutViewport,
+        retained: &RetainedLayoutCache,
+        seeds: &[LayoutFrontierSeed],
+        force_full: bool,
+    ) {
+        if SKIP.with(Cell::get) > 0 {
+            return;
+        }
+        let Some(cache) = retained.documents.get(&document) else {
+            return;
+        };
+        #[cfg(any(test, feature = "benchmark"))]
+        let counted = plan_stats::save();
+        let full = engine.layout_document(world, document, viewport);
+        #[cfg(any(test, feature = "benchmark"))]
+        plan_stats::restore(counted);
+        let Ok(full) = full else {
+            return;
+        };
+        let mut wrong = Vec::new();
+        for (id, expected) in full {
+            let kept = cache.boxes.get(&id).copied().unwrap_or_default();
+            if !same(kept, expected) {
+                wrong.push((id, kept, expected));
+            }
+        }
+        if wrong.is_empty() {
+            return;
+        }
+        let shown: Vec<String> = wrong
+            .iter()
+            .take(8)
+            .map(|(id, kept, expected)| {
+                let chain: Vec<_> =
+                    std::iter::successors(world.parent_id(*id), |id| world.parent_id(*id))
+                        .collect();
+                format!("{id:?} kept {kept:?} full {expected:?} under {chain:?}")
+            })
+            .collect();
+        panic!(
+            "retained layout (force_full {force_full}) differs from a full layout at {} \
+             nodes:\n{}\nseeds: {seeds:?}",
+            wrong.len(),
+            shown.join("\n")
+        );
+    }
+}
