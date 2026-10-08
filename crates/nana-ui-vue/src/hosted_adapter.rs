@@ -494,8 +494,10 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             InputPayload::FileDrag(drag) => {
                 host.emit_file_drag_from_runtime(engine, drag.kind, &drag.paths, drag.position)?;
             }
+            InputPayload::PointerLeave { pointer_id } => {
+                host.emit_pointer_leave_from_runtime(engine, pointer_id.0)?;
+            }
             InputPayload::PointerEnter { .. }
-            | InputPayload::PointerLeave { .. }
             | InputPayload::Focus { focused: true }
             | InputPayload::DeviceConnected
             | InputPayload::DeviceDisconnected

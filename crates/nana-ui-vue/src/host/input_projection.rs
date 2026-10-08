@@ -18,6 +18,12 @@ pub(crate) struct State {
     /// these remember the previous JS view so blur/over events still fire.
     pub(crate) js_focus: Option<NodeHandle>,
     pub(crate) js_pointer_hover: BTreeMap<u64, Option<NodeHandle>>,
+    /// Each pointer's last event the page heard, for the events the page
+    /// gets with no sample of their own: a window leave, a blur's cancel.
+    pub(crate) js_pointer_last: BTreeMap<u64, PointerInput>,
+    /// Where each pointer the page saw go down was pressed, until it lifts
+    /// or cancels.
+    pub(crate) js_pointer_pressed: BTreeMap<u64, NodeHandle>,
     /// This window's input source when no scene host routes for it; bound
     /// on first use.
     pub(crate) source: Option<nana_ui_runtime::HeadlessInput>,
@@ -717,6 +723,28 @@ impl VueHost {
             self.flush_pointer_capture_events(engine)?;
         }
         let detail = self.pointer_detail(input, event_target);
+        self.input_projection
+            .js_pointer_last
+            .insert(input.pointer_id, input);
+        match input.kind {
+            PointerEventKind::Down => {
+                self.input_projection
+                    .js_pointer_pressed
+                    .entry(input.pointer_id)
+                    .or_insert(event_target);
+            }
+            PointerEventKind::Up if input.buttons == 0 => {
+                self.input_projection
+                    .js_pointer_pressed
+                    .remove(&input.pointer_id);
+            }
+            PointerEventKind::Cancel => {
+                self.input_projection
+                    .js_pointer_pressed
+                    .remove(&input.pointer_id);
+            }
+            _ => {}
+        }
 
         if matches!(
             input.kind,
@@ -859,6 +887,94 @@ impl VueHost {
             default_prevented,
             consumed,
         })
+    }
+    /// The pointer left the window: the page hears it leave what it was
+    /// over, out to nothing, as a browser's page does.
+    pub fn emit_pointer_leave_from_runtime<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        pointer_id: u64,
+    ) -> Result<(), JsEngineError> {
+        let previous = self
+            .input_projection
+            .js_pointer_hover
+            .remove(&pointer_id)
+            .flatten();
+        let input = self
+            .input_projection
+            .js_pointer_last
+            .get(&pointer_id)
+            .copied()
+            .unwrap_or(PointerInput {
+                pointer_id,
+                ..PointerInput::mouse(PointerEventKind::Move, 0.0, 0.0)
+            });
+        let input = PointerInput {
+            kind: PointerEventKind::Move,
+            ..input
+        };
+        if !self
+            .input_projection
+            .js_pointer_pressed
+            .contains_key(&pointer_id)
+        {
+            self.input_projection.js_pointer_last.remove(&pointer_id);
+        }
+        let Some(previous) = previous else {
+            return Ok(());
+        };
+        let mouse = input.pointer_type == PointerType::Mouse;
+        let mut transition = self.pointer_detail(input, previous);
+        transition.insert("relatedTarget".into(), HostValue::Null);
+        self.fire_dom_event(engine, previous, "pointerout", transition.clone())?;
+        if mouse {
+            self.fire_dom_event(engine, previous, "mouseout", transition)?;
+        }
+        let (leaving, _) = self.pointer_transition_paths(Some(previous), None);
+        for node in leaving {
+            let mut transition = self.pointer_detail(input, node);
+            transition.insert("relatedTarget".into(), HostValue::Null);
+            self.fire_dom_event(engine, node, "pointerleave", transition.clone())?;
+            if mouse {
+                self.fire_dom_event(engine, node, "mouseleave", transition)?;
+            }
+        }
+        self.flush_interactive_css_if_needed();
+        engine.run_microtasks()?;
+        let _ = self.pump_frame(engine)?;
+        Ok(())
+    }
+    /// The window lost focus with pointers still down: each one's gesture
+    /// is over, and the page hears `pointercancel` where it was pressed,
+    /// before the capture it held is reported lost.
+    pub(crate) fn emit_blur_pointer_cancels<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+    ) -> Result<(), JsEngineError> {
+        let pressed = std::mem::take(&mut self.input_projection.js_pointer_pressed);
+        for (pointer_id, target) in pressed {
+            let last = self
+                .input_projection
+                .js_pointer_last
+                .get(&pointer_id)
+                .copied()
+                .unwrap_or(PointerInput {
+                    pointer_id,
+                    ..PointerInput::mouse(PointerEventKind::Cancel, 0.0, 0.0)
+                });
+            let input = PointerInput {
+                kind: PointerEventKind::Cancel,
+                button: -1,
+                buttons: 0,
+                ..last
+            };
+            self.input_projection
+                .js_pointer_last
+                .insert(pointer_id, input);
+            let detail = self.pointer_detail(input, target);
+            self.fire_dom_event(engine, target, "pointercancel", detail)?;
+        }
+        Ok(())
     }
     pub(crate) fn pointer_range_value(&self, target: NodeHandle, x: f32) -> Option<f64> {
         let widget = self

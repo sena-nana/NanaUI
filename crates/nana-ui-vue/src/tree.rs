@@ -1561,6 +1561,13 @@ impl NanaTreeDocument {
                 ),
                 busy: widget.props.loading,
                 invalid: widget.props.invalid,
+                // `aria-hidden="true"`: kept painted and laid out, gone from
+                // what assistive technology reads.
+                hidden: widget
+                    .props
+                    .attrs
+                    .get("aria-hidden")
+                    .is_some_and(|value| value.trim().eq_ignore_ascii_case("true")),
                 ..AccessibilityState::default()
             };
             {

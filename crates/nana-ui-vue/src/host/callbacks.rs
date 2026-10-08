@@ -406,6 +406,7 @@ impl VueHost {
             if self.input_projection.file_drag_target.is_some() {
                 self.emit_file_drag_from_runtime(engine, FileDragKind::Cancel, &[], None)?;
             }
+            self.emit_blur_pointer_cancels(engine)?;
             let changes = {
                 let mut document = self.document.lock().expect("vue doc");
                 document.clear_pointer_interactions();

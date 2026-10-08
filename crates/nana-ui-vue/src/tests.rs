@@ -935,6 +935,95 @@ fn a_routed_blur_tells_the_page_its_capture_ended() {
     );
 }
 
+/// A blur with the button still down ends the page's gesture: the page
+/// hears `pointercancel` where it pressed, then its capture end.
+#[test]
+fn a_blur_mid_press_cancels_the_pages_pointer_first() {
+    let mut host = VueHost::new();
+    host.callbacks.fire_event = Some(JsFunctionId(1));
+    let (first, _) = install_input_nodes(&mut host);
+    let mut engine = RecordingEngine::default();
+    host.dispatch_pointer(
+        &mut engine,
+        PointerInput::mouse(PointerEventKind::Down, 10.0, 10.0),
+    )
+    .expect("press");
+    assert!(
+        host.document()
+            .lock()
+            .expect("document")
+            .capture_pointer(1, first)
+    );
+    host.flush_pointer_capture_events(&mut engine)
+        .expect("publish capture");
+    let pressed = fired_events(&engine)
+        .iter()
+        .find(|(_, name, _)| name == "pointerdown")
+        .map(|(target, _, _)| *target)
+        .expect("the page heard the press");
+
+    host.route_input(nana_ui_platform::InputPayload::Focus { focused: false })
+        .expect("route blur");
+    host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
+        .expect("page blur");
+
+    let events = fired_events(&engine);
+    let position = |target: u64, wanted: &str| {
+        events
+            .iter()
+            .position(|(fired_at, name, _)| *fired_at == target && name == wanted)
+            .unwrap_or_else(|| panic!("{wanted} at {target}"))
+    };
+    assert!(position(pressed, "pointercancel") < position(first.0, "lostpointercapture"));
+
+    // A second blur has nothing left to cancel.
+    let before = fired_events(&engine).len();
+    host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
+        .expect("second blur");
+    assert!(
+        !fired_events(&engine)[before..]
+            .iter()
+            .any(|(_, name, _)| name == "pointercancel")
+    );
+}
+
+/// The pointer leaving the window leaves what the page had it over, out to
+/// nothing.
+#[test]
+fn a_pointer_leaving_the_window_leaves_the_page() {
+    let mut host = VueHost::new();
+    host.callbacks.fire_event = Some(JsFunctionId(1));
+    install_input_nodes(&mut host);
+    let mut engine = RecordingEngine::default();
+    host.dispatch_pointer(
+        &mut engine,
+        PointerInput::mouse(PointerEventKind::Move, 10.0, 10.0),
+    )
+    .expect("hover");
+    let hovered = fired_events(&engine)
+        .iter()
+        .find(|(_, name, _)| name == "pointerover")
+        .map(|(target, _, _)| *target)
+        .expect("the page heard the pointer arrive");
+    let before = fired_events(&engine).len();
+
+    host.route_input(nana_ui_platform::InputPayload::PointerLeave {
+        pointer_id: nana_ui_platform::PointerId(1),
+    })
+    .expect("route leave");
+    host.emit_pointer_leave_from_runtime(&mut engine, 1)
+        .expect("page leave");
+
+    let events = &fired_events(&engine)[before..];
+    for name in ["pointerout", "mouseout", "pointerleave", "mouseleave"] {
+        let event = events
+            .iter()
+            .find(|(target, fired, _)| *target == hovered && fired == name)
+            .unwrap_or_else(|| panic!("{name} on the hovered node"));
+        assert_eq!(event.2.get("relatedTarget"), Some(&HostValue::Null));
+    }
+}
+
 /// A capture taken and not yet announced when the window blurs was never
 /// observable: the page hears neither its start nor its end.
 #[test]

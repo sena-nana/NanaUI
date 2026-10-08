@@ -1782,6 +1782,48 @@ fn choice_field_rules_keep_runtime_landings_distinct() {
     }
 }
 
+/// `aria-hidden="true"` takes a node out of what assistive technology reads
+/// (#293); `"false"` or removing it brings it back.
+#[test]
+fn aria_hidden_hides_the_node_from_assistive_technology() {
+    let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+    let icon = doc.create_element("span");
+    doc.insert(icon, doc.mount_root(), None);
+    let mut bridge = crate::MessageBridge::new();
+    bridge.register(
+        icon.0,
+        crate::WidgetKind::Text,
+        crate::WidgetProps {
+            element_tag: "span".into(),
+            label: "★".into(),
+            ..Default::default()
+        },
+    );
+    let hidden = |doc: &NanaTreeDocument| {
+        doc.runtime
+            .accessibility(StableNodeId::try_from(icon).unwrap())
+            .map(|state| state.hidden)
+    };
+    doc.sync_semantic_styles(&bridge.snapshot());
+    assert_eq!(hidden(&doc), Some(false));
+
+    bridge.patch_prop(
+        icon.0,
+        "aria-hidden",
+        &nana_js_engine::HostValue::string("true"),
+    );
+    doc.sync_semantic_styles(&bridge.snapshot());
+    assert_eq!(hidden(&doc), Some(true));
+
+    bridge.patch_prop(
+        icon.0,
+        "aria-hidden",
+        &nana_js_engine::HostValue::string("false"),
+    );
+    doc.sync_semantic_styles(&bridge.snapshot());
+    assert_eq!(hidden(&doc), Some(false));
+}
+
 /// Incremental semantic sync must land the same projections a full pass
 /// would: mutations applied stepwise (each sync walking only the bridge's
 /// dirty set) end with correct runtime state for mutated widgets, their
