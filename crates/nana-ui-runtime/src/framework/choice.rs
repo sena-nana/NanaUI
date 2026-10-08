@@ -957,3 +957,175 @@ fn context_menu_enabled_index(
     };
     Some(enabled[next])
 }
+
+/// The commands of an [`ActionMenu`]: its items wherever its children put
+/// them, fixed ones and the rows of keyed lists or conditional blocks alike.
+impl AppContext {
+    /// The nearest action menu at or above `node`, when it is open.
+    pub(crate) fn open_action_menu_of(&self, node: StableNodeId) -> Option<Entity<ActionMenu>> {
+        let mut current = Some(node);
+        while let Some(id) = current {
+            if let Some(menu) = self.view_entity::<ActionMenu>(id) {
+                return self
+                    .views
+                    .get(&id)
+                    .and_then(|view| view.downcast_ref::<ActionMenu>())
+                    .is_some_and(|menu| menu.popover.open)
+                    .then_some(menu);
+            }
+            current = self.world.parent_id(id);
+        }
+        None
+    }
+
+    /// `menu`'s items in order, looking through the containers its children
+    /// build (the column of an `each`, the branch of a `when`) but not into
+    /// another menu, popover, or the content that draws its trigger.
+    pub fn action_menu_items(&self, menu: Entity<ActionMenu>) -> Vec<StableNodeId> {
+        let trigger = self
+            .views
+            .get(&menu.stable_id())
+            .and_then(|view| view.downcast_ref::<ActionMenu>())
+            .and_then(|menu| menu.popover.trigger_content);
+        let mut items = Vec::new();
+        let mut stack: Vec<StableNodeId> = self
+            .world
+            .node(menu.stable_id())
+            .map(|node| node.children.iter().rev().copied().collect())
+            .unwrap_or_default();
+        while let Some(id) = stack.pop() {
+            if Some(id) == trigger {
+                continue;
+            }
+            if self.view_is::<ActionMenuItem>(id) {
+                items.push(id);
+            } else if !self.view_is::<ActionMenu>(id)
+                && !self.view_is::<Popover>(id)
+                && let Some(node) = self.world.node(id)
+            {
+                stack.extend(node.children.iter().rev().copied());
+            }
+        }
+        items
+    }
+
+    /// The items of `menu` a keyboard can land on: enabled, and shown
+    /// (neither they nor a container between them and the menu hidden).
+    pub(crate) fn reachable_action_menu_items(
+        &self,
+        menu: Entity<ActionMenu>,
+    ) -> Vec<StableNodeId> {
+        self.action_menu_items(menu)
+            .into_iter()
+            .filter(|&item| {
+                let enabled = self
+                    .views
+                    .get(&item)
+                    .and_then(|view| view.downcast_ref::<ActionMenuItem>())
+                    .is_some_and(|item| !item.disabled);
+                let mut shown = true;
+                let mut current = Some(item);
+                while let Some(id) = current
+                    && id != menu.stable_id()
+                {
+                    if self
+                        .world
+                        .node_style(id)
+                        .is_some_and(|style| style.layout.hidden)
+                    {
+                        shown = false;
+                        break;
+                    }
+                    current = self.world.parent_id(id);
+                }
+                enabled && shown
+            })
+            .collect()
+    }
+
+    /// Arrow keys, Home and End inside an open action menu (or on its
+    /// trigger while it is open) move focus between its reachable items,
+    /// wrapping at the ends. Returns whether the key was the menu's.
+    pub(crate) fn navigate_open_action_menu(
+        &mut self,
+        document: DocumentId,
+        key: &str,
+    ) -> Result<bool, FrameworkError> {
+        if !matches!(key, "ArrowDown" | "ArrowUp" | "Home" | "End") {
+            return Ok(false);
+        }
+        let Some(focused) = self.world.focused(document) else {
+            return Ok(false);
+        };
+        let Some(menu) = self.open_action_menu_of(focused) else {
+            return Ok(false);
+        };
+        let items = self.reachable_action_menu_items(menu);
+        if items.is_empty() {
+            return Ok(true);
+        }
+        let current = items.iter().position(|item| *item == focused);
+        let last = items.len() - 1;
+        let next = match (key, current) {
+            ("Home", _) | ("ArrowDown", None) => 0,
+            ("End", _) | ("ArrowUp", None) => last,
+            ("ArrowDown", Some(index)) => (index + 1) % items.len(),
+            ("ArrowUp", Some(index)) => index.checked_sub(1).unwrap_or(last),
+            _ => return Ok(false),
+        };
+        self.focus_node(document, items[next])?;
+        Ok(true)
+    }
+
+    /// Before a commit that removes the focused node: where focus is in an
+    /// open action menu, which survives the commit, so the item that takes
+    /// its place can take focus ([`Self::hand_over_menu_focus`]).
+    pub(crate) fn menu_focus_before_removal(
+        &self,
+        focused: &HashMap<DocumentId, StableNodeId>,
+        despawned: &HashSet<StableNodeId>,
+    ) -> Vec<(DocumentId, Entity<ActionMenu>, usize)> {
+        focused
+            .iter()
+            .filter(|(_, node)| despawned.contains(node))
+            .filter_map(|(&document, &node)| {
+                let menu = self.open_action_menu_of(node)?;
+                if despawned.contains(&menu.stable_id()) {
+                    return None;
+                }
+                let index = self
+                    .reachable_action_menu_items(menu)
+                    .iter()
+                    .position(|item| *item == node)?;
+                Some((document, menu, index))
+            })
+            .collect()
+    }
+
+    /// After that commit: the focused item went with it, so focus the item
+    /// now at its place (or the last one; the trigger when none is left),
+    /// rather than leaving the open menu with no focus at all.
+    pub(crate) fn hand_over_menu_focus(
+        &mut self,
+        handoffs: Vec<(DocumentId, Entity<ActionMenu>, usize)>,
+    ) -> Result<(), FrameworkError> {
+        for (document, menu, index) in handoffs {
+            if self.world.focused(document).is_some()
+                || !self.world.contains(menu.stable_id())
+                || self.open_action_menu_of(menu.stable_id()) != Some(menu)
+            {
+                continue;
+            }
+            let items = self.reachable_action_menu_items(menu);
+            let target = items
+                .get(index)
+                .or(items.last())
+                .copied()
+                .unwrap_or(menu.stable_id());
+            if self.focus_node(document, target).is_err() {
+                self.clear_focus(document)?;
+            }
+        }
+        Ok(())
+    }
+}

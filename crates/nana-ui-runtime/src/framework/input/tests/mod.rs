@@ -36,6 +36,7 @@ macro_rules! wheel_fixture {
     };
 }
 
+mod action_menu_items;
 mod dispatch;
 mod hover_card;
 mod modal_handles;

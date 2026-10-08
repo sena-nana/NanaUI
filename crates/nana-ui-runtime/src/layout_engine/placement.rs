@@ -2080,7 +2080,10 @@ fn place_triggered_menu_items(
     let available = Size::new(inner_width, viewport.height);
     let mut item_sizes = Vec::with_capacity(items.len());
     let mut content_height = 0.0;
-    for (index, child) in items.iter().copied().enumerate() {
+    // Gaps fall between items that take room: an empty group of items (a
+    // keyed list with no rows yet) adds none.
+    let mut placed_any = false;
+    for child in items.iter().copied() {
         let size = intrinsic_size_scoped(
             child,
             available,
@@ -2091,8 +2094,11 @@ fn place_triggered_menu_items(
             intrinsic,
             scope,
         )?;
-        if index > 0 {
-            content_height += crate::popover::MENU_ITEM_GAP;
+        if size.height > 0.0 {
+            if placed_any {
+                content_height += crate::popover::MENU_ITEM_GAP;
+            }
+            placed_any = true;
         }
         content_height += size.height;
         item_sizes.push(size);
@@ -2156,7 +2162,9 @@ fn place_triggered_menu_items(
                 None,
             )?;
         }
-        cursor_y += child_size.height + crate::popover::MENU_ITEM_GAP;
+        if child_size.height > 0.0 {
+            cursor_y += child_size.height + crate::popover::MENU_ITEM_GAP;
+        }
     }
     Ok(())
 }

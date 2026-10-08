@@ -2931,8 +2931,35 @@ impl UiWorld {
         }
         if let Some(overlay) = self.parent_triggered_overlay(id) {
             apply_triggered_overlay(Arc::make_mut(&mut style), overlay);
+            if self.groups_action_menu_items(id, &style) {
+                // A keyed list or a conditional block of commands: its items
+                // are spaced as the menu spaces its own.
+                Arc::make_mut(&mut style).gap = Some(LengthSpec::Px(crate::popover::MENU_ITEM_GAP));
+            }
         }
         style
+    }
+
+    /// Whether `id`, a child of an open action menu, is a plain column that
+    /// holds menu items (the container of an `each` or `when`) rather than
+    /// an item of its own.
+    fn groups_action_menu_items(
+        &self,
+        id: StableNodeId,
+        style: &nana_ui_core::LayoutStyle,
+    ) -> bool {
+        self.nodes.visual(id).is_none()
+            && matches!(style.direction, Some(nana_ui_core::FlexDirection::Column))
+            && self.record(id).hierarchy.parent.is_some_and(|parent| {
+                matches!(
+                    self.nodes.visual(parent),
+                    Some(StandardVisual::MenuSurface {
+                        kind: crate::MenuSurfaceKind::ActionMenu,
+                        open: true,
+                        ..
+                    })
+                )
+            })
     }
 
     /// The content of an open triggered menu (Popover, ActionMenu,

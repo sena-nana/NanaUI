@@ -750,6 +750,11 @@ impl AppContext {
             if self.navigate_open_context_menu(document, key, repeat)? {
                 return Ok(CONSUMED);
             }
+            // An open action menu's commands are real focus stops; the
+            // arrows walk them, through keyed lists of commands too.
+            if self.navigate_open_action_menu(document, key)? {
+                return Ok(CONSUMED);
+            }
         }
         // The application's key policy sees keys, not text.
         if !stroke.is_text()

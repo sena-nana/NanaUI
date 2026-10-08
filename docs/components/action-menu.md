@@ -34,6 +34,39 @@ widget(ActionMenu::new().trigger("文件")).children((
 
 :::
 
+## 条目随数据变
+
+条目可以来自带 key 的列表：`.children(..)` 里放 `each(..)`（或 `Store` 的 `keyed(..).each(..)`、`when(..)`），和固定的条目放在一起。条目数没有上限，行增删时已有的条目不重建。
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+use nana_ui::runtime::ActionMenu;
+
+view! {
+    <Widget of={ActionMenu::new().trigger("预设")}>
+        <ActionMenuItem v-for={p in presets} key={p.id} @activate={apply(p.id)}>{p.name.clone()}</ActionMenuItem>
+        <ActionMenuItem @activate={manage()}>"管理预设…"</ActionMenuItem>
+    </Widget>
+}
+```
+
+```rust rust
+use nana_ui::runtime::view::{action_menu, action_menu_item, each};
+
+action_menu("预设").children((
+    each(presets, |p| p.id, |p| action_menu_item(p.name.clone()).on_activate(move || apply(p.id))),
+    action_menu_item("管理预设…").on_activate(manage),
+))
+```
+
+:::
+
+- 列表的那一列算一组条目：组里的条目和菜单自己的条目同样间距，空的列表不占位置，也不多出间距。
+- 激活、禁用、可访问名都是条目自己的：行里用绑定（`.disabled(..)`、`.accessible_name(..)`）跟着数据变，不靠重建。
+- 打开时，方向键上下、Home、End 在可用的条目之间移动焦点（跳过禁用和隐藏的，两头循环），焦点在触发器上时也一样；Tab 照常。行在打开时插进来，焦点留在原来的条目上；有焦点的条目被删掉，焦点落到接替它位置的条目（没有了就是最后一条，再没有就回到触发器）。`AppContext::action_menu_items(menu)` 按顺序给出菜单的全部条目。
+
 ## 触发器
 
 `.trigger(text)` 是文本触发器。

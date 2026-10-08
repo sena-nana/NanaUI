@@ -1789,6 +1789,11 @@ impl AppContext {
             .iter()
             .filter_map(|&id| self.world.document_of(id).map(|document| (document, id)))
             .collect::<HashSet<_>>();
+        let menu_focus = if despawned.is_empty() {
+            Vec::new()
+        } else {
+            self.menu_focus_before_removal(&previous_focus, &despawned)
+        };
         let written_editors = self.text_histories_written_by(&mutations);
         let (report, parked, inserted) = self
             .world
@@ -1848,6 +1853,9 @@ impl AppContext {
         }
         self.collect_child_reprojects();
         self.drain_child_reprojects()?;
+        if !menu_focus.is_empty() {
+            self.hand_over_menu_focus(menu_focus)?;
+        }
         suspended?;
         Ok(report)
     }
