@@ -264,6 +264,15 @@ impl UiWorld {
             editable: self.nodes.has_text_inputs() && self.nodes.text_input(id).is_some(),
             text_spans,
             rich_text,
+            // The caret shows only on the focused editor; its selection
+            // stays visible either way.
+            rich_editor: self.nodes.rich_editor_marks(id).map(|marks| {
+                let mut marks = marks.clone();
+                if self.focused(document) != Some(id) {
+                    marks.caret = None;
+                }
+                marks
+            }),
             standard_visual,
             component_geometry,
             standard_visual_foreground,

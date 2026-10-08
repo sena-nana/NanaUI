@@ -63,6 +63,11 @@ pub enum UiMutation {
         id: StableNodeId,
         rich: Option<nana_ui_core::RichText>,
     },
+    /// A rich text editor's caret and selection. Paint only.
+    SetRichEditorMarks {
+        id: StableNodeId,
+        marks: Option<crate::RichEditorMarks>,
+    },
     /// Engine writeback (and tests). Product Vue frames must not use this to
     /// fight [`crate::RuntimeLayoutEngine`]; mixed trees flush that engine.
     WriteLayout {
@@ -323,6 +328,16 @@ impl MutationQueue {
             id,
             rich: Some(rich),
         });
+    }
+
+    /// A rich text editor's caret and selection marks. Paint only.
+    pub fn set_rich_editor_marks(
+        &mut self,
+        id: StableNodeId,
+        marks: Option<crate::RichEditorMarks>,
+    ) {
+        self.mutations
+            .push(UiMutation::SetRichEditorMarks { id, marks });
     }
 
     /// Drop `id`'s spans, keeping its text.

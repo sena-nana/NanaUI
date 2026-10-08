@@ -974,6 +974,7 @@ mod tests {
             document_text_selection_color: [0.0; 4],
             compositor: Default::default(),
             rich_text: None,
+            rich_editor: None,
         }
     }
 

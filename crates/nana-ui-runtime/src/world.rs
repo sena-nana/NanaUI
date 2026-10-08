@@ -2541,6 +2541,11 @@ impl UiWorld {
             .unwrap_or_else(|| self.record(id).text.value.clone())
     }
 
+    /// The caret and selection marks of a rich text editor node.
+    pub fn rich_editor_marks(&self, id: StableNodeId) -> Option<&crate::RichEditorMarks> {
+        self.nodes.rich_editor_marks(id)
+    }
+
     /// The rich text `id` was given with `SetRichText`, if any.
     pub fn rich_text(&self, id: StableNodeId) -> Option<&nana_ui_core::RichText> {
         self.nodes.rich_text(id)

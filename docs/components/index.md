@@ -35,6 +35,7 @@
 
 - [Text](text.md) — 文本。带插值的子文本会跟着信号重算。
 - [RichTextView](rich-text-view.md) — 带样式范围的文本：字体、颜色、描边、阴影、装饰线。值由应用持有，改色不重新排版。
+- [RichTextEditor](rich-text-editor.md) — 就地编辑一份 `RichText`，和 RichTextView 断出同样的行。工具栏经 `cx.rich_edit` 发命令。
 - [Column](column.md) — 纵向排列。间距是 `.gap`，单位是逻辑像素。
 - [Row](row.md) — 横向排列。宽度随内容收缩，子项在交叉轴上居中。
 - [Stack](stack.md) — `row` / `column` / `bar` / `spacer` / `overlay_layer` 的容器。预设只覆盖常用的 flex。

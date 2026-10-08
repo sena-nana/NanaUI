@@ -166,6 +166,11 @@ const TEXT_ATOM_ICONS: u32 = 4;
 const TEXT_ATOM_LABELS: u32 = 5;
 /// Inline objects of a rich text node, one slot per object in text order.
 const TEXT_INLINE_OBJECTS: u32 = 7;
+/// A rich text editor's caret, over its glyphs.
+const TEXT_EDITOR_CARET: u32 = 8;
+/// A rich text editor's selection rectangles share the document selection's
+/// paint layer (under the glyphs) from this index on.
+const RICH_EDITOR_SELECTION_BASE: usize = 1 << 16;
 
 /// The surface of an open triggered menu (Popover, ActionMenu, HoverCard).
 /// It is the trigger's primitive, but it wraps content Runtime lays out
@@ -688,6 +693,81 @@ pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
     }
 }
 
+/// The page width a retained layout is mapped into and the y its lines start
+/// at inside `bounds`: the same vertical alignment the painter applies.
+fn text_frame(
+    bounds: SceneRect,
+    vertical: TextVerticalAlignment,
+    retained: &nana_ui_runtime::RetainedTextLayout,
+) -> (f32, f32) {
+    let layout = &retained.layout;
+    let (box_width, laid_out_height) = layout.physical_size();
+    let top = if layout.is_vertical() {
+        bounds.y
+    } else {
+        match vertical {
+            TextVerticalAlignment::Top => bounds.y,
+            TextVerticalAlignment::Center => bounds.y + (bounds.height - laid_out_height) * 0.5,
+            TextVerticalAlignment::Bottom => bounds.y + bounds.height - laid_out_height,
+        }
+    };
+    (box_width.max(bounds.width), top)
+}
+
+/// A rich text editor's selection (under the glyphs) and caret (over them),
+/// from the very layout its text is drawn from.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rich_editor_mark_primitives(
+    context: &VisualPrimitiveContext<'_>,
+    bounds: SceneRect,
+    vertical: TextVerticalAlignment,
+    retained: &nana_ui_runtime::RetainedTextLayout,
+    marks: &nana_ui_runtime::RichEditorMarks,
+    selection_color: [f32; 4],
+    caret_color: [f32; 4],
+) -> (Vec<ScenePrimitive>, Option<ScenePrimitive>) {
+    let layout = &retained.layout;
+    let (page_width, top) = text_frame(bounds, vertical, retained);
+    let selection = if marks.selection.is_empty() {
+        Vec::new()
+    } else {
+        layout
+            .selection_rects(marks.selection.clone())
+            .into_iter()
+            .enumerate()
+            .map(|(index, rect)| {
+                let rect = layout.page_rect(rect, page_width);
+                visual_quad(
+                    context,
+                    collection_slot(DOCUMENT_TEXT_SELECTION, RICH_EDITOR_SELECTION_BASE + index),
+                    SceneRect {
+                        x: bounds.x + rect.x,
+                        y: top + rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                    VisualQuadStyle::solid(selection_color),
+                )
+            })
+            .collect()
+    };
+    let caret = marks.caret.and_then(|byte| {
+        let (x, line_top, height) = nana_ui_runtime::rich_editor_caret_box(layout, byte)?;
+        Some(visual_quad(
+            context,
+            collection_slot(TEXT_EDITOR_CARET, 0),
+            SceneRect {
+                x: bounds.x + x - 0.5,
+                y: top + line_top,
+                width: 1.5,
+                height,
+            },
+            VisualQuadStyle::solid(caret_color),
+        ))
+    });
+    (selection, caret)
+}
+
 /// One primitive per inline object `layout` placed, in text order, where the
 /// text primitive at `bounds` draws its lines.
 ///
@@ -705,16 +785,7 @@ pub(crate) fn inline_object_primitives(
     editor: bool,
 ) -> Vec<ScenePrimitive> {
     let layout = &retained.layout;
-    let (box_width, laid_out_height) = layout.physical_size();
-    let top = if layout.is_vertical() {
-        bounds.y
-    } else {
-        match vertical {
-            TextVerticalAlignment::Top => bounds.y,
-            TextVerticalAlignment::Center => bounds.y + (bounds.height - laid_out_height) * 0.5,
-            TextVerticalAlignment::Bottom => bounds.y + bounds.height - laid_out_height,
-        }
-    };
+    let (box_width, top) = text_frame(bounds, vertical, retained);
     let mut out = Vec::new();
     for (index, placed) in layout.objects.iter().enumerate() {
         let Some(object) = rich.object_at(placed.offset) else {

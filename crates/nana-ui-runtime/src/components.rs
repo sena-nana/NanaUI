@@ -3782,6 +3782,20 @@ impl DocumentTextSelection {
     }
 }
 
+/// What a [`crate::RichTextEditor`] draws over its text, in byte offsets of
+/// the text the node shows (the document with any IME preedit spliced in).
+/// The scene turns them into rectangles from the very layout the text is
+/// drawn from, so the caret never lags a frame behind the glyphs.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RichEditorMarks {
+    /// Selected bytes; empty for a caret alone.
+    pub selection: std::ops::Range<usize>,
+    /// The caret's byte, when one is drawn (focused and editable).
+    pub caret: Option<usize>,
+    /// Draw editor-only objects (marker chips).
+    pub show_editor_objects: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedNode {
     pub id: StableNodeId,
@@ -3818,6 +3832,9 @@ pub struct ExtractedNode {
     /// text is still that value's. The scene reads its paint tier; the
     /// shaping tier is already in [`Self::text_layout`].
     pub rich_text: Option<nana_ui_core::RichText>,
+    /// What a rich text editor draws over its own text: the selection, the
+    /// caret, and whether its editor-only objects show.
+    pub rich_editor: Option<RichEditorMarks>,
     pub standard_visual: Option<StandardVisual>,
     /// Boxed: the `TextInput` variant alone is ~1.8 KB, which would otherwise
     /// dominate `ExtractedNode` and be memcpy'd for every extracted node.

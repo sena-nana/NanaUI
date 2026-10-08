@@ -37,3 +37,29 @@ fn the_documented_rich_text_builds_and_mounts() {
         .unwrap();
     assert_eq!(cx.world().rich_text(view.stable_id()), Some(&outlined));
 }
+
+#[test]
+fn the_documented_editor_commands_reach_the_document() {
+    use nana_ui::runtime::rich::RichObject;
+    use nana_ui::runtime::{RichEditCommand, RichTextEditor, RichTextEditorEvent};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let editor = cx
+        .create_component(document, RichTextEditor::new(RichText::new("")))
+        .unwrap();
+    assert!(
+        cx.rich_edit(editor, RichEditCommand::SetAttrs(RichSpanStyle::new().bold()))
+            .unwrap()
+    );
+    cx.rich_edit(editor, RichEditCommand::InsertText("hi".into()))
+        .unwrap();
+    cx.rich_edit(
+        editor,
+        RichEditCommand::InsertObject(RichObject::chip(7, "等待 500ms", 1)),
+    )
+    .unwrap();
+    let value = cx.read(editor, |view| view.value.clone()).unwrap();
+    assert_eq!(value.style_at(0).and_then(|style| style.shape.weight), Some(700));
+    assert_eq!(value.objects().len(), 1);
+    let _ = std::mem::size_of::<RichTextEditorEvent>();
+}

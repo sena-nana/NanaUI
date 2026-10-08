@@ -428,6 +428,39 @@ impl UiScene {
                     }
                     self.insert_primitive(selection);
                 }
+                let editor_marks = node
+                    .rich_editor
+                    .as_ref()
+                    .zip(node.text_layout.as_ref())
+                    .map(|(marks, layout)| {
+                        let caret_color = node
+                            .style
+                            .paint_colors
+                            .color
+                            .map(nana_ui_core::PaintColor::to_srgb)
+                            .or(node.style.color)
+                            .unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                        crate::scene::rich_editor_mark_primitives(
+                            &VisualPrimitiveContext {
+                                node: id,
+                                transform,
+                                clips: &clips,
+                                opacity,
+                                z_index: node.z_index,
+                                document_order: node_order,
+                            },
+                            text_bounds,
+                            node.source_style.text_vertical_alignment,
+                            layout,
+                            marks,
+                            node.document_text_selection_color,
+                            caret_color,
+                        )
+                    });
+                let (editor_selection, editor_caret) = editor_marks.unwrap_or_default();
+                for primitive in editor_selection {
+                    self.insert_primitive(primitive);
+                }
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 2 },
                     node: id,
@@ -508,11 +541,16 @@ impl UiScene {
                         node.source_style.text_vertical_alignment,
                         layout,
                         rich,
-                        false,
+                        node.rich_editor
+                            .as_ref()
+                            .is_some_and(|marks| marks.show_editor_objects),
                     );
                     for primitive in objects {
                         self.insert_primitive(primitive);
                     }
+                }
+                if let Some(caret) = editor_caret {
+                    self.insert_primitive(caret);
                 }
             }
             let context = GeometryPaintContext {

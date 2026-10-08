@@ -756,6 +756,48 @@ impl RichText {
         }
     }
 
+    /// The piece of this document over `range`: its text, the spans over it
+    /// and the objects in it, rebased so the piece starts at 0. What a copy
+    /// takes.
+    pub fn slice(&self, range: Range<usize>) -> RichText {
+        let range = self.snap(range);
+        RichText {
+            text: Arc::from(&self.text[range.clone()]),
+            spans: Arc::new(self.spans.slice(range.clone())),
+            objects: Arc::new(
+                self.objects
+                    .iter()
+                    .filter(|(at, _)| range.contains(at))
+                    .map(|(at, object)| (at - range.start, object.clone()))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Replaces `range` with `piece`, its spans and objects included. What a
+    /// paste of a copied piece does.
+    pub fn replace_with(&mut self, range: Range<usize>, piece: &RichText) {
+        let range = self.snap(range);
+        let at = range.start;
+        self.replace_range(range, piece.text());
+        if !piece.spans.is_empty() || !self.spans.is_empty() {
+            let inserted = at..at + piece.text.len();
+            let spans = Arc::make_mut(&mut self.spans);
+            spans.clear_range(inserted);
+            for (span, style) in piece.spans.iter() {
+                spans.set(span.start + at..span.end + at, style.clone());
+            }
+        }
+        if !piece.objects.is_empty() {
+            let objects = Arc::make_mut(&mut self.objects);
+            for (offset, object) in piece.objects.iter() {
+                let offset = offset + at;
+                let index = objects.partition_point(|(existing, _)| *existing < offset);
+                objects.insert(index, (offset, object.clone()));
+            }
+        }
+    }
+
     /// Byte range clipped to the text and moved onto character boundaries.
     fn snap(&self, range: Range<usize>) -> Range<usize> {
         let floor = |mut offset: usize| {
@@ -993,6 +1035,27 @@ mod tests {
                 .line_box(),
             [20.0, 24.0, 6.0]
         );
+    }
+
+    #[test]
+    fn a_slice_pasted_back_is_the_piece_it_was() {
+        let bold = RichSpanStyle::new().bold();
+        let doc = RichText::builder()
+            .plain("a ")
+            .push("bold", bold.clone())
+            .object(RichObject::image(4, "x.png", 8.0, 8.0))
+            .plain(" z")
+            .build();
+        let piece = doc.slice(2..doc.text().len() - 2);
+        assert_eq!(piece.text(), "bold\u{FFFC}");
+        assert_eq!(piece.style_at(0), Some(&bold));
+        assert_eq!(piece.objects()[0].0, 4);
+        let mut target = RichText::new("[]");
+        target.replace_with(1..1, &piece);
+        assert_eq!(target.text(), "[bold\u{FFFC}]");
+        assert_eq!(target.style_at(1), Some(&bold));
+        assert_eq!(target.style_at(0), None);
+        assert_eq!(target.objects()[0].0, 5);
     }
 
     #[test]

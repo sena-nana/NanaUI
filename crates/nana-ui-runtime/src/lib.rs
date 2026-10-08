@@ -86,7 +86,13 @@ mod reorder_list;
 pub use markdown_drawing::{MarkdownDrawing, MarkdownDrawingCommand};
 #[cfg(feature = "rich-text")]
 mod rich_text;
+mod rich_text_editor;
 mod rich_text_view;
+#[doc(hidden)]
+pub use rich_text_editor::caret_box as rich_editor_caret_box;
+pub use rich_text_editor::{
+    RichAttrMask, RichEditCommand, RichSelectionAttrs, RichTextEditor, RichTextEditorEvent,
+};
 pub use rich_text_view::RichTextView;
 mod schedule;
 mod search_dropdown;
@@ -176,18 +182,18 @@ pub use components::{
     ExtractedNode, ExtractedTextSpan, ImeComposition, ImeView, InteractionState, InteractionStyle,
     LayoutBox, LayoutInput, LineLabel, MeasureTextShaper, MenuItemMark, MenuSurfaceKind,
     ModalLayoutInput, MountState, NodeStyle, NumberSteppers, OverlayHostState,
-    PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset, ScrollbarBar,
-    SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual,
-    TextAffinity, TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold, TextColorSwatchSpan,
-    TextCompletion, TextCompletionEdit, TextCompletionPopup, TextCompletionRow,
-    TextCompletionSnapshot, TextContent, TextDiagnosticSeverity, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark,
-    TextGitMarkKind, TextHit, TextHorizontalAlignment, TextHover, TextHoverPopup, TextInlay,
-    TextInputScroll, TextInputState, TextInputView, TextMatchMarker, TextMatchSpan, TextMetrics,
-    TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
-    TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry, TextValue,
-    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
-    decode_virtual_menu_item, virtual_menu_item_id,
+    PointerCaptureChange, RadioIndicator, RichEditorMarks, ScrollMetrics, ScrollOffset,
+    ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint,
+    StandardVisual, TextAffinity, TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold,
+    TextColorSwatchSpan, TextCompletion, TextCompletionEdit, TextCompletionPopup,
+    TextCompletionRow, TextCompletionSnapshot, TextContent, TextDiagnosticSeverity,
+    TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter,
+    TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHit, TextHorizontalAlignment,
+    TextHover, TextHoverPopup, TextInlay, TextInputScroll, TextInputState, TextInputView,
+    TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
+    TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp, TextSignaturePopup,
+    TextSnippet, TextStickyLineGeometry, TextValue, TextVerticalAlignment, TextWhitespaceKind,
+    TooltipVisual, TriggeredMenuOverlay, decode_virtual_menu_item, virtual_menu_item_id,
 };
 pub use custom_paint::{
     AFFINE_IDENTITY, Affine, BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient,

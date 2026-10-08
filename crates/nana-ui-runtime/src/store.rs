@@ -402,6 +402,8 @@ pub(crate) struct NodeStore {
     /// Application-owned rich text (spans over the node's text), only for
     /// nodes given one with `SetRichText`.
     rich_texts: HashMap<StableNodeId, nana_ui_core::RichText>,
+    /// Caret and selection of rich text editors.
+    rich_editor_marks: HashMap<StableNodeId, crate::RichEditorMarks>,
     /// Revisions, resolution stamp and retained layout handle of every node's
     /// text (Issue #95), one entry per node. Kept apart from the dense records
     /// on purpose: a large relayout scope decides "no text work" for every
@@ -487,6 +489,7 @@ impl NodeStore {
         self.text_drop_indicators.remove(&id);
         self.text_natural_widths.remove(&id);
         self.rich_texts.remove(&id);
+        self.rich_editor_marks.remove(&id);
         if let Some(text) = self.text_nodes.remove(&id) {
             self.text_layouts.remove(text.layout);
         }
@@ -663,6 +666,12 @@ impl NodeStore {
         set_text_natural_width
     );
     sparse!(rich_texts, nana_ui_core::RichText, rich_text, set_rich_text);
+    sparse!(
+        rich_editor_marks,
+        crate::RichEditorMarks,
+        rich_editor_marks,
+        set_rich_editor_marks
+    );
 
     pub(crate) fn text_layouts(&self) -> &nana_text::TextLayoutStore {
         &self.text_layouts
