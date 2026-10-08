@@ -42,6 +42,7 @@ pub const WINDOW_OUTPUT_HIDDEN_FPS: NonZeroU32 = match NonZeroU32::new(30) {
 
 /// A consumer that keeps the previous native frame this long has stalled;
 /// the pool is retired and a fresh one opened.
+#[cfg(all(windows, feature = "native-export"))]
 const NATIVE_STALL: Duration = Duration::from_secs(2);
 
 /// Output size.
@@ -330,8 +331,12 @@ pub(crate) struct RecordedOutput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reported {
-    Active { extent: [u32; 2], native: bool },
+    Active {
+        extent: [u32; 2],
+        native: bool,
+    },
     NativeUnavailable,
+    #[cfg(all(windows, feature = "native-export"))]
     NativeDeferred,
     Failed,
 }
