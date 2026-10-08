@@ -846,12 +846,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         let settings = self.settings_of(id);
         let (visible, focus_on_show) = (settings.visible, settings.focus_on_show);
+        let blocked_parent = settings.modal.then_some(settings.parent).flatten();
         self.mutate_window_visibility(id, |window| {
             set_native_visible(window, visible, focus_on_show)
         });
         window.request_redraw();
         self.prepare_window_chrome(id, geometry.maximized);
         crate::host_diagnostics::window_opened(id, &geometry);
+        // A modal takes the parent's input from here on: whatever the parent
+        // held (a press, a capture, a preedit) ends now, not at a release the
+        // parent will never see.
+        if let Some(parent) = blocked_parent
+            && self.window_contexts.contains_key(&parent)
+        {
+            self.input_mut(parent).clear_pointers();
+            self.deliver_host_input(event_loop, parent, InputPayload::Focus { focused: false });
+        }
         Ok(WindowEvent::Ready { id, geometry })
     }
     pub(super) fn close_window(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {

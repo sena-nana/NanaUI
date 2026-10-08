@@ -2402,6 +2402,9 @@ fn scene_aux_window_attributes(
     Ok(attributes)
 }
 
+/// What still reaches a window a modal child blocks: its own upkeep, and
+/// losing focus, which cancels the press, capture and preedit it held when
+/// the modal took over.
 fn allows_modal_parent_event(event: &WinitWindowEvent) -> bool {
     matches!(
         event,
@@ -2411,6 +2414,7 @@ fn allows_modal_parent_event(event: &WinitWindowEvent) -> bool {
             | WinitWindowEvent::ScaleFactorChanged { .. }
             | WinitWindowEvent::Occluded(_)
             | WinitWindowEvent::Destroyed
+            | WinitWindowEvent::Focused(false)
     )
 }
 
@@ -3552,15 +3556,15 @@ mod tests {
     use super::next_accessibility_update;
     use super::{
         Desktop, DisplayBounds, FileDragInput, FileDragKind, ForwardPointerAction, FrameMoveStep,
-        InputTracker, PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position,
-        frame_edge_cursor, frame_move_step, held_mouse_button, invalidate_program_host_textures,
-        mouse_button_code, mouse_button_mask, platform_composition, platform_input_key,
-        platform_input_modifiers, platform_physical_key, platform_window_event,
-        remove_image_target_index, replace_image_target_index, route_window_command,
-        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
-        surface_image_keys, system_input_modifiers, tablet_pointer_id, window_cursor_override,
-        window_level, window_surface_effect, window_wants_transparent_surface,
-        windows_scene_chrome, windows_to_redraw, winit_icon,
+        InputTracker, PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, allows_modal_parent_event,
+        desktop_position, frame_edge_cursor, frame_move_step, held_mouse_button,
+        invalidate_program_host_textures, mouse_button_code, mouse_button_mask,
+        platform_composition, platform_input_key, platform_input_modifiers, platform_physical_key,
+        platform_window_event, remove_image_target_index, replace_image_target_index,
+        route_window_command, scene_clear_color, scene_runtime_input_update,
+        scene_window_attributes, screen_position, surface_image_keys, system_input_modifiers,
+        tablet_pointer_id, window_cursor_override, window_level, window_surface_effect,
+        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
     };
     use crate::presentation::{
         ResolvedSurfaceTarget, ResolvedWindowPresentation, WindowSurfaceTarget,
@@ -3607,6 +3611,15 @@ mod tests {
     }
 
     #[cfg(not(target_os = "android"))]
+    #[test]
+    fn a_blocked_parent_still_hears_it_lost_focus() {
+        assert!(allows_modal_parent_event(&WinitWindowEvent::Focused(false)));
+        assert!(!allows_modal_parent_event(&WinitWindowEvent::Focused(true)));
+        assert!(!allows_modal_parent_event(
+            &WinitWindowEvent::CloseRequested
+        ));
+    }
+
     #[test]
     fn empty_flush_reprojects_when_the_program_already_drained_runtime_work() {
         let Some(AccessibilityUpdate::Full { generation, nodes }) =
