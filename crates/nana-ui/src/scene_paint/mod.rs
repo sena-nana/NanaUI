@@ -553,6 +553,38 @@ enum DrawCommand {
     PopGroup,
 }
 
+/// Runs `$build` on a scoped thread of its own, or right here when no
+/// thread can be started (a target without threads, or none left).
+macro_rules! beside {
+    ($scope:expr, $name:literal, $build:expr) => {
+        match std::thread::Builder::new()
+            .name($name.into())
+            .spawn_scoped($scope, || $build)
+        {
+            Ok(handle) => Beside::Thread(handle),
+            Err(_) => Beside::Built($build),
+        }
+    };
+}
+
+/// A pipeline family being built by [`beside!`].
+enum Beside<'scope, T> {
+    Thread(std::thread::ScopedJoinHandle<'scope, T>),
+    Built(T),
+}
+
+impl<T> Beside<'_, T> {
+    /// The family, re-raising a panic from its thread as this thread's own.
+    fn join(self) -> T {
+        match self {
+            Self::Thread(handle) => handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            Self::Built(value) => value,
+        }
+    }
+}
+
 impl SceneWgpuPainter {
     /// A painter for targets of `format` on `gpu`. Every frame it paints must
     /// come from the same device.
@@ -564,11 +596,43 @@ impl SceneWgpuPainter {
         let device = __framework::device(gpu);
         let queue = __framework::queue(gpu);
         let format = __framework::format_to_wgpu(presentation.working_format());
-        let quads = QuadPipeline::new_with_policy(device, format, Some(gpu.policy()));
+        let policy = gpu.policy();
+        // The pipeline families compile side by side: each owns its shaders
+        // and pipelines, and a compile is CPU work in the shader compiler and
+        // the driver, so the painter costs its slowest family instead of the
+        // sum of all of them. The quad family, the slowest, stays on this
+        // thread. The motion resources need the quad layout and compile
+        // nothing (their evaluator is test-only and built on first use).
+        let (quads, meshes, icons, text, host_textures, backdrop) = std::thread::scope(|scope| {
+            let meshes = beside!(scope, "nana-paint-mesh", {
+                MeshPipeline::new_with_policy(device, format, Some(policy))
+            });
+            let icons = beside!(scope, "nana-paint-icon", {
+                IconPipeline::new_with_policy(device, format, Some(policy))
+            });
+            let text = beside!(scope, "nana-paint-text", {
+                TextPipeline::new_with_policy(device, queue, format, policy)
+            });
+            let host_textures = beside!(scope, "nana-paint-host-texture", {
+                HostTexturePipeline::new(device, queue, format, policy, gpu)
+            });
+            let backdrop = beside!(scope, "nana-paint-backdrop", {
+                BackdropPipeline::new(device, format, policy)
+            });
+            let quads = QuadPipeline::new_with_policy(device, format, Some(policy));
+            (
+                quads,
+                meshes.join(),
+                icons.join(),
+                text.join(),
+                host_textures.join(),
+                backdrop.join(),
+            )
+        });
         let motion = MotionGpuResources::new_with_policy(
             device,
             quads.motion_layout(),
-            Some(gpu.policy()),
+            Some(policy),
             eval_format_for_gpu(gpu),
         );
         Self {
@@ -585,16 +649,16 @@ impl SceneWgpuPainter {
             presentation_parameters: ScenePresentationParameters::default(),
             quads,
             motion,
-            meshes: MeshPipeline::new_with_policy(device, format, Some(gpu.policy())),
-            icons: IconPipeline::new_with_policy(device, format, Some(gpu.policy())),
-            text: TextPipeline::new_with_policy(device, queue, format, gpu.policy()),
-            host_textures: HostTexturePipeline::new(device, queue, format, gpu.policy(), gpu),
+            meshes,
+            icons,
+            text,
+            host_textures,
             url_cache: {
                 let mut cache = UrlTextureCache::default();
                 cache.set_srgb_source(!presentation.is_direct_linear());
                 cache
             },
-            backdrop: BackdropPipeline::new(device, format, gpu.policy()),
+            backdrop,
             dest: None,
             // Pipeline-cache reuse requires a host-enabled device feature;
             // the painter must not demand it, so degrade to per-recreate

@@ -58,10 +58,13 @@ pub(super) struct MotionGpuResources {
     uploaded_time: Option<MotionGpuTime>,
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
+    /// The parity evaluator, built by the first readback. Product present
+    /// never reads a sample back, so a painter never compiles its 800-line
+    /// shader, which was about a third of painter startup under FXC.
     #[cfg_attr(not(test), allow(dead_code))]
-    dummy_group: wgpu::BindGroup,
+    eval: Option<Option<MotionEval>>,
     #[cfg_attr(not(test), allow(dead_code))]
-    eval_pipeline: Option<wgpu::RenderPipeline>,
+    policy: Option<nana_gpu::GpuDeviceState>,
     /// Format used by the private evaluator target. Rgba32Float is preferred
     /// when the adapter exposes it as a color target; Rgba16Float is the
     /// portable fallback and Rgba8Unorm is the final safety net.
@@ -94,33 +97,6 @@ impl MotionGpuResources {
         eval_format: wgpu::TextureFormat,
     ) -> Self {
         let bind_layout = layout.clone();
-        let dummy_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("nana-ui.scene.motion.dummy.layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(16),
-                },
-                count: None,
-            }],
-        });
-        let dummy_uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("nana-ui.scene.motion.dummy.uniform"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let dummy_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nana-ui.scene.motion.dummy.bind"),
-            layout: &dummy_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: dummy_uniform.as_entire_binding(),
-            }],
-        });
         let descriptor_capacity = 1;
         let keyframe_capacity = 1;
         let descriptors = ManagedBuffer::new(storage_buffer(
@@ -140,30 +116,6 @@ impl MotionGpuResources {
             mapped_at_creation: false,
         });
         let bind_group = motion_bind_group(device, &bind_layout, &descriptors, &keyframes, &time);
-        let eval_pipeline = if let Some(policy) = policy {
-            nana_gpu::__framework::render_pipeline_state(
-                policy,
-                nana_gpu::PipelineKey {
-                    generation: policy.generation(),
-                    target_format: nana_gpu::__framework::format_from_wgpu(eval_format),
-                    sample_count: 1,
-                    shader: 0x6d6f_7469_6f6e_6576,
-                    layout: 5,
-                    material: 0,
-                    primitive: 0,
-                    blend: 0,
-                    depth: 0,
-                    vertex_layout: 0,
-                },
-                || {
-                    create_eval_pipeline(device, &dummy_layout, layout, eval_format)
-                        .expect("motion pipeline")
-                },
-            )
-            .ok()
-        } else {
-            create_eval_pipeline(device, &dummy_layout, layout, eval_format)
-        };
         Self {
             descriptors,
             keyframes,
@@ -171,8 +123,8 @@ impl MotionGpuResources {
             uploaded_time: None,
             bind_layout,
             bind_group,
-            dummy_group,
-            eval_pipeline,
+            eval: None,
+            policy: policy.cloned(),
             eval_format,
             descriptor_capacity,
             keyframe_capacity,
@@ -304,7 +256,17 @@ impl MotionGpuResources {
         now: Duration,
     ) -> Option<MotionGpuReadback> {
         self.sync(device, queue, scene);
-        let pipeline = self.eval_pipeline.as_ref()?;
+        let eval = self
+            .eval
+            .get_or_insert_with(|| {
+                MotionEval::new(
+                    device,
+                    &self.bind_layout,
+                    self.policy.as_ref(),
+                    self.eval_format,
+                )
+            })
+            .as_ref()?;
         let time = MotionGpuTime::with_eval(now, motion_id);
         queue.write_buffer(
             &self.time,
@@ -347,8 +309,8 @@ impl MotionGpuResources {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &self.dummy_group, &[]);
+            pass.set_pipeline(&eval.pipeline);
+            pass.set_bind_group(0, &eval.dummy_group, &[]);
             pass.set_bind_group(1, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -544,6 +506,79 @@ fn motion_bind_group(
             },
         ],
     })
+}
+
+/// The readback evaluator: a full-screen pass that writes one motion sample.
+#[cfg_attr(not(test), allow(dead_code))]
+struct MotionEval {
+    pipeline: wgpu::RenderPipeline,
+    dummy_group: wgpu::BindGroup,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl MotionEval {
+    fn new(
+        device: &wgpu::Device,
+        motion: &wgpu::BindGroupLayout,
+        policy: Option<&nana_gpu::GpuDeviceState>,
+        format: wgpu::TextureFormat,
+    ) -> Option<Self> {
+        let dummy_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("nana-ui.scene.motion.dummy.layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            }],
+        });
+        let dummy_uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui.scene.motion.dummy.uniform"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let dummy_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nana-ui.scene.motion.dummy.bind"),
+            layout: &dummy_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: dummy_uniform.as_entire_binding(),
+            }],
+        });
+        let pipeline = if let Some(policy) = policy {
+            nana_gpu::__framework::render_pipeline_state(
+                policy,
+                nana_gpu::PipelineKey {
+                    generation: policy.generation(),
+                    target_format: nana_gpu::__framework::format_from_wgpu(format),
+                    sample_count: 1,
+                    shader: 0x6d6f_7469_6f6e_6576,
+                    layout: 5,
+                    material: 0,
+                    primitive: 0,
+                    blend: 0,
+                    depth: 0,
+                    vertex_layout: 0,
+                },
+                || {
+                    create_eval_pipeline(device, &dummy_layout, motion, format)
+                        .expect("motion pipeline")
+                },
+            )
+            .ok()
+        } else {
+            create_eval_pipeline(device, &dummy_layout, motion, format)
+        }?;
+        Some(Self {
+            pipeline,
+            dummy_group,
+        })
+    }
 }
 
 fn create_eval_pipeline(
@@ -1702,6 +1737,30 @@ mod tests {
             1.0,
         );
         assert_eq!(actual_pixels, reference_pixels);
+    }
+
+    /// The evaluator only serves readback, which product present never does:
+    /// building a painter, and painting with it, compiles none of it.
+    #[test]
+    fn a_painter_compiles_the_motion_evaluator_only_for_a_readback() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::for_test(format);
+        assert!(painter.motion.eval.is_none());
+        let (_world, scene, handle) = animated_opacity_scene(Duration::from_millis(16));
+        paint_once(&device, &queue, &mut painter, &scene);
+        assert!(painter.motion.eval.is_none());
+        painter
+            .motion
+            .evaluate_readback(
+                &device,
+                &queue,
+                &scene,
+                handle.index() + 1,
+                Duration::from_millis(16),
+            )
+            .expect("readback builds the evaluator");
+        assert!(painter.motion.eval.is_some());
     }
 
     #[test]
