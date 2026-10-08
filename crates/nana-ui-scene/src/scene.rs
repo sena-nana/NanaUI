@@ -171,6 +171,22 @@ const TEXT_EDITOR_CARET: u32 = 8;
 /// A rich text editor's selection rectangles share the document selection's
 /// paint layer (under the glyphs) from this index on.
 const RICH_EDITOR_SELECTION_BASE: usize = 1 << 16;
+/// Rich text tag backgrounds share that paint layer too (under the glyphs,
+/// over a selection), from this index on.
+const RICH_TAG_BASE: usize = 1 << 17;
+
+/// A tag's fill by its kind: the application's marker kinds, cycled.
+fn tag_color(kind: u16) -> [f32; 4] {
+    const PALETTE: [[f32; 4]; 6] = [
+        [0.93, 0.55, 0.20, 0.92],
+        [0.36, 0.52, 0.92, 0.92],
+        [0.55, 0.40, 0.85, 0.92],
+        [0.22, 0.66, 0.55, 0.92],
+        [0.88, 0.38, 0.55, 0.92],
+        [0.45, 0.50, 0.58, 0.92],
+    ];
+    PALETTE[usize::from(kind) % PALETTE.len()]
+}
 
 /// The surface of an open triggered menu (Popover, ActionMenu, HoverCard).
 /// It is the trigger's primitive, but it wraps content Runtime lays out
@@ -907,6 +923,31 @@ fn inline_object_primitives(
                     mask: None,
                     corner_radius: [0.0; 4],
                 }
+            }
+            nana_ui_core::RichObjectContent::Tag { kind, .. } => {
+                let Some(label) = layout
+                    .labels
+                    .iter()
+                    .find(|label| label.offset == placed.offset)
+                else {
+                    continue;
+                };
+                let pill = layout.page_rect(label.rect, box_width.max(bounds.width));
+                let pill = SceneRect {
+                    x: bounds.x + pill.x,
+                    y: top + pill.y,
+                    width: pill.width,
+                    height: pill.height,
+                };
+                let mut style = VisualQuadStyle::solid(tag_color(*kind));
+                style.corner_radius = corner_radii(pill.height * 0.5);
+                out.push(visual_quad(
+                    context,
+                    collection_slot(DOCUMENT_TEXT_SELECTION, RICH_TAG_BASE + index),
+                    pill,
+                    style,
+                ));
+                continue;
             }
             nana_ui_core::RichObjectContent::Chip { .. } => {
                 if !editor {

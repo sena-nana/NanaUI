@@ -375,6 +375,17 @@ impl TextNodeState {
                 ));
                 if !rich.objects().is_empty() {
                     source.set_objects(rich_text_objects(rich));
+                    source.set_labels(
+                        rich.objects()
+                            .iter()
+                            .filter_map(|(offset, object)| {
+                                Some(nana_text::ObjectLabel {
+                                    offset: *offset,
+                                    text: Arc::clone(object.tag_label()?),
+                                })
+                            })
+                            .collect(),
+                    );
                 }
                 if !rich.rubies().is_empty() {
                     source.set_rubies(

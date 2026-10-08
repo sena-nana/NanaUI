@@ -245,6 +245,23 @@ fn ruby_style(source: &TextSource, base: &TextStyle, at: usize) -> TextStyle {
     }
 }
 
+/// The style an object label is shaped in: the text's around it, at
+/// [`crate::source::LABEL_SCALE`] of the size, upright and medium weight.
+fn label_style(source: &TextSource, base: &TextStyle, at: usize) -> TextStyle {
+    let spans = source.spans();
+    let style = spans
+        .iter()
+        .rfind(|span| span.range.start <= at && at < span.range.end)
+        .map_or(base, |span| &span.style);
+    TextStyle {
+        font_size_px: (style.font_size_px * crate::source::LABEL_SCALE).max(9.0),
+        font_weight: style.font_weight.clamp(500, 700),
+        italic: false,
+        letter_spacing_px: 0.0,
+        ..style.clone()
+    }
+}
+
 impl TextEngine for NativeTextEngine {
     fn font_generation(&self) -> FontGeneration {
         self.fonts.generation()
@@ -288,11 +305,29 @@ impl TextEngine for NativeTextEngine {
                 })
                 .collect()
         };
+        // Each object label shaped once, small, in the style around it.
+        let labels: Vec<Arc<ShapedText>> = source
+            .labels()
+            .iter()
+            .map(|label| {
+                let style = label_style(source, base, label.offset);
+                let text = TextSource::new(Arc::clone(&label.text));
+                let constraints = TextConstraints {
+                    max_width_px: None,
+                    wrap: None,
+                    max_lines: None,
+                    ellipsis: false,
+                    ..*constraints
+                };
+                self.shape(&text, &style, &constraints)
+            })
+            .collect();
         let layouts_before = self.layouter.counters();
         let request = LayoutRequest::new(kind, source, &shaped, base, constraints)
             .with_ellipsis(ellipsis.as_ref())
             .with_strut(strut)
-            .with_rubies(&rubies);
+            .with_rubies(&rubies)
+            .with_labels(&labels);
         let layout = self.layouter.layout(&request);
         let layouts = self.layouter.counters();
         let after = self.shaper.counters();

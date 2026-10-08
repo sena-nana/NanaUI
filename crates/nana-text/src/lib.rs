@@ -80,7 +80,7 @@ pub use metrics::{LineMetrics, RunMetrics};
 pub use shape::{GlyphFlags, RunDirection, RunOrientation, ScriptTag, ShapedGlyph, ShapedRun};
 pub use shared::{SharedText, TextStamp};
 pub use source::{
-    CompositionSegment, InlineObject, InlineObjectMetrics, OBJECT_REPLACEMENT, RUBY_SCALE,
-    RubySpan, TextSource, TextSpan,
+    CompositionSegment, InlineObject, InlineObjectMetrics, LABEL_SCALE, OBJECT_REPLACEMENT,
+    ObjectLabel, RUBY_SCALE, RubySpan, TextSource, TextSpan,
 };
 pub use style::{TextKind, TextStyle};

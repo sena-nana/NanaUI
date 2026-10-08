@@ -1983,6 +1983,43 @@ impl TextPipeline {
                 }
             }
         }
+        // Object labels (tags), inside their objects, on their own pill: a
+        // fixed light ink. Each glyph stands for the object's character, so
+        // it takes the object's effects and reveal turn.
+        for label in &layout.labels {
+            let baseline = (label.baseline_y_px * scale).round();
+            let cluster = label.offset as u32;
+            for run in &label.runs {
+                let Some(instance) = run.instance.as_ref() else {
+                    continue;
+                };
+                let (font, variation, synthesis) = rasterizer.intern_instance(instance);
+                let size = size_bits(run.font_size_px * scale);
+                let mut pen = run.origin_x_px;
+                for glyph in &run.glyphs {
+                    let x = (pen + glyph.offset_x_px) * scale + origin[0];
+                    let y = (origin[1] - glyph.offset_y_px * scale).floor() + baseline;
+                    pen += glyph.advance_px;
+                    resolved.push(
+                        font,
+                        generation,
+                        variation,
+                        size,
+                        synthesis,
+                        mode,
+                        [1.0, 1.0, 1.0, 1.0],
+                        None,
+                        GlyphRole::Fill,
+                        PlacedGlyph {
+                            glyph: glyph.glyph_id,
+                            x,
+                            y,
+                            cluster,
+                        },
+                    );
+                }
+            }
+        }
         if resolved.is_empty() {
             return None;
         }

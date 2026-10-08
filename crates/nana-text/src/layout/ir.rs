@@ -68,6 +68,21 @@ pub struct PlacedObject {
     pub rect: TextRect,
 }
 
+/// An object's label as laid out: its runs, placed inside the object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlacedLabel {
+    /// Byte offset of the object's U+FFFC.
+    pub offset: usize,
+    pub line: u32,
+    /// The label's baseline, in the layout's line space.
+    pub baseline_y_px: f32,
+    /// The tag's box (the label and its padding, not the clear room either
+    /// side of it), in line space.
+    pub rect: TextRect,
+    /// Shaped label runs with `origin_x_px` set where they are drawn.
+    pub runs: Vec<crate::shape::ShapedRun>,
+}
+
 /// A ruby annotation as laid out: its runs, placed centred above its base.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlacedRuby {
@@ -190,6 +205,9 @@ pub struct TextLayout {
     /// are horizontal only, and this layout is vertical.
     #[serde(default)]
     pub rubies_dropped: bool,
+    /// Every object label placed inside its object, in source order.
+    #[serde(default)]
+    pub labels: Vec<PlacedLabel>,
 }
 
 impl TextLayout {
@@ -319,6 +337,7 @@ mod tests {
             objects: Vec::new(),
             rubies: Vec::new(),
             rubies_dropped: false,
+            labels: Vec::new(),
         }
     }
 

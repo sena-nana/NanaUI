@@ -528,6 +528,12 @@ pub enum RichObjectContent {
     /// never shows. It always takes no room, so a line breaks the same way in
     /// the editor and on the display.
     Chip { label: Arc<str>, kind: u16 },
+    /// An editor marker shown as a labelled tag: a small pill with `label`
+    /// in it. Unlike a [`Self::Chip`] it takes room on the line (the room
+    /// its label needs, shaped by the text engine) and it is drawn wherever
+    /// the text is, so a display that must break lines like the editor
+    /// leaves tags out of its text.
+    Tag { label: Arc<str>, kind: u16 },
 }
 
 /// An object inline in the text: a sticker, an emote, an editor chip.
@@ -585,6 +591,29 @@ impl RichObject {
         }
     }
 
+    /// An editor marker shown as a labelled tag (see [`RichObjectContent::Tag`]).
+    /// Its size is its label's, so it has none of its own.
+    pub fn tag(id: u64, label: impl Into<Arc<str>>, kind: u16) -> Self {
+        Self {
+            id,
+            width_px: 0.0,
+            height_px: 0.0,
+            descent_px: 0.0,
+            content: RichObjectContent::Tag {
+                label: label.into(),
+                kind,
+            },
+        }
+    }
+
+    /// The label a tag shows.
+    pub fn tag_label(&self) -> Option<&Arc<str>> {
+        match &self.content {
+            RichObjectContent::Tag { label, .. } => Some(label),
+            _ => None,
+        }
+    }
+
     /// How far the object reaches below the baseline.
     pub fn descent(mut self, descent_px: f32) -> Self {
         self.descent_px = descent_px;
@@ -599,7 +628,7 @@ impl RichObject {
     /// The box it takes on its line: width, ascent, descent. A chip takes
     /// none.
     pub fn line_box(&self) -> [f32; 3] {
-        if self.editor_only() {
+        if self.editor_only() || self.tag_label().is_some() {
             return [0.0; 3];
         }
         let finite = |value: f32| {

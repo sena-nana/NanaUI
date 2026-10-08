@@ -48,6 +48,8 @@ pub struct LayoutRequest<'a> {
     /// The shaped annotation of each of [`TextSource::rubies`], in order;
     /// empty when they are not laid out (vertical text).
     pub rubies: &'a [Arc<ShapedText>],
+    /// The shaped text of each of [`TextSource::labels`], in order.
+    pub labels: &'a [Arc<ShapedText>],
 }
 
 impl<'a> LayoutRequest<'a> {
@@ -67,12 +69,19 @@ impl<'a> LayoutRequest<'a> {
             ellipsis: None,
             strut_metrics: None,
             rubies: &[],
+            labels: &[],
         }
     }
 
     #[must_use]
     pub fn with_rubies(mut self, rubies: &'a [Arc<ShapedText>]) -> Self {
         self.rubies = rubies;
+        self
+    }
+
+    #[must_use]
+    pub fn with_labels(mut self, labels: &'a [Arc<ShapedText>]) -> Self {
+        self.labels = labels;
         self
     }
 
@@ -202,6 +211,13 @@ impl Layouter {
                 .zip(request.rubies)
                 .map(|(ruby, shaped)| (ruby.range.clone(), Arc::clone(shaped)))
                 .collect(),
+            request
+                .source
+                .labels()
+                .iter()
+                .zip(request.labels)
+                .map(|(label, shaped)| (label.offset, Arc::clone(shaped)))
+                .collect(),
         );
         if let Some(hit) = self.cache.get(&key) {
             self.counters.layout_cache_hits += 1;
@@ -291,6 +307,7 @@ impl Layouter {
         let rubies = placed_rubies(request, &laid_out.lines, &laid_out.runs);
         let rubies_dropped = !request.source.rubies().is_empty()
             && (request.rubies.len() != request.source.rubies().len() || request.shaped.vertical);
+        let labels = placed_labels(request, &objects, &laid_out.lines);
 
         TextLayout {
             id: self.issue_id(),
@@ -306,6 +323,7 @@ impl Layouter {
             objects,
             rubies,
             rubies_dropped,
+            labels,
         }
     }
 
@@ -375,15 +393,111 @@ fn sized_runs(request: &LayoutRequest<'_>, scale: f32) -> Option<Vec<ShapedRun>>
             .object_at(run.source.start)
             .map(|object| object.metrics)
             .unwrap_or_default();
-        let width = metrics.width_px.max(0.0) * scale;
+        let [width, ascent, descent] = match label_box(request, run.source.start) {
+            Some(label) => [label.width_px, label.ascent_px, label.descent_px],
+            None => [
+                metrics.width_px.max(0.0) * scale,
+                metrics.ascent_px.max(0.0) * scale,
+                metrics.descent_px.max(0.0) * scale,
+            ],
+        };
         if let Some(glyph) = run.glyphs.first_mut() {
             glyph.advance_px = width;
         }
         run.advance_px = width;
-        run.metrics.ascent_px = metrics.ascent_px.max(0.0) * scale;
-        run.metrics.descent_px = metrics.descent_px.max(0.0) * scale;
+        run.metrics.ascent_px = ascent;
+        run.metrics.descent_px = descent;
     }
     Some(runs)
+}
+
+/// A labelled object's box, physical px: the label and its padding.
+struct LabelBox {
+    width_px: f32,
+    ascent_px: f32,
+    descent_px: f32,
+    /// From the object's left edge to the label's pen.
+    inset_px: f32,
+    /// Room kept clear either side of the tag.
+    gap_px: f32,
+}
+
+fn label_box(request: &LayoutRequest<'_>, offset: usize) -> Option<LabelBox> {
+    let shaped = request.labels.get(request.source.label_index(offset)?)?;
+    let width: f32 = shaped.runs.iter().map(|run| run.advance_px).sum();
+    let size = shaped
+        .runs
+        .iter()
+        .map(|run| run.font_size_px * request.constraints.scale.px_per_logical)
+        .fold(0.0f32, f32::max);
+    let ascent = shaped
+        .runs
+        .iter()
+        .map(|run| run.metrics.ascent_px)
+        .fold(0.0f32, f32::max);
+    let descent = shaped
+        .runs
+        .iter()
+        .map(|run| run.metrics.descent_px)
+        .fold(0.0f32, f32::max);
+    let pad_x = (size * 0.45).round();
+    let pad_y = (size * 0.18).round();
+    // A small gap either side keeps neighbouring text off the tag.
+    let gap = (size * 0.2).round();
+    Some(LabelBox {
+        width_px: width + 2.0 * (pad_x + gap),
+        ascent_px: ascent + pad_y,
+        descent_px: descent + pad_y,
+        inset_px: pad_x + gap,
+        gap_px: gap,
+    })
+}
+
+/// Each object label placed inside its object, on the object's baseline.
+fn placed_labels(
+    request: &LayoutRequest<'_>,
+    objects: &[super::ir::PlacedObject],
+    lines: &[super::ir::LineBox],
+) -> Vec<super::ir::PlacedLabel> {
+    if request.labels.is_empty() {
+        return Vec::new();
+    }
+    let mut placed = Vec::new();
+    for (label, shaped) in request.source.labels().iter().zip(request.labels) {
+        let Some(object) = objects.iter().find(|object| object.offset == label.offset) else {
+            continue;
+        };
+        let Some(boxed) = label_box(request, label.offset) else {
+            continue;
+        };
+        let Some(line) = lines.get(object.line as usize) else {
+            continue;
+        };
+        let mut cursor = object.rect.x + boxed.inset_px;
+        let runs = shaped
+            .runs
+            .iter()
+            .map(|run| {
+                let mut run = run.clone();
+                run.origin_x_px = cursor;
+                cursor += run.advance_px;
+                run
+            })
+            .collect();
+        placed.push(super::ir::PlacedLabel {
+            offset: label.offset,
+            line: object.line,
+            baseline_y_px: line.metrics.baseline_y_px,
+            rect: TextRect::new(
+                object.rect.x + boxed.gap_px,
+                object.rect.y,
+                (object.rect.width - 2.0 * boxed.gap_px).max(0.0),
+                object.rect.height,
+            ),
+            runs,
+        });
+    }
+    placed
 }
 
 /// An annotation's size: how wide it is and how tall it stands, physical px.

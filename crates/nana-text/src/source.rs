@@ -85,6 +85,21 @@ pub struct RubySpan {
 /// An annotation's size relative to its base.
 pub const RUBY_SCALE: f32 = 0.5;
 
+/// A label an inline object shows inside itself: an editor's marker tag
+/// ("pause", "sound: coin"). The object takes the label's room — shaped at
+/// [`LABEL_SCALE`] of the text around it, plus padding — instead of its own
+/// [`InlineObjectMetrics`], and the layout places the label's runs inside it
+/// ([`crate::PlacedLabel`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObjectLabel {
+    /// Byte offset of the object's U+FFFC in [`TextSource::text`].
+    pub offset: usize,
+    pub text: Arc<str>,
+}
+
+/// A label's size relative to the text around its object.
+pub const LABEL_SCALE: f32 = 0.62;
+
 /// One styled byte range of a [`TextSource`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextSpan {
@@ -173,6 +188,9 @@ pub struct TextSource {
     /// Sorted, non-overlapping.
     #[serde(default)]
     rubies: Vec<RubySpan>,
+    /// Sorted by offset; each names an object of `objects`.
+    #[serde(default)]
+    labels: Vec<ObjectLabel>,
     revision: TextRevision,
     /// Hash of `text`, filled on first use and reset by every mutation.
     #[serde(skip)]
@@ -195,6 +213,7 @@ impl PartialEq for TextSource {
             && self.spans == other.spans
             && self.objects == other.objects
             && self.rubies == other.rubies
+            && self.labels == other.labels
             && self.revision == other.revision
     }
 }
@@ -212,6 +231,7 @@ impl TextSource {
             spans: Vec::new(),
             objects: Vec::new(),
             rubies: Vec::new(),
+            labels: Vec::new(),
             revision: TextRevision::INITIAL,
             content_hash: OnceLock::new(),
             folded: OnceLock::new(),
@@ -240,6 +260,29 @@ impl TextSource {
     /// The ruby annotations, sorted by base.
     pub fn rubies(&self) -> &[RubySpan] {
         &self.rubies
+    }
+
+    /// The object labels, sorted by offset.
+    pub fn labels(&self) -> &[ObjectLabel] {
+        &self.labels
+    }
+
+    /// Index into [`Self::labels`] of the label of the object at byte
+    /// `offset`, if it has one.
+    pub fn label_index(&self, offset: usize) -> Option<usize> {
+        self.labels
+            .binary_search_by_key(&offset, |label| label.offset)
+            .ok()
+    }
+
+    /// Replaces the object labels. One not on an object of
+    /// [`Self::objects`], or empty, is dropped. Set the objects first.
+    pub fn set_labels(&mut self, mut labels: Vec<ObjectLabel>) {
+        labels.retain(|label| !label.text.is_empty() && self.object_at(label.offset).is_some());
+        labels.sort_by_key(|label| label.offset);
+        labels.dedup_by_key(|label| label.offset);
+        self.labels = labels;
+        self.bump();
     }
 
     /// Replaces the ruby annotations. One whose base is empty, past the text
@@ -350,6 +393,13 @@ impl TextSource {
                 object.offset = object.offset + added - removed;
             }
         }
+        self.labels
+            .retain(|label| label.offset < range.start || label.offset >= range.end);
+        for label in &mut self.labels {
+            if label.offset >= range.end {
+                label.offset = label.offset + added - removed;
+            }
+        }
         self.bump();
     }
 
@@ -358,6 +408,7 @@ impl TextSource {
         self.spans.clear();
         self.objects.clear();
         self.rubies.clear();
+        self.labels.clear();
         self.bump();
     }
 
@@ -409,6 +460,7 @@ impl TextSource {
                         spans: self.spans.clone(),
                         objects: self.objects.clone(),
                         rubies: self.rubies.clone(),
+                        labels: self.labels.clone(),
                         revision: self.revision,
                         content_hash: OnceLock::new(),
                         folded: OnceLock::new(),

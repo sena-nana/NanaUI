@@ -151,6 +151,8 @@ pub(crate) struct LayoutKey {
     /// Each ruby's base range and its shaped annotation, held so the pointer
     /// it is compared by stays valid.
     rubies: Vec<(std::ops::Range<usize>, Arc<ShapedText>)>,
+    /// Each object label's offset and shaped text, held like the rubies.
+    labels: Vec<(usize, Arc<ShapedText>)>,
 }
 
 impl LayoutKey {
@@ -169,6 +171,7 @@ impl LayoutKey {
         empty_line_height: f32,
         objects: &[crate::source::InlineObject],
         rubies: Vec<(std::ops::Range<usize>, Arc<ShapedText>)>,
+        labels: Vec<(usize, Arc<ShapedText>)>,
     ) -> Self {
         Self {
             shaped: Arc::clone(shaped),
@@ -204,6 +207,7 @@ impl LayoutKey {
                 })
                 .collect(),
             rubies,
+            labels,
         }
     }
 
@@ -242,6 +246,12 @@ impl PartialEq for LayoutKey {
                 .iter()
                 .zip(&other.rubies)
                 .all(|((left, a), (right, b))| left == right && Arc::ptr_eq(a, b))
+            && self.labels.len() == other.labels.len()
+            && self
+                .labels
+                .iter()
+                .zip(&other.labels)
+                .all(|((left, a), (right, b))| left == right && Arc::ptr_eq(a, b))
     }
 }
 
@@ -263,6 +273,10 @@ impl Hash for LayoutKey {
         self.objects.hash(state);
         for (range, shaped) in &self.rubies {
             range.hash(state);
+            (Arc::as_ptr(shaped) as *const u8 as usize).hash(state);
+        }
+        for (offset, shaped) in &self.labels {
+            offset.hash(state);
             (Arc::as_ptr(shaped) as *const u8 as usize).hash(state);
         }
     }
