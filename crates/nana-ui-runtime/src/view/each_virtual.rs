@@ -615,7 +615,10 @@ where
         let columns = self.units_columns(cx);
         let regroup = self.synced != Some(items.stamp)
             || columns.is_some_and(|columns| columns != self.geometry.units.columns);
-        let units = regroup.then(|| self.units(columns, &items.items).unwrap_or_default());
+        // A grid with no width yet groups nothing and stays unsynced, so its
+        // first width regroups even when that fits the one column units
+        // start at.
+        let units = regroup.then(|| self.units(columns, &items.items)).flatten();
         let geometry = &mut self.geometry;
         geometry.offset = viewport.offset[1];
         geometry.extent = viewport.extent[1];
