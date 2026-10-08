@@ -479,6 +479,8 @@ commands.push(WindowCommand::SetContentAspectRatio { id, ratio: Some(9.0 / 16.0)
 - **最大化与全屏**不受约束，用平台给的尺寸。在最大化或全屏时换了比例，窗口回到普通状态后的第一次尺寸变化时再按新比例调整。
 - **平台**：拖动时保持比例只在 Windows 上实现。macOS 与 Linux 上开窗尺寸、换比例时的调整和最小尺寸照常生效，用户拖动不受约束。
 
+只放视频的窗口，外壳的显隐交给媒体条的 `auto_hide(true)`：指针空闲、离开窗口（包括全屏时）都会收起，标题栏听条的 `OverlayVisibilityChanged` 跟着走。不要再用 `PointerPresenceChanged` 自己维护「指针在不在」来切换外壳，那样全屏时外壳永远不会收起。写法见 [MediaTransportBar](../components/media-transport-bar.md#自动收起)。
+
 ### 嵌入已有宿主
 
 `platform_host::EmbeddedRuntime` 接收宿主 `ActiveEventLoop`、proxy 和 `HostedGpuShared`。从不创建或退出宿主事件循环。宿主转发 `window_event`、`wake` 和 `about_to_wait`。`HostedGpuShared::from_device` 接入已有 Instance/Adapter/Device/Queue。不申请第二个 Device。

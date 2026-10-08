@@ -76,6 +76,8 @@ use crate::{
 };
 
 mod assemble;
+mod auto_overlay;
+pub(crate) use auto_overlay::OverlayActivity;
 mod build;
 pub(crate) use assemble::AssembledKey;
 mod document_text;
@@ -605,6 +607,8 @@ struct ComponentLifecycle {
     split_hover_probe_last: HashMap<DocumentId, Duration, crate::BuildIdHasher>,
     /// Per `PaneTree`, the boxes it owns, addressed by its own split / pane id.
     pane_tree_slots: HashMap<StableNodeId, HashMap<Arc<str>, StableNodeId>, crate::BuildIdHasher>,
+    /// Media transport bars whose idle hide the runtime drives.
+    auto_overlays: std::collections::BTreeSet<StableNodeId>,
 }
 
 impl ComponentLifecycle {

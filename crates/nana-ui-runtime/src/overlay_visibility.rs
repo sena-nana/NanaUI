@@ -1,6 +1,8 @@
 //! Time-based overlay show/hide policy. Hosts supply clocks and lock flags
-//! through [`crate::AppContext::sync_overlay_visibility`]; the policy does not
-//! own windows, media, or pointer routing, and is not a leaf control.
+//! through [`crate::AppContext::sync_overlay_visibility`], or let the runtime
+//! drive a bar's policy from routed input and its own clock
+//! ([`crate::MediaTransportBar::auto_hide`]). The policy does not own windows
+//! or media, and is not a leaf control.
 
 use std::time::{Duration, Instant};
 
@@ -40,6 +42,14 @@ impl Default for OverlayVisibilityConfig {
     }
 }
 
+/// A bar's idle visibility flipped. Emitted by the bar whichever way its
+/// policy is driven, so chrome outside the bar (a title bar over the same
+/// picture) can show and hide with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayVisibilityChanged {
+    pub visible: bool,
+}
+
 /// Auto-hide machine for media chrome and stage HUDs. Not a leaf control.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayVisibility {
@@ -47,6 +57,8 @@ pub struct OverlayVisibility {
     visible: bool,
     active: bool,
     held: bool,
+    /// Hidden by [`Self::conceal`] until the next activity.
+    concealed: bool,
     deadline: Option<Instant>,
     startup_until: Option<Instant>,
     hot_since: Option<Instant>,
@@ -70,6 +82,7 @@ impl OverlayVisibility {
             visible: true,
             active: false,
             held: false,
+            concealed: false,
             deadline: None,
             startup_until,
             hot_since: None,
@@ -100,8 +113,11 @@ impl OverlayVisibility {
         if self.startup_until.is_some_and(|until| now >= until) {
             self.startup_until = None;
         }
-        if !active || held || self.startup_until.is_some() {
+        if held || (!self.concealed && (!active || self.startup_until.is_some())) {
             self.visible = true;
+            self.deadline = None;
+        } else if self.concealed {
+            self.visible = false;
             self.deadline = None;
         } else if !self.active || self.held || (self.visible && self.deadline.is_none()) {
             self.deadline = Some(now + self.config.idle);
@@ -114,6 +130,7 @@ impl OverlayVisibility {
     /// Immediate reveal (pointer / keyboard activity).
     pub fn activity(&mut self, now: Instant) -> bool {
         let changed = !self.visible;
+        self.concealed = false;
         self.visible = true;
         self.deadline = (self.active && !self.held).then_some(now + self.config.idle);
         changed
@@ -138,6 +155,21 @@ impl OverlayVisibility {
             self.hot_since = None;
             false
         }
+    }
+
+    /// Hide now, playing or not, until the next [`Self::activity`]: the
+    /// pointer left the window. A held overlay (focus, drag, open menu) stays
+    /// until the hold ends, then hides.
+    pub fn conceal(&mut self) -> bool {
+        self.concealed = true;
+        self.hot_since = None;
+        if self.held {
+            return false;
+        }
+        self.deadline = None;
+        let changed = self.visible;
+        self.visible = false;
+        changed
     }
 
     pub fn tick(&mut self, now: Instant) -> bool {
@@ -243,13 +275,15 @@ impl crate::AppContext {
             self.clear_focus(document)?;
             locks = self.overlay_locks(document, root);
         }
-        self.update_component(bar, |bar, _| {
+        self.update_component(bar, |bar, cx| {
+            let before = bar.visibility.visible();
             if menu_closed {
                 bar.visibility.activity(now);
             }
             bar.visibility.synchronize(now, active, locks);
             bar.visibility.tick(now);
             bar.menu_was_open = locks.menu_open;
+            report_visibility(before, bar, cx);
             bar.visibility.wakeup()
         })
     }
@@ -260,10 +294,25 @@ impl crate::AppContext {
         bar: crate::Entity<crate::MediaTransportBar>,
         now: Instant,
     ) -> Result<bool, crate::FrameworkError> {
-        self.update_component(bar, |bar, _| {
-            let before = bar.visibility.wakeup();
+        self.update_component(bar, |bar, cx| {
+            let (before, shown) = (bar.visibility.wakeup(), bar.visibility.visible());
             let changed = bar.visibility.activity(now);
+            report_visibility(shown, bar, cx);
             changed || before != bar.visibility.wakeup()
+        })
+    }
+
+    /// Hide the bar now until the next activity: the pointer left its window.
+    /// See [`OverlayVisibility::conceal`].
+    pub fn conceal_overlay(
+        &mut self,
+        bar: crate::Entity<crate::MediaTransportBar>,
+    ) -> Result<bool, crate::FrameworkError> {
+        self.update_component(bar, |bar, cx| {
+            let shown = bar.visibility.visible();
+            let changed = bar.visibility.conceal();
+            report_visibility(shown, bar, cx);
+            changed
         })
     }
 
@@ -272,6 +321,19 @@ impl crate::AppContext {
         bar: crate::Entity<crate::MediaTransportBar>,
     ) -> Result<Option<Instant>, crate::FrameworkError> {
         self.read(bar, |bar| bar.visibility.wakeup())
+    }
+}
+
+/// Emit [`OverlayVisibilityChanged`] when the bar's idle visibility is no
+/// longer `before`.
+pub(crate) fn report_visibility(
+    before: bool,
+    bar: &crate::MediaTransportBar,
+    cx: &mut crate::ViewContext<'_, crate::MediaTransportBar>,
+) {
+    let visible = bar.visibility.visible();
+    if visible != before {
+        cx.emit(OverlayVisibilityChanged { visible });
     }
 }
 
@@ -335,6 +397,142 @@ mod tests {
         assert!(!vis.visible());
         vis.tick(now + OVERLAY_IDLE + Duration::from_millis(150));
         assert!(vis.visible());
+    }
+
+    #[test]
+    fn conceal_hides_until_activity_whether_playing_or_not_and_waits_for_a_hold() {
+        let now = t0();
+        let mut vis = OverlayVisibility::new(now);
+        vis.synchronize(now, false, OverlayLocks::default());
+        assert!(vis.conceal(), "paused chrome hides when the pointer leaves");
+        vis.synchronize(now, false, OverlayLocks::default());
+        assert!(!vis.visible(), "and stays hidden while it is away");
+        vis.activity(now);
+        assert!(vis.visible());
+
+        let held = OverlayLocks {
+            menu_open: true,
+            ..OverlayLocks::default()
+        };
+        vis.synchronize(now, true, held);
+        assert!(!vis.conceal(), "an open menu keeps the chrome");
+        assert!(vis.visible());
+        vis.synchronize(now, true, OverlayLocks::default());
+        assert!(!vis.visible(), "the hold ends with the pointer still away");
+    }
+
+    #[test]
+    fn an_auto_hidden_bar_follows_routed_input_and_the_runtime_clock() {
+        use crate::{
+            AppContext, DocumentId, HeadlessInput, LayoutViewport, MediaTransportBar,
+            MutationQueue, Stack,
+        };
+        use nana_ui_core::LengthSpec;
+        use nana_ui_input::{InputPayload, PointerId, PointerPhase};
+        use std::sync::{Arc, Mutex};
+
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let window = cx
+            .create_component(
+                document,
+                Stack::column(0.0).hittable().with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(640.0));
+                    layout.height = Some(LengthSpec::Px(360.0));
+                }),
+            )
+            .unwrap();
+        let bar = cx
+            .create_detached_component(document, MediaTransportBar::new().auto_hide(true))
+            .unwrap();
+        cx.append_child(window, bar).unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        cx.layout_document(document, LayoutViewport::new(640.0, 360.0))
+            .unwrap();
+        cx.compat_world_mut().rebuild_hit_test(document);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let out = Arc::clone(&seen);
+        cx.on(bar, move |_, event: &OverlayVisibilityChanged, _| {
+            out.lock().unwrap().push(event.visible);
+        })
+        .unwrap();
+        let shown = |cx: &AppContext| cx.read(bar, MediaTransportBar::shown).unwrap();
+        let mut input = HeadlessInput::bind(&mut cx, document);
+
+        assert_eq!(cx.next_animation_deadline(), None, "paused chrome stays");
+        cx.update_component(bar, |bar, _| bar.playing = true)
+            .unwrap();
+        assert_eq!(cx.next_animation_deadline(), Some(OVERLAY_IDLE));
+        cx.advance_animations(OVERLAY_IDLE);
+        assert!(!shown(&cx), "idle while playing");
+
+        input.set_now(Duration::from_secs(10));
+        input
+            .pointer(&mut cx, PointerPhase::Move, 100.0, 100.0)
+            .unwrap();
+        assert!(shown(&cx), "the pointer over the picture reveals it");
+        assert_eq!(cx.next_animation_deadline(), Some(Duration::from_secs(13)));
+
+        let seek = cx.read(bar, |bar| bar.seek()).unwrap().unwrap();
+        let mut capture = MutationQueue::new();
+        capture.capture_pointer(1, seek.stable_id());
+        cx.commit_mutations(capture).unwrap();
+        cx.advance_animations(Duration::from_secs(20));
+        assert!(shown(&cx), "a seek drag holds it");
+        let mut release = MutationQueue::new();
+        release.release_pointer(1, seek.stable_id());
+        cx.commit_mutations(release).unwrap();
+
+        input.set_now(Duration::from_secs(21));
+        input
+            .route(
+                &mut cx,
+                InputPayload::PointerLeave {
+                    pointer_id: PointerId(1),
+                },
+            )
+            .unwrap();
+        assert!(!shown(&cx), "leaving the window hides it at once");
+        cx.update_component(bar, |bar, _| bar.playing = false)
+            .unwrap();
+        assert!(!shown(&cx), "pausing does not bring it back while away");
+
+        input.set_now(Duration::from_secs(22));
+        input
+            .pointer(&mut cx, PointerPhase::Move, 100.0, 100.0)
+            .unwrap();
+        assert!(shown(&cx));
+        cx.advance_animations(Duration::from_secs(60));
+        assert!(shown(&cx), "paused chrome stays while the pointer is in");
+
+        cx.update_component(bar, |bar, _| bar.playing = true)
+            .unwrap();
+        cx.advance_animations(Duration::from_secs(70));
+        assert!(!shown(&cx));
+        input.set_now(Duration::from_secs(80));
+        input
+            .press(
+                &mut cx,
+                nana_ui_input::KeyInput::named(
+                    "KeyA",
+                    "a",
+                    nana_ui_input::KeyState::Pressed,
+                    Default::default(),
+                ),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(shown(&cx), "a key press reveals it");
+        assert_eq!(
+            cx.next_animation_deadline(),
+            Some(Duration::from_secs(83)),
+            "idle counts from the key press"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![false, true, false, true, false, true]
+        );
     }
 
     #[test]

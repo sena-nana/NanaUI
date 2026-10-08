@@ -23,8 +23,9 @@
 //! ([`MediaTransportBar::settings_content`], a view's `.settings(..)`).
 //!
 //! Idle hide is [`crate::OverlayVisibility`] held on this control and driven by
-//! [`crate::AppContext::sync_overlay_visibility`]; an inline bar that the host
-//! never syncs that way stays visible. It is kept apart from the bar's own
+//! [`crate::AppContext::sync_overlay_visibility`], or by the runtime itself
+//! when [`MediaTransportBar::auto_hide`] is on; an inline bar that nothing
+//! drives stays visible. It is kept apart from the bar's own
 //! `hidden` (a view's `.visible(..)`), which stays the application's: the bar
 //! shows while neither hides it ([`MediaTransportBar::shown`]), so hiding it
 //! while playback is unavailable and the idle hide do not undo each other.
@@ -223,6 +224,8 @@ pub struct MediaTransportBar {
     pub show_settings: Option<bool>,
     /// `None` follows the density: shown when regular, hidden when compact.
     pub show_fullscreen: Option<bool>,
+    /// The runtime drives the idle hide itself; see [`Self::auto_hide`].
+    pub auto_hide: bool,
     pub icons: MediaTransportIcons,
     pub play_label: Arc<str>,
     pub pause_label: Arc<str>,
@@ -261,6 +264,7 @@ impl MediaTransportBar {
             show_play: None,
             show_settings: None,
             show_fullscreen: None,
+            auto_hide: false,
             icons: MediaTransportIcons::default(),
             play_label: Arc::from("播放"),
             pause_label: Arc::from("暂停"),
@@ -371,6 +375,25 @@ impl MediaTransportBar {
 
     pub fn show_fullscreen(mut self, show: bool) -> Self {
         self.show_fullscreen = Some(show);
+        self
+    }
+
+    /// Let the runtime run the idle hide from the input it routes and its own
+    /// clock, with no host calls: for a window that is only a picture.
+    ///
+    /// While `playing` and not `disabled`, the bar hides
+    /// [`crate::OVERLAY_IDLE`] after the last activity: a pointer moving,
+    /// pressing or releasing over the bar's parent (its stage), or any key
+    /// press in the document. The pointer leaving the window hides it at
+    /// once, paused or not, until the pointer comes back. An open menu, a
+    /// drag (seeking, volume) and keyboard focus inside the bar hold it; a
+    /// control focused by a click does not. Each flip emits
+    /// [`crate::OverlayVisibilityChanged`], so a title bar over the same
+    /// picture can follow it. Do not also drive this bar through
+    /// [`AppContext::sync_overlay_visibility`] or
+    /// [`AppContext::reveal_overlay`]: those take the host's clock.
+    pub fn auto_hide(mut self, enabled: bool) -> Self {
+        self.auto_hide = enabled;
         self
     }
 
@@ -653,6 +676,7 @@ impl RegisterableComponent for MediaTransportBar {
         bar.show_play = shown_attr(spec, "show-play");
         bar.show_settings = shown_attr(spec, "show-settings");
         bar.show_fullscreen = shown_attr(spec, "show-fullscreen");
+        bar.auto_hide = shown_attr(spec, "auto-hide").unwrap_or(false);
         bar
     }
     /// Markup only carries configuration. Playback state, labels, idle
@@ -671,6 +695,7 @@ impl RegisterableComponent for MediaTransportBar {
             show_play: next.show_play,
             show_settings: next.show_settings,
             show_fullscreen: next.show_fullscreen,
+            auto_hide: next.auto_hide,
             ..previous.clone()
         }
     }
@@ -1034,6 +1059,10 @@ impl AppContext {
         bar: Entity<MediaTransportBar>,
     ) -> Result<(), FrameworkError> {
         let snapshot = self.read(bar, Clone::clone)?;
+        if self.track_auto_overlay(bar.stable_id(), snapshot.auto_hide) {
+            // Playing or not, enabled or not: the policy follows the write.
+            self.drive_auto_overlay(bar, crate::framework::OverlayActivity::None)?;
+        }
         let slots = &snapshot.slots;
         let chrome = snapshot.chrome_layout();
         if snapshot.applied != Some(chrome) {

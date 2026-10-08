@@ -662,6 +662,7 @@ impl AppContext {
                     .filter(|(target, _)| self.world.is_mounted(**target))
                     .filter_map(|(_, lifecycle)| lifecycle.show_at.or(lifecycle.close_at)),
             )
+            .chain(self.auto_overlay_deadline())
             .min()
     }
 
@@ -713,6 +714,11 @@ impl AppContext {
         for target in tooltip_targets {
             if self.open_tooltip(target).unwrap_or(false) {
                 frame.component_updates.push(target);
+            }
+        }
+        for bar in self.drive_auto_overlays(None, OverlayActivity::None) {
+            if !frame.component_updates.contains(&bar) {
+                frame.component_updates.push(bar);
             }
         }
         self.sweep_hover_cards();

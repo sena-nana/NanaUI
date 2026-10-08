@@ -96,6 +96,37 @@ Overlay 沿父级底边绝对定位，只有铬接命中；Inline 参与父级�
 
 菜单开合时调用 `AppContext::sync_overlay_visibility`，打开的菜单把条留住，关上后空闲计时从这一下重新开始。
 
+### 自动收起
+
+`.auto_hide(true)` 让运行时自己驱动空闲收起，宿主不用转发输入、不用排定时器：
+
+- 播放中（`playing` 且没有 `disabled`）最后一次活动之后 `OVERLAY_IDLE`（3 秒）收起。活动是指针在条的父节点（画面）上移动、按下或抬起，或者文档里任意一次按键。
+- 指针离开窗口时立刻收起，暂停时也一样，直到指针回来。
+- 打开的菜单、拖动（定位、音量）和条里的键盘焦点把条留住；点按留下的焦点不算，否则点过一次按钮条就再也不会收起。
+- 每次显隐翻转，条发 `OverlayVisibilityChanged { visible }`。画面上的其他外壳（标题栏）跟着它走。
+
+这样的条不要再调 `sync_overlay_visibility` / `reveal_overlay`：那两个用宿主的时钟，和运行时的时钟混在一起没有意义。手动驱动的条也会发 `OverlayVisibilityChanged`；`conceal_overlay` 是手动驱动时的「指针离开」。
+
+只放视频的窗口这样写：
+
+```rust
+let chrome = signal(true);
+view! {
+    <Widget of={Stack::fill_column(0.0)}>
+        <Widget of={GpuTextureView::new("").contain()} />
+        <Widget
+            of={MediaTransportBar::new().compact_overlay().auto_hide(true)}
+            on:OverlayVisibilityChanged={move |e: &OverlayVisibilityChanged| {
+                chrome.set_if_changed(e.visible);
+            }}
+        />
+        <Widget of={AppTitleBar::new("").transparent(true)} v-show={chrome.get() && !fullscreen.get()} />
+    </Widget>
+}
+```
+
+条放在画面的同一个父节点下，指针在整扇窗口上都算「在画面上」。窗口的宽高比交给 [`content_aspect_ratio`](../reference/window.md#内容宽高比)。
+
 ## 时间读数
 
 时间读数的格式是 `media_clock`：`m:ss` 或 `h:mm:ss`。

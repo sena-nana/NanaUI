@@ -23,6 +23,7 @@ use nana_ui_input::{
     KeyState, PointerId, PointerInput, PointerPhase, PointerType,
 };
 
+use super::OverlayActivity;
 use crate::{AppContext, DocumentId, FrameworkError, StableNodeId, TextShaper};
 
 use dispatch::{KeyStroke, reborrow_text_shaper};
@@ -601,6 +602,34 @@ impl AppContext {
                     nana_diagnostics::framework::runtime::INPUT_HOVER_CHANGES
                 );
             }
+        }
+        if self.has_auto_overlays() {
+            let activity = match &event.payload {
+                InputPayload::Pointer(pointer)
+                    if matches!(
+                        pointer.phase,
+                        PointerPhase::Move | PointerPhase::Down | PointerPhase::Up
+                    ) =>
+                {
+                    OverlayActivity::Pointer {
+                        x: pointer.x,
+                        y: pointer.y,
+                        target: landed,
+                    }
+                }
+                InputPayload::PointerEnter { x, y, .. } => OverlayActivity::Pointer {
+                    x: *x,
+                    y: *y,
+                    target: None,
+                },
+                InputPayload::PointerLeave { .. } => OverlayActivity::Leave,
+                InputPayload::Key(key) if key.state == KeyState::Pressed => OverlayActivity::Key,
+                _ => OverlayActivity::None,
+            };
+            // A key press does not move the clock on its own; the idle
+            // deadline counts from this event.
+            self.component_lifecycle.now = self.component_lifecycle.now.max(now);
+            self.drive_auto_overlays(Some(document), activity);
         }
         // Handlers wrote signals; apply their bindings before deciding
         // whether this event invalidated the frame.

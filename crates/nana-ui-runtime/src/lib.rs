@@ -307,7 +307,8 @@ pub use overlay_surfaces::{
     ModalSlots, ModalSurface, ModalSurfaceKind,
 };
 pub use overlay_visibility::{
-    OVERLAY_IDLE, OverlayLocks, OverlayVisibility, OverlayVisibilityConfig,
+    OVERLAY_IDLE, OverlayLocks, OverlayVisibility, OverlayVisibilityChanged,
+    OverlayVisibilityConfig,
 };
 pub use pane::{
     PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneSlot, PaneTree, PaneTreeNode,
