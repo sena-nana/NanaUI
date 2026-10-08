@@ -26,6 +26,7 @@ pub mod layout_authority;
 pub mod layout_foundation;
 pub mod layout_frontier;
 mod layout_style_api;
+pub mod layout_style_change;
 pub mod menu;
 pub mod menu_bar;
 pub mod motion;
@@ -112,6 +113,7 @@ pub use layout_frontier::{
     InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutInvalidation,
     LayoutInvalidationSource, LayoutMetricDelta,
 };
+pub use layout_style_change::LayoutStyleChange;
 pub use menu::{MenuConfirmation, MenuSelection};
 pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};
 pub use motion::{

@@ -909,77 +909,9 @@ fn layout_affects_containing_block(
     previous: &nana_ui_core::LayoutStyle,
     next: &nana_ui_core::LayoutStyle,
 ) -> bool {
-    previous.direction != next.direction
-        || previous.dir != next.dir
-        || previous.flex_reverse != next.flex_reverse
-        || previous.order != next.order
-        || previous.flex_wrap != next.flex_wrap
-        || previous.display != next.display
-        || previous.box_sizing != next.box_sizing
-        || previous.position != next.position
-        || previous.gap != next.gap
-        || previous.row_gap != next.row_gap
-        || previous.column_gap != next.column_gap
-        || previous.padding != next.padding
-        || previous.padding_top != next.padding_top
-        || previous.padding_right != next.padding_right
-        || previous.padding_bottom != next.padding_bottom
-        || previous.padding_left != next.padding_left
-        || previous.logical_padding != next.logical_padding
-        || previous.margin != next.margin
-        || previous.margin_top != next.margin_top
-        || previous.margin_right != next.margin_right
-        || previous.margin_bottom != next.margin_bottom
-        || previous.margin_left != next.margin_left
-        || previous.logical_margin != next.logical_margin
-        || previous.offset_top != next.offset_top
-        || previous.offset_right != next.offset_right
-        || previous.offset_bottom != next.offset_bottom
-        || previous.offset_left != next.offset_left
-        || previous.logical_inset != next.logical_inset
-        || previous.width != next.width
-        || previous.height != next.height
-        || previous.min_width != next.min_width
-        || previous.max_width != next.max_width
-        || previous.min_height != next.min_height
-        || previous.max_height != next.max_height
-        || previous.allow_shrink != next.allow_shrink
-        || previous.align_items != next.align_items
-        || previous.align_self != next.align_self
-        || previous.align_content != next.align_content
-        || previous.justify_content != next.justify_content
-        || previous.justify_items != next.justify_items
-        || previous.justify_self != next.justify_self
-        || previous.flex_grow != next.flex_grow
-        || previous.flex_shrink != next.flex_shrink
-        || previous.flex_basis != next.flex_basis
-        || previous.overflow_x != next.overflow_x
-        || previous.overflow_y != next.overflow_y
-        || previous.aspect_ratio != next.aspect_ratio
-        || previous.float != next.float
-        || previous.clear != next.clear
-        || previous.writing_mode != next.writing_mode
-        || previous.unsupported_writing_mode != next.unsupported_writing_mode
-        || previous.layout_isolation != next.layout_isolation
-        || previous.grid_template_areas != next.grid_template_areas
-        || previous.grid_columns != next.grid_columns
-        || previous.grid_rows != next.grid_rows
-        || previous.grid_auto_columns != next.grid_auto_columns
-        || previous.grid_auto_rows != next.grid_auto_rows
-        || previous.grid_auto_flow != next.grid_auto_flow
-        || previous.grid_columns_repeat != next.grid_columns_repeat
-        || previous.grid_rows_repeat != next.grid_rows_repeat
-        || previous.grid_placement != next.grid_placement
-        || previous.border_width != next.border_width
-        || previous.border_top_width != next.border_top_width
-        || previous.border_right_width != next.border_right_width
-        || previous.border_bottom_width != next.border_bottom_width
-        || previous.border_left_width != next.border_left_width
-        || previous.border_style != next.border_style
-        || previous.border_top_style != next.border_top_style
-        || previous.border_right_style != next.border_right_style
-        || previous.border_bottom_style != next.border_bottom_style
-        || previous.border_left_style != next.border_left_style
+    previous
+        .changed_fields(next)
+        .intersects(nana_ui_core::LayoutStyleChange::CONTAINING_BLOCK)
 }
 
 impl MessageBridge {

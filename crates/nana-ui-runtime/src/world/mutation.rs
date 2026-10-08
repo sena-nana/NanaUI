@@ -1439,19 +1439,19 @@ impl UiWorld {
                 let cursor_changed = previous.layout.cursor != style.layout.cursor;
                 let user_select_changed = previous.layout.user_select != style.layout.user_select;
                 let omits_box_changed = previous.layout.omits_box() != style.layout.omits_box();
-                let transform_changed = previous.layout.transform != style.layout.transform
-                    || previous.layout.transform_3d != style.layout.transform_3d
-                    || previous.layout.transform_origin != style.layout.transform_origin
-                    || previous.layout.transform_box != style.layout.transform_box
-                    || previous.layout.css_perspective != style.layout.css_perspective
-                    || previous.layout.preserve_3d != style.layout.preserve_3d
-                    || previous.layout.unsupported_transform != style.layout.unsupported_transform;
-                let stacking_changed = previous.layout.z_index != style.layout.z_index
-                    || previous.layout.isolation != style.layout.isolation;
-                let layout_changed =
-                    layout_semantics_changed(previous.layout.as_ref(), style.layout.as_ref());
-                let style_layout_invalidation =
-                    layout_style_invalidation(previous.layout.as_ref(), style.layout.as_ref());
+                // One pass over the layout fields, read by every
+                // classification below.
+                let changed = if Arc::ptr_eq(&previous.layout, &style.layout) {
+                    nana_ui_core::LayoutStyleChange::NONE
+                } else {
+                    previous.layout.changed_fields(style.layout.as_ref())
+                };
+                let transform_changed =
+                    changed.intersects(nana_ui_core::LayoutStyleChange::TRANSFORM);
+                let stacking_changed =
+                    changed.intersects(nana_ui_core::LayoutStyleChange::STACKING);
+                let layout_changed = changed.intersects(nana_ui_core::LayoutStyleChange::LAYOUT);
+                let style_layout_invalidation = layout_style_invalidation(changed);
                 if !super::text::same_text_constraint_inputs(&previous, style) {
                     self.nodes
                         .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
@@ -1491,9 +1491,9 @@ impl UiWorld {
                     );
                 }
 
-                if !style_excluding_transform_and_cursor_eq(&previous, style) {
+                if !style_excluding_transform_and_cursor_eq(&previous, style, changed) {
                     self.mark(*id, DirtyMask::STYLE);
-                    if !style_change_is_layout_geometry_only(&previous, style) {
+                    if !style_change_is_layout_geometry_only(&previous, style, changed) {
                         self.mark(*id, DirtyMask::RENDER);
                     }
                 }

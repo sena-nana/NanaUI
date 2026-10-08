@@ -4782,127 +4782,41 @@ fn node_presentation_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
         && left.painter == right.painter
 }
 
-fn style_excluding_transform_and_cursor_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
-    node_presentation_eq(left, right)
-        && (std::sync::Arc::ptr_eq(&left.layout, &right.layout)
-            || layout_excluding_transform_and_cursor_eq(
-                left.layout.as_ref(),
-                right.layout.as_ref(),
-            ))
-}
-
-fn layout_excluding_transform_and_cursor_eq(
-    left: &nana_ui_core::LayoutStyle,
-    right: &nana_ui_core::LayoutStyle,
+/// Equal but for transforms and the cursor, given what changed in layout.
+fn style_excluding_transform_and_cursor_eq(
+    left: &NodeStyle,
+    right: &NodeStyle,
+    changed: nana_ui_core::LayoutStyleChange,
 ) -> bool {
-    let excluded_equal = left.transform == right.transform
-        && left.transform_3d == right.transform_3d
-        && left.unsupported_transform == right.unsupported_transform
-        && left.transform_origin == right.transform_origin
-        && left.transform_box == right.transform_box
-        && left.css_perspective == right.css_perspective
-        && left.preserve_3d == right.preserve_3d
-        && left.cursor == right.cursor
-        && left.user_select == right.user_select;
-    if excluded_equal {
-        return left == right;
-    }
-    // One copy, carrying the other side's excluded fields, instead of two
-    // stripped copies.
-    let mut left = left.clone();
-    left.transform = right.transform;
-    left.transform_3d = right.transform_3d;
-    left.unsupported_transform = right.unsupported_transform.clone();
-    left.transform_origin = right.transform_origin;
-    left.transform_box = right.transform_box;
-    left.css_perspective = right.css_perspective;
-    left.preserve_3d = right.preserve_3d;
-    left.cursor = right.cursor;
-    left.user_select = right.user_select;
-    left == *right
+    use nana_ui_core::LayoutStyleChange as Change;
+    node_presentation_eq(left, right)
+        && changed
+            .difference(Change::TRANSFORM.union(Change::CURSOR))
+            .is_empty()
 }
 
-/// True when the write changes only fields layout resolves into a box.
-fn style_change_is_layout_geometry_only(previous: &NodeStyle, next: &NodeStyle) -> bool {
-    if !node_presentation_eq(previous, next)
-        || !layout_semantics_changed(previous.layout.as_ref(), next.layout.as_ref())
-    {
+/// True when the write changes only fields layout resolves into a box: a
+/// field paint also reads off the style (border widths and styles, how text
+/// breaks, aligns and ends) is not one, since changing it alone may leave
+/// every box in place and still change the pixels. Transforms and the
+/// cursor ride along without counting.
+fn style_change_is_layout_geometry_only(
+    previous: &NodeStyle,
+    next: &NodeStyle,
+    changed: nana_ui_core::LayoutStyleChange,
+) -> bool {
+    use nana_ui_core::LayoutStyleChange as Change;
+    if !node_presentation_eq(previous, next) {
         return false;
     }
-    let overlaid = layout_with_semantics_of(previous.layout.as_ref(), next.layout.as_ref());
-    layout_excluding_transform_and_cursor_eq(&overlaid, next.layout.as_ref())
-}
-
-/// `base` with the fields whose change only moves boxes taken from
-/// `semantics`. A field paint also reads off the style (border widths and
-/// styles, how text breaks, aligns and ends) is not one: changing it alone
-/// may leave every box in place and still change the pixels.
-fn layout_with_semantics_of(
-    base: &nana_ui_core::LayoutStyle,
-    semantics: &nana_ui_core::LayoutStyle,
-) -> nana_ui_core::LayoutStyle {
-    let mut overlaid = base.clone();
-    overlaid.direction = semantics.direction;
-    overlaid.dir = semantics.dir;
-    overlaid.flex_reverse = semantics.flex_reverse;
-    overlaid.order = semantics.order;
-    overlaid.flex_wrap = semantics.flex_wrap;
-    overlaid.display = semantics.display;
-    overlaid.box_sizing = semantics.box_sizing;
-    overlaid.position = semantics.position;
-    overlaid.gap = semantics.gap;
-    overlaid.row_gap = semantics.row_gap;
-    overlaid.column_gap = semantics.column_gap;
-    overlaid.padding = semantics.padding;
-    overlaid.padding_top = semantics.padding_top;
-    overlaid.padding_right = semantics.padding_right;
-    overlaid.padding_bottom = semantics.padding_bottom;
-    overlaid.padding_left = semantics.padding_left;
-    overlaid.margin = semantics.margin;
-    overlaid.margin_top = semantics.margin_top;
-    overlaid.margin_right = semantics.margin_right;
-    overlaid.margin_bottom = semantics.margin_bottom;
-    overlaid.margin_left = semantics.margin_left;
-    overlaid.offset_top = semantics.offset_top;
-    overlaid.offset_right = semantics.offset_right;
-    overlaid.offset_bottom = semantics.offset_bottom;
-    overlaid.offset_left = semantics.offset_left;
-    overlaid.width = semantics.width;
-    overlaid.height = semantics.height;
-    overlaid.min_width = semantics.min_width;
-    overlaid.max_width = semantics.max_width;
-    overlaid.min_height = semantics.min_height;
-    overlaid.max_height = semantics.max_height;
-    overlaid.allow_shrink = semantics.allow_shrink;
-    overlaid.align_items = semantics.align_items;
-    overlaid.align_self = semantics.align_self;
-    overlaid.align_content = semantics.align_content;
-    overlaid.justify_content = semantics.justify_content;
-    overlaid.justify_items = semantics.justify_items;
-    overlaid.justify_self = semantics.justify_self;
-    overlaid.flex_grow = semantics.flex_grow;
-    overlaid.flex_shrink = semantics.flex_shrink;
-    overlaid.flex_basis = semantics.flex_basis;
-    overlaid.overflow_x = semantics.overflow_x;
-    overlaid.overflow_y = semantics.overflow_y;
-    overlaid.aspect_ratio = semantics.aspect_ratio;
-    overlaid.float = semantics.float;
-    overlaid.clear = semantics.clear;
-    overlaid.writing_mode = semantics.writing_mode;
-    overlaid.grid_template_areas = semantics.grid_template_areas.clone();
-    overlaid.grid_column_line_names = semantics.grid_column_line_names.clone();
-    overlaid.grid_row_line_names = semantics.grid_row_line_names.clone();
-    overlaid.grid_columns = semantics.grid_columns.clone();
-    overlaid.grid_rows = semantics.grid_rows.clone();
-    overlaid.grid_columns_unsupported = semantics.grid_columns_unsupported;
-    overlaid.grid_rows_unsupported = semantics.grid_rows_unsupported;
-    overlaid.grid_auto_columns = semantics.grid_auto_columns.clone();
-    overlaid.grid_auto_rows = semantics.grid_auto_rows.clone();
-    overlaid.grid_auto_flow = semantics.grid_auto_flow;
-    overlaid.grid_columns_repeat = semantics.grid_columns_repeat.clone();
-    overlaid.grid_rows_repeat = semantics.grid_rows_repeat.clone();
-    overlaid.grid_placement = semantics.grid_placement.clone();
-    overlaid
+    changed.intersects(Change::LAYOUT)
+        && changed
+            .difference(
+                Change::GEOMETRY
+                    .union(Change::TRANSFORM)
+                    .union(Change::CURSOR),
+            )
+            .is_empty()
 }
 
 /// Own box, padding, fragment, and clip. Child placements stay on the children,
@@ -4918,183 +4832,25 @@ fn layout_result_projects_new_geometry(
     !previous.geometry_eq(next)
 }
 
-fn layout_semantics_changed(
-    previous: &nana_ui_core::LayoutStyle,
-    next: &nana_ui_core::LayoutStyle,
-) -> bool {
-    // `None` is the default column axis throughout the layout engine. Treat
-    // it like `Some(Column)` at the mutation boundary so spelling changes do
-    // not retire retained measure plans or schedule a needless frontier.
-    previous
-        .direction
-        .unwrap_or(nana_ui_core::FlexDirection::Column)
-        != next
-            .direction
-            .unwrap_or(nana_ui_core::FlexDirection::Column)
-        || previous.dir != next.dir
-        || previous.flex_reverse != next.flex_reverse
-        || previous.order != next.order
-        || previous.flex_wrap != next.flex_wrap
-        || previous.display != next.display
-        || previous.box_sizing != next.box_sizing
-        || previous.position != next.position
-        || previous.gap != next.gap
-        || previous.row_gap != next.row_gap
-        || previous.column_gap != next.column_gap
-        || previous.padding != next.padding
-        || previous.padding_top != next.padding_top
-        || previous.padding_right != next.padding_right
-        || previous.padding_bottom != next.padding_bottom
-        || previous.padding_left != next.padding_left
-        || previous.margin != next.margin
-        || previous.margin_top != next.margin_top
-        || previous.margin_right != next.margin_right
-        || previous.margin_bottom != next.margin_bottom
-        || previous.margin_left != next.margin_left
-        || previous.offset_top != next.offset_top
-        || previous.offset_right != next.offset_right
-        || previous.offset_bottom != next.offset_bottom
-        || previous.offset_left != next.offset_left
-        || previous.width != next.width
-        || previous.height != next.height
-        || previous.min_width != next.min_width
-        || previous.max_width != next.max_width
-        || previous.min_height != next.min_height
-        || previous.max_height != next.max_height
-        || previous.allow_shrink != next.allow_shrink
-        || previous.align_items != next.align_items
-        || previous.align_self != next.align_self
-        || previous.align_content != next.align_content
-        || previous.justify_content != next.justify_content
-        || previous.justify_items != next.justify_items
-        || previous.justify_self != next.justify_self
-        || previous.flex_grow != next.flex_grow
-        || previous.flex_shrink != next.flex_shrink
-        || previous.flex_basis != next.flex_basis
-        || previous.overflow_x != next.overflow_x
-        || previous.overflow_y != next.overflow_y
-        || previous.text_overflow_ellipsis != next.text_overflow_ellipsis
-        || previous.line_clamp != next.line_clamp
-        || previous.white_space_nowrap != next.white_space_nowrap
-        || previous.white_space != next.white_space
-        || previous.word_break != next.word_break
-        || previous.overflow_wrap != next.overflow_wrap
-        || previous.aspect_ratio != next.aspect_ratio
-        || previous.font_italic != next.font_italic
-        || previous.text_align != next.text_align
-        || previous.word_break != next.word_break
-        || previous.line_break != next.line_break
-        || previous.float != next.float
-        || previous.clear != next.clear
-        || previous.writing_mode != next.writing_mode
-        || previous.grid_template_areas != next.grid_template_areas
-        || previous.grid_column_line_names != next.grid_column_line_names
-        || previous.grid_row_line_names != next.grid_row_line_names
-        || previous.grid_columns != next.grid_columns
-        || previous.grid_rows != next.grid_rows
-        || previous.grid_columns_unsupported != next.grid_columns_unsupported
-        || previous.grid_rows_unsupported != next.grid_rows_unsupported
-        || previous.grid_auto_columns != next.grid_auto_columns
-        || previous.grid_auto_rows != next.grid_auto_rows
-        || previous.grid_auto_flow != next.grid_auto_flow
-        || previous.grid_columns_repeat != next.grid_columns_repeat
-        || previous.grid_rows_repeat != next.grid_rows_repeat
-        || previous.grid_placement != next.grid_placement
-        || previous.border_width != next.border_width
-        || previous.border_top_width != next.border_top_width
-        || previous.border_right_width != next.border_right_width
-        || previous.border_bottom_width != next.border_bottom_width
-        || previous.border_left_width != next.border_left_width
-        || previous.border_style != next.border_style
-        || previous.border_top_style != next.border_top_style
-        || previous.border_right_style != next.border_right_style
-        || previous.border_bottom_style != next.border_bottom_style
-        || previous.border_left_style != next.border_left_style
-}
-
-/// Classify a style mutation at the layout authority boundary. The boolean
-/// `layout_semantics_changed` predicate remains the coverage guard while this
-/// function publishes the narrower dependency classes consumed by the
-/// retained frontier.
-fn layout_style_invalidation(
-    previous: &nana_ui_core::LayoutStyle,
-    next: &nana_ui_core::LayoutStyle,
-) -> LayoutInvalidation {
-    if !layout_semantics_changed(previous, next) {
+/// Classify a style mutation at the layout authority boundary: the
+/// dependency classes the retained frontier consumes, from what changed.
+fn layout_style_invalidation(changed: nana_ui_core::LayoutStyleChange) -> LayoutInvalidation {
+    use nana_ui_core::LayoutStyleChange as Change;
+    if !changed.intersects(Change::LAYOUT) {
         return LayoutInvalidation::none();
     }
-    let direction_changed = previous
-        .direction
-        .unwrap_or(nana_ui_core::FlexDirection::Column)
-        != next
-            .direction
-            .unwrap_or(nana_ui_core::FlexDirection::Column);
-    let writing =
-        direction_changed || previous.dir != next.dir || previous.writing_mode != next.writing_mode;
-    let spacing = previous.gap != next.gap
-        || previous.row_gap != next.row_gap
-        || previous.column_gap != next.column_gap
-        || previous.padding != next.padding
-        || previous.padding_top != next.padding_top
-        || previous.padding_right != next.padding_right
-        || previous.padding_bottom != next.padding_bottom
-        || previous.padding_left != next.padding_left
-        || previous.margin != next.margin
-        || previous.margin_top != next.margin_top
-        || previous.margin_right != next.margin_right
-        || previous.margin_bottom != next.margin_bottom
-        || previous.margin_left != next.margin_left;
-    let sizing = previous.width != next.width
-        || previous.height != next.height
-        || previous.min_width != next.min_width
-        || previous.max_width != next.max_width
-        || previous.min_height != next.min_height
-        || previous.max_height != next.max_height
-        || previous.box_sizing != next.box_sizing
-        || previous.aspect_ratio != next.aspect_ratio;
-    let position = previous.position != next.position
-        || previous.offset_top != next.offset_top
-        || previous.offset_right != next.offset_right
-        || previous.offset_bottom != next.offset_bottom
-        || previous.offset_left != next.offset_left
-        || previous.float != next.float
-        || previous.clear != next.clear;
-    let flow = previous.display != next.display
-        || previous.flex_reverse != next.flex_reverse
-        || previous.order != next.order
-        || previous.flex_wrap != next.flex_wrap
-        || previous.flex_grow != next.flex_grow
-        || previous.flex_shrink != next.flex_shrink
-        || previous.flex_basis != next.flex_basis
-        || previous.grid_template_areas != next.grid_template_areas
-        || previous.grid_column_line_names != next.grid_column_line_names
-        || previous.grid_row_line_names != next.grid_row_line_names
-        || previous.grid_columns != next.grid_columns
-        || previous.grid_rows != next.grid_rows
-        || previous.grid_columns_unsupported != next.grid_columns_unsupported
-        || previous.grid_rows_unsupported != next.grid_rows_unsupported
-        || previous.grid_auto_columns != next.grid_auto_columns
-        || previous.grid_auto_rows != next.grid_auto_rows
-        || previous.grid_auto_flow != next.grid_auto_flow
-        || previous.grid_columns_repeat != next.grid_columns_repeat
-        || previous.grid_rows_repeat != next.grid_rows_repeat
-        || previous.grid_placement != next.grid_placement;
-    let alignment = previous.align_items != next.align_items
-        || previous.align_self != next.align_self
-        || previous.align_content != next.align_content
-        || previous.justify_content != next.justify_content
-        || previous.justify_items != next.justify_items
-        || previous.justify_self != next.justify_self;
-    let typography = previous.font_italic != next.font_italic
-        || previous.text_align != next.text_align
-        || previous.word_break != next.word_break
-        || previous.line_break != next.line_break
-        || previous.white_space_nowrap != next.white_space_nowrap
-        || previous.white_space != next.white_space
-        || previous.overflow_wrap != next.overflow_wrap
-        || previous.text_overflow_ellipsis != next.text_overflow_ellipsis
-        || previous.line_clamp != next.line_clamp;
-    let scroll = previous.overflow_x != next.overflow_x || previous.overflow_y != next.overflow_y;
+    let writing = changed.intersects(Change::WRITING);
+    let spacing = changed.intersects(Change::SPACING);
+    let sizing = changed.intersects(Change::SIZING);
+    let position = changed.intersects(Change::POSITION);
+    let grid = changed.intersects(Change::GRID);
+    let flow = changed.intersects(Change::FLOW) || grid;
+    let alignment = changed.intersects(Change::ALIGNMENT);
+    let typography = changed.intersects(Change::TEXT_LAYOUT);
+    let scroll = changed.intersects(Change::SCROLL);
+    // Border widths and styles take or give room without a group of their
+    // own: classified as everything, as before.
+    let border = changed.intersects(Change::BORDER_GEOMETRY.union(Change::BORDER_STYLE));
 
     let mut fields = LayoutFieldMask::NONE;
     if flow {
@@ -5112,11 +4868,7 @@ fn layout_style_invalidation(
     if alignment {
         fields = fields.union(LayoutFieldMask::ALIGNMENT);
     }
-    if previous.grid_template_areas != next.grid_template_areas
-        || previous.grid_columns != next.grid_columns
-        || previous.grid_rows != next.grid_rows
-        || previous.grid_placement != next.grid_placement
-    {
+    if grid {
         fields = fields.union(LayoutFieldMask::GRID);
     }
     if typography || writing {
@@ -5125,9 +4877,7 @@ fn layout_style_invalidation(
     if scroll {
         fields = fields.union(LayoutFieldMask::SCROLL);
     }
-    if fields == LayoutFieldMask::NONE {
-        // Future LayoutStyle fields must remain safe until their group is
-        // explicitly classified here.
+    if border || fields == LayoutFieldMask::NONE {
         fields = LayoutFieldMask::ALL;
     }
 
