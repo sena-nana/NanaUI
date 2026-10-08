@@ -513,14 +513,16 @@ impl ChromeLayout {
             MediaTransportDensity::Mini => (space::MD, space::MD, space::XS, space::XS),
         };
         // Stacked: the center takes the first line (see `center`); the button
-        // groups wrap onto the second, pushed to its two ends.
+        // groups wrap onto the second, pushed to its two ends. Mini hides the
+        // center that otherwise takes the free width, so its two groups are
+        // pushed apart the same way.
         let stacked = self.density == MediaTransportDensity::Stacked;
         layout.flex_wrap = if stacked {
             FlexWrap::Wrap
         } else {
             FlexWrap::NoWrap
         };
-        layout.justify_content = if stacked {
+        layout.justify_content = if stacked || self.mini() {
             JustifySpec::SpaceBetween
         } else {
             JustifySpec::Start
@@ -2181,6 +2183,12 @@ mod tests {
         assert!(
             time.x + time.width <= trailing_frame.x,
             "time before the trailing slot"
+        );
+        let chrome = stage.frame(slots.chrome.unwrap());
+        assert_close(
+            trailing_frame.x + trailing_frame.width,
+            chrome.x + chrome.width - space::MD,
+            "the time and trailing slot sit at the row's far end",
         );
         for id in [
             slots.mute,
