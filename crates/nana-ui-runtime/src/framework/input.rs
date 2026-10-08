@@ -26,6 +26,7 @@ use nana_ui_input::{
 use super::OverlayActivity;
 use crate::{AppContext, DocumentId, FrameworkError, StableNodeId, TextShaper};
 
+pub(crate) use dispatch::LINE_SCROLL_EXTENT;
 use dispatch::{KeyStroke, reborrow_text_shaper};
 pub use headless::HeadlessInput;
 

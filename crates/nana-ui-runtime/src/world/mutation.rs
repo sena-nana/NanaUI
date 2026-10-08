@@ -1623,15 +1623,16 @@ impl UiWorld {
                 let moved = record.layout.x.to_bits() != layout.x.to_bits()
                     || record.layout.y.to_bits() != layout.y.to_bits();
                 record.layout = *layout;
-                // A modal frame sizes its surface to its body slot's box: when
-                // that box changes, the frame's clip, hit area and paint change
-                // with it although the frame's own box did not.
+                // A parent that sizes its surface from this box (a modal
+                // frame's body, a popover's items): when the box changes, the
+                // parent's clip, hit area and paint change with it although
+                // its own box did not.
                 if (resized || moved)
                     && let Some(parent) = self.parent_id(*id)
-                    && matches!(
-                        self.nodes.visual(parent),
-                        Some(StandardVisual::ModalFrame { slots, .. }) if slots.body == Some(*id)
-                    )
+                    && self
+                        .nodes
+                        .visual(parent)
+                        .is_some_and(|visual| visual.paint_depends_on_child(*id))
                 {
                     self.mark(
                         parent,

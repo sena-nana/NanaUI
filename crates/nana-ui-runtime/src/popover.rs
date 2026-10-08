@@ -841,6 +841,39 @@ mod tests {
     use crate::framework::AppContext;
     use std::time::Duration;
 
+    /// An open popover's hanging surface is sized from its items: an item
+    /// whose box changes repaints and re-hit-tests the surface too.
+    #[test]
+    fn an_item_that_resizes_repaints_the_hanging_surface() {
+        let mut context = AppContext::new();
+        let popover = context
+            .create_component(
+                document(),
+                Popover::new().trigger("Details").width(240.0).open(true),
+            )
+            .unwrap();
+        let body = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).height(LengthSpec::Px(40.0)),
+            )
+            .unwrap();
+        context.append_child(popover, body).unwrap();
+        let viewport = LayoutViewport::new(320.0, 400.0);
+        context.layout_document(document(), viewport).unwrap();
+        let _ = context.take_system_work();
+
+        context
+            .update_component(body, |stack, _| {
+                *stack = crate::Stack::column(0.0).height(LengthSpec::Px(120.0));
+            })
+            .unwrap();
+        context.layout_document(document(), viewport).unwrap();
+        let work = context.take_system_work();
+        assert!(work.render_extraction.contains(&popover.stable_id()));
+        assert!(work.input_hit_test.contains(&popover.stable_id()));
+    }
+
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
     }

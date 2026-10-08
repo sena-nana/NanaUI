@@ -39,7 +39,7 @@ macro_rules! optional_input {
 }
 
 /// Logical pixels one wheel line scrolls.
-const LINE_SCROLL_EXTENT: f32 = 60.0;
+pub(crate) const LINE_SCROLL_EXTENT: f32 = 60.0;
 /// Rows PageUp and PageDown move a focused table by.
 const TABLE_PAGE_ROWS: usize = 10;
 

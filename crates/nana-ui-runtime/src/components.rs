@@ -3106,9 +3106,6 @@ pub enum AccessibilityScrollUnit {
     Page,
 }
 
-/// How far a line step scrolls: a wheel notch's extent.
-pub(crate) const ACCESSIBILITY_LINE_SCROLL: f32 = 60.0;
-
 impl AccessibilityScrollDirection {
     /// The offset change of one step in this direction over a viewport of
     /// this size. A line never steps past a whole viewport.
@@ -3119,7 +3116,10 @@ impl AccessibilityScrollDirection {
         viewport_height: f32,
     ) -> ScrollOffset {
         let step = |viewport: f32| match unit {
-            AccessibilityScrollUnit::Item => ACCESSIBILITY_LINE_SCROLL.min(viewport.max(0.0)),
+            // A line is what a wheel notch scrolls.
+            AccessibilityScrollUnit::Item => {
+                crate::framework::LINE_SCROLL_EXTENT.min(viewport.max(0.0))
+            }
             AccessibilityScrollUnit::Page => viewport,
         };
         match self {
@@ -3918,6 +3918,22 @@ pub struct ExtractedTextSpan {
 }
 
 impl StandardVisual {
+    /// Whether this node's own paint, clip and hit area are sized from
+    /// `child`'s box, so a change to that box changes them although this
+    /// node's box did not: a modal frame's surface fits its body slot, an
+    /// open triggered menu's hanging surface fits its items.
+    pub(crate) fn paint_depends_on_child(&self, child: StableNodeId) -> bool {
+        match self {
+            Self::ModalFrame { slots, .. } => slots.body == Some(child),
+            Self::MenuSurface {
+                open: true,
+                overlay: Some(overlay),
+                ..
+            } => overlay.trigger_content != Some(child),
+            _ => false,
+        }
+    }
+
     /// Optional component family owning this visual; base geometry has no feature.
     pub fn required_feature(&self) -> Option<&'static str> {
         match self {
