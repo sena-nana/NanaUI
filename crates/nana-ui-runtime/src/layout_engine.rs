@@ -3429,21 +3429,6 @@ mod tests;
 #[cfg(any(test, feature = "layout-verify"))]
 pub(crate) mod verify {
     use super::*;
-    use std::cell::Cell;
-
-    thread_local! {
-        static SKIP: Cell<u32> = const { Cell::new(0) };
-    }
-
-    /// Run `f` without the guard: for the few tests that look at a pass the
-    /// guard would reject on purpose.
-    #[cfg(test)]
-    pub(crate) fn skip_layout_verify<R>(f: impl FnOnce() -> R) -> R {
-        SKIP.with(|skip| skip.set(skip.get() + 1));
-        let result = f();
-        SKIP.with(|skip| skip.set(skip.get() - 1));
-        result
-    }
 
     fn same(a: LayoutBox, b: LayoutBox) -> bool {
         const EPSILON: f32 = 0.01;
@@ -3466,9 +3451,6 @@ pub(crate) mod verify {
         seeds: &[LayoutFrontierSeed],
         force_full: bool,
     ) {
-        if SKIP.with(Cell::get) > 0 {
-            return;
-        }
         let Some(cache) = retained.documents.get(&document) else {
             return;
         };
