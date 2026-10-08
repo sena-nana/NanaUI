@@ -36,7 +36,7 @@ WindowShadow 与 UiScene 的 `DropShadow` 是两条 authority：前者由 Window
 
 默认自绘标题栏：左侧内容、中间标题、右侧窗口按钮。空白处拖动窗口。按钮先吃到指针。不会被拖走。
 
-叠加在舞台上的标题栏仍使用 `AppTitleBar`。通过 `leading / center / trailing / controls` 布局槽承载文字和操作。并调用 `assemble_app_title_bar`。`transparent(true)` 仅移除栏背景。保留内容与命中。不需要开启整窗透明。`drag_enabled(false)` 禁止栏内空白与文字启动拖窗。并在后续输入时取消已按下但未完成的手势。隐藏或卸载标题栏也会取消。默认分别为 `false`、`true`。全屏保留业务入口时设置 `drag_enabled(false)` 和 `show_window_controls(false)`。不要另外添加顶边坐标拖动逻辑。语义入口支持 `transparent` 和 `drag-enabled`。标题为空且没有 center 内容时不保留中间占位。右侧按内容宽度保留空间。左侧使用剩余宽度并可收缩。有标题或 center 时保持左右对称布局。放不下时按这个次序让位：中间列先挪开（右侧内容比均分宽度宽时。中间列向左让出。宽度不变）。再收窄（内容省略。可收到零）。右侧列（应用的按钮与窗口按钮）永远保有它内容的宽度。所以窗口按钮不会被裁掉。左侧列在中间列之前被挤窄。
+叠加在舞台上的标题栏仍使用 `AppTitleBar`。通过 `leading / center / trailing / controls` 布局槽承载文字和操作。并调用 `assemble_app_title_bar`。`transparent(true)` 仅移除栏背景。保留内容与命中。不需要开启整窗透明。叠在视频上时用 `over_media(true)`：媒体遮罩渐变垫在栏后，标题与窗口按钮用主题的浅色媒体前景，不随浅色主题变暗。`drag_enabled(false)` 禁止栏内空白与文字启动拖窗。并在后续输入时取消已按下但未完成的手势。隐藏或卸载标题栏也会取消。默认分别为 `false`、`true`。全屏保留业务入口时设置 `drag_enabled(false)` 和 `show_window_controls(false)`。不要另外添加顶边坐标拖动逻辑。语义入口支持 `transparent` 和 `drag-enabled`。标题为空且没有 center 内容时不保留中间占位。右侧按内容宽度保留空间。左侧使用剩余宽度并可收缩。有标题或 center 时保持左右对称布局。放不下时按这个次序让位：中间列先挪开（右侧内容比均分宽度宽时。中间列向左让出。宽度不变）。再收窄（内容省略。可收到零）。右侧列（应用的按钮与窗口按钮）永远保有它内容的宽度。所以窗口按钮不会被裁掉。左侧列在中间列之前被挤窄。
 
 系统窗口按钮是标题栏的 `controls` 组件 `AppTitleBarControls`。布局由组件节点决定。两平台对外一致：
 
@@ -479,7 +479,7 @@ commands.push(WindowCommand::SetContentAspectRatio { id, ratio: Some(9.0 / 16.0)
 - **最大化与全屏**不受约束，用平台给的尺寸。在最大化或全屏时换了比例，窗口回到普通状态后的第一次尺寸变化时再按新比例调整。
 - **平台**：拖动时保持比例只在 Windows 上实现。macOS 与 Linux 上开窗尺寸、换比例时的调整和最小尺寸照常生效，用户拖动不受约束。
 
-只放视频的窗口，外壳的显隐交给媒体条的 `auto_hide(true)`：指针空闲、离开窗口（包括全屏时）都会收起，标题栏听条的 `OverlayVisibilityChanged` 跟着走。不要再用 `PointerPresenceChanged` 自己维护「指针在不在」来切换外壳，那样全屏时外壳永远不会收起。写法见 [MediaTransportBar](../components/media-transport-bar.md#自动收起)。
+只放视频的窗口，外壳的显隐交给媒体条的 `auto_hide(true)`：指针空闲、离开窗口（包括全屏时）都会收起，标题栏听条的 `OverlayVisibilityChanged` 跟着走。标题栏写 `AppTitleBar::over_media(true)`，不要只写 `transparent(true)`：浅色主题的深色前景落在画面上看不清。不要再用 `PointerPresenceChanged` 自己维护「指针在不在」来切换外壳，那样全屏时外壳永远不会收起。写法见 [MediaTransportBar](../components/media-transport-bar.md#自动收起)。
 
 ### 嵌入已有宿主
 

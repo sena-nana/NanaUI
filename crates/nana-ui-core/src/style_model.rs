@@ -48,7 +48,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::semantics::{ButtonKind, CardKind, ControlSize, StatusTone};
-use crate::theme::tokens::{AccentRamp, OpacityTokens, StateLayer};
+use crate::theme::tokens::{AccentRamp, MEDIA_FOREGROUND, OpacityTokens, StateLayer};
 use crate::theme::{ThemeAppearance, ThemeMetrics, UI_BASE_TEXT_SIZE, UI_METRICS};
 
 /// Backend-neutral RGBA in 0..=1.
@@ -311,6 +311,9 @@ pub enum SemanticColorRole {
     /// Chrome strip. Defaults to Surface; backdrop can keep it opaque while
     /// sidebar Surface is translucent.
     Titlebar,
+    /// Text and glyphs over media under the theme's media scrim, light in
+    /// every mode. The theme's `EffectTokens::media_foreground`.
+    OnMedia,
     // ---- 代码 token 角色（语义 overlay 通道；默认值见 `SemanticPalette::get`，
     // Muted/Faint 系保守起步、逐主题可覆盖）----
     /// 函数名（声明与调用点）。
@@ -379,6 +382,7 @@ impl SemanticColorRole {
             "danger-soft-hover" => Self::DangerSoftHover,
             "danger-soft-pressed" => Self::DangerSoftPressed,
             "titlebar" | "title-bar" => Self::Titlebar,
+            "on-media" => Self::OnMedia,
             _ => return None,
         })
     }
@@ -748,6 +752,9 @@ impl SemanticPalette {
                 ..self.danger
             },
             SemanticColorRole::Titlebar => self.surface,
+            // An effect token, not a palette field: the built-in value here,
+            // the installed one through `StyleModelRef::color`.
+            SemanticColorRole::OnMedia => MEDIA_FOREGROUND,
             // 代码 token 角色默认值：Keyword/Function/Type 与 syntect
             // 基础层已有视觉档位对齐，避免开启语义高亮后反而褪色；
             // Builtin 在 syntect 无对应档位（现状不着色），accent 属
@@ -775,6 +782,8 @@ pub struct StyleModelRef {
     pub metrics: ThemeMetrics,
     pub palette: SemanticPalette,
     pub titlebar: SemanticColor,
+    /// [`SemanticColorRole::OnMedia`]: the theme's on-media foreground.
+    pub on_media: SemanticColor,
     /// State-layer alphas for the derived soft roles. Small on purpose: this
     /// struct is the per-node read handle, and Issue #101 §1.5 measured what
     /// putting a large value on a read path costs.
@@ -792,6 +801,7 @@ impl StyleModelRef {
             },
             metrics: UI_METRICS,
             titlebar: palette.surface,
+            on_media: MEDIA_FOREGROUND,
             palette,
             opacity: OpacityTokens::for_appearance(theme_mode),
         }
@@ -809,13 +819,21 @@ impl StyleModelRef {
             metrics,
             palette,
             titlebar,
+            on_media: MEDIA_FOREGROUND,
             opacity,
         }
+    }
+
+    /// The installed on-media foreground ([`SemanticColorRole::OnMedia`]).
+    pub const fn with_on_media(mut self, on_media: SemanticColor) -> Self {
+        self.on_media = on_media;
+        self
     }
 
     pub const fn color(self, role: SemanticColorRole) -> SemanticColor {
         match role {
             SemanticColorRole::Titlebar => self.titlebar,
+            SemanticColorRole::OnMedia => self.on_media,
             other => self.palette.get_in(other, self.opacity),
         }
     }

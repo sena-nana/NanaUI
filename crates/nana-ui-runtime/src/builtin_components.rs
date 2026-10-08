@@ -1931,6 +1931,7 @@ impl RegisterableComponent for AppTitleBar {
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let mut component = AppTitleBar::new(spec.display_label())
             .transparent(flag_attr(spec, &["transparent"]))
+            .over_media(flag_attr(spec, &["over-media"]))
             .drag_enabled(
                 parse_tristate_attr(spec, &["drag-enabled", "dragenabled"]).unwrap_or(true),
             )
@@ -3596,17 +3597,23 @@ mod tests {
         let defaults =
             AppTitleBar::from_semantic(&spec_with(&type_id, &layout, &[], &[], &[], "", ""));
         assert!(!defaults.transparent);
+        assert!(!defaults.over_media);
         assert!(defaults.drag_enabled);
         let configured = AppTitleBar::from_semantic(&spec_with(
             &type_id,
             &layout,
-            &[("transparent", "true"), ("drag-enabled", "false")],
+            &[
+                ("transparent", "true"),
+                ("over-media", "true"),
+                ("drag-enabled", "false"),
+            ],
             &[],
             &[],
             "",
             "",
         ));
         assert!(configured.transparent);
+        assert!(configured.over_media);
         assert!(!configured.drag_enabled);
     }
 

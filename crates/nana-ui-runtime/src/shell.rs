@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LengthSpec, OverflowSpec,
-    PositionSpec, RegionId, SemanticColorRole, TITLE_BAR_HEIGHT, WINDOW_CONTROL_GAP,
-    WINDOW_CONTROL_PADDING, WINDOW_CONTROL_WIDTH, WindowChrome, WorkspaceModel,
+    PositionSpec, RegionId, SemanticColorMix, SemanticColorRole, TITLE_BAR_HEIGHT,
+    WINDOW_CONTROL_GAP, WINDOW_CONTROL_PADDING, WINDOW_CONTROL_WIDTH, WindowChrome, WorkspaceModel,
 };
 
 use crate::view_components::project_common;
@@ -26,6 +26,12 @@ const NATIVE_LEADING_CLEARANCE: f32 = nana_ui_core::space::MD;
 const NATIVE_WINDOW_CONTROLS_WIDTH: f32 = 78.0;
 const TITLE_FONT_SIZE: f32 = nana_ui_core::type_scale::BODY;
 const TITLE_FONT_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
+/// Over media, a window button's hover and press are the on-media foreground
+/// at these alphas, the way a player's own buttons light up over the picture.
+const MEDIA_HOVER_ALPHA: f32 = 0.16;
+const MEDIA_PRESSED_ALPHA: f32 = 0.24;
+/// Close keeps its danger fill over media; pressing it darkens the fill.
+const MEDIA_CLOSE_PRESSED_ALPHA: f32 = 0.8;
 const OVERLAY_Z_INDEX: i32 = 1;
 const STATUS_OVERLAY_Z_INDEX: i32 = 2;
 
@@ -68,6 +74,10 @@ impl WindowChromeAction {
 pub struct AppTitleBar {
     pub title: Arc<str>,
     pub transparent: bool,
+    /// Laid over media (a video): a scrim behind the bar and the on-media
+    /// foreground on the title and window buttons, in every theme. Implies
+    /// [`Self::transparent`].
+    pub over_media: bool,
     pub drag_enabled: bool,
     pub leading: Option<StableNodeId>,
     pub center: Option<StableNodeId>,
@@ -88,6 +98,7 @@ impl AppTitleBar {
         Self {
             title: title.into(),
             transparent: false,
+            over_media: false,
             drag_enabled: true,
             leading: None,
             center: None,
@@ -104,6 +115,16 @@ impl AppTitleBar {
     /// Removes only the title-bar background, preserving foreground and slot content.
     pub fn transparent(mut self, transparent: bool) -> Self {
         self.transparent = transparent;
+        self
+    }
+
+    /// Lays the bar over media, the way an image viewer shows an image: the
+    /// theme's media scrim fades from the top edge to nothing behind the bar,
+    /// and the title and window buttons take the theme's on-media foreground
+    /// ([`SemanticColorRole::OnMedia`]). The media is dark in the light theme
+    /// too, so both themes look the same. Implies [`Self::transparent`].
+    pub fn over_media(mut self, over_media: bool) -> Self {
+        self.over_media = over_media;
         self
     }
 
@@ -180,8 +201,16 @@ impl AppTitleBar {
     fn effective_style(&self, world: &UiWorld, id: StableNodeId) -> NodeStyle {
         let columns = title_bar_has_columns(world, id);
         let mut style = self.style.clone();
-        style.foreground = Some(SemanticColorRole::Text);
-        style.background = (!self.transparent).then_some(SemanticColorRole::Titlebar);
+        style.foreground = Some(if self.over_media {
+            SemanticColorRole::OnMedia
+        } else {
+            SemanticColorRole::Text
+        });
+        style.background =
+            (!self.transparent && !self.over_media).then_some(SemanticColorRole::Titlebar);
+        if self.over_media {
+            style.painter = Some(crate::NodePainter::new(MediaScrimPainter));
+        }
         style.text_horizontal_alignment = TextHorizontalAlignment::Center;
         style.text_vertical_alignment = TextVerticalAlignment::Center;
         let layout = Arc::make_mut(&mut style.layout);
@@ -323,6 +352,7 @@ impl AppTitleBar {
         }
         AppTitleBarControls::new(self.maximized)
             .native(self.native_controls)
+            .over_media(self.over_media)
             .project(controls, world, mutations);
     }
 }
@@ -382,6 +412,32 @@ impl ComponentView for AppTitleBar {
             },
         );
         self.project_slots(id, world, mutations);
+    }
+}
+
+/// [`AppTitleBar::over_media`]'s scrim: the theme's media scrim at the top
+/// edge, fading to nothing at the bottom. Painted rather than written into
+/// the layout so a theme install re-records it.
+struct MediaScrimPainter;
+
+impl crate::Painter for MediaScrimPainter {
+    fn paint(&self, cx: &mut crate::PaintContext<'_>) {
+        let scrim = cx.effects().media_scrim;
+        let clear = nana_ui_core::SemanticColor { a: 0.0, ..scrim };
+        let mut rect = crate::PaintPath::new();
+        rect.rect(cx.bounds());
+        cx.fill_path(
+            &rect,
+            crate::Gradient::linear([0.0, 0.0], [0.0, cx.size()[1]])
+                .stop(0.0, scrim.as_rgba_array())
+                .stop(1.0, clear.as_rgba_array()),
+        );
+        // After the scrim: the bar's own title goes on top of it.
+        cx.draw_default();
+    }
+
+    fn paint_key(&self) -> u64 {
+        0
     }
 }
 
@@ -456,6 +512,8 @@ impl ComponentView for AppTitleBarSlot {
 pub struct AppTitleBarControls {
     pub maximized: bool,
     pub native: bool,
+    /// The custom buttons sit over media: see [`AppTitleBar::over_media`].
+    pub over_media: bool,
     pub minimize: Option<StableNodeId>,
     pub maximize: Option<StableNodeId>,
     pub close: Option<StableNodeId>,
@@ -467,6 +525,7 @@ impl AppTitleBarControls {
         Self {
             maximized,
             native: !WindowChrome::platform_default().uses_custom_controls(),
+            over_media: false,
             minimize: None,
             maximize: None,
             close: None,
@@ -476,6 +535,11 @@ impl AppTitleBarControls {
 
     pub fn native(mut self, native: bool) -> Self {
         self.native = native;
+        self
+    }
+
+    pub fn over_media(mut self, over_media: bool) -> Self {
+        self.over_media = over_media;
         self
     }
 
@@ -601,7 +665,14 @@ impl ComponentView for AppTitleBarControls {
             let Some(child) = child else {
                 continue;
             };
-            project_window_control(child, action, self.maximized, world, mutations);
+            project_window_control(
+                child,
+                action,
+                self.maximized,
+                self.over_media,
+                world,
+                mutations,
+            );
         }
     }
 }
@@ -1090,6 +1161,7 @@ impl AppContext {
                 controls,
                 snapshot.maximized,
                 snapshot.native_controls,
+                snapshot.over_media,
             )?;
             changed |= controls != Some(mounted);
             controls = Some(mounted);
@@ -1487,9 +1559,10 @@ fn ensure_title_label(
         .stable_id())
 }
 
+/// No foreground of its own: the title takes the bar's, `Text` or, over
+/// media, `OnMedia`.
 fn title_label_style() -> NodeStyle {
     let mut style = NodeStyle::default();
-    style.foreground = Some(SemanticColorRole::Text);
     style.text_horizontal_alignment = TextHorizontalAlignment::Center;
     style.text_vertical_alignment = TextVerticalAlignment::Center;
     let layout = Arc::make_mut(&mut style.layout);
@@ -1627,6 +1700,7 @@ fn ensure_window_controls(
     existing: Option<StableNodeId>,
     maximized: bool,
     native: bool,
+    over_media: bool,
 ) -> Result<StableNodeId, FrameworkError> {
     let controls = existing
         .filter(|id| context.world().contains(*id))
@@ -1673,6 +1747,7 @@ fn ensure_window_controls(
                     |controls, _| {
                         controls.maximized = maximized;
                         controls.native = false;
+                        controls.over_media = over_media;
                         controls.minimize = Some(minimize);
                         controls.maximize = Some(maximize);
                         controls.close = Some(close);
@@ -1686,6 +1761,7 @@ fn ensure_window_controls(
                 |controls, _| {
                     controls.maximized = maximized;
                     controls.native = false;
+                    controls.over_media = over_media;
                 },
             )?;
         }
@@ -1696,6 +1772,7 @@ fn ensure_window_controls(
         document,
         AppTitleBarControls::new(maximized)
             .native(false)
+            .over_media(over_media)
             .minimize(minimize)
             .maximize(maximize)
             .close(close),
@@ -2033,6 +2110,7 @@ fn project_window_control(
     id: StableNodeId,
     action: WindowChromeAction,
     maximized: bool,
+    over_media: bool,
     world: &UiWorld,
     mutations: &mut MutationQueue,
 ) {
@@ -2059,7 +2137,7 @@ fn project_window_control(
         id,
         world,
         mutations,
-        &window_control_style(action == WindowChromeAction::Close),
+        &window_control_style(action == WindowChromeAction::Close, over_media),
         InteractionState {
             pointer_events: true,
             focusable: true,
@@ -2072,11 +2150,31 @@ fn project_window_control(
     );
 }
 
-fn window_control_style(danger: bool) -> NodeStyle {
+fn window_control_style(danger: bool, over_media: bool) -> NodeStyle {
     let mut style = IconButton::new(Icon::Close, "")
         .size(ControlSize::Small)
         .style;
-    if danger {
+    if over_media {
+        let on_media = |background_mix| crate::SemanticPaint {
+            foreground: Some(SemanticColorRole::OnMedia),
+            background_mix: Some(background_mix),
+            ..crate::SemanticPaint::default()
+        };
+        style.foreground = Some(SemanticColorRole::OnMedia);
+        let (hovered, pressed) = if danger {
+            (
+                SemanticColorMix::alpha(SemanticColorRole::Danger, 1.0),
+                SemanticColorMix::alpha(SemanticColorRole::Danger, MEDIA_CLOSE_PRESSED_ALPHA),
+            )
+        } else {
+            (
+                SemanticColorMix::alpha(SemanticColorRole::OnMedia, MEDIA_HOVER_ALPHA),
+                SemanticColorMix::alpha(SemanticColorRole::OnMedia, MEDIA_PRESSED_ALPHA),
+            )
+        };
+        style.interaction.hovered = on_media(hovered);
+        style.interaction.pressed = on_media(pressed);
+    } else if danger {
         style.interaction.hovered.foreground = Some(SemanticColorRole::Danger);
         style.interaction.hovered.background = Some(SemanticColorRole::DangerSoftHover);
         style.interaction.pressed.foreground = Some(SemanticColorRole::Danger);
@@ -2365,6 +2463,121 @@ mod tests {
                 parent
             );
             assert_eq!(context.world().text(text.stable_id()), Some("Status"));
+        }
+    }
+
+    /// Over media the light theme looks like the dark one: the media scrim
+    /// fades behind the bar, and the title and window buttons are light at
+    /// rest, hovered and pressed. Turning it off gives the themed bar back.
+    #[test]
+    fn a_title_bar_over_media_is_light_on_the_media_scrim_in_the_light_theme() {
+        let mut context = AppContext::new();
+        let palette = nana_ui_core::SemanticPalette::light();
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeAppearance::Light,
+                nana_ui_core::UI_METRICS,
+                palette,
+                palette.surface,
+            )
+            .unwrap();
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("Nana")
+                    .native_controls(false)
+                    .over_media(true),
+            )
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        let effects = context.world().theme().effects();
+        let light = effects.media_foreground.as_rgba_array();
+        assert!(light[..3].iter().all(|channel| *channel > 0.9), "{light:?}");
+        let center = context
+            .world()
+            .node(bar.stable_id())
+            .unwrap()
+            .children
+            .iter()
+            .copied()
+            .find(|&id| node_tag(context.world(), id).as_deref() == Some(CENTER_COLUMN_TAG))
+            .unwrap();
+        let title = context.world().node(center).unwrap().children[0];
+        assert_eq!(context.world().text(title), Some("Nana"));
+        let controls = find_title_bar_controls_child(&context, bar.stable_id()).unwrap();
+        let buttons = context.world().node(controls).unwrap().children.clone();
+        assert_eq!(buttons.len(), 3);
+        let color =
+            |context: &AppContext, id| context.world().extract_nodes(&[id])[0].style.color.unwrap();
+
+        let node = &context.world().extract_nodes(&[bar.stable_id()])[0];
+        assert_eq!(node.style.background, None, "no themed bar fill");
+        let scrim = node.custom_paint.as_ref().expect("the scrim is painted");
+        let [
+            crate::PaintOp::FillPath {
+                paint: crate::ResolvedPaint::Gradient(gradient),
+                ..
+            },
+            crate::PaintOp::DrawDefault,
+        ] = scrim.behind_children.as_slice()
+        else {
+            panic!("a gradient under the bar's own paint: {scrim:?}");
+        };
+        assert_eq!(
+            gradient.shape,
+            crate::GradientShape::Linear {
+                start: [0.0, 0.0],
+                end: [0.0, TITLE_BAR_HEIGHT],
+            },
+            "top to bottom"
+        );
+        assert_eq!(
+            gradient.stops.first(),
+            Some(&(0.0, effects.media_scrim.as_rgba_array()))
+        );
+        assert_eq!(
+            gradient
+                .stops
+                .last()
+                .map(|(offset, color)| (*offset, color[3])),
+            Some((1.0, 0.0)),
+            "fades to nothing"
+        );
+        assert_eq!(color(&context, title), light);
+
+        let model = context.world().style_model();
+        for (index, &button) in buttons.iter().enumerate() {
+            assert_eq!(color(&context, button), light, "button {index} at rest");
+            let style = context.world().node_style(button).unwrap();
+            for state in [style.interaction.hovered, style.interaction.pressed] {
+                assert_eq!(state.foreground, Some(SemanticColorRole::OnMedia));
+                let fill = state.background_mix.unwrap().resolve(model);
+                if index == 2 {
+                    assert!(fill.r > 0.6 && fill.g < 0.4, "close stays red: {fill:?}");
+                } else {
+                    assert!(
+                        fill.r.min(fill.g).min(fill.b) > 0.9 && fill.a > 0.0 && fill.a < 0.5,
+                        "a light wash: {fill:?}"
+                    );
+                }
+            }
+        }
+
+        context
+            .update_component(bar, |bar, _| bar.over_media = false)
+            .unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        let node = &context.world().extract_nodes(&[bar.stable_id()])[0];
+        assert!(node.custom_paint.is_none());
+        assert_eq!(node.style.background, Some(palette.surface.as_rgba_array()));
+        assert_eq!(color(&context, title), palette.text.as_rgba_array());
+        for &button in &buttons {
+            assert_eq!(color(&context, button), palette.muted.as_rgba_array());
         }
     }
 

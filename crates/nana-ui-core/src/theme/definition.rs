@@ -587,6 +587,7 @@ impl ThemeDefinition {
             let _ = check.finite(name, shadow.spread_radius);
         }
         check.color("effects.media_scrim", self.effects.media_scrim);
+        check.color("effects.media_foreground", self.effects.media_foreground);
 
         if let Some(error) = error {
             return Err(error);
@@ -599,7 +600,8 @@ impl ThemeDefinition {
             tokens.palette,
             tokens.titlebar_color(),
             tokens.opacity,
-        );
+        )
+        .with_on_media(self.effects.media_foreground);
         Ok(super::CompiledTheme::new(
             ThemeIdentity {
                 id: self.id.clone(),
@@ -1024,6 +1026,35 @@ mod tests {
         assert_eq!(
             compiled.style_model().theme_appearance,
             ThemeAppearance::Custom
+        );
+    }
+
+    /// `OnMedia` is the theme's on-media foreground: light in both built-in
+    /// themes, and whatever a custom theme installs.
+    #[test]
+    fn the_on_media_role_is_the_installed_media_foreground() {
+        for definition in [ThemeDefinition::NANA_DARK, ThemeDefinition::NANA_LIGHT] {
+            let on_media = definition
+                .compile()
+                .expect("compiles")
+                .style_model()
+                .color(SemanticColorRole::OnMedia);
+            assert_eq!(on_media, definition.effects.media_foreground);
+            assert!(
+                on_media.r.min(on_media.g).min(on_media.b) > 0.9,
+                "{}: {on_media:?}",
+                definition.id
+            );
+        }
+        let mut custom = ThemeDefinition::NANA_LIGHT;
+        custom.effects.media_foreground = SemanticColor::rgb8(240, 236, 220);
+        assert_eq!(
+            custom
+                .compile()
+                .expect("compiles")
+                .style_model()
+                .color(SemanticColorRole::OnMedia),
+            SemanticColor::rgb8(240, 236, 220)
         );
     }
 

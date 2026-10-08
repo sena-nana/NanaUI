@@ -137,7 +137,7 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 | **L2 NanaVue** | `packages/nanavue-components` 的 props → Semantics；`src/nana-controls.css` 仍有 532 行样式，含 `--lilia-*` / `--nana-*` 变量与 fallback 字面色（`#dfe2e7`、`#e2e2e2` 等） | CSS fallback 值与 `SemanticPalette` 是两份数字。`SEMANTICS.md` 已禁止独立 `#3867ff`，但 fallback 链还在 |
 | **L1 Vue/CSS** | [`css_map.rs`](../../crates/nana-ui-css/src/css_map.rs) 把 CSS 子集映射到 Layout；[`style.rs`](../../crates/nana-ui-css/src/style.rs) 只做 paint 解析；已知 token 名经 `SemanticColorRole::from_css_token_name` 进 Tokens，未知 `#hex` 只能当受限 paint hint | 规则已经写死且有测试，是目前最干净的一层 |
 
-`from_css_token_name` 认得的名字就是 L1 的正式 token 表面：`background`/`surface`/`subtle`/`hover`/`active`/`selected*`/`border*`/`text`/`muted`/`faint`/`accent*`/`success`/`warning*`/`danger*`/`titlebar`。以及 `--nana-` 前缀与 `var()` 包裹。9 个代码 token 角色（`Keyword`/`Function`/…）**不在** L1 表面。只在 L3 语义高亮里用。
+`from_css_token_name` 认得的名字就是 L1 的正式 token 表面：`background`/`surface`/`subtle`/`hover`/`active`/`selected*`/`border*`/`text`/`muted`/`faint`/`accent*`/`success`/`warning*`/`danger*`/`titlebar`/`on-media`。以及 `--nana-` 前缀与 `var()` 包裹。9 个代码 token 角色（`Keyword`/`Function`/…）**不在** L1 表面。只在 L3 语义高亮里用。
 
 ### 1.4 审计发现
 
@@ -753,7 +753,7 @@ cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 | Border | `BorderTokens` | `HAIRLINE` 读它的 `DEFAULT` | 1 个裸 `const` |
 | Opacity | `OpacityTokens` | `StyleModelRef::color` 解析五个 soft 角色 | `SemanticPalette::get` 里的字面量 + `background.r > 0.5` 亮度嗅探 |
 | Motion | `MotionTokens` | hover 交叉淡入、switch 拨动读**安装值**；`motion::*` 八个 `const` 读 `DEFAULT` | 八个裸 `const` + 两个死字段 |
-| Effect / Elevation | `EffectTokens` | 菜单/浮层阴影、模态框阴影、图片查看器的媒体遮罩（`media_scrim`，两种模式都是深色；画家在线性光里合成，所以内置值是黑 0.99，白底上约 `#1a1a1a`）读**安装值** | `surface_shadow` 里的 `match mode` + 模态框的亮度嗅探 |
+| Effect / Elevation | `EffectTokens` | 菜单/浮层阴影、模态框阴影、图片查看器的媒体遮罩（`media_scrim`，两种模式都是深色；画家在线性光里合成，所以内置值是黑 0.99，白底上约 `#1a1a1a`）、叠在媒体上的前景（`media_foreground`，两种模式都是白色，经 `SemanticColorRole::OnMedia` 读）读**安装值** | `surface_shadow` 里的 `match mode` + 模态框的亮度嗅探 |
 | Surface / material | `SurfaceTokens` | `ThemeTokens::with_backdrop` 决定 backdrop 给哪个角色上 alpha | `match target` 写死在宿主适配层 |
 | Focus | `AccentRamp.focus` + `FocusSurface` / `FocusBorder` / `FocusText` | 11 个组件的 `InteractionStyle::focused`，以及 radio 焦点环的颜色 | 三个组件写 `border: Accent` 配零宽度边（画不出来）、三个与 hover 同值、一个与选中同值 |
 | Component recipe | `ComponentThemeRegistry` | extraction 的 family 前景表、`Button` 的 variant×state 表、status tone 表 | 25 臂 `match StandardVisual` + `Button::project` 里五张内联表 |

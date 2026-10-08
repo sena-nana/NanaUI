@@ -120,12 +120,12 @@ view! {
                 chrome.set_if_changed(e.visible);
             }}
         />
-        <Widget of={AppTitleBar::new("").transparent(true)} v-show={chrome.get() && !fullscreen.get()} />
+        <Widget of={AppTitleBar::new("").over_media(true)} v-show={chrome.get() && !fullscreen.get()} />
     </Widget>
 }
 ```
 
-条放在画面的同一个父节点下，指针在整扇窗口上都算「在画面上」。窗口的宽高比交给 [`content_aspect_ratio`](../reference/window.md#内容宽高比)。
+条放在画面的同一个父节点下，指针在整扇窗口上都算「在画面上」。标题栏用 [`over_media(true)`](app-title-bar.md#叠在媒体上)，浅色主题下按钮和标题在画面上也看得清。窗口的宽高比交给 [`content_aspect_ratio`](../reference/window.md#内容宽高比)。
 
 ## 时间读数
 

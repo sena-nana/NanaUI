@@ -1701,6 +1701,12 @@ impl<'a> PaintContext<'a> {
         self.theme.metrics()
     }
 
+    /// The installed effect tokens: the media scrim a built-in painter lays
+    /// under chrome over media.
+    pub(crate) fn effects(&self) -> nana_ui_core::EffectTokens {
+        self.theme.effects()
+    }
+
     /// 按当前主题解析颜色。
     pub fn color(&self, color: impl Into<PaintColor>) -> [f32; 4] {
         let model = self.theme.style_model();

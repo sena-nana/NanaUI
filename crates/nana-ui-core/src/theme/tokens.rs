@@ -631,6 +631,11 @@ pub struct EffectTokens {
     /// (an image viewer). Dark in every mode: an image is judged against
     /// dark, and a light theme's page colour would wash it out.
     pub media_scrim: SemanticColor,
+    /// Text and glyphs laid over media under [`Self::media_scrim`]: a title
+    /// bar over a video. Light in every mode, for the same reason the scrim
+    /// is dark in every mode. Reached from a node as
+    /// [`SemanticColorRole::OnMedia`](crate::SemanticColorRole::OnMedia).
+    pub media_foreground: SemanticColor,
 }
 
 /// The media scrim both built-in modes use.
@@ -640,6 +645,10 @@ pub struct EffectTokens {
 /// white page, what CSS's `rgba(0, 0, 0, .9)` shows. 0.9 would leave 10%,
 /// which over a light page is a mid grey (`#595959`), not a scrim.
 const MEDIA_SCRIM: SemanticColor = SemanticColor::rgba(0.0, 0.0, 0.0, 0.99);
+
+/// The on-media foreground both built-in modes use: white, the colour a
+/// player's own chrome takes over the picture.
+pub(crate) const MEDIA_FOREGROUND: SemanticColor = SemanticColor::rgba(1.0, 1.0, 1.0, 1.0);
 
 impl EffectTokens {
     /// Lilia `--shadow-surface` dark: `0 10px 30px -24px rgba(0,0,0,.62)`.
@@ -661,6 +670,7 @@ impl EffectTokens {
             inset: false,
         },
         media_scrim: MEDIA_SCRIM,
+        media_foreground: MEDIA_FOREGROUND,
     };
 
     /// Lilia `--shadow-surface` light: `0 10px 26px -24px rgba(17,24,39,.24)`.
@@ -682,6 +692,7 @@ impl EffectTokens {
             inset: false,
         },
         media_scrim: MEDIA_SCRIM,
+        media_foreground: MEDIA_FOREGROUND,
     };
 
     pub const fn shadow(self, role: ElevationRole) -> ShadowToken {
