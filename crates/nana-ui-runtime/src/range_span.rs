@@ -620,23 +620,20 @@ impl Painter for TrackPainter {
         let (track, fill) = if disabled {
             (SemanticColorRole::Border, SemanticColorRole::Faint)
         } else {
-            (
-                SemanticColorRole::BorderStrong,
-                SemanticColorRole::AccentSoft,
-            )
+            (SemanticColorRole::BorderStrong, SemanticColorRole::Accent)
         };
-        // The neutral track runs outside the span only: a soft fill laid
-        // over it would mix with the grey instead of reading as the accent.
-        let radius = girth / 2.0;
-        for (from, to, role) in [
-            (0.0, self.low, track),
-            (self.low, self.high, fill),
-            (self.high, 1.0, track),
+        // The neutral track runs outside the span only; the span itself is a
+        // thinner solid accent bar centred on the track line.
+        let span = girth * 2.0 / 3.0;
+        for (from, to, role, thickness) in [
+            (0.0, self.low, track, girth),
+            (self.low, self.high, fill, span),
+            (self.high, 1.0, track, girth),
         ] {
             if to > from {
                 cx.rounded_rect(
-                    self.segment(size, from, to, girth),
-                    radius,
+                    self.segment(size, from, to, thickness),
+                    thickness / 2.0,
                     BoxPaint::fill(role),
                 );
             }
@@ -1591,6 +1588,52 @@ mod tests {
             seen.lock().unwrap().is_empty(),
             "the indicator is not a value"
         );
+    }
+
+    #[test]
+    fn the_span_is_a_thin_accent_bar_between_neutral_track_ends() {
+        use crate::custom_paint::{PaintOp, ResolvedPaint, record};
+        let theme = nana_ui_core::builtin_theme_arc(nana_ui_core::ThemeAppearance::Light);
+        let painter = TrackPainter {
+            vertical: false,
+            inset: 10.0,
+            low: 0.25,
+            high: 0.75,
+            indicator: None,
+        };
+        let measure = |_: &crate::PaintText, _: f32, _: Option<f32>| crate::TextSize::default();
+        let bars = |disabled: bool| {
+            let state = crate::PaintState {
+                disabled,
+                ..crate::PaintState::default()
+            };
+            record(&painter, theme.as_ref(), [220.0, 32.0], state, &measure)
+                .behind_children
+                .iter()
+                .filter_map(|op| match op {
+                    PaintOp::RoundedRect {
+                        rect,
+                        fill: Some(ResolvedPaint::Solid(color)),
+                        ..
+                    } => Some((*rect, *color)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let color = |role| theme.style_model().color(role).as_rgba_array();
+        let drawn = bars(false);
+        assert_eq!(drawn.len(), 3);
+        let (before, span, after) = (drawn[0], drawn[1], drawn[2]);
+        assert_eq!(before.1, color(SemanticColorRole::BorderStrong));
+        assert_eq!(after.1, color(SemanticColorRole::BorderStrong));
+        assert_eq!(span.1, color(SemanticColorRole::Accent));
+        assert!((span.0.height - before.0.height * 2.0 / 3.0).abs() < 1e-4);
+        let centre = |rect: LayoutBox| rect.y + rect.height / 2.0;
+        assert!((centre(span.0) - centre(before.0)).abs() < 1e-4);
+        assert!((span.0.x - (before.0.x + before.0.width)).abs() < 1e-4);
+        let disabled = bars(true);
+        assert_eq!(disabled[1].1, color(SemanticColorRole::Faint));
+        assert_eq!(disabled[0].1, color(SemanticColorRole::Border));
     }
 
     #[test]

@@ -47,6 +47,10 @@ Arc::make_mut(&mut field.style.layout).height = Some(LengthSpec::Px(180.0));
 
 最小值和最大值不在节点的边上，而是各往里缩 `range_span_track_inset(size)`（实例上是 `track_inset()`）：半个滑块加焦点环，滑块停在两端时焦点环仍在节点里面。控件自己没有内边距和边框，这个距离就从节点边缘量。要在旁边画刻度或实时电平，按它对齐：值 `v` 在主轴上的位置是 `inset + (v - min) / (max - min) * (长度 - 2 * inset)`，竖向从底边量。
 
+## 外观
+
+两个滑块之间是一条实心强调色（`Accent`）细条，粗细约为轨道的三分之二，居中、两端圆角；区间外是中性色轨道（`BorderStrong`）。滑块与 [RangeField](range-field.md) 的滑块同样。禁用时轨道转 `Border`，区间转 `Faint`，滑块转禁用色。
+
 ## 实时指示
 
 `indicator` 是轨道上的一个圆点，不吸附步进、不响应输入，画在滑块上面。超出范围的值画在较近的一端，非有限值不画。只改它不会动布局和别的节点：控件的整条轨道是一个自绘节点，改的只是这个节点的绘制键。程序里也可以用 `cx.set_range_span_indicator(field, Some(v))`。
