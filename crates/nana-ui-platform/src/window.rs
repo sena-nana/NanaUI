@@ -81,6 +81,19 @@ pub fn clamp_position_to_displays(
     nearest.clamp_position(position, size)
 }
 
+/// Index of the display holding `position`, else of the one whose edge is
+/// nearest to it; the first such display on a tie.
+pub fn display_index_at(position: (f64, f64), displays: &[DisplayBounds]) -> Option<usize> {
+    displays
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            a.distance_squared(position, (0.0, 0.0))
+                .total_cmp(&b.distance_squared(position, (0.0, 0.0)))
+        })
+        .map(|(index, _)| index)
+}
+
 /// Fits a tool window into one available display, including partially offscreen frames.
 pub fn fit_window_to_displays(
     position: (f64, f64),
@@ -88,10 +101,7 @@ pub fn fit_window_to_displays(
     displays: &[DisplayBounds],
 ) -> ((f64, f64), (f64, f64)) {
     let center = (position.0 + size.0 / 2.0, position.1 + size.1 / 2.0);
-    let Some(display) = displays.iter().min_by(|a, b| {
-        a.distance_squared(center, (0.0, 0.0))
-            .total_cmp(&b.distance_squared(center, (0.0, 0.0)))
-    }) else {
+    let Some(display) = display_index_at(center, displays).map(|index| &displays[index]) else {
         return (position, size);
     };
     let size = (

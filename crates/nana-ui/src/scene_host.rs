@@ -1989,50 +1989,35 @@ struct Desktop {
 }
 
 impl Desktop {
-    /// Size ratio of the display holding `position`, or the nearest one.
-    fn size_ratio_at(&self, position: (f64, f64)) -> f64 {
-        let distance = |display: &DisplayBounds| {
-            let dx = (display.position.0 - position.0)
-                .max(position.0 - (display.position.0 + display.size.0))
-                .max(0.0);
-            let dy = (display.position.1 - position.1)
-                .max(position.1 - (display.position.1 + display.size.1))
-                .max(0.0);
-            dx * dx + dy * dy
-        };
-        self.displays
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
-            .and_then(|(index, _)| self.size_ratios.get(index).copied())
+    /// The display holding `position`, or the nearest one.
+    fn display_index_at(&self, position: (f64, f64)) -> Option<usize> {
+        nana_ui_platform::display_index_at(position, &self.displays)
+    }
+
+    fn size_ratio_of(&self, index: Option<usize>) -> f64 {
+        index
+            .and_then(|index| self.size_ratios.get(index).copied())
             .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
             .unwrap_or(1.0)
+    }
+
+    /// Size ratio of the display holding `position`, or the nearest one.
+    fn size_ratio_at(&self, position: (f64, f64)) -> f64 {
+        self.size_ratio_of(self.display_index_at(position))
     }
 
     /// Logical size, for a window at `position`, of the display holding it
     /// or the nearest one.
     fn logical_size_at(&self, position: (f64, f64)) -> Option<(f64, f64)> {
-        let ratio = self.size_ratio_at(position);
-        let center = |display: &DisplayBounds| {
-            let dx = display.position.0 + display.size.0 / 2.0 - position.0;
-            let dy = display.position.1 + display.size.1 / 2.0 - position.1;
-            dx * dx + dy * dy
-        };
-        let display = self
-            .displays
-            .iter()
-            .find(|display| {
-                (display.position.0..display.position.0 + display.size.0).contains(&position.0)
-                    && (display.position.1..display.position.1 + display.size.1)
-                        .contains(&position.1)
-            })
-            .or_else(|| {
-                self.displays
-                    .iter()
-                    .min_by(|a, b| center(a).total_cmp(&center(b)))
-            })?;
+        let index = self.display_index_at(position)?;
+        let (display, ratio) = (&self.displays[index], self.size_ratio_of(Some(index)));
         Some((display.size.0 / ratio, display.size.1 / ratio))
     }
+}
+
+/// `minimum`, no larger than `size` on either edge.
+fn minimum_within(minimum: (f64, f64), size: (f64, f64)) -> (f64, f64) {
+    (minimum.0.min(size.0), minimum.1.min(size.1))
 }
 
 fn scene_window_attributes(
@@ -2059,13 +2044,9 @@ fn scene_window_attributes(
             ),
             displays,
         );
-        let size = (size.0 / ratio, size.1 / ratio);
         settings.initial_position = Some(position);
-        settings.initial_size = size;
-        settings.minimum_size = (
-            settings.minimum_size.0.min(size.0),
-            settings.minimum_size.1.min(size.1),
-        );
+        settings.initial_size = (size.0 / ratio, size.1 / ratio);
+        settings.minimum_size = minimum_within(settings.minimum_size, settings.initial_size);
     }
     if let Some(ratio) = settings.content_aspect_ratio {
         // The requested (or restored) size lends its area; the display the
@@ -2082,10 +2063,7 @@ fn scene_window_attributes(
         );
         settings.minimum_size = nana_ui_platform::aspect_minimum_size(settings.minimum_size, ratio);
         if settings.constrain_to_work_area {
-            settings.minimum_size = (
-                settings.minimum_size.0.min(settings.initial_size.0),
-                settings.minimum_size.1.min(settings.initial_size.1),
-            );
+            settings.minimum_size = minimum_within(settings.minimum_size, settings.initial_size);
         }
     }
     let mut attributes = winit::window::WindowAttributes::default()
