@@ -953,6 +953,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
         query: None,
         rows: Arc::from([
             nana_ui_runtime::SelectOptionData {
+                key: None,
                 label: Arc::from("Add"),
                 hint: None,
                 disabled: false,
@@ -962,6 +963,7 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
                 mark: nana_ui_runtime::MenuItemMark::Command,
             },
             nana_ui_runtime::SelectOptionData {
+                key: None,
                 label: Arc::from("Rename"),
                 hint: None,
                 disabled: false,

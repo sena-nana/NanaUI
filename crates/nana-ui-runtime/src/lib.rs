@@ -195,7 +195,8 @@ pub use components::{
     TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
     TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp, TextSignaturePopup,
     TextSnippet, TextStickyLineGeometry, TextValue, TextVerticalAlignment, TextWhitespaceKind,
-    TooltipVisual, TriggeredMenuOverlay, decode_virtual_menu_item, virtual_menu_item_id,
+    TooltipVisual, TriggeredMenuOverlay, decode_virtual_menu_item, menu_row_index, menu_row_slots,
+    virtual_menu_item_id,
 };
 pub use custom_paint::{
     AFFINE_IDENTITY, Affine, BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient,

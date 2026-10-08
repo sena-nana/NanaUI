@@ -319,6 +319,15 @@ impl crate::ComponentView for AnchoredActionMenu {
     }
 }
 
+/// A context-menu row is known by its value: the same command keeps its
+/// accessibility node while a search filters the rows around it.
+fn menu_item_key(value: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextMenuItem {
     pub value: Arc<str>,
@@ -649,6 +658,7 @@ impl crate::ComponentView for ContextMenu {
             .visible_items()
             .into_iter()
             .map(|item| SelectOptionData {
+                key: Some(menu_item_key(&item.value)),
                 label: item.label,
                 hint: item.hint,
                 disabled: item.disabled,
@@ -1313,9 +1323,13 @@ mod tests {
             .expect("second virtual menu item");
         assert_eq!(second.description.as_deref(), Some("⌫"));
         assert!(second.disabled);
+        let (owner, slot) = crate::decode_virtual_menu_item(second.id).unwrap();
+        assert_eq!(owner, menu.stable_id());
         assert_eq!(
-            crate::decode_virtual_menu_item(second.id),
-            Some((menu.stable_id(), 1))
+            context
+                .world()
+                .virtual_menu_row_index(menu.stable_id(), slot),
+            Some(1)
         );
     }
 
@@ -1435,7 +1449,7 @@ mod tests {
                         target: row.id,
                         action: crate::AccessibilityAction::ActivateMenuItem {
                             menu: wrong_menu,
-                            index: 0,
+                            slot: crate::decode_virtual_menu_item(row.id).unwrap().1,
                         },
                     },
                 )
@@ -1594,10 +1608,52 @@ mod tests {
             .find(|node| node.id == root.children[0])
             .expect("filtered virtual menu item");
         assert_eq!(item.label.as_deref(), Some("删除"));
+        let (owner, slot) = crate::decode_virtual_menu_item(item.id).unwrap();
+        assert_eq!(owner, menu.stable_id());
         assert_eq!(
-            crate::decode_virtual_menu_item(item.id),
-            Some((menu.stable_id(), 0))
+            context
+                .world()
+                .virtual_menu_row_index(menu.stable_id(), slot),
+            Some(0)
         );
+    }
+
+    /// A search that filters out the rows before one keeps that row's
+    /// accessibility node: a screen reader on it stays on the same command
+    /// instead of landing on whichever row took its position.
+    #[test]
+    fn a_filtered_context_menu_row_keeps_its_accessibility_node() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                ContextMenu::new(8.0, 12.0)
+                    .items([
+                        ContextMenuItem::new("open", "打开"),
+                        ContextMenuItem::new("rename", "重命名"),
+                        ContextMenuItem::new("delete", "删除"),
+                    ])
+                    .searchable(true)
+                    .open(true),
+            )
+            .unwrap();
+        let delete_id = |context: &AppContext| {
+            context
+                .world()
+                .project_accessibility(document())
+                .into_iter()
+                .find(|node| node.label.as_deref() == Some("删除"))
+                .expect("delete row")
+                .id
+        };
+        let before = delete_id(&context);
+        context
+            .update_component(menu, |menu, _| menu.set_query("删"))
+            .unwrap();
+        assert_eq!(delete_id(&context), before);
+        // And the node still activates that row, now the first one shown.
+        let (owner, slot) = crate::decode_virtual_menu_item(before).unwrap();
+        assert_eq!(context.world().virtual_menu_row_index(owner, slot), Some(0));
     }
 
     #[test]
@@ -1605,6 +1661,7 @@ mod tests {
         let palette = SemanticPalette::for_appearance(nana_ui_core::ThemeAppearance::Dark);
         let rows = [
             SelectOptionData {
+                key: None,
                 label: Arc::from("Add"),
                 hint: None,
                 disabled: false,
@@ -1614,6 +1671,7 @@ mod tests {
                 mark: crate::MenuItemMark::Command,
             },
             SelectOptionData {
+                key: None,
                 label: Arc::from("Rename"),
                 hint: None,
                 disabled: false,

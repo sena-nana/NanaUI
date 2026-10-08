@@ -341,6 +341,7 @@ impl crate::ComponentView for Select {
                 .options
                 .iter()
                 .map(|option| SelectOptionData {
+                    key: None,
                     label: Arc::clone(&option.label),
                     hint: None,
                     disabled: option.disabled,

@@ -260,14 +260,14 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         let host = self.require_host(VueWindowId(id.0))?;
         let target = crate::NodeHandle(request.target.get());
         match request.action {
-            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, index } => {
+            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, slot } => {
                 let shared = host
                     .lock()
                     .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
                     .shared_runtime_document();
                 let request = nana_ui_runtime::AccessibilityActionRequest {
                     target: request.target,
-                    action: nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, index },
+                    action: nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, slot },
                 };
                 let result = shared
                     .with_document_mut(|document| {

@@ -2838,9 +2838,12 @@ impl AppContext {
         }
         match request.action {
             AccessibilityAction::Click => {
-                if let Some((menu, index)) = crate::decode_virtual_menu_item(request.target)
+                if let Some((menu, slot)) = crate::decode_virtual_menu_item(request.target)
                     && let Some(entity) = self.view_entity::<ContextMenu>(menu)
                 {
+                    let Some(index) = self.world.virtual_menu_row_index(menu, slot) else {
+                        return Ok(false);
+                    };
                     return self.activate_context_menu_index(entity, index);
                 }
                 if self.activate_node(request.target)? {
@@ -2856,19 +2859,25 @@ impl AppContext {
                 }
                 Ok(false)
             }
-            AccessibilityAction::ActivateMenuItem { menu, index } => {
-                if crate::decode_virtual_menu_item(request.target) != Some((menu, index)) {
+            AccessibilityAction::ActivateMenuItem { menu, slot } => {
+                if crate::decode_virtual_menu_item(request.target) != Some((menu, slot)) {
                     return Ok(false);
                 }
                 let Some(entity) = self.view_entity::<ContextMenu>(menu) else {
                     return Ok(false);
                 };
+                let Some(index) = self.world.virtual_menu_row_index(menu, slot) else {
+                    return Ok(false);
+                };
                 self.activate_context_menu_index(entity, index)
             }
             AccessibilityAction::Focus => {
-                if let Some((menu, index)) = crate::decode_virtual_menu_item(request.target)
+                if let Some((menu, slot)) = crate::decode_virtual_menu_item(request.target)
                     && let Some(entity) = self.view_entity::<ContextMenu>(menu)
                 {
+                    let Some(index) = self.world.virtual_menu_row_index(menu, slot) else {
+                        return Ok(false);
+                    };
                     return self.focus_context_menu_index(entity, index);
                 }
                 self.focus_node(document, request.target)

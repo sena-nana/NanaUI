@@ -165,6 +165,7 @@ impl SearchDropdown {
         {
             return (
                 menu_option_label(&SelectOptionData {
+                    key: None,
                     label: Arc::clone(&option.label),
                     hint: option.hint.clone(),
                     disabled: false,
@@ -291,6 +292,7 @@ impl SearchDropdown {
             .map(|index| {
                 let option = &self.options[index];
                 SelectOptionData {
+                    key: None,
                     label: Arc::clone(&option.label),
                     hint: option.hint.clone(),
                     disabled: false,

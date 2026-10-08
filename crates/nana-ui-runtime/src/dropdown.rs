@@ -44,6 +44,7 @@ impl DropdownOption {
 
     fn menu_label(&self) -> Arc<str> {
         menu_option_label(&SelectOptionData {
+            key: None,
             label: Arc::clone(&self.label),
             hint: self.hint.clone(),
             disabled: self.disabled,
@@ -284,6 +285,7 @@ impl Dropdown {
         self.options
             .iter()
             .map(|option| SelectOptionData {
+                key: None,
                 label: Arc::clone(&option.label),
                 hint: option.hint.clone(),
                 disabled: option.disabled,

@@ -1133,6 +1133,10 @@ pub struct SelectOptionData {
     /// Spoken name when [`Self::label`] is ambiguous. `None` keeps the label.
     pub accessible_name: Option<Arc<str>>,
     pub mark: MenuItemMark,
+    /// The row's identity across changes to the list, such as a search that
+    /// filters it. A keyed row keeps its accessibility node while rows before
+    /// it come and go; an unkeyed row is known by its position.
+    pub key: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3016,26 +3020,72 @@ pub struct AccessibilityScrollAxis {
 /// Keeping the identity derived from the menu and visible row index means a
 /// screen reader can retain focus while a context menu is reprojected, while
 /// still allowing filtering and nested levels to replace the row set.
-pub fn virtual_menu_item_id(menu: StableNodeId, index: usize) -> Option<StableNodeId> {
-    let index = u64::try_from(index).ok()?.checked_add(1)?;
-    if index > u16::MAX as u64 {
+/// The first slot of a keyed menu row; positional slots stay below it.
+const KEYED_MENU_SLOT: u16 = 0x8000;
+
+/// The accessibility slot of each row of a menu, in row order. A positional
+/// row's slot is its index plus one; a keyed row's comes from its key, so it
+/// stays put when rows before it are filtered out. Keys that collide take the
+/// next free keyed slot in row order. 0 marks a row that has no slot.
+pub fn menu_row_slots(rows: &[SelectOptionData]) -> Vec<u16> {
+    let mut taken = std::collections::HashSet::new();
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| match row.key {
+            Some(key) => {
+                if taken.len() >= usize::from(KEYED_MENU_SLOT) {
+                    return 0;
+                }
+                let folded = key ^ (key >> 15) ^ (key >> 30) ^ (key >> 45) ^ (key >> 60);
+                let mut slot = KEYED_MENU_SLOT | (folded as u16 & 0x7fff);
+                while !taken.insert(slot) {
+                    slot = KEYED_MENU_SLOT | (slot.wrapping_add(1) & 0x7fff);
+                }
+                slot
+            }
+            None => u16::try_from(index + 1)
+                .ok()
+                .filter(|slot| *slot < KEYED_MENU_SLOT)
+                .unwrap_or(0),
+        })
+        .collect()
+}
+
+/// The row of `rows` that holds accessibility `slot` now.
+pub fn menu_row_index(rows: &[SelectOptionData], slot: u16) -> Option<usize> {
+    if slot == 0 {
+        return None;
+    }
+    menu_row_slots(rows)
+        .iter()
+        .position(|candidate| *candidate == slot)
+}
+
+/// The virtual accessibility node of the row in `slot` of `menu`'s rows (see
+/// [`menu_row_slots`]).
+pub fn virtual_menu_item_id(menu: StableNodeId, slot: u16) -> Option<StableNodeId> {
+    if slot == 0 {
         return None;
     }
     let menu = menu.get();
     if menu > 0x7fff_ffff_ffff {
         return None;
     }
-    StableNodeId::new(0x8000_0000_0000_0000 | (menu << 16) | index)
+    StableNodeId::new(0x8000_0000_0000_0000 | (menu << 16) | u64::from(slot))
 }
 
-pub fn decode_virtual_menu_item(id: StableNodeId) -> Option<(StableNodeId, usize)> {
+/// The menu and row slot a virtual menu row node stands for.
+pub fn decode_virtual_menu_item(id: StableNodeId) -> Option<(StableNodeId, u16)> {
     let raw = id.get();
     if raw & 0x8000_0000_0000_0000 == 0 {
         return None;
     }
-    let index = (raw & u16::MAX as u64).checked_sub(1)? as usize;
+    let slot = (raw & u64::from(u16::MAX)) as u16;
+    if slot == 0 {
+        return None;
+    }
     let menu = StableNodeId::new((raw >> 16) & 0x7fff_ffff_ffff)?;
-    Some((menu, index))
+    Some((menu, slot))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3067,7 +3117,8 @@ pub enum AccessibilityAction {
     /// accessibility node, so route it back to the retained ContextMenu.
     ActivateMenuItem {
         menu: StableNodeId,
-        index: usize,
+        /// The row's slot, as [`decode_virtual_menu_item`] reads it.
+        slot: u16,
     },
     Focus,
     /// Increase a numeric control by one exposed step.

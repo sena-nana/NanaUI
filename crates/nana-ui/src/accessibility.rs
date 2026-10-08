@@ -432,13 +432,13 @@ impl AccessibilityProjector {
         if !self.interactive || node.disabled {
             return None;
         }
-        if let Some((menu, index)) = nana_ui_runtime::decode_virtual_menu_item(target) {
+        if let Some((menu, slot)) = nana_ui_runtime::decode_virtual_menu_item(target) {
             if !is_menu_row(node.role) {
                 return None;
             }
             let action = match request.action {
                 Action::Click => {
-                    nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, index }
+                    nana_ui_runtime::AccessibilityAction::ActivateMenuItem { menu, slot }
                 }
                 Action::Focus => nana_ui_runtime::AccessibilityAction::Focus,
                 _ => return None,
@@ -1487,7 +1487,7 @@ mod tests {
     fn virtual_menu_row_wins_platform_focus_over_its_trigger() {
         let menu_id = 5u64;
         let row =
-            nana_ui_runtime::virtual_menu_item_id(StableNodeId::new(menu_id).unwrap(), 0).unwrap();
+            nana_ui_runtime::virtual_menu_item_id(StableNodeId::new(menu_id).unwrap(), 1).unwrap();
         let mut trigger = node(4, Some(1), &[]);
         trigger.role = AccessibilityRole::ListItem;
         trigger.label = Some("窗口".into());
@@ -2108,7 +2108,7 @@ mod tests {
     #[test]
     fn virtual_menu_items_project_click_and_focus_actions() {
         let menu = StableNodeId::new(2).unwrap();
-        let item = nana_ui_runtime::virtual_menu_item_id(menu, 0).unwrap();
+        let item = nana_ui_runtime::virtual_menu_item_id(menu, 1).unwrap();
         let mut virtual_item = node(item.get(), Some(menu.get()), &[]);
         virtual_item.role = AccessibilityRole::MenuItem;
         virtual_item.label = Some("打开".into());
@@ -2146,7 +2146,7 @@ mod tests {
     #[test]
     fn a_checkable_virtual_menu_row_still_activates_on_click() {
         let menu = StableNodeId::new(2).unwrap();
-        let item = nana_ui_runtime::virtual_menu_item_id(menu, 0).unwrap();
+        let item = nana_ui_runtime::virtual_menu_item_id(menu, 1).unwrap();
         let mut virtual_item = node(item.get(), Some(menu.get()), &[]);
         virtual_item.role = AccessibilityRole::Checkbox;
         virtual_item.label = Some("取消窗口置顶".into());
@@ -2166,7 +2166,7 @@ mod tests {
             .expect("checkbox menu row click");
         assert!(matches!(
             request.action,
-            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { index: 0, .. }
+            nana_ui_runtime::AccessibilityAction::ActivateMenuItem { slot: 1, .. }
         ));
     }
 

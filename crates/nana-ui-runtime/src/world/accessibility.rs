@@ -446,8 +446,11 @@ impl UiWorld {
                 ..
             }) = self.nodes.visual(id)
         {
-            children
-                .extend((0..rows.len()).filter_map(|index| crate::virtual_menu_item_id(id, index)));
+            children.extend(
+                crate::menu_row_slots(rows)
+                    .into_iter()
+                    .filter_map(|slot| crate::virtual_menu_item_id(id, slot)),
+            );
         }
         Some(AccessibilityNode {
             id,
@@ -534,10 +537,11 @@ impl UiWorld {
             _ => Vec::new(),
         };
         let count = rows.len().max(1) as f32;
+        let slots = crate::menu_row_slots(rows);
         rows.iter()
             .enumerate()
             .filter_map(|(index, row)| {
-                let id = crate::virtual_menu_item_id(menu.id, index)?;
+                let id = crate::virtual_menu_item_id(menu.id, slots[index])?;
                 let bounds = options
                     .get(index)
                     .map(|option| option.bounds)
@@ -685,6 +689,14 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// The row of `menu` that holds accessibility `slot` now.
+    pub(crate) fn virtual_menu_row_index(&self, menu: StableNodeId, slot: u16) -> Option<usize> {
+        match self.nodes.visual(menu) {
+            Some(StandardVisual::MenuSurface { rows, .. }) => crate::menu_row_index(rows, slot),
+            _ => None,
+        }
+    }
+
     /// Project only accessibility nodes named by scheduled dirty work.
     pub fn project_accessibility_nodes(&self, ids: &[StableNodeId]) -> Vec<AccessibilityNode> {
         let mut memo = ProjectionMemo::default();
