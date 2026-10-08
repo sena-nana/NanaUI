@@ -52,6 +52,14 @@ impl WindowInputSource {
         }
     }
 
+    /// The window regained focus. The platform may have dropped the IME
+    /// while it was away, so the state the Runtime sends again on focus is
+    /// applied as a fresh enable, not diffed into an update of a session
+    /// that is gone.
+    pub(super) fn forget_ime(&mut self) {
+        self.ime = None;
+    }
+
     /// The pointer left: the window shows the default cursor, and so does
     /// the next composition. The Runtime forgot its cursor on leave and
     /// sends nothing for a default one on the next enter, so a cursor kept
@@ -185,7 +193,9 @@ fn ime_request_data(state: &TextInputContext) -> ImeRequestData {
     let mut data = ImeRequestData::default().with_hint_and_purpose(ImeHint::NONE, purpose);
     if let Some(cursor) = state.cursor_area {
         data = data.with_cursor_area(
-            winit::dpi::LogicalPosition::new(cursor.x, cursor.y + cursor.height).into(),
+            // The area the candidates must not cover, from its top-left
+            // corner: the IME places its list beside or below it.
+            winit::dpi::LogicalPosition::new(cursor.x, cursor.y).into(),
             winit::dpi::LogicalSize::new(cursor.width.max(1.0), cursor.height.max(1.0)).into(),
         );
     }
@@ -218,7 +228,9 @@ pub(super) fn ime_apply(
     let Some(previous) = previous else {
         return ImeApply::Enable { capabilities, data };
     };
-    if ime_capabilities(previous) != capabilities {
+    // Another editor is a new session: whatever the IME was composing
+    // belongs to the field focus left.
+    if previous.owner != next.owner || ime_capabilities(previous) != capabilities {
         ImeApply::Replace { capabilities, data }
     } else {
         ImeApply::Update(data)
@@ -264,6 +276,7 @@ mod tests {
 
     fn state(cursor_area: bool, surrounding: bool) -> TextInputContext {
         TextInputContext {
+            owner: 1,
             purpose: TextInputPurpose::Normal,
             cursor_area: cursor_area.then(|| LogicalRect::new(10.0, 20.0, 2.0, 18.0)),
             surrounding: surrounding.then(|| SurroundingText {
@@ -288,6 +301,42 @@ mod tests {
         assert!(matches!(
             ime_apply(Some(&first), Some(&moved)),
             ImeApply::Update(_)
+        ));
+    }
+
+    #[test]
+    fn another_field_replaces_the_ime_session() {
+        let first = state(true, true);
+        let other = TextInputContext {
+            owner: 2,
+            ..first.clone()
+        };
+        assert!(matches!(
+            ime_apply(Some(&first), Some(&other)),
+            ImeApply::Replace { .. }
+        ));
+    }
+
+    #[test]
+    fn the_candidate_area_is_the_caret_itself() {
+        let data = ime_request_data(&state(true, false));
+        assert_eq!(
+            data.cursor_area,
+            Some((
+                winit::dpi::LogicalPosition::new(10.0, 20.0).into(),
+                winit::dpi::LogicalSize::new(2.0, 18.0).into(),
+            ))
+        );
+    }
+
+    #[test]
+    fn regaining_focus_enables_the_ime_afresh() {
+        let mut source = WindowInputSource::new(InputSourceId(1), EndpointGeneration(1));
+        source.ime = Some(state(true, true));
+        source.forget_ime();
+        assert!(matches!(
+            ime_apply(source.ime.as_ref(), Some(&state(true, true))),
+            ImeApply::Enable { .. }
         ));
     }
 

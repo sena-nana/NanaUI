@@ -23,6 +23,7 @@ const HANDLE_PROBE_INTERVAL: Duration = Duration::from_millis(8);
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum TextInputKey {
     Terminal {
+        node: Option<StableNodeId>,
         caret: Option<LayoutBox>,
     },
     Editor {
@@ -167,6 +168,7 @@ impl AppContext {
     fn text_input_key(&self, document: DocumentId) -> Option<TextInputKey> {
         if self.terminal_accepts_input(document) {
             return Some(TextInputKey::Terminal {
+                node: self.world.focused(document),
                 caret: self.projected_terminal_caret(document),
             });
         }
@@ -185,6 +187,7 @@ impl AppContext {
     pub(super) fn text_input_context(&self, document: DocumentId) -> Option<TextInputContext> {
         if self.terminal_accepts_input(document) {
             return Some(TextInputContext {
+                owner: self.world.focused(document).map_or(0, StableNodeId::get),
                 purpose: TextInputPurpose::Terminal,
                 cursor_area: self.projected_terminal_caret(document).map(logical_rect),
                 surrounding: None,
@@ -196,6 +199,7 @@ impl AppContext {
             .then(|| surrounding_window(view.value, view.selection.focus, view.selection.anchor))
             .flatten();
         Some(TextInputContext {
+            owner: node.get(),
             purpose,
             cursor_area: self.text_input_caret(node).map(logical_rect),
             surrounding,

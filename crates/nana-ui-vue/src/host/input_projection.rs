@@ -484,6 +484,20 @@ impl VueHost {
         if previous == next {
             return Ok(());
         }
+        // The Runtime dropped the preedit of the field focus left; the page
+        // hears that composition end there, before the blur, and the next
+        // preedit starts afresh in the new field.
+        if let Some((composing, _)) = self
+            .input_projection
+            .ime
+            .take_if(|(composing, _)| Some(*composing) != next)
+        {
+            self.emit_composition_event(
+                engine,
+                composing,
+                &CompositionInput::new(CompositionEventKind::End, ""),
+            )?;
+        }
         if let Some(previous) = previous {
             self.fire_dom_event(engine, previous, "blur", BTreeMap::new())?;
         }

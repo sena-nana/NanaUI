@@ -69,6 +69,10 @@ impl SurroundingText {
 /// `Some` and disables it for `None`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextInputContext {
+    /// Which editor this is. Focus moving to another field (or terminal)
+    /// changes it, and the host starts a new IME session: a composition in
+    /// the old field must not commit into the new one.
+    pub owner: u64,
     pub purpose: TextInputPurpose,
     /// Caret, or the field when it has no caret geometry, in the window's
     /// logical coordinates. The IME candidate window anchors below it.
@@ -183,6 +187,7 @@ mod tests {
         let mut services = HeadlessHostServices::new();
         services.set_cursor(CursorIcon::Text);
         let state = TextInputContext {
+            owner: 1,
             purpose: TextInputPurpose::Normal,
             cursor_area: None,
             surrounding: Some(SurroundingText {

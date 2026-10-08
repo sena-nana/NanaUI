@@ -1174,6 +1174,26 @@ fn a_two_mebibyte_field_composes_with_a_bounded_window() {
     );
 }
 
+/// Focus moving to another field names another owner, so the host starts a
+/// new IME session instead of updating the old one.
+#[test]
+fn another_focused_field_is_another_ime_owner() {
+    let mut context = AppContext::new();
+    let doc = document(21);
+    let mut input = HeadlessInput::bind(&mut context, doc);
+    let first = focused_editor(&mut context, doc, "a");
+    let second = context.create_component(doc, TextInput::new("b")).unwrap();
+    input
+        .route(&mut context, InputPayload::Focus { focused: true })
+        .unwrap();
+    let owner = |input: &HeadlessInput| input.services().text_input().map(|state| state.owner);
+    assert_eq!(owner(&input), Some(first.stable_id().get()));
+    let tab = KeyInput::named("Tab", "Tab", KeyState::Pressed, InputModifiers::default());
+    input.press(&mut context, tab, None, None).unwrap();
+    assert_eq!(context.world().focused(doc), Some(second.stable_id()));
+    assert_eq!(owner(&input), Some(second.stable_id().get()));
+}
+
 #[test]
 fn a_password_field_hands_the_ime_no_text() {
     let mut context = AppContext::new();

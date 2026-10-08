@@ -2001,6 +2001,44 @@ fn native_ime_disabled_after_blur_cancels_the_preedit() {
     );
 }
 
+/// Clicking away from a field mid-composition: the page hears the
+/// composition end in that field, with no text, before its blur.
+#[test]
+fn focus_leaving_a_composing_field_ends_its_composition_first() {
+    let mut host = VueHost::new();
+    let (input, _) = install_focused_native_input(&mut host, "Nana");
+    let mut engine = RecordingEngine::default();
+
+    host.dispatch_native_ime(
+        &mut engine,
+        &NativeComposition::Update {
+            text: "世".into(),
+            selection: Some((0, "世".len())),
+        },
+    )
+    .expect("preedit");
+    host.dispatch_pointer(
+        &mut engine,
+        PointerInput::mouse(PointerEventKind::Down, 120.0, 12.0),
+    )
+    .expect("press the button");
+    assert_ne!(host.focused(), Some(input));
+
+    let events = fired_events(&engine);
+    let position = |wanted: &str| {
+        events
+            .iter()
+            .position(|(target, name, _)| *target == input.0 && name == wanted)
+            .unwrap_or_else(|| panic!("{wanted} on the field"))
+    };
+    let end = position("compositionend");
+    assert!(end < position("blur"));
+    assert_eq!(
+        events[end].2.get("data").and_then(HostValue::as_str),
+        Some("")
+    );
+}
+
 #[test]
 fn native_ime_disabled_clears_blocked_original_without_commit() {
     let mut host = VueHost::new();
