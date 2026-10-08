@@ -284,7 +284,7 @@ impl AppContext {
         // reimplementation of it: the sub-stage clocks are the same
         // `completed` hook the full-layout benchmark already uses.
         #[cfg(feature = "benchmark")]
-        {
+        let result = {
             let mut substages = [Duration::ZERO; 4];
             let mut started = Instant::now();
             let result = self.layout_document_observed(
@@ -301,16 +301,11 @@ impl AppContext {
             for (total, elapsed) in self.layout_substage_totals.iter_mut().zip(substages) {
                 *total += elapsed;
             }
-            if result.is_err() {
-                self.world.restore_layout_frontier_seeds(&typed_seeds);
-            }
-            return result;
-        }
-        #[cfg(not(feature = "benchmark"))]
+            result
+        };
         if result.is_err() {
             self.world.restore_layout_frontier_seeds(&typed_seeds);
         }
-        #[cfg(not(feature = "benchmark"))]
         result
     }
 

@@ -203,7 +203,7 @@ impl SnapshotImage {
             .into());
         }
         let mut pixels = self.pixels;
-        for rgba in pixels.chunks_exact_mut(4) {
+        for rgba in pixels.as_chunks_mut::<4>().0 {
             let alpha = f32::from(rgba[3]) / 255.0;
             if alpha <= 0.0 {
                 rgba[..3].fill(0);
