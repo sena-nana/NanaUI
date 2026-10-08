@@ -42,6 +42,11 @@ impl RuntimeFrameUpdate {
     }
 }
 
+/// Shape-then-relayout rounds a frame runs after its layout before it stops:
+/// enough for a wrap to widen a box that widens another wrap, bounded so a
+/// layout that never settles cannot hold the frame.
+const POST_LAYOUT_SHAPE_PASSES: usize = 4;
+
 impl RuntimeDocument {
     pub fn new(document: DocumentId) -> Self {
         Self::with_context(document, AppContext::new())
@@ -125,9 +130,15 @@ impl RuntimeDocument {
                     context.layout_document_with_frontier(document, viewport, &seeds)?;
                 }
                 // Re-shape only the relayout scope: nodes outside it keep
-                // shapes that already match their unchanged boxes.
+                // shapes that already match their unchanged boxes. A shape
+                // that moves layout relays out, and that pass's scope is
+                // shaped in turn: text that a relayout widened (a row that
+                // stacked) wraps at its new width in this frame.
                 let mut shape_scope = context.take_last_layout_scope();
-                if context.shape_text_for_layout_scoped(&shape_scope, shaper)? {
+                for _ in 0..POST_LAYOUT_SHAPE_PASSES {
+                    if !context.shape_text_for_layout_scoped(&shape_scope, shaper)? {
+                        break;
+                    }
                     // Shaping re-dirtied layout (empty-state padding, modal
                     // presentations); relayout that closure plus the scope
                     // whose boxes may have shifted again.
@@ -153,10 +164,11 @@ impl RuntimeDocument {
                             merged.push(seed);
                         }
                     }
-                    let seeds = merged;
-                    if !seeds.is_empty() {
-                        context.layout_document_with_frontier(document, viewport, &seeds)?;
+                    if merged.is_empty() {
+                        break;
                     }
+                    context.layout_document_with_frontier(document, viewport, &merged)?;
+                    shape_scope = context.take_last_layout_scope();
                 }
                 force_layout = false;
             }
