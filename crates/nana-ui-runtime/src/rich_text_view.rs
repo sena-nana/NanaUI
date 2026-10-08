@@ -28,6 +28,8 @@ pub struct RichTextView {
     /// Painted, but omitted from accessibility projection.
     pub decorative: bool,
     pub style: NodeStyle,
+    /// Glyph presentation the node starts with (see [`Self::presentation`]).
+    pub presentation: Option<nana_ui_core::GlyphPresentation>,
 }
 
 impl RichTextView {
@@ -36,7 +38,25 @@ impl RichTextView {
             value: value.into(),
             decorative: false,
             style: NodeStyle::default(),
+            presentation: None,
         }
+    }
+
+    /// Present the glyphs from the moment the node is shown: `effects` is
+    /// the table the spans' `effect` indices name. The reveal's `start` is
+    /// replaced by the document clock when the node is first projected with
+    /// this presentation, so a view built for a new line starts its
+    /// typewriter on the frame it appears — no frame of the whole text
+    /// first, and no round trip through [`crate::AppContext::set_rich_presentation`].
+    /// Projecting an equal presentation again (ignoring `start`) keeps the
+    /// running one.
+    pub fn presentation(
+        mut self,
+        effects: impl Into<std::sync::Arc<[nana_ui_core::GlyphEffect]>>,
+        reveal: Option<nana_ui_core::RevealSchedule>,
+    ) -> Self {
+        self.presentation = Some(nana_ui_core::GlyphPresentation::new(effects, reveal));
+        self
     }
 
     /// Replace the value. A clone of a value the node already shows is
@@ -149,6 +169,25 @@ impl ComponentView for RichTextView {
         if world.rich_text(id) != Some(&self.value) {
             mutations.set_rich_text(id, self.value.clone());
         }
+        if let Some(wanted) = &self.presentation {
+            let running = world.glyph_presentation(id).is_some_and(|current| {
+                current.effects == wanted.effects
+                    && match (&current.reveal, &wanted.reveal) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => {
+                            a.at_s == b.at_s && a.limit == b.limit && a.intro == b.intro
+                        }
+                        _ => false,
+                    }
+            });
+            if !running {
+                let mut presentation = wanted.clone();
+                if let Some(reveal) = &mut presentation.reveal {
+                    reveal.start = world.animation_now();
+                }
+                mutations.set_glyph_presentation(id, Some(presentation));
+            }
+        }
         project_common(
             id,
             world,
@@ -202,6 +241,40 @@ mod tests {
         cx.set_component(view, RichTextView::new(recolored.clone()))
             .unwrap();
         assert_eq!(cx.world().rich_text(id), Some(&recolored));
+    }
+
+    #[test]
+    fn a_presentation_starts_when_projected_and_survives_reprojection() {
+        use nana_ui_core::{GlyphEffect, RevealSchedule};
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let effects: std::sync::Arc<[GlyphEffect]> = std::sync::Arc::from([GlyphEffect::wave(2.0)]);
+        let reveal = RevealSchedule::new(std::time::Duration::from_secs(999), vec![0.0, 0.1]);
+        let make = || {
+            RichTextView::new(RichText::new("hi"))
+                .presentation(effects.clone(), Some(reveal.clone()))
+        };
+        let view = cx.create_component(document, make()).unwrap();
+        let id = view.stable_id();
+        let shown = cx
+            .world()
+            .glyph_presentation(id)
+            .cloned()
+            .expect("presented");
+        assert_eq!(shown.effects, effects);
+        let start = shown.reveal.as_ref().unwrap().start;
+        assert_eq!(
+            start,
+            cx.world().animation_now(),
+            "start is the clock, not the builder's"
+        );
+        let generation = cx.world().generation();
+        cx.set_component(view, make()).unwrap();
+        assert_eq!(
+            cx.world().generation(),
+            generation,
+            "an equal presentation keeps running"
+        );
     }
 
     #[test]
