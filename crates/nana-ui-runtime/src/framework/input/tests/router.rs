@@ -1228,6 +1228,44 @@ fn text_from_a_handled_key_is_dropped() {
     assert_eq!(context.input_counters().text_suppressed, 1);
 }
 
+/// A program that observed a key press and stopped it (a page's
+/// `keydown.preventDefault()`) drops the text the key typed.
+#[test]
+fn text_from_a_key_the_program_stopped_is_dropped() {
+    let mut context = AppContext::new();
+    let doc = document(20);
+    let mut input = HeadlessInput::bind(&mut context, doc);
+    let editor = focused_editor(&mut context, doc, "");
+
+    let mut endpoint = InputEndpoint::new(8, 1024);
+    let key_event = input.stamp(InputPayload::Key(key("a", InputModifiers::default())));
+    let sequence = key_event.metadata.sequence;
+    endpoint.push(key_event).unwrap();
+    endpoint
+        .push(input.stamp(InputPayload::Text(CommittedText {
+            text: "a".into(),
+            key: Some(sequence),
+        })))
+        .unwrap();
+
+    let routed = context
+        .route_next(&mut endpoint, input.services_mut(), None)
+        .unwrap();
+    assert!(matches!(routed.event.payload, InputPayload::Key(_)));
+    context.suppress_text_for(HeadlessInput::SOURCE, sequence);
+    let routed = context
+        .route_next(&mut endpoint, input.services_mut(), None)
+        .unwrap();
+    assert!(routed.result.unwrap().prevent_default);
+    assert!(
+        context
+            .route_next(&mut endpoint, input.services_mut(), None)
+            .is_none()
+    );
+    assert_eq!(context.world().text(editor.stable_id()), Some(""));
+    assert_eq!(context.input_counters().text_suppressed, 1);
+}
+
 #[test]
 fn copy_and_cut_go_through_the_host_clipboard_and_cut_waits_for_it() {
     let mut context = AppContext::new();

@@ -1368,6 +1368,17 @@ impl VueHost {
         detail.insert("value".into(), HostValue::string(&value));
         detail.insert("isComposing".into(), HostValue::Bool(false));
         if !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
+            // The Runtime already made the edit; a page that cancels it gets
+            // the field back as it last saw it. A composition's commit is
+            // not cancellable, as in a browser.
+            if input_type != "insertCompositionText" {
+                let mut document = self.document.lock().expect("vue doc");
+                let seen = document.get_attribute(target, "value").unwrap_or_default();
+                if let Some(mut state) = document.text_input_state(target) {
+                    state.synchronize_editor_value(seen);
+                    document.set_text_input_state(target, state);
+                }
+            }
             return Ok(false);
         }
         self.document

@@ -1182,6 +1182,7 @@ impl DocumentLayoutCache {
     ///
     /// Mutation history does not add entries: a later pass replaces the plan
     /// for the same container. See [`bound_container_plan`].
+    #[cfg(test)]
     fn retained_plan_entries(&self) -> usize {
         let mut count = 0usize;
         for plan in self.container_plans.values() {

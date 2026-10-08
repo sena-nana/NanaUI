@@ -483,14 +483,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return disposition;
         }
         let window = Arc::clone(host.surface.window());
-        let mut routed = std::mem::take(&mut self.routed_input);
-        let text = &mut self.text;
-        let (mut services, endpoint, input_id, generation) =
+        let (_, endpoint, input_id, generation) =
             NativeWindowServices::of(window.as_ref(), &self.clipboard, &mut host.input_source);
         let bound = self.program.write_document(id, |document| {
             let document_id = document.document();
             let context = document.context_mut();
-            let bind = match context.bind_input_source(input_id, generation, document_id) {
+            match context.bind_input_source(input_id, generation, document_id) {
                 Ok(()) => Ok(()),
                 Err(nana_ui_runtime::InputBindError::DocumentRebind { .. }) => {
                     // The program gave this window another document: what the
@@ -504,32 +502,51 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     context.bind_input_source(input_id, generation, document_id)
                 }
                 Err(error) => Err(error),
-            };
-            if bind.is_ok() {
-                context.drain_input(endpoint, &mut services, Some(text), &mut routed);
             }
-            bind
         });
-        let cursor_changed = services.cursor_changed;
         match bound {
-            Some(Err(error)) => self
-                .program
-                .report_host_failure(HostFailure::InputDispatch {
-                    window: id,
-                    error: error.to_string(),
-                }),
+            Some(Err(error)) => {
+                self.program
+                    .report_host_failure(HostFailure::InputDispatch {
+                        window: id,
+                        error: error.to_string(),
+                    });
+                return disposition;
+            }
             None => {
                 // No document: the batch cannot be routed; drop it rather
                 // than hold it against a window that will never route it.
                 if let Some(host) = self.window_contexts.get_mut(&id) {
                     while host.input_source.endpoint.pop().is_some() {}
                 }
+                return disposition;
             }
             Some(Ok(())) => {}
         }
         let mut update = RuntimeProgramUpdate::default();
-        let mut pointer_moved = cursor_changed;
-        for routed_event in routed.drain(..) {
+        let mut pointer_moved = false;
+        // One event at a time: the program observes each event before the
+        // next one routes, so what it does with a key press (a page's
+        // `keydown.preventDefault()`) stops the text that key typed.
+        loop {
+            let Some(host) = self.window_contexts.get_mut(&id) else {
+                break;
+            };
+            let text = &mut self.text;
+            let (mut services, endpoint, _, _) =
+                NativeWindowServices::of(window.as_ref(), &self.clipboard, &mut host.input_source);
+            let routed_event = self
+                .program
+                .write_document(id, |document| {
+                    document
+                        .context_mut()
+                        .route_next(endpoint, &mut services, Some(text))
+                })
+                .flatten();
+            pointer_moved |= services.cursor_changed;
+            let Some(routed_event) = routed_event else {
+                break;
+            };
             let outcome = match routed_event.result {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -568,11 +585,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             if outcome.invalidated_work {
                 update = update.merge(RuntimeProgramUpdate::redraw(id));
             }
-            if !self.window_contexts.contains_key(&id) {
-                break;
-            }
         }
-        self.routed_input = routed;
         if !self.window_contexts.contains_key(&id) {
             return disposition;
         }

@@ -426,16 +426,41 @@ impl AppContext {
         routed: &mut Vec<RoutedEvent>,
     ) -> usize {
         let mut count = 0;
-        while let Some(event) = endpoint.pop() {
-            let result = self.route_input(&event, services, reborrow_text_shaper(&mut text_shaper));
-            let event = match &result {
-                Ok(outcome) => outcome.localize(event),
-                Err(_) => event,
-            };
-            routed.push(RoutedEvent { event, result });
+        while let Some(event) =
+            self.route_next(endpoint, services, reborrow_text_shaper(&mut text_shaper))
+        {
+            routed.push(event);
             count += 1;
         }
         count
+    }
+
+    /// Take the next event off `endpoint` and route it. A host whose program
+    /// observes input routes one event, lets the program observe it, then
+    /// routes the next: what the program does with a key press (stop its
+    /// text with [`Self::suppress_text_for`]) lands before that text routes.
+    pub fn route_next(
+        &mut self,
+        endpoint: &mut InputEndpoint,
+        services: &mut dyn HostServices,
+        text_shaper: Option<&mut dyn TextShaper>,
+    ) -> Option<RoutedEvent> {
+        let event = endpoint.pop()?;
+        let result = self.route_input(&event, services, text_shaper);
+        let event = match &result {
+            Ok(outcome) => outcome.localize(event),
+            Err(_) => event,
+        };
+        Some(RoutedEvent { event, result })
+    }
+
+    /// Drop the text the key press `key` of `source` typed, as a page's
+    /// `keydown.preventDefault()` does: a later [`InputPayload::Text`] whose
+    /// `key` is `key` inserts nothing. Only the latest press is remembered.
+    pub fn suppress_text_for(&mut self, source: InputSourceId, key: InputSequence) {
+        if let Some(state) = self.input.sources.get_mut(&source) {
+            state.handled_key = Some(key);
+        }
     }
 
     /// Bring `source`'s cursor and text-input state up to date with a world

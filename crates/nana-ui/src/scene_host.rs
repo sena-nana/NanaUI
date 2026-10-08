@@ -326,8 +326,6 @@ struct WindowManager<Program: RuntimeProgram> {
     input_generations: HashMap<WindowId, u64>,
     /// The process's clipboard, the one backend every window's input uses.
     clipboard: nana_ui_platform::SharedClipboardHost,
-    /// Routed events of the drain in progress, reused across drains.
-    routed_input: Vec<nana_ui_runtime::RoutedEvent>,
     /// The primary window's icons, while the startup thread still renders them.
     pending_icons: Option<Receiver<SceneIcons>>,
     /// Messages `initialize` returned, not yet applied (only with a splash).
@@ -1293,7 +1291,6 @@ fn complete_startup<Program: RuntimeProgram>(
         startup: host_startup,
         input_generations: HashMap::from([(WindowId::PRIMARY, 1)]),
         clipboard: host_services::process_clipboard(),
-        routed_input: Vec::new(),
         pending_icons,
         startup_messages: std::collections::VecDeque::new(),
     };

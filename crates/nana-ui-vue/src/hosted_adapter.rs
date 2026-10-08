@@ -455,6 +455,15 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 {
                     host.input_projection.handled_key = Some(event.metadata.sequence);
                 }
+                // The page stopped the key: the Runtime drops its text too,
+                // so the field keeps what the page sees.
+                if key.is_pressed() && !allowed {
+                    if let Ok(mut document) = host.document().lock() {
+                        document
+                            .context_mut()
+                            .suppress_text_for(event.metadata.source, event.metadata.sequence);
+                    }
+                }
             }
             InputPayload::Text(committed) => {
                 let suppressed =
@@ -1683,9 +1692,116 @@ mod tests {
         assert_eq!(text(&document).as_deref(), Some("a"));
     }
 
+    /// A native window routes a key press and its text one after the other,
+    /// the page observing each before the next routes: the page hears one
+    /// `input`, and a page that prevents the key or its `beforeinput` keeps
+    /// the field as it was.
+    #[test]
+    fn a_native_key_and_its_text_reach_the_page_once_and_stop_when_prevented() {
+        fn run(prevent: &[&'static str]) -> (Option<String>, usize) {
+            let mut runtime = test_runtime();
+            runtime.engine.prevent = prevent.to_vec();
+            let host = runtime.vue.host(VueWindowId::PRIMARY).unwrap();
+            host.lock()
+                .unwrap()
+                .bind_event_bridge(&mut runtime.engine)
+                .unwrap();
+            let document = host.lock().unwrap().document();
+            let source = InputSourceId(7);
+            let node = {
+                let mut document = document.lock().unwrap();
+                let retained = document.runtime_document_mut();
+                let id = retained.document();
+                let context = retained.context_mut();
+                context
+                    .bind_input_source(source, EndpointGeneration(1), id)
+                    .unwrap();
+                let node = context
+                    .create_component(id, nana_ui_runtime::TextInput::new(""))
+                    .unwrap()
+                    .stable_id();
+                context.focus_node(id, node).unwrap();
+                node
+            };
+            host.lock()
+                .unwrap()
+                .document()
+                .lock()
+                .unwrap()
+                .set_attribute(crate::NodeHandle::from(node), "value", "");
+            let mut services = nana_ui_platform::HeadlessHostServices::new();
+            let metadata = |sequence| nana_ui_platform::InputMetadata {
+                source,
+                device: DeviceId(0),
+                generation: EndpointGeneration(1),
+                sequence: InputSequence(sequence),
+                timestamp: nana_ui_platform::InputTimestamp(sequence),
+            };
+            let key = nana_ui_platform::KeyInput::named(
+                "a",
+                "KeyA",
+                nana_ui_platform::KeyState::Pressed,
+                Default::default(),
+            );
+            for event in [
+                CanonicalInputEvent {
+                    metadata: metadata(1),
+                    payload: InputPayload::Key(key),
+                },
+                CanonicalInputEvent {
+                    metadata: metadata(2),
+                    payload: InputPayload::Text(nana_ui_platform::CommittedText {
+                        text: "a".into(),
+                        key: Some(InputSequence(1)),
+                    }),
+                },
+            ] {
+                let outcome = document
+                    .lock()
+                    .unwrap()
+                    .context_mut()
+                    .route_input(&event, &mut services, None)
+                    .unwrap();
+                runtime
+                    .observe_routed_input(
+                        WindowId::PRIMARY,
+                        RoutedInput {
+                            event: &event,
+                            pointer_hit: outcome.pointer_hit,
+                            disposition: outcome.disposition(),
+                        },
+                    )
+                    .unwrap();
+            }
+            let text = document
+                .lock()
+                .unwrap()
+                .runtime_document()
+                .context()
+                .world()
+                .text(node)
+                .map(str::to_owned);
+            let inputs = runtime
+                .engine
+                .fired
+                .iter()
+                .filter(|name| *name == "input")
+                .count();
+            (text, inputs)
+        }
+
+        assert_eq!(run(&[]), (Some("a".into()), 1));
+        assert_eq!(run(&["keydown"]), (Some(String::new()), 0));
+        assert_eq!(run(&["beforeinput"]), (Some(String::new()), 0));
+    }
+
     #[derive(Default)]
     struct InputEngine {
         on_event: Option<Box<dyn FnOnce()>>,
+        /// Page events whose default the page prevents.
+        prevent: Vec<&'static str>,
+        /// Every page event fired, by name.
+        fired: Vec<String>,
     }
 
     impl JsEngine for InputEngine {
@@ -1704,12 +1820,17 @@ mod tests {
         fn invoke(
             &mut self,
             _: nana_js_engine::JsFunctionId,
-            _: &[nana_js_engine::HostValue],
+            args: &[nana_js_engine::HostValue],
         ) -> Result<nana_js_engine::HostValue, JsEngineError> {
             if let Some(callback) = self.on_event.take() {
                 callback();
             }
-            Ok(nana_js_engine::HostValue::Bool(true))
+            let name = args.iter().find_map(|arg| arg.as_str().map(str::to_owned));
+            let prevented = name
+                .as_deref()
+                .is_some_and(|name| self.prevent.contains(&name));
+            self.fired.extend(name);
+            Ok(nana_js_engine::HostValue::Bool(!prevented))
         }
         fn run_microtasks(&mut self) -> Result<(), JsEngineError> {
             Ok(())
