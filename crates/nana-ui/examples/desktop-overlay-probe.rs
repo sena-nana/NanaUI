@@ -305,6 +305,8 @@ impl RuntimeProgram for Probe {
                     .surface(nana_ui::WindowSurfacePreference::NativeWindow);
                 plain.initial_position = Some((900.0, 120.0));
                 plain.focus_on_show = false;
+                // On top like the overlays, so the screen check sees it.
+                plain.always_on_top = true;
                 plain.skip_taskbar = true;
                 commands(vec![
                     WindowCommand::Open {
