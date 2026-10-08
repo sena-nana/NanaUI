@@ -19,6 +19,10 @@ pub struct ApplicationWindow {
     /// Keep one host per window: replacing the `Arc` refetches its images.
     pub fetch_host: Option<nana_ui_platform::SharedFetchHost>,
     pub demand: FrameDemand,
+    /// Paint this window a second time into an offscreen output; frames and
+    /// state changes arrive at [`ApplicationState::output_frame`] and
+    /// [`ApplicationState::output_status`].
+    pub output: Option<crate::WindowOutputConfig>,
 }
 
 impl ApplicationWindow {
@@ -53,6 +57,7 @@ impl ApplicationWindow {
             producers: None,
             fetch_host: None,
             demand: FrameDemand::OnDemand,
+            output: None,
         }
     }
 }
@@ -118,6 +123,24 @@ pub trait ApplicationState: Sized + 'static {
     fn rebuild_gpu(
         &mut self,
         _windows: &mut HashMap<WindowId, ApplicationWindow>,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+    }
+    /// A new frame of the window's [`ApplicationWindow::output`]. See
+    /// [`RuntimeProgram::window_output_frame`].
+    fn output_frame(
+        &mut self,
+        _window: &mut ApplicationWindow,
+        _frame: &crate::WindowOutputFrame,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+    }
+    /// The window's output changed state. See
+    /// [`RuntimeProgram::window_output_status`].
+    fn output_status(
+        &mut self,
+        _window: &mut ApplicationWindow,
+        _status: crate::WindowOutputStatus,
         _context: &RuntimeProgramContext<Self::Message>,
     ) {
     }
@@ -225,6 +248,29 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
     ) {
         if let Some(window) = self.windows.get_mut(&id) {
             self.state.prepare(window, context);
+        }
+    }
+    fn window_output(&self, id: WindowId) -> Option<crate::WindowOutputConfig> {
+        self.windows.get(&id).and_then(|window| window.output)
+    }
+    fn window_output_frame(
+        &mut self,
+        id: WindowId,
+        frame: &crate::WindowOutputFrame,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) {
+        if let Some(window) = self.windows.get_mut(&id) {
+            self.state.output_frame(window, frame, context);
+        }
+    }
+    fn window_output_status(
+        &mut self,
+        id: WindowId,
+        status: crate::WindowOutputStatus,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) {
+        if let Some(window) = self.windows.get_mut(&id) {
+            self.state.output_status(window, status, context);
         }
     }
     fn window_frame_presented(

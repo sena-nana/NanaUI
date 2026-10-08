@@ -526,6 +526,8 @@ python scripts/validate-desktop-overlay.py --presents
 
 **验证状态**：2026-10-08 在 Windows 11（RTX 5060 Ti，DX12）真机上，`--presents` 三轮均为每窗 60 帧 / 2 秒，三扇窗的标记像素都在屏幕上。完整的 `validate-desktop-overlay.py`（指针路由、任务栏）这次没有跑，因为这台机器没装 `comtypes`。
 
+隐藏、最小化或被遮挡的窗口仍可以出画面：程序用 `RuntimeProgram::window_output` 要一个窗口输出，并设 `while_hidden`。宿主在只做 GPU 的隐藏 tick 里 flush 文档，只画输出。合同与真机结果见 [Window-independent presentation](output.md#window-outputs)。
+
 ## Runtime 中的原生网页内容
 
 `runtime::BrowserView` 是保留树中的布局和可访问性节点。应用工具条、地址输入和

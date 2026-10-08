@@ -873,6 +873,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         #[cfg(target_os = "macos")]
         self.present_transaction_pinned.remove(&id);
         self.frame_schedules.remove(&id);
+        self.close_window_output(id);
         self.texture_subscriptions.remove(&id);
         if let Ok(mut targets) = self.image_targets.lock() {
             remove_image_target_index(&mut targets, &mut self.image_window_keys, id);

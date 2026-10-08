@@ -437,7 +437,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .program
             .read_document(id, |document| document.compositor_needs_tick())
             .unwrap_or(false);
-        window_present_demand(program, compositor, self.can_present(id))
+        let can_present = self.can_present(id);
+        merge_frame_demand(
+            window_present_demand(program, compositor, can_present),
+            self.window_output_demand(id, can_present),
+        )
     }
 
     pub(super) fn sync_compositor_clock(&mut self, id: WindowId) {

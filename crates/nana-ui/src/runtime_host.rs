@@ -699,6 +699,41 @@ pub trait RuntimeProgram: Sized + 'static {
         RuntimeProgramUpdate::default()
     }
 
+    /// Ask for this window's content to be painted a second time into an
+    /// offscreen output (a Spout sender, a recorder). Read every frame; `None`
+    /// (the default) stops an output that was running.
+    ///
+    /// The host paints the window's own scene into the output inside the
+    /// frame it records for the window, so nothing is laid out twice and an
+    /// unchanged window produces no output frame. With
+    /// [`crate::WindowOutputConfig::while_hidden`] a hidden, minimised or
+    /// occluded window keeps its output ticking at
+    /// [`crate::WindowOutputConfig::max_fps`] (30 by default).
+    fn window_output(&self, _id: WindowId) -> Option<crate::WindowOutputConfig> {
+        None
+    }
+
+    /// A new output frame of window `id`, right after the host submitted it.
+    /// Record GPU work that reads [`crate::WindowOutputFrame::texture`] here,
+    /// or take its native token; see [`crate::WindowOutputFrame`].
+    fn window_output_frame(
+        &mut self,
+        _id: WindowId,
+        _frame: &crate::WindowOutputFrame,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+    }
+
+    /// The output of window `id` changed state (started, resized, lost or
+    /// regained native export, failed, stopped). Reported once per change.
+    fn window_output_status(
+        &mut self,
+        _id: WindowId,
+        _status: crate::WindowOutputStatus,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+    }
+
     /// Fill content after the host presented a frame that applied [`Self::update`].
     fn bind_window(
         &mut self,

@@ -62,6 +62,10 @@ gpu = ["dep:bytemuck", "dep:nana-frame-exchange", "dep:nana-gpu", "dep:base64", 
 # Hosts that bring their own device and renderers that record their own
 # pipelines need it; ordinary HostTexture / FrameExchange use does not.
 wgpu-interop = ["gpu", "nana-gpu/wgpu-interop", "nana-frame-exchange/wgpu-interop"]
+# Window outputs can also be exported as DX12 shared textures and a shared
+# fence another D3D device opens by handle (`WindowOutputExport::Native`).
+# Windows only; compiles the DX12 backend in.
+native-export = ["gpu", "nana-gpu/native-export"]
 hosted = [
     "gpu",
     "accesskit-tree",
@@ -116,6 +120,16 @@ accesskit_macos = { workspace = true, optional = true }
 
 [dev-dependencies]
 pollster = { workspace = true }
+
+# `window-output-probe` reads its native output on a D3D11 device.
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
 accesskit_unix = { workspace = true, optional = true }
@@ -185,6 +199,10 @@ required-features = ["gpu", "wgpu-interop"]
 [[example]]
 name = "desktop-overlay-probe"
 required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
+name = "window-output-probe"
+required-features = ["hosted", "bundled-fonts", "native-export"]
 
 [[example]]
 name = "native-content-probe"

@@ -198,6 +198,10 @@ WGPU 是唯一的后端。它不是扩展合同。普通路径只用 `nana-gpu` 
 
 提交守卫不可重入。持着 `lock_submission()` 时，不要再调用 `FrameContext::submit`、`GpuContext::write_texture`、`FrameExchange::copy_from` 这些会自己取守卫的方法。
 
+#### 原生纹理导出（`native-export`）
+
+Windows 上的 DX12 设备可以把纹理交给另一个 D3D 设备。打开 `nana-gpu`（或 `nana-ui`）的 `native-export` 特性。`GpuCapability::NativeTextureExport` 报告能否使用。`NativeExportPool` 在宿主那一份设备上建 3 张共享的 BGRA8 纹理和一个共享 fence，导出成 NT handle。它不另开 Device/Queue，也不回读 CPU。`stage` 把一张已画好的纹理复制进当前 `FrameContext`。`FrameContext::submit` 在 `queue.submit` 之后、仍持提交守卫时，在设备队列上 signal 这一帧的 ready 值。`finish` 交出 `NativeFrameToken`。消费端先 `accept_release`，在自己的 GPU 时间线上 `Wait(ready)`，读完再 `Signal(release)`。上一帧没释放时 `stage` 返回 `Deferred`，不等待。没被接收就丢掉的 token 由生产端自己 signal 释放。窗口输出（`WindowOutputExport::Native`）每一帧都走这条路。公开类型只有 Nana 自己的类型、`BorrowedHandle` 和 `i64` 的适配器 LUID。完整的消费端合同见 [Window-independent presentation](output.md#dx12-shared-textures-native-export)。
+
 ## 跨线程最新帧
 
 画面在另一个线程上产出（模型渲染、导播合成、解码）时，用 `FrameExchange` 把完成的帧交给窗口。用 `FrameBinding` 把它绑到 slot。两者都在宿主那一个 `GpuContext` 上。生产端 crate `nana-frame-exchange` 建在 `nana-gpu` 上，并再导出 `GpuContext` / `GpuTexture` / `DeviceGeneration`。渲染库不必依赖 `nana-ui`。
