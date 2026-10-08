@@ -23,7 +23,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 ## 目录
 
-**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`、`DatePicker`。`RangeField` 默认在轨道旁画当前值和单位。`.show_value(false)`（Vue `showValue`）只留轨道。读屏仍能读到数值。`.show_label(false)` 不画标签。轨道占满。标签仍是读屏名称。
+**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`、`DatePicker`。`RangeField` 默认在轨道旁画当前值和单位。`.show_value(false)`（Vue `showValue`）只留轨道。读屏仍能读到数值。`.show_label(false)` 不画标签。轨道占满。标签仍是读屏名称。`.rail(粗细)` 只画一条横贯控件的细轨，圆点只在焦点可见时出现，控件高度就是命中区。
 
 **布局与文本基元。** `Text`、`Stack`（`row` / `column` / `bar` / `spacer` / `overlay_layer` 等预设）、`Divider`、`IconGlyph`、`ScrollView`。`Stack::spacer()` 是零宽 flex-grow。它把其后兄弟推到行尾。`Stack::overlay_layer()` 铺满已定位父级。它脱流。不命中。会裁剪。给舞台 HUD / 弹幕当容器。节点池仍由你的应用挂。`Divider` 默认交叉轴 `Fill` + `align_self: Stretch`。放进 `align_items: Start` 的列里仍能看见。
 

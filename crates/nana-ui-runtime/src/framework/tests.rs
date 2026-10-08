@@ -1610,6 +1610,7 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
             ratio: 1.0,
             markers: Arc::from([]),
             invalid: false,
+            rail: None,
         })
     );
     let accessibility = context.world().project_accessibility(document);
@@ -6778,6 +6779,7 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
                 ratio: 0.7,
                 markers: Arc::from([]),
                 invalid: false,
+                rail: None,
             })
         );
     }
@@ -6949,6 +6951,7 @@ fn range_field_can_hide_the_value_readout_and_still_expose_the_numeric_value() {
             ratio: 0.4,
             markers: Arc::from([]),
             invalid: false,
+            rail: None,
         })
     );
     let accessibility = context.world().project_accessibility(document);
@@ -6957,6 +6960,62 @@ fn range_field_can_hide_the_value_readout_and_still_expose_the_numeric_value() {
         .find(|node| node.id == range.stable_id())
         .unwrap();
     assert_eq!(slider.numeric_value, Some(40.0));
+}
+
+#[test]
+fn a_rail_range_maps_its_whole_box_and_names_itself_only_for_assistive_technology() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(300.0));
+        layout.height = Some(LengthSpec::Px(16.0));
+    }
+    let range = context
+        .create_component(
+            document,
+            RangeField::new(40.0, 0.0, 100.0, 1.0)
+                .label("Seek")
+                .rail(2.0)
+                .style(style),
+        )
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
+        .unwrap();
+    let bounds = context.world().layout_box(range.stable_id()).unwrap();
+    let crate::ComponentGeometry::Range { label, track, .. } = context
+        .world()
+        .component_geometry(range.stable_id())
+        .unwrap()
+    else {
+        panic!("range geometry expected");
+    };
+    assert!(label.is_none());
+    assert_eq!((track.x, track.width), (bounds.x, bounds.width));
+    assert!(matches!(
+        context.world().standard_visual(range.stable_id()),
+        Some(StandardVisual::Range {
+            label: None,
+            rail: Some(2.0),
+            ..
+        })
+    ));
+    context
+        .begin_range_drag(document, 7, range.stable_id(), bounds.x)
+        .unwrap();
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 0.0);
+    context
+        .update_range_drag(document, 7, bounds.x + bounds.width)
+        .unwrap();
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 100.0);
+    let accessibility = context.world().project_accessibility(document);
+    let slider = accessibility
+        .iter()
+        .find(|node| node.id == range.stable_id())
+        .unwrap();
+    assert_eq!(slider.label.as_deref(), Some("Seek"));
 }
 
 #[test]

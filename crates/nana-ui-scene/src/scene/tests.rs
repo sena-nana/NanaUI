@@ -5514,6 +5514,7 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
         ratio: 0.25,
         markers: Arc::from([]),
         invalid: false,
+        rail: None,
     });
     style_mut(&mut slider).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut slider).border_color = Some([0.4, 0.4, 0.4, 1.0]);
@@ -5550,6 +5551,62 @@ fn standard_control_visuals_expand_without_backend_tag_matching() {
             .width,
         21.5
     );
+}
+
+#[test]
+fn a_rail_range_draws_its_girth_and_shows_the_thumb_only_with_visible_focus() {
+    let mut range = node(1, None, &[]);
+    range.layout = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 16.0,
+    };
+    range.standard_visual = Some(StandardVisual::Range {
+        label: None,
+        value: Arc::from(""),
+        unit: None,
+        size: nana_ui_core::ControlSize::Small,
+        ratio: 0.5,
+        markers: Arc::from([]),
+        invalid: false,
+        rail: Some(2.0),
+    });
+    range.component_geometry = Some(Box::new(ComponentGeometry::Range {
+        label: None,
+        value: nana_ui_runtime::ComponentTextRegion {
+            bounds: LayoutBox::default(),
+            content: Arc::<str>::from("").into(),
+            color: None,
+            font_size: 12.0,
+            font_weight: None,
+        },
+        unit: None,
+        track: range.layout,
+    }));
+    style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
+    style_mut(&mut range).border_color = Some([0.4, 0.4, 0.4, 1.0]);
+    let slot = |scene: &UiScene, slot| {
+        scene
+            .primitive(PrimitiveId { node: id(1), slot })
+            .map(|primitive| primitive.bounds)
+    };
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([range.clone()], []);
+    let rail = slot(&scene, 3).expect("rail");
+    assert_eq!(
+        (rail.x, rail.y, rail.width, rail.height),
+        (0.0, 7.0, 200.0, 2.0)
+    );
+    assert_eq!(slot(&scene, 4).expect("fill").width, 100.0);
+    assert!(slot(&scene, 5).is_none(), "no thumb without visible focus");
+
+    range.focused = true;
+    let mut scene = UiScene::new();
+    scene.apply_delta([range], []);
+    assert!(slot(&scene, 5).is_some(), "the thumb marks visible focus");
+    assert!(slot(&scene, 6).is_some(), "with its ring");
 }
 
 #[test]
@@ -5963,6 +6020,7 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
             ratio: 0.5,
             markers: Arc::from([]),
             invalid: false,
+            rail: None,
         });
         style_mut(&mut range).border_color = Some([0.4, 0.4, 0.45, 1.0]);
         range.standard_visual_foreground = Some([0.2, 0.5, 1.0, 1.0]);
@@ -6035,6 +6093,7 @@ fn a_range_marker_paints_on_the_track_under_the_thumb() {
         ratio: 0.5,
         markers: Arc::from([0.25]),
         invalid: false,
+        rail: None,
     });
     style_mut(&mut range).background = Some([0.2, 0.5, 0.9, 1.0]);
     style_mut(&mut range).border_color = Some([0.4, 0.4, 0.45, 1.0]);
@@ -6138,6 +6197,7 @@ fn migrated_components_consume_runtime_subregion_geometry() {
         ratio: 0.25,
         markers: Arc::from([]),
         invalid: false,
+        rail: None,
     });
     range.component_geometry = Some(Box::new(ComponentGeometry::Range {
         label: Some(ComponentTextRegion {

@@ -1605,9 +1605,11 @@ impl UiScene {
                     ratio,
                     size,
                     markers,
+                    rail: rail_girth,
                     ..
                 }) => {
                     let ratio = ratio.clamp(0.0, 1.0);
+                    let rail_girth = rail_girth.filter(|girth| girth.is_finite() && *girth > 0.0);
                     let track_band = match node.component_geometry.as_deref() {
                         Some(ComponentGeometry::Range { track, .. }) => scene_rect(*track),
                         _ => SceneRect {
@@ -1624,12 +1626,16 @@ impl UiScene {
                     }
                     .min(bounds.width)
                     .min(track_band.height.max(0.0));
+                    // A rail-only range draws its own girth and shows the
+                    // thumb only while focus is visible on it.
+                    let girth = rail_girth.map_or(4.0, |girth| girth.min(track_band.height));
                     let rail = SceneRect {
                         x: track_band.x,
-                        y: track_band.y + (track_band.height - 4.0) / 2.0,
+                        y: track_band.y + (track_band.height - girth) / 2.0,
                         width: track_band.width,
-                        height: 4.0,
+                        height: girth,
                     };
+                    let rail_radius = girth / 2.0;
                     self.insert_primitive(visual_quad_with_paint(
                         &visual_context,
                         3,
@@ -1638,7 +1644,7 @@ impl UiScene {
                             background: node.style.border_color,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: corner_radii(2.0),
+                            corner_radius: corner_radii(rail_radius),
                         },
                         matching_paint_color(
                             node.style.paint_colors.border,
@@ -1657,7 +1663,7 @@ impl UiScene {
                             background: node.style.background,
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: corner_radii(2.0),
+                            corner_radius: corner_radii(rail_radius),
                         },
                         node.style.paint_colors.background,
                         None,
@@ -1695,19 +1701,21 @@ impl UiScene {
                         width: thumb_extent,
                         height: thumb_extent,
                     };
-                    self.insert_primitive(visual_quad_with_paint(
-                        &visual_context,
-                        thumb_slot,
-                        thumb_rect,
-                        VisualQuadStyle {
-                            background: node.style.background,
-                            border_color: node.style.border_color,
-                            border_width: 1.0,
-                            corner_radius: corner_radii(thumb_extent / 2.0),
-                        },
-                        node.style.paint_colors.background,
-                        node.style.paint_colors.border,
-                    ));
+                    if rail_girth.is_none() || node.focused {
+                        self.insert_primitive(visual_quad_with_paint(
+                            &visual_context,
+                            thumb_slot,
+                            thumb_rect,
+                            VisualQuadStyle {
+                                background: node.style.background,
+                                border_color: node.style.border_color,
+                                border_width: 1.0,
+                                corner_radius: corner_radii(thumb_extent / 2.0),
+                            },
+                            node.style.paint_colors.background,
+                            node.style.paint_colors.border,
+                        ));
+                    }
                     if node.focused {
                         // Focus marks the thumb (LiliaUI focus-visible outline),
                         // never the rail: the rail colour stays interaction-free.

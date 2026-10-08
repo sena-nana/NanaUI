@@ -826,6 +826,9 @@ pub enum StandardVisual {
         /// Positions along the track, each in `0.0..=1.0`.
         markers: Arc<[f32]>,
         invalid: bool,
+        /// `Some(girth)`: a rail that thick across the whole content box,
+        /// with no thumb unless focus is visible on the range.
+        rail: Option<f32>,
     },
     /// Scroll container chrome. Carries policy only: the track and thumb boxes
     /// come from the authoritative [`ScrollOffset`] / [`ScrollMetrics`] at

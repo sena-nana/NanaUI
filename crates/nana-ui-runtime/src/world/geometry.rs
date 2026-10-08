@@ -1504,6 +1504,29 @@ impl UiWorld {
                 )
             }
             StandardVisual::Range {
+                rail: Some(_),
+                value,
+                size,
+                ..
+            } => Some(crate::ComponentGeometry::Range {
+                label: None,
+                value: text_region(
+                    LayoutBox {
+                        x: content.x + content.width,
+                        y: content.y,
+                        width: 0.0,
+                        height: content.height,
+                    },
+                    Arc::clone(value),
+                    false,
+                    size.text_size(),
+                    Some(500),
+                ),
+                unit: None,
+                // The rail spans the box: the pointer maps onto all of it.
+                track: content,
+            }),
+            StandardVisual::Range {
                 label,
                 value,
                 unit,

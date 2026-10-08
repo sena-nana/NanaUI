@@ -4028,6 +4028,9 @@ pub struct RangeField {
     /// the track takes the width the drawn label would have used.
     pub show_label: bool,
     pub size: nana_ui_core::ControlSize,
+    /// `Some(girth)` draws only a rail that thick across the whole box; see
+    /// [`Self::rail`].
+    pub rail: Option<f32>,
     pub disabled: bool,
     pub invalid: bool,
     pub dragging: Option<RangeDragState>,
@@ -4108,6 +4111,7 @@ impl RangeField {
             show_value: true,
             show_label: true,
             size: nana_ui_core::ControlSize::Medium,
+            rail: None,
             disabled: false,
             invalid: false,
             dragging: None,
@@ -4139,6 +4143,16 @@ impl RangeField {
     }
     pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
         self.size = size;
+        self
+    }
+    /// Draw only a rail `girth` thick, filled up to the value, across the
+    /// whole box: no drawn label, value readout or field padding, and no
+    /// thumb unless the range has keyboard focus. The box keeps its own
+    /// height, so a thin rail can sit in a taller hit area. The label still
+    /// names the slider for assistive technology. A girth that is not finite
+    /// and positive keeps the regular look.
+    pub fn rail(mut self, girth: f32) -> Self {
+        self.rail = (girth.is_finite() && girth > 0.0).then_some(girth);
         self
     }
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -4238,22 +4252,24 @@ impl ComponentView for RangeField {
     }
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let value = format_range_value(self.value, self.step);
+        let rail = self.rail.filter(|girth| girth.is_finite() && *girth > 0.0);
+        let show_value = self.show_value && rail.is_none();
         let visual = StandardVisual::Range {
-            label: self.label.clone().filter(|_| self.show_label),
-            value: if self.show_value {
+            label: self
+                .label
+                .clone()
+                .filter(|_| self.show_label && rail.is_none()),
+            value: if show_value {
                 Arc::clone(&value)
             } else {
                 Arc::from("")
             },
-            unit: if self.show_value {
-                self.unit.clone()
-            } else {
-                None
-            },
+            unit: if show_value { self.unit.clone() } else { None },
             size: self.size,
             ratio: self.ratio(),
             markers: self.marker_ratios(),
             invalid: self.invalid,
+            rail,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -4276,7 +4292,9 @@ impl ComponentView for RangeField {
         if effective_style.control_height.is_none() && effective_style.layout.height.is_none() {
             effective_style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));
         }
-        effective_style.control_padding_x = Some(nana_ui_core::ControlPadding::Field);
+        if rail.is_none() {
+            effective_style.control_padding_x = Some(nana_ui_core::ControlPadding::Field);
+        }
         if self.invalid {
             effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
         }
