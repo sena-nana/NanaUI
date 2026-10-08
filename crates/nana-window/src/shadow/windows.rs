@@ -199,6 +199,7 @@ fn companion_class() -> Option<*const u16> {
 
 /// The companion is already at `body` with this visibility, so another
 /// `SetWindowPos` would only reorder it.
+#[allow(clippy::too_many_arguments)]
 fn placement_already_shown(
     size: (i32, i32),
     held_size: (i32, i32),
