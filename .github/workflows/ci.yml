@@ -61,6 +61,13 @@ jobs:
         run: cargo check -p component-gallery --bin component-gallery --locked
       - name: Run default-feature tests
         run: cargo test --workspace --all-targets --locked
+      # The Runtime suite again on typed contexts: a creation path that forgot
+      # to install a component's type hook fails the test that needs it.
+      - name: Run Runtime tests on typed contexts
+        if: runner.os == 'Linux'
+        env:
+          NANA_TEST_TYPED_BUILTINS: "1"
+        run: cargo test -p nana-ui-runtime --lib --locked
       - name: Run V8 engine tests
         run: cargo test -p nana-js-v8 --features engine --locked -- --test-threads=1
       # The headless Agent surface is gated behind non-default features, so the
