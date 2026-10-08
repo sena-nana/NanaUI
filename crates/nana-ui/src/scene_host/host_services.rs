@@ -51,6 +51,17 @@ impl WindowInputSource {
             ime: None,
         }
     }
+
+    /// The pointer left: the window shows the default cursor, and so does
+    /// the next composition. The Runtime forgot its cursor on leave and
+    /// sends nothing for a default one on the next enter, so a cursor kept
+    /// here (a text beam, `cursor: none`) would come back over plain UI.
+    pub(super) fn reset_cursor(&mut self) -> (CursorIcon, bool) {
+        self.runtime_cursor = nana_ui_platform::CursorIcon::Default;
+        let applied = native_cursor(self.runtime_cursor);
+        self.applied_cursor = Some(applied);
+        applied
+    }
 }
 
 /// The host services of one window for one drain.
@@ -292,6 +303,20 @@ mod tests {
     fn leaving_the_field_disables_the_ime() {
         assert_eq!(ime_apply(Some(&state(true, true)), None), ImeApply::Disable);
         assert_eq!(ime_apply(None, None), ImeApply::None);
+    }
+
+    #[test]
+    fn a_pointer_leaving_resets_the_cursor_the_runtime_asked_for() {
+        let mut source = WindowInputSource::new(InputSourceId(1), EndpointGeneration(1));
+        source.runtime_cursor = nana_ui_platform::CursorIcon::Hidden;
+        source.applied_cursor = Some(native_cursor(source.runtime_cursor));
+        assert_eq!(source.reset_cursor(), (CursorIcon::Default, true));
+        // Re-entering over plain UI: the Runtime sends nothing, and what the
+        // host composes is the default.
+        assert_eq!(
+            native_cursor(source.runtime_cursor),
+            (CursorIcon::Default, true)
+        );
     }
 
     #[test]

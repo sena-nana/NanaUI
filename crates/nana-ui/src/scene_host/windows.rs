@@ -1280,10 +1280,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return;
         };
-        host.input_source.applied_cursor = Some((CursorIcon::Default, true));
+        let (icon, visible) = host.input_source.reset_cursor();
         let window = host.surface.window();
-        window.set_cursor_visible(true);
-        window.set_cursor(CursorIcon::Default.into());
+        window.set_cursor_visible(visible);
+        window.set_cursor(icon.into());
     }
 
     /// Starts a window move for `WindowCommand::Drag`, the one signal any
