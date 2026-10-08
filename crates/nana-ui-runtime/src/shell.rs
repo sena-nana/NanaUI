@@ -64,15 +64,24 @@ impl WindowChromeAction {
     }
 }
 
+/// What an [`AppTitleBar`] draws behind itself.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TitleBarBackdrop {
+    /// The theme's title-bar background.
+    #[default]
+    Themed,
+    /// Nothing; see [`AppTitleBar::transparent`].
+    Transparent,
+    /// The media scrim, with on-media title and window buttons; see
+    /// [`AppTitleBar::over_media`].
+    OverMedia,
+}
+
 /// 36px application title bar. Leading / center / trailing / controls are host-mounted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppTitleBar {
     pub title: Arc<str>,
-    pub transparent: bool,
-    /// Laid over media (a video): a scrim behind the bar and the on-media
-    /// foreground on the title and window buttons, in every theme. Implies
-    /// [`Self::transparent`].
-    pub over_media: bool,
+    pub(crate) backdrop: TitleBarBackdrop,
     pub drag_enabled: bool,
     pub leading: Option<StableNodeId>,
     pub center: Option<StableNodeId>,
@@ -92,8 +101,7 @@ impl AppTitleBar {
     pub fn new(title: impl Into<Arc<str>>) -> Self {
         Self {
             title: title.into(),
-            transparent: false,
-            over_media: false,
+            backdrop: TitleBarBackdrop::Themed,
             drag_enabled: true,
             leading: None,
             center: None,
@@ -107,9 +115,16 @@ impl AppTitleBar {
         }
     }
 
-    /// Removes only the title-bar background, preserving foreground and slot content.
+    /// Removes only the title-bar background, preserving foreground and slot
+    /// content. A bar [`Self::over_media`] stays so.
     pub fn transparent(mut self, transparent: bool) -> Self {
-        self.transparent = transparent;
+        if self.backdrop != TitleBarBackdrop::OverMedia {
+            self.backdrop = if transparent {
+                TitleBarBackdrop::Transparent
+            } else {
+                TitleBarBackdrop::Themed
+            };
+        }
         self
     }
 
@@ -117,10 +132,22 @@ impl AppTitleBar {
     /// theme's media scrim fades from the top edge to nothing behind the bar,
     /// and the title and window buttons take the theme's on-media foreground
     /// ([`SemanticColorRole::OnMedia`]). The media is dark in the light theme
-    /// too, so both themes look the same. Implies [`Self::transparent`].
+    /// too, so both themes look the same. Implies [`Self::transparent`];
+    /// turning it off gives the themed bar back.
+    ///
+    /// It covers the title and the window buttons only: content the
+    /// application puts in the bar's slots keeps its own roles.
     pub fn over_media(mut self, over_media: bool) -> Self {
-        self.over_media = over_media;
+        if over_media {
+            self.backdrop = TitleBarBackdrop::OverMedia;
+        } else if self.backdrop == TitleBarBackdrop::OverMedia {
+            self.backdrop = TitleBarBackdrop::Themed;
+        }
         self
+    }
+
+    fn is_over_media(&self) -> bool {
+        self.backdrop == TitleBarBackdrop::OverMedia
     }
 
     /// Enables native window dragging from the bar's non-interactive content.
@@ -196,14 +223,14 @@ impl AppTitleBar {
     fn effective_style(&self, world: &UiWorld, id: StableNodeId) -> NodeStyle {
         let columns = title_bar_has_columns(world, id);
         let mut style = self.style.clone();
-        style.foreground = Some(if self.over_media {
+        style.foreground = Some(if self.is_over_media() {
             SemanticColorRole::OnMedia
         } else {
             SemanticColorRole::Text
         });
         style.background =
-            (!self.transparent && !self.over_media).then_some(SemanticColorRole::Titlebar);
-        if self.over_media {
+            (self.backdrop == TitleBarBackdrop::Themed).then_some(SemanticColorRole::Titlebar);
+        if self.is_over_media() {
             style.painter = Some(crate::NodePainter::new(MediaScrimPainter));
         }
         style.text_horizontal_alignment = TextHorizontalAlignment::Center;
@@ -347,7 +374,7 @@ impl AppTitleBar {
         }
         AppTitleBarControls::new(self.maximized)
             .native(self.native_controls)
-            .over_media(self.over_media)
+            .over_media(self.is_over_media())
             .project(controls, world, mutations);
     }
 }
@@ -1156,7 +1183,7 @@ impl AppContext {
                 controls,
                 snapshot.maximized,
                 snapshot.native_controls,
-                snapshot.over_media,
+                snapshot.is_over_media(),
             )?;
             changed |= controls != Some(mounted);
             controls = Some(mounted);
@@ -2465,7 +2492,7 @@ mod tests {
         let parent = context.world().node(text.stable_id()).unwrap().parent;
         for transparent in [true, false] {
             context
-                .update_component(bar, |bar, _| bar.transparent = transparent)
+                .update_component(bar, |bar, _| *bar = bar.clone().transparent(transparent))
                 .unwrap();
             context
                 .layout_document(document(), LayoutViewport::new(800.0, 400.0))
@@ -2593,7 +2620,7 @@ mod tests {
         }
 
         context
-            .update_component(bar, |bar, _| bar.over_media = false)
+            .update_component(bar, |bar, _| *bar = bar.clone().over_media(false))
             .unwrap();
         context
             .layout_document(document(), LayoutViewport::new(800.0, 400.0))

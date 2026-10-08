@@ -730,7 +730,7 @@ mod tests {
             .unwrap();
         context
             .update_component(bar, |bar, _| {
-                bar.transparent = true;
+                *bar = bar.clone().transparent(true);
                 bar.trailing = Some(text.stable_id());
             })
             .unwrap();

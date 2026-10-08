@@ -3596,8 +3596,7 @@ mod tests {
         let layout = Arc::new(LayoutStyle::default());
         let defaults =
             AppTitleBar::from_semantic(&spec_with(&type_id, &layout, &[], &[], &[], "", ""));
-        assert!(!defaults.transparent);
-        assert!(!defaults.over_media);
+        assert_eq!(defaults.backdrop, crate::shell::TitleBarBackdrop::Themed);
         assert!(defaults.drag_enabled);
         let configured = AppTitleBar::from_semantic(&spec_with(
             &type_id,
@@ -3612,8 +3611,23 @@ mod tests {
             "",
             "",
         ));
-        assert!(configured.transparent);
-        assert!(configured.over_media);
+        assert_eq!(
+            configured.backdrop,
+            crate::shell::TitleBarBackdrop::OverMedia
+        );
+        let transparent = AppTitleBar::from_semantic(&spec_with(
+            &type_id,
+            &layout,
+            &[("transparent", "true")],
+            &[],
+            &[],
+            "",
+            "",
+        ));
+        assert_eq!(
+            transparent.backdrop,
+            crate::shell::TitleBarBackdrop::Transparent
+        );
         assert!(!configured.drag_enabled);
     }
 
