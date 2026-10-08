@@ -1609,7 +1609,6 @@ impl UiScene {
                     ..
                 }) => {
                     let ratio = ratio.clamp(0.0, 1.0);
-                    let rail_girth = rail_girth.filter(|girth| girth.is_finite() && *girth > 0.0);
                     let track_band = match node.component_geometry.as_deref() {
                         Some(ComponentGeometry::Range { track, .. }) => scene_rect(*track),
                         _ => SceneRect {
