@@ -1060,11 +1060,38 @@ fn upload_levels(
     work: Option<&crate::gpu_work::GpuWorkSink>,
     srgb_source: bool,
 ) -> Option<CachedUrlTexture> {
+    // An image larger than the device's largest texture is shown at the
+    // largest size that fits, not given up on (and remembered as failed).
+    let limit = device.limits().max_texture_dimension_2d;
+    if let Some(first) = levels.first()
+        && (first.width > limit || first.height > limit)
+    {
+        let (width, height) = fit_within((first.width, first.height), limit);
+        let base = super::image_resample::resample(first, width, height);
+        let fitted = if levels.len() > 1 {
+            super::image_resample::mip_chain(base)
+        } else {
+            vec![base]
+        };
+        return upload_levels(device, queue, &fitted, work, srgb_source);
+    }
     let levels: Vec<_> = levels
         .iter()
         .map(|level| (level.width, level.height, level.rgba.as_slice()))
         .collect();
     upload_mips(device, queue, &levels, work, srgb_source)
+}
+
+/// `size` scaled down, keeping its aspect, until neither side exceeds
+/// `limit`; never below one texel.
+fn fit_within(size: (u32, u32), limit: u32) -> (u32, u32) {
+    let longest = size.0.max(size.1).max(1);
+    if longest <= limit {
+        return size;
+    }
+    let scale = f64::from(limit) / f64::from(longest);
+    let side = |value: u32| ((f64::from(value) * scale).floor() as u32).clamp(1, limit);
+    (side(size.0), side(size.1))
 }
 
 /// One texture whose mip `i` is `levels[i]`; each level halves the one above.
@@ -1241,6 +1268,30 @@ impl UrlTextureCache {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_oversized_image_fits_the_largest_texture() {
+        assert_eq!(super::fit_within((200, 100), 64), (64, 32));
+        assert_eq!(super::fit_within((100, 9_000), 8_192), (91, 8_192));
+        assert_eq!(super::fit_within((20_000, 1), 8_192), (8_192, 1));
+        assert_eq!(super::fit_within((64, 64), 64), (64, 64));
+    }
+
+    #[test]
+    fn an_image_wider_than_the_device_allows_still_uploads() {
+        let gpu = crate::test_gpu::context();
+        let device = nana_gpu::__framework::device(&gpu);
+        let queue = nana_gpu::__framework::queue(&gpu);
+        let limit = device.limits().max_texture_dimension_2d;
+        let wide = super::Level::new(limit + 8, 2, vec![255; (limit as usize + 8) * 2 * 4]);
+        let texture =
+            super::upload_levels(device, queue, &[wide], None, true).expect("fitted, not failed");
+        assert!(
+            texture.width <= limit && texture.height >= 1,
+            "{}",
+            texture.width
+        );
+    }
+
     use super::*;
 
     impl UrlTextureCache {
