@@ -179,3 +179,5 @@ composite pass 的祖先 `FragmentClip`（含 inset-round 和 polygon）与 quad
 扩展经 `ExtensionRegistrar::register_presenter` 安装。Presenter 只读已经提交的 UTF-8。IME preedit 保持单色。
 
 未知语言，或 presenter 还没注册时，Scene 退回单色文本。
+
+`HighlightRequest::with_overlay` 带宿主给的语义段。重叠处 overlay 盖过 presenter 的基础层。presenter 没注册时只画 overlay。`SelectableRichText` 的 `RichSpan::color` 走这一条：各段仍拼成一段文本、一个文本图元，带色的段按 UTF-8 字节区间写进 overlay，颜色在抽取时按当前色板解析。

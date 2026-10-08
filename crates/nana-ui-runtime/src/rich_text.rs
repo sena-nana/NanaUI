@@ -31,8 +31,10 @@ use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
     FrameworkError, HighlightRequest, InteractionState, LayoutBox, LengthSpec, MutationQueue,
-    NodeKind, NodeStyle, StableNodeId, StandardVisual, TextContent, UiWorld,
+    NodeKind, NodeStyle, SemanticColorRole, StableNodeId, StandardVisual, TextContent, UiWorld,
 };
+
+mod span_color;
 
 /// Unit advance used for backend-neutral hit testing. Scene paint owns real
 /// glyph metrics.
@@ -1117,6 +1119,9 @@ pub struct RichSpan {
     pub emphasis: bool,
     pub code: bool,
     pub link: Option<Arc<str>>,
+    /// Semantic foreground of this span, resolved against the installed
+    /// palette. `None` paints it in the node's own text color.
+    pub color: Option<SemanticColorRole>,
 }
 
 impl RichSpan {
@@ -1127,6 +1132,7 @@ impl RichSpan {
             emphasis: false,
             code: false,
             link: None,
+            color: None,
         }
     }
 
@@ -1137,7 +1143,15 @@ impl RichSpan {
             emphasis: false,
             code: false,
             link: Some(href.into()),
+            color: None,
         }
+    }
+
+    /// Paint this span in `role` instead of the node's text color. Business
+    /// colors do not belong here; pick the role that matches the span's job.
+    pub fn color(mut self, role: SemanticColorRole) -> Self {
+        self.color = Some(role);
+        self
     }
 }
 
@@ -1438,6 +1452,10 @@ impl ComponentView for SelectableRichText {
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
+        }
+        let colors = span_color::color_request(&self.spans);
+        if world.highlight_request(id) != colors.as_ref() {
+            mutations.set_highlight_request(id, colors);
         }
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);

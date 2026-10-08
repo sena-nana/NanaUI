@@ -82,3 +82,84 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
         _ => {}
     }
 }
+
+#[cfg(all(test, feature = "rich-text"))]
+mod tests {
+    use nana_ui_runtime::{
+        ComputedStyle, DocumentId, LayoutViewport, RichSpan, SelectableRichText, SemanticColorRole,
+        StableNodeId, TextContent, TextMetrics, TextShapeConstraints, TextShaper,
+    };
+
+    use crate::{PrimitiveId, RuntimeDocument, ScenePrimitiveKind, SceneTextSpan};
+
+    struct LineShaper;
+
+    impl TextShaper for LineShaper {
+        fn shape(
+            &mut self,
+            _id: StableNodeId,
+            text: &TextContent,
+            _style: &ComputedStyle,
+            constraints: TextShapeConstraints,
+        ) -> TextMetrics {
+            let intrinsic = text.value.len() as f32 * 8.0;
+            TextMetrics {
+                width: constraints.max_width.unwrap_or(intrinsic).min(intrinsic),
+                height: 18.0,
+                ascent: None,
+            }
+        }
+    }
+
+    /// The span roles of a selectable rich text reach its one text primitive
+    /// as byte ranges in the installed palette's colors.
+    #[test]
+    fn selectable_rich_text_paints_span_roles_on_its_text_primitive() {
+        let document = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let text = runtime
+            .context_mut()
+            .create_component(
+                document,
+                SelectableRichText::new([
+                    RichSpan::plain("pub").color(SemanticColorRole::Keyword),
+                    RichSpan::plain(" fn"),
+                    RichSpan::plain(" // 注释").color(SemanticColorRole::Muted),
+                ]),
+            )
+            .unwrap();
+        runtime
+            .flush(LayoutViewport::new(320.0, 120.0), &mut LineShaper)
+            .unwrap();
+        let palette = runtime.context().world().style_model();
+        let color = |role| nana_ui_core::PaintColor::Srgb {
+            rgba: palette.color(role).as_rgba_array(),
+        };
+        let primitive = runtime
+            .scene()
+            .primitive(PrimitiveId {
+                node: text.stable_id(),
+                slot: 2,
+            })
+            .expect("the rich text paints one text primitive");
+        let ScenePrimitiveKind::Text { content, spans, .. } = &primitive.kind else {
+            panic!("expected a text primitive, got {:?}", primitive.kind);
+        };
+        assert_eq!(content.as_ref(), "pub fn // 注释");
+        assert_eq!(
+            spans,
+            &vec![
+                SceneTextSpan {
+                    start: 0,
+                    end: 3,
+                    color: color(SemanticColorRole::Keyword),
+                },
+                SceneTextSpan {
+                    start: "pub fn".len(),
+                    end: content.len(),
+                    color: color(SemanticColorRole::Muted),
+                },
+            ]
+        );
+    }
+}
