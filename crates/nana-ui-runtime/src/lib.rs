@@ -76,6 +76,7 @@ mod panel;
 mod path_field;
 mod placeholders;
 mod popover;
+mod presence;
 mod presentation;
 mod profiler;
 mod qr_code;
@@ -320,6 +321,7 @@ pub use popover::{
     ActionMenu, MENU_OVERLAY_Z_INDEX, Popover, PopoverClosed, PopoverToggled,
     resolve_popover_origin,
 };
+pub use presence::{PresenceLifecycle, PresencePhase, PresenceSettled};
 pub use presentation::{
     HIGHLIGHT_PRESENTER, HighlightRequest, TextPresentation, TextPresenter, TextSpan,
 };

@@ -325,7 +325,8 @@ each(items, |t| t.id, row).transition(Transition::slide(0.0, 12.0, ms(180)).move
 - **进场**：新行、新分支从给定的透明度和变换播到节点自己的值。挂载时已经存在的行不播。
 - **离场**：被删掉的行或分支不立刻销毁。它的作用域马上回收（不再跟随数据）。节点留在原位。不参与命中测试。焦点移走。播完离场后才销毁。
 - **移动**（`.moves(时长)`）：位置变了的行从原来的位置滑过去（FLIP）。插入、删除、重排都算。离场的行最终销毁、后面的行补位时也算。
-- 预设：`Transition::fade`、`slide(dx, dy, 时长)`、`scale(比例, 时长)`。自定义用 `Transition::new().enter(Presence::new(时长).opacity(0.0).translate(0.0, 8.0)).leave(..)`。`.ease(e)` 统一缓动。`without_enter()` / `without_leave()` 只要一半。
+- 一个常驻节点的显示和隐藏（卡片、工具窗口的内容）用同一个 `Transition` 交给 `PresenceLifecycle`，见 [Runtime 与 Scene](runtime-scene.md)。
+- 预设：`Transition::fade`、`slide(dx, dy, 时长)`、`scale(比例, 时长)`。自定义用 `Transition::new().enter(Presence::new(时长).opacity(0.0).translate(0.0, 8.0)).leave(..)`。`.ease(e)` 统一缓动，`Presence::ease_transform(e)` 给位移单独一条曲线。`without_enter()` / `without_leave()` 只要一半。
 - 全部走节点的合成器轨道。不写回逻辑样式。离场结束由 `advance_animations` 的完成事件驱动。移动在布局阶段之后、同一帧提取之前开始。所以不会先闪到新位置。
 - `when` 的新旧分支同时存在：旧分支原位离场。新分支接在它后面进场。加 `.moves` 后。旧分支消失时新分支平滑上移。Vue 的 `mode="out-in"`（先离场再进场）目前没有。
 - 虚拟列表（`each_virtual`）不支持：滚出视口的行本来就要立刻回收。

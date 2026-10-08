@@ -1440,8 +1440,9 @@ impl AppContext {
     }
 
     /// Whether view-layer motion is reduced: implicit property transitions
-    /// ([`crate::view::Implicit`], `El::animate`) and the enter, leave and
-    /// move of [`crate::view::Transition`] then land at once. Their logical values are committed as usual and every
+    /// ([`crate::view::Implicit`], `El::animate`), the enter, leave and move
+    /// of [`crate::view::Transition`], and [`crate::PresenceLifecycle`] then
+    /// land at once. Their logical values are committed as usual and every
     /// `Finished` they would have reported still arrives, on the next
     /// advance, so whatever waits for one moves on. The application's
     /// [`Self::set_reduced_motion`] wins; otherwise this follows the system

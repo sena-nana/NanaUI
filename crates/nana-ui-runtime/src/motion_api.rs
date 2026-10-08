@@ -483,7 +483,10 @@ impl AnimationSpec {
     }
 }
 
-fn user_animation_id(target: StableNodeId, property: AnimatableProperty) -> Option<AnimationId> {
+pub(crate) fn user_animation_id(
+    target: StableNodeId,
+    property: AnimatableProperty,
+) -> Option<AnimationId> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     hasher.write_u64(USER_MOTION);
     hasher.write_u64(target.get());

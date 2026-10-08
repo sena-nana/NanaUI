@@ -30,6 +30,8 @@ pub struct Presence {
     pub(crate) transform: Option<PaintTransform>,
     pub(crate) duration: Duration,
     pub(crate) easing: Easing,
+    /// The transform's own curve, when it is not [`Self::easing`].
+    pub(crate) transform_easing: Option<Easing>,
 }
 
 impl Presence {
@@ -39,6 +41,7 @@ impl Presence {
             transform: None,
             duration,
             easing: Easing::EaseOutCubic,
+            transform_easing: None,
         }
     }
 
@@ -78,6 +81,14 @@ impl Presence {
 
     pub fn ease(mut self, easing: Easing) -> Self {
         self.easing = easing;
+        self
+    }
+
+    /// A curve of the transform's own, such as a settle with a small
+    /// overshoot that the opacity must not share (it would pass 1). The
+    /// opacity keeps [`Self::ease`]; both keep one duration and end together.
+    pub fn ease_transform(mut self, easing: Easing) -> Self {
+        self.transform_easing = Some(easing);
         self
     }
 

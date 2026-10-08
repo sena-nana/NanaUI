@@ -687,7 +687,7 @@ impl AppContext {
                     to,
                     now,
                     duration,
-                    enter.easing,
+                    presence_easing(enter, property),
                     AnimationFillMode::Backwards,
                 ));
             }
@@ -729,7 +729,7 @@ impl AppContext {
                 to,
                 now,
                 duration,
-                leave.easing,
+                presence_easing(leave, property),
                 AnimationFillMode::Forwards,
             );
             last = Some(spec.id);
@@ -930,6 +930,14 @@ impl AppContext {
         if !mutations.is_empty() && self.commit_mutations(mutations).is_err() {
             nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
         }
+    }
+}
+
+/// The curve `presence` gives `property`.
+fn presence_easing(presence: &crate::view::Presence, property: AnimatableProperty) -> Easing {
+    match property {
+        AnimatableProperty::Transform => presence.transform_easing.unwrap_or(presence.easing),
+        _ => presence.easing,
     }
 }
 

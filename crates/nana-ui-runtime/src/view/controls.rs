@@ -18,8 +18,8 @@ use crate::{
 };
 use crate::{
     AppTitleBar, Breadcrumb, Dialog, Drawer, FormField, GpuView, IconGlyph, InteractiveCard,
-    LabeledValue, LevelMeter, List, MediaTransportBar, Panel, SettingsCard, SidebarRow, Skeleton,
-    StatusBar, Tabs, Toolbar, Tooltip, ValidationMessage, Video,
+    LabeledValue, LevelMeter, List, MediaTransportBar, OverlayHost, Panel, SettingsCard,
+    SidebarRow, Skeleton, StatusBar, Tabs, Toolbar, Tooltip, ValidationMessage, Video,
 };
 use nana_ui_core::{Icon, RadiusTier, SemanticColorRole, StatusTone};
 
@@ -155,7 +155,8 @@ styled!(
     Dialog,
     Drawer,
     LevelMeter,
-    AppTitleBar
+    AppTitleBar,
+    OverlayHost
 );
 
 /// Expands the control table of `nana-ui-view-schema`: per control, one
