@@ -801,6 +801,7 @@ impl VueHost {
     }
 
     /// Scroll `node` to `next`, clamped. Whether it moved.
+    #[cfg(feature = "hosted")]
     pub(crate) fn accessibility_scroll_to(
         &self,
         node: NodeHandle,
