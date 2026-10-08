@@ -206,6 +206,17 @@ struct RingState {
     owned: u64,
     /// Emptied batches kept for their capacity.
     spare: Vec<UploadBatch>,
+    /// Chunks recorded and not yet back, oldest first, with the submission
+    /// that carries each once it is known.
+    in_flight: std::collections::VecDeque<(u64, Option<wgpu::SubmissionIndex>)>,
+    next_chunk: u64,
+}
+
+/// A recorded upload: its command buffer, and the chunk it carries, to name
+/// the submission with [`UploadRing::submitted`].
+pub(crate) struct RecordedUploads {
+    pub(crate) commands: wgpu::CommandBuffer,
+    pub(crate) chunk: u64,
 }
 
 impl UploadRing {
@@ -245,12 +256,25 @@ impl UploadRing {
         Some(state.free.swap_remove(index))
     }
 
+    /// The submission that carries `chunk`.
+    pub(crate) fn submitted(&self, chunk: u64, index: wgpu::SubmissionIndex) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = state.in_flight.iter_mut().find(|(id, _)| *id == chunk) {
+            entry.1 = Some(index);
+        }
+    }
+
+    /// The submission of the oldest chunk in flight: the first to come back.
+    fn oldest_submission(&self) -> Option<wgpu::SubmissionIndex> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.in_flight.iter().find_map(|(_, index)| index.clone())
+    }
+
     /// A mapped chunk of at least `size` bytes.
     fn acquire(
         self: &Arc<Self>,
         device: &wgpu::Device,
         policy: &GpuDeviceState,
-        latest: Option<wgpu::SubmissionIndex>,
         size: u64,
     ) -> wgpu::Buffer {
         if let Some(chunk) = self.take_free(size) {
@@ -266,10 +290,12 @@ impl UploadRing {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.owned + chunk_size > RING_BUDGET
         };
-        if over_budget && let Some(latest) = latest {
+        // Over budget: wait for the oldest chunk to come back, not for the
+        // whole queue to drain.
+        if over_budget && let Some(oldest) = self.oldest_submission() {
             policy.record_ring_wait();
             let _ = device.poll(wgpu::PollType::Wait {
-                submission_index: Some(latest),
+                submission_index: Some(oldest),
                 timeout: Some(RING_WAIT),
             });
             if let Some(chunk) = self.take_free(size) {
@@ -286,11 +312,13 @@ impl UploadRing {
         })
     }
 
-    /// A chunk that came back mapped. Kept while the pool is within budget.
+    /// A chunk that came back mapped. Kept while the pool is within budget,
+    /// and always when the pool is empty: a chunk larger than the budget (one
+    /// 4K image) is reused by the next frame instead of reallocated.
     fn release(&self, chunk: wgpu::Buffer, mapped: bool) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let pooled: u64 = state.free.iter().map(wgpu::Buffer::size).sum();
-        if mapped && pooled + chunk.size() <= RING_BUDGET {
+        if mapped && (pooled == 0 || pooled + chunk.size() <= RING_BUDGET) {
             state.free.push(chunk);
         } else {
             state.owned = state.owned.saturating_sub(chunk.size());
@@ -306,15 +334,14 @@ pub(crate) fn record(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     policy: &GpuDeviceState,
-    latest: Option<wgpu::SubmissionIndex>,
     batch: UploadBatch,
-) -> Option<wgpu::CommandBuffer> {
+) -> Option<RecordedUploads> {
     if batch.is_empty() {
         ring.recycle(batch);
         return None;
     }
     let size = (batch.bytes.len() as u64).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
-    let chunk = ring.acquire(device, policy, latest, size);
+    let chunk = ring.acquire(device, policy, size);
     match chunk.slice(..size).get_mapped_range_mut() {
         Ok(mut view) => view
             .slice(..batch.bytes.len())
@@ -359,13 +386,29 @@ pub(crate) fn record(
         batch.writes,
         (batch.buffers.len() + batch.textures.len()) as u64,
     );
+    let id = {
+        let mut state = ring.state.lock().unwrap_or_else(|e| e.into_inner());
+        let id = state.next_chunk;
+        state.next_chunk += 1;
+        state.in_flight.push_back((id, None));
+        id
+    };
     let returning = Arc::clone(ring);
     let mapped = chunk.clone();
     encoder.map_buffer_on_submit(&chunk, wgpu::MapMode::Write, .., move |result| {
+        returning
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .in_flight
+            .retain(|(chunk, _)| *chunk != id);
         returning.release(mapped, result.is_ok());
     });
     ring.recycle(batch);
-    Some(encoder.finish())
+    Some(RecordedUploads {
+        commands: encoder.finish(),
+        chunk: id,
+    })
 }
 
 fn write_directly(queue: &wgpu::Queue, batch: &UploadBatch) {
@@ -409,6 +452,10 @@ mod tests {
     use super::*;
 
     fn device() -> wgpu::Device {
+        device_and_queue().0
+    }
+
+    fn device_and_queue() -> (wgpu::Device, wgpu::Queue) {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -419,7 +466,6 @@ mod tests {
         .expect("upload tests require a WGPU adapter");
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
             .expect("upload tests require a WGPU device")
-            .0
     }
 
     fn buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -487,6 +533,51 @@ mod tests {
         let at = copy.source as usize;
         assert_eq!(&batch.bytes[at..at + 3], &[1, 2, 3]);
         assert_eq!(&batch.bytes[at + 256..at + 259], &[4, 5, 6]);
+    }
+
+    /// A chunk bigger than the whole budget (one 4K image) stays pooled when
+    /// nothing else is, so the next frame reuses it instead of allocating.
+    #[test]
+    fn an_oversized_chunk_is_kept_while_the_pool_is_empty() {
+        let device = device();
+        let ring = UploadRing::new();
+        let chunk = |size| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: true,
+            })
+        };
+        ring.release(chunk(RING_BUDGET * 2), true);
+        assert!(ring.take_free(RING_BUDGET + 1).is_some());
+        // With something pooled, the budget holds.
+        ring.release(chunk(MIN_CHUNK), true);
+        ring.release(chunk(RING_BUDGET * 2), true);
+        assert!(ring.take_free(RING_BUDGET + 1).is_none());
+    }
+
+    /// The ring knows which submission carries each chunk it lent, and
+    /// forgets it once the chunk is back.
+    #[test]
+    fn a_chunk_in_flight_names_its_submission_until_it_returns() {
+        let (device, queue) = device_and_queue();
+        let ring = UploadRing::new();
+        let policy = GpuDeviceState::new(crate::DeviceGeneration::next());
+        let target = buffer(&device, 64);
+        let mut batch = ring.batch();
+        batch.write_buffer(&target, 0, &[1, 2, 3, 4]);
+        let recorded = record(&ring, &device, &queue, &policy, batch).expect("a copy");
+        assert!(ring.oldest_submission().is_none(), "not submitted yet");
+        let index = queue.submit([recorded.commands]);
+        ring.submitted(recorded.chunk, index.clone());
+        assert!(ring.oldest_submission().is_some());
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: Some(index),
+            timeout: Some(Duration::from_secs(5)),
+        });
+        assert!(ring.oldest_submission().is_none(), "the chunk came back");
+        assert!(ring.take_free(1).is_some());
     }
 
     #[test]

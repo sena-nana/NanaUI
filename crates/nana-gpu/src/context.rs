@@ -336,8 +336,6 @@ pub(crate) struct GpuInner {
     /// Writes made outside a frame (and those of discarded frames), landed
     /// by the next submission on this device.
     pub(crate) pending_uploads: Mutex<crate::upload::UploadBatch>,
-    /// The newest submission, for bounded waits on in-flight work.
-    pub(crate) latest_submission: Mutex<Option<wgpu::SubmissionIndex>>,
 }
 
 /// The one device a process renders with. Cloning is cheap and keeps the
@@ -407,7 +405,6 @@ impl GpuContext {
                 policy,
                 upload_ring: crate::upload::UploadRing::new(),
                 pending_uploads: Mutex::new(crate::upload::UploadBatch::default()),
-                latest_submission: Mutex::new(None),
             }),
         }
     }
@@ -589,36 +586,18 @@ impl GpuContext {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()),
         );
-        let latest = self.latest_submission();
-        let Some(commands) = crate::upload::record(
+        let Some(uploads) = crate::upload::record(
             &self.inner.upload_ring,
             &self.inner.device,
             &self.inner.queue,
             &self.inner.policy,
-            latest,
             batch,
         ) else {
             return;
         };
         let _submission = self.lock_submission();
-        let index = self.inner.queue.submit([commands]);
-        self.note_submission(index);
-    }
-
-    pub(crate) fn latest_submission(&self) -> Option<wgpu::SubmissionIndex> {
-        self.inner
-            .latest_submission
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    pub(crate) fn note_submission(&self, index: wgpu::SubmissionIndex) {
-        *self
-            .inner
-            .latest_submission
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(index);
+        let index = self.inner.queue.submit([uploads.commands]);
+        self.inner.upload_ring.submitted(uploads.chunk, index);
     }
 
     /// Start recording one frame. The returned [`FrameContext`] owns the

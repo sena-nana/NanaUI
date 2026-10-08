@@ -143,9 +143,9 @@ impl FrameContext {
             &self.gpu.inner.device,
             &self.gpu.inner.queue,
             self.gpu.policy(),
-            self.gpu.latest_submission(),
             self.take_uploads(),
         );
+        let upload_chunk = uploads.as_ref().map(|uploads| uploads.chunk);
         let index = {
             let _submission = self.gpu.lock_submission();
             // The reconfiguration guard is shared between submitters. A
@@ -156,12 +156,15 @@ impl FrameContext {
                 .submission_order
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let index = self
-                .gpu
-                .inner
-                .queue
-                .submit(uploads.into_iter().chain([commands]));
-            self.gpu.note_submission(index.clone());
+            let index = self.gpu.inner.queue.submit(
+                uploads
+                    .map(|uploads| uploads.commands)
+                    .into_iter()
+                    .chain([commands]),
+            );
+            if let Some(chunk) = upload_chunk {
+                self.gpu.inner.upload_ring.submitted(chunk, index.clone());
+            }
             let submission = self
                 .gpu
                 .inner
