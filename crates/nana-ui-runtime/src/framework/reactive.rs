@@ -672,6 +672,7 @@ impl AppContext {
         if !enter.plays() {
             return Ok(());
         }
+        let duration = self.motion_duration(enter.duration);
         let now = self.component_lifecycle.now;
         let mut mutations = MutationQueue::new();
         for &root in roots {
@@ -685,7 +686,7 @@ impl AppContext {
                     from,
                     to,
                     now,
-                    enter.duration,
+                    duration,
                     enter.easing,
                     AnimationFillMode::Backwards,
                 ));
@@ -713,6 +714,7 @@ impl AppContext {
             return Ok(self.reactive.leaving.contains_key(&root));
         }
         let document = node.document;
+        let duration = self.motion_duration(leave.duration);
         let now = self.component_lifecycle.now;
         let mut mutations = MutationQueue::new();
         let mut last = None;
@@ -726,7 +728,7 @@ impl AppContext {
                 from,
                 to,
                 now,
-                leave.duration,
+                duration,
                 leave.easing,
                 AnimationFillMode::Forwards,
             );
@@ -767,6 +769,10 @@ impl AppContext {
         first: nana_ui_core::FlipRect,
         (duration, easing): (Duration, Easing),
     ) {
+        // Reduced motion: rows land where layout puts them.
+        if self.reduced_motion() {
+            return;
+        }
         self.reactive.flips.push(PendingFlip {
             node,
             first,
@@ -798,13 +804,16 @@ impl AppContext {
             if next == logical || implicit.duration.is_zero() {
                 continue;
             }
+            // Reduced motion runs it for no time at all: the new value shows
+            // at once and its Finished still arrives with the next advance.
+            let duration = self.motion_duration(implicit.duration);
             mutations.start_animation(crate::motion_api::presence_spec(
                 node,
                 implicit.property,
                 shown,
                 next,
                 now,
-                implicit.duration,
+                duration,
                 implicit.easing,
                 AnimationFillMode::None,
             ));
@@ -813,6 +822,15 @@ impl AppContext {
             return Ok(());
         }
         self.commit_mutations(mutations).map(|_| ())
+    }
+
+    /// `duration`, or none at all under reduced motion.
+    pub(crate) fn motion_duration(&self, duration: Duration) -> Duration {
+        if self.reduced_motion() {
+            Duration::ZERO
+        } else {
+            duration
+        }
     }
 
     /// Where `node` is now, for [`Self::flip_after_layout`].

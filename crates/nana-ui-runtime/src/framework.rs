@@ -1083,6 +1083,10 @@ pub struct AppContext {
     /// Bindings, keyed lists and scopes of views mounted with
     /// [`Self::mount_view`].
     reactive: reactive::ReactiveHost,
+    /// The system's reduce-motion preference as the host last reported it.
+    system_reduced_motion: bool,
+    /// The application's own choice, which wins over the system's.
+    reduced_motion_override: Option<bool>,
 }
 
 /// Bookkeeping for multi-click selection inside a text editor.
@@ -1416,6 +1420,8 @@ impl AppContext {
             text_histories: text_history::TextHistories::default(),
             input: input::InputState::default(),
             reactive: reactive::ReactiveHost::default(),
+            system_reduced_motion: false,
+            reduced_motion_override: None,
         };
         context
             .install(builtins)
@@ -1431,6 +1437,37 @@ impl AppContext {
 
     pub fn world(&self) -> &UiWorld {
         &self.world
+    }
+
+    /// Whether view-layer motion is reduced: implicit property transitions
+    /// ([`crate::view::Implicit`], `El::animate`) and the enter, leave and
+    /// move of [`crate::view::Transition`] then land at once. Their logical values are committed as usual and every
+    /// `Finished` they would have reported still arrives, on the next
+    /// advance, so whatever waits for one moves on. The application's
+    /// [`Self::set_reduced_motion`] wins; otherwise this follows the system
+    /// preference the host reports.
+    pub fn reduced_motion(&self) -> bool {
+        self.reduced_motion_override
+            .unwrap_or(self.system_reduced_motion)
+    }
+
+    /// The application's own choice, over the system preference (a
+    /// "reduce motion" setting of its own). [`Self::follow_system_reduced_motion`]
+    /// drops it.
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion_override = Some(reduced);
+    }
+
+    /// Follow the system preference again.
+    pub fn follow_system_reduced_motion(&mut self) {
+        self.reduced_motion_override = None;
+    }
+
+    /// The system's reduce-motion preference. The hosted runtime reports it
+    /// when a window's document is created and whenever it changes; an
+    /// embedding host calls this itself.
+    pub fn set_system_reduced_motion(&mut self, reduced: bool) {
+        self.system_reduced_motion = reduced;
     }
 
     /// Whether the last layout pass dropped lines of this text to honour its

@@ -793,6 +793,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return Err(error);
         }
         pending_native.0 = None;
+        self.sync_document_reduced_motion(id);
         self.window_ids.insert(window.id(), id);
         let level = if settings.always_on_top {
             WindowLevel::AlwaysOnTop

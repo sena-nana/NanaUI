@@ -329,6 +329,7 @@ each(items, |t| t.id, row).transition(Transition::slide(0.0, 12.0, ms(180)).move
 - 全部走节点的合成器轨道。不写回逻辑样式。离场结束由 `advance_animations` 的完成事件驱动。移动在布局阶段之后、同一帧提取之前开始。所以不会先闪到新位置。
 - `when` 的新旧分支同时存在：旧分支原位离场。新分支接在它后面进场。加 `.moves` 后。旧分支消失时新分支平滑上移。Vue 的 `mode="out-in"`（先离场再进场）目前没有。
 - 虚拟列表（`each_virtual`）不支持：滚出视口的行本来就要立刻回收。
+- **减少动态效果**：`AppContext::reduced_motion()` 为真时，进场、离场、隐式属性过渡（`El::animate`、样式表的 `transition`）都不播：值立刻落到终点，离场的行在下一次 advance 销毁，移动不滑。逻辑值照常提交，它们本来会报的 `Finished` 仍随下一次 advance 送达，等它的代码照常往下走。托管运行时在建窗口文档时和系统设置变化时调用 `set_system_reduced_motion` 同步；应用自己的设置用 `set_reduced_motion(bool)` 压过系统，`follow_system_reduced_motion()` 回到跟随系统。
 - 模板：`<Transition name="fade" duration="150">` 包住一条 `v-if` / `v-else-if` / `v-else` 链。`<TransitionGroup duration="150" move="200">` 包住一个 `v-for` 元素（两个标签可以互换）。`name` 可选 `fade`、`slide-up`、`slide-down`、`slide-left`、`slide-right`、`scale`。默认 `fade`。时长单位是毫秒。`:transition="值"` 直接传一个 `Transition`。
 
 ## 组合控件的 slot

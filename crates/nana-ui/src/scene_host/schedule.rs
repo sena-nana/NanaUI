@@ -122,12 +122,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         self.reduced_motion = reduced;
         for id in self.known_window_ids() {
+            self.sync_document_reduced_motion(id);
             let update = self.program.window_event(
                 WindowEvent::ReducedMotionChanged { id, reduced },
                 &self.context_for(id),
             );
             self.apply_update(event_loop, update, None);
         }
+    }
+
+    /// Report the system reduce-motion preference to `id`'s document, so its
+    /// view-layer motion follows it ([`nana_ui_runtime::AppContext::reduced_motion`]).
+    pub(super) fn sync_document_reduced_motion(&mut self, id: WindowId) {
+        let reduced = self.reduced_motion;
+        let _ = self.program.write_document(id, |document| {
+            document.context_mut().set_system_reduced_motion(reduced);
+        });
     }
 
     /// Deliver a system high-contrast change recorded by the window subclass.

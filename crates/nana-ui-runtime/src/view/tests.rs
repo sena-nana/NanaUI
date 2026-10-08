@@ -1810,6 +1810,87 @@ fn an_implicit_transition_plays_from_the_shown_value_to_the_new_one() {
     );
 }
 
+#[test]
+fn reduced_motion_lands_an_implicit_transition_at_once_and_still_reports_it() {
+    use std::time::Duration;
+    let (mut cx, _, parent) = setup();
+    let start = Duration::from_secs(10);
+    cx.advance_animations(start);
+    cx.set_system_reduced_motion(true);
+    assert!(cx.reduced_motion());
+    let dim = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let dimmed = signal(false);
+            dim.set(Some(dimmed));
+            widget(Stack::column(0.0))
+                .class(CARD_CLASS)
+                .class_when(DIM_CLASS, dimmed)
+                .animate([Implicit::new(
+                    crate::AnimatableProperty::Opacity,
+                    Duration::from_millis(200),
+                )])
+        })
+        .unwrap();
+    let node = view.roots()[0];
+    dim.get().unwrap().set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(opacity_at(&cx, node, start), 0.4, "no transition to watch");
+    let frame = cx.advance_animations(start);
+    assert!(
+        frame
+            .events
+            .iter()
+            .any(|event| event.target == node && event.kind == crate::AnimationEventKind::Finished),
+        "a waiter still hears it end: {:?}",
+        frame.events
+    );
+
+    // The application's own setting wins over the system's, both ways.
+    cx.set_reduced_motion(false);
+    assert!(!cx.reduced_motion());
+    dim.get().unwrap().set(false);
+    cx.flush_reactive().unwrap();
+    let halfway = opacity_at(&cx, node, start + Duration::from_millis(100));
+    assert!(halfway > 0.4 && halfway < 0.8, "{halfway}");
+    cx.follow_system_reduced_motion();
+    assert!(cx.reduced_motion());
+}
+
+#[test]
+fn reduced_motion_swaps_a_transitioned_branch_without_a_fade() {
+    use std::time::Duration;
+    let (mut cx, _, parent) = setup();
+    let start = Duration::from_secs(10);
+    cx.advance_animations(start);
+    cx.set_reduced_motion(true);
+    let flag = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let open = signal(true);
+            flag.set(Some(open));
+            when(open, || text("面板").key("panel"))
+                .otherwise(|| text("空").key("empty"))
+                .transition(Transition::fade(Duration::from_millis(200)))
+        })
+        .unwrap();
+    let container = view.roots()[0];
+    let panel = children(&cx, container)[0];
+    flag.get().unwrap().set(false);
+    cx.flush_reactive().unwrap();
+    let empty = *children(&cx, container).last().unwrap();
+    assert_eq!(
+        opacity_at(&cx, empty, start),
+        1.0,
+        "the new branch is just there"
+    );
+    // The old one is gone with the next advance, at the same instant.
+    assert!(cx.next_animation_deadline().is_some_and(|due| due <= start));
+    cx.advance_animations(start);
+    assert!(!cx.world().contains(panel));
+    assert_eq!(children(&cx, container), vec![empty]);
+}
+
 /// Kind, text and children of `id`, recursively: what two ways of building
 /// the same tree must agree on.
 fn shape(cx: &AppContext, id: StableNodeId) -> String {
