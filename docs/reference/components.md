@@ -126,7 +126,7 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 
 同一控件有两个正交维度。改字段后下一次 `sync_media_transport_bar` 生效。不是第二套绘制：
 
-- `density`：`Regular`（读数在进度上方，可开第二行）、`Compact`（单行紧凑，读数在进度旁；设置 / 全屏默认隐藏，`show_settings` / `show_fullscreen` 可显式打开，三个槽照常可用）或 `Stacked`（按钮与 Compact 相同，读数与进度单独占上面一整行，窄表面如迷你播放器不必把进度挤在按钮之间）。
+- `density`：`Regular`（读数在进度上方，可开第二行）、`Compact`（单行紧凑，读数在进度旁；设置 / 全屏默认隐藏，`show_settings` / `show_fullscreen` 可显式打开，三个槽照常可用）、`Stacked`（按钮与 Compact 相同，读数与进度单独占上面一整行，窄表面如迷你播放器不必把进度挤在按钮之间）或 `Mini`（`.mini()`：顶边 2px 进度细轨带 16px 透明命中带，下面一行是播放、静音钮 `Mute(bool)`、无圆点音量细轨、`leading`、时间读数、`trailing`；没有音量弹出层。应用不再搬动条内部节点，见 [MediaTransportBar](../components/media-transport-bar.md#mini)）。
 - `placement`：`Overlay`（Absolute 贴父级底边、`max_width` 封顶、外壳不命中）或 `Inline`（参与父级文档流，高度即 chrome 高度，横向填满父级，不用 `max_width`）。
 
 播放钮在每种密度下都显示。`show_play = Some(false)`（`MediaTransportBar::new().show_play(false)`，视图里 `.bind(move |bar| bar.show_play = Some(ready.get()))`，模板 `<Widget of={MediaTransportBar::new().show_play(false)}>`）把它藏起。例如直播间还没准备好播放时。藏起的钮不占位。不能聚焦。焦点在它上面时会被清掉。

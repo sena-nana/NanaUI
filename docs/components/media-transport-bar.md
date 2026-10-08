@@ -40,7 +40,29 @@ widget(
 
 ## 密度
 
-`.density` 是 `MediaTransportDensity`：`Regular` 把合并时间读数放在进度上面，并可以开第二行；`Compact` 收成一行，设置和全屏默认隐藏；`Stacked` 的按钮和紧凑档一样，当前时间、进度和总时长按顺序排在上面一整行，时间读数不会挤压进度范围。
+`.density` 是 `MediaTransportDensity`：`Regular` 把合并时间读数放在进度上面，并可以开第二行；`Compact` 收成一行，设置和全屏默认隐藏；`Stacked` 的按钮和紧凑档一样，当前时间、进度和总时长按顺序排在上面一整行，时间读数不会挤压进度范围；`Mini` 是小窗播放器。
+
+### Mini
+
+`MediaTransportBar::new().mini()`（`Mini` 加 `Inline`）给小窗用，布局全归条自己：
+
+- 进度是条顶边上一条 2px 的细轨（`RangeField::rail`），外面套一条以它为中心、16px 高的透明命中带。命中带伸到条上方的内容（画面）上，在那里按下、拖动就能定位；伸进按钮行的部分让给按钮。直播时细轨换成直播进度计量。
+- 下面一行依次是播放、静音钮、没有圆点的音量细轨、`leading` 槽，然后是合并的时间读数和 `trailing` 槽。没有音量弹出层；设置和全屏默认隐藏，可以用 `show_settings` / `show_fullscreen` 打开。
+- 静音钮按下发 `MediaTransportEvent::Mute(想要的静音状态)`，也就是 `!muted`。图标在 `muted` 或音量为 0 时换成静音图标，名字说的是按下会做的事（`mute_label` / `unmute_label`）。
+- 画面上的播放覆盖层仍是应用自己的；不想要条上的播放钮就 `show_play(false)`。
+
+```rust
+widget(MediaTransportBar::new().mini().show_play(false).icons(icons))
+    .leading(extra_buttons)   // 音量细轨之后
+    .trailing(window_actions) // 时间读数之后
+    .bind(move |bar| playback.with(|p| p.paint(bar)))
+    .on(move |event: &MediaTransportEvent| match event {
+        MediaTransportEvent::Mute(muted) => set_muted(*muted),
+        _ => {}
+    });
+```
+
+应用不要再移动条内部的节点、改它们的尺寸或透明度：`density` 在 `Mini` 和其他档之间切换时，条会把进度、时间和音量放回各自的位置。
 
 ## 位置
 
@@ -86,7 +108,8 @@ Overlay 沿父级底边绝对定位，只有铬接命中；Inline 参与父级�
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
-| `.density` | `MediaTransportDensity` | `Regular` 合并读数在进度上面，并可以开第二行；`Compact` 收成一行，设置和全屏默认隐藏；`Stacked` 当前时间、进度和总时长在上面一整行。`new()` 默认常规密度 |
+| `.density` | `MediaTransportDensity` | `Regular` 合并读数在进度上面，并可以开第二行；`Compact` 收成一行，设置和全屏默认隐藏；`Stacked` 当前时间、进度和总时长在上面一整行；`Mini` 顶边细轨加一行控件，见上文。`new()` 默认常规密度 |
+| `.mini()` | — | `Mini` 加 `Inline` |
 | `.placement` | `MediaTransportPlacement` | `Overlay` 或 `Inline`。默认贴在父级底边 |
 | `.show_play` | — | `show_play(false)` 藏起播放钮，藏起的钮不占位、不能聚焦 |
 | `.show_settings` | — | 为 `None` 时跟随密度 |
@@ -102,7 +125,7 @@ Overlay 沿父级底边绝对定位，只有铬接命中；Inline 参与父级�
 
 ## 事件
 
-事件是 `MediaTransportEvent`：`PlayPause`、`Seek(秒)`、`SeekStarted`、`SeekEnded`、`Volume`（`0..=100`，含拖动预览）、`Fullscreen`、`MenuOpened`、`MenuClosed`。
+事件是 `MediaTransportEvent`：`PlayPause`、`Seek(秒)`、`SeekStarted`、`SeekEnded`、`Volume`（`0..=100`，含拖动预览）、`Fullscreen`、`Mute(bool)`（只有 `Mini` 的静音钮发）、`MenuOpened`、`MenuClosed`。
 
 `Seek` 只在抬起或键盘步进时提交。
 
@@ -114,6 +137,7 @@ Overlay 沿父级底边绝对定位，只有铬接命中；Inline 参与父级�
 | `MediaTransportEvent::SeekEnded` | — | `MediaTransportEvent` |
 | `MediaTransportEvent::Volume` | `0..=100` | 含拖动预览 |
 | `MediaTransportEvent::Fullscreen` | — | `MediaTransportEvent` |
+| `MediaTransportEvent::Mute` | `bool` | `Mini` 的静音钮：想要的静音状态，即 `!muted` |
 | `MediaTransportEvent::MenuOpened` | — | 菜单打开时调用 `AppContext::sync_overlay_visibility`，打开的菜单把条留住 |
 | `MediaTransportEvent::MenuClosed` | — | 关上后空闲计时从这一下重新开始 |
 

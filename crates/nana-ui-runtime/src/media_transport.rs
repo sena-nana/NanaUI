@@ -5,7 +5,8 @@
 //! An empty or fully hidden `secondary` slot collapses the bar to a single row.
 //!
 //! [`MediaTransportDensity`] picks the regular two-level chrome, a compact
-//! single row, or a stacked variant with the progress on its own line; [`MediaTransportPlacement`] floats the bar over its stage or
+//! single row, a stacked variant with the progress on its own line, or the
+//! mini player's thin progress rail over one row of controls; [`MediaTransportPlacement`] floats the bar over its stage or
 //! lets it take part in the parent's layout (a shell mini player strip, the
 //! bottom bar of a second window). Both are plain fields: the next
 //! [`AppContext::sync_media_transport_bar`] applies a change to assembled
@@ -51,6 +52,16 @@ const BAR_MARGIN: f32 = space::XL;
 const BAR_Z_INDEX: i32 = 30;
 const BACKPLATE_OPACITY: f32 = 0.88;
 const VOLUME_POPOVER_WIDTH: f32 = crate::popover::POPOVER_WIDTH;
+/// [`MediaTransportDensity::Mini`]: the progress rail's drawn girth, the
+/// transparent band around it that takes the pointer, and the inline volume
+/// rail.
+const MINI_PROGRESS_GIRTH: f32 = 2.0;
+const MINI_PROGRESS_HIT: f32 = 16.0;
+const MINI_VOLUME_GIRTH: f32 = 4.0;
+/// [`Progress`]'s fixed girth.
+const LIVE_METER_GIRTH: f32 = space::SM;
+const MINI_VOLUME_WIDTH: f32 = 64.0;
+const MINI_VOLUME_MIN_WIDTH: f32 = 48.0;
 
 /// Built-in transport action. Scene extras keep their own events.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,6 +78,9 @@ pub enum MediaTransportEvent {
     /// Live volume in `0..=100`, including drag previews.
     Volume(f64),
     Fullscreen,
+    /// The mute button of [`MediaTransportDensity::Mini`]: the muted state
+    /// the user asked for, the opposite of the bar's `muted`.
+    Mute(bool),
     /// The bar's settings menu or volume popover opened. An open menu holds
     /// the bar visible: sync the overlay
     /// ([`AppContext::sync_overlay_visibility`]) so the hold starts now.
@@ -91,6 +105,15 @@ pub enum MediaTransportDensity {
     /// full-width line above them, so a narrow surface keeps a usable seek track
     /// instead of squeezing it between the buttons.
     Stacked,
+    /// A mini player's chrome. The progress is a 2px rail along the bar's
+    /// top edge inside a 16px transparent pointer band centred on it, which
+    /// reaches over the content above the bar; a live stream shows its meter
+    /// there instead. One row below holds play, a mute
+    /// button ([`MediaTransportEvent::Mute`]), a volume rail without a thumb,
+    /// the leading slot, then the time readout and the trailing slot. There
+    /// is no volume popover; settings and fullscreen are hidden unless shown
+    /// explicitly. Usually inline: [`MediaTransportBar::mini`].
+    Mini,
 }
 
 /// Where the bar sits relative to its parent.
@@ -158,6 +181,13 @@ pub struct MediaTransportSlots {
     pub trailing: Option<StableNodeId>,
     pub volume: Option<StableNodeId>,
     pub volume_menu: Option<StableNodeId>,
+    /// Holds [`Self::volume_menu`] so the popover can be hidden as a whole.
+    pub volume_group: Option<StableNodeId>,
+    /// [`MediaTransportDensity::Mini`]'s mute button; hidden otherwise.
+    pub mute: Option<StableNodeId>,
+    /// [`MediaTransportDensity::Mini`]'s progress line above the controls,
+    /// holding the seek range or the live meter; hidden otherwise.
+    pub strip: Option<StableNodeId>,
     /// Holds [`Self::settings`] so the menu can be hidden as a whole.
     pub settings_group: Option<StableNodeId>,
     pub settings: Option<StableNodeId>,
@@ -197,6 +227,8 @@ pub struct MediaTransportBar {
     pub play_label: Arc<str>,
     pub pause_label: Arc<str>,
     pub volume_label: Arc<str>,
+    pub mute_label: Arc<str>,
+    pub unmute_label: Arc<str>,
     pub settings_label: Arc<str>,
     pub fullscreen_label: Arc<str>,
     pub fullscreen_exit_label: Arc<str>,
@@ -233,6 +265,8 @@ impl MediaTransportBar {
             play_label: Arc::from("播放"),
             pause_label: Arc::from("暂停"),
             volume_label: Arc::from("音量"),
+            mute_label: Arc::from("静音"),
+            unmute_label: Arc::from("取消静音"),
             settings_label: Arc::from("播放设置"),
             fullscreen_label: Arc::from("全屏"),
             fullscreen_exit_label: Arc::from("退出全屏"),
@@ -316,6 +350,14 @@ impl MediaTransportBar {
         self
     }
 
+    /// Configure the in-flow mini player: [`MediaTransportDensity::Mini`]
+    /// with [`MediaTransportPlacement::Inline`].
+    pub fn mini(mut self) -> Self {
+        self.density = MediaTransportDensity::Mini;
+        self.placement = MediaTransportPlacement::Inline;
+        self
+    }
+
     /// Show or hide the play button; hidden, it takes no focus or press.
     pub fn show_play(mut self, show: bool) -> Self {
         self.show_play = Some(show);
@@ -390,6 +432,10 @@ impl MediaTransportBar {
         self.slots.fullscreen.map(Entity::from_stable_id)
     }
 
+    pub fn mute_button(&self) -> Option<Entity<IconButton>> {
+        self.slots.mute.map(Entity::from_stable_id)
+    }
+
     fn chrome_layout(&self) -> ChromeLayout {
         let regular = self.density == MediaTransportDensity::Regular;
         ChromeLayout {
@@ -423,10 +469,16 @@ pub(crate) struct ChromeLayout {
 }
 
 impl ChromeLayout {
+    fn mini(self) -> bool {
+        self.density == MediaTransportDensity::Mini
+    }
+
     fn chrome(self, layout: &mut LayoutStyle) {
         layout.max_width = self
             .max_width
             .map(|bits| LengthSpec::Px(f32::from_bits(bits)));
+        // The mini rail sits right on the controls row.
+        layout.gap = Some(LengthSpec::Px(if self.mini() { 0.0 } else { space::MD }));
     }
 
     fn row(self, layout: &mut LayoutStyle) {
@@ -435,6 +487,7 @@ impl ChromeLayout {
             MediaTransportDensity::Compact | MediaTransportDensity::Stacked => {
                 (space::MD, space::MD, space::SM, space::SM)
             }
+            MediaTransportDensity::Mini => (space::MD, space::MD, space::XS, space::XS),
         };
         // Stacked: the center takes the first line (see `center`); the button
         // groups wrap onto the second, pushed to its two ends.
@@ -462,10 +515,13 @@ impl ChromeLayout {
             MediaTransportDensity::Regular => {
                 (FlexDirection::Column, space::XXS, AlignSpec::Stretch)
             }
-            MediaTransportDensity::Compact | MediaTransportDensity::Stacked => {
-                (FlexDirection::Row, space::MD, AlignSpec::Center)
-            }
+            MediaTransportDensity::Compact
+            | MediaTransportDensity::Stacked
+            | MediaTransportDensity::Mini => (FlexDirection::Row, space::MD, AlignSpec::Center),
         };
+        // Mini moves the progress onto its rail and the time beside the
+        // trailing slot; nothing is left to show here.
+        layout.hidden = self.mini();
         let stacked = self.density == MediaTransportDensity::Stacked;
         layout.order = if stacked { -1 } else { 0 };
         layout.flex_basis = stacked.then_some(LengthSpec::Percent(100.0));
@@ -588,6 +644,8 @@ impl RegisterableComponent for MediaTransportBar {
             bar.density = MediaTransportDensity::Compact;
         } else if keyword("density", "stacked") {
             bar.density = MediaTransportDensity::Stacked;
+        } else if keyword("density", "mini") {
+            bar.density = MediaTransportDensity::Mini;
         }
         if keyword("placement", "inline") {
             bar.placement = MediaTransportPlacement::Inline;
@@ -681,6 +739,21 @@ impl AppContext {
                     }),
             )?;
             self.append_child(chrome, backplate)?;
+            // Below the row in paint order: where the mini rail's pointer
+            // band reaches into the row, the row's buttons keep the press.
+            let strip = self.create_detached_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.position = PositionSpec::Relative;
+                    layout.width = Some(LengthSpec::Fill);
+                    layout.min_width = Some(LengthSpec::Px(0.0));
+                    layout.height = Some(LengthSpec::Px(MINI_PROGRESS_GIRTH));
+                    layout.flex_shrink = Some(0.0);
+                    layout.z_index = Some(1);
+                    layout.hidden = true;
+                }),
+            )?;
+            self.append_child(chrome, strip)?;
             let row = self.create_detached_component(
                 document,
                 Stack::row(0.0).with_layout(|layout| {
@@ -704,6 +777,11 @@ impl AppContext {
                 chrome_icon(snapshot.icons.play, snapshot.play_label.as_ref()),
             )?;
             self.append_child(left, play)?;
+            let mute = self.create_detached_component(
+                document,
+                chrome_icon(snapshot.icons.volume, snapshot.mute_label.as_ref()),
+            )?;
+            self.append_child(left, mute)?;
             let leading = self.create_detached_component(
                 document,
                 Stack::row(space::XS).with_layout(|layout| {
@@ -777,6 +855,14 @@ impl AppContext {
                 }),
             )?;
             self.append_child(right, trailing)?;
+            let volume_group = self.create_detached_component(
+                document,
+                Stack::row(0.0).with_layout(|layout| {
+                    layout.align_items = AlignSpec::Center;
+                    layout.flex_shrink = Some(0.0);
+                }),
+            )?;
+            self.append_child(right, volume_group)?;
             let volume_menu = self.create_detached_component(
                 document,
                 Popover::new()
@@ -784,7 +870,7 @@ impl AppContext {
                     .placement(PopoverPlacement::Top)
                     .width(VOLUME_POPOVER_WIDTH),
             )?;
-            self.append_child(right, volume_menu)?;
+            self.append_child(volume_group, volume_menu)?;
             let volume = self.create_detached_component(
                 document,
                 RangeField::new(100.0, 0.0, 100.0, 1.0)
@@ -872,6 +958,9 @@ impl AppContext {
             self.observe(fullscreen, bar, |_, _: &Activate, cx| {
                 cx.emit(MediaTransportEvent::Fullscreen);
             })?;
+            self.observe(mute, bar, |bar, _: &Activate, cx| {
+                cx.emit(MediaTransportEvent::Mute(!bar.muted));
+            })?;
             self.observe(volume_menu, bar, report_menu)?;
             self.observe(settings, bar, report_menu)?;
 
@@ -889,6 +978,9 @@ impl AppContext {
                     trailing: Some(trailing.stable_id()),
                     volume: Some(volume.stable_id()),
                     volume_menu: Some(volume_menu.stable_id()),
+                    volume_group: Some(volume_group.stable_id()),
+                    mute: Some(mute.stable_id()),
+                    strip: Some(strip.stable_id()),
                     settings_group: Some(settings_group.stable_id()),
                     settings: Some(settings.stable_id()),
                     fullscreen: Some(fullscreen.stable_id()),
@@ -1074,6 +1166,20 @@ impl AppContext {
                 })?;
             }
         }
+        if let Some(mute) = slots.mute {
+            let icon = if snapshot.muted || snapshot.volume <= 0.0 {
+                snapshot.icons.volume_muted
+            } else {
+                snapshot.icons.volume
+            };
+            // The name says what a press does.
+            let label = if snapshot.muted {
+                &snapshot.unmute_label
+            } else {
+                &snapshot.mute_label
+            };
+            sync_icon_button(self, mute, icon, label, Some(snapshot.disabled))?;
+        }
         if let Some(fullscreen) = slots.fullscreen {
             let (icon, label) = if snapshot.fullscreen {
                 (
@@ -1118,16 +1224,23 @@ impl AppContext {
                 })?;
             }
         }
-        if let Some(group) = slots.settings_group {
-            self.update_component(Entity::<Stack>::from_stable_id(group), |stack, _| {
-                *stack = stack
-                    .clone()
-                    .with_layout(|layout| layout.hidden = !chrome.settings);
-            })?;
+        let mini = chrome.mini();
+        self.place_mini_controls(slots, mini)?;
+        for (group, hidden) in [
+            (slots.settings_group, !chrome.settings),
+            (slots.volume_group, mini),
+            (slots.strip, !mini),
+        ] {
+            if let Some(group) = group {
+                self.update_component(Entity::<Stack>::from_stable_id(group), |stack, _| {
+                    *stack = stack.clone().with_layout(|layout| layout.hidden = hidden);
+                })?;
+            }
         }
         for (button, shown) in [
             (slots.play, chrome.play),
             (slots.fullscreen, chrome.fullscreen),
+            (slots.mute, mini),
         ] {
             if let Some(button) = button {
                 self.update_component(
@@ -1148,12 +1261,20 @@ impl AppContext {
                 self.toggle_action_menu(settings)?;
             }
         }
+        if mini && let Some(volume_menu) = slots.volume_menu {
+            let volume_menu = Entity::<Popover>::from_stable_id(volume_menu);
+            if self.read(volume_menu, |menu| menu.open)? {
+                self.toggle_popover(volume_menu)?;
+            }
+        }
         // Nor may focus stay on a hidden control: it would keep the overlay
         // locked visible and let the keyboard activate what is not shown.
         let hidden = [
             (!chrome.play).then_some(slots.play).flatten(),
             (!chrome.settings).then_some(slots.settings_group).flatten(),
             (!chrome.fullscreen).then_some(slots.fullscreen).flatten(),
+            (!mini).then_some(slots.mute).flatten(),
+            mini.then_some(slots.volume_group).flatten(),
         ];
         if let Some(document) = slots
             .chrome
@@ -1166,6 +1287,153 @@ impl AppContext {
                 .any(|root| self.world().is_descendant_or_self(focused, root))
         {
             self.clear_focus(document)?;
+        }
+        Ok(())
+    }
+
+    /// Moves the controls [`MediaTransportDensity::Mini`] lays out apart —
+    /// seek range and live meter onto the rail, time beside the trailing
+    /// slot, volume inline after mute — and back, and gives them that
+    /// density's look. A node already in place does not move.
+    fn place_mini_controls(
+        &mut self,
+        slots: &MediaTransportSlots,
+        mini: bool,
+    ) -> Result<(), FrameworkError> {
+        let (
+            Some(center),
+            Some(strip),
+            Some(left),
+            Some(right),
+            Some(leading),
+            Some(trailing),
+            Some(time),
+            Some(time_duration),
+            Some(seek),
+            Some(live_progress),
+            Some(volume),
+            Some(volume_menu),
+        ) = (
+            slots.center,
+            slots.strip,
+            slots.leading.and_then(|id| self.world().node(id)?.parent),
+            slots.trailing.and_then(|id| self.world().node(id)?.parent),
+            slots.leading,
+            slots.trailing,
+            slots.time,
+            slots.time_duration,
+            slots.seek,
+            slots.live_progress,
+            slots.volume,
+            slots.volume_menu,
+        )
+        else {
+            return Ok(());
+        };
+        // `(node, parent, before)`, in an order that leaves each parent's
+        // children as assembly made them.
+        let moves = if mini {
+            [
+                (seek, strip, None),
+                (live_progress, strip, None),
+                (time, right, Some(trailing)),
+                (volume, left, Some(leading)),
+            ]
+        } else {
+            [
+                (seek, center, Some(time_duration)),
+                (live_progress, center, Some(time_duration)),
+                (time, center, Some(seek)),
+                (volume, volume_menu, None),
+            ]
+        };
+        let mut mutations = MutationQueue::new();
+        for (node, parent, before) in moves {
+            if self
+                .world()
+                .node(node)
+                .is_some_and(|placed| placed.parent != Some(parent))
+            {
+                mutations.insert(parent, node, before);
+            }
+        }
+        if !mutations.is_empty() {
+            self.commit_mutations(mutations)?;
+        }
+        self.update_component(Entity::<RangeField>::from_stable_id(seek), |range, _| {
+            range.rail = mini.then_some(MINI_PROGRESS_GIRTH);
+            let layout = Arc::make_mut(&mut range.style.layout);
+            if mini {
+                // A transparent band centred on the drawn rail takes the
+                // pointer, reaching over the content above the bar.
+                layout.position = PositionSpec::Absolute;
+                layout.offset_left = Some(LengthSpec::Px(0.0));
+                layout.offset_right = Some(LengthSpec::Px(0.0));
+                layout.offset_top = Some(LengthSpec::Px(
+                    (MINI_PROGRESS_GIRTH - MINI_PROGRESS_HIT) / 2.0,
+                ));
+                layout.height = Some(LengthSpec::Px(MINI_PROGRESS_HIT));
+                layout.flex_grow = None;
+                layout.flex_shrink = None;
+            } else {
+                layout.position = PositionSpec::default();
+                layout.offset_left = None;
+                layout.offset_right = None;
+                layout.offset_top = None;
+                layout.height = None;
+                layout.flex_grow = Some(1.0);
+                layout.flex_shrink = Some(1.0);
+            }
+        })?;
+        self.update_component(
+            Entity::<Progress>::from_stable_id(live_progress),
+            |progress, _| {
+                let layout = Arc::make_mut(&mut progress.style.layout);
+                if mini {
+                    // The meter keeps its own girth, centred on the rail.
+                    layout.position = PositionSpec::Absolute;
+                    layout.offset_left = Some(LengthSpec::Px(0.0));
+                    layout.offset_right = Some(LengthSpec::Px(0.0));
+                    layout.offset_top = Some(LengthSpec::Px(
+                        (MINI_PROGRESS_GIRTH - LIVE_METER_GIRTH) / 2.0,
+                    ));
+                } else {
+                    layout.position = PositionSpec::default();
+                    layout.offset_left = None;
+                    layout.offset_right = None;
+                    layout.offset_top = None;
+                }
+            },
+        )?;
+        self.update_component(Entity::<RangeField>::from_stable_id(volume), |range, _| {
+            range.rail = mini.then_some(MINI_VOLUME_GIRTH);
+            let layout = Arc::make_mut(&mut range.style.layout);
+            if mini {
+                layout.width = Some(LengthSpec::Px(MINI_VOLUME_WIDTH));
+                layout.min_width = Some(LengthSpec::Px(MINI_VOLUME_MIN_WIDTH));
+                layout.flex_shrink = Some(1.0);
+            } else {
+                layout.width = None;
+                layout.min_width = None;
+                layout.flex_shrink = None;
+            }
+        })?;
+        if mini {
+            // The row's left group gives way before the time and trailing
+            // slot do, so the volume rail is what narrows.
+            self.update_component(Entity::<Stack>::from_stable_id(left), |stack, _| {
+                *stack = stack.clone().with_layout(|layout| {
+                    layout.flex_shrink = Some(1.0);
+                    layout.min_width = Some(LengthSpec::Px(0.0));
+                });
+            })?;
+        } else {
+            self.update_component(Entity::<Stack>::from_stable_id(left), |stack, _| {
+                *stack = stack.clone().with_layout(|layout| {
+                    layout.flex_shrink = Some(0.0);
+                    layout.min_width = None;
+                });
+            })?;
         }
         Ok(())
     }
@@ -1434,6 +1702,7 @@ mod tests {
         for density in [
             MediaTransportDensity::Regular,
             MediaTransportDensity::Compact,
+            MediaTransportDensity::Mini,
         ] {
             let mut cx = AppContext::new();
             let bar = cx
@@ -1807,6 +2076,202 @@ mod tests {
         );
         assert!(!regular.hidden(slots.settings_group.unwrap()));
         assert!(!regular.hidden(slots.fullscreen.unwrap()));
+    }
+
+    #[test]
+    fn mini_draws_a_thin_seek_rail_whose_pointer_band_reaches_over_the_stage() {
+        let mut stage = Stage::new(document(), MediaTransportBar::new().mini());
+        let trailing = stage
+            .cx
+            .create_detached_component(document(), chrome_icon(Icon::Close, "回到播放"))
+            .unwrap();
+        let trailing_slot = stage.cx.read(stage.bar, |bar| bar.trailing()).unwrap();
+        stage
+            .cx
+            .append_child(trailing_slot.unwrap(), trailing)
+            .unwrap();
+        stage
+            .cx
+            .update_component(stage.bar, |bar, _| bar.duration = 120.0)
+            .unwrap();
+        stage.layout(document());
+        let slots = stage.slots();
+        let world = stage.cx.world();
+        assert!(!stage.hidden(slots.strip.unwrap()));
+        assert!(stage.hidden(slots.center.unwrap()));
+        assert!(stage.hidden(slots.volume_group.unwrap()));
+        assert!(stage.hidden(slots.settings_group.unwrap()));
+        assert!(stage.hidden(slots.fullscreen.unwrap()));
+        assert!(!stage.hidden(slots.mute.unwrap()));
+
+        let strip = stage.frame(slots.strip.unwrap());
+        let seek = stage.frame(slots.seek.unwrap());
+        let sibling = stage.frame(stage.sibling.stable_id());
+        assert_close(strip.height, MINI_PROGRESS_GIRTH, "the drawn rail");
+        assert_close(strip.y, sibling.y + sibling.height, "the rail tops the bar");
+        assert_close(seek.height, MINI_PROGRESS_HIT, "the pointer band");
+        assert_close(
+            seek.y + seek.height / 2.0,
+            strip.y + strip.height / 2.0,
+            "the band is centred on the rail",
+        );
+        assert_close(seek.width, strip.width, "the rail spans the bar");
+        assert!(matches!(
+            world.standard_visual(slots.seek.unwrap()),
+            Some(crate::StandardVisual::Range {
+                rail: Some(MINI_PROGRESS_GIRTH),
+                ..
+            })
+        ));
+        let x = seek.x + seek.width / 2.0;
+        stage.cx.compat_world_mut().rebuild_hit_test(document());
+        let world = stage.cx.world();
+        for y in [strip.y - 6.0, strip.y + 1.0] {
+            assert_eq!(
+                world.hit_test(document(), x, y),
+                slots.seek,
+                "a press at {y} over the stage edge seeks"
+            );
+        }
+
+        let center_y = |id: StableNodeId| {
+            let frame = stage.frame(id);
+            frame.y + frame.height / 2.0
+        };
+        let play = stage.frame(slots.play.unwrap());
+        let mute = stage.frame(slots.mute.unwrap());
+        let volume = stage.frame(slots.volume.unwrap());
+        let time = stage.frame(slots.time.unwrap());
+        let trailing_frame = stage.frame(trailing.stable_id());
+        assert!(
+            play.y >= strip.y + strip.height,
+            "controls sit below the rail"
+        );
+        assert!(play.x < mute.x && mute.x < volume.x, "play, mute, volume");
+        assert!(volume.x + volume.width <= time.x, "volume before the time");
+        assert!(
+            time.x + time.width <= trailing_frame.x,
+            "time before the trailing slot"
+        );
+        for id in [
+            slots.mute,
+            slots.volume,
+            slots.time,
+            Some(trailing.stable_id()),
+        ] {
+            assert_close(
+                center_y(id.unwrap()),
+                center_y(slots.play.unwrap()),
+                "one row",
+            );
+        }
+        assert!(matches!(
+            world.standard_visual(slots.volume.unwrap()),
+            Some(crate::StandardVisual::Range {
+                rail: Some(MINI_VOLUME_GIRTH),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn mini_shows_a_live_meter_on_its_rail() {
+        let mut stage = Stage::new(document(), MediaTransportBar::new().mini().live(true));
+        stage.layout(document());
+        let slots = stage.slots();
+        assert!(stage.hidden(slots.seek.unwrap()));
+        assert!(!stage.hidden(slots.live_progress.unwrap()));
+        let meter = stage.frame(slots.live_progress.unwrap());
+        let strip = stage.frame(slots.strip.unwrap());
+        assert_close(
+            meter.y + meter.height / 2.0,
+            strip.y + strip.height / 2.0,
+            "the meter sits on the rail",
+        );
+        assert_close(meter.width, strip.width, "across the bar");
+    }
+
+    #[test]
+    fn mini_mute_asks_for_the_opposite_state_and_names_the_press() {
+        let mut cx = AppContext::new();
+        let bar = cx
+            .create_component(document(), MediaTransportBar::new().mini())
+            .unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        let mute = cx.read(bar, |bar| bar.mute_button()).unwrap().unwrap();
+        let seen = StdArc::new(Mutex::new(Vec::new()));
+        let out = StdArc::clone(&seen);
+        cx.on(bar, move |_, event: &MediaTransportEvent, _| {
+            out.lock().unwrap().push(*event);
+        })
+        .unwrap();
+        let label = |cx: &AppContext| cx.read(mute, |button| button.label.clone()).unwrap();
+        assert_eq!(&*label(&cx), "静音");
+        cx.activate_icon_button(mute).unwrap();
+        cx.update_component(bar, |bar, _| bar.muted = true).unwrap();
+        assert_eq!(&*label(&cx), "取消静音");
+        cx.activate_icon_button(mute).unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                MediaTransportEvent::Mute(true),
+                MediaTransportEvent::Mute(false)
+            ]
+        );
+    }
+
+    #[test]
+    fn leaving_mini_puts_every_control_back_where_assembly_made_it() {
+        let mut stage = Stage::new(
+            document(),
+            MediaTransportBar::new().density(MediaTransportDensity::Compact),
+        );
+        let slots = stage.slots();
+        let children = |cx: &AppContext, id: Option<StableNodeId>| {
+            cx.world().node(id.unwrap()).unwrap().children.clone()
+        };
+        let parent = |cx: &AppContext, id: Option<StableNodeId>| {
+            cx.world().node(id.unwrap()).unwrap().parent
+        };
+        let center = children(&stage.cx, slots.center);
+        let right = children(&stage.cx, parent(&stage.cx, slots.trailing));
+        let left = children(&stage.cx, parent(&stage.cx, slots.leading));
+        for density in [MediaTransportDensity::Mini, MediaTransportDensity::Compact] {
+            stage
+                .cx
+                .update_component(stage.bar, |bar, _| bar.density = density)
+                .unwrap();
+        }
+        assert_eq!(children(&stage.cx, slots.center), center);
+        assert_eq!(
+            children(&stage.cx, parent(&stage.cx, slots.trailing)),
+            right
+        );
+        assert_eq!(children(&stage.cx, parent(&stage.cx, slots.leading)), left);
+        assert_eq!(parent(&stage.cx, slots.volume), slots.volume_menu);
+        assert!(children(&stage.cx, slots.strip).is_empty());
+        for range in [slots.seek, slots.volume] {
+            let range = Entity::<RangeField>::from_stable_id(range.unwrap());
+            assert_eq!(stage.cx.read(range, |range| range.rail).unwrap(), None);
+        }
+        stage.layout(document());
+        compact_layout_holds(&stage);
+    }
+
+    /// The compact row as `compact_is_one_row_...` checks it.
+    fn compact_layout_holds(stage: &Stage) {
+        let slots = stage.slots();
+        let time = stage.frame(slots.time.unwrap());
+        let seek = stage.frame(slots.seek.unwrap());
+        assert!(time.x + time.width <= seek.x);
+        assert_close(
+            time.y + time.height / 2.0,
+            seek.y + seek.height / 2.0,
+            "readout and range share one row",
+        );
+        assert!(stage.hidden(slots.strip.unwrap()));
+        assert!(stage.hidden(slots.mute.unwrap()));
+        assert!(!stage.hidden(slots.volume_group.unwrap()));
     }
 
     #[test]
