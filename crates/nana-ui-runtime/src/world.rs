@@ -977,6 +977,9 @@ impl UiWorld {
             .entry(id)
             .and_modify(|previous| *previous = previous.merge(invalidation))
             .or_insert(invalidation);
+        // Text shaping and other post-layout writers reach layout only through
+        // this cause, not through a commit, so the input epoch moves here too.
+        self.note_layout_source_change();
         // A fixed border box absorbs an inner metric. Drop that box so a
         // changed child placement can be republished, and leave every
         // ancestor result in place when the border box itself did not change.
@@ -4141,6 +4144,7 @@ impl UiWorld {
                     LayoutFieldMask::ALL,
                     LayoutDependencyFootprint::ALL,
                 ));
+            self.note_layout_source_change();
         }
         self.mark_scroll_compatible(id, bits)
     }
