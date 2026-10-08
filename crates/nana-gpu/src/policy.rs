@@ -7,7 +7,7 @@
 //! renderer that created them.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::{DeviceGeneration, GpuTexture, GpuTextureFormat};
 
@@ -215,6 +215,10 @@ struct PolicyState {
     transient_buffers: HashMap<TransientResourceKey, VecDeque<wgpu::Buffer>>,
     transient_textures: HashMap<TransientResourceKey, VecDeque<GpuTexture>>,
     pipelines: StampedCache<PipelineKey, wgpu::RenderPipeline>,
+    /// Pipelines some thread is compiling right now. The compile runs outside
+    /// this state's lock; a second request for the same key waits on the
+    /// first one's cell instead of compiling it again.
+    compiling: HashMap<PipelineKey, Arc<OnceLock<wgpu::RenderPipeline>>>,
     retired_pipelines: Vec<(u64, wgpu::RenderPipeline)>,
     layouts: StampedCache<u64, Arc<wgpu::BindGroupLayout>>,
     retired_layouts: Vec<(u64, Arc<wgpu::BindGroupLayout>)>,
@@ -241,6 +245,7 @@ impl GpuDeviceState {
                 transient_buffers: HashMap::new(),
                 transient_textures: HashMap::new(),
                 pipelines: StampedCache::new(MAX_PIPELINES),
+                compiling: HashMap::new(),
                 retired_pipelines: Vec::new(),
                 layouts: StampedCache::new(MAX_LAYOUTS),
                 retired_layouts: Vec::new(),
@@ -584,15 +589,35 @@ impl GpuDeviceState {
                 found: key.generation,
             });
         }
-        // Creation is serialized: concurrent cold requests must not compile
-        // the same pipeline twice. The factory must not reenter this registry.
+        // A compile can take hundreds of milliseconds (seconds under FXC), so
+        // it runs outside the lock: independent pipelines compile in parallel,
+        // and frame slots, uploads and pools are not held up meanwhile.
+        // Concurrent cold requests for one key share one cell and compile it
+        // once. The factory may itself use this registry.
+        let cell = {
+            let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(pipeline) = state.pipelines.get(&key).cloned() {
+                state.stats.pipeline_registry_hits += 1;
+                nana_diagnostics::metric!(nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_HITS);
+                return Ok(pipeline);
+            }
+            Arc::clone(state.compiling.entry(key).or_default())
+        };
+        let mut compiled = false;
+        let pipeline = cell
+            .get_or_init(|| {
+                compiled = true;
+                create()
+            })
+            .clone();
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pipeline) = state.pipelines.get(&key).cloned() {
+        if !compiled {
+            // Another request compiled it while this one waited.
             state.stats.pipeline_registry_hits += 1;
             nana_diagnostics::metric!(nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_HITS);
             return Ok(pipeline);
         }
-        let pipeline = create();
+        state.compiling.remove(&key);
         let mut evicted = Vec::new();
         state.pipelines.insert(key, pipeline.clone(), &mut evicted);
         // Keep evicted backend objects alive until a queue completion
@@ -851,19 +876,153 @@ mod tests {
         assert!(state.release_frame_slot(third, 3));
     }
 
+    /// One device for every GPU test here: creating devices while other tests
+    /// run can deadlock in some drivers' loaders (see nana-ui's `test_gpu`).
+    fn test_device() -> wgpu::Device {
+        static DEVICE: OnceLock<wgpu::Device> = OnceLock::new();
+        DEVICE
+            .get_or_init(|| {
+                let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                    backends: wgpu::Backends::from_env().unwrap_or_default(),
+                    ..wgpu::InstanceDescriptor::new_without_display_handle()
+                });
+                let adapter = pollster::block_on(
+                    wgpu::util::initialize_adapter_from_env_or_default(&instance, None),
+                )
+                .expect("GPU policy tests require a WGPU adapter");
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                    .expect("GPU policy tests require a WGPU device")
+                    .0
+            })
+            .clone()
+    }
+
+    fn test_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("policy test shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                "@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }
+                 @fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }"
+                    .into(),
+            ),
+        });
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("policy test pipeline"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+                compilation_options: Default::default(),
+            }),
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
+    fn pipeline_key(state: &GpuDeviceState, material: u64) -> PipelineKey {
+        PipelineKey {
+            generation: state.generation(),
+            target_format: crate::GpuTextureFormat::RGBA8_UNORM,
+            sample_count: 1,
+            shader: 1,
+            layout: 1,
+            material,
+            primitive: 0,
+            blend: 0,
+            depth: 0,
+            vertex_layout: 0,
+        }
+    }
+
+    /// Two pipelines compile at the same time: each factory waits for the
+    /// other to have started, which a registry that compiles under its lock
+    /// never lets happen.
+    #[test]
+    fn independent_pipelines_compile_in_parallel() {
+        let device = test_device();
+        let state = state();
+        let (first_started, first_seen) = std::sync::mpsc::channel();
+        let (second_started, second_seen) = std::sync::mpsc::channel();
+        let wait = std::time::Duration::from_secs(20);
+        let (state, device) = (&state, &device);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(move || {
+                state.pipeline(pipeline_key(state, 1), || {
+                    first_started.send(()).unwrap();
+                    second_seen
+                        .recv_timeout(wait)
+                        .expect("the second compile ran while the first one did");
+                    test_pipeline(device)
+                })
+            });
+            let second = scope.spawn(move || {
+                state.pipeline(pipeline_key(state, 2), || {
+                    second_started.send(()).unwrap();
+                    first_seen
+                        .recv_timeout(wait)
+                        .expect("the first compile ran while the second one did");
+                    test_pipeline(device)
+                })
+            });
+            first.join().unwrap().expect("first pipeline");
+            second.join().unwrap().expect("second pipeline");
+        });
+        let stats = state.stats();
+        assert_eq!(stats.pipeline_registry_misses, 2);
+        assert_eq!(stats.pipeline_registry_hits, 0);
+    }
+
+    /// A request for a pipeline another thread is compiling waits for that
+    /// compile instead of starting its own.
+    #[test]
+    fn a_pipeline_being_compiled_is_compiled_once() {
+        let device = test_device();
+        let state = state();
+        let key = pipeline_key(&state, 3);
+        let (started, compiling) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (shared, device) = (&state, &device);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(move || {
+                shared.pipeline(key, || {
+                    started.send(()).unwrap();
+                    released.recv().unwrap();
+                    test_pipeline(device)
+                })
+            });
+            compiling.recv().unwrap();
+            let second = scope
+                .spawn(move || shared.pipeline(key, || panic!("the pipeline was compiled twice")));
+            // Give the second request time to reach the compile it waits on;
+            // arriving after it finished would be a plain cache hit.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            release.send(()).unwrap();
+            let first = first.join().unwrap().expect("compiled pipeline");
+            let second = second.join().unwrap().expect("shared pipeline");
+            assert_eq!(first, second);
+        });
+        let stats = state.stats();
+        assert_eq!(stats.pipeline_registry_misses, 1);
+        assert_eq!(stats.pipeline_registry_hits, 1);
+        assert_eq!(
+            state.pipeline(key, || panic!("cached")).ok(),
+            state.pipeline(key, || panic!("cached")).ok()
+        );
+    }
+
     #[test]
     fn real_transient_buffer_pool_reuses_matching_descriptors() {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
-            &instance, None,
-        ))
-        .expect("GPU policy tests require a WGPU adapter");
-        let (device, _queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("GPU policy tests require a WGPU device");
+        let device = test_device();
         let state = GpuDeviceState::new(DeviceGeneration::next());
         let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
         let key = TransientResourceKey::buffer(state.generation(), usage.bits(), 256);
