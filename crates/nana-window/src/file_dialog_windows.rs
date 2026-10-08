@@ -1,6 +1,7 @@
 //! Common Item Dialog (`IFileOpenDialog` / `IFileSaveDialog`) on a worker
 //! thread. HRESULT cancel is distinct from a platform failure.
 use super::*;
+use crate::win32::wide;
 use raw_window_handle::RawWindowHandle;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
@@ -374,10 +375,6 @@ fn owner_hwnd<W: HasWindowHandle + ?Sized>(window: &W) -> Option<HWND> {
         RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut _)),
         _ => None,
     }
-}
-
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// `SHCreateItemFromParsingName` rejects `\\?\`. Map `\\?\C:\...` → `C:\...`

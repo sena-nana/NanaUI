@@ -183,7 +183,7 @@ fn companion_class() -> Option<*const u16> {
     static CLASS: OnceLock<Option<Vec<u16>>> = OnceLock::new();
     CLASS
         .get_or_init(|| {
-            let name: Vec<u16> = "NanaWindowShadow\0".encode_utf16().collect();
+            let name = crate::win32::wide("NanaWindowShadow");
             let module = unsafe { GetModuleHandleW(std::ptr::null()) };
             let class = WNDCLASSW {
                 lpfnWndProc: Some(companion_proc),

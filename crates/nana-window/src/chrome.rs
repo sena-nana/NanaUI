@@ -1538,6 +1538,8 @@ mod tests {
             SendMessageW, WM_STYLECHANGING, WNDCLASSW, WS_OVERLAPPEDWINDOW,
         };
 
+        use crate::win32::wide;
+
         /// How many `WM_STYLECHANGING` messages the other subclass saw, and
         /// the style it observed. A test-local static is enough: the fixture
         /// owns the only window that carries this subclass.
@@ -1560,10 +1562,6 @@ mod tests {
             }
             // SAFETY: forwarding the message unchanged, as a subclass must.
             unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
-        }
-
-        fn wide(text: &str) -> Vec<u16> {
-            text.encode_utf16().chain(std::iter::once(0)).collect()
         }
 
         let class_name = wide("NanaStyleGuardFixture");
