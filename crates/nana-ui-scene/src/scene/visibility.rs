@@ -302,6 +302,7 @@ fn batch_bounds(rectangles: &[SceneRect]) -> Option<Bounds> {
     Some(result)
 }
 
+#[cfg(any(test, debug_assertions))]
 const MAX_PROJECTION_ULPS: u64 = 8;
 
 /// Compare one projection result without turning harmless reprojection
@@ -311,6 +312,7 @@ const MAX_PROJECTION_ULPS: u64 = 8;
 /// while a fresh scene composes the current transform directly. Those paths
 /// are mathematically equivalent but can differ by a handful of `f32` ULPs.
 /// Non-finite values are deliberately never accepted as approximately equal.
+#[cfg(any(test, debug_assertions))]
 fn projection_component_matches(retained: f32, fresh: f32) -> bool {
     if !retained.is_finite() || !fresh.is_finite() {
         return false;
