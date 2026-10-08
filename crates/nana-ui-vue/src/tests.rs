@@ -793,13 +793,19 @@ fn pointer_capture_keeps_target_and_blur_releases_it() {
     let api = host.host_api_registry();
     api.call(
         "setPointerCapture",
-        &[HostValue::Number(first.0 as f64), HostValue::Number(pointer_id)],
+        &[
+            HostValue::Number(first.0 as f64),
+            HostValue::Number(pointer_id),
+        ],
     )
     .expect("capture pointer");
     assert_eq!(
         api.call(
             "hasPointerCapture",
-            &[HostValue::Number(first.0 as f64), HostValue::Number(pointer_id)],
+            &[
+                HostValue::Number(first.0 as f64),
+                HostValue::Number(pointer_id)
+            ],
         )
         .expect("query capture"),
         HostValue::Bool(true)
@@ -866,7 +872,10 @@ fn pointer_capture_keeps_target_and_blur_releases_it() {
     assert_eq!(
         api.call(
             "hasPointerCapture",
-            &[HostValue::Number(first.0 as f64), HostValue::Number(pointer_id)],
+            &[
+                HostValue::Number(first.0 as f64),
+                HostValue::Number(pointer_id)
+            ],
         )
         .expect("capture released"),
         HostValue::Bool(false)
