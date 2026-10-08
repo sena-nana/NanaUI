@@ -115,8 +115,13 @@ impl AppContext {
 
     /// The resize handle within slop of `(x, y)` — a split pane's, a dock's
     /// or a workspace region's — that a press or the cursor there reaches.
-    /// A handle under an open modal is not reachable: the modal's surface
-    /// takes the press, whatever lies within slop of it underneath.
+    ///
+    /// The slop reaches past the handle's edge into what lies around it, but
+    /// only into its own container. Whatever was hit at the point decides:
+    /// a node inside the handle's container (one of its panes) or around it
+    /// (the window under it) lets the handle take the press; anything else
+    /// is painted over the container there (a modal, a panel, a hover card,
+    /// a positioned control) and keeps the press.
     pub(crate) fn reachable_handle_near(
         &self,
         document: DocumentId,
@@ -124,18 +129,41 @@ impl AppContext {
         y: f32,
         target: Option<StableNodeId>,
     ) -> [Option<StableNodeId>; 3] {
-        let reachable = |handle: StableNodeId| !self.covered_by_blocking_overlay(document, handle);
+        use crate::component_descriptors::{DOCK, SPLIT_PANE, WORKSPACE};
+        let reachable = |handle: StableNodeId, owner_type: &str| {
+            if self.covered_by_blocking_overlay(document, handle) {
+                return false;
+            }
+            let Some(hit) = target else {
+                return true;
+            };
+            // The component the handle resizes: its nearest ancestor of the
+            // owning type, wherever inside it the handle is mounted.
+            let owner = std::iter::successors(self.world.parent_id(handle), |&node| {
+                self.world.parent_id(node)
+            })
+            .find(|&node| {
+                self.world
+                    .component_type(node)
+                    .is_some_and(|component| component.as_str() == owner_type)
+            });
+            let Some(owner) = owner else {
+                return true;
+            };
+            self.world.is_descendant_or_self(hit, owner)
+                || self.world.is_descendant_or_self(owner, hit)
+        };
         [
             self.split_handle_near_hit(document, x, y, target)
-                .filter(|handle| reachable(*handle)),
+                .filter(|handle| reachable(*handle, SPLIT_PANE.type_id)),
             hooked!(self, dock, |h| (h.handle_near_hit)(
                 self, document, x, y, target
             ))
-            .filter(|handle| reachable(*handle)),
+            .filter(|handle| reachable(*handle, DOCK.type_id)),
             hooked!(self, workspace, |h| (h.handle_near_hit)(
                 self, document, x, y, target
             ))
-            .filter(|handle| reachable(*handle)),
+            .filter(|handle| reachable(*handle, WORKSPACE.type_id)),
         ]
     }
 

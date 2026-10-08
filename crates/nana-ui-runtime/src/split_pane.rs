@@ -1243,6 +1243,53 @@ mod tests {
         assert_eq!(context.split_handle_near(document(), 40.0, 20.0), None);
     }
 
+    /// A node painted over the split near its handle keeps a press there;
+    /// a press in one of the panes beside the handle still reaches it.
+    #[test]
+    fn a_node_over_the_handles_slop_keeps_the_press() {
+        let mut context = AppContext::new();
+        let first = slot(&mut context, "first");
+        let second = slot(&mut context, "second");
+        let handle = slot(&mut context, "handle");
+        let card = slot(&mut context, "card");
+        let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
+        let split = mount(&mut context, &model, first, second, handle);
+        context
+            .commit_mutations({
+                let mut mutations = MutationQueue::new();
+                mutations.insert(split.stable_id(), first, None);
+                mutations.insert(split.stable_id(), handle, None);
+                mutations.insert(split.stable_id(), second, None);
+                mutations.write_layout(
+                    handle,
+                    crate::LayoutBox {
+                        x: 200.0,
+                        y: 0.0,
+                        width: HANDLE_SIZE,
+                        height: 200.0,
+                    },
+                );
+                mutations.write_layout(
+                    card,
+                    crate::LayoutBox {
+                        x: 203.0,
+                        y: 0.0,
+                        width: 60.0,
+                        height: 40.0,
+                    },
+                );
+                mutations
+            })
+            .unwrap();
+        context.rebuild_hit_test(document());
+        let [over_card, ..] = context.reachable_handle_near(document(), 205.0, 20.0, Some(card));
+        assert_eq!(over_card, None);
+        let [in_pane, ..] = context.reachable_handle_near(document(), 205.0, 20.0, Some(second));
+        assert_eq!(in_pane, Some(handle));
+        let [nothing_hit, ..] = context.reachable_handle_near(document(), 205.0, 20.0, None);
+        assert_eq!(nothing_hit, Some(handle));
+    }
+
     #[test]
     fn idle_project_does_not_dirty() {
         let mut context = AppContext::new();

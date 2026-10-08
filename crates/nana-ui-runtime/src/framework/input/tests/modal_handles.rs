@@ -138,3 +138,56 @@ fn a_dialog_button_beside_a_sidebar_handle_takes_the_press() {
         "the dialog's button was pressed"
     );
 }
+
+/// With no modal open, a press on a region's content just inside a handle's
+/// slop starts the resize: the content is inside the handle's container.
+#[test]
+fn a_press_on_content_beside_a_sidebar_handle_resizes() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let navigation = cx
+        .create_detached_component(doc, SidebarFrame::new())
+        .unwrap();
+    let primary = cx
+        .create_detached_component(doc, Text::new("primary"))
+        .unwrap();
+    let shell = cx
+        .create_component(
+            doc,
+            DesktopShell::new()
+                .navigation(navigation.stable_id())
+                .primary(primary.stable_id()),
+        )
+        .unwrap();
+    cx.assemble_desktop_shell(shell).unwrap();
+    cx.layout_document(doc, LayoutViewport::new(700.0, 500.0))
+        .unwrap();
+    cx.advance_animations(Duration::from_secs(5));
+    cx.layout_document(doc, LayoutViewport::new(700.0, 500.0))
+        .unwrap();
+    cx.rebuild_hit_test(doc);
+
+    let workspace = Entity::<Workspace>::from_stable_id(
+        cx.read(shell, |shell| shell.workspace.unwrap()).unwrap(),
+    );
+    let handle = cx
+        .read(workspace, |workspace| {
+            workspace.handles.get(&RegionId::Resources).copied()
+        })
+        .unwrap()
+        .expect("the sidebar has a resize handle");
+    let handle_box = cx.world().layout_box(handle).unwrap();
+    let (x, y) = (
+        handle_box.x + handle_box.width + 2.0,
+        handle_box.y + handle_box.height / 2.0,
+    );
+    // Content on either side of the handle, as a hit there would report it.
+    for content in [primary.stable_id(), navigation.stable_id()] {
+        let [split, dock, workspace_handle] = cx.reachable_handle_near(doc, x, y, Some(content));
+        assert_eq!(
+            split.or(dock).or(workspace_handle),
+            Some(handle),
+            "the handle reaches content in its own workspace"
+        );
+    }
+}
