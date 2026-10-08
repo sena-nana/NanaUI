@@ -90,8 +90,8 @@ pub use native_browser::{
 };
 #[cfg(feature = "hosted")]
 pub use web_surface::{
-    MAX_WEB_SURFACE_EDGE, MAX_WEB_SURFACE_FPS, WebFrame, WebFrameSink, WebSurfaceCommand,
-    WebSurfaceDesc, WebSurfaceEvent, WebSurfaceNotice, WebSurfaceRequest, web_surface_support,
+    WebFrame, WebFrameSink, WebSurfaceCommand, WebSurfaceDesc, WebSurfaceEvent, WebSurfaceNotice,
+    WebSurfaceRequest,
 };
 pub mod overlay;
 pub mod pane;

@@ -80,13 +80,7 @@ define_class!(
         }
         #[unsafe(method(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
         fn new_window(&self, view: &AnyObject, _configuration: &AnyObject, action: &AnyObject, _features: &AnyObject) -> *mut AnyObject {
-            unsafe {
-                let request: Retained<AnyObject> = msg_send![action, request];
-                let url: Option<Retained<AnyObject>> = msg_send![&request, URL];
-                if url.is_some_and(|url| self.ivars().policy.allows(&url_string(&url))) {
-                    let _: Option<Retained<AnyObject>> = msg_send![view, loadRequest: &*request];
-                }
-            }
+            follow_new_window(view, action, &self.ivars().policy);
             std::ptr::null_mut()
         }
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
@@ -101,15 +95,13 @@ define_class!(
         }
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         fn failed_provisional(&self, view: &AnyObject, _navigation: Option<&AnyObject>, error: &AnyObject) {
-            let code: isize = unsafe { msg_send![error, code] };
-            if code != -999 {
+            if !is_cancelled(error) {
                 self.publish(view, Some(error_description(error)));
             }
         }
         #[unsafe(method(webView:didFailNavigation:withError:))]
         fn failed(&self, view: &AnyObject, _navigation: Option<&AnyObject>, error: &AnyObject) {
-            let code: isize = unsafe { msg_send![error, code] };
-            if code != -999 {
+            if !is_cancelled(error) {
                 self.publish(view, Some(error_description(error)));
             }
         }
@@ -119,14 +111,9 @@ define_class!(
         }
         #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
         fn decide(&self, view: &AnyObject, action: &AnyObject, completion: &block2::Block<dyn Fn(isize)>) {
-            let url = unsafe {
-                let request: Retained<AnyObject> = msg_send![action, request];
-                let url: Option<Retained<AnyObject>> = msg_send![&request, URL];
-                url.map(|url| url_string(&url)).unwrap_or_default()
-            };
-            let allowed = self.ivars().policy.allows(&url);
+            let allowed = self.ivars().policy.allows(&action_url(action));
             completion.call((if allowed { 1 } else { 0 },));
-            if !allowed { self.publish(view, Some("不允许打开此地址".into())); }
+            if !allowed { self.publish(view, Some(NOT_ALLOWED.into())); }
         }
     }
 );
@@ -334,19 +321,7 @@ impl MacBrowser {
         }
         unsafe {
             match command {
-                BrowserCommand::Navigate(url) => {
-                    if !self.policy.allows(url) {
-                        return Err("不允许打开此地址".into());
-                    }
-                    let url_string = NSString::from_str(url);
-                    let url: Option<Retained<AnyObject>> =
-                        msg_send![class!(NSURL), URLWithString: &*url_string];
-                    let url = url.ok_or("地址无效")?;
-                    let request: Retained<AnyObject> =
-                        msg_send![class!(NSURLRequest), requestWithURL: &*url];
-                    let _: Option<Retained<AnyObject>> =
-                        msg_send![&self.view, loadRequest: &*request];
-                }
+                BrowserCommand::Navigate(url) => load_url(&self.view, url, &self.policy)?,
                 BrowserCommand::Back => {
                     let _: Option<Retained<AnyObject>> = msg_send![&self.view, goBack];
                 }
@@ -429,6 +404,47 @@ impl Drop for MacBrowser {
             self.container.removeFromSuperview();
         }
     }
+}
+
+pub(crate) const NOT_ALLOWED: &str = "不允许打开此地址";
+
+/// The address a navigation action goes to.
+pub(crate) fn action_url(action: &AnyObject) -> String {
+    unsafe {
+        let request: Retained<AnyObject> = msg_send![action, request];
+        let url: Option<Retained<AnyObject>> = msg_send![&request, URL];
+        url.map(|url| url_string(&url)).unwrap_or_default()
+    }
+}
+
+/// A link that asks for a new window opens in this view instead, if allowed.
+pub(crate) fn follow_new_window(view: &AnyObject, action: &AnyObject, policy: &BrowserPolicy) {
+    if policy.allows(&action_url(action)) {
+        unsafe {
+            let request: Retained<AnyObject> = msg_send![action, request];
+            let _: Option<Retained<AnyObject>> = msg_send![view, loadRequest: &*request];
+        }
+    }
+}
+
+pub(crate) fn load_url(view: &AnyObject, url: &str, policy: &BrowserPolicy) -> Result<(), String> {
+    if !policy.allows(url) {
+        return Err(NOT_ALLOWED.into());
+    }
+    unsafe {
+        let address = NSString::from_str(url);
+        let url: Option<Retained<AnyObject>> = msg_send![class!(NSURL), URLWithString: &*address];
+        let request: Retained<AnyObject> =
+            msg_send![class!(NSURLRequest), requestWithURL: &*url.ok_or("地址无效")?];
+        let _: Option<Retained<AnyObject>> = msg_send![view, loadRequest: &*request];
+    }
+    Ok(())
+}
+
+/// `NSURLErrorCancelled`: a newer navigation replaced this one.
+pub(crate) fn is_cancelled(error: &AnyObject) -> bool {
+    let code: isize = unsafe { msg_send![error, code] };
+    code == -999
 }
 
 pub(crate) fn url_string(url: &AnyObject) -> String {

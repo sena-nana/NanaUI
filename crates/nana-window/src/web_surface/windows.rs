@@ -343,12 +343,6 @@ fn run(
                 error: Some(error),
                 ..Default::default()
             }));
-            // Keep answering until the owner drops the surface.
-            while let Ok(request) = requests.recv() {
-                if matches!(request, Request::Close) {
-                    break;
-                }
-            }
         }
     }
     if com.is_ok() {
@@ -501,6 +495,18 @@ fn webview2_error(error: webview2_com::Error) -> String {
     }
 }
 
+/// An event handler that only re-reads the page's state.
+fn republish<A, B>(
+    engine: std::rc::Weak<Engine>,
+) -> impl FnMut(A, B) -> windows::core::Result<()> + 'static {
+    move |_, _| {
+        if let Some(engine) = engine.upgrade() {
+            engine.publish_state();
+        }
+        Ok(())
+    }
+}
+
 impl Engine {
     fn create_webview(self: &Rc<Self>) -> Result<(), String> {
         let folder = user_data_folder();
@@ -619,27 +625,15 @@ impl Engine {
                     &mut token,
                 )
                 .map_err(message)?;
-            let this = weak.clone();
             webview
                 .add_SourceChanged(
-                    &SourceChangedEventHandler::create(Box::new(move |_, _| {
-                        if let Some(this) = this.upgrade() {
-                            this.publish_state();
-                        }
-                        Ok(())
-                    })),
+                    &SourceChangedEventHandler::create(Box::new(republish(weak.clone()))),
                     &mut token,
                 )
                 .map_err(message)?;
-            let this = weak.clone();
             webview
                 .add_DocumentTitleChanged(
-                    &DocumentTitleChangedEventHandler::create(Box::new(move |_, _| {
-                        if let Some(this) = this.upgrade() {
-                            this.publish_state();
-                        }
-                        Ok(())
-                    })),
+                    &DocumentTitleChangedEventHandler::create(Box::new(republish(weak.clone()))),
                     &mut token,
                 )
                 .map_err(message)?;

@@ -346,7 +346,7 @@ URL、白名单、Cookie、引擎选型归**应用**（默认拒绝，localhost 
 - Windows：每个实例一条 STA 线程，WebView2 组合控制器挂在 `Windows.UI.Composition` visual 上，用 `Windows.Graphics.Capture` 截取；需要 WebView2 Runtime，分发时带 `WebView2Loader.dll`。缺运行时以状态错误报告。
 - Linux：`web_surface_support()` 为假，`WebSurface::new` 返回不可用。
 
-`cargo run -p nana-window --example web-surface-probe [-- --window]` 实测帧率、页面是否持续刷新和透明度，并保存最后一帧；`--size WxH`、`--fps N`、`--seconds N`、`--static` 用来测开销（它只报自己的 CPU，WebKit 进程另测）。
+`cargo run -p nana-window --example web-surface-probe [-- --window]` 实测帧率、页面是否持续刷新和透明度，并保存最后一帧；`--size WxH`、`--fps N`、`--seconds N`、`--static` 用来测开销（用 `ps` 连同 WebKit 进程一起测）。
 
 ## 按图离屏
 

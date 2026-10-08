@@ -57,7 +57,6 @@ windows = { version = "0.62", features = [
     # Headless web surfaces: WebView2 composition hosting captured with
     # Windows.Graphics.Capture.
     "Foundation",
-    "Foundation_Numerics",
     "Graphics",
     "Graphics_Capture",
     "Graphics_DirectX",

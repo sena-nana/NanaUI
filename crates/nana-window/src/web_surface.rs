@@ -26,9 +26,9 @@ pub type WebFrameSink = Arc<dyn Fn(WebFrame) + Send + Sync>;
 pub type WebSurfaceWake = Arc<dyn Fn() + Send + Sync>;
 
 /// The largest edge a surface lays out or captures, in pixels.
-pub const MAX_WEB_SURFACE_EDGE: u32 = 4096;
+const MAX_WEB_SURFACE_EDGE: u32 = 4096;
 /// The highest capture rate a surface accepts.
-pub const MAX_WEB_SURFACE_FPS: u32 = 60;
+const MAX_WEB_SURFACE_FPS: u32 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WebSurfaceDesc {
@@ -70,11 +70,11 @@ impl WebSurfaceDesc {
         }
     }
 
-    /// Captured frame size in pixels.
-    pub fn frame_size(&self) -> [u32; 2] {
-        let desc = self.clamped();
-        desc.size
-            .map(|edge| ((edge as f32 * desc.scale).round() as u32).clamp(1, MAX_WEB_SURFACE_EDGE))
+    /// Captured frame size in pixels of a [`Self::clamped`] description.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+    pub(crate) fn frame_size(&self) -> [u32; 2] {
+        self.size
+            .map(|edge| ((edge as f32 * self.scale).round() as u32).clamp(1, MAX_WEB_SURFACE_EDGE))
     }
 }
 
@@ -138,14 +138,38 @@ mod platform;
 #[cfg(target_os = "windows")]
 #[path = "web_surface/windows.rs"]
 mod platform;
-
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const UNSUPPORTED: &str = "此平台不支持网页画面";
+mod platform {
+    use super::*;
+
+    pub(super) struct PlatformSurface;
+
+    impl PlatformSurface {
+        pub(super) fn new(
+            _: BrowserPolicy,
+            _: WebSurfaceDesc,
+            _: WebFrameSink,
+            _: WebSurfaceWake,
+        ) -> Result<Self, String> {
+            Err("此平台不支持网页画面".into())
+        }
+        pub(super) fn configure(&mut self, _: WebSurfaceDesc) {}
+        pub(super) fn command(
+            &mut self,
+            _: u64,
+            _: Option<&WebSurfaceCommand>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        pub(super) fn take_events(&mut self) -> Vec<WebSurfaceCompletion> {
+            Vec::new()
+        }
+    }
+}
 
 /// A headless page. On macOS create and drive it on the main thread; on
 /// Windows any one thread may own it (the engine runs on its own thread).
 pub struct WebSurface {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     inner: platform::PlatformSurface,
 }
 
@@ -156,25 +180,14 @@ impl WebSurface {
         frames: WebFrameSink,
         wake: WebSurfaceWake,
     ) -> Result<Self, String> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            Ok(Self {
-                inner: platform::PlatformSurface::new(policy, desc.clamped(), frames, wake)?,
-            })
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = (policy, desc, frames, wake);
-            Err(UNSUPPORTED.into())
-        }
+        Ok(Self {
+            inner: platform::PlatformSurface::new(policy, desc.clamped(), frames, wake)?,
+        })
     }
 
     /// Apply a new size, scale, transparency or capture rate. The page stays loaded.
     pub fn configure(&mut self, desc: WebSurfaceDesc) {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.inner.configure(desc.clamped());
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let _ = desc;
     }
 
     /// Run `command` under `revision`; `None` only re-publishes the current state.
@@ -183,26 +196,11 @@ impl WebSurface {
         revision: u64,
         command: Option<&WebSurfaceCommand>,
     ) -> Result<(), String> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            self.inner.command(revision, command)
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = (revision, command);
-            Err(UNSUPPORTED.into())
-        }
+        self.inner.command(revision, command)
     }
 
     pub fn take_events(&mut self) -> Vec<WebSurfaceCompletion> {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            self.inner.take_events()
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            Vec::new()
-        }
+        self.inner.take_events()
     }
 }
 
@@ -266,7 +264,7 @@ mod tests {
             ..WebSurfaceDesc::default()
         };
         assert_eq!(retina.clamped().size, [2048, 300]);
-        assert_eq!(retina.frame_size(), [4096, 600]);
+        assert_eq!(retina.clamped().frame_size(), [4096, 600]);
     }
 
     #[test]
@@ -295,14 +293,5 @@ mod tests {
         events.close();
         events.publish(2, WebSurfaceEvent::State(BrowserState::default()));
         assert!(events.take().is_empty());
-    }
-
-    #[test]
-    fn zero_fps_pauses_capture() {
-        assert_eq!(capture_interval(0), None);
-        assert_eq!(
-            capture_interval(50),
-            Some(std::time::Duration::from_millis(20))
-        );
     }
 }

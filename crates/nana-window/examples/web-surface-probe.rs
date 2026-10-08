@@ -7,9 +7,9 @@
 //! With `--window` the page is also shown in its interaction window for a few
 //! seconds; frames must keep flowing while it is open.
 //!
-//! For cost measurements: `--seconds N`, `--size WxH`, and `--static` for a
-//! page that never changes. The probe prints its own CPU time per second; the
-//! web engine's processes are measured separately.
+//! For cost measurements: `--seconds N`, `--size WxH`, `--fps N`, and
+//! `--static` for a page that never changes; measure the probe and the web
+//! engine's processes with `ps`.
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -65,35 +65,6 @@ fn pump(duration: Duration) {
     }
     #[cfg(not(target_os = "macos"))]
     std::thread::sleep(duration);
-}
-
-/// User and system CPU time of this process.
-fn cpu_time() -> Duration {
-    #[cfg(unix)]
-    {
-        #[repr(C)]
-        struct TimeVal {
-            seconds: i64,
-            micros: i32,
-        }
-        #[repr(C)]
-        struct Usage {
-            user: TimeVal,
-            system: TimeVal,
-            rest: [i64; 14],
-        }
-        unsafe extern "C" {
-            fn getrusage(who: i32, usage: *mut Usage) -> i32;
-        }
-        let mut usage: Usage = unsafe { std::mem::zeroed() };
-        unsafe { getrusage(0, &mut usage) };
-        let time = |value: &TimeVal| {
-            Duration::from_secs(value.seconds as u64) + Duration::from_micros(value.micros as u64)
-        };
-        time(&usage.user) + time(&usage.system)
-    }
-    #[cfg(not(unix))]
-    Duration::ZERO
 }
 
 #[derive(Default)]
@@ -170,13 +141,8 @@ fn main() -> std::process::ExitCode {
             )
             .expect("show");
     }
-    let cpu_before = cpu_time();
     pump(Duration::from_secs(seconds));
     let elapsed = started.elapsed().as_secs_f64();
-    println!(
-        "probe process CPU {:.0}% of one core",
-        (cpu_time() - cpu_before).as_secs_f64() * 100.0 / elapsed
-    );
     if show_window {
         surface
             .command(3, Some(&WebSurfaceCommand::HideWindow))

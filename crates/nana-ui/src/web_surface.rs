@@ -6,10 +6,7 @@
 //! background thread. Where the frames go — a HostTexture slot, a renderer of
 //! the application's own — is the application's decision.
 
-pub use nana_window::{
-    MAX_WEB_SURFACE_EDGE, MAX_WEB_SURFACE_FPS, WebFrame, WebFrameSink, WebSurfaceCommand,
-    WebSurfaceDesc, WebSurfaceEvent, web_surface_support,
-};
+pub use nana_window::{WebFrame, WebFrameSink, WebSurfaceCommand, WebSurfaceDesc, WebSurfaceEvent};
 
 use crate::BrowserPolicy;
 

@@ -68,9 +68,8 @@ pub use splash::{
     SplashSpec, SplashStaticReason, SplashWork, validate_logo,
 };
 pub use web_surface::{
-    MAX_WEB_SURFACE_EDGE, MAX_WEB_SURFACE_FPS, WebFrame, WebFrameSink, WebSurface,
-    WebSurfaceCommand, WebSurfaceCompletion, WebSurfaceDesc, WebSurfaceEvent, WebSurfaceWake,
-    web_surface_support,
+    WebFrame, WebFrameSink, WebSurface, WebSurfaceCommand, WebSurfaceCompletion, WebSurfaceDesc,
+    WebSurfaceEvent, WebSurfaceWake, web_surface_support,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -32,6 +32,18 @@ fn reconcile(hosted: Option<&HostedWebSurface>, request: &WebSurfaceRequest) -> 
     }
 }
 
+/// An error the engine could not report itself, as a state event.
+fn failure(revision: u64, attached: bool, error: String) -> nana_window::WebSurfaceCompletion {
+    nana_window::WebSurfaceCompletion {
+        revision,
+        event: WebSurfaceEvent::State(BrowserState {
+            attached,
+            error: Some(error),
+            ..Default::default()
+        }),
+    }
+}
+
 /// A new instance loads the requested page; it never replays window commands.
 fn initial_command(request: &WebSurfaceRequest) -> Option<WebSurfaceCommand> {
     match &request.command {
@@ -47,16 +59,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         let requests = self.program.web_surface_requests();
-        self.web_surfaces
-            .retain(|id, _| requests.iter().filter(|request| request.id == *id).count() == 1);
+        // An id requested twice names no page.
+        let mut counts = HashMap::<&str, usize>::new();
         for request in &requests {
-            if request.id.is_empty()
-                || requests
-                    .iter()
-                    .filter(|other| other.id == request.id)
-                    .count()
-                    != 1
-            {
+            *counts.entry(&request.id).or_default() += 1;
+        }
+        self.web_surfaces
+            .retain(|id, _| counts.get(id.as_str()) == Some(&1));
+        for request in &requests {
+            if request.id.is_empty() || counts[request.id.as_str()] != 1 {
                 continue;
             }
             match reconcile(self.web_surfaces.get(&request.id), request) {
@@ -64,8 +75,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     // Release the old engine before its replacement starts.
                     self.web_surfaces.remove(&request.id);
                     let hosted = self.create_web_surface(request);
+                    if !hosted.events.is_empty() {
+                        self.proxy.wake_up();
+                    }
                     self.web_surfaces.insert(request.id.clone(), hosted);
-                    self.proxy.wake_up();
                 }
                 Reconcile::Keep { configure, command } => {
                     let hosted = self
@@ -84,14 +97,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                         if let Err(error) =
                             surface.command(request.revision, request.command.as_ref())
                         {
-                            hosted.events.push(nana_window::WebSurfaceCompletion {
-                                revision: request.revision,
-                                event: WebSurfaceEvent::State(BrowserState {
-                                    attached: true,
-                                    error: Some(error),
-                                    ..Default::default()
-                                }),
-                            });
+                            hosted.events.push(failure(request.revision, true, error));
                             self.proxy.wake_up();
                         }
                     }
@@ -114,25 +120,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 if let Err(error) =
                     surface.command(request.revision, initial_command(request).as_ref())
                 {
-                    events.push(nana_window::WebSurfaceCompletion {
-                        revision: request.revision,
-                        event: WebSurfaceEvent::State(BrowserState {
-                            attached: true,
-                            error: Some(error),
-                            ..Default::default()
-                        }),
-                    });
+                    events.push(failure(request.revision, true, error));
                 }
                 Some(surface)
             }
             Err(error) => {
-                events.push(nana_window::WebSurfaceCompletion {
-                    revision: request.revision,
-                    event: WebSurfaceEvent::State(BrowserState {
-                        error: Some(error),
-                        ..Default::default()
-                    }),
-                });
+                events.push(failure(request.revision, false, error));
                 None
             }
         };

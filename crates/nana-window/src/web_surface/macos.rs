@@ -33,7 +33,10 @@ use super::{
     WebSurfaceEvent, WebSurfaceWake, capture_interval,
 };
 use crate::BrowserPolicy;
-use crate::browser::platform::{error_description, read_state, url_string};
+use crate::browser::platform::{
+    NOT_ALLOWED, action_url, error_description, follow_new_window, is_cancelled, load_url,
+    read_state,
+};
 
 #[repr(C)]
 struct CGImage {
@@ -283,6 +286,17 @@ impl Shared {
         window.orderFrontRegardless();
     }
 
+    /// Return the page from its interaction window to its parking place.
+    fn hide(&self) {
+        if self.interactive.replace(false) {
+            self.park();
+            self.events
+                .borrow_mut()
+                .publish(self.revision.get(), WebSurfaceEvent::WindowClosed);
+            (self.wake)();
+        }
+    }
+
     fn show(&self, title: &str, mtm: MainThreadMarker) {
         let Some(window) = self.window.borrow().clone() else {
             return;
@@ -304,14 +318,10 @@ impl Shared {
     }
 }
 
-struct DelegateState {
-    shared: Rc<Shared>,
-}
-
 define_class!(
     #[unsafe(super = NSObject)]
     #[thread_kind = MainThreadOnly]
-    #[ivars = DelegateState]
+    #[ivars = Rc<Shared>]
     struct SurfaceDelegate;
 
     unsafe impl NSObjectProtocol for SurfaceDelegate {}
@@ -319,15 +329,7 @@ define_class!(
     unsafe impl NSWindowDelegate for SurfaceDelegate {
         #[unsafe(method(windowShouldClose:))]
         fn should_close(&self, _sender: &NSWindow) -> bool {
-            let shared = &self.ivars().shared;
-            if shared.interactive.replace(false) {
-                shared.park();
-                shared
-                    .events
-                    .borrow_mut()
-                    .publish(shared.revision.get(), WebSurfaceEvent::WindowClosed);
-                (shared.wake)();
-            }
+            self.ivars().hide();
             false
         }
     }
@@ -335,28 +337,21 @@ define_class!(
     impl SurfaceDelegate {
         #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
         fn observed(&self, _key: &NSString, _view: &AnyObject, _change: Option<&AnyObject>, _context: *mut c_void) {
-            self.ivars().shared.publish_state();
+            self.ivars().publish_state();
         }
         #[unsafe(method(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
         fn new_window(&self, view: &AnyObject, _configuration: &AnyObject, action: &AnyObject, _features: &AnyObject) -> *mut AnyObject {
-            // Pages that open a new window navigate this one instead.
-            unsafe {
-                let request: Retained<AnyObject> = msg_send![action, request];
-                let url: Option<Retained<AnyObject>> = msg_send![&request, URL];
-                if url.is_some_and(|url| self.ivars().shared.policy.allows(&url_string(&url))) {
-                    let _: Option<Retained<AnyObject>> = msg_send![view, loadRequest: &*request];
-                }
-            }
+            follow_new_window(view, action, &self.ivars().policy);
             std::ptr::null_mut()
         }
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
         fn started(&self, _view: &AnyObject, _navigation: Option<&AnyObject>) {
-            self.ivars().shared.error.borrow_mut().take();
-            self.ivars().shared.publish_state();
+            self.ivars().error.borrow_mut().take();
+            self.ivars().publish_state();
         }
         #[unsafe(method(webView:didFinishNavigation:))]
         fn finished(&self, _view: &AnyObject, _navigation: Option<&AnyObject>) {
-            self.ivars().shared.publish_state();
+            self.ivars().publish_state();
         }
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         fn failed_provisional(&self, _view: &AnyObject, _navigation: Option<&AnyObject>, error: &AnyObject) {
@@ -368,22 +363,17 @@ define_class!(
         }
         #[unsafe(method(webViewWebContentProcessDidTerminate:))]
         fn terminated(&self, view: &AnyObject) {
-            *self.ivars().shared.error.borrow_mut() = Some("网页进程已退出，正在重新加载".into());
-            self.ivars().shared.publish_state();
+            *self.ivars().error.borrow_mut() = Some("网页进程已退出，正在重新加载".into());
+            self.ivars().publish_state();
             let _: Option<Retained<AnyObject>> = unsafe { msg_send![view, reload] };
         }
         #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
         fn decide(&self, _view: &AnyObject, action: &AnyObject, completion: &block2::Block<dyn Fn(isize)>) {
-            let url = unsafe {
-                let request: Retained<AnyObject> = msg_send![action, request];
-                let url: Option<Retained<AnyObject>> = msg_send![&request, URL];
-                url.map(|url| url_string(&url)).unwrap_or_default()
-            };
-            let allowed = self.ivars().shared.policy.allows(&url);
+            let allowed = self.ivars().policy.allows(&action_url(action));
             completion.call((if allowed { 1 } else { 0 },));
             if !allowed {
-                *self.ivars().shared.error.borrow_mut() = Some("不允许打开此地址".into());
-                self.ivars().shared.publish_state();
+                *self.ivars().error.borrow_mut() = Some(NOT_ALLOWED.into());
+                self.ivars().publish_state();
             }
         }
     }
@@ -391,11 +381,9 @@ define_class!(
 
 impl SurfaceDelegate {
     fn fail(&self, error: &AnyObject) {
-        let code: isize = unsafe { msg_send![error, code] };
-        // NSURLErrorCancelled: a newer navigation replaced this one.
-        if code != -999 {
-            *self.ivars().shared.error.borrow_mut() = Some(error_description(error));
-            self.ivars().shared.publish_state();
+        if !is_cancelled(error) {
+            *self.ivars().error.borrow_mut() = Some(error_description(error));
+            self.ivars().publish_state();
         }
     }
 }
@@ -434,9 +422,7 @@ impl PlatformSurface {
             unchanged,
         });
         let delegate: Retained<SurfaceDelegate> = unsafe {
-            let allocated = SurfaceDelegate::alloc(mtm).set_ivars(DelegateState {
-                shared: shared.clone(),
-            });
+            let allocated = SurfaceDelegate::alloc(mtm).set_ivars(shared.clone());
             msg_send![super(allocated), init]
         };
         let [width, height] = desc.size.map(f64::from);
@@ -493,12 +479,13 @@ impl PlatformSurface {
             timer: None,
             mtm,
         };
-        surface.apply(desc);
+        surface.configure(desc);
         surface.shared.park();
         Ok(surface)
     }
 
-    fn apply(&mut self, desc: WebSurfaceDesc) {
+    /// Apply size, scale, background and capture rate; the page stays loaded.
+    pub(super) fn configure(&mut self, desc: WebSurfaceDesc) {
         let previous = self.shared.desc.replace(desc);
         if let Some(view) = self.shared.view.borrow().as_ref() {
             unsafe {
@@ -550,10 +537,6 @@ impl PlatformSurface {
         }
     }
 
-    pub(super) fn configure(&mut self, desc: WebSurfaceDesc) {
-        self.apply(desc);
-    }
-
     pub(super) fn command(
         &mut self,
         revision: u64,
@@ -564,19 +547,8 @@ impl PlatformSurface {
         match command {
             None => {}
             Some(WebSurfaceCommand::Navigate(url)) => {
-                if !self.shared.policy.allows(url) {
-                    return Err("不允许打开此地址".into());
-                }
+                load_url(&view, url, &self.shared.policy)?;
                 self.shared.error.borrow_mut().take();
-                unsafe {
-                    let address = NSString::from_str(url);
-                    let url: Option<Retained<AnyObject>> =
-                        msg_send![class!(NSURL), URLWithString: &*address];
-                    let url = url.ok_or("地址无效")?;
-                    let request: Retained<AnyObject> =
-                        msg_send![class!(NSURLRequest), requestWithURL: &*url];
-                    let _: Option<Retained<AnyObject>> = msg_send![&view, loadRequest: &*request];
-                }
             }
             Some(WebSurfaceCommand::Reload) => {
                 self.shared.error.borrow_mut().take();
@@ -586,14 +558,7 @@ impl PlatformSurface {
                 self.shared.interactive.set(true);
                 self.shared.show(title, self.mtm);
             }
-            Some(WebSurfaceCommand::HideWindow) if self.shared.interactive.replace(false) => {
-                self.shared.park();
-                self.shared
-                    .events
-                    .borrow_mut()
-                    .publish(revision, WebSurfaceEvent::WindowClosed);
-            }
-            Some(WebSurfaceCommand::HideWindow) => {}
+            Some(WebSurfaceCommand::HideWindow) => self.shared.hide(),
         }
         self.shared.publish_state();
         Ok(())
