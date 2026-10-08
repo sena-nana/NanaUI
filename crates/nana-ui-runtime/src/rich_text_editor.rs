@@ -864,7 +864,7 @@ impl AppContext {
         Some(crate::LayoutBox {
             x: content.x + x - scroll.x,
             y: content.y + top - scroll.y,
-            width: 1.0,
+            width: nana_ui_core::HAIRLINE,
             height,
         })
     }
