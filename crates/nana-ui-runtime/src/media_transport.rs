@@ -56,13 +56,11 @@ const VOLUME_POPOVER_WIDTH: f32 = crate::popover::POPOVER_WIDTH;
 /// [`MediaTransportDensity::Mini`]: the progress rail's drawn girth, the
 /// transparent band around it that takes the pointer, and the inline volume
 /// rail.
-const MINI_PROGRESS_GIRTH: f32 = 2.0;
-const MINI_PROGRESS_HIT: f32 = 16.0;
-const MINI_VOLUME_GIRTH: f32 = 4.0;
+const MINI_PROGRESS_GIRTH: f32 = space::XXS;
+const MINI_PROGRESS_HIT: f32 = space::XXXL;
+const MINI_VOLUME_GIRTH: f32 = space::XS;
 /// [`Progress`]'s fixed girth.
 const LIVE_METER_GIRTH: f32 = space::SM;
-const MINI_VOLUME_WIDTH: f32 = 64.0;
-const MINI_VOLUME_MIN_WIDTH: f32 = 48.0;
 
 /// Built-in transport action. Scene extras keep their own events.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1466,12 +1464,15 @@ impl AppContext {
                 }
             },
         )?;
+        // The inline volume is two controls wide, and gives up at most half
+        // of one before the row squeezes something else.
+        let control = ControlSize::Medium.height_in(self.world().theme_metrics());
         self.update_component(Entity::<RangeField>::from_stable_id(volume), |range, _| {
             range.rail = mini.then_some(MINI_VOLUME_GIRTH);
             let layout = Arc::make_mut(&mut range.style.layout);
             if mini {
-                layout.width = Some(LengthSpec::Px(MINI_VOLUME_WIDTH));
-                layout.min_width = Some(LengthSpec::Px(MINI_VOLUME_MIN_WIDTH));
+                layout.width = Some(LengthSpec::Px(control * 2.0));
+                layout.min_width = Some(LengthSpec::Px(control * 1.5));
                 layout.flex_shrink = Some(1.0);
             } else {
                 layout.width = None;

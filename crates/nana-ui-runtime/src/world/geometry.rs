@@ -1511,11 +1511,12 @@ impl UiWorld {
             } => Some(crate::ComponentGeometry::Range {
                 label: None,
                 value: text_region(
+                    // A rail draws no readout: an empty region at its end.
                     LayoutBox {
                         x: content.x + content.width,
                         y: content.y,
-                        width: 0.0,
                         height: content.height,
+                        ..LayoutBox::default()
                     },
                     Arc::clone(value),
                     false,

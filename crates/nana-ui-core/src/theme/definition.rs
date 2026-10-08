@@ -588,6 +588,19 @@ impl ThemeDefinition {
         }
         check.color("effects.media_scrim", self.effects.media_scrim);
         check.color("effects.media_foreground", self.effects.media_foreground);
+        for (name, alpha) in [
+            ("effects.media_hover_alpha", self.effects.media_hover_alpha),
+            (
+                "effects.media_pressed_alpha",
+                self.effects.media_pressed_alpha,
+            ),
+            (
+                "effects.media_danger_pressed_alpha",
+                self.effects.media_danger_pressed_alpha,
+            ),
+        ] {
+            check.alpha(name, alpha);
+        }
 
         if let Some(error) = error {
             return Err(error);

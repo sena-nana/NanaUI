@@ -636,6 +636,14 @@ pub struct EffectTokens {
     /// is dark in every mode. Reached from a node as
     /// [`SemanticColorRole::OnMedia`](crate::SemanticColorRole::OnMedia).
     pub media_foreground: SemanticColor,
+    /// A control over media lights up with [`Self::media_foreground`] at
+    /// these alphas when hovered and pressed, the way a player's own buttons
+    /// do over the picture.
+    pub media_hover_alpha: f32,
+    pub media_pressed_alpha: f32,
+    /// A danger control over media (a window's close) keeps its danger fill
+    /// on hover; pressed, the fill at this alpha.
+    pub media_danger_pressed_alpha: f32,
 }
 
 /// The media scrim both built-in modes use.
@@ -649,6 +657,12 @@ const MEDIA_SCRIM: SemanticColor = SemanticColor::rgba(0.0, 0.0, 0.0, 0.99);
 /// The on-media foreground both built-in modes use: white, the colour a
 /// player's own chrome takes over the picture.
 pub(crate) const MEDIA_FOREGROUND: SemanticColor = SemanticColor::rgba(1.0, 1.0, 1.0, 1.0);
+
+/// The state layers over media both built-in modes use: media is dark in
+/// every mode, so they do not change with it.
+const MEDIA_HOVER_ALPHA: f32 = 0.16;
+const MEDIA_PRESSED_ALPHA: f32 = 0.24;
+const MEDIA_DANGER_PRESSED_ALPHA: f32 = 0.8;
 
 impl EffectTokens {
     /// Lilia `--shadow-surface` dark: `0 10px 30px -24px rgba(0,0,0,.62)`.
@@ -671,6 +685,9 @@ impl EffectTokens {
         },
         media_scrim: MEDIA_SCRIM,
         media_foreground: MEDIA_FOREGROUND,
+        media_hover_alpha: MEDIA_HOVER_ALPHA,
+        media_pressed_alpha: MEDIA_PRESSED_ALPHA,
+        media_danger_pressed_alpha: MEDIA_DANGER_PRESSED_ALPHA,
     };
 
     /// Lilia `--shadow-surface` light: `0 10px 26px -24px rgba(17,24,39,.24)`.
@@ -693,6 +710,9 @@ impl EffectTokens {
         },
         media_scrim: MEDIA_SCRIM,
         media_foreground: MEDIA_FOREGROUND,
+        media_hover_alpha: MEDIA_HOVER_ALPHA,
+        media_pressed_alpha: MEDIA_PRESSED_ALPHA,
+        media_danger_pressed_alpha: MEDIA_DANGER_PRESSED_ALPHA,
     };
 
     pub const fn shadow(self, role: ElevationRole) -> ShadowToken {

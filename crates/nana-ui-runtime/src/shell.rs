@@ -26,12 +26,6 @@ const NATIVE_LEADING_CLEARANCE: f32 = nana_ui_core::space::MD;
 const NATIVE_WINDOW_CONTROLS_WIDTH: f32 = 78.0;
 const TITLE_FONT_SIZE: f32 = nana_ui_core::type_scale::BODY;
 const TITLE_FONT_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
-/// Over media, a window button's hover and press are the on-media foreground
-/// at these alphas, the way a player's own buttons light up over the picture.
-const MEDIA_HOVER_ALPHA: f32 = 0.16;
-const MEDIA_PRESSED_ALPHA: f32 = 0.24;
-/// Close keeps its danger fill over media; pressing it darkens the fill.
-const MEDIA_CLOSE_PRESSED_ALPHA: f32 = 0.8;
 const OVERLAY_Z_INDEX: i32 = 1;
 const STATUS_OVERLAY_Z_INDEX: i32 = 2;
 
@@ -2155,7 +2149,11 @@ fn project_window_control(
         id,
         world,
         mutations,
-        &window_control_style(action == WindowChromeAction::Close, over_media),
+        &window_control_style(
+            action == WindowChromeAction::Close,
+            over_media,
+            world.theme().effects(),
+        ),
         InteractionState {
             pointer_events: true,
             focusable: true,
@@ -2168,7 +2166,14 @@ fn project_window_control(
     );
 }
 
-fn window_control_style(danger: bool, over_media: bool) -> NodeStyle {
+/// Over media, a window button's hover and press are the on-media foreground
+/// at the theme's media state alphas; close keeps its danger fill and
+/// darkens it when pressed.
+fn window_control_style(
+    danger: bool,
+    over_media: bool,
+    effects: nana_ui_core::EffectTokens,
+) -> NodeStyle {
     let mut style = IconButton::new(Icon::Close, "")
         .size(ControlSize::Small)
         .style;
@@ -2182,12 +2187,15 @@ fn window_control_style(danger: bool, over_media: bool) -> NodeStyle {
         let (hovered, pressed) = if danger {
             (
                 SemanticColorMix::alpha(SemanticColorRole::Danger, 1.0),
-                SemanticColorMix::alpha(SemanticColorRole::Danger, MEDIA_CLOSE_PRESSED_ALPHA),
+                SemanticColorMix::alpha(
+                    SemanticColorRole::Danger,
+                    effects.media_danger_pressed_alpha,
+                ),
             )
         } else {
             (
-                SemanticColorMix::alpha(SemanticColorRole::OnMedia, MEDIA_HOVER_ALPHA),
-                SemanticColorMix::alpha(SemanticColorRole::OnMedia, MEDIA_PRESSED_ALPHA),
+                SemanticColorMix::alpha(SemanticColorRole::OnMedia, effects.media_hover_alpha),
+                SemanticColorMix::alpha(SemanticColorRole::OnMedia, effects.media_pressed_alpha),
             )
         };
         style.interaction.hovered = on_media(hovered);
