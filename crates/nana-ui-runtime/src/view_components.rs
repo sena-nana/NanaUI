@@ -1341,7 +1341,24 @@ pub struct ListItem {
     pub auto_height: bool,
     /// 行 pill 相对文本线水平外扩，语义见 [`ListItem::pill_bleed`]。
     pub pill_bleed: bool,
+    /// What the row is to assistive technology; the look is the same.
+    pub role: ListItemRole,
     pub style: NodeStyle,
+}
+
+/// What a [`ListItem`] says it is, independent of how it looks. A row that
+/// is not in a list — an entry of a dock, a capsule in a strip — is a button,
+/// and one whose selected look means "on" (an open card) is a toggle button
+/// that reports itself pressed rather than selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ListItemRole {
+    /// A row of a list; [`ListItem::selected`] is reported as selected.
+    #[default]
+    ListItem,
+    /// A button. A selected look is still reported as selected.
+    Button,
+    /// A toggle button: [`ListItem::selected`] is reported as pressed.
+    ToggleButton,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1374,6 +1391,7 @@ impl ListItem {
             size: nana_ui_core::ControlSize::Small,
             auto_height: false,
             pill_bleed: false,
+            role: ListItemRole::ListItem,
             style: NodeStyle {
                 layout: Arc::new(layout),
                 background: None,
@@ -1417,6 +1435,12 @@ impl ListItem {
                 ..NodeStyle::default()
             },
         }
+    }
+
+    /// What the row is to assistive technology; see [`ListItemRole`].
+    pub fn role(mut self, role: ListItemRole) -> Self {
+        self.role = role;
+        self
     }
 
     pub fn selected(mut self, selected: bool) -> Self {
@@ -1579,10 +1603,19 @@ impl ComponentView for ListItem {
                 focusable: !self.disabled,
             },
             AccessibilityState {
-                role: AccessibilityRole::ListItem,
+                role: match self.role {
+                    ListItemRole::ListItem => AccessibilityRole::ListItem,
+                    ListItemRole::Button | ListItemRole::ToggleButton => AccessibilityRole::Button,
+                },
                 label: Some(Arc::from(accessible.as_str())),
                 disabled: self.disabled,
-                selected: Some(self.selected),
+                // A pressed toggle paints as selected, so the look holds.
+                checked: (self.role == ListItemRole::ToggleButton).then_some(self.selected),
+                selected: match self.role {
+                    ListItemRole::ListItem => Some(self.selected),
+                    ListItemRole::Button => self.selected.then_some(true),
+                    ListItemRole::ToggleButton => None,
+                },
                 ..AccessibilityState::default()
             },
         );
@@ -5111,6 +5144,42 @@ mod tests {
         component.project(id, &world, &mut queue);
         world.commit(queue).unwrap();
         (world, id)
+    }
+
+    #[test]
+    fn a_row_can_say_it_is_a_button_or_a_toggle_without_changing_its_look() {
+        let selected_paint = |world: &UiWorld, id| {
+            let state = world.accessibility(id).unwrap();
+            state.checked == Some(true) || state.mixed || state.selected == Some(true)
+        };
+        let (world, id) = mount(&ListItem::new("模型").selected(true));
+        let state = world.accessibility(id).unwrap();
+        assert_eq!(state.role, AccessibilityRole::ListItem);
+        assert_eq!(state.selected, Some(true));
+
+        let (world, id) = mount(
+            &ListItem::new("模型")
+                .selected(true)
+                .role(ListItemRole::ToggleButton),
+        );
+        let state = world.accessibility(id).unwrap();
+        assert_eq!(state.role, AccessibilityRole::Button);
+        assert_eq!(state.checked, Some(true), "pressed, not selected");
+        assert_eq!(state.selected, None);
+        assert!(selected_paint(&world, id), "still drawn selected");
+
+        let (world, id) = mount(&ListItem::new("模型").role(ListItemRole::ToggleButton));
+        assert_eq!(world.accessibility(id).unwrap().checked, Some(false));
+        assert!(!selected_paint(&world, id));
+
+        let (world, id) = mount(&ListItem::new("Hiyori").role(ListItemRole::Button));
+        let state = world.accessibility(id).unwrap();
+        assert_eq!(state.role, AccessibilityRole::Button);
+        assert_eq!(
+            (state.checked, state.selected),
+            (None, None),
+            "a plain button"
+        );
     }
 
     #[test]

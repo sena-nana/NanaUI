@@ -1973,6 +1973,55 @@ mod tests {
     }
 
     #[test]
+    fn a_list_item_declared_a_toggle_button_projects_as_a_pressed_button() {
+        use nana_ui_runtime::{AppContext, DocumentId, ListItem, ListItemRole};
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let dock = cx
+            .create_component(
+                document,
+                ListItem::new("设置")
+                    .selected(true)
+                    .role(ListItemRole::ToggleButton),
+            )
+            .unwrap();
+        let capsule = cx
+            .create_component(document, ListItem::new("Hiyori").role(ListItemRole::Button))
+            .unwrap();
+        let row = cx
+            .create_component(document, ListItem::new("文件").selected(true))
+            .unwrap();
+        let project = |id| {
+            let node = cx
+                .world()
+                .project_accessibility_nodes(&[id])
+                .pop()
+                .expect("projected");
+            project_node(&node, None, true, 1.0)
+                .into_iter()
+                .next()
+                .unwrap()
+                .1
+        };
+
+        let open_card = project(dock.stable_id());
+        assert_eq!(open_card.role(), Role::Button);
+        assert_eq!(open_card.label(), Some("设置"));
+        assert_eq!(open_card.toggled(), Some(Toggled::True), "pressed");
+        assert_eq!(open_card.is_selected(), None, "not \"selected\"");
+        assert!(open_card.supports_action(Action::Click));
+
+        let model = project(capsule.stable_id());
+        assert_eq!(model.role(), Role::Button);
+        assert_eq!(model.toggled(), None);
+        assert_eq!(model.is_selected(), None);
+
+        let list_row = project(row.stable_id());
+        assert_eq!(list_row.role(), Role::ListItem);
+        assert_eq!(list_row.is_selected(), Some(true));
+    }
+
+    #[test]
     fn menu_item_marks_project_name_role_and_selection() {
         let project = |role, label: &str, checked, selected| {
             let mut item = node(2, Some(1), &[]);

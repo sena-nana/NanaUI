@@ -10,8 +10,8 @@ use super::node::{El, widget};
 use super::prop::{FieldWrite, IntoProp};
 use super::reactive::Signal;
 use crate::{
-    ActionMenu, ActionMenuItem, ColorChanged, ColorField, TabsEvent, TextSelection, ThumbnailState,
-    TreeNode, TreeView,
+    ActionMenu, ActionMenuItem, ColorChanged, ColorField, ListItemRole, TabsEvent, TextSelection,
+    ThumbnailState, TreeNode, TreeView,
 };
 use crate::{
     Activate, AppContext, Avatar, Button, Card, Checkbox, Chip, Divider, EmptyState, Entity,
@@ -766,6 +766,7 @@ edited_in_code!(
     Option<Icon>,
     StatusTone,
     ButtonKind,
+    ListItemRole,
     [f32; 4],
     Vec<TreeNode<Arc<str>>>
 );

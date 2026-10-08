@@ -380,13 +380,13 @@ pub use tree_view::TreeView;
 pub use video::Video;
 pub use view_components::{
     Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, Divider, FileDropEvent,
-    HostedTextarea, IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots,
-    NumberChanged, NumberInput, OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment,
-    RangeChanged, RangeDragState, RangeDragging, RangeField, RangeInput, RangeMarker, ScrollAnchor,
-    ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollView, ScrollViewportChanged,
-    ScrollbarDragState, SecondaryPress, SizeChanged, Stack, Switch, Table, TableCell,
-    TableCellFocused, TableRow, Text, TextArea, TextChanged, TextClamped, TextInput, TextSubmitted,
-    ToggleChanged, Tooltip, UserScroll,
+    HostedTextarea, IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemRole,
+    ListItemSlots, NumberChanged, NumberInput, OverlayChanged, OverlayClosing, OverlayHost,
+    RangeAdjustment, RangeChanged, RangeDragState, RangeDragging, RangeField, RangeInput,
+    RangeMarker, ScrollAnchor, ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollView,
+    ScrollViewportChanged, ScrollbarDragState, SecondaryPress, SizeChanged, Stack, Switch, Table,
+    TableCell, TableCellFocused, TableRow, Text, TextArea, TextChanged, TextClamped, TextInput,
+    TextSubmitted, ToggleChanged, Tooltip, UserScroll,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{

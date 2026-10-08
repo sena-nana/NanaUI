@@ -36,6 +36,8 @@ list_item("设置").detail("外观").selected(current).on_activate(open)
 
 `selected` 由应用写。激活只报告点了这一行，不改选中。无障碍角色是 ListItem，`selected` 映射选中，`disabled` 映射禁用。
 
+不在列表里的行（Dock 的入口、一排胶囊）用 `role` 说明自己是什么，外观不变：`ListItemRole::Button` 报成按钮（画成选中时仍报选中）；`ListItemRole::ToggleButton` 报成切换按钮，`selected` 报成"按下"而不是"选中"，例如打开着的任务卡片的入口。按下的切换按钮照样画成选中。
+
 ## 要改控件
 
 `@activate={open}` 已经在上面的例子里。函数不接收参数。需要 `ViewContext` 时用 `.on_cx(|_item, _event: &Activate, cx| …)`，模板里写成三个参数的 `on:Activate={…}`。
@@ -48,7 +50,7 @@ list_item("设置").detail("外观").selected(current).on_activate(open)
 
 ## 属性
 
-字段是 `label: String`、`detail: String`、`selected: bool`、`disabled: bool`。没有 `model`。选中不由控件自己翻。
+字段是 `label: String`、`detail: String`、`selected: bool`、`disabled: bool`、`role: ListItemRole`。没有 `model`。选中不由控件自己翻。
 
 | 属性 | 类型 | 说明 |
 | --- | --- | --- |
@@ -56,6 +58,7 @@ list_item("设置").detail("外观").selected(current).on_activate(open)
 | `detail` | `String` | 空字符串表示不画行尾补充，不增加行高。非空、又没有 content 槽时画在行尾 |
 | `selected` | `bool` | 由应用写。选中不由控件自己翻。无障碍映射选中 |
 | `disabled` | `bool` | 为真时不发 `Activate`。无障碍映射禁用 |
+| `role` | `ListItemRole` | 默认 `ListItem`；`Button`、`ToggleButton`（`selected` 报成按下）。只改无障碍，不改外观 |
 
 ## 事件
 

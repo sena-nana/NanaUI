@@ -118,6 +118,7 @@ macro_rules! for_each_control {
                 detail: String = set,
                 selected: bool = set,
                 disabled: bool = set,
+                role: ListItemRole = set,
             }
             on { on_activate: Activate };
             Progress => progress(max: f64) for Progress {
