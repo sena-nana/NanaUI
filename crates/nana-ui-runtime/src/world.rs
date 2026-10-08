@@ -1031,6 +1031,27 @@ impl UiWorld {
         );
     }
 
+    /// Publish that `parent`'s child list changed: it re-measures, rebuilds
+    /// its placement and exports its metrics. A child that arrives carries a
+    /// topology cause of its own and is laid out in full; the children that
+    /// stay keep their content, so this is not a forced subtree.
+    pub(crate) fn record_child_list_invalidation(&mut self, parent: StableNodeId) {
+        self.record_layout_invalidation(
+            parent,
+            LayoutInvalidation::new(
+                LayoutInvalidationSource::Structure,
+                InvalidationReason::TOPOLOGY,
+                InvalidationKind::TOPOLOGY
+                    .union(InvalidationKind::MEASURE)
+                    .union(InvalidationKind::PLACEMENT),
+                LayoutFieldMask::FLOW,
+                LayoutDependencyFootprint::intrinsic_container()
+                    .union(LayoutDependencyFootprint::EXPORTS_BASELINE)
+                    .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+            ),
+        );
+    }
+
     /// Drain typed seeds for one document after the coarse system-work drain.
     /// Entries from other documents stay queued for their own layout pass.
     pub(crate) fn take_layout_frontier_seeds(
@@ -3904,11 +3925,10 @@ impl UiWorld {
                 continue;
             }
             let axes = seed.invalidation.affected_axes;
-            let force_all = axes == LayoutDependencyFootprint::ALL
-                || seed
-                    .invalidation
-                    .kind
-                    .intersects(InvalidationKind::TOPOLOGY);
+            // An unknown cause or a subtree that just arrived: lay out all
+            // of it. A parent whose child list changed is not one; it carries
+            // a narrower footprint of its own.
+            let force_all = axes == LayoutDependencyFootprint::ALL;
             pending.push_back((
                 seed.node,
                 axes,
@@ -3951,9 +3971,10 @@ impl UiWorld {
                     });
                 // Fixed ordinary boxes stop intrinsic export and keep a
                 // lateral edge. Formatting contexts still consume metrics.
-                let upward_for_parent = if force_all {
-                    LayoutDependencyFootprint::ALL
-                } else if has_definite_size && !is_formatting_context {
+                // A forced subtree reaches its ancestors as any metric change
+                // does: they re-measure along the path, and only the subtree
+                // itself is laid out in full.
+                let upward_for_parent = if has_definite_size && !is_formatting_context {
                     lateral
                 } else if is_formatting_context {
                     upward.union(lateral)
@@ -3970,8 +3991,6 @@ impl UiWorld {
                     };
                     let edge_downward = if edge_structural {
                         LayoutDependencyFootprint::NONE
-                    } else if force_all {
-                        LayoutDependencyFootprint::ALL
                     } else {
                         downward
                     };
@@ -3990,11 +4009,9 @@ impl UiWorld {
                         pending.push_back((
                             parent,
                             upward_for_parent,
-                            force_all
-                                || (axes.intersects(lateral)
-                                    && parent_record.hierarchy.children.len() <= 1),
-                            force_all,
-                            force_all,
+                            axes.intersects(lateral) && parent_record.hierarchy.children.len() <= 1,
+                            false,
+                            false,
                         ));
                     }
                 }
@@ -4153,7 +4170,7 @@ impl UiWorld {
                 // reach the shared container without scanning descendants.
                 for &sibling in flow_siblings {
                     if sibling != node && self.document_of(sibling) == Some(document) {
-                        pending.push_back((sibling, lateral, true, false, force_all));
+                        pending.push_back((sibling, lateral, true, false, false));
                     }
                 }
             }
@@ -4246,7 +4263,7 @@ impl UiWorld {
         // when the removed subtree itself is no longer live. Keep the live
         // parent in the typed frontier so the retained layout cannot preserve
         // the old child placement.
-        self.record_topology_invalidation(parent);
+        self.record_child_list_invalidation(parent);
         let hierarchy = self.hierarchy_mut(parent);
         Arc::make_mut(&mut hierarchy.children).retain(|child| *child != id);
         intern_empty_children(&mut hierarchy.children);

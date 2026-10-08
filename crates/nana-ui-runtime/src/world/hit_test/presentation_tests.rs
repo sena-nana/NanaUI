@@ -616,6 +616,56 @@ fn layout_width_animation_writes_px_not_scale() {
     );
 }
 
+/// Issue 326: each sample of a width animation is a sizing change of the
+/// animated node, not an unknown cause that lays its whole subtree out again.
+#[test]
+fn a_layout_width_sample_seeds_a_sizing_change_not_a_forced_subtree() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element {
+            tag: "button".into(),
+        },
+    );
+    queue.write_layout(node(1), box_at(0.0, 0.0, 80.0, 40.0));
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                width: Some(nana_ui_core::LengthSpec::Px(80.0)),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    queue.start_animation(width_overlay(1, node(1), 40.0, 80.0));
+    world.commit(queue).unwrap();
+    let _ = world.take_system_work();
+    world.advance_animations(Duration::from_millis(50));
+    let seeds = world.take_system_work().layout_frontier_seeds;
+    let seed = seeds
+        .iter()
+        .find(|seed| seed.node == node(1))
+        .expect("the sample seeds layout");
+    assert_ne!(
+        seed.invalidation.affected_axes,
+        nana_ui_core::LayoutDependencyFootprint::ALL
+    );
+    assert!(
+        seed.invalidation
+            .changed_inputs
+            .contains(nana_ui_core::LayoutFieldMask::SIZING)
+    );
+    assert!(
+        !seed
+            .invalidation
+            .reason
+            .intersects(nana_ui_core::InvalidationReason::UNKNOWN)
+    );
+}
+
 #[test]
 fn flip_play_keeps_last_layout_and_hit_test_follows_presentation() {
     let mut world = UiWorld::new();

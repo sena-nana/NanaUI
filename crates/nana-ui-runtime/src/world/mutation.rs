@@ -1228,7 +1228,7 @@ impl UiWorld {
                 if old_parent == Some(*parent) && *before == Some(*child) {
                     return;
                 }
-                self.record_topology_invalidation(*parent);
+                self.record_child_list_invalidation(*parent);
                 if old_parent != Some(*parent) {
                     self.record_topology_invalidation(*child);
                 }
@@ -1269,13 +1269,13 @@ impl UiWorld {
                     *parent,
                     DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
-                self.record_topology_invalidation(*parent);
+                self.record_child_list_invalidation(*parent);
                 if let Some(old_parent) = old_parent {
                     self.mark_ancestors(
                         old_parent,
                         DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                     );
-                    self.record_topology_invalidation(old_parent);
+                    self.record_child_list_invalidation(old_parent);
                 }
                 if old_parent.is_some() {
                     report.reparented += 1;
@@ -1314,7 +1314,7 @@ impl UiWorld {
                 self.record_topology_invalidation(*root);
                 let root_snapshot = self.node(*root).expect("validated root must exist");
                 if let Some(parent) = root_snapshot.parent {
-                    self.record_topology_invalidation(parent);
+                    self.record_child_list_invalidation(parent);
                     self.clear_layout_result_ancestors(parent);
                     let hierarchy = self.hierarchy_mut(parent);
                     Arc::make_mut(&mut hierarchy.children).retain(|child| child != root);

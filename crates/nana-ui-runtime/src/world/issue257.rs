@@ -795,3 +795,79 @@ fn equivalent_recompute_does_not_publish_layout_geometry() {
     );
     assert!(fixed_after.layout_result_reused > fixed_before.layout_result_reused);
 }
+
+/// Rows of a fixed-width column, each holding a label.
+fn labelled_rows(count: u64) -> UiWorld {
+    let mut world = rows(count);
+    let mut queue = MutationQueue::new();
+    for index in 0..count {
+        let label = node(4_000 + index);
+        queue.create(label, document(1), NodeKind::Text);
+        queue.insert(node(3_000 + index), label, None);
+        queue.set_style(label, style(px_box(40.0, 12.0)));
+        queue.set_text(
+            label,
+            TextContent {
+                value: "row".into(),
+            },
+        );
+    }
+    world.commit(queue).unwrap();
+    let _ = world.take_system_work();
+    world
+}
+
+struct AppendCounts {
+    measured: usize,
+    placed: usize,
+    old_labels_reached: usize,
+}
+
+fn append_row(count: u64) -> AppendCounts {
+    let mut world = labelled_rows(count);
+    let row = node(9_000);
+    let label = node(9_001);
+    let mut queue = MutationQueue::new();
+    queue.create(row, document(1), NodeKind::Element { tag: "row".into() });
+    queue.insert(node(2), row, None);
+    queue.set_style(row, style(px_box(180.0, 20.0)));
+    queue.create(label, document(1), NodeKind::Text);
+    queue.insert(row, label, None);
+    queue.set_style(label, style(px_box(40.0, 12.0)));
+    world.commit(queue).unwrap();
+    let seeds = seeds_after(&mut world);
+    let frontier = frontier_for(&world, &seeds);
+    assert!(
+        frontier.measure_nodes().contains(&row),
+        "the new row is laid out"
+    );
+    assert!(frontier.measure_nodes().contains(&label), "and its subtree");
+    assert!(
+        frontier.measure_nodes().contains(&node(2)),
+        "the column re-measures"
+    );
+    AppendCounts {
+        measured: frontier.measure_nodes().len(),
+        placed: frontier.placement_nodes().len(),
+        old_labels_reached: (0..count)
+            .filter(|index| frontier.contains(node(4_000 + index)))
+            .count(),
+    }
+}
+
+#[test]
+fn appending_a_row_lays_out_the_row_not_the_whole_column() {
+    let small = append_row(32);
+    let large = append_row(256);
+    assert_eq!(
+        small.measured, large.measured,
+        "measure work follows the new row and its metric path, not the column"
+    );
+    assert_eq!(
+        large.old_labels_reached, 0,
+        "existing rows' content is untouched"
+    );
+    // Rows after the insertion point move; here there are none, and the
+    // existing rows keep their place.
+    assert_eq!(small.placed, large.placed);
+}

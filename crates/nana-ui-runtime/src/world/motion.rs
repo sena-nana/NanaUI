@@ -518,9 +518,19 @@ impl UiWorld {
             self.nodes
                 .invalidate_text(sample.target, crate::text_node::TextDirty::CONSTRAINT);
         }
+        // The sample changed one field group of this node's own style: seed
+        // that, as a style write would, rather than an unknown cause that
+        // lays the whole subtree out again every frame.
+        let changed = match sample.property {
+            crate::AnimatableProperty::Width | crate::AnimatableProperty::Height => {
+                nana_ui_core::LayoutStyleChange::SIZING
+            }
+            _ => nana_ui_core::LayoutStyleChange::SPACING,
+        };
+        self.record_layout_invalidation(sample.target, super::layout_style_invalidation(changed));
         self.mark_subtree(
             sample.target,
-            DirtyMask::LAYOUT | DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,
+            DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,
         );
         self.account_animation_dirty(DirtyMask::LAYOUT | DirtyMask::RENDER);
         true
