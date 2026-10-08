@@ -48,8 +48,11 @@ fn the_documented_editor_commands_reach_the_document() {
         .create_component(document, RichTextEditor::new(RichText::new("")))
         .unwrap();
     assert!(
-        cx.rich_edit(editor, RichEditCommand::SetAttrs(RichSpanStyle::new().bold()))
-            .unwrap()
+        cx.rich_edit(
+            editor,
+            RichEditCommand::SetAttrs(RichSpanStyle::new().bold())
+        )
+        .unwrap()
     );
     cx.rich_edit(editor, RichEditCommand::InsertText("hi".into()))
         .unwrap();
@@ -59,7 +62,28 @@ fn the_documented_editor_commands_reach_the_document() {
     )
     .unwrap();
     let value = cx.read(editor, |view| view.value.clone()).unwrap();
-    assert_eq!(value.style_at(0).and_then(|style| style.shape.weight), Some(700));
+    assert_eq!(
+        value.style_at(0).and_then(|style| style.shape.weight),
+        Some(700)
+    );
     assert_eq!(value.objects().len(), 1);
     let _ = std::mem::size_of::<RichTextEditorEvent>();
+}
+
+#[test]
+fn the_documented_presentation_reaches_the_world_without_text_work() {
+    use nana_ui::runtime::rich::{GlyphEffect, GlyphIntro, RevealSchedule};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let line = RichText::builder()
+        .plain("欢迎")
+        .push("来到直播间", RichSpanStyle::new().effect(0))
+        .build();
+    let view = cx
+        .create_component(document, RichTextView::new(line))
+        .unwrap();
+    let reveal = RevealSchedule::uniform(cx.animation_now(), 7, 0.08).intro(GlyphIntro::pop(0.2));
+    cx.set_rich_presentation(view, vec![GlyphEffect::wave(3.0)], Some(reveal))
+        .unwrap();
+    assert!(cx.world().glyph_presentation(view.stable_id()).is_some());
 }

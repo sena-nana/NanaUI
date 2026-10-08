@@ -1403,6 +1403,19 @@ entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边
 - **光标与选区。** 组件把字节位置写进 `RichEditorMarks`（`SetRichEditorMarks`，只重绘）。场景在提取时用节点自己的保留排版算矩形：选区在字形下面（和文档选区同一层），光标在上面。只有聚焦的编辑器画光标；焦点移动时标脏重绘。
 - **剪贴板。** 系统剪贴板只放纯文本；进程内记住最后一段复制的富文本及其纯文本哈希，粘贴的文字与之相同时贴回富文本。跨进程的富格式留给宿主扩展。
 
+### 逐字呈现
+
+逐字特效和打字机揭示是**呈现**，不是文本：它们不进塑形、排版、字形栅格，也不进段落已经建好的字形实例。
+
+- **词汇**在 `nana_ui_core::motion::glyph`：`GlyphEffect { kind: Shake | Wave | Jump | Rainbow | Pulse | Flicker, amplitude, frequency_hz, stagger }`，`GlyphIntro { fade, pop, rise_px, duration_s, easing }`，`RevealSchedule { start, at_s, limit, intro }`。`at_s[i]` 是第 `i` 个字素（扩展字素簇）开始入场的时刻，相对 `start`；`start` 在文档的动画时钟上（`AppContext::animation_now()`）。超出 `at_s` 或到达 `limit` 的字素不显示。
+- **入口**是 `AppContext::set_rich_presentation(node, effects, reveal)`（`MutationQueue::set_glyph_presentation`）。`effects` 是一张表，`RichSpanStyle::effect` 是表里的下标。它只标 RENDER：场景把它和每个字素的特效下标打包进 `Text { presentation: SceneGlyphPresentation }`。span 的特效下标改了同样只到这里（`GLYPH_PRESENTATION`）。
+- **实例**在建 entry 时就记下自己的字素序号（`GlyphInstance.pad[1]` 的高 30 位，低 2 位是角色）。呈现不在 entry 的指纹里：换特效、换揭示不重建实例。
+- **GPU。** 每帧 prepare 把呈现的段落打包成一张字表（绑定 4，`text_glyph_fx`）：一个段落一个表头（揭示起点、上限、入场参数、特效表的位置），每个字素两个字（特效下标、揭示时刻）。run 行的 `fx` 指向表头。顶点着色器从 `Globals.motion` 读运动时钟（整秒、小数、模一小时的特效时钟），按 `glyph_look` 算出位移、绕字形中心的缩放、透明度和彩虹色，再放到实例的四个角上。阴影、描边跟着同一个字素走；彩虹只染填充。装饰线跟它下面的第一个字一起出现。还没轮到的字直接剔掉。时钟只在动了时写 16 字节。
+- **CPU 求值器** `evaluate_glyph` 是同一套算术：抖动和闪烁用同一个整数哈希（lowbias32），揭示的时间差先按整秒相减再加小数。内联对象（贴纸）不经文字着色器，场景在每个合成器 tick 用它算出对象的位移、缩放和透明度，写回对象图元。
+- **出帧。** 场景记录每个呈现中的节点到什么时候还在动：循环特效一直动，揭示到最后一个字入场结束为止。`compositor_needs_tick` 据此请求帧；揭示播完就回到按需出帧。画笔在有活动呈现时不复用上一帧的 dest。
+
+测试：`nana-ui-core` `motion::glyph::tests`（揭示、上限、确定性、波峰）；`nana-ui-scene` `tests/glyph_presentation.rs`（揭示不做文本工作、只在播放期间要帧、循环特效持续、清除后停止、贴纸按自己的字素揭示）；`nana-ui` `scene_paint::text`（着色器把字放到 CPU 求值器给的位置：波峰位移、未揭示不画、pop 的缩放；60 帧活动呈现不重建、不上传任何字形或实例）。
+
 ### 字体的装饰线度量
 
 `RunMetrics` 加了 `underline_offset_px` / `underline_thickness_px`（基线到下划线**顶边**，向下为正）和 `strikeout_offset_px` / `strikeout_thickness_px`（基线到删除线顶边，向上为正），在 run 的轴坐标和字号下从 `post` / `OS/2` 读。字体没给或给了 0 厚度时按字号补：1/14 em 粗，下划线在基线下 0.1 em，删除线居中在 x-height 一半处。四个字段都是 `serde(default)`：Phase 0 的 golden 里它们是 0，parity diff 只在期望值带着它们时才比较。
@@ -1426,7 +1439,6 @@ entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边
 - 竖排段落的装饰线；`text-decoration-style`（波浪、双线）、`text-decoration-thickness`。
 - 颜色位图字形（无轮廓的 emoji）的阴影和描边：只从轮廓栅格，这类字形画不出阴影。
 - 画笔自排的回退路径（保留 layout 的对齐盒对不上时）不读塑形 span，按节点样式排。
-- `effect` 只存在 Runtime 里，合成器还没有逐字呈现（A6）。
 - Vue 没有 `RichText` 的值，`rich-text` 标签只造纯文本。
 
 ## 性能与许可证收口（#99）

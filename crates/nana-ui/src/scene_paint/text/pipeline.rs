@@ -166,6 +166,25 @@ fn vs_main(vertex: VsIn) -> VsOut {
             color = unpack_srgb(input.color);
         }
     }
+    // Per-glyph presentation: moved, scaled about the glyph's own centre,
+    // faded or recoloured on the motion clock. The instance is untouched.
+    let ordinal = input.pad.y >> 2u;
+    if run.fx != 0u && ordinal != 0u {
+        let look = glyph_look(run.fx, ordinal - 1u);
+        if look.alpha <= 0.0 {
+            var hidden: VsOut;
+            hidden.position = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
+            return hidden;
+        }
+        let centre = vec2<f32>(input.origin) + vec2<f32>(f32(width), f32(height)) * 0.5;
+        local = centre + (local - centre) * look.scale + look.offset * run.raster;
+        color.a = color.a * look.alpha;
+        // Only the glyph's own fill takes the rainbow; its shadow and outline
+        // keep their colours.
+        if look.color.w > 0.0 && (input.pad.y & 3u) == 0u {
+            color = vec4<f32>(srgb_to_linear3(look.color.rgb), color.a);
+        }
+    }
     color.a = color.a * run.opacity;
 
     let world = text_world_position(run, local);
@@ -352,6 +371,39 @@ struct Globals {
     transform: [f32; 16],
     /// [`TextContrast::to_gpu`].
     contrast: [f32; 8],
+    /// [`MotionClock`]: whole seconds, fraction bits, effect-clock bits.
+    motion: [u32; 4],
+}
+
+/// Byte offset of [`Globals::motion`], written alone every presenting frame.
+const GLOBALS_MOTION_OFFSET: u64 = (16 + 8) * 4;
+
+/// The motion clock as the text shader reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct MotionClock {
+    pub secs: u32,
+    pub fraction: f32,
+    pub effect_clock: f32,
+}
+
+impl MotionClock {
+    pub(super) fn at(now: std::time::Duration) -> Self {
+        let (secs, fraction) = nana_ui_core::motion::glyph::split_seconds(now);
+        Self {
+            secs,
+            fraction,
+            effect_clock: nana_ui_core::motion::glyph::effect_clock(now),
+        }
+    }
+
+    fn words(self) -> [u32; 4] {
+        [
+            self.secs,
+            self.fraction.to_bits(),
+            self.effect_clock.to_bits(),
+            0,
+        ]
+    }
 }
 
 /// One glyph: 48 bytes, against the 60 a vertex-per-corner quad would cost.
@@ -392,7 +444,10 @@ pub(super) struct TextRunGpu {
     /// Only a projected run reads it, to take its corners back to logical
     /// space before the homography.
     pub raster: f32,
-    pad: [f32; 2],
+    /// Word offset of the run's per-glyph presentation in the fx table; zero
+    /// for none.
+    pub fx: u32,
+    pad: f32,
 }
 
 /// The transform and clip a run paints under. 160 bytes, deduplicated.
@@ -444,6 +499,12 @@ fn text_layout_key() -> u64 {
             vertex,
         )
         .min_size(INSTANCE_BYTES),
+        nana_gpu::LogicalBinding::new(
+            4,
+            nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+            vertex,
+        )
+        .min_size(FX_WORD_BYTES),
     ])
     .expect("text globals table")
     .layout_key();
@@ -502,6 +563,10 @@ pub(super) struct TextTargetGpu {
     run_capacity: usize,
     presentations: ManagedBuffer,
     presentation_capacity: usize,
+    /// The per-glyph presentation table, in words.
+    fx: ManagedBuffer,
+    fx_capacity: usize,
+    uploaded_motion: Option<MotionClock>,
     globals: wgpu::Buffer,
     globals_bind_group: Option<wgpu::BindGroup>,
     uploaded_size: Option<[u32; 2]>,
@@ -573,6 +638,12 @@ impl TextGpu {
                     vertex,
                 )
                 .min_size(INSTANCE_BYTES),
+                nana_gpu::LogicalBinding::new(
+                    4,
+                    nana_gpu::LogicalBindingType::StorageBuffer { read_only: true },
+                    vertex,
+                )
+                .min_size(FX_WORD_BYTES),
             ])
             .expect("text globals logical table is valid")
             .for_generation(policy.generation());
@@ -609,6 +680,7 @@ impl TextGpu {
                     // Only the vertex stage reads a glyph: every fragment of it
                     // gets what it needs through the varyings.
                     storage_entry(3, wgpu::ShaderStages::VERTEX, INSTANCE_BYTES),
+                    storage_entry(4, wgpu::ShaderStages::VERTEX, FX_WORD_BYTES),
                 ],
             })
         };
@@ -755,6 +827,7 @@ impl TextGpu {
             let globals = Globals {
                 transform: orthographic(physical_size[0], physical_size[1]),
                 contrast: self.contrast.to_gpu(),
+                motion: target.uploaded_motion.unwrap_or_default().words(),
             };
             let global_bytes = bytemuck::bytes_of(&globals);
             if let Some(work) = work {
@@ -959,6 +1032,40 @@ impl TextGpu {
                 work,
             );
         }
+        if frame.fx.len() > 1 {
+            let mut previous: &[u32] = frame.uploaded_fx;
+            if frame.fx.len() > target.fx_capacity {
+                target.fx_capacity = frame.fx.len().next_power_of_two();
+                let size = target.fx_capacity as u64 * FX_WORD_BYTES;
+                let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
+                if let Some(work) = work {
+                    work.replace_buffer(
+                        device,
+                        &mut target.fx,
+                        size,
+                        usage,
+                        "nana-ui.scene.text.glyph-fx",
+                    );
+                } else {
+                    target.fx = ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("nana-ui.scene.text.glyph-fx"),
+                        size,
+                        usage,
+                        mapped_at_creation: false,
+                    }));
+                }
+                target.allocations += 1;
+                previous = &[];
+                rebind = true;
+            }
+            bytes.presentation += crate::scene_paint::buffer_upload::upload_changed_with_work(
+                queue,
+                &target.fx,
+                bytemuck::cast_slice(previous),
+                bytemuck::cast_slice(frame.fx),
+                work,
+            );
+        }
         if rebind {
             target.globals_bind_group = Some(target.bind(device, &self.globals_layout));
         }
@@ -968,6 +1075,27 @@ impl TextGpu {
             work.record_upload(bytes.instances + bytes.indices);
         }
         bytes
+    }
+
+    /// Write the motion clock the glyph presentation samples, when it moved.
+    pub(super) fn write_motion(
+        &self,
+        queue: &wgpu::Queue,
+        target: &mut TextTargetGpu,
+        clock: MotionClock,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        if target.uploaded_motion == Some(clock) {
+            return;
+        }
+        target.uploaded_motion = Some(clock);
+        let words = clock.words();
+        let bytes = bytemuck::bytes_of(&words);
+        if let Some(work) = work {
+            work.write_buffer(queue, &target.globals, GLOBALS_MOTION_OFFSET, bytes);
+        } else {
+            queue.write_buffer(&target.globals, GLOBALS_MOTION_OFFSET, bytes);
+        }
     }
 
     pub(super) fn draw_segment(
@@ -1011,6 +1139,9 @@ pub(super) struct FrameUpload<'a> {
     pub run_dirty: Option<Range<u32>>,
     pub presentations: &'a [TextPresentationGpu],
     pub uploaded_presentations: &'a [TextPresentationGpu],
+    /// The per-glyph presentation table this frame, word 0 reserved.
+    pub fx: &'a [u32],
+    pub uploaded_fx: &'a [u32],
 }
 
 /// One coalesced run of arena or index slots to write, staged contiguously.
@@ -1079,6 +1210,8 @@ fn build_pipeline(
 }
 
 const INSTANCE_BYTES: u64 = std::mem::size_of::<GlyphInstance>() as u64;
+const FX_WORD_BYTES: u64 = 4;
+const INITIAL_FX_WORDS: usize = 64;
 const INDEX_BYTES: u64 = std::mem::size_of::<u32>() as u64;
 
 fn instance_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -1302,6 +1435,14 @@ impl TextTargetGpu {
                 mapped_at_creation: false,
             })),
             presentation_capacity: INITIAL_PRESENTATIONS,
+            fx: ManagedBuffer::new(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.text.glyph-fx"),
+                size: INITIAL_FX_WORDS as u64 * FX_WORD_BYTES,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })),
+            fx_capacity: INITIAL_FX_WORDS,
+            uploaded_motion: None,
             // Replaced below, once the buffers the real layout needs exist.
             globals_bind_group: None,
             globals,
@@ -1336,6 +1477,10 @@ impl TextTargetGpu {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.instances.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.fx.as_entire_binding(),
                 },
             ],
         })
@@ -1376,6 +1521,17 @@ impl GlyphInstance {
     pub(super) fn with_role(self, role: u32) -> Self {
         Self {
             pad: [self.pad[0], (self.pad[1] & !ROLE_MASK) | (role & ROLE_MASK)],
+            ..self
+        }
+    }
+
+    /// Name the grapheme this instance draws, for its per-glyph presentation.
+    pub(super) fn with_ordinal(self, ordinal: u32) -> Self {
+        Self {
+            pad: [
+                self.pad[0],
+                (self.pad[1] & ROLE_MASK) | (ordinal.saturating_add(1).min(u32::MAX >> 2) << 2),
+            ],
             ..self
         }
     }
@@ -1441,7 +1597,8 @@ impl TextRunGpu {
         color: [0.0; 4],
         opacity: 0.0,
         raster: 1.0,
-        pad: [0.0; 2],
+        fx: 0,
+        pad: 0.0,
     };
 
     pub(super) fn new(
@@ -1451,6 +1608,7 @@ impl TextRunGpu {
         color: [f32; 4],
         opacity: f32,
         raster: f32,
+        fx: u32,
     ) -> Self {
         Self {
             origin,
@@ -1459,7 +1617,8 @@ impl TextRunGpu {
             color,
             opacity,
             raster,
-            pad: [0.0; 2],
+            fx,
+            pad: 0.0,
         }
     }
 }

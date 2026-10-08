@@ -299,6 +299,10 @@ pub enum ScenePrimitiveKind {
         /// present it is what the painter draws them from; `text_shadow`,
         /// `underline` and `line_through` above stay for other readers.
         rich: Option<Arc<SceneRichPaint>>,
+        /// Per-glyph presentation: effects and a reveal the text shader
+        /// samples on the motion clock. Not part of what the glyphs were
+        /// built from, so changing it rebuilds no instance.
+        presentation: Option<Arc<SceneGlyphPresentation>>,
     },
     Icon {
         icon: Icon,
@@ -487,6 +491,73 @@ impl SceneTextEffects {
                 .clone()
                 .unwrap_or_else(|| Arc::clone(&self.shadows)),
         }
+    }
+}
+
+/// What a Text primitive presents per glyph, by grapheme ordinal: the
+/// effect table, which effect each grapheme plays, and the reveal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneGlyphPresentation {
+    pub effects: Arc<[nana_ui_core::GlyphEffect]>,
+    /// Effect index per grapheme of the content; `u16::MAX` for none. Empty
+    /// when no grapheme plays an effect.
+    pub cluster_effects: Arc<[u16]>,
+    pub reveal: Option<nana_ui_core::RevealSchedule>,
+}
+
+impl SceneGlyphPresentation {
+    /// The presentation of `content` under `presentation`, its graphemes'
+    /// effect indices read from `rich`'s spans.
+    pub fn new(
+        content: &str,
+        rich: Option<&nana_ui_core::RichText>,
+        presentation: &nana_ui_core::GlyphPresentation,
+    ) -> Option<Arc<Self>> {
+        use unicode_segmentation::UnicodeSegmentation;
+        let mut any = false;
+        let cluster_effects: Vec<u16> = match rich.filter(|rich| rich.text() == content) {
+            Some(rich) if !presentation.effects.is_empty() => content
+                .grapheme_indices(true)
+                .map(
+                    |(offset, _)| match rich.style_at(offset).and_then(|style| style.effect) {
+                        Some(effect) if usize::from(effect) < presentation.effects.len() => {
+                            any = true;
+                            effect
+                        }
+                        _ => u16::MAX,
+                    },
+                )
+                .collect(),
+            _ => Vec::new(),
+        };
+        if !any && presentation.reveal.is_none() {
+            return None;
+        }
+        Some(Arc::new(Self {
+            effects: Arc::clone(&presentation.effects),
+            cluster_effects: if any {
+                cluster_effects.into()
+            } else {
+                Arc::from([])
+            },
+            reveal: presentation.reveal.clone(),
+        }))
+    }
+
+    /// Until when it changes what is drawn; `None` while an effect loops.
+    pub fn live_until(&self) -> Option<std::time::Duration> {
+        if !self.cluster_effects.is_empty() {
+            return None;
+        }
+        self.reveal.as_ref().map(nana_ui_core::RevealSchedule::end)
+    }
+
+    /// The effect grapheme `ordinal` plays.
+    pub fn effect_of(&self, ordinal: usize) -> Option<&nana_ui_core::GlyphEffect> {
+        self.cluster_effects
+            .get(ordinal)
+            .filter(|index| **index != u16::MAX)
+            .and_then(|index| self.effects.get(usize::from(*index)))
     }
 }
 
@@ -717,7 +788,7 @@ fn text_frame(
 /// A rich text editor's selection (under the glyphs) and caret (over them),
 /// from the very layout its text is drawn from.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn rich_editor_mark_primitives(
+fn rich_editor_mark_primitives(
     context: &VisualPrimitiveContext<'_>,
     bounds: SceneRect,
     vertical: TextVerticalAlignment,
@@ -768,6 +839,16 @@ pub(crate) fn rich_editor_mark_primitives(
     (selection, caret)
 }
 
+/// An inline object a presenting text node carries, as it was laid out.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GlyphObject {
+    pub slot: u64,
+    pub ordinal: u32,
+    pub center: [f32; 2],
+    pub opacity: f32,
+    pub transform: AffineTransform,
+}
+
 /// One primitive per inline object `layout` placed, in text order, where the
 /// text primitive at `bounds` draws its lines.
 ///
@@ -776,7 +857,7 @@ pub(crate) fn rich_editor_mark_primitives(
 /// `editor` asks for it (and takes no room either way). Objects keep the
 /// node's transform, clips, opacity and document order, so they scroll, clip
 /// and fade with their text.
-pub(crate) fn inline_object_primitives(
+fn inline_object_primitives(
     context: &VisualPrimitiveContext<'_>,
     bounds: SceneRect,
     vertical: TextVerticalAlignment,
@@ -1111,6 +1192,14 @@ pub struct UiScene {
     /// queried node itself; a zero here proves no walk can find a group, so no
     /// frame of a scene without isolation pays for it at all.
     dest_group_candidates: usize,
+    /// Text nodes presenting per glyph, and until when what they draw keeps
+    /// changing (`None`: a looping effect). What keeps frames coming while a
+    /// reveal plays and stops them once it has finished.
+    glyph_live: NodeMap<Option<std::time::Duration>>,
+    /// Inline objects of presenting text nodes, as laid out, so each
+    /// compositor tick can move, scale and fade them the way the glyphs
+    /// around them are (the text shader cannot reach them: they are images).
+    glyph_objects: NodeMap<(Arc<SceneGlyphPresentation>, Arc<[GlyphObject]>)>,
     /// Identity that changes on node-changing mutation and on Clone.
     /// In-place [`UiScene::apply_delta`] that updates or removes nodes also
     /// gets a fresh value, because product flush mutates a unique `Arc` in
@@ -1142,6 +1231,8 @@ impl Default for UiScene {
             compositor: CompositorRegistry::default(),
             custom_paint: NodeMap::default(),
             dest_group_candidates: 0,
+            glyph_live: NodeMap::default(),
+            glyph_objects: NodeMap::default(),
             instance: next_scene_instance(),
         }
     }
@@ -1176,6 +1267,8 @@ impl Clone for UiScene {
             compositor: self.compositor.clone(),
             custom_paint: self.custom_paint.clone(),
             dest_group_candidates: self.dest_group_candidates,
+            glyph_live: self.glyph_live.clone(),
+            glyph_objects: self.glyph_objects.clone(),
             instance: next_scene_instance(),
         }
     }
@@ -2028,7 +2121,65 @@ impl UiScene {
     }
 
     fn remove_node_primitives(&mut self, id: StableNodeId) {
+        self.glyph_live.remove(&id);
+        self.glyph_objects.remove(&id);
         self.retire_node_primitives(id, |_| true);
+    }
+
+    /// Move, scale and fade the inline objects of presenting text nodes to
+    /// what the CPU evaluator says their grapheme looks like `now`: the same
+    /// arithmetic the text shader applies to the glyphs around them.
+    pub(super) fn present_inline_objects(&mut self, now: std::time::Duration) {
+        if self.glyph_objects.is_empty() {
+            return;
+        }
+        let mut moved = false;
+        for (node, (presentation, objects)) in &self.glyph_objects {
+            for object in objects.iter() {
+                let sample = nana_ui_core::evaluate_glyph(
+                    presentation.effect_of(object.ordinal as usize),
+                    presentation.reveal.as_ref(),
+                    object.ordinal,
+                    now,
+                );
+                let [cx, cy] = object.center;
+                let scale = sample.scale;
+                let local = AffineTransform::from_matrix([
+                    scale,
+                    0.0,
+                    0.0,
+                    scale,
+                    cx + sample.offset[0] - scale * cx,
+                    cy + sample.offset[1] - scale * cy,
+                ]);
+                let Some(held) = self.primitives.get_mut(&PrimitiveId {
+                    node: *node,
+                    slot: object.slot,
+                }) else {
+                    continue;
+                };
+                let opacity = object.opacity * sample.alpha;
+                let transform = object.transform.then(local);
+                if held.primitive.opacity != opacity || held.primitive.transform != transform {
+                    held.primitive.opacity = opacity;
+                    held.primitive.transform = transform;
+                    moved = true;
+                }
+            }
+        }
+        if moved {
+            // Painters key what they recorded on the instance.
+            self.instance = next_scene_instance();
+        }
+    }
+
+    /// Whether a text node's per-glyph presentation still changes what is
+    /// drawn at the motion clock's time.
+    pub fn glyph_presentation_live(&self) -> bool {
+        let now = self.compositor_now();
+        self.glyph_live
+            .values()
+            .any(|until| until.is_none_or(|until| until > now))
     }
 
     /// Drop the node's primitives that `doomed` names, and their places in
@@ -3128,6 +3279,7 @@ fn component_text_primitive(
             },
             layout: None,
             rich: None,
+            presentation: None,
         },
     }
 }
@@ -3590,6 +3742,7 @@ fn overlay_text_primitive(
             opentype: SceneTextOpenType::default(),
             layout: None,
             rich: None,
+            presentation: None,
         },
     }
 }

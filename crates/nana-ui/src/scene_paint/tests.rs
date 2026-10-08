@@ -4972,6 +4972,7 @@ fn overflow_parent(
         compositor: Default::default(),
         rich_text: None,
         rich_editor: None,
+        glyph_presentation: None,
     }
 }
 
@@ -5030,6 +5031,7 @@ fn translucent_parent(
         compositor: Default::default(),
         rich_text: None,
         rich_editor: None,
+        glyph_presentation: None,
     }
 }
 
@@ -5082,6 +5084,7 @@ fn overflowing_text_child(
         compositor: Default::default(),
         rich_text: None,
         rich_editor: None,
+        glyph_presentation: None,
     }
 }
 
@@ -5142,6 +5145,7 @@ fn host_texture_child(
         compositor: Default::default(),
         rich_text: None,
         rich_editor: None,
+        glyph_presentation: None,
     }
 }
 
@@ -5215,6 +5219,7 @@ fn extracted_div(
         compositor: Default::default(),
         rich_text: None,
         rich_editor: None,
+        glyph_presentation: None,
     }
 }
 

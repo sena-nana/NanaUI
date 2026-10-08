@@ -266,6 +266,7 @@ mod tests {
             compositor: Default::default(),
             rich_text: None,
             rich_editor: None,
+            glyph_presentation: None,
         }
     }
 

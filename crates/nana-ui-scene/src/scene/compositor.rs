@@ -254,6 +254,11 @@ impl UiScene {
         !self.compositor.layers.is_empty()
             || !self.compositor.phases.is_empty()
             || !self.compositor.requested.is_empty()
+            || self.glyph_presentation_live()
+    }
+
+    pub(super) fn compositor_now(&self) -> Duration {
+        self.compositor.gpu.now
     }
 
     pub fn compositor_layer_requested(&self, node: StableNodeId) -> bool {
@@ -331,6 +336,7 @@ impl UiScene {
         } else {
             self.compositor.gpu.now = now;
         }
+        self.present_inline_objects(now);
         self.compositor.last_promoted = 0;
         self.compositor.last_demoted = 0;
         let mut candidates = self.compositor.requested.clone();
@@ -975,6 +981,7 @@ mod tests {
             compositor: Default::default(),
             rich_text: None,
             rich_editor: None,
+            glyph_presentation: None,
         }
     }
 

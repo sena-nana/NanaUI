@@ -43,7 +43,9 @@ mod upload;
 use nana_text::{TextEngine as _, TextLayout};
 use nana_ui_core::{LineHeightSpec, TextAlignSpec};
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
-use nana_ui_scene::{SceneRichPaint, SceneTextEffects, SceneTextOpenType, SceneTextSpan};
+use nana_ui_scene::{
+    SceneGlyphPresentation, SceneRichPaint, SceneTextEffects, SceneTextOpenType, SceneTextSpan,
+};
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -60,8 +62,8 @@ use self::glyph::{
     size_bits,
 };
 use self::pipeline::{
-    ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, TextGpu,
-    TextPresentationGpu, TextRunGpu, TextTargetGpu,
+    ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, MotionClock,
+    TextGpu, TextPresentationGpu, TextRunGpu, TextTargetGpu,
 };
 /// The glyph rasterizer this platform draws with: DirectWrite on Windows,
 /// so text there matches every native app; swash elsewhere.
@@ -567,6 +569,9 @@ struct RunPresentation {
     presentation: u32,
     /// Physical px per logical px the entry's instances are in.
     raster: f32,
+    /// Word offset of the paragraph's per-glyph presentation in this frame's
+    /// fx table; zero for none.
+    fx: u32,
 }
 
 /// One text draw command's head, or one run folded into an earlier one.
@@ -616,6 +621,10 @@ pub(super) struct TextPipelineTarget {
     run_slots: RunSlots,
     presentations: Vec<TextPresentationGpu>,
     uploaded_presentations: Vec<TextPresentationGpu>,
+    /// This frame's per-glyph presentation table, word 0 reserved so an
+    /// offset of zero means none; and what the GPU holds.
+    fx: Vec<u32>,
+    uploaded_fx: Vec<u32>,
     presentation_index: HashMap<[u32; 40], u32>,
     /// The presentation the label before this one asked for, by the values it
     /// was derived from. See [`TextPipeline::presentation_index`].
@@ -748,6 +757,8 @@ impl TextPipelineTarget {
             run_slots: RunSlots::default(),
             presentations: Vec::new(),
             uploaded_presentations: Vec::new(),
+            fx: vec![0],
+            uploaded_fx: Vec::new(),
             presentation_index: HashMap::new(),
             last_presentation: None,
             arena: SlotArena::default(),
@@ -827,6 +838,8 @@ pub(super) struct TextPipeline {
     /// like the colour overrides.
     effects: Option<Arc<SceneRichPaint>>,
     legacy_shadow: Option<nana_ui_core::TextShadowSpec>,
+    /// What the next [`Self::prepare`] presents per glyph. One-shot.
+    glyph_presentation: Option<Arc<SceneGlyphPresentation>>,
     target: TextPipelineTarget,
     /// The font-set generation this painter's caches were filled at. A
     /// `@font-face` registration reissues faces, so both the shaped paragraphs
@@ -903,6 +916,7 @@ impl TextPipeline {
             solids: Vec::new(),
             effects: None,
             legacy_shadow: None,
+            glyph_presentation: None,
             target,
             font_generation: crate::text_engine::engine_font_generation(),
             resolve_requests: 0,
@@ -923,6 +937,27 @@ impl TextPipeline {
     /// paragraph, so it cannot leak into the following text node.
     pub(super) fn set_linear_color_override(&mut self, color: Option<[f32; 4]>) {
         self.linear_color_override = color;
+    }
+
+    /// What the next [`Self::prepare`] presents per glyph. Not part of what
+    /// its instances are built from: a new presentation is a new fx row, not
+    /// a rebuilt entry.
+    pub(super) fn set_glyph_presentation(
+        &mut self,
+        presentation: Option<&Arc<SceneGlyphPresentation>>,
+    ) {
+        self.glyph_presentation = presentation.cloned();
+    }
+
+    /// The motion clock glyph presentation samples, written when it moved.
+    pub(super) fn write_motion(
+        &mut self,
+        queue: &wgpu::Queue,
+        now: std::time::Duration,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        self.gpu
+            .write_motion(queue, &mut self.target.gpu, MotionClock::at(now), work);
     }
 
     /// What the next [`Self::prepare`] draws besides its fill: the scene's
@@ -997,6 +1032,9 @@ impl TextPipeline {
             &mut target.uploaded_presentations,
         );
         target.presentations.clear();
+        std::mem::swap(&mut target.fx, &mut target.uploaded_fx);
+        target.fx.clear();
+        target.fx.push(0);
         target.presentation_index.clear();
         target.last_presentation = None;
         target.writes.clear();
@@ -1213,6 +1251,7 @@ impl TextPipeline {
         let paint_color_override = self.paint_color_override.take();
         let effects = self.effects.take();
         let legacy_shadow = self.legacy_shadow.take();
+        let glyph_presentation = self.glyph_presentation.take();
         if content.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
         }
@@ -1571,6 +1610,7 @@ impl TextPipeline {
                     flags: 0,
                     presentation: 0,
                     raster: 1.0,
+                    fx: 0,
                 },
                 next: NO_RUN,
                 last: index as u32,
@@ -1637,6 +1677,7 @@ impl TextPipeline {
                     rich: effects.as_deref(),
                     legacy_shadow,
                 },
+                content,
                 revision,
                 retained_paragraph.as_deref(),
             )?,
@@ -1651,6 +1692,9 @@ impl TextPipeline {
         let presentation = self.presentation_index(affine, persp, fragment_clip, scale);
         let run = &mut self.target.runs[index];
         run.entry = entry;
+        let fx = glyph_presentation.as_deref().map_or(0, |presentation| {
+            pack_glyph_fx(&mut self.target.fx, presentation)
+        });
         run.presentation = RunPresentation {
             origin: whole,
             color: linear_color_override.unwrap_or_else(|| run_color(default_color)),
@@ -1658,6 +1702,7 @@ impl TextPipeline {
             flags,
             presentation,
             raster,
+            fx,
         };
         run.next = NO_RUN;
         run.last = index as u32;
@@ -1827,6 +1872,9 @@ impl TextPipeline {
         // stamped with.
         fingerprint: u64,
         effects: EffectSource<'_>,
+        // The text the paragraph lays out: what a glyph's grapheme ordinal,
+        // which its per-glyph presentation is looked up by, counts in.
+        content: &str,
         revision: u64,
         // The Runtime's own layout for this node, when it has one. `None`
         // means the painter laid this paragraph out itself and it is in the
@@ -1963,6 +2011,7 @@ impl TextPipeline {
         let mut segments: Vec<EntrySegment> = Vec::new();
         // Paint order: shadows and under-strokes, underlines, fills and
         // over-strokes, strikeouts.
+        let solid_ordinals = GraphemeOrdinals::new(content);
         let place_solids = |line_through: bool,
                             entries: &mut EntryStore,
                             placed: &mut u32,
@@ -1976,6 +2025,7 @@ impl TextPipeline {
                 placeholders,
                 placed,
                 segments,
+                &solid_ordinals,
             );
         };
         let underlines_at = if solids.is_empty() {
@@ -1983,6 +2033,7 @@ impl TextPipeline {
         } else {
             fill_start
         };
+        let ordinals = GraphemeOrdinals::new(content);
         for (index, run) in resolved.runs.iter().enumerate() {
             if index == underlines_at {
                 place_solids(false, &mut target.entries, &mut placed, &mut segments);
@@ -2055,7 +2106,8 @@ impl TextPipeline {
                         content | own,
                         linear_color,
                     )
-                    .with_role(role),
+                    .with_role(role)
+                    .with_ordinal(ordinals.of(glyph.cluster as usize)),
                 );
                 placed += 1;
             }
@@ -2652,6 +2704,8 @@ impl TextPipeline {
                 run_dirty: target.run_dirty.clone(),
                 presentations: &target.presentations,
                 uploaded_presentations: &target.uploaded_presentations,
+                fx: &target.fx,
+                uploaded_fx: &target.uploaded_fx,
             },
             work,
         );
@@ -2939,6 +2993,7 @@ impl RunPresentation {
             self.color,
             self.opacity,
             self.raster,
+            self.fx,
         )
     }
 }
@@ -3228,6 +3283,8 @@ struct SolidQuad {
     color: [f32; 4],
     paint_color: Option<nana_ui_core::PaintColor>,
     line_through: bool,
+    /// The byte of the first glyph it runs under.
+    cluster: u32,
 }
 
 /// Writes the underlines (or, with `line_through`, the strikeouts) of
@@ -3242,6 +3299,7 @@ fn place_solid_quads(
     placeholders: [u32; 2],
     placed: &mut u32,
     segments: &mut Vec<EntrySegment>,
+    ordinals: &GraphemeOrdinals,
 ) {
     for quad in solids
         .iter()
@@ -3280,10 +3338,113 @@ fn place_solid_quads(
                 CONTENT_MASK | own,
                 linear_color,
             )
-            .with_role(pipeline::ROLE_SOLID),
+            .with_role(pipeline::ROLE_SOLID)
+            // A line reveals with the first glyph it runs under.
+            .with_ordinal(ordinals.of(quad.cluster as usize)),
         );
         *placed += 1;
     }
+}
+
+/// Grapheme ordinals of a paragraph's bytes: what per-glyph presentation
+/// counts in, so the reveal schedule an application compiled per grapheme
+/// lines up with the glyphs whatever the shaper merged or split.
+struct GraphemeOrdinals {
+    starts: Vec<usize>,
+}
+
+impl GraphemeOrdinals {
+    fn new(content: &str) -> Self {
+        use unicode_segmentation::UnicodeSegmentation;
+        Self {
+            starts: content.grapheme_indices(true).map(|(at, _)| at).collect(),
+        }
+    }
+
+    /// The grapheme `byte` falls in.
+    fn of(&self, byte: usize) -> u32 {
+        self.starts
+            .partition_point(|start| *start <= byte)
+            .saturating_sub(1) as u32
+    }
+}
+
+/// Appends `presentation`'s header, effect table and per-grapheme pairs to
+/// `fx`, returning the header's word offset. The layout `glyph_look` in
+/// `text_atlas.wgsl` reads.
+fn pack_glyph_fx(fx: &mut Vec<u32>, presentation: &SceneGlyphPresentation) -> u32 {
+    const HEADER: usize = 12;
+    let at = fx.len();
+    let reveal = presentation.reveal.as_ref();
+    let clusters = presentation
+        .cluster_effects
+        .len()
+        .max(reveal.map_or(0, |reveal| reveal.at_s.len()));
+    let mut flags = 0u32;
+    if reveal.is_some() {
+        flags |= 1;
+    }
+    if !presentation.cluster_effects.is_empty() {
+        flags |= 2;
+    }
+    let (start_secs, start_fraction) = reveal.map_or((0, 0.0), |reveal| {
+        nana_ui_core::motion::glyph::split_seconds(reveal.start)
+    });
+    let intro = reveal.map(|reveal| reveal.intro).unwrap_or_default();
+    let easing = match intro.easing {
+        nana_ui_core::GlyphEasing::Linear => 0u32,
+        nana_ui_core::GlyphEasing::EaseOut => 1,
+        nana_ui_core::GlyphEasing::BackOut => 2,
+    };
+    let effects_at = at + HEADER;
+    let clusters_at = effects_at + presentation.effects.len() * 4;
+    fx.extend_from_slice(&[
+        flags,
+        clusters as u32,
+        start_secs,
+        start_fraction.to_bits(),
+        reveal.and_then(|reveal| reveal.limit).unwrap_or(u32::MAX),
+        u32::from(intro.fade) | u32::from(intro.pop) << 1 | easing << 8,
+        intro.rise_px.to_bits(),
+        intro.duration_s.max(0.0).to_bits(),
+        effects_at as u32,
+        clusters_at as u32,
+        presentation.effects.len() as u32,
+        0,
+    ]);
+    for effect in presentation.effects.iter() {
+        let kind = match effect.kind {
+            nana_ui_core::GlyphEffectKind::Shake => 0u32,
+            nana_ui_core::GlyphEffectKind::Wave => 1,
+            nana_ui_core::GlyphEffectKind::Jump => 2,
+            nana_ui_core::GlyphEffectKind::Rainbow => 3,
+            nana_ui_core::GlyphEffectKind::Pulse => 4,
+            nana_ui_core::GlyphEffectKind::Flicker => 5,
+        };
+        fx.extend_from_slice(&[
+            kind,
+            effect.amplitude.to_bits(),
+            effect.frequency_hz.to_bits(),
+            effect.stagger.to_bits(),
+        ]);
+    }
+    for ordinal in 0..clusters {
+        let effect = presentation
+            .cluster_effects
+            .get(ordinal)
+            .map_or(u32::MAX, |index| {
+                if *index == u16::MAX {
+                    u32::MAX
+                } else {
+                    u32::from(*index)
+                }
+            });
+        let at = reveal.map_or(0.0, |reveal| {
+            reveal.at_s.get(ordinal).copied().unwrap_or(f32::INFINITY)
+        });
+        fx.extend_from_slice(&[effect, at.to_bits()]);
+    }
+    at as u32
 }
 
 /// A legacy `text_shadow` as the effects every other shadow is drawn from.
@@ -3478,6 +3639,7 @@ fn decoration_quads(
         color: [f32; 4],
         left: f32,
         right: f32,
+        cluster: u32,
     }
     for line in &layout.lines {
         let baseline = (line.metrics.baseline_y_px * scale).round() + origin[1].floor();
@@ -3513,6 +3675,7 @@ fn decoration_quads(
                         color: open.color,
                         paint_color: open.key.paint_color,
                         line_through,
+                        cluster: open.cluster,
                     });
                 };
                 if open.key.decoration.underline {
@@ -3561,6 +3724,7 @@ fn decoration_quads(
                             color,
                             left,
                             right,
+                            cluster: glyph.cluster,
                         });
                     }
                 }
@@ -4683,6 +4847,142 @@ mod tests {
         );
     }
 
+    fn presentation(
+        effects: Vec<nana_ui_core::GlyphEffect>,
+        cluster_effects: Vec<u16>,
+        reveal: Option<nana_ui_core::RevealSchedule>,
+    ) -> Arc<SceneGlyphPresentation> {
+        Arc::new(SceneGlyphPresentation {
+            effects: effects.into(),
+            cluster_effects: cluster_effects.into(),
+            reveal,
+        })
+    }
+
+    /// "H" painted at `now` under `presented`.
+    fn paint_presented(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        presented: Option<&Arc<SceneGlyphPresentation>>,
+        now: std::time::Duration,
+    ) -> Option<(u32, u32, u32, u32)> {
+        pipeline.write_motion(queue, now, None);
+        pipeline.set_glyph_presentation(presented);
+        let pixels = paint_text_with(
+            device,
+            queue,
+            pipeline,
+            ("H", 32.0),
+            LogicalRect::from_xywh(16.0, 32.0, 96.0, 64.0),
+            LogicalRect::from_xywh(0.0, 0.0, 128.0, 128.0),
+            clip::IDENTITY_AFFINE,
+            [0.0; 2],
+            clip::FragmentClip::PASS,
+            [128, 128],
+        );
+        ink_aabb(&pixels, 128, 128)
+    }
+
+    /// The text shader moves a glyph where the CPU evaluator says it is.
+    #[test]
+    fn the_shader_presents_a_glyph_where_the_cpu_evaluator_puts_it() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let still = paint_presented(
+            &device,
+            &queue,
+            &mut pipeline,
+            None,
+            std::time::Duration::ZERO,
+        )
+        .expect("the glyph draws");
+        let wave = nana_ui_core::GlyphEffect::wave(6.0);
+        let crest = std::time::Duration::from_secs_f32(0.25 / wave.frequency_hz);
+        let expected = nana_ui_core::evaluate_glyph(Some(&wave), None, 0, crest);
+        let waved = presentation(vec![wave], vec![0], None);
+        let moved = paint_presented(&device, &queue, &mut pipeline, Some(&waved), crest)
+            .expect("still drawn");
+        let shift = moved.1 as f32 - still.1 as f32;
+        assert!(
+            (shift - expected.offset[1]).abs() <= 1.0,
+            "the shader moved it {shift}px, the evaluator says {}",
+            expected.offset[1]
+        );
+        assert_eq!(moved.0, still.0, "a wave only moves it up and down");
+
+        let reveal =
+            nana_ui_core::RevealSchedule::new(std::time::Duration::from_secs(10), vec![0.5]);
+        let hidden = presentation(Vec::new(), Vec::new(), Some(reveal));
+        assert!(
+            paint_presented(
+                &device,
+                &queue,
+                &mut pipeline,
+                Some(&hidden),
+                std::time::Duration::from_millis(10_400)
+            )
+            .is_none(),
+            "not revealed yet: nothing drawn"
+        );
+        let shown = paint_presented(
+            &device,
+            &queue,
+            &mut pipeline,
+            Some(&hidden),
+            std::time::Duration::from_millis(10_600),
+        )
+        .expect("revealed");
+        assert_eq!(shown, still);
+
+        let popped = nana_ui_core::RevealSchedule::new(std::time::Duration::ZERO, vec![0.0])
+            .intro(nana_ui_core::GlyphIntro::pop(1.0));
+        let half = std::time::Duration::from_millis(100);
+        let expected = nana_ui_core::evaluate_glyph(None, Some(&popped), 0, half);
+        let small = paint_presented(
+            &device,
+            &queue,
+            &mut pipeline,
+            Some(&presentation(Vec::new(), Vec::new(), Some(popped))),
+            half,
+        )
+        .expect("entering");
+        let (still_w, small_w) = ((still.2 - still.0) as f32, (small.2 - small.0) as f32);
+        assert!(
+            (small_w - still_w * expected.scale).abs() <= 2.0,
+            "scaled to {small_w} of {still_w}, the evaluator says x{}",
+            expected.scale
+        );
+    }
+
+    /// Presentation is not part of what an entry was built from: changing it,
+    /// and sixty frames of it moving, rebuild and upload no glyph.
+    #[test]
+    fn a_live_presentation_rebuilds_and_uploads_no_glyph() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        paint_effects(&device, &queue, &mut pipeline, None, None);
+        let first = pipeline.glyph_counters();
+        let waved = presentation(
+            vec![nana_ui_core::GlyphEffect::wave(4.0)],
+            vec![0; 13],
+            None,
+        );
+        for frame in 0..60u64 {
+            pipeline.write_motion(&queue, std::time::Duration::from_millis(frame * 16), None);
+            pipeline.set_glyph_presentation(Some(&waved));
+            paint_rich(&device, &queue, &mut pipeline, &[]);
+        }
+        let steady = pipeline.glyph_counters();
+        assert_eq!(steady.text_instance_rebuilds, first.text_instance_rebuilds);
+        assert_eq!(steady.glyph_rasterized, first.glyph_rasterized);
+        assert_eq!(steady.glyph_upload_bytes, first.glyph_upload_bytes);
+        assert_eq!(
+            steady.text_instance_upload_bytes, first.text_instance_upload_bytes,
+            "no instance moves: the shader reads the clock"
+        );
+    }
+
     /// Prepare one label, flush it and upload, reporting the GPU work.
     #[allow(clippy::too_many_arguments)]
     fn prepare_label(
@@ -4843,6 +5143,7 @@ mod tests {
                     flags: 0,
                     presentation: 0,
                     raster: 1.0,
+                    fx: 0,
                 },
                 next: NO_RUN,
                 last: index as u32,

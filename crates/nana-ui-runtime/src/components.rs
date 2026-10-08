@@ -3835,6 +3835,8 @@ pub struct ExtractedNode {
     /// What a rich text editor draws over its own text: the selection, the
     /// caret, and whether its editor-only objects show.
     pub rich_editor: Option<RichEditorMarks>,
+    /// The node's per-glyph presentation (effects table and reveal).
+    pub glyph_presentation: Option<nana_ui_core::GlyphPresentation>,
     pub standard_visual: Option<StandardVisual>,
     /// Boxed: the `TextInput` variant alone is ~1.8 KB, which would otherwise
     /// dominate `ExtractedNode` and be memcpy'd for every extracted node.

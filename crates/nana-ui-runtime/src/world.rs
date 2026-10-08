@@ -2541,6 +2541,11 @@ impl UiWorld {
             .unwrap_or_else(|| self.record(id).text.value.clone())
     }
 
+    /// The per-glyph presentation of a rich text node.
+    pub fn glyph_presentation(&self, id: StableNodeId) -> Option<&nana_ui_core::GlyphPresentation> {
+        self.nodes.glyph_presentation(id)
+    }
+
     /// The caret and selection marks of a rich text editor node.
     pub fn rich_editor_marks(&self, id: StableNodeId) -> Option<&crate::RichEditorMarks> {
         self.nodes.rich_editor_marks(id)
@@ -3051,8 +3056,11 @@ impl UiWorld {
         if dirty.contains(TextDirty::PAINT) {
             marks |= DirtyMask::RENDER;
         }
-        // An effect index alone is read by the presentation layer only; no
-        // Runtime pass consumes it, so nothing is scheduled.
+        // An effect index alone is read by the presentation layer only: the
+        // scene carries the new per-glyph table and no text pass runs.
+        if dirty.contains(TextDirty::GLYPH_PRESENTATION) {
+            marks |= DirtyMask::RENDER;
+        }
         if marks != 0 {
             self.mark(id, marks);
         }

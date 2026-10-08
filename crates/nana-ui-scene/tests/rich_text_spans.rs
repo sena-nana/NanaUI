@@ -191,13 +191,25 @@ fn an_effect_index_alone_costs_no_runtime_work() {
     let mut runtime = document(label_layout(), dialogue(RED));
     let mut shaper = NanaTextEngineShaper::new(engine());
     settle(&mut runtime, &mut shaper);
+    let (handle, _) = runtime
+        .context()
+        .world()
+        .text_layout(id(LABEL))
+        .expect("laid out");
+    let before = text_work(&runtime);
     let mut effected = dialogue(RED);
     effected.apply_span(0..5, &RichSpanStyle::new().effect(3));
     set_rich(&mut runtime, effected.clone());
-    let update = runtime.flush(viewport(), &mut shaper).unwrap();
-    assert!(
-        update.is_idle(),
-        "nothing the Runtime draws read the effect"
+    runtime.flush(viewport(), &mut shaper).unwrap();
+    let work = text_work(&runtime);
+    if work != before {
+        assert_eq!(work.text_nodes_shaped, 0, "an effect index shapes nothing");
+        assert_eq!(work.layouts_created, 0, "nor lays anything out");
+    }
+    assert_eq!(
+        runtime.context().world().text_layout(id(LABEL)).unwrap().0,
+        handle,
+        "the layout stands"
     );
     assert_eq!(
         runtime.context().world().rich_text(id(LABEL)),

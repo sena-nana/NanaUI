@@ -59,6 +59,7 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         compositor: Default::default(),
         rich_text: None,
         rich_editor: None,
+        glyph_presentation: None,
     }
 }
 

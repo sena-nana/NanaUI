@@ -146,6 +146,53 @@ widget(RichTextView::new(line))
 - `RichObject::texture(id, slot, w, h)`：宿主纹理槽。动图由应用解码后写进这个槽，由宿主纹理渲染器画。
 - `RichObject::chip(id, label, kind)`：编辑器里的标记。不占宽度，展示框不画它，所以编辑器和展示框断行一致。
 
+## 逐字特效与打字机揭示
+
+`RichSpanStyle::effect(i)` 让一段字播放特效表里的第 `i` 个特效；`cx.set_rich_presentation(view, effects, reveal)` 给出这张表和揭示计划。它们只是呈现：不重新塑形、不重新排版，也不重建字形，文字着色器按运动时钟逐字算位置和透明度。只在还有东西在动时请求帧。
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::{GlyphEffect, GlyphIntro, RevealSchedule, RichSpanStyle, RichText};
+
+let line = RichText::builder()
+    .plain("欢迎")
+    .push("来到直播间", RichSpanStyle::new().effect(0))
+    .build();
+let view = cx.create_component(document, RichTextView::new(line))?;
+let reveal = RevealSchedule::uniform(cx.animation_now(), 7, 0.08).intro(GlyphIntro::pop(0.2));
+cx.set_rich_presentation(view, vec![GlyphEffect::wave(3.0)], Some(reveal))?;
+
+view! {
+    <Widget of={RichTextView::new(RichText::new("欢迎来到直播间"))} />
+}
+```
+
+```rust rust
+use nana_ui::runtime::view::widget;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::{GlyphEffect, GlyphIntro, RevealSchedule, RichSpanStyle, RichText};
+
+let line = RichText::builder()
+    .plain("欢迎")
+    .push("来到直播间", RichSpanStyle::new().effect(0))
+    .build();
+let view = cx.create_component(document, RichTextView::new(line))?;
+let reveal = RevealSchedule::uniform(cx.animation_now(), 7, 0.08).intro(GlyphIntro::pop(0.2));
+cx.set_rich_presentation(view, vec![GlyphEffect::wave(3.0)], Some(reveal))?;
+
+widget(RichTextView::new(RichText::new("欢迎来到直播间")))
+```
+
+:::
+
+- 特效：`shake`（抖动）、`wave`（波浪）、`jump`（跳动）、`rainbow`（彩虹）、`pulse`（呼吸缩放）、`flicker`（闪烁），`stagger` 是相邻字之间的相位差。
+- 揭示：`at_s[i]` 是第 `i` 个字素开始入场的时刻（秒，相对 `start`）；`limit` 让揭示停在某个字素前（暂停标记）。`start` 用 `cx.animation_now()`，和合成器同一个时钟。
+- 入场：`GlyphIntro::fade` / `pop` / `rise`。
+- 贴纸跟着自己所在的字素揭示、跟着它的特效动。
+
 ## 属性
 
 | 属性 | 类型 | 说明 |

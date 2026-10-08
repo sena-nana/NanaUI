@@ -1029,10 +1029,15 @@ impl SceneWgpuPainter {
             size: dest_physical,
         };
 
+        // Per-glyph presentation moves with the motion clock, so a frame with
+        // a live one is never the dest already painted.
         let gpu_motion_live = scene
             .motion_gpu_descriptors()
             .iter()
-            .any(|descriptor| descriptor.is_live());
+            .any(|descriptor| descriptor.is_live())
+            || scene.glyph_presentation_live();
+        self.text
+            .write_motion(&self.queue, scene.motion_gpu_now(), Some(&gpu_work));
         if self.painted == Some(painted)
             && !gpu_motion_live
             && let Some(dest) = self.dest.as_mut()
@@ -1499,6 +1504,7 @@ impl SceneWgpuPainter {
                         // so there is one paragraph, not two that agree.
                         layout,
                         rich,
+                        presentation,
                     } => {
                         // A text node's glyphs are retained per node and
                         // per pass, so the shadows under a label are their
@@ -1512,6 +1518,7 @@ impl SceneWgpuPainter {
                         // instances of the paragraph's own entry, in paint
                         // order, built from the same glyphs.
                         self.text.set_effects(rich.as_ref(), *text_shadow);
+                        self.text.set_glyph_presentation(presentation.as_ref());
                         let mut push_text = |commands: &mut Vec<DrawCommand>,
                                              batching: &mut Batching,
                                              extra_offset: [f32; 2],

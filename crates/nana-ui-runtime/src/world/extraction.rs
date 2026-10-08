@@ -266,6 +266,7 @@ impl UiWorld {
             rich_text,
             // The caret shows only on the focused editor; its selection
             // stays visible either way.
+            glyph_presentation: self.nodes.glyph_presentation(id).cloned(),
             rich_editor: self.nodes.rich_editor_marks(id).map(|marks| {
                 let mut marks = marks.clone();
                 if self.focused(document) != Some(id) {

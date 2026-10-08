@@ -28,10 +28,11 @@ pub mod host {
 /// roles).
 pub mod rich {
     pub use nana_ui_core::{
-        AttributedRanges, MAX_TEXT_SHADOWS, OBJECT_REPLACEMENT, PaintColor, RichObject,
+        AttributedRanges, GlyphEasing, GlyphEffect, GlyphEffectKind, GlyphIntro, GlyphPresentation,
+        GlyphSample, MAX_TEXT_SHADOWS, OBJECT_REPLACEMENT, PaintColor, RevealSchedule, RichObject,
         RichObjectContent, RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText,
         RichTextBuilder, RichTextShadow, RichTextStroke, TextDecorationLine, TextStrokeJoin,
-        TextStrokePlacement,
+        TextStrokePlacement, evaluate_glyph,
     };
 }
 

@@ -559,6 +559,7 @@ fn custom_text(
         opentype: SceneTextOpenType::from_computed(&node.style),
         layout: None,
         rich: None,
+        presentation: None,
     }
 }
 

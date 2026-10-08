@@ -284,7 +284,8 @@ impl<'a> ValidationPlan<'a> {
                 UiMutation::SetPresetTheme { .. } | UiMutation::SetThemeTokens { .. } => {}
                 UiMutation::SetText { id, .. }
                 | UiMutation::SetRichText { id, .. }
-                | UiMutation::SetRichEditorMarks { id, .. } => {
+                | UiMutation::SetRichEditorMarks { id, .. }
+                | UiMutation::SetGlyphPresentation { id, .. } => {
                     self.require_exists(*id)?;
                 }
                 UiMutation::WriteLayout { id, layout } => {
@@ -1619,6 +1620,13 @@ impl UiWorld {
                 }
             }
             UiMutation::SetRichText { id, rich } => self.apply_rich_text(*id, rich.as_ref()),
+            UiMutation::SetGlyphPresentation { id, presentation } => {
+                if self.nodes.glyph_presentation(*id) != presentation.as_ref() {
+                    self.nodes.set_glyph_presentation(*id, presentation.clone());
+                    // The scene carries it to the painter; no text pass reads it.
+                    self.mark(*id, DirtyMask::RENDER);
+                }
+            }
             UiMutation::SetRichEditorMarks { id, marks } => {
                 if self.nodes.rich_editor_marks(*id) != marks.as_ref() {
                     self.nodes.set_rich_editor_marks(*id, marks.clone());

@@ -53,6 +53,9 @@ impl UiScene {
 
     fn build_node_primitives(&mut self, id: StableNodeId) {
         self.unadjustable_projections.remove(&id);
+        // Written again below when the node still presents per glyph.
+        self.glyph_live.remove(&id);
+        self.glyph_objects.remove(&id);
         let Some(node) = self.nodes.get(&id).cloned() else {
             return;
         };
@@ -428,6 +431,19 @@ impl UiScene {
                     }
                     self.insert_primitive(selection);
                 }
+                // Presentation only: the painter samples it on the motion
+                // clock; the scene keeps asking for frames while it moves.
+                let glyph_presentation =
+                    node.glyph_presentation.as_ref().and_then(|presentation| {
+                        crate::scene::SceneGlyphPresentation::new(
+                            text.value.as_str(),
+                            node.rich_text.as_ref(),
+                            presentation,
+                        )
+                    });
+                if let Some(presentation) = &glyph_presentation {
+                    self.glyph_live.insert(id, presentation.live_until());
+                }
                 let editor_marks = node
                     .rich_editor
                     .as_ref()
@@ -523,6 +539,7 @@ impl UiScene {
                             style,
                             node.rich_text.as_ref(),
                         ),
+                        presentation: glyph_presentation.clone(),
                     },
                 });
                 if let (Some(rich), Some(layout)) = (&node.rich_text, &node.text_layout)
@@ -545,6 +562,35 @@ impl UiScene {
                             .as_ref()
                             .is_some_and(|marks| marks.show_editor_objects),
                     );
+                    match &glyph_presentation {
+                        Some(presentation) => {
+                            use unicode_segmentation::UnicodeSegmentation;
+                            let content = text.value.as_str();
+                            let held: Vec<crate::scene::GlyphObject> = objects
+                                .iter()
+                                .filter_map(|primitive| {
+                                    let index = (primitive.id.slot & 0xffff_ffff) as usize;
+                                    let placed = layout.layout.objects.get(index)?;
+                                    Some(crate::scene::GlyphObject {
+                                        slot: primitive.id.slot,
+                                        ordinal: content
+                                            .get(..placed.offset)
+                                            .map_or(0, |before| before.graphemes(true).count())
+                                            as u32,
+                                        center: [
+                                            primitive.bounds.x + primitive.bounds.width * 0.5,
+                                            primitive.bounds.y + primitive.bounds.height * 0.5,
+                                        ],
+                                        opacity: primitive.opacity,
+                                        transform: primitive.transform,
+                                    })
+                                })
+                                .collect();
+                            self.glyph_objects
+                                .insert(id, (Arc::clone(presentation), held.into()));
+                        }
+                        None => {}
+                    }
                     for primitive in objects {
                         self.insert_primitive(primitive);
                     }
@@ -1501,6 +1547,7 @@ impl UiScene {
                                 opentype: SceneTextOpenType::default(),
                                 layout: None,
                                 rich: None,
+                                presentation: None,
                             },
                         });
                     }

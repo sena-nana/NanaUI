@@ -404,6 +404,8 @@ pub(crate) struct NodeStore {
     rich_texts: HashMap<StableNodeId, nana_ui_core::RichText>,
     /// Caret and selection of rich text editors.
     rich_editor_marks: HashMap<StableNodeId, crate::RichEditorMarks>,
+    /// Per-glyph presentation of rich text nodes.
+    glyph_presentations: HashMap<StableNodeId, nana_ui_core::GlyphPresentation>,
     /// Revisions, resolution stamp and retained layout handle of every node's
     /// text (Issue #95), one entry per node. Kept apart from the dense records
     /// on purpose: a large relayout scope decides "no text work" for every
@@ -490,6 +492,7 @@ impl NodeStore {
         self.text_natural_widths.remove(&id);
         self.rich_texts.remove(&id);
         self.rich_editor_marks.remove(&id);
+        self.glyph_presentations.remove(&id);
         if let Some(text) = self.text_nodes.remove(&id) {
             self.text_layouts.remove(text.layout);
         }
@@ -666,6 +669,12 @@ impl NodeStore {
         set_text_natural_width
     );
     sparse!(rich_texts, nana_ui_core::RichText, rich_text, set_rich_text);
+    sparse!(
+        glyph_presentations,
+        nana_ui_core::GlyphPresentation,
+        glyph_presentation,
+        set_glyph_presentation
+    );
     sparse!(
         rich_editor_marks,
         crate::RichEditorMarks,

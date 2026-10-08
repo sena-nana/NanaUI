@@ -63,6 +63,11 @@ pub enum UiMutation {
         id: StableNodeId,
         rich: Option<nana_ui_core::RichText>,
     },
+    /// A node's per-glyph presentation. Presentation only.
+    SetGlyphPresentation {
+        id: StableNodeId,
+        presentation: Option<nana_ui_core::GlyphPresentation>,
+    },
     /// A rich text editor's caret and selection. Paint only.
     SetRichEditorMarks {
         id: StableNodeId,
@@ -328,6 +333,19 @@ impl MutationQueue {
             id,
             rich: Some(rich),
         });
+    }
+
+    /// Present `id`'s glyphs with `presentation`: the effects its rich spans'
+    /// `effect` indices name, and a reveal. No shaping, layout, glyph
+    /// rasterization or instance rebuild: the text vertex shader samples it on
+    /// the motion clock. `None` stops presenting.
+    pub fn set_glyph_presentation(
+        &mut self,
+        id: StableNodeId,
+        presentation: Option<nana_ui_core::GlyphPresentation>,
+    ) {
+        self.mutations
+            .push(UiMutation::SetGlyphPresentation { id, presentation });
     }
 
     /// A rich text editor's caret and selection marks. Paint only.
