@@ -437,8 +437,7 @@ pub(crate) fn command_palette_geometry(
         input_background: palette.background.as_rgba_array(),
         input_border: palette.border.as_rgba_array(),
         elevation: ComponentElevation {
-            paint_color: None,
-            color: [0.0, 0.0, 0.0, 0.4],
+            color: nana_ui_core::PaintColor::srgb([0.0, 0.0, 0.0, 0.4]),
             offset_x: 0.0,
             offset_y: nana_ui_core::space::XL,
             blur_radius: nana_ui_core::space::PAGE,

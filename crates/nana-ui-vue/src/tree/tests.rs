@@ -7100,7 +7100,7 @@ fn a_paint_attribute_paints_a_layout_element() {
                 background: Some(color),
                 corner_radius,
                 ..
-            } => Some((primitive.bounds, *color, *corner_radius)),
+            } => Some((primitive.bounds, color.to_srgb(), *corner_radius)),
             _ => None,
         })
         .collect::<Vec<_>>()[..]

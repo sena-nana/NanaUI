@@ -351,16 +351,15 @@ impl UiScene {
                     } => (
                         offset_rect(*rect, origin),
                         ScenePrimitiveKind::Quad {
-                            background: *fill,
-                            border_color: border.map(|(color, _)| color),
+                            background: super::slot_color(*fill_color_space, *fill),
+                            border_color: super::slot_color(
+                                *border_color_space,
+                                border.map(|(color, _)| color),
+                            ),
                             border_width: border.map_or(0.0, |(_, width)| width),
                             corner_radius: *radii,
                             shadow: *shadow,
-                            surface: QuadSurfacePaint {
-                                background_color: *fill_color_space,
-                                border_color_space: *border_color_space,
-                                ..QuadSurfacePaint::default()
-                            },
+                            surface: QuadSurfacePaint::default(),
                         },
                         Arc::clone(clips),
                         under(local_transform),
@@ -407,8 +406,7 @@ impl UiScene {
                         offset_rect(*rect, origin),
                         ScenePrimitiveKind::Icon {
                             icon: *icon,
-                            color: Some(*color),
-                            paint_color: *paint_color,
+                            color: super::slot_color(*paint_color, Some(*color)),
                         },
                         local_clips(local),
                         under(local_transform),
@@ -514,10 +512,6 @@ pub(super) fn image_quad(
         corner_radius: radii,
         shadow: None,
         surface: QuadSurfacePaint {
-            border_colors_space: [None; 4],
-            outline_color_space: None,
-            background_color: None,
-            border_color_space: None,
             content_image: Some(image),
             ..QuadSurfacePaint::default()
         },
@@ -532,8 +526,7 @@ fn custom_text(
 ) -> ScenePrimitiveKind {
     ScenePrimitiveKind::Text {
         content: text.content.to_string().into(),
-        color: Some(color),
-        paint_color,
+        color: super::slot_color(paint_color, Some(color)),
         size: text.size,
         weight: text.weight,
         family: text
@@ -750,10 +743,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                         border: border.map(|(color, width)| (fade(color, alpha), width)),
                         border_color_space,
                         shadow: shadow.map(|shadow| ComponentElevation {
-                            paint_color: shadow
-                                .paint_color
-                                .map(|color| scale_paint_alpha(color, alpha)),
-                            color: fade(shadow.color, alpha),
+                            color: scale_paint_alpha(shadow.color, alpha),
                             ..shadow
                         }),
                         transform: t,
@@ -1191,12 +1181,9 @@ fn push_shadow(
     clip: Option<&ActiveClip>,
 ) {
     // Mesh vertices carry straight sRGB and are linearized once by the GPU
-    // path uploader. Keep the compatibility value here; the explicit value
-    // is carried alongside the finished mesh for direct linear scRGB upload.
-    let source_color = shadow
-        .paint_color
-        .map_or(shadow.color, nana_ui_core::PaintColor::to_srgb);
-    let color = fade(source_color, alpha);
+    // path uploader; the shadow's own colour rides on the finished mesh for
+    // a direct linear scRGB upload.
+    let color = fade(shadow.color.to_srgb(), alpha);
     let lengths = [
         shadow.offset_x,
         shadow.offset_y,
@@ -1207,10 +1194,9 @@ fn push_shadow(
         return;
     }
     // Past a screen's reach a blur or spread only costs geometry.
-    let paint_color = shadow.paint_color;
+    let paint_color = Some(shadow.color);
     let shadow = ComponentElevation {
-        paint_color: None,
-        color,
+        color: nana_ui_core::PaintColor::srgb(color),
         blur_radius: shadow.blur_radius.min(MAX_LENGTH),
         spread_radius: shadow.spread_radius.clamp(-MAX_LENGTH, MAX_LENGTH),
         ..*shadow
@@ -1996,7 +1982,7 @@ impl MeshBuilder {
         }
         let blur = shadow.blur_radius.max(0.0);
         if blur < 0.5 {
-            self.fill(&shapes, shadow.color);
+            self.fill(&shapes, shadow.color.to_srgb());
             return shapes;
         }
         let mut reach: Shapes = Vec::new();
@@ -2027,12 +2013,8 @@ impl MeshBuilder {
             } else {
                 1.0
             };
-            let color = [
-                shadow.color[0],
-                shadow.color[1],
-                shadow.color[2],
-                shadow.color[3] * peak,
-            ];
+            let [r, g, b, a] = shadow.color.to_srgb();
+            let color = [r, g, b, a * peak];
             let sign = shape_outward_sign(shape);
             let mut inner_rings: Vec<Contour> = Vec::new();
             let mut outer_rings: Vec<Contour> = Vec::new();
@@ -2123,12 +2105,11 @@ impl MeshBuilder {
             } else {
                 shapes.overlay(&hole, OverlayRule::Difference, OverlayFill::NonZero)
             };
-            self.fill(&dark, shadow.color);
+            self.fill(&dark, shadow.color.to_srgb());
         } else {
             // The band around the hole, dark side out.
             let start = self.vertices.len();
             let plain = ComponentElevation {
-                paint_color: None,
                 offset_x: 0.0,
                 offset_y: 0.0,
                 spread_radius: 0.0,
@@ -2151,7 +2132,7 @@ impl MeshBuilder {
                 {
                     let base = self.vertices.len() as u32;
                     for position in vertices {
-                        self.vertex(position, [0.0, 0.0], 1.0, shadow.color);
+                        self.vertex(position, [0.0, 0.0], 1.0, shadow.color.to_srgb());
                     }
                     self.indices
                         .extend(indices.iter().map(|index| base + index));
@@ -2385,8 +2366,7 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(rect_path(0.0, 0.0, 10.0, 10.0)),
             shadow: ComponentElevation {
-                paint_color: Some(color),
-                color: color.to_srgb(),
+                color,
                 offset_x: 0.0,
                 offset_y: 0.0,
                 blur_radius: 0.0,
@@ -2454,8 +2434,9 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
             shadow: ComponentElevation {
-                paint_color: None,
-                color: [0.0, 0.0, 0.0, 0.5],
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.0, 0.0, 0.0, 0.5],
+                },
                 offset_x: 0.0,
                 offset_y: 6.0,
                 blur_radius: 12.0,
@@ -2623,8 +2604,9 @@ mod tests {
             .close();
         let square = Arc::new(rect_path(0.0, 0.0, 10.0, 10.0));
         let shadow = |blur_radius: f32| ComponentElevation {
-            paint_color: None,
-            color: [0.0, 0.0, 0.0, 1.0],
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 1.0],
+            },
             offset_x: 0.0,
             offset_y: 0.0,
             blur_radius,
@@ -2669,8 +2651,9 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
             shadow: ComponentElevation {
-                paint_color: None,
-                color: [0.0, 0.0, 0.0, 1.0],
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.0, 0.0, 0.0, 1.0],
+                },
                 offset_x: 20.0,
                 offset_y: 20.0,
                 blur_radius: 8.0,
@@ -2710,8 +2693,9 @@ mod tests {
         ring.ellipse(circle(50.0)).ellipse(circle(48.0));
         let ring = ring.with_fill_rule(FillRule::EvenOdd);
         let shadow = ComponentElevation {
-            paint_color: None,
-            color: [0.0, 0.0, 0.0, 1.0],
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 1.0],
+            },
             offset_x: 0.0,
             offset_y: 0.0,
             blur_radius: 10.0,
@@ -2757,8 +2741,9 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(path),
             shadow: ComponentElevation {
-                paint_color: None,
-                color: [0.0, 0.0, 0.0, 0.5],
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.0, 0.0, 0.0, 0.5],
+                },
                 offset_x: 0.0,
                 offset_y: 0.0,
                 blur_radius: 16.0,
@@ -2789,8 +2774,9 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
             shadow: ComponentElevation {
-                paint_color: None,
-                color: [0.0, 0.0, 0.0, 0.5],
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.0, 0.0, 0.0, 0.5],
+                },
                 offset_x: 0.0,
                 offset_y: 6.0,
                 blur_radius: 12.0,
@@ -3103,8 +3089,9 @@ mod tests {
         let built = build_ops(&[PaintOp::Shadow {
             path: Arc::new(rect_path(0.0, 0.0, 100.0, 60.0)),
             shadow: ComponentElevation {
-                paint_color: None,
-                color: [0.0, 0.0, 0.0, 0.5],
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.0, 0.0, 0.0, 0.5],
+                },
                 offset_x: 0.0,
                 offset_y: 0.0,
                 blur_radius: 8.0,

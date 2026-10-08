@@ -9311,7 +9311,7 @@ fn the_overlay_shadow_is_a_theme_token_not_a_brightness_sniff() {
         compiled.shadow(nana_ui_core::ElevationRole::Overlay),
     );
     assert_eq!(elevation.offset_y, 21.0);
-    assert_eq!(elevation.color[3], 0.9);
+    assert_eq!(elevation.color.to_srgb()[3], 0.9);
 
     // A dark theme whose background happens to be pale used to flip to the
     // light shadow. It now keeps its own.

@@ -930,8 +930,7 @@ impl MeshPipeline {
         bounds: LogicalRect,
         affine: [f32; 6],
         phase: u8,
-        color: [f32; 4],
-        paint_color: Option<nana_ui_core::PaintColor>,
+        color: nana_ui_core::PaintColor,
         opacity: f32,
         fragment_clip: FragmentClip,
     ) -> Option<MeshRange> {
@@ -939,10 +938,8 @@ impl MeshPipeline {
         if scale <= 0.0 {
             return None;
         }
-        let color = with_opacity(color, opacity);
-        let explicit_color = paint_color
-            .map(pack_paint_color)
-            .map(|[r, g, b, a]| [r, g, b, a * opacity]);
+        let [r, g, b, a] = pack_paint_color(color);
+        let color = [r, g, b, a * opacity];
         let center = [
             bounds.x + bounds.width / 2.0,
             bounds.y + bounds.height / 2.0,
@@ -961,13 +958,8 @@ impl MeshPipeline {
             ];
             let distance = (index + 8 - phase % 8) % 8;
             let alpha = 1.0 - f32::from(distance) * 0.105;
-            let mut tick_color = explicit_color.unwrap_or(color);
-            tick_color[3] *= alpha;
-            let packed = if explicit_color.is_some() {
-                tick_color
-            } else {
-                pack_linear(tick_color)
-            };
+            let mut packed = color;
+            packed[3] *= alpha;
             push_segment(
                 &mut self.pending_instances,
                 from,

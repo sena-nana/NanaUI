@@ -142,7 +142,7 @@ pub(crate) fn derive_visual_shape(scene: &UiScene, logical: [f32; 2]) -> WindowV
         else {
             continue;
         };
-        if background[3] <= 0.0 {
+        if background.to_srgb()[3] <= 0.0 {
             continue;
         }
         // Only a translation places the body; a rotated or scaled card has no

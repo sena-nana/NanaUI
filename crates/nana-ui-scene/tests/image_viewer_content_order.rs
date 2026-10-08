@@ -84,7 +84,7 @@ fn image_viewer_texture_is_above_backdrop_and_below_controls_with_stage_clipping
             .enumerate()
             .filter(|(_, primitive)| {
                 matches!(&primitive.kind,
-            ScenePrimitiveKind::Quad { background: Some(color), .. } if color[3] > 0.0)
+            ScenePrimitiveKind::Quad { background: Some(color), .. } if color.to_srgb()[3] > 0.0)
             })
             .collect::<Vec<_>>();
         assert!(backgrounds.len() >= 3);
@@ -227,7 +227,10 @@ fn the_viewer_scrim_shows_near_black_over_the_page_in_both_themes() {
             .find(|primitive| primitive.node == viewer.stable_id() && primitive.id.slot == 10)
             .expect("the scrim paints");
         let ScenePrimitiveKind::Quad {
-            background: Some([r, g, b, alpha]),
+            background:
+                Some(nana_ui_core::PaintColor::Srgb {
+                    rgba: [r, g, b, alpha],
+                }),
             ..
         } = scrim.kind
         else {

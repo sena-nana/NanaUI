@@ -180,7 +180,7 @@ fn a_paint_only_span_change_shapes_and_lays_out_nothing() {
         .iter()
         .find(|span| span.start == "Hello ".len())
         .expect("the span's fill reaches the scene");
-    assert_eq!(world.paint_color, Some(BLUE));
+    assert_eq!(world.color, BLUE);
     let rich = rich.expect("an underline is an effect");
     assert!(rich.effects_at("Hello w".len()).decoration.underline);
     assert!(!rich.effects_at(0).decoration.underline);

@@ -1289,8 +1289,7 @@ impl ScrollbarBar {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComponentElevation {
-    pub paint_color: Option<nana_ui_core::PaintColor>,
-    pub color: [f32; 4],
+    pub color: nana_ui_core::PaintColor,
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur_radius: f32,
@@ -1303,8 +1302,7 @@ impl ComponentElevation {
     /// One elevation step of a theme, as the scene consumes it.
     pub fn from_shadow(shadow: nana_ui_core::ShadowToken) -> Self {
         Self {
-            paint_color: None,
-            color: shadow.color.as_rgba_array(),
+            color: nana_ui_core::PaintColor::srgb(shadow.color.as_rgba_array()),
             offset_x: shadow.offset_x,
             offset_y: shadow.offset_y,
             blur_radius: shadow.blur_radius,
@@ -1330,8 +1328,9 @@ impl ComponentElevation {
 
     pub fn from_box_shadow(shadow: nana_ui_core::BoxShadowSpec) -> Self {
         Self {
-            paint_color: shadow.paint_color,
-            color: shadow.color,
+            color: shadow
+                .paint_color
+                .unwrap_or(nana_ui_core::PaintColor::srgb(shadow.color)),
             offset_x: shadow.offset_x,
             offset_y: shadow.offset_y,
             blur_radius: shadow.blur_radius,

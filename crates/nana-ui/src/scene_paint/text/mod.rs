@@ -3152,8 +3152,7 @@ mod span_color_tests {
         let spans = [SceneTextSpan {
             start: 0,
             end: 1,
-            color: paint.to_srgb(),
-            paint_color: Some(paint),
+            color: paint,
         }];
         let colors = SpanColors::new("x", &spans, [0.0; 4], None);
         let resolved = colors.color_at(0);
@@ -3195,8 +3194,9 @@ impl SpanColors {
             kept.push((
                 span.start..span.end,
                 ResolvedSpanColor {
-                    srgb: span.color,
-                    paint_color: span.paint_color,
+                    srgb: span.color.to_srgb(),
+                    paint_color: (!matches!(span.color, nana_ui_core::PaintColor::Srgb { .. }))
+                        .then_some(span.color),
                 },
             ));
         }
@@ -4612,8 +4612,7 @@ mod tests {
             vec![SceneTextSpan {
                 start: 0,
                 end: "warm".len(),
-                color,
-                paint_color: None,
+                color: nana_ui_core::PaintColor::srgb(color),
             }]
         };
         paint_rich(&device, &queue, &mut pipeline, &span([1.0, 0.0, 0.0, 1.0]));

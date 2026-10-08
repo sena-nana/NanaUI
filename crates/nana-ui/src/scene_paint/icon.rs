@@ -5,7 +5,7 @@ use nana_gpu::{__framework, LogicalBinding, LogicalBindingType, ResourceTable, S
 
 use super::{
     clip::{self, FragmentClip, LogicalRect},
-    color::{orthographic, pack_linear, pack_paint_color, with_opacity},
+    color::{orthographic, pack_paint_color},
 };
 use crate::{PhysicalRect, gpu_work::ManagedBuffer, icons::Icon};
 
@@ -474,8 +474,7 @@ impl IconPipeline {
         persp: [f32; 2],
         scale: f32,
         icon: Icon,
-        color: [f32; 4],
-        paint_color: Option<nana_ui_core::PaintColor>,
+        color: nana_ui_core::PaintColor,
         opacity: f32,
         fragment_clip: FragmentClip,
     ) -> Option<PreparedIcon> {
@@ -488,7 +487,6 @@ impl IconPipeline {
             scale,
             icon,
             color,
-            paint_color,
             opacity,
             fragment_clip,
             None,
@@ -505,8 +503,7 @@ impl IconPipeline {
         persp: [f32; 2],
         scale: f32,
         icon: Icon,
-        color: [f32; 4],
-        paint_color: Option<nana_ui_core::PaintColor>,
+        color: nana_ui_core::PaintColor,
         opacity: f32,
         fragment_clip: FragmentClip,
         work: Option<&crate::gpu_work::GpuWorkSink>,
@@ -529,14 +526,8 @@ impl IconPipeline {
         }
         self.frame_keys.insert(key);
         let uv_rect = UvRect::of(self.entries.get(&key)?, self.atlas.edge);
-        let color = match paint_color {
-            Some(paint_color) => {
-                let mut packed = pack_paint_color(paint_color);
-                packed[3] *= opacity;
-                packed
-            }
-            None => pack_linear(with_opacity(color, opacity)),
-        };
+        let mut color = pack_paint_color(color);
+        color[3] *= opacity;
         let clip = fragment_clip.for_physical_pixels(scale);
         let first_vertex = self.pending_vertices.len() as u32;
         let [tl, tr, bl, br] = icon_quad(bounds, affine, persp, scale);
@@ -1083,8 +1074,7 @@ mod tests {
                 [0.0; 2],
                 1.0,
                 Icon::Search,
-                [0.1, 0.2, 0.3, 1.0],
-                Some(color),
+                color,
                 0.5,
                 FragmentClip::PASS,
             )

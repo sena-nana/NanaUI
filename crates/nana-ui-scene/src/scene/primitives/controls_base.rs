@@ -33,12 +33,13 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Icon {
                         icon: *icon,
-                        color: label.color,
-                        paint_color: node
-                            .style
-                            .paint_colors
-                            .color
-                            .filter(|paint| label.color == Some(paint.to_srgb())),
+                        color: crate::scene::slot_color(
+                            node.style
+                                .paint_colors
+                                .color
+                                .filter(|paint| label.color == Some(paint.to_srgb())),
+                            label.color,
+                        ),
                     },
                 });
             }
@@ -240,9 +241,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Icon {
                         icon: *icon,
-                        color: Some(*color),
-                        paint_color: matching_paint_color(
-                            node.style.paint_colors.color,
+                        color: crate::scene::slot_color(
+                            matching_paint_color(node.style.paint_colors.color, Some(*color)),
                             Some(*color),
                         ),
                     },
@@ -326,8 +326,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     corner_radius: corner_radii(*corner_radius),
                 },
             );
-            if let ScenePrimitiveKind::Quad { surface, .. } = &mut track_primitive.kind {
-                surface.background_color = node.style.paint_colors.background;
+            if let ScenePrimitiveKind::Quad { background, .. } = &mut track_primitive.kind {
+                *background = (node.style.paint_colors.background).or(*background);
             }
             emit(track_primitive);
             let mut fill_primitive = visual_quad(
@@ -348,12 +348,13 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     corner_radius: corner_radii(*corner_radius),
                 },
             );
-            if let ScenePrimitiveKind::Quad { surface, .. } = &mut fill_primitive.kind {
-                surface.background_color = node
+            if let ScenePrimitiveKind::Quad { background, .. } = &mut fill_primitive.kind {
+                *background = (node
                     .style
                     .paint_colors
                     .color
-                    .filter(|paint| node.standard_visual_foreground == Some(paint.to_srgb()));
+                    .filter(|paint| node.standard_visual_foreground == Some(paint.to_srgb())))
+                .or(*background);
             }
             emit(fill_primitive);
             if let Some(cancel) = cancel {
@@ -573,22 +574,21 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     z_index: menu_z,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
-                        background: Some(menu.background),
-                        border_color: Some(menu.border),
-                        border_width: 1.0,
-                        corner_radius: corner_radii(node.chrome_radii.md),
-                        shadow: Some(menu.elevation),
-                        surface: QuadSurfacePaint {
-                            background_color: matching_paint_color(
+                        background: crate::scene::slot_color(
+                            matching_paint_color(
                                 node.style.paint_colors.background,
                                 Some(menu.background),
                             ),
-                            border_color_space: matching_paint_color(
-                                node.style.paint_colors.border,
-                                Some(menu.border),
-                            ),
-                            ..QuadSurfacePaint::default()
-                        },
+                            Some(menu.background),
+                        ),
+                        border_color: crate::scene::slot_color(
+                            matching_paint_color(node.style.paint_colors.border, Some(menu.border)),
+                            Some(menu.border),
+                        ),
+                        border_width: 1.0,
+                        corner_radius: corner_radii(node.chrome_radii.md),
+                        shadow: Some(menu.elevation),
+                        surface: QuadSurfacePaint::default(),
                     },
                 });
                 for (index, option) in menu.options.iter().enumerate() {
@@ -726,9 +726,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         document_order: node_order,
                         kind: ScenePrimitiveKind::Icon {
                             icon,
-                            color: Some(color),
-                            paint_color: matching_paint_color(
-                                node.style.paint_colors.color,
+                            color: crate::scene::slot_color(
+                                matching_paint_color(node.style.paint_colors.color, Some(color)),
                                 Some(color),
                             ),
                         },
@@ -784,18 +783,15 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 z_index: overlay_z,
                 document_order: node_order,
                 kind: ScenePrimitiveKind::Quad {
-                    background: Some(*background),
-                    border_color: None,
+                    background: crate::scene::slot_color(
+                        matching_paint_color(node.style.paint_colors.background, Some(*background)),
+                        Some(*background),
+                    ),
+                    border_color: crate::scene::slot_color(None, None),
                     border_width: 0.0,
                     corner_radius: corner_radii(node.chrome_radii.md),
                     shadow: Some(*elevation),
-                    surface: QuadSurfacePaint {
-                        background_color: matching_paint_color(
-                            node.style.paint_colors.background,
-                            Some(*background),
-                        ),
-                        ..QuadSurfacePaint::default()
-                    },
+                    surface: QuadSurfacePaint::default(),
                 },
             });
             let mut title_text = component_text_primitive(

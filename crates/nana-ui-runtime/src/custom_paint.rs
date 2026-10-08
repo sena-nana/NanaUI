@@ -1750,11 +1750,10 @@ impl<'a> PaintContext<'a> {
                 spread,
                 inset,
             } => ComponentElevation {
-                paint_color: match color {
-                    PaintColor::Authoring(color) => Some(color),
-                    _ => None,
+                color: match color {
+                    PaintColor::Authoring(color) => color,
+                    color => nana_ui_core::PaintColor::srgb(self.color(color)),
                 },
-                color: self.color(color),
                 offset_x: offset[0],
                 offset_y: offset[1],
                 blur_radius: blur.max(0.0),

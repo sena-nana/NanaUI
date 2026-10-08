@@ -463,8 +463,9 @@ fn extracted_text_spans_travel_on_the_text_primitive() {
         &vec![SceneTextSpan {
             start: 0,
             end: 2,
-            color: [0.2, 0.6, 1.0, 1.0],
-            paint_color: None,
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.2, 0.6, 1.0, 1.0]
+            },
         }]
     );
 }
@@ -899,8 +900,9 @@ fn a_menu_surface_paints_the_radius_it_was_handed_not_the_constant() {
             search_field: None,
             options: Vec::new(),
             elevation: ComponentElevation {
-                paint_color: None,
-                color: [0.0, 0.0, 0.0, 0.55],
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.0, 0.0, 0.0, 0.55],
+                },
                 offset_x: 0.0,
                 offset_y: 4.0,
                 blur_radius: 18.0,
@@ -1050,8 +1052,9 @@ fn menu_surface_paints_row_icon_and_iconless_labels() {
             },
         ],
         elevation: ComponentElevation {
-            paint_color: None,
-            color: [0.0, 0.0, 0.0, 0.55],
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.55],
+            },
             offset_x: 0.0,
             offset_y: 4.0,
             blur_radius: 18.0,
@@ -2228,7 +2231,7 @@ fn text_primitive_preserves_content_box_and_paint_semantics() {
             ellipsis: true,
             horizontal_alignment: TextHorizontalAlignment::Center,
             vertical_alignment: TextVerticalAlignment::Center,
-            paint_color: Some(nana_ui_core::PaintColor::Oklch { .. }),
+            color: Some(nana_ui_core::PaintColor::Oklch { .. }),
             ..
         }
     ));
@@ -2337,11 +2340,7 @@ fn document_selection_fill_paints_under_glyphs() {
         matches!(
             scene.primitive(fill_id).map(|primitive| &primitive.kind),
             Some(ScenePrimitiveKind::QuadBatch {
-                background: Some([1.0, 0.0, 0.0, 1.0]),
-                surface: QuadSurfacePaint {
-                    background_color: Some(nana_ui_core::PaintColor::Oklch { .. }),
-                    ..
-                },
+                background: Some(nana_ui_core::PaintColor::Oklch { .. }),
                 ..
             })
         ),
@@ -2597,7 +2596,9 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
             .filter(|primitive| matches!(
                 primitive.kind,
                 ScenePrimitiveKind::Quad {
-                    background: Some([0.9, 0.1, 0.1, 1.0]),
+                    background: Some(nana_ui_core::PaintColor::Srgb {
+                        rgba: [0.9, 0.1, 0.1, 1.0]
+                    }),
                     ..
                 }
             ))
@@ -2653,12 +2654,18 @@ fn text_input_editor_markers_and_line_labels_paint() {
     let ScenePrimitiveKind::Quad { background, .. } = &error_quad.kind else {
         panic!("expected quad");
     };
-    assert_eq!(*background, Some([0.9, 0.1, 0.1, 1.0]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.9, 0.1, 0.1, 1.0]))
+    );
     let warning_quad = marker(collection_slot(TEXT_DIAGNOSTIC_MARKERS, 1), 30.0);
     let ScenePrimitiveKind::Quad { background, .. } = &warning_quad.kind else {
         panic!("expected quad");
     };
-    assert_eq!(*background, Some([0.9, 0.7, 0.1, 1.0]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.9, 0.7, 0.1, 1.0]))
+    );
     // 行号标签为右对齐文本图元。
     let label = scene
             .primitives()
@@ -2792,7 +2799,10 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         panic!("expected quad batch");
     };
     assert_eq!(bounds.len(), 1);
-    assert_eq!(*background, Some([0.48, 0.73, 0.94, 0.20]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.48, 0.73, 0.94, 0.20]))
+    );
     let current = batch(6);
     let ScenePrimitiveKind::QuadBatch {
         bounds, background, ..
@@ -2801,7 +2811,10 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         panic!("expected quad batch");
     };
     assert_eq!(bounds.len(), 1);
-    assert_eq!(*background, Some([0.48, 0.73, 0.94, 0.45]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.48, 0.73, 0.94, 0.45]))
+    );
     // 诊断下划线（slot 20）与匹配高亮共存。
     let diagnostic = scene
         .primitive(PrimitiveId {
@@ -2812,7 +2825,10 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
     let ScenePrimitiveKind::Quad { background, .. } = &diagnostic.kind else {
         panic!("expected quad");
     };
-    assert_eq!(*background, Some([0.9, 0.1, 0.1, 1.0]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.9, 0.1, 0.1, 1.0]))
+    );
 }
 
 #[test]
@@ -3068,7 +3084,10 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
     let ScenePrimitiveKind::Quad { background, .. } = &panel.kind else {
         panic!("expected panel quad");
     };
-    assert_eq!(*background, Some([0.12, 0.12, 0.14, 1.0]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.12, 0.12, 0.14, 1.0]))
+    );
     assert_eq!(
         panel.bounds,
         SceneRect {
@@ -3101,7 +3120,10 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
             height: 80.0
         }
     );
-    assert_eq!(*background, Some([0.5, 0.5, 0.5, 1.0]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.5, 0.5, 0.5, 1.0]))
+    );
 
     let indicator = scene
         .primitive(PrimitiveId {
@@ -3112,7 +3134,10 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
     let ScenePrimitiveKind::Quad { background, .. } = &indicator.kind else {
         panic!("expected indicator quad");
     };
-    assert_eq!(*background, Some([1.0, 0.2, 0.2, 0.2]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([1.0, 0.2, 0.2, 0.2]))
+    );
 }
 
 #[test]
@@ -3276,7 +3301,10 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         panic!("expected occurrence quad batch");
     };
     assert_eq!(bounds.len(), 2);
-    assert_eq!(*background, Some(occurrence_color));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb(occurrence_color))
+    );
     // 空格圆点批次：两条小圆点。
     let ScenePrimitiveKind::QuadBatch { bounds, .. } = &batch(16).kind else {
         panic!("expected whitespace dot batch");
@@ -3304,7 +3332,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
     };
     assert_eq!(bounds.len(), 2);
     assert_eq!(bounds[0].height, 42.0);
-    assert_eq!(*background, Some(faint));
+    assert_eq!(*background, Some(nana_ui_core::PaintColor::srgb(faint)));
 }
 
 #[test]
@@ -3547,7 +3575,10 @@ fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
             ..
         } => {
             assert_eq!(bounds.len(), 2);
-            assert_eq!(*background, Some([0.2, 0.8, 0.3, 1.0]));
+            assert_eq!(
+                *background,
+                Some(nana_ui_core::PaintColor::srgb([0.2, 0.8, 0.3, 1.0]))
+            );
             assert_eq!(*border_color, None);
             assert_eq!(
                 bounds[0],
@@ -3576,7 +3607,10 @@ fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
             bounds, background, ..
         } => {
             assert_eq!(bounds.len(), 1);
-            assert_eq!(*background, Some([0.9, 0.7, 0.2, 1.0]));
+            assert_eq!(
+                *background,
+                Some(nana_ui_core::PaintColor::srgb([0.9, 0.7, 0.2, 1.0]))
+            );
         }
         _ => panic!("expected modified git gutter quad batch"),
     }
@@ -3586,7 +3620,10 @@ fn text_input_git_gutter_renders_kind_batches_and_coexists_with_gutter_slots() {
             bounds, background, ..
         } => {
             assert_eq!(bounds.len(), 1);
-            assert_eq!(*background, Some([0.9, 0.3, 0.3, 1.0]));
+            assert_eq!(
+                *background,
+                Some(nana_ui_core::PaintColor::srgb([0.9, 0.3, 0.3, 1.0]))
+            );
         }
         _ => panic!("expected deleted git gutter quad batch"),
     }
@@ -3680,14 +3717,20 @@ fn text_input_sticky_line_paints_panel_divider_and_head_text() {
     let panel = primitive(80).expect("sticky panel");
     match &panel.kind {
         ScenePrimitiveKind::Quad { background, .. } => {
-            assert_eq!(*background, Some([1.0, 1.0, 1.0, 1.0]))
+            assert_eq!(
+                *background,
+                Some(nana_ui_core::PaintColor::srgb([1.0, 1.0, 1.0, 1.0]))
+            )
         }
         other => panic!("expected panel quad, got {other:?}"),
     }
     let divider = primitive(81).expect("sticky divider");
     match &divider.kind {
         ScenePrimitiveKind::Quad { background, .. } => {
-            assert_eq!(*background, Some([0.2, 0.2, 0.2, 1.0]))
+            assert_eq!(
+                *background,
+                Some(nana_ui_core::PaintColor::srgb([0.2, 0.2, 0.2, 1.0]))
+            )
         }
         other => panic!("expected divider quad, got {other:?}"),
     }
@@ -3822,7 +3865,10 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
             bounds, background, ..
         } => {
             assert_eq!(bounds.len(), 13);
-            assert_eq!(*background, Some([0.5, 0.5, 0.5, 0.4]));
+            assert_eq!(
+                *background,
+                Some(nana_ui_core::PaintColor::srgb([0.5, 0.5, 0.5, 0.4]))
+            );
             assert_eq!(
                 bounds[0],
                 SceneRect {
@@ -3847,7 +3893,10 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         } => {
             assert_eq!(bounds.len(), 12);
             assert_eq!(*background, None);
-            assert_eq!(*border_color, Some([0.5, 0.5, 0.5, 0.4]));
+            assert_eq!(
+                *border_color,
+                Some(nana_ui_core::PaintColor::srgb([0.5, 0.5, 0.5, 0.4]))
+            );
             assert_eq!(*border_width, 1.0);
             assert_eq!(
                 bounds[11],
@@ -4116,7 +4165,10 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
     assert_eq!(rects.len(), 2);
     assert_eq!(rects[0].y, 24.0);
     assert_eq!(rects[1].y, 40.0);
-    assert_eq!(*background, Some([0.2, 0.2, 0.2, 0.55]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.2, 0.2, 0.2, 0.55]))
+    );
 }
 
 #[test]
@@ -4254,7 +4306,10 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
     let ScenePrimitiveKind::Quad { background, .. } = &line.kind else {
         panic!("expected caret line quad");
     };
-    assert_eq!(*background, Some([0.18, 0.18, 0.18, 1.0]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.18, 0.18, 0.18, 1.0]))
+    );
     assert_eq!(line.bounds.width, 84.0);
     // 缩进参考线是 slot 10 的填充批次，同一颜色合并。
     let guides = primitive(10);
@@ -4265,7 +4320,10 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         panic!("expected indent guide batch");
     };
     assert_eq!(bounds.len(), 2);
-    assert_eq!(*background, Some([0.16, 0.16, 0.16, 1.0]));
+    assert_eq!(
+        *background,
+        Some(nana_ui_core::PaintColor::srgb([0.16, 0.16, 0.16, 1.0]))
+    );
     // 括号匹配是 slot 12 的描边批次（无填充，不遮挡字形）。
     let brackets = primitive(12);
     let ScenePrimitiveKind::QuadBatch {
@@ -4280,7 +4338,10 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
     };
     assert_eq!(bounds.len(), 2);
     assert_eq!(*background, None);
-    assert_eq!(*border_color, Some([0.48, 0.73, 0.94, 1.0]));
+    assert_eq!(
+        *border_color,
+        Some(nana_ui_core::PaintColor::srgb([0.48, 0.73, 0.94, 1.0]))
+    );
     assert_eq!(*border_width, 1.0);
 }
 
@@ -4652,7 +4713,9 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
             .unwrap()
             .kind,
         ScenePrimitiveKind::Quad {
-            background: Some([_, _, _, 0.12]),
+            background: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [_, _, _, 0.12]
+            }),
             ..
         }
     ));
@@ -4997,8 +5060,9 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
         background: [0.1, 0.1, 0.1, 1.0],
         border: [0.3, 0.3, 0.3, 1.0],
         elevation: ComponentElevation {
-            paint_color: None,
-            color: [0.0, 0.0, 0.0, 0.24],
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.24],
+            },
             offset_x: 0.0,
             offset_y: 8.0,
             blur_radius: 24.0,
@@ -5017,7 +5081,9 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
             .unwrap()
             .kind,
         ScenePrimitiveKind::Quad {
-            background: Some([0.0, 0.0, 0.0, 0.45]),
+            background: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.45]
+            }),
             ..
         }
     ));
@@ -5106,8 +5172,9 @@ fn command_palette_title_and_query_sort_above_surface_quads() {
         input_background: [0.08, 0.08, 0.08, 1.0],
         input_border: [0.3, 0.3, 0.3, 1.0],
         elevation: ComponentElevation {
-            paint_color: None,
-            color: [0.0, 0.0, 0.0, 0.4],
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.4],
+            },
             offset_x: 0.0,
             offset_y: 12.0,
             blur_radius: 24.0,
@@ -5215,8 +5282,9 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
         background: [0.1, 0.1, 0.1, 1.0],
         border: [0.0; 4],
         elevation: ComponentElevation {
-            paint_color: None,
-            color: [0.0, 0.0, 0.0, 0.45],
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.45],
+            },
             offset_x: 0.0,
             offset_y: 14.0,
             blur_radius: 30.0,
@@ -5674,14 +5742,16 @@ fn scrollbar_chrome_paints_ordinary_quads_over_the_scrollport() {
     assert!(matches!(
         track.kind,
         ScenePrimitiveKind::Quad {
-            background: Some([0.1, 0.1, 0.1, 1.0]),
+            background: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [0.1, 0.1, 0.1, 1.0]
+            }),
             ..
         }
     ));
     assert!(matches!(
         thumb.kind,
         ScenePrimitiveKind::Quad {
-            background: Some([0.6, 0.6, 0.6, 1.0]),
+            background: Some(nana_ui_core::PaintColor::Srgb { rgba: [0.6, 0.6, 0.6, 1.0] }),
             corner_radius,
             ..
         } if corner_radius.iter().all(|r| (*r - 3.0).abs() < f32::EPSILON)
@@ -5770,7 +5840,9 @@ fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
     assert!(matches!(
         track.kind,
         ScenePrimitiveKind::Quad {
-            background: Some([0.2, 0.2, 0.2, 1.0]),
+            background: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [0.2, 0.2, 0.2, 1.0]
+            }),
             ..
         }
     ));
@@ -5778,7 +5850,7 @@ fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
     assert!(matches!(
         thumb.kind,
         ScenePrimitiveKind::Quad {
-            background: Some([1.0, 0.0, 0.0, 1.0]),
+            background: Some(nana_ui_core::PaintColor::Srgb { rgba: [1.0, 0.0, 0.0, 1.0] }),
             corner_radius,
             ..
         } if corner_radius.iter().all(|r| (*r - 2.0).abs() < f32::EPSILON)
@@ -5857,7 +5929,9 @@ fn focused_list_item_paints_an_external_keyboard_ring() {
     assert!(matches!(
         ring.kind,
         ScenePrimitiveKind::Quad {
-            border_color: Some([0.2, 0.6, 1.0, 1.0]),
+            border_color: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [0.2, 0.6, 1.0, 1.0]
+            }),
             border_width: 2.0,
             ..
         }
@@ -5980,8 +6054,9 @@ fn an_icon_trigger_paints_a_centered_glyph_instead_of_label_text() {
         search_field: None,
         options: Vec::new(),
         elevation: ComponentElevation {
-            paint_color: None,
-            color: [0.0, 0.0, 0.0, 0.0],
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.0],
+            },
             offset_x: 0.0,
             offset_y: 0.0,
             blur_radius: 0.0,
@@ -6064,7 +6139,10 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
     match &ring.kind {
         ScenePrimitiveKind::Quad {
             background: None,
-            border_color: Some([0.2, 0.5, 1.0, 1.0]),
+            border_color:
+                Some(nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.2, 0.5, 1.0, 1.0],
+                }),
             border_width: 2.0,
             ..
         } => {}
@@ -6080,7 +6158,10 @@ fn a_focused_range_adds_a_thumb_focus_ring_and_keeps_the_rail_untouched() {
         .kind
     {
         ScenePrimitiveKind::Quad {
-            background: Some([0.4, 0.4, 0.45, 1.0]),
+            background:
+                Some(nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.4, 0.4, 0.45, 1.0],
+                }),
             ..
         } => {}
         other => panic!("rail must stay on the base border colour, got {other:?}"),
@@ -6282,8 +6363,9 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             height: 34.0,
         },
         elevation: Some(ComponentElevation {
-            paint_color: None,
-            color: [0.0, 0.0, 0.0, 0.25],
+            color: nana_ui_core::PaintColor::Srgb {
+                rgba: [0.0, 0.0, 0.0, 0.25],
+            },
             offset_x: 0.0,
             offset_y: 3.0,
             blur_radius: 8.0,
@@ -6343,7 +6425,12 @@ fn migrated_components_consume_runtime_subregion_geometry() {
     match &icon.kind {
         ScenePrimitiveKind::Icon {
             color: Some(color), ..
-        } => assert_eq!(*color, [0.1, 0.6, 0.9, 1.0]),
+        } => assert_eq!(
+            *color,
+            nana_ui_core::PaintColor::Srgb {
+                rgba: [0.1, 0.6, 0.9, 1.0]
+            }
+        ),
         other => panic!("{other:?}"),
     }
     assert!(matches!(
@@ -6355,8 +6442,12 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             .unwrap()
             .kind,
         ScenePrimitiveKind::Quad {
-            background: Some([0.2, 0.3, 0.4, 1.0]),
-            border_color: Some([0.4, 0.5, 0.6, 1.0]),
+            background: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [0.2, 0.3, 0.4, 1.0]
+            }),
+            border_color: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [0.4, 0.5, 0.6, 1.0]
+            }),
             ..
         }
     ));
@@ -6469,7 +6560,6 @@ fn migrated_components_consume_runtime_subregion_geometry() {
             .kind,
         ScenePrimitiveKind::Quad {
             shadow: Some(ComponentElevation {
-                paint_color: None,
                 offset_x: 0.0,
                 offset_y: 3.0,
                 blur_radius: 8.0,
@@ -6824,7 +6914,9 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
             })
             .map(|primitive| &primitive.kind),
         Some(ScenePrimitiveKind::QuadBatch {
-            background: Some([0.2, 0.4, 0.8, 0.14]),
+            background: Some(nana_ui_core::PaintColor::Srgb {
+                rgba: [0.2, 0.4, 0.8, 0.14]
+            }),
             ..
         })
     ));
@@ -8517,14 +8609,16 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
             SceneTextSpan {
                 start: 0,
                 end: 4,
-                color: [1.0, 0.0, 0.0, 1.0],
-                paint_color: None,
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [1.0, 0.0, 0.0, 1.0]
+                },
             },
             SceneTextSpan {
                 start: 13,
                 end: 16,
-                color: [0.0, 1.0, 0.0, 1.0],
-                paint_color: None,
+                color: nana_ui_core::PaintColor::Srgb {
+                    rgba: [0.0, 1.0, 0.0, 1.0]
+                },
             }
         ]
     );
@@ -10219,6 +10313,9 @@ fn an_outline_is_not_painted_in_the_border_colour() {
     let ScenePrimitiveKind::Quad { surface, .. } = &quad.kind else {
         panic!("expected quad");
     };
-    assert_ne!(surface.outline_color_space, Some(red));
-    assert_eq!(surface.outline_color, Some([0.0, 0.0, 1.0, 1.0]));
+    assert_ne!(surface.outline_color, Some(red));
+    assert_eq!(
+        surface.outline_color,
+        Some(nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0]))
+    );
 }

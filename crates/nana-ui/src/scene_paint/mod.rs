@@ -59,6 +59,18 @@ pub use presentation_color::{
 pub use validate::ScenePaintError;
 use validate::validate_scene;
 
+/// The colour a text run takes in its own space: one that is not plain sRGB.
+/// Plain sRGB text goes through the glyph runs' 8-bit sRGB colour, as every
+/// resolved theme colour does.
+fn explicit_text_color(
+    color: Option<nana_ui_core::PaintColor>,
+) -> Option<nana_ui_core::PaintColor> {
+    color.filter(|color| !matches!(color, nana_ui_core::PaintColor::Srgb { .. }))
+}
+
+/// What a text, icon or spinner with no colour of its own paints.
+const BLACK: nana_ui_core::PaintColor = nana_ui_core::PaintColor::srgb([0.0, 0.0, 0.0, 1.0]);
+
 /// Final surface encoding for the linear-scRGB Scene.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScenePresentationColorSpace {
@@ -1520,7 +1532,6 @@ impl SceneWgpuPainter {
                     ScenePrimitiveKind::Text {
                         content,
                         color,
-                        paint_color,
                         size,
                         weight,
                         family,
@@ -1577,7 +1588,7 @@ impl SceneWgpuPainter {
                                 clip,
                                 scale,
                                 content,
-                                color_override.or(*color),
+                                color_override.or(color.map(nana_ui_core::PaintColor::to_srgb)),
                                 *size,
                                 *weight,
                                 family.as_deref(),
@@ -1629,8 +1640,8 @@ impl SceneWgpuPainter {
                             &mut batching,
                             [0.0, 0.0],
                             None,
-                            paint_color.map(pack_paint_color),
-                            *paint_color,
+                            explicit_text_color(*color).map(pack_paint_color),
+                            explicit_text_color(*color),
                         );
                     }
                     ScenePrimitiveKind::QuadColorBatch {
@@ -1666,8 +1677,8 @@ impl SceneWgpuPainter {
                                 vertex_clip,
                                 affine,
                                 persp,
-                                Some(*color),
-                                *border_color,
+                                Some(nana_ui_core::PaintColor::srgb(*color)),
+                                border_color.map(nana_ui_core::PaintColor::srgb),
                                 *border_width,
                                 *corner_radius,
                                 no_shadow,
@@ -1687,11 +1698,7 @@ impl SceneWgpuPainter {
                             }
                         }
                     }
-                    ScenePrimitiveKind::Icon {
-                        icon,
-                        color,
-                        paint_color,
-                    } => {
+                    ScenePrimitiveKind::Icon { icon, color } => {
                         if let Some(prepared) = self.icons.prepare_with_work(
                             &self.device,
                             &self.queue,
@@ -1700,8 +1707,7 @@ impl SceneWgpuPainter {
                             persp,
                             scale,
                             *icon,
-                            color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                            *paint_color,
+                            color.unwrap_or(BLACK),
                             opacity,
                             vertex_clip,
                             Some(&gpu_work),
@@ -1731,8 +1737,9 @@ impl SceneWgpuPainter {
                                 persp,
                                 scale,
                                 *icon,
-                                color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                                None,
+                                nana_ui_core::PaintColor::srgb(
+                                    color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                                ),
                                 opacity,
                                 vertex_clip,
                                 Some(&gpu_work),
@@ -1748,17 +1755,12 @@ impl SceneWgpuPainter {
                             }
                         }
                     }
-                    ScenePrimitiveKind::Spinner {
-                        phase,
-                        color,
-                        paint_color,
-                    } => {
+                    ScenePrimitiveKind::Spinner { phase, color } => {
                         if let Some(range) = self.meshes.push_spinner(
                             bounds,
                             mesh_affine(affine, persp),
                             *phase,
-                            color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                            *paint_color,
+                            color.unwrap_or(BLACK),
                             opacity,
                             frag_clip,
                         ) {

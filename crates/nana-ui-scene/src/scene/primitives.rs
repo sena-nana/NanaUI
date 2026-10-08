@@ -268,8 +268,14 @@ impl UiScene {
                     z_index: node.z_index,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
-                        background: surface_background,
-                        border_color: surface_border_color,
+                        background: super::slot_color(
+                            style.paint_colors.background,
+                            surface_background,
+                        ),
+                        border_color: super::slot_color(
+                            style.paint_colors.border,
+                            surface_border_color,
+                        ),
                         border_width: surface_border_width,
                         corner_radius: surface_corner_radii(style, bounds.width, bounds.height),
                         shadow: style
@@ -307,7 +313,16 @@ impl UiScene {
                                 let edges = style.paint_border_edges_with(surface_border_color);
                                 surface.border_widths =
                                     [edges.top, edges.right, edges.bottom, edges.left];
-                                surface.border_colors = style.paint_border_edge_colors();
+                                // A side's own authored colour, else its
+                                // resolved colour where it strokes; a side
+                                // with neither takes the quad's.
+                                let resolved = style.paint_border_edge_colors();
+                                for (side, resolved) in
+                                    surface.border_colors.iter_mut().zip(resolved)
+                                {
+                                    *side = side.or((resolved[3] > 0.0)
+                                        .then(|| nana_ui_core::PaintColor::srgb(resolved)));
+                                }
                                 surface.border_styles = style.paint_border_style_codes();
                             }
                             surface
@@ -426,8 +441,8 @@ impl UiScene {
                         }),
                         VisualQuadStyle::solid(node.document_text_selection_color),
                     );
-                    if let ScenePrimitiveKind::QuadBatch { surface, .. } = &mut selection.kind {
-                        surface.background_color = node.style.paint_colors.selection_background;
+                    if let ScenePrimitiveKind::QuadBatch { background, .. } = &mut selection.kind {
+                        *background = node.style.paint_colors.selection_background.or(*background);
                     }
                     self.insert_primitive(selection);
                 }
@@ -488,13 +503,14 @@ impl UiScene {
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Text {
                         content: text.value.clone(),
-                        color: node
-                            .style
-                            .paint_colors
-                            .color
-                            .map(nana_ui_core::PaintColor::to_srgb)
-                            .or(node.style.color),
-                        paint_color: node.style.paint_colors.color,
+                        color: super::slot_color(
+                            node.style.paint_colors.color,
+                            node.style
+                                .paint_colors
+                                .color
+                                .map(nana_ui_core::PaintColor::to_srgb)
+                                .or(node.style.color),
+                        ),
                         size: node.style.font_size,
                         weight: node.style.font_weight,
                         family: node.style.font_family.as_deref().map(str::to_owned),
@@ -738,10 +754,12 @@ impl UiScene {
                                 document_order: node_order,
                                 kind: ScenePrimitiveKind::Spinner {
                                     phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
-                                    color: node.standard_visual_foreground.or(node.style.color),
-                                    paint_color: node.style.paint_colors.color.filter(|paint| {
-                                        node.standard_visual_foreground == Some(paint.to_srgb())
-                                    }),
+                                    color: super::slot_color(
+                                        node.style.paint_colors.color.filter(|paint| {
+                                            node.standard_visual_foreground == Some(paint.to_srgb())
+                                        }),
+                                        node.standard_visual_foreground.or(node.style.color),
+                                    ),
                                 },
                             });
                         }
@@ -1518,9 +1536,11 @@ impl UiScene {
                             document_order: node_order,
                             kind: ScenePrimitiveKind::Text {
                                 content: "✓".into(),
-                                color: node.standard_visual_foreground,
-                                paint_color: matching_paint_color(
-                                    node.style.paint_colors.color,
+                                color: super::slot_color(
+                                    matching_paint_color(
+                                        node.style.paint_colors.color,
+                                        node.standard_visual_foreground,
+                                    ),
                                     node.standard_visual_foreground,
                                 ),
                                 size: extent * 0.75,
@@ -1569,18 +1589,19 @@ impl UiScene {
                         document_order: node_order,
                         kind: ScenePrimitiveKind::Icon {
                             icon: *icon,
-                            color: node
-                                .standard_visual_foreground
-                                .or_else(|| {
-                                    node.style
-                                        .paint_colors
-                                        .color
-                                        .map(nana_ui_core::PaintColor::to_srgb)
-                                })
-                                .or(node.style.color),
-                            paint_color: node.style.paint_colors.color.filter(|paint| {
-                                node.standard_visual_foreground == Some(paint.to_srgb())
-                            }),
+                            color: super::slot_color(
+                                node.style.paint_colors.color.filter(|paint| {
+                                    node.standard_visual_foreground == Some(paint.to_srgb())
+                                }),
+                                node.standard_visual_foreground
+                                    .or_else(|| {
+                                        node.style
+                                            .paint_colors
+                                            .color
+                                            .map(nana_ui_core::PaintColor::to_srgb)
+                                    })
+                                    .or(node.style.color),
+                            ),
                         },
                     });
                 }
@@ -1670,10 +1691,12 @@ impl UiScene {
                             document_order: node_order,
                             kind: ScenePrimitiveKind::Spinner {
                                 phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
-                                color: node.standard_visual_foreground.or(node.style.color),
-                                paint_color: node.style.paint_colors.color.filter(|paint| {
-                                    node.standard_visual_foreground == Some(paint.to_srgb())
-                                }),
+                                color: super::slot_color(
+                                    node.style.paint_colors.color.filter(|paint| {
+                                        node.standard_visual_foreground == Some(paint.to_srgb())
+                                    }),
+                                    node.standard_visual_foreground.or(node.style.color),
+                                ),
                             },
                         });
                     }
@@ -1906,10 +1929,12 @@ impl UiScene {
                             document_order: node_order,
                             kind: ScenePrimitiveKind::Spinner {
                                 phase: (loading_phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
-                                color: node.standard_visual_foreground.or(node.style.color),
-                                paint_color: node.style.paint_colors.color.filter(|paint| {
-                                    node.standard_visual_foreground == Some(paint.to_srgb())
-                                }),
+                                color: super::slot_color(
+                                    node.style.paint_colors.color.filter(|paint| {
+                                        node.standard_visual_foreground == Some(paint.to_srgb())
+                                    }),
+                                    node.standard_visual_foreground.or(node.style.color),
+                                ),
                             },
                         });
                     }
@@ -1940,10 +1965,12 @@ impl UiScene {
                         document_order: node_order,
                         kind: ScenePrimitiveKind::Spinner {
                             phase: (phase.clamp(0.0, 1.0) * 8.0).floor() as u8 % 8,
-                            color: node.standard_visual_foreground.or(node.style.color),
-                            paint_color: node.style.paint_colors.color.filter(|paint| {
-                                node.standard_visual_foreground == Some(paint.to_srgb())
-                            }),
+                            color: super::slot_color(
+                                node.style.paint_colors.color.filter(|paint| {
+                                    node.standard_visual_foreground == Some(paint.to_srgb())
+                                }),
+                                node.standard_visual_foreground.or(node.style.color),
+                            ),
                         },
                     });
                 }

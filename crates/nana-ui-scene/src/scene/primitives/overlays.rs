@@ -69,8 +69,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 z_index: node.z_index,
                 document_order: node_order,
                 kind: ScenePrimitiveKind::Quad {
-                    background: Some(*background),
-                    border_color: None,
+                    background: crate::scene::slot_color(None, Some(*background)),
+                    border_color: crate::scene::slot_color(None, None),
                     border_width: 0.0,
                     corner_radius: corner_radii(radius),
                     shadow: Some(*elevation),
@@ -204,9 +204,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Icon {
                         icon: *icon,
-                        color: Some(*color),
-                        paint_color: matching_paint_color(
-                            node.style.paint_colors.color,
+                        color: crate::scene::slot_color(
+                            matching_paint_color(node.style.paint_colors.color, Some(*color)),
                             Some(*color),
                         ),
                     },
@@ -274,8 +273,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     z_index: node.z_index,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
-                        background: chrome.background,
-                        border_color: chrome.border,
+                        background: crate::scene::slot_color(None, chrome.background),
+                        border_color: crate::scene::slot_color(None, chrome.border),
                         border_width: 1.0,
                         corner_radius: corner_radii(radius),
                         shadow: None,
@@ -295,18 +294,19 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Icon {
                         icon: *icon,
-                        color: node
-                            .standard_visual_foreground
-                            .or_else(|| {
-                                node.style
-                                    .paint_colors
-                                    .color
-                                    .map(nana_ui_core::PaintColor::to_srgb)
-                            })
-                            .or(node.style.color),
-                        paint_color: node.style.paint_colors.color.filter(|paint| {
-                            node.standard_visual_foreground == Some(paint.to_srgb())
-                        }),
+                        color: crate::scene::slot_color(
+                            node.style.paint_colors.color.filter(|paint| {
+                                node.standard_visual_foreground == Some(paint.to_srgb())
+                            }),
+                            node.standard_visual_foreground
+                                .or_else(|| {
+                                    node.style
+                                        .paint_colors
+                                        .color
+                                        .map(nana_ui_core::PaintColor::to_srgb)
+                                })
+                                .or(node.style.color),
+                        ),
                     },
                 });
             } else if let Some(trigger) = trigger {
@@ -350,8 +350,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     z_index,
                     document_order: node_order,
                     kind: ScenePrimitiveKind::Quad {
-                        background: Some(*background),
-                        border_color: Some(*border),
+                        background: crate::scene::slot_color(None, Some(*background)),
+                        border_color: crate::scene::slot_color(None, Some(*border)),
                         border_width: 1.0,
                         corner_radius: corner_radii(node.chrome_radii.md),
                         shadow: Some(*elevation),
@@ -429,9 +429,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         document_order: node_order,
                         kind: ScenePrimitiveKind::Icon {
                             icon,
-                            color: Some(color),
-                            paint_color: matching_paint_color(
-                                node.style.paint_colors.color,
+                            color: crate::scene::slot_color(
+                                matching_paint_color(node.style.paint_colors.color, Some(color)),
                                 Some(color),
                             ),
                         },

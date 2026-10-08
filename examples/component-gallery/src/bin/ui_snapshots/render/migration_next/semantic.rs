@@ -104,7 +104,7 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
             "quad-color-batch {head} count={} colors={} border={} border_width={} radius={}",
             bounds.len(),
             colors.len(),
-            color(*border_color),
+            rgba(*border_color),
             number(*border_width),
             radius(*corner_radius),
         ),
@@ -147,7 +147,7 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
         } => format!(
             "icon-batch {head} count={} icon={icon:?} color={}",
             bounds.len(),
-            color(*icon_color),
+            rgba(*icon_color),
         ),
         // The phase is the animation clock, not a design value. Recording it
         // would make every re-run of a spinner fixture a baseline change.
@@ -165,14 +165,14 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
             "stroke {head} points={} width={} color={} cap={cap:?}",
             points.len(),
             number(*width),
-            color(Some(*stroke_color)),
+            rgba(Some(*stroke_color)),
         ),
         // A painted node's triangles: their count and the theme colour they
         // were resolved to.
         ScenePrimitiveKind::Path { mesh, .. } => format!(
             "path {head} triangles={} color={}",
             mesh.indices.len() / 3,
-            color(mesh.vertices.first().map(|vertex| vertex.color)),
+            rgba(mesh.vertices.first().map(|vertex| vertex.color)),
         ),
         ScenePrimitiveKind::LayerBegin { opacity, blend, .. } => {
             format!(
@@ -197,18 +197,18 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
 fn describe_shadow(value: nana_ui::runtime::ComponentElevation) -> String {
     let fields = format!(
         "color: {:?}, offset_x: {:?}, offset_y: {:?}, blur_radius: {:?}, spread_radius: {:?}, inset: {:?}",
-        value.color,
+        value.color.to_srgb(),
         value.offset_x,
         value.offset_y,
         value.blur_radius,
         value.spread_radius,
         value.inset,
     );
-    match value.paint_color {
-        Some(paint_color) => {
+    match value.color {
+        nana_ui_core::PaintColor::Srgb { .. } => format!("ComponentElevation {{ {fields} }}"),
+        paint_color => {
             format!("ComponentElevation {{ paint_color: {paint_color:?}, {fields} }}")
         }
-        None => format!("ComponentElevation {{ {fields} }}"),
     }
 }
 
@@ -230,7 +230,11 @@ fn radius(corners: [f32; 4]) -> String {
         .join("/")
 }
 
-fn color(value: Option<[f32; 4]>) -> String {
+fn color(value: Option<nana_ui_core::PaintColor>) -> String {
+    rgba(value.map(nana_ui_core::PaintColor::to_srgb))
+}
+
+fn rgba(value: Option<[f32; 4]>) -> String {
     match value {
         None => "none".to_owned(),
         Some([r, g, b, a]) => format!(

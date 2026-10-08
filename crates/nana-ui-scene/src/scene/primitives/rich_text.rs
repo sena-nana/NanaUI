@@ -29,8 +29,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     selection.iter().copied().map(scene_rect),
                     VisualQuadStyle::solid(*selection_color),
                 );
-                if let ScenePrimitiveKind::QuadBatch { surface, .. } = &mut selection.kind {
-                    surface.background_color = node.style.paint_colors.selection_background;
+                if let ScenePrimitiveKind::QuadBatch { background, .. } = &mut selection.kind {
+                    *background = (node.style.paint_colors.selection_background).or(*background);
                 }
                 emit(selection);
             }
@@ -61,8 +61,8 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     selection.iter().copied().map(scene_rect),
                     VisualQuadStyle::solid(*selection_color),
                 );
-                if let ScenePrimitiveKind::QuadBatch { surface, .. } = &mut selection.kind {
-                    surface.background_color = node.style.paint_colors.selection_background;
+                if let ScenePrimitiveKind::QuadBatch { background, .. } = &mut selection.kind {
+                    *background = (node.style.paint_colors.selection_background).or(*background);
                 }
                 emit(selection);
             }
