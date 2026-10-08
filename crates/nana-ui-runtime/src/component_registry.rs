@@ -257,6 +257,12 @@ impl ComponentRegistry {
         self.by_rust.get(&type_id).and_then(|id| self.by_id.get(id))
     }
 
+    /// Every registered component type, in no particular order.
+    #[cfg(test)]
+    pub(crate) fn type_ids(&self) -> impl Iterator<Item = &ComponentTypeId> {
+        self.by_id.keys()
+    }
+
     pub fn resolve_tag(&self, tag: &str) -> Option<&ComponentTypeId> {
         self.by_tag.get(&normalize_tag(tag))
     }

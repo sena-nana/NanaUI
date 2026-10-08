@@ -24,6 +24,10 @@ macro_rules! descriptors {
 }
 descriptors! {
     STACK => { type_id: "nana.stack", tags: &["stack"] },
+    COLUMN => { type_id: "nana.column", tags: &["column"] },
+    ROW => { type_id: "nana.row", tags: &["row"] },
+    BOX => { type_id: "nana.box", tags: &["box"] },
+    DROP_TARGET => { type_id: "nana.drop-target", tags: &["drop-target"] },
     TEXT => { type_id: "nana.text", tags: &["text"] },
     BUTTON => { type_id: "nana.button", tags: &["button"] },
     ICON_BUTTON => { type_id: "nana.icon-button", tags: &["icon-button"] },
@@ -109,6 +113,10 @@ descriptors! {
     SIDEBAR_SECTION => { type_id: "nana.sidebar-section", tags: &["sidebar-section"] },
     SIDEBAR_FOOTER => { type_id: "nana.sidebar-footer", tags: &["sidebar-footer"] },
     GPU_TEXTURE_VIEW => { type_id: "nana.gpu", tags: &["gpu"] },
+    GPU_VIEW => { type_id: "nana.gpu-view", tags: &["gpu-view"] },
+    VIDEO => { type_id: "nana.video", tags: &["video"] },
+    BROWSER_VIEW => { type_id: "nana.browser-view", tags: &["browser-view"] },
+    NATIVE_CONTENT => { type_id: "nana.native-content", tags: &["native-content"] },
 }
 /// Looks up a declared tag even when its implementation is compiled out.
 pub fn builtin_component(tag: &str) -> Option<&'static ComponentDescriptor> {
@@ -122,6 +130,19 @@ pub fn builtin_component(tag: &str) -> Option<&'static ComponentDescriptor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The other direction (#292): every builtin the registry installs has
+    /// a declaration, so capability queries know every builtin there is.
+    #[test]
+    fn every_installed_builtin_is_declared() {
+        let context = crate::AppContext::new();
+        let undeclared: Vec<_> = context
+            .component_type_ids()
+            .filter(|type_id| builtin_component(type_id.as_str()).is_none())
+            .map(|type_id| type_id.as_str().to_owned())
+            .collect();
+        assert!(undeclared.is_empty(), "undeclared builtins: {undeclared:?}");
+    }
+
     #[test]
     fn declarations_match_installed_component_registry() {
         let context = crate::AppContext::new();

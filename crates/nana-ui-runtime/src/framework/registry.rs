@@ -7,6 +7,12 @@ impl AppContext {
         self.components.resolve_tag(tag)
     }
 
+    /// Every component type this context can instantiate.
+    #[cfg(test)]
+    pub(crate) fn component_type_ids(&self) -> impl Iterator<Item = &ComponentTypeId> {
+        self.components.type_ids()
+    }
+
     /// Resolve an already-normalized tag (see [`normalize_tag`]).
     pub fn resolve_component_tag_normalized(
         &self,

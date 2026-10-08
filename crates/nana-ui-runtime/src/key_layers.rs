@@ -18,80 +18,9 @@ use crate::{
     NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
 };
 
-/// Modifier bits for a backend-neutral key event.
-///
-/// Stored-chord modifiers. Live events use [`nana_ui_input::InputModifiers`];
-/// [`Self::from_input`] copies the four bits in the same order:
-/// - `alt` ← `InputModifiers::alt`
-/// - `control` ← `InputModifiers::control`
-/// - `meta` ← `InputModifiers::meta` / `nana_ui::command::KeyModifiers::logo`
-/// - `shift` ← `InputModifiers::shift`
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct KeyModifiers {
-    pub alt: bool,
-    pub control: bool,
-    pub meta: bool,
-    pub shift: bool,
-}
-
-impl KeyModifiers {
-    pub const fn primary() -> Self {
-        if cfg!(target_os = "macos") {
-            Self {
-                meta: true,
-                ..Self::empty()
-            }
-        } else {
-            Self {
-                control: true,
-                ..Self::empty()
-            }
-        }
-    }
-
-    pub const fn empty() -> Self {
-        Self {
-            alt: false,
-            control: false,
-            meta: false,
-            shift: false,
-        }
-    }
-
-    pub const fn with_shift(mut self) -> Self {
-        self.shift = true;
-        self
-    }
-
-    pub const fn from_flags(control: bool, alt: bool, shift: bool, meta: bool) -> Self {
-        Self {
-            alt,
-            control,
-            meta,
-            shift,
-        }
-    }
-
-    /// Copy the four bits of a live [`nana_ui_input::InputModifiers`].
-    /// The names stay in the same order: alt, control, meta, shift.
-    pub const fn from_input(modifiers: nana_ui_input::InputModifiers) -> Self {
-        Self {
-            alt: modifiers.alt,
-            control: modifiers.control,
-            meta: modifiers.meta,
-            shift: modifiers.shift,
-        }
-    }
-
-    pub const fn to_input(self) -> nana_ui_input::InputModifiers {
-        nana_ui_input::InputModifiers {
-            alt: self.alt,
-            control: self.control,
-            meta: self.meta,
-            shift: self.shift,
-        }
-    }
-}
+/// The modifiers of a stored shortcut chord: the same bits a live key event
+/// carries, so a chord copies them as they are.
+pub type KeyModifiers = nana_ui_input::InputModifiers;
 
 /// Chord key plus modifiers. Hosts copy these bits from platform input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -109,10 +38,7 @@ impl CapturedStroke {
     }
 
     fn from_canonical(event: &nana_ui_input::KeyInput) -> Option<Self> {
-        let stroke = Self::new(
-            event.logical.0.as_ref(),
-            KeyModifiers::from_input(event.modifiers),
-        );
+        let stroke = Self::new(event.logical.0.as_ref(), event.modifiers);
         (!stroke.key.is_empty()).then_some(stroke)
     }
 
@@ -198,7 +124,7 @@ impl KeyCaptureLayer {
             self.pending_modifiers = KeyModifiers::empty();
             return None;
         }
-        let modifiers = KeyModifiers::from_input(event.modifiers);
+        let modifiers = event.modifiers;
         if !event.is_pressed() {
             if is_modifier_key(event.logical.0.as_ref()) {
                 self.pending_modifiers = modifiers;
@@ -780,7 +706,7 @@ mod tests {
     }
 
     fn press(key: &'static str, modifiers: KeyModifiers) -> KeyInput {
-        KeyInput::named(key, key, KeyState::Pressed, modifiers.to_input())
+        KeyInput::named(key, key, KeyState::Pressed, modifiers)
     }
 
     #[test]
@@ -797,11 +723,9 @@ mod tests {
                 shift: true,
             },
         };
-        let stored = KeyModifiers::from_input(event.modifiers);
-        assert_eq!(stored.to_input(), event.modifiers);
         let stroke = CapturedStroke::from_canonical(&event).expect("logical key");
         assert_eq!(stroke.key.as_ref(), "k");
-        assert_eq!(stroke.modifiers, stored);
+        assert_eq!(stroke.modifiers, event.modifiers);
         assert_eq!(event.physical.0.as_ref(), "KeyK");
 
         let release = KeyInput::named(
@@ -815,7 +739,7 @@ mod tests {
         );
         assert!(!release.is_pressed());
         assert_eq!(
-            KeyModifiers::from_input(release.modifiers),
+            release.modifiers,
             KeyModifiers {
                 control: true,
                 ..KeyModifiers::empty()
