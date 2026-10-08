@@ -62,6 +62,8 @@ fn with_document<R>(
 
 宿主不会自己关窗。系统或标题栏关闭按钮都只发 `WindowEvent::CloseRequested`。默认的 `window_event` 立刻回 `WindowCommand::Close(id)`，关掉这一扇。要退出整个进程，回 `RuntimeProgramUpdate::exit()`。需要先保存时，先回默认更新，保存完成后再关。
 
+用 `ApplicationState` 时，这个回答来自 `close_requested`。默认关掉这一扇。要先问一句或收到托盘，就回一个不含 `Close(id)` 的更新，等用户决定后从 `update` 再关。`window_event` 仍会收到这次请求，只用来观察。
+
 ## run_runtime
 
 ```rust

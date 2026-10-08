@@ -96,12 +96,30 @@ pub trait ApplicationState: Sized + 'static {
     }
     /// Observe framework window lifecycle events without importing native events.
     /// `Closed` is delivered after the document is removed and `window_closed` returns.
+    /// Whether a `CloseRequested` closes the window is [`Self::close_requested`]'s answer.
     fn window_event(
         &mut self,
         _event: &WindowEvent,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
         RuntimeProgramUpdate::default()
+    }
+    /// The system or the title bar asked to close `id`. The default answer
+    /// closes it. Answer without [`WindowCommand::Close`] to keep it open —
+    /// to ask first, or to hide to the tray — and close it later from
+    /// [`Self::update`] once that is decided.
+    ///
+    /// [`WindowCommand::Close`]: nana_ui_platform::host::WindowCommand::Close
+    fn close_requested(
+        &mut self,
+        id: WindowId,
+        _windows: &mut HashMap<WindowId, ApplicationWindow>,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate {
+            window_commands: vec![nana_ui_platform::host::WindowCommand::Close(id)],
+            ..RuntimeProgramUpdate::default()
+        }
     }
     fn theme(&self) -> Arc<CompiledTheme> {
         builtin_theme_arc(ThemeAppearance::Dark)
@@ -392,15 +410,14 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
             self.windows.remove(id);
             self.state.window_closed(*id);
         }
-        let application_update = self.state.window_event(&event, context);
-        let update = match event {
-            WindowEvent::CloseRequested { id } => RuntimeProgramUpdate {
-                window_commands: vec![nana_ui_platform::host::WindowCommand::Close(id)],
-                ..Default::default()
-            },
+        let observed = self.state.window_event(&event, context);
+        let answer = match event {
+            WindowEvent::CloseRequested { id } => {
+                self.state.close_requested(id, &mut self.windows, context)
+            }
             _ => RuntimeProgramUpdate::default(),
         };
-        update.merge(application_update)
+        answer.merge(observed)
     }
     fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
         self.state.rebuild_gpu(&mut self.windows, context);
@@ -484,5 +501,98 @@ mod tests {
         );
         assert_eq!(program.appearance_backdrop_opacity_for(overlay), 0.0);
         assert_eq!(RuntimeProgram::next_wakeup(&program), Some(deadline));
+    }
+
+    fn program_context(id: WindowId) -> RuntimeProgramContext<()> {
+        RuntimeProgramContext::new(
+            id,
+            nana_ui_platform::WindowGeometry::default(),
+            crate::test_gpu::context(),
+            crate::ResolvedWindowPresentation::closed(),
+            crate::CompositionWork::default(),
+            Arc::new(|_| {}),
+            std::sync::mpsc::sync_channel(1).0,
+            None,
+            crate::startup::StartupHandle::detached(),
+        )
+    }
+
+    /// Asks before closing: keeps the window and remembers the request.
+    #[derive(Default)]
+    struct Confirming {
+        asked: Vec<WindowId>,
+        observed: usize,
+    }
+
+    impl ApplicationState for Confirming {
+        type Message = ();
+        type Error = String;
+        fn initialize(_: &RuntimeProgramContext<()>) -> Result<Self, String> {
+            unreachable!("constructed directly")
+        }
+        fn build(
+            &mut self,
+            _: &mut ApplicationWindow,
+            _: &RuntimeProgramContext<()>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn window_event(
+            &mut self,
+            event: &WindowEvent,
+            _: &RuntimeProgramContext<()>,
+        ) -> RuntimeProgramUpdate {
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                self.observed += 1;
+            }
+            RuntimeProgramUpdate::default()
+        }
+        fn close_requested(
+            &mut self,
+            id: WindowId,
+            _: &mut HashMap<WindowId, ApplicationWindow>,
+            _: &RuntimeProgramContext<()>,
+        ) -> RuntimeProgramUpdate {
+            self.asked.push(id);
+            RuntimeProgramUpdate::redraw(id)
+        }
+    }
+
+    /// A close request closes the window by default; a state that answers
+    /// without `Close` keeps it open, and `window_event` still observes it.
+    #[test]
+    fn a_close_request_closes_unless_the_state_answers_otherwise() {
+        use nana_ui_platform::host::WindowCommand;
+
+        let id = WindowId(3);
+        let context = program_context(id);
+        let mut closing = RuntimeApplication {
+            state: Overlay {
+                overlay: id,
+                deadline: Instant::now(),
+            },
+            windows: HashMap::new(),
+        };
+        let answer = RuntimeProgram::window_event(
+            &mut closing,
+            WindowEvent::CloseRequested { id },
+            &context,
+        );
+        assert_eq!(answer.window_commands, vec![WindowCommand::Close(id)]);
+
+        let mut confirming = RuntimeApplication {
+            state: Confirming::default(),
+            windows: HashMap::new(),
+        };
+        let answer = RuntimeProgram::window_event(
+            &mut confirming,
+            WindowEvent::CloseRequested { id },
+            &context,
+        );
+        assert!(answer.window_commands.is_empty(), "{answer:?}");
+        assert!(!answer.exit);
+        assert_eq!(answer.redraw, crate::RuntimeRedraw::Window(id));
+        assert_eq!(confirming.state.asked, [id]);
+        assert_eq!(confirming.state.observed, 1);
     }
 }

@@ -192,6 +192,7 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 | `appearance_backdrop_opacity_for(&self, id)` | `appearance_backdrop_opacity_for` |
 | `input_event(&mut self, id, input, windows, cx)` | `input_event`，多给一份全部窗口的 `ApplicationWindow` |
 | `next_wakeup(&self)` / `wake(&mut self, now, windows, cx)` | `next_wakeup` / `wake` |
+| `close_requested(&mut self, id, windows, cx)` | `window_event` 的 `CloseRequested`。默认回 `WindowCommand::Close(id)`；回答里不带它，窗口就留着（先确认、收到托盘），决定后再从 `update` 关 |
 
 富文本：`nana_ui::runtime::rich` 是值的词汇（`RichText`、`RichSpanStyle`、`RichTextStroke`、`RichTextShadow`、Style Model 的 `PaintColor`）。`RichTextView` 组件或 `MutationQueue::set_rich_text(id, rich)` 把它挂到文本节点上，按改到的层定价：塑形层重新排版，绘制层只重绘，`effect` 不碰文本。见 [RichTextView](../components/rich-text-view.md) 与 [文本引擎](text-engine.md#富文本-span)。编辑用 [RichTextEditor](../components/rich-text-editor.md)：工具栏调 `AppContext::rich_edit(entity, RichEditCommand)`，文档经 `RichTextEditorEvent::Changed` 交回应用。逐字特效和打字机揭示用 `AppContext::set_rich_presentation(node, effects, reveal)`，只是呈现，不做文本工作，只在播放期间请求帧。
 
