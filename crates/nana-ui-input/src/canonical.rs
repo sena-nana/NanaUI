@@ -429,7 +429,10 @@ impl InputEndpoint {
     }
 
     /// Queue `event`, merged into the last one when both are coalescible. A
-    /// full queue returns the event: drain, then push it again.
+    /// full queue returns the event: drain, then push it again. The byte
+    /// budget bounds a burst, not one event: an empty endpoint takes an event
+    /// larger than the whole budget (a drop of many files) on its own, so the
+    /// retry after a drain always lands.
     #[allow(clippy::result_large_err)]
     pub fn push(&mut self, event: CanonicalInputEvent) -> Result<(), CanonicalInputEvent> {
         metric!(nana_diagnostics::framework::runtime::INPUT_EVENTS);
@@ -443,7 +446,8 @@ impl InputEndpoint {
         }
         let bytes = event.payload.allocation_bytes();
         if self.queue.len() >= self.max_events
-            || bytes > self.max_payload_bytes.saturating_sub(self.payload_bytes)
+            || (!self.queue.is_empty()
+                && bytes > self.max_payload_bytes.saturating_sub(self.payload_bytes))
         {
             return Err(event);
         }
@@ -568,12 +572,20 @@ mod tests {
 
     #[test]
     fn a_full_endpoint_returns_the_event_for_a_retry() {
-        let mut endpoint = InputEndpoint::new(1, 1);
-        let text = CanonicalInputEvent {
-            metadata: meta(1),
+        let mut endpoint = InputEndpoint::new(2, 1);
+        let text = |sequence| CanonicalInputEvent {
+            metadata: meta(sequence),
             payload: InputPayload::Text(CommittedText::new("hello")),
         };
-        assert_eq!(endpoint.push(text.clone()), Err(text));
+        // Over the byte budget: alone in an empty endpoint it fits, behind
+        // another event it waits for a drain.
+        endpoint.push(text(1)).unwrap();
+        assert_eq!(endpoint.push(text(2)), Err(text(2)));
+        endpoint.pop();
+        endpoint.push(text(2)).unwrap();
+        endpoint.pop();
+
+        let mut endpoint = InputEndpoint::new(1, 1);
         endpoint.push(pointer(2, PointerPhase::Down)).unwrap();
         let up = endpoint.push(pointer(3, PointerPhase::Up)).unwrap_err();
         endpoint.pop();
