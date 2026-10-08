@@ -334,7 +334,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     fn start(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
-        mut instance: Option<wgpu::Instance>,
+        mut instance: Option<crate::hosted_context::ProbedInstance>,
     ) -> Result<(), String> {
         loop {
             match self.start_attempt(event_loop, instance.take()) {
@@ -355,7 +355,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     fn start_attempt(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
-        instance: Option<wgpu::Instance>,
+        instance: Option<crate::hosted_context::ProbedInstance>,
     ) -> Result<(), String> {
         let target = self.target.resolved;
         let (window, provisional, requested_material, applied_material) = create_primary_window(
