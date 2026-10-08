@@ -43,6 +43,8 @@ fn counter() -> impl IntoView {
 
 `set` 换上新值并通知，就算新值和旧值相等也通知。`update` 就地改，然后通知。传给 `update` 的闭包不要再读同一个信号。
 
+`T: PartialEq` 时，`set_if_changed(value)` 先不追踪地比较，值相等就什么都不做，不同才 `set`，返回是否写了。后台结果、尺寸回调这类经常带回同一个值的写入用它，绑定不会白跑一轮；在副作用里调用也不会让副作用订阅这个信号。`try_set_if_changed` 在信号已经不在时返回 `false`，不 panic，适合写回可能已被回收的行。
+
 `get_untracked` 和 `with_untracked` 读，但不建立依赖。`untrack(|| …)` 包住一整段，里面的读取都不记。作用域已经回收后再读写，会报 `runtime.reactive.disposed_access`，同时 panic。`try_update` 在信号已经不在时返回 `false`，不 panic。
 
 `set` 和 `update` 只把订阅者排进队列，不立刻改树。输入路由在每个事件末尾调用 `flush_reactive`，每帧开头也会再刷一次。你在 `RuntimeProgram::update` 里改信号，有待应用绑定的窗口也会被请求重绘。

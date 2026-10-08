@@ -1334,6 +1334,31 @@ impl<T: 'static> Signal<T> {
     }
 }
 
+impl<T: PartialEq + 'static> Signal<T> {
+    /// [`Self::set`] only when `value` differs from the current value;
+    /// answers whether it wrote. The comparison is untracked, so calling
+    /// this inside an effect does not subscribe the effect to the signal.
+    #[track_caller]
+    pub fn set_if_changed(&self, value: T) -> bool {
+        if self.with_untracked(|current| *current == value) {
+            return false;
+        }
+        self.set(value);
+        true
+    }
+
+    /// [`Self::set_if_changed`], unless the signal's scope is already
+    /// disposed; answers whether it wrote. For writes that may outlive the
+    /// signal, such as a background result landing after its row recycled.
+    #[track_caller]
+    pub fn try_set_if_changed(&self, value: T) -> bool {
+        if created_at(self.key).is_none() {
+            return false;
+        }
+        self.set_if_changed(value)
+    }
+}
+
 impl<T: 'static> Readable<T> for Signal<T> {
     #[track_caller]
     fn with_value<R>(&self, f: impl FnOnce(&T) -> R) -> R {
@@ -1471,6 +1496,50 @@ mod tests {
         assert_eq!(runs.get(), 2);
         flush_user_effects();
         assert_eq!(runs.get(), 2);
+        dispose_scope(scope);
+    }
+
+    #[test]
+    fn set_if_changed_writes_and_notifies_only_a_different_value() {
+        let runs = Rc::new(Cell::new(0));
+        let (scope, count) = scoped(|| {
+            let count = signal(1u32);
+            let seen = Rc::clone(&runs);
+            watch_effect(move || {
+                count.get();
+                seen.set(seen.get() + 1);
+            });
+            count
+        });
+        assert!(!count.set_if_changed(1));
+        flush_user_effects();
+        assert_eq!(runs.get(), 1, "an equal value queues nothing");
+        assert!(count.set_if_changed(2));
+        flush_user_effects();
+        assert_eq!((runs.get(), count.get_untracked()), (2, 2));
+        dispose_scope(scope);
+        assert!(!count.try_set_if_changed(3), "a disposed signal is skipped");
+    }
+
+    #[test]
+    fn set_if_changed_inside_an_effect_does_not_subscribe_it() {
+        let runs = Rc::new(Cell::new(0));
+        let (scope, (source, mirror)) = scoped(|| {
+            let source = signal(0u32);
+            let mirror = signal(0u32);
+            let seen = Rc::clone(&runs);
+            watch_effect(move || {
+                mirror.set_if_changed(source.get());
+                seen.set(seen.get() + 1);
+            });
+            (source, mirror)
+        });
+        mirror.set(9);
+        flush_user_effects();
+        assert_eq!(runs.get(), 1, "writing the mirror elsewhere does not rerun");
+        source.set(4);
+        flush_user_effects();
+        assert_eq!((runs.get(), mirror.get_untracked()), (2, 4));
         dispose_scope(scope);
     }
 

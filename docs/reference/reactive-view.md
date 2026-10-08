@@ -556,7 +556,7 @@ impl ApplicationState for App {
 | 环节 | 行为 |
 | --- | --- |
 | 挂载 | 整棵声明树在一次 commit 里建完；挂到父节点下再多一次插入 commit。根节点无 key 插入，不影响父节点自己的 keyed 子节点 |
-| 写信号 | `set` / `update` 只把订阅它的副作用排进队列，不碰树；`computed` 只标脏，下次被读时才重算 |
+| 写信号 | `set` / `update` 只把订阅它的副作用排进队列，不碰树；`computed` 只标脏，下次被读时才重算。`set` 不比较新旧值；`set_if_changed`（`T: PartialEq`）相等时不写也不排队，`try_set_if_changed` 另外跳过已回收的信号 |
 | 等值截断 | 写入只把直接读者标脏，更下游标"待查"。待查的 computed 或副作用先把它依赖的 computed 更新一遍，只有其中某个算出了**不同的值**才重跑（`computed` 要求 `T: PartialEq`）。所以 `computed(\|\| n.get() % 2)` 在 1 → 3 时，读它的绑定一个都不跑 |
 | flush | `AppContext::flush_reactive`。按轮执行：先跑 `watch_effect`，再跑 `each` / `when` 的结构更新，最后把这一轮所有需要改的节点各暂存一次、合进**一次** commit。输入路由在每个事件末尾调用它（所以 `InputRouteOutcome::invalidated_work` 会反映绑定的变化），`take_system_work` 在每帧开头调用它 |
 | 节点绑定 | 同一个节点的所有动态字段共用一个副作用。任何一个输入变了，先按字段逐个与保留的视图比较（`FieldWrite::differs`），全部相等就到此为止：不复制、不投影、不提交。只要有一个字段不同，才复制一份、写入、投影一次 |
