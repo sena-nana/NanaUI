@@ -32,9 +32,11 @@ use std::sync::Arc;
 
 use nana_text::{
     TextConstraints as NanaTextConstraints, TextEngineEpoch, TextKind, TextLayout, TextLayoutId,
-    TextSource, TextStyle as NanaTextStyle,
+    TextSource, TextSpan, TextStyle as NanaTextStyle,
 };
-use nana_ui_core::{LineHeightSpec, TextAlignSpec};
+use nana_ui_core::{
+    AttributedRanges, LineHeightSpec, RichShapeStyle, RichSpanStyle, RichText, TextAlignSpec,
+};
 
 use crate::{ComputedStyle, TextHorizontalAlignment, TextMetrics, TextShapeConstraints};
 
@@ -79,6 +81,11 @@ impl TextDirty {
 
     pub const fn intersects(self, other: Self) -> bool {
         self.0 & other.0 != 0
+    }
+
+    /// The classes both name.
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
     }
 
     pub const fn is_empty(self) -> bool {
@@ -232,11 +239,13 @@ pub(crate) struct TextStamp {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TextNodeState {
     pub revisions: TextRevisions,
-    /// The shared source a `nana-text` engine lays out, and the content
-    /// revision it was built at. Built once per content revision, only for a
-    /// node an engine actually resolves; boxed so a node that never is pays a
-    /// pointer, not a source.
-    source: Option<Box<(u32, TextSource)>>,
+    /// The shared source a `nana-text` engine lays out, and the revisions it
+    /// was built at: the content revision, and — for rich text whose spans
+    /// resolve shaping fields over the node's computed style — the shape
+    /// revision (zero otherwise). Built once per such pair, only for a node an
+    /// engine actually resolves; boxed so a node that never is pays a pointer,
+    /// not a source.
+    source: Option<Box<(u32, u32, TextSource)>>,
     stamp: Option<TextStamp>,
     /// The layout this node retains in its world's layout store, or null.
     pub layout: TextLayoutId,
@@ -320,15 +329,142 @@ impl TextNodeState {
 
     /// The source for the node's current content, building it only when the
     /// content revision moved since the last build. Returns whether it copied.
-    pub fn source_for(&mut self, text: &str) -> (&TextSource, bool) {
+    ///
+    /// `rich` is the node's application-owned rich text, when it has one and
+    /// it still holds `text`: its shaping tier becomes the source's spans,
+    /// each a full `nana-text` style resolved over `base` — so a theme change
+    /// that moves the node's own font restyles every span that does not
+    /// override it. Such a source is also rebuilt when the shape revision
+    /// moves. Paint and presentation fields never reach the source.
+    pub fn source_for(
+        &mut self,
+        text: &str,
+        rich: Option<&RichText>,
+        base: &ComputedStyle,
+    ) -> (&TextSource, bool) {
+        let shaped = rich.filter(|rich| rich.text() == text).filter(|rich| {
+            rich.spans()
+                .iter()
+                .any(|(_, style)| !style.shape.is_empty())
+        });
         let revision = self.revisions.content;
-        let stale = self.source.as_ref().is_none_or(|built| built.0 != revision);
+        let shape = if shaped.is_some() {
+            // Never zero, so a rich source is never mistaken for a plain one.
+            self.revisions.shape | 1 << 31
+        } else {
+            0
+        };
+        let stale = self
+            .source
+            .as_ref()
+            .is_none_or(|built| built.0 != revision || built.1 != shape);
         if stale {
-            self.source = Some(Box::new((revision, TextSource::new(text))));
+            let mut source = TextSource::new(text);
+            if let Some(rich) = shaped {
+                source.set_spans(rich_text_spans(
+                    rich,
+                    &nana_text_style(base),
+                    base.font_size,
+                ));
+            }
+            self.source = Some(Box::new((revision, shape, source)));
         }
-        let (_, source) = self.source.as_deref().expect("built above");
+        let (_, _, source) = self.source.as_deref().expect("built above");
         (source, stale)
     }
+}
+
+/// The `nana-text` spans of a rich text's shaping tier, each resolved over
+/// `base` (the node's own style). Paint and presentation fields are not read.
+pub(crate) fn rich_text_spans(
+    rich: &RichText,
+    base: &NanaTextStyle,
+    base_size: f32,
+) -> Vec<TextSpan> {
+    rich.spans()
+        .iter()
+        .filter(|(_, style)| !style.shape.is_empty())
+        .map(|(range, style)| TextSpan {
+            range,
+            style: shape_over(base, base_size, &style.shape),
+            composition: None,
+        })
+        .collect()
+}
+
+/// `shape` laid over a node's resolved `base` style.
+///
+/// A span that changes the size keeps the node's line-height *ratio*: an
+/// absolute line height of 20px on 16px text becomes 1.25 times the span's
+/// size. Rich text is read as one paragraph whose emphasised words may be
+/// larger, and a line that holds a larger word grows to hold it.
+fn shape_over(base: &NanaTextStyle, base_size: f32, shape: &RichShapeStyle) -> NanaTextStyle {
+    let mut style = base.clone();
+    if let Some(family) = &shape.family {
+        style.font_family = Some(nana_font_family(family));
+    }
+    if let Some(size) = shape.size_px.filter(|size| size.is_finite() && *size > 0.0) {
+        style.font_size_px = size;
+        if let Some(LineHeightSpec::Absolute(height)) = style.line_height
+            && base_size > 0.0
+        {
+            style.line_height = Some(LineHeightSpec::Relative(height / base_size));
+        }
+    }
+    if let Some(weight) = shape.weight {
+        style.font_weight = weight;
+    }
+    if let Some(italic) = shape.italic {
+        style.italic = italic;
+    }
+    if let Some(spacing) = shape
+        .letter_spacing_px
+        .filter(|spacing| spacing.is_finite())
+    {
+        style.letter_spacing_px = spacing;
+    }
+    if let Some(features) = &shape.features {
+        style.features = features.to_vec();
+    }
+    style
+}
+
+/// What changed between two rich texts on one node, by tier: the text
+/// itself, the shaping tier, the paint tier, the presentation tier.
+///
+/// Each tier is compared as its own normalized projection, so restyling a
+/// word's colour is `PAINT` however the spans were cut, and changing only an
+/// effect index is `GLYPH_PRESENTATION` — no shaping, layout or paint work.
+/// `None` is plain text: no spans.
+pub(crate) fn classify_rich_change(
+    previous: Option<&RichText>,
+    next: Option<&RichText>,
+) -> TextDirty {
+    if previous == next {
+        return TextDirty::NONE;
+    }
+    let empty = AttributedRanges::<RichSpanStyle>::default();
+    let before = previous.map_or(&empty, RichText::spans);
+    let after = next.map_or(&empty, RichText::spans);
+    let mut dirty = TextDirty::NONE;
+    if let (Some(before), Some(after)) = (previous, next)
+        && before.text() != after.text()
+    {
+        dirty |= TextDirty::CONTENT;
+    }
+    let shape = |style: &RichSpanStyle| (!style.shape.is_empty()).then(|| style.shape.clone());
+    if before.map(shape) != after.map(shape) {
+        dirty |= TextDirty::SHAPE_STYLE;
+    }
+    let paint = |style: &RichSpanStyle| (!style.paint.is_empty()).then(|| style.paint.clone());
+    if before.map(paint) != after.map(paint) {
+        dirty |= TextDirty::PAINT;
+    }
+    let effect = |style: &RichSpanStyle| style.effect;
+    if before.map(effect) != after.map(effect) {
+        dirty |= TextDirty::GLYPH_PRESENTATION;
+    }
+    dirty
 }
 
 /// The style inputs to shaping and layout that a [`ComputedStyle`] change can
@@ -608,16 +744,103 @@ mod tests {
 
     #[test]
     fn the_source_is_built_once_per_content_revision() {
+        let style = ComputedStyle::default();
         let mut node = TextNodeState::default();
-        let (_, copied) = node.source_for("hello");
+        let (_, copied) = node.source_for("hello", None, &style);
         assert!(copied);
-        let (source, copied) = node.source_for("hello");
+        let (source, copied) = node.source_for("hello", None, &style);
         assert!(!copied, "an unchanged revision reuses the built source");
         assert_eq!(source.text(), "hello");
         node.invalidate(TextDirty::CONTENT);
-        let (source, copied) = node.source_for("bye");
+        let (source, copied) = node.source_for("bye", None, &style);
         assert!(copied);
         assert_eq!(source.text(), "bye");
+        node.invalidate(TextDirty::SHAPE_STYLE);
+        let (_, copied) = node.source_for("bye", None, &style);
+        assert!(
+            !copied,
+            "plain text does not resolve its style into the source"
+        );
+    }
+
+    #[test]
+    fn a_rich_source_resolves_its_shaping_spans_over_the_node_style() {
+        let style = ComputedStyle {
+            font_size: 16.0,
+            line_height: Some(LineHeightSpec::Absolute(20.0)),
+            ..ComputedStyle::default()
+        };
+        let rich = RichText::new("big word")
+            .with_span(0..3, RichSpanStyle::new().size(32.0).bold())
+            .with_span(
+                4..8,
+                RichSpanStyle::new().color(nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0])),
+            );
+        let mut node = TextNodeState::default();
+        let (source, copied) = node.source_for("big word", Some(&rich), &style);
+        assert!(copied);
+        assert_eq!(
+            source.spans().len(),
+            1,
+            "only the shaping tier reaches the source"
+        );
+        let span = &source.spans()[0];
+        assert_eq!(span.range, 0..3);
+        assert_eq!(span.style.font_size_px, 32.0);
+        assert_eq!(span.style.font_weight, 700);
+        assert_eq!(
+            span.style.line_height,
+            Some(LineHeightSpec::Relative(1.25)),
+            "a larger span keeps the node's line-height ratio"
+        );
+        let (_, copied) = node.source_for("big word", Some(&rich), &style);
+        assert!(!copied);
+        node.invalidate(TextDirty::SHAPE_STYLE);
+        let (_, copied) = node.source_for("big word", Some(&rich), &style);
+        assert!(copied, "a node style change re-resolves the spans");
+        let stale = RichText::new("other").with_span(0..2, RichSpanStyle::new().bold());
+        node.invalidate(TextDirty::CONTENT);
+        let (source, _) = node.source_for("big word", Some(&stale), &style);
+        assert!(
+            source.spans().is_empty(),
+            "spans over other text are not applied"
+        );
+    }
+
+    #[test]
+    fn rich_changes_are_classified_by_the_tier_they_touch() {
+        let red = nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]);
+        let blue = nana_ui_core::PaintColor::srgb([0.0, 0.0, 1.0, 1.0]);
+        let base = RichText::new("hello").with_span(0..5, RichSpanStyle::new().color(red));
+        let recolored = RichText::new("hello").with_span(0..5, RichSpanStyle::new().color(blue));
+        assert_eq!(
+            classify_rich_change(Some(&base), Some(&recolored)),
+            TextDirty::PAINT
+        );
+        let resized = base
+            .clone()
+            .with_span(0..2, RichSpanStyle::new().color(red).size(30.0));
+        assert_eq!(
+            classify_rich_change(Some(&base), Some(&resized)),
+            TextDirty::SHAPE_STYLE
+        );
+        let effected = base
+            .clone()
+            .with_span(0..5, RichSpanStyle::new().color(red).effect(2));
+        assert_eq!(
+            classify_rich_change(Some(&base), Some(&effected)),
+            TextDirty::GLYPH_PRESENTATION
+        );
+        // Cut differently, styled the same: nothing changed.
+        let mut split = RichText::new("hello").with_span(0..2, RichSpanStyle::new().color(red));
+        split.set_span(2..5, RichSpanStyle::new().color(red));
+        assert_eq!(
+            classify_rich_change(Some(&base), Some(&split)),
+            TextDirty::NONE
+        );
+        assert_eq!(classify_rich_change(Some(&base), None), TextDirty::PAINT);
+        let edited = RichText::new("hullo").with_span(0..5, RichSpanStyle::new().color(red));
+        assert!(classify_rich_change(Some(&base), Some(&edited)).contains(TextDirty::CONTENT));
     }
 
     #[test]

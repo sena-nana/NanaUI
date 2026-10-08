@@ -20,6 +20,20 @@ pub mod host {
     pub use nana_ui_scene::{RuntimeDocument, RuntimeFrameUpdate, SceneDelta, UiScene};
 }
 
+/// Rich text vocabulary: the application-owned value [`RichTextView`] shows,
+/// its sparse span styles, and the authoring-space colour they paint in.
+///
+/// Its own module because `PaintColor` here is the Style Model's colour value,
+/// not the painter's [`crate::runtime::PaintColor`] (which also takes theme
+/// roles).
+pub mod rich {
+    pub use nana_ui_core::{
+        AttributedRanges, MAX_TEXT_SHADOWS, PaintColor, RichPaintStyle, RichShapeStyle,
+        RichSpanStyle, RichText, RichTextBuilder, RichTextShadow, RichTextStroke,
+        TextDecorationLine, TextStrokeJoin, TextStrokePlacement,
+    };
+}
+
 /// Work counters and frame profiler for benches and Issue #8 — not view state.
 pub mod perf {
     pub use nana_ui_runtime::{

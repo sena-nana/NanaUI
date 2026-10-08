@@ -282,7 +282,7 @@ impl<'a> ValidationPlan<'a> {
                     self.styles.insert(*id, style.clone());
                 }
                 UiMutation::SetPresetTheme { .. } | UiMutation::SetThemeTokens { .. } => {}
-                UiMutation::SetText { id, .. } => {
+                UiMutation::SetText { id, .. } | UiMutation::SetRichText { id, .. } => {
                     self.require_exists(*id)?;
                 }
                 UiMutation::WriteLayout { id, layout } => {
@@ -1599,6 +1599,8 @@ impl UiWorld {
                 let text_changed = self.record(*id).text != *text;
                 if text_changed {
                     self.record_mut(*id).text = text.clone();
+                    // Spans over the old text would style the wrong bytes.
+                    self.nodes.set_rich_text(*id, None);
                     self.invalidate_text_content(*id);
                 }
                 self.mark(
@@ -1614,6 +1616,7 @@ impl UiWorld {
                     self.set_document_text_selection(document, None);
                 }
             }
+            UiMutation::SetRichText { id, rich } => self.apply_rich_text(*id, rich.as_ref()),
             UiMutation::WriteLayout { id, layout } => {
                 let record = self.record_mut(*id);
                 // A box that only moved leaves its text's constraints alone;

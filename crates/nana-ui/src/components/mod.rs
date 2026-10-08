@@ -21,13 +21,13 @@ pub use nana_ui_runtime::{
     ListItem, MediaTransportBar, MediaTransportDensity, MediaTransportEvent, MediaTransportIcons,
     MediaTransportPlacement, MediaTransportSlots, OVERLAY_IDLE, OverlayHost, OverlayLocks,
     OverlayVisibility, OverlayVisibilityConfig, Popover, Progress, ProgressCancelled, QrCode,
-    RangeField, SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl,
-    Select, SelectOption, SettingsCard, SettingsCollapsibleCard, SettingsRow, SidebarFooter,
-    SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection,
-    SidebarSectionSlots, SidebarSectionState, Skeleton, Spinner, StatusBadge, Switch, TabDragGroup,
-    TabDragSurface, TabOption, Tabs, TabsEvent, Text, TextArea, TextInput, TextSearchBar,
-    Thumbnail, ThumbnailState, Toast, Tooltip, TreeNavigation, TreeNode, TreeView, TreeViewEvent,
-    ValidationMessage, XYPad, media_clock, tree_navigation_event,
+    RangeField, RichTextView, SearchDropdown, SearchDropdownEvent, SearchDropdownOption,
+    SegmentedControl, Select, SelectOption, SettingsCard, SettingsCollapsibleCard, SettingsRow,
+    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowState, SidebarRowTone,
+    SidebarSection, SidebarSectionSlots, SidebarSectionState, Skeleton, Spinner, StatusBadge,
+    Switch, TabDragGroup, TabDragSurface, TabOption, Tabs, TabsEvent, Text, TextArea, TextInput,
+    TextSearchBar, Thumbnail, ThumbnailState, Toast, Tooltip, TreeNavigation, TreeNode, TreeView,
+    TreeViewEvent, ValidationMessage, XYPad, media_clock, tree_navigation_event,
 };
 #[cfg(feature = "calendar")]
 pub use nana_ui_runtime::{

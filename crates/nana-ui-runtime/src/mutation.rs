@@ -57,6 +57,12 @@ pub enum UiMutation {
         id: StableNodeId,
         text: TextContent,
     },
+    /// Rich text for a node: its text plus styled spans. `None` drops the
+    /// spans and keeps the text. See [`MutationQueue::set_rich_text`].
+    SetRichText {
+        id: StableNodeId,
+        rich: Option<nana_ui_core::RichText>,
+    },
     /// Engine writeback (and tests). Product Vue frames must not use this to
     /// fight [`crate::RuntimeLayoutEngine`]; mixed trees flush that engine.
     WriteLayout {
@@ -301,6 +307,28 @@ impl MutationQueue {
 
     pub fn set_text(&mut self, id: StableNodeId, text: TextContent) {
         self.mutations.push(UiMutation::SetText { id, text });
+    }
+
+    /// Give `id` rich text: the node's text becomes `rich`'s, and its spans
+    /// style it over the node's computed style.
+    ///
+    /// A change is priced by the tier it touches: a shaping field reshapes
+    /// and relays the node out; a paint field (colour, decoration, stroke,
+    /// shadow) only repaints it; an effect index costs no text work. The
+    /// value is the application's — keep it, and hand the next one in when it
+    /// changes. A later [`Self::set_text`] with different text drops the
+    /// spans.
+    pub fn set_rich_text(&mut self, id: StableNodeId, rich: nana_ui_core::RichText) {
+        self.mutations.push(UiMutation::SetRichText {
+            id,
+            rich: Some(rich),
+        });
+    }
+
+    /// Drop `id`'s spans, keeping its text.
+    pub fn clear_rich_text(&mut self, id: StableNodeId) {
+        self.mutations
+            .push(UiMutation::SetRichText { id, rich: None });
     }
 
     /// Publish a box computed by [`crate::RuntimeLayoutEngine`], or by a test.

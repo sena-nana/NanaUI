@@ -4121,7 +4121,10 @@ impl UiWorld {
         let resolved = match engine {
             Some(engine) => {
                 let alignment = self.record(id).style.text_horizontal_alignment;
-                let (source, copied) = self.nodes.text_source(id).expect("a resolved node exists");
+                let (source, copied) = self
+                    .nodes
+                    .text_source(id, &style)
+                    .expect("a resolved node exists");
                 // Locked per resolution, never across the pass: the same pass
                 // measures component text through the host's `shape`, which
                 // may lay out through this very engine.

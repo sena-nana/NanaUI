@@ -19,14 +19,14 @@ use crate::{
     EmptyState, ExtensionRegistrar, FindReplaceBar, FormField, FrameworkError, GpuTextureView,
     GpuView, HostedTextarea, IconButton, IconGlyph, InteractionRequestCard, InteractiveCard,
     LabeledValue, LevelMeter, List, ListItem, ListItemSlots, ModalSurface, NodeStyle, NumberInput,
-    PaneChrome, PathField, Popover, Progress, QrCode, RangeField, ScrollView, SearchDropdown,
-    SearchDropdownOption, SegmentedControl, Select, SettingsCard, SettingsCollapsibleCard,
-    SettingsPage, SettingsRow, SidebarFooter, SidebarFrame, SidebarRow, SidebarRowState,
-    SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane, Stack, StatusBadge, Switch,
-    Table, TableCell, TableRow, Tabs, Text, TextArea, TextDiagnosticSeverity, TextDiagnosticSpan,
-    TextGitMark, TextGitMarkKind, TextInput, TextInputState, Thumbnail, ThumbnailState, Toast,
-    ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage, ValueEmphasis, Video, Workspace,
-    WorkspaceRegionSlot, XYPad, XYPadValue,
+    PaneChrome, PathField, Popover, Progress, QrCode, RangeField, RichTextView, ScrollView,
+    SearchDropdown, SearchDropdownOption, SegmentedControl, Select, SettingsCard,
+    SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame, SidebarRow,
+    SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane, Stack,
+    StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextDiagnosticSeverity,
+    TextDiagnosticSpan, TextGitMark, TextGitMarkKind, TextInput, TextInputState, Thumbnail,
+    ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension, ValidationMessage,
+    ValueEmphasis, Video, Workspace, WorkspaceRegionSlot, XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
 };
 #[cfg(feature = "calendar")]
@@ -112,6 +112,7 @@ fn install_builtins<const BIND: bool>(
     alias::<Stack, BIND>(registrar, "nana.box", &["box"])?;
     alias::<Stack, BIND>(registrar, "nana.drop-target", &["drop-target"])?;
     component::<Text, BIND>(registrar)?;
+    component::<RichTextView, BIND>(registrar)?;
     component::<Button, BIND>(registrar)?;
     component::<IconButton, BIND>(registrar)?;
     component::<IconGlyph, BIND>(registrar)?;
@@ -251,6 +252,19 @@ impl RegisterableComponent for Text {
     const TAGS: &'static [&'static str] = crate::component_descriptors::TEXT.tags;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         Text::new(spec.display_label()).style(crate::NodeStyle {
+            layout: Arc::clone(spec.layout),
+            ..crate::NodeStyle::default()
+        })
+    }
+}
+
+impl RegisterableComponent for RichTextView {
+    const TYPE_ID: &'static str = crate::component_descriptors::RICH_TEXT_VIEW.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::RICH_TEXT_VIEW.tags;
+    /// A tag carries no spans: built from markup, the value is its label as
+    /// plain rich text, and the application hands the styled value in.
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        RichTextView::new(spec.display_label().to_owned()).style(crate::NodeStyle {
             layout: Arc::clone(spec.layout),
             ..crate::NodeStyle::default()
         })

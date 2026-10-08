@@ -86,6 +86,8 @@ mod reorder_list;
 pub use markdown_drawing::{MarkdownDrawing, MarkdownDrawingCommand};
 #[cfg(feature = "rich-text")]
 mod rich_text;
+mod rich_text_view;
+pub use rich_text_view::RichTextView;
 mod schedule;
 mod search_dropdown;
 mod select;

@@ -110,7 +110,12 @@ impl GlyphRasterizer for DWriteGlyphRasterizer {
         // strikes.
         let delegated = key.synthesis.contains(GlyphSynthesis::ROTATE_CW)
             || key.synthesis.contains(GlyphSynthesis::PIXEL_FONT)
-            || key.synthesis.contains(GlyphSynthesis::DISABLE_HINTING);
+            || key.synthesis.contains(GlyphSynthesis::DISABLE_HINTING)
+            // A stroke and a shadow are the outline's own coverage, and a fill
+            // drawn beside them must come from the same scaler to sit inside
+            // its outline.
+            || key.synthesis.contains(GlyphSynthesis::OUTLINE_RASTER)
+            || key.mode.is_derived();
         if !delegated
             && let Some(dwrite) = self.dwrite.as_mut()
             && let Some(image) = dwrite.rasterize(&self.swash, request)

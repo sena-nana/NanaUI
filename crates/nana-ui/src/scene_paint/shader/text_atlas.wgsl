@@ -67,6 +67,8 @@ const RUN_PROJECT: u32 = 4u;
 const CONTENT_MASK: u32 = 0u;
 const CONTENT_COLOR: u32 = 1u;
 const CONTENT_SUBPIXEL: u32 = 2u;
+// A solid quad (an underline, a strikeout): full coverage, no atlas sample.
+const CONTENT_SOLID: u32 = 3u;
 
 @group(0) @binding(1)
 var<storage, read> text_runs: array<TextRun>;

@@ -558,6 +558,7 @@ fn custom_text(
         wrap_break: nana_ui_core::TextWrapBreak::default(),
         opentype: SceneTextOpenType::from_computed(&node.style),
         layout: None,
+        rich: None,
     }
 }
 

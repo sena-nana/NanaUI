@@ -52,6 +52,15 @@ pub(super) const INSTANCE_LINEAR_COLOR: u32 = 8;
 /// Bits above these four are the run index.
 pub(super) const INSTANCE_RUN_SHIFT: u32 = 4;
 
+/// What an instance is to its paragraph, in the low two bits of `pad[1]`:
+/// the glyph's own fill, a shadow layer, an outline, or a solid quad (an
+/// underline or a strikeout) that samples no atlas at all.
+pub(super) const ROLE_FILL: u32 = 0;
+pub(super) const ROLE_SHADOW: u32 = 1;
+pub(super) const ROLE_STROKE: u32 = 2;
+pub(super) const ROLE_SOLID: u32 = 3;
+const ROLE_MASK: u32 = 3;
+
 /// Bilinear sampling: the quad no longer lands on the texel grid.
 pub(super) const RUN_LINEAR: u32 = 1;
 /// The run carries a clip the scissor cannot express.
@@ -129,6 +138,11 @@ fn vs_main(vertex: VsIn) -> VsOut {
     if (input.control & 4u) != 0u {
         content = CONTENT_SUBPIXEL;
     }
+    // An underline or strikeout: a solid quad, no texel behind it.
+    let solid = (input.pad.y & 3u) == 3u;
+    if solid {
+        content = CONTENT_SOLID;
+    }
     let width = input.dim & 0xffffu;
     let height = (input.dim & 0xffff0000u) >> 16u;
     let corner = vec2<u32>(vertex.vertex & 1u, (vertex.vertex >> 1u) & 1u);
@@ -136,7 +150,7 @@ fn vs_main(vertex: VsIn) -> VsOut {
     var local = vec2<f32>(input.origin + vec2<i32>(offset));
     let base = vec2<u32>(input.uv & 0xffffu, (input.uv & 0xffff0000u) >> 16u);
     var texel = vec2<f32>(base + offset);
-    if (run.flags & RUN_PROJECT) != 0u {
+    if (run.flags & RUN_PROJECT) != 0u && !solid {
         // Bitmap texels are raster px, so the quad and its atlas coordinates
         // grow alike.
         let grown = (vec2<f32>(corner) * 2.0 - 1.0) * text_edge_grow(run, local);
@@ -240,6 +254,11 @@ fn shade(input: VsOut) -> TextShade {
     }
     let linear = (flags & RUN_LINEAR) != 0u;
     var out: TextShade;
+    if input.content == CONTENT_SOLID {
+        out.color = input.color.rgb;
+        out.alpha = vec4<f32>(input.color.a * clip_cover);
+        return out;
+    }
     if input.content == CONTENT_MASK {
         var coverage = 0.0;
         if linear {
@@ -1351,6 +1370,25 @@ impl GlyphInstance {
             control: (self.control & ((1 << INSTANCE_RUN_SHIFT) - 1)) | (run << INSTANCE_RUN_SHIFT),
             ..self
         }
+    }
+
+    /// Tag this instance with its [`ROLE_FILL`]..[`ROLE_SOLID`] role.
+    pub(super) fn with_role(self, role: u32) -> Self {
+        Self {
+            pad: [self.pad[0], (self.pad[1] & !ROLE_MASK) | (role & ROLE_MASK)],
+            ..self
+        }
+    }
+
+    /// A solid quad — an underline, a strikeout — samples no atlas, so it
+    /// keeps its rectangle when the atlas moves.
+    pub(super) fn is_solid(&self) -> bool {
+        self.pad[1] & ROLE_MASK == ROLE_SOLID && self.dim != 0
+    }
+
+    #[cfg(test)]
+    pub(super) fn role(&self) -> u32 {
+        self.pad[1] & ROLE_MASK
     }
 
     /// Re-point this glyph at the rectangle its atlas handle now names.

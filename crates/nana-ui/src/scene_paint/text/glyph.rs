@@ -58,6 +58,11 @@ impl GlyphSynthesis {
     /// a transform the rasterizer applies that changes the bitmap — so it
     /// rides in the same key field.
     pub(super) const ROTATE_CW: Self = Self(1 << 4);
+    /// Rasterize from the outline with the renderer's own scaler, never a
+    /// platform rasterizer. A glyph that is also stroked or blurred is: its
+    /// outline and its shadow come from the same scaler, and a fill drawn by
+    /// another one would not sit exactly inside them.
+    pub(super) const OUTLINE_RASTER: Self = Self(1 << 5);
 
     pub(super) const fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 == flag.0
@@ -84,6 +89,41 @@ pub(super) enum GlyphRenderMode {
     SubpixelRgb,
     /// The same for a panel whose subpixels run blue, green, red.
     SubpixelBgr,
+    /// Grayscale coverage of the glyph's outline stroked `width_q / 4` raster
+    /// px wide, centred on it. Outline glyphs only.
+    Stroke {
+        width_q: u16,
+        /// [`super::raster::stroke_join`]'s encoding of the join.
+        join: u8,
+    },
+    /// Grayscale coverage grown by `spread_q / 4` raster px, then blurred by
+    /// a Gaussian of CSS blur radius `radius_q / 4` raster px (twice its
+    /// standard deviation). What a text shadow layer samples.
+    Blur { radius_q: u16, spread_q: u16 },
+}
+
+impl GlyphRenderMode {
+    /// Quarter raster px, the bucket the stroke and blur keys are cut in.
+    pub(super) fn quarters(px: f32) -> u16 {
+        (px.max(0.0) * 4.0).round().min(f32::from(u16::MAX)) as u16
+    }
+
+    /// Whether this mode is coverage the renderer derives from the outline
+    /// itself (a stroke, a blur), rather than the glyph as the face draws it.
+    pub(super) fn is_derived(self) -> bool {
+        matches!(self, Self::Stroke { .. } | Self::Blur { .. })
+    }
+}
+
+/// What an instance is to the paragraph it belongs to. Kept on the run and
+/// in the instance, so the presentation layer can tell a shadow from the
+/// glyph it shadows.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub(super) enum GlyphRole {
+    #[default]
+    Fill,
+    Shadow,
+    Stroke,
 }
 
 /// Fractional pen placement, quantized to quarter pixels.
@@ -183,6 +223,9 @@ pub(super) struct PlacedGlyph {
     pub glyph: GlyphId,
     pub x: f32,
     pub y: f32,
+    /// Byte offset of the glyph's cluster in the paragraph's text: what a
+    /// per-range paint (a rich span's stroke, a shadow) is looked up by.
+    pub cluster: u32,
 }
 
 /// A maximal span of glyphs sharing a face instance, a size and a color.
@@ -202,6 +245,7 @@ pub(super) struct NanaGlyphRun {
     pub color: [f32; 4],
     /// Authoring-space value, when this run came from an explicit CSS paint.
     pub paint_color: Option<nana_ui_core::PaintColor>,
+    pub role: GlyphRole,
     pub glyphs: Range<u32>,
 }
 
@@ -273,6 +317,7 @@ impl NanaGlyphBuffer {
         render_mode: GlyphRenderMode,
         color: [f32; 4],
         paint_color: Option<nana_ui_core::PaintColor>,
+        role: GlyphRole,
         glyph: PlacedGlyph,
     ) {
         let index = self.glyphs.len() as u32;
@@ -286,6 +331,7 @@ impl NanaGlyphBuffer {
             && run.render_mode == render_mode
             && run.color == color
             && run.paint_color == paint_color
+            && run.role == role
             && run.glyphs.end == index
         {
             run.glyphs.end = index + 1;
@@ -300,6 +346,7 @@ impl NanaGlyphBuffer {
             render_mode,
             color,
             paint_color,
+            role,
             glyphs: index..index + 1,
         });
     }
@@ -340,6 +387,7 @@ mod tests {
             glyph: 7,
             x: 1.0,
             y: 2.0,
+            cluster: 0,
         };
         for color in [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]] {
             buffer.push(
@@ -351,6 +399,7 @@ mod tests {
                 GlyphRenderMode::Mask,
                 color,
                 None,
+                GlyphRole::Fill,
                 glyph,
             );
         }
@@ -376,10 +425,12 @@ mod tests {
                 GlyphRenderMode::Mask,
                 [1.0; 4],
                 None,
+                GlyphRole::Fill,
                 PlacedGlyph {
                     glyph: index,
                     x: index as f32,
                     y: 0.0,
+                    cluster: index,
                 },
             );
         }

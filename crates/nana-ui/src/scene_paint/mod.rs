@@ -358,7 +358,6 @@ use clip::{
     paint_transform, physical_bounds, physical_scissor, transformed_aabb,
     transformed_aabb_projective, union_physical,
 };
-use color::with_opacity;
 pub(crate) use color::{pack_linear, pack_paint_color};
 use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
@@ -1499,6 +1498,7 @@ impl SceneWgpuPainter {
                         // rather than laying the same paragraph out again,
                         // so there is one paragraph, not two that agree.
                         layout,
+                        rich,
                     } => {
                         // A text node's glyphs are retained per node and
                         // per pass, so the shadows under a label are their
@@ -1508,6 +1508,10 @@ impl SceneWgpuPainter {
                         let slot = id.slot;
                         let mut pass = 0u32;
                         let opaque_backdrop = group_depth == 0;
+                        // Shadows, outlines and decoration lines are
+                        // instances of the paragraph's own entry, in paint
+                        // order, built from the same glyphs.
+                        self.text.set_effects(rich.as_ref(), *text_shadow);
                         let mut push_text = |commands: &mut Vec<DrawCommand>,
                                              batching: &mut Batching,
                                              extra_offset: [f32; 2],
@@ -1571,28 +1575,6 @@ impl SceneWgpuPainter {
                                 );
                             }
                         };
-                        if let Some(shadow) = text_shadow {
-                            let base_color = with_opacity(shadow.color, opacity);
-                            for (dx, dy, alpha_scale) in text_shadow_draw_offsets(*shadow) {
-                                let scaled = [
-                                    base_color[0],
-                                    base_color[1],
-                                    base_color[2],
-                                    base_color[3] * alpha_scale,
-                                ];
-                                push_text(
-                                    &mut commands,
-                                    &mut batching,
-                                    [shadow.offset_x + dx, shadow.offset_y + dy],
-                                    Some(scaled),
-                                    shadow.paint_color.map(pack_paint_color).map(|mut color| {
-                                        color[3] *= alpha_scale;
-                                        color
-                                    }),
-                                    None,
-                                );
-                            }
-                        }
                         push_text(
                             &mut commands,
                             &mut batching,
@@ -2715,19 +2697,6 @@ fn push_path_draw(
     }
     batching.open(commands.len(), painted);
     commands.push(DrawCommand::Path { range, scissor });
-}
-
-fn text_shadow_draw_offsets(shadow: nana_ui_core::TextShadowSpec) -> Vec<(f32, f32, f32)> {
-    let mut out = vec![(0.0, 0.0, 1.0)];
-    let blur = shadow.blur_radius.max(0.0);
-    if blur > 0.5 {
-        let step = blur * 0.35;
-        out.push((step, 0.0, 0.55));
-        out.push((-step, 0.0, 0.55));
-        out.push((0.0, step, 0.55));
-        out.push((0.0, -step, 0.55));
-    }
-    out
 }
 
 struct EncodeOrdered<'a> {

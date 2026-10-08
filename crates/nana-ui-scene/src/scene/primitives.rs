@@ -461,7 +461,11 @@ impl UiScene {
                         },
                         horizontal_alignment: node.source_style.text_horizontal_alignment,
                         vertical_alignment: node.source_style.text_vertical_alignment,
-                        spans: scene_text_spans(&node, None, &text.value),
+                        spans: crate::scene::rich_fill_spans(
+                            text.value.as_str(),
+                            node.rich_text.as_ref(),
+                            scene_text_spans(&node, None, &text.value),
+                        ),
                         text_shadow: style.paint.text_shadow,
                         underline: style.text_decoration.is_some_and(|d| d.underline),
                         line_through: style.text_decoration.is_some_and(|d| d.line_through),
@@ -479,24 +483,15 @@ impl UiScene {
                             ..SceneTextOpenType::from_computed(&node.style)
                         },
                         layout: node.text_layout.clone(),
+                        // Decorations, outline and shadows are drawn by the
+                        // text painter from the paragraph's own lines and
+                        // runs, not as strokes across the whole box.
+                        rich: crate::scene::SceneRichPaint::from_style(
+                            style,
+                            node.rich_text.as_ref(),
+                        ),
                     },
                 });
-                if let Some(deco) = style.text_decoration.filter(|d| d.is_active()) {
-                    insert_text_decoration_strokes(
-                        &VisualPrimitiveContext {
-                            node: id,
-                            transform,
-                            clips: &clips,
-                            opacity,
-                            z_index: node.z_index,
-                            document_order: node_order,
-                        },
-                        text_bounds,
-                        node.style.color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                        deco,
-                        |primitive| self.insert_primitive(primitive),
-                    );
-                }
             }
             let context = GeometryPaintContext {
                 node: &node,
@@ -1445,6 +1440,7 @@ impl UiScene {
                                 wrap_break: nana_ui_core::TextWrapBreak::Word,
                                 opentype: SceneTextOpenType::default(),
                                 layout: None,
+                                rich: None,
                             },
                         });
                     }

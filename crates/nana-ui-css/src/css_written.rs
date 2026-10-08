@@ -150,6 +150,8 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("border-image", "url(a.png) 30 round"),
     ("border-radius", "4px"),
     ("text-shadow", "1px 1px red"),
+    ("-webkit-text-stroke", "1px red"),
+    ("paint-order", "stroke"),
     ("border-width", "1px"),
     ("border-top-width", "1px"),
     ("border-right-width", "1px"),

@@ -1299,6 +1299,101 @@ world 镜像、`TextChanged`、presentation 三处）。现在剩下编辑本身
 | ~~IME 语义后端换 `EditSession`~~ **已接**（#182） | 存储与语义都在会话里，见「编辑器的存储：EditSession」 |
 | 大文档存储 | `SharedText`（`Arc<String>` + 印记，#182）；**不换 rope**：310 KB 文档上一次编辑的 memmove 是整帧成本的 0.5%，见「大文档编辑基准」 |
 
+## 富文本 span
+
+应用把一段带样式的文本交给普通文本节点：`MutationQueue::set_rich_text(id, RichText)`，或者用 [`RichTextView`](../components/rich-text-view.md) 组件。值是 `nana_ui_core::RichText`，由应用持有：一个 `Arc<str>` 加一份 `Arc<AttributedRanges<RichSpanStyle>>`，克隆是两次引用计数。框架不在应用背后改它。
+
+```text
+RichText（应用持有）
+    │  SetRichText：classify_rich_change → 最小 TextDirty
+    ▼
+TextNodeState::source_for  塑形层铺在节点计算样式上 → TextSource::set_spans
+    │
+    ▼
+nana-text 塑形 / 排版      span 有自己的字号与行高，行盒按它撑高
+    │  TextLayout（测量与绘制同一份）
+    ▼
+ExtractedNode.rich_text → Text { spans（填充色）, rich: SceneRichPaint（其余绘制层）}
+    │
+    ▼
+NanaRenderer::text         阴影 → 填充下描边 → 下划线 → 填充 → 填充上描边 → 删除线
+```
+
+### 三层样式
+
+`RichSpanStyle` 是稀疏的：每个字段都是 `Option`，`None` 继承节点的计算样式，换主题时没覆盖的部分跟着变。字段按工作代价分成三层：
+
+| 层 | 字段 | `classify_rich_change` | 工作 |
+| --- | --- | --- | --- |
+| `shape: RichShapeStyle` | `family`、`size_px`、`weight`、`italic`、`letter_spacing_px`、`features` | `SHAPE_STYLE` | 重新塑形、排版、场景几何 |
+| `paint: RichPaintStyle` | `color`、`decoration`、`decoration_color`、`stroke`、`shadows`（≤ 4 层） | `PAINT` | 只重新提取绘制；画笔重建这一段的实例 |
+| 呈现 | `effect: Option<u16>` | `GLYPH_PRESENTATION` | 不碰文本；Runtime 不调度任何趟 |
+
+分类比的是每一层各自的**规范化投影**：`AttributedRanges::map` 把一层取出来，丢掉空的，合并相等的邻居。所以同一份样式切成不同的段不算变化，只改颜色的变化永远到不了 shape revision。文本本身变了是 `CONTENT`。之后的 `SetText` 换了文本会丢掉 span（它们指的是旧字节）。
+
+`AttributedRanges<A>` 是纯区间代数：有序、不重叠、非空、相等邻居合并。`set` / `update` / `clear_range` 改一段的属性，`splice` 跟着文本编辑平移区间（插入的字继承光标前那个字的属性），`slice` / `map` / `at` 只读。它不认识文本，也不认识样式；`RichText` 负责把范围对齐到字符边界。它放在 `nana-ui-core`，不在 `nana-text`：`nana-ui-core` 不能依赖 `nana-text`，而这份值要在 core 里定义。
+
+### 塑形层进 `TextSource`
+
+`TextNodeState::source_for(text, rich, computed)` 只在节点还显示这份值的文本时读它的 span。每个有塑形字段的 span 变成一个 `TextSpan`，样式是节点的 `nana_text_style` 铺上 span 的字段：字体族走和节点同一条 `nana_font_family`。改了字号的 span 保持节点的行高**比例**：节点是 16px、绝对行高 20px 时，32px 的那段行高是 32 × 1.25。一行里有大字，这一行就撑高。
+
+带塑形 span 的源按 `(content, shape)` 两个 revision 缓存，节点计算样式变了（`SHAPE_STYLE`）就重铺一次；没有塑形 span 的节点和以前一样只按 content revision 缓存，不多复制一次文本。绘制层和呈现层字段从不进源，也就进不了 shape cache 的键。
+
+### 绘制层进场景
+
+`ScenePrimitiveKind::Text` 多了 `rich: Option<Arc<SceneRichPaint>>`：
+
+- `base: SceneTextEffects`：节点 CSS 的 `text-decoration`、全部 `text-shadow` 层（`PaintStyle::text_shadows`）、`-webkit-text-stroke`（`PaintStyle::text_stroke`，`paint-order: stroke` 时在填充下面）。
+- `runs`：span 的绘制层盖在 `base` 上的那些范围。
+- `revision`：上面这些的哈希，永不为 0。画笔用它判断这一段的实例是不是还是这样画的，不用逐项比较。
+- `reach`：阴影和描边伸出字形墨迹的逻辑像素，画笔用它放大 ink 盒，裁剪和合批不会切掉阴影。
+
+span 的填充色不在 `rich` 里，而是并进已有的 `spans`（`rich_fill_spans`）：和语法高亮、选区色是同一条颜色路径，已有的 span 优先。
+
+普通文本节点不再为装饰线另出整框宽的 `Stroke` 图元。Markdown 的行内 run 还用那条旧路径。
+
+### 画笔：同一 entry 里的分层实例
+
+画笔先照常把段落解析成填充字形，再按 `rich`（或没有 `rich` 时组件文本的单层 `text_shadow`）把它们排成：
+
+1. 阴影层，CSS 最后一层在最下。模糊或扩散过的是 `GlyphRenderMode::Blur { radius_q, spread_q }`，锐利阴影直接复用填充的位图；
+2. `TextStrokePlacement::Under` 的描边，`GlyphRenderMode::Stroke { width_q, join }`；
+3. 下划线；
+4. 填充；
+5. `Over` 的描边；
+6. 删除线。
+
+实例的 `pad[1]` 低两位记它的角色（填充、阴影、描边、实心）。下划线和删除线是 `ROLE_SOLID` 的实心四边形：不采样 atlas，atlas 搬家时不用修。它们按行、按 run 走 glyph cell，同色同装饰的相邻字合成一段；位置和粗细是 `RunMetrics` 里从 `post` / `OS/2` 读来的值，取整到整像素。没写 `decoration_color` 的线跟随填充色；和段落本色相同时继承 run 行，改色不用重建。竖排段落目前不画装饰线。
+
+`Stroke` 和 `Blur` 只从轮廓栅格（swash），彩色字形也一样。被描边的字形，填充也带 `GlyphSynthesis::OUTLINE_RASTER` 走 swash：Windows 上 DirectWrite 画的填充和 swash 画的描边差半个像素就会露边。阴影不需要，填充照旧走平台栅格器。
+
+模糊在 CPU 上对 8 位覆盖率做可分离高斯：四周按 3σ 补边，核归一化，总覆盖率守恒（测试要求偏差 < 2%）。半径超过 8 个栅格像素时先 2×2 降采样、用一半的 σ 模糊、再双线性放大。逻辑半径封顶 24px。模糊结果和普通位图一样进栅格缓存和 atlas，键里有半径和扩散，没有颜色。
+
+entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边、阴影、装饰线重建这一个 entry 的实例，不重新排版；只改它们的颜色不新栅格化任何位图；稳态帧什么都不做——不栅格化、不传 atlas、不重建、不重传 instance。
+
+### 字体的装饰线度量
+
+`RunMetrics` 加了 `underline_offset_px` / `underline_thickness_px`（基线到下划线**顶边**，向下为正）和 `strikeout_offset_px` / `strikeout_thickness_px`（基线到删除线顶边，向上为正），在 run 的轴坐标和字号下从 `post` / `OS/2` 读。字体没给或给了 0 厚度时按字号补：1/14 em 粗，下划线在基线下 0.1 em，删除线居中在 x-height 一半处。四个字段都是 `serde(default)`：Phase 0 的 golden 里它们是 0，parity diff 只在期望值带着它们时才比较。
+
+### 运行时字体
+
+皮肤一类要换掉的字体用 `nana_ui::HostFontScope` 注册：`add_bytes` / `add_file` / `add_face` 返回 `HostFontRegistration`，`clear()` 或丢掉 scope 时 `FontSystem::unregister` 撤回这一个源。撤回是新的字体代际，见上文「Dirty graph」的字体集合一条：测量过的节点下一帧重新解析，旧代际的位图不再被采样。
+
+### 测试
+
+- `nana-ui-core` `rich_text::tests`：区间代数（拆分、合并、`update` 的空隙、`splice`、投影）、字符边界对齐、builder。
+- `nana-ui-runtime` `text_node::tests`：塑形 span 铺在节点样式上、行高比例、按层分类。
+- `nana-ui-scene` `tests/rich_text_spans.rs`：只改绘制层时 `text_nodes_shaped == 0` 且保留的 layout 句柄不变；只改特效索引时整帧空闲；大字号 span 撑高行盒；描边、阴影、装饰线进场景且不再出整框 `Stroke`；CSS 是 span 的底。
+- `nana-ui` `scene_paint::text`：改描边重建实例不重排、改色不新栅格化；带模糊阴影的稳态帧不栅格化、不上传；实例按画序排在一个 entry 里；带大字号 span 的段落从 Runtime 句柄画出；描边位图比填充宽且同心；模糊守恒覆盖率。
+
+### 这一阶段没做的
+
+- 竖排段落的装饰线；`text-decoration-style`（波浪、双线）、`text-decoration-thickness`。
+- 颜色位图字形（无轮廓的 emoji）的阴影和描边：只从轮廓栅格，这类字形画不出阴影。
+- 画笔自排的回退路径（保留 layout 的对齐盒对不上时）不读塑形 span，按节点样式排。
+- `effect` 只存在 Runtime 里，合成器还没有逐字呈现（A6）。
+- Vue 没有 `RichText` 的值，`rich-text` 标签只造纯文本。
+
 ## 性能与许可证收口（#99）
 
 - **性能矩阵**：[text-release-matrix-2026-09-20](../../archive/docs-notes/performance-data/text-release-matrix-2026-09-20/README.md)

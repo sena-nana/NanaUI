@@ -22,8 +22,9 @@ pub use scene::{
     CompositorMotionBinding, CompositorPaintEncode, FilterGroup, FramePlan, InsetShadowOverlay,
     LAYER_DEMOTE_HOLD, LAYER_PROMOTE_HOLD, LayerMask, LayerMaskMode, OpacityGroup, PathMesh,
     PathVertex, PrimitiveId, QuadSurfacePaint, SceneDelta, SceneDeltaStats, SceneDraw,
-    ScenePrimitive, ScenePrimitiveKind, SceneRect, SceneTextOpenType, SceneTextSpan, StrokeCap,
-    StrokePattern, UiScene,
+    ScenePrimitive, ScenePrimitiveKind, SceneRect, SceneRichPaint, SceneRichRun, SceneTextEffects,
+    SceneTextOpenType, SceneTextSpan, StrokeCap, StrokePattern, UiScene, css_text_effects,
+    rich_fill_spans,
 };
 
 pub use nana_ui_core::{

@@ -32,6 +32,7 @@ pub mod number_field;
 pub mod overlay;
 pub mod packaged;
 pub mod persist;
+pub mod rich_text;
 pub mod scrollbar;
 pub mod selection;
 pub mod semantics;
@@ -67,9 +68,9 @@ pub use box_layout::{
     MAX_BOX_SHADOWS, MaskImage, MixBlendMode, OutlineSpec, OutlineStyle, OverflowSpec,
     OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
     PointerEventsSpec, PositionSpec, RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec,
-    TextDecorationLine, TextOrientationSpec, TextShadowSpec, TextWrapBreak, TransformBox,
-    TransformOrigin, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec,
-    WritingModeSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
+    TextDecorationLine, TextOrientationSpec, TextShadowSpec, TextStrokeSpec, TextWrapBreak,
+    TransformBox, TransformOrigin, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
+    WordBreakSpec, WritingModeSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
     resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
 };
 pub use date::{CivilDate, DayCell, MonthGrid, WeekStart, Weekday, days_in_month, is_leap_year};
@@ -140,6 +141,10 @@ pub use persist::{
     VIEW_STATE_PREFIX, ViewStateEnvelope, ViewStateSchemaVersion, ViewStateStore,
     appearance_storage_key, dock_storage_key, is_framework_storage_key, memory_store, shared_store,
     window_storage_key,
+};
+pub use rich_text::{
+    AttributedRanges, MAX_TEXT_SHADOWS, RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText,
+    RichTextBuilder, RichTextShadow, RichTextStroke, TextStrokeJoin, TextStrokePlacement,
 };
 pub use scrollbar::{
     SCROLLBAR_METRICS, ScrollbarAxis, ScrollbarMetrics, ScrollbarSkin, ScrollbarTrack,
