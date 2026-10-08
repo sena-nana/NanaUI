@@ -1744,16 +1744,6 @@ impl UiWorld {
         counters
     }
 
-    /// Attach counters from a shared Foundation layout pass to the current
-    /// work snapshot. The Foundation adapter is intentionally supplied by the
-    /// frame owner so Runtime does not run a second layout algorithm.
-    pub fn record_layout_foundation_counters(
-        &mut self,
-        counters: nana_ui_core::LayoutFoundationCounters,
-    ) {
-        self.bump_last_counters(|work| work.record_layout_foundation(counters));
-    }
-
     /// Start a multi-pass frame accumulator. Idle drains still leave the
     /// previous snapshot in place until a non-empty pass runs.
     pub fn begin_frame_counters(&mut self) {
@@ -2072,7 +2062,6 @@ impl UiWorld {
             baseline_queries: 0,
             cross_context_measure_hits: 0,
             cross_context_measure_misses: 0,
-            layout_foundation: nana_ui_core::LayoutFoundationCounters::default(),
             glyph_cache_hits: None,
             glyph_cache_misses: None,
             cache_eviction: None,
@@ -2230,6 +2219,13 @@ impl UiWorld {
         self.despawned_since_drain = self
             .despawned_since_drain
             .saturating_add(work.entities_despawned);
+    }
+
+    /// Whether `id` is a document root node.
+    pub(crate) fn is_document_node(&self, id: StableNodeId) -> bool {
+        self.nodes
+            .get(id)
+            .is_some_and(|record| matches!(record.kind.as_ref(), NodeKind::Document))
     }
 
     pub fn node(&self, id: StableNodeId) -> Option<NodeSnapshot> {

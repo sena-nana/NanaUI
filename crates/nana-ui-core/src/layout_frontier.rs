@@ -235,6 +235,16 @@ pub struct LayoutInvalidation {
 }
 
 impl LayoutInvalidation {
+    /// A cause that names every dependency for no known reason: the whole
+    /// subtree below it is laid out again. Frontier diagnostics count these as
+    /// fallbacks from incremental layout. A subtree that just arrived is laid
+    /// out in full whatever else it carries; that is its first layout.
+    pub const fn is_unknown_forced_subtree(&self) -> bool {
+        self.affected_axes.bits() == LayoutDependencyFootprint::ALL.bits()
+            && self.reason.intersects(InvalidationReason::UNKNOWN)
+            && !self.reason.intersects(InvalidationReason::TOPOLOGY)
+    }
+
     pub const fn new(
         source: LayoutInvalidationSource,
         reason: InvalidationReason,

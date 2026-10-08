@@ -21,12 +21,9 @@ use std::sync::Arc;
 
 use nana_ui_core::box_layout::text_line_box_height_px;
 use nana_ui_core::{
-    AlignSpec, BoxSizing, ClearSpec, ConstraintClass, DisplaySpec, FlexDirection, FlexWrap,
-    FloatSpec, FontSizeContext, FormattingContext, GridAutoFlow, GridLine, GridPlacement,
-    GridRepeatAuto, GridTemplateAreas, GridTrack, IntrinsicMetrics, JustifySpec, LayoutBehavior,
-    LayoutFoundation, LayoutIntent, LayoutNode, LayoutNodeId, LayoutOwnership, LayoutPlacement,
-    LayoutRect, LayoutResult as FoundationResult, LayoutSize, LayoutStyle, LengthSpec,
-    Participation, PlacementMode, PositionSpec, ReplacedContent, TextAlignSpec,
+    AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
+    FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
+    GridTrack, JustifySpec, LayoutStyle, LengthSpec, PositionSpec, TextAlignSpec,
     resolve_grid_track_sizes,
 };
 
@@ -50,21 +47,6 @@ impl LayoutViewport {
             height: finite_extent(height),
         }
     }
-}
-
-fn inset_foundation_rect(rect: LayoutRect, edges: nana_ui_core::PaddingSpec) -> LayoutRect {
-    let left = edges.left.max(0.0);
-    let right = edges.right.max(0.0);
-    let top = edges.top.max(0.0);
-    let bottom = edges.bottom.max(0.0);
-    LayoutRect::new(
-        rect.inline + left,
-        rect.block + top,
-        LayoutSize::new(
-            (rect.size.inline - left - right).max(0.0),
-            (rect.size.block - top - bottom).max(0.0),
-        ),
-    )
 }
 
 /// Backend-neutral layout owner used by canonical Runtime applications.
@@ -92,358 +74,6 @@ pub struct StyleLayoutNode {
 }
 
 impl RuntimeLayoutEngine {
-    /// Run the existing layout oracle and expose its output through the shared
-    /// Foundation contract.  The adapter owns no second tree: stable runtime
-    /// IDs are lowered directly to `LayoutNodeId`s and the returned result is
-    /// suitable for Scene, hit testing, accessibility, and scroll consumers.
-    pub fn layout_document_foundation(
-        self,
-        world: &UiWorld,
-        document: DocumentId,
-        viewport: LayoutViewport,
-    ) -> Result<LayoutFoundation, UiWorldError> {
-        let mut foundation = LayoutFoundation::new();
-        self.layout_document_foundation_into(world, document, viewport, &mut foundation)?;
-        Ok(foundation)
-    }
-
-    /// Refresh an existing Foundation projection without rebuilding component
-    /// identities.  The mature Runtime algorithm remains the geometry oracle;
-    /// this method only lowers its node/result stream into shared contracts.
-    pub fn layout_document_foundation_into(
-        self,
-        world: &UiWorld,
-        document: DocumentId,
-        viewport: LayoutViewport,
-        foundation: &mut LayoutFoundation,
-    ) -> Result<(), UiWorldError> {
-        let boxes = self.layout_document(world, document, viewport)?;
-        let order = world.document_order(document);
-        foundation.retain_nodes(order.iter().filter_map(|id| LayoutNodeId::new(id.get())));
-        let mut by_id = HashMap::with_capacity(boxes.len());
-        for (id, bounds) in boxes.iter().copied() {
-            by_id.insert(id, bounds);
-        }
-        // Keep the resolved style/parent projection local to this lowering
-        // pass.  Foundation results must carry the same clip and containing
-        // block dependencies as the runtime result, without consulting a
-        // potentially stale retained snapshot from the previous frame.
-        let mut styles = HashMap::with_capacity(order.len());
-        let mut parents = HashMap::with_capacity(order.len());
-        for id in order {
-            let Some(layout_id) = LayoutNodeId::new(id.get()) else {
-                continue;
-            };
-            let input = world.layout_input(id)?;
-            styles.insert(id, Arc::clone(&input.style));
-            parents.insert(id, input.parent);
-            let context = if input.style.omits_box() {
-                FormattingContext::None
-            } else if input.style.display.is_none() && input.style.direction.is_some() {
-                // Stack::row/column lower their parent-owned flow axis into
-                // `direction` while leaving CSS display unspecified. Preserve
-                // that facade contract in Foundation instead of silently
-                // classifying the node as an ordinary block.
-                FormattingContext::Flex
-            } else {
-                FormattingContext::from_display(input.style.display.unwrap_or(DisplaySpec::Block))
-            };
-            let placement = match input.style.position {
-                PositionSpec::Absolute => PlacementMode::Absolute,
-                PositionSpec::Fixed => PlacementMode::Fixed,
-                PositionSpec::Sticky => PlacementMode::Sticky,
-                PositionSpec::Static | PositionSpec::Relative => PlacementMode::NormalFlow,
-            };
-            let mut node = LayoutNode::new(
-                layout_id,
-                LayoutIntent {
-                    default_direction: input.style.direction,
-                    ..LayoutIntent::component_default(LayoutOwnership::default())
-                },
-                context,
-            );
-            node.children = input
-                .children
-                .iter()
-                .filter_map(|child| LayoutNodeId::new(child.get()))
-                .collect();
-            node.placement = placement;
-            let custom_render = world.custom_render(id);
-            let replaced = custom_render.is_some()
-                || input.style.paint.content_image.is_some()
-                || input.style.paint.skipped_replaced.is_some();
-            let intrinsic_size = by_id
-                .get(&id)
-                .map(|bounds| LayoutSize::new(bounds.width, bounds.height));
-            let fit = custom_render
-                .map(|render| match render.fit {
-                    nana_ui_core::ContentFit::Cover => nana_ui_core::ObjectFit::Cover,
-                    nana_ui_core::ContentFit::Fill => nana_ui_core::ObjectFit::Fill,
-                    nana_ui_core::ContentFit::ScaleDown => nana_ui_core::ObjectFit::ScaleDown,
-                    nana_ui_core::ContentFit::None => nana_ui_core::ObjectFit::None,
-                    nana_ui_core::ContentFit::Contain => nana_ui_core::ObjectFit::Contain,
-                })
-                .unwrap_or_else(|| match input.style.paint.object_fit {
-                    Some(nana_ui_core::BackgroundImageFit::Cover) => nana_ui_core::ObjectFit::Cover,
-                    Some(nana_ui_core::BackgroundImageFit::Stretch) => {
-                        nana_ui_core::ObjectFit::Fill
-                    }
-                    Some(nana_ui_core::BackgroundImageFit::ScaleDown) => {
-                        nana_ui_core::ObjectFit::ScaleDown
-                    }
-                    Some(nana_ui_core::BackgroundImageFit::Auto) => nana_ui_core::ObjectFit::None,
-                    Some(nana_ui_core::BackgroundImageFit::Contain) | None => {
-                        nana_ui_core::ObjectFit::Contain
-                    }
-                    Some(nana_ui_core::BackgroundImageFit::Length) => nana_ui_core::ObjectFit::Fill,
-                });
-            let replaced_content = replaced.then(|| ReplacedContent {
-                intrinsic_size,
-                aspect_ratio: input.style.aspect_ratio,
-                fit,
-                resource_generation: custom_render.map_or(0, |render| render.revision),
-                ..ReplacedContent::default()
-            });
-            node.participation = if let Some(content) = replaced_content {
-                Participation::Replaced(content)
-            } else if placement.is_out_of_flow() {
-                Participation::OutOfFlow(placement)
-            } else if input.text_metrics.is_some() {
-                Participation::NativeTextInline
-            } else {
-                Participation::NormalFlow
-            };
-            node.behavior = LayoutBehavior {
-                scroll_x: input.style.overflow_x.scrolls(),
-                scroll_y: input.style.overflow_y.scrolls(),
-                clip: input.style.overflow_x.clips() || input.style.overflow_y.clips(),
-                viewport: input.style.overflow_x.scrolls() || input.style.overflow_y.scrolls(),
-                scroll_offset: world
-                    .scroll_request(id)
-                    .map(|offset| LayoutSize::new(offset.x, offset.y))
-                    .unwrap_or(LayoutSize::ZERO),
-            };
-            // A custom render revision is a presentation frame/resource
-            // update. Keep the retained participation while upserting the
-            // structural node, then use Foundation's replaced-content path so
-            // frame churn cannot masquerade as a layout participation remap.
-            let previous_replaced = foundation
-                .node(layout_id)
-                .and_then(|existing| match existing.participation {
-                    Participation::Replaced(content) => Some(content),
-                    _ => None,
-                });
-            if let Some(previous) = previous_replaced
-                && replaced_content.is_some()
-            {
-                node.participation = Participation::Replaced(previous);
-            }
-            foundation.upsert(node);
-            if let (Some(previous), Some(content)) = (previous_replaced, replaced_content) {
-                let intrinsic_metadata_changed = previous.intrinsic_size != content.intrinsic_size
-                    || previous.aspect_ratio != content.aspect_ratio
-                    || previous.baseline != content.baseline;
-                foundation.set_replaced_content(layout_id, content, intrinsic_metadata_changed);
-            }
-            if let Some(metrics) = input.text_metrics {
-                let mut intrinsic =
-                    IntrinsicMetrics::new(LayoutSize::new(metrics.width, metrics.height));
-                intrinsic.first_baseline = metrics
-                    .ascent
-                    .filter(|value| value.is_finite())
-                    .map(|value| value.max(0.0));
-                foundation.set_metrics(layout_id, intrinsic);
-            } else if replaced && let Some(size) = intrinsic_size {
-                let mut intrinsic = IntrinsicMetrics::new(size);
-                intrinsic.aspect_ratio = input.style.aspect_ratio;
-                foundation.set_metrics(layout_id, intrinsic);
-            }
-        }
-        let retained_results = boxes
-            .iter()
-            .filter_map(|(id, _)| LayoutNodeId::new(id.get()))
-            .filter(|id| {
-                foundation
-                    .node(*id)
-                    .is_some_and(|node| node.formatting_context.generates_box())
-            })
-            .collect::<Vec<_>>();
-        foundation.retain_results(retained_results);
-        fn generated_children(
-            foundation: &LayoutFoundation,
-            parent: LayoutNodeId,
-            output: &mut Vec<LayoutNodeId>,
-        ) {
-            let Some(node) = foundation.node(parent) else {
-                return;
-            };
-            for child in node.children.iter().copied() {
-                let Some(child_node) = foundation.node(child) else {
-                    continue;
-                };
-                if child_node.formatting_context.is_transparent() {
-                    generated_children(foundation, child, output);
-                } else if child_node.formatting_context.generates_box() {
-                    output.push(child);
-                }
-            }
-        }
-        for (id, box_) in boxes.into_iter().rev() {
-            let Some(layout_id) = LayoutNodeId::new(id.get()) else {
-                continue;
-            };
-            let Some(node) = foundation.node(layout_id) else {
-                continue;
-            };
-            if !node.formatting_context.generates_box() {
-                continue;
-            }
-            let bounds = LayoutRect::new(box_.x, box_.y, LayoutSize::new(box_.width, box_.height));
-            let mut result = FoundationResult::new(layout_id, bounds, 0);
-            if let Some(style) =
-                styles.get(&StableNodeId::new(layout_id.get()).expect("nonzero id"))
-            {
-                let border = style.resolved_border_edges();
-                let percent_base = parents
-                    .get(&StableNodeId::new(layout_id.get()).expect("nonzero id"))
-                    .copied()
-                    .flatten()
-                    .and_then(|parent| by_id.get(&parent).map(|bounds| bounds.width));
-                let padding = style.resolved_padding_against(percent_base);
-                result.padding_box = inset_foundation_rect(bounds, border);
-                result.content_box = inset_foundation_rect(result.padding_box, padding);
-                result.border_box = bounds;
-                result.used_size = result.content_box.size.into();
-            }
-            let mut ancestor = parents
-                .get(&StableNodeId::new(layout_id.get()).expect("nonzero id"))
-                .copied()
-                .flatten();
-            let mut clip = None;
-            let mut containing_block = None;
-            while let Some(candidate) = ancestor {
-                if let Some(style) = styles.get(&candidate) {
-                    if clip.is_none() && style.clips_overflow() {
-                        clip = LayoutNodeId::new(candidate.get());
-                    }
-                    if containing_block.is_none() && style.position.establishes_containing_block() {
-                        containing_block = LayoutNodeId::new(candidate.get());
-                    }
-                }
-                ancestor = parents.get(&candidate).copied().flatten();
-            }
-            if node.placement == PlacementMode::Fixed {
-                containing_block = None;
-            }
-            let clip_dependency = clip;
-            result.clip = clip_dependency.and_then(|clip| {
-                styles
-                    .get(&StableNodeId::new(clip.get()).expect("nonzero id"))
-                    .and_then(|_| by_id.get(&StableNodeId::new(clip.get()).expect("nonzero id")))
-                    .map(|clip_box| {
-                        LayoutRect::new(
-                            clip_box.x,
-                            clip_box.y,
-                            LayoutSize::new(clip_box.width, clip_box.height),
-                        )
-                    })
-            });
-            result.containing_block = containing_block;
-            result.dependency_footprint.extend(
-                clip_dependency
-                    .into_iter()
-                    .chain(containing_block)
-                    .filter_map(|id| LayoutNodeId::new(id.get())),
-            );
-            let mut children = Vec::new();
-            generated_children(foundation, layout_id, &mut children);
-            for child in children {
-                let Some(stable_child) = StableNodeId::new(child.get()) else {
-                    continue;
-                };
-                let Some(child_box) = by_id.get(&stable_child) else {
-                    continue;
-                };
-                if foundation
-                    .node(child)
-                    .is_some_and(|child| child.formatting_context.generates_box())
-                {
-                    result.children.push(LayoutPlacement {
-                        node: child,
-                        bounds: LayoutRect::new(
-                            child_box.x,
-                            child_box.y,
-                            LayoutSize::new(child_box.width, child_box.height),
-                        ),
-                        participation: foundation
-                            .node(child)
-                            .map(|child| child.participate(node.formatting_context))
-                            .unwrap_or(Participation::Unsupported),
-                    });
-                }
-            }
-            result
-                .dependency_footprint
-                .extend(result.children.iter().map(|child| child.node));
-            result.fragments.push(nana_ui_core::LayoutFragment {
-                node: layout_id,
-                bounds,
-                kind: if node.participation == Participation::NativeTextInline {
-                    nana_ui_core::FragmentKind::Text
-                } else {
-                    nana_ui_core::FragmentKind::Box
-                },
-            });
-            result.overflow = result.children.iter().fold(bounds, |current, child| {
-                let child_overflow = foundation
-                    .result(child.node)
-                    .map(|result| result.overflow)
-                    .unwrap_or(child.bounds);
-                let right = (current.inline + current.size.inline)
-                    .max(child_overflow.inline + child_overflow.size.inline);
-                let bottom = (current.block + current.size.block)
-                    .max(child_overflow.block + child_overflow.size.block);
-                LayoutRect::new(
-                    current.inline.min(child_overflow.inline),
-                    current.block.min(child_overflow.block),
-                    LayoutSize::new(
-                        (right - current.inline.min(child_overflow.inline)).max(0.0),
-                        (bottom - current.block.min(child_overflow.block)).max(0.0),
-                    ),
-                )
-            });
-            result.scroll_extent = nana_ui_core::UsedSize::new(
-                result.overflow.size.inline,
-                result.overflow.size.block,
-            );
-            if let Some(metrics) = foundation.metrics(layout_id, ConstraintClass::Unconstrained) {
-                result.first_baseline = metrics
-                    .first_baseline
-                    .map(|baseline| result.content_box.block + baseline);
-                result.last_baseline = metrics
-                    .last_baseline
-                    .map(|baseline| result.content_box.block + baseline);
-            }
-            if let Participation::Replaced(content) = node.participation {
-                let baseline = match content.baseline {
-                    nana_ui_core::BaselinePolicy::Bottom => {
-                        Some(result.content_box.block + result.content_box.size.block)
-                    }
-                    nana_ui_core::BaselinePolicy::Center => {
-                        Some(result.content_box.block + result.content_box.size.block * 0.5)
-                    }
-                    nana_ui_core::BaselinePolicy::FirstBaseline => {
-                        result.first_baseline.or(Some(result.content_box.block))
-                    }
-                };
-                result.first_baseline = result.first_baseline.or(baseline);
-                result.last_baseline = result.last_baseline.or(baseline);
-            }
-            foundation.publish_result(result);
-        }
-        Ok(())
-    }
-
     pub fn layout_document(
         self,
         world: &UiWorld,
@@ -587,13 +217,24 @@ impl RuntimeLayoutEngine {
             // so parent constraints, containing blocks and local formatting
             // contexts participate in one deduplicated closure.
             let graph = world.layout_dependency_graph_for_seeds(document, typed_seeds);
-            LayoutFrontier::from_dependency_graph(
+            let mut frontier = LayoutFrontier::from_dependency_graph(
                 typed_seeds
                     .iter()
                     .copied()
                     .filter(|seed| world.document_of(seed.node) == Some(document)),
                 &graph,
-            )
+            );
+            // A forced subtree rooted at the document is the whole document.
+            if typed_seeds.iter().any(|seed| {
+                seed.invalidation.is_unknown_forced_subtree()
+                    && world.document_of(seed.node) == Some(document)
+                    && world
+                        .parent_id(seed.node)
+                        .is_none_or(|parent| world.is_document_node(parent))
+            }) {
+                frontier.note_full_document_fallback();
+            }
+            frontier
         };
         let affected = if force_full {
             HashSet::new()

@@ -4,8 +4,6 @@
 //! Runtime fills these from dirty system work. GPU upload bytes are omitted
 //! rather than estimated: this crate does not observe renderer uploads.
 
-use crate::layout_foundation::LayoutFoundationCounters;
-
 /// Per-frame algorithm counts. Timing stays on the Runtime profiler; these
 /// fields are the stable CI signals.
 ///
@@ -126,8 +124,6 @@ pub struct WorkCounters {
     pub baseline_queries: usize,
     pub cross_context_measure_hits: usize,
     pub cross_context_measure_misses: usize,
-    /// Shared Layout Foundation structural and cache work (Issue #206).
-    pub layout_foundation: LayoutFoundationCounters,
     /// `GlyphCache::lookup` hits. `None` until a glyph backend consults the
     /// cache this pass — omitted, never a fake 0.
     pub glyph_cache_hits: Option<usize>,
@@ -259,12 +255,6 @@ impl OutputWorkObservation {
 }
 
 impl WorkCounters {
-    /// Fold counters emitted by the shared Layout Foundation into this
-    /// per-frame snapshot.
-    pub fn record_layout_foundation(&mut self, counters: LayoutFoundationCounters) {
-        self.layout_foundation.accumulate(counters);
-    }
-
     /// Fold another drain into this frame snapshot. `entities_total` is the
     /// latest live count; extract fields are added only when the other snapshot
     /// recorded them.
@@ -379,7 +369,6 @@ impl WorkCounters {
         self.cross_context_measure_misses = self
             .cross_context_measure_misses
             .saturating_add(other.cross_context_measure_misses);
-        self.layout_foundation.accumulate(other.layout_foundation);
         fold_optional_count(&mut self.glyph_cache_hits, other.glyph_cache_hits);
         fold_optional_count(&mut self.glyph_cache_misses, other.glyph_cache_misses);
         fold_optional_count(&mut self.cache_eviction, other.cache_eviction);
@@ -907,7 +896,6 @@ mod tests {
         assert_eq!(WorkCounters::default().text_layout_cache_hits, 0);
         assert_eq!(WorkCounters::default().text_layout_cache_misses, 0);
         assert_eq!(WorkCounters::default().text_wrap_layouts, 0);
-        assert!(WorkCounters::default().layout_foundation.is_idle());
         assert_eq!(WorkCounters::default().glyph_cache_hits, None);
         assert_eq!(WorkCounters::default().glyph_cache_misses, None);
         assert_eq!(WorkCounters::default().cache_eviction, None);
@@ -962,29 +950,6 @@ mod tests {
         assert_eq!(total.gpu_upload_bytes, None);
         assert_eq!(total.input_targets, 3);
         assert_eq!(total.render_nodes_changed, 7);
-    }
-
-    #[test]
-    fn foundation_counters_are_first_class_frame_work() {
-        let mut counters = WorkCounters::default();
-        let foundation = LayoutFoundationCounters {
-            layout_nodes_placed: 3,
-            layout_context_transitions: 1,
-            scroll_layout_reflows: 1,
-            replaced_resource_rebinds: 2,
-            ..Default::default()
-        };
-        counters.record_layout_foundation(foundation);
-        assert_eq!(counters.layout_foundation.layout_nodes_placed, 3);
-        assert_eq!(counters.layout_foundation.layout_context_transitions, 1);
-        assert_eq!(counters.layout_foundation.scroll_layout_reflows, 1);
-        assert_eq!(counters.layout_foundation.replaced_resource_rebinds, 2);
-
-        let mut next = WorkCounters::default();
-        next.record_layout_foundation(foundation);
-        counters.accumulate(next);
-        assert_eq!(counters.layout_foundation.layout_nodes_placed, 6);
-        assert_eq!(counters.layout_foundation.replaced_resource_rebinds, 4);
     }
 
     #[test]

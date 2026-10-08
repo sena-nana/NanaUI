@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use nana_ui_core::{
     InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutInvalidation,
-    LayoutInvalidationSource, LayoutMetricDelta,
+    LayoutInvalidationSource,
 };
 
 use crate::StableNodeId;
@@ -306,26 +306,6 @@ fn descend_kind(
 }
 
 impl LayoutFrontier {
-    /// Build the bottom-up ancestor frontier.  `parent_of` and `is_isolated`
-    /// are O(1) retained-tree queries.  A shared edge is visited once per
-    /// newly-added work class, so a batch does not perform repeated root walks.
-    pub fn from_seeds<I, P, Iso>(seeds: I, mut parent_of: P, mut is_isolated: Iso) -> Self
-    where
-        I: IntoIterator<Item = LayoutFrontierSeed>,
-        P: FnMut(StableNodeId) -> Option<StableNodeId>,
-        Iso: FnMut(StableNodeId) -> bool,
-    {
-        let mut frontier = Self::default();
-        for seed in seeds {
-            if seed.invalidation.is_empty() {
-                frontier.propagations_stopped = frontier.propagations_stopped.saturating_add(1);
-                continue;
-            }
-            frontier.add_seed(seed, &mut parent_of, &mut is_isolated);
-        }
-        frontier
-    }
-
     /// Build a frontier from explicit parent, descendant and context-local
     /// dependency edges. This is the typed path for parent-constraint,
     /// descendant, and sibling-prefix invalidations.
@@ -348,6 +328,14 @@ impl LayoutFrontier {
                 continue;
             }
             frontier.seeds = frontier.seeds.saturating_add(1);
+            // An unknown cause names every dependency: its whole subtree is
+            // laid out again rather than the part that depends. A subtree that
+            // just arrived is laid out in full too, but that is its first
+            // layout, not a fallback.
+            if seed.invalidation.is_unknown_forced_subtree() {
+                frontier.local_subtree_fallbacks =
+                    frontier.local_subtree_fallbacks.saturating_add(1);
+            }
             let existed = frontier.entries.contains_key(&seed.node);
             let changed = frontier.insert_entry(seed.node, seed.invalidation);
             frontier.refresh_sets(seed.node);
@@ -566,80 +554,6 @@ impl LayoutFrontier {
         self.entries.entry(node).or_default().merge(invalidation)
     }
 
-    fn add_seed<P, Iso>(
-        &mut self,
-        seed: LayoutFrontierSeed,
-        parent_of: &mut P,
-        is_isolated: &mut Iso,
-    ) where
-        P: FnMut(StableNodeId) -> Option<StableNodeId>,
-        Iso: FnMut(StableNodeId) -> bool,
-    {
-        self.seeds = self.seeds.saturating_add(1);
-        let already_seeded = self.entries.contains_key(&seed.node);
-        let entry = self.entries.entry(seed.node).or_default();
-        if already_seeded {
-            self.seed_merges = self.seed_merges.saturating_add(1);
-        }
-        let seed_changed = entry.merge(seed.invalidation);
-        self.refresh_sets(seed.node);
-        // An identical seed has no new dependency class to carry upward.  It
-        // is already represented by the existing node entry, so stop here
-        // instead of paying one redundant parent-edge visit per duplicate.
-        if already_seeded && !seed_changed {
-            self.propagations_stopped = self.propagations_stopped.saturating_add(1);
-            return;
-        }
-        // An established layout-isolation boundary owns its subtree. The
-        // seed itself remains in the frontier, but its exported metrics do
-        // not invalidate ancestors outside that boundary.
-        if is_isolated(seed.node) {
-            self.propagations_stopped = self.propagations_stopped.saturating_add(1);
-            return;
-        }
-
-        let mut cursor = parent_of(seed.node);
-        while let Some(parent) = cursor {
-            self.dependency_edges_visited = self.dependency_edges_visited.saturating_add(1);
-            let mut parent_invalidation = seed.invalidation;
-            // An ancestor has to place its affected child.  It only needs a
-            // fresh measure when the seed exports a metric or the context is
-            // explicitly coupled.  This is the key distinction between a
-            // placement-only delta and a measure frontier.
-            if !seed.invalidation.kind.intersects(InvalidationKind::MEASURE)
-                && !seed.invalidation.kind.intersects(
-                    InvalidationKind::CONTEXT_REFLOW.union(InvalidationKind::WRITING_CONTEXT),
-                )
-                && !seed
-                    .invalidation
-                    .kind
-                    .intersects(InvalidationKind::SCROLL_OVERFLOW)
-                && !seed
-                    .invalidation
-                    .kind
-                    .intersects(InvalidationKind::TOPOLOGY)
-            {
-                parent_invalidation.kind = InvalidationKind::PLACEMENT;
-            }
-            let parent_was_present = self.entries.contains_key(&parent);
-            let existing = self.entries.entry(parent).or_default();
-            let added = existing.merge(parent_invalidation);
-            if parent_was_present {
-                self.seed_merges = self.seed_merges.saturating_add(1);
-            }
-            self.refresh_sets(parent);
-            if !added {
-                self.propagations_stopped = self.propagations_stopped.saturating_add(1);
-                break;
-            }
-            if is_isolated(parent) {
-                self.propagations_stopped = self.propagations_stopped.saturating_add(1);
-                break;
-            }
-            cursor = parent_of(parent);
-        }
-    }
-
     fn refresh_sets(&mut self, node: StableNodeId) {
         let Some(entry) = self.entries.get(&node).copied() else {
             return;
@@ -660,48 +574,6 @@ impl LayoutFrontier {
         if entry.scroll {
             self.scroll.insert(node);
         }
-    }
-
-    /// Seed the frontier from an exported metric result.  A `None` delta is a
-    /// valid stable boundary and deliberately does not walk ancestors.
-    pub fn propagate_metric_delta<P, Iso>(
-        &mut self,
-        node: StableNodeId,
-        delta: LayoutMetricDelta,
-        mut parent_of: P,
-        mut is_isolated: Iso,
-    ) where
-        P: FnMut(StableNodeId) -> Option<StableNodeId>,
-        Iso: FnMut(StableNodeId) -> bool,
-    {
-        if delta.is_none() {
-            self.propagations_stopped = self.propagations_stopped.saturating_add(1);
-            return;
-        }
-        let mut kind = InvalidationKind::PLACEMENT;
-        if delta.propagates_measure() {
-            kind = kind.union(InvalidationKind::MEASURE);
-        }
-        if delta.intersects(LayoutMetricDelta::WRITING_CONTEXT) {
-            kind = kind.union(InvalidationKind::WRITING_CONTEXT);
-        }
-        if delta.intersects(LayoutMetricDelta::SCROLL_EXTENT.union(LayoutMetricDelta::OVERFLOW)) {
-            kind = kind.union(InvalidationKind::SCROLL_OVERFLOW);
-        }
-        self.add_seed(
-            LayoutFrontierSeed::new(
-                node,
-                LayoutInvalidation::new(
-                    LayoutInvalidationSource::Runtime,
-                    InvalidationReason::UNKNOWN,
-                    kind,
-                    nana_ui_core::LayoutFieldMask::INTRINSIC,
-                    delta.affected_footprint(),
-                ),
-            ),
-            &mut parent_of,
-            &mut is_isolated,
-        );
     }
 
     pub fn contains(&self, node: StableNodeId) -> bool {
@@ -761,5 +633,11 @@ impl LayoutFrontier {
     }
     pub fn full_document_fallbacks(&self) -> usize {
         self.full_document_fallbacks
+    }
+
+    /// Record that a forced subtree was the whole document: this incremental
+    /// pass laid everything out.
+    pub(crate) fn note_full_document_fallback(&mut self) {
+        self.full_document_fallbacks = self.full_document_fallbacks.saturating_add(1);
     }
 }

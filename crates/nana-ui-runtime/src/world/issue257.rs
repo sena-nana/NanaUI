@@ -871,3 +871,49 @@ fn appending_a_row_lays_out_the_row_not_the_whole_column() {
     // existing rows keep their place.
     assert_eq!(small.placed, large.placed);
 }
+
+/// The fallback counters report what they name: a subtree laid out in full
+/// for an unknown cause, and such a subtree that is the whole document. A row
+/// that just arrived is laid out in full too, but that is its first layout.
+#[test]
+fn only_unknown_causes_count_as_fallbacks() {
+    let viewport = LayoutViewport::new(240.0, 400.0);
+    let mut world = labelled_rows(8);
+    let mut retained = RetainedLayoutCache::default();
+    let emitted = layout_with_seeds(&world, viewport, &[], &mut retained, true);
+    write_boxes(&mut world, &emitted);
+    let _ = world.take_system_work();
+
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(9_000),
+        document(1),
+        NodeKind::Element { tag: "row".into() },
+    );
+    queue.insert(node(2), node(9_000), None);
+    queue.set_style(node(9_000), style(px_box(180.0, 20.0)));
+    world.commit(queue).unwrap();
+    let seeds = seeds_after(&mut world);
+    let emitted = layout_with_seeds(&world, viewport, &seeds, &mut retained, false);
+    write_boxes(&mut world, &emitted);
+    let _ = world.take_system_work();
+    let stats = retained.frontier_stats(document(1));
+    assert_eq!(stats.local_subtree_fallbacks, 0);
+    assert_eq!(stats.full_document_fallbacks, 0);
+
+    world.mark_layout(node(3_000));
+    let seeds = seeds_after(&mut world);
+    let emitted = layout_with_seeds(&world, viewport, &seeds, &mut retained, false);
+    write_boxes(&mut world, &emitted);
+    let _ = world.take_system_work();
+    let stats = retained.frontier_stats(document(1));
+    assert_eq!(stats.local_subtree_fallbacks, 1);
+    assert_eq!(stats.full_document_fallbacks, 0);
+
+    world.mark_layout(node(2));
+    let seeds = seeds_after(&mut world);
+    layout_with_seeds(&world, viewport, &seeds, &mut retained, false);
+    let stats = retained.frontier_stats(document(1));
+    assert_eq!(stats.local_subtree_fallbacks, 1);
+    assert_eq!(stats.full_document_fallbacks, 1);
+}
