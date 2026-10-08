@@ -292,12 +292,23 @@ fn parse_color_mix_paint(input: &str) -> Option<CssPaintColor> {
     // CSS Color 5 makes an under-specified mix translucent by the missing
     // weight; weights above 100% are normalized without further attenuation.
     let alpha_scale = (supplied / 100.0).min(1.0);
+    // CSS Color 4 §12.3: components interpolate premultiplied by alpha (hue
+    // excepted), so a transparent endpoint adds no colour of its own: half
+    // red and half `transparent` is red at half alpha, not dark red.
+    let mix = |a: f32, a_alpha: f32, b: f32, b_alpha: f32| {
+        let alpha = a_alpha * t + b_alpha * (1.0 - t);
+        if alpha > 0.0 {
+            (a * a_alpha * t + b * b_alpha * (1.0 - t)) / alpha
+        } else {
+            a * t + b * (1.0 - t)
+        }
+    };
     if space.eq_ignore_ascii_case("in oklch") {
         let a = paint_to_oklch(a);
         let b = paint_to_oklch(b);
         return Some(CssPaintColor::Oklch {
-            l: a.0 * t + b.0 * (1.0 - t),
-            c: a.1 * t + b.1 * (1.0 - t),
+            l: mix(a.0, a.3, b.0, b.3),
+            c: mix(a.1, a.3, b.1, b.3),
             h: interpolate_hue(a.2, b.2, a.1, b.1, t),
             alpha: (a.3 * t + b.3 * (1.0 - t)) * alpha_scale,
         });
@@ -321,8 +332,8 @@ fn parse_color_mix_paint(input: &str) -> Option<CssPaintColor> {
         }
         return Some(CssPaintColor::Hsv {
             h: wrap_hue(ha + delta * (1.0 - t)),
-            s: a.1 * t + b.1 * (1.0 - t),
-            v: a.2 * t + b.2 * (1.0 - t),
+            s: mix(a.1, a.3, b.1, b.3),
+            v: mix(a.2, a.3, b.2, b.3),
             alpha: (a.3 * t + b.3 * (1.0 - t)) * alpha_scale,
         });
     }
@@ -332,9 +343,9 @@ fn parse_color_mix_paint(input: &str) -> Option<CssPaintColor> {
     let a = a.to_srgb();
     let b = b.to_srgb();
     Some(CssPaintColor::Srgb([
-        a[0] * t + b[0] * (1.0 - t),
-        a[1] * t + b[1] * (1.0 - t),
-        a[2] * t + b[2] * (1.0 - t),
+        mix(a[0], a[3], b[0], b[3]),
+        mix(a[1], a[3], b[1], b[3]),
+        mix(a[2], a[3], b[2], b[3]),
         (a[3] * t + b[3] * (1.0 - t)) * alpha_scale,
     ]))
 }
@@ -387,6 +398,13 @@ fn parse_linear_scrgb(input: &str) -> Option<CssPaintColor> {
 
 fn split_color_and_optional_percent(input: &str) -> Option<(&str, Option<f32>)> {
     let s = input.trim();
+    // `N% color`: the percentage may come first.
+    if let Some((pct_raw, color)) = s.split_once(' ')
+        && let Some(percent) = pct_raw.trim().strip_suffix('%')
+        && let Some(percent) = parse_finite_f32(percent)
+    {
+        return Some((color.trim(), Some(percent)));
+    }
     // Prefer trailing `N%` after the color.
     if let Some((color, pct_raw)) = s.rsplit_once(' ')
         && let Some(percent) = pct_raw.trim().strip_suffix('%')
@@ -711,6 +729,28 @@ mod tests {
         assert!((implicit[0] - implicit[2]).abs() < 0.08);
         let sparse = parse_css_paint_color("color-mix(in oklch, red 20%, blue 20%)").unwrap();
         assert!((sparse.to_srgb()[3] - 0.4).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn color_mix_interpolates_premultiplied_and_takes_a_leading_percent() {
+        // A transparent endpoint adds no colour: red at half alpha.
+        let half = parse_css_color("color-mix(in srgb, red 50%, transparent)").unwrap();
+        assert!((half[0] - 1.0).abs() < 1.0e-6, "{half:?}");
+        assert!(half[1].abs() < 1.0e-6 && half[2].abs() < 1.0e-6, "{half:?}");
+        assert!((half[3] - 0.5).abs() < 1.0e-6, "{half:?}");
+        let tint = parse_css_paint_color("color-mix(in oklch, #61a8fa 20%, transparent)").unwrap();
+        let solid = parse_css_paint_color("#61a8fa").unwrap();
+        let (tint, solid) = (paint_to_oklch(tint), paint_to_oklch(solid));
+        assert!(
+            (tint.0 - solid.0).abs() < 1.0e-4,
+            "lightness kept: {tint:?}"
+        );
+        assert!((tint.3 - 0.2).abs() < 1.0e-6);
+        // `30% red, blue` is `red 30%, blue`.
+        assert_eq!(
+            parse_css_color("color-mix(in srgb, 30% red, blue)"),
+            parse_css_color("color-mix(in srgb, red 30%, blue)")
+        );
     }
 
     #[test]
