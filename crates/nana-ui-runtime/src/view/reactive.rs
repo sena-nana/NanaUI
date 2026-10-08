@@ -1409,10 +1409,7 @@ impl<T: PartialEq + 'static> Signal<T> {
     /// signal, such as a background result landing after its row recycled.
     #[track_caller]
     pub fn try_set_if_changed(&self, value: T) -> bool {
-        if created_at(self.key).is_none() {
-            return false;
-        }
-        self.set_if_changed(value)
+        self.defined_at().is_some() && self.set_if_changed(value)
     }
 }
 
