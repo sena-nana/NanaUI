@@ -148,17 +148,12 @@ fn srgb_channel_to_linear(u: f32) -> f32 {
 // Keep the specialization scalar as a float. Some GLES translators materialize
 // integer overrides as an `int[1]`, which cannot initialize a WGSL `u32`.
 override PATH_SAMPLES: f32 = 1.0;
-// A switch rather than a module-scope `const` array: indexed with the
-// run-time sample index, that array reads back wrong on D3D12 (FXC), and every
-// 4× path draws nothing.
-fn path_sample_offset(sample: u32) -> vec2<f32> {
-    switch sample {
-        case 0u: { return vec2<f32>(-0.125, -0.375); }
-        case 1u: { return vec2<f32>(0.375, -0.125); }
-        case 2u: { return vec2<f32>(-0.375, 0.125); }
-        default: { return vec2<f32>(0.125, 0.375); }
-    }
-}
+const PATH_SAMPLE_OFFSETS = array<vec2<f32>, 4>(
+    vec2<f32>(-0.125, -0.375),
+    vec2<f32>(0.375, -0.125),
+    vec2<f32>(-0.375, 0.125),
+    vec2<f32>(0.125, 0.375),
+);
 
 // An AA fringe ramps linearly over its one device pixel, as every other edge;
 // across a shadow band of ±2σ, smoothstep shapes the ramp into a close fit of
@@ -168,16 +163,10 @@ fn path_alpha(coverage: f32, fringe: bool) -> f32 {
     return select(smoothstep(0.0, 1.0, linear), linear, fringe);
 }
 
-@fragment
-fn path_fs_main(
-    input: PathVertexOutput,
-    @builtin(sample_index) sample_index: u32,
-) -> @location(0) vec4<f32> {
-    // Coverage is linear across a triangle; its screen gradient, taken while
-    // every invocation of the quad still runs, reaches any sample from here.
-    let ramp = vec2<f32>(dpdx(input.coverage), dpdy(input.coverage));
+// The clip coverage of `input`'s fragment.
+fn path_clip_cover(input: PathVertexOutput) -> f32 {
     let clip = clip_palette.items[input.clip_index];
-    let clip_cover = fragment_clip_coverage(
+    return fragment_clip_coverage(
         input.world_pos,
         clip.rect,
         clip.inv_abcd,
@@ -190,9 +179,29 @@ fn path_fs_main(
         clip.poly3,
         input.pixel_scale,
     );
-    if clip_cover <= 0.0 {
-        discard;
+}
+
+// The premultiplied colour of `input`'s fragment at coverage `alpha`.
+fn path_shade(input: PathVertexOutput, alpha: f32) -> vec4<f32> {
+    if input.gradient != NO_GRADIENT {
+        return gradient_color(input.gradient, input.paint_pos) * (input.color.a * alpha);
     }
+    return premultiply(input.color) * alpha;
+}
+
+// Keep the clip and the shading in their own functions and the one
+// `discard` at the end. With them written inline and the clip's discard
+// first, D3D12's FXC build of this shader drew nothing under 4x MSAA
+// (WARP: every path black), while the same code split this way and Metal,
+// Vulkan and GL were correct.
+@fragment
+fn path_fs_main(
+    input: PathVertexOutput,
+    @builtin(sample_index) sample_index: u32,
+) -> @location(0) vec4<f32> {
+    // Coverage is linear across a triangle; its screen gradient, taken while
+    // every invocation of the quad still runs, reaches any sample from here.
+    let ramp = vec2<f32>(dpdx(input.coverage), dpdy(input.coverage));
     let fringe = input.fringe > 0.5;
     var coverage = path_alpha(input.coverage, fringe);
     if PATH_SAMPLES == 4.0 {
@@ -201,16 +210,13 @@ fn path_fs_main(
         // `sample_mask` array builtin, which is not representable as a scalar
         // u32 by every GLSL translation backend.
         coverage = path_alpha(
-            input.coverage + dot(ramp, path_sample_offset(sample_index)),
+            input.coverage + dot(ramp, PATH_SAMPLE_OFFSETS[min(sample_index, 3u)]),
             fringe,
         );
     }
-    let alpha = coverage * clip_cover;
+    let alpha = coverage * path_clip_cover(input);
     if alpha <= 0.0 {
         discard;
     }
-    if input.gradient != NO_GRADIENT {
-        return gradient_color(input.gradient, input.paint_pos) * (input.color.a * alpha);
-    }
-    return premultiply(input.color) * alpha;
+    return path_shade(input, alpha);
 }
