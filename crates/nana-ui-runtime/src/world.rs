@@ -2300,16 +2300,13 @@ impl UiWorld {
         self.layout_result(id).map(|result| result.bounds)
     }
 
-    /// Canonical geometry with the retained writeback fallback needed by
-    /// component APIs that may run between box writes and result publication.
+    /// The box layout last wrote for `id`: what interaction maps pointers
+    /// against and components size themselves by. Unlike
+    /// [`Self::canonical_layout_box`] it does not wait for the next
+    /// publication after a change, so a press between a write and the next
+    /// layout still lands.
     pub(crate) fn component_layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
-        let node = self.nodes.get(id)?;
-        if self.layout_results.is_empty() {
-            return Some(node.layout);
-        }
-        self.canonical_layout_box(id)
-            .filter(|bounds| *bounds == node.layout)
-            .or(Some(node.layout))
+        self.nodes.get(id).map(|node| node.layout)
     }
 
     /// Compatibility accessor for callers that need the retained box during

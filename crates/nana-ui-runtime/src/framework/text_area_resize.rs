@@ -52,7 +52,7 @@ impl AppContext {
         if !grip.contains(x, y) {
             return Ok(false);
         }
-        let Some(bounds) = self.world.canonical_layout_box(target) else {
+        let Some(bounds) = self.world.component_layout_box(target) else {
             return Ok(false);
         };
         let start_height = self.read(entity, |area| {

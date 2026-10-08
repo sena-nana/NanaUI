@@ -466,7 +466,7 @@ impl AppContext {
                     return Some(node);
                 }
                 if let Some(handle) = self.handle_of_split(node)
-                    && let Some(bounds) = self.world().canonical_layout_box(handle)
+                    && let Some(bounds) = self.world().component_layout_box(handle)
                     && point_near_box(bounds, x, y, SLOP)
                 {
                     return Some(handle);
@@ -481,7 +481,7 @@ impl AppContext {
         self.split_panes_in(document).find_map(|pane| {
             let handle = self.handle_of_split(pane)?;
             self.world()
-                .canonical_layout_box(handle)
+                .component_layout_box(handle)
                 .filter(|bounds| point_near_box(*bounds, x, y, SLOP))
                 .map(|_| handle)
         })

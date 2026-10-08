@@ -1026,7 +1026,7 @@ impl AppContext {
                             self.workspace_handle_id(handle).is_some()
                                 && self
                                     .world()
-                                    .canonical_layout_box(handle)
+                                    .component_layout_box(handle)
                                     .is_some_and(|bounds| {
                                         point_near_box(bounds, x, y, HANDLE_HIT_SLOP)
                                     })

@@ -22,7 +22,7 @@ impl AppContext {
         let Some((x, y)) = self.world.pointer_layout_position(target, x, y) else {
             return self.clear_chart_hover(target);
         };
-        let Some(bounds) = self.world.canonical_layout_box(target) else {
+        let Some(bounds) = self.world.component_layout_box(target) else {
             return Ok(());
         };
         let title = if let Ok((old, active, title)) =

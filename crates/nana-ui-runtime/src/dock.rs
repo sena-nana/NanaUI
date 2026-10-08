@@ -2529,7 +2529,7 @@ impl AppContext {
             chrome_find(chrome, &mut |node| match node {
                 DockChrome::Split { handle, .. } => self
                     .world()
-                    .canonical_layout_box(*handle)
+                    .component_layout_box(*handle)
                     .is_some_and(|bounds| point_near_box(bounds, x, y, SLOP))
                     .then_some(*handle),
                 _ => None,
@@ -2591,7 +2591,7 @@ impl AppContext {
             chrome_find(chrome, &mut |node| match node {
                 DockChrome::Tabs { strip, .. } => self
                     .world()
-                    .canonical_layout_box(*strip)
+                    .component_layout_box(*strip)
                     .is_some_and(|bounds| bounds.contains(x, y))
                     .then_some(*strip),
                 _ => None,
@@ -2677,7 +2677,7 @@ impl AppContext {
         if self.read(dock, |dock| dock.locked)? {
             return Ok(false);
         }
-        let Some(bounds) = self.world().canonical_layout_box(frame) else {
+        let Some(bounds) = self.world().component_layout_box(frame) else {
             return Ok(false);
         };
         let extent = match axis {
@@ -2874,7 +2874,7 @@ impl AppContext {
         let locked = self.read(dock, |dock| dock.locked)?;
         let outside = self
             .world()
-            .canonical_layout_box(dock.stable_id())
+            .component_layout_box(dock.stable_id())
             .is_none_or(|bounds| !bounds.contains(x, y));
         self.update_component(dock, |dock, cx| {
             dock.item_drag = None;
@@ -3056,7 +3056,7 @@ impl AppContext {
             })
             .unwrap_or_default();
         for (id, option) in options {
-            let Some(bounds) = self.world().canonical_layout_box(option) else {
+            let Some(bounds) = self.world().component_layout_box(option) else {
                 continue;
             };
             if !bounds.contains(x, y) {
@@ -3086,7 +3086,7 @@ impl AppContext {
             if id.as_ref() == dragged {
                 continue;
             }
-            let Some(bounds) = self.world().canonical_layout_box(frame) else {
+            let Some(bounds) = self.world().component_layout_box(frame) else {
                 continue;
             };
             if let Some(zone) = drop_zone_at(bounds, x, y) {

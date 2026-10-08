@@ -830,7 +830,7 @@ impl AppContext {
         else {
             return Ok(None);
         };
-        let Some(bounds) = self.world().canonical_layout_box(viewer.stable_id()) else {
+        let Some(bounds) = self.world().component_layout_box(viewer.stable_id()) else {
             return Ok(None);
         };
         let metrics = self.world().theme_metrics();
@@ -873,7 +873,7 @@ impl AppContext {
         let Some((x, y)) = self.world().pointer_layout_position(id, x, y) else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().canonical_layout_box(viewer.stable_id()) else {
+        let Some(bounds) = self.world().component_layout_box(viewer.stable_id()) else {
             return Ok(false);
         };
         let metrics = self.world().theme_metrics();
@@ -916,7 +916,7 @@ impl AppContext {
         else {
             return Ok(false);
         };
-        let Some(bounds) = self.world().canonical_layout_box(viewer.stable_id()) else {
+        let Some(bounds) = self.world().component_layout_box(viewer.stable_id()) else {
             return Ok(false);
         };
         let metrics = self.world().theme_metrics();

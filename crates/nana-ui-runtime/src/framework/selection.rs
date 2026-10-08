@@ -98,7 +98,7 @@ impl AppContext {
                     .is_some_and(|accepts| accepts.accepts(kind))
             })
             .filter(|id| {
-                self.world.canonical_layout_box(*id).is_some_and(|bounds| {
+                self.world.component_layout_box(*id).is_some_and(|bounds| {
                     x >= bounds.x
                         && x < bounds.x + bounds.width
                         && y >= bounds.y
