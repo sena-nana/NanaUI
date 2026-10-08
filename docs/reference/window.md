@@ -183,7 +183,7 @@ winit 的无边框窗口并不去掉 frame 样式位。`to_window_styles()` 对�
 
 | 入口 | 做什么 | 典型调用 |
 | --- | --- | --- |
-| `mutate_window_geometry` | 只改窗口矩形。不动 chrome、不重绘 | `Move`、`SetBounds`、`Size` / `MinSize` / `MaxSize` |
+| `mutate_window_geometry` | 只改窗口矩形。不动 chrome、不重绘 | `Move`、`SetBounds`、`Size` / `MinSize` / `MaxSize`、`SetContentAspectRatio` 的尺寸调整 |
 | `mutate_window_visibility` | `WS_VISIBLE` 会变，重放 chrome；帧由调用方决定 | `Visible`、`focus_window` 的置顶显示 |
 | `mutate_native_style` | 某个 window flag 变了，重放 chrome 并请求一帧 | maximize、minimize、fullscreen、window level、resizable、`set_cursor_hittest` |
 
@@ -456,6 +456,28 @@ pub enum FullscreenMode {
 描述符全屏在窗口可见之后才应用（窗口先以隐藏状态创建并完成文档初始化）。不要用描述符表达“这块屏必须存在”。那是显式请求的合同。
 
 `window-service-lifecycle` / `embedded-window-lifecycle` 覆盖枚举非空、指定屏全屏后收到 `ModeChanged`、置顶、`set_skip_taskbar` 的平台结果（Windows 成功。其他平台 `Unsupported`）、退出全屏、非法 `DisplayId`、描述符全屏。macOS 绿色按钮、第二块屏、拔屏。以及 Windows 多屏。需要人工核对。
+
+### 内容宽高比
+
+整扇窗口只放一幅画面（视频播放器、图片查看）时，用 `WindowDescriptor::content_aspect_ratio(Some(宽 / 高))` 让客户区保持这个比例。运行中换比例（下一个视频）发 `WindowCommand::SetContentAspectRatio { id, ratio }` 或调 `WindowHandle::set_content_aspect_ratio(ratio)`，`None` 解除。比例不是有限正数时按 `None` 处理；描述符里写了非法值则创建失败（`InvalidParameter`）。不要再在 `Resized` 后发 `SetBounds` 纠正尺寸：那条路在拖上下边时总被拉回，也会和最大化、全屏打架。
+
+```rust
+let player = WindowDescriptor::new("播放器")
+    .initial_size(960.0, 540.0)
+    .minimum_size(320.0, 320.0)
+    .content_aspect_ratio(Some(16.0 / 9.0));
+// 换片后
+commands.push(WindowCommand::SetContentAspectRatio { id, ratio: Some(9.0 / 16.0) });
+```
+
+规则：
+
+- **比例只管客户区**。非客户区边框和标题栏不参与计算。
+- **最小尺寸**变成 `aspect_minimum_size(minimum_size, 比例)`：比例正确、且两条边都不小于 `minimum_size` 的最小尺寸。总是一条边保持最小值，另一条边变长，所以横向的最小值（如 640×360）会让竖屏内容至少 1138 高。内容可能是竖屏时给一个两种方向都能接受的最小值，正方形最合适。运行中 `WindowHandle::set_min_size` 也按这条规则换算。
+- **开窗与换比例时的尺寸**是 `aspect_window_size`：保持当前（或描述符、或恢复出来的）面积，再缩到窗口所在显示器能放下，最后不小于上面的最小尺寸（最小尺寸优先，和平台最小尺寸一致）。保持面积使得来回切换比例回到同一尺寸。窗口左上角不动。
+- **用户拖边框**：拖上、下边时高度跟手，宽度随之变；拖左、右边时宽度跟手，高度随之变；拖角时跟手势开始以来相对变化更大的那条轴。被拖边的对边不动；只拖上下边时左边不动，只拖左右边时上边不动。系统边框（`WM_SIZING`）和 NanaUI 客户区边框（`LiveFrameResize`）两条路径共用同一个纯函数。
+- **最大化与全屏**不受约束，用平台给的尺寸。在最大化或全屏时换了比例，窗口回到普通状态后的第一次尺寸变化时再按新比例调整。
+- **平台**：拖动时保持比例只在 Windows 上实现。macOS 与 Linux 上开窗尺寸、换比例时的调整和最小尺寸照常生效，用户拖动不受约束。
 
 ### 嵌入已有宿主
 

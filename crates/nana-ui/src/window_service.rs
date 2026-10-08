@@ -363,6 +363,14 @@ impl WindowHandle {
             position,
         }))
     }
+    /// Lock the client area to `ratio` (width over height), or release it
+    /// with `None`; see `WindowDescriptor::content_aspect_ratio`.
+    pub fn set_content_aspect_ratio(&self, ratio: Option<f32>) -> WindowRequest<()> {
+        self.control(Control::Command(WindowCommand::SetContentAspectRatio {
+            id: self.id,
+            ratio,
+        }))
+    }
     pub fn set_resizable(&self, resizable: bool) -> WindowRequest<()> {
         self.control(Control::Resizable(resizable))
     }
@@ -450,6 +458,14 @@ pub(crate) fn validate_descriptor(descriptor: &WindowDescriptor) -> Result<(), W
             "position must be finite".into(),
         ));
     }
+    if descriptor
+        .content_aspect_ratio
+        .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0)
+    {
+        return Err(WindowError::InvalidParameter(
+            "content aspect ratio must be finite and positive".into(),
+        ));
+    }
     if descriptor.modal && descriptor.parent.is_none() {
         return Err(WindowError::InvalidParameter(
             "modal window requires a parent".into(),
@@ -534,6 +550,10 @@ mod tests {
             },
             WindowDescriptor {
                 persist_key: Some(String::new()),
+                ..Default::default()
+            },
+            WindowDescriptor {
+                content_aspect_ratio: Some(f32::NAN),
                 ..Default::default()
             },
             WindowDescriptor {

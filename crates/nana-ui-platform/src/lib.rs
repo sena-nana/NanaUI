@@ -43,8 +43,9 @@ pub use window::{
     DisplayBounds, DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest, MousePassthroughMode,
     SystemAppearance, WindowDescriptor, WindowEvent, WindowGeometry, WindowIcon, WindowIconError,
     WindowId, WindowLevel, WindowModeState, WindowResizeEdge, WindowRole, WindowSurfacePreference,
-    clamp_position_to_displays, clear_registered_application_icon, fit_window_to_displays,
-    register_application_icon, resolve_window_icon, window_resize_edge,
+    aspect_minimum_size, aspect_window_size, clamp_position_to_displays,
+    clear_registered_application_icon, fit_window_to_displays, register_application_icon,
+    resolve_window_icon, valid_aspect_ratio, window_resize_edge,
 };
 #[cfg(feature = "ws")]
 pub use ws::{

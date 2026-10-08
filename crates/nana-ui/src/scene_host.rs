@@ -192,6 +192,9 @@ struct WindowContext {
     accessibility: Option<HostedAccessibility>,
     accessibility_pending: PendingAccessibility,
     size_move: LiveSizeMove,
+    /// A content aspect ratio is set but the window has not been brought to
+    /// it yet, because it was maximized or fullscreen when it was set.
+    aspect_conform_pending: bool,
     /// Level last applied; platforms do not report it back.
     level: WindowLevel,
     /// Mode last delivered through `WindowEvent::ModeChanged`.
@@ -1210,7 +1213,13 @@ fn complete_startup<Program: RuntimeProgram>(
         #[cfg(not(target_os = "android"))]
         accessibility,
         accessibility_pending: PendingAccessibility::default(),
-        size_move: LiveSizeMove::install(window.as_ref())?,
+        size_move: {
+            let size_move = LiveSizeMove::install(window.as_ref())?;
+            let (ratio, minimum) = windows::content_aspect_lock(&settings);
+            size_move.set_content_aspect_ratio(ratio, minimum);
+            size_move
+        },
+        aspect_conform_pending: false,
         level: if settings.always_on_top {
             WindowLevel::AlwaysOnTop
         } else {
@@ -1997,6 +2006,31 @@ impl Desktop {
             .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
             .unwrap_or(1.0)
     }
+
+    /// Logical size, for a window at `position`, of the display holding it
+    /// or the nearest one.
+    fn logical_size_at(&self, position: (f64, f64)) -> Option<(f64, f64)> {
+        let ratio = self.size_ratio_at(position);
+        let center = |display: &DisplayBounds| {
+            let dx = display.position.0 + display.size.0 / 2.0 - position.0;
+            let dy = display.position.1 + display.size.1 / 2.0 - position.1;
+            dx * dx + dy * dy
+        };
+        let display = self
+            .displays
+            .iter()
+            .find(|display| {
+                (display.position.0..display.position.0 + display.size.0).contains(&position.0)
+                    && (display.position.1..display.position.1 + display.size.1)
+                        .contains(&position.1)
+            })
+            .or_else(|| {
+                self.displays
+                    .iter()
+                    .min_by(|a, b| center(a).total_cmp(&center(b)))
+            })?;
+        Some((display.size.0 / ratio, display.size.1 / ratio))
+    }
 }
 
 fn scene_window_attributes(
@@ -2006,6 +2040,7 @@ fn scene_window_attributes(
 ) -> winit::window::WindowAttributes {
     let displays = desktop.displays.as_slice();
     let mut settings = settings.clone();
+    let requested_size = settings.initial_size;
     if settings.constrain_to_work_area {
         let position = settings.initial_position.unwrap_or_else(|| {
             displays
@@ -2029,6 +2064,27 @@ fn scene_window_attributes(
             settings.minimum_size.0.min(size.0),
             settings.minimum_size.1.min(size.1),
         );
+    }
+    if let Some(ratio) = nana_ui_platform::valid_aspect_ratio(settings.content_aspect_ratio) {
+        // The requested (or restored) size lends its area; the display the
+        // window opens on, when known, is the limit.
+        let at = settings
+            .initial_position
+            .or_else(|| displays.first().map(|display| display.position));
+        let limit = at.and_then(|at| desktop.logical_size_at(at));
+        settings.initial_size = nana_ui_platform::aspect_window_size(
+            requested_size,
+            ratio,
+            settings.minimum_size,
+            limit,
+        );
+        settings.minimum_size = nana_ui_platform::aspect_minimum_size(settings.minimum_size, ratio);
+        if settings.constrain_to_work_area {
+            settings.minimum_size = (
+                settings.minimum_size.0.min(settings.initial_size.0),
+                settings.minimum_size.1.min(settings.initial_size.1),
+            );
+        }
     }
     let mut attributes = winit::window::WindowAttributes::default()
         .with_title(settings.title.clone())
@@ -2426,6 +2482,7 @@ enum RoutedWindowCommand {
     SetMinimized(WindowId),
     SetMaximized(WindowId),
     SetAlwaysOnTop(WindowId),
+    SetContentAspectRatio(WindowId),
     SetNativeWindowControlsVisible(WindowId),
     SetIcon(WindowId),
     SetMenuBar(WindowId),
@@ -2470,6 +2527,9 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         }
         WindowCommand::SetAlwaysOnTop { id, .. } if known(*id) => {
             RoutedWindowCommand::SetAlwaysOnTop(*id)
+        }
+        WindowCommand::SetContentAspectRatio { id, .. } if known(*id) => {
+            RoutedWindowCommand::SetContentAspectRatio(*id)
         }
         WindowCommand::SetNativeWindowControlsVisible { id, .. } if known(*id) => {
             RoutedWindowCommand::SetNativeWindowControlsVisible(*id)
@@ -3929,6 +3989,49 @@ mod tests {
     }
 
     #[test]
+    fn a_ratio_locked_window_opens_at_its_ratio_with_a_ratio_exact_minimum() {
+        let settings = WindowDescriptor::new("Player")
+            .initial_size(960.0, 540.0)
+            .minimum_size(320.0, 320.0)
+            .content_aspect_ratio(Some(9.0 / 16.0));
+        let logical = |size: Option<winit::dpi::Size>| match size {
+            Some(winit::dpi::Size::Logical(size)) => (size.width, size.height),
+            other => panic!("expected a logical size, got {other:?}"),
+        };
+        let open = |desktop: &Desktop, settings: &WindowDescriptor| {
+            let attributes =
+                scene_window_attributes(settings, desktop, WindowSurfaceTarget::NativeWindow);
+            (
+                logical(attributes.surface_size),
+                logical(attributes.min_surface_size),
+            )
+        };
+        let unknown = Desktop {
+            displays: Vec::new(),
+            size_ratios: Vec::new(),
+            scale: 1.0,
+        };
+        // Portrait content keeps the requested area and stands up.
+        let (size, minimum) = open(&unknown, &settings);
+        assert!((size.0 - 540.0).abs() < 0.01 && (size.1 - 960.0).abs() < 0.01);
+        assert!((minimum.0 - 320.0).abs() < 0.01 && (minimum.1 - 568.89).abs() < 0.01);
+        // On a short work area it fits the height instead of running off it.
+        let short = Desktop {
+            displays: vec![DisplayBounds {
+                position: (0.0, 0.0),
+                size: (1366.0, 728.0),
+            }],
+            size_ratios: Vec::new(),
+            scale: 1.0,
+        };
+        let mut constrained = settings.clone();
+        constrained.constrain_to_work_area = true;
+        let (size, minimum) = open(&short, &constrained);
+        assert!((size.0 - 409.5).abs() < 0.01 && (size.1 - 728.0).abs() < 0.01);
+        assert!(minimum.0 <= size.0 && minimum.1 <= size.1);
+    }
+
+    #[test]
     fn scene_windows_reclamp_offscreen_initial_positions_to_live_displays() {
         let mut settings = WindowDescriptor::new("Scene");
         settings.initial_size = (888.0, 586.0);
@@ -5077,6 +5180,26 @@ mod tests {
                 &known
             ),
             RoutedWindowCommand::SetAlwaysOnTop(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetContentAspectRatio {
+                    id: tool,
+                    ratio: Some(1.5),
+                },
+                &known
+            ),
+            RoutedWindowCommand::SetContentAspectRatio(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetContentAspectRatio {
+                    id: WindowId(3),
+                    ratio: None,
+                },
+                &known
+            ),
+            RoutedWindowCommand::Ignore
         );
         assert_eq!(
             route_window_command(

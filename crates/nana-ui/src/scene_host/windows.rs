@@ -8,6 +8,16 @@ fn uses_host_managed_drag(settings: &WindowDescriptor, button: i16) -> bool {
     settings.host_managed_drag || button != PRIMARY_MOUSE_BUTTON
 }
 
+/// The content aspect lock a descriptor asks for: its ratio and the
+/// ratio-exact minimum client size.
+pub(super) fn content_aspect_lock(settings: &WindowDescriptor) -> (Option<f64>, (f64, f64)) {
+    let ratio = nana_ui_platform::valid_aspect_ratio(settings.content_aspect_ratio);
+    let minimum = ratio.map_or(settings.minimum_size, |ratio| {
+        nana_ui_platform::aspect_minimum_size(settings.minimum_size, ratio)
+    });
+    (ratio.map(f64::from), minimum)
+}
+
 /// Advance a native window's input endpoint identity without ever reusing it.
 /// This deliberately has the same exhaustion policy as `InputSequencer`.
 fn next_input_generation(generation: u64) -> u64 {
@@ -116,6 +126,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     WindowLevel::Normal
                 };
                 self.set_window_level(event_loop, id, level);
+            }
+            RoutedWindowCommand::SetContentAspectRatio(id) => {
+                let WindowCommand::SetContentAspectRatio { ratio, .. } = command else {
+                    return;
+                };
+                self.set_content_aspect_ratio(event_loop, id, ratio);
             }
             RoutedWindowCommand::SetNativeWindowControlsVisible(id) => {
                 let WindowCommand::SetNativeWindowControlsVisible {
@@ -750,6 +766,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
         let size_move = LiveSizeMove::install(window.as_ref())?;
+        let (ratio, minimum) = content_aspect_lock(&settings);
+        size_move.set_content_aspect_ratio(ratio, minimum);
         self.windows.register(id);
         let context = program_context(
             self.message_tx.clone(),
@@ -807,6 +825,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 accessibility,
                 accessibility_pending: PendingAccessibility::default(),
                 size_move,
+                aspect_conform_pending: false,
                 level,
                 mode: None,
                 pending_fullscreen,
@@ -955,6 +974,80 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             ));
         });
     }
+    /// Lock or release the window's content aspect ratio. A windowed window
+    /// takes the ratio at once; a maximized or fullscreen one when it is
+    /// windowed again.
+    pub(super) fn set_content_aspect_ratio(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        ratio: Option<f32>,
+    ) {
+        let ratio = nana_ui_platform::valid_aspect_ratio(ratio);
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        host.settings.content_aspect_ratio = ratio;
+        host.aspect_conform_pending = ratio.is_some();
+        self.sync_content_aspect_lock(id);
+        self.conform_content_aspect(event_loop, id);
+    }
+
+    /// Hand the window's content aspect ratio to the platform: the minimum
+    /// size it implies and the user-resize lock.
+    pub(super) fn sync_content_aspect_lock(&self, id: WindowId) {
+        let Some(host) = self.window_contexts.get(&id) else {
+            return;
+        };
+        let (ratio, minimum) = content_aspect_lock(&host.settings);
+        host.size_move.set_content_aspect_ratio(ratio, minimum);
+        host.surface.window().set_min_surface_size(Some(
+            winit::dpi::LogicalSize::new(minimum.0, minimum.1).into(),
+        ));
+    }
+
+    /// Bring a windowed window owed its content aspect ratio to it, keeping
+    /// its area and fitting the display that holds it. A maximized or
+    /// fullscreen window stays owed until it is windowed again.
+    pub(super) fn conform_content_aspect(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+    ) {
+        let geometry = self.geometry_of(id);
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        if !host.aspect_conform_pending {
+            return;
+        }
+        let Some(ratio) = nana_ui_platform::valid_aspect_ratio(host.settings.content_aspect_ratio)
+        else {
+            host.aspect_conform_pending = false;
+            return;
+        };
+        if geometry.maximized || host.surface.window().fullscreen().is_some() {
+            return;
+        }
+        host.aspect_conform_pending = false;
+        let minimum = host.settings.minimum_size;
+        let size = (
+            f64::from(geometry.logical_size.0),
+            f64::from(geometry.logical_size.1),
+        );
+        let limit = geometry.logical_position.and_then(|(x, y)| {
+            let center = (f64::from(x) + size.0 / 2.0, f64::from(y) + size.1 / 2.0);
+            scene_desktop(event_loop, true).logical_size_at(center)
+        });
+        let target = nana_ui_platform::aspect_window_size(size, ratio, minimum, limit);
+        if (target.0 - size.0).abs() < 0.5 && (target.1 - size.1).abs() < 0.5 {
+            return;
+        }
+        self.mutate_window_geometry(id, |window| {
+            window.request_surface_size(winit::dpi::LogicalSize::new(target.0, target.1).into())
+        });
+    }
+
     pub(super) fn active_modal_child(&self, parent: WindowId) -> Option<WindowId> {
         self.window_contexts.iter().find_map(|(id, host)| {
             (host.settings.modal
@@ -1913,6 +2006,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Control::MinSize(size) => {
                 if let Some(size) = size {
                     validate_size(size)?;
+                }
+                if let Some(host) = self.window_contexts.get_mut(&id)
+                    && host.settings.content_aspect_ratio.is_some()
+                {
+                    // A locked window keeps a ratio-exact minimum.
+                    host.settings.minimum_size = size.unwrap_or((1.0, 1.0));
+                    self.sync_content_aspect_lock(id);
+                    return Ok(());
                 }
                 self.mutate_window_geometry(id, |window| {
                     window.set_min_surface_size(

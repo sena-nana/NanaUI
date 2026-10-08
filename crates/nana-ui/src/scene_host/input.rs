@@ -193,6 +193,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
                 self.sync_window_mode(event_loop, id);
                 let geometry_changed = self.sync_geometry(id);
+                // Leaving maximized or fullscreen arrives as a resize.
+                self.conform_content_aspect(event_loop, id);
                 let hdr_changed = self.refresh_surface_hdr_info(id);
                 #[cfg(target_os = "macos")]
                 let native_live_resize = self.sync_native_live_resize_presents(id);

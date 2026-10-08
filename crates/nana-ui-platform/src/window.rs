@@ -411,6 +411,9 @@ pub struct WindowDescriptor {
     pub title: String,
     pub initial_size: (f64, f64),
     pub minimum_size: (f64, f64),
+    /// Client width over client height the window keeps, or `None`. See
+    /// [`WindowDescriptor::content_aspect_ratio`].
+    pub content_aspect_ratio: Option<f32>,
     pub initial_position: Option<(f64, f64)>,
     pub maximized: bool,
     pub transparent: bool,
@@ -512,6 +515,7 @@ impl WindowDescriptor {
             title: title.into(),
             initial_size: (1200.0, 800.0),
             minimum_size: (760.0, 520.0),
+            content_aspect_ratio: None,
             initial_position: None,
             maximized: false,
             transparent: false,
@@ -584,6 +588,25 @@ impl WindowDescriptor {
 
     pub fn minimum_size(mut self, width: f64, height: f64) -> Self {
         self.minimum_size = (width, height);
+        self
+    }
+
+    /// Keep the client area at `ratio` (width over height), for a window
+    /// whose content is one picture, such as a video player.
+    ///
+    /// The window opens at [`aspect_window_size`] of its initial (or
+    /// restored) size, and its minimum becomes [`aspect_minimum_size`]: the
+    /// smallest size with this ratio that breaks neither minimum edge, so give
+    /// a minimum both orientations can live with (a square works for content
+    /// that may be portrait). While the user drags a frame edge the opposite
+    /// dimension follows. Maximized and fullscreen windows take the platform's
+    /// size. Change it later with `WindowCommand::SetContentAspectRatio`.
+    /// A ratio that is not finite and positive counts as `None`.
+    ///
+    /// Held during user resizes on Windows; elsewhere only the open size,
+    /// conforming and the minimum apply.
+    pub fn content_aspect_ratio(mut self, ratio: Option<f32>) -> Self {
+        self.content_aspect_ratio = valid_aspect_ratio(ratio);
         self
     }
 
@@ -686,6 +709,14 @@ pub enum WindowCommand {
         id: WindowId,
         always_on_top: bool,
     },
+    /// Lock the client area to `ratio` (width over height) or, with `None`,
+    /// release it; see [`WindowDescriptor::content_aspect_ratio`]. A windowed
+    /// window is resized to [`aspect_window_size`] of its current size at
+    /// once; a maximized or fullscreen one when it returns to windowed.
+    SetContentAspectRatio {
+        id: WindowId,
+        ratio: Option<f32>,
+    },
     /// Fade the platform's native window buttons (macOS traffic lights) over
     /// `duration`; hidden buttons take no pointer input. The host keeps the
     /// state across native style changes such as leaving fullscreen.
@@ -739,6 +770,43 @@ pub enum WindowCommand {
         id: WindowId,
         shadow: crate::WindowShadow,
     },
+}
+
+/// `ratio` when it is finite and positive.
+pub fn valid_aspect_ratio(ratio: Option<f32>) -> Option<f32> {
+    ratio.filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+}
+
+/// The minimum client size of a window locked to `ratio`: the smallest size
+/// with that ratio whose edges are both at least `minimum`'s. One edge keeps
+/// its minimum and the other grows, so a landscape minimum forces portrait
+/// content tall; give a minimum both orientations can live with.
+pub fn aspect_minimum_size(minimum: (f64, f64), ratio: f32) -> (f64, f64) {
+    let ratio = f64::from(ratio);
+    let width = minimum.0.max(minimum.1 * ratio);
+    (width, width / ratio)
+}
+
+/// The client size a window locked to `ratio` takes from `size`.
+///
+/// It keeps the area of `size`, so switching between ratios and back
+/// returns the same size, then scales down to fit inside `limit` (a work
+/// area, when known) and up to [`aspect_minimum_size`] of `minimum`; the
+/// minimum wins over the limit, as the platform's minimum would.
+pub fn aspect_window_size(
+    size: (f64, f64),
+    ratio: f32,
+    minimum: (f64, f64),
+    limit: Option<(f64, f64)>,
+) -> (f64, f64) {
+    let ratio = f64::from(ratio);
+    let area = (size.0 * size.1).max(1.0);
+    let mut width = (area * ratio).sqrt();
+    if let Some(limit) = limit.filter(|limit| limit.0 > 0.0 && limit.1 > 0.0) {
+        width = width.min(limit.0).min(limit.1 * ratio);
+    }
+    let width = width.max(aspect_minimum_size(minimum, ratio as f32).0);
+    (width, width / ratio)
 }
 
 /// Client-area edge used to start a window resize.
@@ -966,5 +1034,43 @@ mod tests {
             fit_window_to_displays((500.0, 100.0), (420.0, 640.0), &screens),
             ((500.0, 100.0), (420.0, 640.0))
         );
+    }
+
+    #[test]
+    fn an_aspect_minimum_grows_one_edge_and_keeps_the_other() {
+        assert_eq!(aspect_minimum_size((320.0, 320.0), 2.0), (640.0, 320.0));
+        assert_eq!(aspect_minimum_size((320.0, 320.0), 0.5), (320.0, 640.0));
+        // A landscape minimum makes portrait content tall.
+        assert_eq!(aspect_minimum_size((640.0, 360.0), 0.5), (640.0, 1280.0));
+    }
+
+    #[test]
+    fn an_aspect_size_keeps_the_area_so_switching_back_returns_the_same_size() {
+        let wide = aspect_window_size((960.0, 540.0), 16.0 / 9.0, (320.0, 320.0), None);
+        assert!((wide.0 - 960.0).abs() < 1e-3 && (wide.1 - 540.0).abs() < 1e-3);
+        let tall = aspect_window_size(wide, 9.0 / 16.0, (320.0, 320.0), None);
+        assert!((tall.0 - 540.0).abs() < 1e-3 && (tall.1 - 960.0).abs() < 1e-3);
+        let back = aspect_window_size(tall, 16.0 / 9.0, (320.0, 320.0), None);
+        assert!((back.0 - 960.0).abs() < 1e-3 && (back.1 - 540.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn an_aspect_size_fits_the_limit_but_not_below_the_minimum() {
+        // A portrait video on a 1366 x 728 work area fits its height.
+        let fitted = aspect_window_size((960.0, 540.0), 0.5, (200.0, 200.0), Some((1366.0, 728.0)));
+        assert_eq!(fitted, (364.0, 728.0));
+        // The minimum wins over a work area too small for it.
+        let floor = aspect_window_size((960.0, 540.0), 1.0, (500.0, 500.0), Some((400.0, 400.0)));
+        assert_eq!(floor, (500.0, 500.0));
+    }
+
+    #[test]
+    fn an_invalid_aspect_ratio_is_no_lock() {
+        let descriptor = WindowDescriptor::new("Player").content_aspect_ratio(Some(f32::NAN));
+        assert_eq!(descriptor.content_aspect_ratio, None);
+        let descriptor = descriptor.content_aspect_ratio(Some(0.0));
+        assert_eq!(descriptor.content_aspect_ratio, None);
+        let descriptor = descriptor.content_aspect_ratio(Some(1.5));
+        assert_eq!(descriptor.content_aspect_ratio, Some(1.5));
     }
 }
