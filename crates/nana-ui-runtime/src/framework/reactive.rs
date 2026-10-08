@@ -824,8 +824,11 @@ impl AppContext {
         self.commit_mutations(mutations).map(|_| ())
     }
 
-    /// `duration`, or none at all under reduced motion.
-    pub(crate) fn motion_duration(&self, duration: Duration) -> Duration {
+    /// `duration`, or none at all under [`Self::reduced_motion`]: for motion
+    /// an application starts itself (`queue.node(id, now).transition()`,
+    /// `Timeline`), which does not see the preference. A zero-length run
+    /// still ends with its `Finished`.
+    pub fn motion_duration(&self, duration: Duration) -> Duration {
         if self.reduced_motion() {
             Duration::ZERO
         } else {

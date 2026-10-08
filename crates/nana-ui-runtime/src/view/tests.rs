@@ -1858,6 +1858,34 @@ fn reduced_motion_lands_an_implicit_transition_at_once_and_still_reports_it() {
 }
 
 #[test]
+fn an_application_transition_takes_no_time_under_reduced_motion() {
+    use std::time::Duration;
+    let (mut cx, _, parent) = setup();
+    let duration = Duration::from_millis(180);
+    assert_eq!(cx.motion_duration(duration), duration);
+    cx.set_reduced_motion(true);
+    assert_eq!(cx.motion_duration(duration), Duration::ZERO);
+    let start = Duration::from_secs(1);
+    cx.advance_animations(start);
+    let mut queue = crate::MutationQueue::new();
+    queue
+        .node(parent, start)
+        .transition()
+        .opacity(0.5)
+        .duration(cx.motion_duration(duration))
+        .start();
+    cx.commit_mutations(queue).unwrap();
+    assert_eq!(opacity_at(&cx, parent, start), 0.5, "lands at once");
+    let frame = cx.advance_animations(start);
+    assert!(
+        frame
+            .events
+            .iter()
+            .any(|event| event.kind == crate::AnimationEventKind::Finished)
+    );
+}
+
+#[test]
 fn reduced_motion_swaps_a_transitioned_branch_without_a_fade() {
     use std::time::Duration;
     let (mut cx, _, parent) = setup();
