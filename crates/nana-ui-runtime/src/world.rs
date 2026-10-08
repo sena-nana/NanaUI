@@ -2541,6 +2541,11 @@ impl UiWorld {
             .unwrap_or_else(|| self.record(id).text.value.clone())
     }
 
+    /// The rich text `id` was given with `SetRichText`, if any.
+    pub fn rich_text(&self, id: StableNodeId) -> Option<&nana_ui_core::RichText> {
+        self.nodes.rich_text(id)
+    }
+
     pub fn text_metrics(&self, id: StableNodeId) -> Option<TextMetrics> {
         self.nodes.get(id).map(|node| node.text_metrics)
     }
@@ -2986,6 +2991,61 @@ impl UiWorld {
             // Emptied text has nothing to draw, and a non-Text element without
             // text never reaches a text pass that could release it later.
             self.nodes.release_text_layout(id);
+        }
+    }
+
+    /// Gives `id` rich text, or drops its spans (`None`), pricing the change
+    /// by the tier it touches ([`crate::text_node::classify_rich_change`]).
+    pub(super) fn apply_rich_text(
+        &mut self,
+        id: StableNodeId,
+        rich: Option<&nana_ui_core::RichText>,
+    ) {
+        use crate::text_node::TextDirty;
+        let previous = self.nodes.rich_text(id).cloned();
+        let text_changed =
+            rich.is_some_and(|rich| self.record(id).text.value.as_str() != rich.text());
+        let mut dirty = if text_changed {
+            // New text: whatever spans it has are styled afresh, and the
+            // scene's paint runs follow them.
+            let mut dirty = TextDirty::PAINT;
+            if rich.is_some_and(|rich| {
+                rich.spans()
+                    .iter()
+                    .any(|(_, style)| !style.shape.is_empty())
+            }) {
+                dirty |= TextDirty::SHAPE_STYLE;
+            }
+            dirty
+        } else {
+            crate::text_node::classify_rich_change(previous.as_ref(), rich)
+        };
+        // The content class was settled above; what is left are the tiers.
+        dirty = dirty.intersection(
+            TextDirty::SHAPE_STYLE
+                .union(TextDirty::PAINT)
+                .union(TextDirty::GLYPH_PRESENTATION),
+        );
+        self.nodes.set_rich_text(id, rich.cloned());
+        let mut marks = 0u16;
+        if text_changed {
+            let rich = rich.expect("text only changes when a value was given");
+            self.record_mut(id).text =
+                crate::TextContent::new(std::sync::Arc::clone(rich.shared_text()));
+            self.invalidate_text_content(id);
+            marks |= DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY;
+        }
+        self.nodes.invalidate_text(id, dirty);
+        if dirty.contains(TextDirty::SHAPE_STYLE) {
+            marks |= DirtyMask::TEXT | DirtyMask::RENDER;
+        }
+        if dirty.contains(TextDirty::PAINT) {
+            marks |= DirtyMask::RENDER;
+        }
+        // An effect index alone is read by the presentation layer only; no
+        // Runtime pass consumes it, so nothing is scheduled.
+        if marks != 0 {
+            self.mark(id, marks);
         }
     }
 

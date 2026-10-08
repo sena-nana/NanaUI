@@ -29,6 +29,33 @@ const OBLIQUE_DEGREES: f32 = 14.0;
 /// number of pixels would over-embolden captions and under-embolden headings.
 const EMBOLDEN_RATIO: f32 = 0.02;
 
+/// Above this CSS blur radius (raster px) a shadow is blurred at half
+/// resolution and scaled back up: the kernel's cost grows with the radius,
+/// and a wide blur has no detail a half-resolution pass would lose.
+const HALF_RES_BLUR_RADIUS: f32 = 8.0;
+
+/// The widest CSS blur radius a shadow is rasterized with, raster px. The
+/// painter caps the logical radius before it reaches the key; this bounds a
+/// bitmap whatever the scale.
+pub(super) const MAX_BLUR_RADIUS: f32 = 96.0;
+
+/// [`GlyphRenderMode::Stroke`]'s `join` byte for a join.
+pub(super) fn stroke_join(join: nana_ui_core::TextStrokeJoin) -> u8 {
+    match join {
+        nana_ui_core::TextStrokeJoin::Round => 0,
+        nana_ui_core::TextStrokeJoin::Miter => 1,
+        nana_ui_core::TextStrokeJoin::Bevel => 2,
+    }
+}
+
+fn zeno_join(join: u8) -> swash::zeno::Join {
+    match join {
+        1 => swash::zeno::Join::Miter,
+        2 => swash::zeno::Join::Bevel,
+        _ => swash::zeno::Join::Round,
+    }
+}
+
 /// How a rasterized glyph's bytes are laid out.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum GlyphImageFormat {
@@ -331,23 +358,38 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
         // property of the face, not of what the caller wanted.
         let snap_to_pixel =
             !scaler.has_outlines() || key.synthesis.contains(GlyphSynthesis::PIXEL_FONT);
-        let mut render = swash::scale::Render::new(&[
-            // A color outline with the first palette, then a color strike,
-            // then the plain outline. Order matters: an emoji face can have
-            // all three, and the first is the one with the palette applied.
+        // A color outline with the first palette, then a color strike, then
+        // the plain outline. Order matters: an emoji face can have all three,
+        // and the first is the one with the palette applied.
+        const FACE_SOURCES: &[swash::scale::Source] = &[
             swash::scale::Source::ColorOutline(0),
             swash::scale::Source::ColorBitmap(swash::scale::StrikeWith::BestFit),
             swash::scale::Source::Outline,
-        ]);
+        ];
+        // A stroke or a shadow is coverage of the outline itself, whatever
+        // colours the face would paint it in.
+        const OUTLINE_ONLY: &[swash::scale::Source] = &[swash::scale::Source::Outline];
+        let mut render = swash::scale::Render::new(if key.mode.is_derived() {
+            OUTLINE_ONLY
+        } else {
+            FACE_SOURCES
+        });
         let format = match key.mode {
-            GlyphRenderMode::Mask => swash::zeno::Format::Alpha,
             GlyphRenderMode::SubpixelRgb | GlyphRenderMode::SubpixelBgr => {
                 swash::zeno::Format::Subpixel
             }
+            GlyphRenderMode::Mask
+            | GlyphRenderMode::Stroke { .. }
+            | GlyphRenderMode::Blur { .. } => swash::zeno::Format::Alpha,
         };
         render
             .format(format)
             .offset(subpixel_offset(key, snap_to_pixel));
+        if let GlyphRenderMode::Stroke { width_q, join } = key.mode {
+            let mut stroke = swash::zeno::Stroke::new(f32::from(width_q) * 0.25);
+            stroke.join(zeno_join(join));
+            render.style(stroke);
+        }
         let mut transform = None;
         if key.synthesis.contains(GlyphSynthesis::FAKE_ITALIC) {
             transform = Some(swash::zeno::Transform::skew(
@@ -369,8 +411,18 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
             });
         }
         render.transform(transform);
+        let mut embolden = 0.0;
         if key.synthesis.contains(GlyphSynthesis::FAKE_BOLD) {
-            render.embolden(size * EMBOLDEN_RATIO);
+            embolden += size * EMBOLDEN_RATIO;
+        }
+        if let GlyphRenderMode::Blur { spread_q, .. } = key.mode {
+            // Spread grows the coverage before it is blurred, the way CSS
+            // spreads a shadow's shape: an embolden by twice the spread moves
+            // each edge out by about the spread.
+            embolden += f32::from(spread_q) * 0.5;
+        }
+        if embolden > 0.0 {
+            render.embolden(embolden);
         }
         let image = render.render(&mut scaler, glyph_id)?;
         let width = image.placement.width;
@@ -392,15 +444,145 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
                 encode_subpixel(pixel, rgb, key.mode);
             }
         }
-        Some(GlyphImage {
+        let image = GlyphImage {
             format,
             width,
             height,
             left: image.placement.left,
             top: image.placement.top,
             data,
-        })
+        };
+        match key.mode {
+            GlyphRenderMode::Blur { radius_q, .. } if format == GlyphImageFormat::Mask => {
+                Some(blur_image(image, f32::from(radius_q) * 0.25))
+            }
+            _ => Some(image),
+        }
     }
+}
+
+/// `image`'s coverage under a Gaussian of CSS blur radius `radius` (twice its
+/// standard deviation), grown by the kernel's reach on every side so no
+/// coverage is cut off.
+pub(super) fn blur_image(image: GlyphImage, radius: f32) -> GlyphImage {
+    let radius = radius.clamp(0.0, MAX_BLUR_RADIUS);
+    if image.is_empty() || radius < 0.5 {
+        return image;
+    }
+    let (data, width, height, pad) = blur_mask(&image.data, image.width, image.height, radius);
+    GlyphImage {
+        format: GlyphImageFormat::Mask,
+        width,
+        height,
+        left: image.left - pad as i32,
+        top: image.top + pad as i32,
+        data,
+    }
+}
+
+/// The separable Gaussian blur behind [`blur_image`], over one byte of
+/// coverage a pixel. Returns the blurred mask, its size and how many pixels
+/// it grew by on each side.
+///
+/// Above [`HALF_RES_BLUR_RADIUS`] the work is done at half resolution: the
+/// padded mask is box-filtered down, blurred with half the deviation, and
+/// scaled back up bilinearly. The kernel is normalized and nothing is cropped,
+/// so the total coverage — how dark the shadow is overall — is what the glyph
+/// had, up to rounding.
+pub(super) fn blur_mask(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    radius: f32,
+) -> (Vec<u8>, u32, u32, u32) {
+    let sigma = radius * 0.5;
+    let pad = (sigma * 3.0).ceil() as u32 + 1;
+    let (w, h) = ((width + pad * 2) as usize, (height + pad * 2) as usize);
+    let mut plane = vec![0f32; w * h];
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            plane[(y + pad as usize) * w + x + pad as usize] =
+                f32::from(src[y * width as usize + x]);
+        }
+    }
+    let blurred = if radius > HALF_RES_BLUR_RADIUS {
+        let (hw, hh) = (w.div_ceil(2), h.div_ceil(2));
+        let mut half = vec![0f32; hw * hh];
+        for y in 0..h {
+            for x in 0..w {
+                half[(y / 2) * hw + x / 2] += plane[y * w + x] * 0.25;
+            }
+        }
+        let half = gaussian(&half, hw, hh, sigma * 0.5);
+        // Bilinear back up, sampling the half-resolution grid at each full
+        // pixel's centre.
+        let mut full = vec![0f32; w * h];
+        for y in 0..h {
+            let fy = ((y as f32 + 0.5) * 0.5 - 0.5).max(0.0);
+            let y0 = (fy as usize).min(hh - 1);
+            let y1 = (y0 + 1).min(hh - 1);
+            let ty = fy - y0 as f32;
+            for x in 0..w {
+                let fx = ((x as f32 + 0.5) * 0.5 - 0.5).max(0.0);
+                let x0 = (fx as usize).min(hw - 1);
+                let x1 = (x0 + 1).min(hw - 1);
+                let tx = fx - x0 as f32;
+                let top = half[y0 * hw + x0] * (1.0 - tx) + half[y0 * hw + x1] * tx;
+                let bottom = half[y1 * hw + x0] * (1.0 - tx) + half[y1 * hw + x1] * tx;
+                full[y * w + x] = top * (1.0 - ty) + bottom * ty;
+            }
+        }
+        full
+    } else {
+        gaussian(&plane, w, h, sigma)
+    };
+    let data = blurred
+        .iter()
+        .map(|value| value.round().clamp(0.0, 255.0) as u8)
+        .collect();
+    (data, w as u32, h as u32, pad)
+}
+
+/// A normalized separable Gaussian of deviation `sigma` over a `w` × `h`
+/// plane, zero outside it.
+fn gaussian(plane: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
+    if sigma <= 0.0 {
+        return plane.to_vec();
+    }
+    let reach = (sigma * 3.0).ceil() as isize;
+    let mut kernel: Vec<f32> = (-reach..=reach)
+        .map(|offset| (-(offset * offset) as f32 / (2.0 * sigma * sigma)).exp())
+        .collect();
+    let sum: f32 = kernel.iter().sum();
+    kernel.iter_mut().for_each(|weight| *weight /= sum);
+    let mut across = vec![0f32; w * h];
+    for y in 0..h {
+        let row = &plane[y * w..(y + 1) * w];
+        for x in 0..w {
+            let mut value = 0.0;
+            for (index, weight) in kernel.iter().enumerate() {
+                let at = x as isize + index as isize - reach;
+                if at >= 0 && (at as usize) < w {
+                    value += row[at as usize] * weight;
+                }
+            }
+            across[y * w + x] = value;
+        }
+    }
+    let mut out = vec![0f32; w * h];
+    for x in 0..w {
+        for y in 0..h {
+            let mut value = 0.0;
+            for (index, weight) in kernel.iter().enumerate() {
+                let at = y as isize + index as isize - reach;
+                if at >= 0 && (at as usize) < h {
+                    value += across[at as usize * w + x] * weight;
+                }
+            }
+            out[y * w + x] = value;
+        }
+    }
+    out
 }
 
 /// Write one pixel of [`GlyphImageFormat::SubpixelRgb`] from its subpixel
@@ -456,6 +638,143 @@ mod tests {
         let engine = crate::text_engine::nana_text_engine();
         let engine = crate::text_engine::lock_engine(&engine);
         engine.fonts().faces().into_iter().take(count).collect()
+    }
+
+    /// A rasterizer and the key of the first glyph of `text` as the process
+    /// engine shapes it at 32px, or `None` when no face shapes it.
+    fn shaped_key(mode: GlyphRenderMode) -> Option<(SwashGlyphRasterizer, GlyphRasterKey)> {
+        let engine = crate::text_engine::nana_text_engine();
+        let layout = {
+            let mut engine = crate::text_engine::lock_engine(&engine);
+            let mut counters = nana_text::TextWorkCounters::default();
+            nana_text::TextEngine::layout(
+                &mut *engine,
+                nana_text::TextKind::Label,
+                &nana_text::TextSource::new("O"),
+                &nana_text::TextStyle {
+                    font_size_px: 32.0,
+                    ..nana_text::TextStyle::default()
+                },
+                &nana_text::TextConstraints::default(),
+                &mut counters,
+            )
+        };
+        let run = layout.runs.first()?;
+        let instance = run.instance.as_ref()?;
+        let mut rasterizer = SwashGlyphRasterizer::new(engine);
+        let (font, variation, synthesis) = rasterizer.intern_instance(instance);
+        let key = GlyphRasterKey {
+            font,
+            font_generation: 0,
+            variation,
+            glyph: run.glyphs.first()?.glyph_id,
+            size_bits: super::super::glyph::size_bits(32.0),
+            subpixel_x: Default::default(),
+            subpixel_y: Default::default(),
+            synthesis,
+            mode,
+        };
+        Some((rasterizer, key))
+    }
+
+    fn coverage(image: &GlyphImage) -> u64 {
+        image.data.iter().map(|value| u64::from(*value)).sum()
+    }
+
+    #[test]
+    fn a_stroked_glyph_is_wider_than_its_fill_and_shares_its_centre() {
+        let Some((mut rasterizer, fill_key)) = shaped_key(GlyphRenderMode::Mask) else {
+            return;
+        };
+        let fill = rasterizer
+            .rasterize(&GlyphRasterRequest { key: fill_key })
+            .expect("the fill rasterizes");
+        let stroke_key = GlyphRasterKey {
+            mode: GlyphRenderMode::Stroke {
+                width_q: GlyphRenderMode::quarters(4.0),
+                join: stroke_join(nana_ui_core::TextStrokeJoin::Round),
+            },
+            ..fill_key
+        };
+        let stroke = rasterizer
+            .rasterize(&GlyphRasterRequest { key: stroke_key })
+            .expect("the outline strokes");
+        assert_eq!(stroke.format, GlyphImageFormat::Mask);
+        assert!(
+            stroke.width >= fill.width + 3 && stroke.height >= fill.height + 3,
+            "a 4px stroke reaches 2px past each edge: fill {}x{}, stroke {}x{}",
+            fill.width,
+            fill.height,
+            stroke.width,
+            stroke.height
+        );
+        let centre = |image: &GlyphImage| {
+            (
+                image.left as f32 + image.width as f32 * 0.5,
+                image.top as f32 - image.height as f32 * 0.5,
+            )
+        };
+        let (fill_x, fill_y) = centre(&fill);
+        let (stroke_x, stroke_y) = centre(&stroke);
+        assert!(
+            (fill_x - stroke_x).abs() <= 1.0 && (fill_y - stroke_y).abs() <= 1.0,
+            "the stroke is centred on the outline the fill is drawn from"
+        );
+    }
+
+    #[test]
+    fn a_blurred_glyph_keeps_its_coverage() {
+        let Some((mut rasterizer, fill_key)) = shaped_key(GlyphRenderMode::Mask) else {
+            return;
+        };
+        let fill = rasterizer
+            .rasterize(&GlyphRasterRequest { key: fill_key })
+            .expect("the fill rasterizes");
+        for radius in [3.0f32, 6.0, 12.0, 24.0] {
+            let blurred = rasterizer
+                .rasterize(&GlyphRasterRequest {
+                    key: GlyphRasterKey {
+                        mode: GlyphRenderMode::Blur {
+                            radius_q: GlyphRenderMode::quarters(radius),
+                            spread_q: 0,
+                        },
+                        ..fill_key
+                    },
+                })
+                .expect("the shadow rasterizes");
+            assert!(
+                blurred.width > fill.width,
+                "a blur spreads the coverage out"
+            );
+            let (before, after) = (coverage(&fill) as f64, coverage(&blurred) as f64);
+            assert!(
+                (after - before).abs() / before < 0.02,
+                "radius {radius}: coverage {before} became {after}"
+            );
+            assert!(
+                blurred.data.iter().copied().max().unwrap_or(0)
+                    < fill.data.iter().copied().max().unwrap_or(0),
+                "and lowers its peak"
+            );
+        }
+    }
+
+    #[test]
+    fn blurring_a_square_conserves_coverage_at_full_and_half_resolution() {
+        let (width, height) = (12u32, 12u32);
+        let square = vec![255u8; (width * height) as usize];
+        for radius in [1.0f32, 4.0, 8.0, 9.0, 16.0, 30.0] {
+            let (data, blurred_width, blurred_height, pad) =
+                blur_mask(&square, width, height, radius);
+            assert_eq!(blurred_width, width + pad * 2);
+            assert_eq!(blurred_height, height + pad * 2);
+            let before: f64 = square.iter().map(|value| f64::from(*value)).sum();
+            let after: f64 = data.iter().map(|value| f64::from(*value)).sum();
+            assert!(
+                (after - before).abs() / before < 0.02,
+                "radius {radius}: {before} became {after}"
+            );
+        }
     }
 
     #[test]

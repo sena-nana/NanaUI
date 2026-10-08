@@ -214,6 +214,7 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         document_text_selection: Vec::new(),
         document_text_selection_color: [0.0; 4],
         compositor: Default::default(),
+        rich_text: None,
     }
 }
 

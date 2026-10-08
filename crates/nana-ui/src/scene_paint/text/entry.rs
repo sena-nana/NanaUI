@@ -342,6 +342,10 @@ impl EntryStore {
         entry.atlas_epoch = epoch;
         let mut intact = true;
         for offset in 0..live {
+            if self.instances[start + offset].is_solid() {
+                // Samples nothing, so nothing the atlas did moved it.
+                continue;
+            }
             let handle = self.handles[start + offset];
             match rect(handle) {
                 Some((origin, size)) => {

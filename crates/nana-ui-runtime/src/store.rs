@@ -399,6 +399,9 @@ pub(crate) struct NodeStore {
     /// holds an entry: its metrics are the lines it wrapped to, and layout
     /// needs this to give it more room once its box may grow.
     text_natural_widths: HashMap<StableNodeId, f32>,
+    /// Application-owned rich text (spans over the node's text), only for
+    /// nodes given one with `SetRichText`.
+    rich_texts: HashMap<StableNodeId, nana_ui_core::RichText>,
     /// Revisions, resolution stamp and retained layout handle of every node's
     /// text (Issue #95), one entry per node. Kept apart from the dense records
     /// on purpose: a large relayout scope decides "no text work" for every
@@ -483,6 +486,7 @@ impl NodeStore {
         self.text_viewport_pins.remove(&id);
         self.text_drop_indicators.remove(&id);
         self.text_natural_widths.remove(&id);
+        self.rich_texts.remove(&id);
         if let Some(text) = self.text_nodes.remove(&id) {
             self.text_layouts.remove(text.layout);
         }
@@ -658,6 +662,7 @@ impl NodeStore {
         text_natural_width,
         set_text_natural_width
     );
+    sparse!(rich_texts, nana_ui_core::RichText, rich_text, set_rich_text);
 
     pub(crate) fn text_layouts(&self) -> &nana_text::TextLayoutStore {
         &self.text_layouts
@@ -698,9 +703,15 @@ impl NodeStore {
     pub(crate) fn text_source(
         &mut self,
         id: StableNodeId,
+        style: &crate::ComputedStyle,
     ) -> Option<(&nana_text::TextSource, bool)> {
         let text = &self.nodes.get(id)?.text;
-        Some(self.text_nodes.get_mut(&id)?.source_for(&text.value))
+        let rich = self.rich_texts.get(&id);
+        Some(
+            self.text_nodes
+                .get_mut(&id)?
+                .source_for(&text.value, rich, style),
+        )
     }
 
     /// Retains `layout` for `id`, replacing what the node held. A node handed

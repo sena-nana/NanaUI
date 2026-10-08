@@ -3814,6 +3814,10 @@ pub struct ExtractedNode {
     /// drawn from the editor presentation, not as plain text.
     pub editable: bool,
     pub text_spans: Vec<ExtractedTextSpan>,
+    /// The application's rich text for this node (`SetRichText`), when its
+    /// text is still that value's. The scene reads its paint tier; the
+    /// shaping tier is already in [`Self::text_layout`].
+    pub rich_text: Option<nana_ui_core::RichText>,
     pub standard_visual: Option<StandardVisual>,
     /// Boxed: the `TextInput` variant alone is ~1.8 KB, which would otherwise
     /// dominate `ExtractedNode` and be memcpy'd for every extracted node.

@@ -2398,8 +2398,12 @@ impl LayoutStyleCss for LayoutStyle {
                     self.paint.border_radii = Some(corners);
                 }
             }
-            "text-shadow" => {
-                self.paint.text_shadow = parse_text_shadow(val);
+            "text-shadow"
+            | "-webkit-text-stroke"
+            | "-webkit-text-stroke-width"
+            | "-webkit-text-stroke-color"
+            | "paint-order" => {
+                crate::css_paint::apply_css_paint_property(self, &key, val);
             }
             "border-width" => apply_border_width_shorthand(self, val),
             "border-top-width" => {
@@ -5446,6 +5450,21 @@ pub fn parse_inline_paint_transform(raw: &str) -> Option<nana_ui_core::box_layou
     }
 }
 
+/// Every layer of `text-shadow`, CSS order, at most
+/// [`nana_ui_core::MAX_TEXT_SHADOWS`]. `none` and an empty value are no
+/// layers; a layer that does not parse is skipped.
+pub fn parse_text_shadows(input: &str) -> Vec<TextShadowSpec> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        return Vec::new();
+    }
+    split_shadow_layers(trimmed)
+        .iter()
+        .filter_map(|layer| parse_text_shadow(layer))
+        .take(nana_ui_core::MAX_TEXT_SHADOWS)
+        .collect()
+}
+
 /// Parse single-layer `text-shadow` (`offset-x offset-y [blur-radius] color`).
 pub fn parse_text_shadow(input: &str) -> Option<TextShadowSpec> {
     let trimmed = input.trim();
@@ -7890,6 +7909,51 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
         layout.apply_css_text("box-shadow: 0 4px 8px rgba(0,0,0,0.5)", None, None);
         assert!(layout.paint.primary_box_shadow().is_some());
         assert!(layout.has_surface_paint());
+    }
+
+    #[test]
+    fn text_shadow_keeps_every_layer_in_css_order() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "text-shadow: 1px 1px 2px red, 0 0 8px rgba(0, 0, 255, 0.5), 3px 3px black",
+            None,
+            None,
+        );
+        let layers = &layout.paint.text_shadows;
+        assert_eq!(layers.len(), 3);
+        assert_eq!(layers[1].blur_radius, 8.0);
+        assert_eq!(
+            layout.paint.text_shadow,
+            Some(layers[0]),
+            "the first layer stays the legacy one"
+        );
+        layout.apply_css_text("text-shadow: none", None, None);
+        assert!(layout.paint.text_shadows.is_empty());
+        assert!(layout.paint.text_shadow.is_none());
+    }
+
+    #[test]
+    fn webkit_text_stroke_and_paint_order_map_onto_the_stroke() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text("-webkit-text-stroke: 2px #ff0000", None, None);
+        let stroke = layout.paint.text_stroke.expect("stroke");
+        assert_eq!(stroke.width, 2.0);
+        assert_eq!(stroke.color, Some([1.0, 0.0, 0.0, 1.0]));
+        assert!(
+            !layout.paint.paint_order_stroke_first,
+            "CSS paints the stroke over the fill"
+        );
+        layout.apply_css_text(
+            "-webkit-text-stroke-width: 3px; paint-order: stroke fill",
+            None,
+            None,
+        );
+        assert_eq!(layout.paint.text_stroke.expect("stroke").width, 3.0);
+        assert!(layout.paint.paint_order_stroke_first);
+        layout.apply_css_text("-webkit-text-stroke: 1px currentColor", None, None);
+        assert_eq!(layout.paint.text_stroke.expect("stroke").color, None);
+        layout.apply_css_text("paint-order: normal", None, None);
+        assert!(!layout.paint.paint_order_stroke_first);
     }
 
     #[test]
