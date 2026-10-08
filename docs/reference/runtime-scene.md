@@ -38,6 +38,8 @@ Rust L3 的 `ViewContext::transition`、`node().motion(Spring::to)`、`node().ti
 
 内建的 hover、switch、spinner、surface、skeleton、sidebar、workspace、loading 不再维护平行的逐帧时钟。compositor-safe 属性走 overlay。switch 的 thumb 和 sidebar 的高度保持 Layout。完成事件走 deadline。
 
+**完成事件的保证。** 每一条开始了的动画，都以恰好一个 `Finished` 或 `Cancelled` 结束。被同 id 的新动画在途中替换的那条报 `Cancelled`（同 CSS 的 `transitioncancel`），已经走到终点但还没被 advance 收走的报 `Finished`。提交产生的结束（`stop_animation`、`finish_animation`、替换、节点移除或停放）留到送达为止：之后再有提交也不会把它们丢掉；`take_animation_events` 或下一次 `advance_animations` 交出它们，各一次。还有未送达的结束时，`next_animation_deadline` 报当前动画时间，宿主据此醒来送达，不靠绘制，也不靠窗口在不在 present。内建控件自己的时间线（spinner、hover 等）没有框架外的等待者，它们的结束随下一次 advance 一起带出，不单独唤醒宿主。估算终点已过却还没落定的动画（比 settle 估算慢一点的 spring）下一个帧间隔再看一次，不会停在 `Duration::MAX` 上永远不报。
+
 `advance_animations` 仍按稀疏 deadline 采样。CPU、Layout、Paint 类的 track 用 `frame_interval`。compositor-safe 的 presentation track 只用 start 和 completion 的 deadline。`animations_considered` 和 `animation_deadlines_scanned` 的语义不变。
 
 查询走 `UiWorld::presentation_pair` 或 `applied_value()`。禁止每帧把 transform 或 opacity 写进 `UiWorld`。

@@ -2710,7 +2710,6 @@ impl UiWorld {
             }
             if !applied {
                 applied = true;
-                self.close_prior_animation_event_frame();
                 self.generation = self.generation.wrapping_add(1);
                 report.generation = self.generation;
             }

@@ -826,6 +826,9 @@ impl AppContext {
         if self.reactive.leaving.is_empty() {
             return;
         }
+        // The leave replaced whatever its track was playing (an enter still
+        // in flight), which reports Cancelled under the same id while the
+        // leave runs on: only an end that leaves nothing running counts.
         let done: Vec<StableNodeId> = events
             .iter()
             .filter(|event| {
@@ -833,6 +836,8 @@ impl AppContext {
                     .leaving
                     .get(&event.target)
                     .is_some_and(|leaving| leaving.animation == event.id)
+                    && (event.kind == crate::AnimationEventKind::Finished
+                        || !self.world.animation_is_active(event.id))
             })
             .map(|event| event.target)
             .collect();

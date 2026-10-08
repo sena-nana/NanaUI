@@ -1268,6 +1268,49 @@ fn a_transitioned_list_keeps_removed_rows_in_place_and_slides_the_rest() {
     assert!(moved < -0.5, "row 1 slides down from above: {moved}");
 }
 
+#[test]
+fn a_row_removed_while_it_enters_plays_its_whole_leave() {
+    use std::time::Duration;
+    let (mut cx, _, parent) = setup();
+    let start = Duration::from_secs(10);
+    cx.advance_animations(start);
+    let items = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let list = signal(vec![1u32]);
+            items.set(Some(list));
+            each(
+                list,
+                |id| *id,
+                |id| text(format!("{id}")).key(format!("r{id}")),
+            )
+            .transition(Transition::fade(Duration::from_millis(200)))
+        })
+        .unwrap();
+    let list = view.roots()[0];
+    items.get().unwrap().update(|list| list.push(2));
+    cx.flush_reactive().unwrap();
+    let entering = children(&cx, list)[1];
+    // Halfway through its enter, the row goes again.
+    let halfway = start + Duration::from_millis(100);
+    cx.advance_animations(halfway);
+    items
+        .get()
+        .unwrap()
+        .update(|list| list.retain(|id| *id != 2));
+    cx.flush_reactive().unwrap();
+    // The enter it cut short is reported, and the row still fades out.
+    let frame = cx.advance_animations(halfway);
+    assert!(frame.events.iter().any(
+        |event| event.target == entering && event.kind == crate::AnimationEventKind::Cancelled
+    ));
+    assert!(cx.world().contains(entering), "still leaving");
+    cx.advance_animations(halfway + Duration::from_millis(100));
+    assert!(cx.world().contains(entering), "still leaving");
+    cx.advance_animations(halfway + Duration::from_millis(250));
+    assert!(!cx.world().contains(entering), "gone once its leave ends");
+}
+
 /// Wait for a worker thread's waker to reach this thread's executor.
 fn until_woken() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

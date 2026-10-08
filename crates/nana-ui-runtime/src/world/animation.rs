@@ -186,26 +186,42 @@ impl UiWorld {
             .map(|animation| animation.spec.timing.start)
     }
 
-    /// Consume mutation-scoped lifecycle events from the last commit.
-    /// Deadline completions still arrive on the `advance_animations` that
-    /// hits their completion deadline.
+    /// Consume the lifecycle events commits produced since they were last
+    /// delivered (a run cancelled, finished early, replaced, or removed with
+    /// its node). Each event is delivered once: here, or by the next
+    /// [`Self::advance_animations`], which also reports the completions its
+    /// deadlines reach.
     pub fn take_animation_events(&mut self) -> Vec<AnimationEvent> {
         std::mem::take(&mut self.pending_animation_events)
     }
 
-    /// Close the previous commit's unobserved event batch. Called at the
-    /// start of the next successful apply so leftover Cancelled from park
-    /// cannot make a later idle advance look like work.
-    pub(super) fn close_prior_animation_event_frame(&mut self) {
-        self.pending_animation_events.clear();
+    /// Whether commits left events no advance has delivered yet.
+    pub fn has_pending_animation_events(&self) -> bool {
+        !self.pending_animation_events.is_empty()
     }
 }
 
 impl UiWorld {
+    /// The next time the host should call [`Self::advance_animations`]: the
+    /// earliest sample or completion deadline, or the current animation time
+    /// while commits left events to deliver, so a cancel or a replacement
+    /// reaches its waiter even when nothing else is due.
     pub fn next_animation_deadline(&self) -> Option<Duration> {
-        self.animation_deadlines
+        let due = self
+            .animation_deadlines
             .first()
-            .map(|(deadline, _)| *deadline)
+            .map(|(deadline, _)| *deadline);
+        // Built-in component timelines (a spinner's turn, a hover fade) have
+        // no waiter outside the framework: their events ride along with the
+        // next advance instead of waking the host for themselves.
+        if !self
+            .pending_animation_events
+            .iter()
+            .any(|event| !crate::animation::is_component_animation(event.id, event.target))
+        {
+            return due;
+        }
+        Some(due.map_or(self.animation_now, |due| due.min(self.animation_now)))
     }
 }
 
@@ -260,6 +276,23 @@ impl UiWorld {
         if let Some(previous) = self.animations.insert(id, active) {
             self.animation_deadlines
                 .remove(&(previous.next_deadline, id));
+            // Every run that starts ends with exactly one event. A run
+            // replaced in flight is cancelled (CSS `transitioncancel`); one
+            // that already reached its end but was not reaped yet finished.
+            let kind = if previous
+                .spec
+                .to_motion_track()
+                .is_some_and(|track| crate::evaluate_track(&track, self.animation_now).finished)
+            {
+                AnimationEventKind::Finished
+            } else {
+                AnimationEventKind::Cancelled
+            };
+            self.pending_animation_events.push(AnimationEvent {
+                id,
+                target: previous.spec.target,
+                kind,
+            });
         }
         self.index_animation_deadline(deadline, id);
         self.install_presentation_overlay(&spec);
@@ -371,9 +404,13 @@ impl UiWorld {
             .and_then(|track| nana_ui_core::motion::track_completion_deadline(&track));
         let now = self.animation_now;
         let next = if compositor {
-            completion
-                .filter(|deadline| *deadline > now)
-                .unwrap_or(Duration::MAX)
+            match completion {
+                Some(deadline) if deadline > now => deadline,
+                // Past its estimated end without having settled: look again
+                // shortly rather than never, or its finish would be lost.
+                Some(_) => now.checked_add(interval).unwrap_or(Duration::MAX),
+                None => Duration::MAX,
+            }
         } else {
             let step = now.checked_add(interval).unwrap_or(now);
             match end {

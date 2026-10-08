@@ -78,6 +78,13 @@ pub fn component_animation_id(kind_tag: u64, target: StableNodeId) -> Option<Ani
     AnimationId::new(hasher.finish())
 }
 
+/// Whether `id` is one of the built-in component timelines of `target`
+/// ([`component_animation_kinds`]).
+pub(crate) fn is_component_animation(id: AnimationId, target: StableNodeId) -> bool {
+    (component_animation_kinds::SKELETON..=component_animation_kinds::FLIP)
+        .any(|kind| component_animation_id(kind, target) == Some(id))
+}
+
 /// Infinite loading-indicator timeline (button / switch / card).
 pub fn loading_animation(id: StableNodeId, start: Duration) -> Option<AnimationSpec> {
     let animation = component_animation_id(component_animation_kinds::LOADING, id)?;
@@ -432,16 +439,29 @@ impl ActiveAnimation {
     }
 }
 
+/// When an unfinished, running animation sampled at `now` is next due. It is
+/// always after `now`, and only an animation that never ends (an infinite
+/// iteration count) is left without one: a run whose estimated end has
+/// already passed without settling (a spring a little slower than its settle
+/// estimate) checks again one frame interval later instead of never, so its
+/// `Finished` cannot be lost.
 fn follow_up_deadline(spec: &AnimationSpec, track: &MotionTrack, now: Duration) -> Duration {
+    let interval = if spec.timing.frame_interval.is_zero() {
+        crate::framework::COMPONENT_FRAME_INTERVAL
+    } else {
+        spec.timing.frame_interval
+    };
+    let step = now.checked_add(interval).unwrap_or(Duration::MAX);
     if spec.uses_completion_deadline_only() {
-        return track_completion_deadline(track)
-            .filter(|end| *end > now)
-            .unwrap_or(Duration::MAX);
+        return match track_completion_deadline(track) {
+            Some(end) if end > now => end,
+            Some(_) => step,
+            None => Duration::MAX,
+        };
     }
-    let step = now.checked_add(spec.timing.frame_interval).unwrap_or(now);
     match spec.end() {
-        Some(end) => step.min(end),
-        None => step,
+        Some(end) if end > now => step.min(end),
+        _ => step,
     }
 }
 
@@ -449,6 +469,21 @@ fn follow_up_deadline(spec: &AnimationSpec, track: &MotionTrack, now: Duration) 
 mod tests {
     use super::*;
     use crate::StableNodeId;
+
+    #[test]
+    fn an_unfinished_run_past_its_estimated_end_still_wakes() {
+        // A compositor spring sampled after its settle estimate without having
+        // settled must be looked at again, not parked at `Duration::MAX`.
+        let compositor = spec(0, 100).with_property(AnimatableProperty::Opacity);
+        let track = compositor.to_motion_track().unwrap();
+        let now = Duration::from_millis(150);
+        let next = follow_up_deadline(&compositor, &track, now);
+        assert!(next > now && next <= now + Duration::from_millis(16));
+        // A CPU track past its end does the same instead of re-firing at once.
+        let cpu = spec(0, 100);
+        let next = follow_up_deadline(&cpu, &cpu.to_motion_track().unwrap(), now);
+        assert!(next > now && next <= now + Duration::from_millis(16));
+    }
 
     fn spec(start_ms: u64, duration_ms: u64) -> AnimationSpec {
         AnimationSpec::new(

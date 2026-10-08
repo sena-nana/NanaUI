@@ -6029,6 +6029,9 @@ fn parked_icon_button_closes_tooltip_projection_and_does_not_reopen_on_remount()
         context.world().overlay_host(button.stable_id()),
         Some(crate::OverlayHostState::default())
     );
+    // The closed tooltip's cancelled fade is reported once, then nothing
+    // keeps the host awake.
+    let _ = context.compat_world_mut().take_animation_events();
     assert_eq!(context.next_animation_deadline(), None);
 
     let mut remount = MutationQueue::new();

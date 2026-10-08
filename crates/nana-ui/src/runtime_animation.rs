@@ -83,4 +83,46 @@ mod tests {
             epoch.checked_add(Duration::from_millis(15))
         );
     }
+
+    #[test]
+    fn a_stopped_run_wakes_the_host_to_report_its_end() {
+        let epoch = Instant::now();
+        let clock = RuntimeAnimationClock::new(epoch);
+        let mut context = AppContext::new();
+        let document = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let view = context
+            .create_view(document, NodeKind::Document, View)
+            .unwrap();
+        let id = AnimationId::new(1).unwrap();
+        context
+            .update(view, |_view, cx| {
+                let target = cx.entity().stable_id();
+                cx.mutations().start_animation(AnimationSpec::new(
+                    id,
+                    target,
+                    Duration::ZERO,
+                    Duration::from_secs(5),
+                    Duration::from_millis(16),
+                    Easing::Linear,
+                ));
+            })
+            .unwrap();
+        clock.wake(&mut context, epoch + Duration::from_millis(20));
+        context
+            .update(view, |_view, cx| cx.mutations().stop_animation(id))
+            .unwrap();
+
+        // Nothing is left to sample, but the end has not been reported yet.
+        let due = clock
+            .next_wakeup(&context)
+            .expect("a wake to report the end");
+        assert!(due <= epoch + Duration::from_millis(20));
+        let frame = clock.wake(&mut context, epoch + Duration::from_millis(21));
+        assert_eq!(frame.events.len(), 1);
+        assert_eq!(
+            frame.events[0].kind,
+            nana_ui_runtime::AnimationEventKind::Cancelled
+        );
+        assert_eq!(clock.next_wakeup(&context), None);
+    }
 }

@@ -1250,6 +1250,9 @@ fn parked_subtree_leaves_every_document_projection_and_remounts_intact() {
         world.commit(refocus),
         Err(UiWorldError::NotFocusable(node(2)))
     );
+    let cancelled = world.take_animation_events();
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(cancelled[0].kind, AnimationEventKind::Cancelled);
     assert_eq!(world.next_animation_deadline(), None);
     assert_eq!(
         world.overlay_host(node(1)),
@@ -6180,6 +6183,14 @@ fn animations_are_atomic_deadline_driven_and_replaceable() {
     start_then_stop.start_animation(animation.clone());
     start_then_stop.stop_animation(animation_id);
     world.commit(start_then_stop).unwrap();
+    // The stopped run still reports its end: the host wakes once for it.
+    assert_eq!(
+        world.next_animation_deadline(),
+        Some(Duration::from_millis(250))
+    );
+    let cancelled = world.take_animation_events();
+    assert_eq!(cancelled.len(), 1);
+    assert_eq!(cancelled[0].kind, AnimationEventKind::Cancelled);
     assert_eq!(world.next_animation_deadline(), None);
 }
 
@@ -6207,6 +6218,12 @@ fn despawning_animation_target_cancels_its_wakeup() {
     let mut remove = MutationQueue::new();
     remove.despawn_subtree(node(1));
     world.commit(remove).unwrap();
+    // Only the delivery of its Cancelled is still due.
+    assert_eq!(world.next_animation_deadline(), Some(Duration::ZERO));
+    let delivered = world.advance_animations(Duration::ZERO);
+    assert!(delivered.samples.is_empty());
+    assert_eq!(delivered.events.len(), 1);
+    assert_eq!(delivered.events[0].kind, AnimationEventKind::Cancelled);
     assert_eq!(world.next_animation_deadline(), None);
     assert!(world.advance_animations(Duration::MAX).samples.is_empty());
 }
@@ -6279,6 +6296,133 @@ fn opacity_overlay_spec(
         MotionValue::Scalar(from),
         MotionTo::Value(MotionValue::Scalar(to)),
     )
+}
+
+/// Every run that starts ends with exactly one Finished or Cancelled, and
+/// the ends commits produce wait for delivery instead of vanishing.
+mod animation_completion {
+    use super::*;
+
+    fn terminal(events: &[crate::AnimationEvent], id: u64) -> Vec<AnimationEventKind> {
+        events
+            .iter()
+            .filter(|event| event.id.get() == id)
+            .map(|event| event.kind)
+            .collect()
+    }
+
+    fn world_with_target() -> UiWorld {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document(1), NodeKind::Document);
+        world.commit(queue).unwrap();
+        world
+    }
+
+    #[test]
+    fn a_run_replaced_in_flight_reports_cancelled_before_its_successor_finishes() {
+        let mut world = world_with_target();
+        let mut queue = MutationQueue::new();
+        queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 1.0, 0.0));
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::from_millis(40));
+
+        let mut reverse = MutationQueue::new();
+        reverse.start_animation(
+            opacity_overlay_spec(1, node(1), 40, 100, 0.0, 1.0)
+                .with_interrupt(MotionInterrupt::Retarget),
+        );
+        world.commit(reverse).unwrap();
+        let mut events = Vec::new();
+        while let Some(due) = world.next_animation_deadline() {
+            events.extend(world.advance_animations(due).events);
+        }
+        assert_eq!(
+            terminal(&events, 1),
+            vec![AnimationEventKind::Cancelled, AnimationEventKind::Finished]
+        );
+    }
+
+    #[test]
+    fn a_run_replaced_after_its_end_but_before_an_advance_reports_finished() {
+        let mut world = world_with_target();
+        let mut queue = MutationQueue::new();
+        queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 1.0, 0.0));
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::ZERO);
+        // The host's present clock moved past the end; no advance reaped it.
+        world.sync_presentation_clock(Duration::from_millis(150));
+        let mut again = MutationQueue::new();
+        again.start_animation(opacity_overlay_spec(1, node(1), 150, 100, 0.0, 1.0));
+        world.commit(again).unwrap();
+        let frame = world.advance_animations(Duration::from_millis(150));
+        assert_eq!(
+            terminal(&frame.events, 1),
+            vec![AnimationEventKind::Finished]
+        );
+    }
+
+    #[test]
+    fn an_end_a_commit_produced_survives_later_commits_until_delivered() {
+        let mut world = world_with_target();
+        let mut queue = MutationQueue::new();
+        queue.create(node(2), document(1), NodeKind::Text);
+        queue.insert(node(1), node(2), None);
+        queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 1.0, 0.0));
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::from_millis(10));
+
+        let mut stop = MutationQueue::new();
+        stop.stop_animation(AnimationId::new(1).unwrap());
+        world.commit(stop).unwrap();
+        // An unrelated commit before the host's next advance.
+        let mut other = MutationQueue::new();
+        other.set_text(
+            node(2),
+            TextContent {
+                value: "later".into(),
+            },
+        );
+        world.commit(other).unwrap();
+
+        // Nothing else is due, yet the host is asked to wake now to deliver it.
+        assert_eq!(
+            world.next_animation_deadline(),
+            Some(Duration::from_millis(10))
+        );
+        let frame = world.advance_animations(Duration::from_millis(10));
+        assert_eq!(
+            terminal(&frame.events, 1),
+            vec![AnimationEventKind::Cancelled]
+        );
+        assert_eq!(world.next_animation_deadline(), None);
+        assert!(
+            world
+                .advance_animations(Duration::from_secs(1))
+                .events
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn finishing_early_is_reported_once_even_across_commits() {
+        let mut world = world_with_target();
+        let mut queue = MutationQueue::new();
+        queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 1.0, 0.0));
+        world.commit(queue).unwrap();
+        let mut finish = MutationQueue::new();
+        finish.finish_animation(AnimationId::new(1).unwrap());
+        world.commit(finish).unwrap();
+        let mut style = MutationQueue::new();
+        style.start_animation(opacity_overlay_spec(2, node(1), 0, 50, 1.0, 0.5));
+        world.commit(style).unwrap();
+        let mut events = Vec::new();
+        while let Some(due) = world.next_animation_deadline() {
+            events.extend(world.advance_animations(due).events);
+        }
+        assert_eq!(terminal(&events, 1), vec![AnimationEventKind::Finished]);
+        assert_eq!(terminal(&events, 2), vec![AnimationEventKind::Finished]);
+    }
 }
 
 #[test]
@@ -6579,8 +6723,10 @@ fn park_cancel_event_is_one_shot_and_later_advance_is_idle() {
     let mut park = MutationQueue::new();
     park.park_subtree(node(2));
     world.commit(park).unwrap();
-    assert_eq!(world.next_animation_deadline(), None);
+    // Due now only to deliver the Cancelled.
+    assert_eq!(world.next_animation_deadline(), Some(Duration::ZERO));
     let on_park = world.take_animation_events();
+    assert_eq!(world.next_animation_deadline(), None);
     assert_eq!(on_park.len(), 1);
     assert_eq!(on_park[0].kind, AnimationEventKind::Cancelled);
     assert_eq!(on_park[0].target, node(2));
