@@ -4038,8 +4038,9 @@ impl RangeMarker {
 }
 
 /// How close a pointer must be, in logical pixels, before a press or drag
-/// lands on a marker instead of the proportional position.
-const RANGE_MARKER_SNAP_PX: f32 = 6.0;
+/// lands on a marker instead of the proportional position: the same slop a
+/// resize handle gives a pointer near it.
+const RANGE_MARKER_SNAP_PX: f32 = nana_ui_core::space::SM;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RangeField {

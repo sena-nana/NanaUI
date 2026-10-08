@@ -15,6 +15,8 @@
 //!
 //! Everything runs on the compositor track of the node: logical style is
 //! never written. A transition with no enter or no leave skips that half.
+//! An easing left unset is the installed theme's standard easing
+//! ([`nana_ui_core::EasingRole::Standard`]), read when the animation starts.
 
 use std::time::Duration;
 
@@ -29,7 +31,8 @@ pub struct Presence {
     pub(crate) opacity: Option<f32>,
     pub(crate) transform: Option<PaintTransform>,
     pub(crate) duration: Duration,
-    pub(crate) easing: Easing,
+    /// `None`: the theme's standard easing.
+    pub(crate) easing: Option<Easing>,
     /// The transform's own curve, when it is not [`Self::easing`].
     pub(crate) transform_easing: Option<Easing>,
 }
@@ -40,7 +43,7 @@ impl Presence {
             opacity: None,
             transform: None,
             duration,
-            easing: Easing::EaseOutCubic,
+            easing: None,
             transform_easing: None,
         }
     }
@@ -80,7 +83,7 @@ impl Presence {
     }
 
     pub fn ease(mut self, easing: Easing) -> Self {
-        self.easing = easing;
+        self.easing = Some(easing);
         self
     }
 
@@ -103,7 +106,8 @@ impl Presence {
 pub struct Implicit {
     pub property: crate::AnimatableProperty,
     pub duration: Duration,
-    pub easing: Easing,
+    /// `None`: the theme's standard easing.
+    pub easing: Option<Easing>,
 }
 
 impl Implicit {
@@ -111,12 +115,12 @@ impl Implicit {
         Self {
             property,
             duration,
-            easing: Easing::EaseOutCubic,
+            easing: None,
         }
     }
 
     pub const fn ease(mut self, easing: Easing) -> Self {
-        self.easing = easing;
+        self.easing = Some(easing);
         self
     }
 }
@@ -126,7 +130,8 @@ impl Implicit {
 pub struct Transition {
     pub(crate) enter: Option<Presence>,
     pub(crate) leave: Option<Presence>,
-    pub(crate) moves: Option<(Duration, Easing)>,
+    /// `None` easing: the theme's standard easing.
+    pub(crate) moves: Option<(Duration, Option<Easing>)>,
 }
 
 impl Transition {
@@ -190,17 +195,17 @@ impl Transition {
     /// Rows that change place slide there over `duration` (Vue
     /// `<TransitionGroup>` move).
     pub fn moves(mut self, duration: Duration) -> Self {
-        self.moves = Some((duration, Easing::EaseOutCubic));
+        self.moves = Some((duration, None));
         self
     }
 
     /// The easing of every half set so far and of moves.
     pub fn ease(mut self, easing: Easing) -> Self {
         for half in [&mut self.enter, &mut self.leave].into_iter().flatten() {
-            half.easing = easing;
+            half.easing = Some(easing);
         }
         if let Some((_, move_easing)) = &mut self.moves {
-            *move_easing = easing;
+            *move_easing = Some(easing);
         }
         self
     }

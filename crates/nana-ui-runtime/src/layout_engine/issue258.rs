@@ -2,6 +2,7 @@
 //!
 //! Owned by the overlay slice so the inline formatting work can keep editing
 //! `tests.rs` and `inline.rs`.
+#![cfg(test)]
 
 use std::sync::Arc;
 

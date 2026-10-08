@@ -251,8 +251,9 @@ impl PresenceLifecycle {
             Some(half) if !at_once && !reduced => half.duration,
             _ => Duration::ZERO,
         };
-        // Without the half nothing plays, so its curve does not matter.
-        let easing = half.map(|half| half.easing).unwrap_or_default();
+        // Without the half nothing plays, so its curve does not matter; an
+        // unset one is the theme's standard easing.
+        let easing = cx.transition_easing(half.and_then(|half| half.easing));
         let transform_easing = half
             .and_then(|half| half.transform_easing)
             .unwrap_or(easing);

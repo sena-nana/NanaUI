@@ -14,12 +14,12 @@
     "color_role": 303,
     "color_literal": 0,
     "design_number": 79,
-    "motion": 20,
+    "motion": 17,
     "elevation": 0
   },
-  "token_reads": 723,
+  "token_reads": 732,
   "local_values": 23,
-  "shared_local_values": 99,
+  "shared_local_values": 96,
   "module_constants": 85,
   "components": [
     {
@@ -2336,7 +2336,7 @@
         "elevation": 0
       },
       "local_values": 5,
-      "token_reads": 13,
+      "token_reads": 14,
       "roles": [
         "AccentSoft",
         "AccentSoftPressed",
@@ -2418,24 +2418,11 @@
         "elevation": 0
       },
       "local_values": 3,
-      "token_reads": 1,
+      "token_reads": 2,
       "roles": []
     },
     {
       "file": "crates/nana-ui-runtime/src/motion_api.rs",
-      "counts": {
-        "color_role": 0,
-        "color_literal": 0,
-        "design_number": 0,
-        "motion": 3,
-        "elevation": 0
-      },
-      "local_values": 3,
-      "token_reads": 0,
-      "roles": []
-    },
-    {
-      "file": "crates/nana-ui-runtime/src/view/transition.rs",
       "counts": {
         "color_role": 0,
         "color_literal": 0,
@@ -2629,7 +2616,7 @@
         "elevation": 0
       },
       "local_values": 1,
-      "token_reads": 0,
+      "token_reads": 5,
       "roles": []
     },
     {
@@ -2642,7 +2629,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 21,
+      "token_reads": 22,
       "roles": [
         "Accent",
         "AccentOnSoft",
@@ -2965,7 +2952,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 12,
+      "token_reads": 13,
       "roles": [
         "Muted",
         "Text"

@@ -65,6 +65,7 @@ COMPONENT_ROOT = "crates/nana-ui-runtime/src"
 # same code a `*tests.rs` file or a `#[cfg(test)]` block holds.
 SKIP_PARTS = ("bin", "benches", "fixtures", "corpus", "tests")
 SKIP_SUFFIXES = ("_tests.rs", "tests.rs")
+TEST_ONLY_FILE = re.compile(r"(?:\s*//[^\n]*\n)*\s*#!\[cfg\((?:test|any\(test\b[^\]]*\))\)\]")
 
 NUMBER = r"-?\d+(?:\.\d+)?"
 
@@ -237,6 +238,11 @@ def rust_sources(root: Path) -> Iterable[Path]:
         if any(part in SKIP_PARTS for part in relative.parts):
             continue
         if path.name.endswith(SKIP_SUFFIXES):
+            continue
+        # A module file compiled only for tests or their verification
+        # (`#![cfg(test)]`, `#![cfg(any(test, …))]` before any item) is test
+        # code wherever it lives.
+        if TEST_ONLY_FILE.match(path.read_text(encoding="utf-8")):
             continue
         yield path
 

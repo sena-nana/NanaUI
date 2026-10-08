@@ -687,7 +687,7 @@ impl AppContext {
                     to,
                     now,
                     duration,
-                    presence_easing(enter, property),
+                    self.transition_easing(presence_easing(enter, property)),
                     AnimationFillMode::Backwards,
                 ));
             }
@@ -705,8 +705,9 @@ impl AppContext {
         &mut self,
         root: StableNodeId,
         leave: &crate::view::Presence,
-        moves: Option<(Duration, Easing)>,
+        moves: Option<(Duration, Option<Easing>)>,
     ) -> Result<bool, FrameworkError> {
+        let moves = moves.map(|(duration, easing)| (duration, self.transition_easing(easing)));
         let Some(node) = self.world.node(root) else {
             return Ok(false);
         };
@@ -729,7 +730,7 @@ impl AppContext {
                 to,
                 now,
                 duration,
-                presence_easing(leave, property),
+                self.transition_easing(presence_easing(leave, property)),
                 AnimationFillMode::Forwards,
             );
             last = Some(spec.id);
@@ -767,18 +768,30 @@ impl AppContext {
         &mut self,
         node: StableNodeId,
         first: nana_ui_core::FlipRect,
-        (duration, easing): (Duration, Easing),
+        (duration, easing): (Duration, Option<Easing>),
     ) {
         // Reduced motion: rows land where layout puts them.
         if self.reduced_motion() {
             return;
         }
+        let easing = self.transition_easing(easing);
         self.reactive.flips.push(PendingFlip {
             node,
             first,
             duration,
             easing,
         });
+    }
+
+    /// The easing a transition plays with: its own, else the installed
+    /// theme's standard easing.
+    pub(crate) fn transition_easing(&self, easing: Option<Easing>) -> Easing {
+        easing.unwrap_or_else(|| {
+            self.world
+                .theme()
+                .motion()
+                .easing(nana_ui_core::EasingRole::Standard)
+        })
     }
 
     /// Animate each property whose logical value the commit changed, from
@@ -814,7 +827,7 @@ impl AppContext {
                 next,
                 now,
                 duration,
-                implicit.easing,
+                self.transition_easing(implicit.easing),
                 AnimationFillMode::None,
             ));
         }
@@ -886,7 +899,7 @@ impl AppContext {
                         && !self.reactive.leaving.contains_key(&sibling)
                         && let Some(first) = self.flip_rect(sibling)
                     {
-                        self.flip_after_layout(sibling, first, moves);
+                        self.flip_after_layout(sibling, first, (moves.0, Some(moves.1)));
                     }
                 }
             }
@@ -937,9 +950,14 @@ impl AppContext {
 }
 
 /// The curve `presence` gives `property`.
-fn presence_easing(presence: &crate::view::Presence, property: AnimatableProperty) -> Easing {
+/// The curve a presence gives `property`: the transform's own when it has
+/// one, else its easing. `None`: the theme's standard easing.
+fn presence_easing(
+    presence: &crate::view::Presence,
+    property: AnimatableProperty,
+) -> Option<Easing> {
     match property {
-        AnimatableProperty::Transform => presence.transform_easing.unwrap_or(presence.easing),
+        AnimatableProperty::Transform => presence.transform_easing.or(presence.easing),
         _ => presence.easing,
     }
 }
