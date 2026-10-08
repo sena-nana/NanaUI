@@ -806,10 +806,7 @@ pub(super) fn place_node_scoped(
             &child_ids,
             writing,
         )
-        && !scope
-            .affected
-            .iter()
-            .any(|child| plan.omitted_children.contains(child))
+        && plan.flow_membership_holds(id, scope, nodes)
         && nodes.world.children_layout_style_is_local(id)
         && triggered_menu_overlay(nodes.world, id).is_none()
     {
@@ -951,6 +948,9 @@ pub(super) fn place_node_scoped(
 
     let (mut flow, descendant_dependent_flow) =
         collect_flow_children_reporting(&child_ids, nodes, style.display)?;
+    if let Some(scope) = scope {
+        retire_omitted_children(&child_ids, nodes, output, scope);
+    }
     let mut positioned = collect_positioned_children(&child_ids, nodes)?;
     let floated = if style
         .display
@@ -1536,9 +1536,8 @@ pub(super) fn place_node_scoped(
                         && child_style.flex_grow.unwrap_or(0.0) <= 0.0
                         && child_style.flex_shrink.unwrap_or(0.0) <= 0.0
                         && matches!(align, AlignSpec::Start | AlignSpec::Stretch);
-                    cross_independent &= align == AlignSpec::Start
-                        || (align == AlignSpec::Stretch
-                            && cross_axis_is_definite(child_style, direction));
+                    cross_independent &= matches!(align, AlignSpec::Start | AlignSpec::Stretch)
+                        && !reads_container_size(child_style, direction);
                     entries.push(PlannedChild {
                         child,
                         style: Arc::clone(&child_style_arc),
@@ -1592,20 +1591,6 @@ pub(super) fn place_node_scoped(
                 content_origin,
                 gap,
                 sequential: plan_sequential,
-                omitted_children: {
-                    let placed = entries
-                        .iter()
-                        .map(|entry| entry.child)
-                        .collect::<HashSet<_>>();
-                    // Positioned children live on `overlay`, filled after they
-                    // are placed. They are not flow omissions.
-                    let positioned_ids = positioned.iter().copied().collect::<HashSet<_>>();
-                    child_ids
-                        .iter()
-                        .copied()
-                        .filter(|child| !placed.contains(child) && !positioned_ids.contains(child))
-                        .collect()
-                },
                 by_child: {
                     let mut by_child: Vec<(StableNodeId, u32)> = entries
                         .iter()
@@ -1708,6 +1693,70 @@ pub(super) fn place_node_scoped(
         plan.overlay = recorded_overlay;
     }
     Ok(())
+}
+
+/// Whether an in-flow child's used box reads its container's content box.
+///
+/// A cross size other than a fixed length does: `auto` shrinks to the
+/// available width, and `fill` or a percentage resolves against it. So does
+/// any size, margin, padding, or inset that resolves against the containing
+/// block, on either axis. A container whose children all answer `false` keeps
+/// their boxes when only its own size changes.
+fn reads_container_size(style: &LayoutStyle, direction: FlexDirection) -> bool {
+    let cross = match direction {
+        FlexDirection::Row => style.height,
+        FlexDirection::Column => style.width,
+    };
+    let fixed_cross = cross.is_some_and(|spec| !depends_on_used_basis(Some(spec)));
+    !fixed_cross
+        || style.has_logical_box_edges()
+        || [
+            style.width,
+            style.height,
+            style.min_width,
+            style.max_width,
+            style.min_height,
+            style.max_height,
+            style.flex_basis,
+            style.margin,
+            style.margin_top,
+            style.margin_right,
+            style.margin_bottom,
+            style.margin_left,
+            style.padding,
+            style.padding_top,
+            style.padding_right,
+            style.padding_bottom,
+            style.padding_left,
+            style.offset_top,
+            style.offset_right,
+            style.offset_bottom,
+            style.offset_left,
+        ]
+        .into_iter()
+        .any(depends_on_used_basis)
+}
+
+/// A child that stopped generating a box gets no flow slot, so the container
+/// loop never places it. Publish the omitted box a full pass leaves it, or the
+/// retained one survives the hide.
+fn retire_omitted_children(
+    children: &[StableNodeId],
+    nodes: &LayoutInputMap<'_>,
+    output: &mut HashMap<StableNodeId, LayoutBox>,
+    scope: &ScopeContext<'_>,
+) {
+    for &child in children {
+        if nodes.style(child).is_some_and(|style| style.omits_box())
+            && scope
+                .retained
+                .boxes
+                .get(&child)
+                .is_some_and(|retained| *retained != LayoutBox::default())
+        {
+            output.insert(child, LayoutBox::default());
+        }
+    }
 }
 
 /// Place one absolute or fixed child against its containing block.
@@ -1994,7 +2043,12 @@ fn finish_positioned_overlay(
         || plan.size != size
         || plan.content != content
         || plan.content_origin != content_origin;
-    if geometry_moved || !placed.is_empty() || stale {
+    // The new block is recorded for the positioned children that compare
+    // against it. A flow-only plan keeps the geometry its children were
+    // placed in: the replays above hand them `plan.content`, so moving it
+    // here would make every child plan disagree with its containing block on
+    // the next pass and fall back to measuring that whole container.
+    if (geometry_moved && !plan.overlay.is_empty()) || !placed.is_empty() || stale {
         publish_overlay_plan(
             id,
             plan,

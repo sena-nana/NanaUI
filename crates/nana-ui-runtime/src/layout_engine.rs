@@ -630,6 +630,10 @@ impl RuntimeLayoutEngine {
             }
             islands
         };
+        // An island whose own border box changed moves its siblings, which only
+        // its parent places. Such a pass also walks from the document roots,
+        // where the parent's retained plan replays the shift.
+        let mut island_resized = false;
         for &(root, origin, containing, font) in &islands {
             // An island boundary normally has a stable used size, but an
             // affected content-sized child can grow inside a fixed ancestor.
@@ -645,6 +649,10 @@ impl RuntimeLayoutEngine {
                 &mut intrinsic,
                 scope_ref,
             )?;
+            island_resized |= retained.boxes.get(&root).is_none_or(|previous| {
+                previous.width.to_bits() != root_size.width.to_bits()
+                    || previous.height.to_bits() != root_size.height.to_bits()
+            });
             place_node_scoped(
                 root,
                 origin,
@@ -660,7 +668,7 @@ impl RuntimeLayoutEngine {
             )?;
         }
         for root in roots {
-            if !force_full && !islands.is_empty() && !affected.contains(&root) {
+            if !force_full && !islands.is_empty() && !island_resized && !affected.contains(&root) {
                 continue;
             }
             let root_size = intrinsic_size_scoped(
@@ -1640,14 +1648,12 @@ struct ContainerPlan {
     /// entry. Scanning the entries instead would leave the fast path O(number
     /// of children), which is the cost it exists to remove.
     by_child: Vec<(StableNodeId, u32)>,
-    /// Direct children excluded from flow when the plan was recorded. A change
-    /// here can introduce a new entry without changing the retained child list.
-    omitted_children: HashSet<StableNodeId>,
     /// Occupied tracks, contributions, and the resolved track sizes. `None`
     /// on every flex and block plan.
     grid: Option<GridTrackPlan>,
-    /// No in-flow child reads this container's cross size, so a containing
-    /// block change on that axis refreshes positioned children only.
+    /// No in-flow child reads this container's content box on either axis,
+    /// so a change of this container's own size refreshes positioned children
+    /// only.
     cross_independent: bool,
     /// Positioned participants of this container. Empty on a flow-only plan.
     overlay: Vec<PlannedOverlay>,
@@ -1807,6 +1813,38 @@ impl ContainerPlan {
 
     fn child_count(&self) -> usize {
         self.by_child.len()
+    }
+
+    /// Every affected direct child still has the role this plan recorded:
+    /// in flow, positioned, or omitted. A child that enters or leaves flow, or
+    /// becomes positioned, changes the participant lists themselves, which no
+    /// replay can patch. Driven from the closure, like [`Self::affected_entries`].
+    fn flow_membership_holds(
+        &self,
+        container: StableNodeId,
+        scope: &ScopeContext<'_>,
+        nodes: &LayoutInputMap<'_>,
+    ) -> bool {
+        scope.affected.iter().all(|&child| {
+            if nodes.world.parent_id(child) != Some(container) {
+                return true;
+            }
+            let Some(style) = nodes.style(child) else {
+                return false;
+            };
+            let was_in_flow = self
+                .by_child
+                .binary_search_by_key(&child, |(entry, _)| *entry)
+                .is_ok();
+            let was_positioned = self.overlay.iter().any(|entry| entry.child == child);
+            if style.omits_box() {
+                !was_in_flow && !was_positioned
+            } else if style.position.is_out_of_flow() {
+                was_positioned
+            } else {
+                was_in_flow
+            }
+        })
     }
 
     /// Entry indices for the children the change closure reaches, in placement

@@ -6311,7 +6311,7 @@ fn a_container_whose_own_text_grows_remeasures_itself() {
     );
 }
 
-/// Two spellings of the same layout must not retire a plan; two different
+/// Two spellings of the same layout must not disturb a plan; two different
 /// layouts must.
 ///
 /// `direction: None` and `direction: Some(Column)` are the same axis --
@@ -6319,9 +6319,9 @@ fn a_container_whose_own_text_grows_remeasures_itself() {
 /// alternate on the same node from one frame to the next, because more than one
 /// writer seeds the field. A plan compared with `==` is retired every frame by
 /// that alternation while nothing about the layout moved. `Some(Row)` is a
-/// different layout and must still retire it.
+/// different layout: the plan must see it and replay from that child.
 #[test]
-fn a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_retires_it() {
+fn a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_replays_it() {
     let viewport = LayoutViewport::new(320.0, 600.0);
     let leaf = |direction| LayoutStyle {
         width: Some(LengthSpec::Px(60.0)),
@@ -6340,11 +6340,11 @@ fn a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_retires
         (3..=10).map(|row| (row, leaf(None), vec![])).collect();
 
     const ROWS: usize = 8;
-    for (spelling, expect_remeasure) in [
+    for (spelling, expect_replay) in [
         // Same axis, different spelling: the plan must survive, so the
         // container must not touch its children.
         (Some(FlexDirection::Column), false),
-        // A real change: the plan must be retired and the children re-measured.
+        // A real change: the plan sees it and replays from the edited child.
         (Some(FlexDirection::Row), true),
     ] {
         let (mut world, document) = hugging_container_world(&rows, hug.clone());
@@ -6374,13 +6374,17 @@ fn a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_retires
         );
         // The global "plans reused" counter is too coarse -- other nodes reuse
         // their own plans either way. What this test is about is whether THIS
-        // container had to walk its children.
-        assert_eq!(
-            step.children_measured >= ROWS,
-            expect_remeasure,
-            "direction {spelling:?}: children measured {} (expected a rescan: \
-             {expect_remeasure})",
+        // container saw the edit: it replays from the edited child, and
+        // re-measures that child alone rather than walking every sibling.
+        assert!(
+            step.children_measured < ROWS,
+            "direction {spelling:?}: children measured {}",
             step.children_measured
+        );
+        assert_eq!(
+            super::plan_stats::suffixes_replayed() > 0,
+            expect_replay,
+            "direction {spelling:?}: expected a replay from the edited child: {expect_replay}"
         );
     }
 }
