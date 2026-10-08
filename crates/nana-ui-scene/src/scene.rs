@@ -164,6 +164,8 @@ const TEXT_DIAGNOSTIC_MARKERS: u32 = 2;
 const TEXT_DIAGNOSTIC_LABELS: u32 = 3;
 const TEXT_ATOM_ICONS: u32 = 4;
 const TEXT_ATOM_LABELS: u32 = 5;
+/// Inline objects of a rich text node, one slot per object in text order.
+const TEXT_INLINE_OBJECTS: u32 = 7;
 
 /// The surface of an open triggered menu (Popover, ActionMenu, HoverCard).
 /// It is the trigger's primitive, but it wraps content Runtime lays out
@@ -684,6 +686,121 @@ pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
         stroke,
         shadows,
     }
+}
+
+/// One primitive per inline object `layout` placed, in text order, where the
+/// text primitive at `bounds` draws its lines.
+///
+/// An image is a quad sampling its `url()`; a host texture slot is the host
+/// texture renderer's custom node; an editor chip is drawn only when
+/// `editor` asks for it (and takes no room either way). Objects keep the
+/// node's transform, clips, opacity and document order, so they scroll, clip
+/// and fade with their text.
+pub(crate) fn inline_object_primitives(
+    context: &VisualPrimitiveContext<'_>,
+    bounds: SceneRect,
+    vertical: TextVerticalAlignment,
+    retained: &nana_ui_runtime::RetainedTextLayout,
+    rich: &nana_ui_core::RichText,
+    editor: bool,
+) -> Vec<ScenePrimitive> {
+    let layout = &retained.layout;
+    let (box_width, laid_out_height) = layout.physical_size();
+    let top = if layout.is_vertical() {
+        bounds.y
+    } else {
+        match vertical {
+            TextVerticalAlignment::Top => bounds.y,
+            TextVerticalAlignment::Center => bounds.y + (bounds.height - laid_out_height) * 0.5,
+            TextVerticalAlignment::Bottom => bounds.y + bounds.height - laid_out_height,
+        }
+    };
+    let mut out = Vec::new();
+    for (index, placed) in layout.objects.iter().enumerate() {
+        let Some(object) = rich.object_at(placed.offset) else {
+            continue;
+        };
+        let rect = layout.page_rect(placed.rect, box_width.max(bounds.width));
+        let object_bounds = SceneRect {
+            x: bounds.x + rect.x,
+            y: top + rect.y,
+            width: rect.width,
+            height: rect.height,
+        };
+        let kind = match &object.content {
+            nana_ui_core::RichObjectContent::Image { source } => {
+                if rect.width <= 0.0 || rect.height <= 0.0 {
+                    continue;
+                }
+                custom_paint::image_quad(
+                    source,
+                    nana_ui_runtime::ImageFit::Contain,
+                    nana_ui_core::ImageSampling::default(),
+                    [0.0; 4],
+                )
+            }
+            nana_ui_core::RichObjectContent::HostTexture { slot } => {
+                if rect.width <= 0.0 || rect.height <= 0.0 {
+                    continue;
+                }
+                ScenePrimitiveKind::Custom {
+                    node: nana_ui_runtime::CustomRenderNode {
+                        fit: nana_ui_core::ContentFit::Contain,
+                        ..nana_ui_runtime::CustomRenderNode::new(
+                            nana_ui_runtime::HOST_TEXTURE_RENDERER,
+                            Arc::clone(slot),
+                            0,
+                        )
+                    },
+                    mask: None,
+                    corner_radius: [0.0; 4],
+                }
+            }
+            nana_ui_core::RichObjectContent::Chip { .. } => {
+                if !editor {
+                    continue;
+                }
+                // The marker takes no room; the editor shows it as a thin
+                // caret-high bar where it sits.
+                let height = layout
+                    .lines
+                    .get(placed.line as usize)
+                    .map_or(bounds.height, |line| line.metrics.height_px);
+                let line_top = layout
+                    .lines
+                    .get(placed.line as usize)
+                    .map_or(0.0, |line| line.metrics.top_y_px);
+                let marker = SceneRect {
+                    x: object_bounds.x - 1.0,
+                    y: top + line_top,
+                    width: 2.0,
+                    height,
+                };
+                out.push(visual_quad(
+                    context,
+                    collection_slot(TEXT_INLINE_OBJECTS, index),
+                    marker,
+                    VisualQuadStyle::solid([0.95, 0.6, 0.2, 0.9]),
+                ));
+                continue;
+            }
+        };
+        out.push(ScenePrimitive {
+            id: PrimitiveId {
+                node: context.node,
+                slot: collection_slot(TEXT_INLINE_OBJECTS, index),
+            },
+            node: context.node,
+            bounds: object_bounds,
+            transform: context.transform,
+            clips: Arc::clone(context.clips),
+            opacity: context.opacity,
+            z_index: context.z_index,
+            document_order: context.document_order,
+            kind,
+        });
+    }
+    out
 }
 
 /// Fill colours of `rich`'s spans as scene text spans, cut around the spans

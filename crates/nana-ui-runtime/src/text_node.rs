@@ -241,10 +241,10 @@ pub(crate) struct TextNodeState {
     pub revisions: TextRevisions,
     /// The shared source a `nana-text` engine lays out, and the revisions it
     /// was built at: the content revision, and — for rich text whose spans
-    /// resolve shaping fields over the node's computed style — the shape
-    /// revision (zero otherwise). Built once per such pair, only for a node an
-    /// engine actually resolves; boxed so a node that never is pays a pointer,
-    /// not a source.
+    /// resolve shaping fields over the node's computed style, or that holds
+    /// inline objects — the shape and constraint revisions (zero otherwise).
+    /// Built once per such key, only for a node an engine actually resolves;
+    /// boxed so a node that never is pays a pointer, not a source.
     source: Option<Box<(u32, u32, TextSource)>>,
     stamp: Option<TextStamp>,
     /// The layout this node retains in its world's layout store, or null.
@@ -343,16 +343,22 @@ impl TextNodeState {
         base: &ComputedStyle,
     ) -> (&TextSource, bool) {
         let shaped = rich.filter(|rich| rich.text() == text).filter(|rich| {
-            rich.spans()
-                .iter()
-                .any(|(_, style)| !style.shape.is_empty())
+            !rich.objects().is_empty()
+                || rich
+                    .spans()
+                    .iter()
+                    .any(|(_, style)| !style.shape.is_empty())
         });
         let revision = self.revisions.content;
-        let shape = if shaped.is_some() {
+        let shape = match shaped {
+            // An object's box is a layout input, so a source holding objects
+            // is rebuilt when the constraint revision moves too.
+            Some(rich) if !rich.objects().is_empty() => {
+                (self.revisions.shape ^ self.revisions.constraint.rotate_left(16)) | 1 << 31
+            }
             // Never zero, so a rich source is never mistaken for a plain one.
-            self.revisions.shape | 1 << 31
-        } else {
-            0
+            Some(_) => self.revisions.shape | 1 << 31,
+            None => 0,
         };
         let stale = self
             .source
@@ -366,6 +372,9 @@ impl TextNodeState {
                     &nana_text_style(base),
                     base.font_size,
                 ));
+                if !rich.objects().is_empty() {
+                    source.set_objects(rich_text_objects(rich));
+                }
             }
             self.source = Some(Box::new((revision, shape, source)));
         }
@@ -388,6 +397,26 @@ pub(crate) fn rich_text_spans(
             range,
             style: shape_over(base, base_size, &style.shape),
             composition: None,
+        })
+        .collect()
+}
+
+/// A rich text's inline objects as `nana-text` objects: the box each takes on
+/// its line. Editor-only chips take none.
+pub(crate) fn rich_text_objects(rich: &RichText) -> Vec<nana_text::InlineObject> {
+    rich.objects()
+        .iter()
+        .map(|(offset, object)| {
+            let [width_px, ascent_px, descent_px] = object.line_box();
+            nana_text::InlineObject {
+                offset: *offset,
+                id: object.id,
+                metrics: nana_text::InlineObjectMetrics {
+                    width_px,
+                    ascent_px,
+                    descent_px,
+                },
+            }
         })
         .collect()
 }
@@ -463,6 +492,25 @@ pub(crate) fn classify_rich_change(
     let effect = |style: &RichSpanStyle| style.effect;
     if before.map(effect) != after.map(effect) {
         dirty |= TextDirty::GLYPH_PRESENTATION;
+    }
+    // Objects at the same offsets (the text is the same): a new box relays
+    // the paragraph out; new content only repaints it.
+    let before = previous.map_or(&[][..], RichText::objects);
+    let after = next.map_or(&[][..], RichText::objects);
+    if before.len() != after.len()
+        || before
+            .iter()
+            .zip(after)
+            .any(|((at, old), (to, new))| at != to || old.line_box() != new.line_box())
+    {
+        dirty |= TextDirty::CONSTRAINT;
+    }
+    if before
+        .iter()
+        .zip(after)
+        .any(|((_, old), (_, new))| old.id != new.id || old.content != new.content)
+    {
+        dirty |= TextDirty::PAINT;
     }
     dirty
 }
@@ -805,6 +853,37 @@ mod tests {
             source.spans().is_empty(),
             "spans over other text are not applied"
         );
+    }
+
+    #[test]
+    fn an_object_box_change_relays_out_and_a_content_change_repaints() {
+        use nana_ui_core::RichObject;
+        let with = |object: RichObject| RichText::builder().plain("a").object(object).build();
+        let base = with(RichObject::image(1, "a.png", 20.0, 20.0));
+        assert_eq!(
+            classify_rich_change(
+                Some(&base),
+                Some(&with(RichObject::image(1, "a.png", 40.0, 20.0)))
+            ),
+            TextDirty::CONSTRAINT
+        );
+        assert_eq!(
+            classify_rich_change(
+                Some(&base),
+                Some(&with(RichObject::image(1, "b.png", 20.0, 20.0)))
+            ),
+            TextDirty::PAINT
+        );
+        let style = ComputedStyle::default();
+        let mut node = TextNodeState::default();
+        let (source, _) = node.source_for(base.text(), Some(&base), &style);
+        assert_eq!(source.objects().len(), 1);
+        assert_eq!(source.objects()[0].metrics.width_px, 20.0);
+        node.invalidate(TextDirty::CONSTRAINT);
+        let resized = with(RichObject::image(1, "a.png", 40.0, 20.0));
+        let (source, copied) = node.source_for(resized.text(), Some(&resized), &style);
+        assert!(copied, "a box change rebuilds the source");
+        assert_eq!(source.objects()[0].metrics.width_px, 40.0);
     }
 
     #[test]

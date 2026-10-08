@@ -28,9 +28,10 @@ pub mod host {
 /// roles).
 pub mod rich {
     pub use nana_ui_core::{
-        AttributedRanges, MAX_TEXT_SHADOWS, PaintColor, RichPaintStyle, RichShapeStyle,
-        RichSpanStyle, RichText, RichTextBuilder, RichTextShadow, RichTextStroke,
-        TextDecorationLine, TextStrokeJoin, TextStrokePlacement,
+        AttributedRanges, MAX_TEXT_SHADOWS, OBJECT_REPLACEMENT, PaintColor, RichObject,
+        RichObjectContent, RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText,
+        RichTextBuilder, RichTextShadow, RichTextStroke, TextDecorationLine, TextStrokeJoin,
+        TextStrokePlacement,
     };
 }
 

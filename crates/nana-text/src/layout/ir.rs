@@ -56,6 +56,18 @@ impl TextRect {
     }
 }
 
+/// Where an inline object landed: its box on its line, in the layout's line
+/// space (physical px), the object's baseline on the line's.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PlacedObject {
+    /// [`crate::InlineObject::id`].
+    pub id: u64,
+    /// Byte offset of its U+FFFC.
+    pub offset: usize,
+    pub line: u32,
+    pub rect: TextRect,
+}
+
 /// Why a line ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -152,6 +164,10 @@ pub struct TextLayout {
     /// mismatch from passing horizontal metrics off as vertical ones.
     #[serde(default)]
     pub unsupported_writing_mode: bool,
+    /// Every inline object that made it onto a line, in logical order. An
+    /// object an ellipsis cut off is not here.
+    #[serde(default)]
+    pub objects: Vec<PlacedObject>,
 }
 
 impl TextLayout {
@@ -278,6 +294,7 @@ mod tests {
             bounds: TextRect::default(),
             overflow: OverflowFlags::NONE,
             unsupported_writing_mode: false,
+            objects: Vec::new(),
         }
     }
 

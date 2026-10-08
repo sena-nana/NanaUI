@@ -144,6 +144,10 @@ pub(crate) struct LayoutKey {
     /// not a shaping input, so it cannot come in through the shaped identity.
     run_line_heights: Vec<u32>,
     empty_line_height: u32,
+    /// Every inline object's offset and box (width, ascent, descent). Not a
+    /// shaping input — objects shape as placeholders — so it cannot come in
+    /// through the shaped identity either.
+    objects: Vec<(usize, [u32; 3])>,
 }
 
 impl LayoutKey {
@@ -160,6 +164,7 @@ impl LayoutKey {
         strut: Option<LineStrut>,
         run_line_heights: &[f32],
         empty_line_height: f32,
+        objects: &[crate::source::InlineObject],
     ) -> Self {
         Self {
             shaped: Arc::clone(shaped),
@@ -181,6 +186,19 @@ impl LayoutKey {
                 .map(canonical_f32_bits)
                 .collect(),
             empty_line_height: canonical_f32_bits(empty_line_height),
+            objects: objects
+                .iter()
+                .map(|object| {
+                    (
+                        object.offset,
+                        [
+                            canonical_f32_bits(object.metrics.width_px),
+                            canonical_f32_bits(object.metrics.ascent_px),
+                            canonical_f32_bits(object.metrics.descent_px),
+                        ],
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -192,7 +210,9 @@ impl LayoutKey {
     /// Bytes the key itself retains. The shaped text is shared with the shape
     /// cache, which already charges for it, so it is not counted twice.
     pub fn retained_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.run_line_heights.capacity() * std::mem::size_of::<u32>()
+        std::mem::size_of::<Self>()
+            + self.run_line_heights.capacity() * std::mem::size_of::<u32>()
+            + self.objects.capacity() * std::mem::size_of::<(usize, [u32; 3])>()
     }
 }
 
@@ -210,6 +230,7 @@ impl PartialEq for LayoutKey {
             && self.strut == other.strut
             && self.run_line_heights == other.run_line_heights
             && self.empty_line_height == other.empty_line_height
+            && self.objects == other.objects
     }
 }
 
@@ -228,5 +249,6 @@ impl Hash for LayoutKey {
         self.strut.hash(state);
         self.run_line_heights.hash(state);
         self.empty_line_height.hash(state);
+        self.objects.hash(state);
     }
 }

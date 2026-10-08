@@ -492,6 +492,28 @@ impl UiScene {
                         ),
                     },
                 });
+                if let (Some(rich), Some(layout)) = (&node.rich_text, &node.text_layout)
+                    && !rich.objects().is_empty()
+                {
+                    let objects = inline_object_primitives(
+                        &VisualPrimitiveContext {
+                            node: id,
+                            transform,
+                            clips: &clips,
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                        },
+                        text_bounds,
+                        node.source_style.text_vertical_alignment,
+                        layout,
+                        rich,
+                        false,
+                    );
+                    for primitive in objects {
+                        self.insert_primitive(primitive);
+                    }
+                }
             }
             let context = GeometryPaintContext {
                 node: &node,

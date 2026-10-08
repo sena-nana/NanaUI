@@ -113,6 +113,10 @@ impl GlyphFlags {
     pub const MISSING: Self = Self(1 << 0);
     /// Came from a face other than the requested family.
     pub const FALLBACK_FONT: Self = Self(1 << 1);
+    /// The placeholder of an inline object: a U+FFFC the shaper did not
+    /// shape. Its advance is the object's width, set at layout; it has no
+    /// outline to draw.
+    pub const OBJECT: Self = Self(1 << 2);
 
     pub const fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 == flag.0
@@ -210,6 +214,13 @@ pub struct ShapedRun {
 }
 
 impl ShapedRun {
+    /// Whether this run is an inline object's placeholder.
+    pub fn is_object(&self) -> bool {
+        self.glyphs
+            .first()
+            .is_some_and(|glyph| glyph.flags.contains(GlyphFlags::OBJECT))
+    }
+
     /// Sum of the glyph advances. Compare against [`Self::advance_px`]; do not
     /// substitute for it.
     pub fn glyph_advance_sum_px(&self) -> f32 {

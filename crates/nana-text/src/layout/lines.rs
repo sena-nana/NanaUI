@@ -183,6 +183,9 @@ struct Prepared {
     ascent_px: f32,
     descent_px: f32,
     height_px: f32,
+    /// How far an inline object taller than the line's text pushes the
+    /// baseline down from where the text alone would put it.
+    lift_px: f32,
 }
 
 /// A line already placed, and what re-placing it would have to undo.
@@ -577,7 +580,7 @@ impl<'a> Builder<'a> {
         let pieces = self.pieces(cells.clone());
         let trimmed = self.trim(cells.start, cells.end);
         let width_px = self.width(cells.start, trimmed);
-        let (ascent_px, descent_px, height_px) = self.line_box(&pieces);
+        let (ascent_px, descent_px, height_px, lift_px) = self.line_box(&pieces);
         Prepared {
             cells,
             pieces,
@@ -585,6 +588,7 @@ impl<'a> Builder<'a> {
             ascent_px,
             descent_px,
             height_px,
+            lift_px,
         }
     }
 
@@ -630,6 +634,7 @@ impl<'a> Builder<'a> {
             ascent_px,
             descent_px,
             height_px,
+            lift_px,
         } = prepared;
         let source = match cells.end.checked_sub(1) {
             Some(last) if cells.start < cells.end => {
@@ -655,8 +660,8 @@ impl<'a> Builder<'a> {
         let baseline_y_px = if self.input.vertical {
             top_y_px + height_px * 0.5
         } else {
-            let half_leading = (height_px - (strut_ascent + strut_descent)) * 0.5;
-            top_y_px + half_leading + strut_ascent
+            let half_leading = (height_px - lift_px - (strut_ascent + strut_descent)) * 0.5;
+            top_y_px + lift_px + half_leading + strut_ascent
         };
 
         let run_start = self.runs.len() as u32;
@@ -802,26 +807,62 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Reported ascent and descent (the tallest run, strut included) and the
-    /// line box height (the tallest line-height request, strut included).
-    fn line_box(&self, pieces: &[Piece]) -> (f32, f32, f32) {
+    /// Reported ascent and descent (the tallest run, strut included), the
+    /// line box height (the tallest line-height request, strut included,
+    /// grown to hold any inline object), and how far such an object moved
+    /// the baseline down.
+    ///
+    /// An object is an atomic inline: it does not ask for a line height of
+    /// its own, it is a box standing on the baseline. The line keeps the
+    /// text's half-leading and grows above and below by what the object
+    /// reaches past it.
+    fn line_box(&self, pieces: &[Piece]) -> (f32, f32, f32, f32) {
         let mut ascent_px: f32 = 0.0;
         let mut descent_px: f32 = 0.0;
         let mut height_px = self.input.strut.map_or(0.0, |strut| strut.line_height_px);
+        let mut object_above: f32 = 0.0;
+        let mut object_below: f32 = 0.0;
+        let mut text_runs = 0;
         for piece in pieces {
             let run = &self.input.runs[piece.run];
             ascent_px = ascent_px.max(run.metrics.ascent_px);
             descent_px = descent_px.max(run.metrics.descent_px);
+            if run.is_object() {
+                object_above = object_above.max(run.metrics.ascent_px);
+                object_below = object_below.max(run.metrics.descent_px);
+                continue;
+            }
+            text_runs += 1;
             height_px = height_px.max(self.input.run_line_heights[piece.run]);
         }
-        if pieces.is_empty() {
+        if pieces.is_empty() || text_runs == 0 {
             height_px = height_px.max(self.input.empty_line_height_px);
         }
         if let Some(strut) = self.input.strut {
             ascent_px = ascent_px.max(strut.metrics.ascent_px);
             descent_px = descent_px.max(strut.metrics.descent_px);
         }
-        (ascent_px, descent_px, height_px)
+        if self.input.vertical || (object_above <= 0.0 && object_below <= 0.0) {
+            return (ascent_px, descent_px, height_px, 0.0);
+        }
+        let (text_ascent, text_descent) = match self.input.strut {
+            Some(strut) => (strut.metrics.ascent_px, strut.metrics.descent_px),
+            None => {
+                let text = pieces
+                    .iter()
+                    .map(|piece| &self.input.runs[piece.run])
+                    .filter(|run| !run.is_object());
+                text.fold((0.0f32, 0.0f32), |(a, d), run| {
+                    (a.max(run.metrics.ascent_px), d.max(run.metrics.descent_px))
+                })
+            }
+        };
+        let half_leading = (height_px - (text_ascent + text_descent)) * 0.5;
+        let above = half_leading + text_ascent;
+        let below = height_px - above;
+        let lift = (object_above - above).max(0.0);
+        let grown_below = (object_below - below).max(0.0);
+        (ascent_px, descent_px, height_px + lift + grown_below, lift)
     }
 
     /// Where a line of `width_px` starts inside the container.

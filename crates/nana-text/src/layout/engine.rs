@@ -9,7 +9,7 @@ use crate::constraints::TextConstraints;
 use crate::font::unicode;
 use crate::id::TextLayoutId;
 use crate::metrics::RunMetrics;
-use crate::shape::RunDirection;
+use crate::shape::{RunDirection, ShapedRun};
 use crate::shaping::ShapedText;
 use crate::source::{SnappedSpans, TextSource};
 use crate::style::{TextKind, TextStyle};
@@ -184,6 +184,7 @@ impl Layouter {
             strut,
             &run_line_heights,
             base_line_height,
+            request.source.objects(),
         );
         if let Some(hit) = self.cache.get(&key) {
             self.counters.layout_cache_hits += 1;
@@ -207,8 +208,10 @@ impl Layouter {
         let scale = request.constraints.scale.px_per_logical;
         let base_line_height = line_height_px(request.style, scale);
         let run_line_heights = run_line_heights(request, scale);
+        let sized = sized_runs(request, scale);
         let (widths, candidates) = Builder::new(line_input(
             request,
+            sized.as_deref(),
             None,
             &run_line_heights,
             base_line_height,
@@ -230,8 +233,10 @@ impl Layouter {
             .ellipsis
             .filter(|_| request.constraints.ellipsis)
             .and_then(|shaped| Ellipsis::new(shaped));
+        let sized = sized_runs(request, request.constraints.scale.px_per_logical);
         let input = line_input(
             request,
+            sized.as_deref(),
             strut,
             run_line_heights,
             base_line_height,
@@ -265,6 +270,7 @@ impl Layouter {
             .map(|line| line.bounds)
             .reduce(TextRect::union)
             .unwrap_or_default();
+        let objects = placed_objects(request.source, &laid_out.lines, &laid_out.runs);
 
         TextLayout {
             id: self.issue_id(),
@@ -277,6 +283,7 @@ impl Layouter {
             bounds,
             overflow: laid_out.overflow,
             unsupported_writing_mode,
+            objects,
         }
     }
 
@@ -290,8 +297,73 @@ impl Layouter {
     }
 }
 
+/// The shaped runs with every inline object's placeholder given its box,
+/// or `None` when the source has no objects (the runs are read as shaped).
+///
+/// This is where an object's size enters: after shaping and inside the
+/// layout cache's key (the source revision moves with the objects), so
+/// resizing a sticker relays the paragraph out from the runs already shaped.
+fn sized_runs(request: &LayoutRequest<'_>, scale: f32) -> Option<Vec<ShapedRun>> {
+    if request.source.objects().is_empty() {
+        return None;
+    }
+    let mut runs = request.shaped.runs.clone();
+    for run in runs.iter_mut().filter(|run| run.is_object()) {
+        let metrics = request
+            .source
+            .object_at(run.source.start)
+            .map(|object| object.metrics)
+            .unwrap_or_default();
+        let width = metrics.width_px.max(0.0) * scale;
+        if let Some(glyph) = run.glyphs.first_mut() {
+            glyph.advance_px = width;
+        }
+        run.advance_px = width;
+        run.metrics.ascent_px = metrics.ascent_px.max(0.0) * scale;
+        run.metrics.descent_px = metrics.descent_px.max(0.0) * scale;
+    }
+    Some(runs)
+}
+
+/// Each object placeholder that was placed, as the box it takes on its line.
+fn placed_objects(
+    source: &TextSource,
+    lines: &[super::ir::LineBox],
+    runs: &[ShapedRun],
+) -> Vec<super::ir::PlacedObject> {
+    if source.objects().is_empty() {
+        return Vec::new();
+    }
+    let mut placed = Vec::new();
+    for line in lines {
+        for run in &runs[line.runs.start as usize..line.runs.end as usize] {
+            if !run.is_object() {
+                continue;
+            }
+            let Some(object) = source.object_at(run.source.start) else {
+                continue;
+            };
+            let ascent = run.metrics.ascent_px;
+            placed.push(super::ir::PlacedObject {
+                id: object.id,
+                offset: object.offset,
+                line: line.index,
+                rect: TextRect::new(
+                    run.origin_x_px,
+                    line.metrics.baseline_y_px - ascent,
+                    run.advance_px,
+                    ascent + run.metrics.descent_px,
+                ),
+            });
+        }
+    }
+    placed.sort_by_key(|object| object.offset);
+    placed
+}
+
 fn line_input<'r>(
     request: &'r LayoutRequest<'_>,
+    sized: Option<&'r [ShapedRun]>,
     strut: Option<LineStrut>,
     run_line_heights: &'r [f32],
     base_line_height: f32,
@@ -299,7 +371,7 @@ fn line_input<'r>(
 ) -> LineInput<'r> {
     LineInput {
         text: request.source.text(),
-        runs: &request.shaped.runs,
+        runs: sized.unwrap_or(&request.shaped.runs),
         paragraphs: &request.shaped.paragraphs,
         run_line_heights,
         constraints: request.constraints,

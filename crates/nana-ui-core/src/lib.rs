@@ -143,8 +143,9 @@ pub use persist::{
     window_storage_key,
 };
 pub use rich_text::{
-    AttributedRanges, MAX_TEXT_SHADOWS, RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText,
-    RichTextBuilder, RichTextShadow, RichTextStroke, TextStrokeJoin, TextStrokePlacement,
+    AttributedRanges, MAX_TEXT_SHADOWS, OBJECT_REPLACEMENT, RichObject, RichObjectContent,
+    RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText, RichTextBuilder, RichTextShadow,
+    RichTextStroke, TextStrokeJoin, TextStrokePlacement,
 };
 pub use scrollbar::{
     SCROLLBAR_METRICS, ScrollbarAxis, ScrollbarMetrics, ScrollbarSkin, ScrollbarTrack,

@@ -1371,6 +1371,27 @@ span 的填充色不在 `rich` 里，而是并进已有的 `spans`（`rich_fill_
 
 entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边、阴影、装饰线重建这一个 entry 的实例，不重新排版；只改它们的颜色不新栅格化任何位图；稳态帧什么都不做——不栅格化、不传 atlas、不重建、不重传 instance。
 
+### 内联对象
+
+贴纸、表情、编辑器里的标记是文本里的对象。文本里放一个 U+FFFC（`OBJECT_REPLACEMENT`），`TextSource::set_objects` 给它配一条 `InlineObject { offset, id, metrics: InlineObjectMetrics { width_px, ascent_px, descent_px } }`。对象是一个字素簇：光标一步跨过它，选区整个拿走它，命中测试不用改。
+
+- **塑形不读对象。** 塑形器把每个 U+FFFC 切成单独的占位 run：一个 `GlyphFlags::OBJECT` 字形，没有字体，advance 为 0。shape cache 的键里没有对象，所以只改对象尺寸不重新塑形。
+- **排版给它盒子。** `Layouter` 在断行之前把占位 run 的 advance 换成对象宽度，ascent / descent 换成对象的。对象是原子行内盒：不要求自己的行高，站在基线上；文字的半行距不变，行盒在上下各长出对象超出的那部分，基线随之下移。layout cache 的键带上每个对象的位置和盒子：两份同文本、同 revision 的源，对象不同就是两份布局。
+- **`TextLayout.objects`** 记下每个放上行的对象：`PlacedObject { id, offset, line, rect }`，`rect` 在行空间，底边是基线加 descent。被省略号截掉的对象不在里面。
+- 占位 run 没有 face，画笔不画它，装饰线也跳过它。
+
+应用一侧的值是 `RichObject { id, width_px, height_px, descent_px, content }`，内容三种：
+
+| `RichObjectContent` | 场景里 | 占位 |
+| --- | --- | --- |
+| `Image { source }` | `Quad` 的 `content_image`，和 CSS `url()` 同源规则，按 contain 摆进盒子 | 自己的宽高 |
+| `HostTexture { slot }` | `Custom`，`HOST_TEXTURE_RENDERER` 画宿主纹理槽（应用自己解码的动图走这里） | 自己的宽高 |
+| `Chip { label, kind }` | 只在编辑器里画；展示框不出图元 | 永远 0 |
+
+`RichTextBuilder::object` / `styled_object`、`RichText::insert_object` / `set_object` 维护它们；`replace_range` 删掉对象的字符就删掉对象。`TextNodeState::source_for` 把 `RichObject::line_box()` 交给 `TextSource::set_objects`。`classify_rich_change` 里，同位置的对象换了盒子是 `CONSTRAINT`（只重排），换了内容是 `PAINT`（只重绘）；插入、删除对象改了文本，是 `CONTENT`。场景按文本顺序给每个对象发一个图元，槽位在 `TEXT_INLINE_OBJECTS` 命名空间里，跟着节点的变换、裁剪、透明度和文档顺序走。
+
+标记 chip 宽度为 0，所以编辑器和展示框对同一份 `RichText` 断出同样的行。
+
 ### 字体的装饰线度量
 
 `RunMetrics` 加了 `underline_offset_px` / `underline_thickness_px`（基线到下划线**顶边**，向下为正）和 `strikeout_offset_px` / `strikeout_thickness_px`（基线到删除线顶边，向上为正），在 run 的轴坐标和字号下从 `post` / `OS/2` 读。字体没给或给了 0 厚度时按字号补：1/14 em 粗，下划线在基线下 0.1 em，删除线居中在 x-height 一半处。四个字段都是 `serde(default)`：Phase 0 的 golden 里它们是 0，parity diff 只在期望值带着它们时才比较。
@@ -1383,7 +1404,8 @@ entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边
 
 - `nana-ui-core` `rich_text::tests`：区间代数（拆分、合并、`update` 的空隙、`splice`、投影）、字符边界对齐、builder。
 - `nana-ui-runtime` `text_node::tests`：塑形 span 铺在节点样式上、行高比例、按层分类。
-- `nana-ui-scene` `tests/rich_text_spans.rs`：只改绘制层时 `text_nodes_shaped == 0` 且保留的 layout 句柄不变；只改特效索引时整帧空闲；大字号 span 撑高行盒；描边、阴影、装饰线进场景且不再出整框 `Stroke`；CSS 是 span 的底。
+- `nana-text` `tests/inline_objects.rs`：对象占自己的宽度并站在基线上；改尺寸只重排不重塑形；高对象撑高行盒且不越出行顶；对象随文字换行；对象随编辑移动。
+- `nana-ui-scene` `tests/rich_text_spans.rs`：贴纸占行宽并画成图片；改贴纸尺寸只重排不重塑形；纹理对象走宿主纹理渲染器；chip 不占宽度、展示框不画它；只改绘制层时 `text_nodes_shaped == 0` 且保留的 layout 句柄不变；只改特效索引时整帧空闲；大字号 span 撑高行盒；描边、阴影、装饰线进场景且不再出整框 `Stroke`；CSS 是 span 的底。
 - `nana-ui` `scene_paint::text`：改描边重建实例不重排、改色不新栅格化；带模糊阴影的稳态帧不栅格化、不上传；实例按画序排在一个 entry 里；带大字号 span 的段落从 Runtime 句柄画出；描边位图比填充宽且同心；模糊守恒覆盖率。
 
 ### 这一阶段没做的

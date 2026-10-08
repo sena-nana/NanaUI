@@ -332,3 +332,152 @@ fn css_text_effects_are_the_base_a_span_overrides() {
     );
     assert_eq!(over.shadows.len(), 2, "and keeps what it did not set");
 }
+
+fn sticker_line(width: f32, height: f32) -> RichText {
+    RichText::builder()
+        .plain("look ")
+        .object(nana_ui_core::RichObject::image(
+            9,
+            "file:///stickers/cat.png",
+            width,
+            height,
+        ))
+        .plain(" here")
+        .build()
+}
+
+fn object_quads(runtime: &RuntimeDocument) -> Vec<nana_ui_scene::SceneRect> {
+    runtime
+        .scene()
+        .primitives()
+        .filter(|primitive| primitive.node == id(LABEL))
+        .filter(|primitive| {
+            matches!(
+                &primitive.kind,
+                ScenePrimitiveKind::Quad { surface, .. } if surface.content_image.is_some()
+            )
+        })
+        .map(|primitive| primitive.bounds)
+        .collect()
+}
+
+#[test]
+fn an_inline_sticker_takes_room_in_the_line_and_paints_as_an_image() {
+    let mut runtime = document(label_layout(), RichText::new("look  here"));
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    let plain = runtime.context().world().text_metrics(id(LABEL)).unwrap();
+
+    set_rich(&mut runtime, sticker_line(32.0, 32.0));
+    settle(&mut runtime, &mut shaper);
+    let with = runtime.context().world().text_metrics(id(LABEL)).unwrap();
+    assert!(
+        with.width > plain.width + 30.0,
+        "{} -> {}",
+        plain.width,
+        with.width
+    );
+    assert!(
+        with.height >= 32.0,
+        "the line holds the sticker: {}",
+        with.height
+    );
+    let quads = object_quads(&runtime);
+    assert_eq!(quads.len(), 1, "one image primitive for the sticker");
+    let quad = quads[0];
+    assert!((quad.width - 32.0).abs() < 0.01 && (quad.height - 32.0).abs() < 0.01);
+    let label = runtime
+        .context()
+        .world()
+        .layout_box(id(LABEL))
+        .expect("laid out");
+    assert!(
+        quad.x > label.x && quad.y >= label.y - 0.01,
+        "{quad:?} in {label:?}"
+    );
+}
+
+#[test]
+fn resizing_a_sticker_relays_out_without_reshaping() {
+    let mut runtime = document(label_layout(), sticker_line(24.0, 24.0));
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    let small = runtime.context().world().text_metrics(id(LABEL)).unwrap();
+    set_rich(&mut runtime, sticker_line(48.0, 24.0));
+    runtime.flush(viewport(), &mut shaper).unwrap();
+    let work = text_work(&runtime);
+    assert!(
+        work.layouts_created > 0,
+        "a new box is a new layout: {work:?}"
+    );
+    assert_eq!(
+        work.shape_cache_misses,
+        Some(0),
+        "but the runs are the ones already shaped: {work:?}"
+    );
+    settle(&mut runtime, &mut shaper);
+    let large = runtime.context().world().text_metrics(id(LABEL)).unwrap();
+    assert!((large.width - small.width - 24.0).abs() < 0.5);
+    assert!((object_quads(&runtime)[0].width - 48.0).abs() < 0.01);
+}
+
+#[test]
+fn an_editor_chip_takes_no_room_and_a_display_does_not_draw_it() {
+    let mut runtime = document(label_layout(), RichText::new("abcd"));
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    let plain = runtime.context().world().text_metrics(id(LABEL)).unwrap();
+    let chipped = RichText::builder()
+        .plain("ab")
+        .object(nana_ui_core::RichObject::chip(4, "wait", 1))
+        .plain("cd")
+        .build();
+    set_rich(&mut runtime, chipped);
+    settle(&mut runtime, &mut shaper);
+    let with = runtime.context().world().text_metrics(id(LABEL)).unwrap();
+    assert!(
+        (with.width - plain.width).abs() < 0.01,
+        "{} vs {}",
+        plain.width,
+        with.width
+    );
+    let drawn = runtime
+        .scene()
+        .primitives()
+        .filter(|primitive| primitive.node == id(LABEL))
+        .filter(|primitive| !matches!(primitive.kind, ScenePrimitiveKind::Text { .. }))
+        .count();
+    assert_eq!(drawn, 0, "a display shows no marker");
+}
+
+#[test]
+fn a_texture_object_is_drawn_by_the_host_texture_renderer() {
+    let animated = RichText::builder()
+        .plain("gif ")
+        .object(nana_ui_core::RichObject::texture(
+            5,
+            "sticker:dance",
+            28.0,
+            28.0,
+        ))
+        .build();
+    let mut runtime = document(label_layout(), animated);
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    let custom: Vec<_> = runtime
+        .scene()
+        .primitives()
+        .filter(|primitive| primitive.node == id(LABEL))
+        .filter_map(|primitive| match &primitive.kind {
+            ScenePrimitiveKind::Custom { node, .. } => Some((node.clone(), primitive.bounds)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(custom.len(), 1);
+    assert_eq!(
+        custom[0].0.renderer.as_ref(),
+        nana_ui_runtime::HOST_TEXTURE_RENDERER
+    );
+    assert_eq!(custom[0].0.resource.as_ref(), "sticker:dance");
+    assert!((custom[0].1.width - 28.0).abs() < 0.01);
+}

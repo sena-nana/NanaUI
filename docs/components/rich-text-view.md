@@ -104,6 +104,48 @@ widget(RichTextView::new(line))
 
 节点的 CSS（`text-decoration`、多层 `text-shadow`、`-webkit-text-stroke`、`paint-order`）是底，span 的绘制层盖在上面。span 没写的字段沿用节点的。
 
+## 内联贴纸
+
+贴纸、表情是文本里的对象，和字一起换行。`RichTextBuilder::object` 放进一个 `RichObject`。它站在基线上，`descent` 让它往下沉一点。改它的尺寸只重新排版，不重新塑形。
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::{RichObject, RichText};
+
+let line = RichText::builder()
+    .plain("早上好")
+    .object(RichObject::image(1, "file:///stickers/wave.png", 28.0, 28.0).descent(4.0))
+    .plain("今天也加油")
+    .build();
+
+view! {
+    <Widget of={RichTextView::new(line)} />
+}
+```
+
+```rust rust
+use nana_ui::runtime::view::widget;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::{RichObject, RichText};
+
+let line = RichText::builder()
+    .plain("早上好")
+    .object(RichObject::image(1, "file:///stickers/wave.png", 28.0, 28.0).descent(4.0))
+    .plain("今天也加油")
+    .build();
+
+widget(RichTextView::new(line))
+```
+
+:::
+
+- `RichObject::image(id, url, w, h)`：图片，和 CSS `url()` 同源规则。
+- `RichObject::texture(id, slot, w, h)`：宿主纹理槽。动图由应用解码后写进这个槽，由宿主纹理渲染器画。
+- `RichObject::chip(id, label, kind)`：编辑器里的标记。不占宽度，展示框不画它，所以编辑器和展示框断行一致。
+
 ## 属性
 
 | 属性 | 类型 | 说明 |

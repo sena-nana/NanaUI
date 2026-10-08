@@ -3009,6 +3009,9 @@ impl UiWorld {
             // New text: whatever spans it has are styled afresh, and the
             // scene's paint runs follow them.
             let mut dirty = TextDirty::PAINT;
+            if rich.is_some_and(|rich| !rich.objects().is_empty()) {
+                dirty |= TextDirty::CONSTRAINT;
+            }
             if rich.is_some_and(|rich| {
                 rich.spans()
                     .iter()
@@ -3023,6 +3026,7 @@ impl UiWorld {
         // The content class was settled above; what is left are the tiers.
         dirty = dirty.intersection(
             TextDirty::SHAPE_STYLE
+                .union(TextDirty::CONSTRAINT)
                 .union(TextDirty::PAINT)
                 .union(TextDirty::GLYPH_PRESENTATION),
         );
@@ -3036,7 +3040,7 @@ impl UiWorld {
             marks |= DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY;
         }
         self.nodes.invalidate_text(id, dirty);
-        if dirty.contains(TextDirty::SHAPE_STYLE) {
+        if dirty.intersects(TextDirty::SHAPE_STYLE.union(TextDirty::CONSTRAINT)) {
             marks |= DirtyMask::TEXT | DirtyMask::RENDER;
         }
         if dirty.contains(TextDirty::PAINT) {

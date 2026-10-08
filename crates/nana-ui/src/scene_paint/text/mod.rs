@@ -3482,6 +3482,10 @@ fn decoration_quads(
     for line in &layout.lines {
         let baseline = (line.metrics.baseline_y_px * scale).round() + origin[1].floor();
         for run in layout.line_runs(line) {
+            // An inline object's placeholder is not text a line runs under.
+            if run.is_object() {
+                continue;
+            }
             let metrics = run.metrics;
             let size = run.font_size_px;
             let (underline_offset, underline_thickness, strike_offset, strike_thickness) =
