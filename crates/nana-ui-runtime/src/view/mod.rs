@@ -43,9 +43,10 @@ mod transition;
 
 pub use crate::VirtualAlignment;
 pub use controls::{
-    Px, StyledComponent, avatar, button, checkbox, chip, column, divider, empty_state, icon_button,
-    list_item, number_input, progress, row, select, slider, spinner, status_badge, switch, text,
-    text_area, text_input, texture, thumbnail,
+    Px, StyledComponent, action_menu, action_menu_item, avatar, button, checkbox, chip,
+    color_field, column, divider, empty_state, fields, icon_button, labeled_value, list_item,
+    number_input, progress, row, select, slider, spinner, status_badge, switch, tabs, text,
+    text_area, text_input, texture, thumbnail, tree_view,
 };
 pub(crate) use controls::{edit_control, inspect_control};
 pub use each_virtual::{EachVirtual, VirtualItem, VirtualListRef, each_virtual, virtual_list_ref};

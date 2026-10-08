@@ -89,7 +89,7 @@ let view = cx.mount_view(parent, counter)?;                    // 或 mount_view
 - **从数据出发**：`list.each(key, row)` 就是 `each(list, key, row)`。`cond.then_show(|| v).otherwise(|| w)` 就是 `when(cond, || v).otherwise(|| w)`（不叫 `show`：Vue 的 `v-show` 保留节点。对应的是 `.visible(..)`）。
 
 - **属性**接受常量、`Signal<T>` / `Computed<T>`、`Fn() -> T` 闭包三种。常量在建节点时写进去。之后没有任何成本。信号直接绑定。只存一条"信号 id + 字段写入函数"的记录。没有闭包。闭包装箱一次。
-- **控件属性**由 `view/controls.rs` 里的 `props!` 宏按字段生成 setter（`button(..).disabled(..)`、`slider(..).value(..)`）。每个 setter 对应一个 `FieldWrite`。任意控件都能用 `widget(component).bind(|c| …)` 和 `.on::<E>(|e| …)`。自定义字段写 `FieldWrite` 后用 `.prop::<T, W>(..)`。
+- **控件属性**由 `view/controls.rs` 按控件表逐字段生成 setter（`button(..).disabled(..)`、`slider(..).value(..)`）。每个 setter 对应一个 `FieldWrite`，可以按名字拿到：`view::fields::<元素函数>::<字段>`（`fields::text::value` 就是 `text(..)` 的 `.value(..)` 绑的那个）。`fields::Visible` 是 `.visible(..)`。`fields::HiddenWhenEmpty<W>` 包住任一字段：值为空（空字符串、`None`、空列表）时节点同时退出布局、绘制和命中，例如 `text("").prop::<_, HiddenWhenEmpty<fields::text::value>>(title)`，两者在同一次写入里变，不会先露出一个空值。有些字段带规则：滑块的 `value` 钳在范围内（还没有值、非有限值落在最小值）；数字框的 `value` 换成新值时光标放到末尾，回显的同一个值不动光标；`Tabs` 的 `selected` 连同标签条的焦点一起换；`ColorField` 的 `value` 经它的 builder 写，色相、饱和度、明度跟着变；`Thumbnail` 的 `resource` 非空即就绪；`EmptyState` 的 `message` 也收 `String`，空字符串就是没有。`ActionMenu` 不是模板标签（模板里的控件是叶子，它的条目是子节点），字段在 `fields::action_menu`：`label`（空则关上、不显示触发器）、`accessible_name`、`open`；`ReorderList` 的 `items` 在 `fields::reorder_list`（`controls` feature）。任意控件都能用 `widget(component).bind(|c| …)` 和 `.on::<E>(|e| …)`。自定义字段写 `FieldWrite` 后用 `.prop::<T, W>(..)`。
 - **key** 只在 `each` 的元素和需要按路径查找（`resolve_assembly_path`）的节点上写。静态结构只建一次。没写 key 的节点按位置命名（`#v0`、`#v1`…）。`when` / `dynamic` 切换后新建的分支、`keep_alive` 重新显示的分支。和 `each` 在挂载之后加进来的行。都和挂载时建的一样登记在容器下：`dynamic(..).key("a")` 里分支根写了 `key("b")`。切换前后 `a/b` 都找到当前显示的那个分支（在 `each_virtual` 的行里也一样）。`each` 的行只有写了 key 的才能按 key 找到（没写的位置名是每次建时各数各的。登记了会互相覆盖）。
 - **`mount_view` 接收闭包。** 视图表达式在挂载作用域里求值。组件函数里创建的信号归这个挂载。`unmount`、销毁根节点、或 `AppContext` 被丢弃时一起回收。`each` 的每一行、`when` 的每个分支各有一个子作用域。行被删掉、分支被切走时只回收它自己的信号和副作用。
 - 在任何作用域之外创建的信号（例如应用启动时的全局状态、事件处理器里新建的信号）不归任何挂载。会一直存在到线程结束。列表数据里每行需要的信号。应该在行视图里创建。或者由持有它的挂载创建。
@@ -798,7 +798,7 @@ fn page() -> impl IntoView {
 - 字段真的改变时。仍然会复制整个组件、完整投影一遍。再由 world 按字段比对标脏。采样显示投影里真正贵的是没变字段的比较和复制。已经在公共路径和 `Button`、`Text`、`Chip` 上去掉。其余控件的投影仍然先复制再比较。按需逐个改（写法见 `Button::project`）。
 - `.bind(|c| …)` 看不出改了哪个字段。所以每次都按"有改动"处理。走复制路径。
 - 闭包绑定每个各自装箱一次。只有 `view!` 能看到的整段模板。才有机会把同一节点的闭包合成一个。
-- 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`、`Thumbnail`、`Avatar`、`Texture`（`GpuTextureView`）、`IconButton`、`Chip`、`StatusBadge`、`EmptyState`（`#action` slot）。外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
+- 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`、`Thumbnail`、`Avatar`、`Texture`（`GpuTextureView`）、`IconButton`、`Chip`、`StatusBadge`、`EmptyState`（`#action` slot）、`LabeledValue`、`Tabs`、`TreeView`、`ColorField`、`ActionMenuItem`。外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
 
 **无障碍检查**：编译模板时。读屏器无法命名的控件会得到一条警告。不会编译失败。规则两条：`Button`、`Checkbox`、`Switch`、`ListItem` 没有文字（空的子节点或空的 `label`）。`TextInput`、`TextArea`、`NumberInput`、`Slider`、`Progress` 没写 `label`（它们的无障碍名字只来自 `label`。占位文字不算）。`.vue` 的警告经 `cargo:warning` 带行列打印。`view!` 在稳定版上没有警告接口。警告以"使用了已弃用常量"的形式出现在宏调用处。说明写在弃用提示里。
 

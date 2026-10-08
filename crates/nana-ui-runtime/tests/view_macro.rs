@@ -467,6 +467,61 @@ fn table_controls_take_their_attributes_in_templates() {
 }
 
 #[test]
+fn menus_tabs_and_value_rows_are_template_tags() {
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let parent = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let mounted = cx
+        .mount_view(parent.stable_id(), || {
+            let chosen = signal(std::sync::Arc::<str>::from("b"));
+            view! {
+                <Column>
+                    <Widget of={nana_ui_runtime::ActionMenu::new().trigger("文件")} key="menu">
+                        <ActionMenuItem danger=true accessible_name="删除这一项" key="delete">"删除"</ActionMenuItem>
+                    </Widget>
+                    <Tabs selected={chosen} key="tabs" />
+                    <LabeledValue value="Live2D" key="row">"类型"</LabeledValue>
+                </Column>
+            }
+        })
+        .unwrap();
+    let root = mounted.roots()[0];
+    let menu = cx
+        .resolve_assembly_entity::<nana_ui_runtime::ActionMenu>(root, "menu")
+        .unwrap();
+    assert_eq!(
+        cx.read(menu, |m| m.popover.trigger.clone()).unwrap(),
+        std::sync::Arc::<str>::from("文件")
+    );
+    let items = cx.world().node(menu.stable_id()).unwrap().children.to_vec();
+    assert_eq!(items.len(), 1, "the item is the menu's child");
+    let item = items[0];
+    assert!(
+        cx.read(
+            Entity::<nana_ui_runtime::ActionMenuItem>::from_stable_id(item),
+            |i| (i.danger, i.label.clone(), i.accessible_name.clone())
+        )
+        .unwrap()
+            == (true, "删除".into(), "删除这一项".into())
+    );
+    let tabs = cx
+        .resolve_assembly_entity::<nana_ui_runtime::Tabs>(root, "tabs")
+        .unwrap();
+    assert_eq!(
+        cx.read(tabs, |t| t.selected.clone()).unwrap(),
+        Some("b".into())
+    );
+    let row = cx
+        .resolve_assembly_entity::<nana_ui_runtime::LabeledValue>(root, "row")
+        .unwrap();
+    assert_eq!(
+        cx.read(row, |r| (r.label.clone(), r.value.clone()))
+            .unwrap(),
+        ("类型".into(), "Live2D".into())
+    );
+}
+
+#[test]
 fn v_virtual_in_a_template_mounts_a_virtual_list() {
     let mut cx = AppContext::new();
     let document = DocumentId::new(1).unwrap();

@@ -2,7 +2,7 @@
 
 `ActionMenu` 是绑在触发器上的动作菜单。它里面是一个 `Popover`，对齐改成起始边，宽度、间距和内边距用菜单自己的默认值。开关跟 popover 一样，写在 `open` 上，由控件自己切换。
 
-控件表里没有 `<ActionMenu>`。
+控件表里没有 `<ActionMenu>`：模板里的控件是叶子，菜单的条目却是它的子节点。条目 `<ActionMenuItem>` 在控件表里（`label`、`accessible_name`、`disabled`、`danger`、`active`，`@activate`）。Rust 写法有 `action_menu(label)`，触发器文字、可访问名和开关是 `fields::action_menu` 的 `label`、`accessible_name`、`open`；`label` 写成空字符串时菜单关上，触发器也不显示。
 
 ## 基本用法
 

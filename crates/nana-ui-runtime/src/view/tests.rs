@@ -3835,3 +3835,177 @@ fn a_title_bar_shows_and_hides_from_a_view() {
     cx.layout_document(document, viewport).unwrap();
     assert_eq!(cx.world().layout_box(page).unwrap().y, 0.0);
 }
+
+/// The fields an application binds beyond the plain setters: named writers,
+/// hidden-while-empty, and the rules some fields carry.
+mod control_fields {
+    use super::*;
+    use crate::view::fields::{self, HiddenWhenEmpty};
+    use std::sync::Arc;
+
+    fn hidden(cx: &AppContext, id: StableNodeId) -> bool {
+        cx.world().node_style(id).unwrap().layout.hidden
+    }
+
+    #[test]
+    fn a_field_hidden_while_empty_shows_and_hides_with_its_value() {
+        let (mut cx, _, parent) = setup();
+        let state = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let title = signal(String::new());
+                let rows = signal(Vec::<crate::SelectOption>::new());
+                state.set(Some((title, rows)));
+                column().children((
+                    text("").prop::<_, HiddenWhenEmpty<fields::text::value>>(title),
+                    select().prop::<_, HiddenWhenEmpty<fields::select::options>>(rows),
+                    empty_state("").prop::<_, HiddenWhenEmpty<fields::empty_state::title>>(
+                        move || Arc::<str>::from(title.get()),
+                    ),
+                    labeled_value("型号").prop::<_, HiddenWhenEmpty<fields::labeled_value::value>>(
+                        move || Arc::<str>::from(title.get()),
+                    ),
+                ))
+            })
+            .unwrap();
+        let nodes = children(&cx, view.roots()[0]);
+        assert!(nodes.iter().all(|node| hidden(&cx, *node)), "all empty");
+        let (title, rows) = state.get().unwrap();
+        title.set("有了".into());
+        rows.set(vec![crate::SelectOption::new("a", "A")]);
+        cx.flush_reactive().unwrap();
+        assert!(nodes.iter().all(|node| !hidden(&cx, *node)), "all shown");
+        assert_eq!(text_of(&cx, Entity::from_stable_id(nodes[0])), "有了");
+        title.set(String::new());
+        cx.flush_reactive().unwrap();
+        assert!(hidden(&cx, nodes[0]) && hidden(&cx, nodes[2]) && hidden(&cx, nodes[3]));
+        assert!(!hidden(&cx, nodes[1]), "the select keeps its options");
+    }
+
+    #[test]
+    fn fields_keep_their_rules() {
+        let (mut cx, _, parent) = setup();
+        let state = std::cell::Cell::new(None);
+        let view = cx
+            .mount_view(parent, || {
+                let number = signal(0.0f64);
+                let tab = signal(Arc::<str>::from("a"));
+                let message = signal(String::new());
+                let level = signal(f64::NAN);
+                let label = signal(Arc::<str>::from("更多"));
+                let slot = signal(Arc::<str>::from(""));
+                state.set(Some((number, tab, message, level, label, slot)));
+                column().children((
+                    number_input().value(number),
+                    tabs().selected(tab),
+                    empty_state("出错了").prop::<_, fields::empty_state::message>(message),
+                    slider(10.0, 20.0, 1.0).value(level),
+                    action_menu(label).open(true),
+                    thumbnail().resource(slot),
+                    color_field().value([1.0, 0.0, 0.0, 1.0]),
+                    button("删除").kind(nana_ui_core::ButtonKind::Danger),
+                ))
+            })
+            .unwrap();
+        let nodes = children(&cx, view.roots()[0]);
+        let (number, tab, message, level, label, slot) = state.get().unwrap();
+
+        number.set(12.0);
+        tab.set("b".into());
+        message.set("网络断开".into());
+        level.set(99.0);
+        label.set("".into());
+        slot.set("model.cover".into());
+        cx.flush_reactive().unwrap();
+
+        cx.read(
+            Entity::<crate::NumberInput>::from_stable_id(nodes[0]),
+            |field| {
+                assert_eq!(field.value(), 12.0);
+                assert_eq!(
+                    field.state.selection,
+                    crate::TextSelection::caret(field.state.value.len()),
+                    "a new value puts the caret after it"
+                );
+            },
+        )
+        .unwrap();
+        cx.read(Entity::<crate::Tabs>::from_stable_id(nodes[1]), |strip| {
+            assert_eq!(strip.selected.as_deref(), Some("b"));
+            assert_eq!(
+                strip.focus.as_deref(),
+                Some("b"),
+                "the strip's focus follows"
+            );
+        })
+        .unwrap();
+        cx.read(
+            Entity::<crate::EmptyState>::from_stable_id(nodes[2]),
+            |state| assert_eq!(state.message.as_deref(), Some("网络断开")),
+        )
+        .unwrap();
+        cx.read(Entity::<RangeField>::from_stable_id(nodes[3]), |range| {
+            assert_eq!(range.value, 20.0, "held inside the range")
+        })
+        .unwrap();
+        cx.read(
+            Entity::<crate::ActionMenu>::from_stable_id(nodes[4]),
+            |menu| {
+                assert!(!menu.popover.open, "a menu without a trigger closes");
+            },
+        )
+        .unwrap();
+        cx.read(
+            Entity::<crate::Thumbnail>::from_stable_id(nodes[5]),
+            |thumb| assert_eq!(thumb.state, crate::ThumbnailState::Ready),
+        )
+        .unwrap();
+        cx.read(
+            Entity::<crate::ColorField>::from_stable_id(nodes[6]),
+            |well| {
+                assert_eq!(well.hue, 0.0);
+                assert_eq!(well.sat, 1.0, "the picker's coordinates follow the colour");
+            },
+        )
+        .unwrap();
+        cx.read(Entity::<Button>::from_stable_id(nodes[7]), |button| {
+            assert_eq!(button.kind, nana_ui_core::ButtonKind::Danger)
+        })
+        .unwrap();
+
+        message.set(String::new());
+        level.set(f64::NAN);
+        cx.flush_reactive().unwrap();
+        cx.read(
+            Entity::<crate::EmptyState>::from_stable_id(nodes[2]),
+            |state| assert_eq!(state.message, None, "an empty message is none"),
+        )
+        .unwrap();
+        cx.read(Entity::<RangeField>::from_stable_id(nodes[3]), |range| {
+            assert_eq!(range.value, 10.0, "no value yet is the minimum")
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn inspect_and_set_field_reach_the_new_controls() {
+        let (mut cx, _, parent) = setup();
+        let view = cx
+            .mount_view(parent, || {
+                action_menu_item("重命名").accessible_name("重命名预设")
+            })
+            .unwrap();
+        let item = view.roots()[0];
+        let inspected = cx.inspect(item).unwrap();
+        assert_eq!(inspected.control, Some("ActionMenuItem"));
+        cx.set_field(item, "disabled", "true").unwrap();
+        cx.read(
+            Entity::<crate::ActionMenuItem>::from_stable_id(item),
+            |item| {
+                assert!(item.disabled);
+                assert_eq!(&*item.accessible_name, "重命名预设");
+            },
+        )
+        .unwrap();
+    }
+}

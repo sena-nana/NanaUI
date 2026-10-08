@@ -285,4 +285,7 @@ const_props! {
     nana_ui_core::Icon => Option<nana_ui_core::Icon>, |v| Some(v);
     Option<nana_ui_core::Icon> => Option<nana_ui_core::Icon>, |v| v;
     nana_ui_core::StatusTone => nana_ui_core::StatusTone, |v| v;
+    nana_ui_core::ButtonKind => nana_ui_core::ButtonKind, |v| v;
+    [f32; 4] => [f32; 4], |v| v;
+    Vec<nana_ui_core::TreeNode<Arc<str>>> => Vec<nana_ui_core::TreeNode<Arc<str>>>, |v| v;
 }

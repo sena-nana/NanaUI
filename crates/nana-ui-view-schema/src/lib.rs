@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! Tag => element_function(argument: kind, …) for RustType {
-//!     field: FieldType = write,      // write: set | text_state | assign
+//!     field: FieldType = write,
 //!     …
 //! }
 //! [on { on_event_name: EventType, … }]        // handlers take no argument
@@ -19,6 +19,20 @@
 //! [model field: FieldType => EventType |event| value_from_event]
 //! ;
 //! ```
+//!
+//! `write` says how a value lands in the component:
+//!
+//! - `set`: the field of that name;
+//! - `text_state`: the edited text, replaced only when it differs, so an
+//!   edit echoed back keeps the caret;
+//! - `assign`: a number field's value through `assign`; a new value puts the
+//!   caret after it, as a field built at that value has it;
+//! - `clamp`: a range's value, held inside its range (a value the data does
+//!   not have yet, or a non-finite one, lands on the minimum);
+//! - `builder`: through the component's builder method of the same name,
+//!   which keeps what it derives (a colour's hue, saturation and value);
+//! - `tab`: the chosen tab, which also takes the strip's focus;
+//! - `resource`: an image's host texture slot, ready while it names one.
 //!
 //! An argument's kind is `text` (a string: the attribute, or the element's
 //! one text child), `f32` / `f64` (a number attribute, literals typed) or
@@ -39,6 +53,7 @@ macro_rules! for_each_control {
                 accessible_name: String = set,
                 disabled: bool = set,
                 loading: bool = set,
+                kind: ButtonKind = set,
             }
             on { on_activate: Activate };
             Checkbox => checkbox(label: text) for Checkbox {
@@ -57,7 +72,7 @@ macro_rules! for_each_control {
             with { on_change: ToggleChanged }
             model checked: bool => ToggleChanged |event| event.checked;
             Slider => slider(min: f64, max: f64, step: f64) for RangeField {
-                value: f64 = set,
+                value: f64 = clamp,
                 label: Option<Arc<str>> = set,
                 disabled: bool = set,
             }
@@ -114,7 +129,7 @@ macro_rules! for_each_control {
             };
             Divider => divider() for Divider {};
             Thumbnail => thumbnail() for Thumbnail {
-                resource: Arc<str> = set,
+                resource: Arc<str> = resource,
                 generation: u64 = set,
                 version: u64 = set,
                 aspect: f32 = set,
@@ -159,6 +174,33 @@ macro_rules! for_each_control {
                 icon: Option<Icon> = set,
                 compact: bool = set,
             };
+            LabeledValue => labeled_value(label: text) for LabeledValue {
+                label: Arc<str> = set,
+                value: Arc<str> = set,
+                compact: bool = set,
+            };
+            Tabs => tabs() for Tabs {
+                selected: Arc<str> = tab,
+                label: Option<Arc<str>> = set,
+            }
+            with { on_change: TabsEvent };
+            TreeView => tree_view() for TreeView {
+                nodes: Vec<TreeNode<Arc<str>>> = set,
+            };
+            ColorField => color_field() for ColorField {
+                value: [f32; 4] = builder,
+                label: Arc<str> = set,
+                disabled: bool = set,
+            }
+            with { on_change: ColorChanged };
+            ActionMenuItem => action_menu_item(label: text) for ActionMenuItem {
+                label: Arc<str> = set,
+                accessible_name: Arc<str> = set,
+                disabled: bool = set,
+                danger: bool = set,
+                active: bool = set,
+            }
+            on { on_activate: Activate };
         }
     };
 }

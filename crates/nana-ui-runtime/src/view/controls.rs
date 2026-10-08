@@ -10,6 +10,10 @@ use super::node::{El, widget};
 use super::prop::{FieldWrite, IntoProp};
 use super::reactive::Signal;
 use crate::{
+    ActionMenu, ActionMenuItem, ColorChanged, ColorField, TabsEvent, TextSelection, ThumbnailState,
+    TreeNode, TreeView,
+};
+use crate::{
     Activate, AppContext, Avatar, Button, Card, Checkbox, Chip, Divider, EmptyState, Entity,
     GpuTextureView, IconButton, ListItem, NodeStyle, NumberChanged, NumberInput, Progress,
     RangeChanged, RangeField, RangeInput, ScrollView, Select, SelectChanged, SelectOption, Spinner,
@@ -21,7 +25,7 @@ use crate::{
     LabeledValue, LevelMeter, List, MediaTransportBar, OverlayHost, Panel, SettingsCard,
     SidebarRow, Skeleton, StatusBar, Tabs, Toolbar, Tooltip, ValidationMessage, Video,
 };
-use nana_ui_core::{Icon, RadiusTier, SemanticColorRole, StatusTone};
+use nana_ui_core::{ButtonKind, Icon, RadiusTier, SemanticColorRole, StatusTone};
 
 /// Components whose [`NodeStyle`] the view layer may write (visibility).
 pub trait StyledComponent {
@@ -41,7 +45,8 @@ impl StyledComponent for Stack {
     }
 }
 
-#[doc(hidden)]
+/// Whether the node takes part in layout, paint and hit testing: what
+/// [`El::visible`] binds.
 pub struct Visible;
 
 impl<C: StyledComponent> FieldWrite<C, bool> for Visible {
@@ -140,10 +145,8 @@ styled!(
     Panel,
     List,
     Toolbar,
-    Tabs,
     InteractiveCard,
     SettingsCard,
-    LabeledValue,
     FormField,
     Breadcrumb,
     StatusBar,
@@ -171,15 +174,24 @@ macro_rules! controls {
         $(with { $($with:ident: $with_event:ident),* $(,)? })?
         $(model $model:ident: $model_ty:ty => $model_event:ident |$event:ident| $from_event:expr)?
         ;
-    )*) => {$(
-        #[allow(non_camel_case_types)]
-        #[doc(hidden)]
-        pub mod $function {
-            $(pub struct $field;)*
+    )*) => {
+        /// One [`FieldWrite`] per bindable field of each control in the
+        /// table, by element function and field: `generated::text::value`.
+        /// Applications name them through [`fields`].
+        pub mod generated {
+            $(
+                #[allow(non_camel_case_types)]
+                pub mod $function {
+                    $(
+                        #[doc = concat!("`", stringify!($component), "` field `", stringify!($field), "`.")]
+                        pub struct $field;
+                    )*
+                }
+            )*
         }
-
         $(
-            impl FieldWrite<$component, $ty> for $function::$field {
+        $(
+            impl FieldWrite<$component, $ty> for generated::$function::$field {
                 const FIELD: &'static str = concat!(stringify!($component), ".", stringify!($field));
 
                 fn write(target: &mut $component, value: $ty) {
@@ -196,7 +208,7 @@ macro_rules! controls {
             $(
                 #[track_caller]
                 pub fn $field(self, value: impl IntoProp<$ty>) -> Self {
-                    self.prop::<$ty, $function::$field>(value)
+                    self.prop::<$ty, generated::$function::$field>(value)
                 }
             )*
 
@@ -251,11 +263,52 @@ macro_rules! controls {
         $target.state.value != *$value
     };
     (@write assign $target:ident, $value:ident, $field:ident) => {{
-        $target.assign($value);
+        if $target.assign($value) {
+            $target.state.selection = TextSelection::caret($target.state.value.len());
+        }
     }};
     (@differs assign $target:ident, $value:ident, $field:ident) => {
         $target.$field() != *$value
     };
+    (@write clamp $target:ident, $value:ident, $field:ident) => {
+        $target.$field = clamp_to_range($target.minimum, $target.maximum, $value)
+    };
+    (@differs clamp $target:ident, $value:ident, $field:ident) => {
+        $target.$field != clamp_to_range($target.minimum, $target.maximum, *$value)
+    };
+    (@write builder $target:ident, $value:ident, $field:ident) => {
+        *$target = $target.clone().$field($value)
+    };
+    (@differs builder $target:ident, $value:ident, $field:ident) => {
+        $target.$field != *$value
+    };
+    (@write tab $target:ident, $value:ident, $field:ident) => {{
+        $target.selected = Some(Arc::clone(&$value));
+        $target.focus = Some($value);
+    }};
+    (@differs tab $target:ident, $value:ident, $field:ident) => {
+        $target.selected.as_ref() != Some($value) || $target.focus.as_ref() != Some($value)
+    };
+    (@write resource $target:ident, $value:ident, $field:ident) => {{
+        $target.state = if $value.trim().is_empty() {
+            ThumbnailState::Empty
+        } else {
+            ThumbnailState::Ready
+        };
+        $target.resource = $value;
+    }};
+    (@differs resource $target:ident, $value:ident, $field:ident) => {
+        $target.resource != *$value
+    };
+}
+
+/// `value` inside `minimum..=maximum`; a non-finite value is the minimum.
+fn clamp_to_range(minimum: f64, maximum: f64, value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(minimum, maximum.max(minimum))
+    } else {
+        minimum
+    }
 }
 
 nana_ui_view_schema::for_each_control!(controls);
@@ -411,10 +464,234 @@ pub fn empty_state(title: impl IntoProp<Arc<str>>) -> El<EmptyState> {
     widget(EmptyState::new("")).title(title)
 }
 
+/// A label and its value on one line.
+#[track_caller]
+pub fn labeled_value(label: impl IntoProp<Arc<str>>) -> El<LabeledValue> {
+    widget(LabeledValue::new("", "")).label(label)
+}
+
+/// A tab strip; give it its options and bind `.selected(..)` by key.
+#[track_caller]
+pub fn tabs() -> El<Tabs> {
+    widget(Tabs::new(""))
+}
+
+/// A tree of rows; bind `.nodes(..)`.
+#[track_caller]
+pub fn tree_view() -> El<TreeView> {
+    widget(TreeView::new(Vec::new()))
+}
+
+/// A colour well with its picker; bind `.value(..)`.
+#[track_caller]
+pub fn color_field() -> El<ColorField> {
+    widget(ColorField::new([0.0, 0.0, 0.0, 1.0]))
+}
+
+/// A menu behind a text trigger. Its items are its children, fixed ones
+/// and keyed lists (`each`) alike; an empty label hides the trigger. Not a
+/// template tag (a control there is a leaf): templates write
+/// `<Widget of={ActionMenu::new()}>`.
+#[track_caller]
+pub fn action_menu(label: impl IntoProp<Arc<str>>) -> El<ActionMenu> {
+    widget(ActionMenu::new()).label(label)
+}
+
+macro_rules! menu_fields {
+    ($($field:ident: $ty:ty, $doc:literal, |$target:ident, $value:ident| $write:expr, |$read:ident| $current:expr;)*) => {
+        $(
+            impl FieldWrite<ActionMenu, $ty> for fields::action_menu::$field {
+                const FIELD: &'static str = concat!("ActionMenu.", stringify!($field));
+
+                fn write($target: &mut ActionMenu, $value: $ty) {
+                    $write
+                }
+
+                fn differs($read: &ActionMenu, value: &$ty) -> bool {
+                    $current != *value
+                }
+            }
+        )*
+
+        impl<K> El<ActionMenu, K> {
+            $(
+                #[doc = $doc]
+                #[track_caller]
+                pub fn $field(self, value: impl IntoProp<$ty>) -> Self {
+                    self.prop::<$ty, fields::action_menu::$field>(value)
+                }
+            )*
+        }
+    };
+}
+
+menu_fields! {
+    label: Arc<str>,
+        "The trigger's text. A menu without one has nothing to hang from: it closes and shows nothing.",
+        |target, value| {
+            target.popover.open &= !value.is_empty();
+            target.popover.trigger = value;
+        },
+        |menu| menu.popover.trigger;
+    accessible_name: Arc<str>,
+        "What a screen reader says for the trigger when its text is ambiguous.",
+        |target, value| target.popover.accessible_name = value,
+        |menu| menu.popover.accessible_name;
+    open: bool,
+        "Whether the menu is open; it also opens and closes itself.",
+        |target, value| target.popover.open = value,
+        |menu| menu.popover.open;
+}
+
+/// One command of an [`action_menu`]; `.on_activate(..)` runs it.
+#[track_caller]
+pub fn action_menu_item(label: impl IntoProp<Arc<str>>) -> El<ActionMenuItem> {
+    widget(ActionMenuItem::new("")).label(label)
+}
+
 impl<K> El<EmptyState, K> {
     /// The one action under the message, such as a retry button.
     pub fn action(self, view: impl IntoView) -> Self {
         self.child_slot(view, |empty, id| empty.action_child(id))
+    }
+}
+
+/// Field writers to bind with [`El::prop`], for the fields the generated
+/// setters do not cover or with an added rule:
+///
+/// - `fields::<element function>::<field>`: the writer behind each setter of
+///   the control table (`fields::text::value` is what `.value(..)` binds on a
+///   `text`), so a writer can be named and wrapped;
+/// - [`fields::Visible`]: whether a node takes part in layout, paint and hit
+///   testing (what `.visible(..)` binds);
+/// - [`fields::HiddenWhenEmpty`]: any of those fields, with the node hidden
+///   while the value is empty (`.prop::<_, HiddenWhenEmpty<fields::text::value>>(title)`).
+pub mod fields {
+    pub use super::Visible;
+    pub use super::generated::*;
+    pub use super::{Blank, HiddenWhenEmpty};
+
+    /// [`crate::ActionMenu`] fields (not a template tag: its items are its
+    /// children).
+    #[allow(non_camel_case_types)]
+    pub mod action_menu {
+        /// The trigger's text; an empty one closes the menu.
+        pub struct label;
+        /// The trigger's spoken name.
+        pub struct accessible_name;
+        /// Whether the menu is open.
+        pub struct open;
+    }
+
+    /// [`crate::ReorderList`] fields (the `controls` feature).
+    #[cfg(feature = "controls")]
+    #[allow(non_camel_case_types)]
+    pub mod reorder_list {
+        /// `ReorderList` field `items`.
+        pub struct items;
+    }
+}
+
+#[cfg(feature = "controls")]
+impl FieldWrite<crate::ReorderList, Vec<crate::ReorderItem>> for fields::reorder_list::items {
+    const FIELD: &'static str = "ReorderList.items";
+
+    fn write(target: &mut crate::ReorderList, items: Vec<crate::ReorderItem>) {
+        if target.items != items {
+            target.items = items;
+        }
+    }
+
+    fn differs(target: &crate::ReorderList, items: &Vec<crate::ReorderItem>) -> bool {
+        target.items != *items
+    }
+}
+
+#[cfg(feature = "controls")]
+impl StyledComponent for crate::ReorderList {
+    fn node_style(&self) -> &NodeStyle {
+        &self.style
+    }
+
+    fn node_style_mut(&mut self) -> &mut NodeStyle {
+        &mut self.style
+    }
+}
+
+/// An empty message is no message: `EmptyState.message` from text, `None`
+/// while the text is empty.
+impl FieldWrite<EmptyState, String> for generated::empty_state::message {
+    const FIELD: &'static str = "EmptyState.message";
+
+    fn write(target: &mut EmptyState, message: String) {
+        let message = (!message.is_empty()).then(|| Arc::from(message));
+        if target.message != message {
+            target.message = message;
+        }
+    }
+
+    fn differs(target: &EmptyState, message: &String) -> bool {
+        target.message.as_deref().unwrap_or("") != message.as_str()
+    }
+}
+
+/// A value that can be empty, for [`HiddenWhenEmpty`].
+pub trait Blank {
+    fn is_blank(&self) -> bool;
+}
+
+impl Blank for String {
+    fn is_blank(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+impl Blank for Arc<str> {
+    fn is_blank(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+/// `None` is empty; `Some("")` is a value.
+impl<T> Blank for Option<T> {
+    fn is_blank(&self) -> bool {
+        self.is_none()
+    }
+}
+
+impl<T> Blank for Vec<T> {
+    fn is_blank(&self) -> bool {
+        self.is_empty()
+    }
+}
+
+/// The field `W` writes, with the node out of layout, paint and hit testing
+/// while the value is empty ([`Blank`]): a line that shows only while it says
+/// something, a list only while it has rows. Both change in the same write,
+/// so the node never shows an empty value.
+pub struct HiddenWhenEmpty<W>(std::marker::PhantomData<W>);
+
+impl<C, T, W> FieldWrite<C, T> for HiddenWhenEmpty<W>
+where
+    C: StyledComponent,
+    T: Blank,
+    W: FieldWrite<C, T>,
+{
+    const FIELD: &'static str = W::FIELD;
+
+    fn write(target: &mut C, value: T) {
+        let hidden = value.is_blank();
+        if W::differs(target, &value) {
+            W::write(target, value);
+        }
+        let style = target.node_style_mut();
+        if style.layout.hidden != hidden {
+            Arc::make_mut(&mut style.layout).hidden = hidden;
+        }
+    }
+
+    fn differs(target: &C, value: &T) -> bool {
+        W::differs(target, value) || target.node_style().layout.hidden != value.is_blank()
     }
 }
 
@@ -484,7 +761,14 @@ macro_rules! edited_in_code {
     )*};
 }
 
-edited_in_code!(Icon, Option<Icon>, StatusTone);
+edited_in_code!(
+    Icon,
+    Option<Icon>,
+    StatusTone,
+    ButtonKind,
+    [f32; 4],
+    Vec<TreeNode<Arc<str>>>
+);
 
 impl FieldText for Vec<SelectOption> {
     fn parse(_: &str) -> Result<Self, String> {
@@ -521,6 +805,10 @@ pub(crate) fn inspect_control(
         (@read set $control:ident, $field:ident) => { &$control.$field };
         (@read text_state $control:ident, $field:ident) => { &$control.state.value };
         (@read assign $control:ident, $field:ident) => { $control.$field() };
+        (@read clamp $control:ident, $field:ident) => { &$control.$field };
+        (@read builder $control:ident, $field:ident) => { &$control.$field };
+        (@read tab $control:ident, $field:ident) => { &$control.selected };
+        (@read resource $control:ident, $field:ident) => { &$control.resource };
     }
     nana_ui_view_schema::for_each_control!(inspectors);
     None
@@ -548,7 +836,7 @@ pub(crate) fn edit_control(
                 return Some(match field {
                     $(stringify!($field) => <$ty as FieldText>::parse(text).and_then(|value| {
                         cx.update_component(Entity::<$component>::from_stable_id(node), |control, _| {
-                            <$function::$field as FieldWrite<$component, $ty>>::write(control, value)
+                            <generated::$function::$field as FieldWrite<$component, $ty>>::write(control, value)
                         })
                         .map_err(|error| error.to_string())
                     }),)*
