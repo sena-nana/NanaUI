@@ -270,7 +270,31 @@ impl Drop for PersistenceCoordinator {
             state.force = true;
         }
         self.owner.lane.wake.notify_all();
-        let _ = self.flush_timeout(Duration::from_secs(2));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        if self.flush_timeout(Duration::from_secs(2)).is_ok() {
+            // The last write landed; the worker exits right after. Wait for
+            // that too (it is no IO), so a coordinator made on this backend
+            // next finds it finished instead of stopping.
+            let mut state = self
+                .owner
+                .lane
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            while !self.owner.finished.load(Ordering::Acquire) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                state = self
+                    .owner
+                    .lane
+                    .wake
+                    .wait_timeout(state, left)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            }
+        }
         if self.owner.finished.load(Ordering::Acquire) {
             let mut known = registry().lock().unwrap_or_else(|e| e.into_inner());
             if known
@@ -293,6 +317,7 @@ fn run(owner: Arc<Owner>, backend: SharedStore) {
                         // The owner remains registered until this point so a
                         // new host cannot race the worker's final exit.
                         finish_owner(&owner);
+                        lane.wake.notify_all();
                         return;
                     }
                     state = lane.wake.wait(state).unwrap_or_else(|e| e.into_inner());
@@ -365,6 +390,9 @@ fn run(owner: Arc<Owner>, backend: SharedStore) {
                 state.error = None;
             }
             Err(error) => {
+                // The write a wait timed out on has ended: later waits retry
+                // and report this error instead of timing out at once.
+                state.stalled = false;
                 state.work.failures += 1;
                 state.error = Some(error);
                 nana_diagnostics::event!(nana_diagnostics::framework::persistence::FAILURE);
@@ -374,6 +402,7 @@ fn run(owner: Arc<Owner>, backend: SharedStore) {
         lane.wake.notify_all();
         if stopping && state.error.is_some() {
             finish_owner(&owner);
+            lane.wake.notify_all();
             return;
         }
     }
@@ -622,6 +651,75 @@ mod tests {
         lane.set("key", "next".into()).unwrap();
         lane.flush_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(memory.get("key").unwrap().as_deref(), Some("next"));
+    }
+    #[test]
+    fn a_failed_write_after_a_timed_out_wait_is_retried_by_the_next_wait() {
+        let memory = memory_store();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let backend = shared_store(BlockedThenFails {
+            store: memory.clone(),
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+            failed: AtomicBool::new(false),
+        });
+        let lane = PersistenceCoordinator::new(backend).unwrap();
+        lane.set("key", "value".into()).unwrap();
+        lane.flush_soon().unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(lane.flush_timeout(Duration::from_millis(20)).is_err());
+        release_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while lane.work().failures == 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(lane.work().failures, 1);
+        lane.flush_timeout(Duration::from_secs(2))
+            .expect("the next wait retries the failed write");
+        assert_eq!(memory.get("key").unwrap().as_deref(), Some("value"));
+    }
+    #[derive(Debug)]
+    struct BlockedThenFails {
+        store: SharedStore,
+        entered: std::sync::mpsc::Sender<()>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+        failed: AtomicBool,
+    }
+    impl KvBackend for BlockedThenFails {
+        fn get(&self, k: &str) -> Result<Option<String>, StoreError> {
+            self.store.get(k)
+        }
+        fn set(&self, k: &str, v: String) -> Result<(), StoreError> {
+            self.store.set(k, v)
+        }
+        fn remove(&self, k: &str) -> Result<(), StoreError> {
+            self.store.remove(k)
+        }
+        fn clear(&self) -> Result<(), StoreError> {
+            self.store.clear()
+        }
+        fn keys(&self) -> Result<Vec<String>, StoreError> {
+            self.store.keys()
+        }
+        fn flush(&self) -> Result<(), StoreError> {
+            if self.failed.swap(true, Ordering::AcqRel) {
+                return self.store.flush();
+            }
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+            Err(StoreError::new("disk full"))
+        }
+    }
+    #[test]
+    fn a_coordinator_made_right_after_the_last_one_drops_attaches() {
+        let backend = memory_store();
+        for round in 0..50 {
+            let lane = PersistenceCoordinator::new(backend.clone()).unwrap();
+            lane.set("round", round.to_string()).unwrap();
+            drop(lane);
+        }
+        let lane = PersistenceCoordinator::new(backend.clone()).unwrap();
+        assert_eq!(lane.get("round").unwrap().as_deref(), Some("49"));
     }
     #[derive(Debug)]
     struct Blocked {
