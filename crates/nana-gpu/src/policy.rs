@@ -228,6 +228,10 @@ struct PolicyState {
 pub struct GpuDeviceState {
     generation: DeviceGeneration,
     inner: Arc<Mutex<PolicyState>>,
+    /// Held while a pipeline compiles, so two cold requests do not compile
+    /// the same one twice, without holding `inner`: uploads, frame-slot
+    /// releases and transient pools on other threads go on meanwhile.
+    compiling: Arc<Mutex<()>>,
 }
 
 impl GpuDeviceState {
@@ -248,6 +252,7 @@ impl GpuDeviceState {
                 frame_slots: vec![None, None, None],
                 stats: GpuPolicyStats::default(),
             })),
+            compiling: Arc::new(Mutex::new(())),
         }
     }
 
@@ -584,15 +589,25 @@ impl GpuDeviceState {
                 found: key.generation,
             });
         }
-        // Creation is serialized: concurrent cold requests must not compile
-        // the same pipeline twice. The factory must not reenter this registry.
-        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pipeline) = state.pipelines.get(&key).cloned() {
+        let cached = |state: &mut PolicyState| {
+            let pipeline = state.pipelines.get(&key).cloned()?;
             state.stats.pipeline_registry_hits += 1;
             nana_diagnostics::metric!(nana_diagnostics::framework::gpu::PIPELINE_REGISTRY_HITS);
+            Some(pipeline)
+        };
+        if let Some(pipeline) = cached(&mut self.inner.lock().unwrap_or_else(|e| e.into_inner())) {
+            return Ok(pipeline);
+        }
+        // Compiles are serialized among themselves, not with the rest of the
+        // policy: a compile takes tens of milliseconds. Another request may
+        // have compiled this one while we waited. The factory must not
+        // reenter this registry.
+        let _compiling = self.compiling.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pipeline) = cached(&mut self.inner.lock().unwrap_or_else(|e| e.into_inner())) {
             return Ok(pipeline);
         }
         let pipeline = create();
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut evicted = Vec::new();
         state.pipelines.insert(key, pipeline.clone(), &mut evicted);
         // Keep evicted backend objects alive until a queue completion
@@ -744,6 +759,81 @@ mod tests {
 
     fn state() -> GpuDeviceState {
         GpuDeviceState::new(DeviceGeneration::next())
+    }
+
+    /// A pipeline that compiles does not hold the policy: other threads'
+    /// uploads, slot releases and pool reads go on. Here the factory itself
+    /// reads the stats, which waits on the policy lock; holding it through
+    /// the compile would never return.
+    #[test]
+    fn a_compiling_pipeline_leaves_the_policy_free() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::from_env().unwrap_or_default(),
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
+        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
+            &instance, None,
+        ))
+        .expect("policy tests require a WGPU adapter");
+        let device = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("policy tests require a WGPU device")
+            .0;
+        let policy = state();
+        let key = PipelineKey {
+            generation: policy.generation(),
+            target_format: crate::GpuTextureFormat(wgpu::TextureFormat::Rgba8Unorm),
+            sample_count: 1,
+            shader: 1,
+            layout: 0,
+            material: 0,
+            primitive: 0,
+            blend: 0,
+            depth: 0,
+            vertex_layout: 0,
+        };
+        let (done, finished) = std::sync::mpsc::channel();
+        let worker = policy.clone();
+        std::thread::spawn(move || {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(
+                    "@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0); }
+                     @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }"
+                        .into(),
+                ),
+            });
+            let compiled = worker.pipeline(key, || {
+                let _ = worker.stats();
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: None,
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            });
+            let _ = done.send(compiled.is_ok());
+        });
+        assert_eq!(
+            finished.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(true),
+            "the factory waited on the policy lock its caller held"
+        );
+        assert_eq!(policy.stats().pipeline_registry_misses, 1);
     }
 
     #[test]
