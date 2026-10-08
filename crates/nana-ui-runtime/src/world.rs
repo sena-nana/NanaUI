@@ -3082,6 +3082,14 @@ impl UiWorld {
         self.nodes.get(id)?.hierarchy.parent
     }
 
+    /// The node's children, without copying the node as [`Self::node`] does;
+    /// empty for a node that is not in the world.
+    pub(crate) fn child_ids(&self, id: StableNodeId) -> &[StableNodeId] {
+        self.nodes
+            .get(id)
+            .map_or(&[], |node| node.hierarchy.children.as_slice())
+    }
+
     fn live_input_target_count(&self) -> usize {
         let mut ids = HashSet::new();
         ids.extend(self.input.focused.values().copied());

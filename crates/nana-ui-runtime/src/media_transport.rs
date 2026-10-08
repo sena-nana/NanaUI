@@ -242,6 +242,9 @@ pub struct MediaTransportBar {
     pub(crate) content: MediaTransportContent,
     pub(crate) visibility: OverlayVisibility,
     pub(crate) menu_was_open: bool,
+    /// One of the bar's own menus opened or closed since its runtime-driven
+    /// policy last ran.
+    pub(crate) menu_toggled: bool,
     /// Chrome layout the assembled children carry, so a playback tick skips
     /// the layout pass.
     pub(crate) applied: Option<ChromeLayout>,
@@ -311,6 +314,7 @@ impl MediaTransportBar {
             content: MediaTransportContent::default(),
             visibility: OverlayVisibility::default(),
             menu_was_open: false,
+            menu_toggled: false,
             applied: None,
         }
     }
@@ -622,6 +626,7 @@ impl ComponentView for MediaTransportBar {
         next.slots = self.slots.clone();
         next.visibility = self.visibility.clone();
         next.menu_was_open = self.menu_was_open;
+        next.menu_toggled = self.menu_toggled;
         next.applied = self.applied;
         *self = next;
     }
@@ -1091,10 +1096,7 @@ impl AppContext {
         bar: Entity<MediaTransportBar>,
     ) -> Result<(), FrameworkError> {
         let snapshot = self.read(bar, Clone::clone)?;
-        if self.track_auto_overlay(bar.stable_id(), snapshot.auto_hide) {
-            // Playing or not, enabled or not: the policy follows the write.
-            self.drive_auto_overlay(bar, crate::framework::OverlayActivity::None)?;
-        }
+        self.sync_auto_overlay(bar, &snapshot)?;
         let labels = snapshot.labels(self.world().framework_strings());
         let slots = &snapshot.slots;
         let chrome = snapshot.chrome_layout();
@@ -1514,12 +1516,18 @@ impl AppContext {
     }
 }
 
-/// The bar's own menus opening and closing, as the bar's events.
+/// The bar's own menus opening and closing, as the bar's events. A bar the
+/// runtime drives runs its policy at once: an open menu holds it, and its
+/// idle timer restarts when the menu closes.
 fn report_menu(
-    _: &mut MediaTransportBar,
+    bar: &mut MediaTransportBar,
     event: &crate::PopoverToggled,
     cx: &mut crate::ViewContext<'_, MediaTransportBar>,
 ) {
+    if bar.auto_hide {
+        bar.menu_toggled = true;
+        cx.reassemble();
+    }
     cx.emit(if event.open {
         MediaTransportEvent::MenuOpened
     } else {

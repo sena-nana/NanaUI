@@ -711,7 +711,7 @@ impl AppContext {
                 frame.component_updates.push(target);
             }
         }
-        for bar in self.drive_auto_overlays(None, OverlayActivity::None) {
+        for bar in self.drive_due_auto_overlays() {
             if !frame.component_updates.contains(&bar) {
                 frame.component_updates.push(bar);
             }

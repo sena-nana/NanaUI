@@ -608,7 +608,7 @@ struct ComponentLifecycle {
     /// Per `PaneTree`, the boxes it owns, addressed by its own split / pane id.
     pane_tree_slots: HashMap<StableNodeId, HashMap<Arc<str>, StableNodeId>, crate::BuildIdHasher>,
     /// Media transport bars whose idle hide the runtime drives.
-    auto_overlays: std::collections::BTreeSet<StableNodeId>,
+    auto_overlays: std::collections::BTreeMap<StableNodeId, auto_overlay::AutoOverlay>,
 }
 
 impl ComponentLifecycle {

@@ -735,7 +735,7 @@ impl AppContext {
             // A key press does not move the clock on its own; the idle
             // deadline counts from this event.
             self.component_lifecycle.now = self.component_lifecycle.now.max(now);
-            self.drive_auto_overlays(Some(document), activity);
+            self.route_auto_overlays(document, activity);
         }
         // Handlers wrote signals; apply their bindings before deciding
         // whether this event invalidated the frame.

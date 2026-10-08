@@ -93,6 +93,12 @@ impl OverlayVisibility {
         self.visible
     }
 
+    /// Up, not concealed, and counting down to an idle hide: activity now
+    /// would only move that deadline later.
+    pub(crate) fn counting_down(&self) -> bool {
+        self.visible && !self.concealed && self.deadline.is_some()
+    }
+
     pub fn wakeup(&self) -> Option<Instant> {
         let mut next = self.deadline;
         if let Some(startup) = self.startup_until {
@@ -204,11 +210,24 @@ impl crate::AppContext {
         document: crate::DocumentId,
         root: crate::StableNodeId,
     ) -> OverlayLocks {
+        self.overlay_locks_with(document, root, false)
+    }
+
+    /// [`Self::overlay_locks`], where with `focus_visible_only` only
+    /// keyboard (focus-visible) focus holds.
+    fn overlay_locks_with(
+        &self,
+        document: crate::DocumentId,
+        root: crate::StableNodeId,
+        focus_visible_only: bool,
+    ) -> OverlayLocks {
+        let focused = if focus_visible_only {
+            self.world().focus_visible(document)
+        } else {
+            self.world().focused(document)
+        };
         OverlayLocks {
-            focused: self
-                .world()
-                .focused(document)
-                .is_some_and(|focused| self.is_descendant(focused, root)),
+            focused: focused.is_some_and(|focused| self.is_descendant(focused, root)),
             dragging: self
                 .world()
                 .pointer_captures(document)
@@ -241,9 +260,7 @@ impl crate::AppContext {
             {
                 return true;
             }
-            if let Some(node) = self.world().node(id) {
-                stack.extend(node.children);
-            }
+            stack.extend_from_slice(self.world().child_ids(id));
         }
         false
     }
@@ -258,33 +275,58 @@ impl crate::AppContext {
         now: Instant,
         active: bool,
     ) -> Result<Option<Instant>, crate::FrameworkError> {
+        let (_, wakeup) = self.step_overlay(
+            bar,
+            OverlayStep {
+                now,
+                active,
+                activity: None,
+                conceal: false,
+                focus_visible_only: false,
+            },
+        )?;
+        Ok(wakeup)
+    }
+
+    /// One run of `bar`'s policy, however it is driven: activity, a menu that
+    /// closed since the last run, the locks and `active`, the pointer leaving
+    /// the window, then the clock. Answers whether the bar's visibility
+    /// flipped, and its next wakeup.
+    pub(crate) fn step_overlay(
+        &mut self,
+        bar: crate::Entity<crate::MediaTransportBar>,
+        step: OverlayStep,
+    ) -> Result<(bool, Option<Instant>), crate::FrameworkError> {
+        let root = bar.stable_id();
         let document = self
             .world()
-            .node(bar.stable_id())
-            .ok_or(crate::FrameworkError::MissingView(bar.stable_id()))?
-            .document;
-        let root = bar.stable_id();
-        let mut locks = self.overlay_locks(document, root);
+            .document_of(root)
+            .ok_or(crate::FrameworkError::MissingView(root))?;
+        let mut locks = self.overlay_locks_with(document, root, step.focus_visible_only);
         let menu_closed = self.read(bar, |bar| bar.menu_was_open)? && !locks.menu_open;
-        if menu_closed
-            && self
-                .world()
-                .focused(document)
-                .is_some_and(|focused| self.is_descendant(focused, root))
-        {
+        // The menu hands focus back to its trigger, which would hold the bar
+        // for good where any focus holds it.
+        if menu_closed && locks.focused && !step.focus_visible_only {
             self.clear_focus(document)?;
-            locks = self.overlay_locks(document, root);
+            locks = self.overlay_locks_with(document, root, false);
         }
         self.update_component(bar, |bar, cx| {
             let before = bar.visibility.visible();
-            if menu_closed {
-                bar.visibility.activity(now);
+            if let Some(at) = step.activity {
+                bar.visibility.activity(at);
             }
-            bar.visibility.synchronize(now, active, locks);
-            bar.visibility.tick(now);
+            if menu_closed {
+                bar.visibility.activity(step.now);
+            }
+            bar.visibility.synchronize(step.now, step.active, locks);
+            if step.conceal {
+                bar.visibility.conceal();
+            }
+            bar.visibility.tick(step.now);
             bar.menu_was_open = locks.menu_open;
+            bar.menu_toggled = false;
             report_visibility(before, bar, cx);
-            bar.visibility.wakeup()
+            (before != bar.visibility.visible(), bar.visibility.wakeup())
         })
     }
 
@@ -322,6 +364,21 @@ impl crate::AppContext {
     ) -> Result<Option<Instant>, crate::FrameworkError> {
         self.read(bar, |bar| bar.visibility.wakeup())
     }
+}
+
+/// What one run of a bar's policy acts on; see
+/// [`crate::AppContext::step_overlay`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OverlayStep {
+    pub now: Instant,
+    /// The bar may hide: playing media, an idle stage.
+    pub active: bool,
+    /// Pointer or key activity to apply first, at its own time.
+    pub activity: Option<Instant>,
+    /// The pointer left the window.
+    pub conceal: bool,
+    /// Only keyboard focus holds the bar, not focus a click left behind.
+    pub focus_visible_only: bool,
 }
 
 /// Emit [`OverlayVisibilityChanged`] when the bar's idle visibility is no
@@ -533,6 +590,66 @@ mod tests {
             *seen.lock().unwrap(),
             vec![false, true, false, true, false, true]
         );
+    }
+
+    #[test]
+    fn an_auto_hidden_bar_takes_pointer_activity_at_its_deadline_and_follows_its_menus() {
+        use crate::{
+            AppContext, DocumentId, HeadlessInput, LayoutViewport, MediaTransportBar, Stack,
+        };
+        use nana_ui_core::LengthSpec;
+        use nana_ui_input::PointerPhase;
+
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let window = cx
+            .create_component(
+                document,
+                Stack::column(0.0).hittable().with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(640.0));
+                    layout.height = Some(LengthSpec::Px(360.0));
+                }),
+            )
+            .unwrap();
+        let bar = cx
+            .create_detached_component(document, MediaTransportBar::new().auto_hide(true))
+            .unwrap();
+        cx.append_child(window, bar).unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        cx.layout_document(document, LayoutViewport::new(640.0, 360.0))
+            .unwrap();
+        cx.compat_world_mut().rebuild_hit_test(document);
+        let shown = |cx: &AppContext| cx.read(bar, MediaTransportBar::shown).unwrap();
+        let mut input = HeadlessInput::bind(&mut cx, document);
+        cx.update_component(bar, |bar, _| bar.playing = true)
+            .unwrap();
+
+        input.set_now(Duration::from_secs(1));
+        input
+            .pointer(&mut cx, PointerPhase::Move, 100.0, 100.0)
+            .unwrap();
+        assert_eq!(
+            cx.next_animation_deadline(),
+            Some(OVERLAY_IDLE),
+            "a move over a bar counting down leaves the bar alone"
+        );
+        cx.advance_animations(OVERLAY_IDLE);
+        assert!(shown(&cx), "the deadline takes the move");
+        assert_eq!(cx.next_animation_deadline(), Some(Duration::from_secs(4)));
+
+        let settings = cx.read(bar, |bar| bar.settings()).unwrap().unwrap();
+        assert!(cx.toggle_action_menu(settings).unwrap());
+        assert!(
+            cx.overlay_wakeup(bar).unwrap().is_none(),
+            "an open menu holds it"
+        );
+        cx.advance_animations(Duration::from_secs(10));
+        assert!(shown(&cx));
+        assert!(cx.dismiss_popovers_on_escape().unwrap());
+        cx.advance_animations(Duration::from_secs(12));
+        assert!(shown(&cx), "the idle timer restarts when the menu closes");
+        cx.advance_animations(Duration::from_secs(13));
+        assert!(!shown(&cx));
     }
 
     #[test]

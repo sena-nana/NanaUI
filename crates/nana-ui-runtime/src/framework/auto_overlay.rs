@@ -6,12 +6,13 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::AppContext;
+use crate::overlay_visibility::OverlayStep;
 use crate::{DocumentId, Entity, FrameworkError, MediaTransportBar, StableNodeId};
 
 /// What a routed event means to an auto-hidden bar.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum OverlayActivity {
-    /// Nothing but time and state: playback started, a menu closed.
+    /// Nothing the policy reacts to at once.
     None,
     /// The pointer moved, pressed or released here, over `target` when the
     /// event landed on a node.
@@ -23,6 +24,19 @@ pub(crate) enum OverlayActivity {
     Key,
     /// The pointer left the window.
     Leave,
+}
+
+/// A bar whose idle hide the runtime drives.
+#[derive(Debug, Default)]
+pub(crate) struct AutoOverlay {
+    /// The latest activity routed input saw while the bar was up and counting
+    /// down to its idle hide. That activity only moves the deadline later, so
+    /// the policy takes it when the deadline comes rather than on every
+    /// pointer move.
+    activity: Option<Instant>,
+    /// `playing && !disabled` the policy last ran with; `None` before its
+    /// first run.
+    active: Option<bool>,
 }
 
 /// The policy keeps `Instant`s; the runtime clock is a `Duration` from the
@@ -38,15 +52,26 @@ fn instant(now: Duration) -> Instant {
 }
 
 impl AppContext {
-    /// Start or stop driving `bar`; answers whether it is driven.
-    pub(crate) fn track_auto_overlay(&mut self, bar: StableNodeId, auto: bool) -> bool {
+    /// Start or stop driving `bar` as `snapshot` (its current value) asks,
+    /// and run its policy when what the policy reads from the bar changed
+    /// since it last ran: playback started or stopped, the bar was enabled or
+    /// disabled, or one of its menus opened or closed.
+    pub(crate) fn sync_auto_overlay(
+        &mut self,
+        bar: Entity<MediaTransportBar>,
+        snapshot: &MediaTransportBar,
+    ) -> Result<(), FrameworkError> {
         let overlays = &mut self.component_lifecycle.auto_overlays;
-        if auto {
-            overlays.insert(bar);
-        } else {
-            overlays.remove(&bar);
+        if !snapshot.auto_hide {
+            overlays.remove(&bar.stable_id());
+            return Ok(());
         }
-        auto
+        let active = snapshot.playing && !snapshot.disabled;
+        let ran = overlays.entry(bar.stable_id()).or_default().active;
+        if ran == Some(active) && !snapshot.menu_toggled {
+            return Ok(());
+        }
+        self.drive_auto_overlay(bar, false, false).map(drop)
     }
 
     pub(crate) fn has_auto_overlays(&self) -> bool {
@@ -57,7 +82,7 @@ impl AppContext {
     pub(super) fn auto_overlay_deadline(&self) -> Option<Duration> {
         self.component_lifecycle
             .auto_overlays
-            .iter()
+            .keys()
             .filter(|bar| self.world.is_mounted(**bar))
             .filter_map(|bar| {
                 self.view_entity::<MediaTransportBar>(*bar)
@@ -68,108 +93,136 @@ impl AppContext {
             .min()
     }
 
-    /// Drive every bar in `document` (every document when `None`); answers
-    /// the bars whose visibility flipped. A bar that went away stops being
-    /// driven.
-    pub(crate) fn drive_auto_overlays(
-        &mut self,
-        document: Option<DocumentId>,
-        activity: OverlayActivity,
-    ) -> Vec<StableNodeId> {
-        let bars: Vec<_> = self
-            .component_lifecycle
-            .auto_overlays
-            .iter()
-            .copied()
-            .collect();
-        let mut flipped = Vec::new();
-        for bar in bars {
-            let Some(node) = self.world.node(bar) else {
-                self.component_lifecycle.auto_overlays.remove(&bar);
+    /// The driven bars mounted in `document` (any document when `None`).
+    /// A bar that went away stops being driven.
+    fn driven_bars(&mut self, document: Option<DocumentId>) -> Vec<Entity<MediaTransportBar>> {
+        let mut bars = Vec::new();
+        let mut gone = Vec::new();
+        for &bar in self.component_lifecycle.auto_overlays.keys() {
+            let Some(entity) = self.view_entity::<MediaTransportBar>(bar) else {
+                gone.push(bar);
                 continue;
             };
-            if document.is_some_and(|document| node.document != document)
-                || !self.world.is_mounted(bar)
+            if document.is_none_or(|document| self.world.document_of(bar) == Some(document))
+                && self.world.is_mounted(bar)
             {
+                bars.push(entity);
+            }
+        }
+        for bar in gone {
+            self.component_lifecycle.auto_overlays.remove(&bar);
+        }
+        bars
+    }
+
+    /// Feed a routed event to every driven bar in `document`.
+    ///
+    /// Activity on a bar that is up and counting down only moves its
+    /// deadline, so it is noted for the policy to take when the deadline
+    /// comes. Any other bar runs its policy now: one that is hidden or
+    /// concealed may reveal, and one that is paused or held may have just
+    /// been released.
+    pub(crate) fn route_auto_overlays(&mut self, document: DocumentId, activity: OverlayActivity) {
+        let now = instant(self.component_lifecycle.now);
+        for bar in self.driven_bars(Some(document)) {
+            let reveal = match activity {
+                OverlayActivity::Pointer { x, y, target } => {
+                    self.over_stage(document, bar.stable_id(), x, y, target)
+                }
+                OverlayActivity::Key => true,
+                OverlayActivity::None | OverlayActivity::Leave => false,
+            };
+            let leave = activity == OverlayActivity::Leave;
+            if !leave
+                && self
+                    .read(bar, |bar| bar.visibility.counting_down())
+                    .unwrap_or(false)
+            {
+                if reveal
+                    && let Some(driven) = self
+                        .component_lifecycle
+                        .auto_overlays
+                        .get_mut(&bar.stable_id())
+                {
+                    driven.activity = Some(now);
+                }
                 continue;
             }
-            let Some(entity) = self.view_entity::<MediaTransportBar>(bar) else {
-                self.component_lifecycle.auto_overlays.remove(&bar);
-                continue;
-            };
-            if self.drive_auto_overlay(entity, activity).unwrap_or(false) {
-                flipped.push(bar);
+            let _ = self.drive_auto_overlay(bar, reveal, leave);
+        }
+    }
+
+    /// Run the policy of every driven bar whose wakeup has come; answers
+    /// the bars whose visibility flipped.
+    pub(crate) fn drive_due_auto_overlays(&mut self) -> Vec<StableNodeId> {
+        let now = instant(self.component_lifecycle.now);
+        let mut flipped = Vec::new();
+        for bar in self.driven_bars(None) {
+            let due = self
+                .read(bar, |bar| {
+                    bar.visibility.wakeup().is_some_and(|wakeup| wakeup <= now)
+                })
+                .unwrap_or(false);
+            if due && self.drive_auto_overlay(bar, false, false).unwrap_or(false) {
+                flipped.push(bar.stable_id());
             }
         }
         flipped
     }
 
-    /// Run `bar`'s policy at the runtime's current time; answers whether its
-    /// visibility flipped.
-    pub(crate) fn drive_auto_overlay(
+    /// Run `bar`'s policy at the runtime's current time, with the activity
+    /// noted for it, a reveal now or the pointer leaving the window; answers
+    /// whether its visibility flipped.
+    fn drive_auto_overlay(
         &mut self,
         bar: Entity<MediaTransportBar>,
-        activity: OverlayActivity,
+        reveal: bool,
+        conceal: bool,
     ) -> Result<bool, FrameworkError> {
-        let root = bar.stable_id();
-        let node = self
-            .world
-            .node(root)
-            .ok_or(FrameworkError::MissingView(root))?;
-        let (document, stage) = (node.document, node.parent.unwrap_or(root));
         let now = instant(self.component_lifecycle.now);
-        let mut locks = self.overlay_locks(document, root);
-        // Keyboard focus holds the bar; a control a click left focused would
-        // otherwise keep it up for good.
-        locks.focused = self
-            .world
-            .focus_visible(document)
-            .is_some_and(|focused| self.world.is_descendant_or_self(focused, root));
-        let reveal = match activity {
-            OverlayActivity::Pointer { x, y, target } => {
-                self.over_stage(document, stage, x, y, target)
-            }
-            OverlayActivity::Key => true,
-            OverlayActivity::None | OverlayActivity::Leave => false,
-        };
-        let leave = activity == OverlayActivity::Leave;
-        self.update_component(bar, |bar, cx| {
-            let before = bar.visibility.visible();
-            let active = bar.playing && !bar.disabled;
-            let menu_closed = bar.menu_was_open && !locks.menu_open;
-            if reveal || menu_closed {
-                bar.visibility.activity(now);
-            }
-            bar.visibility.synchronize(now, active, locks);
-            if leave {
-                bar.visibility.conceal();
-            }
-            bar.visibility.tick(now);
-            bar.menu_was_open = locks.menu_open;
-            crate::overlay_visibility::report_visibility(before, bar, cx);
-            before != bar.visibility.visible()
-        })
+        let active = self.read(bar, |bar| bar.playing && !bar.disabled)?;
+        let noted = self
+            .component_lifecycle
+            .auto_overlays
+            .get_mut(&bar.stable_id())
+            .and_then(|driven| {
+                driven.active = Some(active);
+                driven.activity.take()
+            });
+        let (flipped, _) = self.step_overlay(
+            bar,
+            OverlayStep {
+                now,
+                active,
+                activity: if reveal { Some(now) } else { noted },
+                conceal,
+                // A control a click left focused would otherwise keep the
+                // bar up for good.
+                focus_visible_only: true,
+            },
+        )?;
+        Ok(flipped)
     }
 
-    /// Whether a pointer at `(x, y)` is over `stage`: the node it landed on,
-    /// or the topmost one under it, is inside the stage, or nothing takes
-    /// the pointer there and the point is in the stage's box.
+    /// Whether a pointer at `(x, y)` is over `bar`'s stage (its parent): the
+    /// node it landed on, or the topmost one under it, is inside the stage,
+    /// or nothing takes the pointer there and the point is in the stage's
+    /// box.
     fn over_stage(
         &self,
         document: DocumentId,
-        stage: StableNodeId,
+        bar: StableNodeId,
         x: f32,
         y: f32,
         target: Option<StableNodeId>,
     ) -> bool {
+        let stage = self.world.parent_id(bar).unwrap_or(bar);
         match target.or_else(|| self.world.hit_test(document, x, y)) {
             Some(hit) => self.world.is_descendant_or_self(hit, stage),
-            None => self.world.layout_box(stage).is_some_and(|frame| {
-                x >= frame.x
-                    && x < frame.x + frame.width
-                    && y >= frame.y
-                    && y < frame.y + frame.height
-            }),
+            None => self
+                .world
+                .layout_box(stage)
+                .is_some_and(|frame| frame.contains(x, y)),
         }
     }
 }
