@@ -16,8 +16,9 @@
 //! and active set, and hands out the same shared layout to every instance
 //! after that.
 
+use std::collections::HashMap;
 use std::panic::Location;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use nana_ui_core::LayoutStyle;
 use serde_json::Value;
@@ -59,8 +60,57 @@ impl StylePatch {
 /// element's `i`-th conditional class).
 pub struct StyleSite {
     rules: &'static [(u64, &'static StylePatch)],
-    /// `(base, active classes) -> composed`, shared by every instance.
-    composed: Mutex<Vec<(Arc<LayoutStyle>, u64, Arc<LayoutStyle>)>>,
+    /// What every instance of the site shares.
+    composed: Mutex<Option<Composed>>,
+}
+
+/// A site's bases and compositions. Held weakly by base: a base no instance
+/// keeps any more takes its compositions with it at the next prune.
+#[derive(Default)]
+struct Composed {
+    /// The distinct bases seen, one per value.
+    bases: Vec<Weak<LayoutStyle>>,
+    /// `(base pointer, active classes) -> composed`.
+    by_base: HashMap<(usize, u64), (Weak<LayoutStyle>, Arc<LayoutStyle>)>,
+    /// Entries at the last prune; the next runs when that doubles.
+    pruned_at: usize,
+}
+
+impl Composed {
+    /// The live base equal to `base`, `base` itself when none is. Pointers
+    /// first: a value comparison of a whole layout runs only for a base
+    /// pointer not seen before.
+    fn canonical(&mut self, base: &Arc<LayoutStyle>) -> Arc<LayoutStyle> {
+        let known = |weak: &Weak<LayoutStyle>| weak.upgrade();
+        if let Some(found) = self
+            .bases
+            .iter()
+            .filter_map(known)
+            .find(|known| Arc::ptr_eq(known, base))
+        {
+            return found;
+        }
+        if let Some(found) = self
+            .bases
+            .iter()
+            .filter_map(known)
+            .find(|known| **known == **base)
+        {
+            return found;
+        }
+        self.bases.push(Arc::downgrade(base));
+        Arc::clone(base)
+    }
+
+    /// Drop what belongs to bases nothing holds, once the map has doubled.
+    fn prune(&mut self) {
+        if self.by_base.len() < (self.pruned_at * 2).max(64) {
+            return;
+        }
+        self.bases.retain(|base| base.strong_count() > 0);
+        self.by_base.retain(|_, (base, _)| base.strong_count() > 0);
+        self.pruned_at = self.by_base.len();
+    }
 }
 
 impl StyleSite {
@@ -68,7 +118,7 @@ impl StyleSite {
     pub const fn new(rules: &'static [(u64, &'static StylePatch)]) -> Self {
         Self {
             rules,
-            composed: Mutex::new(Vec::new()),
+            composed: Mutex::new(None),
         }
     }
 
@@ -77,19 +127,23 @@ impl StyleSite {
     /// one: every instance then shares it, and composing finds it by
     /// pointer instead of comparing whole layouts.
     fn shared_base(&self, base: &Arc<LayoutStyle>) -> Arc<LayoutStyle> {
-        let composed = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut composed = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
         composed
-            .iter()
-            .find(|(known, _, _)| Arc::ptr_eq(known, base) || **known == **base)
-            .map_or_else(|| Arc::clone(base), |(known, _, _)| Arc::clone(known))
+            .get_or_insert_with(Composed::default)
+            .canonical(base)
     }
 
     /// `base` with the patches that apply under `active`, in order.
     pub fn compose(&self, base: &Arc<LayoutStyle>, active: u64) -> Arc<LayoutStyle> {
-        let mut composed = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((_, _, layout)) = composed.iter().find(|(known, mask, _)| {
-            *mask == active && (Arc::ptr_eq(known, base) || **known == **base)
-        }) {
+        let mut guard = self.composed.lock().unwrap_or_else(PoisonError::into_inner);
+        let composed = guard.get_or_insert_with(Composed::default);
+        let base = composed.canonical(base);
+        let key = (Arc::as_ptr(&base) as usize, active);
+        if let Some((known, layout)) = composed.by_base.get(&key)
+            && known
+                .upgrade()
+                .is_some_and(|known| Arc::ptr_eq(&known, &base))
+        {
             return Arc::clone(layout);
         }
         let applying = self
@@ -97,9 +151,21 @@ impl StyleSite {
             .iter()
             .filter(|(needs, _)| needs & !active == 0)
             .map(|(_, patch)| patch.value());
-        let layout = Arc::new(apply(base, applying));
-        composed.push((Arc::clone(base), active, Arc::clone(&layout)));
+        let layout = Arc::new(apply(&base, applying));
+        composed
+            .by_base
+            .insert(key, (Arc::downgrade(&base), Arc::clone(&layout)));
+        composed.prune();
         layout
+    }
+
+    #[cfg(test)]
+    fn composed_entries(&self) -> usize {
+        self.composed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, |composed| composed.by_base.len())
     }
 }
 
@@ -535,5 +601,38 @@ impl ContainerStyle {
         at: &'static Location<'static>,
     ) {
         self.0.push(ContainerStyleOp::Visible(visible, at));
+    }
+}
+
+#[cfg(test)]
+mod site_tests {
+    use super::*;
+
+    static SITE: StyleSite = StyleSite::new(&[]);
+    static SHARED: StyleSite = StyleSite::new(&[]);
+
+    /// Equal bases at different addresses share one composition; bases no
+    /// instance holds any more do not keep theirs alive for ever.
+    #[test]
+    fn a_site_shares_equal_bases_and_forgets_dropped_ones() {
+        let one = Arc::new(LayoutStyle::default());
+        let other = Arc::new(LayoutStyle::default());
+        assert!(Arc::ptr_eq(
+            &SHARED.compose(&one, 0),
+            &SHARED.compose(&other, 0)
+        ));
+
+        for width in 0..500 {
+            let base = Arc::new(LayoutStyle {
+                width: Some(nana_ui_core::LengthSpec::Px(width as f32)),
+                ..LayoutStyle::default()
+            });
+            let _ = SITE.compose(&base, 0);
+        }
+        assert!(
+            SITE.composed_entries() <= 128,
+            "{} entries for bases nothing holds",
+            SITE.composed_entries()
+        );
     }
 }
