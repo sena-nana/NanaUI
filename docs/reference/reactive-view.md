@@ -798,7 +798,7 @@ fn page() -> impl IntoView {
 - 字段真的改变时。仍然会复制整个组件、完整投影一遍。再由 world 按字段比对标脏。采样显示投影里真正贵的是没变字段的比较和复制。已经在公共路径和 `Button`、`Text`、`Chip` 上去掉。其余控件的投影仍然先复制再比较。按需逐个改（写法见 `Button::project`）。
 - `.bind(|c| …)` 看不出改了哪个字段。所以每次都按"有改动"处理。走复制路径。
 - 闭包绑定每个各自装箱一次。只有 `view!` 能看到的整段模板。才有机会把同一节点的闭包合成一个。
-- 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`、`Thumbnail`、`Avatar`、`Texture`（`GpuTextureView`）、`IconButton`、`Chip`、`StatusBadge`、`EmptyState`（`#action` slot）、`LabeledValue`、`Tabs`、`TreeView`、`ColorField`、`ActionMenuItem`。外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
+- 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`RangeSpan`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`、`Thumbnail`、`Avatar`、`Texture`（`GpuTextureView`）、`IconButton`、`Chip`、`StatusBadge`、`EmptyState`（`#action` slot）、`LabeledValue`、`Tabs`、`TreeView`、`ColorField`、`ActionMenuItem`。外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
 
 **无障碍检查**：编译模板时。读屏器无法命名的控件会得到一条警告。不会编译失败。规则两条：`Button`、`Checkbox`、`Switch`、`ListItem` 没有文字（空的子节点或空的 `label`）。`TextInput`、`TextArea`、`NumberInput`、`Slider`、`Progress` 没写 `label`（它们的无障碍名字只来自 `label`。占位文字不算）。`.vue` 的警告经 `cargo:warning` 带行列打印。`view!` 在稳定版上没有警告接口。警告以"使用了已弃用常量"的形式出现在宏调用处。说明写在弃用提示里。
 

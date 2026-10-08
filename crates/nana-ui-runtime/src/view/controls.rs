@@ -16,7 +16,8 @@ use crate::{
 use crate::{
     Activate, AppContext, Avatar, Button, Card, Checkbox, Chip, Divider, EmptyState, Entity,
     GpuTextureView, IconButton, ListItem, NodeStyle, NumberChanged, NumberInput, Progress,
-    RangeChanged, RangeField, RangeInput, ScrollView, Select, SelectChanged, SelectOption, Spinner,
+    RangeChanged, RangeField, RangeInput, RangeSpanChanged, RangeSpanField, RangeSpanInput,
+    RangeSpanOrientation, RangeSpanThumb, ScrollView, Select, SelectChanged, SelectOption, Spinner,
     StableNodeId, Stack, StatusBadge, Switch, Text, TextArea, TextChanged, TextInput,
     TextSubmitted, Thumbnail, ToggleChanged,
 };
@@ -276,6 +277,26 @@ macro_rules! controls {
     (@differs clamp $target:ident, $value:ident, $field:ident) => {
         $target.$field != clamp_to_range($target.minimum, $target.maximum, *$value)
     };
+    (@write span_low $target:ident, $value:ident, $field:ident) => {
+        $target.assign(RangeSpanThumb::Low, $value)
+    };
+    (@differs span_low $target:ident, $value:ident, $field:ident) => {
+        $target.low != $target.assigned(RangeSpanThumb::Low, *$value)
+    };
+    (@write span_high $target:ident, $value:ident, $field:ident) => {
+        $target.assign(RangeSpanThumb::High, $value)
+    };
+    (@differs span_high $target:ident, $value:ident, $field:ident) => {
+        $target.high != $target.assigned(RangeSpanThumb::High, *$value)
+    };
+    (@write span $target:ident, $value:ident, $field:ident) => {
+        $target.set_span($value.0, $value.1)
+    };
+    (@differs span $target:ident, $value:ident, $field:ident) => {{
+        let mut next = $target.clone();
+        next.set_span($value.0, $value.1);
+        ($target.low, $target.high) != (next.low, next.high)
+    }};
     (@write builder $target:ident, $value:ident, $field:ident) => {
         *$target = $target.clone().$field($value)
     };
@@ -366,6 +387,15 @@ pub fn button(label: impl IntoProp<String>) -> El<Button> {
 #[track_caller]
 pub fn slider(minimum: f64, maximum: f64, step: f64) -> El<RangeField> {
     widget(RangeField::new(minimum, minimum, maximum, step))
+}
+
+/// A two-thumb range between `minimum` and `maximum`, starting at the whole
+/// range; bind `.low(…)` / `.high(…)` or `.model(…)` with `(low, high)`.
+#[track_caller]
+pub fn range_span(minimum: f64, maximum: f64, step: f64) -> El<RangeSpanField> {
+    widget(RangeSpanField::new(
+        minimum, maximum, minimum, maximum, step,
+    ))
 }
 
 #[track_caller]
@@ -743,6 +773,27 @@ impl FieldText for f32 {
     }
 }
 
+impl FieldText for Option<f64> {
+    /// Empty text is `None`.
+    fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        f64::parse(text).map(Some)
+    }
+}
+
+impl FieldText for (f64, f64) {
+    /// Two numbers separated by a comma: `0.2, 0.8`.
+    fn parse(text: &str) -> Result<Self, String> {
+        let (low, high) = text
+            .split_once(',')
+            .ok_or_else(|| format!("`{text}` is not two numbers separated by a comma"))?;
+        Ok((f64::parse(low)?, f64::parse(high)?))
+    }
+}
+
 impl FieldText for u64 {
     fn parse(text: &str) -> Result<Self, String> {
         text.trim()
@@ -767,6 +818,7 @@ edited_in_code!(
     StatusTone,
     ButtonKind,
     ListItemRole,
+    RangeSpanOrientation,
     [f32; 4],
     Vec<TreeNode<Arc<str>>>
 );
@@ -807,6 +859,9 @@ pub(crate) fn inspect_control(
         (@read text_state $control:ident, $field:ident) => { &$control.state.value };
         (@read assign $control:ident, $field:ident) => { $control.$field() };
         (@read clamp $control:ident, $field:ident) => { &$control.$field };
+        (@read span_low $control:ident, $field:ident) => { &$control.low };
+        (@read span_high $control:ident, $field:ident) => { &$control.high };
+        (@read span $control:ident, $field:ident) => { &($control.low, $control.high) };
         (@read builder $control:ident, $field:ident) => { &$control.$field };
         (@read tab $control:ident, $field:ident) => { &$control.selected };
         (@read resource $control:ident, $field:ident) => { &$control.resource };

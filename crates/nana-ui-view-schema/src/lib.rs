@@ -29,6 +29,11 @@
 //!   caret after it, as a field built at that value has it;
 //! - `clamp`: a range's value, held inside its range (a value the data does
 //!   not have yet, or a non-finite one, lands on the minimum);
+//! - `span_low` / `span_high`: one thumb of a range span, held inside its
+//!   range and pushing the other thumb along instead of crossing it, so the
+//!   order two bindings land in does not change the pair;
+//! - `span`: both thumbs of a range span as `(low, high)`, in order whichever
+//!   way they arrive;
 //! - `builder`: through the component's builder method of the same name,
 //!   which keeps what it derives (a colour's hue, saturation and value);
 //! - `tab`: the chosen tab, which also takes the strip's focus;
@@ -78,6 +83,19 @@ macro_rules! for_each_control {
             }
             with { on_input: RangeInput, on_change: RangeChanged }
             model value: f64 => RangeInput |event| event.value;
+            RangeSpan => range_span(min: f64, max: f64, step: f64) for RangeSpanField {
+                low: f64 = span_low,
+                high: f64 = span_high,
+                span: (f64, f64) = span,
+                indicator: Option<f64> = set,
+                label: Option<Arc<str>> = set,
+                low_label: Option<Arc<str>> = set,
+                high_label: Option<Arc<str>> = set,
+                orientation: RangeSpanOrientation = set,
+                disabled: bool = set,
+            }
+            with { on_input: RangeSpanInput, on_change: RangeSpanChanged }
+            model span: (f64, f64) => RangeSpanInput |event| (event.low, event.high);
             TextInput => text_input() for TextInput {
                 value: String = text_state,
                 label: Option<Arc<str>> = set,

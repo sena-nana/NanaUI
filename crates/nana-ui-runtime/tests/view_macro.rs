@@ -1550,3 +1550,58 @@ fn a_tag_with_a_path_calls_its_function_even_when_the_name_is_built_in() {
     // The bare tag is the built-in control.
     assert!(lines.next().unwrap().contains("empty-state"), "{tree}");
 }
+
+/// `<RangeSpan>`: both thumbs bound as one `(low, high)` pair, the indicator
+/// as a plain prop, and keys on a thumb written back through `v-model`.
+#[test]
+fn a_range_span_binds_its_pair_both_ways_and_its_indicator_one_way() {
+    use nana_ui_runtime::{RangeSpanField, RangeSpanOrientation, RangeSpanThumb};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let span = signal((0.2_f64, 0.6_f64));
+    let live = signal(Some(0.4_f64));
+    let mounted = cx
+        .mount_view_root(document, || {
+            view! {
+                <RangeSpan min=0 max=1 step=0.1 orientation={RangeSpanOrientation::Vertical}
+                    low_label="输入下限" high_label="输入上限" indicator={live} v-model={span} />
+            }
+        })
+        .unwrap();
+    let field = mounted.root::<RangeSpanField>().unwrap();
+    let read = |cx: &AppContext| {
+        cx.read(field, |field| {
+            (field.low, field.high, field.indicator, field.orientation)
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        read(&cx),
+        (0.2, 0.6, Some(0.4), RangeSpanOrientation::Vertical)
+    );
+    let low = cx
+        .read(field, |field| field.thumb_node(RangeSpanThumb::Low))
+        .unwrap()
+        .expect("the view assembles the thumbs");
+    assert_eq!(
+        cx.world().accessibility(low).unwrap().label.as_deref(),
+        Some("输入下限")
+    );
+
+    span.set((0.9, 0.3));
+    live.set(Some(0.5));
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        read(&cx),
+        (0.3, 0.9, Some(0.5), RangeSpanOrientation::Vertical)
+    );
+
+    cx.adjust_range_span(
+        field,
+        RangeSpanThumb::Low,
+        nana_ui_runtime::RangeAdjustment::Increment,
+    )
+    .unwrap();
+    cx.flush_reactive().unwrap();
+    assert_eq!(span.get(), (0.4, 0.9));
+}

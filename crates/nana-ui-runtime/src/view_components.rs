@@ -70,7 +70,7 @@ fn add_length_px(length: nana_ui_core::LengthSpec, offset: f32) -> nana_ui_core:
     }
 }
 
-fn format_range_value(value: f64, step: f64) -> Arc<str> {
+pub(crate) fn format_range_value(value: f64, step: f64) -> Arc<str> {
     let decimals = (0_i32..=6)
         .find(|decimals| {
             let scale = 10_f64.powi(*decimals);

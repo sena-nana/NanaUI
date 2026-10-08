@@ -287,6 +287,10 @@ const_props! {
     nana_ui_core::StatusTone => nana_ui_core::StatusTone, |v| v;
     nana_ui_core::ButtonKind => nana_ui_core::ButtonKind, |v| v;
     crate::ListItemRole => crate::ListItemRole, |v| v;
+    crate::RangeSpanOrientation => crate::RangeSpanOrientation, |v| v;
+    Option<f64> => Option<f64>, |v| v;
+    f64 => Option<f64>, |v| Some(v);
+    (f64, f64) => (f64, f64), |v| v;
     [f32; 4] => [f32; 4], |v| v;
     Vec<nana_ui_core::TreeNode<Arc<str>>> => Vec<nana_ui_core::TreeNode<Arc<str>>>, |v| v;
 }

@@ -37,6 +37,7 @@ column().gap(8).children((
 | `TextInput`、`TextArea` | `Signal<String>` | `TextChanged`，取 `event.value.to_string()` |
 | `Checkbox`、`Switch` | `Signal<bool>` | `ToggleChanged`，取 `event.checked` |
 | `Slider` | `Signal<f64>` | `RangeInput`，取 `event.value` |
+| `RangeSpan` | `Signal<(f64, f64)>` | `RangeSpanInput`，取 `(event.low, event.high)` |
 | `NumberInput` | `Signal<f64>` | `NumberChanged`，取 `event.value` |
 | `Select` | `Signal<Option<Arc<str>>>` | `SelectChanged`，取 `Some(event.value.clone())` |
 

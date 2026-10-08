@@ -2888,6 +2888,17 @@ impl AppContext {
                 if let Some(entity) = self.view_entity::<NumberInput>(request.target) {
                     return self.step_number_input(entity, steps);
                 }
+                if let Some((entity, Some(thumb))) = self.range_span_target(request.target) {
+                    return self.adjust_range_span(
+                        entity,
+                        thumb,
+                        if steps > 0 {
+                            RangeAdjustment::Increment
+                        } else {
+                            RangeAdjustment::Decrement
+                        },
+                    );
+                }
                 Ok(false)
             }
             AccessibilityAction::Expand | AccessibilityAction::Collapse => {
@@ -2956,6 +2967,16 @@ impl AppContext {
                         .map(|value| {
                             self.set_range_value(Entity::from_stable_id(request.target), value)
                         })
+                        .transpose()
+                        .map(|changed| changed.unwrap_or(false));
+                }
+                if let Some((entity, Some(thumb))) = self.range_span_target(request.target) {
+                    return value
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|value| value.is_finite())
+                        .map(|value| self.set_range_span_thumb(entity, thumb, value))
                         .transpose()
                         .map(|changed| changed.unwrap_or(false));
                 }

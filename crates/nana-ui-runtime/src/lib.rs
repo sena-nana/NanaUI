@@ -81,6 +81,7 @@ mod presentation;
 mod profiler;
 mod qr_code;
 mod query;
+mod range_span;
 #[cfg(feature = "controls")]
 mod reorder_list;
 #[cfg(feature = "rich-text")]
@@ -338,6 +339,11 @@ pub use presentation::{
 pub use presentation::{HighlightPresentation, SyntectHighlighter};
 pub use profiler::{FrameProfile, FrameProfiler, StageStatus, StageTiming};
 pub use qr_code::{QrCode, QrCodeError};
+pub use range_span::{
+    RangeSpanChanged, RangeSpanDragState, RangeSpanDragging, RangeSpanField, RangeSpanHandle,
+    RangeSpanInput, RangeSpanOrientation, RangeSpanThumb, range_span_thumb_extent,
+    range_span_track_inset,
+};
 #[cfg(feature = "controls")]
 pub use reorder_list::{
     ReorderItem, ReorderList, ReorderListEvent, ReorderListPointer, ReorderRowPaint,

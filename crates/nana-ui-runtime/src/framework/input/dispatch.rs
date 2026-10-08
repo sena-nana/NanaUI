@@ -233,6 +233,7 @@ impl AppContext {
                 } else {
                     self.update_scrollbar_drag(document, *pointer_id, *x, *y)?
                         || self.update_range_drag_at(document, *pointer_id, *x, *y)?
+                        || self.update_range_span_drag_at(document, *pointer_id, *x, *y)?
                         || self.update_xy_pad_drag(
                             document,
                             *pointer_id,
@@ -469,6 +470,14 @@ impl AppContext {
                                 self.release_pointer(document, *pointer_id);
                             } else if self.is_range_field(target) {
                                 self.begin_range_drag_at(document, *pointer_id, target, *x, *y)?;
+                            } else if self.range_span_target(target).is_some() {
+                                self.begin_range_span_drag_at(
+                                    document,
+                                    *pointer_id,
+                                    target,
+                                    *x,
+                                    *y,
+                                )?;
                             } else if self.is_xy_pad(target) {
                                 self.begin_xy_pad_drag(document, *pointer_id, target, *x, *y)?;
                             }
@@ -513,6 +522,7 @@ impl AppContext {
                 }
                 if self.end_scrollbar_drag(document, *pointer_id, false)?
                     || self.end_range_drag(document, *pointer_id, false)?
+                    || self.end_range_span_drag(document, *pointer_id, false)?
                     || self.end_xy_pad_drag(document, *pointer_id, false)?
                     || optional_input!(
                         "graph-canvas",
@@ -579,6 +589,7 @@ impl AppContext {
                 self.document_text_pointer_release(*pointer_id);
                 let scrollbar = self.end_scrollbar_drag(document, *pointer_id, true)?;
                 let range = self.end_range_drag(document, *pointer_id, true)?;
+                let range_span = self.end_range_span_drag(document, *pointer_id, true)?;
                 let xy_pad = self.end_xy_pad_drag(document, *pointer_id, true)?;
                 let graph = optional_input!(
                     "graph-canvas",
@@ -620,6 +631,7 @@ impl AppContext {
                 let split_hover = self.sync_split_handle_hover(document, None)?;
                 scrollbar
                     || range
+                    || range_span
                     || xy_pad
                     || graph
                     || minimap
@@ -948,7 +960,8 @@ impl AppContext {
             _ => None,
         };
         if let Some(adjustment) = range_adjustment
-            && self.adjust_focused_range(document, adjustment)?
+            && (self.adjust_focused_range(document, adjustment)?
+                || self.adjust_focused_range_span(document, adjustment)?)
         {
             return Ok(true);
         }

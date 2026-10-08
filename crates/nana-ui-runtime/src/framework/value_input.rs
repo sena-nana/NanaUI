@@ -421,6 +421,8 @@ impl AppContext {
                 })?
             {
                 self.end_range_drag_on(target, pointer_id, true)?;
+            } else if self.range_span_drags(target, pointer_id) {
+                self.end_range_span_drag_on(target, pointer_id, true)?;
             } else if self.is_xy_pad(target)
                 && self.read(Entity::<XYPad>::from_stable_id(target), |pad| {
                     pad.dragging.is_some()

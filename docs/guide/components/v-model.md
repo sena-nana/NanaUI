@@ -42,6 +42,7 @@ column().gap(8).children((
 | `Checkbox` | `checked: bool` | `ToggleChanged` |
 | `Switch` | `checked: bool` | `ToggleChanged` |
 | `Slider` | `value: f64` | `RangeInput` |
+| `RangeSpan` | `span: (f64, f64)` | `RangeSpanInput` |
 | `Select` | `value: Option<Arc<str>>` | `SelectChanged` |
 
 滑块这一行要看清楚：`.model` 听的是 `RangeInput`，也就是拖动过程中的每一个可见值，不是松手才发出的 `RangeChanged`。拖动时信号会跟着预览走。只要提交后的值，自己接 `.on_change`，不要用 `.model`。见 [事件](events.md)。
