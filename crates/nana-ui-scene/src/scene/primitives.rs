@@ -562,34 +562,31 @@ impl UiScene {
                             .as_ref()
                             .is_some_and(|marks| marks.show_editor_objects),
                     );
-                    match &glyph_presentation {
-                        Some(presentation) => {
-                            use unicode_segmentation::UnicodeSegmentation;
-                            let content = text.value.as_str();
-                            let held: Vec<crate::scene::GlyphObject> = objects
-                                .iter()
-                                .filter_map(|primitive| {
-                                    let index = (primitive.id.slot & 0xffff_ffff) as usize;
-                                    let placed = layout.layout.objects.get(index)?;
-                                    Some(crate::scene::GlyphObject {
-                                        slot: primitive.id.slot,
-                                        ordinal: content
-                                            .get(..placed.offset)
-                                            .map_or(0, |before| before.graphemes(true).count())
-                                            as u32,
-                                        center: [
-                                            primitive.bounds.x + primitive.bounds.width * 0.5,
-                                            primitive.bounds.y + primitive.bounds.height * 0.5,
-                                        ],
-                                        opacity: primitive.opacity,
-                                        transform: primitive.transform,
-                                    })
+                    if let Some(presentation) = &glyph_presentation {
+                        use unicode_segmentation::UnicodeSegmentation;
+                        let content = text.value.as_str();
+                        let held: Vec<crate::scene::GlyphObject> = objects
+                            .iter()
+                            .filter_map(|primitive| {
+                                let index = (primitive.id.slot & 0xffff_ffff) as usize;
+                                let placed = layout.layout.objects.get(index)?;
+                                Some(crate::scene::GlyphObject {
+                                    slot: primitive.id.slot,
+                                    ordinal: content
+                                        .get(..placed.offset)
+                                        .map_or(0, |before| before.graphemes(true).count())
+                                        as u32,
+                                    center: [
+                                        primitive.bounds.x + primitive.bounds.width * 0.5,
+                                        primitive.bounds.y + primitive.bounds.height * 0.5,
+                                    ],
+                                    opacity: primitive.opacity,
+                                    transform: primitive.transform,
                                 })
-                                .collect();
-                            self.glyph_objects
-                                .insert(id, (Arc::clone(presentation), held.into()));
-                        }
-                        None => {}
+                            })
+                            .collect();
+                        self.glyph_objects
+                            .insert(id, (Arc::clone(presentation), held.into()));
                     }
                     for primitive in objects {
                         self.insert_primitive(primitive);

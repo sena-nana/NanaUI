@@ -144,6 +144,8 @@ pub(super) struct LineInput<'a> {
     pub empty_line_height_px: f32,
     pub base_direction: RunDirection,
     pub ellipsis: Option<&'a Ellipsis>,
+    /// Ruby annotations: no line breaks inside a base, and room above it.
+    pub rubies: Vec<super::engine::RubyBox>,
     /// Lines run top to bottom and stack across (#59). The runs were shaped
     /// for it, so every advance is already a length along the line; what
     /// changes here is which box dimension budgets what, and where the
@@ -384,9 +386,21 @@ impl<'a> Builder<'a> {
                     .iter()
                     .filter_map(|offset| self.cell_at(*offset))
                     .filter(|index| *index > lo && *index < hi)
+                    .filter(|index| !self.inside_ruby(*index))
                     .collect()
             }
         }
+    }
+
+    /// Whether a line starting at cell `index` would split a ruby base.
+    fn inside_ruby(&self, index: usize) -> bool {
+        let Some(cell) = self.cells.get(index) else {
+            return false;
+        };
+        self.input
+            .rubies
+            .iter()
+            .any(|ruby| ruby.range.start < cell.start && cell.start < ruby.range.end)
     }
 
     /// Where the line starting at `start` ends, and whether that was a wrap.
@@ -823,6 +837,17 @@ impl<'a> Builder<'a> {
         let mut object_above: f32 = 0.0;
         let mut object_below: f32 = 0.0;
         let mut text_runs = 0;
+        let ruby_above = self
+            .input
+            .rubies
+            .iter()
+            .filter(|ruby| {
+                pieces.iter().any(|piece| {
+                    piece.source.start < ruby.range.end && ruby.range.start < piece.source.end
+                })
+            })
+            .map(|ruby| ruby.height_px)
+            .fold(0.0f32, f32::max);
         for piece in pieces {
             let run = &self.input.runs[piece.run];
             ascent_px = ascent_px.max(run.metrics.ascent_px);
@@ -842,7 +867,8 @@ impl<'a> Builder<'a> {
             ascent_px = ascent_px.max(strut.metrics.ascent_px);
             descent_px = descent_px.max(strut.metrics.descent_px);
         }
-        if self.input.vertical || (object_above <= 0.0 && object_below <= 0.0) {
+        if self.input.vertical || (object_above <= 0.0 && object_below <= 0.0 && ruby_above <= 0.0)
+        {
             return (ascent_px, descent_px, height_px, 0.0);
         }
         let (text_ascent, text_descent) = match self.input.strut {
@@ -860,7 +886,10 @@ impl<'a> Builder<'a> {
         let half_leading = (height_px - (text_ascent + text_descent)) * 0.5;
         let above = half_leading + text_ascent;
         let below = height_px - above;
-        let lift = (object_above - above).max(0.0);
+        // An annotation stands on the text's ascent.
+        let lift = (object_above - above)
+            .max(text_ascent + ruby_above - above)
+            .max(0.0);
         let grown_below = (object_below - below).max(0.0);
         (ascent_px, descent_px, height_px + lift + grown_below, lift)
     }

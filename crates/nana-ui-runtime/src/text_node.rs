@@ -344,6 +344,7 @@ impl TextNodeState {
     ) -> (&TextSource, bool) {
         let shaped = rich.filter(|rich| rich.text() == text).filter(|rich| {
             !rich.objects().is_empty()
+                || !rich.rubies().is_empty()
                 || rich
                     .spans()
                     .iter()
@@ -374,6 +375,17 @@ impl TextNodeState {
                 ));
                 if !rich.objects().is_empty() {
                     source.set_objects(rich_text_objects(rich));
+                }
+                if !rich.rubies().is_empty() {
+                    source.set_rubies(
+                        rich.rubies()
+                            .iter()
+                            .map(|(range, text)| nana_text::RubySpan {
+                                range: range.clone(),
+                                text: Arc::clone(text),
+                            })
+                            .collect(),
+                    );
                 }
             }
             self.source = Some(Box::new((revision, shape, source)));
@@ -482,7 +494,10 @@ pub(crate) fn classify_rich_change(
         dirty |= TextDirty::CONTENT;
     }
     let shape = |style: &RichSpanStyle| (!style.shape.is_empty()).then(|| style.shape.clone());
-    if before.map(shape) != after.map(shape) {
+    if before.map(shape) != after.map(shape)
+        || previous.map_or(&[][..], RichText::rubies) != next.map_or(&[][..], RichText::rubies)
+    {
+        // An annotation is shaped, and holds its base together on a line.
         dirty |= TextDirty::SHAPE_STYLE;
     }
     let paint = |style: &RichSpanStyle| (!style.paint.is_empty()).then(|| style.paint.clone());

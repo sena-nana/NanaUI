@@ -419,3 +419,65 @@ fn arrows_move_and_extend_by_character_and_line_edges() {
         .unwrap();
     assert_eq!(selection(&runtime), (0, 0));
 }
+
+#[test]
+fn a_ruby_set_from_the_editor_lays_out_as_the_display_lays_it_out() {
+    let plain = RichText::new("今天的直播非常开心");
+    let (mut runtime, view, editor) = document(plain.clone());
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    let flat = lines(&runtime, editor.stable_id());
+    runtime
+        .context_mut()
+        .rich_edit(editor, RichEditCommand::Select(15..21))
+        .unwrap();
+    assert!(
+        runtime
+            .context_mut()
+            .rich_edit(editor, RichEditCommand::SetRuby(Some("fēicháng".into())))
+            .unwrap()
+    );
+    let annotated = editor_value(&runtime, editor);
+    assert_eq!(annotated.rubies().len(), 1);
+    assert_eq!(annotated.rubies()[0].0, 15..21);
+    runtime
+        .context_mut()
+        .update_component(Entity::<RichTextView>::from_stable_id(view), |shown, _| {
+            shown.value = annotated.clone();
+        })
+        .unwrap();
+    settle(&mut runtime, &mut shaper);
+    let (_, layout) = runtime
+        .context()
+        .world()
+        .text_layout(editor.stable_id())
+        .expect("laid out");
+    assert_eq!(layout.rubies.len(), 1, "the annotation is placed");
+    assert!(
+        lines(&runtime, editor.stable_id())[0].2 > flat[0].2,
+        "its line grows to hold it"
+    );
+    assert_eq!(
+        lines(&runtime, editor.stable_id()),
+        lines(&runtime, view),
+        "the editor and the display agree with the annotation in"
+    );
+    assert!(
+        runtime
+            .context_mut()
+            .rich_edit(editor, RichEditCommand::SetRuby(None))
+            .unwrap()
+    );
+    assert!(editor_value(&runtime, editor).rubies().is_empty());
+    assert!(
+        runtime
+            .context_mut()
+            .rich_edit(editor, RichEditCommand::Undo)
+            .unwrap()
+    );
+    assert_eq!(
+        editor_value(&runtime, editor).rubies().len(),
+        1,
+        "undo brings it back"
+    );
+}

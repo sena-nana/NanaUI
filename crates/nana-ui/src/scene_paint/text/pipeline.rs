@@ -1559,6 +1559,12 @@ impl GlyphInstance {
     /// The atlas rectangle this glyph samples, or `None` for a glyph that
     /// covers nothing.
     #[cfg(test)]
+    /// Where the instance's quad sits, in the entry's raster px.
+    #[cfg(test)]
+    pub(super) fn screen_origin(&self) -> [i32; 2] {
+        self.origin
+    }
+
     pub(super) fn placement(&self) -> Option<([u32; 2], [u32; 2])> {
         (self.dim != 0).then_some((
             [self.uv & 0xffff, self.uv >> 16],

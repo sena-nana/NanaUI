@@ -624,13 +624,16 @@ impl RichObject {
 /// character boundaries and clips them to the text, so a value always
 /// addresses whole characters. Inline objects sit at the
 /// [`OBJECT_REPLACEMENT`] characters of the text; each is looked up by the
-/// byte offset of its character.
+/// byte offset of its character. Ruby annotations name a base range and the
+/// small text set above it (horizontal text only).
 #[derive(Debug, Clone, Default)]
 pub struct RichText {
     text: Arc<str>,
     spans: Arc<AttributedRanges<RichSpanStyle>>,
     /// Sorted by offset; each names an [`OBJECT_REPLACEMENT`] of `text`.
     objects: Arc<Vec<(usize, RichObject)>>,
+    /// Sorted, non-overlapping, never empty.
+    rubies: Arc<Vec<(Range<usize>, Arc<str>)>>,
 }
 
 impl PartialEq for RichText {
@@ -638,6 +641,7 @@ impl PartialEq for RichText {
         (Arc::ptr_eq(&self.text, &other.text) || self.text == other.text)
             && (Arc::ptr_eq(&self.spans, &other.spans) || self.spans == other.spans)
             && (Arc::ptr_eq(&self.objects, &other.objects) || self.objects == other.objects)
+            && (Arc::ptr_eq(&self.rubies, &other.rubies) || self.rubies == other.rubies)
     }
 }
 
@@ -648,6 +652,54 @@ impl RichText {
             text: text.into(),
             spans: Arc::default(),
             objects: Arc::default(),
+            rubies: Arc::default(),
+        }
+    }
+
+    /// The ruby annotations: each base range and the text set above it,
+    /// sorted by base.
+    pub fn rubies(&self) -> &[(Range<usize>, Arc<str>)] {
+        &self.rubies
+    }
+
+    /// The annotation whose base covers byte `offset`.
+    pub fn ruby_at(&self, offset: usize) -> Option<(Range<usize>, &Arc<str>)> {
+        self.rubies
+            .iter()
+            .find(|(base, _)| base.contains(&offset))
+            .map(|(base, text)| (base.clone(), text))
+    }
+
+    /// Sets `annotation` above `base` (snapped to character boundaries),
+    /// replacing every annotation the base overlaps. An empty base or
+    /// annotation only clears.
+    pub fn set_ruby(&mut self, base: Range<usize>, annotation: impl Into<Arc<str>>) {
+        let base = self.snap(base);
+        let annotation = annotation.into();
+        self.clear_ruby(base.clone());
+        if base.is_empty() || annotation.is_empty() {
+            return;
+        }
+        let rubies = Arc::make_mut(&mut self.rubies);
+        let index = rubies.partition_point(|(existing, _)| existing.start < base.start);
+        rubies.insert(index, (base, annotation));
+    }
+
+    /// Removes every annotation whose base overlaps `range` (or, for an
+    /// empty range, contains it).
+    pub fn clear_ruby(&mut self, range: Range<usize>) {
+        if self.rubies.is_empty() {
+            return;
+        }
+        let hits = |base: &Range<usize>| {
+            if range.is_empty() {
+                base.start <= range.start && range.start < base.end
+            } else {
+                base.start < range.end && range.start < base.end
+            }
+        };
+        if self.rubies.iter().any(|(base, _)| hits(base)) {
+            Arc::make_mut(&mut self.rubies).retain(|(base, _)| !hits(base));
         }
     }
 
@@ -754,6 +806,18 @@ impl RichText {
                 }
             }
         }
+        if !self.rubies.is_empty() {
+            // An edit touching the inside of a base drops its annotation:
+            // the reading no longer matches the text.
+            let rubies = Arc::make_mut(&mut self.rubies);
+            rubies.retain(|(base, _)| base.end <= range.start || base.start >= range.end);
+            for (base, _) in rubies.iter_mut() {
+                if base.start >= range.end {
+                    base.start = base.start + replacement.len() - range.len();
+                    base.end = base.end + replacement.len() - range.len();
+                }
+            }
+        }
     }
 
     /// The piece of this document over `range`: its text, the spans over it
@@ -769,6 +833,18 @@ impl RichText {
                     .iter()
                     .filter(|(at, _)| range.contains(at))
                     .map(|(at, object)| (at - range.start, object.clone()))
+                    .collect(),
+            ),
+            rubies: Arc::new(
+                self.rubies
+                    .iter()
+                    .filter(|(base, _)| range.start <= base.start && base.end <= range.end)
+                    .map(|(base, text)| {
+                        (
+                            base.start - range.start..base.end - range.start,
+                            text.clone(),
+                        )
+                    })
                     .collect(),
             ),
         }
@@ -794,6 +870,14 @@ impl RichText {
                 let offset = offset + at;
                 let index = objects.partition_point(|(existing, _)| *existing < offset);
                 objects.insert(index, (offset, object.clone()));
+            }
+        }
+        if !piece.rubies.is_empty() {
+            let rubies = Arc::make_mut(&mut self.rubies);
+            for (base, text) in piece.rubies.iter() {
+                let base = base.start + at..base.end + at;
+                let index = rubies.partition_point(|(existing, _)| existing.start < base.start);
+                rubies.insert(index, (base, text.clone()));
             }
         }
     }
@@ -831,9 +915,33 @@ pub struct RichTextBuilder {
     text: String,
     spans: AttributedRanges<RichSpanStyle>,
     objects: Vec<(usize, RichObject)>,
+    rubies: Vec<(Range<usize>, Arc<str>)>,
 }
 
 impl RichTextBuilder {
+    /// Appends `base` in the node's own style, with `annotation` set above
+    /// it.
+    pub fn ruby(&mut self, base: &str, annotation: impl Into<Arc<str>>) -> &mut Self {
+        self.styled_ruby(base, annotation, RichSpanStyle::new())
+    }
+
+    /// Appends `base` styled with `style`, with `annotation` set above it in
+    /// the base's style at half its size.
+    pub fn styled_ruby(
+        &mut self,
+        base: &str,
+        annotation: impl Into<Arc<str>>,
+        style: RichSpanStyle,
+    ) -> &mut Self {
+        let start = self.text.len();
+        self.push(base, style);
+        let annotation = annotation.into();
+        if !base.is_empty() && !annotation.is_empty() {
+            self.rubies.push((start..self.text.len(), annotation));
+        }
+        self
+    }
+
     /// Appends `text` in the node's own style.
     pub fn plain(&mut self, text: &str) -> &mut Self {
         self.text.push_str(text);
@@ -874,6 +982,7 @@ impl RichTextBuilder {
             text: std::mem::take(&mut self.text).into(),
             spans: Arc::new(std::mem::take(&mut self.spans)),
             objects: Arc::new(std::mem::take(&mut self.objects)),
+            rubies: Arc::new(std::mem::take(&mut self.rubies)),
         }
     }
 }
@@ -998,6 +1107,41 @@ mod tests {
             style.paint.shadows.as_deref().unwrap().len(),
             MAX_TEXT_SHADOWS
         );
+    }
+
+    #[test]
+    fn rubies_ride_on_their_bases_and_go_with_copies() {
+        let mut rich = RichText::builder()
+            .plain("我是")
+            .ruby("漢字", "かんじ")
+            .plain("です")
+            .build();
+        assert_eq!(rich.rubies()[0].0, 6..12);
+        assert_eq!(&**rich.ruby_at(9).unwrap().1, "かんじ");
+        rich.replace_range(0..0, "啊");
+        assert_eq!(rich.rubies()[0].0, 9..15, "an edit before a base shifts it");
+        let piece = rich.slice(3..15);
+        assert_eq!(piece.rubies()[0].0, 6..12, "a copy keeps a whole base");
+        assert!(
+            rich.slice(12..15).rubies().is_empty(),
+            "but not part of one"
+        );
+        let mut target = RichText::new("x");
+        target.replace_with(1..1, &piece);
+        assert_eq!(target.rubies()[0].0, 7..13);
+        rich.set_ruby(9..12, "かん");
+        rich.set_ruby(9..15, "かんじ");
+        assert_eq!(
+            rich.rubies().len(),
+            1,
+            "a new annotation replaces the one it overlaps"
+        );
+        assert_eq!(rich.rubies()[0].0, 9..15);
+        rich.replace_range(12..12, "x");
+        assert_eq!(rich.rubies().len(), 0, "an edit inside a base drops it");
+        rich.set_ruby(0..3, "a");
+        rich.clear_ruby(1..1);
+        assert!(rich.rubies().is_empty());
     }
 
     #[test]

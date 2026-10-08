@@ -1945,6 +1945,44 @@ impl TextPipeline {
                 }
             }
         }
+        // Ruby annotations, above their bases. Each glyph stands for the
+        // base's first byte, so it takes the base's colour, effects and
+        // reveal turn.
+        for ruby in &layout.rubies {
+            let baseline = (ruby.baseline_y_px * scale).round();
+            let cluster = ruby.range.start as u32;
+            let color = colors.color_at(ruby.range.start);
+            for run in &ruby.runs {
+                let Some(instance) = run.instance.as_ref() else {
+                    continue;
+                };
+                let (font, variation, synthesis) = rasterizer.intern_instance(instance);
+                let size = size_bits(run.font_size_px * scale);
+                let mut pen = run.origin_x_px;
+                for glyph in &run.glyphs {
+                    let x = (pen + glyph.offset_x_px) * scale + origin[0];
+                    let y = (origin[1] - glyph.offset_y_px * scale).floor() + baseline;
+                    pen += glyph.advance_px;
+                    resolved.push(
+                        font,
+                        generation,
+                        variation,
+                        size,
+                        synthesis,
+                        mode,
+                        color.srgb,
+                        color.paint_color,
+                        GlyphRole::Fill,
+                        PlacedGlyph {
+                            glyph: glyph.glyph_id,
+                            x,
+                            y,
+                            cluster,
+                        },
+                    );
+                }
+            }
+        }
         if resolved.is_empty() {
             return None;
         }
@@ -4845,6 +4883,99 @@ mod tests {
             tallest as f32 > shortest as f32 * 1.4,
             "the span's glyphs are rasterized at its own size: {heights:?}"
         );
+    }
+
+    /// A ruby annotation is drawn from the layout, glyph for glyph, above its
+    /// base and smaller than it.
+    #[test]
+    fn a_ruby_annotation_is_drawn_above_its_base() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let content = "漢字";
+        let mut source = nana_text::TextSource::new(content);
+        source.set_rubies(vec![nana_text::RubySpan {
+            range: 0..6,
+            text: Arc::from("kanji"),
+        }]);
+        let base = nana_text::TextStyle {
+            font_size_px: 16.0,
+            line_height: Some(LineHeightSpec::Absolute(20.0)),
+            ..nana_text::TextStyle::default()
+        };
+        let constraints = nana_text::TextConstraints {
+            max_width_px: Some(240.0),
+            preserve_lines: true,
+            ..nana_text::TextConstraints::default()
+        };
+        let layout = {
+            let engine = crate::text_engine::nana_text_engine();
+            let mut engine = crate::text_engine::lock_engine(&engine);
+            let mut counters = nana_text::TextWorkCounters::default();
+            nana_text::TextEngine::layout(
+                &mut *engine,
+                nana_text::TextKind::Label,
+                &source,
+                &base,
+                &constraints,
+                &mut counters,
+            )
+        };
+        assert_eq!(layout.rubies.len(), 1);
+        let annotation_glyphs: usize = layout.rubies[0]
+            .runs
+            .iter()
+            .map(|run| run.glyphs.len())
+            .sum();
+        let base_glyphs: usize = layout.runs.iter().map(|run| run.glyphs.len()).sum();
+        let handle = nana_ui_runtime::RetainedTextLayout {
+            id: layout.id,
+            layout,
+        };
+        prepare_with_layout(
+            &device,
+            &queue,
+            &mut pipeline,
+            content,
+            240.0,
+            Some(&handle),
+        );
+        let id = pipeline
+            .target
+            .entries
+            .lookup(EntryKey {
+                node: 1,
+                slot: 0,
+                pass: 0,
+            })
+            .expect("one entry");
+        let entry = pipeline.target.entries.get(id).unwrap();
+        let mut placed: Vec<([i32; 2], [u32; 2])> = pipeline
+            .target
+            .entries
+            .instances(entry)
+            .iter()
+            .take(entry.glyphs as usize)
+            .filter(|instance| !instance.is_solid())
+            .filter_map(|instance| {
+                instance
+                    .placement()
+                    .map(|(_, size)| (instance.screen_origin(), size))
+            })
+            .filter(|(_, size)| size[1] > 0)
+            .collect();
+        assert_eq!(
+            placed.len(),
+            base_glyphs + annotation_glyphs,
+            "the base and every annotation glyph"
+        );
+        placed.sort_by_key(|(origin, size)| origin[1] + size[1] as i32);
+        let (top, small) = placed[0];
+        let (bottom, large) = placed[placed.len() - 1];
+        assert!(
+            top[1] + (small[1] as i32) <= bottom[1] + 2,
+            "the annotation stands above the base"
+        );
+        assert!(small[1] < large[1], "and is smaller");
     }
 
     fn presentation(

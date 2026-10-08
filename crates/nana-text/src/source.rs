@@ -69,6 +69,22 @@ pub struct InlineObject {
     pub metrics: InlineObjectMetrics,
 }
 
+/// A ruby annotation: small text set above a base range (furigana, pinyin).
+///
+/// The base is laid out as one unit — no line breaks inside it — and is
+/// spaced out when the annotation is wider than it. The annotation is shaped
+/// once, at [`RUBY_SCALE`] of the base's size, and placed centred above it.
+/// Horizontal text only: a vertical layout drops annotations and says so.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RubySpan {
+    /// Byte range of the base in [`TextSource::text`].
+    pub range: Range<usize>,
+    pub text: Arc<str>,
+}
+
+/// An annotation's size relative to its base.
+pub const RUBY_SCALE: f32 = 0.5;
+
 /// One styled byte range of a [`TextSource`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextSpan {
@@ -154,6 +170,9 @@ pub struct TextSource {
     /// Sorted by offset; each names a U+FFFC of `text`.
     #[serde(default)]
     objects: Vec<InlineObject>,
+    /// Sorted, non-overlapping.
+    #[serde(default)]
+    rubies: Vec<RubySpan>,
     revision: TextRevision,
     /// Hash of `text`, filled on first use and reset by every mutation.
     #[serde(skip)]
@@ -175,6 +194,7 @@ impl PartialEq for TextSource {
         self.text == other.text
             && self.spans == other.spans
             && self.objects == other.objects
+            && self.rubies == other.rubies
             && self.revision == other.revision
     }
 }
@@ -191,6 +211,7 @@ impl TextSource {
             text: text.into(),
             spans: Vec::new(),
             objects: Vec::new(),
+            rubies: Vec::new(),
             revision: TextRevision::INITIAL,
             content_hash: OnceLock::new(),
             folded: OnceLock::new(),
@@ -214,6 +235,36 @@ impl TextSource {
     /// The inline objects, sorted by offset.
     pub fn objects(&self) -> &[InlineObject] {
         &self.objects
+    }
+
+    /// The ruby annotations, sorted by base.
+    pub fn rubies(&self) -> &[RubySpan] {
+        &self.rubies
+    }
+
+    /// Replaces the ruby annotations. One whose base is empty, past the text
+    /// or off character boundaries is dropped, and so is one overlapping an
+    /// earlier one.
+    pub fn set_rubies(&mut self, mut rubies: Vec<RubySpan>) {
+        rubies.retain(|ruby| {
+            ruby.range.start < ruby.range.end
+                && ruby.range.end <= self.text.len()
+                && self.text.is_char_boundary(ruby.range.start)
+                && self.text.is_char_boundary(ruby.range.end)
+                && !ruby.text.is_empty()
+        });
+        rubies.sort_by_key(|ruby| ruby.range.start);
+        let mut kept: Vec<RubySpan> = Vec::with_capacity(rubies.len());
+        for ruby in rubies {
+            if kept
+                .last()
+                .is_none_or(|last| last.range.end <= ruby.range.start)
+            {
+                kept.push(ruby);
+            }
+        }
+        self.rubies = kept;
+        self.bump();
     }
 
     /// The object whose U+FFFC sits at byte `offset`, if any.
@@ -284,6 +335,14 @@ impl TextSource {
                 span.range.end = span.range.end + added - removed;
             }
         }
+        self.rubies
+            .retain(|ruby| ruby.range.end <= range.start || ruby.range.start >= range.end);
+        for ruby in &mut self.rubies {
+            if ruby.range.start >= range.end {
+                ruby.range.start = ruby.range.start + added - removed;
+                ruby.range.end = ruby.range.end + added - removed;
+            }
+        }
         self.objects
             .retain(|object| object.offset < range.start || object.offset >= range.end);
         for object in &mut self.objects {
@@ -298,6 +357,7 @@ impl TextSource {
         self.text = text.into();
         self.spans.clear();
         self.objects.clear();
+        self.rubies.clear();
         self.bump();
     }
 
@@ -348,6 +408,7 @@ impl TextSource {
                         text: self.text.replace(FOLDED_SEPARATORS, " ").into(),
                         spans: self.spans.clone(),
                         objects: self.objects.clone(),
+                        rubies: self.rubies.clone(),
                         revision: self.revision,
                         content_hash: OnceLock::new(),
                         folded: OnceLock::new(),

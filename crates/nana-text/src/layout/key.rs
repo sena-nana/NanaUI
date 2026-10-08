@@ -148,6 +148,9 @@ pub(crate) struct LayoutKey {
     /// shaping input — objects shape as placeholders — so it cannot come in
     /// through the shaped identity either.
     objects: Vec<(usize, [u32; 3])>,
+    /// Each ruby's base range and its shaped annotation, held so the pointer
+    /// it is compared by stays valid.
+    rubies: Vec<(std::ops::Range<usize>, Arc<ShapedText>)>,
 }
 
 impl LayoutKey {
@@ -165,6 +168,7 @@ impl LayoutKey {
         run_line_heights: &[f32],
         empty_line_height: f32,
         objects: &[crate::source::InlineObject],
+        rubies: Vec<(std::ops::Range<usize>, Arc<ShapedText>)>,
     ) -> Self {
         Self {
             shaped: Arc::clone(shaped),
@@ -199,6 +203,7 @@ impl LayoutKey {
                     )
                 })
                 .collect(),
+            rubies,
         }
     }
 
@@ -231,6 +236,12 @@ impl PartialEq for LayoutKey {
             && self.run_line_heights == other.run_line_heights
             && self.empty_line_height == other.empty_line_height
             && self.objects == other.objects
+            && self.rubies.len() == other.rubies.len()
+            && self
+                .rubies
+                .iter()
+                .zip(&other.rubies)
+                .all(|((left, a), (right, b))| left == right && Arc::ptr_eq(a, b))
     }
 }
 
@@ -250,5 +261,9 @@ impl Hash for LayoutKey {
         self.run_line_heights.hash(state);
         self.empty_line_height.hash(state);
         self.objects.hash(state);
+        for (range, shaped) in &self.rubies {
+            range.hash(state);
+            (Arc::as_ptr(shaped) as *const u8 as usize).hash(state);
+        }
     }
 }

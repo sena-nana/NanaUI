@@ -73,6 +73,7 @@ widget(RichTextEditor::new(RichText::new("")))
 | `InsertText(text)` | 用 `text` 替换选区，样式和打字一样 |
 | `InsertObject(object)` | 用一个内联对象替换选区：贴纸、图片，或零宽的标记 chip |
 | `SetObject { offset, object }` | 换掉 `offset` 处的对象 |
+| `SetRuby(Some(text))` / `SetRuby(None)` | 给选区加注音（替换它碰到的注音）/ 删掉选区碰到的注音。只做横排 |
 | `Select(range)` / `SelectAll` | 改选区（按字符边界对齐） |
 | `Undo` / `Redo` | 撤销、重做 |
 

@@ -146,6 +146,45 @@ widget(RichTextView::new(line))
 - `RichObject::texture(id, slot, w, h)`：宿主纹理槽。动图由应用解码后写进这个槽，由宿主纹理渲染器画。
 - `RichObject::chip(id, label, kind)`：编辑器里的标记。不占宽度，展示框不画它，所以编辑器和展示框断行一致。
 
+## 注音
+
+`RichTextBuilder::ruby(base, annotation)` 在基字上方放一行半字号的注音（假名、拼音）。基字不会拆到两行；注音比基字宽时基字被撑开，行高长出注音那一截。只做横排，竖排时注音不画。
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::RichText;
+
+let line = RichText::builder()
+    .plain("今天学")
+    .ruby("漢字", "かんじ")
+    .build();
+
+view! {
+    <Widget of={RichTextView::new(line)} />
+}
+```
+
+```rust rust
+use nana_ui::runtime::view::widget;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::RichText;
+
+let line = RichText::builder()
+    .plain("今天学")
+    .ruby("漢字", "かんじ")
+    .build();
+
+widget(RichTextView::new(line))
+```
+
+:::
+
+- 注音用基字的样式（字体、粗细、颜色、描边、阴影），字号减半，跟着基字揭示。
+- `RichText::set_ruby(range, text)` / `clear_ruby(range)` 改已有文档；编辑里碰到基字内部会丢掉那条注音。
+
 ## 逐字特效与打字机揭示
 
 `RichSpanStyle::effect(i)` 让一段字播放特效表里的第 `i` 个特效；`cx.set_rich_presentation(view, effects, reveal)` 给出这张表和揭示计划。它们只是呈现：不重新塑形、不重新排版，也不重建字形，文字着色器按运动时钟逐字算位置和透明度。只在还有东西在动时请求帧。

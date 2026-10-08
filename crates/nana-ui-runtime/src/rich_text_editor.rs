@@ -55,6 +55,10 @@ pub enum RichEditCommand {
         offset: usize,
         object: RichObject,
     },
+    /// Set a ruby annotation above the selection (`Some`), replacing any it
+    /// overlaps, or remove every annotation it touches (`None`). Horizontal
+    /// text only.
+    SetRuby(Option<String>),
     /// Select a byte range (snapped to characters).
     Select(Range<usize>),
     SelectAll,
@@ -394,6 +398,33 @@ impl RichTextEditor {
                 }
                 self.remember(false);
                 self.value.set_object(offset, object)
+            }
+            RichEditCommand::SetRuby(annotation) => {
+                let range = self.range();
+                if !self.editable() {
+                    return false;
+                }
+                match annotation.filter(|text| !text.is_empty()) {
+                    Some(text) if !range.is_empty() => {
+                        self.remember(false);
+                        self.value.set_ruby(range, text);
+                    }
+                    Some(_) => return false,
+                    None => {
+                        if !self.value.rubies().iter().any(|(base, _)| {
+                            if range.is_empty() {
+                                base.contains(&range.start)
+                            } else {
+                                base.start < range.end && range.start < base.end
+                            }
+                        }) {
+                            return false;
+                        }
+                        self.remember(false);
+                        self.value.clear_ruby(range);
+                    }
+                }
+                true
             }
             RichEditCommand::Select(range) => {
                 let len = self.value.text().len();

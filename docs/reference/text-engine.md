@@ -1392,6 +1392,21 @@ entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边
 
 标记 chip 宽度为 0，所以编辑器和展示框对同一份 `RichText` 断出同样的行。
 
+### Ruby 注音
+
+注音（假名、拼音）是基字上方的一行小字。`TextSource::set_rubies` 给源配一张表：`RubySpan { range, text }`，`range` 是基字的字节范围，表按基字排序、互不重叠。编辑碰到基字内部就丢掉那条注音，基字之后的平移。只做横排。
+
+- **塑形。** `NativeTextEngine::layout` 把每条注音按基字起点处的样式、`RUBY_SCALE`（0.5）倍字号单独塑形，走同一个 shape cache。注音的 `ShapedText` 按指针进 layout key：换注音就是另一份布局，基字本身不重新塑形。
+- **基字是一个整体。** 断点不落在基字内部（`break_stops` 滤掉），所以基字不会拆到两行。
+- **宽注音撑开基字。** 注音比基字宽时，基字每个字形右移差值的一半，最后一个字形的 advance 加上整个差值：基字在注音下居中，后面的文字顺移差值。窄注音不动基字，居中放在它上面。
+- **行盒长高。** 含基字的行，行盒向上长出注音的高度（站在文字 ascent 上），和高贴纸一样走 `lift`，基线随之下移。
+- **`TextLayout.rubies`** 记下每条放上行的注音：`PlacedRuby { range, line, baseline_y_px, rect, runs }`，`runs` 是已经摆好 `origin_x_px` 的注音 run（簇是注音文本的字节）。竖排布局不放注音，`rubies_dropped` 为真。
+- **画笔** 在行的字形之后画注音的字形，同一个 entry。每个注音字形按基字的第一个字节取颜色、阴影、描边和揭示序号，所以注音跟着基字一起出现、一起动。
+
+应用一侧是 `RichText` 的注音表：`RichTextBuilder::ruby(base, annotation)` / `styled_ruby`，`RichText::set_ruby(range, text)` 替换它碰到的注音，`clear_ruby(range)` 删掉，`ruby_at(offset)` 查。`slice` 只带走整条落在范围里的注音，`replace_with` 把它们贴回去。`source_for` 把表交给 `TextSource::set_rubies`；`classify_rich_change` 里注音变了是 `SHAPE_STYLE`。编辑器的 `RichEditCommand::SetRuby(Some(text))` 给选区加注音，`SetRuby(None)` 删掉选区碰到的注音，都可以撤销。
+
+测试：`nana-text` `tests/ruby.rs`（居中在基字上方且行长高、宽注音撑开基字并顺移后文、基字内不断行、编辑平移和丢弃、竖排丢弃）；`nana-ui-core` `rich_text::tests`；`nana-ui-scene` `tests/rich_text_editor.rs`（编辑器加的注音，编辑器和展示框断行逐位相同，可撤销）；`nana-ui` `scene_paint::text`（注音字形画在基字上方，比基字小）。
+
 ### 富文本编辑器
 
 `RichTextEditor` 不是另一种编辑器存储，而是一个普通文本节点加一份编辑状态：
