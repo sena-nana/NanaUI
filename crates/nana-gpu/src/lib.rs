@@ -37,6 +37,9 @@ pub mod __framework;
 #[cfg(feature = "wgpu-interop")]
 mod wgpu_interop;
 
+#[cfg(all(windows, feature = "native-export"))]
+mod export;
+
 pub use abi::{
     LogicalBinding, LogicalBindingType, LogicalResource, ResourceBinding, ResourceClass,
     ResourceSet, ResourceTable, ShaderInterface, ShaderStage, VertexAttribute,
@@ -57,3 +60,9 @@ pub use texture::{
 
 #[cfg(feature = "wgpu-interop")]
 pub use wgpu_interop::{WgpuInterop, wgpu};
+
+#[cfg(all(windows, feature = "native-export"))]
+pub use export::{
+    NATIVE_EXPORT_FORMAT, NATIVE_EXPORT_SLOTS, NativeExportDeferral, NativeExportError,
+    NativeExportOutcome, NativeExportPool, NativeFrameToken, StagedNativeFrame,
+};
