@@ -6,6 +6,10 @@
 //! `cargo run -p nana-window --example web-surface-probe [-- --window]`
 //! With `--window` the page is also shown in its interaction window for a few
 //! seconds; frames must keep flowing while it is open.
+//!
+//! For cost measurements: `--seconds N`, `--size WxH`, and `--static` for a
+//! page that never changes. The probe prints its own CPU time per second; the
+//! web engine's processes are measured separately.
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -15,6 +19,10 @@ use nana_window::{
     BrowserPolicy, WebFrame, WebSurface, WebSurfaceCommand, WebSurfaceDesc, web_surface_support,
 };
 
+const STATIC_PAGE: &str = r#"<!doctype html><html><body style="margin:0;background:transparent">
+<div style="font:64px sans-serif;color:#e33;background:rgba(0,0,0,.5);width:400px">static</div>
+</body></html>"#;
+
 const PAGE: &str = r#"<!doctype html><html><body style="margin:0;background:transparent">
 <div id=n style="font:64px sans-serif;color:#e33">0</div>
 <div style="width:120px;height:120px;border-radius:60px;background:#3c6;animation:m 1s linear infinite alternate"></div>
@@ -22,7 +30,7 @@ const PAGE: &str = r#"<!doctype html><html><body style="margin:0;background:tran
 <script>let n=0;(function f(){document.getElementById('n').textContent=++n;requestAnimationFrame(f)})()</script>
 </body></html>"#;
 
-fn serve() -> String {
+fn serve(page: &'static str) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let address = format!("http://{}/", listener.local_addr().expect("address"));
     std::thread::spawn(move || {
@@ -31,8 +39,8 @@ fn serve() -> String {
             let _ = stream.read(&mut buffer);
             let _ = write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{PAGE}",
-                PAGE.len()
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                page.len()
             );
         }
     });
@@ -59,6 +67,35 @@ fn pump(duration: Duration) {
     std::thread::sleep(duration);
 }
 
+/// User and system CPU time of this process.
+fn cpu_time() -> Duration {
+    #[cfg(unix)]
+    {
+        #[repr(C)]
+        struct TimeVal {
+            seconds: i64,
+            micros: i32,
+        }
+        #[repr(C)]
+        struct Usage {
+            user: TimeVal,
+            system: TimeVal,
+            rest: [i64; 14],
+        }
+        unsafe extern "C" {
+            fn getrusage(who: i32, usage: *mut Usage) -> i32;
+        }
+        let mut usage: Usage = unsafe { std::mem::zeroed() };
+        unsafe { getrusage(0, &mut usage) };
+        let time = |value: &TimeVal| {
+            Duration::from_secs(value.seconds as u64) + Duration::from_micros(value.micros as u64)
+        };
+        time(&usage.user) + time(&usage.system)
+    }
+    #[cfg(not(unix))]
+    Duration::ZERO
+}
+
 #[derive(Default)]
 struct Received {
     frames: Vec<(Instant, u64)>,
@@ -70,12 +107,31 @@ fn main() -> std::process::ExitCode {
         println!("no headless web engine on this platform");
         return std::process::ExitCode::SUCCESS;
     }
-    let show_window = std::env::args().any(|arg| arg == "--window");
+    let args: Vec<String> = std::env::args().collect();
+    let option = |name: &str| {
+        args.iter()
+            .position(|arg| arg == name)
+            .and_then(|index| args.get(index + 1))
+            .cloned()
+    };
+    let show_window = args.iter().any(|arg| arg == "--window");
+    let still = args.iter().any(|arg| arg == "--static");
+    let seconds: u64 = option("--seconds")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(4);
+    let size = option("--size")
+        .and_then(|value| {
+            let (width, height) = value.split_once('x')?;
+            Some([width.parse().ok()?, height.parse().ok()?])
+        })
+        .unwrap_or([960, 540]);
     let received = Arc::new(Mutex::new(Received::default()));
     let sink = received.clone();
     let desc = WebSurfaceDesc {
-        size: [960, 540],
-        max_fps: 30,
+        size,
+        max_fps: option("--fps")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(30),
         ..WebSurfaceDesc::default()
     };
     let mut surface = match WebSurface::new(
@@ -97,7 +153,7 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let address = serve();
+    let address = serve(if still { STATIC_PAGE } else { PAGE });
     surface
         .command(1, Some(&WebSurfaceCommand::Navigate(address)))
         .expect("navigate");
@@ -114,8 +170,13 @@ fn main() -> std::process::ExitCode {
             )
             .expect("show");
     }
-    pump(Duration::from_secs(4));
+    let cpu_before = cpu_time();
+    pump(Duration::from_secs(seconds));
     let elapsed = started.elapsed().as_secs_f64();
+    println!(
+        "probe process CPU {:.0}% of one core",
+        (cpu_time() - cpu_before).as_secs_f64() * 100.0 / elapsed
+    );
     if show_window {
         surface
             .command(3, Some(&WebSurfaceCommand::HideWindow))
@@ -160,6 +221,9 @@ fn main() -> std::process::ExitCode {
         .write_header()
         .and_then(|mut writer| writer.write_image_data(&frame.rgba))
         .expect("write png");
+    if still {
+        return std::process::ExitCode::SUCCESS;
+    }
     if count < 20 || digests.len() < count / 2 {
         eprintln!("FAIL: the page did not keep rendering offscreen");
         return std::process::ExitCode::FAILURE;

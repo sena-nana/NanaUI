@@ -341,11 +341,12 @@ URL、白名单、Cookie、引擎选型归**应用**（默认拒绝，localhost 
 - 程序在 `RuntimeProgram::web_surface_requests()` 返回 `WebSurfaceRequest { id, policy, desc, restore_url, revision, command, frames }`；撤回请求就释放引擎。事件经 `web_surface_event(WebSurfaceNotice { id, revision, event }, context)` 回流。
 - `desc`（尺寸、缩放、透明、帧率）原地生效；换 sink（另一个 `Arc`）或策略会重建实例。新实例只导航到 Navigate 目标或 `restore_url`，不重放窗口命令。
 - `ShowWindow` 把**同一个**页面放进可交互的原生窗口（登录、点网页里的设置），Cookie 和页面状态不丢，期间帧照常输出；用户关窗或 `HideWindow` 后页面回到屏外，并报 `WindowClosed`。
-- macOS：屏外无边框窗口里的 `WKWebView`，关闭遮挡检测以免 WebKit 停止渲染，`takeSnapshotWithConfiguration` 截图，CGImage 在工作线程转换。实测 960×540 稳定 30 fps，1080p 截图约 110 fps 上限。
+- macOS：屏外无边框窗口里的 `WKWebView`，关闭遮挡检测以免 WebKit 停止渲染，`takeSnapshotWithConfiguration` 截图，CGImage 在工作线程转换。页面按 `desc.scale` 渲染（不按屏幕倍率），截图无需重采样。和上一帧相同的截图不交付；连续 10 张不变后降到每秒 4 张，一变就恢复。实测 960×540 稳定 30 fps，1080p 截图约 110 fps 上限。
+- 代价：每张截图都要 WebKit 把整页重画一遍（macOS 上在 WebKit GPU 进程里）。持续动画的页面本身也按显示器刷新率渲染，这部分与截图无关，降低 `max_fps` 只能减掉截图那一份。实测 1280×720：静止页面合计约 5% 单核，持续动画页面在 30 fps 时约 30%（release）。
 - Windows：每个实例一条 STA 线程，WebView2 组合控制器挂在 `Windows.UI.Composition` visual 上，用 `Windows.Graphics.Capture` 截取；需要 WebView2 Runtime，分发时带 `WebView2Loader.dll`。缺运行时以状态错误报告。
 - Linux：`web_surface_support()` 为假，`WebSurface::new` 返回不可用。
 
-`cargo run -p nana-window --example web-surface-probe [-- --window]` 实测帧率、页面是否持续刷新和透明度，并保存最后一帧。
+`cargo run -p nana-window --example web-surface-probe [-- --window]` 实测帧率、页面是否持续刷新和透明度，并保存最后一帧；`--size WxH`、`--fps N`、`--seconds N`、`--static` 用来测开销（它只报自己的 CPU，WebKit 进程另测）。
 
 ## 按图离屏
 

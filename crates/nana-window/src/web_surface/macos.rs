@@ -4,11 +4,18 @@
 //! ordered in and the view opts out of occlusion detection; captures use
 //! `takeSnapshotWithConfiguration`, and the CGImage is converted to RGBA on a
 //! worker thread.
+//!
+//! Every snapshot costs WebKit a full render of the page, so the page renders
+//! at the requested device scale rather than the screen's (no 2× image to scale
+//! back down), unchanged captures are dropped, and a page that stopped
+//! changing is captured only a few times a second until it changes again.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::rc::{Rc, Weak};
-use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::SyncSender;
 
 use block2::RcBlock;
 use objc2::encode::{Encoding, RefEncode};
@@ -55,6 +62,8 @@ unsafe extern "C" {
     fn CGContextSetInterpolationQuality(context: *mut c_void, quality: i32);
     fn CGContextDrawImage(context: *mut c_void, rect: NSRect, image: *mut CGImage);
     fn CGImageRetain(image: *mut CGImage) -> *mut CGImage;
+    fn CGImageGetWidth(image: *mut CGImage) -> usize;
+    fn CGImageGetHeight(image: *mut CGImage) -> usize;
     fn CGImageRelease(image: *mut CGImage);
 }
 
@@ -65,7 +74,12 @@ unsafe extern "C" {
 
 /// `kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big`: RGBA in memory.
 const RGBA_PREMULTIPLIED: u32 = 1 | (4 << 12);
+const CG_INTERPOLATION_NONE: i32 = 1;
 const CG_INTERPOLATION_HIGH: i32 = 3;
+/// Identical captures in a row after which the page counts as still.
+const STILL_AFTER: u32 = 10;
+/// Capture rate of a still page; the first change restores the full rate.
+const STILL_FPS: u32 = 4;
 /// Far outside any arrangement of displays, so the parked window is never seen.
 const PARKED_ORIGIN: f64 = -32_000.0;
 
@@ -84,33 +98,49 @@ impl Drop for CapturedImage {
 struct ConvertJob {
     image: CapturedImage,
     size: [u32; 2],
-    sequence: u64,
 }
 
-fn spawn_converter(sink: WebFrameSink) -> Result<SyncSender<ConvertJob>, String> {
+fn spawn_converter(
+    sink: WebFrameSink,
+    unchanged: Arc<AtomicU32>,
+) -> Result<SyncSender<ConvertJob>, String> {
     // One job in flight: a capture that finds the worker busy is dropped, so a
     // slow sink lowers the rate instead of growing a queue.
     let (sender, receiver) = std::sync::mpsc::sync_channel::<ConvertJob>(1);
     std::thread::Builder::new()
         .name("nana-web-surface".into())
         .spawn(move || {
+            let mut last: Option<Arc<[u8]>> = None;
+            let mut sequence = 0;
             for job in receiver {
-                if let Some(rgba) = convert(&job.image, job.size) {
-                    sink(WebFrame {
-                        width: job.size[0],
-                        height: job.size[1],
-                        rgba,
-                        sequence: job.sequence,
-                    });
+                let Some(rgba) = convert(&job.image, job.size) else {
+                    continue;
+                };
+                // A capture equal to the last delivered frame is not a frame.
+                if last.as_deref() == Some(&*rgba) {
+                    unchanged.fetch_add(1, Ordering::Relaxed);
+                    continue;
                 }
+                unchanged.store(0, Ordering::Relaxed);
+                last = Some(rgba.clone());
+                sequence += 1;
+                sink(WebFrame {
+                    width: job.size[0],
+                    height: job.size[1],
+                    rgba,
+                    sequence,
+                });
             }
         })
         .map_err(|error| error.to_string())?;
     Ok(sender)
 }
 
-fn convert(image: &CapturedImage, [width, height]: [u32; 2]) -> Option<std::sync::Arc<[u8]>> {
+fn convert(image: &CapturedImage, [width, height]: [u32; 2]) -> Option<Arc<[u8]>> {
     let (width, height) = (width as usize, height as usize);
+    // Same size: a straight copy; otherwise (an engine without a device scale
+    // override) a resample.
+    let exact = unsafe { [CGImageGetWidth(image.0), CGImageGetHeight(image.0)] } == [width, height];
     let mut pixels = vec![0u8; width.checked_mul(height)?.checked_mul(4)?];
     unsafe {
         let space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
@@ -130,7 +160,14 @@ fn convert(image: &CapturedImage, [width, height]: [u32; 2]) -> Option<std::sync
         if context.is_null() {
             return None;
         }
-        CGContextSetInterpolationQuality(context, CG_INTERPOLATION_HIGH);
+        CGContextSetInterpolationQuality(
+            context,
+            if exact {
+                CG_INTERPOLATION_NONE
+            } else {
+                CG_INTERPOLATION_HIGH
+            },
+        );
         CGContextDrawImage(
             context,
             NSRect::new(
@@ -155,7 +192,10 @@ struct Shared {
     desc: Cell<WebSurfaceDesc>,
     interactive: Cell<bool>,
     capturing: Cell<bool>,
-    sequence: Cell<u64>,
+    /// Capture ticks so far, for the still-page rate.
+    ticks: Cell<u64>,
+    /// Identical captures in a row, counted by the converter.
+    unchanged: Arc<AtomicU32>,
     converter: SyncSender<ConvertJob>,
 }
 
@@ -176,6 +216,14 @@ impl Shared {
         if self.capturing.get() {
             return;
         }
+        let ticks = self.ticks.get() + 1;
+        self.ticks.set(ticks);
+        if self.unchanged.load(Ordering::Relaxed) >= STILL_AFTER {
+            let every = u64::from((self.desc.get().max_fps / STILL_FPS).max(1));
+            if !ticks.is_multiple_of(every) {
+                return;
+            }
+        }
         let Some(view) = self.view.borrow().clone() else {
             return;
         };
@@ -195,16 +243,12 @@ impl Shared {
             if cg.is_null() {
                 return;
             }
-            let sequence = shared.sequence.get() + 1;
             let job = ConvertJob {
                 image: CapturedImage(unsafe { CGImageRetain(cg) }),
                 size: shared.desc.get().frame_size(),
-                sequence,
             };
-            match shared.converter.try_send(job) {
-                Ok(()) => shared.sequence.set(sequence),
-                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {}
-            }
+            // A busy converter drops this capture; the next tick takes another.
+            let _ = shared.converter.try_send(job);
         });
         unsafe {
             let configuration: Retained<AnyObject> =
@@ -373,6 +417,7 @@ impl PlatformSurface {
         wake: WebSurfaceWake,
     ) -> Result<Self, String> {
         let mtm = MainThreadMarker::new().ok_or("网页画面必须在主线程创建")?;
+        let unchanged = Arc::new(AtomicU32::new(0));
         let shared = Rc::new(Shared {
             events: RefCell::default(),
             revision: Cell::new(0),
@@ -384,8 +429,9 @@ impl PlatformSurface {
             desc: Cell::new(desc),
             interactive: Cell::new(false),
             capturing: Cell::new(false),
-            sequence: Cell::new(0),
-            converter: spawn_converter(frames)?,
+            ticks: Cell::new(0),
+            converter: spawn_converter(frames, unchanged.clone())?,
+            unchanged,
         });
         let delegate: Retained<SurfaceDelegate> = unsafe {
             let allocated = SurfaceDelegate::alloc(mtm).set_ivars(DelegateState {
@@ -456,6 +502,15 @@ impl PlatformSurface {
         let previous = self.shared.desc.replace(desc);
         if let Some(view) = self.shared.view.borrow().as_ref() {
             unsafe {
+                // Render at the frame's own scale rather than the screen's, so
+                // a snapshot needs no resampling and WebKit draws 1/4 of the
+                // pixels on a 2× display.
+                let responds: bool =
+                    msg_send![view, respondsToSelector: sel!(_setOverrideDeviceScaleFactor:)];
+                if responds {
+                    let _: () =
+                        msg_send![view, _setOverrideDeviceScaleFactor: f64::from(desc.scale)];
+                }
                 let draws: Retained<AnyObject> =
                     msg_send![class!(NSNumber), numberWithBool: !desc.transparent];
                 let key = NSString::from_str("drawsBackground");
