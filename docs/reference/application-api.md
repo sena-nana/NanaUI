@@ -558,6 +558,10 @@ fingerprint 和活动焦点/IME 状态都不变时不挂/卸单元格。冻结�
 macOS `WKWebView`。Windows/Linux 明确不可用。`nana-ui` 没有独立的
 `browser` feature。
 
+需要把网页当画面素材（直播挂件、叠加层）时用无头 `WebSurface`：
+`RuntimeProgram::web_surface_requests` 声明页面，帧交给应用自己的 sink。它不在
+UI 树里，也不是 WebView 产品壳。合同见 [GPU 参考](gpu.md#无头网页画面websurface)。
+
 
 ### 多文档布局缓存
 

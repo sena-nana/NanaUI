@@ -431,21 +431,21 @@ impl Drop for MacBrowser {
     }
 }
 
-fn url_string(url: &AnyObject) -> String {
+pub(crate) fn url_string(url: &AnyObject) -> String {
     unsafe {
         let value: Option<Retained<NSString>> = msg_send![url, absoluteString];
         value.map(|value| value.to_string()).unwrap_or_default()
     }
 }
 
-fn error_description(error: &AnyObject) -> String {
+pub(crate) fn error_description(error: &AnyObject) -> String {
     unsafe {
         let value: Retained<NSString> = msg_send![error, localizedDescription];
         value.to_string()
     }
 }
 
-fn read_state(view: &AnyObject, error: Option<String>) -> BrowserState {
+pub(crate) fn read_state(view: &AnyObject, error: Option<String>) -> BrowserState {
     unsafe {
         let url: Option<Retained<AnyObject>> = msg_send![view, URL];
         let title: Option<Retained<NSString>> = msg_send![view, title];

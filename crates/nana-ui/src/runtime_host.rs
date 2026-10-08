@@ -539,6 +539,21 @@ pub trait RuntimeProgram: Sized + 'static {
         RuntimeProgramUpdate::default()
     }
 
+    /// Headless web pages the host keeps alive, keyed by id. Omit a request to
+    /// release its engine. Unlike [`Self::native_browser_requests`] these are
+    /// not tied to a window or node; frames go to each request's sink.
+    fn web_surface_requests(&self) -> Vec<crate::WebSurfaceRequest> {
+        Vec::new()
+    }
+
+    fn web_surface_event(
+        &mut self,
+        _event: crate::WebSurfaceNotice,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
+
     /// Called once the host can mount, lay out, dispatch and draw an ordinary
     /// document — the `UiReady` point of a two-phase startup (Issue #225).
     /// Business state does not have to exist before this; build what the

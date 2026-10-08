@@ -590,6 +590,13 @@ python scripts/validate-desktop-overlay.py --presents
 `NANA_BROWSER_CAPTURE_OUTPUT=/tmp/nanaui-browser.png` 可保存网页 PNG。必须实际查看
 原生窗口与 PNG 后才能宣称平台视觉和交互通过。编译及离屏树检查不能替代 WebKit 验收。
 
+### 无头网页画面
+
+`RuntimeProgram::web_surface_requests` 声明不挂在任何窗口上的网页实例，帧经
+`WebFrameSink` 直接交给应用，事件经 `web_surface_event` 回流。`ShowWindow` 打开的交互窗口
+由宿主平台层拥有，不是 Runtime 窗口，不进 `WindowService`。合同见
+[GPU 参考](gpu.md#无头网页画面websurface)。
+
 ### Surface 故障恢复
 
 Surface 创建、验证或材质 alpha 配置失败只暂停对应窗口。并以两秒间隔在现有共享 GPU 上重试。其他窗口继续绘制。`HostFailure::SurfaceRecovery` 报告窗口身份与首次错误。恢复成功后重置该窗口材质缓存并重绘。失败不关闭应用文档。恢复期间材质操作返回 `OperationFailed`。失败的材质操作不会保存新的覆盖值或透明偏好。若原生配置已部分改变。后续 Surface 恢复会重新应用上一次成功的设置。只有 Device 丢失才启动全局 GPU 恢复。Device 丢失导致的 Surface 失败不会逐窗口报告 `SurfaceRecovery`。standalone 恢复依次尝试各存活窗口作为新 Device 的基准。某扇窗口无法重建不会阻塞其他窗口。embedded 的局部 Surface 故障不会要求宿主更换 Device。

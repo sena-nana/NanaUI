@@ -184,6 +184,8 @@ Runtime 节点仍拥有布局、可访问性、可见性和生命周期锚点。
 
 盒模型对照仍在 workspace 外的 `tools/css-parity-webview`。不得链进产品 crate。
 
+无头 `WebSurface` 是另一种宿主内容：页面不进任何窗口，帧经应用的 sink 离开 framework。平台代码在 `nana-window`（macOS `WKWebView`、Windows WebView2），`nana-ui` 只按请求对账实例。
+
 ## 编译边界
 
 `nana-ui` 的 default feature 只有 `wgpu-backends`，而且只在启用 `gpu` 时选择图形后端。它不创建第二套 host，也不创建第二套 GPU owner。要出窗口仍需显式打开 `hosted`；需要自选后端时使用 `default-features = false`。

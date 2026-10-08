@@ -71,7 +71,7 @@ pub struct BrowserRect {
 
 #[cfg(target_os = "macos")]
 #[path = "browser/macos.rs"]
-mod platform;
+pub(crate) mod platform;
 
 /// One browser belongs to one host window and is destroyed before that window.
 pub struct NativeBrowser {

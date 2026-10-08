@@ -334,6 +334,19 @@ URL、白名单、Cookie、引擎选型归**应用**（默认拒绝，localhost 
 
 拟议事件：`WebViewNavigated`、`WebViewTitleChanged`、`WebViewFailed`。后退 / 地址栏用现有控件拼。不要让 `WebView` 自绘浏览器 chrome。控件落地前用系统浏览器或应用自己的引擎。不要在树上叠一层原生 WebView。
 
+### 无头网页画面（WebSurface）
+
+`WebSurface` 是拟议 `WebView` 控件的引擎层，现在已经可用：宿主保持一个不进任何窗口视图树的网页实例，按 `max_fps` 截取画面，把 `WebFrame`（RGBA8、sRGB、sRGB 空间预乘）交给请求里的 `WebFrameSink`。sink 在后台线程上被调用，UI 线程不转换、不排队像素。帧去哪里归应用：登记到 HostTexture 槽、交给自己的渲染器都可以。
+
+- 程序在 `RuntimeProgram::web_surface_requests()` 返回 `WebSurfaceRequest { id, policy, desc, restore_url, revision, command, frames }`；撤回请求就释放引擎。事件经 `web_surface_event(WebSurfaceNotice { id, revision, event }, context)` 回流。
+- `desc`（尺寸、缩放、透明、帧率）原地生效；换 sink（另一个 `Arc`）或策略会重建实例。新实例只导航到 Navigate 目标或 `restore_url`，不重放窗口命令。
+- `ShowWindow` 把**同一个**页面放进可交互的原生窗口（登录、点网页里的设置），Cookie 和页面状态不丢，期间帧照常输出；用户关窗或 `HideWindow` 后页面回到屏外，并报 `WindowClosed`。
+- macOS：屏外无边框窗口里的 `WKWebView`，关闭遮挡检测以免 WebKit 停止渲染，`takeSnapshotWithConfiguration` 截图，CGImage 在工作线程转换。实测 960×540 稳定 30 fps，1080p 截图约 110 fps 上限。
+- Windows：每个实例一条 STA 线程，WebView2 组合控制器挂在 `Windows.UI.Composition` visual 上，用 `Windows.Graphics.Capture` 截取；需要 WebView2 Runtime，分发时带 `WebView2Loader.dll`。缺运行时以状态错误报告。
+- Linux：`web_surface_support()` 为假，`WebSurface::new` 返回不可用。
+
+`cargo run -p nana-window --example web-surface-probe [-- --window]` 实测帧率、页面是否持续刷新和透明度，并保存最后一帧。
+
 ## 按图离屏
 
 离屏必须按 Scene 图、在采样**之前**编码时，仍挂 `GpuTextureView`。再实现 `SceneResourceProducer`。

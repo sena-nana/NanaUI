@@ -13,6 +13,7 @@ mod presence;
 mod present;
 mod schedule;
 mod startup;
+mod web_surface;
 mod windows;
 
 use accessibility::PendingAccessibility;
@@ -252,6 +253,7 @@ struct WindowManager<Program: RuntimeProgram> {
     next_window_id: u64,
     // Native children drop before their owning GPU/window resources.
     browsers: HashMap<(WindowId, String), browser::HostedBrowser>,
+    web_surfaces: HashMap<String, web_surface::HostedWebSurface>,
     graphics: crate::HostedGpuShared,
     /// What this process needs from its GPU backend. Process-wide, because the
     /// backend, adapter and device are.
@@ -1263,6 +1265,7 @@ fn complete_startup<Program: RuntimeProgram>(
         messages: message_rx,
         file_dialogs: dialogs::FileDialogs::default(),
         browsers: HashMap::new(),
+        web_surfaces: HashMap::new(),
         tasks,
         animation_clock,
         surface_generation: 0,
@@ -1430,6 +1433,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             // before application-owned state is released.
             self.window_requests.take();
             self.browsers.clear();
+            self.web_surfaces.clear();
             self.close_all_file_dialogs();
             let ids = self.known_window_ids();
             for id in ids {
@@ -1451,6 +1455,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
         self.reconcile_browser_lifetimes();
+        self.sync_web_surfaces();
         for id in windows_to_redraw(update.redraw, &self.known_window_ids()) {
             if painting == Some(id) {
                 continue;

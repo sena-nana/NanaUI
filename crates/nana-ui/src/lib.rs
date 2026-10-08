@@ -82,9 +82,16 @@ mod native_browser;
 mod native_content;
 mod text_engine;
 #[cfg(feature = "hosted")]
+mod web_surface;
+#[cfg(feature = "hosted")]
 pub use native_browser::{
     BrowserCommand, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState, NativeBrowserEvent,
     NativeBrowserRequest,
+};
+#[cfg(feature = "hosted")]
+pub use web_surface::{
+    MAX_WEB_SURFACE_EDGE, MAX_WEB_SURFACE_FPS, WebFrame, WebFrameSink, WebSurfaceCommand,
+    WebSurfaceDesc, WebSurfaceEvent, WebSurfaceNotice, WebSurfaceRequest, web_surface_support,
 };
 pub mod overlay;
 pub mod pane;
