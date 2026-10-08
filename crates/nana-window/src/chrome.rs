@@ -319,19 +319,9 @@ pub struct LiveFrameResize {
     mouse_x: f64,
     mouse_y: f64,
     min: (f64, f64),
+    /// The window's content aspect lock and its frame as the resize began.
     #[cfg(target_os = "windows")]
-    aspect: Option<LiveAspect>,
-}
-
-/// A window's content aspect lock as a custom-chrome resize began.
-#[cfg(target_os = "windows")]
-#[derive(Debug, Clone, Copy)]
-struct LiveAspect {
-    lock: crate::aspect::AspectLock,
-    /// Outer minus client size per axis.
-    frame: (f64, f64),
-    /// Client size when the gesture began.
-    reference: (f64, f64),
+    aspect: Option<(crate::aspect::AspectLock, crate::aspect::SizingBasis)>,
 }
 
 #[cfg(target_os = "macos")]
@@ -399,14 +389,8 @@ impl LiveFrameResize {
             windows_sys::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
         }
         let min = win32_min_track_size(hwnd);
-        let aspect = crate::size_move::aspect_lock(hwnd).and_then(|lock| {
-            let (frame, reference) = crate::size_move::frame_and_client(hwnd)?;
-            Some(LiveAspect {
-                lock,
-                frame,
-                reference,
-            })
-        });
+        let aspect =
+            crate::size_move::aspect_lock(hwnd).zip(crate::size_move::sizing_basis(hwnd, min));
         Some(Self {
             edge,
             origin_x: f64::from(rect.left),
@@ -436,12 +420,11 @@ impl LiveFrameResize {
             self.min,
             true,
         );
-        if let Some(aspect) = self.aspect {
-            let [left, top, right, bottom] = aspect.lock.constrain_frame(
+        if let Some((lock, basis)) = self.aspect {
+            let [left, top, right, bottom] = lock.constrain_frame(
                 [next[0], next[1], next[0] + next[2], next[1] + next[3]],
                 self.edge,
-                aspect.frame,
-                aspect.reference,
+                basis,
             );
             next = [left, top, right - left, bottom - top];
         }
@@ -1069,7 +1052,7 @@ fn win32_hwnd<W: HasWindowHandle + ?Sized>(
 }
 
 #[cfg(target_os = "windows")]
-fn win32_min_track_size(hwnd: windows_sys::Win32::Foundation::HWND) -> (f64, f64) {
+pub(crate) fn win32_min_track_size(hwnd: windows_sys::Win32::Foundation::HWND) -> (f64, f64) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MINMAXINFO, SendMessageW, WM_GETMINMAXINFO};
 
     let mut info = MINMAXINFO::default();

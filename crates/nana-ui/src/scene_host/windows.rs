@@ -8,14 +8,9 @@ fn uses_host_managed_drag(settings: &WindowDescriptor, button: i16) -> bool {
     settings.host_managed_drag || button != PRIMARY_MOUSE_BUTTON
 }
 
-/// The content aspect lock a descriptor asks for: its ratio and the
-/// ratio-exact minimum client size.
-pub(super) fn content_aspect_lock(settings: &WindowDescriptor) -> (Option<f64>, (f64, f64)) {
-    let ratio = nana_ui_platform::valid_aspect_ratio(settings.content_aspect_ratio);
-    let minimum = ratio.map_or(settings.minimum_size, |ratio| {
-        nana_ui_platform::aspect_minimum_size(settings.minimum_size, ratio)
-    });
-    (ratio.map(f64::from), minimum)
+/// The content aspect ratio of a checked descriptor, for [`LiveSizeMove`].
+pub(super) fn content_aspect_ratio(settings: &WindowDescriptor) -> Option<f64> {
+    settings.content_aspect_ratio.map(f64::from)
 }
 
 /// Advance a native window's input endpoint identity without ever reusing it.
@@ -784,8 +779,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
         let size_move = LiveSizeMove::install(window.as_ref())?;
-        let (ratio, minimum) = content_aspect_lock(&settings);
-        size_move.set_content_aspect_ratio(ratio, minimum);
+        size_move.set_content_aspect_ratio(content_aspect_ratio(&settings));
         self.windows.register(id);
         let context = program_context(
             self.message_tx.clone(),
@@ -1030,8 +1024,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(host) = self.window_contexts.get(&id) else {
             return;
         };
-        let (ratio, minimum) = content_aspect_lock(&host.settings);
-        host.size_move.set_content_aspect_ratio(ratio, minimum);
+        let settings = &host.settings;
+        let minimum = settings
+            .content_aspect_ratio
+            .map_or(settings.minimum_size, |ratio| {
+                nana_ui_platform::aspect_minimum_size(settings.minimum_size, ratio)
+            });
+        host.size_move
+            .set_content_aspect_ratio(content_aspect_ratio(settings));
         host.surface.window().set_min_surface_size(Some(
             winit::dpi::LogicalSize::new(minimum.0, minimum.1).into(),
         ));

@@ -1216,8 +1216,7 @@ fn complete_startup<Program: RuntimeProgram>(
         accessibility_pending: PendingAccessibility::default(),
         size_move: {
             let size_move = LiveSizeMove::install(window.as_ref())?;
-            let (ratio, minimum) = windows::content_aspect_lock(&settings);
-            size_move.set_content_aspect_ratio(ratio, minimum);
+            size_move.set_content_aspect_ratio(windows::content_aspect_ratio(&settings));
             size_move
         },
         aspect_conform_pending: false,
