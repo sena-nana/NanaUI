@@ -8,6 +8,9 @@ struct Globals {
     gamma_ratios: vec4<f32>,
     // x: grayscale enhanced contrast, y: ClearType enhanced contrast.
     contrast: vec4<f32>,
+    // The motion clock: whole seconds, the fraction (f32 bits), and the
+    // per-glyph effect clock (seconds modulo an hour, f32 bits).
+    motion: vec4<u32>,
 }
 
 @group(0) @binding(0)
@@ -29,7 +32,9 @@ struct TextRun {
     // Physical px per logical px the instances were resolved at: the device
     // scale, times the raster step a magnifying transform earned the entry.
     raster: f32,
-    pad0: f32,
+    // Word offset of this run's per-glyph presentation in `text_glyph_fx`;
+    // zero when it presents none.
+    fx: u32,
     pad1: f32,
 }
 
@@ -75,6 +80,134 @@ var<storage, read> text_runs: array<TextRun>;
 
 @group(0) @binding(2)
 var<storage, read> text_presentations: array<TextPresentation>;
+
+// Per-glyph presentation, packed as words: a header per presenting run, its
+// effect table and one (effect index, reveal time) pair per grapheme. See
+// `pack_glyph_fx` in `text/mod.rs`, which writes it, and
+// `nana_ui_core::motion::glyph`, the CPU evaluator it mirrors.
+@group(0) @binding(4)
+var<storage, read> text_glyph_fx: array<u32>;
+
+struct GlyphLook {
+    offset: vec2<f32>,
+    scale: f32,
+    alpha: f32,
+    // w > 0: replace the fill's colour (sRGB).
+    color: vec4<f32>,
+}
+
+fn glyph_hash(value: u32) -> u32 {
+    var x = value;
+    x = x ^ (x >> 16u);
+    x = x * 0x7feb352du;
+    x = x ^ (x >> 15u);
+    x = x * 0x846ca68bu;
+    x = x ^ (x >> 16u);
+    return x;
+}
+
+fn glyph_unit(hash: u32) -> f32 {
+    return f32(hash >> 8u) / 16777216.0;
+}
+
+fn glyph_rainbow(hue: f32) -> vec3<f32> {
+    let h = (hue - floor(hue)) * 6.0;
+    let s = 0.8;
+    let v = 1.0;
+    let k = (vec3<f32>(5.0, 3.0, 1.0) + vec3<f32>(h)) % vec3<f32>(6.0);
+    return vec3<f32>(v) - vec3<f32>(v * s) * clamp(min(k, vec3<f32>(4.0) - k), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn glyph_ease(kind: u32, progress: f32) -> f32 {
+    let t = clamp(progress, 0.0, 1.0);
+    if kind == 0u {
+        return t;
+    }
+    if kind == 2u {
+        let c1 = 1.70158;
+        let c3 = c1 + 1.0;
+        let u = t - 1.0;
+        return 1.0 + c3 * u * u * u + c1 * u * u;
+    }
+    let r = 1.0 - t;
+    return 1.0 - r * r * r;
+}
+
+// What glyph `ordinal` of the run whose presentation starts at word `fx`
+// looks like now.
+fn glyph_look(fx: u32, ordinal: u32) -> GlyphLook {
+    var look: GlyphLook;
+    look.offset = vec2<f32>(0.0);
+    look.scale = 1.0;
+    look.alpha = 1.0;
+    look.color = vec4<f32>(0.0);
+    let flags = text_glyph_fx[fx];
+    let clusters = text_glyph_fx[fx + 1u];
+    let cluster_base = text_glyph_fx[fx + 9u];
+    var effect_index = 0xffffffffu;
+    var at = bitcast<f32>(0x7f800000u);
+    if ordinal < clusters {
+        effect_index = text_glyph_fx[cluster_base + ordinal * 2u];
+        at = bitcast<f32>(text_glyph_fx[cluster_base + ordinal * 2u + 1u]);
+    }
+    let effect_count = text_glyph_fx[fx + 10u];
+    if (flags & 2u) != 0u && effect_index < effect_count {
+        let base = text_glyph_fx[fx + 8u] + effect_index * 4u;
+        let kind = text_glyph_fx[base];
+        let amplitude = bitcast<f32>(text_glyph_fx[base + 1u]);
+        let frequency = bitcast<f32>(text_glyph_fx[base + 2u]);
+        let stagger = bitcast<f32>(text_glyph_fx[base + 3u]);
+        let clock = bitcast<f32>(globals.motion.z);
+        let phase = clock * frequency - f32(ordinal) * stagger;
+        let tau = 6.2831855;
+        if kind == 0u {
+            let step = u32(i32(floor(clock * frequency)));
+            let seed = glyph_hash((ordinal * 0x9e3779b9u) ^ step);
+            look.offset.x = look.offset.x + (glyph_unit(seed) * 2.0 - 1.0) * amplitude;
+            look.offset.y = look.offset.y + (glyph_unit(glyph_hash(seed)) * 2.0 - 1.0) * amplitude;
+        } else if kind == 1u {
+            look.offset.y = look.offset.y - amplitude * sin(tau * phase);
+        } else if kind == 2u {
+            look.offset.y = look.offset.y - amplitude * abs(sin(3.1415927 * phase));
+        } else if kind == 3u {
+            look.color = vec4<f32>(glyph_rainbow(phase), 1.0);
+        } else if kind == 4u {
+            look.scale = look.scale * (1.0 + amplitude * (0.5 + 0.5 * sin(tau * phase)));
+        } else if kind == 5u {
+            let step = u32(i32(floor(clock * frequency)));
+            if glyph_unit(glyph_hash((ordinal * 0x85ebca6bu) ^ step)) < 0.2 {
+                look.alpha = look.alpha * 0.35;
+            }
+        }
+    }
+    if (flags & 1u) != 0u {
+        let limit = text_glyph_fx[fx + 4u];
+        let start_secs = text_glyph_fx[fx + 2u];
+        let start_fraction = bitcast<f32>(text_glyph_fx[fx + 3u]);
+        let since = f32(i32(globals.motion.x - start_secs))
+            + (bitcast<f32>(globals.motion.y) - start_fraction);
+        let local = since - at;
+        // Unscheduled (infinite) or held back by the limit, or not yet due.
+        if ordinal >= limit || !(local >= 0.0) {
+            look.alpha = 0.0;
+            return look;
+        }
+        let intro = text_glyph_fx[fx + 5u];
+        let duration = bitcast<f32>(text_glyph_fx[fx + 7u]);
+        if duration > 0.0 {
+            let linear = clamp(local / duration, 0.0, 1.0);
+            let eased = glyph_ease((intro >> 8u) & 255u, linear);
+            if (intro & 1u) != 0u {
+                look.alpha = look.alpha * linear;
+            }
+            if (intro & 2u) != 0u {
+                look.scale = look.scale * (0.5 + 0.5 * eased);
+            }
+            look.offset.y = look.offset.y + bitcast<f32>(text_glyph_fx[fx + 6u]) * (1.0 - eased);
+        }
+    }
+    return look;
+}
 
 @group(1) @binding(0)
 var mask_atlas: texture_2d<f32>;

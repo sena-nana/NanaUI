@@ -1371,6 +1371,66 @@ span 的填充色不在 `rich` 里，而是并进已有的 `spans`（`rich_fill_
 
 entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边、阴影、装饰线重建这一个 entry 的实例，不重新排版；只改它们的颜色不新栅格化任何位图；稳态帧什么都不做——不栅格化、不传 atlas、不重建、不重传 instance。
 
+### 内联对象
+
+贴纸、表情、编辑器里的标记是文本里的对象。文本里放一个 U+FFFC（`OBJECT_REPLACEMENT`），`TextSource::set_objects` 给它配一条 `InlineObject { offset, id, metrics: InlineObjectMetrics { width_px, ascent_px, descent_px } }`。对象是一个字素簇：光标一步跨过它，选区整个拿走它，命中测试不用改。
+
+- **塑形不读对象。** 塑形器把每个 U+FFFC 切成单独的占位 run：一个 `GlyphFlags::OBJECT` 字形，没有字体，advance 为 0。shape cache 的键里没有对象，所以只改对象尺寸不重新塑形。
+- **排版给它盒子。** `Layouter` 在断行之前把占位 run 的 advance 换成对象宽度，ascent / descent 换成对象的。对象是原子行内盒：不要求自己的行高，站在基线上；文字的半行距不变，行盒在上下各长出对象超出的那部分，基线随之下移。layout cache 的键带上每个对象的位置和盒子：两份同文本、同 revision 的源，对象不同就是两份布局。
+- **`TextLayout.objects`** 记下每个放上行的对象：`PlacedObject { id, offset, line, rect }`，`rect` 在行空间，底边是基线加 descent。被省略号截掉的对象不在里面。
+- 占位 run 没有 face，画笔不画它，装饰线也跳过它。
+
+应用一侧的值是 `RichObject { id, width_px, height_px, descent_px, content }`，内容三种：
+
+| `RichObjectContent` | 场景里 | 占位 |
+| --- | --- | --- |
+| `Image { source }` | `Quad` 的 `content_image`，和 CSS `url()` 同源规则，按 contain 摆进盒子 | 自己的宽高 |
+| `HostTexture { slot }` | `Custom`，`HOST_TEXTURE_RENDERER` 画宿主纹理槽（应用自己解码的动图走这里） | 自己的宽高 |
+| `Chip { label, kind }` | 只在编辑器里画；展示框不出图元 | 永远 0 |
+
+`RichTextBuilder::object` / `styled_object`、`RichText::insert_object` / `set_object` 维护它们；`replace_range` 删掉对象的字符就删掉对象。`TextNodeState::source_for` 把 `RichObject::line_box()` 交给 `TextSource::set_objects`。`classify_rich_change` 里，同位置的对象换了盒子是 `CONSTRAINT`（只重排），换了内容是 `PAINT`（只重绘）；插入、删除对象改了文本，是 `CONTENT`。场景按文本顺序给每个对象发一个图元，槽位在 `TEXT_INLINE_OBJECTS` 命名空间里，跟着节点的变换、裁剪、透明度和文档顺序走。
+
+标记 chip 宽度为 0，所以编辑器和展示框对同一份 `RichText` 断出同样的行。
+
+### Ruby 注音
+
+注音（假名、拼音）是基字上方的一行小字。`TextSource::set_rubies` 给源配一张表：`RubySpan { range, text }`，`range` 是基字的字节范围，表按基字排序、互不重叠。编辑碰到基字内部就丢掉那条注音，基字之后的平移。只做横排。
+
+- **塑形。** `NativeTextEngine::layout` 把每条注音按基字起点处的样式、`RUBY_SCALE`（0.5）倍字号单独塑形，走同一个 shape cache。注音的 `ShapedText` 按指针进 layout key：换注音就是另一份布局，基字本身不重新塑形。
+- **基字是一个整体。** 断点不落在基字内部（`break_stops` 滤掉），所以基字不会拆到两行。
+- **宽注音撑开基字。** 注音比基字宽时，基字每个字形右移差值的一半，最后一个字形的 advance 加上整个差值：基字在注音下居中，后面的文字顺移差值。窄注音不动基字，居中放在它上面。
+- **行盒长高。** 含基字的行，行盒向上长出注音的高度（站在文字 ascent 上），和高贴纸一样走 `lift`，基线随之下移。
+- **`TextLayout.rubies`** 记下每条放上行的注音：`PlacedRuby { range, line, baseline_y_px, rect, runs }`，`runs` 是已经摆好 `origin_x_px` 的注音 run（簇是注音文本的字节）。竖排布局不放注音，`rubies_dropped` 为真。
+- **画笔** 在行的字形之后画注音的字形，同一个 entry。每个注音字形按基字的第一个字节取颜色、阴影、描边和揭示序号，所以注音跟着基字一起出现、一起动。
+
+应用一侧是 `RichText` 的注音表：`RichTextBuilder::ruby(base, annotation)` / `styled_ruby`，`RichText::set_ruby(range, text)` 替换它碰到的注音，`clear_ruby(range)` 删掉，`ruby_at(offset)` 查。`slice` 只带走整条落在范围里的注音，`replace_with` 把它们贴回去。`source_for` 把表交给 `TextSource::set_rubies`；`classify_rich_change` 里注音变了是 `SHAPE_STYLE`。编辑器的 `RichEditCommand::SetRuby(Some(text))` 给选区加注音，`SetRuby(None)` 删掉选区碰到的注音，都可以撤销。
+
+测试：`nana-text` `tests/ruby.rs`（居中在基字上方且行长高、宽注音撑开基字并顺移后文、基字内不断行、编辑平移和丢弃、竖排丢弃）；`nana-ui-core` `rich_text::tests`；`nana-ui-scene` `tests/rich_text_editor.rs`（编辑器加的注音，编辑器和展示框断行逐位相同，可撤销）；`nana-ui` `scene_paint::text`（注音字形画在基字上方，比基字小）。
+
+### 富文本编辑器
+
+`RichTextEditor` 不是另一种编辑器存储，而是一个普通文本节点加一份编辑状态：
+
+- **排版。** 它显示的文本（文档，或者文档里拼进了预编辑）经 `SetRichText` 走上面这条富文本路径，所以它的 `TextLayout` 和同一份 `RichText`、同一宽度下的 `RichTextView` 是同一种计算。`tests/rich_text_editor.rs` 断言两者每一行的字节范围、宽度和行高逐位相同。
+- **编辑状态** 在组件里：选区（锚点、焦点，字节）、预编辑及其光标、光标处的输入样式、撤销 / 重做快照（整份 `RichText` 的克隆，两次引用计数），上限 200 步，连续打字合成一步。应用交回相等的 `value` 时这些都保留；交回不同的文档时选区收进新文本，预编辑和输入样式清掉。
+- **区间重映射。** 编辑落到 `RichText::replace_range` / `replace_with`：span 走 `AttributedRanges::splice`（插入的字继承光标前那个字），对象跟着自己的字符平移，删掉字符就删掉对象。复制取 `RichText::slice`。
+- **输入。** 键盘在终端之后、普通编辑器之前路由到聚焦的富文本编辑器（应用的按键策略仍然最先看到按键）；组字走 `dispatch_composition` 的同一位置；指针按下、拖动、松开在终端之后处理。输入法的上下文是 `TextInputPurpose::Normal`，锚点是编辑器光标。
+- **光标与选区。** 组件把字节位置写进 `RichEditorMarks`（`SetRichEditorMarks`，只重绘）。场景在提取时用节点自己的保留排版算矩形：选区在字形下面（和文档选区同一层），光标在上面。只有聚焦的编辑器画光标；焦点移动时标脏重绘。
+- **剪贴板。** 系统剪贴板只放纯文本；进程内记住最后一段复制的富文本及其纯文本哈希，粘贴的文字与之相同时贴回富文本。跨进程的富格式留给宿主扩展。
+
+### 逐字呈现
+
+逐字特效和打字机揭示是**呈现**，不是文本：它们不进塑形、排版、字形栅格，也不进段落已经建好的字形实例。
+
+- **词汇**在 `nana_ui_core::motion::glyph`：`GlyphEffect { kind: Shake | Wave | Jump | Rainbow | Pulse | Flicker, amplitude, frequency_hz, stagger }`，`GlyphIntro { fade, pop, rise_px, duration_s, easing }`，`RevealSchedule { start, at_s, limit, intro }`。`at_s[i]` 是第 `i` 个字素（扩展字素簇）开始入场的时刻，相对 `start`；`start` 在文档的动画时钟上（`AppContext::animation_now()`）。超出 `at_s` 或到达 `limit` 的字素不显示。
+- **入口**是 `AppContext::set_rich_presentation(node, effects, reveal)`（`MutationQueue::set_glyph_presentation`）。`effects` 是一张表，`RichSpanStyle::effect` 是表里的下标。它只标 RENDER：场景把它和每个字素的特效下标打包进 `Text { presentation: SceneGlyphPresentation }`。span 的特效下标改了同样只到这里（`GLYPH_PRESENTATION`）。
+- **实例**在建 entry 时就记下自己的字素序号（`GlyphInstance.pad[1]` 的高 30 位，低 2 位是角色）。呈现不在 entry 的指纹里：换特效、换揭示不重建实例。
+- **GPU。** 每帧 prepare 把呈现的段落打包成一张字表（绑定 4，`text_glyph_fx`）：一个段落一个表头（揭示起点、上限、入场参数、特效表的位置），每个字素两个字（特效下标、揭示时刻）。run 行的 `fx` 指向表头。顶点着色器从 `Globals.motion` 读运动时钟（整秒、小数、模一小时的特效时钟），按 `glyph_look` 算出位移、绕字形中心的缩放、透明度和彩虹色，再放到实例的四个角上。阴影、描边跟着同一个字素走；彩虹只染填充。装饰线跟它下面的第一个字一起出现。还没轮到的字直接剔掉。时钟只在动了时写 16 字节。
+- **CPU 求值器** `evaluate_glyph` 是同一套算术：抖动和闪烁用同一个整数哈希（lowbias32），揭示的时间差先按整秒相减再加小数。内联对象（贴纸）不经文字着色器，场景在每个合成器 tick 用它算出对象的位移、缩放和透明度，写回对象图元。
+- **出帧。** 场景记录每个呈现中的节点到什么时候还在动：循环特效一直动，揭示到最后一个字入场结束为止。`compositor_needs_tick` 据此请求帧；揭示播完就回到按需出帧。画笔在有活动呈现时不复用上一帧的 dest。
+
+测试：`nana-ui-core` `motion::glyph::tests`（揭示、上限、确定性、波峰）；`nana-ui-scene` `tests/glyph_presentation.rs`（揭示不做文本工作、只在播放期间要帧、循环特效持续、清除后停止、贴纸按自己的字素揭示）；`nana-ui` `scene_paint::text`（着色器把字放到 CPU 求值器给的位置：波峰位移、未揭示不画、pop 的缩放；60 帧活动呈现不重建、不上传任何字形或实例）。
+
 ### 字体的装饰线度量
 
 `RunMetrics` 加了 `underline_offset_px` / `underline_thickness_px`（基线到下划线**顶边**，向下为正）和 `strikeout_offset_px` / `strikeout_thickness_px`（基线到删除线顶边，向上为正），在 run 的轴坐标和字号下从 `post` / `OS/2` 读。字体没给或给了 0 厚度时按字号补：1/14 em 粗，下划线在基线下 0.1 em，删除线居中在 x-height 一半处。四个字段都是 `serde(default)`：Phase 0 的 golden 里它们是 0，parity diff 只在期望值带着它们时才比较。
@@ -1383,7 +1443,10 @@ entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边
 
 - `nana-ui-core` `rich_text::tests`：区间代数（拆分、合并、`update` 的空隙、`splice`、投影）、字符边界对齐、builder。
 - `nana-ui-runtime` `text_node::tests`：塑形 span 铺在节点样式上、行高比例、按层分类。
-- `nana-ui-scene` `tests/rich_text_spans.rs`：只改绘制层时 `text_nodes_shaped == 0` 且保留的 layout 句柄不变；只改特效索引时整帧空闲；大字号 span 撑高行盒；描边、阴影、装饰线进场景且不再出整框 `Stroke`；CSS 是 span 的底。
+- `nana-text` `tests/inline_objects.rs`：对象占自己的宽度并站在基线上；改尺寸只重排不重塑形；高对象撑高行盒且不越出行顶；对象随文字换行；对象随编辑移动。
+- `nana-ui-runtime` `rich_text_editor::tests`：打字继承样式且合成一步撤销；光标处的样式作用于下一个字；三态摘要；预编辑带下划线且不进文档；对象在光标处插入且是一个字符；只读。
+- `nana-ui-scene` `tests/rich_text_editor.rs`：编辑器与展示框逐行一致；打字、输入法、退格、撤销经输入路由到达文档；富文本复制粘贴保留样式；光标与选区从编辑器自己的排版画出；工具栏改色不重排；方向键、Home / End。
+- `nana-ui-scene` `tests/rich_text_spans.rs`：贴纸占行宽并画成图片；改贴纸尺寸只重排不重塑形；纹理对象走宿主纹理渲染器；chip 不占宽度、展示框不画它；只改绘制层时 `text_nodes_shaped == 0` 且保留的 layout 句柄不变；只改特效索引时整帧空闲；大字号 span 撑高行盒；描边、阴影、装饰线进场景且不再出整框 `Stroke`；CSS 是 span 的底。
 - `nana-ui` `scene_paint::text`：改描边重建实例不重排、改色不新栅格化；带模糊阴影的稳态帧不栅格化、不上传；实例按画序排在一个 entry 里；带大字号 span 的段落从 Runtime 句柄画出；描边位图比填充宽且同心；模糊守恒覆盖率。
 
 ### 这一阶段没做的
@@ -1391,7 +1454,6 @@ entry 的颜色指纹把 span 颜色和 `rich.revision` 合在一起：改描边
 - 竖排段落的装饰线；`text-decoration-style`（波浪、双线）、`text-decoration-thickness`。
 - 颜色位图字形（无轮廓的 emoji）的阴影和描边：只从轮廓栅格，这类字形画不出阴影。
 - 画笔自排的回退路径（保留 layout 的对齐盒对不上时）不读塑形 span，按节点样式排。
-- `effect` 只存在 Runtime 里，合成器还没有逐字呈现（A6）。
 - Vue 没有 `RichText` 的值，`rich-text` 标签只造纯文本。
 
 ## 性能与许可证收口（#99）

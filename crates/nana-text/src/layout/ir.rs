@@ -56,6 +56,33 @@ impl TextRect {
     }
 }
 
+/// Where an inline object landed: its box on its line, in the layout's line
+/// space (physical px), the object's baseline on the line's.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PlacedObject {
+    /// [`crate::InlineObject::id`].
+    pub id: u64,
+    /// Byte offset of its U+FFFC.
+    pub offset: usize,
+    pub line: u32,
+    pub rect: TextRect,
+}
+
+/// A ruby annotation as laid out: its runs, placed centred above its base.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlacedRuby {
+    /// The base's byte range in the source.
+    pub range: std::ops::Range<usize>,
+    pub line: u32,
+    /// The annotation's own baseline, in the layout's line space.
+    pub baseline_y_px: f32,
+    /// Its box, in line space.
+    pub rect: TextRect,
+    /// Shaped annotation runs with `origin_x_px` set where they are drawn.
+    /// Glyph clusters are bytes of the annotation text.
+    pub runs: Vec<crate::shape::ShapedRun>,
+}
+
 /// Why a line ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -152,6 +179,17 @@ pub struct TextLayout {
     /// mismatch from passing horizontal metrics off as vertical ones.
     #[serde(default)]
     pub unsupported_writing_mode: bool,
+    /// Every inline object that made it onto a line, in logical order. An
+    /// object an ellipsis cut off is not here.
+    #[serde(default)]
+    pub objects: Vec<PlacedObject>,
+    /// Every ruby annotation placed above its base, in source order.
+    #[serde(default)]
+    pub rubies: Vec<PlacedRuby>,
+    /// The source asked for annotations this layout could not place: they
+    /// are horizontal only, and this layout is vertical.
+    #[serde(default)]
+    pub rubies_dropped: bool,
 }
 
 impl TextLayout {
@@ -278,6 +316,9 @@ mod tests {
             bounds: TextRect::default(),
             overflow: OverflowFlags::NONE,
             unsupported_writing_mode: false,
+            objects: Vec::new(),
+            rubies: Vec::new(),
+            rubies_dropped: false,
         }
     }
 

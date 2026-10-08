@@ -115,18 +115,19 @@ pub use menu::{MenuConfirmation, MenuSelection};
 pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};
 pub use motion::{
     AnimatableProperty, AnimationClass, AnimationDirection, AnimationFillMode, AnimationIteration,
-    AnimationPlayState, AnimationPlayback, CompiledMotion, DecayParams, Easing, FlipRect, Keyframe,
-    MOTION_DESCRIPTOR_VERSION, MOTION_GPU_DESCRIPTOR_SIZE, MOTION_GPU_KEYFRAME_SIZE,
+    AnimationPlayState, AnimationPlayback, CompiledMotion, DecayParams, Easing, FlipRect,
+    GlyphEasing, GlyphEffect, GlyphEffectKind, GlyphIntro, GlyphPresentation, GlyphSample,
+    Keyframe, MOTION_DESCRIPTOR_VERSION, MOTION_GPU_DESCRIPTOR_SIZE, MOTION_GPU_KEYFRAME_SIZE,
     MOTION_GPU_TIME_SIZE, MotionCodecError, MotionCodecId, MotionCodecInfo, MotionCodecRegistry,
     MotionCurve, MotionDescriptor, MotionDescriptorError, MotionDescriptorStore,
     MotionEvaluatorBackend, MotionGpuDescriptor, MotionGpuKeyframe, MotionGpuTime, MotionGpuValue,
     MotionGraph, MotionHandle, MotionInspectorEntry, MotionInterrupt, MotionSample, MotionTargetId,
     MotionTiming, MotionTo, MotionTrack, MotionTrackId, MotionValue, MotionValueKind,
     MotionWorkCounters, PresentationOverlay, PresentationPair, PresentationSlot, PresentationStore,
-    ProgressSample, Spring, SpringParams, StepJump, TimedProgress, Timeline,
+    ProgressSample, RevealSchedule, Spring, SpringParams, StepJump, TimedProgress, Timeline,
     classify_animatable_property, compile_motion_descriptor, cpu_fallback_reason,
-    decode_motion_track, evaluate_descriptor, evaluate_progress, evaluate_track, evaluate_track_at,
-    invert_flip_translate, retarget_track, track_completion_deadline,
+    decode_motion_track, evaluate_descriptor, evaluate_glyph, evaluate_progress, evaluate_track,
+    evaluate_track_at, invert_flip_translate, retarget_track, track_completion_deadline,
 };
 pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
@@ -143,8 +144,9 @@ pub use persist::{
     window_storage_key,
 };
 pub use rich_text::{
-    AttributedRanges, MAX_TEXT_SHADOWS, RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText,
-    RichTextBuilder, RichTextShadow, RichTextStroke, TextStrokeJoin, TextStrokePlacement,
+    AttributedRanges, MAX_TEXT_SHADOWS, OBJECT_REPLACEMENT, RichObject, RichObjectContent,
+    RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText, RichTextBuilder, RichTextShadow,
+    RichTextStroke, TextStrokeJoin, TextStrokePlacement,
 };
 pub use scrollbar::{
     SCROLLBAR_METRICS, ScrollbarAxis, ScrollbarMetrics, ScrollbarSkin, ScrollbarTrack,

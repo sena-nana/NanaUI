@@ -483,7 +483,7 @@ fn about_origin(local: Affine, origin: [f32; 2]) -> AffineTransform {
     ])
 }
 
-fn image_quad(
+pub(super) fn image_quad(
     source: &Arc<str>,
     fit: ImageFit,
     sampling: nana_ui_core::ImageSampling,
@@ -559,6 +559,7 @@ fn custom_text(
         opentype: SceneTextOpenType::from_computed(&node.style),
         layout: None,
         rich: None,
+        presentation: None,
     }
 }
 

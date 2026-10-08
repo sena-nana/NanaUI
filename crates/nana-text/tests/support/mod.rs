@@ -118,6 +118,9 @@ pub fn layout(runs: Vec<ShapedRun>, lines: Vec<LineBox>) -> TextLayout {
         bounds,
         overflow: OverflowFlags::NONE,
         unsupported_writing_mode: false,
+        objects: Vec::new(),
+        rubies: Vec::new(),
+        rubies_dropped: false,
     }
 }
 

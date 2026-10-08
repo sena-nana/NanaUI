@@ -2541,6 +2541,16 @@ impl UiWorld {
             .unwrap_or_else(|| self.record(id).text.value.clone())
     }
 
+    /// The per-glyph presentation of a rich text node.
+    pub fn glyph_presentation(&self, id: StableNodeId) -> Option<&nana_ui_core::GlyphPresentation> {
+        self.nodes.glyph_presentation(id)
+    }
+
+    /// The caret and selection marks of a rich text editor node.
+    pub fn rich_editor_marks(&self, id: StableNodeId) -> Option<&crate::RichEditorMarks> {
+        self.nodes.rich_editor_marks(id)
+    }
+
     /// The rich text `id` was given with `SetRichText`, if any.
     pub fn rich_text(&self, id: StableNodeId) -> Option<&nana_ui_core::RichText> {
         self.nodes.rich_text(id)
@@ -3009,6 +3019,9 @@ impl UiWorld {
             // New text: whatever spans it has are styled afresh, and the
             // scene's paint runs follow them.
             let mut dirty = TextDirty::PAINT;
+            if rich.is_some_and(|rich| !rich.objects().is_empty()) {
+                dirty |= TextDirty::CONSTRAINT;
+            }
             if rich.is_some_and(|rich| {
                 rich.spans()
                     .iter()
@@ -3023,6 +3036,7 @@ impl UiWorld {
         // The content class was settled above; what is left are the tiers.
         dirty = dirty.intersection(
             TextDirty::SHAPE_STYLE
+                .union(TextDirty::CONSTRAINT)
                 .union(TextDirty::PAINT)
                 .union(TextDirty::GLYPH_PRESENTATION),
         );
@@ -3036,14 +3050,17 @@ impl UiWorld {
             marks |= DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY;
         }
         self.nodes.invalidate_text(id, dirty);
-        if dirty.contains(TextDirty::SHAPE_STYLE) {
+        if dirty.intersects(TextDirty::SHAPE_STYLE.union(TextDirty::CONSTRAINT)) {
             marks |= DirtyMask::TEXT | DirtyMask::RENDER;
         }
         if dirty.contains(TextDirty::PAINT) {
             marks |= DirtyMask::RENDER;
         }
-        // An effect index alone is read by the presentation layer only; no
-        // Runtime pass consumes it, so nothing is scheduled.
+        // An effect index alone is read by the presentation layer only: the
+        // scene carries the new per-glyph table and no text pass runs.
+        if dirty.contains(TextDirty::GLYPH_PRESENTATION) {
+            marks |= DirtyMask::RENDER;
+        }
         if marks != 0 {
             self.mark(id, marks);
         }

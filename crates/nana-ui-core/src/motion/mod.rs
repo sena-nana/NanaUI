@@ -15,6 +15,7 @@ mod codec;
 mod descriptor;
 mod easing;
 mod eval;
+pub mod glyph;
 mod gpu;
 mod inspector;
 mod ir;
@@ -34,6 +35,10 @@ pub use easing::Easing;
 pub use eval::{
     ProgressSample, damped_harmonic, evaluate_progress, evaluate_track, evaluate_track_at,
     retarget_track,
+};
+pub use glyph::{
+    GlyphEasing, GlyphEffect, GlyphEffectKind, GlyphIntro, GlyphPresentation, GlyphSample,
+    RevealSchedule, evaluate_glyph,
 };
 pub use gpu::{
     MOTION_GPU_CURVE_DECAY, MOTION_GPU_CURVE_EASING, MOTION_GPU_CURVE_SPRING,

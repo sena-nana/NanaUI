@@ -103,6 +103,36 @@ impl RichTextView {
     }
 }
 
+impl crate::AppContext {
+    /// Present a rich text node's glyphs: `effects` is the table its spans'
+    /// `effect` indices name, `reveal` the typewriter schedule. Presentation
+    /// only: it shapes, lays out and rasterizes nothing and rebuilds no glyph
+    /// instance; frames are requested only while something still moves.
+    pub fn set_rich_presentation(
+        &mut self,
+        node: impl Into<StableNodeId>,
+        effects: impl Into<Arc<[nana_ui_core::GlyphEffect]>>,
+        reveal: Option<nana_ui_core::RevealSchedule>,
+    ) -> Result<(), crate::FrameworkError> {
+        let mut queue = MutationQueue::new();
+        queue.set_glyph_presentation(
+            node.into(),
+            Some(nana_ui_core::GlyphPresentation::new(effects, reveal)),
+        );
+        self.commit_mutations(queue).map(|_| ())
+    }
+
+    /// Stop presenting a node's glyphs.
+    pub fn clear_rich_presentation(
+        &mut self,
+        node: impl Into<StableNodeId>,
+    ) -> Result<(), crate::FrameworkError> {
+        let mut queue = MutationQueue::new();
+        queue.set_glyph_presentation(node.into(), None);
+        self.commit_mutations(queue).map(|_| ())
+    }
+}
+
 impl ComponentView for RichTextView {
     fn share_layouts(
         &mut self,

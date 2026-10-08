@@ -215,6 +215,8 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         document_text_selection_color: [0.0; 4],
         compositor: Default::default(),
         rich_text: None,
+        rich_editor: None,
+        glyph_presentation: None,
     }
 }
 

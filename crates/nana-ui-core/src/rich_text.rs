@@ -509,21 +509,139 @@ impl RichSpanStyle {
     }
 }
 
+/// The character an inline object stands in the text as (U+FFFC OBJECT
+/// REPLACEMENT CHARACTER). One character, so a caret steps over an object in
+/// one move and a selection takes it whole.
+pub const OBJECT_REPLACEMENT: char = '\u{FFFC}';
+
+/// What an inline object shows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RichObjectContent {
+    /// An image by URL, with the source rules CSS `url()` has (`file://`,
+    /// `nana://res/…`, a policy-gated `http(s)` host). Drawn contained in the
+    /// object's box.
+    Image { source: Arc<str> },
+    /// A host texture slot the application fills — an animated sticker it
+    /// decodes itself, a live preview. Drawn by the host texture renderer.
+    HostTexture { slot: Arc<str> },
+    /// An editor marker: a chip the editor draws over the text and a display
+    /// never shows. It always takes no room, so a line breaks the same way in
+    /// the editor and on the display.
+    Chip { label: Arc<str>, kind: u16 },
+}
+
+/// An object inline in the text: a sticker, an emote, an editor chip.
+///
+/// It stands on the baseline: `height_px - descent_px` above it, `descent_px`
+/// below. Changing its size relays the paragraph out without shaping it
+/// again; changing only what it shows repaints it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RichObject {
+    /// The application's name for it, handed back by the editor's events and
+    /// the scene.
+    pub id: u64,
+    pub width_px: f32,
+    pub height_px: f32,
+    pub descent_px: f32,
+    pub content: RichObjectContent,
+}
+
+impl RichObject {
+    /// An image `width_px` × `height_px`, standing on the baseline.
+    pub fn image(id: u64, source: impl Into<Arc<str>>, width_px: f32, height_px: f32) -> Self {
+        Self {
+            id,
+            width_px,
+            height_px,
+            descent_px: 0.0,
+            content: RichObjectContent::Image {
+                source: source.into(),
+            },
+        }
+    }
+
+    /// A host texture slot `width_px` × `height_px`.
+    pub fn texture(id: u64, slot: impl Into<Arc<str>>, width_px: f32, height_px: f32) -> Self {
+        Self {
+            id,
+            width_px,
+            height_px,
+            descent_px: 0.0,
+            content: RichObjectContent::HostTexture { slot: slot.into() },
+        }
+    }
+
+    /// An editor-only marker chip. It takes no room on the line.
+    pub fn chip(id: u64, label: impl Into<Arc<str>>, kind: u16) -> Self {
+        Self {
+            id,
+            width_px: 0.0,
+            height_px: 0.0,
+            descent_px: 0.0,
+            content: RichObjectContent::Chip {
+                label: label.into(),
+                kind,
+            },
+        }
+    }
+
+    /// How far the object reaches below the baseline.
+    pub fn descent(mut self, descent_px: f32) -> Self {
+        self.descent_px = descent_px;
+        self
+    }
+
+    /// Whether only an editor shows it.
+    pub fn editor_only(&self) -> bool {
+        matches!(self.content, RichObjectContent::Chip { .. })
+    }
+
+    /// The box it takes on its line: width, ascent, descent. A chip takes
+    /// none.
+    pub fn line_box(&self) -> [f32; 3] {
+        if self.editor_only() {
+            return [0.0; 3];
+        }
+        let finite = |value: f32| {
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        };
+        let descent = finite(self.descent_px);
+        [
+            finite(self.width_px),
+            (finite(self.height_px) - descent).max(0.0),
+            descent,
+        ]
+    }
+}
+
 /// One string and its styled ranges, owned by the application.
 ///
 /// Ranges are bytes into [`Self::text`]. Every way in snaps them down to
 /// character boundaries and clips them to the text, so a value always
-/// addresses whole characters.
+/// addresses whole characters. Inline objects sit at the
+/// [`OBJECT_REPLACEMENT`] characters of the text; each is looked up by the
+/// byte offset of its character. Ruby annotations name a base range and the
+/// small text set above it (horizontal text only).
 #[derive(Debug, Clone, Default)]
 pub struct RichText {
     text: Arc<str>,
     spans: Arc<AttributedRanges<RichSpanStyle>>,
+    /// Sorted by offset; each names an [`OBJECT_REPLACEMENT`] of `text`.
+    objects: Arc<Vec<(usize, RichObject)>>,
+    /// Sorted, non-overlapping, never empty.
+    rubies: Arc<Vec<(Range<usize>, Arc<str>)>>,
 }
 
 impl PartialEq for RichText {
     fn eq(&self, other: &Self) -> bool {
         (Arc::ptr_eq(&self.text, &other.text) || self.text == other.text)
             && (Arc::ptr_eq(&self.spans, &other.spans) || self.spans == other.spans)
+            && (Arc::ptr_eq(&self.objects, &other.objects) || self.objects == other.objects)
+            && (Arc::ptr_eq(&self.rubies, &other.rubies) || self.rubies == other.rubies)
     }
 }
 
@@ -533,7 +651,90 @@ impl RichText {
         Self {
             text: text.into(),
             spans: Arc::default(),
+            objects: Arc::default(),
+            rubies: Arc::default(),
         }
+    }
+
+    /// The ruby annotations: each base range and the text set above it,
+    /// sorted by base.
+    pub fn rubies(&self) -> &[(Range<usize>, Arc<str>)] {
+        &self.rubies
+    }
+
+    /// The annotation whose base covers byte `offset`.
+    pub fn ruby_at(&self, offset: usize) -> Option<(Range<usize>, &Arc<str>)> {
+        self.rubies
+            .iter()
+            .find(|(base, _)| base.contains(&offset))
+            .map(|(base, text)| (base.clone(), text))
+    }
+
+    /// Sets `annotation` above `base` (snapped to character boundaries),
+    /// replacing every annotation the base overlaps. An empty base or
+    /// annotation only clears.
+    pub fn set_ruby(&mut self, base: Range<usize>, annotation: impl Into<Arc<str>>) {
+        let base = self.snap(base);
+        let annotation = annotation.into();
+        self.clear_ruby(base.clone());
+        if base.is_empty() || annotation.is_empty() {
+            return;
+        }
+        let rubies = Arc::make_mut(&mut self.rubies);
+        let index = rubies.partition_point(|(existing, _)| existing.start < base.start);
+        rubies.insert(index, (base, annotation));
+    }
+
+    /// Removes every annotation whose base overlaps `range` (or, for an
+    /// empty range, contains it).
+    pub fn clear_ruby(&mut self, range: Range<usize>) {
+        if self.rubies.is_empty() {
+            return;
+        }
+        let hits = |base: &Range<usize>| {
+            if range.is_empty() {
+                base.start <= range.start && range.start < base.end
+            } else {
+                base.start < range.end && range.start < base.end
+            }
+        };
+        if self.rubies.iter().any(|(base, _)| hits(base)) {
+            Arc::make_mut(&mut self.rubies).retain(|(base, _)| !hits(base));
+        }
+    }
+
+    /// The inline objects, sorted by the offset of their character.
+    pub fn objects(&self) -> &[(usize, RichObject)] {
+        &self.objects
+    }
+
+    /// The object whose character sits at byte `offset`.
+    pub fn object_at(&self, offset: usize) -> Option<&RichObject> {
+        self.objects
+            .binary_search_by_key(&offset, |(at, _)| *at)
+            .ok()
+            .map(|index| &self.objects[index].1)
+    }
+
+    /// Inserts `object` at byte `offset` (snapped to a character boundary):
+    /// its character goes into the text there, styled like the character
+    /// before it.
+    pub fn insert_object(&mut self, offset: usize, object: RichObject) {
+        let at = self.snap(offset..offset).start;
+        self.replace_range(at..at, OBJECT_REPLACEMENT.encode_utf8(&mut [0; 4]));
+        let objects = Arc::make_mut(&mut self.objects);
+        let index = objects.partition_point(|(existing, _)| *existing < at);
+        objects.insert(index, (at, object));
+    }
+
+    /// Replaces the object at byte `offset` in place, keeping its character.
+    /// Returns `false` when no object sits there.
+    pub fn set_object(&mut self, offset: usize, object: RichObject) -> bool {
+        let Ok(index) = self.objects.binary_search_by_key(&offset, |(at, _)| *at) else {
+            return false;
+        };
+        Arc::make_mut(&mut self.objects)[index].1 = object;
+        true
     }
 
     pub fn builder() -> RichTextBuilder {
@@ -585,8 +786,9 @@ impl RichText {
         });
     }
 
-    /// Replaces `range` of the text with `replacement`, shifting the spans.
-    /// Inserted text takes the style of the character before it.
+    /// Replaces `range` of the text with `replacement`, shifting the spans
+    /// and objects. Inserted text takes the style of the character before it;
+    /// objects inside `range` go with their characters.
     pub fn replace_range(&mut self, range: Range<usize>, replacement: &str) {
         let range = self.snap(range);
         let mut text = String::with_capacity(self.text.len() - range.len() + replacement.len());
@@ -594,7 +796,90 @@ impl RichText {
         text.push_str(replacement);
         text.push_str(&self.text[range.end..]);
         self.text = text.into();
-        Arc::make_mut(&mut self.spans).splice(range, replacement.len());
+        Arc::make_mut(&mut self.spans).splice(range.clone(), replacement.len());
+        if !self.objects.is_empty() {
+            let objects = Arc::make_mut(&mut self.objects);
+            objects.retain(|(at, _)| *at < range.start || *at >= range.end);
+            for (at, _) in objects.iter_mut() {
+                if *at >= range.end {
+                    *at = *at + replacement.len() - range.len();
+                }
+            }
+        }
+        if !self.rubies.is_empty() {
+            // An edit touching the inside of a base drops its annotation:
+            // the reading no longer matches the text.
+            let rubies = Arc::make_mut(&mut self.rubies);
+            rubies.retain(|(base, _)| base.end <= range.start || base.start >= range.end);
+            for (base, _) in rubies.iter_mut() {
+                if base.start >= range.end {
+                    base.start = base.start + replacement.len() - range.len();
+                    base.end = base.end + replacement.len() - range.len();
+                }
+            }
+        }
+    }
+
+    /// The piece of this document over `range`: its text, the spans over it
+    /// and the objects in it, rebased so the piece starts at 0. What a copy
+    /// takes.
+    pub fn slice(&self, range: Range<usize>) -> RichText {
+        let range = self.snap(range);
+        RichText {
+            text: Arc::from(&self.text[range.clone()]),
+            spans: Arc::new(self.spans.slice(range.clone())),
+            objects: Arc::new(
+                self.objects
+                    .iter()
+                    .filter(|(at, _)| range.contains(at))
+                    .map(|(at, object)| (at - range.start, object.clone()))
+                    .collect(),
+            ),
+            rubies: Arc::new(
+                self.rubies
+                    .iter()
+                    .filter(|(base, _)| range.start <= base.start && base.end <= range.end)
+                    .map(|(base, text)| {
+                        (
+                            base.start - range.start..base.end - range.start,
+                            text.clone(),
+                        )
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Replaces `range` with `piece`, its spans and objects included. What a
+    /// paste of a copied piece does.
+    pub fn replace_with(&mut self, range: Range<usize>, piece: &RichText) {
+        let range = self.snap(range);
+        let at = range.start;
+        self.replace_range(range, piece.text());
+        if !piece.spans.is_empty() || !self.spans.is_empty() {
+            let inserted = at..at + piece.text.len();
+            let spans = Arc::make_mut(&mut self.spans);
+            spans.clear_range(inserted);
+            for (span, style) in piece.spans.iter() {
+                spans.set(span.start + at..span.end + at, style.clone());
+            }
+        }
+        if !piece.objects.is_empty() {
+            let objects = Arc::make_mut(&mut self.objects);
+            for (offset, object) in piece.objects.iter() {
+                let offset = offset + at;
+                let index = objects.partition_point(|(existing, _)| *existing < offset);
+                objects.insert(index, (offset, object.clone()));
+            }
+        }
+        if !piece.rubies.is_empty() {
+            let rubies = Arc::make_mut(&mut self.rubies);
+            for (base, text) in piece.rubies.iter() {
+                let base = base.start + at..base.end + at;
+                let index = rubies.partition_point(|(existing, _)| existing.start < base.start);
+                rubies.insert(index, (base, text.clone()));
+            }
+        }
     }
 
     /// Byte range clipped to the text and moved onto character boundaries.
@@ -629,9 +914,34 @@ impl From<String> for RichText {
 pub struct RichTextBuilder {
     text: String,
     spans: AttributedRanges<RichSpanStyle>,
+    objects: Vec<(usize, RichObject)>,
+    rubies: Vec<(Range<usize>, Arc<str>)>,
 }
 
 impl RichTextBuilder {
+    /// Appends `base` in the node's own style, with `annotation` set above
+    /// it.
+    pub fn ruby(&mut self, base: &str, annotation: impl Into<Arc<str>>) -> &mut Self {
+        self.styled_ruby(base, annotation, RichSpanStyle::new())
+    }
+
+    /// Appends `base` styled with `style`, with `annotation` set above it in
+    /// the base's style at half its size.
+    pub fn styled_ruby(
+        &mut self,
+        base: &str,
+        annotation: impl Into<Arc<str>>,
+        style: RichSpanStyle,
+    ) -> &mut Self {
+        let start = self.text.len();
+        self.push(base, style);
+        let annotation = annotation.into();
+        if !base.is_empty() && !annotation.is_empty() {
+            self.rubies.push((start..self.text.len(), annotation));
+        }
+        self
+    }
+
     /// Appends `text` in the node's own style.
     pub fn plain(&mut self, text: &str) -> &mut Self {
         self.text.push_str(text);
@@ -648,10 +958,31 @@ impl RichTextBuilder {
         self
     }
 
+    /// Appends an inline object, in the node's own style.
+    pub fn object(&mut self, object: RichObject) -> &mut Self {
+        let at = self.text.len();
+        self.text.push(OBJECT_REPLACEMENT);
+        self.objects.push((at, object));
+        self
+    }
+
+    /// Appends an inline object whose character carries `style` (an effect
+    /// or a decoration that should reach it).
+    pub fn styled_object(&mut self, object: RichObject, style: RichSpanStyle) -> &mut Self {
+        let at = self.text.len();
+        self.object(object);
+        if !style.is_empty() {
+            self.spans.set(at..self.text.len(), style);
+        }
+        self
+    }
+
     pub fn build(&mut self) -> RichText {
         RichText {
             text: std::mem::take(&mut self.text).into(),
             spans: Arc::new(std::mem::take(&mut self.spans)),
+            objects: Arc::new(std::mem::take(&mut self.objects)),
+            rubies: Arc::new(std::mem::take(&mut self.rubies)),
         }
     }
 }
@@ -776,6 +1107,99 @@ mod tests {
             style.paint.shadows.as_deref().unwrap().len(),
             MAX_TEXT_SHADOWS
         );
+    }
+
+    #[test]
+    fn rubies_ride_on_their_bases_and_go_with_copies() {
+        let mut rich = RichText::builder()
+            .plain("我是")
+            .ruby("漢字", "かんじ")
+            .plain("です")
+            .build();
+        assert_eq!(rich.rubies()[0].0, 6..12);
+        assert_eq!(&**rich.ruby_at(9).unwrap().1, "かんじ");
+        rich.replace_range(0..0, "啊");
+        assert_eq!(rich.rubies()[0].0, 9..15, "an edit before a base shifts it");
+        let piece = rich.slice(3..15);
+        assert_eq!(piece.rubies()[0].0, 6..12, "a copy keeps a whole base");
+        assert!(
+            rich.slice(12..15).rubies().is_empty(),
+            "but not part of one"
+        );
+        let mut target = RichText::new("x");
+        target.replace_with(1..1, &piece);
+        assert_eq!(target.rubies()[0].0, 7..13);
+        rich.set_ruby(9..12, "かん");
+        rich.set_ruby(9..15, "かんじ");
+        assert_eq!(
+            rich.rubies().len(),
+            1,
+            "a new annotation replaces the one it overlaps"
+        );
+        assert_eq!(rich.rubies()[0].0, 9..15);
+        rich.replace_range(12..12, "x");
+        assert_eq!(rich.rubies().len(), 0, "an edit inside a base drops it");
+        rich.set_ruby(0..3, "a");
+        rich.clear_ruby(1..1);
+        assert!(rich.rubies().is_empty());
+    }
+
+    #[test]
+    fn objects_ride_on_their_characters_through_edits() {
+        let sticker = RichObject::image(1, "file:///cat.png", 32.0, 32.0);
+        let mut rich = RichText::builder()
+            .plain("hi ")
+            .object(sticker.clone())
+            .plain(" there")
+            .build();
+        assert_eq!(rich.object_at(3), Some(&sticker));
+        rich.replace_range(0..2, "hello");
+        assert_eq!(
+            rich.objects()[0].0,
+            6,
+            "objects shift with the text before them"
+        );
+        rich.insert_object(0, RichObject::chip(2, "wait", 0));
+        assert_eq!(rich.objects().len(), 2);
+        assert_eq!(rich.objects()[0].0, 0);
+        assert_eq!(rich.objects()[1].0, 6 + OBJECT_REPLACEMENT.len_utf8());
+        let chip = &rich.objects()[0].1;
+        assert!(chip.editor_only());
+        assert_eq!(chip.line_box(), [0.0; 3], "a chip takes no room");
+        let at = rich.objects()[1].0;
+        rich.replace_range(at..at + OBJECT_REPLACEMENT.len_utf8(), "");
+        assert_eq!(
+            rich.objects().len(),
+            1,
+            "deleting the character deletes the object"
+        );
+        assert_eq!(
+            RichObject::image(3, "a.png", 20.0, 30.0)
+                .descent(6.0)
+                .line_box(),
+            [20.0, 24.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn a_slice_pasted_back_is_the_piece_it_was() {
+        let bold = RichSpanStyle::new().bold();
+        let doc = RichText::builder()
+            .plain("a ")
+            .push("bold", bold.clone())
+            .object(RichObject::image(4, "x.png", 8.0, 8.0))
+            .plain(" z")
+            .build();
+        let piece = doc.slice(2..doc.text().len() - 2);
+        assert_eq!(piece.text(), "bold\u{FFFC}");
+        assert_eq!(piece.style_at(0), Some(&bold));
+        assert_eq!(piece.objects()[0].0, 4);
+        let mut target = RichText::new("[]");
+        target.replace_with(1..1, &piece);
+        assert_eq!(target.text(), "[bold\u{FFFC}]");
+        assert_eq!(target.style_at(1), Some(&bold));
+        assert_eq!(target.style_at(0), None);
+        assert_eq!(target.objects()[0].0, 5);
     }
 
     #[test]

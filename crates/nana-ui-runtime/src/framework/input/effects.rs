@@ -170,6 +170,11 @@ impl AppContext {
                 caret: self.terminal_caret_bounds(document),
             });
         }
+        if self.rich_editor_accepts_input(document) {
+            return Some(TextInputKey::Terminal {
+                caret: self.rich_editor_caret_bounds(document),
+            });
+        }
         let (node, view) = self.editable_focused_text_input(document)?;
         Some(TextInputKey::Editor {
             node,
@@ -187,6 +192,13 @@ impl AppContext {
             return Some(TextInputContext {
                 purpose: TextInputPurpose::Terminal,
                 cursor_area: self.terminal_caret_bounds(document).map(logical_rect),
+                surrounding: None,
+            });
+        }
+        if self.rich_editor_accepts_input(document) {
+            return Some(TextInputContext {
+                purpose: TextInputPurpose::Normal,
+                cursor_area: self.rich_editor_caret_bounds(document).map(logical_rect),
                 surrounding: None,
             });
         }

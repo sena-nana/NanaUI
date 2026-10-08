@@ -132,6 +132,7 @@ export default defineConfig({
           items: [
             { text: "Text", link: "/components/text" },
             { text: "RichTextView", link: "/components/rich-text-view" },
+            { text: "RichTextEditor", link: "/components/rich-text-editor" },
             { text: "Column", link: "/components/column" },
             { text: "Row", link: "/components/row" },
             { text: "Stack", link: "/components/stack" },

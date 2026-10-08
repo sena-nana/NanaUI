@@ -104,6 +104,134 @@ widget(RichTextView::new(line))
 
 节点的 CSS（`text-decoration`、多层 `text-shadow`、`-webkit-text-stroke`、`paint-order`）是底，span 的绘制层盖在上面。span 没写的字段沿用节点的。
 
+## 内联贴纸
+
+贴纸、表情是文本里的对象，和字一起换行。`RichTextBuilder::object` 放进一个 `RichObject`。它站在基线上，`descent` 让它往下沉一点。改它的尺寸只重新排版，不重新塑形。
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::{RichObject, RichText};
+
+let line = RichText::builder()
+    .plain("早上好")
+    .object(RichObject::image(1, "file:///stickers/wave.png", 28.0, 28.0).descent(4.0))
+    .plain("今天也加油")
+    .build();
+
+view! {
+    <Widget of={RichTextView::new(line)} />
+}
+```
+
+```rust rust
+use nana_ui::runtime::view::widget;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::{RichObject, RichText};
+
+let line = RichText::builder()
+    .plain("早上好")
+    .object(RichObject::image(1, "file:///stickers/wave.png", 28.0, 28.0).descent(4.0))
+    .plain("今天也加油")
+    .build();
+
+widget(RichTextView::new(line))
+```
+
+:::
+
+- `RichObject::image(id, url, w, h)`：图片，和 CSS `url()` 同源规则。
+- `RichObject::texture(id, slot, w, h)`：宿主纹理槽。动图由应用解码后写进这个槽，由宿主纹理渲染器画。
+- `RichObject::chip(id, label, kind)`：编辑器里的标记。不占宽度，展示框不画它，所以编辑器和展示框断行一致。
+
+## 注音
+
+`RichTextBuilder::ruby(base, annotation)` 在基字上方放一行半字号的注音（假名、拼音）。基字不会拆到两行；注音比基字宽时基字被撑开，行高长出注音那一截。只做横排，竖排时注音不画。
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::RichText;
+
+let line = RichText::builder()
+    .plain("今天学")
+    .ruby("漢字", "かんじ")
+    .build();
+
+view! {
+    <Widget of={RichTextView::new(line)} />
+}
+```
+
+```rust rust
+use nana_ui::runtime::view::widget;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::RichText;
+
+let line = RichText::builder()
+    .plain("今天学")
+    .ruby("漢字", "かんじ")
+    .build();
+
+widget(RichTextView::new(line))
+```
+
+:::
+
+- 注音用基字的样式（字体、粗细、颜色、描边、阴影），字号减半，跟着基字揭示。
+- `RichText::set_ruby(range, text)` / `clear_ruby(range)` 改已有文档；编辑里碰到基字内部会丢掉那条注音。
+
+## 逐字特效与打字机揭示
+
+`RichSpanStyle::effect(i)` 让一段字播放特效表里的第 `i` 个特效；`cx.set_rich_presentation(view, effects, reveal)` 给出这张表和揭示计划。它们只是呈现：不重新塑形、不重新排版，也不重建字形，文字着色器按运动时钟逐字算位置和透明度。只在还有东西在动时请求帧。
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::{GlyphEffect, GlyphIntro, RevealSchedule, RichSpanStyle, RichText};
+
+let line = RichText::builder()
+    .plain("欢迎")
+    .push("来到直播间", RichSpanStyle::new().effect(0))
+    .build();
+let view = cx.create_component(document, RichTextView::new(line))?;
+let reveal = RevealSchedule::uniform(cx.animation_now(), 7, 0.08).intro(GlyphIntro::pop(0.2));
+cx.set_rich_presentation(view, vec![GlyphEffect::wave(3.0)], Some(reveal))?;
+
+view! {
+    <Widget of={RichTextView::new(RichText::new("欢迎来到直播间"))} />
+}
+```
+
+```rust rust
+use nana_ui::runtime::view::widget;
+use nana_ui::runtime::RichTextView;
+use nana_ui::runtime::rich::{GlyphEffect, GlyphIntro, RevealSchedule, RichSpanStyle, RichText};
+
+let line = RichText::builder()
+    .plain("欢迎")
+    .push("来到直播间", RichSpanStyle::new().effect(0))
+    .build();
+let view = cx.create_component(document, RichTextView::new(line))?;
+let reveal = RevealSchedule::uniform(cx.animation_now(), 7, 0.08).intro(GlyphIntro::pop(0.2));
+cx.set_rich_presentation(view, vec![GlyphEffect::wave(3.0)], Some(reveal))?;
+
+widget(RichTextView::new(RichText::new("欢迎来到直播间")))
+```
+
+:::
+
+- 特效：`shake`（抖动）、`wave`（波浪）、`jump`（跳动）、`rainbow`（彩虹）、`pulse`（呼吸缩放）、`flicker`（闪烁），`stagger` 是相邻字之间的相位差。
+- 揭示：`at_s[i]` 是第 `i` 个字素开始入场的时刻（秒，相对 `start`）；`limit` 让揭示停在某个字素前（暂停标记）。`start` 用 `cx.animation_now()`，和合成器同一个时钟。
+- 入场：`GlyphIntro::fade` / `pop` / `rise`。
+- 贴纸跟着自己所在的字素揭示、跟着它的特效动。
+
 ## 属性
 
 | 属性 | 类型 | 说明 |

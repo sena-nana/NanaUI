@@ -282,7 +282,10 @@ impl<'a> ValidationPlan<'a> {
                     self.styles.insert(*id, style.clone());
                 }
                 UiMutation::SetPresetTheme { .. } | UiMutation::SetThemeTokens { .. } => {}
-                UiMutation::SetText { id, .. } | UiMutation::SetRichText { id, .. } => {
+                UiMutation::SetText { id, .. }
+                | UiMutation::SetRichText { id, .. }
+                | UiMutation::SetRichEditorMarks { id, .. }
+                | UiMutation::SetGlyphPresentation { id, .. } => {
                     self.require_exists(*id)?;
                 }
                 UiMutation::WriteLayout { id, layout } => {
@@ -1617,6 +1620,19 @@ impl UiWorld {
                 }
             }
             UiMutation::SetRichText { id, rich } => self.apply_rich_text(*id, rich.as_ref()),
+            UiMutation::SetGlyphPresentation { id, presentation } => {
+                if self.nodes.glyph_presentation(*id) != presentation.as_ref() {
+                    self.nodes.set_glyph_presentation(*id, presentation.clone());
+                    // The scene carries it to the painter; no text pass reads it.
+                    self.mark(*id, DirtyMask::RENDER);
+                }
+            }
+            UiMutation::SetRichEditorMarks { id, marks } => {
+                if self.nodes.rich_editor_marks(*id) != marks.as_ref() {
+                    self.nodes.set_rich_editor_marks(*id, marks.clone());
+                    self.mark(*id, DirtyMask::RENDER);
+                }
+            }
             UiMutation::WriteLayout { id, layout } => {
                 let record = self.record_mut(*id);
                 // A box that only moved leaves its text's constraints alone;
@@ -2111,6 +2127,15 @@ impl UiWorld {
                 };
                 if let Some(old) = old.filter(|old| Some(*old) != *target) {
                     self.release_focus(old);
+                    // A rich editor draws its caret only while focused.
+                    if self.nodes.rich_editor_marks(old).is_some() {
+                        self.mark(old, DirtyMask::RENDER);
+                    }
+                }
+                if let Some(target) = target
+                    && self.nodes.rich_editor_marks(*target).is_some()
+                {
+                    self.mark(*target, DirtyMask::RENDER);
                 }
                 if let Some(target) = target {
                     self.mark(*target, DirtyMask::STATE);

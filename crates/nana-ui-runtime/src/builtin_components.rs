@@ -113,6 +113,7 @@ fn install_builtins<const BIND: bool>(
     alias::<Stack, BIND>(registrar, "nana.drop-target", &["drop-target"])?;
     component::<Text, BIND>(registrar)?;
     component::<RichTextView, BIND>(registrar)?;
+    component::<crate::RichTextEditor, BIND>(registrar)?;
     component::<Button, BIND>(registrar)?;
     component::<IconButton, BIND>(registrar)?;
     component::<IconGlyph, BIND>(registrar)?;
@@ -268,6 +269,21 @@ impl RegisterableComponent for RichTextView {
             layout: Arc::clone(spec.layout),
             ..crate::NodeStyle::default()
         })
+    }
+}
+
+impl RegisterableComponent for crate::RichTextEditor {
+    const TYPE_ID: &'static str = crate::component_descriptors::RICH_TEXT_EDITOR.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::RICH_TEXT_EDITOR.tags;
+    /// Markup gives the starting text; styling comes from the application.
+    fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
+        crate::RichTextEditor::new(spec.display_label().to_owned())
+            .read_only(spec.read_only)
+            .disabled(spec.disabled)
+            .style(crate::NodeStyle {
+                layout: Arc::clone(spec.layout),
+                ..crate::NodeStyle::default()
+            })
     }
 }
 

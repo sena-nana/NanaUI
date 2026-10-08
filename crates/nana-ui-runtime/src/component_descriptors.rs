@@ -26,6 +26,7 @@ descriptors! {
     STACK => { type_id: "nana.stack", tags: &["stack"] },
     TEXT => { type_id: "nana.text", tags: &["text"] },
     RICH_TEXT_VIEW => { type_id: "nana.rich-text", tags: &["rich-text"] },
+    RICH_TEXT_EDITOR => { type_id: "nana.rich-text-editor", tags: &["rich-text-editor"] },
     BUTTON => { type_id: "nana.button", tags: &["button"] },
     ICON_BUTTON => { type_id: "nana.icon-button", tags: &["icon-button"] },
     ICON_GLYPH => { type_id: "nana.icon", tags: &["icon", "i"] },

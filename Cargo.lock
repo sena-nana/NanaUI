@@ -2744,9 +2744,11 @@ dependencies = [
  "nana-diagnostics",
  "nana-text",
  "nana-ui-core",
+ "nana-ui-input",
  "nana-ui-runtime",
  "serde",
  "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]

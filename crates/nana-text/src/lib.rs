@@ -73,10 +73,14 @@ pub use engine::{
 pub use id::{FontGeneration, FontId, FontSourceId, ShapeRunId, TextLayoutId, TextRevision};
 pub use layout::{
     IntrinsicWidths, LayoutCacheBudget, LayoutCounters, LayoutRequest, Layouter, LineBox,
-    LineBreakCause, OverflowFlags, StaleLayout, TextLayout, TextLayoutStore, TextRect,
+    LineBreakCause, OverflowFlags, PlacedObject, PlacedRuby, StaleLayout, TextLayout,
+    TextLayoutStore, TextRect,
 };
 pub use metrics::{LineMetrics, RunMetrics};
 pub use shape::{GlyphFlags, RunDirection, RunOrientation, ScriptTag, ShapedGlyph, ShapedRun};
 pub use shared::{SharedText, TextStamp};
-pub use source::{CompositionSegment, TextSource, TextSpan};
+pub use source::{
+    CompositionSegment, InlineObject, InlineObjectMetrics, OBJECT_REPLACEMENT, RUBY_SCALE,
+    RubySpan, TextSource, TextSpan,
+};
 pub use style::{TextKind, TextStyle};

@@ -255,6 +255,8 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::SetThemeTokens { .. } => "SetThemeTokens",
         UiMutation::SetText { .. } => "SetText",
         UiMutation::SetRichText { .. } => "SetRichText",
+        UiMutation::SetRichEditorMarks { .. } => "SetRichEditorMarks",
+        UiMutation::SetGlyphPresentation { .. } => "SetGlyphPresentation",
         UiMutation::WriteLayout { .. } => "WriteLayout",
         UiMutation::PatchPlacement { .. } => "PatchPlacement",
         UiMutation::SetScrollOffset { .. } => "SetScrollOffset",
