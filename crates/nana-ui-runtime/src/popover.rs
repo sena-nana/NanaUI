@@ -841,6 +841,29 @@ mod tests {
     use crate::framework::AppContext;
     use std::time::Duration;
 
+    /// The hanging surface opens `gap` below the trigger's box, not below
+    /// the first frame of the trigger's open animation.
+    #[test]
+    fn the_surface_hangs_a_gap_below_the_trigger_box() {
+        let mut context = AppContext::new();
+        let popover = context
+            .create_component(document(), Popover::new().trigger("Details").open(true))
+            .unwrap();
+        let body = context
+            .create_component(document(), crate::Text::new("Inspector content"))
+            .unwrap();
+        context.append_child(popover, body).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(420.0, 200.0))
+            .unwrap();
+        let trigger = context.world().layout_box(popover.stable_id()).unwrap();
+        let surface = hanging_surface(context.world(), popover.stable_id()).unwrap();
+        assert!(
+            (surface.y - (trigger.y + trigger.height + POPOVER_GAP)).abs() < 0.01,
+            "trigger {trigger:?}, surface {surface:?}"
+        );
+    }
+
     /// An open popover's hanging surface is sized from its items: an item
     /// whose box changes repaints and re-hit-tests the surface too.
     #[test]

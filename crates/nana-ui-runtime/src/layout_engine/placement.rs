@@ -2198,10 +2198,12 @@ fn place_triggered_menu_items(
     };
     // The items are viewport-fixed, so they hang off where the trigger shows:
     // its box through the scroll offsets and transforms above it, not the
-    // unscrolled layout box.
+    // unscrolled layout box. Not through its own transform: the trigger's
+    // open animation would otherwise leave the surface where its first
+    // frame put it.
     let trigger = nodes
         .world
-        .project_input_bounds(id, trigger)
+        .project_placement_bounds(id, trigger)
         .unwrap_or(trigger);
     let (origin_x, origin_y) = crate::popover::resolve_popover_origin(
         trigger,

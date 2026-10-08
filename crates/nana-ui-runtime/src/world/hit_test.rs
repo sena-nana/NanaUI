@@ -902,11 +902,27 @@ impl UiWorld {
         &self,
         target: StableNodeId,
     ) -> Option<([f32; 6], [f32; 2])> {
+        self.layout_projection_transform_from(target, true)
+    }
+
+    /// [`Self::layout_projection_transform`], or with `own` false only what
+    /// lies above `target`: its ancestors' transforms and scroll offsets,
+    /// not its own transform. A box placed beside `target` (a popover's
+    /// hanging surface) follows where `target` sits, not how it animates.
+    pub(super) fn layout_projection_transform_from(
+        &self,
+        target: StableNodeId,
+        own: bool,
+    ) -> Option<([f32; 6], [f32; 2])> {
         if !self.is_mounted(target) {
             return None;
         }
         let mut chain = Vec::new();
-        let mut cursor = Some(target);
+        let mut cursor = if own {
+            Some(target)
+        } else {
+            self.nodes.get(target)?.hierarchy.parent
+        };
         while let Some(id) = cursor {
             let node = self.nodes.get(id)?;
             chain.push(id);

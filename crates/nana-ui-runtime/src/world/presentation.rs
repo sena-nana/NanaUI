@@ -352,6 +352,17 @@ impl UiWorld {
         project_transformed_box(bounds, [a, by, c, d, e, f], [g, h])
     }
 
+    /// `id`'s layout box where it sits in the window: through the scroll
+    /// offsets and transforms above it, but not its own transform.
+    pub(crate) fn project_placement_bounds(
+        &self,
+        id: StableNodeId,
+        bounds: LayoutBox,
+    ) -> Option<LayoutBox> {
+        let ([a, by, c, d, e, f], [g, h]) = self.layout_projection_transform_from(id, false)?;
+        project_transformed_box(bounds, [a, by, c, d, e, f], [g, h])
+    }
+
     pub fn presentation_pair(
         &self,
         id: StableNodeId,
