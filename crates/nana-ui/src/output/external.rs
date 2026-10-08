@@ -524,8 +524,12 @@ impl ExternalSurface {
             self.resource_generation,
             self.painter.image_revision(),
         );
+        // The published frame is this content only when it is the latest
+        // revision submitted; an older one still showing while the newer
+        // completes is a different scene.
         if self.last_key == Some(key)
             && let Some(published) = self.published
+            && published.revision == self.next_content_revision
         {
             self.last_work.idle_reuse_frames = 1;
             nana_diagnostics::metric!(nana_diagnostics::framework::gpu::OUTPUT_IDLE_REUSE_FRAMES);

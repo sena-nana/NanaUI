@@ -340,6 +340,14 @@ impl RenderTargetPlanner {
         self.last_work = OutputWorkObservation::default();
         let mut consumers = consumers.to_vec();
         consumers.sort_by_key(|consumer| consumer.id);
+        if consumers.is_empty() {
+            // Nothing left to present to: drop the plan with the consumers
+            // rather than keep the last one attached to a stale topology.
+            self.key = None;
+            self.plan = None;
+            self.consumers.clear();
+            return Err(PlanError::NoConsumers);
+        }
         let key = PlanKey {
             canonical,
             consumers: consumers.clone(),
@@ -615,6 +623,11 @@ mod tests {
             .detach_consumer(target(), ConsumerId(1))
             .unwrap_err();
         assert_eq!(planner.rebuilds(), 1);
+        // The last consumer is gone, not kept behind a stale plan.
+        assert!(planner.plan().is_none());
+        let plan = planner.attach_consumer(target(), window(2)).unwrap();
+        assert_eq!(plan.consumer_count(), 1);
+        assert_eq!(plan.path_for(ConsumerId(1)), None);
     }
 
     #[test]

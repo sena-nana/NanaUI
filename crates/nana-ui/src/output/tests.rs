@@ -177,3 +177,36 @@ fn failed_resize_preserves_the_current_completed_frame() {
         .expect("failed resize leaves old lease valid");
     assert_eq!(surface.published_revision(), Some(frame.content_revision()));
 }
+
+#[test]
+fn a_render_of_new_content_never_reports_the_older_revision_as_reused() {
+    let mut surface = surface();
+    let scene = UiScene::new();
+    render_initial(&mut surface, &scene);
+    let first = completed_sample(&mut surface).content_revision();
+    // A new host revision is new content: submitted, not yet completed.
+    let ExternalRenderOutcome::Submitted {
+        content_revision: second,
+        ..
+    } = surface
+        .render(&scene, 1, viewport(EXTENT), None, None)
+        .expect("changed content renders")
+    else {
+        panic!("changed content must be submitted");
+    };
+    assert_ne!(first, second);
+    // Asked again for the same new content before it completes, the surface
+    // may defer or reuse the new revision, never offer the old one as it.
+    for _ in 0..8 {
+        match surface
+            .render(&scene, 1, viewport(EXTENT), None, None)
+            .expect("repeat render")
+        {
+            ExternalRenderOutcome::Reused {
+                content_revision, ..
+            } => assert_eq!(content_revision, second),
+            ExternalRenderOutcome::Deferred => {}
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
