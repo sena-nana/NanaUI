@@ -201,7 +201,7 @@ pub(in crate::world) fn graph_minimap_geometry(
         nodes: nodes.iter().filter_map(&project).collect(),
         node_fill: fill,
         indicator: indicator
-            .and_then(&project)
+            .and_then(project)
             .and_then(|mapped| intersect_layout_boxes(box_bounds, mapped)),
         indicator_fill,
         indicator_border,
