@@ -967,11 +967,13 @@ mod tests {
     #[test]
     fn foundation_counters_are_first_class_frame_work() {
         let mut counters = WorkCounters::default();
-        let mut foundation = LayoutFoundationCounters::default();
-        foundation.layout_nodes_placed = 3;
-        foundation.layout_context_transitions = 1;
-        foundation.scroll_layout_reflows = 1;
-        foundation.replaced_resource_rebinds = 2;
+        let foundation = LayoutFoundationCounters {
+            layout_nodes_placed: 3,
+            layout_context_transitions: 1,
+            scroll_layout_reflows: 1,
+            replaced_resource_rebinds: 2,
+            ..Default::default()
+        };
         counters.record_layout_foundation(foundation);
         assert_eq!(counters.layout_foundation.layout_nodes_placed, 3);
         assert_eq!(counters.layout_foundation.layout_context_transitions, 1);

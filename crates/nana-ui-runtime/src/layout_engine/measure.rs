@@ -1761,7 +1761,7 @@ fn grid_measure_delta(
     updated.size = size;
     updated.grid = Some(GridTrackPlan::from_layout(&solved));
     for entry in &mut updated.entries {
-        if entry.intrinsic.is_some() && !flow.iter().any(|child| *child == entry.child) {
+        if entry.intrinsic.is_some() && !flow.contains(&entry.child) {
             entry.intrinsic = None;
         }
     }

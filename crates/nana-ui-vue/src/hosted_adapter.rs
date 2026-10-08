@@ -463,12 +463,13 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 }
                 // The page stopped the key: the Runtime drops its text too,
                 // so the field keeps what the page sees.
-                if key.is_pressed() && !allowed {
-                    if let Ok(mut document) = host.document().lock() {
-                        document
-                            .context_mut()
-                            .suppress_text_for(event.metadata.source, event.metadata.sequence);
-                    }
+                if key.is_pressed()
+                    && !allowed
+                    && let Ok(mut document) = host.document().lock()
+                {
+                    document
+                        .context_mut()
+                        .suppress_text_for(event.metadata.source, event.metadata.sequence);
                 }
             }
             InputPayload::Text(committed) => {

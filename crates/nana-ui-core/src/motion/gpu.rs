@@ -541,9 +541,11 @@ mod tests {
     fn paused_instant_is_packed_separately_from_the_shared_clock() {
         let registry = MotionCodecRegistry::builtin();
         let paused_at = Duration::from_secs(86_400) + Duration::from_millis(25);
-        let mut playback = crate::motion::AnimationPlayback::default();
-        playback.play_state = AnimationPlayState::Paused;
-        playback.paused_at = Some(paused_at);
+        let playback = crate::motion::AnimationPlayback {
+            play_state: AnimationPlayState::Paused,
+            paused_at: Some(paused_at),
+            ..Default::default()
+        };
         let track = MotionTrack::transition(
             MotionTrackId::new(1).unwrap(),
             MotionTargetId::new(1).unwrap(),

@@ -531,10 +531,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // One event at a time: the program observes each event before the
         // next one routes, so what it does with a key press (a page's
         // `keydown.preventDefault()`) stops the text that key typed.
-        loop {
-            let Some(host) = self.window_contexts.get_mut(&id) else {
-                break;
-            };
+        while let Some(host) = self.window_contexts.get_mut(&id) {
             let text = &mut self.text;
             let (mut services, endpoint, _, _) =
                 NativeWindowServices::of(window.as_ref(), &self.clipboard, &mut host.input_source);

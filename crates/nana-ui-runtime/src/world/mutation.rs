@@ -1526,19 +1526,7 @@ impl UiWorld {
                 if inherited_text_changed {
                     self.mark_subtree(*id, super::motion::INHERITED_TEXT_DIRTY);
                 }
-                if omits_box_changed {
-                    self.mark_subtree(
-                        *id,
-                        DirtyMask::STYLE
-                            | DirtyMask::INPUT
-                            | DirtyMask::FOCUS_IME
-                            | DirtyMask::ACCESSIBILITY
-                            | DirtyMask::RENDER,
-                    );
-                    if let Some(parent) = self.parent_id(*id) {
-                        self.mark(parent, DirtyMask::ACCESSIBILITY);
-                    }
-                } else if paint_visibility_changed {
+                if omits_box_changed || paint_visibility_changed {
                     self.mark_subtree(
                         *id,
                         DirtyMask::STYLE

@@ -3560,9 +3560,12 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
     /// metadata changed and never rebuilds application or Scene state.
     pub fn refresh_display_hdr_info(&mut self) -> bool {
         let ids: Vec<_> = self.manager.window_contexts.keys().copied().collect();
-        ids.into_iter().fold(false, |changed, id| {
-            self.manager.refresh_surface_hdr_info(id) || changed
-        })
+        // Every window refreshes; none is skipped once one changed.
+        let mut changed = false;
+        for id in ids {
+            changed |= self.manager.refresh_surface_hdr_info(id);
+        }
+        changed
     }
     /// Returns NanaUI's next deadline for the host to merge with its own timers.
     pub fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) -> Option<Instant> {

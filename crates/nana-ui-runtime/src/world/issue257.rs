@@ -430,7 +430,7 @@ fn contained_label_edit(count: u64) -> GateACounts {
     let after = world.last_work_counters();
     assert_eq!(
         after.layout_full_document_fallbacks - before.layout_full_document_fallbacks,
-        stats.full_document_fallbacks as usize,
+        stats.full_document_fallbacks,
         "frontier stats are the work-counter authority"
     );
     assert_eq!(

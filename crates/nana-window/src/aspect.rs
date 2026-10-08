@@ -89,7 +89,7 @@ fn relative_change(value: f64, reference: f64) -> f64 {
 }
 
 /// The edge a `WM_SIZING` `wParam` (`WMSZ_*`) names.
-#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn sizing_edge(wmsz: usize) -> Option<FrameResizeEdge> {
     Some(match wmsz {
         1 => FrameResizeEdge::West,

@@ -260,11 +260,14 @@ fn metadata_compatible(metadata: FrameColorMetadata, alpha: HostTextureAlphaMode
     {
         return false;
     }
-    match (alpha, metadata.alpha()) {
+    matches!(
+        (alpha, metadata.alpha()),
         (HostTextureAlphaMode::Opaque, FrameAlphaMode::Opaque)
-        | (HostTextureAlphaMode::Premultiplied, FrameAlphaMode::Premultiplied) => true,
-        _ => false,
-    }
+            | (
+                HostTextureAlphaMode::Premultiplied,
+                FrameAlphaMode::Premultiplied
+            )
+    )
 }
 
 impl<E> Drop for FrameBinding<E> {

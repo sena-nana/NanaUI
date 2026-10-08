@@ -2068,11 +2068,11 @@ impl UiWorld {
             // Layout payloads are drained exclusively from the typed side
             // table. The private LAYOUT bit only causes this entity to be
             // visited by the drain.
-            if bits & DirtyMask::LAYOUT != 0 {
-                if let Some(invalidation) = self.pending_layout_invalidations.remove(&id) {
-                    work.layout_frontier_seeds
-                        .push(crate::LayoutFrontierSeed::new(id, invalidation));
-                }
+            if bits & DirtyMask::LAYOUT != 0
+                && let Some(invalidation) = self.pending_layout_invalidations.remove(&id)
+            {
+                work.layout_frontier_seeds
+                    .push(crate::LayoutFrontierSeed::new(id, invalidation));
             }
             let has_text = matches!(self.record(id).kind.as_ref(), NodeKind::Text)
                 || !self.record(id).text.value.is_empty()
@@ -3918,81 +3918,75 @@ impl UiWorld {
             }
             // Every typed seed needs its exported metric path. An isolated
             // node owns its subtree metrics, so its parent edge is a boundary.
-            if up_seen.insert(node) && !self.layout_isolated(node) {
-                if let Some(parent) = self.parent_id(node) {
-                    if self.document_of(parent) == Some(document) {
-                        let Some(parent_record) = self.nodes.get(parent) else {
-                            continue;
-                        };
-                        let parent_display = parent_record.resolved_layout.display;
-                        let has_definite_size =
-                            definite_fixed_border(parent_record.resolved_layout.as_ref());
-                        // A fixed inline-block is an atomic box. Inner metrics
-                        // stop at its border; the outer inline formatting
-                        // context does not reflow.
-                        let atomic_border = has_definite_size
-                            && parent_display == Some(nana_ui_core::DisplaySpec::InlineBlock);
-                        let is_formatting_context = !atomic_border
-                            && parent_display.is_some_and(|display| {
-                                display.is_flex_container()
-                                    || display.is_grid_container()
-                                    || display.is_inline_level()
-                            });
-                        // Fixed ordinary boxes stop intrinsic export and keep a
-                        // lateral edge. Formatting contexts still consume metrics.
-                        let upward_for_parent = if force_all {
-                            LayoutDependencyFootprint::ALL
-                        } else if has_definite_size && !is_formatting_context {
-                            lateral
-                        } else if is_formatting_context {
-                            upward.union(lateral)
-                        } else {
-                            upward
-                        };
-                        if !upward_for_parent.is_empty() {
-                            let follows_metrics = force_all || axes.intersects(upward_for_parent);
-                            let edge_structural = !follows_metrics;
-                            let edge_upward = if edge_structural {
-                                LayoutDependencyFootprint::NONE
-                            } else {
-                                upward_for_parent
-                            };
-                            let edge_downward = if edge_structural {
-                                LayoutDependencyFootprint::NONE
-                            } else if force_all {
-                                LayoutDependencyFootprint::ALL
-                            } else {
-                                downward
-                            };
-                            let parent_is_document =
-                                matches!(parent_record.kind.as_ref(), NodeKind::Document);
-                            let exports_size = force_all || axes.intersects(upward);
-                            // Unchanged fixed border: do not replay the parent.
-                            let inner_fixed = edge_structural
-                                && !exports_size
-                                && self.is_fixed_metric_boundary(node);
-                            if !inner_fixed
-                                && (!edge_structural || (!parent_is_document && !has_definite_size))
-                            {
-                                graph.add_parent_dependency_split(
-                                    parent,
-                                    node,
-                                    edge_upward,
-                                    edge_downward,
-                                );
-                            }
-                            if !inner_fixed && !edge_structural && !parent_is_document {
-                                pending.push_back((
-                                    parent,
-                                    upward_for_parent,
-                                    force_all
-                                        || (axes.intersects(lateral)
-                                            && parent_record.hierarchy.children.len() <= 1),
-                                    force_all,
-                                    force_all,
-                                ));
-                            }
-                        }
+            if up_seen.insert(node)
+                && !self.layout_isolated(node)
+                && let Some(parent) = self.parent_id(node)
+                && self.document_of(parent) == Some(document)
+            {
+                let Some(parent_record) = self.nodes.get(parent) else {
+                    continue;
+                };
+                let parent_display = parent_record.resolved_layout.display;
+                let has_definite_size =
+                    definite_fixed_border(parent_record.resolved_layout.as_ref());
+                // A fixed inline-block is an atomic box. Inner metrics
+                // stop at its border; the outer inline formatting
+                // context does not reflow.
+                let atomic_border = has_definite_size
+                    && parent_display == Some(nana_ui_core::DisplaySpec::InlineBlock);
+                let is_formatting_context = !atomic_border
+                    && parent_display.is_some_and(|display| {
+                        display.is_flex_container()
+                            || display.is_grid_container()
+                            || display.is_inline_level()
+                    });
+                // Fixed ordinary boxes stop intrinsic export and keep a
+                // lateral edge. Formatting contexts still consume metrics.
+                let upward_for_parent = if force_all {
+                    LayoutDependencyFootprint::ALL
+                } else if has_definite_size && !is_formatting_context {
+                    lateral
+                } else if is_formatting_context {
+                    upward.union(lateral)
+                } else {
+                    upward
+                };
+                if !upward_for_parent.is_empty() {
+                    let follows_metrics = force_all || axes.intersects(upward_for_parent);
+                    let edge_structural = !follows_metrics;
+                    let edge_upward = if edge_structural {
+                        LayoutDependencyFootprint::NONE
+                    } else {
+                        upward_for_parent
+                    };
+                    let edge_downward = if edge_structural {
+                        LayoutDependencyFootprint::NONE
+                    } else if force_all {
+                        LayoutDependencyFootprint::ALL
+                    } else {
+                        downward
+                    };
+                    let parent_is_document =
+                        matches!(parent_record.kind.as_ref(), NodeKind::Document);
+                    let exports_size = force_all || axes.intersects(upward);
+                    // Unchanged fixed border: do not replay the parent.
+                    let inner_fixed =
+                        edge_structural && !exports_size && self.is_fixed_metric_boundary(node);
+                    if !inner_fixed
+                        && (!edge_structural || (!parent_is_document && !has_definite_size))
+                    {
+                        graph.add_parent_dependency_split(parent, node, edge_upward, edge_downward);
+                    }
+                    if !inner_fixed && !edge_structural && !parent_is_document {
+                        pending.push_back((
+                            parent,
+                            upward_for_parent,
+                            force_all
+                                || (axes.intersects(lateral)
+                                    && parent_record.hierarchy.children.len() <= 1),
+                            force_all,
+                            force_all,
+                        ));
                     }
                 }
             }
@@ -4212,10 +4206,7 @@ impl UiWorld {
         while let Some(id) = stack.pop() {
             let children = self.node(id).expect("hierarchy node must exist").children;
             stack.extend(children.iter().rev().copied());
-            let _ = self.mark(
-                id,
-                subtree_bits | (id == root).then_some(root_layout).unwrap_or(0),
-            );
+            let _ = self.mark(id, subtree_bits | if id == root { root_layout } else { 0 });
         }
     }
 
@@ -4903,8 +4894,8 @@ fn layout_with_semantics_of(
     overlaid.grid_row_line_names = semantics.grid_row_line_names.clone();
     overlaid.grid_columns = semantics.grid_columns.clone();
     overlaid.grid_rows = semantics.grid_rows.clone();
-    overlaid.grid_columns_unsupported = semantics.grid_columns_unsupported.clone();
-    overlaid.grid_rows_unsupported = semantics.grid_rows_unsupported.clone();
+    overlaid.grid_columns_unsupported = semantics.grid_columns_unsupported;
+    overlaid.grid_rows_unsupported = semantics.grid_rows_unsupported;
     overlaid.grid_auto_columns = semantics.grid_auto_columns.clone();
     overlaid.grid_auto_rows = semantics.grid_auto_rows.clone();
     overlaid.grid_auto_flow = semantics.grid_auto_flow;

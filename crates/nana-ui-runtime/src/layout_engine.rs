@@ -233,8 +233,10 @@ impl RuntimeLayoutEngine {
                     Participation::Replaced(content) => Some(content),
                     _ => None,
                 });
-            if previous_replaced.is_some() && replaced_content.is_some() {
-                node.participation = Participation::Replaced(previous_replaced.unwrap());
+            if let Some(previous) = previous_replaced
+                && replaced_content.is_some()
+            {
+                node.participation = Participation::Replaced(previous);
             }
             foundation.upsert(node);
             if let (Some(previous), Some(content)) = (previous_replaced, replaced_content) {
@@ -251,12 +253,10 @@ impl RuntimeLayoutEngine {
                     .filter(|value| value.is_finite())
                     .map(|value| value.max(0.0));
                 foundation.set_metrics(layout_id, intrinsic);
-            } else if replaced {
-                if let Some(size) = intrinsic_size {
-                    let mut intrinsic = IntrinsicMetrics::new(size);
-                    intrinsic.aspect_ratio = input.style.aspect_ratio;
-                    foundation.set_metrics(layout_id, intrinsic);
-                }
+            } else if replaced && let Some(size) = intrinsic_size {
+                let mut intrinsic = IntrinsicMetrics::new(size);
+                intrinsic.aspect_ratio = input.style.aspect_ratio;
+                foundation.set_metrics(layout_id, intrinsic);
             }
         }
         let retained_results = boxes
@@ -336,22 +336,18 @@ impl RuntimeLayoutEngine {
                 containing_block = None;
             }
             let clip_dependency = clip;
-            result.clip = clip_dependency
-                .map(|clip| {
-                    styles
-                        .get(&StableNodeId::new(clip.get()).expect("nonzero id"))
-                        .and_then(|_| {
-                            by_id.get(&StableNodeId::new(clip.get()).expect("nonzero id"))
-                        })
-                        .map(|clip_box| {
-                            LayoutRect::new(
-                                clip_box.x,
-                                clip_box.y,
-                                LayoutSize::new(clip_box.width, clip_box.height),
-                            )
-                        })
-                })
-                .flatten();
+            result.clip = clip_dependency.and_then(|clip| {
+                styles
+                    .get(&StableNodeId::new(clip.get()).expect("nonzero id"))
+                    .and_then(|_| by_id.get(&StableNodeId::new(clip.get()).expect("nonzero id")))
+                    .map(|clip_box| {
+                        LayoutRect::new(
+                            clip_box.x,
+                            clip_box.y,
+                            LayoutSize::new(clip_box.width, clip_box.height),
+                        )
+                    })
+            });
             result.containing_block = containing_block;
             result.dependency_footprint.extend(
                 clip_dependency

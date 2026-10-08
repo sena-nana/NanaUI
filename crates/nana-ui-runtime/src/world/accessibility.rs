@@ -494,7 +494,7 @@ impl UiWorld {
                 let min = metrics.min_offset().x;
                 let max = metrics.max_offset().x;
                 let offset = scroll_offset?;
-                (max > min).then(|| crate::AccessibilityScrollAxis {
+                (max > min).then_some(crate::AccessibilityScrollAxis {
                     value: offset.x as f64,
                     minimum: min as f64,
                     maximum: max as f64,
@@ -504,7 +504,7 @@ impl UiWorld {
                 let min = metrics.min_offset().y;
                 let max = metrics.max_offset().y;
                 let offset = scroll_offset?;
-                (max > min).then(|| crate::AccessibilityScrollAxis {
+                (max > min).then_some(crate::AccessibilityScrollAxis {
                     value: offset.y as f64,
                     minimum: min as f64,
                     maximum: max as f64,
