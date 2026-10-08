@@ -10,9 +10,9 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     GpuContext, GpuRenderTarget, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages,
-    NanaTextShaper, RegionId, RegionRole, RegionState, ScenePaintViewport, SceneWgpuPainter,
-    SettingsTabId, ThemeAppearance, WorkspaceAction, WorkspaceLayout, WorkspaceModel,
-    WorkspaceMutation,
+    HostTexture, HostTextureAlphaMode, HostTextureRegistry, NanaTextShaper, RegionId, RegionRole,
+    RegionState, ScenePaintViewport, SceneWgpuPainter, SettingsTabId, ThemeAppearance,
+    WorkspaceAction, WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
 };
 use nana_ui_platform::{
     InputModifiers, InputPayload, PointerId, PointerInput, PointerPhase, WheelInput, WheelUnit,
@@ -61,10 +61,29 @@ pub fn run() -> BenchmarkReport {
         })
         .and_then(|texture| texture.render_target())
         .expect("benchmark target");
+    // The Gallery's ready thumbnail samples this slot; its pixels do not matter.
+    let thumbnail = gpu
+        .create_texture(&GpuTextureDescriptor {
+            label: Some("nana-ui benchmark gallery thumbnail"),
+            width: 32,
+            height: 32,
+            format: GpuTextureFormat::RGBA8_UNORM_SRGB,
+            usage: GpuTextureUsages::SAMPLED,
+        })
+        .expect("benchmark gallery thumbnail");
+    let host_textures = HostTextureRegistry::new();
+    host_textures.register(
+        "gallery.thumb",
+        HostTexture::new(1, 0, &thumbnail),
+        32,
+        32,
+        HostTextureAlphaMode::Opaque,
+    );
     let mut render = RenderContext {
         gpu: &gpu,
         painter,
         target: &target,
+        host_textures,
     };
 
     let mut cases: Vec<_> = [100, 500, 1_000]
@@ -122,6 +141,7 @@ struct RenderContext<'a> {
     gpu: &'a GpuContext,
     painter: SceneWgpuPainter,
     target: &'a GpuRenderTarget,
+    host_textures: HostTextureRegistry,
 }
 
 fn benchmark_list_case(item_count: usize, render: &mut RenderContext<'_>) -> CaseReport {
@@ -333,7 +353,14 @@ fn paint_scene(
     let started = Instant::now();
     render
         .painter
-        .paint(scene, &mut frame, render.target, viewport, None, None)
+        .paint(
+            scene,
+            &mut frame,
+            render.target,
+            viewport,
+            Some(&render.host_textures),
+            None,
+        )
         .expect("benchmark SceneWgpuPainter must paint");
     let draw_cpu_ms = elapsed_ms(started);
 
