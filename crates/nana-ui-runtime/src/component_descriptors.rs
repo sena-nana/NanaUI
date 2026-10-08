@@ -25,6 +25,7 @@ macro_rules! descriptors {
 descriptors! {
     STACK => { type_id: "nana.stack", tags: &["stack"] },
     TEXT => { type_id: "nana.text", tags: &["text"] },
+    RICH_TEXT_VIEW => { type_id: "nana.rich-text", tags: &["rich-text"] },
     BUTTON => { type_id: "nana.button", tags: &["button"] },
     ICON_BUTTON => { type_id: "nana.icon-button", tags: &["icon-button"] },
     ICON_GLYPH => { type_id: "nana.icon", tags: &["icon", "i"] },
