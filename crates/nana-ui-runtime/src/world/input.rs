@@ -126,6 +126,25 @@ impl UiWorld {
     pub fn take_pointer_capture_changes(&mut self) -> Vec<PointerCaptureChange> {
         std::mem::take(&mut self.input.pending_pointer_capture_changes)
     }
+
+    /// How many capture changes are pending, to read those a commit adds.
+    pub(crate) fn pointer_capture_change_count(&self) -> usize {
+        self.input.pending_pointer_capture_changes.len()
+    }
+
+    /// The captures released since the pending list was `from` long.
+    pub(crate) fn pointer_captures_released_since(
+        &self,
+        from: usize,
+    ) -> impl Iterator<Item = (u64, StableNodeId)> + '_ {
+        self.input
+            .pending_pointer_capture_changes
+            .get(from..)
+            .unwrap_or_default()
+            .iter()
+            .filter(|change| !change.captured)
+            .map(|change| (change.pointer_id, change.target))
+    }
 }
 
 impl UiWorld {

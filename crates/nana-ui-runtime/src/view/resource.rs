@@ -110,8 +110,9 @@ where
         holding.set(true);
         let holding = Rc::clone(&holding);
         reactive::on_cleanup(move || {
+            // The boundary's scope may be gone first.
             if holding.replace(false) {
-                suspense.pending.update(|pending| *pending -= 1);
+                suspense.pending.try_update(|pending| *pending -= 1);
             }
         });
     }
@@ -141,7 +142,7 @@ where
                 if holding.replace(false)
                     && let Some(suspense) = suspense
                 {
-                    suspense.pending.update(|pending| *pending -= 1);
+                    suspense.pending.try_update(|pending| *pending -= 1);
                 }
             })));
         });

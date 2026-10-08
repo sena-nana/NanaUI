@@ -1139,6 +1139,8 @@ pub struct VirtualListItems<K, C: ComponentView> {
     measured: bool,
     /// Rows were mounted or moved since the last measurement.
     pending_measure: bool,
+    /// Bumped each time a measurement changed the layout's extents.
+    measurements: u64,
 }
 
 /// Application-owned visible row/cell identities for a virtual Table. The
@@ -1268,6 +1270,7 @@ impl<K, C: ComponentView> Default for VirtualListItems<K, C> {
             published: None,
             measured: false,
             pending_measure: false,
+            measurements: 0,
         }
     }
 }
@@ -1294,6 +1297,12 @@ where
     /// sees their laid-out height.
     pub fn pending_measure(&self) -> bool {
         self.pending_measure
+    }
+
+    /// How many measuring syncs changed the layout's extents: equal before
+    /// and after a sync, the layout is as it was.
+    pub fn measurements(&self) -> u64 {
+        self.measurements
     }
 
     pub fn mounted_keys(&self) -> &[K] {
@@ -1743,7 +1752,10 @@ impl AppContext {
             ));
         }
         self.prepare_surface_closing(&mut mutations);
-        self.despawn_placed_with_declared_parents(&mut mutations);
+        if let Some(rescued) = self.despawn_placed_with_declared_parents(&mut mutations) {
+            // Before the batch reads which subtrees it despawns.
+            self.commit_mutations(rescued)?;
+        }
         let previous_focus = mutations
             .as_slice()
             .iter()
@@ -1795,10 +1807,15 @@ impl AppContext {
             self.menu_focus_before_removal(&previous_focus, &despawned)
         };
         let written_editors = self.text_histories_written_by(&mutations);
+        let captures_before = self.world.pointer_capture_change_count();
         let (report, parked, inserted) = self
             .world
             .commit_with_mount_lifecycle(mutations)
             .map_err(FrameworkError::from)?;
+        let lost_captures: Vec<_> = self
+            .world
+            .pointer_captures_released_since(captures_before)
+            .collect();
         self.verify_text_histories(written_editors);
         for (document, root, previous, restore) in hover_restore {
             // Other focus owners (including overlay and scope restoration) win.
@@ -1857,6 +1874,7 @@ impl AppContext {
             self.hand_over_menu_focus(menu_focus)?;
         }
         suspended?;
+        self.end_drags_that_lost_their_capture(&lost_captures)?;
         Ok(report)
     }
 
@@ -3518,10 +3536,16 @@ impl AppContext {
 
     /// A keyed child placed away from its declared parent is still that
     /// parent's: when the batch despawns the parent, it despawns the child
-    /// too, and anything that child declared elsewhere in turn.
-    fn despawn_placed_with_declared_parents(&self, mutations: &mut MutationQueue) {
+    /// too, and anything that child declared elsewhere in turn. When the
+    /// batch despawns only where the child is placed (a teleport's target),
+    /// the child goes back under its declared parent first and lives on.
+    /// Returns the moves that rescue such children, to commit first.
+    fn despawn_placed_with_declared_parents(
+        &mut self,
+        mutations: &mut MutationQueue,
+    ) -> Option<MutationQueue> {
         if self.placed_assembled.is_empty() {
-            return;
+            return None;
         }
         let mut roots: HashSet<StableNodeId> = mutations
             .as_slice()
@@ -3532,7 +3556,7 @@ impl AppContext {
             })
             .collect();
         if roots.is_empty() {
-            return;
+            return None;
         }
         let under = |roots: &HashSet<StableNodeId>, id: StableNodeId| {
             std::iter::successors(Some(id), |id| self.world.parent_id(*id))
@@ -3551,13 +3575,40 @@ impl AppContext {
                 })
                 .collect();
             if found.is_empty() {
-                return;
+                break;
             }
             for node in found {
                 roots.insert(node);
                 mutations.despawn_subtree(node);
             }
         }
+        let mut rescued: Vec<(StableNodeId, StableNodeId)> = self
+            .placed_assembled
+            .iter()
+            .copied()
+            .filter(|node| !roots.contains(node) && under(&roots, *node))
+            .filter_map(|node| {
+                let (declared, _) = self.assembled_parent.get(&node)?;
+                (!under(&roots, *declared)).then_some((node, *declared))
+            })
+            .collect();
+        if rescued.is_empty() {
+            return None;
+        }
+        // Their placement's order, so siblings come back in the order shown.
+        rescued.sort_by_key(|(node, _)| {
+            let parent = self.world.parent_id(*node);
+            let at = parent
+                .and_then(|parent| self.world.node(parent))
+                .and_then(|parent| parent.children.iter().position(|child| child == node));
+            (parent, at)
+        });
+        let mut first = MutationQueue::new();
+        for (node, declared) in rescued {
+            first.insert(declared, node, None);
+            self.placed_assembled.remove(&node);
+        }
+        Some(first)
     }
 
     fn forget_subtree(&mut self, removed: &HashSet<StableNodeId>) {

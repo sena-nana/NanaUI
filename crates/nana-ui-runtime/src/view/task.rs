@@ -105,22 +105,22 @@ pub struct Task {
 impl Task {
     /// Drop the future now. Nothing it would have done afterwards happens.
     pub fn abort(self) {
-        with_executor(|executor| {
-            let Some(slot) = executor.slots.get_mut(self.index as usize) else {
-                return;
-            };
+        let future = with_executor(|executor| {
+            let slot = executor.slots.get_mut(self.index as usize)?;
             if slot.generation != self.generation || !slot.live {
-                return;
+                return None;
             }
             slot.generation = slot.generation.wrapping_add(1);
             slot.live = false;
-            // A task polling itself away drops its future when the poll
-            // returns.
-            drop(slot.future.take());
             slot.waker = None;
             executor.free.push(self.index);
             executor.live -= 1;
+            // A task polling itself away drops its future when the poll
+            // returns.
+            slot.future.take()
         });
+        // Outside the borrow: the future's drop may use the executor.
+        drop(future);
     }
 
     /// Whether the task has neither finished nor been aborted.

@@ -228,6 +228,10 @@ struct Runtime {
 struct Released {
     cleanups: Vec<Box<dyn FnOnce()>>,
     garbage: Vec<Box<dyn Any>>,
+    /// Signals a removed observer read: their subscriber lists are compacted
+    /// once per disposal, not scanned once per observer (a list of n rows
+    /// reading one signal would otherwise pay O(n²) to clear).
+    stale_subscribers: Vec<SignalKey>,
 }
 
 impl Runtime {
@@ -389,9 +393,20 @@ impl Runtime {
     /// Mark `key`'s readers `direct` (dirty for a write or a changed
     /// computed) and everything further down "check".
     fn mark(&mut self, key: SignalKey, direct: Staleness) {
+        self.mark_except(key, direct, None);
+    }
+
+    /// [`mark`](Self::mark), leaving out `reader`: the observer reading the
+    /// new value right now needs no notice of it.
+    fn mark_except(&mut self, key: SignalKey, direct: Staleness, reader: Option<Observer>) {
         let mut stack = std::mem::take(&mut self.notify_stack);
         if let Some(node) = self.signal(key) {
-            stack.extend(node.subscribers.iter().map(|observer| (*observer, direct)));
+            stack.extend(
+                node.subscribers
+                    .iter()
+                    .filter(|observer| Some(**observer) != reader)
+                    .map(|observer| (*observer, direct)),
+            );
         }
         while let Some((observer, staleness)) = stack.pop() {
             match observer {
@@ -440,9 +455,7 @@ impl Runtime {
         let Some(node) = self.effects.remove(key.index, key.generation) else {
             return;
         };
-        for dep in &node.deps {
-            self.unsubscribe(*dep, Observer::Effect(key));
-        }
+        released.stale_subscribers.extend_from_slice(&node.deps);
         if let Some(run) = node.run {
             released.garbage.push(Box::new(run));
         }
@@ -454,14 +467,43 @@ impl Runtime {
             return;
         };
         if let Some(computed) = node.computed {
-            for dep in &computed.deps {
-                self.unsubscribe(*dep, Observer::Computed(key));
-            }
+            released.stale_subscribers.extend_from_slice(&computed.deps);
             if let Some(compute) = computed.compute {
                 released.garbage.push(Box::new(compute));
             }
         }
         released.garbage.push(Box::new(node.value));
+    }
+
+    /// Drop the observers that no longer exist from the subscriber lists
+    /// `released` names, each list once.
+    fn compact_subscribers(&mut self, released: &mut Released) {
+        let stale = &mut released.stale_subscribers;
+        if stale.is_empty() {
+            return;
+        }
+        stale.sort_unstable_by_key(|key| (key.index, key.generation));
+        stale.dedup();
+        for key in stale.drain(..) {
+            let Some(mut subscribers) = self
+                .signal_mut(key)
+                .map(|node| std::mem::take(&mut node.subscribers))
+            else {
+                continue;
+            };
+            subscribers.retain(|observer| match *observer {
+                Observer::Effect(effect) => {
+                    self.effects.get(effect.index, effect.generation).is_some()
+                }
+                Observer::Computed(computed) => self
+                    .signals
+                    .get(computed.index, computed.generation)
+                    .is_some(),
+            });
+            if let Some(node) = self.signal_mut(key) {
+                node.subscribers = subscribers;
+            }
+        }
     }
 
     fn dispose_scope(&mut self, key: ScopeKey, released: &mut Released) {
@@ -641,7 +683,10 @@ fn recompute(key: SignalKey, at: &'static Location<'static>) {
             computed.compute = Some(compute);
         }
         if changed {
-            rt.mark(key, Staleness::Dirty);
+            // The observer whose read brought this computed up to date sees
+            // the new value now; marking it would run it again.
+            let reader = rt.tracking.last().and_then(|frame| frame.observer);
+            rt.mark_except(key, Staleness::Dirty, reader);
         }
     });
 }
@@ -879,7 +924,10 @@ pub(crate) fn effect_site(key: EffectKey) -> Option<&'static Location<'static>> 
 
 pub(crate) fn dispose_effect(key: EffectKey) {
     let mut released = Released::default();
-    with_rt(|rt| rt.remove_effect(key, &mut released));
+    with_rt(|rt| {
+        rt.remove_effect(key, &mut released);
+        rt.compact_subscribers(&mut released);
+    });
     released.run();
 }
 
@@ -1035,10 +1083,16 @@ pub(crate) fn release_signals(scope: Option<ScopeKey>, keys: &[SignalKey]) {
         for key in keys {
             rt.remove_signal(*key, &mut released);
         }
+        rt.compact_subscribers(&mut released);
         if let Some(scope) = scope
             && let Some(node) = rt.scope_mut(scope)
         {
-            node.signals.retain(|key| !keys.contains(key));
+            if keys.len() <= 8 {
+                node.signals.retain(|key| !keys.contains(key));
+            } else {
+                let gone: hashbrown::HashSet<SignalKey> = keys.iter().copied().collect();
+                node.signals.retain(|key| !gone.contains(key));
+            }
         }
     });
     released.run();
@@ -1074,7 +1128,10 @@ pub(crate) fn with_scope<R>(scope: ScopeKey, f: impl FnOnce() -> R) -> R {
 
 pub(crate) fn dispose_scope(key: ScopeKey) {
     let mut released = Released::default();
-    with_rt(|rt| rt.dispose_scope(key, &mut released));
+    with_rt(|rt| {
+        rt.dispose_scope(key, &mut released);
+        rt.compact_subscribers(&mut released);
+    });
     released.run();
 }
 

@@ -361,11 +361,60 @@ impl AppContext {
         let Some(target) = self.world.pointer_capture(document, pointer_id) else {
             return Ok(false);
         };
+        self.end_range_drag_on(target, pointer_id, cancel)
+    }
+
+    /// A commit released `pointer_id`'s capture of `target` without the
+    /// drag ending (the field was hidden or parked): end a range or XY pad
+    /// drag it held as a cancel, so its dragging and seek events close.
+    pub(crate) fn end_drags_that_lost_their_capture(
+        &mut self,
+        released: &[(u64, StableNodeId)],
+    ) -> Result<(), FrameworkError> {
+        for &(pointer_id, target) in released {
+            if !self.world.contains(target) {
+                continue;
+            }
+            if self.is_range_field(target)
+                && self.read(Entity::<RangeField>::from_stable_id(target), |range| {
+                    range
+                        .dragging
+                        .is_some_and(|drag| drag.pointer_id == pointer_id)
+                })?
+            {
+                self.end_range_drag_on(target, pointer_id, true)?;
+            } else if self.is_xy_pad(target)
+                && self.read(Entity::<XYPad>::from_stable_id(target), |pad| {
+                    pad.dragging.is_some()
+                })?
+            {
+                self.end_xy_pad_drag_on(target, pointer_id, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn holds_capture(&self, target: StableNodeId, pointer_id: u64) -> bool {
+        self.world
+            .document_of(target)
+            .and_then(|document| self.world.pointer_capture(document, pointer_id))
+            == Some(target)
+    }
+
+    fn end_range_drag_on(
+        &mut self,
+        target: StableNodeId,
+        pointer_id: u64,
+        cancel: bool,
+    ) -> Result<bool, FrameworkError> {
         if !self.is_range_field(target) {
             return Ok(false);
         }
+        let held = self.holds_capture(target, pointer_id);
         self.update_component(Entity::<RangeField>::from_stable_id(target), |range, cx| {
-            cx.mutations().release_pointer(pointer_id, target);
+            if held {
+                cx.mutations().release_pointer(pointer_id, target);
+            }
             let Some(drag) = range.dragging.take() else {
                 return false;
             };
@@ -469,9 +518,19 @@ impl AppContext {
         let Some(target) = self.world.pointer_capture(document, pointer_id) else {
             return Ok(false);
         };
+        self.end_xy_pad_drag_on(target, pointer_id, cancel)
+    }
+
+    fn end_xy_pad_drag_on(
+        &mut self,
+        target: StableNodeId,
+        pointer_id: u64,
+        cancel: bool,
+    ) -> Result<bool, FrameworkError> {
         if !self.is_xy_pad(target) {
             return Ok(false);
         }
+        let held = self.holds_capture(target, pointer_id);
         let initial = self.read(Entity::<XYPad>::from_stable_id(target), |pad| {
             pad.dragging.map(|drag| drag.initial)
         })?;
@@ -484,7 +543,9 @@ impl AppContext {
                 cx.emit(XYPadEvent::Change(pad.value));
             }
             pad.dragging = None;
-            cx.mutations().release_pointer(pointer_id, target);
+            if held {
+                cx.mutations().release_pointer(pointer_id, target);
+            }
         })?;
         Ok(initial.is_some())
     }

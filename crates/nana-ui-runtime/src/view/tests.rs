@@ -4037,3 +4037,203 @@ mod control_fields {
         .unwrap();
     }
 }
+
+/// A suspense closed while its resource still loads releases its hold
+/// without touching the boundary's own state, which goes first.
+#[test]
+fn a_suspense_closed_while_loading_is_disposed_without_a_fault() {
+    let (mut cx, _, parent) = setup();
+    let handles = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let open = signal(true);
+            handles.set(Some(open));
+            when(open, || {
+                suspense(
+                    || text("加载中"),
+                    || {
+                        let data = resource(|| (), |()| std::future::pending::<u32>());
+                        text(move || format!("{:?}", data.get()))
+                    },
+                )
+            })
+        })
+        .unwrap();
+    cx.take_system_work();
+    let tasks = task_count();
+    handles.get().unwrap().set(false);
+    cx.flush_reactive().unwrap();
+    assert_eq!(task_count(), tasks - 1, "the pending fetch is dropped");
+    view.unmount(&mut cx).unwrap();
+}
+
+/// An aborted future may abort or spawn tasks while it is dropped.
+#[test]
+fn an_aborted_future_may_use_the_executor_while_it_is_dropped() {
+    struct OnDrop(Option<super::task::Task>);
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            if let Some(task) = self.0.take() {
+                task.abort();
+            }
+            spawn_local(async {}).abort();
+        }
+    }
+    let inner = spawn_local(std::future::pending());
+    let guard = OnDrop(Some(inner));
+    let outer = spawn_local(async move {
+        let _guard = guard;
+        std::future::pending::<()>().await;
+    });
+    outer.abort();
+    assert!(!inner.is_running());
+}
+
+/// An effect that reads a signal and a computed of that signal runs once
+/// per write.
+#[test]
+fn an_effect_over_a_signal_and_its_computed_runs_once_per_write() {
+    let (mut cx, _, _) = setup();
+    let count = signal(1u32);
+    let doubled = computed(move || count.get() * 2);
+    let tripled = computed(move || count.get() * 3);
+    let runs = std::rc::Rc::new(std::cell::Cell::new(0u32));
+    let seen = runs.clone();
+    let _watch = watch_effect(move || {
+        let _ = (count.get(), doubled.get(), tripled.get());
+        seen.set(seen.get() + 1);
+    });
+    assert_eq!(runs.get(), 1);
+    count.set(2);
+    cx.flush_reactive().unwrap();
+    assert_eq!(runs.get(), 2, "one run for one write");
+    count.set(3);
+    cx.flush_reactive().unwrap();
+    assert_eq!(runs.get(), 3);
+}
+
+/// A row may ask its list where it is while it is built: the ref answers
+/// from the last sync and never waits on the sync building the row.
+#[test]
+fn a_row_reads_its_list_ref_while_it_is_built() {
+    let (mut cx, document, parent) = setup();
+    let rows = virtual_list_ref::<u32>();
+    let list_ref = rows.clone();
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counted = asked.clone();
+    cx.mount_view(parent, move || {
+        let (rows, counted) = (list_ref.clone(), counted.clone());
+        each_virtual(
+            signal(virtual_items(100)),
+            |row| row.id,
+            40.0,
+            move |row: VirtualRow| {
+                let _ = rows.item(&row.id);
+                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                keyed_row(row)
+            },
+        )
+        .overscan(0.0)
+        .height(200.0)
+        .list_ref(list_ref.clone())
+    })
+    .unwrap();
+    settle(&mut cx, document, LayoutViewport::new(320.0, 600.0));
+    assert!(
+        asked.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "rows were built"
+    );
+    assert!(rows.row(&0).is_some());
+}
+
+/// A reader of one row, outside the list, follows the row out of the list
+/// and back in: its trigger is released with the row, and it is told then.
+#[test]
+fn a_reader_of_a_removed_row_follows_it_out_and_back() {
+    let (mut cx, _, _) = setup();
+    let board = store_with_history(
+        Board {
+            tasks: (1..=3).map(task).collect(),
+        },
+        8,
+    );
+    let tasks = board.tasks().keyed(|task| task.id);
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+    let shown = seen.clone();
+    let _watch = watch_effect(move || {
+        *shown.borrow_mut() = tasks.at(&2).title().try_with(Clone::clone);
+    });
+    assert_eq!(seen.borrow().as_deref(), Some("任务 2"));
+    board.tasks().retain(|task| task.id != 2);
+    cx.flush_reactive().unwrap();
+    assert_eq!(*seen.borrow(), None, "the reader saw the row go");
+    reactive::advance_epoch();
+    assert!(board.undo());
+    cx.flush_reactive().unwrap();
+    assert_eq!(seen.borrow().as_deref(), Some("任务 2"), "and come back");
+}
+
+/// Removing keyed rows that were read one by one releases their triggers
+/// with the removal, not on some later keyed read.
+#[test]
+fn removing_read_rows_releases_their_triggers_with_the_removal() {
+    let board = store(Board {
+        tasks: (1..=5_000).map(task).collect(),
+    });
+    let tasks = board.tasks().keyed(|task| task.id);
+    let scope = reactive::create_scope(None);
+    reactive::with_scope(scope, || {
+        for id in 1..=5_000u64 {
+            let _watch = watch_effect(move || {
+                tasks.at(&id).done().get();
+            });
+        }
+    });
+    let before = reactive_stats();
+    board.tasks().retain(|_| false);
+    assert_eq!(
+        before.signals - reactive_stats().signals,
+        5_000,
+        "each removed row's trigger is released with the removal"
+    );
+    reactive::dispose_scope(scope);
+}
+
+/// The target going away first does not take the content with it: the
+/// content goes back to where it was declared, and to the target again when
+/// one comes back.
+#[test]
+fn teleported_content_outlives_its_target() {
+    let (mut cx, _, parent) = setup();
+    let handles = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let layer = node_ref();
+            let open = signal(true);
+            handles.set(Some((layer, open)));
+            column().children((
+                when(open, move || {
+                    widget(Stack::column(0.0)).node_ref(layer).key("layer")
+                }),
+                teleport(move || layer.get(), text("浮层")),
+            ))
+        })
+        .unwrap();
+    let (layer, open) = handles.get().unwrap();
+    let first = layer.get_untracked().unwrap();
+    let content = children(&cx, first);
+    assert_eq!(content.len(), 1, "placed under the layer");
+
+    open.set(false);
+    cx.flush_reactive().unwrap();
+    assert!(!cx.world().contains(first));
+    assert!(cx.world().contains(content[0]), "the content lives on");
+    let root = view.roots()[0];
+    let anchor = children(&cx, root)[1];
+    assert_eq!(children(&cx, anchor), content, "back where it was declared");
+
+    open.set(true);
+    cx.flush_reactive().unwrap();
+    let second = layer.get_untracked().unwrap();
+    assert_eq!(children(&cx, second), content, "and under the new layer");
+}

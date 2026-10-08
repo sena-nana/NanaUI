@@ -621,10 +621,11 @@ fn placing_a_node_back_under_its_declared_parent_ends_the_placement() {
 }
 
 /// With no composition owner guard, a keyed node may be placed inside any
-/// subtree. When that subtree dies first, the node dies with it; its
-/// declared parent must forget it and reassemble cleanly.
+/// subtree. When that subtree dies first, the node is still its declared
+/// parent's: it goes back under that parent, its records intact, and the
+/// parent reassembles it in place.
 #[test]
-fn a_node_placed_into_a_subtree_that_dies_leaves_no_stale_records() {
+fn a_node_placed_into_a_subtree_that_dies_goes_back_to_its_declared_parent() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let parent = context
@@ -639,17 +640,17 @@ fn a_node_placed_into_a_subtree_that_dies_leaves_no_stale_records() {
     let mut teardown = MutationQueue::new();
     teardown.despawn_subtree(other.stable_id());
     context.commit_mutations(teardown).unwrap();
-    assert!(!context.world().contains(slot));
-    assert!(context.assembled_child(pane, "slot").is_none());
-    assert!(context.assembly_path(slot).is_none());
+    assert!(!context.world().contains(other_pane));
+    assert!(context.world().contains(slot));
+    assert_eq!(context.world().parent_id(slot), Some(pane));
+    assert_eq!(context.assembled_child(pane, "slot"), Some(slot));
     let rebuilt = context.mount(Entity::<Stack>::from_stable_id(pane), |scope| {
         scope.child("slot", Stack::column(0.0))?;
         Ok(())
     });
     rebuilt.unwrap();
-    let fresh = context.assembled_child(pane, "slot").unwrap();
-    assert_ne!(fresh, slot);
-    assert_eq!(context.world().node(pane).unwrap().children, vec![fresh]);
+    assert_eq!(context.assembled_child(pane, "slot"), Some(slot), "kept");
+    assert_eq!(context.world().node(pane).unwrap().children, vec![slot]);
 }
 
 #[test]
@@ -6550,6 +6551,40 @@ fn a_range_drag_previews_with_input_and_commits_once_on_release() {
     assert!(
         events.lock().unwrap().is_empty(),
         "a press that does not move the value commits nothing"
+    );
+}
+
+/// A field parked mid-drag loses its capture without a release: the drag
+/// still ends, as a cancel, so whoever paused on it hears it end.
+#[test]
+fn a_range_drag_ends_when_its_field_is_parked_mid_drag() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let (range, x, width) = laid_out_range(&mut context, document);
+    let events = record_range_events(&mut context, range);
+    let dragging = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&dragging);
+    context
+        .on(range, move |_, event: &RangeDragging, _| {
+            seen.lock().unwrap().push(event.dragging);
+        })
+        .unwrap();
+    context
+        .begin_range_drag(document, 7, range.stable_id(), x + width * 0.5)
+        .unwrap();
+    let mut park = MutationQueue::new();
+    park.park_subtree(range.stable_id());
+    context.commit_mutations(park).unwrap();
+    assert_eq!(*dragging.lock().unwrap(), vec![true, false]);
+    assert!(
+        context
+            .read(range, |range| range.dragging.is_none())
+            .unwrap()
+    );
+    assert_eq!(
+        events.lock().unwrap().last(),
+        Some(&RangeEvent::Input(0.0)),
+        "the drag is cancelled back to where it started"
     );
 }
 

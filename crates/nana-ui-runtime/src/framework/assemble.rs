@@ -24,7 +24,9 @@ pub struct AssemblyScope<'a> {
     context: &'a mut AppContext,
     parent: StableNodeId,
     document: DocumentId,
+    /// The keys declared so far, in order, and as a set.
     seen: Vec<String>,
+    seen_keys: hashbrown::HashSet<String>,
 }
 
 impl AppContext {
@@ -89,6 +91,7 @@ impl AppContext {
             parent: parent.id,
             document,
             seen: Vec::new(),
+            seen_keys: hashbrown::HashSet::new(),
         };
         build(&mut scope)?;
         scope.finish()
@@ -117,6 +120,7 @@ impl AssemblyScope<'_> {
             parent: entity.id,
             document,
             seen: Vec::new(),
+            seen_keys: hashbrown::HashSet::new(),
         };
         children(&mut nested)?;
         nested.finish()?;
@@ -131,7 +135,7 @@ impl AssemblyScope<'_> {
         if !super::valid_assembly_key(&key) {
             return Err(FrameworkError::InvalidInput);
         }
-        if self.seen.iter().any(|seen| seen == &key) {
+        if !self.seen_keys.insert(key.clone()) {
             return Err(FrameworkError::DuplicateAssemblyKey {
                 parent: self.parent,
                 key,
@@ -182,14 +186,14 @@ impl AssemblyScope<'_> {
             .get(&self.parent)
             .into_iter()
             .flatten()
-            .filter(|(key, _)| !self.seen.iter().any(|seen| seen == *key))
+            .filter(|(key, _)| !self.seen_keys.contains(key.as_str()))
             .map(|(_, child)| child.id)
             .collect();
         for id in unused {
             self.context.despawn_node(id)?;
         }
         if let Some(mut slots) = self.context.assembled.get(&self.parent).cloned() {
-            slots.retain(|key, _| self.seen.iter().any(|seen| seen == key));
+            slots.retain(|key, _| self.seen_keys.contains(key.as_str()));
             self.context.store_assembled(self.parent, slots);
         }
         // A child placed under another parent keeps its identity here but is
@@ -223,9 +227,7 @@ impl AssemblyScope<'_> {
             return Ok(());
         }
         let mut mutations = MutationQueue::new();
-        for child in ordered {
-            mutations.insert(self.parent, child, None);
-        }
+        move_into_order(self.parent, &current, &ordered, &mut mutations);
         self.context.commit_mutations(mutations)?;
         Ok(())
     }

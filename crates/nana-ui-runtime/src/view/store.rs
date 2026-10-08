@@ -80,7 +80,13 @@ struct PathNode {
     deep: Option<SignalKey>,
     /// A list's key hash → position, checked on each use.
     index: Option<HashMap<u64, usize>>,
+    /// A keyed list's item → key hash, a `KeyHash<T>`: lets a `retain`
+    /// find the rows it removed.
+    rekey: Option<Rc<dyn Any>>,
 }
+
+/// An item's key hash, for one list's item type.
+type KeyHash<T> = Box<dyn Fn(&T) -> u64>;
 
 impl Paths {
     fn link(&mut self, path: u64, parent: u64, key: Option<u64>) {
@@ -143,14 +149,14 @@ impl Paths {
     /// The position of the item keyed `key` in the list at `list`, rebuilding
     /// the list's index when it is stale; rows no longer present lose their
     /// paths then.
-    fn position<T, K: Hash>(
+    fn position<T: 'static, K: Hash + 'static>(
         &mut self,
         list: u64,
         items: &[T],
         key: u64,
         key_of: fn(&T) -> K,
     ) -> Option<usize> {
-        let node = self.nodes.get(&list)?;
+        let node = self.nodes.get_mut(&list)?;
         if let Some(at) = node
             .index
             .as_ref()
@@ -161,31 +167,65 @@ impl Paths {
         {
             return Some(at);
         }
+        if node.rekey.is_none() {
+            let hash: KeyHash<T> = Box::new(move |item| key_hash(&key_of(item)));
+            node.rekey = Some(Rc::new(hash));
+        }
+        // A key looked up and not found keeps its path: its reader waits on
+        // that trigger for the row to come back.
+        self.reindex(list, items, |item| key_hash(&key_of(item)), Some(key))
+            .get(&key)
+            .copied()
+    }
+
+    /// Index the list at `list` again, the first item of each key; rows no
+    /// longer present, but `keep`, lose their paths, their triggers released.
+    fn reindex<T>(
+        &mut self,
+        list: u64,
+        items: &[T],
+        hash: impl Fn(&T) -> u64,
+        keep: Option<u64>,
+    ) -> &HashMap<u64, usize> {
         let mut index = HashMap::with_capacity(items.len());
         for (at, item) in items.iter().enumerate() {
-            index.entry(key_hash(&key_of(item))).or_insert(at);
+            index.entry(hash(item)).or_insert(at);
         }
-        let found = index.get(&key).copied();
-        let gone: Vec<u64> = node
-            .children
-            .iter()
-            .copied()
-            .filter(|child| {
-                self.nodes
-                    .get(child)
-                    .and_then(|child| child.key)
-                    .is_some_and(|key| !index.contains_key(&key))
-            })
-            .collect();
+        let node = self
+            .nodes
+            .get_mut(&list)
+            .expect("a reindexed list is linked");
+        let children = std::mem::take(&mut node.children);
+        let (kept, gone): (Vec<u64>, Vec<u64>) = children.into_iter().partition(|child| {
+            self.nodes
+                .get(child)
+                .and_then(|child| child.key)
+                .is_none_or(|key| Some(key) == keep || index.contains_key(&key))
+        });
         let node = self.nodes.get_mut(&list).expect("checked above");
+        node.children = kept;
         node.index = Some(index);
-        if !gone.is_empty() {
-            node.children.retain(|child| !gone.contains(child));
-            for child in gone {
-                self.forget(child);
-            }
+        for child in gone {
+            self.forget(child);
         }
-        found
+        self.nodes[&list].index.as_ref().expect("just indexed")
+    }
+
+    /// After a structural change of the keyed list at `list`, release the
+    /// paths of the rows it no longer has: their readers are told now, not
+    /// on the next keyed read.
+    fn drop_removed<T: 'static>(&mut self, list: u64, items: &[T]) {
+        let Some(rekey) = self
+            .nodes
+            .get(&list)
+            .filter(|node| node.index.is_some())
+            .and_then(|node| node.rekey.clone())
+        else {
+            return;
+        };
+        if let Some(hash) = rekey.downcast_ref::<KeyHash<T>>() {
+            self.reindex(list, items, hash, None);
+        }
     }
 
     fn forget(&mut self, path: u64) {
@@ -356,8 +396,40 @@ fn read<P: StorePath, R>(
     let result = found.map(f);
     drop(value);
     let scope = cell.paths.borrow().scope;
-    reactive::release_signals(scope, &released);
+    release(scope, &released, at);
     result
+}
+
+/// Release the triggers of rows gone from their list. Whatever still reads
+/// one is told first, so it reads again (and finds the row gone, or back)
+/// instead of waiting on a trigger nothing fires any more.
+fn release(scope: Option<ScopeKey>, released: &[SignalKey], at: &'static Location<'static>) {
+    if released.is_empty() {
+        return;
+    }
+    reactive::notify_keys(released, at);
+    reactive::release_signals(scope, released);
+}
+
+/// After a structural change of the list at `path`, drop the rows it no
+/// longer has: see [`Paths::drop_removed`].
+fn drop_removed<P: StorePath<Value = Vec<T>>, T: 'static>(
+    path: &P,
+    at: &'static Location<'static>,
+) {
+    let cell = cell::<P::Root>(path.store(), at);
+    let cell = cell
+        .downcast_ref::<StoreCell<P::Root>>()
+        .expect("a store path reads its own store");
+    let (released, scope) = {
+        let value = cell.value.borrow();
+        let mut paths = cell.paths.borrow_mut();
+        if let Some(items) = path.locate(&value, &mut paths) {
+            paths.drop_removed(path.path(), items);
+        }
+        (std::mem::take(&mut paths.released), paths.scope)
+    };
+    release(scope, &released, at);
 }
 
 /// Write through `path` and fire its triggers; `below`: see [`Paths::fired`].
@@ -404,7 +476,7 @@ fn write<P: StorePath>(
         }
         (std::mem::take(&mut paths.released), paths.scope)
     };
-    reactive::release_signals(scope, &released);
+    release(scope, &released, at);
     reactive::notify_keys(&fired, at);
     if written
         && let Some(before) = snapshot
@@ -857,9 +929,9 @@ pub trait StoreList<T: 'static>: StorePath<Value = Vec<T>> {
 
     #[track_caller]
     fn retain(&self, keep: impl FnMut(&T) -> bool) {
-        write(self, Location::caller(), false, true, |items| {
-            items.retain(keep)
-        });
+        let at = Location::caller();
+        write(self, at, false, true, |items| items.retain(keep));
+        drop_removed(self, at);
     }
 
     #[track_caller]

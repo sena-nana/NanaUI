@@ -13,17 +13,19 @@
 //! [`EachVirtual::grid`] flows items into as many columns as fit.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Range;
 use std::panic::Location;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use hashbrown::{HashMap, HashSet};
 use nana_ui_core::VirtualListLayout;
 
 use super::node::{AnyView, IntoView, NodeRef, StructuralBinding, UNBUILT, ViewBuilder, widget};
-use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey, Signal};
+use super::reactive::{self, Computed, EffectKey, EffectTarget, Readable, ScopeKey, Signal};
 use super::structural::{build_scoped, build_under, container};
 use super::style::{ContainerStyle, container_styles};
 use crate::{
@@ -233,13 +235,13 @@ pub struct VirtualItem {
 /// Reads answer as of the list's last sync (each scroll, resize and data
 /// change syncs it); before the list is built they answer `None`.
 pub struct VirtualListRef<K> {
-    geometry: Arc<Mutex<Geometry<K>>>,
+    shared: Arc<Mutex<Shared<K>>>,
 }
 
 impl<K> Clone for VirtualListRef<K> {
     fn clone(&self) -> Self {
         Self {
-            geometry: Arc::clone(&self.geometry),
+            shared: Arc::clone(&self.shared),
         }
     }
 }
@@ -247,18 +249,21 @@ impl<K> Clone for VirtualListRef<K> {
 /// A [`VirtualListRef`] for a list whose items are keyed by `K`.
 pub fn virtual_list_ref<K>() -> VirtualListRef<K> {
     VirtualListRef {
-        geometry: Arc::new(Mutex::new(Geometry::default())),
+        shared: Arc::new(Mutex::new(Shared::default())),
     }
 }
 
 impl<K: Eq + Hash + Clone> VirtualListRef<K> {
-    fn with<R>(&self, f: impl FnOnce(&mut Geometry<K>) -> R) -> R {
-        f(&mut self.geometry.lock().unwrap_or_else(PoisonError::into_inner))
+    /// The lock is only held to read or swap the published geometry, never
+    /// while rows are built: a row may read its list while it is built.
+    fn with<R>(&self, f: impl FnOnce(&mut Shared<K>) -> R) -> R {
+        f(&mut self.shared.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Where the item keyed `key` is, whether it is built or not.
     pub fn item(&self, key: &K) -> Option<VirtualItem> {
-        self.with(|geometry| {
+        self.with(|shared| {
+            let geometry = &shared.published;
             let at = geometry.unit_of(key)?;
             Some(VirtualItem {
                 offset: geometry.layout.extent(0..at),
@@ -271,13 +276,13 @@ impl<K: Eq + Hash + Clone> VirtualListRef<K> {
     /// scope, so `cx.resolve_assembly_path(row, "title")` finds what the row
     /// keyed `title`. `None` while the item is scrolled away.
     pub fn row(&self, key: &K) -> Option<StableNodeId> {
-        self.with(|geometry| geometry.rows.get(key).copied())
+        self.with(|shared| shared.published.rows.get(key).copied())
     }
 
     /// The reading position: the item at the top of the viewport, and how
     /// far into it the top is. [`Self::scroll_to_inset`] goes back to it.
     pub fn first_visible(&self) -> Option<(K, f32)> {
-        self.with(|geometry| geometry.first_visible(geometry.offset))
+        self.with(|shared| shared.published.first_visible(shared.published.offset))
     }
 
     /// Scroll so the item keyed `key` is in view, aligned as asked
@@ -293,9 +298,9 @@ impl<K: Eq + Hash + Clone> VirtualListRef<K> {
     }
 
     fn request(&self, request: Request<K>) {
-        let wake = self.with(|geometry| {
-            geometry.request = Some(request);
-            geometry.wake
+        let wake = self.with(|shared| {
+            shared.request = Some(request);
+            shared.wake
         });
         if let Some(wake) = wake {
             wake.update(|at| *at += 1);
@@ -313,10 +318,10 @@ enum Request<K> {
     Keep(K, f32),
 }
 
-/// What the list places and where, shared by the binding and its
-/// [`VirtualListRef`].
-struct Geometry<K> {
-    layout: VirtualListLayout,
+/// What each placed unit is and which items it shows. Rebuilt, and
+/// published again, only when the items or a grid's column count change.
+#[derive(Clone)]
+struct Units<K> {
     /// What each placed unit is, in order, and the items it shows.
     units: Vec<Unit<K>>,
     members: Vec<Range<usize>>,
@@ -324,24 +329,14 @@ struct Geometry<K> {
     /// Each item's key, in order, and its position.
     keys: Vec<K>,
     positions: HashMap<K, usize>,
-    /// A grid's column count at the last sync; 1 for a list.
+    /// A grid's column count; 1 for a list.
     columns: usize,
     grid: bool,
-    /// The list's own offset at the viewport's top, and the viewport's
-    /// height, at the last sync.
-    offset: f32,
-    extent: f32,
-    /// The node each built item's view is in.
-    rows: HashMap<K, StableNodeId>,
-    request: Option<Request<K>>,
-    /// Wakes the binding for a request.
-    wake: Option<Signal<u64>>,
 }
 
-impl<K> Default for Geometry<K> {
+impl<K> Default for Units<K> {
     fn default() -> Self {
         Self {
-            layout: VirtualListLayout::new([]),
             units: Vec::new(),
             members: Vec::new(),
             index: HashMap::new(),
@@ -349,9 +344,48 @@ impl<K> Default for Geometry<K> {
             positions: HashMap::new(),
             columns: 1,
             grid: false,
+        }
+    }
+}
+
+/// What the list places and where. The binding keeps its own and publishes
+/// a copy to its [`VirtualListRef`] after each sync.
+struct Geometry<K> {
+    units: Units<K>,
+    layout: VirtualListLayout,
+    /// The list's own offset at the viewport's top, and the viewport's
+    /// height, at the last sync.
+    offset: f32,
+    extent: f32,
+    /// The node each built item's view is in.
+    rows: HashMap<K, StableNodeId>,
+}
+
+impl<K> Default for Geometry<K> {
+    fn default() -> Self {
+        Self {
+            units: Units::default(),
+            layout: VirtualListLayout::default(),
             offset: 0.0,
             extent: 0.0,
             rows: HashMap::new(),
+        }
+    }
+}
+
+/// What a [`VirtualListRef`] and its list share.
+struct Shared<K> {
+    /// The geometry as of the list's last sync.
+    published: Geometry<K>,
+    request: Option<Request<K>>,
+    /// Wakes the binding for a request.
+    wake: Option<Signal<u64>>,
+}
+
+impl<K> Default for Shared<K> {
+    fn default() -> Self {
+        Self {
+            published: Geometry::default(),
             request: None,
             wake: None,
         }
@@ -361,20 +395,21 @@ impl<K> Default for Geometry<K> {
 impl<K: Eq + Hash + Clone> Geometry<K> {
     /// The unit an item is placed in.
     fn unit_of(&self, key: &K) -> Option<usize> {
-        let position = *self.positions.get(key)?;
-        if self.grid {
-            let row = position / self.columns.max(1);
-            (row < self.units.len()).then_some(row)
+        let units = &self.units;
+        let position = *units.positions.get(key)?;
+        if units.grid {
+            let row = position / units.columns.max(1);
+            (row < units.units.len()).then_some(row)
         } else {
-            self.index.get(&Unit::Item(key.clone())).copied()
+            units.index.get(&Unit::Item(key.clone())).copied()
         }
     }
 
     /// The item at `offset` and how far into it `offset` is.
     fn first_visible(&self, offset: f32) -> Option<(K, f32)> {
         let anchor = self.layout.scroll_anchor(offset)?;
-        let first = self.members.get(anchor.index)?.start;
-        Some((self.keys.get(first)?.clone(), anchor.inset))
+        let first = self.units.members.get(anchor.index)?.start;
+        Some((self.units.keys.get(first)?.clone(), anchor.inset))
     }
 
     /// The list's offset a request scrolls to; `None` for one that does
@@ -403,9 +438,34 @@ impl<K: Eq + Hash + Clone> Geometry<K> {
     }
 }
 
-struct EachVirtualBinding<T, K, S, KF, RF> {
-    items: S,
-    key_fn: KF,
+/// The items with their keys, first of each key only, and which recompute
+/// made them: each recompute is a new list, equal only to itself.
+struct Keyed<K, T> {
+    stamp: u64,
+    items: Rc<[(K, T)]>,
+}
+
+impl<K, T> Clone for Keyed<K, T> {
+    fn clone(&self) -> Self {
+        Self {
+            stamp: self.stamp,
+            items: Rc::clone(&self.items),
+        }
+    }
+}
+
+impl<K, T> PartialEq for Keyed<K, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.stamp == other.stamp
+    }
+}
+
+struct EachVirtualBinding<T: 'static, K: 'static, RF> {
+    /// Recomputed only when the items change, so a scroll does not visit
+    /// every item.
+    items: Computed<Keyed<K, T>>,
+    /// The recompute of `items` the units were built from.
+    synced: Option<u64>,
     row_fn: RF,
     scope: Option<ScopeKey>,
     /// Written by scroll and viewport events: the window moved.
@@ -416,41 +476,52 @@ struct EachVirtualBinding<T, K, S, KF, RF> {
     list: Entity<List>,
     grid: Option<Grid>,
     state: VirtualListItems<Unit<K>, Stack>,
-    geometry: Arc<Mutex<Geometry<K>>>,
+    /// The binding's own geometry; published to `shared` after each sync.
+    geometry: Geometry<K>,
+    shared: Arc<Mutex<Shared<K>>>,
     row_height: f32,
     measured: bool,
     overscan: f32,
     /// Bumped when the units change, so the range gate re-materializes.
     version: u64,
-    _types: PhantomData<fn(T)>,
+    /// The units version and measurement count the published geometry is a
+    /// copy at.
+    published: (u64, u64),
 }
 
-impl<T, K, S, KF, RF, V> EachVirtualBinding<T, K, S, KF, RF>
+/// Every item with its key, first of each key only.
+fn keyed<T: Clone, K: Eq + Hash + Clone>(
+    stamp: u64,
+    items: &[T],
+    key_fn: impl Fn(&T) -> K,
+) -> Keyed<K, T> {
+    let mut seen = HashSet::with_capacity(items.len());
+    Keyed {
+        stamp,
+        items: items
+            .iter()
+            .filter_map(|item| {
+                let key = key_fn(item);
+                seen.insert(key.clone()).then(|| (key, item.clone()))
+            })
+            .collect(),
+    }
+}
+
+impl<T, K, RF, V> EachVirtualBinding<T, K, RF>
 where
     T: Clone + Send + 'static,
     K: Eq + Hash + Clone + Send + 'static,
-    S: Readable<Vec<T>>,
-    KF: Fn(&T) -> K + Send + 'static,
     RF: Fn(T) -> V + Send + 'static,
     V: IntoView,
 {
-    /// Every item with its key, first of each key only; reads what the
-    /// binding depends on.
-    fn read(&self) -> Vec<(K, T)> {
+    /// The keyed items; reads what the binding depends on.
+    fn read(&self) -> Keyed<K, T> {
         self.moved.get();
         if let Some(within) = self.within {
             within.get();
         }
-        self.items.with_value(|items| {
-            let mut seen = HashSet::with_capacity(items.len());
-            items
-                .iter()
-                .filter_map(|item| {
-                    let key = (self.key_fn)(item);
-                    seen.insert(key.clone()).then(|| (key, item.clone()))
-                })
-                .collect()
-        })
+        self.items.get()
     }
 
     /// The scroll container. An ancestor's is observed once its ref names
@@ -489,124 +560,136 @@ where
         Ok(self.scroll)
     }
 
-    /// Group the items into what the list places: each item, or grid rows
-    /// of as many as fit across. `None` while a grid has no width yet.
-    fn units(
-        &self,
-        cx: &AppContext,
-        columns: usize,
-        items: &[(K, T)],
-    ) -> (usize, Option<Vec<(Unit<K>, Range<usize>)>>) {
+    /// How many columns the items flow into: 1 for a list; a grid's as many
+    /// as its width fits, `None` while it has no width yet.
+    fn units_columns(&self, cx: &AppContext) -> Option<usize> {
         let Some(grid) = self.grid else {
-            return (
-                1,
-                Some(
-                    items
-                        .iter()
-                        .enumerate()
-                        .map(|(at, (key, _))| (Unit::Item(key.clone()), at..at + 1))
-                        .collect(),
-                ),
-            );
+            return Some(1);
         };
         let width = cx
             .world()
             .component_layout_box(self.list.stable_id())
             .map_or(0.0, |bounds| bounds.width);
-        if width <= 0.0 {
-            return (columns, None);
-        }
-        let columns = grid_columns(width, grid);
-        (
-            columns,
-            Some(
-                (0..items.len())
-                    .step_by(columns)
-                    .map(|start| {
-                        let end = (start + columns).min(items.len());
-                        let keys = items[start..end]
-                            .iter()
-                            .map(|(key, _)| key.clone())
-                            .collect();
-                        (Unit::Row { columns, keys }, start..end)
-                    })
+        (width > 0.0).then(|| grid_columns(width, grid))
+    }
+
+    /// Group the items into what the list places: each item, or grid rows
+    /// of `columns`. `None` while a grid has no width yet.
+    fn units(
+        &self,
+        columns: Option<usize>,
+        items: &[(K, T)],
+    ) -> Option<Vec<(Unit<K>, Range<usize>)>> {
+        if self.grid.is_none() {
+            return Some(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(at, (key, _))| (Unit::Item(key.clone()), at..at + 1))
                     .collect(),
-            ),
+            );
+        }
+        let columns = columns?;
+        Some(
+            (0..items.len())
+                .step_by(columns)
+                .map(|start| {
+                    let end = (start + columns).min(items.len());
+                    let keys = items[start..end]
+                        .iter()
+                        .map(|(key, _)| key.clone())
+                        .collect();
+                    (Unit::Row { columns, keys }, start..end)
+                })
+                .collect(),
         )
     }
 
-    fn sync(&mut self, cx: &mut AppContext, items: Vec<(K, T)>) -> Result<(), FrameworkError> {
+    fn sync(&mut self, cx: &mut AppContext, items: Keyed<K, T>) -> Result<(), FrameworkError> {
         let Some(scroll) = self.scroll(cx)? else {
             return Ok(());
         };
         let viewport = cx.virtual_list_viewport(scroll, self.list, 0.0)?;
         let follow_end = cx.read(scroll, |view| view.follow_end)?;
-        let shared = Arc::clone(&self.geometry);
-        let mut guard = shared.lock().unwrap_or_else(PoisonError::into_inner);
-        let geometry = &mut *guard;
+        let mut request = self.with_shared(|shared| shared.request.take());
+        let columns = self.units_columns(cx);
+        let regroup = self.synced != Some(items.stamp)
+            || columns.is_some_and(|columns| columns != self.geometry.units.columns);
+        let units = regroup.then(|| self.units(columns, &items.items).unwrap_or_default());
+        let geometry = &mut self.geometry;
         geometry.offset = viewport.offset[1];
         geometry.extent = viewport.extent[1];
-        let mut request = geometry.request.take();
-        let (columns, units) = self.units(cx, geometry.columns, &items);
-        let units = units.unwrap_or_default();
-        geometry.columns = columns;
-        geometry.grid = self.grid.is_some();
-        if units.len() != geometry.units.len()
-            || units
-                .iter()
-                .zip(&geometry.units)
-                .any(|((unit, _), kept)| unit != kept)
-        {
-            // Items inserted or removed above the one at the top of the
-            // viewport keep it where it is (scroll anchoring), unless the
-            // list follows its end.
-            if request.is_none() && !follow_end && !geometry.units.is_empty() {
-                request = geometry
-                    .first_visible(viewport.offset[1])
-                    .map(|(key, inset)| Request::Keep(key, inset));
+        // A scroll keeps the items and the columns: nothing to regroup.
+        if let Some(units) = units {
+            let kept = &geometry.units;
+            if units.len() != kept.units.len()
+                || units
+                    .iter()
+                    .zip(&kept.units)
+                    .any(|((unit, _), kept)| unit != kept)
+            {
+                // Items inserted or removed above the one at the top of the
+                // viewport keep it where it is (scroll anchoring), unless the
+                // list follows its end.
+                if request.is_none() && !follow_end && !kept.units.is_empty() {
+                    request = geometry
+                        .first_visible(viewport.offset[1])
+                        .map(|(key, inset)| Request::Keep(key, inset));
+                }
+                // Units that stay keep the extent they were placed or
+                // measured at.
+                let estimate = self.row_height + self.grid.map_or(0.0, |grid| grid.gap);
+                let extents = units
+                    .iter()
+                    .map(|(unit, _)| {
+                        kept.index
+                            .get(unit)
+                            .map_or(estimate, |&at| geometry.layout.extent(at..at + 1))
+                    })
+                    .collect::<Vec<_>>();
+                geometry.layout = VirtualListLayout::new(extents);
+                let index = units
+                    .iter()
+                    .enumerate()
+                    .map(|(at, (unit, _))| (unit.clone(), at))
+                    .collect();
+                let (units, members) = units.into_iter().unzip();
+                let keys: Vec<K> = items.items.iter().map(|(key, _)| key.clone()).collect();
+                let positions = keys
+                    .iter()
+                    .enumerate()
+                    .map(|(at, key)| (key.clone(), at))
+                    .collect();
+                geometry.units = Units {
+                    units,
+                    members,
+                    index,
+                    keys,
+                    positions,
+                    columns: columns.unwrap_or(kept.columns),
+                    grid: self.grid.is_some(),
+                };
+                self.version += 1;
             }
-            // Units that stay keep the extent they were placed or measured at.
-            let estimate = self.row_height + self.grid.map_or(0.0, |grid| grid.gap);
-            let extents = units
-                .iter()
-                .map(|(unit, _)| {
-                    geometry
-                        .index
-                        .get(unit)
-                        .map_or(estimate, |&at| geometry.layout.extent(at..at + 1))
-                })
-                .collect::<Vec<_>>();
-            geometry.layout = VirtualListLayout::new(extents);
-            geometry.index = units
-                .iter()
-                .enumerate()
-                .map(|(at, (unit, _))| (unit.clone(), at))
-                .collect();
-            (geometry.units, geometry.members) = units.into_iter().unzip();
-            geometry.keys = items.iter().map(|(key, _)| key.clone()).collect();
-            geometry.positions = geometry
-                .keys
-                .iter()
-                .enumerate()
-                .map(|(at, key)| (key.clone(), at))
-                .collect();
-            self.version += 1;
+            self.synced = Some(items.stamp);
         }
         let target = request
             .as_ref()
             .and_then(|request| geometry.target(request));
-        let (units, members, index) = (&geometry.units, &geometry.members, &geometry.index);
+        let units = &geometry.units;
         let (row_fn, scope, grid) = (&self.row_fn, self.scope, self.grid);
-        let key_at = |at: usize| units[at].clone();
-        let index_of = |unit: &Unit<K>| index.get(unit).copied();
+        let columns = units.columns;
+        let key_at = |at: usize| units.units[at].clone();
+        let index_of = |unit: &Unit<K>| units.index.get(unit).copied();
         let slot = |_: usize, _: &Unit<K>| match grid {
             // The gap below a grid row is part of its extent.
             Some(grid) => Stack::column(0.0)
                 .with_layout(|layout| layout.padding_bottom = Some(LengthSpec::Px(grid.gap))),
             None => Stack::column(0.0),
         };
+        let items = &items.items;
         let mount = |cx: &mut AppContext, slot: Entity<Stack>, at: usize, _: &Unit<K>| {
-            let range = members[at].clone();
+            let range = units.members[at].clone();
             mount_row(cx, slot, scope, || match grid {
                 None => row_fn(items[range.start].1.clone()).into_any(),
                 Some(grid) => grid_row(grid, columns, &items[range], row_fn),
@@ -651,17 +734,39 @@ where
         };
         if let Some(offset) = placed {
             self.scroll_list_to(cx, scroll, offset)?;
-            geometry.offset = offset;
+            self.geometry.offset = offset;
         }
+        self.geometry.rows = self.built_rows(cx);
         // Rows revealed at their estimate are measured after the next
         // layout, which moves an item aligned to the end or the center:
         // reveal it again then, until nothing it shows is estimated.
-        if self.state.pending_measure()
-            && let Some(request @ Request::Reveal(..)) = request
-        {
-            geometry.request = Some(request);
-        }
-        geometry.rows = self.built_rows(cx, geometry);
+        let again = match request {
+            Some(request @ Request::Reveal(..)) if self.state.pending_measure() => Some(request),
+            _ => None,
+        };
+        // Readers get copies of the units and the layout made only when they
+        // changed: a scroll that measures nothing copies neither.
+        let units = (self.published.0 != self.version).then(|| self.geometry.units.clone());
+        let measurements = self.state.measurements();
+        let layout = (units.is_some() || self.published.1 != measurements)
+            .then(|| self.geometry.layout.clone());
+        self.published = (self.version, measurements);
+        let geometry = &self.geometry;
+        self.with_shared(|shared| {
+            let published = &mut shared.published;
+            if let Some(units) = units {
+                published.units = units;
+            }
+            if let Some(layout) = layout {
+                published.layout = layout;
+            }
+            published.offset = geometry.offset;
+            published.extent = geometry.extent;
+            published.rows.clone_from(&geometry.rows);
+            if shared.request.is_none() {
+                shared.request = again;
+            }
+        });
         if self.within.is_some() || self.grid.is_some() {
             // Content above the list, or the list's own width, can change
             // with no scroll or viewport change: look again after the next
@@ -669,6 +774,10 @@ where
             cx.notify_laid_out(scroll);
         }
         Ok(())
+    }
+
+    fn with_shared<R>(&self, f: impl FnOnce(&mut Shared<K>) -> R) -> R {
+        f(&mut self.shared.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Scroll so the viewport's top is `offset` into the list: now, as far
@@ -710,7 +819,8 @@ where
 
     /// The node each built item's view is in: its row's slot, or in a grid
     /// its cell of the row.
-    fn built_rows(&self, cx: &AppContext, geometry: &Geometry<K>) -> HashMap<K, StableNodeId> {
+    fn built_rows(&self, cx: &AppContext) -> HashMap<K, StableNodeId> {
+        let geometry = &self.geometry.units;
         let mut rows = HashMap::new();
         for unit in self.state.mounted_keys() {
             let (Some(slot), Some(&at)) = (self.state.entity(unit), geometry.index.get(unit))
@@ -835,21 +945,27 @@ where
         if id == UNBUILT {
             return;
         }
-        let geometry = match self.list_ref {
-            Some(list_ref) => list_ref.geometry,
-            None => Arc::new(Mutex::new(Geometry::default())),
+        let shared = match self.list_ref {
+            Some(list_ref) => list_ref.shared,
+            None => Arc::new(Mutex::new(Shared::default())),
         };
         {
             // A handle given to a list built again answers for the new one.
-            let mut shared = geometry.lock().unwrap_or_else(PoisonError::into_inner);
-            *shared = Geometry::default();
+            let mut shared = shared.lock().unwrap_or_else(PoisonError::into_inner);
+            *shared = Shared::default();
             shared.wake = Some(moved);
         }
+        let (items, key_fn) = (self.items, self.key_fn);
+        let stamps = Cell::new(0u64);
+        let items = reactive::computed(move || {
+            stamps.set(stamps.get() + 1);
+            items.with_value(|items| keyed(stamps.get(), items, &key_fn))
+        });
         let effect =
             reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, self.site);
         let binding = EachVirtualBinding {
-            items: self.items,
-            key_fn: self.key_fn,
+            items,
+            synced: None,
             row_fn: self.row_fn,
             scope: reactive::current_scope(),
             moved,
@@ -862,12 +978,13 @@ where
             } else {
                 VirtualListItems::default()
             },
-            geometry,
+            geometry: Geometry::default(),
+            shared,
             row_height: self.row_height,
             measured: self.measured,
             overscan: self.overscan,
             version: 0,
-            _types: PhantomData,
+            published: (u64::MAX, u64::MAX),
         };
         // Subscribe now; the first window follows the first layout, whose
         // viewport event moves it. An ancestor's events are only heard once
@@ -881,12 +998,10 @@ where
     }
 }
 
-impl<T, K, S, KF, RF, V> StructuralBinding for EachVirtualBinding<T, K, S, KF, RF>
+impl<T, K, RF, V> StructuralBinding for EachVirtualBinding<T, K, RF>
 where
     T: Clone + Send + 'static,
     K: Eq + Hash + Clone + Send + 'static,
-    S: Readable<Vec<T>>,
-    KF: Fn(&T) -> K + Send + 'static,
     RF: Fn(T) -> V + Send + 'static,
     V: IntoView,
 {

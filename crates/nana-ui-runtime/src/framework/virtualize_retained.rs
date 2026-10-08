@@ -533,6 +533,7 @@ impl AppContext {
         if measured {
             // Rows move with the new extents even when the window is the same.
             items.published = None;
+            items.measurements = items.measurements.wrapping_add(1);
         }
         if at.is_none() && viewport.offset[1] != before {
             let current = self.world.scroll_offset(scroll.id).unwrap_or_default();
