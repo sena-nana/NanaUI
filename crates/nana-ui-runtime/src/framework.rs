@@ -2704,7 +2704,11 @@ impl AppContext {
         document: DocumentId,
         target: StableNodeId,
     ) -> Result<bool, FrameworkError> {
-        self.focus_node_with(document, target, true)
+        let moved = self.focus_node_in_place(document, target)?;
+        if moved {
+            self.reveal_focused_target(target)?;
+        }
+        Ok(moved)
     }
 
     /// Move focus to `target` without scrolling anything, like a web
@@ -2718,15 +2722,6 @@ impl AppContext {
         &mut self,
         document: DocumentId,
         target: StableNodeId,
-    ) -> Result<bool, FrameworkError> {
-        self.focus_node_with(document, target, false)
-    }
-
-    fn focus_node_with(
-        &mut self,
-        document: DocumentId,
-        target: StableNodeId,
-        reveal: bool,
     ) -> Result<bool, FrameworkError> {
         if !self
             .world
@@ -2763,9 +2758,6 @@ impl AppContext {
                 mutations.request_focus(document, Some(target));
                 self.commit_mutations(mutations)?;
                 self.views.insert(parent, Box::new(next));
-                if reveal {
-                    self.reveal_focused_target(target)?;
-                }
                 return Ok(true);
             }
             if self
@@ -2789,9 +2781,6 @@ impl AppContext {
                 mutations.request_focus(document, Some(target));
                 self.commit_mutations(mutations)?;
                 self.views.insert(parent, Box::new(next));
-                if reveal {
-                    self.reveal_focused_target(target)?;
-                }
                 return Ok(true);
             }
             return Ok(false);
@@ -2802,9 +2791,6 @@ impl AppContext {
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, Some(target));
         self.commit_mutations(mutations)?;
-        if reveal {
-            self.reveal_focused_target(target)?;
-        }
         Ok(true)
     }
 
