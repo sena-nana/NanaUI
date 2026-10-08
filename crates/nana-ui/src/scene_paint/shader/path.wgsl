@@ -148,12 +148,17 @@ fn srgb_channel_to_linear(u: f32) -> f32 {
 // Keep the specialization scalar as a float. Some GLES translators materialize
 // integer overrides as an `int[1]`, which cannot initialize a WGSL `u32`.
 override PATH_SAMPLES: f32 = 1.0;
-const PATH_SAMPLE_OFFSETS = array<vec2<f32>, 4>(
-    vec2<f32>(-0.125, -0.375),
-    vec2<f32>(0.375, -0.125),
-    vec2<f32>(-0.375, 0.125),
-    vec2<f32>(0.125, 0.375),
-);
+// A switch rather than a module-scope `const` array: indexed with the
+// run-time sample index, that array reads back wrong on D3D12 (FXC), and every
+// 4× path draws nothing.
+fn path_sample_offset(sample: u32) -> vec2<f32> {
+    switch sample {
+        case 0u: { return vec2<f32>(-0.125, -0.375); }
+        case 1u: { return vec2<f32>(0.375, -0.125); }
+        case 2u: { return vec2<f32>(-0.375, 0.125); }
+        default: { return vec2<f32>(0.125, 0.375); }
+    }
+}
 
 // An AA fringe ramps linearly over its one device pixel, as every other edge;
 // across a shadow band of ±2σ, smoothstep shapes the ramp into a close fit of
@@ -195,9 +200,8 @@ fn path_fs_main(
         // coverage values. It also avoids relying on the backend's
         // `sample_mask` array builtin, which is not representable as a scalar
         // u32 by every GLSL translation backend.
-        let sample = min(sample_index, 3u);
         coverage = path_alpha(
-            input.coverage + dot(ramp, PATH_SAMPLE_OFFSETS[sample]),
+            input.coverage + dot(ramp, path_sample_offset(sample_index)),
             fringe,
         );
     }

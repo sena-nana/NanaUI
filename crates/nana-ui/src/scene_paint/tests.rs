@@ -12433,3 +12433,33 @@ fn a_rolled_back_target_keeps_the_fetch_host() {
         "the rollback must not release the window's fetch host"
     );
 }
+
+/// D3D12 (FXC) reads a module-scope `const` array back wrong when the index
+/// is only known at run time: the 4× path coverage once indexed its sample
+/// offsets that way and every path drew nothing there, while Metal and Vulkan
+/// stayed correct. Metal-only test machines cannot see it, so no shader may
+/// declare one; a function-local `var` array or a `switch` is fine.
+#[test]
+fn no_shader_declares_a_module_scope_const_array() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/scene_paint/shader");
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("shader directory") {
+        let path = entry.expect("shader entry").path();
+        if path.extension().is_none_or(|ext| ext != "wgsl") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("shader source");
+        for (line, text) in source.lines().enumerate() {
+            let Some(rest) = text.strip_prefix("const ") else {
+                continue;
+            };
+            if rest.contains("array<") || rest.contains("= array(") {
+                offenders.push(format!("{}:{}", path.display(), line + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "module-scope const arrays: {offenders:?}"
+    );
+}
