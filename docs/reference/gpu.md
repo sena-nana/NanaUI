@@ -11,7 +11,7 @@ Issue #186 当前结论为 **NO-GO**。WGPU 仍是 NanaUI 的唯一正式 backen
 
 ## WGPU 后端由应用选择
 
-框架 crate 不替你的应用决定编进哪些图形后端。workspace 的 `wgpu` 关闭默认特性。只留 `std`、`parking_lot`、`wgsl`。`nana-ui` 与 `nana-ui-vue` 的默认特性 `wgpu-backends` 打开平台上全部后端（Windows 为 DX12/Vulkan/GLES，Apple 为 Metal，Linux 为 Vulkan/GLES）。只在启用 `gpu` 时生效。因此按默认特性依赖的应用行为不变。只发行部分后端的应用用 `default-features = false`。在自己的 `wgpu` 依赖上按平台列出后端。`hosted_context` 只在编进来的后端里选择 adapter。框架自身的测试经 dev-dependency 打开全部后端。示例和平台宿主作为应用，自己打开 `wgpu-backends`。
+框架 crate 不替你的应用决定编进哪些图形后端。workspace 的 `wgpu` 关闭默认特性。只留 `std`、`parking_lot`、`wgsl`。`nana-ui` 与 `nana-ui-vue` 的默认特性 `wgpu-backends` 打开平台上全部后端（Windows 为 DX12/Vulkan/GLES，Apple 为 Metal，Linux 为 Vulkan/GLES）。只在启用 `gpu` 时生效。因此按默认特性依赖的应用行为不变。只发行部分后端的应用用 `default-features = false`。在自己的 `wgpu` 依赖上按平台列出后端。`hosted_context` 只在编进来的后端里选择 adapter。DX12 用哪个着色器编译器见 [两阶段启动](startup.md#dx12-着色器编译器)：exe 旁的 `dxcompiler.dll`，没有时用 FXC。框架自身的测试经 dev-dependency 打开全部后端。示例和平台宿主作为应用，自己打开 `wgpu-backends`。
 
 ## 统一 GPU policy（Issue #184）
 
@@ -77,7 +77,7 @@ renderer 不直接调用 `queue.write_buffer` / `write_texture`。`GpuWorkSink` 
 
 ### 缓存与资源
 
-pipeline 与 resource layout registry 是按 `DeviceGeneration` 的 `StampedCache`。命中只写一次时间戳。满时一次线性选择淘汰最久未用的八分之一。被淘汰的后端对象等到下一次提交完成才释放。transient buffer / texture 池按完整描述 key 持有、复用。超出预算淘汰。
+pipeline 与 resource layout registry 是按 `DeviceGeneration` 的 `StampedCache`。命中只写一次时间戳。满时一次线性选择淘汰最久未用的八分之一。被淘汰的后端对象等到下一次提交完成才释放。pipeline 在 registry 的锁外编译：不同 key 可以在不同线程上同时编译，同一 key 的并发冷请求共用一次编译，编译期间帧槽、上传和池也不被挡住。transient buffer / texture 池按完整描述 key 持有、复用。超出预算淘汰。
 
 普通 resize 保留 `GpuContext` 和静态 pipeline。device replacement 使用新 context。旧设备资源不能进入新设备。HostTexture 本身就是本设备上的纹理（generation 已校验）。没有需要「realize」的东西。此前按 identity/version 缓存 HostTexture 的 realization cache 已删除（它把连续内容的每个版本都塞进静态缓存）。`url(...)` 图片由 `SceneWgpuPainter` 持有的唯一一个 `UrlTextureCache` 负责。quad 背景、border-image 与 HostTexture mask 共用它。同一 URL 每个 painter 只抓取、解码、上传、保留一次（仍按 fetch host 分桶）。图片就绪后两条管线各自丢弃按 target 保存的 URL 绑定。
 

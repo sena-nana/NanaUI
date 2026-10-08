@@ -443,6 +443,13 @@ pub mod host {
     /// `early-splash` pack, on the event thread before the window is shown.
     pub static STARTUP_SPLASH_LOGO_READ_NS: Metric =
         Metric::gauge(D, 6, "host.startup.splash_logo_read", "ns");
+    /// Selecting the adapter and creating the device on the startup thread.
+    pub static STARTUP_DEVICE_REQUEST_NS: Metric =
+        Metric::gauge(D, 7, "host.startup.device_request", "ns");
+    /// Building the primary scene painter, its pipeline compiles included,
+    /// on the startup thread once the device exists.
+    pub static STARTUP_PAINTER_BUILD_NS: Metric =
+        Metric::gauge(D, 8, "host.startup.painter_build", "ns");
     /// Fault: a packaged Early Splash logo could not be read; the application
     /// starts without a splash. `code` is `SplashPackageError::code`; the
     /// message names the URL and the reason.
