@@ -655,9 +655,9 @@ impl RuntimeLayoutEngine {
             islands
         };
         // An island whose own border box changed moves its siblings, which only
-        // its parent places. Such a pass also walks from the document roots,
-        // where the parent's retained plan replays the shift.
-        let mut island_resized = false;
+        // its parent places. Such a pass also walks from the island's document
+        // root, where the parent's retained plan replays the shift.
+        let mut resized_roots = HashSet::new();
         let reach = if force_full {
             AffectedIndex::default()
         } else {
@@ -686,10 +686,16 @@ impl RuntimeLayoutEngine {
                 &mut intrinsic,
                 scope_ref,
             )?;
-            island_resized |= retained.boxes.get(&root).is_none_or(|previous| {
+            if retained.boxes.get(&root).is_none_or(|previous| {
                 previous.width.to_bits() != root_size.width.to_bits()
                     || previous.height.to_bits() != root_size.height.to_bits()
-            });
+            }) {
+                let mut top = root;
+                while let Some(parent) = world.parent_id(top) {
+                    top = parent;
+                }
+                resized_roots.insert(top);
+            }
             place_node_scoped(
                 root,
                 origin,
@@ -706,9 +712,13 @@ impl RuntimeLayoutEngine {
         }
         for root in roots {
             // With islands laid out on their own, a root pass runs only for
-            // what leads to an affected node outside every island, or for an
-            // island that resized and moves its siblings.
-            if !force_full && !islands.is_empty() && !island_resized && !reach.reaches(root) {
+            // what leads to an affected node outside every island, or for the
+            // root of an island that resized and moves its siblings.
+            if !force_full
+                && !islands.is_empty()
+                && !resized_roots.contains(&root)
+                && !reach.reaches(root)
+            {
                 continue;
             }
             let root_size = intrinsic_size_scoped(
