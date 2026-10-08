@@ -191,14 +191,14 @@ const INITIAL_GRADIENTS: usize = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct GpuGradient {
     /// kind (0 linear, 1 radial, 2 conic), extend (0 pad, 1 repeat, 2
-    /// reflect), stop count, color space (always 1: linear scRGB).
+    /// reflect), stop count, the space the stops interpolate in (0 sRGB, 1
+    /// linear scRGB).
     header: [u32; 4],
     /// Linear: start.xy, end.xy. Radial: center.xy, radius. Conic: center.xy,
     /// start angle.
     geometry: [f32; 4],
     offsets: [[f32; 4]; GRADIENT_STOPS / 4],
-    /// Premultiplied linear scRGB stops. `header.w` remains set for ABI
-    /// compatibility with older path shader buffers.
+    /// Premultiplied stops, in the space `header.w` names.
     colors: [[f32; 4]; GRADIENT_STOPS],
 }
 
@@ -218,20 +218,13 @@ impl GpuGradient {
             GradientExtend::Repeat => 1,
             GradientExtend::Reflect => 2,
         };
-        // Both analytic quads and paths interpolate in the retained linear
-        // scRGB scene space. Legacy resolved stops arrive as sRGB for API
-        // compatibility, so decode them once at upload rather than letting
-        // the path shader interpolate in a different space.
-        let legacy_linear;
-        let source = if let Some(stops) = gradient.linear_stops.as_deref() {
-            stops
-        } else {
-            legacy_linear = gradient
-                .stops
-                .iter()
-                .map(|(offset, color)| (*offset, super::color::pack_linear(*color)))
-                .collect::<Vec<_>>();
-            &legacy_linear
+        // Plain sRGB stops interpolate in sRGB, as a browser blends them (a
+        // black-to-white midpoint is 50% grey, not 73%); the shader decodes
+        // the result once. Stops written in a colour space of their own
+        // arrive linear and interpolate there.
+        let (source, space) = match gradient.linear_stops.as_deref() {
+            Some(stops) => (stops, 1),
+            None => (gradient.stops.as_slice(), 0),
         };
         let stops: Vec<(f32, [f32; 4])> = if source.len() <= GRADIENT_STOPS {
             source.to_vec()
@@ -244,13 +237,7 @@ impl GpuGradient {
                 .collect()
         };
         let mut packed = Self::zeroed();
-        packed.header = [
-            kind,
-            extend,
-            stops.len() as u32,
-            // The uploaded buffer is always linear scRGB now.
-            1,
-        ];
+        packed.header = [kind, extend, stops.len() as u32, space];
         packed.geometry = geometry;
         for (index, (offset, [r, g, b, a])) in stops.iter().enumerate() {
             let alpha = if a.is_finite() {
@@ -265,8 +252,8 @@ impl GpuGradient {
     }
 }
 
-/// Straight linear-scRGB colour of sorted stops at `t`, interpolated
-/// premultiplied.
+/// Straight colour of sorted stops at `t`, interpolated premultiplied in the
+/// stops' own space.
 fn sample_stops(stops: &[(f32, [f32; 4])], t: f32) -> [f32; 4] {
     let premultiplied = |[r, g, b, a]: [f32; 4]| {
         let a = if a.is_finite() {
@@ -3528,5 +3515,40 @@ impl MeshPipeline {
         std::mem::swap(&mut self.pending_clips, &mut target.pending_clips);
         std::mem::swap(&mut self.clip_intern, &mut target.clip_intern);
         std::mem::swap(&mut self.uploaded_clips, &mut target.uploaded_clips);
+    }
+}
+
+#[cfg(test)]
+mod gradient_space_tests {
+    use super::GpuGradient;
+    use nana_ui_runtime::{GradientExtend, GradientShape, ResolvedGradient};
+
+    fn gradient(linear: Option<Vec<(f32, [f32; 4])>>) -> ResolvedGradient {
+        ResolvedGradient {
+            shape: GradientShape::Linear {
+                start: [0.0, 0.0],
+                end: [10.0, 0.0],
+            },
+            stops: vec![(0.0, [0.0, 0.0, 0.0, 1.0]), (1.0, [1.0, 1.0, 1.0, 1.0])],
+            linear_stops: linear,
+            extend: GradientExtend::Pad,
+        }
+    }
+
+    /// Plain sRGB stops go up as sRGB, to blend there as a browser does; the
+    /// shader decodes after interpolating. Stops written in a colour space
+    /// of their own go up linear.
+    #[test]
+    fn plain_stops_interpolate_in_srgb_and_explicit_ones_in_linear() {
+        let plain = GpuGradient::from_resolved(&gradient(None));
+        assert_eq!(plain.header[3], 0);
+        assert_eq!(plain.colors[1], [1.0, 1.0, 1.0, 1.0]);
+
+        let explicit = GpuGradient::from_resolved(&gradient(Some(vec![
+            (0.0, [0.0, 0.0, 0.0, 1.0]),
+            (1.0, [2.0, 2.0, 2.0, 1.0]),
+        ])));
+        assert_eq!(explicit.header[3], 1);
+        assert_eq!(explicit.colors[1], [2.0, 2.0, 2.0, 1.0]);
     }
 }

@@ -8,11 +8,11 @@ const GRADIENT_STOPS: u32 = 16u;
 // Matches `GpuGradient` in `mesh.rs`.
 struct GpuGradient {
     // kind (0 linear, 1 radial, 2 conic), extend (0 pad, 1 repeat, 2 reflect),
-    // stop count, unused.
+    // stop count, the space stops interpolate in (0 sRGB, 1 linear scRGB).
     header: vec4<u32>,
     geometry: vec4<f32>,
     offsets: array<vec4<f32>, 4>,
-    // Premultiplied linear scRGB.
+    // Premultiplied, in the space `header.w` names.
     colors: array<vec4<f32>, 16>,
 }
 
@@ -119,14 +119,28 @@ fn gradient_color(index: u32, p: vec2<f32>) -> vec4<f32> {
             }
         }
     }
-    // All stops are uploaded in linear scRGB. This keeps path gradients
-    // consistent with analytic quad gradients and preserves extended values
-    // until the final presentation transform.
+    // Plain sRGB stops interpolated in sRGB, as a browser blends them, and
+    // decode once here. Stops in a colour space of their own arrive linear
+    // and keep extended values until the presentation transform.
     if srgb.a <= 0.0 {
         return vec4<f32>(0.0);
     }
-    let straight = srgb.rgb / srgb.a;
+    var straight = srgb.rgb / srgb.a;
+    if g.header.w == 0u {
+        straight = vec3<f32>(
+            srgb_channel_to_linear(straight.r),
+            srgb_channel_to_linear(straight.g),
+            srgb_channel_to_linear(straight.b),
+        );
+    }
     return vec4<f32>(straight * srgb.a, srgb.a);
+}
+
+fn srgb_channel_to_linear(u: f32) -> f32 {
+    if u < 0.04045 {
+        return u / 12.92;
+    }
+    return pow((u + 0.055) / 1.055, 2.4);
 }
 
 // The pass's sample count, and a 4× pass's sample positions relative to the
