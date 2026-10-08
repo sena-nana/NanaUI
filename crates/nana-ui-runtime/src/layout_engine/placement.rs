@@ -48,12 +48,13 @@ fn children_reaching_affected(
     scope: &ScopeContext<'_>,
 ) -> Vec<u32> {
     let mut indices = plan.affected_entries(scope);
-    indices.extend(scope.reach.children(container).iter().filter_map(|child| {
-        plan.by_child
-            .binary_search_by_key(child, |(child, _)| *child)
-            .ok()
-            .map(|slot| plan.by_child[slot].1)
-    }));
+    indices.extend(
+        scope
+            .reach
+            .children(container)
+            .iter()
+            .filter_map(|&child| plan.entry_index(child)),
+    );
     indices.sort_unstable();
     indices.dedup();
     indices
@@ -586,6 +587,11 @@ fn replay_grid(
         return Ok(false);
     }
     let entries = plan.entries.borrow().clone();
+    let entry_of = |child: StableNodeId| {
+        plan.entry_index(child)
+            .and_then(|index| entries.get(index as usize))
+            .filter(|entry| entry.child == child)
+    };
     let mut flow = Vec::new();
     let mut sizes = Vec::new();
     let content_changed = plan.content != content;
@@ -596,7 +602,7 @@ fn replay_grid(
         if !grid_child_in_flow(child_style.as_ref()) {
             continue;
         }
-        let Some(entry) = entries.iter().find(|entry| entry.child == child) else {
+        let Some(entry) = entry_of(child) else {
             return Ok(false);
         };
         let remeasure = scope.measure.contains(&child)
@@ -634,9 +640,14 @@ fn replay_grid(
         nodes,
         None,
     );
+    let previous_items: HashMap<StableNodeId, &GridItemPlan> = old_grid
+        .items
+        .iter()
+        .map(|item| (item.child, item))
+        .collect();
     let mut reuse = HashMap::new();
     for item in &solved.items {
-        let Some(previous) = old_grid.item(item.id).cloned() else {
+        let Some(&previous) = previous_items.get(&item.id) else {
             continue;
         };
         if previous.col != item.col as u32
@@ -647,7 +658,7 @@ fn replay_grid(
         {
             continue;
         }
-        let (old_inline, old_block) = old_grid.cell(&previous);
+        let (old_inline, old_block) = old_grid.cell(previous);
         let new_inline =
             grid_span_extent(&solved.col_sizes, item.col, item.col_span, solved.col_gap);
         let new_block =
@@ -660,7 +671,7 @@ fn replay_grid(
         if scope.measure.contains(&item.id) {
             continue;
         }
-        let Some(entry) = entries.iter().find(|entry| entry.child == item.id) else {
+        let Some(entry) = entry_of(item.id) else {
             continue;
         };
         let current = nodes.style(item.id);

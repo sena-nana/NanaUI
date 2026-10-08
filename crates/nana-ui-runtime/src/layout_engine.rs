@@ -1606,10 +1606,6 @@ impl GridTrackPlan {
         }
     }
 
-    fn item(&self, child: StableNodeId) -> Option<&GridItemPlan> {
-        self.items.iter().find(|item| item.child == child)
-    }
-
     fn cell(&self, item: &GridItemPlan) -> (f32, f32) {
         (
             grid_span_extent(
@@ -1922,6 +1918,14 @@ impl ContainerPlan {
         self.by_child.len()
     }
 
+    /// The index in `entries` of `child`'s recorded placement.
+    fn entry_index(&self, child: StableNodeId) -> Option<u32> {
+        self.by_child
+            .binary_search_by_key(&child, |(child, _)| *child)
+            .ok()
+            .map(|slot| self.by_child[slot].1)
+    }
+
     /// Every affected direct child still has the role this plan recorded:
     /// in flow, positioned, or omitted. A child that enters or leaves flow, or
     /// becomes positioned, changes the participant lists themselves, which no
@@ -1960,12 +1964,7 @@ impl ContainerPlan {
         let mut indices: Vec<u32> = scope
             .affected
             .iter()
-            .filter_map(|id| {
-                self.by_child
-                    .binary_search_by_key(id, |(child, _)| *child)
-                    .ok()
-                    .map(|slot| self.by_child[slot].1)
-            })
+            .filter_map(|&id| self.entry_index(id))
             .collect();
         indices.sort_unstable();
         indices

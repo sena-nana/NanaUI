@@ -1266,19 +1266,23 @@ impl UiWorld {
         ids: &[StableNodeId],
         source: crate::LayoutResultSource,
     ) {
-        let mut unique = ids.to_vec();
         // A child placement is part of the parent's Result. Include the
         // ancestor closure so a compatibility write cannot leave a parent
-        // pointing at an older child box.
+        // pointing at an older child box. Siblings share their ancestors:
+        // a walk stops at the first one already collected.
+        let mut seen: NodeSet = ids.iter().copied().collect();
+        let mut unique: Vec<StableNodeId> = seen.iter().copied().collect();
         for &id in ids {
             let mut ancestor = self.parent_id(id);
             while let Some(parent) = ancestor {
+                if !seen.insert(parent) {
+                    break;
+                }
                 unique.push(parent);
                 ancestor = self.parent_id(parent);
             }
         }
         unique.sort_unstable();
-        unique.dedup();
         // Ancestors are republished with the batch. Downstream geometry is
         // scheduled only for a caller node whose own box, padding, fragment
         // or clip changed.
