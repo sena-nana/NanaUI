@@ -4,20 +4,12 @@
 presentation without making an OS Window the owner of rendering. It is
 available with the `gpu` feature and does not require `hosted` or `winit`.
 
-`RenderTargetPlanner` negotiates a topology only at configuration boundaries:
-consumer attach/detach, resize, format/color-space changes, and device
-replacement. A single compatible Window consumer selects `DirectSurface`, so
-the existing surface path keeps its direct-to-surface work. Retained and
-multi-consumer plans select, in order, same-device sampling, explicitly
-advertised native sharing, GPU transfer, or an explicitly opted-in CPU
-fallback. The planner never assumes native interop from a consumer kind.
-
-With the `hosted` feature, `WindowPresenter` exposes the existing
-`HostedGpuSurface` capabilities and lifecycle without creating an offscreen
-target. Refresh its requirements after a structural surface change, then keep
-the planner outside the per-frame encode loop. It is an adapter seam; the
-existing hosted scene loop still needs explicit host wiring before it becomes
-the active window path.
+A window presents to its own surface directly. Anything else that consumes
+the same scene, such as a Spout sender, a recorder or a nested host, takes an
+output: the scene is painted a second time into an `ExternalSurface` inside
+the frame the window records anyway (see *Window outputs* below). There is no
+topology planner and no CPU fallback; a consumer that needs the pixels on
+another device or in another process gets them through native sharing.
 
 `ExternalSurface` owns a bounded set of persistent GPU textures and uses the
 same `SceneWgpuPainter` as a Window. `render` compares the Scene projection,
@@ -57,8 +49,8 @@ the `native-export` feature adds the one native exchange NanaUI ships (see
 that wgpu 30 can import some DMA-BUF images through its HAL, but does not
 expose external semaphore import/export or a memory export contract, and
 queue ownership barriers would be outside the safe Nana GPU contract; native
-exchange stays unsupported there. Set `copy_source` when a planner needs to
-choose an explicit GPU-transfer or CPU-readback route.
+exchange stays unsupported there. Set `copy_source` when a consumer copies
+the output texture on the GPU.
 
 The producer must include revisions for GPU producers or host textures that
 are not represented by `UiScene::projection_revision`. A resize or device
@@ -67,11 +59,10 @@ completed surface available. All target resources carry `DeviceGeneration`,
 and the surface rejects a different device rather than sending stale handles
 to the painter.
 
-Output work is observable through `OutputWorkObservation`, the planner's
+Output work is observable through `OutputWorkObservation`, the surface's
 `last_work()` snapshot, `WorkCounters`'s `output_*` fields, and
 `nana_diagnostics::framework::gpu::OUTPUT_*` metrics. Frame drivers fold a
-planner or surface snapshot with `record_last_work`; CPU fallback is therefore
-explicit in both planning and diagnostics.
+surface snapshot into the frame's counters with `record_last_work`.
 
 ## Window outputs
 
@@ -166,9 +157,8 @@ A consumer that has not released for 2 seconds gets the pool retired and a new
 one (`NativeRetired`). A resize, an alpha/export change and a device switch
 also retire the pool; the next token names a new `pool_generation`. The
 content is sRGB-encoded with premultiplied alpha unless the output asked for
-`Straight`. The export path performs no CPU readback (`cpu_readbacks` stays
-0); the D3D11 readback in the tests and in `window-output-probe` is
-verification only.
+`Straight`. The export path performs no CPU readback; the D3D11 readback in
+the tests and in `window-output-probe` is verification only.
 
 ```powershell
 cargo test -p nana-gpu --features native-export --test native_export

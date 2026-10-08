@@ -130,15 +130,11 @@ pub use nana_gpu::{
     NATIVE_EXPORT_FORMAT, NATIVE_EXPORT_SLOTS, NativeExportDeferral, NativeExportError,
     NativeExportOutcome, NativeExportPool, NativeFrameToken, StagedNativeFrame,
 };
-#[cfg(all(feature = "gpu", feature = "hosted"))]
-pub use output::WindowPresenter;
 #[cfg(feature = "gpu")]
 pub use output::{
-    ConsumerId, ConsumerKind, ConsumerRoute, EmbeddedBindError, EmbeddedFrameBinding,
-    EmbeddedMetadataError, EmbeddedOutputMetadata, EmbeddedSurfaceNode, ExternalFrame,
-    ExternalRenderOutcome, ExternalSurface, ExternalSurfaceConfig, ExternalSurfaceError,
-    OutputConsumer, OutputPath, OutputPlan, OutputTopology, PlanError, PresenterCapabilities,
-    RenderTargetPlanner, RenderTargetRequirements,
+    EmbeddedBindError, EmbeddedFrameBinding, EmbeddedMetadataError, EmbeddedOutputMetadata,
+    EmbeddedSurfaceNode, ExternalFrame, ExternalRenderOutcome, ExternalSurface,
+    ExternalSurfaceConfig, ExternalSurfaceError,
 };
 #[cfg(all(feature = "gpu", feature = "hosted"))]
 pub use output::{

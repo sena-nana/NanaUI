@@ -13,7 +13,7 @@
     │
     ▼
 nana-ui                 宿主适配器：run_runtime、控件再导出、SceneWgpuPainter、
-    │                   FrameBinding、output planner/ExternalSurface（gpu feature）
+    │                   FrameBinding、窗口输出/ExternalSurface（gpu feature）
     ├── nana-gpu        GPU 后端合同：GpuContext（设备、代次、能力、丢失、
     │                   纹理与提交守卫）、FrameContext（独占 encoder 的一帧）、
     │                   GpuTexture。WGPU 是唯一后端，wgpu-interop 是显式逃生口
@@ -54,14 +54,12 @@ Vue + JS L1/L2（可选宿主）
 
 `SceneWgpuPainter` 在 `nana-ui` 里，建在宿主的 `GpuContext` 上。每一帧画进宿主的 `FrameContext`。
 
-窗口不是 output API 的语义根。`nana_ui::output::RenderTargetPlanner`
-在 consumer attach/detach、resize、format 或 device generation 变化时协商
-target topology；`ExternalSurface` 为无窗口、嵌套和 headless consumer 保留持久
-GPU 资源。它们仍调用同一个 `SceneWgpuPainter`，不会复制 UiWorld、UiScene 或
-renderer。普通单窗口 consumer 可通过 adapter 选择 direct surface fast path；静态
-retained output 在 producer 入口跳过整帧，consumer 只采样最近 completed revision。
-当前 hosted scene loop 尚未切换到该 planner，后续接入仍需由 host 明确 wiring。详见
-[`output.md`](output.md)。
+窗口不是 output API 的语义根。窗口直接画进自己的 surface；其他消费同一场景的
+consumer（Spout、录制、嵌套宿主）通过窗口输出拿到画面：宿主在窗口本来就要录的那一帧里，
+用同一个 `SceneWgpuPainter` 把场景再画进 `ExternalSurface`，不会复制 UiWorld、UiScene
+或 renderer。`ExternalSurface` 为无窗口、嵌套和 headless consumer 保留持久 GPU 资源；
+静态 retained output 在 producer 入口跳过整帧，consumer 只采样最近 completed revision。
+没有拓扑协商，也没有 CPU 回读路径。详见 [`output.md`](output.md)。
 
 `scripts/check-engine-boundary.py` 保持 Runtime 和 Scene 对绘制后端中立，并守住 GPU 合同。`nana-gpu`、`nana-frame-exchange`、`nana-ui` 的公开签名，只有在 `wgpu-interop` 之下才能出现 `wgpu`。`nana_gpu::__framework` 只供框架 crate 自己的源码使用。见 [实时画面](gpu.md#gpu-合同与-wgpu-逃生口)。
 

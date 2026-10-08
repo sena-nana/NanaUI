@@ -18,7 +18,6 @@ use nana_gpu::{
 use nana_ui_platform::SharedFetchHost;
 use nana_ui_scene::UiScene;
 
-use super::planner::RenderTargetRequirements;
 use crate::{
     AlphaEncoding, HostTextureRegistry, SceneGpuRendererRegistry, ScenePaintError,
     ScenePaintViewport, ScenePresentationProfile, SceneWgpuPainter,
@@ -460,28 +459,6 @@ impl ExternalSurface {
 
     fn target_id(&self, generation: u64, slot: usize) -> crate::RenderTargetId {
         crate::RenderTargetId(self.target_namespace ^ external_target_id(generation, slot))
-    }
-
-    /// The canonical target requirements this producer supplies to a
-    /// [`RenderTargetPlanner`](super::RenderTargetPlanner).
-    pub fn requirements(&self) -> RenderTargetRequirements {
-        Self::requirements_for(self.config, self.alpha_encoding)
-    }
-
-    fn requirements_for(
-        config: ExternalSurfaceConfig,
-        alpha_encoding: AlphaEncoding,
-    ) -> RenderTargetRequirements {
-        let usage = if config.copy_source {
-            GpuTextureUsages::RENDER_TARGET | GpuTextureUsages::SAMPLED | GpuTextureUsages::COPY_SRC
-        } else {
-            GpuTextureUsages::RENDER_TARGET | GpuTextureUsages::SAMPLED
-        };
-        RenderTargetRequirements::new(config.extent, config.format())
-            .with_color_space(config.presentation.color_space)
-            .with_alpha(alpha_encoding)
-            .persistent(true)
-            .with_usage(usage)
     }
 
     /// Drive WGPU's non-blocking completion callbacks and retire leases that
@@ -1005,21 +982,6 @@ mod tests {
             Err(ExternalSurfaceError::InvalidSlotCount {
                 slots: MAX_SLOTS + 1
             })
-        );
-    }
-
-    #[test]
-    fn requirements_advertise_copy_source_only_when_requested() {
-        let base = ExternalSurfaceConfig::new([640, 480], GpuTextureFormat::RGBA8_UNORM);
-        assert!(
-            !ExternalSurface::requirements_for(base, AlphaEncoding::Linear)
-                .usage
-                .contains(GpuTextureUsages::COPY_SRC)
-        );
-        assert!(
-            ExternalSurface::requirements_for(base.with_copy_source(true), AlphaEncoding::Linear)
-                .usage
-                .contains(GpuTextureUsages::COPY_SRC)
         );
     }
 }

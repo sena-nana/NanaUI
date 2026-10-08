@@ -260,13 +260,9 @@ pub mod gpu {
     // Presentation/output boundary (Issue #242). IDs are append-only; these
     // counters keep fallback and extra work observable without allocating
     // diagnostic strings on the frame path.
-    pub static OUTPUT_TARGET_PLAN_REBUILDS: Metric =
-        Metric::counter(D, 40, "gpu.output.target_plan_rebuilds", "count");
     pub static OUTPUT_EXTRA_PASSES: Metric =
         Metric::counter(D, 41, "gpu.output.extra_passes", "count");
     pub static OUTPUT_GPU_COPIES: Metric = Metric::counter(D, 42, "gpu.output.gpu_copies", "count");
-    pub static OUTPUT_CPU_READBACKS: Metric =
-        Metric::counter(D, 43, "gpu.output.cpu_readbacks", "count");
     pub static OUTPUT_TARGET_RECREATES: Metric =
         Metric::counter(D, 44, "gpu.output.target_recreates", "count");
     pub static OUTPUT_CONTENT_REVISIONS: Metric =
@@ -278,12 +274,11 @@ pub mod gpu {
         Metric::counter(D, 48, "gpu.output.gpu_copy_bytes", "bytes");
     pub static OUTPUT_GPU_CONVERT_PASSES: Metric =
         Metric::counter(D, 49, "gpu.output.gpu_convert_passes", "count");
-    pub static OUTPUT_CPU_FALLBACK_FRAMES: Metric =
-        Metric::counter(D, 50, "gpu.output.cpu_fallback_frames", "count");
-    pub static OUTPUT_CANONICAL_TARGETS: Metric =
-        Metric::counter(D, 51, "gpu.output.canonical_target_count", "count");
-    pub static OUTPUT_CONSUMERS: Metric =
-        Metric::counter(D, 52, "gpu.output.consumer_count", "count");
+    // Retired with the render-target planner (no caller planned a topology:
+    // window outputs paint the window's scene into their own surface); the IDs
+    // stay taken: 40 gpu.output.target_plan_rebuilds, 43 gpu.output.cpu_readbacks,
+    // 50 gpu.output.cpu_fallback_frames, 51 gpu.output.canonical_target_count,
+    // 52 gpu.output.consumer_count.
 
     /// A low-volume frame-binding transition. `outcome`: 1 a live frame
     /// replaced the placeholder, 2 the placeholder replaced a frame, 3

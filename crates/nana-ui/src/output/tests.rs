@@ -109,7 +109,6 @@ fn static_output_can_be_sampled_240_times_without_new_producer_work() {
     assert_eq!(work.target_recreates, 0);
     assert_eq!(work.extra_passes, 0);
     assert_eq!(work.gpu_copies, 0);
-    assert_eq!(work.cpu_readbacks, 0);
     assert_eq!(work.idle_reuse_frames, 1);
 }
 

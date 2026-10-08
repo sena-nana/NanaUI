@@ -1023,7 +1023,6 @@ mod tests {
             assert_eq!(frame.format(), WINDOW_OUTPUT_FORMAT);
             assert_eq!(frame.alpha(), alpha);
             assert!(frame.texture().usage().contains(GpuTextureUsages::COPY_SRC));
-            assert_eq!(state.last_work().cpu_readbacks, 0);
             assert_eq!(
                 state.take_statuses(),
                 vec![WindowOutputStatus::Active {
@@ -1053,7 +1052,6 @@ mod tests {
                 std::thread::yield_now();
             }
             assert_eq!(state.last_work().idle_reuse_frames, 1);
-            assert_eq!(state.last_work().cpu_readbacks, 0);
             assert!(state.take_statuses().is_empty());
         }
     }

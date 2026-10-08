@@ -209,19 +209,14 @@ impl SystemWork {
             gpu_buffer_reallocations: None,
             validation_nodes_scanned: self.validation_nodes_scanned,
             hit_test_nodes_rebuilt: None,
-            output_target_plan_rebuilds: None,
             output_extra_passes: None,
             output_gpu_copies: None,
-            output_cpu_readbacks: None,
-            output_canonical_target_count: None,
-            output_consumer_count: None,
             output_target_recreates: None,
             output_content_revisions: None,
             output_idle_reuse_frames: None,
             output_resolve_count: None,
             output_gpu_copy_bytes: None,
             output_gpu_convert_passes: None,
-            output_cpu_fallback_frames: None,
         }
     }
 
