@@ -694,7 +694,7 @@ impl AppContext {
             return Ok(false);
         };
         if phase == 0 {
-            self.focus_node(document, entity.stable_id())?;
+            self.focus_node_in_place(document, entity.stable_id())?;
             self.press_pointer(document, pointer, entity.stable_id())?;
         }
         if phase >= 2 {

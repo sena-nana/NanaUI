@@ -2644,10 +2644,35 @@ impl AppContext {
         self.world.release_pointer_capture(document, pointer_id)
     }
 
+    /// Move focus to `target` and scroll it into every ancestor scrollport.
     pub fn focus_node(
         &mut self,
         document: DocumentId,
         target: StableNodeId,
+    ) -> Result<bool, FrameworkError> {
+        self.focus_node_with(document, target, true)
+    }
+
+    /// Move focus to `target` without scrolling anything, like a web
+    /// `focus({ preventScroll: true })`.
+    ///
+    /// A pointer press focuses this way: its target is already under the
+    /// pointer, and scrolling would move the content out from under the
+    /// release. An application restoring a saved scroll position and the focus
+    /// inside it uses this too, so the restored offset stands.
+    pub fn focus_node_in_place(
+        &mut self,
+        document: DocumentId,
+        target: StableNodeId,
+    ) -> Result<bool, FrameworkError> {
+        self.focus_node_with(document, target, false)
+    }
+
+    fn focus_node_with(
+        &mut self,
+        document: DocumentId,
+        target: StableNodeId,
+        reveal: bool,
     ) -> Result<bool, FrameworkError> {
         if !self
             .world
@@ -2684,7 +2709,9 @@ impl AppContext {
                 mutations.request_focus(document, Some(target));
                 self.commit_mutations(mutations)?;
                 self.views.insert(parent, Box::new(next));
-                self.reveal_focused_target(target)?;
+                if reveal {
+                    self.reveal_focused_target(target)?;
+                }
                 return Ok(true);
             }
             if self
@@ -2708,7 +2735,9 @@ impl AppContext {
                 mutations.request_focus(document, Some(target));
                 self.commit_mutations(mutations)?;
                 self.views.insert(parent, Box::new(next));
-                self.reveal_focused_target(target)?;
+                if reveal {
+                    self.reveal_focused_target(target)?;
+                }
                 return Ok(true);
             }
             return Ok(false);
@@ -2719,7 +2748,9 @@ impl AppContext {
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, Some(target));
         self.commit_mutations(mutations)?;
-        self.reveal_focused_target(target)?;
+        if reveal {
+            self.reveal_focused_target(target)?;
+        }
         Ok(true)
     }
 

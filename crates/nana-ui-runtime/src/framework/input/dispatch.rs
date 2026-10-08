@@ -310,7 +310,9 @@ impl AppContext {
                 let focus_target = hit.and_then(|id| nearest_focusable(self, id));
                 if !hit.is_some_and(|id| self.preserves_hover_card_editor_focus(id)) {
                     if let Some(focus) = focus_target {
-                        self.focus_node(document, focus)?;
+                        // The press already sits on its target. Revealing it
+                        // would scroll the content out from under the release.
+                        self.focus_node_in_place(document, focus)?;
                     } else {
                         self.clear_focus(document)?;
                     }
