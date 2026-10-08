@@ -1052,8 +1052,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if !host.aspect_conform_pending {
             return;
         }
-        let Some(ratio) = nana_ui_platform::valid_aspect_ratio(host.settings.content_aspect_ratio)
-        else {
+        let Some(ratio) = host.settings.content_aspect_ratio else {
             host.aspect_conform_pending = false;
             return;
         };

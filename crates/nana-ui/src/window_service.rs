@@ -458,9 +458,8 @@ pub(crate) fn validate_descriptor(descriptor: &WindowDescriptor) -> Result<(), W
             "position must be finite".into(),
         ));
     }
-    if descriptor
-        .content_aspect_ratio
-        .is_some_and(|ratio| !ratio.is_finite() || ratio <= 0.0)
+    if descriptor.content_aspect_ratio.is_some()
+        && nana_ui_platform::valid_aspect_ratio(descriptor.content_aspect_ratio).is_none()
     {
         return Err(WindowError::InvalidParameter(
             "content aspect ratio must be finite and positive".into(),

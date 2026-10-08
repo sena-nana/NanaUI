@@ -2067,7 +2067,7 @@ fn scene_window_attributes(
             settings.minimum_size.1.min(size.1),
         );
     }
-    if let Some(ratio) = nana_ui_platform::valid_aspect_ratio(settings.content_aspect_ratio) {
+    if let Some(ratio) = settings.content_aspect_ratio {
         // The requested (or restored) size lends its area; the display the
         // window opens on, when known, is the limit.
         let at = settings
