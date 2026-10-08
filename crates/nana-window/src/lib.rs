@@ -7,6 +7,7 @@ pub use browser::{
     BrowserCommand, BrowserCompletion, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState,
     NativeBrowser,
 };
+mod aspect;
 mod contrast_preference;
 #[cfg(target_os = "windows")]
 mod dcomp;

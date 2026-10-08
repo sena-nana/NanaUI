@@ -319,6 +319,19 @@ pub struct LiveFrameResize {
     mouse_x: f64,
     mouse_y: f64,
     min: (f64, f64),
+    #[cfg(target_os = "windows")]
+    aspect: Option<LiveAspect>,
+}
+
+/// A window's content aspect lock as a custom-chrome resize began.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy)]
+struct LiveAspect {
+    lock: crate::aspect::AspectLock,
+    /// Outer minus client size per axis.
+    frame: (f64, f64),
+    /// Client size when the gesture began.
+    reference: (f64, f64),
 }
 
 #[cfg(target_os = "macos")]
@@ -386,6 +399,14 @@ impl LiveFrameResize {
             windows_sys::Win32::UI::Input::KeyboardAndMouse::SetCapture(hwnd);
         }
         let min = win32_min_track_size(hwnd);
+        let aspect = crate::size_move::aspect_lock(hwnd).and_then(|lock| {
+            let (frame, reference) = crate::size_move::frame_and_client(hwnd)?;
+            Some(LiveAspect {
+                lock,
+                frame,
+                reference,
+            })
+        });
         Some(Self {
             edge,
             origin_x: f64::from(rect.left),
@@ -395,6 +416,7 @@ impl LiveFrameResize {
             mouse_x: f64::from(mouse.x),
             mouse_y: f64::from(mouse.y),
             min,
+            aspect,
         })
     }
 
@@ -406,7 +428,7 @@ impl LiveFrameResize {
         if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) } == 0 {
             return false;
         }
-        let next = live_frame_after_delta(
+        let mut next = live_frame_after_delta(
             [self.origin_x, self.origin_y, self.width, self.height],
             f64::from(mouse.x) - self.mouse_x,
             f64::from(mouse.y) - self.mouse_y,
@@ -414,6 +436,15 @@ impl LiveFrameResize {
             self.min,
             true,
         );
+        if let Some(aspect) = self.aspect {
+            let [left, top, right, bottom] = aspect.lock.constrain_frame(
+                [next[0], next[1], next[0] + next[2], next[1] + next[3]],
+                self.edge,
+                aspect.frame,
+                aspect.reference,
+            );
+            next = [left, top, right - left, bottom - top];
+        }
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
                 hwnd,

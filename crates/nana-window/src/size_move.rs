@@ -1,5 +1,6 @@
 //! Live window-resize session. Windows posts `WM_ENTERSIZEMOVE` /
-//! `WM_EXITSIZEMOVE` around the nested size-move loop.
+//! `WM_EXITSIZEMOVE` around the nested size-move loop, and `WM_SIZING` for
+//! every step of a user resize inside it.
 
 use raw_window_handle::HasWindowHandle;
 
@@ -43,26 +44,57 @@ impl LiveSizeMove {
             false
         }
     }
+
+    /// Keep the client area at `ratio` (width over height) while the user
+    /// drags a frame edge, never below `minimum` (logical client size) on
+    /// either edge. `None` releases the lock. Covers both the platform's own
+    /// size-move loop and [`crate::LiveFrameResize`]; a maximized window is
+    /// left alone. Programmatic resizes are the host's to conform.
+    ///
+    /// Windows only; other platforms ignore it.
+    pub fn set_content_aspect_ratio(&self, ratio: Option<f64>, minimum: (f64, f64)) {
+        let lock = ratio
+            .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+            .map(|ratio| crate::aspect::AspectLock {
+                ratio,
+                minimum: (minimum.0.max(0.0), minimum.1.max(0.0)),
+            });
+        #[cfg(target_os = "windows")]
+        self.inner.set_aspect(lock);
+        #[cfg(not(target_os = "windows"))]
+        let _ = lock;
+    }
 }
 
 #[cfg(target_os = "windows")]
 mod windows_hook {
+    use std::cell::Cell;
     use std::ffi::c_void;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
-    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_SETTINGCHANGE,
+    use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows_sys::Win32::UI::Shell::{
+        DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass,
     };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowRect, IsZoomed, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
+        WM_SETTINGCHANGE, WM_SIZING,
+    };
+
+    use crate::aspect::AspectLock;
 
     const SUBCLASS_ID: usize = 0x4E_41_53_4D;
 
     struct HookState {
         active: AtomicBool,
+        /// Logical minimum; scaled to the window's DPI at each use.
+        aspect: Cell<Option<AspectLock>>,
+        /// Client size when the current size-move loop began.
+        reference: Cell<Option<(f64, f64)>>,
     }
 
     pub(super) struct Hook {
@@ -81,6 +113,8 @@ mod windows_hook {
             let hwnd = handle.hwnd.get() as *mut c_void;
             let state = Box::into_raw(Box::new(HookState {
                 active: AtomicBool::new(false),
+                aspect: Cell::new(None),
+                reference: Cell::new(None),
             }));
             // SAFETY: hwnd belongs to the live winit window. `state` remains
             // allocated until the subclass is removed by `Drop`.
@@ -99,6 +133,12 @@ mod windows_hook {
             // SAFETY: the hook owns `state` for its full lifetime.
             unsafe { &*self.state }.active.load(Ordering::Acquire)
         }
+
+        pub(super) fn set_aspect(&self, lock: Option<AspectLock>) {
+            // SAFETY: the hook owns `state`; the window procedure that also
+            // reads it runs on this same thread.
+            unsafe { &*self.state }.aspect.set(lock);
+        }
     }
 
     impl Drop for Hook {
@@ -111,6 +151,93 @@ mod windows_hook {
                 unsafe { drop(Box::from_raw(self.state)) };
             }
         }
+    }
+
+    /// The aspect lock installed on `hwnd`, with its minimum in physical
+    /// pixels. `None` for a window without the hook or without a lock, and
+    /// for a maximized window, which keeps whatever the platform gave it.
+    pub(crate) fn aspect_lock(hwnd: HWND) -> Option<AspectLock> {
+        let mut data = 0usize;
+        // SAFETY: GetWindowSubclass only reads the subclass table of hwnd.
+        let found =
+            unsafe { GetWindowSubclass(hwnd, Some(size_move_proc), SUBCLASS_ID, &mut data) };
+        if found == 0 || data == 0 {
+            return None;
+        }
+        // SAFETY: data is the live HookState installed with this subclass.
+        let state = unsafe { &*(data as *const HookState) };
+        physical_lock(hwnd, state.aspect.get()?)
+    }
+
+    fn physical_lock(hwnd: HWND, lock: AspectLock) -> Option<AspectLock> {
+        // SAFETY: plain queries on a live window.
+        if unsafe { IsZoomed(hwnd) } != 0 {
+            return None;
+        }
+        let dpi = unsafe { GetDpiForWindow(hwnd) };
+        let scale = if dpi == 0 { 1.0 } else { f64::from(dpi) / 96.0 };
+        Some(AspectLock {
+            ratio: lock.ratio,
+            minimum: (lock.minimum.0 * scale, lock.minimum.1 * scale),
+        })
+    }
+
+    /// Outer minus client size per axis, and the client size.
+    pub(crate) fn frame_and_client(hwnd: HWND) -> Option<((f64, f64), (f64, f64))> {
+        let (mut outer, mut client) = (RECT::default(), RECT::default());
+        // SAFETY: plain queries on a live window.
+        if unsafe { GetWindowRect(hwnd, &mut outer) } == 0
+            || unsafe { GetClientRect(hwnd, &mut client) } == 0
+        {
+            return None;
+        }
+        let client_size = (
+            f64::from(client.right - client.left),
+            f64::from(client.bottom - client.top),
+        );
+        let frame = (
+            f64::from(outer.right - outer.left) - client_size.0,
+            f64::from(outer.bottom - outer.top) - client_size.1,
+        );
+        Some((frame, client_size))
+    }
+
+    /// Bring a `WM_SIZING` drag rectangle to the locked ratio. Answers
+    /// whether it did.
+    fn constrain_sizing(hwnd: HWND, state: &HookState, wparam: WPARAM, lparam: LPARAM) -> bool {
+        let Some(lock) = state.aspect.get() else {
+            return false;
+        };
+        let Some(edge) = crate::aspect::sizing_edge(wparam) else {
+            return false;
+        };
+        let Some(lock) = physical_lock(hwnd, lock) else {
+            return false;
+        };
+        let Some((frame, client)) = frame_and_client(hwnd) else {
+            return false;
+        };
+        let reference = state.reference.get().unwrap_or(client);
+        // SAFETY: WM_SIZING's lParam is the drag rectangle, writable.
+        let rect = unsafe { &mut *(lparam as *mut RECT) };
+        let next = lock.constrain_frame(
+            [
+                f64::from(rect.left),
+                f64::from(rect.top),
+                f64::from(rect.right),
+                f64::from(rect.bottom),
+            ],
+            edge,
+            frame,
+            reference,
+        );
+        *rect = RECT {
+            left: next[0] as i32,
+            top: next[1] as i32,
+            right: next[2] as i32,
+            bottom: next[3] as i32,
+        };
+        true
     }
 
     unsafe extern "system" fn size_move_proc(
@@ -133,13 +260,35 @@ mod windows_hook {
             let active =
                 super::size_move_active_after(message, state.active.load(Ordering::Acquire));
             state.active.store(active, Ordering::Release);
+            let reference = if active {
+                frame_and_client(hwnd).map(|(_, client)| client)
+            } else {
+                None
+            };
+            state.reference.set(reference);
             // SAFETY: hwnd is the subclassed live window.
             unsafe { InvalidateRect(hwnd, ptr::null(), 0) };
+        }
+        if message == WM_SIZING {
+            // winit snaps to resize increments first; the ratio has the last
+            // word, because Windows applies the rectangle as it comes back.
+            // SAFETY: forwards to winit's original window procedure.
+            let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+            // SAFETY: ref_data is the live HookState installed with this subclass.
+            let state = unsafe { &*(ref_data as *const HookState) };
+            return if constrain_sizing(hwnd, state, wparam, lparam) {
+                1
+            } else {
+                result
+            };
         }
         // SAFETY: forwards every message to winit's original window procedure.
         unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
     }
 }
+
+#[cfg(target_os = "windows")]
+pub(crate) use windows_hook::{aspect_lock, frame_and_client};
 
 #[cfg(test)]
 mod tests {
