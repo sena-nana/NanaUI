@@ -37,6 +37,10 @@ pub struct ScenePresentationParameters {
     pub headroom: f32,
     /// Luminance represented by one linear scRGB unit, in nits.
     pub reference_white_nits: f32,
+    /// SDR white in an extended-linear (scRGB) target's own units. Windows
+    /// fixes scRGB 1.0 at 80 nits, so white there is the user's SDR white
+    /// level over 80; macOS EDR already means SDR white by 1.0.
+    pub extended_linear_white: f32,
 }
 
 impl Default for ScenePresentationParameters {
@@ -44,6 +48,7 @@ impl Default for ScenePresentationParameters {
         Self {
             headroom: 16.0,
             reference_white_nits: 80.0,
+            extended_linear_white: 1.0,
         }
     }
 }
@@ -53,6 +58,17 @@ impl ScenePresentationParameters {
         Self {
             headroom,
             reference_white_nits,
+            extended_linear_white: 1.0,
+        }
+    }
+
+    /// Return a copy whose extended-linear output puts SDR white at
+    /// `white` scRGB units.
+    #[must_use]
+    pub const fn with_extended_linear_white(self, white: f32) -> Self {
+        Self {
+            extended_linear_white: white,
+            ..self
         }
     }
 
@@ -81,6 +97,7 @@ impl ScenePresentationParameters {
         Self {
             headroom: finite_bound(self.headroom, 1.0, 125.0, 16.0),
             reference_white_nits: finite_bound(self.reference_white_nits, 1.0, 10_000.0, 80.0),
+            extended_linear_white: finite_bound(self.extended_linear_white, 0.05, 125.0, 1.0),
         }
     }
 
@@ -94,18 +111,60 @@ impl ScenePresentationParameters {
         self.normalized().reference_white_nits
     }
 
+    #[must_use]
+    pub fn extended_linear_white(self) -> f32 {
+        self.normalized().extended_linear_white
+    }
+
     /// Layout for the destination blit uniform (`headroom`, reference white,
-    /// followed by two reserved lanes for future display metadata).
+    /// extended-linear SDR white, and one reserved lane).
     #[must_use]
     pub fn to_uniform(self) -> [f32; 4] {
         let normalized = self.normalized();
         [
             normalized.headroom,
             normalized.reference_white_nits,
-            0.0,
+            normalized.extended_linear_white,
             0.0,
         ]
     }
+}
+
+/// BT.709/sRGB linear RGB to Display P3 linear RGB (D65), row-major. Each
+/// row sums to one, so white stays exactly white. `blit.wgsl` spells the
+/// same rows.
+pub const LINEAR_SRGB_TO_P3: [[f32; 3]; 3] = [
+    [0.822_462_1, 0.177_538_0, 0.0],
+    [0.033_194_1, 0.966_805_8, 0.0],
+    [0.017_082_7, 0.072_397_4, 0.910_519_9],
+];
+
+/// Convert linear BT.709/scRGB channels to linear Display P3 channels.
+#[must_use]
+pub fn linear_srgb_to_p3(rgb: [f32; 3]) -> [f32; 3] {
+    LINEAR_SRGB_TO_P3.map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2])
+}
+
+/// Bring a colour into `[0, 1]` without changing its hue: pull it toward the
+/// grey of its own luminance just far enough. The final clamp only catches
+/// floating-point residue and a negative neutral.
+#[must_use]
+pub fn gamut_map_rgb(rgb: [f32; 3]) -> [f32; 3] {
+    let luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+    let lo = rgb[0].min(rgb[1].min(rgb[2]));
+    let hi = rgb[0].max(rgb[1].max(rgb[2]));
+    let hi_scale = if hi <= 1.0 {
+        1.0
+    } else {
+        (1.0 - luma) / (hi - luma).max(1.0e-6)
+    };
+    let lo_scale = if lo >= 0.0 {
+        1.0
+    } else {
+        (0.0 - luma) / (lo - luma).min(-1.0e-6)
+    };
+    let scale = hi_scale.min(lo_scale).clamp(0.0, 1.0);
+    rgb.map(|channel| (luma + (channel - luma) * scale).clamp(0.0, 1.0))
 }
 
 /// BT.709/sRGB linear RGB to BT.2020 linear RGB matrix (D65).
@@ -205,6 +264,25 @@ pub fn hlg_eotf(encoded: f32) -> f32 {
     hlg_decode(encoded)
 }
 
+/// System gamma of the HLG reference display (BT.2100: 1.2 at a 1000-nit
+/// peak).
+const HLG_SYSTEM_GAMMA: f32 = 1.2;
+
+/// The HLG signal for display light: `display` is BT.2020 linear light over
+/// the 1000-nit nominal peak. HLG encodes scene light, so the display's OOTF
+/// (luminance raised to the system gamma) is undone first; without that,
+/// 203-nit reference white lands near 49% signal instead of BT.2408's 75%.
+#[must_use]
+pub fn hlg_encode_display(display: [f32; 3]) -> [f32; 3] {
+    let display = display.map(finite_clamp);
+    let luminance = 0.2627 * display[0] + 0.6780 * display[1] + 0.0593 * display[2];
+    if luminance <= 0.0 {
+        return [0.0; 3];
+    }
+    let scale = luminance.powf((1.0 - HLG_SYSTEM_GAMMA) / HLG_SYSTEM_GAMMA);
+    display.map(|channel| hlg_encode(channel * scale))
+}
+
 /// Convert linear BT.709/scRGB channels to linear BT.2020 channels.
 #[must_use]
 pub fn linear_sc_rgb_to_bt2020(rgb: [f32; 3]) -> [f32; 3] {
@@ -213,11 +291,16 @@ pub fn linear_sc_rgb_to_bt2020(rgb: [f32; 3]) -> [f32; 3] {
 
 /// Apply a bounded highlight shoulder while leaving SDR UI values unchanged.
 ///
-/// A shared scale is applied only to channels above SDR reference white. This
-/// keeps neutral highlights and their chroma direction stable without lifting
-/// unrelated midtone channels when one highlight is present. `headroom == 1`
-/// is the SDR limit; larger finite values roll highlights toward the
-/// available peak.
+/// With headroom above one, a shared scale is applied only to channels above
+/// SDR reference white. This keeps neutral highlights and their chroma
+/// direction stable without lifting unrelated midtone channels when one
+/// highlight is present, and rolls highlights toward the available peak.
+///
+/// `headroom == 1` (an SDR fallback, or a display that reports nothing) has
+/// no room above white: a colour brighter than white is scaled as a whole
+/// until its brightest channel is white. Clipping each channel instead turns
+/// an orange highlight yellow; a shoulder that starts below white turns the
+/// white of every light theme grey.
 #[must_use]
 pub fn tone_map_headroom_rgb(mut rgb: [f32; 3], headroom: f32) -> [f32; 3] {
     // Custom GPU nodes and host supplied clear colours can contain NaN or
@@ -242,11 +325,10 @@ pub fn tone_map_headroom_rgb(mut rgb: [f32; 3], headroom: f32) -> [f32; 3] {
     } else {
         1.0
     };
-    let mapped_peak = if headroom <= 1.0 {
-        1.0
-    } else {
-        1.0 + (headroom - 1.0) * (1.0 - (-(peak - 1.0) / (headroom - 1.0)).exp())
-    };
+    if headroom <= 1.0 {
+        return rgb.map(|channel| channel / peak);
+    }
+    let mapped_peak = 1.0 + (headroom - 1.0) * (1.0 - (-(peak - 1.0) / (headroom - 1.0)).exp());
     // Scale the excursion above white, not the whole channel. This anchors
     // every channel at 1.0 even when another channel has a much larger peak,
     // avoiding a discontinuity as a channel crosses the SDR/HDR boundary.
@@ -297,11 +379,13 @@ mod tests {
                 .with_headroom(4.0)
                 .with_reference_white_nits(100.0)
                 .to_uniform(),
-            [4.0, 100.0, 0.0, 0.0]
+            [4.0, 100.0, 1.0, 0.0]
         );
         assert_eq!(
-            ScenePresentationParameters::new(4.0, 80.0).to_uniform(),
-            [4.0, 80.0, 0.0, 0.0]
+            ScenePresentationParameters::new(4.0, 80.0)
+                .with_extended_linear_white(3.0)
+                .to_uniform(),
+            [4.0, 80.0, 3.0, 0.0]
         );
     }
 
@@ -345,6 +429,23 @@ mod tests {
     }
 
     #[test]
+    fn hlg_reference_white_encodes_at_three_quarters() {
+        // BT.2408: 203-nit reference white is 75% HLG signal.
+        let signal = hlg_encode_display([0.203; 3]);
+        assert!(
+            signal.iter().all(|v| (v - 0.75).abs() < 0.005),
+            "{signal:?}"
+        );
+        assert_eq!(hlg_encode_display([0.0; 3]), [0.0; 3]);
+        // The nominal peak is the top of the signal.
+        assert!(
+            hlg_encode_display([1.0; 3])
+                .iter()
+                .all(|v| (v - 1.0).abs() < 1.0e-3)
+        );
+    }
+
+    #[test]
     fn bt2020_matrix_preserves_white_and_maps_red() {
         let white = linear_sc_rgb_to_bt2020([1.0, 1.0, 1.0]);
         assert!(
@@ -359,6 +460,31 @@ mod tests {
     }
 
     #[test]
+    fn white_and_everything_up_to_it_is_untouched_at_every_headroom() {
+        for headroom in [1.0, 1.5, 4.0, 16.0] {
+            for value in [[1.0, 1.0, 1.0], [0.913, 0.913, 0.913], [0.86, 0.2, 1.0]] {
+                assert_eq!(tone_map_headroom_rgb(value, headroom), value, "{headroom}");
+            }
+        }
+    }
+
+    #[test]
+    fn p3_matrix_keeps_white_and_matches_the_shader() {
+        for row in LINEAR_SRGB_TO_P3 {
+            assert!((row.iter().sum::<f32>() - 1.0).abs() < 1.0e-6, "{row:?}");
+        }
+        let shader = include_str!("shader/blit.wgsl");
+        for row in LINEAR_SRGB_TO_P3 {
+            let spelled = format!("vec3<f32>({:.7}, {:.7}, {:.7})", row[0], row[1], row[2]);
+            assert!(shader.contains(&spelled), "blit.wgsl lacks {spelled}");
+        }
+        for row in BT709_TO_BT2020 {
+            let spelled = format!("vec3<f32>({:.6}, {:.6}, {:.6})", row[0], row[1], row[2]);
+            assert!(shader.contains(&spelled), "blit.wgsl lacks {spelled}");
+        }
+    }
+
+    #[test]
     fn headroom_shoulder_keeps_reference_white_and_chroma() {
         assert_eq!(
             tone_map_headroom_rgb([1.0, 0.5, 0.0], 16.0),
@@ -368,7 +494,9 @@ mod tests {
         assert!(mapped[0] < 4.0 && mapped[0] > 1.0);
         let excess_ratio = (mapped[1] - 1.0) / (mapped[0] - 1.0);
         assert!((excess_ratio - 1.0 / 3.0).abs() < 1.0e-6);
-        assert_eq!(tone_map_headroom_rgb([2.0, 1.0, 0.0], 1.0), [1.0, 1.0, 0.0]);
+        // No room above white: the colour scales as a whole, keeping its hue.
+        assert_eq!(tone_map_headroom_rgb([2.0, 1.0, 0.0], 1.0), [1.0, 0.5, 0.0]);
+        assert_eq!(tone_map_headroom_rgb([3.0, 1.5, 0.3], 1.0), [1.0, 0.5, 0.1]);
         assert_eq!(
             tone_map_headroom_rgb([f32::INFINITY, 0.5, f32::NAN], 16.0),
             [0.0, 0.5, 0.0]

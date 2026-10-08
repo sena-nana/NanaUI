@@ -282,7 +282,21 @@ impl HostedGpuSurface {
             self.tone_map_headroom(),
             self.reference_white_nits(),
         )
+        .with_extended_linear_white(self.extended_linear_white())
         .normalized()
+    }
+
+    /// SDR white in this surface's scRGB units. Windows composes scRGB with
+    /// 1.0 at 80 nits and lets the user move SDR white (the "SDR content
+    /// brightness" slider); writing white as 1.0 there shows the UI at a
+    /// fraction of every other window's brightness. macOS EDR already means
+    /// SDR white by 1.0.
+    fn extended_linear_white(&self) -> f32 {
+        if cfg!(windows) {
+            self.reference_white_nits() / 80.0
+        } else {
+            1.0
+        }
     }
 
     /// Re-query advisory display metadata after a display/configuration event.

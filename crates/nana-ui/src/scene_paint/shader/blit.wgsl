@@ -8,7 +8,9 @@ var source_sampler: sampler;
 // changing EDR headroom updates this small uniform without rebuilding the
 // painter's destination pipelines.
 // x = tone-map headroom above SDR reference white, y = SDR reference white
-// in nits.  The host normalizes both to finite, conservative bounds.
+// in nits, z = SDR white in an extended-linear target's units (Windows scRGB
+// puts 1.0 at 80 nits).  The host normalizes all to finite, conservative
+// bounds.
 @group(0) @binding(2)
 var<uniform> presentation_params: vec4<f32>;
 
@@ -53,16 +55,6 @@ fn extended_srgb_oetf3(c: vec3<f32>) -> vec3<f32> {
     return linear_to_srgb3(c);
 }
 
-fn shoulder3(c: vec3<f32>) -> vec3<f32> {
-    // A deterministic SDR shoulder. Ordinary UI values retain their linear
-    // value. Highlights roll off smoothly instead of hard-clipping every
-    // value above one to the same white pixel.
-    let knee = vec3<f32>(0.85);
-    let excess = max(c - knee, vec3<f32>(0.0));
-    let rolled = knee + vec3<f32>(0.15) * (vec3<f32>(1.0) - exp(-excess * vec3<f32>(0.8)));
-    return select(rolled, c, c <= knee);
-}
-
 fn gamut_map(rgb: vec3<f32>) -> vec3<f32> {
     let luma = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
     let lo = min(rgb.x, min(rgb.y, rgb.z));
@@ -78,9 +70,9 @@ fn gamut_map(rgb: vec3<f32>) -> vec3<f32> {
 
 fn sc_to_p3(rgb: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(
-        dot(rgb, vec3<f32>(0.8225927, 0.1775330, 0.0000000)),
-        dot(rgb, vec3<f32>(0.0331995, 0.9667835, 0.0000000)),
-        dot(rgb, vec3<f32>(0.0170853, 0.0723957, 0.9103015)),
+        dot(rgb, vec3<f32>(0.8224621, 0.1775380, 0.0000000)),
+        dot(rgb, vec3<f32>(0.0331941, 0.9668058, 0.0000000)),
+        dot(rgb, vec3<f32>(0.0170827, 0.0723974, 0.9105199)),
     );
 }
 
@@ -116,8 +108,9 @@ fn tone_map_headroom3(rgb: vec3<f32>, requested: f32) -> vec3<f32> {
     let finite = requested == requested && abs(requested) < 1.0e20;
     let headroom = clamp(select(1.0, requested, finite), 1.0, 125.0);
     if (!(headroom > 1.0)) {
-        let clipped = vec3<f32>(1.0);
-        return select(clipped, finite_rgb, finite_rgb <= vec3<f32>(1.0));
+        // No room above white: scale the colour as a whole until its
+        // brightest channel is white, so its hue survives.
+        return finite_rgb / peak;
     }
     let mapped_peak =
         1.0 + (headroom - 1.0) * (1.0 - exp(-(peak - 1.0) / (headroom - 1.0)));
@@ -158,11 +151,11 @@ fn presentation_rgb(straight: vec3<f32>, mode: u32) -> vec3<f32> {
     switch mode {
         case 0u: { return gamut_map(straight); }
         case 1u: { return gamut_map(sc_to_p3(straight)); }
-        case 2u: { return tone_map_headroom3(straight, presentation_params.x); }
+        case 2u: { return tone_map_headroom3(straight, presentation_params.x) * presentation_params.z; }
         case 3u: { return tone_map_headroom3(straight, presentation_params.x); }
         case 4u: { return sc_to_p3(tone_map_headroom3(straight, presentation_params.x)); }
-        case 5u: { return gamut_map(shoulder3(straight)); }
-        case 6u: { return gamut_map(sc_to_p3(shoulder3(straight))); }
+        case 5u: { return gamut_map(tone_map_headroom3(straight, 1.0)); }
+        case 6u: { return gamut_map(sc_to_p3(tone_map_headroom3(straight, 1.0))); }
         case 7u: {
             let headroom = presentation_params.x;
             let white_nits = max(presentation_params.y, 1.0);
@@ -171,7 +164,18 @@ fn presentation_rgb(straight: vec3<f32>, mode: u32) -> vec3<f32> {
         case 8u: {
             let headroom = presentation_params.x;
             let white_nits = max(presentation_params.y, 1.0);
-            return hlg_oetf3(sc_to_bt2020(tone_map_headroom3(straight, headroom)) * white_nits / 1000.0);
+            let display = clamp(
+                sc_to_bt2020(tone_map_headroom3(straight, headroom)) * white_nits / 1000.0,
+                vec3<f32>(0.0),
+                vec3<f32>(1.0),
+            );
+            // HLG encodes scene light: undo the reference display's OOTF
+            // (system gamma 1.2) before the OETF; see `hlg_encode_display`.
+            let luminance = dot(display, vec3<f32>(0.2627, 0.6780, 0.0593));
+            if (!(luminance > 0.0)) {
+                return vec3<f32>(0.0);
+            }
+            return hlg_oetf3(display * pow(luminance, (1.0 - 1.2) / 1.2));
         }
         default: { return straight; }
     }

@@ -198,26 +198,6 @@ impl ScenePresentationProfile {
             || matches!(self.color_space, ScenePresentationColorSpace::DisplayP3)
             || (matches!(self.color_space, ScenePresentationColorSpace::Srgb)
                 && !self.target_format.is_srgb());
-        let gamut = |mut value: [f32; 3]| {
-            let luma = 0.2126 * value[0] + 0.7152 * value[1] + 0.0722 * value[2];
-            let lo = value[0].min(value[1].min(value[2]));
-            let hi = value[0].max(value[1].max(value[2]));
-            let hi_scale = if hi <= 1.0 {
-                1.0
-            } else {
-                (1.0 - luma) / (hi - luma).max(1.0e-6)
-            };
-            let lo_scale = if lo >= 0.0 {
-                1.0
-            } else {
-                (0.0 - luma) / (lo - luma).min(-1.0e-6)
-            };
-            let scale = hi_scale.min(lo_scale).clamp(0.0, 1.0);
-            for channel in &mut value {
-                *channel = (luma + (*channel - luma) * scale).clamp(0.0, 1.0);
-            }
-            value
-        };
         let encode = |value: f32| {
             let sign = value.signum();
             let absolute = value.abs();
@@ -249,16 +229,9 @@ impl ScenePresentationProfile {
             };
         }
         if tone_map {
-            // The SDR fallback keeps the established smooth shoulder used by
-            // the HDR-to-SDR path. Its target is SDR by definition, so live
-            // HDR headroom must not silently change this fallback contract.
-            rgb = rgb.map(|value| {
-                if value > 0.85 {
-                    0.85 + 0.15 * (1.0 - (-0.8 * (value - 0.85)).exp())
-                } else {
-                    value
-                }
-            });
+            // The SDR fallback has no room above white whatever the display
+            // reports: the same curve as an HDR target at headroom 1.
+            rgb = tone_map_headroom_rgb(rgb, 1.0);
         } else if matches!(
             self.color_space,
             ScenePresentationColorSpace::ExtendedSrgbLinear
@@ -278,14 +251,17 @@ impl ScenePresentationProfile {
             self.color_space,
             ScenePresentationColorSpace::DisplayP3 | ScenePresentationColorSpace::ExtendedDisplayP3
         ) {
-            rgb = [
-                0.8225927 * rgb[0] + 0.1775330 * rgb[1],
-                0.0331995 * rgb[0] + 0.9667835 * rgb[1],
-                0.0170853 * rgb[0] + 0.0723957 * rgb[1] + 0.9103015 * rgb[2],
-            ];
+            rgb = presentation_color::linear_srgb_to_p3(rgb);
         }
         if gamut_transform {
-            rgb = gamut(rgb);
+            rgb = presentation_color::gamut_map_rgb(rgb);
+        }
+        if matches!(
+            self.color_space,
+            ScenePresentationColorSpace::ExtendedSrgbLinear
+        ) {
+            let white = parameters.extended_linear_white();
+            rgb = rgb.map(|value| value * white);
         }
         let encoded = match self.color_space {
             ScenePresentationColorSpace::ExtendedSrgbLinear => rgb,
@@ -295,7 +271,9 @@ impl ScenePresentationProfile {
             }
             ScenePresentationColorSpace::Bt2100Hlg => {
                 let rgb = linear_sc_rgb_to_bt2020(rgb);
-                rgb.map(|value| hlg_encode(value * parameters.reference_white_nits() / 1_000.0))
+                presentation_color::hlg_encode_display(
+                    rgb.map(|value| value * parameters.reference_white_nits() / 1_000.0),
+                )
             }
             _ => rgb.map(encode),
         };

@@ -11,8 +11,8 @@ use nana_ui_scene::UiScene;
 
 use super::{
     ScenePaintViewport, ScenePresentationColorSpace, ScenePresentationParameters,
-    ScenePresentationProfile, SceneWgpuPainter, hlg_encode, linear_sc_rgb_to_bt2020,
-    pq_encode_nits, tone_map_headroom_rgb,
+    ScenePresentationProfile, SceneWgpuPainter, linear_sc_rgb_to_bt2020, pq_encode_nits,
+    tone_map_headroom_rgb,
 };
 
 const WIDTH: u32 = 4;
@@ -369,15 +369,47 @@ fn extended_linear_clear_uses_the_same_headroom_as_blit() {
     let (pixels, counts) =
         paint_with_parameters(profile, empty_scene(), [2.0, 0.5, 0.0, 0.5], parameters);
     let pixel = rgba16(&pixels);
-    // H=1 clips only the above-white channel before premultiplication;
-    // ExtendedLinear still stores that result linearly (it does not apply
-    // sRGB OETF).
+    // H=1 has no room above white: the colour scales as a whole to
+    // [1, 0.25, 0] (its hue kept) before premultiplication; ExtendedLinear
+    // still stores that result linearly (it does not apply sRGB OETF).
     assert!((pixel[0] - 0.5).abs() < 0.02, "clear={pixel:?}");
-    assert!((pixel[1] - 0.25).abs() < 0.02, "clear={pixel:?}");
+    assert!((pixel[1] - 0.125).abs() < 0.02, "clear={pixel:?}");
     assert!(pixel[2].abs() < 0.02, "clear={pixel:?}");
     assert!((pixel[3] - 0.5).abs() < 0.02, "clear alpha={pixel:?}");
     assert_eq!(counts.color + counts.msaa, 1);
     assert_eq!(counts.blit, 1);
+}
+
+/// Windows puts scRGB 1.0 at 80 nits: with SDR white at 240 nits, white is
+/// written as 3.0, by the clear and by the blit alike.
+#[test]
+fn extended_linear_white_follows_the_sdr_white_level() {
+    let profile = ScenePresentationProfile::new(
+        nana_gpu::GpuTextureFormat::RGBA16_FLOAT,
+        ScenePresentationColorSpace::ExtendedSrgbLinear,
+    );
+    let parameters = ScenePresentationParameters::new(4.0, 240.0).with_extended_linear_white(3.0);
+    let (pixels, _) =
+        paint_with_parameters(profile, empty_scene(), [1.0, 1.0, 1.0, 1.0], parameters);
+    let clear = rgba16(&pixels);
+    assert!(
+        clear[..3].iter().all(|v| (v - 3.0).abs() < 0.02),
+        "clear={clear:?}"
+    );
+    let (pixels, _) = paint_with_parameters(
+        profile,
+        scene_with_fill(PaintColor::LinearScRgb {
+            channels: [1.0; 3],
+            alpha: 1.0,
+        }),
+        [0.0; 4],
+        parameters,
+    );
+    let fill = rgba16(&pixels);
+    assert!(
+        fill[..3].iter().all(|v| (v - 3.0).abs() < 0.02),
+        "fill={fill:?}"
+    );
 }
 
 #[test]
@@ -407,6 +439,31 @@ fn zero_alpha_extended_color_fails_closed_at_presentation_boundary() {
     assert_eq!(counts.blit, 1);
 }
 
+/// An HDR request on an SDR surface leaves everything up to white as it is:
+/// white stays white, a light grey stays that grey.
+#[test]
+fn hdr_to_sdr_fallback_keeps_white_and_light_greys() {
+    let profile = ScenePresentationProfile::sdr(nana_gpu::GpuTextureFormat::RGBA8_UNORM_SRGB)
+        .with_force_float_working();
+    for (linear, expected) in [(1.0_f32, 255_u8), (0.913, 245)] {
+        let (pixels, _) = paint(
+            profile,
+            scene_with_fill(PaintColor::LinearScRgb {
+                channels: [linear; 3],
+                alpha: 1.0,
+            }),
+            [0.0; 4],
+        );
+        let pixel = rgba8(&pixels);
+        for channel in &pixel[..3] {
+            assert!(
+                channel.abs_diff(expected) <= 1,
+                "{linear} became {pixel:?}, not {expected}"
+            );
+        }
+    }
+}
+
 #[test]
 fn hdr_to_sdr_fallback_tone_maps_highlights_and_preserves_alpha() {
     let profile = ScenePresentationProfile::sdr(nana_gpu::GpuTextureFormat::RGBA8_UNORM_SRGB)
@@ -420,14 +477,25 @@ fn hdr_to_sdr_fallback_tone_maps_highlights_and_preserves_alpha() {
         [0.0; 4],
     );
     let pixel = rgba8(&pixels);
-    assert!(pixel[0] > 45 && pixel[0] < 125, "tone-mapped red={pixel:?}");
+    // Scaled as a whole to white, then pulled into gamut toward its grey,
+    // then premultiplied and encoded by the typed target.
+    let mapped = super::presentation_color::gamut_map_rgb(
+        super::presentation_color::tone_map_headroom_rgb([2.0, -0.2, 0.5], 1.0),
+    );
+    let encode = |value: f32| {
+        let encoded = if value <= 0.003_130_8 {
+            value * 12.92
+        } else {
+            1.055 * value.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    };
+    for (channel, expected) in pixel[..3].iter().zip(mapped.map(|v| encode(v * 0.5))) {
+        assert!(channel.abs_diff(expected) <= 3, "{pixel:?} vs {mapped:?}");
+    }
     assert!(
         pixel[1] < 8,
         "negative gamut channel must map to zero={pixel:?}"
-    );
-    assert!(
-        pixel[2] > 20 && pixel[2] < 100,
-        "tone-mapped blue={pixel:?}"
     );
     assert!(
         (i16::from(pixel[3]) - 128).unsigned_abs() <= 2,
@@ -500,13 +568,13 @@ fn extended_display_p3_hdr_profile_uses_p3_primaries() {
             1.055 * value.powf(1.0 / 2.4) - 0.055
         }
     };
-    assert!((pixel[0] - encode(0.8225927)).abs() < 0.03, "red={pixel:?}");
+    assert!((pixel[0] - encode(0.8224621)).abs() < 0.03, "red={pixel:?}");
     assert!(
-        (pixel[1] - encode(0.0331995)).abs() < 0.03,
+        (pixel[1] - encode(0.0331941)).abs() < 0.03,
         "green={pixel:?}"
     );
     assert!(
-        (pixel[2] - encode(0.0170853)).abs() < 0.03,
+        (pixel[2] - encode(0.0170827)).abs() < 0.03,
         "blue={pixel:?}"
     );
     assert!((pixel[3] - 1.0).abs() < 0.02, "alpha={pixel:?}");
@@ -578,7 +646,9 @@ fn hlg_presentation_matches_reference_encoding_and_clear() {
     );
     let parameters = ScenePresentationParameters::new(4.0, 80.0);
     let rgb = linear_sc_rgb_to_bt2020([0.18, 0.18, 0.18]);
-    let expected = hlg_encode(rgb[0] * parameters.reference_white_nits() / 1_000.0);
+    let expected = super::presentation_color::hlg_encode_display(
+        rgb.map(|value| value * parameters.reference_white_nits() / 1_000.0),
+    )[0];
     let (pixels, counts) = paint_with_parameters(
         profile,
         scene_with_fill(PaintColor::LinearScRgb {
