@@ -88,6 +88,7 @@ ExtractedNode.text_layout → UiScene 里的 Text
 | 宽度、换行、行高、对齐 | 只排版 |
 | 颜色 | 不重新整形，也不重新排版 |
 | transform、opacity | 不碰文本 |
+| 逐字特效、揭示（`GLYPH_PRESENTATION`） | 不碰文本，只在合成器 |
 
 `transform` / `opacity` 不增加文本的 revision，所以稳态的合成动画碰不到 shaping。采样也不写回基础样式。呈现仍留在 overlay 上。
 

@@ -2478,6 +2478,16 @@ impl AppContext {
         }
     }
 
+    /// The document animation clock: the time the last frame (or input
+    /// event) sampled compositor animations at, in the Runtime's animation
+    /// time domain. An application that schedules its own presentation —
+    /// a typewriter reveal, a per-glyph effect start — reads this so its
+    /// timestamps share the clock the compositor samples with, rather than
+    /// a wall clock that drifts from it.
+    pub fn animation_now(&self) -> std::time::Duration {
+        self.world.animation_now()
+    }
+
     /// Whether the document still has live retained roots. Host capability
     /// requests use the same UiWorld lifetime authority as Runtime routing.
     pub fn has_document(&self, document: DocumentId) -> bool {

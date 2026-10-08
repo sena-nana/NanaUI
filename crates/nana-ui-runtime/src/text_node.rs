@@ -12,6 +12,7 @@
 //! EDIT_STATE                    -> editor overlay / caret
 //! PAINT                         -> scene paint only
 //! TRANSFORM / OPACITY           -> compositor only
+//! GLYPH_PRESENTATION            -> compositor only (per-glyph effects)
 //! ```
 //!
 //! [`TextNodeState::invalidate`] turns a class into revision bumps, and a
@@ -39,7 +40,7 @@ use crate::{ComputedStyle, TextHorizontalAlignment, TextMetrics, TextShapeConstr
 
 /// What changed about a text node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct TextDirty(u8);
+pub struct TextDirty(u16);
 
 impl TextDirty {
     pub const NONE: Self = Self(0);
@@ -62,6 +63,11 @@ impl TextDirty {
     pub const TRANSFORM: Self = Self(1 << 6);
     /// The node's opacity.
     pub const OPACITY: Self = Self(1 << 7);
+    /// Per-glyph presentation of rich text: which effect a span plays, and
+    /// when its glyphs reveal. Sampled by the compositor every frame; like
+    /// transform and opacity it never reaches a shaping, layout or paint
+    /// revision, so a span that only changes its effect costs no text work.
+    pub const GLYPH_PRESENTATION: Self = Self(1 << 8);
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -94,7 +100,11 @@ impl TextDirty {
         if self.intersects(Self::PAINT) {
             work |= TextWork::SCENE_PAINT.0;
         }
-        if self.intersects(Self::TRANSFORM.union(Self::OPACITY)) {
+        if self.intersects(
+            Self::TRANSFORM
+                .union(Self::OPACITY)
+                .union(Self::GLYPH_PRESENTATION),
+        ) {
             work |= TextWork::COMPOSITOR.0;
         }
         TextWork(work)
@@ -117,7 +127,7 @@ impl std::ops::BitOrAssign for TextDirty {
 
 /// Work a [`TextDirty`] class implies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct TextWork(u8);
+pub struct TextWork(u16);
 
 impl TextWork {
     pub const NONE: Self = Self(0);
@@ -492,7 +502,7 @@ pub(crate) fn text_metrics_of_layout(layout: &TextLayout) -> TextMetrics {
 mod tests {
     use super::*;
 
-    const ALL: [TextDirty; 8] = [
+    const ALL: [TextDirty; 9] = [
         TextDirty::CONTENT,
         TextDirty::FONT,
         TextDirty::SHAPE_STYLE,
@@ -501,6 +511,7 @@ mod tests {
         TextDirty::PAINT,
         TextDirty::TRANSFORM,
         TextDirty::OPACITY,
+        TextDirty::GLYPH_PRESENTATION,
     ];
 
     #[test]
@@ -524,6 +535,7 @@ mod tests {
         assert_eq!(TextDirty::PAINT.work(), TextWork::SCENE_PAINT);
         assert_eq!(TextDirty::TRANSFORM.work(), TextWork::COMPOSITOR);
         assert_eq!(TextDirty::OPACITY.work(), TextWork::COMPOSITOR);
+        assert_eq!(TextDirty::GLYPH_PRESENTATION.work(), TextWork::COMPOSITOR);
         assert!(TextDirty::NONE.work().is_empty());
     }
 
@@ -553,6 +565,7 @@ mod tests {
             TextDirty::TRANSFORM,
             TextDirty::OPACITY,
             TextDirty::EDIT_STATE,
+            TextDirty::GLYPH_PRESENTATION,
         ] {
             let mut node = TextNodeState::default();
             let before = node.revisions;
@@ -561,6 +574,15 @@ mod tests {
             assert_eq!(node.revisions.shape, before.shape, "{class:?}");
             assert_eq!(node.revisions.constraint, before.constraint, "{class:?}");
         }
+    }
+
+    #[test]
+    fn a_glyph_presentation_change_moves_no_revision_at_all() {
+        let mut node = TextNodeState::default();
+        let before = node.revisions;
+        node.invalidate(TextDirty::GLYPH_PRESENTATION);
+        assert_eq!(node.revisions, before);
+        assert!(TextDirty::GLYPH_PRESENTATION.0 > u8::MAX as u16);
     }
 
     #[test]

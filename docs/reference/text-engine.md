@@ -897,6 +897,11 @@ ExtractedNode.text_layout ──► ScenePrimitiveKind::Text { layout: Option<Re
 | `EDIT_STATE` | editor overlay（Phase 5） | edit |
 | `PAINT` | 只重新提取 paint | paint |
 | `TRANSFORM` / `OPACITY` | 只走 compositor | 无 |
+| `GLYPH_PRESENTATION` | 只走 compositor（富文本逐字特效、揭示） | 无 |
+
+`TextDirty` / `TextWork` 是 `u16` 位集。`GLYPH_PRESENTATION` 是第九类，放不进 `u8`。它和
+transform / opacity 一样不碰任何 revision，连 paint 也不碰。只改特效索引的 span 因此不重新整形、
+不重新排版，也不重建字形实例。
 
 变更在发生处分类。而不是事后比较：
 

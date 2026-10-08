@@ -929,6 +929,8 @@ pub struct PaintText {
     pub paint: Paint,
     pub size: Option<f32>,
     pub weight: Option<u16>,
+    /// 字体族（CSS `font-family` 列表）；`None` 沿用节点自己的字体。
+    pub family: Option<Arc<str>>,
     pub italic: bool,
     /// 行高，逻辑像素；`None` 用字体默认行高。
     pub line_height: Option<f32>,
@@ -947,6 +949,7 @@ impl PaintText {
             paint: Paint::Color(PaintColor::Role(SemanticColorRole::Text)),
             size: None,
             weight: None,
+            family: None,
             italic: false,
             line_height: None,
             wrap: false,
@@ -993,6 +996,13 @@ impl PaintText {
 
     pub fn weight(mut self, weight: u16) -> Self {
         self.weight = Some(weight);
+        self
+    }
+
+    /// 字体族，与 CSS `font-family` 同语法（逗号分隔的回退列表）。测量
+    /// （`cx.measure_text`）和绘制读的是同一个字体族。
+    pub fn family(mut self, family: impl Into<Arc<str>>) -> Self {
+        self.family = Some(family.into());
         self
     }
 
@@ -1076,6 +1086,7 @@ pub enum PaintOp {
         paint: ResolvedPaint,
         size: f32,
         weight: Option<u16>,
+        family: Option<Arc<str>>,
         italic: bool,
         line_height: Option<f32>,
         wrap: bool,
@@ -1846,6 +1857,7 @@ impl<'a> PaintContext<'a> {
             paint,
             size,
             weight: text.weight,
+            family: text.family,
             italic: text.italic,
             line_height: text.line_height,
             wrap: text.wrap,
@@ -1957,6 +1969,9 @@ pub(crate) fn paint_text_request(
     let mut style = base.clone();
     style.font_size = size;
     style.font_weight = text.weight.or(style.font_weight);
+    if let Some(family) = &text.family {
+        style.font_family = Some(Arc::clone(family));
+    }
     style.italic = text.italic;
     style.letter_spacing = 0.0;
     style.line_height = text.line_height.map(nana_ui_core::LineHeightSpec::Absolute);

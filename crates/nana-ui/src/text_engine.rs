@@ -153,6 +153,85 @@ pub(crate) fn register_file(path: &std::path::Path) -> Result<usize, FontError> 
         .map(|registration| registration.faces.len())
 }
 
+/// One registration an application can withdraw: the source the font layer
+/// issued and the families its faces answer to.
+pub(crate) struct ScopedRegistration {
+    pub source: nana_text::FontSourceId,
+    pub families: Vec<Arc<str>>,
+    pub faces: usize,
+}
+
+fn scoped(
+    engine: &NativeTextEngine,
+    registration: nana_text::font::FontRegistration,
+) -> ScopedRegistration {
+    let mut families: Vec<Arc<str>> = registration
+        .faces
+        .iter()
+        .filter_map(|id| engine.fonts().describe(*id))
+        .flat_map(|face| face.families)
+        .collect();
+    families.sort();
+    families.dedup();
+    ScopedRegistration {
+        source: registration.source,
+        families,
+        faces: registration.faces.len(),
+    }
+}
+
+/// [`register_face_bytes`], keeping the source so it can be unregistered.
+pub(crate) fn register_scoped_bytes(
+    data: Vec<u8>,
+    descriptor: FaceDescriptor,
+) -> Result<ScopedRegistration, FontError> {
+    let engine = nana_text_engine();
+    let mut engine = lock_engine(&engine);
+    let registration = engine
+        .fonts_mut()
+        .register_bytes(font_blob(data), &descriptor)?;
+    Ok(scoped(&engine, registration))
+}
+
+/// [`register_file`], keeping the source so it can be unregistered.
+pub(crate) fn register_scoped_file(
+    path: &std::path::Path,
+) -> Result<ScopedRegistration, FontError> {
+    let engine = nana_text_engine();
+    let mut engine = lock_engine(&engine);
+    let registration = engine
+        .fonts_mut()
+        .register_file(path, &FaceDescriptor::default())?;
+    Ok(scoped(&engine, registration))
+}
+
+/// Withdraws every face of `source` from the one font set. Layouts and
+/// glyphs keyed by the old font generation go stale on their own; bytes a
+/// frame in flight still holds stay valid until it lets go.
+pub(crate) fn unregister_source(source: nana_text::FontSourceId) -> Result<(), FontError> {
+    let engine = nana_text_engine();
+    let mut engine = lock_engine(&engine);
+    engine.fonts_mut().unregister(source).map(|_| ())
+}
+
+/// The descriptor `@font-face` bytes register under.
+pub(crate) fn face_descriptor(
+    family: &str,
+    weight: Option<u16>,
+    weight_end: Option<u16>,
+    style: Option<FontStyle>,
+) -> FaceDescriptor {
+    FaceDescriptor {
+        family: Some(Arc::from(family)),
+        weight: weight.map(|start| {
+            let end = weight_end.unwrap_or(start);
+            (f32::from(start.min(end)), f32::from(start.max(end)))
+        }),
+        stretch: None,
+        style,
+    }
+}
+
 /// Mirror of [`crate::nana_text::alias_host_font_face_local`]: bind a declared
 /// CSS family to faces already in the database.
 ///

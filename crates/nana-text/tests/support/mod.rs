@@ -67,6 +67,7 @@ pub fn run(
             ascent_px: 16.0,
             descent_px: 4.0,
             line_gap_px: 0.0,
+            ..RunMetrics::default()
         },
         instance: None,
         ignored_axes: Vec::new(),

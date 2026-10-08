@@ -182,6 +182,19 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 
 `RuntimeProgramContext` 提供 `window_id`、`geometry`、`gpu()`、`material()`、`dispatch`、`run_task`、`startup()`（启动记录与接管请求）。原生窗口句柄不穿过这条边界。
 
+`ApplicationState` 透传下列钩子。`RuntimeApplication<State>` 原样转给 `RuntimeProgram`，所以透明叠加窗口、需要合成器路径的应用不必再手写一层 `RuntimeProgram`：
+
+| `ApplicationState` 方法 | 对应 `RuntimeProgram` 钩子 |
+| --- | --- |
+| `gpu_backend_policy()`（关联函数） | `gpu_backend_policy` |
+| `startup_window_material_mode()`（关联函数） | `startup_window_material_mode` |
+| `window_material_mode_for(&self, id)` | `window_material_mode_for` |
+| `appearance_backdrop_opacity_for(&self, id)` | `appearance_backdrop_opacity_for` |
+| `input_event(&mut self, id, input, windows, cx)` | `input_event`，多给一份全部窗口的 `ApplicationWindow` |
+| `next_wakeup(&self)` / `wake(&mut self, now, windows, cx)` | `next_wakeup` / `wake` |
+
+`AppContext::animation_now()` 是文档的动画时钟：合成器上一次采样动画用的时间。应用自己排的呈现（打字机揭示、逐字特效的起点）读它，和合成器用同一个时钟，不用会漂移的墙钟。
+
 `RuntimeProgramUpdate.redraw` 支持 `None`、`Window(id)`、`Windows(ids)`、`All`。
 合并局部更新会保留实际窗口集合。`RuntimeRedraw::for_windows` 会排序去重。
 `RuntimeRedraw` 现在持有窗口列表。只实现 `Clone`。不再实现 `Copy`。穷尽匹配需处理 `Windows`。
@@ -253,7 +266,7 @@ slots / overlay 组装接口。`mount` 仍用于按 key 构造并销毁缺席组
   父节点的 `hovered` 为假。与内建交互外观一致。
 - 文字：`cx.measure_text(&text, max_width)` 用宿主当前的排版引擎测量（未接引擎时
   按 em 估算）。与 `cx.text` 画出来的一致。`PaintText` 支持折行、最多行数、
-  行高、斜体。颜色可以是渐变。
+  行高、斜体和字体族（`family`，CSS `font-family` 语法；测量和绘制读同一个）。颜色可以是渐变。
 - 路径：`PaintPath` 支持直线、二次 / 三次贝塞尔、`arc` 和 Canvas 语义的
   `arc_to`（任意拐角倒圆。凹角也可以）。NonZero / EvenOdd。参数与 Canvas 一样
   写成标量（`arc` 的最后一个参数是扫过的角度。与 `QPainterPath::arcTo` 相同。

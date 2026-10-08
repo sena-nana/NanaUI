@@ -9656,6 +9656,7 @@ mod custom_paint {
                     paint: nana_ui_runtime::ResolvedPaint::Solid(CARD),
                     size: 13.0,
                     weight: None,
+                    family: None,
                     italic: false,
                     line_height: None,
                     wrap: false,

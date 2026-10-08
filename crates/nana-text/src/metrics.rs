@@ -8,11 +8,37 @@
 use serde::{Deserialize, Serialize};
 
 /// Font metrics for one shaped run, scaled to the run's size.
+///
+/// The decoration fields come from the face's `post` (underline) and `OS/2`
+/// (strikeout) tables, at the run's axis coordinates. A face without them
+/// gets proportional stand-ins at read time, so a real run never reports a
+/// zero thickness; zero means the metrics predate these fields (a golden
+/// recorded before them), and a painter falls back on its own estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct RunMetrics {
     pub ascent_px: f32,
     pub descent_px: f32,
     pub line_gap_px: f32,
+    /// Baseline to the **top** of the underline, positive **below** the
+    /// baseline.
+    #[serde(default)]
+    pub underline_offset_px: f32,
+    #[serde(default)]
+    pub underline_thickness_px: f32,
+    /// Baseline to the **top** of the strikeout, positive **above** the
+    /// baseline.
+    #[serde(default)]
+    pub strikeout_offset_px: f32,
+    #[serde(default)]
+    pub strikeout_thickness_px: f32,
+}
+
+impl RunMetrics {
+    /// Whether the decoration fields were read from a face (as opposed to
+    /// deserialized from metrics that predate them).
+    pub fn has_decorations(&self) -> bool {
+        self.underline_thickness_px > 0.0 && self.strikeout_thickness_px > 0.0
+    }
 }
 
 /// Metrics for one laid-out line.

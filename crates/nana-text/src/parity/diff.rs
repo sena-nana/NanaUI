@@ -380,6 +380,34 @@ impl Diff {
             actual.metrics.line_gap_px,
             baseline,
         );
+        // Goldens recorded before the decoration metrics carry zeros there:
+        // only an expectation that states them is held to them.
+        if expected.metrics.has_decorations() {
+            for (field, want, got) in [
+                (
+                    "metrics.underline_offset_px",
+                    expected.metrics.underline_offset_px,
+                    actual.metrics.underline_offset_px,
+                ),
+                (
+                    "metrics.underline_thickness_px",
+                    expected.metrics.underline_thickness_px,
+                    actual.metrics.underline_thickness_px,
+                ),
+                (
+                    "metrics.strikeout_offset_px",
+                    expected.metrics.strikeout_offset_px,
+                    actual.metrics.strikeout_offset_px,
+                ),
+                (
+                    "metrics.strikeout_thickness_px",
+                    expected.metrics.strikeout_thickness_px,
+                    actual.metrics.strikeout_thickness_px,
+                ),
+            ] {
+                self.near(scope, field, want, got, baseline);
+            }
+        }
 
         // Counts before descending: one extra glyph would otherwise produce a
         // page of misaligned per-glyph deltas and an unreadable report.
