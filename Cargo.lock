@@ -2502,6 +2502,7 @@ dependencies = [
  "nana-diagnostics",
  "pollster",
  "wgpu",
+ "windows 0.62.2",
 ]
 
 [[package]]

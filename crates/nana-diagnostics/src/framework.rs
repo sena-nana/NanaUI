@@ -391,6 +391,10 @@ pub mod host {
         /// non-empty drains are sampled).
         pub MESSAGE_QUEUE_DEPTH, D, 4, "host.message_queue_depth", "count"
     );
+    /// Due frames the host served itself because the paint it requested for
+    /// them did not arrive within one frame period (Windows only).
+    pub static FRAMES_SERVED_WITHOUT_PAINT: Metric =
+        Metric::counter(D, 5, "host.frames_served_without_paint", "count");
 
     /// Fault, at most once per second per `kind` (see [`FAILURES`] for the
     /// full count). `kind` is the `HostFailure` variant's stable code.

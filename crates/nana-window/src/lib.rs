@@ -117,6 +117,27 @@ pub fn show_without_activation<W: raw_window_handle::HasWindowHandle + ?Sized>(w
     platform::show_without_activation(window)
 }
 
+/// Keep a layered window on screen after its hit-testing was turned off.
+///
+/// Windows turns a window click-through by making it `WS_EX_LAYERED |
+/// WS_EX_TRANSPARENT`, and a layered window without layering attributes is not
+/// composed: a DirectComposition window keeps presenting into nothing. This
+/// gives such a window an opaque constant alpha (its per-pixel alpha is
+/// unchanged) and leaves attributes someone else set alone. Call it after
+/// every change that can rewrite the extended style. Returns whether the
+/// window is layered; other platforms have no such style and return false.
+pub fn settle_layered_window<W: raw_window_handle::HasWindowHandle + ?Sized>(window: &W) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        platform::settle_layered_window(window)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        false
+    }
+}
+
 /// Keep a shown window invisible to the user while it presents normally.
 ///
 /// A held window is visible to the platform: it has a live surface, gets

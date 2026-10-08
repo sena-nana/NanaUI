@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use nana_gpu::{
-    DeviceGeneration, FrameId, GpuContext, GpuError, GpuTexture, GpuTextureDescriptor,
-    GpuTextureFormat, GpuTextureUsages,
+    DeviceGeneration, FrameContext, FrameId, GpuContext, GpuError, GpuSubmission, GpuTexture,
+    GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages,
 };
 use nana_ui_platform::SharedFetchHost;
 use nana_ui_scene::UiScene;
@@ -82,6 +82,12 @@ pub enum ExternalSurfaceError {
         slots: usize,
     },
     InvalidViewport,
+    /// [`ExternalSurface::record`] without a painter on a surface that was
+    /// created to borrow its host's.
+    NoPainter,
+    /// The plan was made for another resource generation, or was already
+    /// bound.
+    StalePlan,
     NoAvailableTarget,
     NoCompletedFrame,
     StaleFrame,
@@ -105,6 +111,11 @@ impl std::fmt::Display for ExternalSurfaceError {
             Self::InvalidViewport => formatter.write_str(
                 "external surface viewport physical size does not match its target extent",
             ),
+            Self::NoPainter => formatter
+                .write_str("external surface was created without a painter and was given none"),
+            Self::StalePlan => {
+                formatter.write_str("external surface plan belongs to an older target generation")
+            }
             Self::NoAvailableTarget => formatter
                 .write_str("all external surface targets are in flight or leased by a consumer"),
             Self::NoCompletedFrame => {
@@ -277,11 +288,53 @@ struct Completion {
     revision: u64,
 }
 
+/// A revision [`ExternalSurface::prepare`] decided to encode: the slot it goes
+/// to and what it will be published as. Record it into a frame with
+/// [`ExternalSurface::record`], then hand the frame's submission to
+/// [`ExternalSurface::bind_submission`]; a plan whose frame is dropped is
+/// simply forgotten.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "a plan does nothing until it is recorded and bound"]
+pub struct ExternalFramePlan {
+    resource_generation: u64,
+    slot: usize,
+    revision: u64,
+    key: u64,
+}
+
+impl ExternalFramePlan {
+    pub const fn content_revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub const fn resource_generation(&self) -> u64 {
+        self.resource_generation
+    }
+}
+
+/// What [`ExternalSurface::prepare`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalPrepare {
+    /// Nothing changed since the published revision: record nothing.
+    Reused {
+        resource_generation: u64,
+        content_revision: u64,
+    },
+    /// No target slot is free (in flight or leased). Record nothing.
+    Deferred,
+    /// Record this revision.
+    Record(ExternalFramePlan),
+}
+
 /// A retained presentation producer independent of a native Window.
 pub struct ExternalSurface {
     gpu: GpuContext,
     config: ExternalSurfaceConfig,
-    painter: SceneWgpuPainter,
+    /// `None` for a surface that records with its host's painter.
+    painter: Option<SceneWgpuPainter>,
+    /// Mixed into every slot's [`crate::RenderTargetId`], so slots of several
+    /// surfaces can share one painter with each other and with windows.
+    target_namespace: u64,
     slots: Vec<TargetSlot>,
     published: Option<Published>,
     resource_generation: u64,
@@ -315,12 +368,39 @@ impl ExternalSurface {
         if gpu.is_lost() {
             return Err(ExternalSurfaceError::DeviceLost);
         }
-        let slots = create_slots(gpu, config)?;
         let painter = SceneWgpuPainter::new_with_presentation(gpu, config.presentation);
+        Self::build(gpu, config, Some(painter), 0)
+    }
+
+    /// A surface that records with a painter its host passes to
+    /// [`Self::record`] (a window's own), so the output shares its pipelines,
+    /// glyph atlas and image cache instead of building a second set.
+    /// `target_namespace` keeps its slots' [`crate::RenderTargetId`]s apart
+    /// from every other target that painter serves.
+    pub fn with_host_painter(
+        gpu: &GpuContext,
+        config: ExternalSurfaceConfig,
+        target_namespace: u64,
+    ) -> Result<Self, ExternalSurfaceError> {
+        Self::build(gpu, config, None, target_namespace)
+    }
+
+    fn build(
+        gpu: &GpuContext,
+        config: ExternalSurfaceConfig,
+        painter: Option<SceneWgpuPainter>,
+        target_namespace: u64,
+    ) -> Result<Self, ExternalSurfaceError> {
+        validate_config(config)?;
+        if gpu.is_lost() {
+            return Err(ExternalSurfaceError::DeviceLost);
+        }
+        let slots = create_slots(gpu, config)?;
         Ok(Self {
             gpu: gpu.clone(),
             config,
             painter,
+            target_namespace,
             slots,
             published: None,
             resource_generation: 1,
@@ -365,8 +445,21 @@ impl ExternalSurface {
     /// it invalidates the retained revision because the painter's bindings
     /// may now resolve through a different egress.
     pub fn set_resource_fetch_host(&mut self, host: Option<SharedFetchHost>) {
-        self.painter.set_resource_fetch_host(host);
+        if let Some(painter) = self.painter.as_mut() {
+            painter.set_resource_fetch_host(host);
+        }
         self.last_key = None;
+    }
+
+    /// The painter target ids of the current slots. A host that records with
+    /// its own painter removes them from it when it drops or resizes this
+    /// surface.
+    pub fn target_ids(&self) -> impl Iterator<Item = crate::RenderTargetId> + '_ {
+        (0..self.slots.len()).map(|slot| self.target_id(self.resource_generation, slot))
+    }
+
+    fn target_id(&self, generation: u64, slot: usize) -> crate::RenderTargetId {
+        crate::RenderTargetId(self.target_namespace ^ external_target_id(generation, slot))
     }
 
     /// The canonical target requirements this producer supplies to a
@@ -435,7 +528,10 @@ impl ExternalSurface {
             });
         }
         let slots = create_slots(gpu, config)?;
-        let painter = SceneWgpuPainter::new_with_presentation(gpu, config.presentation);
+        let painter = self
+            .painter
+            .is_some()
+            .then(|| SceneWgpuPainter::new_with_presentation(gpu, config.presentation));
         self.drain_events();
         self.config = config;
         self.gpu = gpu.clone();
@@ -468,7 +564,10 @@ impl ExternalSurface {
             return Ok(());
         }
         let slots = create_slots(gpu, self.config)?;
-        let painter = SceneWgpuPainter::new_with_presentation(gpu, self.config.presentation);
+        let painter = self
+            .painter
+            .is_some()
+            .then(|| SceneWgpuPainter::new_with_presentation(gpu, self.config.presentation));
         self.gpu = gpu.clone();
         self.painter = painter;
         self.slots = slots;
@@ -495,6 +594,9 @@ impl ExternalSurface {
     /// Produce a new retained revision if the scene or host content changed.
     /// `host_revision` must include external producer/texture revisions that
     /// are not represented by [`UiScene::projection_revision`].
+    ///
+    /// This is [`Self::prepare`], [`Self::record`] into a frame of its own
+    /// and [`Self::bind_submission`], with this surface's own painter.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -504,6 +606,47 @@ impl ExternalSurface {
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<ExternalRenderOutcome, ExternalSurfaceError> {
+        let plan = match self.prepare(scene, host_revision, viewport, host_textures)? {
+            ExternalPrepare::Reused {
+                resource_generation,
+                content_revision,
+            } => {
+                return Ok(ExternalRenderOutcome::Reused {
+                    resource_generation,
+                    content_revision,
+                });
+            }
+            ExternalPrepare::Deferred => return Ok(ExternalRenderOutcome::Deferred),
+            ExternalPrepare::Record(plan) => plan,
+        };
+        let Some(mut frame) = self.gpu.try_begin_frame("NanaUI external surface") else {
+            return Ok(ExternalRenderOutcome::Deferred);
+        };
+        if let Err(error) = self.record(
+            &plan,
+            &mut frame,
+            None,
+            scene,
+            viewport,
+            host_textures,
+            gpu_renderers,
+        ) {
+            frame.discard();
+            return Err(error);
+        }
+        let submitted = frame.submit();
+        self.bind_submission(plan, &submitted)
+    }
+
+    /// Decide whether this presentation needs a new revision, and where it
+    /// would go. Records nothing and never waits.
+    pub fn prepare(
+        &mut self,
+        scene: &UiScene,
+        host_revision: u64,
+        viewport: ScenePaintViewport,
+        host_textures: Option<&HostTextureRegistry>,
+    ) -> Result<ExternalPrepare, ExternalSurfaceError> {
         self.last_work = OutputWorkObservation::default();
         if self.gpu.is_lost() {
             return Err(ExternalSurfaceError::DeviceLost);
@@ -522,14 +665,16 @@ impl ExternalSurface {
             viewport,
             self.config.presentation,
             self.resource_generation,
-            self.painter.image_revision(),
+            self.painter
+                .as_ref()
+                .map_or(0, SceneWgpuPainter::image_revision),
         );
         if self.last_key == Some(key)
             && let Some(published) = self.published
         {
             self.last_work.idle_reuse_frames = 1;
             nana_diagnostics::metric!(nana_diagnostics::framework::gpu::OUTPUT_IDLE_REUSE_FRAMES);
-            return Ok(ExternalRenderOutcome::Reused {
+            return Ok(ExternalPrepare::Reused {
                 resource_generation: self.resource_generation,
                 content_revision: published.revision,
             });
@@ -543,58 +688,114 @@ impl ExternalSurface {
                 .iter()
                 .any(|slot| matches!(slot.state, SlotState::InFlight { .. }))
         {
-            return Ok(ExternalRenderOutcome::Deferred);
+            return Ok(ExternalPrepare::Deferred);
         }
-        let Some(slot_index) = self.available_slot() else {
-            return Ok(ExternalRenderOutcome::Deferred);
+        let Some(slot) = self.available_slot() else {
+            return Ok(ExternalPrepare::Deferred);
         };
-        let Some(mut frame) = self.gpu.try_begin_frame("NanaUI external surface") else {
-            return Ok(ExternalRenderOutcome::Deferred);
+        Ok(ExternalPrepare::Record(ExternalFramePlan {
+            resource_generation: self.resource_generation,
+            slot,
+            revision: self.next_content_revision.saturating_add(1),
+            key,
+        }))
+    }
+
+    /// The texture `plan` records into, for work the host appends after the
+    /// scene in the same frame (a conversion pass, an export copy).
+    pub fn plan_texture(
+        &self,
+        plan: &ExternalFramePlan,
+    ) -> Result<&GpuTexture, ExternalSurfaceError> {
+        if plan.resource_generation != self.resource_generation {
+            return Err(ExternalSurfaceError::StalePlan);
+        }
+        self.slots
+            .get(plan.slot)
+            .map(|slot| &slot.texture)
+            .ok_or(ExternalSurfaceError::StalePlan)
+    }
+
+    /// Paint `scene` into the plan's slot inside the caller's `frame`. With
+    /// `painter` the host's painter records it (see
+    /// [`Self::with_host_painter`]); without, this surface's own. Nothing is
+    /// published until [`Self::bind_submission`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn record(
+        &mut self,
+        plan: &ExternalFramePlan,
+        frame: &mut FrameContext,
+        painter: Option<&mut SceneWgpuPainter>,
+        scene: &UiScene,
+        viewport: ScenePaintViewport,
+        host_textures: Option<&HostTextureRegistry>,
+        gpu_renderers: Option<&SceneGpuRendererRegistry>,
+    ) -> Result<(), ExternalSurfaceError> {
+        if viewport.physical_size != self.config.extent {
+            return Err(ExternalSurfaceError::InvalidViewport);
+        }
+        let target = self.plan_texture(plan)?.render_target()?;
+        let id = self.target_id(plan.resource_generation, plan.slot);
+        let encoding = self.alpha_encoding;
+        let painter = match painter {
+            Some(painter) => painter,
+            None => self
+                .painter
+                .as_mut()
+                .ok_or(ExternalSurfaceError::NoPainter)?,
         };
-        let revision = self.next_content_revision.saturating_add(1);
-        let target = self.slots[slot_index].texture.render_target()?;
-        self.painter.set_alpha_encoding(self.alpha_encoding);
-        let paint = self.painter.paint_target(
-            crate::RenderTargetId(external_target_id(self.resource_generation, slot_index)),
+        painter.set_alpha_encoding(encoding);
+        painter.paint_target(
+            id,
             scene,
-            &mut frame,
+            frame,
             &target,
             viewport,
             host_textures,
             gpu_renderers,
-        );
-        if let Err(error) = paint {
-            frame.discard();
-            return Err(error.into());
+        )?;
+        Ok(())
+    }
+
+    /// Mark the plan's slot in flight on `submission`; it is published when
+    /// that submission completes.
+    pub fn bind_submission(
+        &mut self,
+        plan: ExternalFramePlan,
+        submission: &GpuSubmission,
+    ) -> Result<ExternalRenderOutcome, ExternalSurfaceError> {
+        if plan.resource_generation != self.resource_generation
+            || plan.slot >= self.slots.len()
+            || !matches!(self.slots[plan.slot].state, SlotState::Available)
+        {
+            return Err(ExternalSurfaceError::StalePlan);
         }
-        let submitted = frame.submit();
         let completion = Arc::clone(&self.completions);
-        let generation = self.resource_generation;
         let event = Completion {
-            generation,
-            slot: slot_index,
-            frame: submitted.frame(),
-            revision,
+            generation: plan.resource_generation,
+            slot: plan.slot,
+            frame: submission.frame(),
+            revision: plan.revision,
         };
         self.gpu
-            .on_submission_complete(&submitted, move || {
+            .on_submission_complete(submission, move || {
                 if let Ok(mut events) = completion.lock() {
                     events.push(event);
                 }
             })
             .map_err(ExternalSurfaceError::Gpu)?;
-        self.slots[slot_index].state = SlotState::InFlight {
-            frame: submitted.frame(),
-            revision,
+        self.slots[plan.slot].state = SlotState::InFlight {
+            frame: submission.frame(),
+            revision: plan.revision,
         };
-        self.next_content_revision = revision;
-        self.last_key = Some(key);
+        self.next_content_revision = plan.revision;
+        self.last_key = Some(plan.key);
         self.last_work.content_revisions = 1;
         nana_diagnostics::metric!(nana_diagnostics::framework::gpu::OUTPUT_CONTENT_REVISIONS);
         Ok(ExternalRenderOutcome::Submitted {
             resource_generation: self.resource_generation,
-            content_revision: revision,
-            frame: submitted.frame(),
+            content_revision: plan.revision,
+            frame: submission.frame(),
         })
     }
 

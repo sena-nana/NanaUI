@@ -260,11 +260,48 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             let tick = frame_tick(presents, due, drawable);
             let (deadline, armed_at) = match tick {
                 FrameTick::Present => {
-                    self.request_redraw(id);
-                    (
-                        self.frame_schedules.entry(id).or_default().arm(demand, now),
-                        now,
-                    )
+                    let watchdog = self
+                        .frame_schedules
+                        .entry(id)
+                        .or_default()
+                        .note_requested(demand, now);
+                    if now >= watchdog && cfg!(target_os = "windows") {
+                        // A whole period went by and the requested paint never
+                        // came. A swap chain presents without one, so serve
+                        // the frame here rather than wait for the next
+                        // unrelated message.
+                        nana_diagnostics::metric!(
+                            nana_diagnostics::framework::host::FRAMES_SERVED_WITHOUT_PAINT
+                        );
+                        self.redraw(event_loop, id);
+                        if !self.window_contexts.contains_key(&id) {
+                            continue;
+                        }
+                        let armed_at = Instant::now();
+                        let demand = self.window_frame_demand(id);
+                        let schedule = self.frame_schedules.entry(id).or_default();
+                        (schedule.arm(demand, armed_at), armed_at)
+                    } else {
+                        let schedule = self.frame_schedules.entry(id).or_default();
+                        // Where frames must come from the paint callback, a
+                        // request that went unanswered is simply made again.
+                        let watchdog = if now >= watchdog {
+                            schedule.renew_request(now);
+                            schedule.note_requested(demand, now)
+                        } else {
+                            watchdog
+                        };
+                        let deadline = schedule.arm(demand, now);
+                        self.request_redraw(id);
+                        // The due frame's deadline is behind us, so only the
+                        // paint just requested would bring the loop back for
+                        // it. Wait for the grace period as well, in case the
+                        // platform withholds that paint.
+                        (
+                            Some(deadline.filter(|at| *at > now).unwrap_or(watchdog)),
+                            now,
+                        )
+                    }
                 }
                 FrameTick::GpuOnly => {
                     let served = self.tick_hidden_gpu(event_loop, id);
@@ -400,7 +437,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .program
             .read_document(id, |document| document.compositor_needs_tick())
             .unwrap_or(false);
-        window_present_demand(program, compositor, self.can_present(id))
+        let can_present = self.can_present(id);
+        merge_frame_demand(
+            window_present_demand(program, compositor, can_present),
+            self.window_output_demand(id, can_present),
+        )
     }
 
     pub(super) fn sync_compositor_clock(&mut self, id: WindowId) {

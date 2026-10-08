@@ -23,8 +23,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return false;
         }
         self.program.prepare_window_frame(id, &self.context_for(id));
+        let output = self.sync_window_output(id)
+            && self
+                .program
+                .window_output(id)
+                .is_some_and(|config| config.while_hidden);
         if !super::schedule::drawable_surface(self.geometry_of(id).physical_size) {
             return true;
+        }
+        if output {
+            // The output needs the document flushed; it shares the frame
+            // with the window's producers.
+            let producers = self.program.scene_resource_producers(id);
+            return self.tick_hidden_output(event_loop, id, producers);
         }
         let Some(producers) = self.program.scene_resource_producers(id) else {
             return true;
@@ -111,6 +122,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         self.resize_window(id);
         self.program.prepare_window_frame(id, &self.context_for(id));
+        self.sync_window_output(id);
         self.sync_compositor_clock(id);
         self.reconcile_browser_lifetimes();
         let geometry = self.geometry_of(id);
@@ -311,6 +323,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let theme = self.program.theme();
         let window_background = self.program.window_background();
         let fetch_host = self.program.resource_fetch_host(id);
+        let output_fetch_host = fetch_host.clone();
+        let viewport = scene_paint_viewport(&geometry, material, theme.as_ref(), window_background);
         // Subpixel text only onto a surface the compositor shows opaque: over
         // a transparent material the per-channel coverage would be composited
         // as colored alpha.
@@ -344,7 +358,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             scene.as_ref(),
             &mut recording,
             &target,
-            scene_paint_viewport(&geometry, material, theme.as_ref(), window_background),
+            viewport,
             host_textures.as_ref(),
             gpu_renderers.as_ref(),
         );
@@ -360,7 +374,26 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.rearm_frame_demand(id);
             return;
         }
+        // The window's output paints the same scene into its own target in
+        // this frame, after the window and before the submit.
+        let output_step = self.plan_window_output(
+            id,
+            scene.as_ref(),
+            host_textures.as_ref(),
+            gpu_renderers.as_ref(),
+            viewport.clear_color,
+        );
+        let output = self.record_window_output(
+            id,
+            output_step,
+            scene.as_ref(),
+            &mut recording,
+            host_textures.as_ref(),
+            gpu_renderers.as_ref(),
+            output_fetch_host,
+        );
         let submission = recording.submit();
+        let output = self.complete_window_output(id, output, &submission);
         if frame_started.is_some() {
             crate::host_diagnostics::watch_submission(self.graphics.gpu().raw_queue());
         }
@@ -392,6 +425,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.request_redraw(id);
             return;
         }
+        self.deliver_window_output(id, output);
         // The frame is presented (and, on Windows, its composition published):
         // it may now end the startup.
         if takes_over {
@@ -566,6 +600,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.gpu_backend_policy,
             self.graphics.adapter_info().backend,
         );
+        self.retire_window_outputs();
         self.painters.clear();
         self.native_renderers.clear();
         self.next_gpu_retry = None;
