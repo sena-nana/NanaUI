@@ -365,7 +365,12 @@ fn logical_buffer_upload_checks_usage_and_bounds() {
     assert_eq!(
         gpu.write_buffer(&buffer, 12, &[1, 2, 3, 4, 5]),
         Err(GpuError::InvalidBindingRange),
-        "the staged copy is padded to four-byte alignment"
+        "past the end"
+    );
+    // A length that is not whole words would zero the bytes after it.
+    assert_eq!(
+        gpu.write_buffer(&buffer, 0, &[1, 2, 3, 4, 5]),
+        Err(GpuError::InvalidBindingRange)
     );
     assert_eq!(
         gpu.write_buffer(&buffer, 15, &[1, 2]),

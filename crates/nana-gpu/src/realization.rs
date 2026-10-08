@@ -257,8 +257,9 @@ impl GpuResourceLayout {
 impl GpuContext {
     /// Upload bytes into a logical buffer while preserving the host submission
     /// ordering contract. The buffer must belong to this device generation and
-    /// have been created with `COPY_DST`. The offset and the padded destination
-    /// range follow WGPU's four-byte copy alignment rules.
+    /// have been created with `COPY_DST`. Like `queue.write_buffer`, the offset
+    /// and the length are multiples of four: a copy moves whole words, so a
+    /// shorter tail would overwrite the bytes after it, and is refused.
     pub fn write_buffer(
         &self,
         buffer: &GpuBuffer,
@@ -268,8 +269,9 @@ impl GpuContext {
         self.check_device(buffer.generation)?;
         if !buffer.usage.contains(GpuBufferUsages::COPY_DST)
             || (!offset.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT) && !bytes.is_empty())
+            || !(bytes.len() as u64).is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
             || offset
-                .checked_add((bytes.len() as u64).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT))
+                .checked_add(bytes.len() as u64)
                 .is_none_or(|end| end > buffer.size)
         {
             return Err(GpuError::InvalidBindingRange);
