@@ -460,7 +460,8 @@ impl UiWorld {
     }
 
     /// Re-resolve one node's layout after its authored layout was mutated in
-    /// place. A node without design intent keeps sharing the same `Arc`.
+    /// place. A node without design intent keeps sharing the same `Arc`. The
+    /// caller records the layout cause, which moves the input epoch.
     pub(crate) fn refresh_resolved_layout(&mut self, id: StableNodeId) {
         let (mut resolved, copied) =
             Self::resolve_layout_intent(&self.record(id).style, self.style_model.metrics);
@@ -469,13 +470,13 @@ impl UiWorld {
             self.layouts.intern(&mut resolved);
         }
         self.record_mut(id).resolved_layout = resolved;
-        self.note_layout_source_change();
     }
 
-    /// Re-resolve every node's layout intent after a metrics install.
+    /// Re-resolve every node's layout intent after a metrics install. The
+    /// caller records a layout cause for each node, which moves the input
+    /// epoch.
     fn reresolve_layout_intent(&mut self, ids: &[StableNodeId]) {
         let metrics = self.style_model.metrics;
-        let mut changed = false;
         for &id in ids {
             let style = &self.record(id).style;
             if style.radius.is_none()
@@ -495,10 +496,6 @@ impl UiWorld {
                 self.layouts.intern(&mut resolved);
             }
             self.record_mut(id).resolved_layout = resolved;
-            changed = true;
-        }
-        if changed {
-            self.note_layout_source_change();
         }
     }
 

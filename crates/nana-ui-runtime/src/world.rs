@@ -984,17 +984,7 @@ impl UiWorld {
         if !self.nodes.contains(id) || invalidation.is_empty() {
             return;
         }
-        // Whatever invalidates layout also retires full-layout snapshots: a
-        // text metric written after layout changes the next full layout
-        // without any style write.
-        self.note_layout_source_change();
-        self.pending_layout_invalidations
-            .entry(id)
-            .and_modify(|previous| *previous = previous.merge(invalidation))
-            .or_insert(invalidation);
-        // Text shaping and other post-layout writers reach layout only through
-        // this cause, not through a commit, so the input epoch moves here too.
-        self.note_layout_source_change();
+        self.queue_layout_invalidation(id, invalidation);
         // A fixed border box absorbs an inner metric. Drop that box so a
         // changed child placement can be republished, and leave every
         // ancestor result in place when the border box itself did not change.
@@ -1009,6 +999,18 @@ impl UiWorld {
         self.suppress_layout_results_subtree(id);
         self.suppress_layout_result_chain(id, changes_border);
         let _ = self.mark_scroll_compatible(id, crate::schedule::DirtyMask::LAYOUT);
+    }
+
+    /// Queue `invalidation` for `id`, merged into a cause already pending:
+    /// a narrower typed seed must not hide a later, wider one. Every cause
+    /// enters through here; each caller then sets the layout dirty bit
+    /// through [`Self::mark_scroll_compatible`], which moves the input epoch
+    /// of the full-layout snapshot.
+    fn queue_layout_invalidation(&mut self, id: StableNodeId, invalidation: LayoutInvalidation) {
+        self.pending_layout_invalidations
+            .entry(id)
+            .and_modify(|previous| *previous = previous.merge(invalidation))
+            .or_insert(invalidation);
     }
 
     /// Publish the structural layout cause for a retained parent whose child
@@ -1068,15 +1070,9 @@ impl UiWorld {
             if !self.nodes.contains(seed.node) || seed.invalidation.is_empty() {
                 continue;
             }
-            self.pending_layout_invalidations
-                .entry(seed.node)
-                .and_modify(|previous| *previous = previous.merge(seed.invalidation))
-                .or_insert(seed.invalidation);
+            self.queue_layout_invalidation(seed.node, seed.invalidation);
             self.invalidate_layout_result(seed.node);
-            if self.record_mut(seed.node).dirty.insert(DirtyMask::LAYOUT) {
-                self.dirty_entities.insert(seed.node);
-                self.pending_work_revision = self.pending_work_revision.saturating_add(1);
-            }
+            let _ = self.mark_scroll_compatible(seed.node, DirtyMask::LAYOUT);
         }
     }
 
@@ -4174,28 +4170,26 @@ impl UiWorld {
             self.non_scroll_hit_dirty.insert(id);
         }
         // Internal callers that only have a dirty bit still publish an
-        // explicit runtime-wide invalidation. Typed mutation authorities have
-        // already installed a narrower entry, which this branch preserves.
+        // explicit runtime-wide invalidation, merged into any narrower entry
+        // a typed mutation authority already installed.
         if bits & DirtyMask::LAYOUT != 0 {
-            // Merged, not inserted: a narrower typed seed already pending
-            // for this node must not hide a later unclassified one.
-            self.note_layout_source_change();
-            let unknown = LayoutInvalidation::new(
-                LayoutInvalidationSource::Runtime,
-                InvalidationReason::UNKNOWN,
-                InvalidationKind::ALL,
-                LayoutFieldMask::ALL,
-                LayoutDependencyFootprint::ALL,
+            self.queue_layout_invalidation(
+                id,
+                LayoutInvalidation::new(
+                    LayoutInvalidationSource::Runtime,
+                    InvalidationReason::UNKNOWN,
+                    InvalidationKind::ALL,
+                    LayoutFieldMask::ALL,
+                    LayoutDependencyFootprint::ALL,
+                ),
             );
-            self.pending_layout_invalidations
-                .entry(id)
-                .and_modify(|previous| *previous = previous.merge(unknown))
-                .or_insert(unknown);
         }
         self.mark_scroll_compatible(id, bits)
     }
 
     /// Record dirtiness without claiming that hit membership or geometry changed.
+    /// Layout dirtiness retires full-layout snapshots: text shaping and other
+    /// post-layout writers reach layout only through a cause, not a commit.
     fn mark_scroll_compatible(&mut self, id: StableNodeId, bits: u16) -> bool {
         if bits & DirtyMask::LAYOUT != 0 {
             self.note_layout_source_change();
