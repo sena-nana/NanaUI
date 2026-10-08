@@ -184,15 +184,28 @@ fn a_render_of_new_content_never_reports_the_older_revision_as_reused() {
     let scene = UiScene::new();
     render_initial(&mut surface, &scene);
     let first = completed_sample(&mut surface).content_revision();
-    // A new host revision is new content: submitted, not yet completed.
-    let ExternalRenderOutcome::Submitted {
-        content_revision: second,
-        ..
-    } = surface
-        .render(&scene, 1, viewport(EXTENT), None, None)
-        .expect("changed content renders")
-    else {
-        panic!("changed content must be submitted");
+    // A new host revision is new content: submitted, not yet completed. A
+    // slow adapter may still hold the first frame's slot; wait for one.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let second = loop {
+        match surface
+            .render(&scene, 1, viewport(EXTENT), None, None)
+            .expect("changed content renders")
+        {
+            ExternalRenderOutcome::Submitted {
+                content_revision, ..
+            } => break content_revision,
+            ExternalRenderOutcome::Deferred => {
+                surface.poll();
+                assert!(Instant::now() < deadline, "no slot for new content");
+                std::thread::yield_now();
+            }
+            ExternalRenderOutcome::Reused {
+                content_revision, ..
+            } => {
+                panic!("new content reported as reused revision {content_revision}")
+            }
+        }
     };
     assert_ne!(first, second);
     // Asked again for the same new content before it completes, the surface
