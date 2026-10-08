@@ -423,7 +423,9 @@ impl VueHost {
         let outcome = context
             .route_input(&event, source.services_mut(), None)
             .map_err(|error| JsEngineError::new(error.to_string()))?;
-        Ok((event, outcome))
+        // The page hears about the pointer the router follows: its capture
+        // calls name the same id the Runtime keys capture by.
+        Ok((outcome.localize(event), outcome))
     }
 
     /// Forget this window's input source: what it held is cancelled while
@@ -872,7 +874,11 @@ impl VueHost {
         engine: &mut E,
         input: PointerInput,
     ) -> Result<bool, JsEngineError> {
-        self.route_input(InputPayload::Pointer(input.to_canonical()))?;
+        let (event, _) = self.route_input(InputPayload::Pointer(input.to_canonical()))?;
+        let mut input = input;
+        if let Some(local) = event.pointer_id() {
+            input.pointer_id = local.0;
+        }
         self.emit_pointer_from_runtime(engine, input)
             .map(|result| result.targeted)
     }

@@ -782,17 +782,24 @@ fn pointer_capture_keeps_target_and_blur_releases_it() {
         host.dispatch_pointer(&mut engine, down)
             .expect("pointer down")
     );
+    // The page captures the pointer it was told about: the id the Runtime
+    // routes it by, not the platform's 7.
+    let pointer_id = fired_events(&engine)
+        .iter()
+        .find(|(_, name, _)| name == "pointerdown")
+        .and_then(|(_, _, detail)| detail.get("pointerId").and_then(HostValue::as_f64))
+        .expect("pointerdown names its pointer");
 
     let api = host.host_api_registry();
     api.call(
         "setPointerCapture",
-        &[HostValue::Number(first.0 as f64), HostValue::Number(7.0)],
+        &[HostValue::Number(first.0 as f64), HostValue::Number(pointer_id)],
     )
     .expect("capture pointer");
     assert_eq!(
         api.call(
             "hasPointerCapture",
-            &[HostValue::Number(first.0 as f64), HostValue::Number(7.0),],
+            &[HostValue::Number(first.0 as f64), HostValue::Number(pointer_id)],
         )
         .expect("query capture"),
         HostValue::Bool(true)
@@ -817,7 +824,7 @@ fn pointer_capture_keeps_target_and_blur_releases_it() {
         .iter()
         .find(|(_, name, detail)| {
             name == "pointermove"
-                && detail.get("pointerId").and_then(HostValue::as_f64) == Some(7.0)
+                && detail.get("pointerId").and_then(HostValue::as_f64) == Some(pointer_id)
         })
         .expect("pointermove event");
     assert_eq!(captured_move.0, first.0);
@@ -851,7 +858,7 @@ fn pointer_capture_keeps_target_and_blur_releases_it() {
     assert!(events.iter().any(|(target, name, detail)| {
         *target == first.0
             && name == "gotpointercapture"
-            && detail.get("pointerId").and_then(HostValue::as_f64) == Some(7.0)
+            && detail.get("pointerId").and_then(HostValue::as_f64) == Some(pointer_id)
     }));
 
     host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
@@ -859,7 +866,7 @@ fn pointer_capture_keeps_target_and_blur_releases_it() {
     assert_eq!(
         api.call(
             "hasPointerCapture",
-            &[HostValue::Number(first.0 as f64), HostValue::Number(7.0),],
+            &[HostValue::Number(first.0 as f64), HostValue::Number(pointer_id)],
         )
         .expect("capture released"),
         HostValue::Bool(false)
@@ -867,7 +874,7 @@ fn pointer_capture_keeps_target_and_blur_releases_it() {
     assert!(fired_events(&engine).iter().any(|(target, name, detail)| {
         *target == first.0
             && name == "lostpointercapture"
-            && detail.get("pointerId").and_then(HostValue::as_f64) == Some(7.0)
+            && detail.get("pointerId").and_then(HostValue::as_f64) == Some(pointer_id)
     }));
 }
 

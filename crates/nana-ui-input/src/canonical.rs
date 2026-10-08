@@ -46,6 +46,32 @@ pub struct CanonicalInputEvent {
     pub payload: InputPayload,
 }
 
+impl CanonicalInputEvent {
+    /// The pointer a pointer, wheel, enter or leave event is about.
+    pub fn pointer_id(&self) -> Option<PointerId> {
+        match &self.payload {
+            InputPayload::Pointer(pointer) => Some(pointer.pointer_id),
+            InputPayload::Wheel(wheel) => Some(wheel.pointer_id),
+            InputPayload::PointerEnter { pointer_id, .. }
+            | InputPayload::PointerLeave { pointer_id } => Some(*pointer_id),
+            _ => None,
+        }
+    }
+
+    /// The same event about pointer `id`: a router hands observers the id
+    /// it keys capture and hover by, not the platform's.
+    pub fn with_pointer_id(mut self, id: PointerId) -> Self {
+        match &mut self.payload {
+            InputPayload::Pointer(pointer) => pointer.pointer_id = id,
+            InputPayload::Wheel(wheel) => wheel.pointer_id = id,
+            InputPayload::PointerEnter { pointer_id, .. }
+            | InputPayload::PointerLeave { pointer_id } => *pointer_id = id,
+            _ => {}
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointerInput {
     pub phase: PointerPhase,

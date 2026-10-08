@@ -1554,3 +1554,75 @@ fn file_drag_paths_count_against_the_endpoint_budget() {
             >= drag.paths[0].capacity() + std::mem::size_of::<std::path::PathBuf>()
     );
 }
+
+/// Observers hear about the pointer the router keys capture and hover by:
+/// after a blur hands the platform pointer a new local id, the drained event
+/// carries that id, so a capture an observer asks for is the one routed.
+#[test]
+fn drained_events_name_the_pointer_the_router_follows() {
+    let mut context = AppContext::new();
+    let doc = document(31);
+    let source = InputSourceId(31);
+    let generation = EndpointGeneration(1);
+    context.bind_input_source(source, generation, doc).unwrap();
+    let node = hittable_node(&mut context, doc, 3);
+    let mut services = UnsupportedHostServices;
+    let mut endpoint = InputEndpoint::new(8, 1024);
+    let mut routed = Vec::new();
+    let mut sequence = 0;
+    let mut drain = |context: &mut AppContext, payload, routed: &mut Vec<RoutedEvent>| {
+        sequence += 1;
+        endpoint
+            .push(event(source, generation, sequence, payload))
+            .unwrap();
+        context.drain_input(&mut endpoint, &mut services, None, routed);
+    };
+    drain(
+        &mut context,
+        pointer(PointerPhase::Move, 10.0, 12.0),
+        &mut routed,
+    );
+    drain(
+        &mut context,
+        InputPayload::Focus { focused: false },
+        &mut routed,
+    );
+    drain(
+        &mut context,
+        pointer(PointerPhase::Move, 10.0, 12.0),
+        &mut routed,
+    );
+    let observed = routed.last().unwrap().event.pointer_id().unwrap().0;
+    let local = context.input.sources[&source].pointers[&(DeviceId(1), PointerId(42))].local;
+    assert_eq!(observed, local);
+    assert_ne!(observed, 42, "the platform id is not the context's");
+    let mut capture = MutationQueue::new();
+    capture.capture_pointer(observed, node);
+    context.commit_mutations(capture).unwrap();
+    assert_eq!(context.world().pointer_capture(doc, local), Some(node));
+}
+
+/// On a Cyrillic layout Ctrl+C reports the logical key `с`: the shortcut
+/// still copies, by the key's place on the keyboard.
+#[test]
+fn shortcuts_follow_the_physical_key_on_a_non_latin_layout() {
+    let mut context = AppContext::new();
+    let doc = document(32);
+    let mut input = HeadlessInput::bind(&mut context, doc);
+    focused_editor(&mut context, doc, "текст");
+    context.select_all_focused_text(doc).unwrap();
+    let cyrillic = KeyInput {
+        physical: nana_ui_input::PhysicalKey("KeyC".into()),
+        logical: nana_ui_input::LogicalKey("с".into()),
+        state: KeyState::Pressed,
+        repeat: false,
+        modifiers: control(),
+    };
+    assert!(
+        input
+            .press(&mut context, cyrillic, None, None)
+            .unwrap()
+            .handled
+    );
+    assert_eq!(input.services().clipboard(), Some("текст"));
+}

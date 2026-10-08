@@ -172,6 +172,7 @@ impl HeadlessInput {
             prevent_default: outcome.prevent_default || text_outcome.prevent_default,
             pointer_hit: None,
             invalidated_work: outcome.invalidated_work || text_outcome.invalidated_work,
+            pointer_id: None,
         })
     }
 

@@ -108,6 +108,35 @@ impl AppContext {
             ..
         } = pointer;
         let pointer_id = &pointer.pointer_id.0;
+        let held = (document, *pointer_id);
+        match phase {
+            PointerPhase::Down if (*is_primary && *button == 0) || *button == 1 => {
+                if self
+                    .input
+                    .pressed_buttons
+                    .get(&held)
+                    .is_some_and(|pressed| pressed != button)
+                {
+                    return Ok(InputDisposition::default());
+                }
+                self.input.pressed_buttons.insert(held, *button);
+            }
+            PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
+                if self
+                    .input
+                    .pressed_buttons
+                    .get(&held)
+                    .is_some_and(|pressed| pressed != button)
+                {
+                    return Ok(InputDisposition::default());
+                }
+                self.input.pressed_buttons.remove(&held);
+            }
+            PointerPhase::Cancel => {
+                self.input.pressed_buttons.remove(&held);
+            }
+            _ => {}
+        }
         let overlay_phase = match phase {
             PointerPhase::Move => OverlayPointerPhase::Move,
             PointerPhase::Down if *is_primary && *button == 0 => OverlayPointerPhase::PrimaryDown,

@@ -6337,3 +6337,147 @@ fn arrow_keys_move_an_open_context_menu_and_enter_activates_it() {
     assert!(!context.read(menu, |menu| menu.open).unwrap());
     assert!(context.active_runtime_overlay(document).is_none());
 }
+
+/// A mouse is one pointer for all its buttons: the middle button going down
+/// and up during a left drag neither ends the drag nor commits it.
+#[test]
+fn another_button_does_not_end_a_left_drag() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let range = context
+        .create_component(document, RangeField::new(0.0, 0.0, 1.0, 0.1))
+        .unwrap();
+    let mut layout = MutationQueue::new();
+    layout.write_layout(
+        range.stable_id(),
+        LayoutBox {
+            x: 10.0,
+            y: 10.0,
+            width: 300.0,
+            height: 32.0,
+        },
+    );
+    context.commit_mutations(layout).unwrap();
+    context.rebuild_hit_test(document);
+    let commits = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&commits);
+    context
+        .on(range, move |_, event: &crate::RangeChanged, _| {
+            observed.lock().unwrap().push(event.value);
+        })
+        .unwrap();
+    let track = match context.world().component_geometry(range.stable_id()) {
+        Some(ComponentGeometry::Range { track, .. }) => track,
+        _ => panic!("range geometry expected"),
+    };
+    let at = |fraction: f32| track.x + track.width * fraction;
+    let middle = |phase: PointerPhase, x: f32| {
+        pointer_fixture! {
+            phase,
+            pointer_id: 1,
+            pointer_type: PointerType::Mouse,
+            x,
+            y: 20.0,
+            screen_x: x,
+            screen_y: 20.0,
+            button: 1,
+            buttons: 4,
+            pressure: 0.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers: InputModifiers::default(),
+        }
+    };
+    let mut adapter = TestInput::default();
+    for gesture in [
+        pointer(PointerPhase::Down, at(0.2), 20.0),
+        pointer(PointerPhase::Move, at(0.5), 20.0),
+        middle(PointerPhase::Down, at(0.5)),
+        middle(PointerPhase::Up, at(0.5)),
+    ] {
+        adapter.dispatch(&mut context, document, &gesture).unwrap();
+    }
+    assert!(commits.lock().unwrap().is_empty(), "the drag goes on");
+    assert_eq!(
+        context.world().pointer_capture(document, 1),
+        Some(range.stable_id())
+    );
+    adapter
+        .dispatch(
+            &mut context,
+            document,
+            &pointer(PointerPhase::Up, at(0.6), 20.0),
+        )
+        .unwrap();
+    assert_eq!(commits.lock().unwrap().len(), 1);
+}
+
+/// A click on a row the scrollport half clips focuses it where it is: the
+/// press does not scroll it into view, so the release lands on the same row
+/// and the click activates it.
+#[test]
+fn a_click_on_a_half_clipped_row_does_not_scroll_it() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut viewport = NodeStyle::default();
+    {
+        let layout = std::sync::Arc::make_mut(&mut viewport.layout);
+        layout.width = Some(nana_ui_core::LengthSpec::Px(200.0));
+        layout.height = Some(nana_ui_core::LengthSpec::Px(130.0));
+    }
+    let scroll = context
+        .create_component(
+            document,
+            ScrollView::new(ScrollAxes::Vertical).style(viewport),
+        )
+        .unwrap();
+    let mut rows = Vec::new();
+    for index in 0..5 {
+        let mut row = Button::new(format!("Row {index}"));
+        {
+            let layout = std::sync::Arc::make_mut(&mut row.style.layout);
+            layout.width = Some(nana_ui_core::LengthSpec::Fill);
+            layout.height = Some(nana_ui_core::LengthSpec::Px(40.0));
+            layout.min_height = Some(nana_ui_core::LengthSpec::Px(40.0));
+            layout.max_height = Some(nana_ui_core::LengthSpec::Px(40.0));
+        }
+        row.style.control_height = None;
+        let row = context.create_component(document, row).unwrap();
+        context.append_child(scroll, row).unwrap();
+        rows.push(row);
+    }
+    context
+        .layout_document(document, crate::LayoutViewport::new(200.0, 130.0))
+        .unwrap();
+    context.rebuild_hit_test(document);
+    let activated = Arc::new(Mutex::new(Vec::new()));
+    for row in &rows {
+        let seen = Arc::clone(&activated);
+        let id = row.stable_id();
+        context
+            .on(*row, move |_, _: &Activate, _| {
+                seen.lock().unwrap().push(id)
+            })
+            .unwrap();
+    }
+    let target = rows[3].stable_id();
+    let row_box = context.world().component_layout_box(target).unwrap();
+    let y = row_box.y + 5.0;
+    assert!(y < 130.0, "the press lands on the visible part of row 3");
+    let mut adapter = TestInput::default();
+    for phase in [PointerPhase::Down, PointerPhase::Up] {
+        adapter
+            .dispatch(&mut context, document, &pointer(phase, 100.0, y))
+            .unwrap();
+    }
+    assert_eq!(context.world().focused(document), Some(target));
+    assert_eq!(
+        context.world().scroll_offset(scroll.stable_id()).unwrap().y,
+        0.0
+    );
+    assert_eq!(*activated.lock().unwrap(), vec![target]);
+}

@@ -42,6 +42,10 @@ pub struct InputRouteOutcome {
     pub pointer_hit: Option<StableNodeId>,
     /// The event scheduled Runtime work: something must be drawn again.
     pub invalidated_work: bool,
+    /// For pointer, wheel, enter and leave events: the context's id for the
+    /// pointer, the one capture, hover and press are keyed by. A platform id
+    /// maps to a new one after a blur or on another window of the context.
+    pub pointer_id: Option<u64>,
 }
 
 impl InputRouteOutcome {
@@ -49,6 +53,16 @@ impl InputRouteOutcome {
         InputDisposition {
             handled: self.handled,
             prevent_default: self.prevent_default,
+        }
+    }
+
+    /// `event` as observers of this context see it: about the context's
+    /// pointer id, so a page that captures the pointer it was told about
+    /// captures the one the router follows.
+    pub fn localize(&self, event: CanonicalInputEvent) -> CanonicalInputEvent {
+        match self.pointer_id {
+            Some(local) => event.with_pointer_id(PointerId(local)),
+            None => event,
         }
     }
 }
@@ -191,12 +205,51 @@ impl SourceState {
     }
 }
 
+/// The key a stroke names. With Control or Command held on a layout whose
+/// letters are not Latin (Cyrillic, Greek, Hebrew), the logical key is that
+/// layout's letter and no shortcut would ever match; the key in the same
+/// place on a Latin keyboard is the one shortcuts are written for.
+fn shortcut_key(key: &nana_ui_input::KeyInput) -> &str {
+    let logical = key.logical.0.as_ref();
+    let chorded = key.modifiers.control || key.modifiers.meta;
+    let single = {
+        let mut chars = logical.chars();
+        chars.next().is_some() && chars.next().is_none()
+    };
+    if !chorded || !single || logical.is_ascii() {
+        return logical;
+    }
+    const LETTERS: [&str; 26] = [
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
+        "s", "t", "u", "v", "w", "x", "y", "z",
+    ];
+    const DIGITS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    let physical = key.physical.0.as_ref();
+    let at = |prefix: &str| {
+        physical
+            .strip_prefix(prefix)
+            .filter(|rest| rest.len() == 1)
+            .and_then(|rest| rest.bytes().next())
+    };
+    if let Some(letter) = at("Key").filter(u8::is_ascii_uppercase) {
+        return LETTERS[usize::from(letter - b'A')];
+    }
+    if let Some(digit) = at("Digit").filter(u8::is_ascii_digit) {
+        return DIGITS[usize::from(digit - b'0')];
+    }
+    logical
+}
+
 /// Input routing state of one context.
 #[derive(Debug)]
 pub(crate) struct InputState {
     sources: HashMap<InputSourceId, SourceState>,
     next_pointer: u64,
     counters: InputCounters,
+    /// The button whose press a pointer holds. A mouse is one pointer for
+    /// all its buttons; another button going down or up meanwhile must not
+    /// end or activate what the first started.
+    pub(super) pressed_buttons: HashMap<(DocumentId, u64), i16>,
 }
 
 impl Default for InputState {
@@ -205,6 +258,7 @@ impl Default for InputState {
             sources: HashMap::new(),
             next_pointer: 1,
             counters: InputCounters::default(),
+            pressed_buttons: HashMap::new(),
         }
     }
 }
@@ -374,6 +428,10 @@ impl AppContext {
         let mut count = 0;
         while let Some(event) = endpoint.pop() {
             let result = self.route_input(&event, services, reborrow_text_shaper(&mut text_shaper));
+            let event = match &result {
+                Ok(outcome) => outcome.localize(event),
+                Err(_) => event,
+            };
             routed.push(RoutedEvent { event, result });
             count += 1;
         }
@@ -493,7 +551,7 @@ impl AppContext {
                     document,
                     KeyStroke {
                         pressed: key.state == KeyState::Pressed,
-                        key: key.logical.0.as_ref(),
+                        key: shortcut_key(key),
                         text: None,
                         repeat: key.repeat,
                         modifiers: key.modifiers,
@@ -639,6 +697,7 @@ impl AppContext {
             prevent_default: disposition.prevent_default,
             pointer_hit: landed,
             invalidated_work: self.world.pending_work_revision() != work_before,
+            pointer_id: local,
         })
     }
 
