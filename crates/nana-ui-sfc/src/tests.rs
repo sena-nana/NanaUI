@@ -624,6 +624,13 @@ let count = signal(0u32);
     assert_eq!(retitled.literals, ["新标题", "加一"]);
     let rewired = shape("views/Page.vue", &view.replace("*c += 1", "*c += 2"));
     assert_ne!(rewired.shape, first.shape, "code changed");
+    // Text that moves what follows it to other lines and columns is still
+    // only text.
+    let longer = shape(
+        "views/Page.vue",
+        &view.replace("<Text>标题</Text>", "<Text>一个长得多的标题</Text>\n"),
+    );
+    assert_eq!(longer.shape, first.shape, "positions are not shape");
 }
 
 #[test]

@@ -138,6 +138,55 @@ fn stable_hash(text: &str) -> u64 {
     })
 }
 
+/// `tokens` (a token stream's text) with what every source site says about
+/// where it is left out: the file, line and column of each
+/// `SourceLocation::new(..)`, each `__checked("file:line:col", ..)` and each
+/// source-map marker.
+fn without_source_sites(tokens: &str) -> String {
+    // Each opener, and whether what follows it up to the site's end is a
+    // string literal (else an argument list ending at `)`).
+    const SITES: [(&str, bool); 3] = [
+        ("SourceLocation :: new (", false),
+        ("__checked (\"", true),
+        ("\"__NANA_SFC_MARKER__|", true),
+    ];
+    let mut out = String::with_capacity(tokens.len());
+    let mut rest = tokens;
+    loop {
+        let Some((at, (opener, in_string))) = SITES
+            .iter()
+            .filter_map(|site| rest.find(site.0).map(|at| (at, *site)))
+            .min_by_key(|(at, _)| *at)
+        else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..at + opener.len()]);
+        rest = &rest[at + opener.len()..];
+        let mut quoted = in_string;
+        let mut chars = rest.char_indices();
+        let mut end = rest.len();
+        while let Some((index, ch)) = chars.next() {
+            match ch {
+                '\\' if quoted => {
+                    chars.next();
+                }
+                '"' if quoted && in_string => {
+                    end = index;
+                    break;
+                }
+                '"' => quoted = !quoted,
+                ')' if !quoted => {
+                    end = index;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        rest = &rest[end..];
+    }
+}
+
 fn finalize_source_map(rendered: &str) -> (String, String) {
     let mut lines: Vec<String> = rendered.lines().map(str::to_owned).collect();
     let mut markers = Vec::new();
@@ -451,19 +500,15 @@ impl Compiler {
         let function = nana_ui_view_codegen::function_ident(&name, Span::call_site());
         let (hot, state) = if self.hot {
             // Everything the view is, but its text: equal shapes differ in
-            // text only.
-            // Sites name the file as the batch did; hash its name alone, so
-            // a watcher reading the directory by another path agrees.
-            let file_name = Path::new(file)
-                .file_name()
-                .map_or(file.into(), |name| name.to_string_lossy());
-            let shape = stable_hash(
+            // text only. Where things are in the file is not shape either:
+            // longer text moves every site after it, and a watcher may spell
+            // the file's path another way.
+            let shape = stable_hash(&without_source_sites(
                 &quote! {
                     fn #function(#(#props),*) { #(#style_items)* #(#script)* #body }
                 }
-                .to_string()
-                .replace(file, &file_name),
-            );
+                .to_string(),
+            ));
             let hot = quote! {
                 const __NANA_HOT: &[&str] = &[#(#literals),*];
                 #runtime::view::__hot_register(#name, #shape);
