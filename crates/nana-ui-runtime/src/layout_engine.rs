@@ -1899,6 +1899,16 @@ impl ContainerPlan {
         if self.grid.is_some() {
             return true;
         }
+        // A container reads its containing block for percentage padding and
+        // margins, which resolve against its inline size, and for
+        // percentage relative offsets. A content-sized ancestor growing
+        // along the block axis changes neither: the plan still holds.
+        let inline = |size: Size| self.writing.inline_size(size.width, size.height).to_bits();
+        if inline(self.containing) == inline(containing)
+            && !reads_containing_block_size(&self.style)
+        {
+            return true;
+        }
         if !flex_line_local_style(self.style.as_ref()) || self.main_reversed || self.cross_reversed
         {
             return false;
@@ -1999,6 +2009,22 @@ fn same_but_cross(
         FlexDirection::Column => aligned.width = cached.width,
     }
     layout_inputs_equal(&aligned, cached)
+}
+
+/// Whether `style` resolves anything against its containing block's block
+/// size: a percentage offset (relative positioning) or a percentage size.
+fn reads_containing_block_size(style: &nana_ui_core::LayoutStyle) -> bool {
+    let percent = |spec: Option<LengthSpec>| matches!(spec, Some(LengthSpec::Percent(_)));
+    percent(style.offset_top)
+        || percent(style.offset_bottom)
+        || percent(style.offset_left)
+        || percent(style.offset_right)
+        || percent(style.width)
+        || percent(style.height)
+        || percent(style.min_width)
+        || percent(style.min_height)
+        || percent(style.max_width)
+        || percent(style.max_height)
 }
 
 fn layout_inputs_equal(a: &nana_ui_core::LayoutStyle, b: &nana_ui_core::LayoutStyle) -> bool {
