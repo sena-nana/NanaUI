@@ -27,7 +27,9 @@ pub struct Chip {
     pub selected: bool,
     pub disabled: bool,
     pub dismissible: bool,
-    pub close_label: Arc<str>,
+    /// The remove control's accessible name; `None` says the framework's
+    /// (`chip.remove`).
+    pub close_label: Option<Arc<str>>,
     pub size: ControlSize,
     pub style: NodeStyle,
     pub(crate) close: Option<StableNodeId>,
@@ -40,7 +42,7 @@ impl Chip {
             selected: false,
             disabled: false,
             dismissible: false,
-            close_label: Arc::from("移除"),
+            close_label: None,
             size: ControlSize::Small,
             style: NodeStyle::default(),
             close: None,
@@ -63,7 +65,7 @@ impl Chip {
     }
 
     pub fn close_label(mut self, close_label: impl Into<Arc<str>>) -> Self {
-        self.close_label = close_label.into();
+        self.close_label = Some(close_label.into());
         self
     }
 
@@ -204,12 +206,16 @@ impl AppContext {
             return Ok(false);
         }
 
+        let close_label = snapshot
+            .close_label
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&self.world().framework_strings().chip_remove));
         let created = snapshot.close.is_none();
         let close = match snapshot.close.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<IconButton>::from_stable_id(id),
             None => self.create_detached_component(
                 document,
-                IconButton::new(Icon::Close, snapshot.close_label.as_ref())
+                IconButton::new(Icon::Close, Arc::clone(&close_label))
                     .size(ControlSize::Small)
                     .kind(ButtonKind::Text)
                     .disabled(snapshot.disabled),
@@ -224,7 +230,7 @@ impl AppContext {
         }
         self.update_component(close, |button, _| {
             button.disabled = snapshot.disabled;
-            button.label = Arc::clone(&snapshot.close_label);
+            button.label = close_label;
             Arc::make_mut(&mut button.style.layout).hidden = false;
         })?;
         self.update_component(chip, |chip, _| {

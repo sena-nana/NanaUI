@@ -261,9 +261,12 @@ pub struct CalendarHeatmapOptions<T> {
     pub label_width: f32,
     pub month_label_height: f32,
     pub week_starts_on: u8,
-    pub weekday_labels: Vec<(u8, String)>,
+    /// `(weekday, label)`; `None` labels Monday, Wednesday and Friday with
+    /// the framework's (`calendar.monday` …).
+    pub weekday_labels: Option<Vec<(u8, String)>>,
     pub level_strategy: CalendarLevelStrategy<T>,
-    pub month_formatter: CalendarMonthFormatter,
+    /// `None` says the framework's month (`calendar.month`).
+    pub month_formatter: Option<CalendarMonthFormatter>,
     pub title_formatter: CalendarTitleFormatter<T>,
 }
 
@@ -278,7 +281,7 @@ impl<T> Clone for CalendarHeatmapOptions<T> {
             week_starts_on: self.week_starts_on,
             weekday_labels: self.weekday_labels.clone(),
             level_strategy: self.level_strategy.clone(),
-            month_formatter: Arc::clone(&self.month_formatter),
+            month_formatter: self.month_formatter.clone(),
             title_formatter: Arc::clone(&self.title_formatter),
         }
     }
@@ -310,7 +313,10 @@ impl<T> PartialEq for CalendarHeatmapOptions<T> {
             && self.week_starts_on == other.week_starts_on
             && self.weekday_labels == other.weekday_labels
             && self.level_strategy == other.level_strategy
-            && Arc::ptr_eq(&self.month_formatter, &other.month_formatter)
+            && match (&self.month_formatter, &other.month_formatter) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (a, b) => a.is_none() && b.is_none(),
+            }
             && Arc::ptr_eq(&self.title_formatter, &other.title_formatter)
     }
 }
@@ -324,13 +330,9 @@ impl<T> Default for CalendarHeatmapOptions<T> {
             label_width: CalendarHeatmap::<()>::LABEL_WIDTH,
             month_label_height: CalendarHeatmap::<()>::MONTH_LABEL_HEIGHT,
             week_starts_on: 1,
-            weekday_labels: vec![
-                (1, "周一".to_owned()),
-                (3, "周三".to_owned()),
-                (5, "周五".to_owned()),
-            ],
+            weekday_labels: None,
             level_strategy: CalendarLevelStrategy::default(),
-            month_formatter: Arc::new(|_year, month| format!("{month}月")),
+            month_formatter: None,
             title_formatter: Arc::new(|datum| format!("{}: {}", datum.date, datum.value)),
         }
     }
@@ -354,10 +356,12 @@ impl<T> CalendarHeatmapOptions<T> {
         mut self,
         labels: impl IntoIterator<Item = (u8, impl Into<String>)>,
     ) -> Self {
-        self.weekday_labels = labels
-            .into_iter()
-            .map(|(day, label)| (day % 7, label.into()))
-            .collect();
+        self.weekday_labels = Some(
+            labels
+                .into_iter()
+                .map(|(day, label)| (day % 7, label.into()))
+                .collect(),
+        );
         self
     }
 
@@ -370,7 +374,7 @@ impl<T> CalendarHeatmapOptions<T> {
         mut self,
         formatter: impl Fn(i32, u8) -> String + Send + Sync + 'static,
     ) -> Self {
-        self.month_formatter = Arc::new(formatter);
+        self.month_formatter = Some(Arc::new(formatter));
         self
     }
 
@@ -383,9 +387,20 @@ impl<T> CalendarHeatmapOptions<T> {
     }
 }
 
+/// [`build_calendar_heatmap_model_in`] with the default framework strings.
 pub fn build_calendar_heatmap_model<T: Clone>(
     data: &[CalendarHeatmapDatum<T>],
+    options: CalendarHeatmapOptions<T>,
+) -> CalendarHeatmapModel<T> {
+    build_calendar_heatmap_model_in(data, options, &nana_ui_core::FrameworkStrings::default())
+}
+
+/// The heatmap's cells and labels; labels the options leave unset say
+/// `strings`.
+pub fn build_calendar_heatmap_model_in<T: Clone>(
+    data: &[CalendarHeatmapDatum<T>],
     mut options: CalendarHeatmapOptions<T>,
+    strings: &nana_ui_core::FrameworkStrings,
 ) -> CalendarHeatmapModel<T> {
     options.cell_size = finite_positive(options.cell_size, CalendarHeatmap::<()>::CELL_SIZE);
     options.cell_gap = finite_non_negative(options.cell_gap, CalendarHeatmap::<()>::CELL_GAP);
@@ -405,7 +420,7 @@ pub fn build_calendar_heatmap_model<T: Clone>(
         .collect();
     dated.sort_by_key(|(day, _)| *day);
     let Some((first, _)) = dated.first() else {
-        return empty_model(&options);
+        return empty_model(&options, strings);
     };
     let last = dated.last().map_or(*first, |(day, _)| *day);
     let by_day: BTreeMap<_, _> = dated.iter().map(|(day, datum)| (*day, *datum)).collect();
@@ -457,8 +472,8 @@ pub fn build_calendar_heatmap_model<T: Clone>(
         + DAYS_PER_WEEK as f32 * options.cell_size
         + (DAYS_PER_WEEK - 1) as f32 * options.cell_gap
         + 2.0;
-    let month_labels = build_month_labels(&cells, *first, last, &options);
-    let day_labels = build_day_labels(&options);
+    let month_labels = build_month_labels(&cells, *first, last, &options, strings);
+    let day_labels = build_day_labels(&options, strings);
     CalendarHeatmapModel {
         cells,
         month_labels,
@@ -561,6 +576,11 @@ impl<T: Clone> CalendarHeatmap<T> {
         build_calendar_heatmap_model(&self.data, self.options.clone())
     }
 
+    /// [`Self::model`] with labels the options leave unset saying `strings`.
+    pub fn model_in(&self, strings: &nana_ui_core::FrameworkStrings) -> CalendarHeatmapModel<T> {
+        build_calendar_heatmap_model_in(&self.data, self.options.clone(), strings)
+    }
+
     pub fn cell_at(&self, x: f32, y: f32) -> Option<CalendarHeatmapActiveCell<T>> {
         self.model().cell_at(x, y)
     }
@@ -612,8 +632,11 @@ impl<T: Clone> CalendarHeatmap<T> {
             .collect()
     }
 
-    pub fn paint_month_labels(&self) -> Arc<[CalendarHeatmapLabelPaint]> {
-        self.model()
+    pub fn paint_month_labels(
+        &self,
+        strings: &nana_ui_core::FrameworkStrings,
+    ) -> Arc<[CalendarHeatmapLabelPaint]> {
+        self.model_in(strings)
             .month_labels
             .iter()
             .map(|label| CalendarHeatmapLabelPaint {
@@ -624,8 +647,11 @@ impl<T: Clone> CalendarHeatmap<T> {
             .collect()
     }
 
-    pub fn paint_day_labels(&self) -> Arc<[CalendarHeatmapLabelPaint]> {
-        self.model()
+    pub fn paint_day_labels(
+        &self,
+        strings: &nana_ui_core::FrameworkStrings,
+    ) -> Arc<[CalendarHeatmapLabelPaint]> {
+        self.model_in(strings)
             .day_labels
             .iter()
             .map(|label| CalendarHeatmapLabelPaint {
@@ -683,8 +709,8 @@ where
         let model = self.model();
         let visual = StandardVisual::CalendarHeatmap {
             cells: self.paint_cells(),
-            month_labels: self.paint_month_labels(),
-            day_labels: self.paint_day_labels(),
+            month_labels: self.paint_month_labels(world.framework_strings()),
+            day_labels: self.paint_day_labels(world.framework_strings()),
             cell_size: model.cell_size,
             cell_radius: model.cell_radius,
             max_level: self.max_level(),
@@ -782,11 +808,14 @@ impl crate::AppContext {
     }
 }
 
-fn empty_model<T>(options: &CalendarHeatmapOptions<T>) -> CalendarHeatmapModel<T> {
+fn empty_model<T>(
+    options: &CalendarHeatmapOptions<T>,
+    strings: &nana_ui_core::FrameworkStrings,
+) -> CalendarHeatmapModel<T> {
     CalendarHeatmapModel {
         cells: Vec::new(),
         month_labels: Vec::new(),
-        day_labels: build_day_labels(options),
+        day_labels: build_day_labels(options, strings),
         width: options.label_width + 2.0,
         height: options.month_label_height
             + DAYS_PER_WEEK as f32 * options.cell_size
@@ -800,9 +829,23 @@ fn empty_model<T>(options: &CalendarHeatmapOptions<T>) -> CalendarHeatmapModel<T
     }
 }
 
-fn build_day_labels<T>(options: &CalendarHeatmapOptions<T>) -> Vec<CalendarHeatmapDayLabel> {
-    options
-        .weekday_labels
+fn build_day_labels<T>(
+    options: &CalendarHeatmapOptions<T>,
+    strings: &nana_ui_core::FrameworkStrings,
+) -> Vec<CalendarHeatmapDayLabel> {
+    let framework;
+    let labels = match &options.weekday_labels {
+        Some(labels) => labels.as_slice(),
+        None => {
+            framework = [
+                (1, strings.calendar_monday.to_string()),
+                (3, strings.calendar_wednesday.to_string()),
+                (5, strings.calendar_friday.to_string()),
+            ];
+            &framework[..]
+        }
+    };
+    labels
         .iter()
         .map(|(day, label)| {
             let offset = (i32::from(*day) - i32::from(options.week_starts_on)).rem_euclid(7) as f32;
@@ -824,6 +867,7 @@ fn build_month_labels<T>(
     start: i64,
     end: i64,
     options: &CalendarHeatmapOptions<T>,
+    strings: &nana_ui_core::FrameworkStrings,
 ) -> Vec<CalendarHeatmapMonthLabel> {
     let mut labels = Vec::new();
     let mut last_month = None;
@@ -842,7 +886,13 @@ fn build_month_labels<T>(
             key: cells
                 .first()
                 .map_or_else(|| week.to_string(), |cell| cell.week_start.clone()),
-            label: (options.month_formatter)(year, month),
+            label: match &options.month_formatter {
+                Some(format) => format(year, month),
+                None => nana_ui_core::framework_strings::fill(
+                    &strings.calendar_month,
+                    &[("month", &month), ("year", &year)],
+                ),
+            },
             x: options.label_width
                 + week as f32 * (options.cell_size + options.cell_gap)
                 + options.cell_size / 2.0,
@@ -1210,8 +1260,8 @@ mod tests {
         let model = view.model();
         let expected = StandardVisual::CalendarHeatmap {
             cells: view.paint_cells(),
-            month_labels: view.paint_month_labels(),
-            day_labels: view.paint_day_labels(),
+            month_labels: view.paint_month_labels(&nana_ui_core::FrameworkStrings::default()),
+            day_labels: view.paint_day_labels(&nana_ui_core::FrameworkStrings::default()),
             cell_size: model.cell_size,
             cell_radius: model.cell_radius,
             max_level: view.max_level(),

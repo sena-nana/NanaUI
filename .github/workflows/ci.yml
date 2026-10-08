@@ -40,6 +40,8 @@ jobs:
         run: python3 scripts/check-engine-boundary.py
       - name: Check API convergence boundaries
         run: python3 scripts/check-api-convergence.py
+      - name: Check framework interface strings stay in the table
+        run: python3 scripts/audit-framework-strings.py
       - name: Check packaging dependency boundary
         run: python3 scripts/check-package-boundary.py
       - name: Self-test repository gate scripts

@@ -62,9 +62,13 @@ pub struct FindReplaceBar {
     pub read_only: bool,
     pub disabled: bool,
     pub feedback: Arc<str>,
-    pub query_placeholder: Arc<str>,
-    pub replacement_placeholder: Arc<str>,
-    pub label: Arc<str>,
+    /// `None` says the framework's (`find.query`).
+    pub query_placeholder: Option<Arc<str>>,
+    /// `None` says the framework's (`find.replacement`).
+    pub replacement_placeholder: Option<Arc<str>>,
+    /// The toolbar's accessible name; `None` says the framework's
+    /// (`find.title`).
+    pub label: Option<Arc<str>>,
     pub style: NodeStyle,
     retained: RetainedChildren,
 }
@@ -84,9 +88,9 @@ impl FindReplaceBar {
             read_only: false,
             disabled: false,
             feedback: Arc::from(""),
-            query_placeholder: Arc::from("查找"),
-            replacement_placeholder: Arc::from("替换为"),
-            label: Arc::from("查找替换"),
+            query_placeholder: None,
+            replacement_placeholder: None,
+            label: None,
             style,
             retained: RetainedChildren::default(),
         }
@@ -123,17 +127,17 @@ impl FindReplaceBar {
     }
 
     pub fn query_placeholder(mut self, placeholder: impl Into<Arc<str>>) -> Self {
-        self.query_placeholder = placeholder.into();
+        self.query_placeholder = Some(placeholder.into());
         self
     }
 
     pub fn replacement_placeholder(mut self, placeholder: impl Into<Arc<str>>) -> Self {
-        self.replacement_placeholder = placeholder.into();
+        self.replacement_placeholder = Some(placeholder.into());
         self
     }
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.label = label.into();
+        self.label = Some(label.into());
         self
     }
 
@@ -150,14 +154,14 @@ impl FindReplaceBar {
         self.retained.query_input
     }
 
-    fn toggle_label(&self) -> &'static str {
-        if self.expanded {
-            "收起查找"
+    fn toggle_label(&self, strings: &nana_ui_core::FrameworkStrings) -> Arc<str> {
+        Arc::clone(if self.expanded {
+            &strings.find_collapse
         } else if self.read_only {
-            "查找"
+            &strings.find_query
         } else {
-            "查找替换"
-        }
+            &strings.find_title
+        })
     }
 }
 
@@ -206,7 +210,11 @@ impl ComponentView for FindReplaceBar {
             },
             AccessibilityState {
                 role: AccessibilityRole::Toolbar,
-                label: Some(Arc::clone(&self.label)),
+                label: Some(
+                    self.label
+                        .clone()
+                        .unwrap_or_else(|| Arc::clone(&world.framework_strings().find_title)),
+                ),
                 disabled: self.disabled,
                 ..AccessibilityState::default()
             },
@@ -226,16 +234,16 @@ impl RegisterableComponent for FindReplaceBar {
             .disabled(spec.disabled)
             .expanded(spec.active);
         if !spec.placeholder.is_empty() {
-            bar.query_placeholder = Arc::from(spec.placeholder);
+            bar.query_placeholder = Some(Arc::from(spec.placeholder));
         }
         if !spec.label.is_empty() {
-            bar.label = Arc::from(spec.label);
+            bar.label = Some(Arc::from(spec.label));
         }
         if let Some(replacement) = spec.attr("replacement") {
             bar.replacement = replacement.to_owned();
         }
         if let Some(placeholder) = spec.attr("replacement-placeholder") {
-            bar.replacement_placeholder = Arc::from(placeholder);
+            bar.replacement_placeholder = Some(Arc::from(placeholder));
         }
         bar.style.layout = Arc::clone(spec.layout);
         bar
@@ -270,10 +278,27 @@ impl AppContext {
             .document;
         let snapshot = self.read(bar, Clone::clone)?;
         let created = snapshot.retained.toggle.is_none();
+        let strings = self.world().framework_strings();
+        let toggle_label = snapshot.toggle_label(strings);
+        let query_placeholder = snapshot
+            .query_placeholder
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&strings.find_query));
+        let replacement_placeholder = snapshot
+            .replacement_placeholder
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&strings.find_replacement));
+        let [previous_label, next_label, replace_label, replace_all_label] = [
+            &strings.find_previous,
+            &strings.find_next,
+            &strings.find_replace,
+            &strings.find_replace_all,
+        ]
+        .map(Arc::clone);
 
         let (toggle, toggle_created) =
             self.ensure_child(document, snapshot.retained.toggle, || {
-                Button::new(snapshot.toggle_label())
+                Button::new(toggle_label.as_ref())
                     .kind(ButtonKind::Text)
                     .size(ControlSize::Small)
                     .disabled(snapshot.disabled)
@@ -296,26 +321,26 @@ impl AppContext {
             })?;
         let (query, query_created) =
             self.ensure_child(document, snapshot.retained.query_input, || {
-                search_input(&snapshot.query, &snapshot.query_placeholder)
-                    .label(snapshot.query_placeholder.as_ref())
+                search_input(&snapshot.query, &query_placeholder)
+                    .label(Arc::clone(&query_placeholder))
             })?;
         let (replacement, replacement_created) =
             self.ensure_child(document, snapshot.retained.replacement_input, || {
-                search_input(&snapshot.replacement, &snapshot.replacement_placeholder)
-                    .label(snapshot.replacement_placeholder.as_ref())
+                search_input(&snapshot.replacement, &replacement_placeholder)
+                    .label(Arc::clone(&replacement_placeholder))
             })?;
         let (feedback, feedback_created) =
             self.ensure_child(document, snapshot.retained.feedback, || {
                 Text::new(snapshot.feedback.as_ref())
             })?;
         let (previous, previous_created) =
-            self.ensure_button(document, snapshot.retained.previous, "上一处")?;
+            self.ensure_button(document, snapshot.retained.previous, &previous_label)?;
         let (next, next_created) =
-            self.ensure_button(document, snapshot.retained.next, "下一处")?;
+            self.ensure_button(document, snapshot.retained.next, &next_label)?;
         let (replace, replace_created) =
-            self.ensure_button(document, snapshot.retained.replace, "替换")?;
+            self.ensure_button(document, snapshot.retained.replace, &replace_label)?;
         let (replace_all, replace_all_created) =
-            self.ensure_button(document, snapshot.retained.replace_all, "全部替换")?;
+            self.ensure_button(document, snapshot.retained.replace_all, &replace_all_label)?;
 
         if query_created {
             self.observe(query, bar, |bar, event: &TextChanged, cx| {
@@ -379,7 +404,7 @@ impl AppContext {
         }
 
         self.update_component(toggle, |button, _| {
-            *button = Button::new(snapshot.toggle_label())
+            *button = Button::new(toggle_label.as_ref())
                 .kind(ButtonKind::Text)
                 .size(ControlSize::Small)
                 .disabled(snapshot.disabled);
@@ -388,7 +413,7 @@ impl AppContext {
             if input.state.value.as_ref() != snapshot.query.as_str() {
                 input.state.replace_value(snapshot.query.clone());
             }
-            input.placeholder = Arc::clone(&snapshot.query_placeholder);
+            input.placeholder = Arc::clone(&query_placeholder);
             input.disabled = snapshot.disabled;
             input.read_only = false;
         })?;
@@ -396,22 +421,26 @@ impl AppContext {
             if input.state.value.as_ref() != snapshot.replacement.as_str() {
                 input.state.replace_value(snapshot.replacement.clone());
             }
-            input.placeholder = Arc::clone(&snapshot.replacement_placeholder);
+            input.placeholder = Arc::clone(&replacement_placeholder);
             input.disabled = snapshot.disabled || snapshot.read_only;
             input.read_only = snapshot.read_only;
         })?;
         for (button, label, disabled) in [
-            (previous, "上一处", snapshot.disabled),
-            (next, "下一处", snapshot.disabled),
-            (replace, "替换", snapshot.disabled || snapshot.read_only),
+            (previous, &previous_label, snapshot.disabled),
+            (next, &next_label, snapshot.disabled),
+            (
+                replace,
+                &replace_label,
+                snapshot.disabled || snapshot.read_only,
+            ),
             (
                 replace_all,
-                "全部替换",
+                &replace_all_label,
                 snapshot.disabled || snapshot.read_only,
             ),
         ] {
             self.update_component(button, |button, _| {
-                *button = Button::new(label)
+                *button = Button::new(label.as_ref())
                     .kind(ButtonKind::Subtle)
                     .size(ControlSize::Small)
                     .disabled(disabled);
@@ -524,7 +553,7 @@ mod tests {
         let bar = FindReplaceBar::new();
         assert!(!bar.expanded);
         assert!(!bar.read_only);
-        assert_eq!(bar.query_placeholder.as_ref(), "查找");
+        assert_eq!(bar.query_placeholder, None, "the framework's, until set");
     }
 
     #[test]

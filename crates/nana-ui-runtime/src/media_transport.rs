@@ -227,14 +227,18 @@ pub struct MediaTransportBar {
     /// The runtime drives the idle hide itself; see [`Self::auto_hide`].
     pub auto_hide: bool,
     pub icons: MediaTransportIcons,
-    pub play_label: Arc<str>,
-    pub pause_label: Arc<str>,
-    pub volume_label: Arc<str>,
-    pub mute_label: Arc<str>,
-    pub unmute_label: Arc<str>,
-    pub settings_label: Arc<str>,
-    pub fullscreen_label: Arc<str>,
-    pub fullscreen_exit_label: Arc<str>,
+    /// The controls' accessible names; `None` says the framework's
+    /// (`media.play`, `media.pause`, `media.volume`, `media.mute`,
+    /// `media.unmute`, `media.settings`, `media.fullscreen`,
+    /// `media.exit_fullscreen`).
+    pub play_label: Option<Arc<str>>,
+    pub pause_label: Option<Arc<str>>,
+    pub volume_label: Option<Arc<str>>,
+    pub mute_label: Option<Arc<str>>,
+    pub unmute_label: Option<Arc<str>>,
+    pub settings_label: Option<Arc<str>>,
+    pub fullscreen_label: Option<Arc<str>>,
+    pub fullscreen_exit_label: Option<Arc<str>>,
     pub style: NodeStyle,
     pub(crate) slots: MediaTransportSlots,
     pub(crate) content: MediaTransportContent,
@@ -245,7 +249,37 @@ pub struct MediaTransportBar {
     pub(crate) applied: Option<ChromeLayout>,
 }
 
+/// The bar's accessible names: its own, else the framework's.
+struct MediaLabels {
+    play: Arc<str>,
+    pause: Arc<str>,
+    volume: Arc<str>,
+    mute: Arc<str>,
+    unmute: Arc<str>,
+    settings: Arc<str>,
+    fullscreen: Arc<str>,
+    fullscreen_exit: Arc<str>,
+    progress: Arc<str>,
+}
+
 impl MediaTransportBar {
+    fn labels(&self, strings: &nana_ui_core::FrameworkStrings) -> MediaLabels {
+        let label = |own: &Option<Arc<str>>, framework: &Arc<str>| {
+            Arc::clone(own.as_ref().unwrap_or(framework))
+        };
+        MediaLabels {
+            play: label(&self.play_label, &strings.media_play),
+            pause: label(&self.pause_label, &strings.media_pause),
+            volume: label(&self.volume_label, &strings.media_volume),
+            mute: label(&self.mute_label, &strings.media_mute),
+            unmute: label(&self.unmute_label, &strings.media_unmute),
+            settings: label(&self.settings_label, &strings.media_settings),
+            fullscreen: label(&self.fullscreen_label, &strings.media_fullscreen),
+            fullscreen_exit: label(&self.fullscreen_exit_label, &strings.media_exit_fullscreen),
+            progress: Arc::clone(&strings.media_progress),
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             playing: false,
@@ -266,14 +300,14 @@ impl MediaTransportBar {
             show_fullscreen: None,
             auto_hide: false,
             icons: MediaTransportIcons::default(),
-            play_label: Arc::from("播放"),
-            pause_label: Arc::from("暂停"),
-            volume_label: Arc::from("音量"),
-            mute_label: Arc::from("静音"),
-            unmute_label: Arc::from("取消静音"),
-            settings_label: Arc::from("播放设置"),
-            fullscreen_label: Arc::from("全屏"),
-            fullscreen_exit_label: Arc::from("退出全屏"),
+            play_label: None,
+            pause_label: None,
+            volume_label: None,
+            mute_label: None,
+            unmute_label: None,
+            settings_label: None,
+            fullscreen_label: None,
+            fullscreen_exit_label: None,
             style: bar_style(),
             slots: MediaTransportSlots::default(),
             content: MediaTransportContent::default(),
@@ -635,7 +669,7 @@ impl ComponentView for MediaTransportBar {
             },
             AccessibilityState {
                 role: AccessibilityRole::Toolbar,
-                label: Some(Arc::from("播放控制")),
+                label: Some(Arc::clone(&world.framework_strings().media_controls)),
                 ..AccessibilityState::default()
             },
         );
@@ -734,6 +768,7 @@ impl AppContext {
         let created = self.read(bar, |bar| bar.slots.play.is_none())?;
         if created {
             let snapshot = self.read(bar, Clone::clone)?;
+            let labels = snapshot.labels(self.world().framework_strings());
             let chrome = self.create_detached_component(
                 document,
                 Stack::column(space::MD)
@@ -801,12 +836,12 @@ impl AppContext {
             self.append_child(row, left)?;
             let play = self.create_detached_component(
                 document,
-                chrome_icon(snapshot.icons.play, snapshot.play_label.as_ref()),
+                chrome_icon(snapshot.icons.play, labels.play.as_ref()),
             )?;
             self.append_child(left, play)?;
             let mute = self.create_detached_component(
                 document,
-                chrome_icon(snapshot.icons.volume, snapshot.mute_label.as_ref()),
+                chrome_icon(snapshot.icons.volume, labels.mute.as_ref()),
             )?;
             self.append_child(left, mute)?;
             let leading = self.create_detached_component(
@@ -839,7 +874,7 @@ impl AppContext {
                 .show_value(false)
                 .show_label(false)
                 .size(ControlSize::Small)
-                .label("进度");
+                .label(Arc::clone(&labels.progress));
             {
                 let layout = Arc::make_mut(&mut seek.style.layout);
                 layout.width = Some(LengthSpec::Fill);
@@ -893,7 +928,7 @@ impl AppContext {
             let volume_menu = self.create_detached_component(
                 document,
                 Popover::new()
-                    .trigger_icon(snapshot.icons.volume, snapshot.volume_label.as_ref())
+                    .trigger_icon(snapshot.icons.volume, labels.volume.as_ref())
                     .placement(PopoverPlacement::Top)
                     .width(VOLUME_POPOVER_WIDTH),
             )?;
@@ -901,7 +936,7 @@ impl AppContext {
             let volume = self.create_detached_component(
                 document,
                 RangeField::new(100.0, 0.0, 100.0, 1.0)
-                    .label("音量")
+                    .label(Arc::clone(&labels.volume))
                     .show_value(false)
                     .size(ControlSize::Small),
             )?;
@@ -917,16 +952,13 @@ impl AppContext {
             let settings = self.create_detached_component(
                 document,
                 ActionMenu::new()
-                    .trigger_icon(snapshot.icons.settings, snapshot.settings_label.as_ref())
+                    .trigger_icon(snapshot.icons.settings, labels.settings.as_ref())
                     .placement(PopoverPlacement::Top),
             )?;
             self.append_child(settings_group, settings)?;
             let fullscreen = self.create_detached_component(
                 document,
-                chrome_icon(
-                    snapshot.icons.fullscreen,
-                    snapshot.fullscreen_label.as_ref(),
-                ),
+                chrome_icon(snapshot.icons.fullscreen, labels.fullscreen.as_ref()),
             )?;
             self.append_child(right, fullscreen)?;
             let secondary_row = self.create_detached_component(
@@ -1065,6 +1097,7 @@ impl AppContext {
             // Playing or not, enabled or not: the policy follows the write.
             self.drive_auto_overlay(bar, crate::framework::OverlayActivity::None)?;
         }
+        let labels = snapshot.labels(self.world().framework_strings());
         let slots = &snapshot.slots;
         let chrome = snapshot.chrome_layout();
         if snapshot.applied != Some(chrome) {
@@ -1073,9 +1106,9 @@ impl AppContext {
         }
         if let Some(play) = slots.play {
             let (icon, label) = if snapshot.playing {
-                (snapshot.icons.pause, &snapshot.pause_label)
+                (snapshot.icons.pause, &labels.pause)
             } else {
-                (snapshot.icons.play, &snapshot.play_label)
+                (snapshot.icons.play, &labels.play)
             };
             sync_icon_button(self, play, icon, label, Some(snapshot.disabled))?;
         }
@@ -1189,11 +1222,11 @@ impl AppContext {
                 snapshot.icons.volume
             };
             if self.read(volume_menu, |menu| {
-                menu.trigger_icon != Some(icon) || menu.trigger != snapshot.volume_label
+                menu.trigger_icon != Some(icon) || menu.trigger != labels.volume
             })? {
                 self.update_component(volume_menu, |menu, _| {
                     menu.trigger_icon = Some(icon);
-                    menu.trigger = Arc::clone(&snapshot.volume_label);
+                    menu.trigger = Arc::clone(&labels.volume);
                 })?;
             }
         }
@@ -1205,20 +1238,17 @@ impl AppContext {
             };
             // The name says what a press does.
             let label = if snapshot.muted {
-                &snapshot.unmute_label
+                &labels.unmute
             } else {
-                &snapshot.mute_label
+                &labels.mute
             };
             sync_icon_button(self, mute, icon, label, Some(snapshot.disabled))?;
         }
         if let Some(fullscreen) = slots.fullscreen {
             let (icon, label) = if snapshot.fullscreen {
-                (
-                    snapshot.icons.fullscreen_exit,
-                    &snapshot.fullscreen_exit_label,
-                )
+                (snapshot.icons.fullscreen_exit, &labels.fullscreen_exit)
             } else {
-                (snapshot.icons.fullscreen, &snapshot.fullscreen_label)
+                (snapshot.icons.fullscreen, &labels.fullscreen)
             };
             sync_icon_button(self, fullscreen, icon, label, None)?;
         }

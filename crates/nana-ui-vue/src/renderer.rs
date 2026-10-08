@@ -1049,6 +1049,35 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
     }
     {
         let host = host.clone();
+        // `{ "window.close": "Close", ... }`: replaces those framework
+        // strings (see `nana_ui_core::FrameworkStrings::KEYS`) and re-says
+        // the controls already built. Answers the keys it did not know.
+        api.register("setFrameworkStrings", move |args| {
+            let Some(HostValue::Object(entries)) = args.first() else {
+                return Err(nana_js_engine::JsException::new(
+                    "setFrameworkStrings takes an object of key to string",
+                ));
+            };
+            let mut doc = lock_doc(&host.document)?;
+            let mut strings = doc.context().world().framework_strings().clone();
+            let mut unknown = Vec::new();
+            for (key, value) in entries {
+                let applied = match value {
+                    HostValue::String(value) => strings.set(key, value.as_str()),
+                    _ => false,
+                };
+                if !applied {
+                    unknown.push(HostValue::string(key.clone()));
+                }
+            }
+            doc.context_mut()
+                .set_framework_strings(strings)
+                .map_err(|error| nana_js_engine::JsException::new(error.to_string()))?;
+            Ok(HostValue::Array(unknown))
+        });
+    }
+    {
+        let host = host.clone();
         api.register("getDocumentTheme", move |_args| {
             let bridge = lock_bridge(&host.bridge)?;
             Ok(HostValue::string(bridge.theme_label()))

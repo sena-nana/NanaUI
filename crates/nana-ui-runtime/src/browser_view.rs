@@ -58,7 +58,7 @@ impl ComponentView for BrowserView {
             },
             AccessibilityState {
                 role: AccessibilityRole::Document,
-                label: Some(Arc::from("网页")),
+                label: Some(Arc::clone(&world.framework_strings().browser_view_label)),
                 ..Default::default()
             },
         );

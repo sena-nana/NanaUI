@@ -675,6 +675,8 @@ pub struct UiWorld {
     /// `WriteLayout` does not bump it, so a full pass can reuse a previous
     /// viewport's boxes while the document content stays the same.
     layout_source_epoch: u64,
+    /// What the framework's own controls say; see [`Self::framework_strings`].
+    framework_strings: Arc<nana_ui_core::FrameworkStrings>,
     /// Canonical render/input-facing geometry. `NodeRecord::layout` remains a
     /// compatibility cache for old internal paths; all public geometry reads
     /// go through this table when a result has been published.
@@ -878,6 +880,7 @@ impl UiWorld {
             generation: 0,
             layout_generation: 0,
             layout_source_epoch: 1,
+            framework_strings: Arc::default(),
             layout_results: crate::NodeMap::default(),
             layout_results_suppressed: HashSet::new(),
             cursor_style_dirty: false,
@@ -1098,6 +1101,17 @@ impl UiWorld {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// What the framework's own controls say: the title bar's buttons, a
+    /// dialog's confirm and cancel, the built-in settings page. Controls
+    /// read it when they are projected or assembled.
+    pub fn framework_strings(&self) -> &nana_ui_core::FrameworkStrings {
+        &self.framework_strings
+    }
+
+    pub(crate) fn set_framework_strings(&mut self, strings: Arc<nana_ui_core::FrameworkStrings>) {
+        self.framework_strings = strings;
     }
 
     pub(crate) fn layout_source_epoch(&self) -> u64 {

@@ -99,6 +99,12 @@ impl AppContext {
 }
 
 impl AssemblyScope<'_> {
+    /// What the framework's own controls say, for a composite assembling
+    /// one of them.
+    pub fn framework_strings(&self) -> &nana_ui_core::FrameworkStrings {
+        self.context.world().framework_strings()
+    }
+
     pub fn child<C: ComponentView>(
         &mut self,
         key: impl Into<String>,

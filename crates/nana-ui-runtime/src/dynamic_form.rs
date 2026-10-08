@@ -624,7 +624,7 @@ fn mount_dynamic_field(
                         .disabled(option.disabled)
                 }))
                 .disabled(*disabled)
-                .placeholder("自动选择");
+                .placeholder(Arc::clone(&scope.framework_strings().dynamic_form_auto));
             mount_settings_control(scope, id, label, hint, None, dropdown, FormControl::Choice)
         }
         DynamicFormField::Field {

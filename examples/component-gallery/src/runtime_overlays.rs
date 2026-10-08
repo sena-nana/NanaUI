@@ -300,7 +300,7 @@ impl GalleryOverlaysRuntime {
                     let selected = state.action_picker.selected();
                     let _ = context.update_component(palette, |palette, _| {
                         palette.title = Arc::from(PALETTE_TITLE);
-                        palette.placeholder = Arc::from(PALETTE_PLACEHOLDER);
+                        palette.placeholder = Some(Arc::from(PALETTE_PLACEHOLDER));
                         palette.items = items;
                         let _ = palette.set_query(query);
                         palette.selected = selected;

@@ -80,13 +80,6 @@ impl ModalSlots {
     }
 }
 
-/// Default confirming-action label. Localize with
-/// [`ConfirmDialog::confirm_label`].
-const DEFAULT_CONFIRM_LABEL: &str = "确认";
-/// Default dismissing-action label. Localize with
-/// [`ConfirmDialog::cancel_label`].
-const DEFAULT_CANCEL_LABEL: &str = "取消";
-
 pub trait ModalSurface: ComponentView {
     fn slots(&self) -> &ModalSlots;
     fn slots_mut(&mut self) -> &mut ModalSlots;
@@ -97,11 +90,13 @@ pub struct ConfirmDialog {
     pub title: Arc<str>,
     pub message: Arc<str>,
     /// Label of the confirming action built by
-    /// [`AppContext::assemble_confirm_dialog`].
-    pub confirm_label: Arc<str>,
+    /// [`AppContext::assemble_confirm_dialog`]; `None` says the framework's
+    /// (`dialog.confirm`).
+    pub confirm_label: Option<Arc<str>>,
     /// Label of the dismissing action built by
-    /// [`AppContext::assemble_confirm_dialog`].
-    pub cancel_label: Arc<str>,
+    /// [`AppContext::assemble_confirm_dialog`]; `None` says the framework's
+    /// (`dialog.cancel`).
+    pub cancel_label: Option<Arc<str>>,
     pub size: DialogSize,
     pub danger: bool,
     pub busy: bool,
@@ -140,13 +135,13 @@ impl ConfirmDialog {
 
     /// Label of the confirming action. Applications localize it here.
     pub fn confirm_label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.confirm_label = label.into();
+        self.confirm_label = Some(label.into());
         self
     }
 
     /// Label of the dismissing action. Applications localize it here.
     pub fn cancel_label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.cancel_label = label.into();
+        self.cancel_label = Some(label.into());
         self
     }
 
@@ -154,8 +149,8 @@ impl ConfirmDialog {
         Self {
             title: title.into(),
             message: message.into(),
-            confirm_label: Arc::from(DEFAULT_CONFIRM_LABEL),
-            cancel_label: Arc::from(DEFAULT_CANCEL_LABEL),
+            confirm_label: None,
+            cancel_label: None,
             size: DialogSize::Default,
             danger: false,
             busy: false,

@@ -526,7 +526,7 @@ impl RegisterableComponent for Chip {
         let mut chip = Self::from_semantic(spec);
         if let Some(previous) = previous {
             chip.close = previous.close;
-            chip.close_label = Arc::clone(&previous.close_label);
+            chip.close_label = previous.close_label.clone();
         }
         chip
     }

@@ -3138,3 +3138,27 @@ fn enter_in_a_page_textarea_breaks_the_line() {
         Some("insertLineBreak")
     );
 }
+
+/// A page replaces framework strings by key; keys the table does not have
+/// come back to it.
+#[test]
+fn a_page_replaces_framework_strings_by_key() {
+    let host = VueHost::new();
+    let api = host.host_api_registry();
+    let mut entries = std::collections::BTreeMap::new();
+    entries.insert("window.close".to_owned(), HostValue::string("Close"));
+    entries.insert("window.nothing".to_owned(), HostValue::string("?"));
+    let unknown = api
+        .call("setFrameworkStrings", &[HostValue::Object(entries)])
+        .expect("setFrameworkStrings");
+    assert_eq!(
+        unknown,
+        HostValue::Array(vec![HostValue::string("window.nothing")])
+    );
+    let document = host.document();
+    let document = document.lock().expect("document");
+    assert_eq!(
+        &*document.context().world().framework_strings().window_close,
+        "Close"
+    );
+}

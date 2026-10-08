@@ -237,16 +237,22 @@ impl AppContext {
             )?;
             let previous = self.create_detached_component(
                 document,
-                IconButton::new(Icon::ArrowLeft, "上一月")
-                    .kind(ButtonKind::Text)
-                    .size(snapshot.size),
+                IconButton::new(
+                    Icon::ArrowLeft,
+                    Arc::clone(&self.world().framework_strings().date_picker_previous_month),
+                )
+                .kind(ButtonKind::Text)
+                .size(snapshot.size),
             )?;
             let heading = self.create_detached_component(document, Text::new(""))?;
             let next = self.create_detached_component(
                 document,
-                IconButton::new(Icon::ArrowRight, "下一月")
-                    .kind(ButtonKind::Text)
-                    .size(snapshot.size),
+                IconButton::new(
+                    Icon::ArrowRight,
+                    Arc::clone(&self.world().framework_strings().date_picker_next_month),
+                )
+                .kind(ButtonKind::Text)
+                .size(snapshot.size),
             )?;
             self.append_child(header, previous)?;
             self.append_child(header, heading)?;

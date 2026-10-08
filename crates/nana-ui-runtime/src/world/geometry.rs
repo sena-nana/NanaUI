@@ -2356,6 +2356,7 @@ impl UiWorld {
                 *highlighted,
                 &self.style_model.palette,
                 self.style_model.metrics,
+                &self.framework_strings().menu_search,
             )),
             StandardVisual::MenuSurface {
                 trigger,

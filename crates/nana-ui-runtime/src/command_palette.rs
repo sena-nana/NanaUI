@@ -49,8 +49,10 @@ pub struct PaletteRowGeometry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandPalette {
     pub title: Arc<str>,
-    pub placeholder: Arc<str>,
-    pub empty_label: Arc<str>,
+    /// `None` says the framework's (`command_palette.placeholder`).
+    pub placeholder: Option<Arc<str>>,
+    /// `None` says the framework's (`command_palette.empty`).
+    pub empty_label: Option<Arc<str>>,
     pub items: Vec<CommandPaletteItem>,
     /// Items have already been filtered and ranked by the host.
     pub filtered_items: bool,
@@ -75,8 +77,8 @@ impl CommandPalette {
         let items = items.into_iter().collect::<Vec<_>>();
         Self {
             title: title.into(),
-            placeholder: Arc::from("搜索操作"),
-            empty_label: Arc::from("没有可用操作"),
+            placeholder: None,
+            empty_label: None,
             items,
             filtered_items: false,
             selected: 0,
@@ -86,12 +88,12 @@ impl CommandPalette {
     }
 
     pub fn placeholder(mut self, placeholder: impl Into<Arc<str>>) -> Self {
-        self.placeholder = placeholder.into();
+        self.placeholder = Some(placeholder.into());
         self
     }
 
     pub fn empty_label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.empty_label = label.into();
+        self.empty_label = Some(label.into());
         self
     }
 
@@ -237,11 +239,19 @@ impl ComponentView for CommandPalette {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let rows = self.windowed_rows();
-        let empty = rows.is_empty().then(|| Arc::clone(&self.empty_label));
+        let strings = world.framework_strings();
+        let empty = rows.is_empty().then(|| {
+            self.empty_label
+                .clone()
+                .unwrap_or_else(|| Arc::clone(&strings.command_palette_empty))
+        });
         let visual = StandardVisual::CommandPalette {
             title: Arc::clone(&self.title),
             query: Arc::from(self.query_text()),
-            placeholder: Arc::clone(&self.placeholder),
+            placeholder: self
+                .placeholder
+                .clone()
+                .unwrap_or_else(|| Arc::clone(&strings.command_palette_placeholder)),
             empty,
             rows: rows.into(),
         };

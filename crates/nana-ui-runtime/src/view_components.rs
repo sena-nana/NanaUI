@@ -4010,7 +4010,6 @@ impl ComponentView for Switch {
             AccessibilityState {
                 role: AccessibilityRole::Switch,
                 label: Some(Arc::from(self.label.as_str())),
-                role_description: AccessibilityRole::Switch.role_description().map(Arc::from),
                 disabled: self.disabled,
                 checked: Some(self.checked),
                 busy: self.loading,

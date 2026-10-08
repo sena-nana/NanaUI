@@ -42,7 +42,9 @@ pub struct FileTab {
     pub dirty: bool,
     pub selected: bool,
     pub close_disabled: bool,
-    pub close_label: Arc<str>,
+    /// The close control's accessible name; `None` says the framework's
+    /// (`file_tab.close`).
+    pub close_label: Option<Arc<str>>,
     pub max_width: f32,
     pub style: NodeStyle,
     pub(crate) leading: Option<StableNodeId>,
@@ -60,7 +62,7 @@ impl FileTab {
             dirty: false,
             selected: false,
             close_disabled: false,
-            close_label: Arc::from("关闭文件"),
+            close_label: None,
             max_width: FILE_TAB_MAX_WIDTH,
             style: ListItem::new(String::new()).style,
             leading: None,
@@ -92,7 +94,7 @@ impl FileTab {
     }
 
     pub fn close_label(mut self, close_label: impl Into<Arc<str>>) -> Self {
-        self.close_label = close_label.into();
+        self.close_label = Some(close_label.into());
         self
     }
 
@@ -174,11 +176,15 @@ impl AppContext {
             Some(id) => Entity::<Text>::from_stable_id(id),
             None => self.create_detached_component(document, unsaved_dot())?,
         };
+        let close_label = snapshot
+            .close_label
+            .clone()
+            .unwrap_or_else(|| Arc::clone(&self.world().framework_strings().file_tab_close));
         let close = match snapshot.close.filter(|id| self.world().contains(*id)) {
             Some(id) => Entity::<IconButton>::from_stable_id(id),
             None => self.create_detached_component(
                 document,
-                IconButton::new(Icon::Close, snapshot.close_label.as_ref())
+                IconButton::new(Icon::Close, Arc::clone(&close_label))
                     .size(ControlSize::Small)
                     .kind(ButtonKind::Text),
             )?,
@@ -214,7 +220,7 @@ impl AppContext {
         })?;
         self.update_component(close, |button, _| {
             button.disabled = snapshot.close_disabled;
-            button.label = Arc::clone(&snapshot.close_label);
+            button.label = close_label;
         })?;
         self.update_component(tab, |tab, _| {
             tab.leading = Some(leading.stable_id());

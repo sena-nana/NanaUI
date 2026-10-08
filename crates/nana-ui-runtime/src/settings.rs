@@ -781,8 +781,6 @@ impl ComponentView for SettingsDisclosure {
     }
 }
 
-const DEFAULT_PLATFORM_HINT: &str = "可选择实色或透明背景；设备支持时，也可使用系统模糊效果。";
-
 /// Host-owned appearance snapshot. Events stay [`AppearanceEvent`]; values stay outside NanaUI.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppearanceSection {
@@ -1743,8 +1741,10 @@ fn ensure_material_options(
         let entity = if let Some(id) = *slot {
             Entity::from_stable_id(id)
         } else {
-            let entity =
-                context.create_detached_component(document, SegmentedOption::new(mode.label()))?;
+            let entity = {
+                let label = mode.label(context.world().framework_strings()).to_owned();
+                context.create_detached_component(document, SegmentedOption::new(label))?
+            };
             *slot = Some(entity.stable_id());
             entity
         };
@@ -1784,8 +1784,14 @@ fn ensure_theme_options(
         {
             Entity::from_stable_id(id)
         } else {
-            context
-                .create_detached_component(document, SegmentedOption::new(choice.label.as_ref()))?
+            // The built-in themes are named in the framework's words.
+            let strings = context.world().framework_strings();
+            let label = match choice.id.as_str() {
+                "nana.light" => Arc::clone(&strings.theme_light),
+                "nana.dark" => Arc::clone(&strings.theme_dark),
+                _ => Arc::clone(&choice.label),
+            };
+            context.create_detached_component(document, SegmentedOption::new(label))?
         };
         assembly.theme_options.push(entity.stable_id());
         options.push(entity);
@@ -1971,6 +1977,7 @@ impl AppContext {
         section: Entity<AppearanceSection>,
     ) -> Result<bool, FrameworkError> {
         let document = document_of(self, section.stable_id())?;
+        let strings = self.world().framework_strings().clone();
         let snapshot = self.read(section, |section| {
             (
                 section.theme_id.clone(),
@@ -2011,8 +2018,8 @@ impl AppContext {
                 &mut assembly.theme_control,
                 &mut assembly.theme_dark,
                 &mut assembly.theme_light,
-                SegmentedOption::new("暗色").icon(Icon::Moon),
-                SegmentedOption::new("浅色").icon(Icon::Appearance),
+                SegmentedOption::new(strings.settings_theme_dark.as_ref()).icon(Icon::Moon),
+                SegmentedOption::new(strings.settings_theme_light.as_ref()).icon(Icon::Appearance),
                 theme_id.as_str() == "nana.dark",
                 false,
                 false,
@@ -2043,8 +2050,8 @@ impl AppContext {
             self,
             document,
             &mut assembly.theme_row,
-            "主题",
-            Some("选择应用配色，立即生效"),
+            strings.settings_theme.as_ref(),
+            Some(strings.settings_theme_hint.as_ref()),
             true,
             true,
             false,
@@ -2060,12 +2067,14 @@ impl AppContext {
             &offered_materials,
             appearance.window_material(),
         )?;
-        let material_hint = platform_hint.as_deref().unwrap_or(DEFAULT_PLATFORM_HINT);
+        let material_hint = platform_hint
+            .as_deref()
+            .unwrap_or(strings.settings_material_hint.as_ref());
         let material_row = mount_settings_row(
             self,
             document,
             &mut assembly.material_row,
-            "窗口材质",
+            strings.settings_material.as_ref(),
             Some(material_hint),
             true,
             false,
@@ -2089,8 +2098,8 @@ impl AppContext {
                 self,
                 document,
                 &mut assembly.material_status_row,
-                "材质状态",
-                Some("显示窗口当前使用的外观效果。"),
+                strings.settings_material_state.as_ref(),
+                Some(strings.settings_material_state_hint.as_ref()),
                 true,
                 false,
                 false,
@@ -2106,8 +2115,8 @@ impl AppContext {
             &mut assembly.target_control,
             &mut assembly.target_sidebar,
             &mut assembly.target_main,
-            SegmentedOption::new("侧边栏").disabled(solid_mode),
-            SegmentedOption::new("主内容区").disabled(solid_mode),
+            SegmentedOption::new(strings.material_region_sidebar.as_ref()).disabled(solid_mode),
+            SegmentedOption::new(strings.material_region_main.as_ref()).disabled(solid_mode),
             matches!(appearance.backdrop_target(), BackdropTarget::Sidebar),
             solid_mode,
             solid_mode,
@@ -2116,15 +2125,15 @@ impl AppContext {
         assembly.target_sidebar = Some(target_sidebar.stable_id());
         assembly.target_main = Some(target_main.stable_id());
         let target_hint = if solid_mode {
-            "实色模式不显示透明区域；切回透明材质后会恢复当前选择。"
+            strings.settings_region_solid_hint.as_ref()
         } else {
-            "选择侧边栏或主内容区显示透明材质。"
+            strings.settings_region_hint.as_ref()
         };
         let target_row = mount_settings_row(
             self,
             document,
             &mut assembly.target_row,
-            "透明区域",
+            strings.settings_region.as_ref(),
             Some(target_hint),
             true,
             false,
@@ -2141,15 +2150,15 @@ impl AppContext {
             titlebar_follow_disabled,
         )?;
         let titlebar_hint = if titlebar_follow_disabled {
-            "仅在侧边栏使用透明材质时生效；当前选择会保留。"
+            strings.settings_title_bar_follows_main_hint.as_ref()
         } else {
-            "侧边栏透明时，整个标题栏同步显示透明材质。"
+            strings.settings_title_bar_follows_hint.as_ref()
         };
         let titlebar_row = mount_settings_row(
             self,
             document,
             &mut assembly.titlebar_row,
-            "标题栏跟随侧边栏透明",
+            strings.settings_title_bar_follows.as_ref(),
             Some(titlebar_hint),
             true,
             false,
@@ -2185,15 +2194,15 @@ impl AppContext {
             .stable_id()
         };
         let opacity_hint = if solid_mode {
-            "实色模式不使用透明度；切回透明材质后会恢复当前数值。"
+            strings.settings_opacity_solid_hint.as_ref()
         } else {
-            "调节透明区域材质的前景色覆盖程度。"
+            strings.settings_opacity_hint.as_ref()
         };
         let opacity_row = mount_settings_row(
             self,
             document,
             &mut assembly.opacity_row,
-            "材质不透明度",
+            strings.settings_opacity.as_ref(),
             Some(opacity_hint),
             true,
             false,
@@ -2205,7 +2214,7 @@ impl AppContext {
             self,
             document,
             &mut assembly.workspace_switch,
-            "主区域圆角",
+            strings.settings_main_radius.as_ref(),
             appearance.workspace_corners_enabled(),
             false,
         )?;
@@ -2213,7 +2222,7 @@ impl AppContext {
             self,
             document,
             &mut assembly.workspace_row,
-            "工作区边缘",
+            strings.settings_workspace_corners.as_ref(),
             None,
             true,
             false,
@@ -2234,7 +2243,7 @@ impl AppContext {
             self,
             document,
             &mut assembly.radius_row,
-            "组件圆角半径",
+            strings.settings_radius.as_ref(),
             None,
             true,
             false,
@@ -2247,7 +2256,7 @@ impl AppContext {
         } else {
             let entity = self.create_detached_component(
                 document,
-                Button::new("恢复默认")
+                Button::new(strings.settings_restore.as_ref())
                     .kind(ButtonKind::Subtle)
                     .size(ControlSize::Small),
             )?;
@@ -2258,8 +2267,8 @@ impl AppContext {
             self,
             document,
             &mut assembly.reset_row,
-            "默认样式",
-            Some("恢复主题、材质与圆角默认值。"),
+            strings.settings_defaults.as_ref(),
+            Some(strings.settings_defaults_hint.as_ref()),
             false,
             false,
             true,
@@ -2406,6 +2415,7 @@ impl AppContext {
         section: Entity<AboutSection>,
     ) -> Result<bool, FrameworkError> {
         let document = document_of(self, section.stable_id())?;
+        let strings = self.world().framework_strings().clone();
         let (metadata, mut assembly) = self.read(section, |section| {
             (
                 section.metadata.clone(),
@@ -2427,7 +2437,7 @@ impl AppContext {
             self,
             document,
             &mut assembly.name_row,
-            "名称",
+            strings.settings_name.as_ref(),
             None,
             true,
             true,
@@ -2449,7 +2459,7 @@ impl AppContext {
             self,
             document,
             &mut assembly.version_row,
-            "版本",
+            strings.settings_version.as_ref(),
             None,
             false,
             false,
@@ -2563,6 +2573,7 @@ impl AppContext {
         sidebar: Entity<SettingsSidebar>,
     ) -> Result<bool, FrameworkError> {
         let document = document_of(self, sidebar.stable_id())?;
+        let strings = self.world().framework_strings().clone();
         let (model, state, mut assembly) = self.read(sidebar, |sidebar| {
             (
                 sidebar.model.clone(),
@@ -2579,7 +2590,7 @@ impl AppContext {
             self,
             document,
             &mut back_row,
-            "返回",
+            strings.settings_back.as_ref(),
             SidebarRowState::Idle,
             back_leading.stable_id(),
         )?;

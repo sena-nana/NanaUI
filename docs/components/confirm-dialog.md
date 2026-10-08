@@ -38,7 +38,7 @@ widget(
 
 ## 按钮文案
 
-`.confirm_label` 和 `.cancel_label` 换成你的话。
+`.confirm_label` 和 `.cancel_label` 换成你的话。不设时用框架文案表里的 `dialog.confirm` / `dialog.cancel`，见[框架文案](../reference/framework-strings.md)。
 
 ## 危险
 

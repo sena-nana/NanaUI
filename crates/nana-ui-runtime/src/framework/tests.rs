@@ -1620,7 +1620,8 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
     assert!(accessibility[0].invalid);
     assert_eq!(accessibility[1].role, crate::AccessibilityRole::Switch);
     assert_eq!(accessibility[1].checked, Some(false));
-    assert_eq!(accessibility[1].role_description.as_deref(), Some("开关"));
+    // The platform names a switch in the user's language; nothing overrides it.
+    assert_eq!(accessibility[1].role_description, None);
     assert_eq!(accessibility[2].role, crate::AccessibilityRole::Slider);
     assert_eq!(accessibility[2].value.as_deref(), Some("100"));
 

@@ -59,13 +59,14 @@ impl WindowChromeAction {
         }
     }
 
-    pub fn label(self, maximized: bool) -> &'static str {
-        match self {
-            Self::Minimize => "最小化",
-            Self::ToggleMaximize if maximized => "还原",
-            Self::ToggleMaximize => "最大化",
-            Self::Close => "关闭",
-        }
+    /// What a screen reader calls the button, from the framework strings.
+    pub fn label(self, strings: &nana_ui_core::FrameworkStrings, maximized: bool) -> Arc<str> {
+        Arc::clone(match self {
+            Self::Minimize => &strings.window_minimize,
+            Self::ToggleMaximize if maximized => &strings.window_restore,
+            Self::ToggleMaximize => &strings.window_maximize,
+            Self::Close => &strings.window_close,
+        })
     }
 }
 
@@ -1678,11 +1679,11 @@ fn window_control_buttons(
     maximized: bool,
 ) -> Result<[StableNodeId; 3], FrameworkError> {
     let mut button = |action: WindowChromeAction| {
+        let label = action.label(context.world().framework_strings(), maximized);
         context
             .create_detached_component(
                 document,
-                IconButton::new(action.icon(maximized), action.label(maximized))
-                    .size(ControlSize::Small),
+                IconButton::new(action.icon(maximized), label).size(ControlSize::Small),
             )
             .map(|entity| entity.stable_id())
     };
@@ -1764,6 +1765,23 @@ fn ensure_window_controls(
                     controls.over_media = over_media;
                 },
             )?;
+            // The buttons keep the words they were made with; say the
+            // framework's current ones (a consumer may have replaced them).
+            let children = context
+                .world()
+                .node(controls)
+                .map(|node| node.children.clone())
+                .unwrap_or_default();
+            for (action, child) in WindowChromeAction::ALL.into_iter().zip(children.iter()) {
+                if !view_is::<IconButton>(context, *child) {
+                    continue;
+                }
+                let label = action.label(context.world().framework_strings(), maximized);
+                let button = Entity::<IconButton>::from_stable_id(*child);
+                if context.read(button, |button| button.label != label)? {
+                    context.update_component(button, |button, _| button.label = label)?;
+                }
+            }
         }
         return Ok(controls);
     }
@@ -2144,7 +2162,7 @@ fn project_window_control(
         },
         AccessibilityState {
             role: AccessibilityRole::Button,
-            label: Some(Arc::from(action.label(maximized))),
+            label: Some(action.label(world.framework_strings(), maximized)),
             ..AccessibilityState::default()
         },
     );
@@ -2719,6 +2737,42 @@ mod tests {
         for id in &buttons {
             assert_eq!(context.world().text(*id).unwrap_or(""), "");
         }
+    }
+
+    /// A consumer's strings reach caption buttons already built: replacing
+    /// the table re-says them, in either window state.
+    #[test]
+    fn caption_buttons_say_the_strings_a_consumer_installs() {
+        let mut context = AppContext::new();
+        let bar = context
+            .create_component(document(), AppTitleBar::new("Nana").native_controls(false))
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        let controls = context.read(bar, |bar| bar.controls).unwrap().unwrap();
+        let buttons = context.world().node(controls).unwrap().children.clone();
+        let mut english = nana_ui_core::FrameworkStrings::default();
+        for (key, value) in [
+            ("window.minimize", "Minimize"),
+            ("window.maximize", "Maximize"),
+            ("window.restore", "Restore"),
+            ("window.close", "Close"),
+        ] {
+            assert!(english.set(key, value));
+        }
+        context.set_framework_strings(english).unwrap();
+        let spoken = |context: &AppContext, id| {
+            context
+                .world()
+                .accessibility(id)
+                .and_then(|state| state.label.as_deref().map(str::to_owned))
+        };
+        assert_eq!(spoken(&context, buttons[0]).as_deref(), Some("Minimize"));
+        assert_eq!(spoken(&context, buttons[1]).as_deref(), Some("Maximize"));
+        assert_eq!(spoken(&context, buttons[2]).as_deref(), Some("Close"));
+        context
+            .update_component(bar, |bar, _| bar.maximized = true)
+            .unwrap();
+        assert_eq!(spoken(&context, buttons[1]).as_deref(), Some("Restore"));
     }
 
     fn native_title_bar(

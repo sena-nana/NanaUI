@@ -19,10 +19,6 @@ use crate::{
 
 const SWATCH_SIZE: f32 = nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS;
 
-/// Default accessible name. Applications localize it with
-/// [`ColorField::label`].
-const DEFAULT_LABEL: &str = "颜色";
-
 /// Committed RGBA in 0..=1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorChanged {
@@ -49,7 +45,8 @@ pub struct ColorField {
     pub invalid: bool,
     pub size: ControlSize,
     /// Accessible name announced for the field.
-    pub label: Arc<str>,
+    /// Accessible name; `None` says the framework's (`color_field.label`).
+    pub label: Option<Arc<str>>,
     pub swatch: Option<StableNodeId>,
     pub hex: Option<StableNodeId>,
     pub picker: Option<StableNodeId>,
@@ -69,7 +66,7 @@ impl ColorField {
     }
     /// Overrides the accessible name announced for the field.
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.label = label.into();
+        self.label = Some(label.into());
         self
     }
 
@@ -85,7 +82,7 @@ impl ColorField {
             disabled: false,
             invalid: false,
             size: ControlSize::Medium,
-            label: Arc::from(DEFAULT_LABEL),
+            label: None,
             swatch: None,
             hex: None,
             picker: None,
@@ -210,7 +207,11 @@ impl ComponentView for ColorField {
             },
             AccessibilityState {
                 role: AccessibilityRole::Generic,
-                label: Some(Arc::clone(&self.label)),
+                label: Some(
+                    self.label.clone().unwrap_or_else(|| {
+                        Arc::clone(&world.framework_strings().color_field_label)
+                    }),
+                ),
                 value: Some(Arc::from(format_hex(self.value))),
                 disabled: self.disabled,
                 invalid: self.invalid,

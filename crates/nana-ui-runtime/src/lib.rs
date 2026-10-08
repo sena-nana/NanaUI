@@ -150,7 +150,7 @@ pub use calendar::{
     CalendarHeatmapDatum, CalendarHeatmapDayLabel, CalendarHeatmapEvent, CalendarHeatmapLabelPaint,
     CalendarHeatmapModel, CalendarHeatmapMonthLabel, CalendarHeatmapOptions, CalendarLevelResolver,
     CalendarLevelStrategy, CalendarMonthFormatter, CalendarTitleFormatter,
-    build_calendar_heatmap_model, calendar_cell_fill,
+    build_calendar_heatmap_model, build_calendar_heatmap_model_in, calendar_cell_fill,
 };
 #[cfg(feature = "charts")]
 pub use charts::{
@@ -276,6 +276,7 @@ pub use menus::{
 };
 pub use motion_api::{FlipBuilder, NodeMotion, SpringBuilder, TimelineBuilder, TransitionBuilder};
 pub use mutation::{MutationQueue, UiMutation};
+pub use nana_ui_core::FrameworkStrings;
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, ClipCircle, ClipEllipse, ClipInset, ClipPath,
     ClipPoint, ClipShapeRadius, CommandPaletteEvent, CommandPaletteItem, CompiledTheme, ContentFit,

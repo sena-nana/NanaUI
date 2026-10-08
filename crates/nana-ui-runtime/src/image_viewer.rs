@@ -236,12 +236,15 @@ pub struct ImageViewer {
     /// viewer shows previous / next controls and the image's place ("3 / 9"),
     /// and ← / → ask for the neighbouring image.
     pub gallery: Option<ImageViewerPosition>,
-    /// Accessible name of the close control.
-    pub close_label: Arc<str>,
-    /// Accessible name of the previous-image control.
-    pub previous_label: Arc<str>,
-    /// Accessible name of the next-image control.
-    pub next_label: Arc<str>,
+    /// Accessible name of the close control; `None` says the framework's
+    /// (`image_viewer.close`).
+    pub close_label: Option<Arc<str>>,
+    /// Accessible name of the previous-image control; `None` says the
+    /// framework's (`image_viewer.previous`).
+    pub previous_label: Option<Arc<str>>,
+    /// Accessible name of the next-image control; `None` says the
+    /// framework's (`image_viewer.next`).
+    pub next_label: Option<Arc<str>>,
     pub style: NodeStyle,
     pub(crate) controls: ImageViewerControls,
 }
@@ -257,9 +260,9 @@ impl ImageViewer {
             offset: ImageViewerOffset::ZERO,
             dragging: None,
             gallery: None,
-            close_label: Arc::from("关闭"),
-            previous_label: Arc::from("上一张"),
-            next_label: Arc::from("下一张"),
+            close_label: None,
+            previous_label: None,
+            next_label: None,
             style: overlay_style(),
             controls: ImageViewerControls::default(),
         }
@@ -287,17 +290,17 @@ impl ImageViewer {
     }
 
     pub fn close_label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.close_label = label.into();
+        self.close_label = Some(label.into());
         self
     }
 
     pub fn previous_label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.previous_label = label.into();
+        self.previous_label = Some(label.into());
         self
     }
 
     pub fn next_label(mut self, label: impl Into<Arc<str>>) -> Self {
-        self.next_label = label.into();
+        self.next_label = Some(label.into());
         self
     }
 
@@ -659,21 +662,26 @@ impl AppContext {
             .ok_or(FrameworkError::MissingView(viewer.stable_id()))?
             .document;
         let snapshot = self.read(viewer, Clone::clone)?;
+        let strings = self.world().framework_strings();
+        let label = |own: &Option<Arc<str>>, framework: &Arc<str>| {
+            Arc::clone(own.as_ref().unwrap_or(framework))
+        };
+        let close_label = label(&snapshot.close_label, &strings.image_viewer_close);
+        let previous_label = label(&snapshot.previous_label, &strings.image_viewer_previous);
+        let next_label = label(&snapshot.next_label, &strings.image_viewer_next);
         let mut controls = snapshot.controls;
         let created = !controls
             .close
             .is_some_and(|close| self.world().contains(close));
         if created {
-            let close = self.create_detached_component(
-                document,
-                close_control(Arc::clone(&snapshot.close_label)),
-            )?;
+            let close =
+                self.create_detached_component(document, close_control(Arc::clone(&close_label)))?;
             let navigation =
                 self.create_detached_component(document, navigation_row(snapshot.caption_band()))?;
             let pill = self.create_detached_component(document, navigation_pill())?;
             let previous = self.create_detached_component(
                 document,
-                step_control(Icon::ArrowLeft, Arc::clone(&snapshot.previous_label)),
+                step_control(Icon::ArrowLeft, Arc::clone(&previous_label)),
             )?;
             let counter = self.create_detached_component(
                 document,
@@ -681,7 +689,7 @@ impl AppContext {
             )?;
             let next = self.create_detached_component(
                 document,
-                step_control(Icon::ArrowRight, Arc::clone(&snapshot.next_label)),
+                step_control(Icon::ArrowRight, Arc::clone(&next_label)),
             )?;
             self.append_child(pill, previous)?;
             self.append_child(pill, counter)?;
@@ -717,7 +725,7 @@ impl AppContext {
         }
         let button = |id: Option<StableNodeId>| id.map(Entity::<IconButton>::from_stable_id);
         if let Some(close) = button(controls.close) {
-            let label = Arc::clone(&snapshot.close_label);
+            let label = Arc::clone(&close_label);
             self.update_component(close, |close, _| close.label = label)?;
         }
         let gallery = snapshot.navigation();
@@ -736,12 +744,12 @@ impl AppContext {
         let steps = [
             (
                 controls.previous,
-                &snapshot.previous_label,
+                &previous_label,
                 gallery.is_some_and(ImageViewerPosition::has_previous),
             ),
             (
                 controls.next,
-                &snapshot.next_label,
+                &next_label,
                 gallery.is_some_and(ImageViewerPosition::has_next),
             ),
         ];

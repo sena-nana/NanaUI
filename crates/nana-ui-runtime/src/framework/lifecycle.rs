@@ -243,11 +243,18 @@ impl AppContext {
             .node(dialog.id)
             .ok_or(FrameworkError::MissingView(dialog.id))?
             .document;
+        let strings = self.world.framework_strings().clone();
         let (confirm_label, cancel_label, danger, busy, existing, requested) =
             self.read(dialog, |dialog| {
                 (
-                    Arc::clone(&dialog.confirm_label),
-                    Arc::clone(&dialog.cancel_label),
+                    dialog
+                        .confirm_label
+                        .clone()
+                        .unwrap_or_else(|| Arc::clone(&strings.dialog_confirm)),
+                    dialog
+                        .cancel_label
+                        .clone()
+                        .unwrap_or_else(|| Arc::clone(&strings.dialog_cancel)),
                     dialog.danger,
                     dialog.busy,
                     dialog.confirm_slots().cloned(),

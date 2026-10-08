@@ -169,7 +169,7 @@ impl ComponentView for DiffView {
             },
             AccessibilityState {
                 role: AccessibilityRole::Generic,
-                label: Some(Arc::from("差异")),
+                label: Some(Arc::clone(&world.framework_strings().diff_title)),
                 disabled: self.disabled,
                 ..Default::default()
             },
@@ -215,6 +215,7 @@ impl RegisterableComponent for DiffView {
 impl AppContext {
     pub fn assemble_diff_view(&mut self, diff: Entity<DiffView>) -> Result<bool, FrameworkError> {
         let snapshot = self.read(diff, Clone::clone)?;
+        let strings = self.world().framework_strings().clone();
         self.mount(diff, |ui| {
             let unified = snapshot.layout == DiffLayout::Unified;
             let mut toolbar = NodeStyle::default();
@@ -230,7 +231,7 @@ impl AppContext {
                 |ui| {
                     ui.child(
                         "layout-unified",
-                        Button::new("统一")
+                        Button::new(strings.diff_unified.as_ref())
                             .kind(if unified {
                                 ButtonKind::Selected
                             } else {
@@ -241,7 +242,7 @@ impl AppContext {
                     )?;
                     ui.child(
                         "layout-split",
-                        Button::new("分栏")
+                        Button::new(strings.diff_split.as_ref())
                             .kind(if unified {
                                 ButtonKind::Subtle
                             } else {
@@ -266,7 +267,14 @@ impl AppContext {
                 ScrollView::new(ScrollAxes::Vertical).style(scroll_style),
                 |ui| {
                     for (hunk_index, hunk) in snapshot.hunks.iter().enumerate() {
-                        mount_hunk(ui, hunk_index, hunk, snapshot.layout, snapshot.disabled)?;
+                        mount_hunk(
+                            ui,
+                            &strings,
+                            hunk_index,
+                            hunk,
+                            snapshot.layout,
+                            snapshot.disabled,
+                        )?;
                     }
                     Ok(())
                 },
@@ -278,7 +286,8 @@ impl AppContext {
 
     fn wire_diff_actions(&mut self, diff: Entity<DiffView>) -> Result<bool, FrameworkError> {
         let root = diff.stable_id();
-        if let Some(unified) = find_labeled_button(self, root, "统一") {
+        let strings = self.world().framework_strings().clone();
+        if let Some(unified) = find_labeled_button(self, root, &strings.diff_unified) {
             self.observe_diff_once(unified, diff, |view, _: &Activate, cx| {
                 if view.disabled || view.layout == DiffLayout::Unified {
                     return;
@@ -289,7 +298,7 @@ impl AppContext {
                 });
             })?;
         }
-        if let Some(split) = find_labeled_button(self, root, "分栏") {
+        if let Some(split) = find_labeled_button(self, root, &strings.diff_split) {
             self.observe_diff_once(split, diff, |view, _: &Activate, cx| {
                 if view.disabled || view.layout == DiffLayout::Split {
                     return;
@@ -302,14 +311,18 @@ impl AppContext {
         }
         let hunks = self.read(diff, |view| view.hunks.len())?;
         for hunk in 0..hunks {
-            if let Some(accept) = find_labeled_button(self, root, &format!("接受块{hunk}")) {
+            if let Some(accept) =
+                find_labeled_button(self, root, &hunk_label(&strings.diff_accept_hunk, hunk))
+            {
                 self.observe_diff_once(accept, diff, move |view, _: &Activate, cx| {
                     if !view.disabled {
                         cx.emit(DiffEvent::HunkAccepted { hunk });
                     }
                 })?;
             }
-            if let Some(reject) = find_labeled_button(self, root, &format!("拒绝块{hunk}")) {
+            if let Some(reject) =
+                find_labeled_button(self, root, &hunk_label(&strings.diff_reject_hunk, hunk))
+            {
                 self.observe_diff_once(reject, diff, move |view, _: &Activate, cx| {
                     if !view.disabled {
                         cx.emit(DiffEvent::HunkRejected { hunk });
@@ -323,18 +336,22 @@ impl AppContext {
                     .unwrap_or(0)
             })?;
             for line in 0..lines {
-                if let Some(accept) =
-                    find_labeled_button(self, root, &format!("接受行{hunk}.{line}"))
-                {
+                if let Some(accept) = find_labeled_button(
+                    self,
+                    root,
+                    &line_label(&strings.diff_accept_line, hunk, line),
+                ) {
                     self.observe_diff_once(accept, diff, move |view, _: &Activate, cx| {
                         if !view.disabled {
                             cx.emit(DiffEvent::LineAccepted { hunk, line });
                         }
                     })?;
                 }
-                if let Some(reject) =
-                    find_labeled_button(self, root, &format!("拒绝行{hunk}.{line}"))
-                {
+                if let Some(reject) = find_labeled_button(
+                    self,
+                    root,
+                    &line_label(&strings.diff_reject_line, hunk, line),
+                ) {
                     self.observe_diff_once(reject, diff, move |view, _: &Activate, cx| {
                         if !view.disabled {
                             cx.emit(DiffEvent::LineRejected { hunk, line });
@@ -389,8 +406,19 @@ fn find_labeled_button(
     None
 }
 
+/// A hunk action's label, from its framework template.
+fn hunk_label(template: &str, hunk: usize) -> String {
+    nana_ui_core::framework_strings::fill(template, &[("hunk", &hunk)])
+}
+
+/// A line action's label, from its framework template.
+fn line_label(template: &str, hunk: usize, line: usize) -> String {
+    nana_ui_core::framework_strings::fill(template, &[("hunk", &hunk), ("line", &line)])
+}
+
 fn mount_hunk(
     ui: &mut crate::framework::AssemblyScope<'_>,
+    strings: &nana_ui_core::FrameworkStrings,
     hunk_index: usize,
     hunk: &DiffHunk,
     layout: DiffLayout,
@@ -410,14 +438,14 @@ fn mount_hunk(
         |ui| {
             ui.child(
                 "accept",
-                Button::new(format!("接受块{hunk_index}"))
+                Button::new(hunk_label(&strings.diff_accept_hunk, hunk_index))
                     .kind(ButtonKind::Subtle)
                     .size(ControlSize::Small)
                     .disabled(disabled),
             )?;
             ui.child(
                 "reject",
-                Button::new(format!("拒绝块{hunk_index}"))
+                Button::new(hunk_label(&strings.diff_reject_hunk, hunk_index))
                     .kind(ButtonKind::Subtle)
                     .size(ControlSize::Small)
                     .disabled(disabled),
@@ -429,7 +457,7 @@ fn mount_hunk(
             match layout {
                 DiffLayout::Unified => {
                     for (line_index, line) in hunk.lines.iter().enumerate() {
-                        mount_line(ui, hunk_index, line_index, line, disabled, true)?;
+                        mount_line(ui, strings, hunk_index, line_index, line, disabled, true)?;
                     }
                 }
                 DiffLayout::Split => {
@@ -443,8 +471,8 @@ fn mount_hunk(
                         "split",
                         Stack::from_layout(row.layout.as_ref().clone()),
                         |ui| {
-                            mount_split_column(ui, hunk_index, hunk, disabled, true)?;
-                            mount_split_column(ui, hunk_index, hunk, disabled, false)?;
+                            mount_split_column(ui, strings, hunk_index, hunk, disabled, true)?;
+                            mount_split_column(ui, strings, hunk_index, hunk, disabled, false)?;
                             Ok(())
                         },
                     )?;
@@ -458,6 +486,7 @@ fn mount_hunk(
 
 fn mount_split_column(
     ui: &mut crate::framework::AssemblyScope<'_>,
+    strings: &nana_ui_core::FrameworkStrings,
     hunk_index: usize,
     hunk: &DiffHunk,
     disabled: bool,
@@ -486,7 +515,7 @@ fn mount_split_column(
                         DiffLineKind::Removed => old_side,
                         DiffLineKind::Added => !old_side,
                     };
-                    mount_line(ui, hunk_index, line_index, line, disabled, actions)?;
+                    mount_line(ui, strings, hunk_index, line_index, line, disabled, actions)?;
                 } else if matches!(line.kind, DiffLineKind::Added | DiffLineKind::Removed) {
                     ui.child(
                         format!("pad-{line_index}"),
@@ -502,6 +531,7 @@ fn mount_split_column(
 
 fn mount_line(
     ui: &mut crate::framework::AssemblyScope<'_>,
+    strings: &nana_ui_core::FrameworkStrings,
     hunk_index: usize,
     line_index: usize,
     line: &DiffLine,
@@ -534,17 +564,25 @@ fn mount_line(
             if show_actions && !matches!(line.kind, DiffLineKind::Context) {
                 ui.child(
                     "line-accept",
-                    Button::new(format!("接受行{hunk_index}.{line_index}"))
-                        .kind(ButtonKind::Text)
-                        .size(ControlSize::Small)
-                        .disabled(disabled),
+                    Button::new(line_label(
+                        &strings.diff_accept_line,
+                        hunk_index,
+                        line_index,
+                    ))
+                    .kind(ButtonKind::Text)
+                    .size(ControlSize::Small)
+                    .disabled(disabled),
                 )?;
                 ui.child(
                     "line-reject",
-                    Button::new(format!("拒绝行{hunk_index}.{line_index}"))
-                        .kind(ButtonKind::Text)
-                        .size(ControlSize::Small)
-                        .disabled(disabled),
+                    Button::new(line_label(
+                        &strings.diff_reject_line,
+                        hunk_index,
+                        line_index,
+                    ))
+                    .kind(ButtonKind::Text)
+                    .size(ControlSize::Small)
+                    .disabled(disabled),
                 )?;
             }
             Ok(())

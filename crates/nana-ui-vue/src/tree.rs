@@ -1528,7 +1528,6 @@ impl NanaTreeDocument {
             );
             let accessibility = AccessibilityState {
                 role,
-                role_description: role.role_description().map(Arc::from),
                 label: accessible_name.map(Arc::<str>::from),
                 value: (!widget.props.value.is_empty())
                     .then(|| Arc::<str>::from(widget.props.value.as_str())),

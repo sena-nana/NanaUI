@@ -58,10 +58,12 @@ pub enum WindowMaterialMode {
 }
 
 impl WindowMaterialMode {
-    pub const fn label(self) -> &'static str {
+    /// What the material is called: the framework's words for solid and
+    /// translucent, the platform's names for the rest.
+    pub fn label(self, strings: &crate::FrameworkStrings) -> &str {
         match self {
-            Self::Solid => "实色",
-            Self::Translucent => "透明",
+            Self::Solid => &strings.material_solid,
+            Self::Translucent => &strings.material_translucent,
             Self::Vibrancy => "Vibrancy",
             Self::Mica => "Mica",
             Self::Acrylic => "Acrylic",
@@ -87,10 +89,10 @@ pub enum BackdropTarget {
 }
 
 impl BackdropTarget {
-    pub const fn label(self) -> &'static str {
+    pub fn label(self, strings: &crate::FrameworkStrings) -> &str {
         match self {
-            Self::Sidebar => "侧边栏",
-            Self::Main => "主内容区",
+            Self::Sidebar => &strings.material_region_sidebar,
+            Self::Main => &strings.material_region_main,
         }
     }
 }

@@ -850,6 +850,7 @@ fn menu_spoken_name(label: &Arc<str>, accessible_name: Option<&Arc<str>>) -> Arc
         .unwrap_or_else(|| Arc::clone(label))
 }
 
+/// `search_placeholder`: what an empty search field shows.
 pub(crate) fn context_menu_geometry(
     bounds: LayoutBox,
     query: Option<&Arc<str>>,
@@ -857,6 +858,7 @@ pub(crate) fn context_menu_geometry(
     highlighted: Option<usize>,
     palette: &SemanticPalette,
     metrics: ThemeMetrics,
+    search_placeholder: &Arc<str>,
 ) -> ComponentGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
     let searchable = query.is_some();
@@ -872,7 +874,7 @@ pub(crate) fn context_menu_geometry(
         ComponentTextRegion {
             bounds: field,
             content: if empty {
-                crate::TextValue::from("搜索操作")
+                Arc::clone(search_placeholder).into()
             } else {
                 Arc::clone(query.expect("searchable query")).into()
             },
@@ -1633,6 +1635,7 @@ mod tests {
             None,
             &palette,
             nana_ui_core::UI_METRICS,
+            &Arc::from("搜索操作"),
         ) else {
             panic!("context menu geometry");
         };

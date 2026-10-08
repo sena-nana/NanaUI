@@ -16,6 +16,7 @@ pub mod drag;
 pub mod expansion;
 pub mod file_dialog;
 pub mod fonts;
+pub mod framework_strings;
 pub mod geometry;
 pub mod graph;
 pub mod icon;
@@ -79,6 +80,7 @@ pub use expansion::ExpansionState;
 pub use file_dialog::{
     FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
 };
+pub use framework_strings::FrameworkStrings;
 pub use geometry::{
     ContentFit, ImageSampling, LogicalPoint, LogicalRect, PhysicalRect, RESIZE_HANDLE_SIZE,
     RegionRect, TITLE_BAR_HEIGHT, WINDOW_CONTROL_GAP, WINDOW_CONTROL_PADDING, WINDOW_CONTROL_WIDTH,

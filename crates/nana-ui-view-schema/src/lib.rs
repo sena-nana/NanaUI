@@ -190,7 +190,7 @@ macro_rules! for_each_control {
             };
             ColorField => color_field() for ColorField {
                 value: [f32; 4] = builder,
-                label: Arc<str> = set,
+                label: Option<Arc<str>> = set,
                 disabled: bool = set,
             }
             with { on_change: ColorChanged };

@@ -1997,6 +1997,33 @@ impl AppContext {
     /// §6 calls that fail-closed; the practical version is that a broken theme
     /// produces one error with a token name in it instead of a screen that is
     /// subtly wrong in one corner.
+    /// Replace what the framework's own controls say (see
+    /// [`nana_ui_core::FrameworkStrings`]). Set it before building: controls
+    /// read the table when they are assembled or projected. Views already
+    /// built are projected and assembled again so they say the new strings;
+    /// a label the application gave a control itself stays.
+    pub fn set_framework_strings(
+        &mut self,
+        strings: impl Into<Arc<nana_ui_core::FrameworkStrings>>,
+    ) -> Result<(), FrameworkError> {
+        let strings = strings.into();
+        if *self.world.framework_strings() == *strings {
+            return Ok(());
+        }
+        self.world.set_framework_strings(strings);
+        let ids: Vec<_> = self.views.keys().copied().collect();
+        for id in ids {
+            if !self.world.contains(id) {
+                continue;
+            }
+            if let Some(type_id) = self.views.get(&id).map(|view| view.as_ref().type_id()) {
+                self.run_built_assembler(id, type_id)?;
+            }
+            self.reproject_view(id, Projection::ProjectOnly)?;
+        }
+        Ok(())
+    }
+
     pub fn set_theme_definition(
         &mut self,
         definition: &nana_ui_core::ThemeDefinition,
