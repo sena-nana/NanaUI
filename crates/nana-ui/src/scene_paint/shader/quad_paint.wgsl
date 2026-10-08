@@ -77,6 +77,28 @@ fn sample_url(local: vec2<f32>, paint: QuadPaintData) -> vec4<f32> {
     return textureSampleGrad(url_tex, url_sampler, uv, uv_dx, uv_dy);
 }
 
+fn quad_srgb_channel_to_linear(u: f32) -> f32 {
+    if (u < 0.04045) {
+        return u / 12.92;
+    }
+    return pow((u + 0.055) / 1.055, 2.4);
+}
+
+// Plain sRGB stops interpolate in sRGB, as a browser blends them; decode the
+// interpolated colour once here.
+fn gradient_to_linear(grad: vec4<f32>, flags: u32) -> vec4<f32> {
+    if ((flags & PAINT_GRADIENT_SRGB) == 0u || grad.a <= 0.0) {
+        return grad;
+    }
+    let straight = grad.rgb / grad.a;
+    let linear = vec3(
+        quad_srgb_channel_to_linear(straight.r),
+        quad_srgb_channel_to_linear(straight.g),
+        quad_srgb_channel_to_linear(straight.b),
+    );
+    return vec4(linear * grad.a, grad.a);
+}
+
 fn compose_quad_fill(base: vec4<f32>, local: vec2<f32>, paint: QuadPaintData) -> vec4<f32> {
     var color = base;
     if ((paint.flags & PAINT_GRADIENT) != 0u) {
@@ -104,7 +126,7 @@ fn compose_quad_fill(base: vec4<f32>, local: vec2<f32>, paint: QuadPaintData) ->
             paint.grad_pos,
             paint.grad_pos2,
         );
-        color = source_over_premult(color, grad);
+        color = source_over_premult(color, gradient_to_linear(grad, paint.flags));
     }
     if ((paint.flags & PAINT_URL) != 0u) {
         let sampled = sample_url(local, paint);

@@ -30,6 +30,9 @@ const PAINT_MASK_URL: u32 = 256;
 /// a decoded straight-alpha sRGB image. Border-image gradients use this bit so
 /// the fragment path does not multiply alpha a second time.
 const PAINT_URL_PREMULT: u32 = 512;
+/// The gradient stops are premultiplied sRGB, interpolated as a browser
+/// blends plain sRGB colours and decoded once in the shader.
+const PAINT_GRADIENT_SRGB: u32 = 1024;
 const QUAD_VERTEX_FRAGMENT: &[ShaderStage] = &[ShaderStage::Vertex, ShaderStage::Fragment];
 const QUAD_FRAGMENT: &[ShaderStage] = &[ShaderStage::Fragment];
 fn quad_layout_key() -> u64 {
@@ -1414,18 +1417,41 @@ fn pack_shared(
     paint
 }
 
-fn pack_stop_arrays(stops: &[nana_ui_core::GradientStop]) -> (u32, [[f32; 4]; 8], [f32; 8]) {
+/// Whether every stop is a plain sRGB colour. CSS interpolates those in
+/// sRGB; a stop in a colour space of its own keeps the whole gradient in
+/// linear scRGB, which also preserves extended values.
+fn stops_interpolate_in_srgb(stops: &[GradientStop]) -> bool {
+    stops.iter().all(|stop| {
+        matches!(
+            stop.paint_color,
+            None | Some(nana_ui_core::PaintColor::Srgb { .. })
+        )
+    })
+}
+
+/// A plain stop's straight sRGB colour.
+fn gradient_stop_srgb(stop: &GradientStop) -> [f32; 4] {
+    match stop.paint_color {
+        Some(nana_ui_core::PaintColor::Srgb { rgba }) => rgba,
+        _ => stop.color,
+    }
+}
+
+fn pack_stop_arrays(
+    stops: &[nana_ui_core::GradientStop],
+    srgb: bool,
+) -> (u32, [[f32; 4]; 8], [f32; 8]) {
     let count = stops.len().min(8) as u32;
     let mut colors = [[0.0; 4]; 8];
     let mut positions = [0.0; 8];
     for (index, stop) in stops.iter().take(8).enumerate() {
-        let [r, g, b, a] = stop
-            .paint_color
-            .map(super::color::pack_paint_color)
-            .unwrap_or_else(|| pack_linear(stop.color));
-        // Interpolate gradients in the same premultiplied linear-scRGB space
-        // used by paths and generated border-image textures. This avoids
-        // colour fringes when a stop fades through transparency.
+        let [r, g, b, a] = if srgb {
+            gradient_stop_srgb(stop)
+        } else {
+            gradient_stop_linear_color(stop)
+        };
+        // Premultiplied, so a stop fading through transparency leaves no
+        // colour fringe.
         colors[index] = [r * a, g * a, b * a, a];
         positions[index] = stop.position;
     }
@@ -1433,7 +1459,11 @@ fn pack_stop_arrays(stops: &[nana_ui_core::GradientStop]) -> (u32, [[f32; 4]; 8]
 }
 
 fn pack_gradient_stops(paint: &mut QuadPaintData, stops: &[nana_ui_core::GradientStop]) {
-    let (count, colors, positions) = pack_stop_arrays(stops);
+    let srgb = stops_interpolate_in_srgb(stops);
+    if srgb {
+        paint.flags |= PAINT_GRADIENT_SRGB;
+    }
+    let (count, colors, positions) = pack_stop_arrays(stops, srgb);
     paint.grad_stop_count = count;
     paint.grad_stops0 = colors[0];
     paint.grad_stops1 = colors[1];
@@ -1448,7 +1478,7 @@ fn pack_gradient_stops(paint: &mut QuadPaintData, stops: &[nana_ui_core::Gradien
 }
 
 fn pack_mask_stops(paint: &mut QuadPaintData, stops: &[nana_ui_core::GradientStop]) {
-    let (count, colors, positions) = pack_stop_arrays(stops);
+    let (count, colors, positions) = pack_stop_arrays(stops, false);
     paint.mask_stop_count = count;
     paint.mask_stops0 = colors[0];
     paint.mask_stops1 = colors[1];
@@ -1589,23 +1619,40 @@ fn cpu_gradient_t(lx: f32, ly: f32, angle_deg: f32) -> f32 {
 }
 
 fn cpu_sample_stops(t: f32, stops: &[GradientStop]) -> [f32; 4] {
+    if stops_interpolate_in_srgb(stops) {
+        let [r, g, b, a] = cpu_interpolate_stops(t, stops, gradient_stop_srgb);
+        if a <= 0.0 {
+            return [0.0; 4];
+        }
+        let [r, g, b, _] = pack_linear([r / a, g / a, b / a, a]);
+        return [r * a, g * a, b * a, a];
+    }
+    cpu_interpolate_stops(t, stops, gradient_stop_linear_color)
+}
+
+/// Premultiplied colour at `t`, interpolating the stops' `color_of` values.
+fn cpu_interpolate_stops(
+    t: f32,
+    stops: &[GradientStop],
+    color_of: fn(&GradientStop) -> [f32; 4],
+) -> [f32; 4] {
     let premultiply = |[r, g, b, a]: [f32; 4]| [r * a, g * a, b * a, a];
     if stops.is_empty() {
         return [0.0, 0.0, 0.0, 0.0];
     }
     if stops.len() == 1 || t <= stops[0].position {
-        return premultiply(gradient_stop_linear_color(&stops[0]));
+        return premultiply(color_of(&stops[0]));
     }
     if t >= stops[stops.len() - 1].position {
-        return premultiply(gradient_stop_linear_color(&stops[stops.len() - 1]));
+        return premultiply(color_of(&stops[stops.len() - 1]));
     }
     for window in stops.windows(2) {
         let a = window[0];
         let b = window[1];
         if t >= a.position && t <= b.position {
             let mix = (t - a.position) / (b.position - a.position).max(0.0001);
-            let a = premultiply(gradient_stop_linear_color(&a));
-            let b = premultiply(gradient_stop_linear_color(&b));
+            let a = premultiply(color_of(&a));
+            let b = premultiply(color_of(&b));
             return [
                 a[0] + (b[0] - a[0]) * mix,
                 a[1] + (b[1] - a[1]) * mix,
@@ -1614,7 +1661,7 @@ fn cpu_sample_stops(t: f32, stops: &[GradientStop]) -> [f32; 4] {
             ];
         }
     }
-    premultiply(gradient_stop_linear_color(&stops[0]))
+    premultiply(color_of(&stops[0]))
 }
 
 /// Resolve a gradient stop into the same linear scRGB upload space used by
@@ -1930,7 +1977,7 @@ fn analytic_gradient_stops_are_premultiplied_linear_sc_rgb() {
             color: [0.0; 4],
         },
     ];
-    let (_, colors, _) = pack_stop_arrays(&stops);
+    let (_, colors, _) = pack_stop_arrays(&stops, stops_interpolate_in_srgb(&stops));
     let first = super::color::pack_paint_color(stops[0].paint_color.unwrap());
     assert_eq!(
         colors[0],

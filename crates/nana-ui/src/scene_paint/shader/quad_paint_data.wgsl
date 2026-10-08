@@ -11,6 +11,8 @@ const PAINT_SHADOW_INSET: u32 = 128u;
 const PAINT_MASK_URL: u32 = 256u;
 // Generated border-image gradients are already linear-premultiplied fp16.
 const PAINT_URL_PREMULT: u32 = 512u;
+// Gradient stops are premultiplied sRGB: decode after interpolating.
+const PAINT_GRADIENT_SRGB: u32 = 1024u;
 
 struct QuadPaintData {
     flags: u32,

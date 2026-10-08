@@ -7195,8 +7195,10 @@ fn radial_gradient_center_differs_from_linear_edge() {
         radial_center[0] > 200 && radial_center[2] < 80,
         "radial center must be red, got {radial_center:?}"
     );
+    // The corner is most of the way to blue in sRGB; the target stores
+    // linear values, so that reads below 200.
     assert!(
-        radial_corner[2] > 200 && radial_corner[0] < 80,
+        radial_corner[2] > 160 && radial_corner[0] < 80,
         "radial corner must be blue, got {radial_corner:?}"
     );
     assert!(
@@ -12432,4 +12434,72 @@ fn a_rolled_back_target_keeps_the_fetch_host() {
         egress_of(painter.fetch_host.as_ref()) == egress_of(Some(&host)),
         "the rollback must not release the window's fetch host"
     );
+}
+
+/// Plain sRGB stops of a CSS gradient interpolate in sRGB, as a browser
+/// blends them: black to white is 50% grey halfway, not the 73% a linear
+/// blend shows.
+#[test]
+fn a_css_gradient_of_plain_srgb_stops_is_grey_halfway() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::for_test(format);
+    let stop = |position: f32, value: f32| nana_ui_core::GradientStop {
+        paint_color: None,
+        position,
+        color: [value, value, value, 1.0],
+    };
+    let surface = nana_ui_scene::QuadSurfacePaint {
+        border_colors_space: [None; 4],
+        outline_color_space: None,
+        background_color: None,
+        border_color_space: None,
+        background_image: Some(nana_ui_core::BackgroundImage::Gradient(
+            nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
+                angle_deg: 180.0,
+                stops: vec![stop(0.0, 0.0), stop(1.0, 1.0)],
+            }),
+        )),
+        ..Default::default()
+    };
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [paint_surface_quad_node(
+            1,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [0.0, 0.0, 0.0, 0.0],
+            surface,
+        )],
+        [],
+    );
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (texture, view) = test_copy_target(&device, format, 64, 64);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui srgb gradient midpoint"),
+    });
+    painter
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    // Row 32's centre sits at t = 32.5 / 64: that much of the way in sRGB.
+    // The target stores linear values.
+    let middle = pixel(&pixels, 64, 32, 32);
+    let srgb: f32 = 32.5 / 64.0;
+    let expected = ((srgb + 0.055) / 1.055).powf(2.4) * 255.0;
+    assert!(
+        (f32::from(middle[1]) - expected).abs() <= 3.0,
+        "halfway must be about {expected:.0}, got {middle:?}"
+    );
+    drop(texture);
 }
