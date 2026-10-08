@@ -1034,6 +1034,16 @@ impl FrameSchedule {
         self.deadline
     }
 
+    /// [`Self::defer`] for a frame that could not start (every frame slot in
+    /// flight): even an on-demand window tries again shortly, since nothing
+    /// else will ask once the slots free.
+    pub(crate) fn retry(&mut self, demand: FrameDemand, now: Instant) -> Option<Instant> {
+        let deferred = self.defer(demand, now);
+        let retry = now + PRESENT_RETRY;
+        self.deadline = Some(deferred.map_or(retry, |at| at.min(retry).max(now)));
+        self.deadline
+    }
+
     /// Continuous consumes the served tick. At/OnDemand keep a still-due deadline.
     pub(crate) fn advance_served(&mut self, demand: FrameDemand, now: Instant) -> Option<Instant> {
         match demand {
@@ -1182,6 +1192,18 @@ mod frame_schedule_tests {
         assert!(!schedule.due(fps(60), now));
         schedule.arm(fps(60), now);
         assert!(!schedule.due(fps(60), now));
+    }
+
+    #[test]
+    fn a_frame_without_a_slot_retries_even_on_demand() {
+        let t0 = Instant::now();
+        let mut schedule = FrameSchedule::default();
+        let next = schedule
+            .retry(FrameDemand::OnDemand, t0)
+            .expect("an on-demand window retries");
+        assert!(next > t0);
+        assert!(!schedule.due(FrameDemand::OnDemand, t0));
+        assert!(schedule.due(FrameDemand::OnDemand, next));
     }
 
     #[test]

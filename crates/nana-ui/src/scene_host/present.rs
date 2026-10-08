@@ -5,6 +5,18 @@ use super::*;
 use crate::SceneGpuRendererRegistry;
 use crate::hosted_context::SurfaceFrame;
 
+/// A frame slot for one window present, or nothing when every slot is in
+/// flight. Callers acquire the swapchain only after this returns. Slots free
+/// in completion callbacks, which run when the device is polled: poll once
+/// without waiting before giving up.
+fn reserve_scene_host_frame(gpu: &nana_gpu::GpuContext) -> Option<nana_gpu::FrameContext> {
+    const LABEL: &str = "NanaUI scene host frame";
+    gpu.try_begin_frame(LABEL).or_else(|| {
+        let _ = gpu.raw_device().poll(wgpu::PollType::Poll);
+        gpu.try_begin_frame(LABEL)
+    })
+}
+
 impl<Program: RuntimeProgram> WindowManager<Program> {
     /// `true` when prepare ran (encode may have been skipped). `false` on abort.
     pub(super) fn tick_hidden_gpu(
@@ -55,6 +67,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     fn rearm_frame_demand(&mut self, id: WindowId) {
         self.update_frame_schedule(id, crate::runtime_host::FrameSchedule::defer);
+    }
+
+    /// Every frame slot is in flight: try again shortly, whatever the window
+    /// asked for, since the slots free without anything asking for a frame.
+    fn retry_frame_soon(&mut self, id: WindowId) {
+        self.update_frame_schedule(id, crate::runtime_host::FrameSchedule::retry);
     }
 
     fn serve_frame_demand(&mut self, id: WindowId) {
@@ -181,18 +199,30 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.rearm_frame_demand(id);
             return;
         }
+        // Take a frame slot before the drawable. A transparent swapchain has
+        // nothing else to composite once its drawable is taken, so waiting
+        // for a slot after acquiring it blanks the window; with every slot in
+        // flight the presented frame stays on screen and this one is skipped.
+        let Some(mut recording) = reserve_scene_host_frame(self.graphics.gpu()) else {
+            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_SKIPPED);
+            self.retry_frame_soon(id);
+            return;
+        };
         let frame = match self.acquire_frame(id) {
             Ok(SurfaceFrame::Ready(frame)) => frame,
             Ok(SurfaceFrame::Retry) => {
+                drop(recording);
                 self.request_redraw(id);
                 return;
             }
             Ok(SurfaceFrame::Skipped) => {
+                drop(recording);
                 nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_SKIPPED);
                 self.rearm_frame_demand(id);
                 return;
             }
             Err(error) => {
+                drop(recording);
                 self.rearm_frame_demand(id);
                 self.suspend_surface(id, error);
                 return;
@@ -211,7 +241,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // nothing may still reference the texture the surface is asked to
         // abandon (DX12), and dropping it rolls the painter's retained writes
         // back.
-        let mut recording = self.graphics.gpu().begin_frame("NanaUI scene host frame");
         let prepared = if let Some(producers) = self.program.scene_resource_producers(id) {
             match producers.encode_scene(scene.as_ref(), &mut recording) {
                 Ok(prepared) => Some(prepared),
@@ -762,5 +791,39 @@ mod surface_recovery_tests {
         assert_eq!(failed_deadline, None);
         assert_eq!(healthy_surface, 20);
         assert_eq!(healthy_deadline, None);
+    }
+}
+
+#[cfg(test)]
+mod present_order_tests {
+    /// `redraw` reserves a frame slot before `acquire_frame`: with every slot
+    /// in flight it returns before `get_current_texture`, instead of taking
+    /// the drawable and then waiting on the GPU.
+    #[test]
+    fn redraw_reserves_a_frame_before_acquiring_the_swapchain() {
+        let source = include_str!("present.rs");
+        let start = source.find("pub(super) fn redraw").expect("redraw");
+        let body = &source[start..];
+        let end = body[1..]
+            .find("\n    fn ")
+            .map(|index| index + 1)
+            .unwrap_or(body.len());
+        let body = &body[..end];
+        let reserve = body
+            .find("reserve_scene_host_frame")
+            .expect("redraw reserves a frame slot");
+        let acquire = body
+            .find("self.acquire_frame(id)")
+            .expect("redraw acquires the swapchain");
+        assert!(reserve < acquire, "the drawable waits for a frame slot");
+        let before_acquire = &body[..acquire];
+        assert!(
+            before_acquire.contains("retry_frame_soon"),
+            "a full pipeline skips the frame and tries again"
+        );
+        assert!(
+            !body.contains("begin_frame("),
+            "the window thread never blocks on a frame slot"
+        );
     }
 }

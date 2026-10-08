@@ -742,6 +742,26 @@ fn a_full_pipeline_blocks_on_the_oldest_frame_and_unsubmitted_slots_never_deadlo
 }
 
 #[test]
+fn try_begin_frame_returns_immediately_while_recordings_hold_every_slot() {
+    let gpu = context();
+    let held: Vec<_> = (0..3).map(|_| gpu.try_begin_frame("held")).collect();
+    assert!(held.iter().all(Option::is_some));
+    let before = gpu.policy().stats();
+    let started = std::time::Instant::now();
+    assert!(gpu.try_begin_frame("window").is_none());
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "a full pipeline must not wait for GPU completion"
+    );
+    assert_eq!(
+        gpu.policy().stats().frame_slot_waits,
+        before.frame_slot_waits
+    );
+    drop(held);
+    assert!(gpu.try_begin_frame("window").is_some());
+}
+
+#[test]
 fn a_frame_can_move_to_another_thread() {
     fn send<T: Send>() {}
     send::<nana_gpu::FrameContext>();

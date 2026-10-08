@@ -73,7 +73,7 @@ renderer 不直接调用 `queue.write_buffer` / `write_texture`。`GpuWorkSink` 
 
 ### 帧槽
 
-`FrameContext` 在录制时占用 slot。discard 立即归还。submit 记录其 `SubmissionIndex`。完成回调归还。槽满时 `begin_frame()` 对最早已提交的帧做一次有界阻塞等待（`gpu.frame_slot_waits`）。不再忙等。若全部槽都被从未提交的录制占用（同一线程持有全部槽），等待永远不会结束。新帧不占槽，直接开始，并报告 `gpu.frame_slots_exhausted`。`try_begin_frame()` 在槽满时立即返回 `None`。FrameExchange 使用该路径返回 `PoolFull`。
+`FrameContext` 在录制时占用 slot。discard 立即归还。submit 记录其 `SubmissionIndex`。完成回调归还。槽满时 `begin_frame()` 对最早已提交的帧做一次有界阻塞等待（`gpu.frame_slot_waits`）。不再忙等。若全部槽都被从未提交的录制占用（同一线程持有全部槽），等待永远不会结束。新帧不占槽，直接开始，并报告 `gpu.frame_slots_exhausted`。`try_begin_frame()` 在槽满时立即返回 `None`。FrameExchange 使用该路径返回 `PoolFull`。窗口呈现也用它，并且只在拿到槽之后才 `get_current_texture`：透明交换链的当前缓冲被取走后，窗口线程再去 `poll(Wait)` 会让整窗没有可合成的画面。拿不到槽时先非阻塞地 poll 一次（槽在完成回调里释放），仍然没有就跳过这一帧，已呈现的缓冲留在屏幕上，约 16ms 后重试，按需刷新的窗口也一样。
 
 ### 缓存与资源
 
