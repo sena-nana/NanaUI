@@ -295,6 +295,44 @@ impl AppContext {
         self.adjust_range(Entity::from_stable_id(target), adjustment)
     }
 
+    /// [`Self::begin_range_drag`] at a window point: through the scroll
+    /// offsets and transforms above the field, as hit testing saw the press.
+    pub(crate) fn begin_range_drag_at(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        target: StableNodeId,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let (x, _) = self.layout_point(target, x, y);
+        self.begin_range_drag(document, pointer_id, target, x)
+    }
+
+    /// [`Self::update_range_drag`] at a window point.
+    pub(crate) fn update_range_drag_at(
+        &mut self,
+        document: DocumentId,
+        pointer_id: u64,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, FrameworkError> {
+        let Some(target) = self.world.pointer_capture(document, pointer_id) else {
+            return Ok(false);
+        };
+        let (x, _) = self.layout_point(target, x, y);
+        self.update_range_drag(document, pointer_id, x)
+    }
+
+    /// A window point in `target`'s layout space.
+    fn layout_point(&self, target: StableNodeId, x: f32, y: f32) -> (f32, f32) {
+        self.world
+            .pointer_layout_position(target, x, y)
+            .unwrap_or((x, y))
+    }
+
+    /// Starts dragging the range at `x`, in the field's layout space (the
+    /// space of its [`crate::ComponentGeometry::Range`] track).
     pub fn begin_range_drag(
         &mut self,
         document: DocumentId,
@@ -448,11 +486,12 @@ impl AppContext {
         let Some(bounds) = self.world.component_layout_box(target) else {
             return Ok(false);
         };
+        let (local_x, local_y) = self.layout_point(target, x, y);
         self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {
             pad.dragging = Some(XYPadDragState {
                 pointer_id,
-                origin_x: x - bounds.x,
-                origin_y: y - bounds.y,
+                origin_x: local_x - bounds.x,
+                origin_y: local_y - bounds.y,
                 axis_lock: None,
                 initial: pad.value,
             });
@@ -478,6 +517,7 @@ impl AppContext {
         let Some(bounds) = self.world.component_layout_box(target) else {
             return Ok(false);
         };
+        let (x, y) = self.layout_point(target, x, y);
         self.update_component(Entity::<XYPad>::from_stable_id(target), |pad, cx| {
             if pad.inactive() {
                 return false;

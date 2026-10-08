@@ -466,8 +466,7 @@ impl AppContext {
                     return Some(node);
                 }
                 if let Some(handle) = self.handle_of_split(node)
-                    && let Some(bounds) = self.world().component_layout_box(handle)
-                    && point_near_box(bounds, x, y, SLOP)
+                    && self.point_near_handle(handle, x, y, SLOP)
                 {
                     return Some(handle);
                 }
@@ -480,11 +479,21 @@ impl AppContext {
         // instead of world size.
         self.split_panes_in(document).find_map(|pane| {
             let handle = self.handle_of_split(pane)?;
-            self.world()
-                .component_layout_box(handle)
-                .filter(|bounds| point_near_box(*bounds, x, y, SLOP))
-                .map(|_| handle)
+            self.point_near_handle(handle, x, y, SLOP).then_some(handle)
         })
+    }
+
+    /// Whether the window point is within `slop` of `handle`, compared in
+    /// the handle's layout space (through the scroll and transforms above).
+    fn point_near_handle(&self, handle: StableNodeId, x: f32, y: f32, slop: f32) -> bool {
+        let Some(bounds) = self.world().component_layout_box(handle) else {
+            return false;
+        };
+        let (x, y) = self
+            .world()
+            .pointer_layout_position(handle, x, y)
+            .unwrap_or((x, y));
+        point_near_box(bounds, x, y, slop)
     }
 
     /// Live `SplitPane` nodes in `document`, in no particular order.

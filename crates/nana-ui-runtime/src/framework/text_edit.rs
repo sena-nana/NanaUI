@@ -1960,6 +1960,9 @@ impl AppContext {
             self.text_edit.text_pointer_drag = None;
             return Ok(false);
         }
+        // Everything below compares against the editor's layout box: bring
+        // the window point through the scroll offsets and transforms above.
+        let (x, y) = self.editor_point(node, x, y);
         // A press on a numeric field's spinner steps the value
         // ([`Self::press_number_stepper`]). The editor still owns the press,
         // so nothing else starts a selection there, but it places no caret.
@@ -2175,6 +2178,7 @@ impl AppContext {
             if drag_id != pointer_id {
                 return Ok(false);
             }
+            let (x, y) = self.editor_point(drag_node, x, y);
             return match self.world.text_minimap_scroll_target(drag_node, x, y) {
                 Some(target) => {
                     self.text_editor_minimap_navigate(drag_node, drag_kind, pointer_id, target)
@@ -2193,6 +2197,7 @@ impl AppContext {
         let Some((drag_id, node, anchor)) = self.text_edit.text_pointer_drag else {
             return Ok(false);
         };
+        let (x, y) = self.editor_point(node, x, y);
         if drag_id != pointer_id {
             return Ok(false);
         }
@@ -2288,6 +2293,7 @@ impl AppContext {
         y: f32,
         shaper: &mut dyn crate::TextShaper,
     ) -> Result<bool, FrameworkError> {
+        let (x, y) = self.editor_point(drag.node, x, y);
         let Some(focused) = self.focused_text_editor(document) else {
             self.clear_text_selection_drag();
             return Ok(false);
@@ -2361,6 +2367,7 @@ impl AppContext {
         if drag.pointer_id != pointer_id {
             return Ok(false);
         }
+        let (x, y) = self.editor_point(drag.node, x, y);
         self.clear_text_selection_drag();
         let Some(focused) = self.focused_text_editor(document) else {
             return Ok(false);
@@ -2468,6 +2475,14 @@ impl AppContext {
     /// affinity 由命中点决定，随选区一路写进编辑器状态：CJK 这类没有悬挂
     /// 空白的软换行行尾即下一行行首，只有 `Upstream` 才把 caret 留在被点
     /// 中的那一行。宿主答不出命中时按 downstream 的探针搜索退化。
+    /// A window point in `node`'s layout space: through the scroll offsets
+    /// and transforms above it, as hit testing sees it.
+    fn editor_point(&self, node: StableNodeId, x: f32, y: f32) -> (f32, f32) {
+        self.world
+            .pointer_layout_position(node, x, y)
+            .unwrap_or((x, y))
+    }
+
     fn text_editor_hit_offset(
         &self,
         node: StableNodeId,
@@ -3335,6 +3350,7 @@ impl AppContext {
             return Ok(());
         }
         let hit = target.and_then(|id| {
+            let (x, y) = self.editor_point(id, x, y);
             let (local_x, local_y) = self.world.editor_frame(id)?.text_point(x, y);
             self.world
                 .text_diagnostic_hit(id, local_x, local_y)

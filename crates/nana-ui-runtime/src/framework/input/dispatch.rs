@@ -217,7 +217,7 @@ impl AppContext {
                     true
                 } else {
                     self.update_scrollbar_drag(document, *pointer_id, *x, *y)?
-                        || self.update_range_drag(document, *pointer_id, *x)?
+                        || self.update_range_drag_at(document, *pointer_id, *x, *y)?
                         || self.update_xy_pad_drag(
                             document,
                             *pointer_id,
@@ -453,7 +453,7 @@ impl AppContext {
                             if !*activation_click && self.press_number_stepper(target, *x, *y)? {
                                 self.release_pointer(document, *pointer_id);
                             } else if self.is_range_field(target) {
-                                self.begin_range_drag(document, *pointer_id, target, *x)?;
+                                self.begin_range_drag_at(document, *pointer_id, target, *x, *y)?;
                             } else if self.is_xy_pad(target) {
                                 self.begin_xy_pad_drag(document, *pointer_id, target, *x, *y)?;
                             }

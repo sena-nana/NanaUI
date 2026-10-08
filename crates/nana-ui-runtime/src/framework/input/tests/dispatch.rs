@@ -6481,3 +6481,140 @@ fn a_click_on_a_half_clipped_row_does_not_scroll_it() {
     );
     assert_eq!(*activated.lock().unwrap(), vec![target]);
 }
+
+/// A range in a horizontally scrolled view takes the value under the
+/// pointer where the track shows, not where its unscrolled box would be.
+#[test]
+fn a_range_in_a_scrolled_view_follows_the_pointer_where_it_shows() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut viewport = NodeStyle::default();
+    {
+        let layout = std::sync::Arc::make_mut(&mut viewport.layout);
+        layout.width = Some(nana_ui_core::LengthSpec::Px(200.0));
+        layout.height = Some(nana_ui_core::LengthSpec::Px(60.0));
+        layout.direction = Some(nana_ui_core::FlexDirection::Row);
+    }
+    let scroll = context
+        .create_component(
+            document,
+            ScrollView::new(ScrollAxes::Horizontal).style(viewport),
+        )
+        .unwrap();
+    let spacer = crate::Stack::column(0.0).with_layout(|layout| {
+        layout.width = Some(nana_ui_core::LengthSpec::Px(300.0));
+        layout.height = Some(nana_ui_core::LengthSpec::Px(32.0));
+        layout.flex_shrink = Some(0.0);
+    });
+    let spacer = context.create_component(document, spacer).unwrap();
+    context.append_child(scroll, spacer).unwrap();
+    let mut field = RangeField::new(0.0, 0.0, 1.0, 0.01);
+    {
+        let layout = std::sync::Arc::make_mut(&mut field.style.layout);
+        layout.width = Some(nana_ui_core::LengthSpec::Px(200.0));
+        layout.flex_shrink = Some(0.0);
+    }
+    let range = context.create_component(document, field).unwrap();
+    context.append_child(scroll, range).unwrap();
+    let layout_viewport = crate::LayoutViewport::new(400.0, 200.0);
+    context.layout_document(document, layout_viewport).unwrap();
+    context
+        .scroll_to(scroll, crate::ScrollOffset { x: 300.0, y: 0.0 })
+        .unwrap();
+    context.layout_document(document, layout_viewport).unwrap();
+    context.rebuild_hit_test(document);
+    let track = match context.world().component_geometry(range.stable_id()) {
+        Some(ComponentGeometry::Range { track, .. }) => track,
+        _ => panic!("range geometry expected"),
+    };
+    // Shown 300 px left of its layout box.
+    let shown_x = |fraction: f32| track.x - 300.0 + track.width * fraction;
+    let y = track.y + track.height / 2.0;
+    let mut adapter = TestInput::default();
+    for (phase, fraction) in [
+        (PointerPhase::Down, 0.25),
+        (PointerPhase::Move, 0.75),
+        (PointerPhase::Up, 0.75),
+    ] {
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &pointer(phase, shown_x(fraction), y),
+            )
+            .unwrap();
+    }
+    let value = context.read(range, |range| range.value).unwrap();
+    assert!((value - 0.75).abs() < 0.02, "value {value}");
+}
+
+/// A field in a scrolled view places the caret where its text shows.
+#[test]
+fn a_press_in_a_scrolled_field_places_the_caret_where_the_text_shows() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut viewport = NodeStyle::default();
+    {
+        let layout = std::sync::Arc::make_mut(&mut viewport.layout);
+        layout.width = Some(nana_ui_core::LengthSpec::Px(240.0));
+        layout.height = Some(nana_ui_core::LengthSpec::Px(60.0));
+        layout.direction = Some(nana_ui_core::FlexDirection::Row);
+    }
+    let scroll = context
+        .create_component(
+            document,
+            ScrollView::new(ScrollAxes::Horizontal).style(viewport),
+        )
+        .unwrap();
+    let spacer = crate::Stack::column(0.0).with_layout(|layout| {
+        layout.width = Some(nana_ui_core::LengthSpec::Px(300.0));
+        layout.height = Some(nana_ui_core::LengthSpec::Px(32.0));
+        layout.flex_shrink = Some(0.0);
+    });
+    let spacer = context.create_component(document, spacer).unwrap();
+    context.append_child(scroll, spacer).unwrap();
+    let mut field = TextInput::new("hello world");
+    {
+        let layout = std::sync::Arc::make_mut(&mut field.style.layout);
+        layout.width = Some(nana_ui_core::LengthSpec::Px(200.0));
+        layout.flex_shrink = Some(0.0);
+    }
+    let input = context.create_component(document, field).unwrap();
+    context.append_child(scroll, input).unwrap();
+    let layout_viewport = crate::LayoutViewport::new(400.0, 200.0);
+    let mut shaper = MeasureTextShaper;
+    context.layout_document(document, layout_viewport).unwrap();
+    context
+        .scroll_to(scroll, crate::ScrollOffset { x: 300.0, y: 0.0 })
+        .unwrap();
+    context.layout_document(document, layout_viewport).unwrap();
+    let work = context.take_system_work();
+    context
+        .compat_world_mut()
+        .shape_text(&work.text, &mut shaper)
+        .unwrap();
+    context.rebuild_hit_test(document);
+    let node = input.stable_id();
+    let field_box = context.world().layout_box(node).unwrap();
+    // Near the field's right edge where it shows: 300 px left of its box.
+    let (x, y) = (
+        field_box.x - 300.0 + 190.0,
+        field_box.y + field_box.height / 2.0,
+    );
+    let mut adapter = TestInput::default();
+    for (phase, at) in [(PointerPhase::Down, 1_000), (PointerPhase::Up, 1_020)] {
+        adapter
+            .dispatch_with_shaper(
+                &mut context,
+                document,
+                &pointer(phase, x, y),
+                Duration::from_millis(at),
+                Some(&mut shaper),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        textarea_selection(&context, node),
+        ("hello world".into(), 11, 11)
+    );
+}

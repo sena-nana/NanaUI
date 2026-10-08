@@ -1626,3 +1626,61 @@ fn shortcuts_follow_the_physical_key_on_a_non_latin_layout() {
     );
     assert_eq!(input.services().clipboard(), Some("текст"));
 }
+
+/// The IME hears where the caret shows: a field scrolled 300 px left
+/// anchors its candidates 300 px left of its layout box.
+#[test]
+fn the_ime_anchor_follows_the_scroll_above_the_field() {
+    let mut context = AppContext::new();
+    let doc = document(33);
+    let mut input = HeadlessInput::bind(&mut context, doc);
+    let scroll = context
+        .create_component(
+            doc,
+            crate::ScrollView::new(crate::ScrollAxes::Horizontal).style({
+                let mut style = NodeStyle::default();
+                let layout = std::sync::Arc::make_mut(&mut style.layout);
+                layout.width = Some(nana_ui_core::LengthSpec::Px(240.0));
+                layout.height = Some(nana_ui_core::LengthSpec::Px(60.0));
+                layout.direction = Some(nana_ui_core::FlexDirection::Row);
+                style
+            }),
+        )
+        .unwrap();
+    let spacer = crate::Stack::column(0.0).with_layout(|layout| {
+        layout.width = Some(nana_ui_core::LengthSpec::Px(300.0));
+        layout.height = Some(nana_ui_core::LengthSpec::Px(32.0));
+        layout.flex_shrink = Some(0.0);
+    });
+    let spacer = context.create_component(doc, spacer).unwrap();
+    context.append_child(scroll, spacer).unwrap();
+    let mut field = TextInput::new("text");
+    {
+        let layout = std::sync::Arc::make_mut(&mut field.style.layout);
+        layout.width = Some(nana_ui_core::LengthSpec::Px(200.0));
+        layout.flex_shrink = Some(0.0);
+    }
+    let field = context.create_component(doc, field).unwrap();
+    context.append_child(scroll, field).unwrap();
+    let viewport = crate::LayoutViewport::new(400.0, 200.0);
+    context.layout_document(doc, viewport).unwrap();
+    context
+        .scroll_to(scroll, crate::ScrollOffset { x: 300.0, y: 0.0 })
+        .unwrap();
+    context.layout_document(doc, viewport).unwrap();
+    context.rebuild_hit_test(doc);
+    assert!(context.focus_node(doc, field.stable_id()).unwrap());
+    input
+        .route(&mut context, InputPayload::Focus { focused: true })
+        .unwrap();
+    let anchor = input
+        .services()
+        .text_input()
+        .and_then(|state| state.cursor_area)
+        .expect("caret anchor");
+    let laid_out = context.world().layout_box(field.stable_id()).unwrap();
+    assert!(
+        anchor.x < laid_out.x - 250.0,
+        "anchor {anchor:?} vs field box {laid_out:?}"
+    );
+}

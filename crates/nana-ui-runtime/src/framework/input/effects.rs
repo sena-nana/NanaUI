@@ -167,7 +167,7 @@ impl AppContext {
     fn text_input_key(&self, document: DocumentId) -> Option<TextInputKey> {
         if self.terminal_accepts_input(document) {
             return Some(TextInputKey::Terminal {
-                caret: self.terminal_caret_bounds(document),
+                caret: self.projected_terminal_caret(document),
             });
         }
         let (node, view) = self.editable_focused_text_input(document)?;
@@ -186,7 +186,7 @@ impl AppContext {
         if self.terminal_accepts_input(document) {
             return Some(TextInputContext {
                 purpose: TextInputPurpose::Terminal,
-                cursor_area: self.terminal_caret_bounds(document).map(logical_rect),
+                cursor_area: self.projected_terminal_caret(document).map(logical_rect),
                 surrounding: None,
             });
         }
@@ -214,13 +214,33 @@ impl AppContext {
         })
     }
 
+    /// The caret where it shows in the window: the IME puts its candidate
+    /// list there, so a field in a scrolled or transformed container must
+    /// not report its unscrolled layout box. Part of the input key, so a
+    /// scroll that moves the caret tells the host.
     fn text_input_caret(&self, node: StableNodeId) -> Option<LayoutBox> {
-        match self.world.component_geometry(node) {
+        let caret = match self.world.component_geometry(node) {
             Some(crate::ComponentGeometry::TextInput {
                 caret: Some(caret), ..
-            }) => Some(caret),
-            _ => self.world.component_layout_box(node),
-        }
+            }) => caret,
+            _ => self.world.component_layout_box(node)?,
+        };
+        Some(
+            self.world
+                .project_input_bounds(node, caret)
+                .unwrap_or(caret),
+        )
+    }
+
+    /// [`Self::terminal_caret_bounds`] where it shows in the window.
+    fn projected_terminal_caret(&self, document: DocumentId) -> Option<LayoutBox> {
+        let caret = self.terminal_caret_bounds(document)?;
+        let terminal = self.focused_terminal(document)?.stable_id();
+        Some(
+            self.world
+                .project_input_bounds(terminal, caret)
+                .unwrap_or(caret),
+        )
     }
 
     fn text_input_purpose(&self, node: StableNodeId) -> TextInputPurpose {
