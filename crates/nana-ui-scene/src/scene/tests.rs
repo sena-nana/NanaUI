@@ -10172,3 +10172,47 @@ mod custom_paint {
         assert_eq!(order, ["begin", "default", "fill", "end", "child"]);
     }
 }
+
+/// An outline takes its own colour, never the border's: with a border colour
+/// in its paint slot and an outline colour set on the paint style, the
+/// outline is the outline's colour.
+#[test]
+fn an_outline_is_not_painted_in_the_border_colour() {
+    let mut painted = node(1, None, &[]);
+    let red = nana_ui_core::PaintColor::srgb([1.0, 0.0, 0.0, 1.0]);
+    painted.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([1.0, 1.0, 1.0, 1.0]),
+            border_width: Some(1.0),
+            paint_colors: nana_ui_core::PaintColorSlots {
+                border: Some(red),
+                ..Default::default()
+            },
+            paint: nana_ui_core::PaintStyle {
+                outline: nana_ui_core::OutlineSpec {
+                    width: 2.0,
+                    color: Some([0.0, 0.0, 1.0, 1.0]),
+                    style: nana_ui_core::OutlineStyle::Solid,
+                },
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    style_mut(&mut painted).background = Some([1.0, 1.0, 1.0, 1.0]);
+    let mut scene = UiScene::new();
+    scene.apply_delta([painted], []);
+    let quad = scene
+        .primitive(PrimitiveId {
+            node: id(1),
+            slot: 0,
+        })
+        .expect("quad");
+    let ScenePrimitiveKind::Quad { surface, .. } = &quad.kind else {
+        panic!("expected quad");
+    };
+    assert_ne!(surface.outline_color_space, Some(red));
+    assert_eq!(surface.outline_color, Some([0.0, 0.0, 1.0, 1.0]));
+}

@@ -2796,6 +2796,12 @@ fn quad_surface_from_style(
     height: f32,
 ) -> QuadSurfacePaint {
     let border_fallback = style.paint_colors.border;
+    let outline_color = style
+        .paint
+        .outline
+        .is_active()
+        .then_some(style.paint.outline.color)
+        .flatten();
     QuadSurfacePaint {
         background_color: style.paint_colors.background,
         border_color_space: border_fallback,
@@ -2805,7 +2811,13 @@ fn quad_surface_from_style(
             style.paint_colors.border_bottom.or(border_fallback),
             style.paint_colors.border_left.or(border_fallback),
         ],
-        outline_color_space: style.paint_colors.outline.or(border_fallback),
+        // An outline never takes the border's colour: its own, then the
+        // current colour as CSS gives an outline without one. A colour set
+        // through `PaintStyle::outline` wins over a slot that disagrees.
+        outline_color_space: match outline_color {
+            Some(legacy) => matching_paint_color(style.paint_colors.outline, Some(legacy)),
+            None => style.paint_colors.outline.or(style.paint_colors.color),
+        },
         background_image: style.paint.background_image.clone(),
         background_layers: style.paint.background_layers.clone(),
         content_image: style.paint.content_image.clone(),
@@ -2833,12 +2845,7 @@ fn quad_surface_from_style(
         } else {
             0.0
         },
-        outline_color: style
-            .paint
-            .outline
-            .is_active()
-            .then_some(style.paint.outline.color)
-            .flatten(),
+        outline_color,
         mix_blend: style.paint.mix_blend,
         border_widths: [0.0; 4],
         border_colors: [[0.0; 4]; 4],
