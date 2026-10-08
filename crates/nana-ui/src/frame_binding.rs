@@ -155,16 +155,21 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
             self.texture.replace_texture(frame.texture());
             self.slot
                 .replace(self.texture.clone(), width, height, self.alpha);
-            self.showing_placeholder = false;
+            let from_placeholder = std::mem::replace(&mut self.showing_placeholder, false);
             self.awaiting_present = true;
             self.retired = self.current.replace(frame);
+            // Every new frame is a replacement, sixty a second for a live
+            // producer: a metric. Only leaving the placeholder for a live
+            // frame is a transition worth an event.
             metric!(gpu::FRAME_BINDING_REPLACEMENTS);
-            event!(
-                gpu::FRAME_BINDING_TRANSITION,
-                exchange = token.exchange_id(),
-                sequence = token.sequence(),
-                outcome = 1u64
-            );
+            if from_placeholder {
+                event!(
+                    gpu::FRAME_BINDING_TRANSITION,
+                    exchange = token.exchange_id(),
+                    sequence = token.sequence(),
+                    outcome = 1u64
+                );
+            }
             return true;
         }
         if stale {

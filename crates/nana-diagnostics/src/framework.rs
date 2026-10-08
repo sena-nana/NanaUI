@@ -285,8 +285,10 @@ pub mod gpu {
     pub static OUTPUT_CONSUMERS: Metric =
         Metric::counter(D, 52, "gpu.output.consumer_count", "count");
 
-    /// A low-volume frame-binding transition. `outcome`: 1 replacement, 2
-    /// placeholder, 3 explicit rejection. `exchange` and `sequence` identify
+    /// A low-volume frame-binding transition. `outcome`: 1 a live frame
+    /// replaced the placeholder, 2 the placeholder replaced a frame, 3
+    /// explicit rejection. Frame-to-frame replacements are counted by
+    /// `gpu.frame_binding.replacements`, not reported here. `exchange` and `sequence` identify
     /// the exchange and frame without exposing application epoch types.
     pub static FRAME_BINDING_TRANSITION: EventDescriptor = EventDescriptor::new(
         D,
