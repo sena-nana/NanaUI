@@ -321,6 +321,30 @@ impl HostedGpuSurface {
         self.refresh_hdr_info(&graphics.gpu)
     }
 
+    /// Resolve the profile again against what the surface offers now (on
+    /// another display, or after the alpha mode changed) and reconfigure
+    /// when it moved. Whether it did.
+    pub(crate) fn re_resolve_profile(&mut self, gpu: &GpuContext) -> bool {
+        let capabilities = self.surface.get_capabilities(__framework::adapter(gpu));
+        let Some(next) = resolve_surface_profile_internal(
+            self.profile.requested,
+            &capabilities,
+            self.want_transparent,
+        ) else {
+            return false;
+        };
+        if !surface_profile_changed(self.profile, next) {
+            return false;
+        }
+        self.profile = next;
+        self.format = next.format;
+        self.configuration.format = next.format;
+        self.configuration.color_space = next.color_space;
+        crate::host_diagnostics::record_surface_hdr(self.profile, &self.hdr_info);
+        self.reconfigure(gpu);
+        true
+    }
+
     /// Alpha composition mode selected from the native surface capabilities.
     pub const fn alpha_mode(&self) -> crate::SurfaceAlphaMode {
         crate::SurfaceAlphaMode::from_wgpu(self.configuration.alpha_mode)
@@ -429,11 +453,17 @@ impl HostedGpuSurface {
             &capabilities.alpha_modes,
             want_transparent,
         )?;
+        let transparency_changed = self.want_transparent != want_transparent;
+        self.want_transparent = want_transparent;
         if self.configuration.alpha_mode != alpha_mode {
             self.configuration.alpha_mode = alpha_mode;
             self.reconfigure(gpu);
         }
-        self.want_transparent = want_transparent;
+        // A transparent surface wants a format with alpha bits: a 10-bit PQ
+        // swapchain keeps only two.
+        if transparency_changed {
+            self.re_resolve_profile(gpu);
+        }
         Ok(())
     }
 

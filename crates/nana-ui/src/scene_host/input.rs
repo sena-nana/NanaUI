@@ -17,6 +17,29 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// event-level query only changes the presentation tone-map parameters.
     /// Keeping the query here avoids an OS capability call on steady frames
     /// (and keeps Metal's main-thread-only query on the event thread).
+    /// The window may be on another display: when it is, read that display's
+    /// HDR metadata and resolve the surface profile against it. A move within
+    /// one display (Windows sends one per step of a drag) does neither.
+    pub(super) fn refresh_surface_display(&mut self, id: WindowId) {
+        let Some(monitor) = self
+            .window(id)
+            .map(|window| window.current_monitor().map(|monitor| monitor.id()))
+        else {
+            return;
+        };
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        if host.monitor == monitor {
+            return;
+        }
+        host.monitor = monitor;
+        let profile_changed = host.surface.re_resolve_profile(self.graphics.gpu());
+        if !self.refresh_surface_hdr_info(id) && profile_changed {
+            self.request_redraw(id);
+        }
+    }
+
     pub(super) fn refresh_surface_hdr_info(&mut self, id: WindowId) -> bool {
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return false;
@@ -165,11 +188,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             WinitWindowEvent::Moved(_) => {
                 self.sync_window_mode(event_loop, id);
                 self.sync_geometry(id);
-                // Moving a window can put it on a display with different HDR
-                // metadata.  Query the cached surface metadata once for this
-                // event; presentation parameters are refreshed without
-                // rebuilding the application or Scene state.
-                self.refresh_surface_hdr_info(id);
+                // Moving a window can put it on another display, with other
+                // HDR metadata and formats. Only a display change re-reads
+                // them; presentation parameters refresh without rebuilding
+                // the application or Scene state.
+                self.refresh_surface_display(id);
                 self.forward_window_event(event_loop, id, &event);
             }
             WinitWindowEvent::SurfaceResized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
@@ -195,7 +218,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 let geometry_changed = self.sync_geometry(id);
                 // Leaving maximized or fullscreen arrives as a resize.
                 self.conform_content_aspect(event_loop, id);
-                let hdr_changed = self.refresh_surface_hdr_info(id);
+                // A scale change usually means another display; a resize
+                // step does not, and is not worth a display query.
+                if matches!(event, WinitWindowEvent::ScaleFactorChanged { .. }) {
+                    self.refresh_surface_display(id);
+                }
                 #[cfg(target_os = "macos")]
                 let native_live_resize = self.sync_native_live_resize_presents(id);
                 #[cfg(not(target_os = "macos"))]
@@ -204,7 +231,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 // Native macOS drags repaint through winit's live-resize
                 // hook, and a custom chrome drag paints its steps in-stack;
                 // both would only duplicate the per-step frame here.
-                if (geometry_changed || hdr_changed) && !native_live_resize {
+                if geometry_changed && !native_live_resize {
                     self.request_redraw(id);
                 }
             }

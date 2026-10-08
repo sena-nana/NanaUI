@@ -213,6 +213,9 @@ struct WindowContext {
     /// Descriptor outcome, applied before the first show and delivered after `Ready`.
     skip_taskbar_report: Option<Result<(), crate::WindowError>>,
     pointer_presence: presence::PointerPresence,
+    /// The display the window was last seen on, by winit's monitor id. A
+    /// move only re-reads display metadata when this changes.
+    monitor: Option<u128>,
     /// The desktop shadow applied to this window (#215).
     shadow: nana_window::shadow::WindowShadowState,
     /// The visible body the shadow follows, with the scene projection and
@@ -1231,6 +1234,7 @@ fn complete_startup<Program: RuntimeProgram>(
         skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
         skip_taskbar_report,
         pointer_presence: presence::PointerPresence::default(),
+        monitor: window.current_monitor().map(|monitor| monitor.id()),
         shadow: nana_window::shadow::WindowShadowState::default(),
         shadow_body: None,
     };

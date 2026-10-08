@@ -855,6 +855,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
                 skip_taskbar_report,
                 pointer_presence: presence::PointerPresence::default(),
+                monitor: window.current_monitor().map(|monitor| monitor.id()),
                 shadow: nana_window::shadow::WindowShadowState::default(),
                 shadow_body: None,
             },
