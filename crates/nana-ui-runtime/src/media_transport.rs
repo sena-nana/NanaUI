@@ -1213,36 +1213,30 @@ impl AppContext {
                 })?;
             }
         }
+        let volume_icon = if snapshot.muted || snapshot.volume <= 0.0 {
+            snapshot.icons.volume_muted
+        } else {
+            snapshot.icons.volume
+        };
         if let Some(volume_menu) = slots.volume_menu {
             let volume_menu = Entity::<Popover>::from_stable_id(volume_menu);
-            let muted = snapshot.muted || snapshot.volume <= 0.0;
-            let icon = if muted {
-                snapshot.icons.volume_muted
-            } else {
-                snapshot.icons.volume
-            };
             if self.read(volume_menu, |menu| {
-                menu.trigger_icon != Some(icon) || menu.trigger != labels.volume
+                menu.trigger_icon != Some(volume_icon) || menu.trigger != labels.volume
             })? {
                 self.update_component(volume_menu, |menu, _| {
-                    menu.trigger_icon = Some(icon);
+                    menu.trigger_icon = Some(volume_icon);
                     menu.trigger = Arc::clone(&labels.volume);
                 })?;
             }
         }
         if let Some(mute) = slots.mute {
-            let icon = if snapshot.muted || snapshot.volume <= 0.0 {
-                snapshot.icons.volume_muted
-            } else {
-                snapshot.icons.volume
-            };
             // The name says what a press does.
             let label = if snapshot.muted {
                 &labels.unmute
             } else {
                 &labels.mute
             };
-            sync_icon_button(self, mute, icon, label, Some(snapshot.disabled))?;
+            sync_icon_button(self, mute, volume_icon, label, Some(snapshot.disabled))?;
         }
         if let Some(fullscreen) = slots.fullscreen {
             let (icon, label) = if snapshot.fullscreen {
@@ -1287,29 +1281,38 @@ impl AppContext {
         }
         let mini = chrome.mini();
         self.place_mini_controls(slots, mini)?;
-        for (group, hidden) in [
-            (slots.settings_group, !chrome.settings),
-            (slots.volume_group, mini),
-            (slots.strip, !mini),
-        ] {
-            if let Some(group) = group {
-                self.update_component(Entity::<Stack>::from_stable_id(group), |stack, _| {
-                    *stack = stack.clone().with_layout(|layout| layout.hidden = hidden);
-                })?;
-            }
+        type Hide = fn(&mut AppContext, StableNodeId, bool) -> Result<(), FrameworkError>;
+        fn hide_group(
+            cx: &mut AppContext,
+            id: StableNodeId,
+            hidden: bool,
+        ) -> Result<(), FrameworkError> {
+            cx.update_component(Entity::<Stack>::from_stable_id(id), |stack, _| {
+                *stack = stack.clone().with_layout(|layout| layout.hidden = hidden);
+            })
         }
-        for (button, shown) in [
-            (slots.play, chrome.play),
-            (slots.fullscreen, chrome.fullscreen),
-            (slots.mute, mini),
-        ] {
-            if let Some(button) = button {
-                self.update_component(
-                    Entity::<IconButton>::from_stable_id(button),
-                    |button, _| {
-                        Arc::make_mut(&mut button.style.layout).hidden = !shown;
-                    },
-                )?;
+        fn hide_button(
+            cx: &mut AppContext,
+            id: StableNodeId,
+            hidden: bool,
+        ) -> Result<(), FrameworkError> {
+            cx.update_component(Entity::<IconButton>::from_stable_id(id), |button, _| {
+                Arc::make_mut(&mut button.style.layout).hidden = hidden;
+            })
+        }
+        // Every control the configuration shows or hides, and whether it is
+        // hidden now.
+        let toggled: [(Option<StableNodeId>, bool, Hide); 6] = [
+            (slots.settings_group, !chrome.settings, hide_group),
+            (slots.volume_group, mini, hide_group),
+            (slots.strip, !mini, hide_group),
+            (slots.play, !chrome.play, hide_button),
+            (slots.fullscreen, !chrome.fullscreen, hide_button),
+            (slots.mute, !mini, hide_button),
+        ];
+        for (id, hidden, hide) in toggled {
+            if let Some(id) = id {
+                hide(self, id, hidden)?;
             }
         }
         if !chrome.settings
@@ -1330,21 +1333,11 @@ impl AppContext {
         }
         // Nor may focus stay on a hidden control: it would keep the overlay
         // locked visible and let the keyboard activate what is not shown.
-        let hidden = [
-            (!chrome.play).then_some(slots.play).flatten(),
-            (!chrome.settings).then_some(slots.settings_group).flatten(),
-            (!chrome.fullscreen).then_some(slots.fullscreen).flatten(),
-            (!mini).then_some(slots.mute).flatten(),
-            mini.then_some(slots.volume_group).flatten(),
-        ];
-        if let Some(document) = slots
-            .chrome
-            .and_then(|id| self.world().node(id))
-            .map(|node| node.document)
+        if let Some(document) = slots.chrome.and_then(|id| self.world().document_of(id))
             && let Some(focused) = self.world().focused(document)
-            && hidden
+            && toggled
                 .into_iter()
-                .flatten()
+                .filter_map(|(id, hidden, _)| id.filter(|_| hidden))
                 .any(|root| self.world().is_descendant_or_self(focused, root))
         {
             self.clear_focus(document)?;
