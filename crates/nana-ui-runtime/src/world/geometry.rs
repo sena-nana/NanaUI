@@ -42,7 +42,7 @@ use super::*;
 const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
 
 /// Block extent of a progress bar.
-const PROGRESS_GIRTH: f32 = nana_ui_core::space::SM;
+pub(crate) const PROGRESS_GIRTH: f32 = nana_ui_core::space::SM;
 
 /// Extent of the glyph an empty state leads with. Composed, the way §1.5
 /// composed the other off-ladder sizes: one page-tight step plus the smallest.

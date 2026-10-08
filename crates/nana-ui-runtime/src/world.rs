@@ -3,6 +3,7 @@ mod animation;
 mod extraction;
 mod focus_scope;
 mod geometry;
+pub(crate) use geometry::PROGRESS_GIRTH;
 mod hit_test;
 mod input;
 mod motion;

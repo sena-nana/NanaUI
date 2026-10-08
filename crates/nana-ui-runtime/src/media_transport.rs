@@ -42,6 +42,7 @@ use crate::view_components::{
     Activate, IconButton, RangeChanged, RangeDragging, RangeField, RangeInput, RangeMarker, Stack,
     Text, project_common,
 };
+use crate::world::PROGRESS_GIRTH;
 use crate::{
     AccessibilityRole, AccessibilityState, ActionMenu, AppContext, ComponentView, Divider, Entity,
     FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle, OverlayVisibility,
@@ -59,8 +60,6 @@ const VOLUME_POPOVER_WIDTH: f32 = crate::popover::POPOVER_WIDTH;
 const MINI_PROGRESS_GIRTH: f32 = space::XXS;
 const MINI_PROGRESS_HIT: f32 = space::XXXL;
 const MINI_VOLUME_GIRTH: f32 = space::XS;
-/// [`Progress`]'s fixed girth.
-const LIVE_METER_GIRTH: f32 = space::SM;
 
 /// Built-in transport action. Scene extras keep their own events.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -878,23 +877,11 @@ impl AppContext {
                 .show_label(false)
                 .size(ControlSize::Small)
                 .label(Arc::clone(&labels.progress));
-            {
-                let layout = Arc::make_mut(&mut seek.style.layout);
-                layout.width = Some(LengthSpec::Fill);
-                layout.min_width = Some(LengthSpec::Px(0.0));
-                layout.flex_grow = Some(1.0);
-                layout.flex_shrink = Some(1.0);
-            }
+            fill_track(Arc::make_mut(&mut seek.style.layout));
             let seek = self.create_detached_component(document, seek)?;
             self.append_child(center, seek)?;
             let mut live_progress = Progress::new(1.0, 1.0);
-            {
-                let layout = Arc::make_mut(&mut live_progress.style.layout);
-                layout.width = Some(LengthSpec::Fill);
-                layout.min_width = Some(LengthSpec::Px(0.0));
-                layout.flex_grow = Some(1.0);
-                layout.flex_shrink = Some(1.0);
-            }
+            fill_track(Arc::make_mut(&mut live_progress.style.layout));
             let live_progress = self.create_detached_component(document, live_progress)?;
             self.append_child(center, live_progress)?;
             let mut time_duration = Text::new("")
@@ -1354,33 +1341,20 @@ impl AppContext {
         slots: &MediaTransportSlots,
         mini: bool,
     ) -> Result<(), FrameworkError> {
-        let (
-            Some(center),
-            Some(strip),
-            Some(left),
-            Some(right),
-            Some(leading),
-            Some(trailing),
-            Some(time),
-            Some(time_duration),
-            Some(seek),
-            Some(live_progress),
-            Some(volume),
-            Some(volume_menu),
-        ) = (
-            slots.center,
-            slots.strip,
-            slots.leading.and_then(|id| self.world().node(id)?.parent),
-            slots.trailing.and_then(|id| self.world().node(id)?.parent),
-            slots.leading,
-            slots.trailing,
-            slots.time,
-            slots.time_duration,
-            slots.seek,
-            slots.live_progress,
-            slots.volume,
-            slots.volume_menu,
-        )
+        let Some(MiniNodes {
+            center,
+            strip,
+            left,
+            right,
+            leading,
+            trailing,
+            time,
+            time_duration,
+            seek,
+            live_progress,
+            volume,
+            volume_menu,
+        }) = self.mini_nodes(slots)
         else {
             return Ok(());
         };
@@ -1420,23 +1394,12 @@ impl AppContext {
             if mini {
                 // A transparent band centred on the drawn rail takes the
                 // pointer, reaching over the content above the bar.
-                layout.position = PositionSpec::Absolute;
-                layout.offset_left = Some(LengthSpec::Px(0.0));
-                layout.offset_right = Some(LengthSpec::Px(0.0));
-                layout.offset_top = Some(LengthSpec::Px(
-                    (MINI_PROGRESS_GIRTH - MINI_PROGRESS_HIT) / 2.0,
-                ));
+                pin_across(layout, (MINI_PROGRESS_GIRTH - MINI_PROGRESS_HIT) / 2.0);
                 layout.height = Some(LengthSpec::Px(MINI_PROGRESS_HIT));
                 layout.flex_grow = None;
                 layout.flex_shrink = None;
             } else {
-                layout.position = PositionSpec::default();
-                layout.offset_left = None;
-                layout.offset_right = None;
-                layout.offset_top = None;
-                layout.height = None;
-                layout.flex_grow = Some(1.0);
-                layout.flex_shrink = Some(1.0);
+                fill_track(layout);
             }
         })?;
         self.update_component(
@@ -1445,17 +1408,9 @@ impl AppContext {
                 let layout = Arc::make_mut(&mut progress.style.layout);
                 if mini {
                     // The meter keeps its own girth, centred on the rail.
-                    layout.position = PositionSpec::Absolute;
-                    layout.offset_left = Some(LengthSpec::Px(0.0));
-                    layout.offset_right = Some(LengthSpec::Px(0.0));
-                    layout.offset_top = Some(LengthSpec::Px(
-                        (MINI_PROGRESS_GIRTH - LIVE_METER_GIRTH) / 2.0,
-                    ));
+                    pin_across(layout, (MINI_PROGRESS_GIRTH - PROGRESS_GIRTH) / 2.0);
                 } else {
-                    layout.position = PositionSpec::default();
-                    layout.offset_left = None;
-                    layout.offset_right = None;
-                    layout.offset_top = None;
+                    fill_track(layout);
                 }
             },
         )?;
@@ -1475,24 +1430,35 @@ impl AppContext {
                 layout.flex_shrink = None;
             }
         })?;
-        if mini {
-            // The row's left group gives way before the time and trailing
-            // slot do, so the volume rail is what narrows.
-            self.update_component(Entity::<Stack>::from_stable_id(left), |stack, _| {
-                *stack = stack.clone().with_layout(|layout| {
-                    layout.flex_shrink = Some(1.0);
-                    layout.min_width = Some(LengthSpec::Px(0.0));
-                });
-            })?;
-        } else {
-            self.update_component(Entity::<Stack>::from_stable_id(left), |stack, _| {
-                *stack = stack.clone().with_layout(|layout| {
-                    layout.flex_shrink = Some(0.0);
-                    layout.min_width = None;
-                });
-            })?;
-        }
+        // In Mini the row's left group gives way before the time and
+        // trailing slot do, so the volume rail is what narrows.
+        self.update_component(Entity::<Stack>::from_stable_id(left), |stack, _| {
+            *stack = stack.clone().with_layout(|layout| {
+                layout.flex_shrink = Some(if mini { 1.0 } else { 0.0 });
+                layout.min_width = mini.then_some(LengthSpec::Px(0.0));
+            });
+        })?;
         Ok(())
+    }
+
+    /// The nodes [`MediaTransportDensity::Mini`] moves, once the bar is
+    /// assembled.
+    fn mini_nodes(&self, slots: &MediaTransportSlots) -> Option<MiniNodes> {
+        let (leading, trailing) = (slots.leading?, slots.trailing?);
+        Some(MiniNodes {
+            center: slots.center?,
+            strip: slots.strip?,
+            left: self.world().parent_id(leading)?,
+            right: self.world().parent_id(trailing)?,
+            leading,
+            trailing,
+            time: slots.time?,
+            time_duration: slots.time_duration?,
+            seek: slots.seek?,
+            live_progress: slots.live_progress?,
+            volume: slots.volume?,
+            volume_menu: slots.volume_menu?,
+        })
     }
 
     fn slot_has_visible_child(&self, slot: StableNodeId) -> bool {
@@ -1507,6 +1473,45 @@ impl AppContext {
             })
             .unwrap_or(false)
     }
+}
+
+/// See [`AppContext::mini_nodes`].
+struct MiniNodes {
+    center: StableNodeId,
+    strip: StableNodeId,
+    /// The row's groups before and after the readout column: play, mute
+    /// and leading; trailing, volume, settings and fullscreen.
+    left: StableNodeId,
+    right: StableNodeId,
+    leading: StableNodeId,
+    trailing: StableNodeId,
+    time: StableNodeId,
+    time_duration: StableNodeId,
+    seek: StableNodeId,
+    live_progress: StableNodeId,
+    volume: StableNodeId,
+    volume_menu: StableNodeId,
+}
+
+/// A progress track filling the rest of the readout column, as assembled.
+fn fill_track(layout: &mut LayoutStyle) {
+    layout.position = PositionSpec::default();
+    layout.offset_left = None;
+    layout.offset_right = None;
+    layout.offset_top = None;
+    layout.height = None;
+    layout.width = Some(LengthSpec::Fill);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.flex_grow = Some(1.0);
+    layout.flex_shrink = Some(1.0);
+}
+
+/// A track pinned across its positioned parent, `top` below its top edge.
+fn pin_across(layout: &mut LayoutStyle, top: f32) {
+    layout.position = PositionSpec::Absolute;
+    layout.offset_left = Some(LengthSpec::Px(0.0));
+    layout.offset_right = Some(LengthSpec::Px(0.0));
+    layout.offset_top = Some(LengthSpec::Px(top));
 }
 
 /// The bar's own menus opening and closing, as the bar's events. A bar the
