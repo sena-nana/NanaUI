@@ -77,17 +77,26 @@ mod windows_hook {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
     use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
-    use windows_sys::Win32::UI::Shell::{
-        DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass,
-    };
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetClientRect, GetWindowRect, IsZoomed, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
-        WM_SETTINGCHANGE, WM_SIZING,
+        GetClientRect, GetPropW, GetWindowRect, IsZoomed, RemovePropW, SetPropW, WM_ENTERSIZEMOVE,
+        WM_EXITSIZEMOVE, WM_SETTINGCHANGE, WM_SIZING,
     };
 
     use crate::aspect::AspectLock;
 
     const SUBCLASS_ID: usize = 0x4E_41_53_4D;
+
+    /// Holds the installed `HookState` for readers outside the window
+    /// procedure. Replaces `GetWindowSubclass`, which comctl32 v5.82 (the
+    /// default without a Common-Controls v6 manifest) exports only by ordinal:
+    /// a by-name import stops every hosted binary from loading.
+    fn state_prop() -> Vec<u16> {
+        "NanaUI.SizeMove"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect()
+    }
 
     struct HookState {
         active: AtomicBool,
@@ -126,6 +135,15 @@ mod windows_hook {
                 unsafe { drop(Box::from_raw(state)) };
                 return Err("SetWindowSubclass failed for live size-move".into());
             }
+            let prop = state_prop();
+            // SAFETY: hwnd is live; the property is removed before `state` is freed.
+            if unsafe { SetPropW(hwnd, prop.as_ptr(), state as *mut c_void) } == 0 {
+                // SAFETY: the subclass was just installed with this state.
+                if unsafe { RemoveWindowSubclass(hwnd, Some(size_move_proc), SUBCLASS_ID) } != 0 {
+                    unsafe { drop(Box::from_raw(state)) };
+                }
+                return Err("SetPropW failed for live size-move".into());
+            }
             Ok(Self { hwnd, state })
         }
 
@@ -143,6 +161,9 @@ mod windows_hook {
 
     impl Drop for Hook {
         fn drop(&mut self) {
+            let prop = state_prop();
+            // SAFETY: readers of the property stop seeing `state` before it is freed.
+            unsafe { RemovePropW(self.hwnd, prop.as_ptr()) };
             // SAFETY: dropped before the winit Window. Successful removal
             // guarantees the callback can no longer observe `state`.
             let removed =
@@ -157,15 +178,15 @@ mod windows_hook {
     /// pixels. `None` for a window without the hook or without a lock, and
     /// for a maximized window, which keeps whatever the platform gave it.
     pub(crate) fn aspect_lock(hwnd: HWND) -> Option<AspectLock> {
-        let mut data = 0usize;
-        // SAFETY: GetWindowSubclass only reads the subclass table of hwnd.
-        let found =
-            unsafe { GetWindowSubclass(hwnd, Some(size_move_proc), SUBCLASS_ID, &mut data) };
-        if found == 0 || data == 0 {
+        let prop = state_prop();
+        // SAFETY: GetPropW only reads the property list of hwnd.
+        let data = unsafe { GetPropW(hwnd, prop.as_ptr()) } as *const HookState;
+        if data.is_null() {
             return None;
         }
-        // SAFETY: data is the live HookState installed with this subclass.
-        let state = unsafe { &*(data as *const HookState) };
+        // SAFETY: the property holds the live HookState until `Hook::drop`
+        // removes it, before the state is freed.
+        let state = unsafe { &*data };
         physical_lock(hwnd, state.aspect.get()?)
     }
 
