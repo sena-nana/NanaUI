@@ -1567,6 +1567,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.note_native_chrome_write();
         let window = host.surface.window();
         apply_native_chrome(window.as_ref(), &host.settings, &host.presentation, true);
+        // Every style write can add or drop the `WS_EX_LAYERED` that turning
+        // hit-testing off brings; without attributes DWM composes nothing of
+        // a layered window, so a click-through composition window would keep
+        // presenting frames nobody sees.
+        nana_window::settle_layered_window(window.as_ref());
         // `prepare_client_chrome` centers the buttons the way a window
         // without a laid-out placeholder wants them.
         place_native_controls(host);

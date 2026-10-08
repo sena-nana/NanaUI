@@ -1,8 +1,14 @@
 #![recursion_limit = "256"]
 
 //! Native two-window acceptance probe. Commands on stdin: lock, unlock, forward, forward-off,
-//! taskbar-show, taskbar-hide, hide, show, close, quit.
+//! taskbar-show, taskbar-hide, hide, show, close, presents, quit.
 //! Run through the Scene host; inspect output plus native pointer/compositor behavior.
+//!
+//! `--presents` opens a composition-capable process instead: a click-through
+//! composition overlay, an idle composition overlay and a click-through
+//! ordinary window, each asking for a continuous 30 Hz cadence. `presents`
+//! reports how many frames each one presented, so a cadence that stops when
+//! nothing posts `WM_PAINT` shows up as a count that does not grow.
 use nana_ui::runtime::view::widget;
 use nana_ui::runtime::{DocumentId, FrameworkError, RuntimeDocument, Stack, Text};
 use nana_ui::{
@@ -20,6 +26,14 @@ use std::{
 };
 
 const OVERLAY: WindowId = WindowId(1);
+/// `--presents`: an idle composition overlay that nothing ever invalidates.
+const COMPOSITION: WindowId = WindowId(3);
+/// `--presents`: a click-through ordinary (redirection-bitmap) window.
+const PLAIN_PASSTHROUGH: WindowId = WindowId(4);
+const PRESENT_HZ: u32 = 30;
+fn presents_mode() -> bool {
+    std::env::args().any(|argument| argument == "--presents")
+}
 const OPAQUE_HIT: (f32, f32, f32, f32) = (24.0, 24.0, 140.0, 80.0);
 #[derive(Clone)]
 enum Message {
@@ -29,12 +43,52 @@ enum Message {
     Visible(bool),
     Close,
     Fail,
+    Presents,
     Quit,
 }
 struct Probe {
     primary: RuntimeDocument,
     overlay: RuntimeDocument,
     overlay_window: Option<WindowHandle>,
+    /// `--presents` windows beyond the overlay, and every window's present count.
+    extra: Vec<(WindowId, RuntimeDocument)>,
+    presents: std::collections::BTreeMap<u64, u64>,
+}
+fn marker_document(raw: u64, label: &'static str) -> RuntimeDocument {
+    let id = DocumentId::new(raw).unwrap();
+    let mut document = RuntimeDocument::new(id);
+    document
+        .context_mut()
+        .mount_view_root(id, || {
+            widget(Stack::fill_column(0.0).align(nana_ui_core::AlignSpec::Start)).children(
+                widget(
+                    Stack::column(8.0)
+                        .width(LengthSpec::Px(OPAQUE_HIT.2))
+                        .height(LengthSpec::Px(OPAQUE_HIT.3))
+                        .with_layout(|layout| {
+                            layout.margin_left = Some(LengthSpec::Px(OPAQUE_HIT.0));
+                            layout.margin_top = Some(LengthSpec::Px(OPAQUE_HIT.1));
+                            layout.background = Some([0.2, 0.3, 0.9, 1.0]);
+                        }),
+                )
+                .children(widget(Text::new(label))),
+            )
+        })
+        .unwrap();
+    document
+}
+fn overlay_settings(title: &str, position: (f64, f64)) -> WindowDescriptor {
+    let mut settings = WindowDescriptor::new(title)
+        .initial_size(320.0, 200.0)
+        .minimum_size(200.0, 120.0);
+    settings.initial_position = Some(position);
+    settings.transparent = true;
+    settings.shadow = nana_ui::WindowShadow::None;
+    settings.always_on_top = true;
+    settings.focus_on_show = false;
+    settings.skip_taskbar = true;
+    settings.role = WindowRole::Tool;
+    settings
 }
 fn report(value: serde_json::Value) {
     println!("{value}");
@@ -99,6 +153,7 @@ impl RuntimeProgram for Probe {
                     "show" => Message::Visible(true),
                     "close" => Message::Close,
                     "fail" => Message::Fail,
+                    "presents" => Message::Presents,
                     "quit" => Message::Quit,
                     _ => continue,
                 };
@@ -110,6 +165,18 @@ impl RuntimeProgram for Probe {
                 primary,
                 overlay,
                 overlay_window: None,
+                extra: if presents_mode() {
+                    vec![
+                        (COMPOSITION, marker_document(3, "Idle composition overlay")),
+                        (
+                            PLAIN_PASSTHROUGH,
+                            marker_document(4, "Click-through plain window"),
+                        ),
+                    ]
+                } else {
+                    Vec::new()
+                },
+                presents: Default::default(),
             },
             vec![],
         ))
@@ -122,7 +189,11 @@ impl RuntimeProgram for Probe {
         Ok(match id {
             WindowId::PRIMARY => Some(f(&self.primary)),
             OVERLAY => Some(f(&self.overlay)),
-            _ => None,
+            _ => self
+                .extra
+                .iter()
+                .find(|(extra, _)| *extra == id)
+                .map(|(_, document)| f(document)),
         })
     }
     fn with_document_mut<R>(
@@ -133,7 +204,11 @@ impl RuntimeProgram for Probe {
         Ok(match id {
             WindowId::PRIMARY => Some(f(&mut self.primary)),
             OVERLAY => Some(f(&mut self.overlay)),
-            _ => None,
+            _ => self
+                .extra
+                .iter_mut()
+                .find(|(extra, _)| *extra == id)
+                .map(|(_, document)| f(document)),
         })
     }
     fn update(
@@ -172,14 +247,40 @@ impl RuntimeProgram for Probe {
                     settings,
                 }])
             }
+            Message::Presents => {
+                report(serde_json::json!({"event":"presents", "counts": self.presents}));
+                RuntimeProgramUpdate::default()
+            }
             Message::Quit => RuntimeProgramUpdate::exit(),
         }
+    }
+    fn gpu_backend_policy() -> nana_ui::GpuBackendPolicy {
+        if presents_mode() {
+            nana_ui::GpuBackendPolicy::CompositionCapable
+        } else {
+            nana_ui::GpuBackendPolicy::Plain
+        }
+    }
+    fn frame_demand(&self, id: WindowId) -> nana_ui::FrameDemand {
+        if presents_mode() && id != WindowId::PRIMARY {
+            nana_ui::FrameDemand::Continuous(std::num::NonZeroU32::new(PRESENT_HZ).unwrap())
+        } else {
+            nana_ui::FrameDemand::OnDemand
+        }
+    }
+    fn window_frame_presented(
+        &mut self,
+        id: WindowId,
+        _: &RuntimeProgramContext<Message>,
+    ) -> RuntimeProgramUpdate {
+        *self.presents.entry(id.0).or_default() += 1;
+        RuntimeProgramUpdate::default()
     }
     fn theme(&self) -> std::sync::Arc<nana_ui::CompiledTheme> {
         nana_ui::builtin_theme_arc(ThemeAppearance::Dark)
     }
     fn window_material_mode_for(&self, id: WindowId) -> MaterialEffect {
-        if id == OVERLAY {
+        if id == OVERLAY || id == COMPOSITION {
             MaterialEffect::Transparent
         } else {
             MaterialEffect::Solid
@@ -194,6 +295,51 @@ impl RuntimeProgram for Probe {
         context: &RuntimeProgramContext<Message>,
     ) -> RuntimeProgramUpdate {
         match event {
+            WindowEvent::Ready {
+                id: WindowId::PRIMARY,
+                ..
+            } if presents_mode() => {
+                report(serde_json::json!({"event":"primary_ready"}));
+                let mut plain = WindowDescriptor::new("NanaUI presents probe plain")
+                    .initial_size(320.0, 200.0)
+                    .surface(nana_ui::WindowSurfacePreference::NativeWindow);
+                plain.initial_position = Some((900.0, 120.0));
+                plain.focus_on_show = false;
+                plain.skip_taskbar = true;
+                commands(vec![
+                    WindowCommand::Open {
+                        id: OVERLAY,
+                        settings: overlay_settings(
+                            "NanaUI presents probe passthrough",
+                            (120.0, 120.0),
+                        ),
+                    },
+                    WindowCommand::Open {
+                        id: COMPOSITION,
+                        settings: overlay_settings("NanaUI presents probe idle", (500.0, 120.0)),
+                    },
+                    WindowCommand::Open {
+                        id: PLAIN_PASSTHROUGH,
+                        settings: plain,
+                    },
+                ])
+            }
+            WindowEvent::Ready { id, .. } if presents_mode() => {
+                report(serde_json::json!({
+                    "event": "ready",
+                    "window": id.0,
+                    "target": format!("{:?}", context.presentation().surface_target()),
+                    "alpha": format!("{:?}", context.surface_alpha_mode()),
+                }));
+                if id == OVERLAY || id == PLAIN_PASSTHROUGH {
+                    commands(vec![WindowCommand::SetMousePassthrough {
+                        id,
+                        enabled: true,
+                    }])
+                } else {
+                    RuntimeProgramUpdate::default()
+                }
+            }
             WindowEvent::Ready {
                 id: WindowId::PRIMARY,
                 ..

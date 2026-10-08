@@ -988,6 +988,9 @@ pub enum FrameDemand {
 pub(crate) struct FrameSchedule {
     demand: FrameDemand,
     deadline: Option<Instant>,
+    /// When the host first asked the platform for the paint that serves the
+    /// due frame, until a redraw serves or defers it.
+    requested: Option<Instant>,
 }
 
 impl FrameSchedule {
@@ -1020,6 +1023,7 @@ impl FrameSchedule {
     }
 
     pub(crate) fn defer(&mut self, demand: FrameDemand, now: Instant) -> Option<Instant> {
+        self.requested = None;
         self.demand = demand;
         self.deadline = match demand {
             FrameDemand::OnDemand => None,
@@ -1036,10 +1040,29 @@ impl FrameSchedule {
 
     /// Continuous consumes the served tick. At/OnDemand keep a still-due deadline.
     pub(crate) fn advance_served(&mut self, demand: FrameDemand, now: Instant) -> Option<Instant> {
+        self.requested = None;
         match demand {
             FrameDemand::Continuous(_) => self.update(demand, now).1,
             _ => self.arm(demand, now),
         }
+    }
+
+    /// Records that the due frame was requested from the platform and returns
+    /// the instant by which a redraw should have served it.
+    ///
+    /// A due frame is normally served by the paint the request posts. Nothing
+    /// else wakes the loop for it: its deadline is already in the past, so a
+    /// paint the platform withholds would leave the window waiting on an
+    /// unrelated event. The returned instant is what the loop waits for
+    /// instead, and a request still outstanding then is the host's to serve.
+    pub(crate) fn note_requested(&mut self, demand: FrameDemand, now: Instant) -> Instant {
+        let requested = *self.requested.get_or_insert(now);
+        requested + unserved_frame_grace(demand)
+    }
+
+    /// Starts the grace period over for a request made again.
+    pub(crate) fn renew_request(&mut self, now: Instant) {
+        self.requested = Some(now);
     }
 
     fn armed_deadline(&self, demand: FrameDemand, now: Instant) -> Option<Instant> {
@@ -1060,6 +1083,15 @@ impl FrameSchedule {
 }
 
 const PRESENT_RETRY: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// How long a requested frame may wait for its paint: one period of a
+/// continuous cadence, so a withheld paint costs no frame, else the retry.
+fn unserved_frame_grace(demand: FrameDemand) -> std::time::Duration {
+    match demand {
+        FrameDemand::Continuous(fps) => continuous_period(fps),
+        FrameDemand::OnDemand | FrameDemand::At(_) => PRESENT_RETRY,
+    }
+}
 
 fn continuous_period(fps: std::num::NonZeroU32) -> std::time::Duration {
     std::time::Duration::from_secs_f64(1.0 / f64::from(fps.get()))
@@ -1182,6 +1214,37 @@ mod frame_schedule_tests {
         assert!(!schedule.due(fps(60), now));
         schedule.arm(fps(60), now);
         assert!(!schedule.due(fps(60), now));
+    }
+
+    #[test]
+    fn a_requested_frame_waits_one_period_for_its_paint() {
+        let start = Instant::now();
+        let demand = fps(30);
+        let mut schedule = FrameSchedule::default();
+        assert!(schedule.due(demand, start));
+        schedule.arm(demand, start);
+        let watchdog = schedule.note_requested(demand, start);
+        assert_eq!(
+            watchdog,
+            start + continuous_period(std::num::NonZeroU32::new(30).unwrap())
+        );
+        // Asking again does not push the grace period out.
+        let later = start + std::time::Duration::from_millis(5);
+        assert_eq!(schedule.note_requested(demand, later), watchdog);
+        // Serving the frame clears the request; the next one starts fresh.
+        schedule.advance_served(demand, later);
+        let next = schedule.note_requested(demand, later);
+        assert!(next > watchdog);
+        schedule.defer(demand, later);
+        schedule.renew_request(watchdog);
+        assert_eq!(
+            schedule.note_requested(demand, watchdog),
+            watchdog + continuous_period(std::num::NonZeroU32::new(30).unwrap())
+        );
+        assert_eq!(
+            FrameSchedule::default().note_requested(FrameDemand::OnDemand, start),
+            start + PRESENT_RETRY
+        );
     }
 
     #[test]

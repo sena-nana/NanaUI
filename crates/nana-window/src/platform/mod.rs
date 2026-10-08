@@ -17,5 +17,5 @@ pub(crate) use macos::{
 #[cfg(target_os = "windows")]
 pub(crate) use windows::{
     DialogCancellation, apply, clear, install_menu_bar, set_application_icon_png,
-    set_presentation_hold, set_skip_taskbar, show_without_activation,
+    set_presentation_hold, set_skip_taskbar, settle_layered_window, show_without_activation,
 };

@@ -75,6 +75,41 @@ pub(crate) fn show_without_activation<W: HasWindowHandle + ?Sized>(_window: &W) 
     false
 }
 
+/// Gives a `WS_EX_LAYERED` window that has no layering attributes an opaque
+/// constant alpha, and reports whether the window is layered at all.
+///
+/// winit turns hit-testing off by adding `WS_EX_LAYERED | WS_EX_TRANSPARENT`
+/// and never calls `SetLayeredWindowAttributes`. A layered window without
+/// attributes is one DWM has nothing to compose for: a window presenting
+/// through a DirectComposition visual keeps presenting, but none of it reaches
+/// the screen. `LWA_ALPHA` at 255 changes nothing about what the window shows,
+/// only that it is shown. Attributes someone else set (a colour key, a real
+/// alpha) are left alone.
+pub(crate) fn settle_layered_window<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetLayeredWindowAttributes, LWA_ALPHA, LWA_COLORKEY, SetLayeredWindowAttributes,
+        WS_EX_LAYERED,
+    };
+
+    let Some(hwnd) = hwnd(window) else {
+        return false;
+    };
+    let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    if ex_style & WS_EX_LAYERED as isize == 0 {
+        return false;
+    }
+    let (mut key, mut alpha, mut flags) = (0u32, 0u8, 0u32);
+    // SAFETY: `hwnd` is a live layered window; the out pointers are locals.
+    let read = unsafe { GetLayeredWindowAttributes(hwnd, &mut key, &mut alpha, &mut flags) };
+    if read == 0 || flags & (LWA_ALPHA | LWA_COLORKEY) == 0 {
+        // SAFETY: as above.
+        unsafe {
+            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+        }
+    }
+    true
+}
+
 /// DWM cloaking: the window stays visible to Win32 (it gets `WM_PAINT`, its
 /// swap chain presents and `IsWindowVisible` is true) but is not composed to
 /// the screen and is not hit-tested.
