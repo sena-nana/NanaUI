@@ -638,22 +638,24 @@ impl AppContext {
             y,
             delta_x,
             delta_y,
-            modifiers,
             ..
         } = wheel;
         let line_delta = &(wheel.unit == WheelUnit::Lines);
-        let (dx, dy) = if modifiers.shift && !cfg!(target_os = "macos") {
-            (*delta_y, *delta_x)
-        } else {
-            (*delta_x, *delta_y)
-        };
+        // Deltas arrive oriented: a host whose platform leaves Shift+wheel
+        // vertical turns it horizontal before it routes.
+        let (dx, dy) = (*delta_x, *delta_y);
         let scale = if *line_delta { LINE_SCROLL_EXTENT } else { 1.0 };
         let delta = ScrollOffset {
             x: -dx * scale,
             y: -dy * scale,
         };
-        let overlay =
-            self.route_overlay_pointer(document, 0, OverlayPointerPhase::Wheel, *x, *y)?;
+        let overlay = self.route_overlay_pointer(
+            document,
+            wheel.pointer_id.0,
+            OverlayPointerPhase::Wheel,
+            *x,
+            *y,
+        )?;
         *landed = overlay.target;
         // 锚定浮层（补全弹层 / hover 浮窗）优先：指针落在浮层面板
         #[cfg(feature = "image-viewer")]

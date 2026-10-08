@@ -524,9 +524,25 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let _ = self.deliver_host_input(event_loop, id, InputPayload::Pointer(pointer));
     }
 
+    /// The pointer leaves the content for transparent space (or the window
+    /// goes away under it): the gesture is cancelled, hover clears, and the
+    /// window shows the default cursor.
     fn dispatch_forward_leave(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
         self.dispatch_pointer_cancel(event_loop, id);
-        self.reset_window_cursor(id);
+        if !self.window_contexts.contains_key(&id) {
+            return;
+        }
+        let pointer_id = mapped_pointer(1, PointerType::Mouse, true, None).pointer_id;
+        let _ = self.deliver_host_input(
+            event_loop,
+            id,
+            InputPayload::PointerLeave {
+                pointer_id: nana_ui_platform::PointerId(pointer_id),
+            },
+        );
+        if self.window_contexts.contains_key(&id) {
+            self.reset_window_cursor(id);
+        }
     }
 
     /// Cancels the mouse gesture when the platform takes its release away (a
@@ -595,7 +611,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if self.window_contexts.get(&id).is_some_and(|host| {
             host.passthrough_mode == MousePassthroughMode::Forward && !host.os_mouse_passthrough
         }) {
-            let _ = self.apply_os_mouse_passthrough(event_loop, id, true, false);
+            // The pointer was over content; what it held there ends with it,
+            // as when it moves off to transparent space.
+            self.restore_forward_passthrough(event_loop, id);
         }
     }
 

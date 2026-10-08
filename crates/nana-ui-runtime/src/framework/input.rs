@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use nana_ui_input::{
     CanonicalInputEvent, CompositionInput, DeviceId, EndpointGeneration, HostServices,
     InputDisposition, InputEndpoint, InputPayload, InputSequence, InputSourceId, InputTimestamp,
-    KeyState, PointerId, PointerInput, PointerPhase, PointerType,
+    KeyState, PointerId, PointerInput, PointerPhase, PointerType, WheelInput,
 };
 
 use super::OverlayActivity;
@@ -330,6 +330,11 @@ impl AppContext {
                     })
                 };
             }
+            // A newer generation is the source starting over: what the old
+            // one held (a press, a capture, a preedit) is cancelled as an
+            // unbind cancels it, not dropped with its state.
+            let now = self.world.animation_now;
+            let _ = self.unbind_input_source(source, now);
         }
         self.input
             .sources
@@ -477,10 +482,20 @@ impl AppContext {
         let document = state.document;
         let pointer = state.pointer;
         if let Some((local, x, y)) = pointer {
-            let target = self
-                .world
-                .pointer_capture(document, local)
-                .or_else(|| self.world.pointer_hover(document, local));
+            let target = match self.world.pointer_capture(document, local) {
+                Some(captured) => Some(captured),
+                None => {
+                    // What lies under a resting pointer moves without it: a
+                    // wheel scrolled, layout shifted, a row animated in.
+                    // Hover follows, as a browser's does after the frame.
+                    let under = self.world.hit_test(document, x, y);
+                    if under != self.world.pointer_hover(document, local) {
+                        let now = self.world.animation_now;
+                        let _ = self.set_pointer_hover_at(document, local, under, now);
+                    }
+                    under
+                }
+            };
             self.sync_cursor(source, document, x, y, target, None, services);
         }
         self.sync_text_input(source, document, false, services);
@@ -547,7 +562,14 @@ impl AppContext {
             }
             // A wheel moves nothing under the cursor it did not already show;
             // the next pointer sample re-derives it.
-            InputPayload::Wheel(wheel) => self.dispatch_wheel(document, wheel, &mut landed)?,
+            InputPayload::Wheel(wheel) => {
+                let local = local.expect("pointer resolved above");
+                let wheel = WheelInput {
+                    pointer_id: PointerId(local),
+                    ..*wheel
+                };
+                self.dispatch_wheel(document, &wheel, &mut landed)?
+            }
             InputPayload::PointerEnter { x, y, .. } => {
                 let local = local.expect("pointer resolved above");
                 let target = self.world.hit_test(document, *x, *y);
@@ -895,6 +917,14 @@ impl AppContext {
             }
             self.release_pointer_capture(document, pointer);
             self.release_pointer(document, pointer);
+            // A press outside a blocking overlay holds no press or capture,
+            // so no cancel reached the overlay: forget its sequence here.
+            self.component_lifecycle
+                .overlay_pointer_sequences
+                .remove(&(document, pointer));
+            self.component_lifecycle
+                .overlay_outside_presses
+                .remove(&(document, pointer));
             self.set_pointer_location(document, pointer, None);
             self.set_pointer_hover_at(document, pointer, None, now)?;
         }

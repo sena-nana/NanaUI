@@ -2647,10 +2647,27 @@ struct ScreenSpace {
     client_ratio: f32,
 }
 
+/// Shift turns a vertical wheel horizontal. macOS does that itself (the
+/// deltas already arrive horizontal); elsewhere the host swaps the axes, so
+/// the Runtime gets deltas that mean what they say on every platform.
+fn shift_wheel_axes(delta: (f32, f32), shift: bool, platform_swaps: bool) -> (f32, f32) {
+    if shift && !platform_swaps {
+        (delta.1, delta.0)
+    } else {
+        delta
+    }
+}
+
+/// Where the window's client area starts on the desktop. Pointer positions
+/// are client coordinates, so the screen position adds the client origin:
+/// the outer position plus the surface's offset inside the frame (title bar,
+/// borders), not the outer position alone.
 fn window_screen_origin(window: &dyn winit::window::Window) -> Option<ScreenSpace> {
     let own = window.scale_factor().max(0.01);
     let scale = desktop_scale(own, window_reference_scale(window));
-    window.outer_position().ok().map(|position| {
+    window.outer_position().ok().map(|outer| {
+        let surface = window.surface_position();
+        let position = winit::dpi::PhysicalPosition::new(outer.x + surface.x, outer.y + surface.y);
         let origin = position.to_logical::<f32>(scale);
         ScreenSpace {
             origin: (origin.x, origin.y),
@@ -3258,7 +3275,8 @@ impl InputTracker {
                 if let Some(position) = position {
                     self.set_cursor_physical(*position, scale);
                 }
-                self.buttons = 0;
+                // A drag that leaves keeps its buttons: the platform still
+                // delivers the moves and the release to this window.
                 let pointer = map_pointer_kind(kind, *primary, *device_id);
                 (
                     device_id,
@@ -3282,6 +3300,11 @@ impl InputTracker {
                     ),
                     _ => (0.0, 0.0, nana_ui_platform::WheelUnit::Pixels),
                 };
+                let (delta_x, delta_y) = shift_wheel_axes(
+                    (delta_x, delta_y),
+                    modifiers.shift,
+                    cfg!(target_os = "macos"),
+                );
                 // The wheel belongs to the mouse: same pointer, same hover.
                 (
                     device_id,
@@ -3554,6 +3577,7 @@ mod tests {
     use super::desktop_scale;
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
+    use super::shift_wheel_axes;
     use super::{
         Desktop, DisplayBounds, FileDragInput, FileDragKind, ForwardPointerAction, FrameMoveStep,
         InputTracker, PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, allows_modal_parent_event,
@@ -3611,6 +3635,13 @@ mod tests {
     }
 
     #[cfg(not(target_os = "android"))]
+    #[test]
+    fn shift_wheel_scrolls_sideways_once() {
+        assert_eq!(shift_wheel_axes((0.0, 3.0), true, false), (3.0, 0.0));
+        assert_eq!(shift_wheel_axes((3.0, 0.0), true, true), (3.0, 0.0));
+        assert_eq!(shift_wheel_axes((0.0, 3.0), false, false), (0.0, 3.0));
+    }
+
     #[test]
     fn a_blocked_parent_still_hears_it_lost_focus() {
         assert!(allows_modal_parent_event(&WinitWindowEvent::Focused(false)));
@@ -4609,7 +4640,8 @@ mod tests {
             }
         );
         assert_eq!(tracker.cursor.0, 10.0);
-        assert_eq!(tracker.buttons, 0);
+        // The press is still held: the release comes to this window.
+        assert_eq!(tracker.buttons, 1);
     }
 
     #[test]
@@ -4670,6 +4702,27 @@ mod tests {
         .expect("pointer leave");
         assert!(matches!(left, InputPayload::PointerLeave { .. }));
         assert_eq!(tracker.cursor, (20.0, 40.0));
+    }
+
+    #[test]
+    fn a_drag_leaving_the_window_keeps_its_buttons() {
+        let mut tracker = InputTracker {
+            buttons: mouse_button_mask(PRIMARY_MOUSE_BUTTON),
+            ..InputTracker::default()
+        };
+        map_input(
+            &mut tracker,
+            &WinitWindowEvent::PointerLeft {
+                device_id: None,
+                position: None,
+                primary: true,
+                kind: PointerKind::Mouse,
+            },
+            1.0,
+            None,
+        )
+        .expect("pointer leave");
+        assert_eq!(tracker.buttons, mouse_button_mask(PRIMARY_MOUSE_BUTTON));
     }
 
     #[test]

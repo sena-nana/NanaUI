@@ -1723,6 +1723,69 @@ fn wheel_on_overflow_auto_updates_scroll_offset() {
     );
 }
 
+/// A wheel that scrolls content under a resting pointer moves its hover to
+/// what is under it once the frame shows it, without the pointer moving.
+#[test]
+fn a_wheel_scroll_moves_the_hover_to_what_is_under_the_pointer() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let scroller = crate::StableNodeId::new(1).unwrap();
+    let first = crate::StableNodeId::new(2).unwrap();
+    let second = crate::StableNodeId::new(3).unwrap();
+    let mut create = MutationQueue::new();
+    create.create(scroller, document, NodeKind::Element { tag: "div".into() });
+    for (row, y) in [(first, 0.0), (second, 60.0)] {
+        create.create(row, document, NodeKind::Element { tag: "item".into() });
+        create.insert(scroller, row, None);
+        create.write_layout(
+            row,
+            LayoutBox {
+                x: 0.0,
+                y,
+                width: 200.0,
+                height: 60.0,
+            },
+        );
+    }
+    create.set_style(
+        scroller,
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                overflow_y: OverflowSpec::Auto,
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    create.write_layout(
+        scroller,
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 60.0,
+        },
+    );
+    context.commit_mutations(create).unwrap();
+    let work = context.take_system_work();
+    context.resolve_styles(&work.style).unwrap();
+    context.rebuild_hit_test(document);
+
+    let mut adapter = TestInput::default();
+    adapter
+        .dispatch(&mut context, document, &pointer_move(10.0, 10.0))
+        .unwrap();
+    assert_eq!(context.world().pointer_hover(document, 1), Some(first));
+    adapter
+        .dispatch(&mut context, document, &wheel(10.0, 10.0, -1.0))
+        .unwrap();
+    assert_eq!(context.world().scroll_offset(scroller).unwrap().y, 60.0);
+    // The frame that shows the scroll: hit index, then the host's refresh.
+    context.rebuild_hit_test(document);
+    context.refresh_input_effects(HeadlessInput::SOURCE, &mut adapter.services);
+    assert_eq!(context.world().pointer_hover(document, 1), Some(second));
+}
+
 #[test]
 fn keyboard_routes_navigation_from_focused_table_cell() {
     let mut context = AppContext::new();
@@ -2174,6 +2237,69 @@ fn outside_press_closes_the_popover_without_reaching_the_underlay() {
     // An app-owned trigger button sits outside the popover too, so letting
     // this press through would toggle the menu straight back open.
     assert_eq!(*activations.lock().unwrap(), 0);
+}
+
+/// A press outside a dialog holds nothing (no press, no capture), yet the
+/// overlay remembers its sequence. Cancelling the source forgets it too.
+#[test]
+fn cancelling_a_source_forgets_its_outside_press() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let host = context
+        .create_component(document, OverlayHost::new())
+        .unwrap();
+    let dialog = context
+        .create_component(document, Dialog::new("Dialog"))
+        .unwrap();
+    context.append_child(host, dialog).unwrap();
+    let mut layout = MutationQueue::new();
+    layout.write_layout(
+        dialog.stable_id(),
+        LayoutBox {
+            x: 100.0,
+            y: 100.0,
+            width: 100.0,
+            height: 100.0,
+        },
+    );
+    context.commit_mutations(layout).unwrap();
+    context.activate_overlay(host, dialog).unwrap();
+    context.rebuild_hit_test(document);
+    let mut adapter = TestInput::default();
+    adapter
+        .dispatch(
+            &mut context,
+            document,
+            &pointer(PointerPhase::Down, 20.0, 20.0),
+        )
+        .unwrap();
+    assert!(
+        !context
+            .component_lifecycle
+            .overlay_pointer_sequences
+            .is_empty()
+    );
+
+    adapter
+        .dispatch(
+            &mut context,
+            document,
+            &Gesture::Event(InputPayload::Focus { focused: false }),
+        )
+        .unwrap();
+
+    assert!(
+        context
+            .component_lifecycle
+            .overlay_pointer_sequences
+            .is_empty()
+    );
+    assert!(
+        context
+            .component_lifecycle
+            .overlay_outside_presses
+            .is_empty()
+    );
 }
 
 #[test]

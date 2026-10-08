@@ -951,6 +951,44 @@ fn unbinding_a_source_cancels_ime_but_retains_document_focus() {
     assert_eq!(context.world().focused(doc), Some(editor.stable_id()));
 }
 
+/// Binding a newer generation starts the source over the way unbinding it
+/// would: the preedit it held is cancelled, not left in the field.
+#[test]
+fn rebinding_at_a_newer_generation_cancels_what_the_source_held() {
+    let mut context = AppContext::new();
+    let doc = document(49);
+    let source = InputSourceId(49);
+    context
+        .bind_input_source(source, EndpointGeneration(1), doc)
+        .unwrap();
+    let editor = focused_editor(&mut context, doc, "draft");
+    context
+        .route_input(
+            &event(
+                source,
+                EndpointGeneration(1),
+                1,
+                InputPayload::Focus { focused: true },
+            ),
+            &mut UnsupportedHostServices,
+            None,
+        )
+        .unwrap();
+    context
+        .set_ime_preedit(doc, "中".into(), Some((0, "中".len())))
+        .unwrap();
+
+    context
+        .bind_input_source(source, EndpointGeneration(2), doc)
+        .unwrap();
+
+    assert!(context.world().ime(editor.stable_id()).is_none());
+    assert_eq!(
+        context.input_binding(source),
+        Some((EndpointGeneration(2), doc))
+    );
+}
+
 #[test]
 fn the_cursor_is_sent_only_when_it_changes() {
     let mut context = AppContext::new();
