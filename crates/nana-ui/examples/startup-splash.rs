@@ -21,6 +21,8 @@
 //! --first-frame-ms=MS       block the event thread MS in the first prepare
 //! --exit-before-handoff     exit from UiReady without ever taking over
 //! --hidden                  start hidden (a tray start: no splash), show later
+//! --composition             ask for a compositor-capable backend (DX12 and
+//!                           DirectComposition on Windows), as overlay apps do
 //! --probe                   exit after the handoff and check the record
 //! ```
 //!
@@ -56,6 +58,7 @@ struct Options {
     first_frame_ms: u64,
     exit_before_handoff: bool,
     hidden: bool,
+    composition: bool,
     probe: bool,
 }
 
@@ -96,6 +99,7 @@ fn options() -> Options {
             "--first-frame-ms" => options.first_frame_ms = millis(value),
             "--exit-before-handoff" => options.exit_before_handoff = true,
             "--hidden" => options.hidden = true,
+            "--composition" => options.composition = true,
             "--probe" => options.probe = true,
             other => panic!("unknown argument {other}"),
         }
@@ -230,6 +234,14 @@ impl ApplicationState for Demo {
         Ok(())
     }
 
+    fn gpu_backend_policy() -> nana_ui::GpuBackendPolicy {
+        if with_options(|options| options.composition) {
+            nana_ui::GpuBackendPolicy::CompositionCapable
+        } else {
+            nana_ui::GpuBackendPolicy::Plain
+        }
+    }
+
     fn startup_takeover(&self) -> StartupTakeover {
         let deferred =
             with_options(|options| options.defer.is_some() || options.exit_before_handoff);
@@ -352,7 +364,8 @@ fn report(status: &StartupStatus, idle_frames: u64) {
             "\"longest_block_ms\":{:.3},\"devices_requested\":{},\"painters_created\":{},",
             "\"logo_decodes\":{},\"logo_uploads\":{},\"animation_submissions\":{},",
             "\"splash_commits\":{},\"splash_live_resources\":{},\"logo_source\":\"{}\",",
-            "\"splash_logo_read_ms\":{},\"idle_frames\":{}}}"
+            "\"splash_logo_read_ms\":{},\"device_request_ms\":{},\"painter_build_ms\":{},",
+            "\"idle_frames\":{}}}"
         ),
         status.phase.label(),
         // The outcome's Debug form quotes pack names and reasons.
@@ -379,6 +392,8 @@ fn report(status: &StartupStatus, idle_frames: u64) {
             "embedded"
         },
         millis(work.splash_logo_read),
+        millis(work.device_request),
+        millis(work.painter_build),
         idle_frames,
     );
     let mut failures = Vec::new();
@@ -419,6 +434,10 @@ fn report(status: &StartupStatus, idle_frames: u64) {
     }
     if idle_frames > 0 {
         failures.push("the window kept drawing after the handoff");
+    }
+    // Both happen on the startup thread before UiReady, once per target tried.
+    if work.device_request.is_none() || work.painter_build.is_none() {
+        failures.push("the device request or the painter build was not timed");
     }
     if !failures.is_empty() {
         eprintln!("startup-splash probe failed: {}", failures.join("; "));

@@ -127,6 +127,9 @@ pub enum GpuCapability {
     Timestamps,
     ExternalTexture,
     TransientHint,
+    /// DX12 shared textures plus a shared fence another D3D device opens by
+    /// handle (`NativeExportPool`, feature `native-export`, Windows).
+    NativeTextureExport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +149,10 @@ impl GpuCapabilities {
             GpuCapability::Timestamps => features.timestamp_query(),
             GpuCapability::ExternalTexture => features.external_texture(),
             GpuCapability::TransientHint => features.transient_hint(),
+            GpuCapability::NativeTextureExport => {
+                cfg!(all(windows, feature = "native-export"))
+                    && matches!(self.backend, GpuBackend::Dx12)
+            }
         }
     }
     pub const fn capability(&self, capability: GpuCapability) -> GpuCapabilityOutcome {
@@ -165,6 +172,13 @@ impl GpuCapabilities {
                         "external memory export/semaphore ownership interop is unavailable"
                     }
                     GpuCapability::TransientHint => "transient resource hints are unavailable",
+                    GpuCapability::NativeTextureExport => {
+                        if cfg!(all(windows, feature = "native-export")) {
+                            "native texture export needs a DX12 device"
+                        } else {
+                            "native texture export needs Windows and the native-export feature"
+                        }
+                    }
                 })
             },
         }

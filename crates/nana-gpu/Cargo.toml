@@ -12,6 +12,9 @@ default = []
 # `FrameContext::wgpu_encoder()`, `GpuTexture::from_wgpu()` and the `wgpu` re-export.
 # Ordinary renderers and producers do not need it.
 wgpu-interop = []
+# DX12 shared textures and a shared fence another D3D device opens by handle
+# (`NativeExportPool`). Windows only; compiles the DX12 backend in.
+native-export = ["dep:windows", "wgpu/dx12"]
 
 [lib]
 name = "nana_gpu"
@@ -21,6 +24,25 @@ path = "src/lib.rs"
 nana-diagnostics.workspace = true
 wgpu.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Security",
+] }
+
 [dev-dependencies]
 wgpu = { workspace = true, features = ["dx12", "gles", "metal", "vulkan"] }
 pollster.workspace = true
+
+# The native-export tests open the exported handles on a D3D11 device.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }

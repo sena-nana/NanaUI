@@ -164,6 +164,29 @@ const TEXT_DIAGNOSTIC_MARKERS: u32 = 2;
 const TEXT_DIAGNOSTIC_LABELS: u32 = 3;
 const TEXT_ATOM_ICONS: u32 = 4;
 const TEXT_ATOM_LABELS: u32 = 5;
+/// Inline objects of a rich text node, one slot per object in text order.
+const TEXT_INLINE_OBJECTS: u32 = 7;
+/// A rich text editor's caret, over its glyphs.
+const TEXT_EDITOR_CARET: u32 = 8;
+/// A rich text editor's selection rectangles share the document selection's
+/// paint layer (under the glyphs) from this index on.
+const RICH_EDITOR_SELECTION_BASE: usize = 1 << 16;
+/// Rich text tag backgrounds share that paint layer too (under the glyphs,
+/// over a selection), from this index on.
+const RICH_TAG_BASE: usize = 1 << 17;
+
+/// A tag's fill by its kind: the application's marker kinds, cycled.
+fn tag_color(kind: u16) -> [f32; 4] {
+    const PALETTE: [[f32; 4]; 6] = [
+        [0.93, 0.55, 0.20, 0.92],
+        [0.36, 0.52, 0.92, 0.92],
+        [0.55, 0.40, 0.85, 0.92],
+        [0.22, 0.66, 0.55, 0.92],
+        [0.88, 0.38, 0.55, 0.92],
+        [0.45, 0.50, 0.58, 0.92],
+    ];
+    PALETTE[usize::from(kind) % PALETTE.len()]
+}
 
 /// The surface of an open triggered menu (Popover, ActionMenu, HoverCard).
 /// It is the trigger's primitive, but it wraps content Runtime lays out
@@ -288,6 +311,14 @@ pub enum ScenePrimitiveKind {
         /// for renderers that still lay text out themselves. Never a shaping
         /// backend's buffer.
         layout: Option<nana_ui_runtime::RetainedTextLayout>,
+        /// Decoration lines, outline and shadow layers, by byte range. When
+        /// present it is what the painter draws them from; `text_shadow`,
+        /// `underline` and `line_through` above stay for other readers.
+        rich: Option<Arc<SceneRichPaint>>,
+        /// Per-glyph presentation: effects and a reveal the text shader
+        /// samples on the motion clock. Not part of what the glyphs were
+        /// built from, so changing it rebuilds no instance.
+        presentation: Option<Arc<SceneGlyphPresentation>>,
     },
     Icon {
         icon: Icon,
@@ -427,6 +458,588 @@ pub struct SceneTextSpan {
     pub color: [f32; 4],
     /// Authoring-space foreground retained until linear GPU upload.
     pub paint_color: Option<nana_ui_core::PaintColor>,
+}
+
+/// What a stretch of a [`ScenePrimitiveKind::Text`] draws besides its fill:
+/// decoration lines, an outline, shadow layers. The fill colour itself rides
+/// in [`ScenePrimitiveKind::Text::spans`], like any other coloured run.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SceneTextEffects {
+    pub decoration: nana_ui_core::TextDecorationLine,
+    /// `None` draws the lines in the glyphs' own fill.
+    pub decoration_color: Option<nana_ui_core::PaintColor>,
+    pub stroke: Option<nana_ui_core::RichTextStroke>,
+    /// CSS order: the first is drawn on top. At most
+    /// [`nana_ui_core::MAX_TEXT_SHADOWS`].
+    pub shadows: Arc<[nana_ui_core::RichTextShadow]>,
+}
+
+impl SceneTextEffects {
+    pub fn is_empty(&self) -> bool {
+        !self.decoration.is_active() && self.stroke.is_none() && self.shadows.is_empty()
+    }
+
+    /// Logical px these effects can reach past the glyphs' own ink.
+    pub fn reach(&self) -> f32 {
+        let shadows = self
+            .shadows
+            .iter()
+            .map(|shadow| {
+                shadow.offset[0].abs().max(shadow.offset[1].abs())
+                    + shadow.blur_px.max(0.0)
+                    + shadow.spread_px.max(0.0)
+            })
+            .fold(0.0f32, f32::max);
+        let stroke = self
+            .stroke
+            .map_or(0.0, |stroke| stroke.width_px.max(0.0) * 0.5);
+        shadows.max(stroke) + stroke
+    }
+
+    /// `over` laid on these effects: each one `over` sets wins.
+    pub fn overlay(&self, over: &nana_ui_core::RichPaintStyle) -> Self {
+        Self {
+            decoration: over.decoration.unwrap_or(self.decoration),
+            decoration_color: over.decoration_color.or(self.decoration_color),
+            stroke: over.stroke.or(self.stroke),
+            shadows: over
+                .shadows
+                .clone()
+                .unwrap_or_else(|| Arc::clone(&self.shadows)),
+        }
+    }
+}
+
+/// What a Text primitive presents per glyph, by grapheme ordinal: the
+/// effect table, which effect each grapheme plays, and the reveal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneGlyphPresentation {
+    pub effects: Arc<[nana_ui_core::GlyphEffect]>,
+    /// Effect index per grapheme of the content; `u16::MAX` for none. Empty
+    /// when no grapheme plays an effect.
+    pub cluster_effects: Arc<[u16]>,
+    pub reveal: Option<nana_ui_core::RevealSchedule>,
+}
+
+impl SceneGlyphPresentation {
+    /// The presentation of `content` under `presentation`, its graphemes'
+    /// effect indices read from `rich`'s spans.
+    pub fn new(
+        content: &str,
+        rich: Option<&nana_ui_core::RichText>,
+        presentation: &nana_ui_core::GlyphPresentation,
+    ) -> Option<Arc<Self>> {
+        use unicode_segmentation::UnicodeSegmentation;
+        let mut any = false;
+        let cluster_effects: Vec<u16> = match rich.filter(|rich| rich.text() == content) {
+            Some(rich) if !presentation.effects.is_empty() => content
+                .grapheme_indices(true)
+                .map(
+                    |(offset, _)| match rich.style_at(offset).and_then(|style| style.effect) {
+                        Some(effect) if usize::from(effect) < presentation.effects.len() => {
+                            any = true;
+                            effect
+                        }
+                        _ => u16::MAX,
+                    },
+                )
+                .collect(),
+            _ => Vec::new(),
+        };
+        if !any && presentation.reveal.is_none() {
+            return None;
+        }
+        Some(Arc::new(Self {
+            effects: Arc::clone(&presentation.effects),
+            cluster_effects: if any {
+                cluster_effects.into()
+            } else {
+                Arc::from([])
+            },
+            reveal: presentation.reveal.clone(),
+        }))
+    }
+
+    /// Until when it changes what is drawn; `None` while an effect loops.
+    pub fn live_until(&self) -> Option<std::time::Duration> {
+        if !self.cluster_effects.is_empty() {
+            return None;
+        }
+        self.reveal.as_ref().map(nana_ui_core::RevealSchedule::end)
+    }
+
+    /// The effect grapheme `ordinal` plays.
+    pub fn effect_of(&self, ordinal: usize) -> Option<&nana_ui_core::GlyphEffect> {
+        self.cluster_effects
+            .get(ordinal)
+            .filter(|index| **index != u16::MAX)
+            .and_then(|index| self.effects.get(usize::from(*index)))
+    }
+}
+
+/// One byte range of a Text primitive with effects of its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneRichRun {
+    pub range: std::ops::Range<usize>,
+    pub effects: SceneTextEffects,
+}
+
+/// Everything a Text primitive draws besides its fill, resolved: the node's
+/// own effects (CSS `text-decoration`, `text-shadow`, `-webkit-text-stroke`)
+/// and the ranges a rich text overrides them over.
+///
+/// The painter turns this into instances of the same paragraph — shadows,
+/// then strokes, then fills, then lines — so a paint change is a rebuild of
+/// those instances and never a relayout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneRichPaint {
+    pub base: SceneTextEffects,
+    /// Sorted, non-overlapping.
+    pub runs: Vec<SceneRichRun>,
+    /// A hash of all of the above. Equal effects have equal revisions, so the
+    /// painter can tell a repaint that changed nothing from one that did
+    /// without comparing them. Never zero.
+    pub revision: u64,
+    /// Logical px the effects can reach past the glyphs' own ink.
+    pub reach: f32,
+}
+
+impl SceneRichPaint {
+    /// `None` when nothing has an effect.
+    pub fn new(base: SceneTextEffects, runs: Vec<SceneRichRun>) -> Option<Arc<Self>> {
+        let runs: Vec<SceneRichRun> = runs
+            .into_iter()
+            .filter(|run| run.range.start < run.range.end && run.effects != base)
+            .collect();
+        if base.is_empty() && runs.iter().all(|run| run.effects.is_empty()) {
+            return None;
+        }
+        let reach = runs
+            .iter()
+            .map(|run| run.effects.reach())
+            .fold(base.reach(), f32::max);
+        let mut hasher = std::hash::DefaultHasher::new();
+        hash_effects(&base, &mut hasher);
+        for run in &runs {
+            std::hash::Hash::hash(&run.range, &mut hasher);
+            hash_effects(&run.effects, &mut hasher);
+        }
+        let revision = std::hash::Hasher::finish(&hasher) | 1;
+        Some(Arc::new(Self {
+            base,
+            runs,
+            revision,
+            reach,
+        }))
+    }
+
+    /// The effects governing byte `offset`.
+    pub fn effects_at(&self, offset: usize) -> &SceneTextEffects {
+        let index = self.runs.partition_point(|run| run.range.end <= offset);
+        self.runs
+            .get(index)
+            .filter(|run| run.range.start <= offset)
+            .map_or(&self.base, |run| &run.effects)
+    }
+
+    fn all(&self) -> impl Iterator<Item = &SceneTextEffects> {
+        std::iter::once(&self.base).chain(self.runs.iter().map(|run| &run.effects))
+    }
+
+    /// The most shadow layers any range draws.
+    pub fn max_shadows(&self) -> usize {
+        self.all()
+            .map(|effects| effects.shadows.len())
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn has_stroke(&self) -> bool {
+        self.all().any(|effects| effects.stroke.is_some())
+    }
+
+    pub fn has_decoration(&self) -> bool {
+        self.all().any(|effects| effects.decoration.is_active())
+    }
+
+    /// A node's effects from its resolved CSS, with `rich`'s paint tier over
+    /// them.
+    pub fn from_style(
+        style: &nana_ui_core::LayoutStyle,
+        rich: Option<&nana_ui_core::RichText>,
+    ) -> Option<Arc<Self>> {
+        let base = css_text_effects(style);
+        let runs = rich
+            .map(|rich| {
+                rich.spans()
+                    .iter()
+                    .filter(|(_, span)| {
+                        let paint = &span.paint;
+                        paint.decoration.is_some()
+                            || paint.decoration_color.is_some()
+                            || paint.stroke.is_some()
+                            || paint.shadows.is_some()
+                    })
+                    .map(|(range, span)| SceneRichRun {
+                        range,
+                        effects: base.overlay(&span.paint),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self::new(base, runs)
+    }
+}
+
+fn hash_paint(color: &nana_ui_core::PaintColor, hasher: &mut impl std::hash::Hasher) {
+    let (channels, alpha) = color.to_linear_sc_rgb();
+    for value in [channels[0], channels[1], channels[2], alpha] {
+        hasher.write_u32(value.to_bits());
+    }
+}
+
+fn hash_effects(effects: &SceneTextEffects, hasher: &mut impl std::hash::Hasher) {
+    hasher.write_u8(
+        u8::from(effects.decoration.underline) | u8::from(effects.decoration.line_through) << 1,
+    );
+    if let Some(color) = &effects.decoration_color {
+        hash_paint(color, hasher);
+    }
+    hasher.write_u8(0xfe);
+    if let Some(stroke) = &effects.stroke {
+        hasher.write_u32(stroke.width_px.to_bits());
+        hash_paint(&stroke.color, hasher);
+        hasher.write_u8(stroke.join as u8);
+        hasher.write_u8(stroke.placement as u8);
+    }
+    hasher.write_u8(0xfd);
+    for shadow in effects.shadows.iter() {
+        for value in [
+            shadow.offset[0],
+            shadow.offset[1],
+            shadow.blur_px,
+            shadow.spread_px,
+        ] {
+            hasher.write_u32(value.to_bits());
+        }
+        hash_paint(&shadow.color, hasher);
+    }
+    hasher.write_usize(effects.shadows.len());
+}
+
+/// A node's text effects as its CSS states them: `text-decoration`, every
+/// `text-shadow` layer, `-webkit-text-stroke` under `paint-order`.
+pub fn css_text_effects(style: &nana_ui_core::LayoutStyle) -> SceneTextEffects {
+    let paint_of = |paint: Option<nana_ui_core::PaintColor>, srgb: [f32; 4]| {
+        paint.unwrap_or(nana_ui_core::PaintColor::srgb(srgb))
+    };
+    let layers: Vec<nana_ui_core::TextShadowSpec> = if style.paint.text_shadows.is_empty() {
+        style.paint.text_shadow.into_iter().collect()
+    } else {
+        style.paint.text_shadows.clone()
+    };
+    let shadows: Arc<[nana_ui_core::RichTextShadow]> = layers
+        .iter()
+        .take(nana_ui_core::MAX_TEXT_SHADOWS)
+        .map(|shadow| nana_ui_core::RichTextShadow {
+            offset: [shadow.offset_x, shadow.offset_y],
+            blur_px: shadow.blur_radius.max(0.0),
+            spread_px: 0.0,
+            color: paint_of(shadow.paint_color, shadow.color),
+        })
+        .collect();
+    let fill = style
+        .paint_colors
+        .color
+        .or(style.color.map(nana_ui_core::PaintColor::srgb));
+    let stroke = style
+        .paint
+        .text_stroke
+        .filter(|stroke| stroke.width > 0.0 && stroke.width.is_finite())
+        .and_then(|stroke| {
+            let color = stroke
+                .paint_color
+                .or(stroke.color.map(nana_ui_core::PaintColor::srgb))
+                .or(fill)?;
+            Some(nana_ui_core::RichTextStroke {
+                width_px: stroke.width,
+                color,
+                join: nana_ui_core::TextStrokeJoin::Miter,
+                placement: if style.paint.paint_order_stroke_first {
+                    nana_ui_core::TextStrokePlacement::Under
+                } else {
+                    nana_ui_core::TextStrokePlacement::Over
+                },
+            })
+        });
+    SceneTextEffects {
+        decoration: style.text_decoration.unwrap_or_default(),
+        decoration_color: None,
+        stroke,
+        shadows,
+    }
+}
+
+/// The page width a retained layout is mapped into and the y its lines start
+/// at inside `bounds`: the same vertical alignment the painter applies.
+fn text_frame(
+    bounds: SceneRect,
+    vertical: TextVerticalAlignment,
+    retained: &nana_ui_runtime::RetainedTextLayout,
+) -> (f32, f32) {
+    let layout = &retained.layout;
+    let (box_width, laid_out_height) = layout.physical_size();
+    let top = if layout.is_vertical() {
+        bounds.y
+    } else {
+        match vertical {
+            TextVerticalAlignment::Top => bounds.y,
+            TextVerticalAlignment::Center => bounds.y + (bounds.height - laid_out_height) * 0.5,
+            TextVerticalAlignment::Bottom => bounds.y + bounds.height - laid_out_height,
+        }
+    };
+    (box_width.max(bounds.width), top)
+}
+
+/// A rich text editor's selection (under the glyphs) and caret (over them),
+/// from the very layout its text is drawn from.
+#[allow(clippy::too_many_arguments)]
+fn rich_editor_mark_primitives(
+    context: &VisualPrimitiveContext<'_>,
+    bounds: SceneRect,
+    vertical: TextVerticalAlignment,
+    retained: &nana_ui_runtime::RetainedTextLayout,
+    marks: &nana_ui_runtime::RichEditorMarks,
+    selection_color: [f32; 4],
+    caret_color: [f32; 4],
+) -> (Vec<ScenePrimitive>, Option<ScenePrimitive>) {
+    let layout = &retained.layout;
+    let (page_width, top) = text_frame(bounds, vertical, retained);
+    let selection = if marks.selection.is_empty() {
+        Vec::new()
+    } else {
+        layout
+            .selection_rects(marks.selection.clone())
+            .into_iter()
+            .enumerate()
+            .map(|(index, rect)| {
+                let rect = layout.page_rect(rect, page_width);
+                visual_quad(
+                    context,
+                    collection_slot(DOCUMENT_TEXT_SELECTION, RICH_EDITOR_SELECTION_BASE + index),
+                    SceneRect {
+                        x: bounds.x + rect.x,
+                        y: top + rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                    VisualQuadStyle::solid(selection_color),
+                )
+            })
+            .collect()
+    };
+    let caret = marks.caret.and_then(|byte| {
+        let (x, line_top, height) = nana_ui_runtime::rich_editor_caret_box(layout, byte)?;
+        Some(visual_quad(
+            context,
+            collection_slot(TEXT_EDITOR_CARET, 0),
+            SceneRect {
+                x: bounds.x + x - 0.5,
+                y: top + line_top,
+                width: 1.5,
+                height,
+            },
+            VisualQuadStyle::solid(caret_color),
+        ))
+    });
+    (selection, caret)
+}
+
+/// An inline object a presenting text node carries, as it was laid out.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GlyphObject {
+    pub slot: u64,
+    pub ordinal: u32,
+    pub center: [f32; 2],
+    pub opacity: f32,
+    pub transform: AffineTransform,
+}
+
+/// One primitive per inline object `layout` placed, in text order, where the
+/// text primitive at `bounds` draws its lines.
+///
+/// An image is a quad sampling its `url()`; a host texture slot is the host
+/// texture renderer's custom node; an editor chip is drawn only when
+/// `editor` asks for it (and takes no room either way). Objects keep the
+/// node's transform, clips, opacity and document order, so they scroll, clip
+/// and fade with their text.
+fn inline_object_primitives(
+    context: &VisualPrimitiveContext<'_>,
+    bounds: SceneRect,
+    vertical: TextVerticalAlignment,
+    retained: &nana_ui_runtime::RetainedTextLayout,
+    rich: &nana_ui_core::RichText,
+    editor: bool,
+) -> Vec<ScenePrimitive> {
+    let layout = &retained.layout;
+    let (box_width, top) = text_frame(bounds, vertical, retained);
+    let mut out = Vec::new();
+    for (index, placed) in layout.objects.iter().enumerate() {
+        let Some(object) = rich.object_at(placed.offset) else {
+            continue;
+        };
+        let rect = layout.page_rect(placed.rect, box_width.max(bounds.width));
+        let object_bounds = SceneRect {
+            x: bounds.x + rect.x,
+            y: top + rect.y,
+            width: rect.width,
+            height: rect.height,
+        };
+        let kind = match &object.content {
+            nana_ui_core::RichObjectContent::Image { source } => {
+                if rect.width <= 0.0 || rect.height <= 0.0 {
+                    continue;
+                }
+                custom_paint::image_quad(
+                    source,
+                    nana_ui_runtime::ImageFit::Contain,
+                    nana_ui_core::ImageSampling::default(),
+                    [0.0; 4],
+                )
+            }
+            nana_ui_core::RichObjectContent::HostTexture { slot } => {
+                if rect.width <= 0.0 || rect.height <= 0.0 {
+                    continue;
+                }
+                ScenePrimitiveKind::Custom {
+                    node: nana_ui_runtime::CustomRenderNode {
+                        fit: nana_ui_core::ContentFit::Contain,
+                        ..nana_ui_runtime::CustomRenderNode::new(
+                            nana_ui_runtime::HOST_TEXTURE_RENDERER,
+                            Arc::clone(slot),
+                            0,
+                        )
+                    },
+                    mask: None,
+                    corner_radius: [0.0; 4],
+                }
+            }
+            nana_ui_core::RichObjectContent::Tag { kind, .. } => {
+                let Some(label) = layout
+                    .labels
+                    .iter()
+                    .find(|label| label.offset == placed.offset)
+                else {
+                    continue;
+                };
+                let pill = layout.page_rect(label.rect, box_width.max(bounds.width));
+                let pill = SceneRect {
+                    x: bounds.x + pill.x,
+                    y: top + pill.y,
+                    width: pill.width,
+                    height: pill.height,
+                };
+                let mut style = VisualQuadStyle::solid(tag_color(*kind));
+                style.corner_radius = corner_radii(pill.height * 0.5);
+                out.push(visual_quad(
+                    context,
+                    collection_slot(DOCUMENT_TEXT_SELECTION, RICH_TAG_BASE + index),
+                    pill,
+                    style,
+                ));
+                continue;
+            }
+            nana_ui_core::RichObjectContent::Chip { .. } => {
+                if !editor {
+                    continue;
+                }
+                // The marker takes no room; the editor shows it as a thin
+                // caret-high bar where it sits.
+                let height = layout
+                    .lines
+                    .get(placed.line as usize)
+                    .map_or(bounds.height, |line| line.metrics.height_px);
+                let line_top = layout
+                    .lines
+                    .get(placed.line as usize)
+                    .map_or(0.0, |line| line.metrics.top_y_px);
+                let marker = SceneRect {
+                    x: object_bounds.x - 1.0,
+                    y: top + line_top,
+                    width: 2.0,
+                    height,
+                };
+                out.push(visual_quad(
+                    context,
+                    collection_slot(TEXT_INLINE_OBJECTS, index),
+                    marker,
+                    VisualQuadStyle::solid([0.95, 0.6, 0.2, 0.9]),
+                ));
+                continue;
+            }
+        };
+        out.push(ScenePrimitive {
+            id: PrimitiveId {
+                node: context.node,
+                slot: collection_slot(TEXT_INLINE_OBJECTS, index),
+            },
+            node: context.node,
+            bounds: object_bounds,
+            transform: context.transform,
+            clips: Arc::clone(context.clips),
+            opacity: context.opacity,
+            z_index: context.z_index,
+            document_order: context.document_order,
+            kind,
+        });
+    }
+    out
+}
+
+/// Fill colours of `rich`'s spans as scene text spans, cut around the spans
+/// already there (selection and syntax colours win over a span's own fill).
+pub fn rich_fill_spans(
+    content: &str,
+    rich: Option<&nana_ui_core::RichText>,
+    existing: Vec<SceneTextSpan>,
+) -> Vec<SceneTextSpan> {
+    let Some(rich) = rich.filter(|rich| rich.text() == content) else {
+        return existing;
+    };
+    let mut taken: Vec<(usize, usize)> =
+        existing.iter().map(|span| (span.start, span.end)).collect();
+    taken.sort_unstable();
+    let mut out = existing;
+    for (range, span) in rich.spans().iter() {
+        let Some(color) = span.paint.color else {
+            continue;
+        };
+        let mut cursor = range.start;
+        for &(start, end) in taken
+            .iter()
+            .filter(|(start, end)| *end > range.start && *start < range.end)
+        {
+            if cursor < start {
+                out.push(SceneTextSpan {
+                    start: cursor,
+                    end: start.min(range.end),
+                    color: color.to_srgb(),
+                    paint_color: Some(color),
+                });
+            }
+            cursor = cursor.max(end);
+        }
+        if cursor < range.end {
+            out.push(SceneTextSpan {
+                start: cursor,
+                end: range.end,
+                color: color.to_srgb(),
+                paint_color: Some(color),
+            });
+        }
+    }
+    out.sort_by_key(|span| (span.start, span.end));
+    out
 }
 
 /// OpenType and wrap extras on a [`ScenePrimitiveKind::Text`] run.
@@ -620,6 +1233,14 @@ pub struct UiScene {
     /// queried node itself; a zero here proves no walk can find a group, so no
     /// frame of a scene without isolation pays for it at all.
     dest_group_candidates: usize,
+    /// Text nodes presenting per glyph, and until when what they draw keeps
+    /// changing (`None`: a looping effect). What keeps frames coming while a
+    /// reveal plays and stops them once it has finished.
+    glyph_live: NodeMap<Option<std::time::Duration>>,
+    /// Inline objects of presenting text nodes, as laid out, so each
+    /// compositor tick can move, scale and fade them the way the glyphs
+    /// around them are (the text shader cannot reach them: they are images).
+    glyph_objects: NodeMap<(Arc<SceneGlyphPresentation>, Arc<[GlyphObject]>)>,
     /// Identity that changes on node-changing mutation and on Clone.
     /// In-place [`UiScene::apply_delta`] that updates or removes nodes also
     /// gets a fresh value, because product flush mutates a unique `Arc` in
@@ -651,6 +1272,8 @@ impl Default for UiScene {
             compositor: CompositorRegistry::default(),
             custom_paint: NodeMap::default(),
             dest_group_candidates: 0,
+            glyph_live: NodeMap::default(),
+            glyph_objects: NodeMap::default(),
             instance: next_scene_instance(),
         }
     }
@@ -685,6 +1308,8 @@ impl Clone for UiScene {
             compositor: self.compositor.clone(),
             custom_paint: self.custom_paint.clone(),
             dest_group_candidates: self.dest_group_candidates,
+            glyph_live: self.glyph_live.clone(),
+            glyph_objects: self.glyph_objects.clone(),
             instance: next_scene_instance(),
         }
     }
@@ -1537,7 +2162,65 @@ impl UiScene {
     }
 
     fn remove_node_primitives(&mut self, id: StableNodeId) {
+        self.glyph_live.remove(&id);
+        self.glyph_objects.remove(&id);
         self.retire_node_primitives(id, |_| true);
+    }
+
+    /// Move, scale and fade the inline objects of presenting text nodes to
+    /// what the CPU evaluator says their grapheme looks like `now`: the same
+    /// arithmetic the text shader applies to the glyphs around them.
+    pub(super) fn present_inline_objects(&mut self, now: std::time::Duration) {
+        if self.glyph_objects.is_empty() {
+            return;
+        }
+        let mut moved = false;
+        for (node, (presentation, objects)) in &self.glyph_objects {
+            for object in objects.iter() {
+                let sample = nana_ui_core::evaluate_glyph(
+                    presentation.effect_of(object.ordinal as usize),
+                    presentation.reveal.as_ref(),
+                    object.ordinal,
+                    now,
+                );
+                let [cx, cy] = object.center;
+                let scale = sample.scale;
+                let local = AffineTransform::from_matrix([
+                    scale,
+                    0.0,
+                    0.0,
+                    scale,
+                    cx + sample.offset[0] - scale * cx,
+                    cy + sample.offset[1] - scale * cy,
+                ]);
+                let Some(held) = self.primitives.get_mut(&PrimitiveId {
+                    node: *node,
+                    slot: object.slot,
+                }) else {
+                    continue;
+                };
+                let opacity = object.opacity * sample.alpha;
+                let transform = object.transform.then(local);
+                if held.primitive.opacity != opacity || held.primitive.transform != transform {
+                    held.primitive.opacity = opacity;
+                    held.primitive.transform = transform;
+                    moved = true;
+                }
+            }
+        }
+        if moved {
+            // Painters key what they recorded on the instance.
+            self.instance = next_scene_instance();
+        }
+    }
+
+    /// Whether a text node's per-glyph presentation still changes what is
+    /// drawn at the motion clock's time.
+    pub fn glyph_presentation_live(&self) -> bool {
+        let now = self.compositor_now();
+        self.glyph_live
+            .values()
+            .any(|until| until.is_none_or(|until| until > now))
     }
 
     /// Drop the node's primitives that `doomed` names, and their places in
@@ -2636,6 +3319,8 @@ fn component_text_primitive(
                 ..SceneTextOpenType::from_computed(&node.style)
             },
             layout: None,
+            rich: None,
+            presentation: None,
         },
     }
 }
@@ -2891,6 +3576,9 @@ fn visual_stroke(
     }
 }
 
+/// Markdown inline runs still mark their decorations with box-wide strokes;
+/// plain text nodes draw theirs per line and run in the text painter.
+#[cfg(feature = "rich-text")]
 fn insert_text_decoration_strokes(
     context: &VisualPrimitiveContext<'_>,
     bounds: SceneRect,
@@ -3101,6 +3789,8 @@ fn overlay_text_primitive(
             wrap_break: nana_ui_core::TextWrapBreak::default(),
             opentype: SceneTextOpenType::default(),
             layout: None,
+            rich: None,
+            presentation: None,
         },
     }
 }

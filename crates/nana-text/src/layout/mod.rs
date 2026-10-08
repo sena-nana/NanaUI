@@ -62,5 +62,7 @@ mod store;
 pub(crate) use breaks::FORCED_BREAKS;
 pub use cache::LayoutCacheBudget;
 pub use engine::{IntrinsicWidths, LayoutCounters, LayoutRequest, Layouter};
-pub use ir::{LineBox, LineBreakCause, OverflowFlags, TextLayout, TextRect};
+pub use ir::{
+    LineBox, LineBreakCause, OverflowFlags, PlacedObject, PlacedRuby, TextLayout, TextRect,
+};
 pub use store::{StaleLayout, TextLayoutStore};

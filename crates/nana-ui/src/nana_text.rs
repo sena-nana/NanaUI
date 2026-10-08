@@ -18,6 +18,8 @@ pub enum HostFontError {
     Empty,
     Unrecognized,
     Io(String),
+    /// The registration was already withdrawn.
+    NotRegistered,
 }
 
 impl std::fmt::Display for HostFontError {
@@ -26,6 +28,7 @@ impl std::fmt::Display for HostFontError {
             Self::Empty => write!(f, "host font bytes were empty"),
             Self::Unrecognized => write!(f, "host font bytes were not a recognized font face"),
             Self::Io(err) => write!(f, "host font file: {err}"),
+            Self::NotRegistered => write!(f, "host font registration was already withdrawn"),
         }
     }
 }
@@ -37,8 +40,8 @@ impl From<nana_text::font::FontError> for HostFontError {
         match error {
             nana_text::font::FontError::Empty => Self::Empty,
             nana_text::font::FontError::Io(message) => Self::Io(message),
-            nana_text::font::FontError::Unrecognized
-            | nana_text::font::FontError::UnknownSource => Self::Unrecognized,
+            nana_text::font::FontError::Unrecognized => Self::Unrecognized,
+            nana_text::font::FontError::UnknownSource => Self::NotRegistered,
         }
     }
 }
@@ -133,6 +136,186 @@ pub fn register_host_font_bytes(bytes: impl Into<Vec<u8>>) -> Result<usize, Host
 /// Load a font file (or collection) from `path`.
 pub fn register_host_font_file(path: impl AsRef<Path>) -> Result<usize, HostFontError> {
     crate::text_engine::register_file(path.as_ref()).map_err(HostFontError::from)
+}
+
+/// One font source an application registered at run time and may withdraw:
+/// a skin's bundled faces, a user-picked file.
+///
+/// The `register_host_font_*` functions above add faces for the life of the
+/// process. A registration made through [`HostFontScope`] (or
+/// [`register_host_font_source`] / [`register_host_font_source_file`] /
+/// [`register_host_font_face_source`]) keeps the handle the font layer
+/// issued, so [`unregister_host_font`] can take exactly those faces out
+/// again. Withdrawing faces is a new font generation: text measured with them
+/// is measured again on the next flush, and glyphs rasterized from them are
+/// never sampled again. A frame already in flight keeps the bytes it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostFontRegistration {
+    source: nana_text::FontSourceId,
+    families: Vec<String>,
+    faces: usize,
+}
+
+impl HostFontRegistration {
+    fn from_scoped(registration: crate::text_engine::ScopedRegistration) -> Self {
+        Self {
+            source: registration.source,
+            families: registration
+                .families
+                .iter()
+                .map(|family| family.to_string())
+                .collect(),
+            faces: registration.faces,
+        }
+    }
+
+    /// Family names the registered faces answer to: the declared family of an
+    /// `@font-face`-style registration, the faces' own names otherwise.
+    pub fn families(&self) -> &[String] {
+        &self.families
+    }
+
+    /// Faces the source contained (a collection holds several).
+    pub fn faces(&self) -> usize {
+        self.faces
+    }
+}
+
+/// Register font bytes under the faces' own family names, keeping a handle.
+pub fn register_host_font_source(
+    bytes: impl Into<Vec<u8>>,
+) -> Result<HostFontRegistration, HostFontError> {
+    let bytes = bytes.into();
+    if bytes.is_empty() {
+        return Err(HostFontError::Empty);
+    }
+    crate::text_engine::register_scoped_bytes(bytes, nana_text::font::FaceDescriptor::default())
+        .map(HostFontRegistration::from_scoped)
+        .map_err(HostFontError::from)
+}
+
+/// Register a font file (or collection), keeping a handle. The bytes are read
+/// now, so a missing or malformed file fails here.
+pub fn register_host_font_source_file(
+    path: impl AsRef<Path>,
+) -> Result<HostFontRegistration, HostFontError> {
+    crate::text_engine::register_scoped_file(path.as_ref())
+        .map(HostFontRegistration::from_scoped)
+        .map_err(HostFontError::from)
+}
+
+/// Register bytes under a declared family and weight range, as
+/// [`register_host_font_face_styled`] does, keeping a handle.
+pub fn register_host_font_face_source(
+    family: &str,
+    bytes: impl Into<Vec<u8>>,
+    weight: Option<u16>,
+    weight_end: Option<u16>,
+    style: Option<HostFontStyle>,
+) -> Result<HostFontRegistration, HostFontError> {
+    let family = family.trim();
+    let bytes = bytes.into();
+    if family.is_empty() || bytes.is_empty() {
+        return Err(HostFontError::Empty);
+    }
+    let descriptor = crate::text_engine::face_descriptor(
+        family,
+        weight,
+        weight_end,
+        style.map(HostFontStyle::to_font_style),
+    );
+    crate::text_engine::register_scoped_bytes(bytes, descriptor)
+        .map(HostFontRegistration::from_scoped)
+        .map_err(HostFontError::from)
+}
+
+/// Withdraw every face `registration` added. A registration withdrawn once
+/// answers [`HostFontError::NotRegistered`] the second time.
+pub fn unregister_host_font(registration: &HostFontRegistration) -> Result<(), HostFontError> {
+    crate::text_engine::unregister_source(registration.source).map_err(HostFontError::from)
+}
+
+/// The fonts one owner registered (a skin, a theme pack), withdrawn together.
+///
+/// Dropping the scope unregisters what it still holds, so replacing a skin's
+/// fonts is assigning a new scope and registering the new skin into it.
+/// [`Self::clear`] does the same without dropping it.
+#[derive(Debug, Default)]
+pub struct HostFontScope {
+    registrations: Vec<HostFontRegistration>,
+}
+
+impl HostFontScope {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// [`register_host_font_source`] into this scope.
+    pub fn add_bytes(
+        &mut self,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Result<&HostFontRegistration, HostFontError> {
+        let registration = register_host_font_source(bytes)?;
+        Ok(self.keep(registration))
+    }
+
+    /// [`register_host_font_source_file`] into this scope.
+    pub fn add_file(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<&HostFontRegistration, HostFontError> {
+        let registration = register_host_font_source_file(path)?;
+        Ok(self.keep(registration))
+    }
+
+    /// [`register_host_font_face_source`] into this scope.
+    pub fn add_face(
+        &mut self,
+        family: &str,
+        bytes: impl Into<Vec<u8>>,
+        weight: Option<u16>,
+        weight_end: Option<u16>,
+        style: Option<HostFontStyle>,
+    ) -> Result<&HostFontRegistration, HostFontError> {
+        let registration =
+            register_host_font_face_source(family, bytes, weight, weight_end, style)?;
+        Ok(self.keep(registration))
+    }
+
+    fn keep(&mut self, registration: HostFontRegistration) -> &HostFontRegistration {
+        self.registrations.push(registration);
+        self.registrations.last().expect("just pushed")
+    }
+
+    /// What this scope holds, in registration order.
+    pub fn registrations(&self) -> &[HostFontRegistration] {
+        &self.registrations
+    }
+
+    /// Every family the scope's faces answer to, sorted and deduplicated.
+    pub fn families(&self) -> Vec<String> {
+        let mut families: Vec<String> = self
+            .registrations
+            .iter()
+            .flat_map(|registration| registration.families.iter().cloned())
+            .collect();
+        families.sort();
+        families.dedup();
+        families
+    }
+
+    /// Unregister everything this scope holds.
+    pub fn clear(&mut self) {
+        for registration in self.registrations.drain(..) {
+            let _ = unregister_host_font(&registration);
+        }
+    }
+}
+
+impl Drop for HostFontScope {
+    fn drop(&mut self) {
+        self.clear();
+    }
 }
 
 /// Set the generic `sans-serif` family. `bundled-fonts` already sets
@@ -364,6 +547,34 @@ mod tests {
     fn assert_positive_finite(metrics: TextMetrics) {
         assert!(metrics.width.is_finite() && metrics.width > 0.0);
         assert!(metrics.height.is_finite() && metrics.height > 0.0);
+    }
+
+    #[test]
+    #[cfg(feature = "bundled-fonts")]
+    fn a_scoped_face_is_withdrawn_when_its_scope_is() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let data = include_bytes!("../assets/fonts/NotoSansSC-Regular.ttf");
+        let mut scope = HostFontScope::new();
+        let registration = scope
+            .add_face("NanaSkinFace", data.to_vec(), Some(400), None, None)
+            .expect("the bundled Regular face loads")
+            .clone();
+        assert_eq!(registration.families(), ["NanaSkinFace".to_string()]);
+        assert_eq!(scope.families(), vec!["NanaSkinFace".to_string()]);
+        assert!(
+            shaped_face_families("NanaSkinFace", "H").contains(&"NanaSkinFace".to_string()),
+            "a registered face is what its family shapes with"
+        );
+        drop(scope);
+        assert!(
+            !shaped_face_families("NanaSkinFace", "H").contains(&"NanaSkinFace".to_string()),
+            "dropping the scope withdraws its faces"
+        );
+        assert_eq!(
+            unregister_host_font(&registration),
+            Err(HostFontError::NotRegistered),
+            "a withdrawn registration cannot be withdrawn twice"
+        );
     }
 
     #[test]

@@ -181,6 +181,21 @@ impl AppContext {
         {
             return Ok(CONSUMED);
         }
+        if !overlay.prevent_default
+            && !activation_click
+            && let Some(phase) = terminal_phase
+            && self.rich_editor_pointer(
+                document,
+                target,
+                *pointer_id,
+                phase,
+                *x,
+                *y,
+                modifiers.shift,
+            )?
+        {
+            return Ok(CONSUMED);
+        }
 
         #[cfg(feature = "graph-canvas")]
         let graph_button = match *button {
@@ -809,6 +824,12 @@ impl AppContext {
         if !keyboard_barrier && self.focused_terminal(document).is_some() {
             return self.terminal_keystroke(document, stroke, services);
         }
+        if !keyboard_barrier
+            && let Some(handled) = self.rich_editor_key(document, key, text, modifiers, services)?
+            && handled
+        {
+            return Ok(CONSUMED);
+        }
         // Focused plain text editors own their editing keys (caret moves,
         // selection, deletion, indent, pairing) before any generic routing.
         if self.text_editor_key(
@@ -1177,6 +1198,14 @@ impl AppContext {
                 CompositionInput::Enabled | CompositionInput::DeleteSurrounding { .. } => {}
             }
             return Ok(CONSUMED);
+        }
+        if !overlay_blocks
+            && let Some(handled) = self.rich_editor_composition(document, composition)?
+        {
+            return Ok(InputDisposition {
+                handled,
+                prevent_default: true,
+            });
         }
         let owns_ime = self.editable_focused_text_input(document).is_some();
         let handled = match composition {

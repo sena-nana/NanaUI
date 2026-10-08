@@ -1,14 +1,15 @@
 //! Standard Rust application owner. Custom and JS hosts may still implement
 //! `RuntimeProgram` directly; application business state stays in `State`.
 use crate::{
-    FrameDemand, HostTextureRegistry, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    SceneGpuRendererRegistry, SceneResourceProducerRegistry, ThemeAppearance,
+    FrameDemand, HostTextureRegistry, RoutedInput, RuntimeProgram, RuntimeProgramContext,
+    RuntimeProgramUpdate, SceneGpuRendererRegistry, SceneResourceProducerRegistry, ThemeAppearance,
 };
 use nana_ui_core::{CompiledTheme, builtin_theme_arc};
 use nana_ui_platform::{WindowEvent, WindowId};
 use nana_ui_scene::{DocumentAccessError, RuntimeDocument};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub struct ApplicationWindow {
     pub document: RuntimeDocument,
@@ -19,6 +20,10 @@ pub struct ApplicationWindow {
     /// Keep one host per window: replacing the `Arc` refetches its images.
     pub fetch_host: Option<nana_ui_platform::SharedFetchHost>,
     pub demand: FrameDemand,
+    /// Paint this window a second time into an offscreen output; frames and
+    /// state changes arrive at [`ApplicationState::output_frame`] and
+    /// [`ApplicationState::output_status`].
+    pub output: Option<crate::WindowOutputConfig>,
 }
 
 impl ApplicationWindow {
@@ -53,6 +58,7 @@ impl ApplicationWindow {
             producers: None,
             fetch_host: None,
             demand: FrameDemand::OnDemand,
+            output: None,
         }
     }
 }
@@ -100,6 +106,51 @@ pub trait ApplicationState: Sized + 'static {
     fn theme(&self) -> Arc<CompiledTheme> {
         builtin_theme_arc(ThemeAppearance::Dark)
     }
+    /// What this process needs from its GPU backend. See
+    /// [`RuntimeProgram::gpu_backend_policy`].
+    fn gpu_backend_policy() -> crate::GpuBackendPolicy {
+        crate::GpuBackendPolicy::Plain
+    }
+    /// Material the primary window is created with, before the first
+    /// document exists. See [`RuntimeProgram::startup_window_material_mode`].
+    fn startup_window_material_mode() -> crate::MaterialEffect {
+        crate::MaterialEffect::Solid
+    }
+    /// Per-window material: a transparent overlay window answers
+    /// `Transparent` for its id. See [`RuntimeProgram::window_material_mode_for`].
+    fn window_material_mode_for(&self, _id: WindowId) -> crate::MaterialEffect {
+        crate::MaterialEffect::Solid
+    }
+    /// Per-window backdrop opacity; foreground content keeps its own alpha.
+    /// See [`RuntimeProgram::appearance_backdrop_opacity_for`].
+    fn appearance_backdrop_opacity_for(&self, _id: WindowId) -> f32 {
+        nana_ui_core::AppearanceSettings::DEFAULT_BACKDROP_OPACITY
+    }
+    /// Raw input after Runtime dispatch, with every window's document in
+    /// reach. See [`RuntimeProgram::input_event`].
+    fn input_event(
+        &mut self,
+        _id: WindowId,
+        _input: RoutedInput<'_>,
+        _windows: &mut HashMap<WindowId, ApplicationWindow>,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, nana_ui_runtime::FrameworkError> {
+        Ok(RuntimeProgramUpdate::default())
+    }
+    /// Application-owned wake deadline, independent of redraw cadence. See
+    /// [`RuntimeProgram::next_wakeup`].
+    fn next_wakeup(&self) -> Option<Instant> {
+        None
+    }
+    /// The deadline [`Self::next_wakeup`] named has passed.
+    fn wake(
+        &mut self,
+        _now: Instant,
+        _windows: &mut HashMap<WindowId, ApplicationWindow>,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
     /// Release application-owned state keyed by a window that has closed.
     fn window_closed(&mut self, _id: WindowId) {}
     fn prepare(
@@ -118,6 +169,24 @@ pub trait ApplicationState: Sized + 'static {
     fn rebuild_gpu(
         &mut self,
         _windows: &mut HashMap<WindowId, ApplicationWindow>,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+    }
+    /// A new frame of the window's [`ApplicationWindow::output`]. See
+    /// [`RuntimeProgram::window_output_frame`].
+    fn output_frame(
+        &mut self,
+        _window: &mut ApplicationWindow,
+        _frame: &crate::WindowOutputFrame,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+    }
+    /// The window's output changed state. See
+    /// [`RuntimeProgram::window_output_status`].
+    fn output_status(
+        &mut self,
+        _window: &mut ApplicationWindow,
+        _status: crate::WindowOutputStatus,
         _context: &RuntimeProgramContext<Self::Message>,
     ) {
     }
@@ -150,6 +219,37 @@ pub struct RuntimeApplication<State: ApplicationState> {
 impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
     type Message = State::Message;
     type Error = State::Error;
+    fn gpu_backend_policy() -> crate::GpuBackendPolicy {
+        State::gpu_backend_policy()
+    }
+    fn startup_window_material_mode() -> crate::MaterialEffect {
+        State::startup_window_material_mode()
+    }
+    fn window_material_mode_for(&self, id: WindowId) -> crate::MaterialEffect {
+        self.state.window_material_mode_for(id)
+    }
+    fn appearance_backdrop_opacity_for(&self, id: WindowId) -> f32 {
+        self.state.appearance_backdrop_opacity_for(id)
+    }
+    fn input_event(
+        &mut self,
+        id: WindowId,
+        input: RoutedInput<'_>,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<RuntimeProgramUpdate, nana_ui_runtime::FrameworkError> {
+        self.state
+            .input_event(id, input, &mut self.windows, context)
+    }
+    fn next_wakeup(&self) -> Option<Instant> {
+        self.state.next_wakeup()
+    }
+    fn wake(
+        &mut self,
+        now: Instant,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.state.wake(now, &mut self.windows, context)
+    }
     fn initialize(
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
@@ -227,6 +327,29 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
             self.state.prepare(window, context);
         }
     }
+    fn window_output(&self, id: WindowId) -> Option<crate::WindowOutputConfig> {
+        self.windows.get(&id).and_then(|window| window.output)
+    }
+    fn window_output_frame(
+        &mut self,
+        id: WindowId,
+        frame: &crate::WindowOutputFrame,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) {
+        if let Some(window) = self.windows.get_mut(&id) {
+            self.state.output_frame(window, frame, context);
+        }
+    }
+    fn window_output_status(
+        &mut self,
+        id: WindowId,
+        status: crate::WindowOutputStatus,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) {
+        if let Some(window) = self.windows.get_mut(&id) {
+            self.state.output_status(window, status, context);
+        }
+    }
     fn window_frame_presented(
         &mut self,
         id: WindowId,
@@ -295,5 +418,71 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
     ) -> RuntimeProgramUpdate {
         self.state
             .startup_changed(status, &mut self.windows, context)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Overlay {
+        overlay: WindowId,
+        deadline: Instant,
+    }
+
+    impl ApplicationState for Overlay {
+        type Message = ();
+        type Error = String;
+        fn initialize(_: &RuntimeProgramContext<()>) -> Result<Self, String> {
+            unreachable!("constructed directly")
+        }
+        fn build(
+            &mut self,
+            _: &mut ApplicationWindow,
+            _: &RuntimeProgramContext<()>,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn gpu_backend_policy() -> crate::GpuBackendPolicy {
+            crate::GpuBackendPolicy::CompositionCapable
+        }
+        fn window_material_mode_for(&self, id: WindowId) -> crate::MaterialEffect {
+            if id == self.overlay {
+                crate::MaterialEffect::Transparent
+            } else {
+                crate::MaterialEffect::Solid
+            }
+        }
+        fn appearance_backdrop_opacity_for(&self, id: WindowId) -> f32 {
+            if id == self.overlay { 0.0 } else { 1.0 }
+        }
+        fn next_wakeup(&self) -> Option<Instant> {
+            Some(self.deadline)
+        }
+    }
+
+    #[test]
+    fn an_application_state_answers_the_window_hooks_without_a_program_shim() {
+        let overlay = WindowId(7);
+        let other = WindowId(8);
+        let deadline = Instant::now();
+        let program = RuntimeApplication {
+            state: Overlay { overlay, deadline },
+            windows: HashMap::new(),
+        };
+        assert_eq!(
+            <RuntimeApplication<Overlay> as RuntimeProgram>::gpu_backend_policy(),
+            crate::GpuBackendPolicy::CompositionCapable
+        );
+        assert_eq!(
+            program.window_material_mode_for(overlay),
+            crate::MaterialEffect::Transparent
+        );
+        assert_eq!(
+            program.window_material_mode_for(other),
+            crate::MaterialEffect::Solid
+        );
+        assert_eq!(program.appearance_backdrop_opacity_for(overlay), 0.0);
+        assert_eq!(RuntimeProgram::next_wakeup(&program), Some(deadline));
     }
 }

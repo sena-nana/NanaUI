@@ -88,6 +88,14 @@ ExtractedNode.text_layout → UiScene 里的 Text
 | 宽度、换行、行高、对齐 | 只排版 |
 | 颜色 | 不重新整形，也不重新排版 |
 | transform、opacity | 不碰文本 |
+| 逐字特效、揭示（`GLYPH_PRESENTATION`） | 不碰文本，只在合成器 |
+| 富文本 span 的字体、字号、字重、字距 | 重新 shaping，再排版 |
+| 富文本 span 的颜色、描边、阴影、装饰线 | 不重新整形，也不重新排版；画笔重建这段的字形实例 |
+| 富文本 span 的特效索引 | 不碰文本 |
+| 内联对象（贴纸、图片）的尺寸 | 只排版，不重新 shaping |
+| 内联对象显示的内容 | 只重绘 |
+
+富文本是应用持有的 `RichText`：一个字符串加按字节范围的稀疏样式。`SetRichText` 把它交给节点，按它改到的那一层分类。塑形层在 `TextNodeState` 里铺在节点的计算样式上，变成 `TextSource` 的 span，测量和绘制还是同一份 `TextLayout`。绘制层进场景的 `Text { rich }`，画笔把阴影、描边、填充和装饰线排成同一段落的实例。细节见 [文本引擎](../reference/text-engine.md#富文本-span)。
 
 `transform` / `opacity` 不增加文本的 revision，所以稳态的合成动画碰不到 shaping。采样也不写回基础样式。呈现仍留在 overlay 上。
 

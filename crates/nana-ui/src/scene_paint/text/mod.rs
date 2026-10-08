@@ -43,7 +43,9 @@ mod upload;
 use nana_text::{TextEngine as _, TextLayout};
 use nana_ui_core::{LineHeightSpec, TextAlignSpec};
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
-use nana_ui_scene::{SceneTextOpenType, SceneTextSpan};
+use nana_ui_scene::{
+    SceneGlyphPresentation, SceneRichPaint, SceneTextEffects, SceneTextOpenType, SceneTextSpan,
+};
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -55,10 +57,13 @@ pub(in crate::scene_paint) use self::entry::EntryKey;
 use self::entry::{
     EntrySegment, EntryStore, RunSlots, SegmentBuilder, SlotArena, VACANT_INDEX, range_keeps,
 };
-use self::glyph::{GlyphRenderMode, GlyphSynthesis, NanaGlyphBuffer, PlacedGlyph, size_bits};
+use self::glyph::{
+    GlyphRenderMode, GlyphRole, GlyphSynthesis, NanaGlyphBuffer, NanaGlyphRun, PlacedGlyph,
+    size_bits,
+};
 use self::pipeline::{
-    ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, TextGpu,
-    TextPresentationGpu, TextRunGpu, TextTargetGpu,
+    ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, MotionClock,
+    TextGpu, TextPresentationGpu, TextRunGpu, TextTargetGpu,
 };
 /// The glyph rasterizer this platform draws with: DirectWrite on Windows,
 /// so text there matches every native app; swash elsewhere.
@@ -564,6 +569,9 @@ struct RunPresentation {
     presentation: u32,
     /// Physical px per logical px the entry's instances are in.
     raster: f32,
+    /// Word offset of the paragraph's per-glyph presentation in this frame's
+    /// fx table; zero for none.
+    fx: u32,
 }
 
 /// One text draw command's head, or one run folded into an earlier one.
@@ -613,6 +621,10 @@ pub(super) struct TextPipelineTarget {
     run_slots: RunSlots,
     presentations: Vec<TextPresentationGpu>,
     uploaded_presentations: Vec<TextPresentationGpu>,
+    /// This frame's per-glyph presentation table, word 0 reserved so an
+    /// offset of zero means none; and what the GPU holds.
+    fx: Vec<u32>,
+    uploaded_fx: Vec<u32>,
     presentation_index: HashMap<[u32; 40], u32>,
     /// The presentation the label before this one asked for, by the values it
     /// was derived from. See [`TextPipeline::presentation_index`].
@@ -745,6 +757,8 @@ impl TextPipelineTarget {
             run_slots: RunSlots::default(),
             presentations: Vec::new(),
             uploaded_presentations: Vec::new(),
+            fx: vec![0],
+            uploaded_fx: Vec::new(),
             presentation_index: HashMap::new(),
             last_presentation: None,
             arena: SlotArena::default(),
@@ -815,6 +829,17 @@ pub(super) struct TextPipeline {
     shape_cache: ShapeCache,
     /// Resolver scratch, reused so a paragraph's runs cost no allocation.
     resolved: NanaGlyphBuffer,
+    /// The same glyphs in paint order with their shadow and stroke layers,
+    /// for a paragraph that has effects. Swapped with `resolved` once built.
+    layered: NanaGlyphBuffer,
+    /// Underlines and strikeouts of the paragraph being built.
+    solids: Vec<SolidQuad>,
+    /// What the next [`Self::prepare`] draws besides its fill. One-shot,
+    /// like the colour overrides.
+    effects: Option<Arc<SceneRichPaint>>,
+    legacy_shadow: Option<nana_ui_core::TextShadowSpec>,
+    /// What the next [`Self::prepare`] presents per glyph. One-shot.
+    glyph_presentation: Option<Arc<SceneGlyphPresentation>>,
     target: TextPipelineTarget,
     /// The font-set generation this painter's caches were filled at. A
     /// `@font-face` registration reissues faces, so both the shaped paragraphs
@@ -887,6 +912,11 @@ impl TextPipeline {
             gpu,
             shape_cache: ShapeCache::default(),
             resolved: NanaGlyphBuffer::default(),
+            layered: NanaGlyphBuffer::default(),
+            solids: Vec::new(),
+            effects: None,
+            legacy_shadow: None,
+            glyph_presentation: None,
             target,
             font_generation: crate::text_engine::engine_font_generation(),
             resolve_requests: 0,
@@ -907,6 +937,40 @@ impl TextPipeline {
     /// paragraph, so it cannot leak into the following text node.
     pub(super) fn set_linear_color_override(&mut self, color: Option<[f32; 4]>) {
         self.linear_color_override = color;
+    }
+
+    /// What the next [`Self::prepare`] presents per glyph. Not part of what
+    /// its instances are built from: a new presentation is a new fx row, not
+    /// a rebuilt entry.
+    pub(super) fn set_glyph_presentation(
+        &mut self,
+        presentation: Option<&Arc<SceneGlyphPresentation>>,
+    ) {
+        self.glyph_presentation = presentation.cloned();
+    }
+
+    /// The motion clock glyph presentation samples, written when it moved.
+    pub(super) fn write_motion(
+        &mut self,
+        queue: &wgpu::Queue,
+        now: std::time::Duration,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        self.gpu
+            .write_motion(queue, &mut self.target.gpu, MotionClock::at(now), work);
+    }
+
+    /// What the next [`Self::prepare`] draws besides its fill: the scene's
+    /// resolved effects, or — for a primitive that carries none — its legacy
+    /// single `text_shadow`. Consumed by that call, like the colour
+    /// overrides, so it cannot leak into the next paragraph.
+    pub(super) fn set_effects(
+        &mut self,
+        rich: Option<&Arc<SceneRichPaint>>,
+        legacy_shadow: Option<nana_ui_core::TextShadowSpec>,
+    ) {
+        self.effects = rich.cloned();
+        self.legacy_shadow = if rich.is_some() { None } else { legacy_shadow };
     }
 
     pub(super) fn set_paint_color_override(&mut self, color: Option<nana_ui_core::PaintColor>) {
@@ -968,6 +1032,9 @@ impl TextPipeline {
             &mut target.uploaded_presentations,
         );
         target.presentations.clear();
+        std::mem::swap(&mut target.fx, &mut target.uploaded_fx);
+        target.fx.clear();
+        target.fx.push(0);
         target.presentation_index.clear();
         target.last_presentation = None;
         target.writes.clear();
@@ -1182,6 +1249,9 @@ impl TextPipeline {
     ) -> Option<PreparedText> {
         let linear_color_override = self.linear_color_override.take();
         let paint_color_override = self.paint_color_override.take();
+        let effects = self.effects.take();
+        let legacy_shadow = self.legacy_shadow.take();
+        let glyph_presentation = self.glyph_presentation.take();
         if content.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
         }
@@ -1214,6 +1284,23 @@ impl TextPipeline {
         // rich text this is the only thing that can tell one paint from
         // another. Solid text costs an empty `Vec` and a zero.
         let colors = SpanColors::new(content, spans, default_color, paint_color_override);
+        // Shadows, strokes and decorations are instances of this same entry,
+        // so what they are is part of what its instances were built from —
+        // and nothing else: a paragraph without them keeps the solid case's
+        // zero.
+        let effects_fingerprint = match (&effects, legacy_shadow) {
+            (Some(effects), _) => effects.revision,
+            (None, Some(shadow)) => legacy_shadow_fingerprint(shadow),
+            (None, None) => 0,
+        };
+        let fingerprint = combine_fingerprints(colors.fingerprint, effects_fingerprint);
+        let reach = match (&effects, legacy_shadow) {
+            (Some(effects), _) => effects.reach,
+            (None, Some(shadow)) => {
+                shadow.offset_x.abs().max(shadow.offset_y.abs()) + shadow.blur_radius.max(0.0)
+            }
+            (None, None) => 0.0,
+        };
         // Every path shapes with the full OpenType machinery. The scene still
         // carries the old `Auto | Advanced` distinction; `nana-text` has no
         // reduced mode to select, and a reduced one changed advances enough to
@@ -1288,7 +1375,7 @@ impl TextPipeline {
                 !entry.damaged
                     && revision != UNTRACKED_REVISION
                     && entry.revision == revision
-                    && entry.colors == colors.fingerprint
+                    && entry.colors == fingerprint
                     && entry.scale_bits == raster.to_bits()
                     && entry.font_generation == self.font_generation
             })
@@ -1445,8 +1532,9 @@ impl TextPipeline {
         // natural height — nothing at a normal line height, a few pixels at
         // `line-height: 1`. Horizontally the pad covers side bearings, which
         // an italic or a swash can push past the advance box.
-        let pad_y = (size * 1.25 - line_height).max(0.0);
-        let pad_x = size * 0.25;
+        // Shadows and outlines reach past the glyphs by what they say.
+        let pad_y = (size * 1.25 - line_height).max(0.0) + reach;
+        let pad_x = size * 0.25 + reach;
         let ink = LogicalRect::from_xywh(
             aligned[0] - pad_x,
             aligned[1] - pad_y,
@@ -1522,6 +1610,7 @@ impl TextPipeline {
                     flags: 0,
                     presentation: 0,
                     raster: 1.0,
+                    fx: 0,
                 },
                 next: NO_RUN,
                 last: index as u32,
@@ -1537,7 +1626,7 @@ impl TextPipeline {
                 self.target.entries.get(*id).is_some_and(|entry| {
                     entry.valid(
                         hash,
-                        colors.fingerprint,
+                        fingerprint,
                         phase,
                         raster.to_bits(),
                         self.font_generation,
@@ -1583,6 +1672,12 @@ impl TextPipeline {
                 mode,
                 default_color,
                 &colors,
+                fingerprint,
+                EffectSource {
+                    rich: effects.as_deref(),
+                    legacy_shadow,
+                },
+                content,
                 revision,
                 retained_paragraph.as_deref(),
             )?,
@@ -1597,6 +1692,9 @@ impl TextPipeline {
         let presentation = self.presentation_index(affine, persp, fragment_clip, scale);
         let run = &mut self.target.runs[index];
         run.entry = entry;
+        let fx = glyph_presentation.as_deref().map_or(0, |presentation| {
+            pack_glyph_fx(&mut self.target.fx, presentation)
+        });
         run.presentation = RunPresentation {
             origin: whole,
             color: linear_color_override.unwrap_or_else(|| run_color(default_color)),
@@ -1604,6 +1702,7 @@ impl TextPipeline {
             flags,
             presentation,
             raster,
+            fx,
         };
         run.next = NO_RUN;
         run.last = index as u32;
@@ -1769,6 +1868,13 @@ impl TextPipeline {
         mode: GlyphRenderMode,
         default_color: [f32; 4],
         colors: &SpanColors,
+        // `colors` and the effects together, which is what the entry is
+        // stamped with.
+        fingerprint: u64,
+        effects: EffectSource<'_>,
+        // The text the paragraph lays out: what a glyph's grapheme ordinal,
+        // which its per-glyph presentation is looked up by, counts in.
+        content: &str,
         revision: u64,
         // The Runtime's own layout for this node, when it has one. `None`
         // means the painter laid this paragraph out itself and it is in the
@@ -1779,6 +1885,8 @@ impl TextPipeline {
         let Self {
             shape_cache,
             resolved,
+            layered,
+            solids,
             rasterizer,
             font_generation,
             ..
@@ -1826,10 +1934,87 @@ impl TextPipeline {
                         mode,
                         colors.color_at(glyph.cluster as usize).srgb,
                         colors.color_at(glyph.cluster as usize).paint_color,
+                        GlyphRole::Fill,
                         PlacedGlyph {
                             glyph: glyph.glyph_id,
                             x,
                             y,
+                            cluster: glyph.cluster,
+                        },
+                    );
+                }
+            }
+        }
+        // Ruby annotations, above their bases. Each glyph stands for the
+        // base's first byte, so it takes the base's colour, effects and
+        // reveal turn.
+        for ruby in &layout.rubies {
+            let baseline = (ruby.baseline_y_px * scale).round();
+            let cluster = ruby.range.start as u32;
+            let color = colors.color_at(ruby.range.start);
+            for run in &ruby.runs {
+                let Some(instance) = run.instance.as_ref() else {
+                    continue;
+                };
+                let (font, variation, synthesis) = rasterizer.intern_instance(instance);
+                let size = size_bits(run.font_size_px * scale);
+                let mut pen = run.origin_x_px;
+                for glyph in &run.glyphs {
+                    let x = (pen + glyph.offset_x_px) * scale + origin[0];
+                    let y = (origin[1] - glyph.offset_y_px * scale).floor() + baseline;
+                    pen += glyph.advance_px;
+                    resolved.push(
+                        font,
+                        generation,
+                        variation,
+                        size,
+                        synthesis,
+                        mode,
+                        color.srgb,
+                        color.paint_color,
+                        GlyphRole::Fill,
+                        PlacedGlyph {
+                            glyph: glyph.glyph_id,
+                            x,
+                            y,
+                            cluster,
+                        },
+                    );
+                }
+            }
+        }
+        // Object labels (tags), inside their objects, on their own pill: a
+        // fixed light ink. Each glyph stands for the object's character, so
+        // it takes the object's effects and reveal turn.
+        for label in &layout.labels {
+            let baseline = (label.baseline_y_px * scale).round();
+            let cluster = label.offset as u32;
+            for run in &label.runs {
+                let Some(instance) = run.instance.as_ref() else {
+                    continue;
+                };
+                let (font, variation, synthesis) = rasterizer.intern_instance(instance);
+                let size = size_bits(run.font_size_px * scale);
+                let mut pen = run.origin_x_px;
+                for glyph in &run.glyphs {
+                    let x = (pen + glyph.offset_x_px) * scale + origin[0];
+                    let y = (origin[1] - glyph.offset_y_px * scale).floor() + baseline;
+                    pen += glyph.advance_px;
+                    resolved.push(
+                        font,
+                        generation,
+                        variation,
+                        size,
+                        synthesis,
+                        mode,
+                        [1.0, 1.0, 1.0, 1.0],
+                        None,
+                        GlyphRole::Fill,
+                        PlacedGlyph {
+                            glyph: glyph.glyph_id,
+                            x,
+                            y,
+                            cluster,
                         },
                     );
                 }
@@ -1838,8 +2023,33 @@ impl TextPipeline {
         if resolved.is_empty() {
             return None;
         }
+        // Effects: the same glyphs again under their shadows and outlines,
+        // and the lines along their runs. Built here, where the layout is in
+        // hand; a legacy single shadow is resolved into the same form.
+        solids.clear();
+        let synthesized;
+        let rich = match (effects.rich, effects.legacy_shadow) {
+            (Some(rich), _) => Some(rich),
+            (None, Some(shadow)) => {
+                synthesized = legacy_effects(shadow);
+                synthesized.as_deref()
+            }
+            (None, None) => None,
+        };
+        let fill_start = match rich {
+            Some(rich) => {
+                let fill_start = layer_effects(resolved, rich, scale, layered);
+                std::mem::swap(resolved, layered);
+                if rich.has_decoration() && !layout.is_vertical() {
+                    decoration_quads(layout, rich, colors, scale, origin, solids);
+                }
+                fill_start
+            }
+            None => 0,
+        };
         let Self {
             resolved,
+            solids,
             rasterizer,
             raster,
             atlas,
@@ -1866,15 +2076,48 @@ impl TextPipeline {
             atlas.placeholder_page(AtlasPageKind::Mask),
             atlas.placeholder_page(AtlasPageKind::Color),
         ];
-        let id = target
-            .entries
-            .begin_build(key, resolved.glyphs.len() as u32, |handle| {
-                atlas.release(handle)
-            });
+        let id = target.entries.begin_build(
+            key,
+            (resolved.glyphs.len() + solids.len()) as u32,
+            |handle| atlas.release(handle),
+        );
         target.counters.instance_rebuilds += 1;
         let mut placed = 0u32;
         let mut segments: Vec<EntrySegment> = Vec::new();
-        for run in &resolved.runs {
+        // Paint order: shadows and under-strokes, underlines, fills and
+        // over-strokes, strikeouts.
+        let solid_ordinals = GraphemeOrdinals::new(content);
+        let place_solids = |line_through: bool,
+                            entries: &mut EntryStore,
+                            placed: &mut u32,
+                            segments: &mut Vec<EntrySegment>| {
+            place_solid_quads(
+                entries,
+                id,
+                solids,
+                line_through,
+                inherited,
+                placeholders,
+                placed,
+                segments,
+                &solid_ordinals,
+            );
+        };
+        let underlines_at = if solids.is_empty() {
+            usize::MAX
+        } else {
+            fill_start
+        };
+        let ordinals = GraphemeOrdinals::new(content);
+        for (index, run) in resolved.runs.iter().enumerate() {
+            if index == underlines_at {
+                place_solids(false, &mut target.entries, &mut placed, &mut segments);
+            }
+            let role = match run.role {
+                GlyphRole::Fill => pipeline::ROLE_FILL,
+                GlyphRole::Shadow => pipeline::ROLE_SHADOW,
+                GlyphRole::Stroke => pipeline::ROLE_STROKE,
+            };
             // The run's color is the same for every glyph under it, so it is
             // packed once rather than per glyph — and compared once against
             // the paragraph's own color, because a glyph that paints it can
@@ -1937,17 +2180,25 @@ impl TextPipeline {
                         color,
                         content | own,
                         linear_color,
-                    ),
+                    )
+                    .with_role(role)
+                    .with_ordinal(ordinals.of(glyph.cluster as usize)),
                 );
                 placed += 1;
             }
+        }
+        if !solids.is_empty() {
+            if underlines_at >= resolved.runs.len() {
+                place_solids(false, &mut target.entries, &mut placed, &mut segments);
+            }
+            place_solids(true, &mut target.entries, &mut placed, &mut segments);
         }
         target.frame_gpu_allocations += atlas.page_count() - pages_before;
         target.entries.finish_build(id, placed);
         let fonts = self.font_generation;
         let entry = self.target.entries.get_mut(id).expect("just built");
         entry.layout = hash;
-        entry.colors = colors.fingerprint;
+        entry.colors = fingerprint;
         entry.phase = phase;
         entry.font_generation = fonts;
         entry.mode = mode;
@@ -2429,7 +2680,7 @@ impl TextPipeline {
                 continue;
             }
             for (index, (instance, handle)) in target.entries.live_glyphs(entry).enumerate() {
-                let Some(drawn) = instance.placement() else {
+                let Some(drawn) = instance.placement().filter(|_| !instance.is_solid()) else {
                     continue;
                 };
                 let current = self
@@ -2528,6 +2779,8 @@ impl TextPipeline {
                 run_dirty: target.run_dirty.clone(),
                 presentations: &target.presentations,
                 uploaded_presentations: &target.uploaded_presentations,
+                fx: &target.fx,
+                uploaded_fx: &target.uploaded_fx,
             },
             work,
         );
@@ -2815,6 +3068,7 @@ impl RunPresentation {
             self.color,
             self.opacity,
             self.raster,
+            self.fx,
         )
     }
 }
@@ -3071,13 +3325,486 @@ fn resolve_vertical(
                     GlyphRenderMode::Mask,
                     colors.color_at(glyph.cluster as usize).srgb,
                     colors.color_at(glyph.cluster as usize).paint_color,
+                    GlyphRole::Fill,
                     PlacedGlyph {
                         glyph: glyph.glyph_id,
                         x,
                         y,
+                        cluster: glyph.cluster,
                     },
                 );
             }
+        }
+    }
+}
+
+/// The effects `prepare` hands `build_entry`: the scene's, or the legacy
+/// single shadow of a primitive that carries none.
+#[derive(Clone, Copy)]
+struct EffectSource<'a> {
+    rich: Option<&'a SceneRichPaint>,
+    legacy_shadow: Option<nana_ui_core::TextShadowSpec>,
+}
+
+/// Widest logical CSS blur radius a shadow is drawn with. Past it the kernel
+/// costs more than the softness is worth.
+const MAX_SHADOW_BLUR: f32 = 24.0;
+
+/// An underline or a strikeout, in the entry's raster px.
+#[derive(Clone, Copy, Debug)]
+struct SolidQuad {
+    origin: [i32; 2],
+    size: [u32; 2],
+    color: [f32; 4],
+    paint_color: Option<nana_ui_core::PaintColor>,
+    line_through: bool,
+    /// The byte of the first glyph it runs under.
+    cluster: u32,
+}
+
+/// Writes the underlines (or, with `line_through`, the strikeouts) of
+/// `solids` into entry `id` from slot `placed` on.
+#[allow(clippy::too_many_arguments)]
+fn place_solid_quads(
+    entries: &mut EntryStore,
+    id: u32,
+    solids: &[SolidQuad],
+    line_through: bool,
+    inherited: u32,
+    placeholders: [u32; 2],
+    placed: &mut u32,
+    segments: &mut Vec<EntrySegment>,
+    ordinals: &GraphemeOrdinals,
+) {
+    for quad in solids
+        .iter()
+        .filter(|quad| quad.line_through == line_through)
+    {
+        let color = pipeline::pack_srgb(quad.color);
+        // A line in the paragraph's own colour inherits the run row, so a
+        // recolour moves it with the glyphs and rebuilds nothing.
+        let own = if quad.paint_color.is_some() {
+            pipeline::INSTANCE_OWN_COLOR | pipeline::INSTANCE_LINEAR_COLOR
+        } else if color == inherited {
+            0
+        } else {
+            pipeline::INSTANCE_OWN_COLOR
+        };
+        let linear_color = quad
+            .paint_color
+            .map(super::color::pack_paint_color)
+            .unwrap_or([0.0; 4]);
+        push_entry_segment(
+            segments,
+            placeholders,
+            placeholders[0],
+            placeholders[1],
+            *placed,
+        );
+        entries.push_glyph(
+            id,
+            *placed,
+            atlas::GlyphAtlasEntryId::STALE,
+            GlyphInstance::new(
+                quad.origin,
+                quad.size,
+                [0, 0],
+                color,
+                CONTENT_MASK | own,
+                linear_color,
+            )
+            .with_role(pipeline::ROLE_SOLID)
+            // A line reveals with the first glyph it runs under.
+            .with_ordinal(ordinals.of(quad.cluster as usize)),
+        );
+        *placed += 1;
+    }
+}
+
+/// Grapheme ordinals of a paragraph's bytes: what per-glyph presentation
+/// counts in, so the reveal schedule an application compiled per grapheme
+/// lines up with the glyphs whatever the shaper merged or split.
+struct GraphemeOrdinals {
+    starts: Vec<usize>,
+}
+
+impl GraphemeOrdinals {
+    fn new(content: &str) -> Self {
+        use unicode_segmentation::UnicodeSegmentation;
+        Self {
+            starts: content.grapheme_indices(true).map(|(at, _)| at).collect(),
+        }
+    }
+
+    /// The grapheme `byte` falls in.
+    fn of(&self, byte: usize) -> u32 {
+        self.starts
+            .partition_point(|start| *start <= byte)
+            .saturating_sub(1) as u32
+    }
+}
+
+/// Appends `presentation`'s header, effect table and per-grapheme pairs to
+/// `fx`, returning the header's word offset. The layout `glyph_look` in
+/// `text_atlas.wgsl` reads.
+fn pack_glyph_fx(fx: &mut Vec<u32>, presentation: &SceneGlyphPresentation) -> u32 {
+    const HEADER: usize = 12;
+    let at = fx.len();
+    let reveal = presentation.reveal.as_ref();
+    let clusters = presentation
+        .cluster_effects
+        .len()
+        .max(reveal.map_or(0, |reveal| reveal.at_s.len()));
+    let mut flags = 0u32;
+    if reveal.is_some() {
+        flags |= 1;
+    }
+    if !presentation.cluster_effects.is_empty() {
+        flags |= 2;
+    }
+    let (start_secs, start_fraction) = reveal.map_or((0, 0.0), |reveal| {
+        nana_ui_core::motion::glyph::split_seconds(reveal.start)
+    });
+    let intro = reveal.map(|reveal| reveal.intro).unwrap_or_default();
+    let easing = match intro.easing {
+        nana_ui_core::GlyphEasing::Linear => 0u32,
+        nana_ui_core::GlyphEasing::EaseOut => 1,
+        nana_ui_core::GlyphEasing::BackOut => 2,
+    };
+    let effects_at = at + HEADER;
+    let clusters_at = effects_at + presentation.effects.len() * 4;
+    fx.extend_from_slice(&[
+        flags,
+        clusters as u32,
+        start_secs,
+        start_fraction.to_bits(),
+        reveal.and_then(|reveal| reveal.limit).unwrap_or(u32::MAX),
+        u32::from(intro.fade) | u32::from(intro.pop) << 1 | easing << 8,
+        intro.rise_px.to_bits(),
+        intro.duration_s.max(0.0).to_bits(),
+        effects_at as u32,
+        clusters_at as u32,
+        presentation.effects.len() as u32,
+        0,
+    ]);
+    for effect in presentation.effects.iter() {
+        let kind = match effect.kind {
+            nana_ui_core::GlyphEffectKind::Shake => 0u32,
+            nana_ui_core::GlyphEffectKind::Wave => 1,
+            nana_ui_core::GlyphEffectKind::Jump => 2,
+            nana_ui_core::GlyphEffectKind::Rainbow => 3,
+            nana_ui_core::GlyphEffectKind::Pulse => 4,
+            nana_ui_core::GlyphEffectKind::Flicker => 5,
+        };
+        fx.extend_from_slice(&[
+            kind,
+            effect.amplitude.to_bits(),
+            effect.frequency_hz.to_bits(),
+            effect.stagger.to_bits(),
+        ]);
+    }
+    for ordinal in 0..clusters {
+        let effect = presentation
+            .cluster_effects
+            .get(ordinal)
+            .map_or(u32::MAX, |index| {
+                if *index == u16::MAX {
+                    u32::MAX
+                } else {
+                    u32::from(*index)
+                }
+            });
+        let at = reveal.map_or(0.0, |reveal| {
+            reveal.at_s.get(ordinal).copied().unwrap_or(f32::INFINITY)
+        });
+        fx.extend_from_slice(&[effect, at.to_bits()]);
+    }
+    at as u32
+}
+
+/// A legacy `text_shadow` as the effects every other shadow is drawn from.
+fn legacy_effects(shadow: nana_ui_core::TextShadowSpec) -> Option<Arc<SceneRichPaint>> {
+    SceneRichPaint::new(
+        SceneTextEffects {
+            shadows: Arc::from([nana_ui_core::RichTextShadow {
+                offset: [shadow.offset_x, shadow.offset_y],
+                blur_px: shadow.blur_radius.max(0.0),
+                spread_px: 0.0,
+                color: shadow
+                    .paint_color
+                    .unwrap_or(nana_ui_core::PaintColor::srgb(shadow.color)),
+            }]),
+            ..SceneTextEffects::default()
+        },
+        Vec::new(),
+    )
+}
+
+fn legacy_shadow_fingerprint(shadow: nana_ui_core::TextShadowSpec) -> u64 {
+    let mut hasher = ShapeHasher::default();
+    for value in [shadow.offset_x, shadow.offset_y, shadow.blur_radius] {
+        value.to_bits().hash(&mut hasher);
+    }
+    shadow.color.map(f32::to_bits).hash(&mut hasher);
+    hash_paint_color(shadow.paint_color, &mut hasher);
+    hasher.finish() | 1
+}
+
+/// One entry stamp for its colours and its effects. Zero only when both are:
+/// the solid case a recolour does not rebuild.
+fn combine_fingerprints(colors: u64, effects: u64) -> u64 {
+    if effects == 0 {
+        return colors;
+    }
+    let mut hasher = ShapeHasher::default();
+    colors.hash(&mut hasher);
+    effects.hash(&mut hasher);
+    hasher.finish() | 1
+}
+
+/// `fills` in paint order with their effects, into `out`: every shadow layer
+/// (the last CSS layer lowest), outlines that sit under the fill, the fills,
+/// outlines over them. Returns the index of the first fill run, which is
+/// where underlines go.
+///
+/// A glyph that is stroked or shadowed is filled from the outline scaler its
+/// stroke and shadow come from, so the three line up to the pixel.
+fn layer_effects(
+    fills: &NanaGlyphBuffer,
+    effects: &SceneRichPaint,
+    scale: f32,
+    out: &mut NanaGlyphBuffer,
+) -> usize {
+    out.clear();
+    let push = |out: &mut NanaGlyphBuffer,
+                run: &NanaGlyphRun,
+                synthesis: GlyphSynthesis,
+                mode: GlyphRenderMode,
+                color: nana_ui_core::PaintColor,
+                role: GlyphRole,
+                glyph: PlacedGlyph| {
+        out.push(
+            run.font,
+            run.font_generation,
+            run.variation,
+            run.size_bits,
+            synthesis,
+            mode,
+            color.to_srgb(),
+            Some(color),
+            role,
+            glyph,
+        );
+    };
+    // Only an outline has to line up with its fill to the pixel; a shadow is
+    // offset and soft anyway, and keeps the platform rasterizer's fill.
+    let outlined = |fx: &SceneTextEffects| fx.stroke.is_some();
+    for layer in (0..effects.max_shadows()).rev() {
+        for run in &fills.runs {
+            for glyph in fills.glyphs_of(run) {
+                let fx = effects.effects_at(glyph.cluster as usize);
+                let Some(shadow) = fx.shadows.get(layer) else {
+                    continue;
+                };
+                let blur = shadow.blur_px.clamp(0.0, MAX_SHADOW_BLUR) * scale;
+                let spread = shadow.spread_px.max(0.0) * scale;
+                let mode = if blur < 0.5 && spread <= 0.0 {
+                    GlyphRenderMode::Mask
+                } else {
+                    GlyphRenderMode::Blur {
+                        radius_q: GlyphRenderMode::quarters(blur),
+                        spread_q: GlyphRenderMode::quarters(spread),
+                    }
+                };
+                // A sharp shadow is the fill's own bitmap, shifted.
+                let synthesis = if mode.is_derived() || outlined(fx) {
+                    run.synthesis.with(GlyphSynthesis::OUTLINE_RASTER)
+                } else {
+                    run.synthesis
+                };
+                push(
+                    out,
+                    run,
+                    synthesis,
+                    mode,
+                    shadow.color,
+                    GlyphRole::Shadow,
+                    PlacedGlyph {
+                        x: glyph.x + shadow.offset[0] * scale,
+                        y: glyph.y + shadow.offset[1] * scale,
+                        ..*glyph
+                    },
+                );
+            }
+        }
+    }
+    let strokes = |out: &mut NanaGlyphBuffer, placement: nana_ui_core::TextStrokePlacement| {
+        for run in &fills.runs {
+            for glyph in fills.glyphs_of(run) {
+                let fx = effects.effects_at(glyph.cluster as usize);
+                let Some(stroke) = fx.stroke.filter(|stroke| stroke.placement == placement) else {
+                    continue;
+                };
+                let width = stroke.width_px.max(0.0) * scale;
+                if width < 0.25 {
+                    continue;
+                }
+                push(
+                    out,
+                    run,
+                    run.synthesis.with(GlyphSynthesis::OUTLINE_RASTER),
+                    GlyphRenderMode::Stroke {
+                        width_q: GlyphRenderMode::quarters(width),
+                        join: raster::stroke_join(stroke.join),
+                    },
+                    stroke.color,
+                    GlyphRole::Stroke,
+                    *glyph,
+                );
+            }
+        }
+    };
+    strokes(out, nana_ui_core::TextStrokePlacement::Under);
+    let fill_start = out.runs.len();
+    for run in &fills.runs {
+        for glyph in fills.glyphs_of(run) {
+            let fx = effects.effects_at(glyph.cluster as usize);
+            let synthesis = if outlined(fx) {
+                run.synthesis.with(GlyphSynthesis::OUTLINE_RASTER)
+            } else {
+                run.synthesis
+            };
+            out.push(
+                run.font,
+                run.font_generation,
+                run.variation,
+                run.size_bits,
+                synthesis,
+                run.render_mode,
+                run.color,
+                run.paint_color,
+                GlyphRole::Fill,
+                *glyph,
+            );
+        }
+    }
+    strokes(out, nana_ui_core::TextStrokePlacement::Over);
+    fill_start
+}
+
+/// Underlines and strikeouts along each line's runs, from the faces' own
+/// `post` / `OS/2` metrics, merged across neighbouring glyphs that decorate
+/// alike. Positions are in the entry's raster px, on whole pixels.
+fn decoration_quads(
+    layout: &TextLayout,
+    effects: &SceneRichPaint,
+    colors: &SpanColors,
+    scale: f32,
+    origin: [f32; 2],
+    out: &mut Vec<SolidQuad>,
+) {
+    #[derive(Clone, Copy, PartialEq)]
+    struct Key {
+        decoration: nana_ui_core::TextDecorationLine,
+        color: [u32; 4],
+        paint_color: Option<nana_ui_core::PaintColor>,
+    }
+    struct Open {
+        key: Key,
+        color: [f32; 4],
+        left: f32,
+        right: f32,
+        cluster: u32,
+    }
+    for line in &layout.lines {
+        let baseline = (line.metrics.baseline_y_px * scale).round() + origin[1].floor();
+        for run in layout.line_runs(line) {
+            // An inline object's placeholder is not text a line runs under.
+            if run.is_object() {
+                continue;
+            }
+            let metrics = run.metrics;
+            let size = run.font_size_px;
+            let (underline_offset, underline_thickness, strike_offset, strike_thickness) =
+                if metrics.has_decorations() {
+                    (
+                        metrics.underline_offset_px,
+                        metrics.underline_thickness_px,
+                        metrics.strikeout_offset_px,
+                        metrics.strikeout_thickness_px,
+                    )
+                } else {
+                    (size * 0.1, size / 14.0, size * 0.3, size / 14.0)
+                };
+            let flush = |open: Option<Open>, out: &mut Vec<SolidQuad>| {
+                let Some(open) = open else {
+                    return;
+                };
+                let left = (open.left * scale + origin[0]).round();
+                let right = (open.right * scale + origin[0]).round();
+                let width = (right - left).max(1.0) as u32;
+                let mut emit = |top: f32, thickness: f32, line_through: bool| {
+                    out.push(SolidQuad {
+                        origin: [left as i32, top as i32],
+                        size: [width, (thickness * scale).round().max(1.0) as u32],
+                        color: open.color,
+                        paint_color: open.key.paint_color,
+                        line_through,
+                        cluster: open.cluster,
+                    });
+                };
+                if open.key.decoration.underline {
+                    emit(
+                        baseline + (underline_offset * scale).round(),
+                        underline_thickness,
+                        false,
+                    );
+                }
+                if open.key.decoration.line_through {
+                    emit(
+                        baseline - (strike_offset * scale).round(),
+                        strike_thickness,
+                        true,
+                    );
+                }
+            };
+            let mut open: Option<Open> = None;
+            for (left, glyph) in run.glyph_cells() {
+                let fx = effects.effects_at(glyph.cluster as usize);
+                if !fx.decoration.is_active() {
+                    flush(open.take(), out);
+                    continue;
+                }
+                let (color, paint_color) = match fx.decoration_color {
+                    Some(color) => (color.to_srgb(), Some(color)),
+                    None => {
+                        let fill = colors.color_at(glyph.cluster as usize);
+                        (fill.srgb, fill.paint_color)
+                    }
+                };
+                let key = Key {
+                    decoration: fx.decoration,
+                    color: color.map(f32::to_bits),
+                    paint_color,
+                };
+                let right = left + glyph.advance_px;
+                match open.as_mut() {
+                    Some(current) if current.key == key && (current.right - left).abs() < 0.01 => {
+                        current.right = right;
+                    }
+                    _ => {
+                        flush(open.take(), out);
+                        open = Some(Open {
+                            key,
+                            color,
+                            left,
+                            right,
+                            cluster: glyph.cluster,
+                        });
+                    }
+                }
+            }
+            flush(open.take(), out);
         }
     }
 }
@@ -3918,6 +4645,512 @@ mod tests {
         );
     }
 
+    /// Paint "warm and cold" under `effects`, as the scene painter does.
+    fn paint_effects(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        effects: Option<&Arc<SceneRichPaint>>,
+        shadow: Option<nana_ui_core::TextShadowSpec>,
+    ) {
+        pipeline.set_effects(effects, shadow);
+        paint_rich(device, queue, pipeline, &[]);
+    }
+
+    fn effects(base: SceneTextEffects) -> Option<Arc<SceneRichPaint>> {
+        SceneRichPaint::new(base, Vec::new())
+    }
+
+    fn outline(width: f32, color: [f32; 4]) -> SceneTextEffects {
+        SceneTextEffects {
+            stroke: Some(nana_ui_core::RichTextStroke::new(
+                width,
+                nana_ui_core::PaintColor::srgb(color),
+            )),
+            decoration: nana_ui_core::TextDecorationLine {
+                underline: true,
+                line_through: false,
+            },
+            ..SceneTextEffects::default()
+        }
+    }
+
+    /// The paint tier of rich text (outline, decoration, shadow) is instances
+    /// of the same paragraph: changing it rebuilds them and lays nothing out;
+    /// changing only a colour rasterizes nothing new either.
+    #[test]
+    fn repainting_an_outline_rebuilds_instances_without_relayout() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let black = effects(outline(2.0, [0.0, 0.0, 0.0, 1.0]));
+        paint_effects(&device, &queue, &mut pipeline, black.as_ref(), None);
+        let first = pipeline.glyph_counters();
+        let (_, misses, _) = pipeline.shape_cache_stats();
+
+        let white = effects(outline(2.0, [1.0, 1.0, 1.0, 1.0]));
+        paint_effects(&device, &queue, &mut pipeline, white.as_ref(), None);
+        let recolored = pipeline.glyph_counters();
+        assert_eq!(
+            recolored.text_instance_rebuilds - first.text_instance_rebuilds,
+            1,
+            "a new outline colour resolves the entry again"
+        );
+        assert_eq!(
+            recolored.glyph_rasterized, first.glyph_rasterized,
+            "the outline bitmaps never depended on its colour"
+        );
+        assert_eq!(
+            pipeline.shape_cache_stats().1,
+            misses,
+            "nothing is laid out again"
+        );
+
+        let wide = effects(outline(4.0, [1.0, 1.0, 1.0, 1.0]));
+        paint_effects(&device, &queue, &mut pipeline, wide.as_ref(), None);
+        let widened = pipeline.glyph_counters();
+        assert!(
+            widened.glyph_rasterized > recolored.glyph_rasterized,
+            "a wider outline is new bitmaps"
+        );
+        assert_eq!(
+            pipeline.shape_cache_stats().1,
+            misses,
+            "and still no relayout"
+        );
+
+        paint_effects(&device, &queue, &mut pipeline, wide.as_ref(), None);
+        let steady = pipeline.glyph_counters();
+        assert_eq!(
+            steady.text_instance_rebuilds,
+            widened.text_instance_rebuilds
+        );
+        assert_eq!(steady.glyph_rasterized, widened.glyph_rasterized);
+    }
+
+    /// A blurred shadow is rasterized and uploaded once. Every frame after
+    /// that is the same entry: no raster, no atlas upload, no rebuild.
+    #[test]
+    fn a_steady_frame_with_a_blurred_shadow_rasterizes_and_uploads_nothing() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let shadow = nana_ui_core::TextShadowSpec {
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur_radius: 6.0,
+            color: [0.0, 0.0, 0.0, 0.6],
+            paint_color: None,
+        };
+        paint_effects(&device, &queue, &mut pipeline, None, Some(shadow));
+        let first = pipeline.glyph_counters();
+        assert!(first.glyph_rasterized > 0);
+        for _ in 0..3 {
+            paint_effects(&device, &queue, &mut pipeline, None, Some(shadow));
+        }
+        let steady = pipeline.glyph_counters();
+        assert_eq!(steady.glyph_rasterized, first.glyph_rasterized, "no raster");
+        assert_eq!(
+            steady.glyph_upload_bytes, first.glyph_upload_bytes,
+            "no atlas upload"
+        );
+        assert_eq!(
+            steady.text_instance_rebuilds, first.text_instance_rebuilds,
+            "no rebuild"
+        );
+        assert_eq!(
+            steady.text_instance_upload_bytes,
+            first.text_instance_upload_bytes
+        );
+    }
+
+    /// One entry, in CSS paint order: shadow layers under outlines under the
+    /// underline under the fills, the strikeout on top.
+    #[test]
+    fn effects_are_instances_of_one_entry_in_paint_order() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let paint = nana_ui_core::PaintColor::srgb;
+        let rich = effects(SceneTextEffects {
+            decoration: nana_ui_core::TextDecorationLine {
+                underline: true,
+                line_through: true,
+            },
+            decoration_color: None,
+            stroke: Some(nana_ui_core::RichTextStroke::new(
+                2.0,
+                paint([0.0, 0.0, 0.0, 1.0]),
+            )),
+            shadows: Arc::from([
+                nana_ui_core::RichTextShadow::new([1.0, 1.0], 0.0, paint([1.0, 0.0, 0.0, 1.0])),
+                nana_ui_core::RichTextShadow::new([3.0, 3.0], 4.0, paint([0.0, 0.0, 1.0, 0.5])),
+            ]),
+        });
+        paint_effects(&device, &queue, &mut pipeline, rich.as_ref(), None);
+        let id = pipeline
+            .target
+            .entries
+            .lookup(EntryKey {
+                node: 1,
+                slot: 0,
+                pass: 0,
+            })
+            .expect("one entry");
+        let entry = pipeline.target.entries.get(id).unwrap();
+        let roles: Vec<u32> = pipeline
+            .target
+            .entries
+            .instances(entry)
+            .iter()
+            .take(entry.glyphs as usize)
+            .map(|instance| instance.role())
+            .collect();
+        let first = |role: u32| roles.iter().position(|r| *r == role).unwrap();
+        let last = |role: u32| roles.iter().rposition(|r| *r == role).unwrap();
+        assert!(last(pipeline::ROLE_SHADOW) < first(pipeline::ROLE_STROKE));
+        assert!(last(pipeline::ROLE_STROKE) < first(pipeline::ROLE_SOLID));
+        let solids: Vec<usize> = roles
+            .iter()
+            .enumerate()
+            .filter(|(_, role)| **role == pipeline::ROLE_SOLID)
+            .map(|(index, _)| index)
+            .collect();
+        assert!(solids.len() >= 2, "an underline and a strikeout: {roles:?}");
+        assert!(
+            solids[0] < first(pipeline::ROLE_FILL),
+            "the underline under the fill"
+        );
+        assert!(
+            *solids.last().unwrap() > last(pipeline::ROLE_FILL),
+            "the strikeout over it: {roles:?}"
+        );
+        let shadows = roles
+            .iter()
+            .filter(|role| **role == pipeline::ROLE_SHADOW)
+            .count();
+        let fills = roles
+            .iter()
+            .filter(|role| **role == pipeline::ROLE_FILL)
+            .count();
+        assert_eq!(shadows, fills * 2, "a copy of every glyph per shadow layer");
+    }
+
+    /// Measurement is paint: a rich paragraph the Runtime laid out, spans at
+    /// their own sizes, is drawn from its handle, glyph for glyph.
+    #[test]
+    fn a_rich_paragraph_is_drawn_from_the_layout_it_was_measured_with() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let content = "small BIG";
+        let mut source = nana_text::TextSource::new(content);
+        let base = nana_text::TextStyle {
+            font_size_px: 16.0,
+            line_height: Some(LineHeightSpec::Absolute(20.0)),
+            ..nana_text::TextStyle::default()
+        };
+        source.set_spans(vec![nana_text::TextSpan {
+            range: 6..9,
+            style: nana_text::TextStyle {
+                font_size_px: 28.0,
+                ..base.clone()
+            },
+            composition: None,
+        }]);
+        let constraints = nana_text::TextConstraints {
+            max_width_px: Some(240.0),
+            preserve_lines: true,
+            ..nana_text::TextConstraints::default()
+        };
+        let layout = {
+            let engine = crate::text_engine::nana_text_engine();
+            let mut engine = crate::text_engine::lock_engine(&engine);
+            let mut counters = nana_text::TextWorkCounters::default();
+            nana_text::TextEngine::layout(
+                &mut *engine,
+                nana_text::TextKind::Label,
+                &source,
+                &base,
+                &constraints,
+                &mut counters,
+            )
+        };
+        assert!(layout.runs.iter().any(|run| run.font_size_px == 28.0));
+        let handle = nana_ui_runtime::RetainedTextLayout {
+            id: layout.id,
+            layout,
+        };
+        prepare_with_layout(
+            &device,
+            &queue,
+            &mut pipeline,
+            content,
+            240.0,
+            Some(&handle),
+        );
+        let drawn = pipeline.glyph_counters();
+        assert!(
+            drawn.text_retained_layouts_drawn >= 1,
+            "drawn from the handle"
+        );
+        assert_eq!(pipeline.shape_cache_stats().1, 0, "never laid out again");
+        let id = pipeline
+            .target
+            .entries
+            .lookup(EntryKey {
+                node: 1,
+                slot: 0,
+                pass: 0,
+            })
+            .expect("one entry");
+        let entry = pipeline.target.entries.get(id).unwrap();
+        let heights: Vec<u32> = pipeline
+            .target
+            .entries
+            .instances(entry)
+            .iter()
+            .filter(|instance| !instance.is_solid())
+            .filter_map(|instance| instance.placement().map(|(_, size)| size[1]))
+            .collect();
+        let tallest = heights.iter().copied().max().unwrap_or(0);
+        let shortest = heights
+            .iter()
+            .copied()
+            .filter(|h| *h > 0)
+            .min()
+            .unwrap_or(0);
+        assert!(
+            tallest as f32 > shortest as f32 * 1.4,
+            "the span's glyphs are rasterized at its own size: {heights:?}"
+        );
+    }
+
+    /// A ruby annotation is drawn from the layout, glyph for glyph, above its
+    /// base and smaller than it.
+    #[test]
+    fn a_ruby_annotation_is_drawn_above_its_base() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let content = "漢字";
+        let mut source = nana_text::TextSource::new(content);
+        source.set_rubies(vec![nana_text::RubySpan {
+            range: 0..6,
+            text: Arc::from("kanji"),
+        }]);
+        let base = nana_text::TextStyle {
+            font_size_px: 16.0,
+            line_height: Some(LineHeightSpec::Absolute(20.0)),
+            ..nana_text::TextStyle::default()
+        };
+        let constraints = nana_text::TextConstraints {
+            max_width_px: Some(240.0),
+            preserve_lines: true,
+            ..nana_text::TextConstraints::default()
+        };
+        let layout = {
+            let engine = crate::text_engine::nana_text_engine();
+            let mut engine = crate::text_engine::lock_engine(&engine);
+            let mut counters = nana_text::TextWorkCounters::default();
+            nana_text::TextEngine::layout(
+                &mut *engine,
+                nana_text::TextKind::Label,
+                &source,
+                &base,
+                &constraints,
+                &mut counters,
+            )
+        };
+        assert_eq!(layout.rubies.len(), 1);
+        let annotation_glyphs: usize = layout.rubies[0]
+            .runs
+            .iter()
+            .map(|run| run.glyphs.len())
+            .sum();
+        let base_glyphs: usize = layout.runs.iter().map(|run| run.glyphs.len()).sum();
+        let handle = nana_ui_runtime::RetainedTextLayout {
+            id: layout.id,
+            layout,
+        };
+        prepare_with_layout(
+            &device,
+            &queue,
+            &mut pipeline,
+            content,
+            240.0,
+            Some(&handle),
+        );
+        let id = pipeline
+            .target
+            .entries
+            .lookup(EntryKey {
+                node: 1,
+                slot: 0,
+                pass: 0,
+            })
+            .expect("one entry");
+        let entry = pipeline.target.entries.get(id).unwrap();
+        let mut placed: Vec<([i32; 2], [u32; 2])> = pipeline
+            .target
+            .entries
+            .instances(entry)
+            .iter()
+            .take(entry.glyphs as usize)
+            .filter(|instance| !instance.is_solid())
+            .filter_map(|instance| {
+                instance
+                    .placement()
+                    .map(|(_, size)| (instance.screen_origin(), size))
+            })
+            .filter(|(_, size)| size[1] > 0)
+            .collect();
+        assert_eq!(
+            placed.len(),
+            base_glyphs + annotation_glyphs,
+            "the base and every annotation glyph"
+        );
+        placed.sort_by_key(|(origin, size)| origin[1] + size[1] as i32);
+        let (top, small) = placed[0];
+        let (bottom, large) = placed[placed.len() - 1];
+        assert!(
+            top[1] + (small[1] as i32) <= bottom[1] + 2,
+            "the annotation stands above the base"
+        );
+        assert!(small[1] < large[1], "and is smaller");
+    }
+
+    fn presentation(
+        effects: Vec<nana_ui_core::GlyphEffect>,
+        cluster_effects: Vec<u16>,
+        reveal: Option<nana_ui_core::RevealSchedule>,
+    ) -> Arc<SceneGlyphPresentation> {
+        Arc::new(SceneGlyphPresentation {
+            effects: effects.into(),
+            cluster_effects: cluster_effects.into(),
+            reveal,
+        })
+    }
+
+    /// "H" painted at `now` under `presented`.
+    fn paint_presented(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        presented: Option<&Arc<SceneGlyphPresentation>>,
+        now: std::time::Duration,
+    ) -> Option<(u32, u32, u32, u32)> {
+        pipeline.write_motion(queue, now, None);
+        pipeline.set_glyph_presentation(presented);
+        let pixels = paint_text_with(
+            device,
+            queue,
+            pipeline,
+            ("H", 32.0),
+            LogicalRect::from_xywh(16.0, 32.0, 96.0, 64.0),
+            LogicalRect::from_xywh(0.0, 0.0, 128.0, 128.0),
+            clip::IDENTITY_AFFINE,
+            [0.0; 2],
+            clip::FragmentClip::PASS,
+            [128, 128],
+        );
+        ink_aabb(&pixels, 128, 128)
+    }
+
+    /// The text shader moves a glyph where the CPU evaluator says it is.
+    #[test]
+    fn the_shader_presents_a_glyph_where_the_cpu_evaluator_puts_it() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let still = paint_presented(
+            &device,
+            &queue,
+            &mut pipeline,
+            None,
+            std::time::Duration::ZERO,
+        )
+        .expect("the glyph draws");
+        let wave = nana_ui_core::GlyphEffect::wave(6.0);
+        let crest = std::time::Duration::from_secs_f32(0.25 / wave.frequency_hz);
+        let expected = nana_ui_core::evaluate_glyph(Some(&wave), None, 0, crest);
+        let waved = presentation(vec![wave], vec![0], None);
+        let moved = paint_presented(&device, &queue, &mut pipeline, Some(&waved), crest)
+            .expect("still drawn");
+        let shift = moved.1 as f32 - still.1 as f32;
+        assert!(
+            (shift - expected.offset[1]).abs() <= 1.0,
+            "the shader moved it {shift}px, the evaluator says {}",
+            expected.offset[1]
+        );
+        assert_eq!(moved.0, still.0, "a wave only moves it up and down");
+
+        let reveal =
+            nana_ui_core::RevealSchedule::new(std::time::Duration::from_secs(10), vec![0.5]);
+        let hidden = presentation(Vec::new(), Vec::new(), Some(reveal));
+        assert!(
+            paint_presented(
+                &device,
+                &queue,
+                &mut pipeline,
+                Some(&hidden),
+                std::time::Duration::from_millis(10_400)
+            )
+            .is_none(),
+            "not revealed yet: nothing drawn"
+        );
+        let shown = paint_presented(
+            &device,
+            &queue,
+            &mut pipeline,
+            Some(&hidden),
+            std::time::Duration::from_millis(10_600),
+        )
+        .expect("revealed");
+        assert_eq!(shown, still);
+
+        let popped = nana_ui_core::RevealSchedule::new(std::time::Duration::ZERO, vec![0.0])
+            .intro(nana_ui_core::GlyphIntro::pop(1.0));
+        let half = std::time::Duration::from_millis(100);
+        let expected = nana_ui_core::evaluate_glyph(None, Some(&popped), 0, half);
+        let small = paint_presented(
+            &device,
+            &queue,
+            &mut pipeline,
+            Some(&presentation(Vec::new(), Vec::new(), Some(popped))),
+            half,
+        )
+        .expect("entering");
+        let (still_w, small_w) = ((still.2 - still.0) as f32, (small.2 - small.0) as f32);
+        assert!(
+            (small_w - still_w * expected.scale).abs() <= 2.0,
+            "scaled to {small_w} of {still_w}, the evaluator says x{}",
+            expected.scale
+        );
+    }
+
+    /// Presentation is not part of what an entry was built from: changing it,
+    /// and sixty frames of it moving, rebuild and upload no glyph.
+    #[test]
+    fn a_live_presentation_rebuilds_and_uploads_no_glyph() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        paint_effects(&device, &queue, &mut pipeline, None, None);
+        let first = pipeline.glyph_counters();
+        let waved = presentation(
+            vec![nana_ui_core::GlyphEffect::wave(4.0)],
+            vec![0; 13],
+            None,
+        );
+        for frame in 0..60u64 {
+            pipeline.write_motion(&queue, std::time::Duration::from_millis(frame * 16), None);
+            pipeline.set_glyph_presentation(Some(&waved));
+            paint_rich(&device, &queue, &mut pipeline, &[]);
+        }
+        let steady = pipeline.glyph_counters();
+        assert_eq!(steady.text_instance_rebuilds, first.text_instance_rebuilds);
+        assert_eq!(steady.glyph_rasterized, first.glyph_rasterized);
+        assert_eq!(steady.glyph_upload_bytes, first.glyph_upload_bytes);
+        assert_eq!(
+            steady.text_instance_upload_bytes, first.text_instance_upload_bytes,
+            "no instance moves: the shader reads the clock"
+        );
+    }
+
     /// Prepare one label, flush it and upload, reporting the GPU work.
     #[allow(clippy::too_many_arguments)]
     fn prepare_label(
@@ -4078,6 +5311,7 @@ mod tests {
                     flags: 0,
                     presentation: 0,
                     raster: 1.0,
+                    fx: 0,
                 },
                 next: NO_RUN,
                 last: index as u32,

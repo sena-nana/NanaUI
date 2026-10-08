@@ -124,6 +124,12 @@ pub use startup::{
 pub mod output;
 #[cfg(feature = "gpu")]
 mod scene_paint;
+/// DX12 shared-texture export of window outputs (Windows, `native-export`).
+#[cfg(all(feature = "hosted", feature = "native-export", target_os = "windows"))]
+pub use nana_gpu::{
+    NATIVE_EXPORT_FORMAT, NATIVE_EXPORT_SLOTS, NativeExportDeferral, NativeExportError,
+    NativeExportOutcome, NativeExportPool, NativeFrameToken, StagedNativeFrame,
+};
 #[cfg(all(feature = "gpu", feature = "hosted"))]
 pub use output::WindowPresenter;
 #[cfg(feature = "gpu")]
@@ -133,6 +139,11 @@ pub use output::{
     ExternalRenderOutcome, ExternalSurface, ExternalSurfaceConfig, ExternalSurfaceError,
     OutputConsumer, OutputPath, OutputPlan, OutputTopology, PlanError, PresenterCapabilities,
     RenderTargetPlanner, RenderTargetRequirements,
+};
+#[cfg(all(feature = "gpu", feature = "hosted"))]
+pub use output::{
+    WINDOW_OUTPUT_FORMAT, WINDOW_OUTPUT_HIDDEN_FPS, WindowOutputAlpha, WindowOutputConfig,
+    WindowOutputExport, WindowOutputExtent, WindowOutputFit, WindowOutputFrame, WindowOutputStatus,
 };
 pub mod selection;
 pub mod settings;
@@ -240,9 +251,11 @@ pub use nana_icons_tabler as icons_tabler;
 #[cfg(feature = "bundled-fonts")]
 pub use nana_text::use_hermetic_fonts;
 pub use nana_text::{
-    HostFontError, HostFontStyle, NanaTextShaper, alias_host_font_face_local,
-    register_host_font_bytes, register_host_font_face, register_host_font_face_styled,
-    register_host_font_file, set_sans_serif_family, shaped_face_families,
+    HostFontError, HostFontRegistration, HostFontScope, HostFontStyle, NanaTextShaper,
+    alias_host_font_face_local, register_host_font_bytes, register_host_font_face,
+    register_host_font_face_source, register_host_font_face_styled, register_host_font_file,
+    register_host_font_source, register_host_font_source_file, set_sans_serif_family,
+    shaped_face_families, unregister_host_font,
 };
 pub use nana_ui_core::ContentFit;
 pub use nana_ui_core::ControlSize;

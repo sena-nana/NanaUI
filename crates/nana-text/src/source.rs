@@ -36,6 +36,70 @@ pub enum CompositionSegment {
     PreeditTarget,
 }
 
+/// The character an inline object stands in the text as: U+FFFC OBJECT
+/// REPLACEMENT CHARACTER. One cluster, so a caret steps over an object in
+/// one move and a selection takes it whole.
+pub const OBJECT_REPLACEMENT: char = '\u{FFFC}';
+
+/// How much room an inline object takes on its line, in logical px.
+///
+/// The object sits on the baseline: `ascent_px` above it, `descent_px` below.
+/// A zero width is an object that takes no room at all (an editor's marker),
+/// so text around it breaks exactly as it would without it.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct InlineObjectMetrics {
+    pub width_px: f32,
+    pub ascent_px: f32,
+    pub descent_px: f32,
+}
+
+/// An object placed in the text: a sticker, an image, an editor chip.
+///
+/// The text holds one [`OBJECT_REPLACEMENT`] at `offset`; this entry says how
+/// large it is. What it *is* — an image, a texture — is the caller's: the
+/// engine only needs its box. Its size is read at layout, never at shaping, so
+/// resizing an object lays the paragraph out again without shaping it again.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct InlineObject {
+    /// Byte offset of the object's U+FFFC in [`TextSource::text`].
+    pub offset: usize,
+    /// The caller's name for the object, handed back in
+    /// [`crate::PlacedObject::id`].
+    pub id: u64,
+    pub metrics: InlineObjectMetrics,
+}
+
+/// A ruby annotation: small text set above a base range (furigana, pinyin).
+///
+/// The base is laid out as one unit — no line breaks inside it — and is
+/// spaced out when the annotation is wider than it. The annotation is shaped
+/// once, at [`RUBY_SCALE`] of the base's size, and placed centred above it.
+/// Horizontal text only: a vertical layout drops annotations and says so.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RubySpan {
+    /// Byte range of the base in [`TextSource::text`].
+    pub range: Range<usize>,
+    pub text: Arc<str>,
+}
+
+/// An annotation's size relative to its base.
+pub const RUBY_SCALE: f32 = 0.5;
+
+/// A label an inline object shows inside itself: an editor's marker tag
+/// ("pause", "sound: coin"). The object takes the label's room — shaped at
+/// [`LABEL_SCALE`] of the text around it, plus padding — instead of its own
+/// [`InlineObjectMetrics`], and the layout places the label's runs inside it
+/// ([`crate::PlacedLabel`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObjectLabel {
+    /// Byte offset of the object's U+FFFC in [`TextSource::text`].
+    pub offset: usize,
+    pub text: Arc<str>,
+}
+
+/// A label's size relative to the text around its object.
+pub const LABEL_SCALE: f32 = 0.62;
+
 /// One styled byte range of a [`TextSource`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextSpan {
@@ -118,6 +182,15 @@ impl<'a> SnappedSpans<'a> {
 pub struct TextSource {
     text: Arc<str>,
     spans: Vec<TextSpan>,
+    /// Sorted by offset; each names a U+FFFC of `text`.
+    #[serde(default)]
+    objects: Vec<InlineObject>,
+    /// Sorted, non-overlapping.
+    #[serde(default)]
+    rubies: Vec<RubySpan>,
+    /// Sorted by offset; each names an object of `objects`.
+    #[serde(default)]
+    labels: Vec<ObjectLabel>,
     revision: TextRevision,
     /// Hash of `text`, filled on first use and reset by every mutation.
     #[serde(skip)]
@@ -136,7 +209,12 @@ pub struct TextSource {
 /// be memoized yet is not part of a source's value.
 impl PartialEq for TextSource {
     fn eq(&self, other: &Self) -> bool {
-        self.text == other.text && self.spans == other.spans && self.revision == other.revision
+        self.text == other.text
+            && self.spans == other.spans
+            && self.objects == other.objects
+            && self.rubies == other.rubies
+            && self.labels == other.labels
+            && self.revision == other.revision
     }
 }
 
@@ -151,6 +229,9 @@ impl TextSource {
         Self {
             text: text.into(),
             spans: Vec::new(),
+            objects: Vec::new(),
+            rubies: Vec::new(),
+            labels: Vec::new(),
             revision: TextRevision::INITIAL,
             content_hash: OnceLock::new(),
             folded: OnceLock::new(),
@@ -169,6 +250,86 @@ impl TextSource {
 
     pub fn revision(&self) -> TextRevision {
         self.revision
+    }
+
+    /// The inline objects, sorted by offset.
+    pub fn objects(&self) -> &[InlineObject] {
+        &self.objects
+    }
+
+    /// The ruby annotations, sorted by base.
+    pub fn rubies(&self) -> &[RubySpan] {
+        &self.rubies
+    }
+
+    /// The object labels, sorted by offset.
+    pub fn labels(&self) -> &[ObjectLabel] {
+        &self.labels
+    }
+
+    /// Index into [`Self::labels`] of the label of the object at byte
+    /// `offset`, if it has one.
+    pub fn label_index(&self, offset: usize) -> Option<usize> {
+        self.labels
+            .binary_search_by_key(&offset, |label| label.offset)
+            .ok()
+    }
+
+    /// Replaces the object labels. One not on an object of
+    /// [`Self::objects`], or empty, is dropped. Set the objects first.
+    pub fn set_labels(&mut self, mut labels: Vec<ObjectLabel>) {
+        labels.retain(|label| !label.text.is_empty() && self.object_at(label.offset).is_some());
+        labels.sort_by_key(|label| label.offset);
+        labels.dedup_by_key(|label| label.offset);
+        self.labels = labels;
+        self.bump();
+    }
+
+    /// Replaces the ruby annotations. One whose base is empty, past the text
+    /// or off character boundaries is dropped, and so is one overlapping an
+    /// earlier one.
+    pub fn set_rubies(&mut self, mut rubies: Vec<RubySpan>) {
+        rubies.retain(|ruby| {
+            ruby.range.start < ruby.range.end
+                && ruby.range.end <= self.text.len()
+                && self.text.is_char_boundary(ruby.range.start)
+                && self.text.is_char_boundary(ruby.range.end)
+                && !ruby.text.is_empty()
+        });
+        rubies.sort_by_key(|ruby| ruby.range.start);
+        let mut kept: Vec<RubySpan> = Vec::with_capacity(rubies.len());
+        for ruby in rubies {
+            if kept
+                .last()
+                .is_none_or(|last| last.range.end <= ruby.range.start)
+            {
+                kept.push(ruby);
+            }
+        }
+        self.rubies = kept;
+        self.bump();
+    }
+
+    /// The object whose U+FFFC sits at byte `offset`, if any.
+    pub fn object_at(&self, offset: usize) -> Option<&InlineObject> {
+        self.objects
+            .binary_search_by_key(&offset, |object| object.offset)
+            .ok()
+            .map(|index| &self.objects[index])
+    }
+
+    /// Replaces the inline objects. An entry whose offset does not hold a
+    /// U+FFFC is dropped: it would size a character that is not an object.
+    pub fn set_objects(&mut self, mut objects: Vec<InlineObject>) {
+        objects.retain(|object| {
+            self.text
+                .get(object.offset..)
+                .is_some_and(|rest| rest.starts_with(OBJECT_REPLACEMENT))
+        });
+        objects.sort_by_key(|object| object.offset);
+        objects.dedup_by_key(|object| object.offset);
+        self.objects = objects;
+        self.bump();
     }
 
     /// The shared text, for a cache that keys on it without copying.
@@ -217,12 +378,37 @@ impl TextSource {
                 span.range.end = span.range.end + added - removed;
             }
         }
+        self.rubies
+            .retain(|ruby| ruby.range.end <= range.start || ruby.range.start >= range.end);
+        for ruby in &mut self.rubies {
+            if ruby.range.start >= range.end {
+                ruby.range.start = ruby.range.start + added - removed;
+                ruby.range.end = ruby.range.end + added - removed;
+            }
+        }
+        self.objects
+            .retain(|object| object.offset < range.start || object.offset >= range.end);
+        for object in &mut self.objects {
+            if object.offset >= range.end {
+                object.offset = object.offset + added - removed;
+            }
+        }
+        self.labels
+            .retain(|label| label.offset < range.start || label.offset >= range.end);
+        for label in &mut self.labels {
+            if label.offset >= range.end {
+                label.offset = label.offset + added - removed;
+            }
+        }
         self.bump();
     }
 
     pub fn set_text(&mut self, text: impl Into<Arc<str>>) {
         self.text = text.into();
         self.spans.clear();
+        self.objects.clear();
+        self.rubies.clear();
+        self.labels.clear();
         self.bump();
     }
 
@@ -272,6 +458,9 @@ impl TextSource {
                     Box::new(Self {
                         text: self.text.replace(FOLDED_SEPARATORS, " ").into(),
                         spans: self.spans.clone(),
+                        objects: self.objects.clone(),
+                        rubies: self.rubies.clone(),
+                        labels: self.labels.clone(),
                         revision: self.revision,
                         content_hash: OnceLock::new(),
                         folded: OnceLock::new(),

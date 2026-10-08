@@ -69,6 +69,8 @@ Vue CSS 的单层 `box-shadow`（outset 与 inset）和 `text-shadow`（仅 outs
 
 你也可以关掉捆绑字体，用 `register_host_font_bytes` 或 `register_host_font_file` 把自有字体载入同一套 FontSystem。它们和捆绑的 Noto 并列。未注册的仍回落捆绑字体或系统字体。
 
+这两个函数注册的字体活到进程结束。皮肤、主题包这类要换掉的字体用 `HostFontScope`：`add_bytes` / `add_file` / `add_face` 各返回一份 `HostFontRegistration`（带它的字体族名）。`clear()` 或丢掉这个 scope，就把它注册的字体全部撤回。单份注册也可以用 `register_host_font_source*` 加 `unregister_host_font` 自己管。撤回是一次新的字体代际：用过这些字体的文本在下一次 flush 重新测量，旧代际的字形位图不会再被采样。
+
 字距走 `nana-text` 的 shaping。这是 tracking，不是事后平移。
 
 `font-feature-settings` 和 `font-kerning` 进入 shaper。`font-variation-settings` 兑现已经声明、并且字体里存在的轴。`wght` 并进 `font-weight`。`wdth` 和自定义轴（例如 `BEVL`）走同一份 `FontVariations`。字体没有的轴会跳过，不会改写成 `wght`。

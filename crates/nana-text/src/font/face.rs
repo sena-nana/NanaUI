@@ -84,7 +84,12 @@ pub fn read_details(data: &[u8], index: u32) -> Option<FaceDetails> {
 }
 
 /// Ascent, descent and line gap in px at `coords` and `size_px`, as positive
-/// numbers.
+/// numbers, plus the underline (`post`) and strikeout (`OS/2`) the face
+/// suggests.
+///
+/// A face that leaves either out — or states a thickness of zero — gets a
+/// stand-in proportional to its size: a 1/14 em stroke, the underline a tenth
+/// of an em under the baseline, the strikeout centred on half the x-height.
 pub fn read_metrics(
     data: &[u8],
     index: u32,
@@ -98,10 +103,39 @@ pub fn read_metrics(
             .map(|coord| (Tag::new(&coord.tag), coord.value)),
     );
     let metrics = font.metrics(Size::new(size_px), &location);
+    let fallback_thickness = (size_px / 14.0).max(f32::MIN_POSITIVE);
+    let usable = |decoration: Option<skrifa::metrics::Decoration>| {
+        decoration.filter(|decoration| {
+            decoration.thickness.is_finite()
+                && decoration.thickness > 0.0
+                && decoration.offset.is_finite()
+        })
+    };
+    let (underline_offset_px, underline_thickness_px) = usable(metrics.underline).map_or(
+        (size_px * 0.1, fallback_thickness),
+        // skrifa's offset is to the top of the stroke, y-up; this one is
+        // positive down.
+        |decoration| (-decoration.offset, decoration.thickness),
+    );
+    let x_height = metrics
+        .x_height
+        .filter(|height| height.is_finite() && *height > 0.0)
+        .unwrap_or(metrics.ascent * 0.5);
+    let (strikeout_offset_px, strikeout_thickness_px) = usable(metrics.strikeout).map_or(
+        (
+            x_height * 0.5 + fallback_thickness * 0.5,
+            fallback_thickness,
+        ),
+        |decoration| (decoration.offset, decoration.thickness),
+    );
     Some(RunMetrics {
         ascent_px: metrics.ascent,
         descent_px: metrics.descent.abs(),
         line_gap_px: metrics.leading,
+        underline_offset_px,
+        underline_thickness_px,
+        strikeout_offset_px,
+        strikeout_thickness_px,
     })
 }
 

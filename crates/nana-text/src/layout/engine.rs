@@ -9,7 +9,7 @@ use crate::constraints::TextConstraints;
 use crate::font::unicode;
 use crate::id::TextLayoutId;
 use crate::metrics::RunMetrics;
-use crate::shape::RunDirection;
+use crate::shape::{RunDirection, ShapedRun};
 use crate::shaping::ShapedText;
 use crate::source::{SnappedSpans, TextSource};
 use crate::style::{TextKind, TextStyle};
@@ -45,6 +45,11 @@ pub struct LayoutRequest<'a> {
     pub ellipsis: Option<&'a Arc<ShapedText>>,
     /// Metrics of the base style's own face. See [`LineStrut`].
     pub strut_metrics: Option<RunMetrics>,
+    /// The shaped annotation of each of [`TextSource::rubies`], in order;
+    /// empty when they are not laid out (vertical text).
+    pub rubies: &'a [Arc<ShapedText>],
+    /// The shaped text of each of [`TextSource::labels`], in order.
+    pub labels: &'a [Arc<ShapedText>],
 }
 
 impl<'a> LayoutRequest<'a> {
@@ -63,7 +68,21 @@ impl<'a> LayoutRequest<'a> {
             constraints,
             ellipsis: None,
             strut_metrics: None,
+            rubies: &[],
+            labels: &[],
         }
+    }
+
+    #[must_use]
+    pub fn with_rubies(mut self, rubies: &'a [Arc<ShapedText>]) -> Self {
+        self.rubies = rubies;
+        self
+    }
+
+    #[must_use]
+    pub fn with_labels(mut self, labels: &'a [Arc<ShapedText>]) -> Self {
+        self.labels = labels;
+        self
     }
 
     #[must_use]
@@ -184,6 +203,21 @@ impl Layouter {
             strut,
             &run_line_heights,
             base_line_height,
+            request.source.objects(),
+            request
+                .source
+                .rubies()
+                .iter()
+                .zip(request.rubies)
+                .map(|(ruby, shaped)| (ruby.range.clone(), Arc::clone(shaped)))
+                .collect(),
+            request
+                .source
+                .labels()
+                .iter()
+                .zip(request.labels)
+                .map(|(label, shaped)| (label.offset, Arc::clone(shaped)))
+                .collect(),
         );
         if let Some(hit) = self.cache.get(&key) {
             self.counters.layout_cache_hits += 1;
@@ -207,8 +241,10 @@ impl Layouter {
         let scale = request.constraints.scale.px_per_logical;
         let base_line_height = line_height_px(request.style, scale);
         let run_line_heights = run_line_heights(request, scale);
+        let sized = sized_runs(request, scale);
         let (widths, candidates) = Builder::new(line_input(
             request,
+            sized.as_deref(),
             None,
             &run_line_heights,
             base_line_height,
@@ -230,8 +266,10 @@ impl Layouter {
             .ellipsis
             .filter(|_| request.constraints.ellipsis)
             .and_then(|shaped| Ellipsis::new(shaped));
+        let sized = sized_runs(request, request.constraints.scale.px_per_logical);
         let input = line_input(
             request,
+            sized.as_deref(),
             strut,
             run_line_heights,
             base_line_height,
@@ -265,6 +303,11 @@ impl Layouter {
             .map(|line| line.bounds)
             .reduce(TextRect::union)
             .unwrap_or_default();
+        let objects = placed_objects(request.source, &laid_out.lines, &laid_out.runs);
+        let rubies = placed_rubies(request, &laid_out.lines, &laid_out.runs);
+        let rubies_dropped = !request.source.rubies().is_empty()
+            && (request.rubies.len() != request.source.rubies().len() || request.shaped.vertical);
+        let labels = placed_labels(request, &objects, &laid_out.lines);
 
         TextLayout {
             id: self.issue_id(),
@@ -277,6 +320,10 @@ impl Layouter {
             bounds,
             overflow: laid_out.overflow,
             unsupported_writing_mode,
+            objects,
+            rubies,
+            rubies_dropped,
+            labels,
         }
     }
 
@@ -290,8 +337,312 @@ impl Layouter {
     }
 }
 
+/// The shaped runs with every inline object's placeholder given its box,
+/// or `None` when the source has no objects (the runs are read as shaped).
+///
+/// This is where an object's size enters: after shaping and inside the
+/// layout cache's key (the source revision moves with the objects), so
+/// resizing a sticker relays the paragraph out from the runs already shaped.
+fn sized_runs(request: &LayoutRequest<'_>, scale: f32) -> Option<Vec<ShapedRun>> {
+    let rubies = ruby_boxes(request);
+    if request.source.objects().is_empty() && rubies.is_empty() {
+        return None;
+    }
+    let mut runs = request.shaped.runs.clone();
+    // A base narrower than its annotation is spaced out to it: its glyphs
+    // move right by half the difference and the last of them takes the rest
+    // of it, so the base stays centred under the annotation and the text
+    // after it moves on by exactly the difference.
+    for ruby in &rubies {
+        let base: f32 = runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter())
+            .filter(|glyph| ruby.range.contains(&(glyph.cluster as usize)))
+            .map(|glyph| glyph.advance_px)
+            .sum();
+        let extra = ruby.width_px - base;
+        if extra <= 0.0 {
+            continue;
+        }
+        let last = runs
+            .iter()
+            .enumerate()
+            .flat_map(|(run, item)| {
+                item.glyphs
+                    .iter()
+                    .enumerate()
+                    .map(move |(glyph, shaped)| (run, glyph, shaped.cluster))
+            })
+            .filter(|(_, _, cluster)| ruby.range.contains(&(*cluster as usize)))
+            .max_by_key(|(_, _, cluster)| *cluster);
+        for run in runs.iter_mut() {
+            for glyph in run.glyphs.iter_mut() {
+                if ruby.range.contains(&(glyph.cluster as usize)) {
+                    glyph.offset_x_px += extra * 0.5;
+                }
+            }
+        }
+        if let Some((run, glyph, _)) = last {
+            runs[run].glyphs[glyph].advance_px += extra;
+            runs[run].advance_px += extra;
+        }
+    }
+    for run in runs.iter_mut().filter(|run| run.is_object()) {
+        let metrics = request
+            .source
+            .object_at(run.source.start)
+            .map(|object| object.metrics)
+            .unwrap_or_default();
+        let [width, ascent, descent] = match label_box(request, run.source.start) {
+            Some(label) => [label.width_px, label.ascent_px, label.descent_px],
+            None => [
+                metrics.width_px.max(0.0) * scale,
+                metrics.ascent_px.max(0.0) * scale,
+                metrics.descent_px.max(0.0) * scale,
+            ],
+        };
+        if let Some(glyph) = run.glyphs.first_mut() {
+            glyph.advance_px = width;
+        }
+        run.advance_px = width;
+        run.metrics.ascent_px = ascent;
+        run.metrics.descent_px = descent;
+    }
+    Some(runs)
+}
+
+/// A labelled object's box, physical px: the label and its padding.
+struct LabelBox {
+    width_px: f32,
+    ascent_px: f32,
+    descent_px: f32,
+    /// From the object's left edge to the label's pen.
+    inset_px: f32,
+    /// Room kept clear either side of the tag.
+    gap_px: f32,
+}
+
+fn label_box(request: &LayoutRequest<'_>, offset: usize) -> Option<LabelBox> {
+    let shaped = request.labels.get(request.source.label_index(offset)?)?;
+    let width: f32 = shaped.runs.iter().map(|run| run.advance_px).sum();
+    let size = shaped
+        .runs
+        .iter()
+        .map(|run| run.font_size_px * request.constraints.scale.px_per_logical)
+        .fold(0.0f32, f32::max);
+    let ascent = shaped
+        .runs
+        .iter()
+        .map(|run| run.metrics.ascent_px)
+        .fold(0.0f32, f32::max);
+    let descent = shaped
+        .runs
+        .iter()
+        .map(|run| run.metrics.descent_px)
+        .fold(0.0f32, f32::max);
+    let pad_x = (size * 0.45).round();
+    let pad_y = (size * 0.18).round();
+    // A small gap either side keeps neighbouring text off the tag.
+    let gap = (size * 0.2).round();
+    Some(LabelBox {
+        width_px: width + 2.0 * (pad_x + gap),
+        ascent_px: ascent + pad_y,
+        descent_px: descent + pad_y,
+        inset_px: pad_x + gap,
+        gap_px: gap,
+    })
+}
+
+/// Each object label placed inside its object, on the object's baseline.
+fn placed_labels(
+    request: &LayoutRequest<'_>,
+    objects: &[super::ir::PlacedObject],
+    lines: &[super::ir::LineBox],
+) -> Vec<super::ir::PlacedLabel> {
+    if request.labels.is_empty() {
+        return Vec::new();
+    }
+    let mut placed = Vec::new();
+    for (label, shaped) in request.source.labels().iter().zip(request.labels) {
+        let Some(object) = objects.iter().find(|object| object.offset == label.offset) else {
+            continue;
+        };
+        let Some(boxed) = label_box(request, label.offset) else {
+            continue;
+        };
+        let Some(line) = lines.get(object.line as usize) else {
+            continue;
+        };
+        let mut cursor = object.rect.x + boxed.inset_px;
+        let runs = shaped
+            .runs
+            .iter()
+            .map(|run| {
+                let mut run = run.clone();
+                run.origin_x_px = cursor;
+                cursor += run.advance_px;
+                run
+            })
+            .collect();
+        placed.push(super::ir::PlacedLabel {
+            offset: label.offset,
+            line: object.line,
+            baseline_y_px: line.metrics.baseline_y_px,
+            rect: TextRect::new(
+                object.rect.x + boxed.gap_px,
+                object.rect.y,
+                (object.rect.width - 2.0 * boxed.gap_px).max(0.0),
+                object.rect.height,
+            ),
+            runs,
+        });
+    }
+    placed
+}
+
+/// An annotation's size: how wide it is and how tall it stands, physical px.
+pub(super) struct RubyBox {
+    pub range: std::ops::Range<usize>,
+    pub width_px: f32,
+    pub height_px: f32,
+}
+
+/// The box of each annotation the request carries.
+pub(super) fn ruby_boxes(request: &LayoutRequest<'_>) -> Vec<RubyBox> {
+    request
+        .source
+        .rubies()
+        .iter()
+        .zip(request.rubies)
+        .map(|(ruby, shaped)| {
+            let width_px = shaped.runs.iter().map(|run| run.advance_px).sum();
+            let height_px = shaped
+                .runs
+                .iter()
+                .map(|run| run.metrics.ascent_px + run.metrics.descent_px)
+                .fold(0.0f32, f32::max);
+            RubyBox {
+                range: ruby.range.clone(),
+                width_px,
+                height_px,
+            }
+        })
+        .collect()
+}
+
+/// Each annotation placed centred above its base, on the line the base
+/// starts on, sitting on the base's ascent.
+fn placed_rubies(
+    request: &LayoutRequest<'_>,
+    lines: &[super::ir::LineBox],
+    runs: &[ShapedRun],
+) -> Vec<super::ir::PlacedRuby> {
+    if request.rubies.is_empty() || request.shaped.vertical {
+        return Vec::new();
+    }
+    let mut placed = Vec::new();
+    for (ruby, shaped) in request.source.rubies().iter().zip(request.rubies) {
+        let Some(line) = lines.iter().find(|line| {
+            line.source.start <= ruby.range.start && ruby.range.start < line.source.end
+        }) else {
+            continue;
+        };
+        let line_runs = &runs[line.runs.start as usize..line.runs.end as usize];
+        let mut left = f32::INFINITY;
+        let mut right = f32::NEG_INFINITY;
+        let mut ascent: f32 = 0.0;
+        for run in line_runs {
+            let mut pen = run.origin_x_px;
+            let mut touched = false;
+            for glyph in &run.glyphs {
+                if ruby.range.contains(&(glyph.cluster as usize)) {
+                    left = left.min(pen);
+                    right = right.max(pen + glyph.advance_px);
+                    touched = true;
+                }
+                pen += glyph.advance_px;
+            }
+            if touched {
+                ascent = ascent.max(run.metrics.ascent_px);
+            }
+        }
+        if !left.is_finite() {
+            continue;
+        }
+        let width: f32 = shaped.runs.iter().map(|run| run.advance_px).sum();
+        let descent = shaped
+            .runs
+            .iter()
+            .map(|run| run.metrics.descent_px)
+            .fold(0.0f32, f32::max);
+        let height = shaped
+            .runs
+            .iter()
+            .map(|run| run.metrics.ascent_px + run.metrics.descent_px)
+            .fold(0.0f32, f32::max);
+        let baseline = line.metrics.baseline_y_px - ascent - descent;
+        let x = (left + right) * 0.5 - width * 0.5;
+        let mut cursor = x;
+        let placed_runs = shaped
+            .runs
+            .iter()
+            .map(|run| {
+                let mut run = run.clone();
+                run.origin_x_px = cursor;
+                cursor += run.advance_px;
+                run
+            })
+            .collect();
+        placed.push(super::ir::PlacedRuby {
+            range: ruby.range.clone(),
+            line: line.index,
+            baseline_y_px: baseline,
+            rect: TextRect::new(x, baseline - (height - descent), width, height),
+            runs: placed_runs,
+        });
+    }
+    placed
+}
+
+/// Each object placeholder that was placed, as the box it takes on its line.
+fn placed_objects(
+    source: &TextSource,
+    lines: &[super::ir::LineBox],
+    runs: &[ShapedRun],
+) -> Vec<super::ir::PlacedObject> {
+    if source.objects().is_empty() {
+        return Vec::new();
+    }
+    let mut placed = Vec::new();
+    for line in lines {
+        for run in &runs[line.runs.start as usize..line.runs.end as usize] {
+            if !run.is_object() {
+                continue;
+            }
+            let Some(object) = source.object_at(run.source.start) else {
+                continue;
+            };
+            let ascent = run.metrics.ascent_px;
+            placed.push(super::ir::PlacedObject {
+                id: object.id,
+                offset: object.offset,
+                line: line.index,
+                rect: TextRect::new(
+                    run.origin_x_px,
+                    line.metrics.baseline_y_px - ascent,
+                    run.advance_px,
+                    ascent + run.metrics.descent_px,
+                ),
+            });
+        }
+    }
+    placed.sort_by_key(|object| object.offset);
+    placed
+}
+
 fn line_input<'r>(
     request: &'r LayoutRequest<'_>,
+    sized: Option<&'r [ShapedRun]>,
     strut: Option<LineStrut>,
     run_line_heights: &'r [f32],
     base_line_height: f32,
@@ -299,7 +650,8 @@ fn line_input<'r>(
 ) -> LineInput<'r> {
     LineInput {
         text: request.source.text(),
-        runs: &request.shaped.runs,
+        runs: sized.unwrap_or(&request.shaped.runs),
+        rubies: ruby_boxes(request),
         paragraphs: &request.shaped.paragraphs,
         run_line_heights,
         constraints: request.constraints,

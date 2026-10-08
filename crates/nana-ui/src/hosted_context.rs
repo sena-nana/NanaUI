@@ -98,7 +98,14 @@ pub(crate) struct GpuBootstrap {
     /// The instance the probe proved that adapter on, for the device request to
     /// reuse. `None` when nothing was probed, or when an embedder's device is
     /// the one that will be used and brought its own instance.
-    instance: Option<wgpu::Instance>,
+    instance: Option<ProbedInstance>,
+}
+
+/// An instance and the adapters a probe already enumerated on it. The device
+/// request picks from these instead of enumerating again.
+pub(crate) struct ProbedInstance {
+    instance: wgpu::Instance,
+    adapters: Vec<wgpu::Adapter>,
 }
 
 impl GpuBootstrap {
@@ -135,18 +142,17 @@ impl GpuBootstrap {
             if backends.is_empty() {
                 return Self::plain();
             }
-            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends,
-                ..wgpu::InstanceDescriptor::new_without_display_handle()
-            });
-            if pollster::block_on(instance.enumerate_adapters(backends)).is_empty() {
+            let instance = wgpu::Instance::new(instance_descriptor(backends));
+            let adapters = pollster::block_on(instance.enumerate_adapters(backends));
+            if adapters.is_empty() {
                 return Self::plain();
             }
             Self {
                 composition: true,
                 // Kept: selecting the device is the other half of what this
-                // enumeration already did.
-                instance: Some(instance),
+                // enumeration already did, and enumerating DX12 creates a
+                // device on every adapter to read its capabilities.
+                instance: Some(ProbedInstance { instance, adapters }),
             }
         }
         #[cfg(not(target_os = "windows"))]
@@ -160,7 +166,7 @@ impl GpuBootstrap {
     /// The probe's instance, for the device request to reuse. Taken, not
     /// cloned: there is one probed instance per process and the device
     /// selection is its one consumer.
-    pub(crate) fn take_instance(&mut self) -> Option<wgpu::Instance> {
+    pub(crate) fn take_instance(&mut self) -> Option<ProbedInstance> {
         self.instance.take()
     }
 }
@@ -1101,6 +1107,9 @@ pub(crate) struct DeviceRequest {
     instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
     required_features: wgpu::Features,
+    /// What a bootstrap probe already enumerated on `instance`; empty when
+    /// nothing was probed.
+    adapters: Vec<wgpu::Adapter>,
 }
 
 /// A device and the surface it was chosen for, not yet configured.
@@ -1140,7 +1149,7 @@ impl PendingPrimarySurface {
         required_features: wgpu::Features,
         want_transparent: bool,
         mode: HostedSurfaceMode,
-        instance: Option<wgpu::Instance>,
+        instance: Option<ProbedInstance>,
     ) -> Result<(Self, DeviceRequest), HostedGpuError> {
         Self::begin_with_policy(
             window,
@@ -1158,7 +1167,7 @@ impl PendingPrimarySurface {
         want_transparent: bool,
         mode: HostedSurfaceMode,
         policy: SurfacePresentationPolicy,
-        instance: Option<wgpu::Instance>,
+        instance: Option<ProbedInstance>,
     ) -> Result<(Self, DeviceRequest), HostedGpuError> {
         let target = HostedSurfaceTarget::new(mode, window.clone())?;
         let request = DeviceRequest::new(window.clone(), required_features, &target, instance)?;
@@ -1196,7 +1205,7 @@ impl DeviceRequest {
         window: Arc<dyn winit::window::Window>,
         required_features: wgpu::Features,
         target: &HostedSurfaceTarget,
-        instance: Option<wgpu::Instance>,
+        instance: Option<ProbedInstance>,
     ) -> Result<Self, HostedGpuError> {
         #[allow(unused_mut)]
         let mut backends = wgpu::Backends::from_env().unwrap_or_default();
@@ -1209,17 +1218,19 @@ impl DeviceRequest {
                 ));
             }
         }
-        let instance = instance.unwrap_or_else(|| {
-            wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends,
-                ..wgpu::InstanceDescriptor::new_without_display_handle()
-            })
-        });
+        let (instance, adapters) = match instance {
+            Some(ProbedInstance { instance, adapters }) => (instance, adapters),
+            None => (
+                wgpu::Instance::new(instance_descriptor(backends)),
+                Vec::new(),
+            ),
+        };
         let surface = target.create_surface(&instance, window)?;
         Ok(Self {
             instance,
             surface,
             required_features,
+            adapters,
         })
     }
 
@@ -1230,10 +1241,14 @@ impl DeviceRequest {
             instance,
             surface,
             required_features,
+            adapters,
         } = self;
-        let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, Some(&surface))
-            .await
-            .map_err(|error| HostedGpuError::Adapter(error.to_string()))?;
+        let adapter = match probed_adapter(adapters, &surface) {
+            Some(adapter) => adapter,
+            None => wgpu::util::initialize_adapter_from_env_or_default(&instance, Some(&surface))
+                .await
+                .map_err(|error| HostedGpuError::Adapter(error.to_string()))?,
+        };
         let capabilities = surface.get_capabilities(&adapter);
         let format = preferred_surface_format(&capabilities.formats)
             .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
@@ -1335,6 +1350,90 @@ impl fmt::Display for HostedRunError {
 }
 
 impl std::error::Error for HostedRunError {}
+
+/// The instance every hosted device is created on: `backends`, and on DX12
+/// the shader compiler [`dx12_shader_compiler`] chooses.
+fn instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
+    #[allow(unused_mut)]
+    let mut descriptor = wgpu::InstanceDescriptor {
+        backends,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    };
+    #[cfg(target_os = "windows")]
+    {
+        descriptor.backend_options.dx12.shader_compiler = dx12_shader_compiler(
+            wgpu::Dx12Compiler::from_env(),
+            std::env::current_exe().ok().as_deref(),
+        );
+    }
+    descriptor
+}
+
+/// DX12's shader compiler. Every scene pipeline is compiled at startup, and
+/// DXC does that roughly twice as fast as FXC, but DXC is a DLL the
+/// application ships: a `dxcompiler.dll` beside the executable is used by its
+/// full path, so neither `PATH` nor the working directory can substitute
+/// another one. Without it the compiler is FXC, which Windows always has.
+/// `WGPU_DX12_COMPILER` still decides when it is set.
+#[cfg(target_os = "windows")]
+fn dx12_shader_compiler(
+    from_env: Option<wgpu::Dx12Compiler>,
+    exe: Option<&std::path::Path>,
+) -> wgpu::Dx12Compiler {
+    if let Some(compiler) = from_env {
+        return compiler;
+    }
+    exe.and_then(std::path::Path::parent)
+        .map(|dir| dir.join("dxcompiler.dll"))
+        .filter(|dll| dll.is_file())
+        .and_then(|dll| dll.to_str().map(str::to_owned))
+        .map_or(wgpu::Dx12Compiler::Fxc, |dxc_path| {
+            wgpu::Dx12Compiler::DynamicDxc { dxc_path }
+        })
+}
+
+/// The adapter `request_adapter` would choose for `surface`, picked from a
+/// probe's enumeration of the same instance instead of enumerating again:
+/// the first compatible adapter whose name contains `WGPU_ADAPTER_NAME` when
+/// that is set, else the first compatible one in enumeration order after the
+/// stable `WGPU_POWER_PREF` sort `request_adapter` applies. `None` sends the
+/// caller to the regular request, which also reports why nothing fits.
+fn probed_adapter(
+    adapters: Vec<wgpu::Adapter>,
+    surface: &wgpu::Surface<'_>,
+) -> Option<wgpu::Adapter> {
+    let compatible = adapters
+        .into_iter()
+        .filter(|adapter| adapter.is_surface_supported(surface));
+    if let Ok(name) = std::env::var("WGPU_ADAPTER_NAME") {
+        let name = name.to_lowercase();
+        return compatible
+            .into_iter()
+            .find(|adapter| adapter.get_info().name.to_lowercase().contains(&name));
+    }
+    let mut compatible: Vec<_> = compatible
+        .map(|adapter| (adapter.get_info().device_type, adapter))
+        .collect();
+    let preference = wgpu::PowerPreference::from_env().unwrap_or_default();
+    if preference != wgpu::PowerPreference::None {
+        let integrated_first = preference == wgpu::PowerPreference::LowPower;
+        compatible.sort_by_key(|(device_type, _)| adapter_order(*device_type, integrated_first));
+    }
+    compatible.into_iter().next().map(|(_, adapter)| adapter)
+}
+
+/// `request_adapter`'s power-preference rank (wgpu-core `get_order`).
+fn adapter_order(device_type: wgpu::DeviceType, integrated_first: bool) -> u8 {
+    match device_type {
+        wgpu::DeviceType::DiscreteGpu if integrated_first => 2,
+        wgpu::DeviceType::IntegratedGpu if integrated_first => 1,
+        wgpu::DeviceType::DiscreteGpu => 1,
+        wgpu::DeviceType::IntegratedGpu => 2,
+        wgpu::DeviceType::Other => 3,
+        wgpu::DeviceType::VirtualGpu => 4,
+        wgpu::DeviceType::Cpu => 5,
+    }
+}
 
 fn preferred_surface_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
     formats
@@ -2066,6 +2165,40 @@ mod tests {
                 ..p
             }
         ));
+    }
+
+    /// DXC is the one shipped beside the executable, named by full path;
+    /// without it the compiler is FXC, whatever `PATH` holds, and an explicit
+    /// `WGPU_DX12_COMPILER` wins over both.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dx12_uses_the_dxc_shipped_beside_the_executable() {
+        use super::dx12_shader_compiler;
+
+        let dir = std::env::temp_dir().join(format!("nana-dxc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("app.exe");
+        assert!(matches!(
+            dx12_shader_compiler(None, Some(&exe)),
+            wgpu::Dx12Compiler::Fxc
+        ));
+        let dll = dir.join("dxcompiler.dll");
+        std::fs::write(&dll, b"").unwrap();
+        match dx12_shader_compiler(None, Some(&exe)) {
+            wgpu::Dx12Compiler::DynamicDxc { dxc_path } => {
+                assert_eq!(std::path::Path::new(&dxc_path), dll);
+            }
+            other => panic!("expected the shipped DXC, got {other:?}"),
+        }
+        assert!(matches!(
+            dx12_shader_compiler(Some(wgpu::Dx12Compiler::Fxc), Some(&exe)),
+            wgpu::Dx12Compiler::Fxc
+        ));
+        assert!(matches!(
+            dx12_shader_compiler(None, None),
+            wgpu::Dx12Compiler::Fxc
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A program that asks for composition on a host device that is not DX12

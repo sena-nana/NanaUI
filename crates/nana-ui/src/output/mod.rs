@@ -12,6 +12,8 @@ mod external;
 pub mod planner;
 #[cfg(feature = "hosted")]
 mod window;
+#[cfg(feature = "hosted")]
+pub(crate) mod window_output;
 
 #[cfg(test)]
 mod tests;
@@ -21,8 +23,8 @@ pub use embedded::{
     EmbeddedSurfaceNode,
 };
 pub use external::{
-    ExternalFrame, ExternalRenderOutcome, ExternalSurface, ExternalSurfaceConfig,
-    ExternalSurfaceError,
+    ExternalFrame, ExternalFramePlan, ExternalPrepare, ExternalRenderOutcome, ExternalSurface,
+    ExternalSurfaceConfig, ExternalSurfaceError,
 };
 pub use planner::{
     ConsumerId, ConsumerKind, ConsumerRoute, OutputConsumer, OutputPath, OutputPlan,
@@ -31,3 +33,8 @@ pub use planner::{
 };
 #[cfg(feature = "hosted")]
 pub use window::WindowPresenter;
+#[cfg(feature = "hosted")]
+pub use window_output::{
+    WINDOW_OUTPUT_FORMAT, WINDOW_OUTPUT_HIDDEN_FPS, WindowOutputAlpha, WindowOutputConfig,
+    WindowOutputExport, WindowOutputExtent, WindowOutputFit, WindowOutputFrame, WindowOutputStatus,
+};

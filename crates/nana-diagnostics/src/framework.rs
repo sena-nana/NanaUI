@@ -393,6 +393,10 @@ pub mod host {
         /// non-empty drains are sampled).
         pub MESSAGE_QUEUE_DEPTH, D, 4, "host.message_queue_depth", "count"
     );
+    /// Due frames the host served itself because the paint it requested for
+    /// them did not arrive within one frame period (Windows only).
+    pub static FRAMES_SERVED_WITHOUT_PAINT: Metric =
+        Metric::counter(D, 5, "host.frames_served_without_paint", "count");
 
     /// Fault, at most once per second per `kind` (see [`FAILURES`] for the
     /// full count). `kind` is the `HostFailure` variant's stable code.
@@ -441,6 +445,13 @@ pub mod host {
     /// `early-splash` pack, on the event thread before the window is shown.
     pub static STARTUP_SPLASH_LOGO_READ_NS: Metric =
         Metric::gauge(D, 6, "host.startup.splash_logo_read", "ns");
+    /// Selecting the adapter and creating the device on the startup thread.
+    pub static STARTUP_DEVICE_REQUEST_NS: Metric =
+        Metric::gauge(D, 7, "host.startup.device_request", "ns");
+    /// Building the primary scene painter, its pipeline compiles included,
+    /// on the startup thread once the device exists.
+    pub static STARTUP_PAINTER_BUILD_NS: Metric =
+        Metric::gauge(D, 8, "host.startup.painter_build", "ns");
     /// Fault: a packaged Early Splash logo could not be read; the application
     /// starts without a splash. `code` is `SplashPackageError::code`; the
     /// message names the URL and the reason.

@@ -129,6 +129,15 @@ pub struct StartupWork {
     /// on the event thread, before the window is shown. `None` for an
     /// embedded logo, and when no splash was attempted.
     pub splash_logo_read: Option<Duration>,
+    /// Adapter selection and device creation on the startup thread, summed
+    /// over the presentation targets tried. `None` for an embedded host,
+    /// whose device already existed.
+    pub device_request: Option<Duration>,
+    /// Building the primary scene painter on the startup thread, its
+    /// pipeline compiles included, summed like `device_request`. On DX12 this
+    /// is most of the startup and depends on the shader compiler: see
+    /// `docs/reference/startup.md`.
+    pub painter_build: Option<Duration>,
     pub splash: SplashWork,
 }
 

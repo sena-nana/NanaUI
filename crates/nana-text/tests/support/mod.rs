@@ -67,6 +67,7 @@ pub fn run(
             ascent_px: 16.0,
             descent_px: 4.0,
             line_gap_px: 0.0,
+            ..RunMetrics::default()
         },
         instance: None,
         ignored_axes: Vec::new(),
@@ -117,6 +118,10 @@ pub fn layout(runs: Vec<ShapedRun>, lines: Vec<LineBox>) -> TextLayout {
         bounds,
         overflow: OverflowFlags::NONE,
         unsupported_writing_mode: false,
+        objects: Vec::new(),
+        rubies: Vec::new(),
+        rubies_dropped: false,
+        labels: Vec::new(),
     }
 }
 

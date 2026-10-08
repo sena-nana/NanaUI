@@ -221,6 +221,16 @@ impl UiWorld {
             .map(nana_ui_core::PaintColor::to_srgb)
             .or(style.selection_background)
             .unwrap_or_else(|| self.style_model.palette.accent_soft.as_rgba_array());
+        // Only while the node still shows that value's text: spans over other
+        // bytes would paint the wrong characters.
+        let rich_text = has_text
+            .then(|| self.nodes.rich_text(id))
+            .flatten()
+            .filter(|rich| {
+                text.as_ref()
+                    .is_some_and(|text| text.value.as_str() == rich.text())
+            })
+            .cloned();
         Some(ExtractedNode {
             id,
             kind,
@@ -253,6 +263,17 @@ impl UiWorld {
             focused: self.focus_visible(document) == Some(id),
             editable: self.nodes.has_text_inputs() && self.nodes.text_input(id).is_some(),
             text_spans,
+            rich_text,
+            // The caret shows only on the focused editor; its selection
+            // stays visible either way.
+            glyph_presentation: self.nodes.glyph_presentation(id).cloned(),
+            rich_editor: self.nodes.rich_editor_marks(id).map(|marks| {
+                let mut marks = marks.clone();
+                if self.focused(document) != Some(id) {
+                    marks.caret = None;
+                }
+                marks
+            }),
             standard_visual,
             component_geometry,
             standard_visual_foreground,

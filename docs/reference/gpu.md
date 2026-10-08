@@ -11,7 +11,7 @@ Issue #186 当前结论为 **NO-GO**。WGPU 仍是 NanaUI 的唯一正式 backen
 
 ## WGPU 后端由应用选择
 
-框架 crate 不替你的应用决定编进哪些图形后端。workspace 的 `wgpu` 关闭默认特性。只留 `std`、`parking_lot`、`wgsl`。`nana-ui` 与 `nana-ui-vue` 的默认特性 `wgpu-backends` 打开平台上全部后端（Windows 为 DX12/Vulkan/GLES，Apple 为 Metal，Linux 为 Vulkan/GLES）。只在启用 `gpu` 时生效。因此按默认特性依赖的应用行为不变。只发行部分后端的应用用 `default-features = false`。在自己的 `wgpu` 依赖上按平台列出后端。`hosted_context` 只在编进来的后端里选择 adapter。框架自身的测试经 dev-dependency 打开全部后端。示例和平台宿主作为应用，自己打开 `wgpu-backends`。
+框架 crate 不替你的应用决定编进哪些图形后端。workspace 的 `wgpu` 关闭默认特性。只留 `std`、`parking_lot`、`wgsl`。`nana-ui` 与 `nana-ui-vue` 的默认特性 `wgpu-backends` 打开平台上全部后端（Windows 为 DX12/Vulkan/GLES，Apple 为 Metal，Linux 为 Vulkan/GLES）。只在启用 `gpu` 时生效。因此按默认特性依赖的应用行为不变。只发行部分后端的应用用 `default-features = false`。在自己的 `wgpu` 依赖上按平台列出后端。`hosted_context` 只在编进来的后端里选择 adapter。DX12 用哪个着色器编译器见 [两阶段启动](startup.md#dx12-着色器编译器)：exe 旁的 `dxcompiler.dll`，没有时用 FXC。框架自身的测试经 dev-dependency 打开全部后端。示例和平台宿主作为应用，自己打开 `wgpu-backends`。
 
 ## 统一 GPU policy（Issue #184）
 
@@ -77,7 +77,7 @@ renderer 不直接调用 `queue.write_buffer` / `write_texture`。`GpuWorkSink` 
 
 ### 缓存与资源
 
-pipeline 与 resource layout registry 是按 `DeviceGeneration` 的 `StampedCache`。命中只写一次时间戳。满时一次线性选择淘汰最久未用的八分之一。被淘汰的后端对象等到下一次提交完成才释放。transient buffer / texture 池按完整描述 key 持有、复用。超出预算淘汰。
+pipeline 与 resource layout registry 是按 `DeviceGeneration` 的 `StampedCache`。命中只写一次时间戳。满时一次线性选择淘汰最久未用的八分之一。被淘汰的后端对象等到下一次提交完成才释放。pipeline 在 registry 的锁外编译：不同 key 可以在不同线程上同时编译，同一 key 的并发冷请求共用一次编译，编译期间帧槽、上传和池也不被挡住。transient buffer / texture 池按完整描述 key 持有、复用。超出预算淘汰。
 
 普通 resize 保留 `GpuContext` 和静态 pipeline。device replacement 使用新 context。旧设备资源不能进入新设备。HostTexture 本身就是本设备上的纹理（generation 已校验）。没有需要「realize」的东西。此前按 identity/version 缓存 HostTexture 的 realization cache 已删除（它把连续内容的每个版本都塞进静态缓存）。`url(...)` 图片由 `SceneWgpuPainter` 持有的唯一一个 `UrlTextureCache` 负责。quad 背景、border-image 与 HostTexture mask 共用它。同一 URL 每个 painter 只抓取、解码、上传、保留一次（仍按 fetch host 分桶）。图片就绪后两条管线各自丢弃按 target 保存的 URL 绑定。
 
@@ -197,6 +197,10 @@ WGPU 是唯一的后端。它不是扩展合同。普通路径只用 `nana-gpu` 
 框架自己的 crate（nana-ui、nana-frame-exchange，以及 JS WebGPU 门面所在的 nana-ui-vue、快照回读所在的 nana-ui-devtools）经隐藏的 `nana_gpu::__framework` 取后端。不打开 `wgpu-interop`。所以 Vue 应用不会被连带获得逃生口。Cargo feature 仍会跨依赖图统一。依赖图里任何一个 crate 打开它，整棵图都能用。所以守门的是 `scripts/check-engine-boundary.py`。这些 crate 的公开签名、字段、再导出、别名、类型头、trait 的方法与关联类型、公开类型的 trait impl 出现 `wgpu`，必须在 `wgpu-interop` 之下。`__framework` 只允许这些 crate 自己的源码使用。
 
 提交守卫不可重入。持着 `lock_submission()` 时，不要再调用 `FrameContext::submit`、`GpuContext::write_texture`、`FrameExchange::copy_from` 这些会自己取守卫的方法。
+
+#### 原生纹理导出（`native-export`）
+
+Windows 上的 DX12 设备可以把纹理交给另一个 D3D 设备。打开 `nana-gpu`（或 `nana-ui`）的 `native-export` 特性。`GpuCapability::NativeTextureExport` 报告能否使用。`NativeExportPool` 在宿主那一份设备上建 3 张共享的 BGRA8 纹理和一个共享 fence，导出成 NT handle。它不另开 Device/Queue，也不回读 CPU。`stage` 把一张已画好的纹理复制进当前 `FrameContext`。`FrameContext::submit` 在 `queue.submit` 之后、仍持提交守卫时，在设备队列上 signal 这一帧的 ready 值。`finish` 交出 `NativeFrameToken`。消费端先 `accept_release`，在自己的 GPU 时间线上 `Wait(ready)`，读完再 `Signal(release)`。上一帧没释放时 `stage` 返回 `Deferred`，不等待。没被接收就丢掉的 token 由生产端自己 signal 释放。窗口输出（`WindowOutputExport::Native`）每一帧都走这条路。公开类型只有 Nana 自己的类型、`BorrowedHandle` 和 `i64` 的适配器 LUID。完整的消费端合同见 [Window-independent presentation](output.md#dx12-shared-textures-native-export)。
 
 ## 跨线程最新帧
 

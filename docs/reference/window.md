@@ -535,6 +535,23 @@ python scripts/validate-desktop-overlay.py
 
 探针验证主窗 Solid/Opaque 与工具窗 Transparent/PreMultiplied、首次不抢焦点、工具窗不在任务栏（UI Automation 比较任务栏按钮快照。不依赖窗口标题、按钮合并设置和系统语言。需要 `comtypes`。切换 `SetSkipTaskbar` 与隐藏后再显示都复核）、创建失败反馈、穿透开关反馈、实际鼠标 1→0→1 路由、Forward 在不透明命中区收回并收到后续 click、以及透明区域与关闭后的底层屏幕像素一致。结果写入 `target/desktop-overlay-native.json`。它不替代具体产品布局的视觉验收。Windows 是 Issue 必测平台。macOS 覆盖行为测试与文档。
 
+呈现节奏单独验收。它不移动指针，也不需要 `comtypes`：
+
+```powershell
+python scripts/validate-desktop-overlay.py --presents
+```
+
+探针以 `--presents` 启动合成进程（`GpuBackendPolicy::CompositionCapable`），开三扇 `FrameDemand::Continuous(30)` 的窗：点击穿透的合成透明窗、没有任何输入的空闲合成透明窗、点击穿透的普通窗。`PASSTHROUGH_PRESENTS` 断言穿透窗在穿透开、关、再开三轮里都按节奏呈现（2 秒不少于 36 帧），并且屏幕像素上仍看得到它。`COMPOSITION_CONTINUOUS_PRESENTS` 断言空闲合成窗不靠任何 `InvalidateRect` 也持续呈现。结果写入 `target/desktop-overlay-presents.json`。
+
+两处宿主行为支撑这两条：
+
+- winit 关掉命中测试时给窗口加 `WS_EX_LAYERED | WS_EX_TRANSPARENT`，但不设层属性。没有属性的分层窗 DWM 不合成。宿主每次写样式后调用 `nana_window::settle_layered_window`，补上 `LWA_ALPHA` 255。已有的颜色键或透明度不动。
+- 到期帧靠宿主请求的 `WM_PAINT` 来服务。它的截止时间已经过去，所以宿主同时等一个帧周期。这个周期里 paint 没到，Windows 上宿主直接在事件循环里呈现这一帧（`host.frames_served_without_paint` 计数），其他平台重新请求。应用不需要自己的 `InvalidateRect` / `UpdateWindow` 线程。
+
+**验证状态**：2026-10-08 在 Windows 11（RTX 5060 Ti，DX12）真机上，`--presents` 三轮均为每窗 60 帧 / 2 秒，三扇窗的标记像素都在屏幕上。完整的 `validate-desktop-overlay.py`（指针路由、任务栏）这次没有跑，因为这台机器没装 `comtypes`。
+
+隐藏、最小化或被遮挡的窗口仍可以出画面：程序用 `RuntimeProgram::window_output` 要一个窗口输出，并设 `while_hidden`。宿主在只做 GPU 的隐藏 tick 里 flush 文档，只画输出。合同与真机结果见 [Window-independent presentation](output.md#window-outputs)。
+
 ## Runtime 中的原生网页内容
 
 `runtime::BrowserView` 是保留树中的布局和可访问性节点。应用工具条、地址输入和

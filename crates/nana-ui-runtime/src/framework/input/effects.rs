@@ -172,6 +172,12 @@ impl AppContext {
                 caret: self.projected_terminal_caret(document),
             });
         }
+        if self.rich_editor_accepts_input(document) {
+            return Some(TextInputKey::Terminal {
+                node: self.world.focused(document),
+                caret: self.rich_editor_caret_bounds(document),
+            });
+        }
         let (node, view) = self.editable_focused_text_input(document)?;
         Some(TextInputKey::Editor {
             node,
@@ -190,6 +196,14 @@ impl AppContext {
                 owner: self.world.focused(document).map_or(0, StableNodeId::get),
                 purpose: TextInputPurpose::Terminal,
                 cursor_area: self.projected_terminal_caret(document).map(logical_rect),
+                surrounding: None,
+            });
+        }
+        if self.rich_editor_accepts_input(document) {
+            return Some(TextInputContext {
+                owner: self.world.focused(document).map_or(0, StableNodeId::get),
+                purpose: TextInputPurpose::Normal,
+                cursor_area: self.rich_editor_caret_bounds(document).map(logical_rect),
                 surrounding: None,
             });
         }

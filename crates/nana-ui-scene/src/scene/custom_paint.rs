@@ -163,6 +163,7 @@ struct TextStyle {
     content: Arc<str>,
     size: f32,
     weight: Option<u16>,
+    family: Option<Arc<str>>,
     italic: bool,
     line_height: Option<f32>,
     wrap: bool,
@@ -482,7 +483,7 @@ fn about_origin(local: Affine, origin: [f32; 2]) -> AffineTransform {
     ])
 }
 
-fn image_quad(
+pub(super) fn image_quad(
     source: &Arc<str>,
     fit: ImageFit,
     sampling: nana_ui_core::ImageSampling,
@@ -535,7 +536,11 @@ fn custom_text(
         paint_color,
         size: text.size,
         weight: text.weight,
-        family: node.style.font_family.as_deref().map(str::to_owned),
+        family: text
+            .family
+            .as_deref()
+            .or(node.style.font_family.as_deref())
+            .map(str::to_owned),
         line_height: text.line_height.map(nana_ui_core::LineHeightSpec::Absolute),
         letter_spacing: 0.0,
         wrap: text.wrap,
@@ -553,6 +558,8 @@ fn custom_text(
         wrap_break: nana_ui_core::TextWrapBreak::default(),
         opentype: SceneTextOpenType::from_computed(&node.style),
         layout: None,
+        rich: None,
+        presentation: None,
     }
 }
 
@@ -846,6 +853,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 paint,
                 size,
                 weight,
+                family,
                 italic,
                 line_height,
                 wrap,
@@ -858,6 +866,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                     content: Arc::clone(content),
                     size: *size,
                     weight: *weight,
+                    family: family.clone(),
                     italic: *italic,
                     line_height: *line_height,
                     wrap: *wrap,
@@ -2914,6 +2923,7 @@ mod tests {
             paint,
             size: 13.0,
             weight: None,
+            family: None,
             italic: false,
             line_height: None,
             wrap: false,

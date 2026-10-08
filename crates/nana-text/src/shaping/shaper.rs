@@ -55,6 +55,8 @@ struct Item {
     level: u8,
     script: Option<ScriptTag>,
     orientation: RunOrientation,
+    /// A U+FFFC: an inline object's placeholder, never shaped.
+    object: bool,
 }
 
 /// A piece of an item after fallback: its range, the face it shapes with, the
@@ -261,6 +263,9 @@ impl Shaper {
                 continue;
             }
             let font = cluster_fonts[index];
+            let object = text[cluster.range.clone()]
+                .chars()
+                .eq(std::iter::once(crate::source::OBJECT_REPLACEMENT));
             let orientation = if !request.vertical {
                 RunOrientation::Horizontal
             } else {
@@ -277,7 +282,9 @@ impl Shaper {
             };
             match items.last_mut() {
                 Some(item)
-                    if item.segment == segment_index
+                    if !object
+                        && !item.object
+                        && item.segment == segment_index
                         && item.font == font
                         && item.level == level
                         && item.script == scripts[index]
@@ -293,12 +300,17 @@ impl Shaper {
                     level,
                     script: scripts[index],
                     orientation,
+                    object,
                 }),
             }
         }
 
         let mut runs = Vec::new();
         for item in items {
+            if item.object {
+                runs.push(self.object_run(&item, &segments[item.segment], scale));
+                continue;
+            }
             let Some(font) = item.font else {
                 // Only a font system with no faces at all gets here.
                 self.counters.text_bytes_unshaped += item.range.len();
@@ -503,6 +515,39 @@ impl Shaper {
             }
         }
         None
+    }
+
+    /// An inline object's placeholder: one glyph that covers the U+FFFC,
+    /// no face, no advance. Layout gives it the object's box; shaping never
+    /// reads the object, so its size is not part of what was shaped.
+    fn object_run(&mut self, item: &Item, segment: &StyleSegment<'_>, scale: f32) -> ShapedRun {
+        let index = self.next_run;
+        self.next_run = self.next_run.wrapping_add(1);
+        ShapedRun {
+            id: ShapeRunId::from_parts(index, 1),
+            source: item.range.clone(),
+            direction: RunDirection::from_bidi_level(item.level),
+            bidi_level: item.level,
+            script: item.script.unwrap_or_default(),
+            orientation: item.orientation,
+            font: FontId::NULL,
+            font_size_px: segment.style.font_size_px * scale,
+            glyphs: vec![ShapedGlyph {
+                glyph_id: 0,
+                cluster: item.range.start as u32,
+                cluster_end: item.range.end as u32,
+                advance_px: 0.0,
+                advance_y_px: 0.0,
+                offset_x_px: 0.0,
+                offset_y_px: 0.0,
+                flags: GlyphFlags::OBJECT,
+            }],
+            advance_px: 0.0,
+            origin_x_px: 0.0,
+            metrics: Default::default(),
+            instance: None,
+            ignored_axes: Vec::new(),
+        }
     }
 
     fn build_run(

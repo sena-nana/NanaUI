@@ -168,6 +168,16 @@ splash 的图层、视觉、位图、D3D11 设备、子类和动画，都由同�
 
 独立宿主（`run_runtime`）在窗口线程上创建窗口、实例和 surface。它先把 adapter 选择、设备请求，以及 scene painter 的 pipeline 编译，交给 `nana-startup-gpu` 线程。然后再挂 splash、显示窗口。所以 splash 和设备请求重叠。splash 不排在设备请求前面。设备就绪后，唤醒事件循环。
 
+请求合成后端（`GpuBackendPolicy::CompositionCapable`）时，建窗前的合成探测已经在 DX12 实例上枚举过一次 adapter。DX12 的枚举会在每个 adapter 上建一次设备读能力，所以设备请求直接从这份列表里选，不再枚举第二次。选法和 `request_adapter` 相同：先认 `WGPU_ADAPTER_NAME`，再按枚举顺序取第一个与 surface 兼容的，设了 `WGPU_POWER_PREF` 时先按它稳定排序。列表里没有合适的，才走一次完整的 `request_adapter`，由它报告原因。
+
+painter 的各个 pipeline 家族（quad、mesh/path、icon、text、HostTexture、backdrop）在 scoped 线程上并行编译。painter 的构建时间是最慢的那个家族，不是全部相加。最慢的是 quad，它留在 `nana-startup-gpu` 线程上。motion 求值 pipeline 只服务于 CPU/GPU 一致性测试的回读，第一次回读时才编译，产品路径不编译它。pipeline registry 在锁外编译：不同 key 并行，同一 key 的并发请求只编译一次。
+
+### DX12 着色器编译器
+
+在 DX12 上，painter 的构建几乎全是着色器编译。DXC 比 FXC 快约一倍。但 DXC 是应用自己发行的 DLL。可执行文件旁边有 `dxcompiler.dll` 时，宿主按完整路径加载它，`PATH` 和工作目录都替换不了它。没有时用 FXC，Windows 总带着它。设了 `WGPU_DX12_COMPILER`（`fxc`、`dxc`、`staticdxc`、`auto`）时以它为准。
+
+要用 DXC，就把 x64 的 `dxcompiler.dll`（DXC v1.8.2502 或更新；[DirectXShaderCompiler releases](https://github.com/microsoft/DirectXShaderCompiler/releases)，或 Windows SDK 10.0.26100 的 `bin/<版本>/x64`）和 exe 放在同一目录。不需要 `dxil.dll`。没有打包这个 DLL 的构建照常运行，只是启动慢。
+
 macOS 的 Dock 图标在 `nana-startup-icons` 线程渲染。它需要重新填充并编码 PNG。这是唯一昂贵的图标。到达时再应用。不阻塞 `UiReady`。程序在此之前自己设置的图标不会被覆盖。
 
 其他平台的窗口图标和任务栏图标在建窗时设好。不起线程。
@@ -187,9 +197,20 @@ macOS 的 Dock 图标在 `nana-startup-icons` 线程渲染。它需要重新填�
 | `handoff_completed` | splash 已移除（macOS 与该帧同一次提交；Windows 在合成器取走该帧之后）。没有 splash 时等于上一项 |
 | `splash_released` | splash 创建的原生对象全部释放 |
 
-`StartupStatus::work` 记这些。事件线程最长单次占用，从入口到交接，含完成交接的那次回调。设备请求次数，每个尝试的呈现目标一次，只有合成目标失败回退时为 2。交接前创建的 painter 数，每种 surface 格式一个。从包里读 Logo 的耗时。还有 `SplashWork`：Logo 解码和上传次数、动画提交次数、合成器提交次数、存活资源数。
+`StartupStatus::work` 记这些。事件线程最长单次占用，从入口到交接，含完成交接的那次回调。设备请求次数，每个尝试的呈现目标一次，只有合成目标失败回退时为 2。交接前创建的 painter 数，每种 surface 格式一个。从包里读 Logo 的耗时。`device_request` 是启动线程上选 adapter 加建设备的耗时，`painter_build` 是随后建 primary painter（含全部 pipeline 编译）的耗时，都按尝试过的呈现目标累加，嵌入宿主为 `None`。还有 `SplashWork`：Logo 解码和上传次数、动画提交次数、合成器提交次数、存活资源数。
 
-诊断事件在 `nana_diagnostics::framework::host`。`STARTUP_PHASE { phase, elapsed_ns }` 从 0 入口到 6 splash 释放。还有 `SPLASH_OUTCOME { outcome }`、`STARTUP_FAILED`、`SPLASH_LOGO_FAILED { code }`。gauge 是 `host.startup.longest_block` 和 `host.startup.splash_logo_read`。
+诊断事件在 `nana_diagnostics::framework::host`。`STARTUP_PHASE { phase, elapsed_ns }` 从 0 入口到 6 splash 释放。还有 `SPLASH_OUTCOME { outcome }`、`STARTUP_FAILED`、`SPLASH_LOGO_FAILED { code }`。gauge 是 `host.startup.longest_block`、`host.startup.splash_logo_read`、`host.startup.device_request` 和 `host.startup.painter_build`。
+
+`startup-splash --probe` 把这两项写进 JSON（`device_request_ms`、`painter_build_ms`），缺任何一项都判失败。`--composition` 让它像悬浮窗应用一样请求合成后端。这两项不设时间门禁：数字取决于机器、驱动和着色器编译器。回归看的是结构（每次启动一次设备请求、一个 painter、不编译 motion 求值 pipeline、registry 并行编译），由 `startup-splash --probe` 和 `nana-gpu`、`nana-ui` 的单元测试守住。
+
+下面是 Windows 数字。RTX 5060 Ti，DX12 + DirectComposition，`startup-splash --probe --app-ms=0 --composition`，每格 3 轮交替运行，机器上同时有别的编译负载。`UiReady` 从宿主入口算起。
+
+| 构建 | 改动前 `UiReady` | 改动后，FXC | 改动后，exe 旁放 `dxcompiler.dll` |
+| --- | --- | --- | --- |
+| release | 5.01–5.34 s | 2.70–2.95 s（painter 2.24–2.39 s） | 1.64–2.28 s（painter 1.18–1.79 s） |
+| debug | 10.38–12.12 s | 6.09–9.20 s（painter 4.73–7.77 s） | 2.96–3.48 s（painter 1.61–1.98 s） |
+
+改动前，release 的 5 s 是这样分的：建窗前的合成探测枚举 adapter 约 0.35 s；启动线程上再枚举一次加建设备约 0.39 s；painter 约 4.05 s（FXC），各 pipeline 家族串行编译。按分项计时，其中约三成是只在测试里用的 motion 求值 pipeline。改动后设备请求降到约 0.08 s。剩下的大头是 quad pipeline：DXC 约 1.3 s，FXC 约 2.3 s。其中约 45% 是片元着色器里逐片元的 motion 不透明度求值，那段求值器在顶点、片元两个阶段各内联一份。
 
 下面是本机数字。macOS，debug 构建，`startup-splash --probe --app-ms=200`。有 splash 和无 splash 交替，各 8 轮。负载 4–7。取最小值。括号内是中位数。
 

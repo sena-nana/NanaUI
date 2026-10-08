@@ -57,6 +57,9 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         document_text_selection: Vec::new(),
         document_text_selection_color: [0.0; 4],
         compositor: Default::default(),
+        rich_text: None,
+        rich_editor: None,
+        glyph_presentation: None,
     }
 }
 
@@ -9716,6 +9719,7 @@ mod custom_paint {
                     paint: nana_ui_runtime::ResolvedPaint::Solid(CARD),
                     size: 13.0,
                     weight: None,
+                    family: None,
                     italic: false,
                     line_height: None,
                     wrap: false,

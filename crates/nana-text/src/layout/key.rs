@@ -144,6 +144,15 @@ pub(crate) struct LayoutKey {
     /// not a shaping input, so it cannot come in through the shaped identity.
     run_line_heights: Vec<u32>,
     empty_line_height: u32,
+    /// Every inline object's offset and box (width, ascent, descent). Not a
+    /// shaping input — objects shape as placeholders — so it cannot come in
+    /// through the shaped identity either.
+    objects: Vec<(usize, [u32; 3])>,
+    /// Each ruby's base range and its shaped annotation, held so the pointer
+    /// it is compared by stays valid.
+    rubies: Vec<(std::ops::Range<usize>, Arc<ShapedText>)>,
+    /// Each object label's offset and shaped text, held like the rubies.
+    labels: Vec<(usize, Arc<ShapedText>)>,
 }
 
 impl LayoutKey {
@@ -160,6 +169,9 @@ impl LayoutKey {
         strut: Option<LineStrut>,
         run_line_heights: &[f32],
         empty_line_height: f32,
+        objects: &[crate::source::InlineObject],
+        rubies: Vec<(std::ops::Range<usize>, Arc<ShapedText>)>,
+        labels: Vec<(usize, Arc<ShapedText>)>,
     ) -> Self {
         Self {
             shaped: Arc::clone(shaped),
@@ -181,6 +193,21 @@ impl LayoutKey {
                 .map(canonical_f32_bits)
                 .collect(),
             empty_line_height: canonical_f32_bits(empty_line_height),
+            objects: objects
+                .iter()
+                .map(|object| {
+                    (
+                        object.offset,
+                        [
+                            canonical_f32_bits(object.metrics.width_px),
+                            canonical_f32_bits(object.metrics.ascent_px),
+                            canonical_f32_bits(object.metrics.descent_px),
+                        ],
+                    )
+                })
+                .collect(),
+            rubies,
+            labels,
         }
     }
 
@@ -192,7 +219,9 @@ impl LayoutKey {
     /// Bytes the key itself retains. The shaped text is shared with the shape
     /// cache, which already charges for it, so it is not counted twice.
     pub fn retained_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.run_line_heights.capacity() * std::mem::size_of::<u32>()
+        std::mem::size_of::<Self>()
+            + self.run_line_heights.capacity() * std::mem::size_of::<u32>()
+            + self.objects.capacity() * std::mem::size_of::<(usize, [u32; 3])>()
     }
 }
 
@@ -210,6 +239,19 @@ impl PartialEq for LayoutKey {
             && self.strut == other.strut
             && self.run_line_heights == other.run_line_heights
             && self.empty_line_height == other.empty_line_height
+            && self.objects == other.objects
+            && self.rubies.len() == other.rubies.len()
+            && self
+                .rubies
+                .iter()
+                .zip(&other.rubies)
+                .all(|((left, a), (right, b))| left == right && Arc::ptr_eq(a, b))
+            && self.labels.len() == other.labels.len()
+            && self
+                .labels
+                .iter()
+                .zip(&other.labels)
+                .all(|((left, a), (right, b))| left == right && Arc::ptr_eq(a, b))
     }
 }
 
@@ -228,5 +270,14 @@ impl Hash for LayoutKey {
         self.strut.hash(state);
         self.run_line_heights.hash(state);
         self.empty_line_height.hash(state);
+        self.objects.hash(state);
+        for (range, shaped) in &self.rubies {
+            range.hash(state);
+            (Arc::as_ptr(shaped) as *const u8 as usize).hash(state);
+        }
+        for (offset, shaped) in &self.labels {
+            offset.hash(state);
+            (Arc::as_ptr(shaped) as *const u8 as usize).hash(state);
+        }
     }
 }

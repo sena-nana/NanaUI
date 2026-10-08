@@ -1,5 +1,12 @@
 """Windows native overlay probe: real pointer routing and screen composition.
 Build desktop-overlay-probe first. This tool briefly moves the pointer onto its own windows.
+
+`--presents` runs only the cadence checks (no pointer, no UI Automation):
+PASSTHROUGH_PRESENTS — a click-through window keeps presenting at its
+continuous cadence and stays on screen, on the composition and the ordinary
+path; COMPOSITION_CONTINUOUS_PRESENTS — an idle composition window that
+nothing invalidates keeps presenting. Results go to
+target/desktop-overlay-presents.json.
 """
 import ctypes as c
 import json
@@ -31,6 +38,86 @@ class Point(c.Structure):
     _fields_ = [(n, c.c_long) for n in ("x", "y")]
 original_pointer = Point(); u.GetCursorPos(c.byref(original_pointer))
 cursor_samples = []
+u.GetDpiForWindow.argtypes = [c.c_void_p]
+PROBE = str(Path("target/debug/examples/desktop-overlay-probe.exe").resolve())
+PRESENT_HZ, PRESENT_WINDOW_S = 30, 2.0
+def screen_pixel(point):
+    dc = u.GetDC(None)
+    try: return g.GetPixel(dc, *point)
+    finally: u.ReleaseDC(None, dc)
+def validate_presents():
+    process = subprocess.Popen([PROBE, "--presents"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    inbox, lines = queue.Queue(), []
+    def read_output():
+        for line in process.stdout:
+            try: event = json.loads(line)
+            except json.JSONDecodeError: continue
+            lines.append(event); inbox.put(event)
+    threading.Thread(target=read_output, daemon=True).start()
+    def wait_for(kind, timeout=60, **fields):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                line = inbox.get(timeout=.1)
+                if line.get("event") == kind and all(line.get(k) == v for k, v in fields.items()): return line
+            except queue.Empty: pass
+        raise AssertionError(f"Timed out awaiting {kind} {fields}: {lines}")
+    def send(value):
+        process.stdin.write(value + chr(10)); process.stdin.flush()
+    def counts():
+        send("presents")
+        return {int(k): v for k, v in wait_for("presents", 10)["counts"].items()}
+    def rates(label):
+        before = counts(); time.sleep(PRESENT_WINDOW_S); after = counts()
+        presented = {w: after.get(w, 0) - before.get(w, 0) for w in (1, 3, 4)}
+        floor = int(PRESENT_HZ * PRESENT_WINDOW_S * 0.6)
+        for window, count in presented.items():
+            assert count >= floor, f"{label}: window {window} presented {count} frames in {PRESENT_WINDOW_S}s (floor {floor}): {presented}"
+        return presented
+    def marker(title, expected):
+        hwnd = u.FindWindowW(None, title); assert hwnd, title
+        rect = Rect(); assert u.GetWindowRect(hwnd, c.byref(rect))
+        scale = u.GetDpiForWindow(hwnd) / 96.0
+        point = (int(rect.left + 94 * scale), int(rect.top + 64 * scale))
+        value = screen_pixel(point)
+        assert value == expected, f"{title}: marker {value:#08x} != {expected:#08x}; the window is not on screen"
+        return value
+    try:
+        targets = {}
+        for window in (1, 3, 4):
+            targets[window] = wait_for("ready", window=window)
+        assert targets[1]["target"] == "Composition" and targets[3]["target"] == "Composition", targets
+        time.sleep(1)
+        for window in (1, 4):
+            assert any(line.get("event") == "passthrough" and line.get("window") == window
+                and line.get("enabled") and line.get("success") for line in lines), (window, lines)
+        RED, BLUE = 0x3326d9, 0xe64c33
+        report = {"targets": targets, "rounds": []}
+        for label in ("locked", "unlocked", "relocked"):
+            presented = rates(label)
+            pixels = {"passthrough": marker("NanaUI presents probe passthrough", RED),
+                      "idle": marker("NanaUI presents probe idle", BLUE),
+                      "plain": marker("NanaUI presents probe plain", BLUE)}
+            report["rounds"].append({"state": label, "presents": presented, "pixels": pixels})
+            if label == "locked":
+                send("unlock")
+                wait_for("passthrough", window=1, enabled=False, success=True)
+            elif label == "unlocked":
+                send("lock")
+                wait_for("passthrough", window=1, enabled=True, success=True)
+            time.sleep(.3)
+        send("quit")
+        assert process.wait(timeout=15) == 0
+        report["assertions"] = ["PASSTHROUGH_PRESENTS", "COMPOSITION_CONTINUOUS_PRESENTS"]
+        Path("target/desktop-overlay-presents.json").write_text(json.dumps(report, indent=2))
+        print(json.dumps(report, indent=2))
+        print("PASSTHROUGH_PRESENTS ok"); print("COMPOSITION_CONTINUOUS_PRESENTS ok")
+    finally:
+        if process.poll() is None: process.kill()
+if "--presents" in sys.argv:
+    validate_presents()
+    raise SystemExit(0)
 try:
     import comtypes.client
 except ImportError as error:
@@ -76,7 +163,7 @@ def settled_taskbar(expect, message, timeout=10, settle=1.5):
 taskbar_before_probe = taskbar_buttons()
 lines, inbox = [], queue.Queue()
 transition_samples = []
-process = subprocess.Popen(["target/debug/examples/desktop-overlay-probe.exe"], stdin=subprocess.PIPE,
+process = subprocess.Popen([PROBE], stdin=subprocess.PIPE,
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
 def read_output():
     for line in process.stdout:

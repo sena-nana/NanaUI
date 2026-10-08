@@ -21,7 +21,7 @@ pub use nana_ui_runtime::{
     ListItem, MediaTransportBar, MediaTransportDensity, MediaTransportEvent, MediaTransportIcons,
     MediaTransportPlacement, MediaTransportSlots, OVERLAY_IDLE, OverlayHost, OverlayLocks,
     OverlayVisibility, OverlayVisibilityChanged, OverlayVisibilityConfig, Popover, Progress,
-    ProgressCancelled, QrCode, RangeField, SearchDropdown, SearchDropdownEvent,
+    ProgressCancelled, QrCode, RangeField, RichTextView, SearchDropdown, SearchDropdownEvent,
     SearchDropdownOption, SegmentedControl, Select, SelectOption, SettingsCard,
     SettingsCollapsibleCard, SettingsRow, SidebarFooter, SidebarFooterButton, SidebarFrame,
     SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, SidebarSectionSlots,

@@ -764,3 +764,37 @@ fn the_cache_is_bounded_by_entries_and_bytes() {
     assert!(counters.shape_cache_bytes <= bytes / 2);
     assert!(counters.shape_cache_entries < 4);
 }
+
+#[test]
+fn a_run_carries_the_faces_decoration_metrics_scaled_to_its_size() {
+    let (mut fonts, _) = system(&["noto-sans-sc"]);
+    let mut shaper = Shaper::default();
+    let source = TextSource::new("Under");
+    let small = shape(
+        &mut shaper,
+        &mut fonts,
+        &source,
+        &style("Noto Sans SC"),
+        DirSpec::Ltr,
+    );
+    let metrics = small.runs[0].metrics;
+    assert!(metrics.has_decorations(), "{metrics:?}");
+    assert!(
+        metrics.underline_offset_px > 0.0 && metrics.underline_offset_px < metrics.descent_px,
+        "an underline sits under the baseline, inside the descent: {metrics:?}"
+    );
+    assert!(
+        metrics.strikeout_offset_px > 0.0 && metrics.strikeout_offset_px < metrics.ascent_px,
+        "a strikeout sits above the baseline, inside the ascent: {metrics:?}"
+    );
+    let large_style = TextStyle {
+        font_size_px: 40.0,
+        ..style("Noto Sans SC")
+    };
+    let large = shape(&mut shaper, &mut fonts, &source, &large_style, DirSpec::Ltr);
+    let doubled = large.runs[0].metrics;
+    assert!(
+        (doubled.underline_thickness_px - metrics.underline_thickness_px * 2.0).abs() < 1e-3,
+        "decoration metrics scale with the run's size"
+    );
+}

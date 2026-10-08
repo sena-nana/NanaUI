@@ -34,6 +34,7 @@ pub mod number_field;
 pub mod overlay;
 pub mod packaged;
 pub mod persist;
+pub mod rich_text;
 pub mod scrollbar;
 pub mod selection;
 pub mod semantics;
@@ -69,9 +70,9 @@ pub use box_layout::{
     MAX_BOX_SHADOWS, MaskImage, MixBlendMode, OutlineSpec, OutlineStyle, OverflowSpec,
     OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
     PointerEventsSpec, PositionSpec, RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec,
-    TextDecorationLine, TextOrientationSpec, TextShadowSpec, TextWrapBreak, TransformBox,
-    TransformOrigin, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec,
-    WritingModeSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
+    TextDecorationLine, TextOrientationSpec, TextShadowSpec, TextStrokeSpec, TextWrapBreak,
+    TransformBox, TransformOrigin, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
+    WordBreakSpec, WritingModeSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
     resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
 };
 pub use date::{CivilDate, DayCell, MonthGrid, WeekStart, Weekday, days_in_month, is_leap_year};
@@ -118,18 +119,19 @@ pub use menu::{MenuConfirmation, MenuSelection};
 pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};
 pub use motion::{
     AnimatableProperty, AnimationClass, AnimationDirection, AnimationFillMode, AnimationIteration,
-    AnimationPlayState, AnimationPlayback, CompiledMotion, DecayParams, Easing, FlipRect, Keyframe,
-    MOTION_DESCRIPTOR_VERSION, MOTION_GPU_DESCRIPTOR_SIZE, MOTION_GPU_KEYFRAME_SIZE,
+    AnimationPlayState, AnimationPlayback, CompiledMotion, DecayParams, Easing, FlipRect,
+    GlyphEasing, GlyphEffect, GlyphEffectKind, GlyphIntro, GlyphPresentation, GlyphSample,
+    Keyframe, MOTION_DESCRIPTOR_VERSION, MOTION_GPU_DESCRIPTOR_SIZE, MOTION_GPU_KEYFRAME_SIZE,
     MOTION_GPU_TIME_SIZE, MotionCodecError, MotionCodecId, MotionCodecInfo, MotionCodecRegistry,
     MotionCurve, MotionDescriptor, MotionDescriptorError, MotionDescriptorStore,
     MotionEvaluatorBackend, MotionGpuDescriptor, MotionGpuKeyframe, MotionGpuTime, MotionGpuValue,
     MotionGraph, MotionHandle, MotionInspectorEntry, MotionInterrupt, MotionSample, MotionTargetId,
     MotionTiming, MotionTo, MotionTrack, MotionTrackId, MotionValue, MotionValueKind,
     MotionWorkCounters, PresentationOverlay, PresentationPair, PresentationSlot, PresentationStore,
-    ProgressSample, Spring, SpringParams, StepJump, TimedProgress, Timeline,
+    ProgressSample, RevealSchedule, Spring, SpringParams, StepJump, TimedProgress, Timeline,
     classify_animatable_property, compile_motion_descriptor, cpu_fallback_reason,
-    decode_motion_track, evaluate_descriptor, evaluate_progress, evaluate_track, evaluate_track_at,
-    invert_flip_translate, retarget_track, track_completion_deadline,
+    decode_motion_track, evaluate_descriptor, evaluate_glyph, evaluate_progress, evaluate_track,
+    evaluate_track_at, invert_flip_translate, retarget_track, track_completion_deadline,
 };
 pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
@@ -144,6 +146,11 @@ pub use persist::{
     VIEW_STATE_PREFIX, ViewStateEnvelope, ViewStateSchemaVersion, ViewStateStore,
     appearance_storage_key, dock_storage_key, is_framework_storage_key, memory_store, shared_store,
     window_storage_key,
+};
+pub use rich_text::{
+    AttributedRanges, MAX_TEXT_SHADOWS, OBJECT_REPLACEMENT, RichObject, RichObjectContent,
+    RichPaintStyle, RichShapeStyle, RichSpanStyle, RichText, RichTextBuilder, RichTextShadow,
+    RichTextStroke, TextStrokeJoin, TextStrokePlacement,
 };
 pub use scrollbar::{
     SCROLLBAR_METRICS, ScrollbarAxis, ScrollbarMetrics, ScrollbarSkin, ScrollbarTrack,

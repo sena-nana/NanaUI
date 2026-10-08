@@ -29,6 +29,8 @@ descriptors! {
     BOX => { type_id: "nana.box", tags: &["box"] },
     DROP_TARGET => { type_id: "nana.drop-target", tags: &["drop-target"] },
     TEXT => { type_id: "nana.text", tags: &["text"] },
+    RICH_TEXT_VIEW => { type_id: "nana.rich-text", tags: &["rich-text"] },
+    RICH_TEXT_EDITOR => { type_id: "nana.rich-text-editor", tags: &["rich-text-editor"] },
     BUTTON => { type_id: "nana.button", tags: &["button"] },
     ICON_BUTTON => { type_id: "nana.icon-button", tags: &["icon-button"] },
     ICON_GLYPH => { type_id: "nana.icon", tags: &["icon", "i"] },

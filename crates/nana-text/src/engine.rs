@@ -230,6 +230,38 @@ impl NativeTextEngine {
     }
 }
 
+/// The style a ruby annotation is shaped in: its base's, at
+/// [`crate::source::RUBY_SCALE`] of the size.
+fn ruby_style(source: &TextSource, base: &TextStyle, at: usize) -> TextStyle {
+    let spans = source.spans();
+    let style = spans
+        .iter()
+        .rfind(|span| span.range.start <= at && at < span.range.end)
+        .map_or(base, |span| &span.style);
+    TextStyle {
+        font_size_px: style.font_size_px * crate::source::RUBY_SCALE,
+        letter_spacing_px: 0.0,
+        ..style.clone()
+    }
+}
+
+/// The style an object label is shaped in: the text's around it, at
+/// [`crate::source::LABEL_SCALE`] of the size, upright and medium weight.
+fn label_style(source: &TextSource, base: &TextStyle, at: usize) -> TextStyle {
+    let spans = source.spans();
+    let style = spans
+        .iter()
+        .rfind(|span| span.range.start <= at && at < span.range.end)
+        .map_or(base, |span| &span.style);
+    TextStyle {
+        font_size_px: (style.font_size_px * crate::source::LABEL_SCALE).max(9.0),
+        font_weight: style.font_weight.clamp(500, 700),
+        italic: false,
+        letter_spacing_px: 0.0,
+        ..style.clone()
+    }
+}
+
 impl TextEngine for NativeTextEngine {
     fn font_generation(&self) -> FontGeneration {
         self.fonts.generation()
@@ -251,10 +283,51 @@ impl TextEngine for NativeTextEngine {
             .then(|| self.shape_ellipsis(base, constraints));
         let strut = self.strut_metrics(base, constraints.scale.px_per_logical);
 
+        // Each annotation shaped once, at its share of its base's size; the
+        // shape cache answers the next layout of the same text.
+        let rubies: Vec<Arc<ShapedText>> = if constraints.wants_vertical_writing() {
+            Vec::new()
+        } else {
+            source
+                .rubies()
+                .iter()
+                .map(|ruby| {
+                    let style = ruby_style(source, base, ruby.range.start);
+                    let annotation = TextSource::new(Arc::clone(&ruby.text));
+                    let constraints = TextConstraints {
+                        max_width_px: None,
+                        wrap: None,
+                        max_lines: None,
+                        ellipsis: false,
+                        ..*constraints
+                    };
+                    self.shape(&annotation, &style, &constraints)
+                })
+                .collect()
+        };
+        // Each object label shaped once, small, in the style around it.
+        let labels: Vec<Arc<ShapedText>> = source
+            .labels()
+            .iter()
+            .map(|label| {
+                let style = label_style(source, base, label.offset);
+                let text = TextSource::new(Arc::clone(&label.text));
+                let constraints = TextConstraints {
+                    max_width_px: None,
+                    wrap: None,
+                    max_lines: None,
+                    ellipsis: false,
+                    ..*constraints
+                };
+                self.shape(&text, &style, &constraints)
+            })
+            .collect();
         let layouts_before = self.layouter.counters();
         let request = LayoutRequest::new(kind, source, &shaped, base, constraints)
             .with_ellipsis(ellipsis.as_ref())
-            .with_strut(strut);
+            .with_strut(strut)
+            .with_rubies(&rubies)
+            .with_labels(&labels);
         let layout = self.layouter.layout(&request);
         let layouts = self.layouter.counters();
         let after = self.shaper.counters();

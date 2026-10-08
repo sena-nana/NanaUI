@@ -189,6 +189,9 @@ pub(super) struct LoadingStartup<Message> {
 pub(super) struct DeviceStart {
     device: Result<AcquiredDevice, String>,
     painter: Option<SceneWgpuPainter>,
+    /// How long the request and the painter took on the startup thread.
+    device_request: Option<Duration>,
+    painter_build: Option<Duration>,
 }
 
 /// One presentation target being tried. Fields drop in declaration order:
@@ -325,6 +328,8 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             Err(mpsc::TryRecvError::Disconnected) => Some(DeviceStart {
                 device: Err("the GPU startup thread stopped without a device".into()),
                 painter: None,
+                device_request: None,
+                painter_build: None,
             }),
         }
     }
@@ -334,7 +339,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     fn start(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
-        mut instance: Option<wgpu::Instance>,
+        mut instance: Option<crate::hosted_context::ProbedInstance>,
     ) -> Result<(), String> {
         loop {
             match self.start_attempt(event_loop, instance.take()) {
@@ -355,7 +360,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     fn start_attempt(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
-        instance: Option<wgpu::Instance>,
+        instance: Option<crate::hosted_context::ProbedInstance>,
     ) -> Result<(), String> {
         let target = self.target.resolved;
         let (window, provisional, requested_material, applied_material) = create_primary_window(
@@ -514,6 +519,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             .take()
             .expect("a device result belongs to an attempt");
         let target = self.target;
+        record_device_start(&self.handle, start.device_request, start.painter_build);
         let bound = start
             .device
             .and_then(|device| surface.finish(device).map_err(|error| error.to_string()))
@@ -587,6 +593,29 @@ fn spawn_icon_render(
         .map(|_| receiver)
 }
 
+/// Adds one attempt's startup-thread durations to the record and the gauges.
+fn record_device_start(
+    handle: &StartupHandle,
+    device_request: Option<Duration>,
+    painter_build: Option<Duration>,
+) {
+    let add = |total: &mut Option<Duration>, part: Option<Duration>| {
+        if let Some(part) = part {
+            *total = Some(total.unwrap_or_default() + part);
+        }
+    };
+    handle.update(|status| {
+        add(&mut status.work.device_request, device_request);
+        add(&mut status.work.painter_build, painter_build);
+    });
+    if let Some(elapsed) = device_request {
+        nana_diagnostics::metric!(host::STARTUP_DEVICE_REQUEST_NS, elapsed);
+    }
+    if let Some(elapsed) = painter_build {
+        nana_diagnostics::metric!(host::STARTUP_PAINTER_BUILD_NS, elapsed);
+    }
+}
+
 /// Requests the device on a thread of its own and wakes the event loop when
 /// it has one. A platform device request cannot be cancelled once it has
 /// started; a startup cancelled meanwhile simply never takes the result.
@@ -604,16 +633,25 @@ fn spawn_device_request(
             {
                 std::thread::sleep(Duration::from_millis(delay));
             }
+            let requested = Instant::now();
             let device = if fault_flag("NANA_STARTUP_GPU_FAIL") {
                 drop(request);
                 Err("GPU initialization failure requested by NANA_STARTUP_GPU_FAIL".into())
             } else {
                 pollster::block_on(request.acquire()).map_err(|error| error.to_string())
             };
+            let device_request = device.is_ok().then(|| requested.elapsed());
+            let built = Instant::now();
             let painter = device.as_ref().ok().map(|device| {
                 SceneWgpuPainter::new_with_presentation(device.gpu(), device.scene_profile())
             });
-            if let Err(unsent) = sender.send(DeviceStart { device, painter }) {
+            let painter_build = painter.is_some().then(|| built.elapsed());
+            if let Err(unsent) = sender.send(DeviceStart {
+                device,
+                painter,
+                device_request,
+                painter_build,
+            }) {
                 // The host went away. The surface holds a reference to its
                 // window, which must not be released off the window's thread:
                 // keep it, once, for the rest of the process.

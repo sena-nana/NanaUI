@@ -336,7 +336,6 @@ use clip::{
     paint_transform, physical_bounds, physical_scissor, transformed_aabb,
     transformed_aabb_projective, union_physical,
 };
-use color::with_opacity;
 pub(crate) use color::{pack_linear, pack_paint_color};
 use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
@@ -532,6 +531,38 @@ enum DrawCommand {
     PopGroup,
 }
 
+/// Runs `$build` on a scoped thread of its own, or right here when no
+/// thread can be started (a target without threads, or none left).
+macro_rules! beside {
+    ($scope:expr, $name:literal, $build:expr) => {
+        match std::thread::Builder::new()
+            .name($name.into())
+            .spawn_scoped($scope, || $build)
+        {
+            Ok(handle) => Beside::Thread(handle),
+            Err(_) => Beside::Built($build),
+        }
+    };
+}
+
+/// A pipeline family being built by [`beside!`].
+enum Beside<'scope, T> {
+    Thread(std::thread::ScopedJoinHandle<'scope, T>),
+    Built(T),
+}
+
+impl<T> Beside<'_, T> {
+    /// The family, re-raising a panic from its thread as this thread's own.
+    fn join(self) -> T {
+        match self {
+            Self::Thread(handle) => handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            Self::Built(value) => value,
+        }
+    }
+}
+
 impl SceneWgpuPainter {
     /// A painter for targets of `format` on `gpu`. Every frame it paints must
     /// come from the same device.
@@ -543,11 +574,43 @@ impl SceneWgpuPainter {
         let device = __framework::device(gpu);
         let queue = __framework::queue(gpu);
         let format = __framework::format_to_wgpu(presentation.working_format());
-        let quads = QuadPipeline::new_with_policy(device, format, Some(gpu.policy()));
+        let policy = gpu.policy();
+        // The pipeline families compile side by side: each owns its shaders
+        // and pipelines, and a compile is CPU work in the shader compiler and
+        // the driver, so the painter costs its slowest family instead of the
+        // sum of all of them. The quad family, the slowest, stays on this
+        // thread. The motion resources need the quad layout and compile
+        // nothing (their evaluator is test-only and built on first use).
+        let (quads, meshes, icons, text, host_textures, backdrop) = std::thread::scope(|scope| {
+            let meshes = beside!(scope, "nana-paint-mesh", {
+                MeshPipeline::new_with_policy(device, format, Some(policy))
+            });
+            let icons = beside!(scope, "nana-paint-icon", {
+                IconPipeline::new_with_policy(device, format, Some(policy))
+            });
+            let text = beside!(scope, "nana-paint-text", {
+                TextPipeline::new_with_policy(device, queue, format, policy)
+            });
+            let host_textures = beside!(scope, "nana-paint-host-texture", {
+                HostTexturePipeline::new(device, queue, format, policy, gpu)
+            });
+            let backdrop = beside!(scope, "nana-paint-backdrop", {
+                BackdropPipeline::new(device, format, policy)
+            });
+            let quads = QuadPipeline::new_with_policy(device, format, Some(policy));
+            (
+                quads,
+                meshes.join(),
+                icons.join(),
+                text.join(),
+                host_textures.join(),
+                backdrop.join(),
+            )
+        });
         let motion = MotionGpuResources::new_with_policy(
             device,
             quads.motion_layout(),
-            Some(gpu.policy()),
+            Some(policy),
             eval_format_for_gpu(gpu),
         );
         Self {
@@ -564,16 +627,16 @@ impl SceneWgpuPainter {
             presentation_parameters: ScenePresentationParameters::default(),
             quads,
             motion,
-            meshes: MeshPipeline::new_with_policy(device, format, Some(gpu.policy())),
-            icons: IconPipeline::new_with_policy(device, format, Some(gpu.policy())),
-            text: TextPipeline::new_with_policy(device, queue, format, gpu.policy()),
-            host_textures: HostTexturePipeline::new(device, queue, format, gpu.policy(), gpu),
+            meshes,
+            icons,
+            text,
+            host_textures,
             url_cache: {
                 let mut cache = UrlTextureCache::default();
                 cache.set_srgb_source(!presentation.is_direct_linear());
                 cache
             },
-            backdrop: BackdropPipeline::new(device, format, gpu.policy()),
+            backdrop,
             dest: None,
             // Pipeline-cache reuse requires a host-enabled device feature;
             // the painter must not demand it, so degrade to per-recreate
@@ -1008,10 +1071,15 @@ impl SceneWgpuPainter {
             size: dest_physical,
         };
 
+        // Per-glyph presentation moves with the motion clock, so a frame with
+        // a live one is never the dest already painted.
         let gpu_motion_live = scene
             .motion_gpu_descriptors()
             .iter()
-            .any(|descriptor| descriptor.is_live());
+            .any(|descriptor| descriptor.is_live())
+            || scene.glyph_presentation_live();
+        self.text
+            .write_motion(&self.queue, scene.motion_gpu_now(), Some(&gpu_work));
         if self.painted == Some(painted)
             && !gpu_motion_live
             && let Some(dest) = self.dest.as_mut()
@@ -1477,6 +1545,8 @@ impl SceneWgpuPainter {
                         // rather than laying the same paragraph out again,
                         // so there is one paragraph, not two that agree.
                         layout,
+                        rich,
+                        presentation,
                     } => {
                         // A text node's glyphs are retained per node and
                         // per pass, so the shadows under a label are their
@@ -1486,6 +1556,11 @@ impl SceneWgpuPainter {
                         let slot = id.slot;
                         let mut pass = 0u32;
                         let opaque_backdrop = group_depth == 0;
+                        // Shadows, outlines and decoration lines are
+                        // instances of the paragraph's own entry, in paint
+                        // order, built from the same glyphs.
+                        self.text.set_effects(rich.as_ref(), *text_shadow);
+                        self.text.set_glyph_presentation(presentation.as_ref());
                         let mut push_text = |commands: &mut Vec<DrawCommand>,
                                              batching: &mut Batching,
                                              extra_offset: [f32; 2],
@@ -1549,28 +1624,6 @@ impl SceneWgpuPainter {
                                 );
                             }
                         };
-                        if let Some(shadow) = text_shadow {
-                            let base_color = with_opacity(shadow.color, opacity);
-                            for (dx, dy, alpha_scale) in text_shadow_draw_offsets(*shadow) {
-                                let scaled = [
-                                    base_color[0],
-                                    base_color[1],
-                                    base_color[2],
-                                    base_color[3] * alpha_scale,
-                                ];
-                                push_text(
-                                    &mut commands,
-                                    &mut batching,
-                                    [shadow.offset_x + dx, shadow.offset_y + dy],
-                                    Some(scaled),
-                                    shadow.paint_color.map(pack_paint_color).map(|mut color| {
-                                        color[3] *= alpha_scale;
-                                        color
-                                    }),
-                                    None,
-                                );
-                            }
-                        }
                         push_text(
                             &mut commands,
                             &mut batching,
@@ -2693,19 +2746,6 @@ fn push_path_draw(
     }
     batching.open(commands.len(), painted);
     commands.push(DrawCommand::Path { range, scissor });
-}
-
-fn text_shadow_draw_offsets(shadow: nana_ui_core::TextShadowSpec) -> Vec<(f32, f32, f32)> {
-    let mut out = vec![(0.0, 0.0, 1.0)];
-    let blur = shadow.blur_radius.max(0.0);
-    if blur > 0.5 {
-        let step = blur * 0.35;
-        out.push((step, 0.0, 0.55));
-        out.push((-step, 0.0, 0.55));
-        out.push((0.0, step, 0.55));
-        out.push((0.0, -step, 0.55));
-    }
-    out
 }
 
 struct EncodeOrdered<'a> {

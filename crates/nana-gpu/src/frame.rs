@@ -44,6 +44,9 @@ pub struct FrameContext {
     transient_registry: Arc<Mutex<Vec<(TransientResourceKey, wgpu::Buffer)>>>,
     /// Writes renderers queued for this frame; submitted ahead of it.
     uploads: crate::upload::FrameUploads,
+    /// Raw queue operations that must follow this frame's `queue.submit`
+    /// under the same submission guard (native-export ready signals).
+    after_submit: Vec<Box<dyn FnOnce() + Send>>,
 }
 
 impl fmt::Debug for FrameContext {
@@ -73,7 +76,17 @@ impl FrameContext {
             frame_slot,
             transient_registry: Arc::new(Mutex::new(Vec::new())),
             uploads,
+            after_submit: Vec::new(),
         }
+    }
+
+    /// Runs `hook` right after this frame's `queue.submit`, still holding the
+    /// submission guard, so a raw queue operation it performs is ordered
+    /// directly after the frame's commands. Dropped unrun when the frame is
+    /// discarded.
+    #[cfg_attr(not(all(windows, feature = "native-export")), allow(dead_code))]
+    pub(crate) fn after_submit(&mut self, hook: Box<dyn FnOnce() + Send>) {
+        self.after_submit.push(hook);
     }
 
     pub(crate) fn uploads(&self) -> crate::upload::FrameUploads {
@@ -164,6 +177,9 @@ impl FrameContext {
             );
             if let Some(chunk) = upload_chunk {
                 self.gpu.inner.upload_ring.submitted(chunk, index.clone());
+            }
+            for hook in self.after_submit.drain(..) {
+                hook();
             }
             let submission = self
                 .gpu

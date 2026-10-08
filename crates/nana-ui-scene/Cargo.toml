@@ -23,6 +23,8 @@ nana-ui-core.workspace = true
 nana-ui-runtime.workspace = true
 lyon_tessellation.workspace = true
 i_overlay.workspace = true
+# Grapheme ordinals of per-glyph presentation.
+unicode-segmentation.workspace = true
 # Benchmark only: `nana-dirty-frame-benchmark --engine nana-text`.
 nana-text = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
@@ -30,6 +32,7 @@ serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 nana-text.workspace = true
+nana-ui-input.workspace = true
 nana-ui-core = { workspace = true, features = ["bundled-font-regular"] }
 
 [[bin]]

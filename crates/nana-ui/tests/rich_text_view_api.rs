@@ -1,0 +1,89 @@
+//! The public rich text surface an application builds from: the examples in
+//! `docs/components/rich-text-view.md`, compiled.
+
+use nana_ui::runtime::rich::{
+    PaintColor, RichSpanStyle, RichText, RichTextShadow, RichTextStroke, TextStrokePlacement,
+};
+use nana_ui::runtime::view::widget;
+use nana_ui::runtime::{AppContext, DocumentId, RichTextView};
+
+#[test]
+fn the_documented_rich_text_builds_and_mounts() {
+    let line = RichText::builder()
+        .plain("今天也")
+        .push(
+            "辛苦了",
+            RichSpanStyle::new()
+                .bold()
+                .color(PaintColor::srgb([1.0, 0.4, 0.5, 1.0])),
+        )
+        .build();
+    let black = PaintColor::srgb([0.0, 0.0, 0.0, 1.0]);
+    let outlined = RichText::new("注意看").with_span(
+        0..9,
+        RichSpanStyle::new()
+            .stroke(RichTextStroke::new(3.0, black).placement(TextStrokePlacement::Under))
+            .shadow(RichTextShadow::new([2.0, 2.0], 6.0, black).spread(1.0))
+            .underline(),
+    );
+    let _ = widget(RichTextView::new(outlined.clone()));
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let view = cx
+        .create_component(document, RichTextView::new(line).font_size(20.0))
+        .unwrap();
+    assert_eq!(cx.world().text(view.stable_id()), Some("今天也辛苦了"));
+    cx.set_component(view, RichTextView::new(outlined.clone()))
+        .unwrap();
+    assert_eq!(cx.world().rich_text(view.stable_id()), Some(&outlined));
+}
+
+#[test]
+fn the_documented_editor_commands_reach_the_document() {
+    use nana_ui::runtime::rich::RichObject;
+    use nana_ui::runtime::{RichEditCommand, RichTextEditor, RichTextEditorEvent};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let editor = cx
+        .create_component(document, RichTextEditor::new(RichText::new("")))
+        .unwrap();
+    assert!(
+        cx.rich_edit(
+            editor,
+            RichEditCommand::SetAttrs(RichSpanStyle::new().bold())
+        )
+        .unwrap()
+    );
+    cx.rich_edit(editor, RichEditCommand::InsertText("hi".into()))
+        .unwrap();
+    cx.rich_edit(
+        editor,
+        RichEditCommand::InsertObject(RichObject::chip(7, "等待 500ms", 1)),
+    )
+    .unwrap();
+    let value = cx.read(editor, |view| view.value.clone()).unwrap();
+    assert_eq!(
+        value.style_at(0).and_then(|style| style.shape.weight),
+        Some(700)
+    );
+    assert_eq!(value.objects().len(), 1);
+    let _ = std::mem::size_of::<RichTextEditorEvent>();
+}
+
+#[test]
+fn the_documented_presentation_reaches_the_world_without_text_work() {
+    use nana_ui::runtime::rich::{GlyphEffect, GlyphIntro, RevealSchedule};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let line = RichText::builder()
+        .plain("欢迎")
+        .push("来到直播间", RichSpanStyle::new().effect(0))
+        .build();
+    let view = cx
+        .create_component(document, RichTextView::new(line))
+        .unwrap();
+    let reveal = RevealSchedule::uniform(cx.animation_now(), 7, 0.08).intro(GlyphIntro::pop(0.2));
+    cx.set_rich_presentation(view, vec![GlyphEffect::wave(3.0)], Some(reveal))
+        .unwrap();
+    assert!(cx.world().glyph_presentation(view.stable_id()).is_some());
+}

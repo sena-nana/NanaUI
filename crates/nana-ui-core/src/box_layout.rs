@@ -1699,6 +1699,20 @@ pub struct TextShadowSpec {
     pub paint_color: Option<PaintColor>,
 }
 
+/// `-webkit-text-stroke`: an outline centred on each glyph's outline.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TextStrokeSpec {
+    /// Full stroke width in px. Zero draws nothing.
+    pub width: f32,
+    /// `None` is `currentColor`: the text's own fill.
+    #[serde(default)]
+    pub color: Option<[f32; 4]>,
+    /// Authoring-space colour, when the declaration used an explicit colour
+    /// function.
+    #[serde(default)]
+    pub paint_color: Option<PaintColor>,
+}
+
 /// CSS `text-decoration-line` subset Scene can stroke (underline / line-through).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TextDecorationLine {
@@ -2480,6 +2494,18 @@ pub struct PaintStyle {
     pub scrollbar: Option<ScrollbarSkin>,
     #[serde(default)]
     pub text_shadow: Option<TextShadowSpec>,
+    /// Every `text-shadow` layer in CSS order (the first is drawn on top),
+    /// at most [`crate::MAX_TEXT_SHADOWS`]. [`Self::text_shadow`] is the first
+    /// of them, kept for readers that only ever drew one.
+    #[serde(default)]
+    pub text_shadows: Vec<TextShadowSpec>,
+    /// `-webkit-text-stroke`.
+    #[serde(default)]
+    pub text_stroke: Option<TextStrokeSpec>,
+    /// `paint-order` puts the stroke before the fill: the outline grows
+    /// around each glyph instead of eating into it.
+    #[serde(default)]
+    pub paint_order_stroke_first: bool,
     /// Extra stroke outside the border box. Does not affect layout.
     #[serde(default)]
     pub outline: OutlineSpec,

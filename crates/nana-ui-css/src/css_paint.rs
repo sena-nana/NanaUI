@@ -5,7 +5,7 @@ use nana_ui_core::box_layout::{
     BorderImageSlice, BorderImageSpec, ClipCircle, ClipEllipse, ClipInset, ClipPath, ClipPoint,
     ClipShapeRadius, ColorFilter, CssGradient, FontFeatureSetting, GradientStop, LengthSpec,
     LinearGradient, MAX_BACKGROUND_LAYERS, MaskImage, MixBlendMode, OutlineStyle, OverflowSpec,
-    PointerEventsSpec, RadialGradient, TextDecorationLine,
+    PointerEventsSpec, RadialGradient, TextDecorationLine, TextStrokeSpec,
 };
 
 use crate::css_map::{
@@ -48,7 +48,46 @@ pub fn apply_css_paint_property(style: &mut nana_ui_core::LayoutStyle, name: &st
             style.paint.backdrop_filter = parse_backdrop_filter(val);
         }
         "text-shadow" => {
-            style.paint.text_shadow = crate::css_map::parse_text_shadow(val);
+            let layers = crate::css_map::parse_text_shadows(val);
+            style.paint.text_shadow = layers.first().copied();
+            style.paint.text_shadows = layers;
+        }
+        "-webkit-text-stroke" => apply_text_stroke_shorthand(style, val),
+        "-webkit-text-stroke-width" => {
+            if let Some(width) = parse_text_stroke_width(val) {
+                let stroke = style.paint.text_stroke.get_or_insert(TextStrokeSpec {
+                    width: 0.0,
+                    color: None,
+                    paint_color: None,
+                });
+                stroke.width = width;
+            }
+        }
+        "-webkit-text-stroke-color" => {
+            let (color, paint_color) = text_stroke_color(val);
+            let stroke = style.paint.text_stroke.get_or_insert(TextStrokeSpec {
+                width: 0.0,
+                color: None,
+                paint_color: None,
+            });
+            stroke.color = color;
+            stroke.paint_color = paint_color;
+        }
+        "paint-order" => {
+            // `normal` is fill, stroke, markers; anything that names stroke
+            // before fill (`stroke`, `stroke fill`, `markers stroke`) puts
+            // the outline under the glyphs.
+            let order: Vec<String> = val
+                .split_whitespace()
+                .map(|token| token.to_ascii_lowercase())
+                .collect();
+            let stroke = order.iter().position(|token| token == "stroke");
+            let fill = order.iter().position(|token| token == "fill");
+            style.paint.paint_order_stroke_first = match (stroke, fill) {
+                (Some(stroke), Some(fill)) => stroke < fill,
+                (Some(_), None) => true,
+                _ => false,
+            };
         }
         "box-shadow" => {
             if let Some(layers) = crate::css_map::parse_box_shadows(val) {
@@ -986,6 +1025,49 @@ fn apply_outline_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
     if !saw_style && style.paint.outline.width > 0.0 {
         style.paint.outline.style = OutlineStyle::Solid;
     }
+}
+
+/// `-webkit-text-stroke: <width> || <color>`.
+fn apply_text_stroke_shorthand(style: &mut nana_ui_core::LayoutStyle, val: &str) {
+    let mut width = None;
+    let mut color = (None, None);
+    for token in split_css_space_tokens(val.trim()) {
+        if let Some(px) = parse_text_stroke_width(&token) {
+            width = Some(px);
+        } else {
+            let resolved = text_stroke_color(&token);
+            if resolved.0.is_some() || token.eq_ignore_ascii_case("currentcolor") {
+                color = resolved;
+            }
+        }
+    }
+    style.paint.text_stroke = width
+        .filter(|width| *width > 0.0)
+        .map(|width| TextStrokeSpec {
+            width,
+            color: color.0,
+            paint_color: color.1,
+        });
+}
+
+fn parse_text_stroke_width(val: &str) -> Option<f32> {
+    match val.trim().to_ascii_lowercase().as_str() {
+        "thin" => Some(1.0),
+        "medium" => Some(3.0),
+        "thick" => Some(5.0),
+        other => parse_css_length_px(other, None).map(|px| px.max(0.0)),
+    }
+}
+
+/// `currentColor` is `None`: the stroke takes the text's own colour.
+fn text_stroke_color(val: &str) -> (Option<[f32; 4]>, Option<nana_ui_core::PaintColor>) {
+    if val.trim().eq_ignore_ascii_case("currentcolor") {
+        return (None, None);
+    }
+    (
+        resolve_paint_color(val),
+        crate::style::resolve_css_paint_color(val).map(|color| color.to_core()),
+    )
 }
 
 fn apply_text_decoration_line(style: &mut nana_ui_core::LayoutStyle, val: &str) {
