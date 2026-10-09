@@ -44,8 +44,6 @@ pub const BLOCK_GAP: f32 = 9.0;
 /// Inset of a fenced code block's text from its panel edge.
 pub const CODE_PANEL_PADDING_X: f32 = nana_ui_core::space::LG;
 pub const CODE_PANEL_PADDING_Y: f32 = nana_ui_core::space::MD;
-/// Corner radius of a fenced code block's panel.
-pub const CODE_PANEL_RADIUS: f32 = nana_ui_core::UI_METRICS.radius_sm;
 const LIST_INDENT: f32 = nana_ui_core::space::XXL;
 const QUOTE_INDENT: f32 = nana_ui_core::space::XL;
 

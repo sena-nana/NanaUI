@@ -314,13 +314,14 @@ pub(crate) fn block_drawing(block: &MarkdownBlock) -> Option<MarkdownDrawing> {
 
 pub(crate) fn document(blocks: &[MarkdownBlock], bounds: LayoutBox) -> MarkdownDrawing {
     let geometry = crate::rich_text::layout_markdown(blocks, bounds);
-    document_with_geometry(blocks, bounds, &geometry)
+    document_with_geometry(blocks, bounds, &geometry, nana_ui_core::UI_METRICS)
 }
 
 pub(crate) fn document_with_geometry(
     blocks: &[MarkdownBlock],
     bounds: LayoutBox,
     geometry: &crate::rich_text::MarkdownGeometry,
+    metrics: nana_ui_core::ThemeMetrics,
 ) -> MarkdownDrawing {
     let mut output = MarkdownDrawing {
         width: bounds.width,
@@ -335,7 +336,7 @@ pub(crate) fn document_with_geometry(
         if matches!(block, MarkdownBlock::Code { .. }) {
             output.commands.push(MarkdownDrawingCommand::Panel {
                 bounds: g.bounds,
-                radius: crate::rich_text::CODE_PANEL_RADIUS,
+                radius: nana_ui_core::RadiusTier::Sm.resolve(metrics),
             });
         }
         if matches!(block, MarkdownBlock::Rule) {
@@ -506,6 +507,54 @@ mod tests {
     }
 
     #[test]
+    fn a_code_panel_rounds_at_the_installed_small_radius() {
+        let id = DocumentId::new(82).unwrap();
+        let mut context = AppContext::new();
+        let markdown = context
+            .create_component(
+                id,
+                NativeMarkdown::from_source("```rust\nfn main() {}\n```"),
+            )
+            .unwrap();
+        context
+            .layout_document(id, LayoutViewport::new(300.0, 200.0))
+            .unwrap();
+        let panel_radius = |context: &AppContext| {
+            let Some(crate::ComponentGeometry::NativeMarkdown { drawing, .. }) =
+                context.world().component_geometry(markdown.stable_id())
+            else {
+                panic!("markdown geometry")
+            };
+            drawing.commands.iter().find_map(|command| match command {
+                MarkdownDrawingCommand::Panel { radius, .. } => Some(*radius),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            panel_radius(&context),
+            Some(nana_ui_core::UI_METRICS.radius_sm)
+        );
+
+        let mut metrics = nana_ui_core::UI_METRICS;
+        metrics.radius_sm = 2.0;
+        assert!(
+            context
+                .set_style_tokens(
+                    nana_ui_core::ThemeAppearance::Dark,
+                    metrics,
+                    nana_ui_core::SemanticPalette::dark(),
+                    nana_ui_core::SemanticPalette::dark().surface,
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            panel_radius(&context),
+            Some(2.0),
+            "a code panel must round at the installed metrics, not the default"
+        );
+    }
+
+    #[test]
     fn chinese_text_and_inline_formula_use_one_advance_contract() {
         let markdown = NativeMarkdown::from_source("行内公式 $E=mc^2$。");
         let bounds = LayoutBox {
@@ -584,7 +633,12 @@ mod tests {
         };
         let geometry =
             crate::rich_text::layout_markdown_measured(markdown.blocks(), bounds, Some(&measure));
-        let drawing = document_with_geometry(markdown.blocks(), bounds, &geometry);
+        let drawing = document_with_geometry(
+            markdown.blocks(),
+            bounds,
+            &geometry,
+            nana_ui_core::UI_METRICS,
+        );
         let MarkdownDrawingCommand::Text { bounds: before, .. } = &drawing.commands[0] else {
             panic!("text");
         };

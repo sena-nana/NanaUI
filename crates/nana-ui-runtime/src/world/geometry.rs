@@ -2559,7 +2559,10 @@ impl UiWorld {
                 let geometry = self.markdown_layout(id, blocks, content);
                 Some(crate::ComponentGeometry::NativeMarkdown {
                     drawing: crate::markdown_drawing::document_with_geometry(
-                        blocks, content, &geometry,
+                        blocks,
+                        content,
+                        &geometry,
+                        self.style_model.metrics,
                     ),
                     text,
                     selection: match selection_range {
