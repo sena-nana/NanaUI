@@ -949,6 +949,7 @@ impl AppContext {
                 self.views.remove(&id);
                 self.component_lifecycle.tooltips.remove(&id);
                 self.component_lifecycle.loading.remove(&id);
+                self.component_lifecycle.toast_timers.remove(&id);
             }
         }
         self.remove_event_handlers_for(&removed);

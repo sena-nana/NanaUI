@@ -30,6 +30,11 @@ pub enum MarkdownDrawingCommand {
         bounds: LayoutBox,
         radius: f32,
     },
+    /// A filled, outlined surface behind a block, such as a code fence.
+    Panel {
+        bounds: LayoutBox,
+        radius: f32,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -123,6 +128,10 @@ impl MarkdownDrawing {
                     width: width * scale,
                 },
                 MarkdownDrawingCommand::Box { bounds, radius } => MarkdownDrawingCommand::Box {
+                    bounds: transform_box(*bounds, x, y, scale),
+                    radius: radius * scale,
+                },
+                MarkdownDrawingCommand::Panel { bounds, radius } => MarkdownDrawingCommand::Panel {
                     bounds: transform_box(*bounds, x, y, scale),
                     radius: radius * scale,
                 },
@@ -323,6 +332,12 @@ pub(crate) fn document_with_geometry(
             output.commands.extend(drawing.placed(g.bounds).commands);
             continue;
         }
+        if matches!(block, MarkdownBlock::Code { .. }) {
+            output.commands.push(MarkdownDrawingCommand::Panel {
+                bounds: g.bounds,
+                radius: crate::rich_text::CODE_PANEL_RADIUS,
+            });
+        }
         if matches!(block, MarkdownBlock::Rule) {
             output.line(
                 vec![
@@ -407,8 +422,10 @@ pub(crate) fn document_with_geometry(
                     *italic = span.is_some_and(|s| s.emphasis);
                     *line_through = span.is_some_and(|s| s.strikethrough);
                     *underline = span.is_some_and(|s| s.link.is_some());
-                    *code =
-                        span.is_some_and(|s| s.code) || matches!(block, MarkdownBlock::Code { .. });
+                    // Inline code washes its own run; a fence's lines sit on
+                    // the block panel instead.
+                    *code = span.is_some_and(|s| s.code)
+                        && !matches!(block, MarkdownBlock::Code { .. });
                     bounds.width = g.graphemes[start..end]
                         .iter()
                         .map(|item| item.bounds.x + item.bounds.width)
@@ -446,6 +463,45 @@ mod tests {
             ("bold", 4),
         ] {
             assert!(drawing.commands.iter().any(|command| matches!(command, MarkdownDrawingCommand::Text { text, italic, line_through, code, underline, weight, .. } if text.as_ref() == needle && [*italic, *line_through, *code, *underline, *weight == 700][flag])));
+        }
+    }
+
+    #[test]
+    fn fenced_code_sits_inset_on_one_panel_without_inline_washes() {
+        let markdown =
+            NativeMarkdown::from_source("before\n\n```rust\nfn main() {}\nlet x = 1;\n```");
+        let drawing = markdown.drawing(LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 400.0,
+            height: 200.0,
+        });
+        let panels = drawing
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                MarkdownDrawingCommand::Panel { bounds, .. } => Some(*bounds),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(panels.len(), 1);
+        let panel = panels[0];
+        let code_lines = drawing
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                MarkdownDrawingCommand::Text {
+                    bounds, text, code, ..
+                } if text.contains("main") || text.contains("let") => Some((*bounds, *code)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!code_lines.is_empty());
+        for (bounds, code) in code_lines {
+            assert!(!code, "fence lines rely on the panel, not a per-run wash");
+            assert!(bounds.x >= panel.x + crate::rich_text::CODE_PANEL_PADDING_X - 0.5);
+            assert!(bounds.y >= panel.y + crate::rich_text::CODE_PANEL_PADDING_Y - 0.5);
+            assert!(bounds.y + bounds.height <= panel.y + panel.height + 0.5);
         }
     }
 

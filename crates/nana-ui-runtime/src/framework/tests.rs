@@ -10049,3 +10049,46 @@ fn a_typed_context_refuses_to_build_a_builtin_from_a_tag() {
             .is_ok()
     );
 }
+
+#[test]
+fn hover_listeners_hear_entry_and_exit_of_their_subtree_once() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let page = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let row = context
+        .create_detached_component(document, Stack::row(0.0).hittable())
+        .unwrap();
+    let label = context
+        .create_detached_component(document, Text::new("Reply"))
+        .unwrap();
+    let copy = context
+        .create_detached_component(document, Button::new("Copy"))
+        .unwrap();
+    let outside = context
+        .create_detached_component(document, Button::new("Next"))
+        .unwrap();
+    context.append_child(row, label).unwrap();
+    context.append_child(row, copy).unwrap();
+    context.append_child(page, row).unwrap();
+    context.append_child(page, outside).unwrap();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&heard);
+    context
+        .on(row, move |_, event: &crate::PointerHoverChanged, _| {
+            log.lock().unwrap().push(event.hovered);
+        })
+        .unwrap();
+
+    for target in [
+        Some(row.stable_id()),
+        Some(copy.stable_id()),
+        Some(outside.stable_id()),
+        Some(copy.stable_id()),
+        None,
+    ] {
+        context.set_pointer_hover(document, 1, target).unwrap();
+    }
+    assert_eq!(*heard.lock().unwrap(), [true, false, true, false]);
+}

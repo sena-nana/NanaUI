@@ -226,6 +226,15 @@ impl AppContext {
                     })
                 })
             });
+        self.pointer_hovers
+            .entry(TypeId::of::<C>())
+            .or_insert_with(|| {
+                Arc::new(|context: &mut AppContext, id, hover| {
+                    context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {
+                        cx.emit(hover);
+                    })
+                })
+            });
         self.file_drops.entry(TypeId::of::<C>()).or_insert_with(|| {
             Arc::new(|context: &mut AppContext, id, event| {
                 context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {

@@ -854,6 +854,26 @@ impl AppContext {
                 frame.component_updates.push(target);
             }
         }
+        let expired_toasts = frame
+            .samples
+            .iter()
+            .filter(|sample| {
+                sample.finished
+                    && crate::component_animation_id(
+                        crate::component_animation_kinds::TOAST,
+                        sample.target,
+                    ) == Some(sample.id)
+            })
+            .map(|sample| sample.target)
+            .collect::<Vec<_>>();
+        for target in expired_toasts {
+            if self.advance_toast_timer(target, now).unwrap_or(false) {
+                let _ = self
+                    .update_component(Entity::<crate::Toast>::from_stable_id(target), |_, cx| {
+                        cx.emit(crate::ToastDismissed)
+                    });
+            }
+        }
         let workspace_targets = frame
             .samples
             .iter()

@@ -755,6 +755,8 @@ pub enum StandardVisual {
         loading: bool,
         loading_phase: f32,
         invalid: bool,
+        /// Where the glyph–label group sits in the content box.
+        content_align: TextHorizontalAlignment,
     },
     TextInput {
         placeholder: Arc<str>,

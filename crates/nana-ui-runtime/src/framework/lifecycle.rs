@@ -696,6 +696,17 @@ impl AppContext {
             (None, None) => {}
         }
 
+        let has_timeout = self
+            .views
+            .get(&id)
+            .and_then(|view| view.downcast_ref::<crate::Toast>())
+            .is_some_and(|toast| toast.timeout.is_some());
+        if has_timeout {
+            self.start_toast_timer(id)?;
+        } else if self.component_lifecycle.toast_timers.remove(&id).is_some() {
+            self.stop_toast_timer(id)?;
+        }
+
         let desired_loading = self.views.get(&id).and_then(|view| {
             if view
                 .downcast_ref::<Button>()
@@ -785,6 +796,10 @@ impl AppContext {
     /// projection for the caller to refresh.
     pub(super) fn suspend_component_lifecycle(&mut self, id: StableNodeId) -> bool {
         let mut changed = false;
+        // A parked toast restarts its full timeout when it is shown again.
+        if self.component_lifecycle.toast_timers.remove(&id).is_some() {
+            let _ = self.stop_toast_timer(id);
+        }
         #[cfg(feature = "rich-text")]
         {
             self.component_lifecycle
@@ -853,10 +868,79 @@ impl AppContext {
         changed
     }
 
+    /// Arms a mounted toast's dismiss timer, once per mount.
+    fn start_toast_timer(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        let timed = self
+            .views
+            .get(&id)
+            .and_then(|view| view.downcast_ref::<crate::Toast>())
+            .is_some_and(|toast| toast.timeout.is_some());
+        if !timed
+            || !self.world.is_mounted(id)
+            || self.component_lifecycle.toast_timers.contains_key(&id)
+        {
+            return Ok(());
+        }
+        if let Some(spec) =
+            crate::toast_timeout_animation(id, self.component_lifecycle.now, Duration::ZERO)
+        {
+            let mut mutations = MutationQueue::new();
+            mutations.start_animation(spec);
+            self.world.commit(mutations)?;
+            self.component_lifecycle
+                .toast_timers
+                .insert(id, super::ToastTimer::Arming);
+        }
+        Ok(())
+    }
+
+    /// A toast timeline finished at `now`: an armed timer starts counting,
+    /// a counting one has run out. Returns whether the toast expired.
+    pub(super) fn advance_toast_timer(
+        &mut self,
+        id: StableNodeId,
+        now: Duration,
+    ) -> Result<bool, FrameworkError> {
+        match self.component_lifecycle.toast_timers.get(&id).copied() {
+            Some(super::ToastTimer::Arming) => {
+                let timeout = self
+                    .views
+                    .get(&id)
+                    .and_then(|view| view.downcast_ref::<crate::Toast>())
+                    .and_then(|toast| toast.timeout);
+                if let Some(spec) =
+                    timeout.and_then(|timeout| crate::toast_timeout_animation(id, now, timeout))
+                {
+                    let mut mutations = MutationQueue::new();
+                    mutations.start_animation(spec);
+                    self.world.commit(mutations)?;
+                    self.component_lifecycle
+                        .toast_timers
+                        .insert(id, super::ToastTimer::Counting);
+                }
+                Ok(false)
+            }
+            Some(super::ToastTimer::Counting) => Ok(true),
+            None => Ok(false),
+        }
+    }
+
+    fn stop_toast_timer(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        if let Some(spec) = crate::toast_timeout_animation(id, Duration::ZERO, Duration::ZERO)
+            && self.world.animation_is_active(spec.id)
+        {
+            let mut mutations = MutationQueue::new();
+            mutations.stop_animation(spec.id);
+            self.world.commit(mutations)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn resume_component_lifecycle(
         &mut self,
         id: StableNodeId,
     ) -> Result<(), FrameworkError> {
+        self.start_toast_timer(id)?;
         if self.world.is_mounted(id)
             && self.component_lifecycle.loading.contains_key(&id)
             && let Some(spec) = crate::loading_animation(id, self.component_lifecycle.now)

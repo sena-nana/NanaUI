@@ -160,6 +160,23 @@ pub(super) fn build(
             nana_ui_runtime::MarkdownDrawingCommand::Line { points, width } => {
                 visual_stroke(&visual, 0, context.bounds, points.clone(), *width, color)
             }
+            nana_ui_runtime::MarkdownDrawingCommand::Panel { bounds, radius } => {
+                let mut fill = color;
+                fill[3] *= 0.06;
+                let mut edge = color;
+                edge[3] *= 0.12;
+                visual_quad(
+                    &visual,
+                    0,
+                    scene_rect(*bounds),
+                    VisualQuadStyle {
+                        background: Some(fill),
+                        border_color: Some(edge),
+                        border_width: 1.0,
+                        corner_radius: corner_radii(*radius),
+                    },
+                )
+            }
             nana_ui_runtime::MarkdownDrawingCommand::Box { bounds, radius } => visual_quad(
                 &visual,
                 0,

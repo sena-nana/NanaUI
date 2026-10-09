@@ -5602,6 +5602,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         loading: true,
         loading_phase: 0.5,
         invalid: false,
+        content_align: nana_ui_runtime::TextHorizontalAlignment::Center,
     });
     action.component_geometry = Some(Box::new(ComponentGeometry::Button {
         icon: None,
@@ -5642,6 +5643,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
         loading: false,
         loading_phase: 0.0,
         invalid: false,
+        content_align: nana_ui_runtime::TextHorizontalAlignment::Center,
     });
     action.component_geometry = Some(Box::new(ComponentGeometry::Button {
         icon: None,
@@ -5753,6 +5755,7 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
         loading: false,
         loading_phase: 0.0,
         invalid: false,
+        content_align: nana_ui_runtime::TextHorizontalAlignment::Center,
     });
     action.component_geometry = Some(Box::new(ComponentGeometry::Button {
         icon: None,
@@ -7199,6 +7202,7 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
         loading: false,
         loading_phase: 0.0,
         invalid: false,
+        content_align: nana_ui_runtime::TextHorizontalAlignment::Center,
     });
     button.component_geometry = Some(Box::new(ComponentGeometry::Button {
         icon: None,

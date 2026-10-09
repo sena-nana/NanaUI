@@ -2022,6 +2022,7 @@ fn nana_chip_projects_runtime_chip() {
             loading: false,
             loading_phase: 0.0,
             invalid: false,
+            content_align: nana_ui_runtime::TextHorizontalAlignment::Center,
         })
     );
 }

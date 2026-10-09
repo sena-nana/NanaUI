@@ -39,19 +39,23 @@ fn dismiss_target() -> InteractionState {
     }
 }
 
-/// Dismiss request from a dismissible toast. Toast does not own a timer.
+/// Dismiss request: the dismiss button was pressed, or the toast's
+/// [`Toast::timeout`] ran out. Removing the toast is the host's call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToastDismissed;
 
 pub use nana_ui_core::ToastTone;
 
-/// Label-only outlined notification. Optional dismiss is a hit target, not a timer.
+/// Label-only outlined notification. It can offer a dismiss hit target and a
+/// [`Toast::timeout`]; either one only asks the host to remove it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toast {
     pub title: Arc<str>,
     pub description: Option<Arc<str>>,
     pub tone: ToastTone,
     pub dismissible: bool,
+    /// Ask for dismissal after this long on screen. `None` waits for the user.
+    pub timeout: Option<std::time::Duration>,
     pub style: NodeStyle,
 }
 
@@ -62,8 +66,15 @@ impl Toast {
             description: None,
             tone,
             dismissible: false,
+            timeout: None,
             style: NodeStyle::default(),
         }
+    }
+
+    /// Emit [`ToastDismissed`] once the toast has been mounted this long.
+    pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
     }
 
     pub fn description(mut self, description: impl Into<Arc<str>>) -> Self {
@@ -348,6 +359,74 @@ mod tests {
             })
             .unwrap();
         assert_eq!(context.world().interaction(id), Some(inert()));
+    }
+
+    #[test]
+    fn timed_toast_asks_for_dismissal_once_after_its_timeout() {
+        use std::time::Duration;
+
+        let mut context = AppContext::new();
+        let timed = context
+            .create_component(
+                document(),
+                Toast::new("Saved", ToastTone::Success).timeout(Duration::from_secs(4)),
+            )
+            .unwrap();
+        let sticky = context
+            .create_component(document(), Toast::new("Sync failed", ToastTone::Danger))
+            .unwrap();
+        let dismissals = Arc::new(Mutex::new(Vec::new()));
+        for (toast, name) in [(timed, "timed"), (sticky, "sticky")] {
+            let log = Arc::clone(&dismissals);
+            context
+                .on(toast, move |_toast, _event: &ToastDismissed, _cx| {
+                    log.lock().unwrap().push(name);
+                })
+                .unwrap();
+        }
+
+        // The first frame comes long after the toast mounted: the timeout
+        // counts from that frame, not from the stale mount clock.
+        context.advance_animations(Duration::from_secs(100));
+        assert!(dismissals.lock().unwrap().is_empty());
+        context.advance_animations(Duration::from_secs(103));
+        assert!(dismissals.lock().unwrap().is_empty());
+        context.advance_animations(Duration::from_secs(104));
+        assert_eq!(*dismissals.lock().unwrap(), ["timed"]);
+        context.advance_animations(Duration::from_secs(300));
+        assert_eq!(*dismissals.lock().unwrap(), ["timed"]);
+    }
+
+    #[test]
+    fn a_toast_built_detached_starts_its_timer_once_it_is_attached() {
+        use std::time::Duration;
+
+        let mut context = AppContext::new();
+        let host = context
+            .create_component(document(), crate::OverlayHost::new())
+            .unwrap();
+        let toast = context
+            .create_detached_component(
+                document(),
+                Toast::new("Copied", ToastTone::Success).timeout(Duration::from_secs(3)),
+            )
+            .unwrap();
+        let dismissed = Arc::new(Mutex::new(0));
+        let count = Arc::clone(&dismissed);
+        context
+            .on(toast, move |_toast, _event: &ToastDismissed, _cx| {
+                *count.lock().unwrap() += 1;
+            })
+            .unwrap();
+        context.advance_animations(Duration::from_secs(10));
+        assert_eq!(*dismissed.lock().unwrap(), 0);
+
+        context.append_child(host, toast).unwrap();
+        context.advance_animations(Duration::from_secs(12));
+        context.advance_animations(Duration::from_secs(14));
+        assert_eq!(*dismissed.lock().unwrap(), 0);
+        context.advance_animations(Duration::from_secs(15));
+        assert_eq!(*dismissed.lock().unwrap(), 1);
     }
 
     #[test]

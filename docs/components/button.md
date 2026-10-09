@@ -44,6 +44,7 @@ button("保存").disabled(pending).on_activate(save)
 | `accessible_name` | `String` | 可访问名称。空字符串沿用 `label`。可见文字保持 `label`，所以一行里的「设置」可以读成「设置 独立捕获窗口」 |
 | `disabled` | `bool` | 常量、信号或闭包 |
 | `loading` | `bool` | 常量、信号或闭包 |
+| `Button::content_align` | `TextHorizontalAlignment` | 在组件上。图标和文字这一组放在内容区的起点、中间（默认）或终点；列表行一样的按钮用 `Start` |
 
 ## 事件
 

@@ -96,6 +96,9 @@ pub struct DiffView {
     pub hunks: Arc<[DiffHunk]>,
     pub layout: DiffLayout,
     pub disabled: bool,
+    /// Whether hunks and lines carry accept / reject actions. A read-only
+    /// review (a commit, the working tree) leaves them out entirely.
+    pub review_actions: bool,
     pub style: NodeStyle,
     wired: Vec<StableNodeId>,
 }
@@ -119,6 +122,7 @@ impl DiffView {
             hunks: hunks.into(),
             layout: DiffLayout::Unified,
             disabled: false,
+            review_actions: true,
             style,
             wired: Vec::new(),
         }
@@ -126,6 +130,12 @@ impl DiffView {
 
     pub fn layout(mut self, layout: DiffLayout) -> Self {
         self.layout = layout;
+        self
+    }
+
+    /// Show or leave out the accept / reject actions.
+    pub fn review_actions(mut self, review_actions: bool) -> Self {
+        self.review_actions = review_actions;
         self
     }
 
@@ -274,6 +284,7 @@ impl AppContext {
                             hunk,
                             snapshot.layout,
                             snapshot.disabled,
+                            snapshot.review_actions,
                         )?;
                     }
                     Ok(())
@@ -423,6 +434,7 @@ fn mount_hunk(
     hunk: &DiffHunk,
     layout: DiffLayout,
     disabled: bool,
+    actions: bool,
 ) -> Result<(), FrameworkError> {
     let mut hunk_style = NodeStyle::default().surface(SemanticColorRole::Subtle);
     {
@@ -436,20 +448,22 @@ fn mount_hunk(
         format!("hunk-{hunk_index}"),
         Stack::from_layout(hunk_style.layout.as_ref().clone()),
         |ui| {
-            ui.child(
-                "accept",
-                Button::new(hunk_label(&strings.diff_accept_hunk, hunk_index))
-                    .kind(ButtonKind::Subtle)
-                    .size(ControlSize::Small)
-                    .disabled(disabled),
-            )?;
-            ui.child(
-                "reject",
-                Button::new(hunk_label(&strings.diff_reject_hunk, hunk_index))
-                    .kind(ButtonKind::Subtle)
-                    .size(ControlSize::Small)
-                    .disabled(disabled),
-            )?;
+            if actions {
+                ui.child(
+                    "accept",
+                    Button::new(hunk_label(&strings.diff_accept_hunk, hunk_index))
+                        .kind(ButtonKind::Subtle)
+                        .size(ControlSize::Small)
+                        .disabled(disabled),
+                )?;
+                ui.child(
+                    "reject",
+                    Button::new(hunk_label(&strings.diff_reject_hunk, hunk_index))
+                        .kind(ButtonKind::Subtle)
+                        .size(ControlSize::Small)
+                        .disabled(disabled),
+                )?;
+            }
             ui.child(
                 "header",
                 Text::new(hunk.header.as_ref()).style(muted_text()),
@@ -457,7 +471,7 @@ fn mount_hunk(
             match layout {
                 DiffLayout::Unified => {
                     for (line_index, line) in hunk.lines.iter().enumerate() {
-                        mount_line(ui, strings, hunk_index, line_index, line, disabled, true)?;
+                        mount_line(ui, strings, hunk_index, line_index, line, disabled, actions)?;
                     }
                 }
                 DiffLayout::Split => {
@@ -471,8 +485,12 @@ fn mount_hunk(
                         "split",
                         Stack::from_layout(row.layout.as_ref().clone()),
                         |ui| {
-                            mount_split_column(ui, strings, hunk_index, hunk, disabled, true)?;
-                            mount_split_column(ui, strings, hunk_index, hunk, disabled, false)?;
+                            mount_split_column(
+                                ui, strings, hunk_index, hunk, disabled, actions, true,
+                            )?;
+                            mount_split_column(
+                                ui, strings, hunk_index, hunk, disabled, actions, false,
+                            )?;
                             Ok(())
                         },
                     )?;
@@ -490,6 +508,7 @@ fn mount_split_column(
     hunk_index: usize,
     hunk: &DiffHunk,
     disabled: bool,
+    review_actions: bool,
     old_side: bool,
 ) -> Result<(), FrameworkError> {
     let mut column = NodeStyle::default();
@@ -510,11 +529,12 @@ fn mount_split_column(
                     DiffLineKind::Added => !old_side,
                 };
                 if show {
-                    let actions = match line.kind {
-                        DiffLineKind::Context => false,
-                        DiffLineKind::Removed => old_side,
-                        DiffLineKind::Added => !old_side,
-                    };
+                    let actions = review_actions
+                        && match line.kind {
+                            DiffLineKind::Context => false,
+                            DiffLineKind::Removed => old_side,
+                            DiffLineKind::Added => !old_side,
+                        };
                     mount_line(ui, strings, hunk_index, line_index, line, disabled, actions)?;
                 } else if matches!(line.kind, DiffLineKind::Added | DiffLineKind::Removed) {
                     ui.child(
@@ -548,7 +568,7 @@ fn mount_line(
     }
     ui.with_child(
         format!("line-{line_index}"),
-        Stack::from_layout(row.layout.as_ref().clone()),
+        Stack::column(0.0).style(row),
         |ui| {
             let old = line.old_number.map(|n| n.to_string()).unwrap_or_default();
             let new = line.new_number.map(|n| n.to_string()).unwrap_or_default();
@@ -593,8 +613,12 @@ fn mount_line(
 
 fn line_style(kind: DiffLineKind) -> NodeStyle {
     match kind {
-        DiffLineKind::Added => NodeStyle::default().surface(SemanticColorRole::Success),
-        DiffLineKind::Removed => NodeStyle::default().surface(SemanticColorRole::Danger),
+        DiffLineKind::Added => NodeStyle::default().surface_mix(
+            nana_ui_core::SemanticColorMix::alpha(SemanticColorRole::Success, 0.14),
+        ),
+        DiffLineKind::Removed => NodeStyle::default().surface_mix(
+            nana_ui_core::SemanticColorMix::alpha(SemanticColorRole::Danger, 0.14),
+        ),
         DiffLineKind::Context => NodeStyle::default(),
     }
 }
@@ -730,5 +754,31 @@ mod tests {
         );
         assert!(find_labeled_button(&context, diff.stable_id(), "接受行0.1").is_some());
         assert!(find_labeled_button(&context, diff.stable_id(), "接受行0.0").is_none());
+    }
+
+    #[test]
+    fn read_only_review_has_no_actions_and_tints_changed_lines() {
+        let mut context = AppContext::new();
+        let diff = context
+            .create_component(
+                document(),
+                DiffView::new(sample_hunks()).review_actions(false),
+            )
+            .unwrap();
+        assert!(context.assemble_diff_view(diff).unwrap());
+        for label in ["接受块0", "拒绝块0", "接受行0.1", "接受行0.2"] {
+            assert!(find_labeled_button(&context, diff.stable_id(), label).is_none());
+        }
+        let added = find_labeled_button(&context, diff.stable_id(), "    let x = 2;")
+            .and_then(|text| context.world().node(text).and_then(|node| node.parent))
+            .expect("added line row");
+        assert!(
+            context.world().node_style(added).is_some_and(|style| style
+                .interaction
+                .base
+                .background_mix
+                .is_some()),
+            "an added line keeps its success wash"
+        );
     }
 }

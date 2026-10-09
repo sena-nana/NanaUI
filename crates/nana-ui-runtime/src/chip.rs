@@ -164,6 +164,7 @@ impl ComponentView for Chip {
             loading: false,
             loading_phase: 0.0,
             invalid: false,
+            content_align: crate::TextHorizontalAlignment::Center,
         };
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
@@ -300,6 +301,7 @@ mod tests {
                 loading: false,
                 loading_phase: 0.0,
                 invalid: false,
+                content_align: crate::TextHorizontalAlignment::Center,
             }
         );
         let style = context.world().node_style(chip.stable_id()).unwrap();

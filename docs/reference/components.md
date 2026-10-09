@@ -41,6 +41,8 @@ import "@nanaui/nanavue-components/controls.css";
 
 `Toast::place_in(viewport, PopoverAlignment::Center, max_width, PanelInsets { .. })` 用与 `Panel::viewport` 相同的预留合同，把提示钉进空闲区域。`align` 决定它在剩余宽度里的分布。`max_width` 封顶。高度仍由内容决定，并贴住预留的底边。`viewport` 是定位宿主自身的盒子。未放置的 toast 仍然填满所在行。放置过的 toast 保留自己的宽度。空闲区域由应用给出。只有应用知道它开了哪些面板。
 
+`Toast::timeout(Duration)` 让提示挂载满这么久后发一次 `ToastDismissed`，与按下关闭按钮的事件相同。计时器每个提示只启动一次，只在到期时唤醒宿主一次，不逐帧推进。不传则一直等用户关闭。框架不会自己移除提示，收到事件后由应用从列表里删掉。
+
 `Spinner` 自己转。挂载后由 Motion IR 无限 timeline 驱动旋转相位。宿主不逐帧喂 phase。停用改为卸载或停放该节点。
 
 `Panel` 是非模态任务面板。挂到独立 `OverlayHost` 的直接子节点。通过同一份 `activate_overlay` / `dismiss_overlay` 管理显示和退出动画。面板使用 Card 表面和具名 Region 无障碍语义。只有卡面命中。外部舞台和普通 Tab 顺序保持可用。不能用 Menu 或 Dialog 冒充非模态面板。可见标题、返回/关闭按钮和内容由应用装配为普通子节点。长内容使用 `ScrollView`。关闭按钮调用 `dismiss_overlay`。不直接删除节点。
@@ -77,6 +79,8 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 `Toolbar` / `StatusBar` 是两条横条容器。内容由应用放。相对裸 `Stack::bar` 多的是壳层表面和**无障碍角色**。读屏把工具栏播报成一组控件。状态栏播报成 live status 区域。普通布局盒表达不了这个。`chrome(false)` 用于已经自带表面的父容器。
 
 拖放：`set_drop_target(entity, DropAccepts::files())` 登记节点接受什么。`drop_target_at(document, x, y, kind)` 回答某点上最内层接受该载荷的节点（按布局盒匹配，不要求节点可点击）。**框架只回答落在哪里。** 落下之后做什么仍是应用的。和 `SecondaryPress` 一样。Tab / Dock / `ReorderList` 的拖动移动的是框架自己的结构。仍走各自的合同。
+
+悬停显隐：给节点挂 `PointerHoverChanged` 处理函数，指针进入它的子树时收到 `hovered: true`，离开时收到 `false`。在子树内的两个后代之间移动不会重复发。只有挂了处理函数的节点收到，由内向外。`Stack` 默认不参与命中，指针停在行的空白处时命中不到它，要用 `.hittable()` 让整行接住悬停。框架只报告进出，显示哪些工具是应用的事。键盘用户够不到隐藏的控件，所以重要操作不要只靠悬停露出。
 
 `ColorField` 是色块 + hex。`assemble_color_field` 挂 HSV 选择器。提交发 `ColorChanged`。拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮。浏览只发 `BrowseRequested`。由应用打开系统对话框。
 
@@ -176,7 +180,7 @@ Compact + Overlay 适合分离窗底栏（单行加边距约 52px）。Compact +
 
 `TerminalView` 是保留式网格。应用喂 `TerminalScreen` 单元格与样式。框架发 `TerminalEvent::Input` / `Resize` / `SelectionChanged`。PTY、submit、interrupt 归应用（通常把 Enter / Ctrl+C 解释成对 PTY 的写入）。Vue tag 是 `nana-terminal`。`screen` JSON 与 Runtime `TerminalScreen` 同形。`cells` 可以是 grapheme 串（宽字符自动占两列），或字符串/对象数组（省略 `width` 时按第一个 grapheme 的显示宽度 0/1/2）。`foreground` / `background` 是 `[r,g,b]` 或 `[r,g,b,a]`：0–1。任一 RGB 通道 `> 1` 则按 0–255。省略 `screen` 时保留宿主 `sync_terminal_screen` 喂入的画面。高频 PTY 帧仍走那条 Runtime API。
 
-`DiffView` 展示应用喂入的 hunk。`DiffEvent` 的接受/拒绝只是请求。不改 buffer。`assemble_diff_view` 用现有 `ScrollView` + `Button` + `Text` 装配。Vue tag 是 `nana-diff`。
+`DiffView` 展示应用喂入的 hunk。`DiffEvent` 的接受/拒绝只是请求。不改 buffer。`assemble_diff_view` 用现有 `ScrollView` + `Button` + `Text` 装配。Vue tag 是 `nana-diff`。只读审阅（提交、工作区改动）用 `.review_actions(false)`：不装配接受/拒绝按钮。增删行以低透明度的成功/危险色铺底。
 
 需要开窗、换 GPU、写盘时，在闭包里 `cx.dispatch_program(msg)`。下一帧进入 `RuntimeProgram::update`。不要在指针处理里做重活。
 

@@ -62,15 +62,16 @@ use crate::{
     ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent, FormField,
     FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton, LabeledValue, List, ListItem,
     ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
-    NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
-    ProgressCancelled, RangeAdjustment, RangeChanged, RangeDragging, RangeField, RangeInput,
-    RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollMetrics, ScrollOffset,
-    ScrollView, ScrollViewportChanged, SearchDropdown, SearchDropdownEvent, SecondaryPress,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
-    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, SizeChanged,
-    StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextClamped,
-    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
-    UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
+    NumberInput, OverlayChanged, OverlayHost, PointerHoverChanged, Popover, PopoverClosed,
+    PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeDragging,
+    RangeField, RangeInput, RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollLaidOut,
+    ScrollMetrics, ScrollOffset, ScrollView, ScrollViewportChanged, SearchDropdown,
+    SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
+    SidebarSection, SizeChanged, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea,
+    TextChanged, TextClamped, TextInput, TextInputState, TextPresenter, TextSelection,
+    ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
+    XYPadEvent,
     component_registry::{
         ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
         RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
@@ -602,6 +603,8 @@ struct ComponentLifecycle {
     chart_tooltips: HashMap<StableNodeId, StableNodeId, crate::BuildIdHasher>,
     hover_cards: HashMap<StableNodeId, HoverCardLifecycle, crate::BuildIdHasher>,
     loading: HashMap<StableNodeId, LoadingComponent, crate::BuildIdHasher>,
+    /// Toasts whose dismiss timer has started; a timer runs once per mount.
+    toast_timers: HashMap<StableNodeId, ToastTimer, crate::BuildIdHasher>,
     overlay_pointer_sequences: HashSet<(DocumentId, u64), crate::BuildIdHasher>,
     overlay_outside_presses: HashMap<(DocumentId, u64), (StableNodeId, u64), crate::BuildIdHasher>,
     overlay_activation_tokens: HashMap<StableNodeId, u64, crate::BuildIdHasher>,
@@ -633,6 +636,23 @@ type ActivationFn =
 /// no longer knows. Registered per type when a component is created.
 type SecondaryPressFn = Arc<
     dyn Fn(&mut AppContext, StableNodeId, SecondaryPress) -> Result<(), FrameworkError>
+        + Send
+        + Sync,
+>;
+
+/// A toast's dismiss timer. The lifecycle clock can be stale when a toast
+/// mounts after an idle stretch, so the timer first arms with a one-frame
+/// timeline and only counts the timeout from the frame that wakes for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToastTimer {
+    Arming,
+    Counting,
+}
+
+/// Emit [`PointerHoverChanged`] on a node whose concrete component type the
+/// caller no longer knows. Registered per type when a component is created.
+type PointerHoverFn = Arc<
+    dyn Fn(&mut AppContext, StableNodeId, PointerHoverChanged) -> Result<(), FrameworkError>
         + Send
         + Sync,
 >;
@@ -1054,6 +1074,7 @@ pub struct AppContext {
     /// Pointer hooks extensions registered ([`ExtensionRegistrar::register_pointer`]).
     pointer_extensions: HashMap<TypeId, &'static dyn hooks::ErasedPointer, crate::BuildIdHasher>,
     secondary_presses: HashMap<TypeId, SecondaryPressFn, crate::BuildIdHasher>,
+    pointer_hovers: HashMap<TypeId, PointerHoverFn, crate::BuildIdHasher>,
     file_drops: HashMap<TypeId, FileDropFn, crate::BuildIdHasher>,
     /// [`reproject_erased`] per component type created through this context.
     reprojectors: HashMap<TypeId, ReprojectFn, crate::BuildIdHasher>,
@@ -1440,6 +1461,7 @@ impl AppContext {
             activations: HashMap::default(),
             pointer_extensions: HashMap::default(),
             secondary_presses: HashMap::default(),
+            pointer_hovers: HashMap::default(),
             file_drops: HashMap::default(),
             reprojectors: HashMap::default(),
             behaviors: HashMap::default(),
@@ -2383,6 +2405,44 @@ impl AppContext {
         self.activate_component(entity, |button| button.disabled)
     }
 
+    /// Tell the hover listeners the pointer left or entered. A listener that
+    /// encloses both the old and the new target hears nothing.
+    fn sync_pointer_hover_listeners(
+        &mut self,
+        previous: Option<StableNodeId>,
+        target: Option<StableNodeId>,
+    ) -> Result<(), FrameworkError> {
+        let listeners = |context: &Self, from: Option<StableNodeId>| {
+            let mut ids = Vec::new();
+            let mut current = from;
+            while let Some(id) = current {
+                if context
+                    .event_handlers
+                    .contains_key(&(id, TypeId::of::<PointerHoverChanged>()))
+                {
+                    ids.push(id);
+                }
+                current = context.world.parent_id(id);
+            }
+            ids
+        };
+        let left = listeners(self, previous);
+        let entered = listeners(self, target);
+        for (ids, others, hovered) in [(&left, &entered, false), (&entered, &left, true)] {
+            for &id in ids.iter().filter(|id| !others.contains(id)) {
+                let emit = self
+                    .views
+                    .get(&id)
+                    .and_then(|view| self.pointer_hovers.get(&view.as_ref().type_id()))
+                    .cloned();
+                if let Some(emit) = emit {
+                    emit(self, id, PointerHoverChanged { hovered })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn enclosing_sidebar_row(&self, id: StableNodeId) -> Option<Entity<SidebarRow>> {
         let mut current = Some(id);
         while let Some(id) = current {
@@ -2764,6 +2824,7 @@ impl AppContext {
                 self.sync_sidebar_row_hover(previous_row, false)?;
             }
             self.sync_sidebar_row_hover(next_row, true)?;
+            self.sync_pointer_hover_listeners(previous, target)?;
         } else if let Some(target) = target {
             self.reposition_follow_cursor_tooltip(target)?;
         }

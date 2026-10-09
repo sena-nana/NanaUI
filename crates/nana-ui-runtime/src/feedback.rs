@@ -719,6 +719,9 @@ impl ComponentView for Progress {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spinner {
     pub label: Arc<str>,
+    /// Whether the label is painted beside the glyph. A hidden label is still
+    /// the spinner's accessible name, for indicators that sit in tight rows.
+    pub label_visible: bool,
     pub size: f32,
     /// Runtime-sampled rotation phase in `0.0..=1.0`. The animation dispatch
     /// owns this field, so a mounted spinner turns without the host ticking it.
@@ -753,6 +756,7 @@ impl Spinner {
     pub fn new(label: impl Into<Arc<str>>) -> Self {
         Self {
             label: label.into(),
+            label_visible: true,
             size: SPINNER_DEFAULT_SIZE,
             phase: 0.0,
             style: NodeStyle::default(),
@@ -762,6 +766,20 @@ impl Spinner {
     pub fn size(mut self, size: f32) -> Self {
         self.size = sanitize_spinner_size(size);
         self
+    }
+
+    /// Keep the label as the accessible name without painting it.
+    pub fn label_visible(mut self, visible: bool) -> Self {
+        self.label_visible = visible;
+        self
+    }
+
+    fn painted_label(&self) -> &str {
+        if self.label_visible {
+            self.label.as_ref()
+        } else {
+            ""
+        }
     }
 
     pub fn style(mut self, style: NodeStyle) -> Self {
@@ -795,7 +813,7 @@ impl Spinner {
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
         layout.gap = Some(LengthSpec::Px(SPINNER_GAP));
-        layout.padding_left = Some(LengthSpec::Px(if self.label.is_empty() {
+        layout.padding_left = Some(LengthSpec::Px(if self.painted_label().is_empty() {
             0.0
         } else {
             size + SPINNER_GAP
@@ -852,10 +870,10 @@ impl ComponentView for Spinner {
             id,
             world,
             mutations,
-            self.label.as_ref(),
+            self.painted_label(),
             self.effective_style(),
             StandardVisual::Spinner {
-                label: Arc::clone(&self.label),
+                label: Arc::from(self.painted_label()),
                 size: self.resolved_size(),
                 phase: self.resolved_phase(),
             },
@@ -933,6 +951,25 @@ mod tests {
             .compat_world_mut()
             .resolve_styles(&work.style)
             .unwrap();
+    }
+
+    #[test]
+    fn hidden_spinner_label_names_it_without_painting_text() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let spinner = context
+            .create_component(document, Spinner::new("处理中").label_visible(false))
+            .unwrap();
+        let id = spinner.stable_id();
+        assert_eq!(context.world().text(id), Some(""));
+        assert_eq!(
+            context
+                .world()
+                .accessibility(id)
+                .and_then(|state| state.label.clone())
+                .as_deref(),
+            Some("处理中")
+        );
     }
 
     #[test]

@@ -498,6 +498,9 @@ pub struct Button {
     pub trailing_icon: Option<nana_ui_core::Icon>,
     pub icon_size: Option<f32>,
     pub icon_gap: f32,
+    /// Where the glyph–label group sits; centred unless a row-like button
+    /// asks for the start edge.
+    pub content_align: TextHorizontalAlignment,
     pub kind: nana_ui_core::ButtonKind,
     pub size: nana_ui_core::ControlSize,
     pub disabled: bool,
@@ -537,6 +540,7 @@ impl Button {
             trailing_icon: None,
             icon_size: None,
             icon_gap: nana_ui_core::space::SM,
+            content_align: TextHorizontalAlignment::Center,
             kind: nana_ui_core::ButtonKind::Ghost,
             size: nana_ui_core::ControlSize::Medium,
             disabled: false,
@@ -599,6 +603,12 @@ impl Button {
         }
         self
     }
+    /// Place the glyph–label group at the start, centre or end of the button.
+    pub fn content_align(mut self, align: TextHorizontalAlignment) -> Self {
+        self.content_align = align;
+        self
+    }
+
     pub fn icon_gap(mut self, gap: f32) -> Self {
         if gap.is_finite() && gap >= 0.0 {
             self.icon_gap = gap;
@@ -729,6 +739,7 @@ impl ComponentView for Button {
                 loading,
                 loading_phase,
                 invalid,
+                content_align,
             }) if **label == *self.label
                 && *icon == self.icon
                 && *trailing_icon == self.trailing_icon
@@ -739,6 +750,7 @@ impl ComponentView for Button {
                 && *loading == self.loading
                 && *loading_phase == self.loading_phase
                 && *invalid == self.invalid
+                && *content_align == self.content_align
         );
         if !visual_current {
             let label = shared_label(&mut shared, &self.label);
@@ -755,6 +767,7 @@ impl ComponentView for Button {
                     loading: self.loading,
                     loading_phase: self.loading_phase,
                     invalid: self.invalid,
+                    content_align: self.content_align,
                 }),
             );
         }
@@ -1659,6 +1672,16 @@ pub struct SecondaryPress {
     pub target: StableNodeId,
     pub x: f32,
     pub y: f32,
+}
+
+/// The pointer entered (`hovered`) or left this node's subtree.
+///
+/// Only nodes with a handler for it receive it, innermost first, so a row can
+/// reveal its own tools on hover without becoming a component. Moving between
+/// two descendants of the same node does not repeat it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PointerHoverChanged {
+    pub hovered: bool,
 }
 
 /// Platform file drag resolved onto a registered drop target.
@@ -5605,6 +5628,36 @@ mod stack_preset_tests {
             world.accessibility(id).unwrap().label.as_deref(),
             Some("设置")
         );
+    }
+
+    #[test]
+    fn start_aligned_button_places_its_group_at_the_content_edge() {
+        let layout_label_x = |align: TextHorizontalAlignment| {
+            let mut context = crate::AppContext::new();
+            let document = crate::DocumentId::new(1).unwrap();
+            let mut button = Button::new("会话").icon(nana_ui_core::Icon::Add);
+            Arc::make_mut(&mut button.style.layout).width =
+                Some(nana_ui_core::LengthSpec::Px(300.0));
+            let button = context
+                .create_component(document, button.content_align(align))
+                .unwrap();
+            context
+                .layout_document(document, crate::LayoutViewport::new(400.0, 100.0))
+                .unwrap();
+            let bounds = context.world().layout_box(button.stable_id()).unwrap();
+            let Some(crate::ComponentGeometry::Button {
+                icon: Some((_, icon)),
+                ..
+            }) = context.world().component_geometry(button.stable_id())
+            else {
+                panic!("button geometry");
+            };
+            (bounds, icon.x)
+        };
+        let (bounds, start) = layout_label_x(TextHorizontalAlignment::Start);
+        let (_, centre) = layout_label_x(TextHorizontalAlignment::Center);
+        assert!(start < bounds.x + 20.0, "start group hugs the left padding");
+        assert!(centre > start + 80.0, "centred group sits well inside");
     }
 
     #[test]

@@ -159,7 +159,7 @@ pub use animation::{
     evaluate_descriptor, evaluate_progress, evaluate_track, evaluate_track_at,
     invert_flip_translate, is_font_variation_settings, layout_flip_hold_spec,
     layout_flip_play_spec, layout_flip_spec, loading_animation, retarget_track,
-    track_completion_deadline, workspace_animation,
+    toast_timeout_animation, track_completion_deadline, workspace_animation,
 };
 pub use avatar::{Avatar, DEFAULT_SIZE as AVATAR_DEFAULT_SIZE};
 pub use bars::{StatusBar, Toolbar};
@@ -413,11 +413,12 @@ pub use view_components::{
     Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, DialogCloseRequested,
     DialogToggled, Divider, FileDropEvent, HostedTextarea, IconButton, IconButtonTooltip,
     IconGlyph, List, ListItem, ListItemRole, ListItemSlots, NumberChanged, NumberInput,
-    OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment, RangeChanged, RangeDragState,
-    RangeDragging, RangeField, RangeInput, RangeMarker, ScrollAnchor, ScrollAxes, ScrollChanged,
-    ScrollLaidOut, ScrollView, ScrollViewportChanged, ScrollbarDragState, SecondaryPress,
-    SizeChanged, Stack, Switch, Table, TableCell, TableCellFocused, TableRow, Text, TextArea,
-    TextChanged, TextClamped, TextInput, TextSubmitted, ToggleChanged, Tooltip, UserScroll,
+    OverlayChanged, OverlayClosing, OverlayHost, PointerHoverChanged, RangeAdjustment,
+    RangeChanged, RangeDragState, RangeDragging, RangeField, RangeInput, RangeMarker, ScrollAnchor,
+    ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollView, ScrollViewportChanged,
+    ScrollbarDragState, SecondaryPress, SizeChanged, Stack, Switch, Table, TableCell,
+    TableCellFocused, TableRow, Text, TextArea, TextChanged, TextClamped, TextInput, TextSubmitted,
+    ToggleChanged, Tooltip, UserScroll,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{

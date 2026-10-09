@@ -50,6 +50,7 @@ widget(Dropdown::single(value))
 | `invalid` | 字段 | 校验态 |
 | `opened` | 字段 | 菜单是否打开 |
 | `highlighted` | 字段 | 当前高亮项 |
+| `bare_trigger` | 字段 | 静止时去掉填充和描边，用作工具条上的选择器；悬停和展开仍有底色，校验态仍描红边 |
 
 ## 事件
 

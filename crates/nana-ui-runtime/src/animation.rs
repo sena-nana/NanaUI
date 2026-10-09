@@ -66,6 +66,8 @@ pub mod component_animation_kinds {
     pub const FLIP: u64 = 10;
     /// A modal frame's scrim fade, apart from its card's.
     pub const SURFACE_SCRIM: u64 = 11;
+    /// A toast's auto-dismiss timer.
+    pub const TOAST: u64 = 12;
 }
 
 /// Derives the animation ID for one component-owned timeline from the
@@ -83,8 +85,27 @@ pub fn component_animation_id(kind_tag: u64, target: StableNodeId) -> Option<Ani
 /// Whether `id` is one of the built-in component timelines of `target`
 /// ([`component_animation_kinds`]).
 pub(crate) fn is_component_animation(id: AnimationId, target: StableNodeId) -> bool {
-    (component_animation_kinds::SKELETON..=component_animation_kinds::FLIP)
+    (component_animation_kinds::SKELETON..=component_animation_kinds::TOAST)
         .any(|kind| component_animation_id(kind, target) == Some(id))
+}
+
+/// A toast's one-shot dismiss timeline. It samples once, at the end, so a
+/// waiting toast does not wake the host every frame.
+pub fn toast_timeout_animation(
+    id: StableNodeId,
+    start: Duration,
+    timeout: Duration,
+) -> Option<AnimationSpec> {
+    let animation = component_animation_id(component_animation_kinds::TOAST, id)?;
+    let timeout = timeout.max(Duration::from_millis(1));
+    Some(AnimationSpec::new(
+        animation,
+        id,
+        start,
+        timeout,
+        timeout,
+        Easing::Linear,
+    ))
 }
 
 /// Infinite loading-indicator timeline (button / switch / card).

@@ -68,6 +68,9 @@ pub struct Dropdown {
     pub invalid: bool,
     pub opened: bool,
     pub highlighted: Option<usize>,
+    /// Resting field has no fill and no border, like a toolbar picker. Hover
+    /// and the open state still wash it so the hit target stays visible.
+    pub bare_trigger: bool,
     pub style: NodeStyle,
 }
 
@@ -101,6 +104,7 @@ impl Dropdown {
             invalid: false,
             opened: false,
             highlighted: None,
+            bare_trigger: false,
             style: crate::select::field_style_for_size(ControlSize::Medium),
         }
     }
@@ -134,6 +138,13 @@ impl Dropdown {
 
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
+        self
+    }
+
+    /// Drop the field's resting fill and border. Hover and the open state
+    /// still wash it; the option list is unchanged.
+    pub fn bare_trigger(mut self, bare: bool) -> Self {
+        self.bare_trigger = bare;
         self
     }
 
@@ -355,8 +366,26 @@ impl Dropdown {
         } else if style.control_height.is_none() {
             style.control_height = Some(nana_ui_core::ControlHeight::Exact(self.size));
         }
+        if self.bare_trigger {
+            style = bare_field_style(style, self.opened, self.invalid);
+        }
         style
     }
+}
+
+fn bare_field_style(mut style: NodeStyle, open: bool, invalid: bool) -> NodeStyle {
+    style.background = open.then_some(nana_ui_core::SemanticColorRole::Hover);
+    style.border = invalid.then_some(nana_ui_core::SemanticColorRole::Danger);
+    style.interaction.hovered.background = Some(nana_ui_core::SemanticColorRole::Hover);
+    style.interaction.hovered.border = style.border;
+    style.interaction.pressed.background = Some(nana_ui_core::SemanticColorRole::Active);
+    style.interaction.focused.border = style.border;
+    style.interaction.disabled.background = None;
+    style.interaction.disabled.border = None;
+    if !invalid {
+        Arc::make_mut(&mut style.layout).border_width = Some(0.0);
+    }
+    style
 }
 
 impl ComponentView for Dropdown {
@@ -555,6 +584,32 @@ mod tests {
                 DropdownOption::new("50", "平衡").disabled(true),
                 DropdownOption::new("100", "最大").hint("峰值"),
             ])
+    }
+
+    #[test]
+    fn bare_trigger_drops_the_resting_field_chrome_but_keeps_feedback() {
+        let field = Dropdown::single(Some("a"))
+            .options([DropdownOption::new("a", "A")])
+            .bare_trigger(true);
+        let style = field.effective_style();
+        assert_eq!(style.background, None);
+        assert_eq!(style.border, None);
+        assert_eq!(style.layout.border_width, Some(0.0));
+        assert_eq!(
+            style.interaction.hovered.background,
+            Some(nana_ui_core::SemanticColorRole::Hover)
+        );
+        let open = field.clone().opened(true).effective_style();
+        assert_eq!(
+            open.background,
+            Some(nana_ui_core::SemanticColorRole::Hover)
+        );
+        let invalid = field.invalid(true).effective_style();
+        assert_eq!(
+            invalid.border,
+            Some(nana_ui_core::SemanticColorRole::Danger)
+        );
+        assert_ne!(invalid.layout.border_width, Some(0.0));
     }
 
     #[test]

@@ -41,6 +41,11 @@ mod span_color;
 pub const GRAPHEME_ADVANCE: f32 = nana_ui_core::space::MD;
 pub const LINE_HEIGHT: f32 = nana_ui_core::type_scale::LINE;
 pub const BLOCK_GAP: f32 = 9.0;
+/// Inset of a fenced code block's text from its panel edge.
+pub const CODE_PANEL_PADDING_X: f32 = nana_ui_core::space::LG;
+pub const CODE_PANEL_PADDING_Y: f32 = nana_ui_core::space::MD;
+/// Corner radius of a fenced code block's panel.
+pub const CODE_PANEL_RADIUS: f32 = 6.0;
 const LIST_INDENT: f32 = nana_ui_core::space::XXL;
 const QUOTE_INDENT: f32 = nana_ui_core::space::XL;
 
@@ -1945,8 +1950,16 @@ fn layout_block(
             )
         }
         MarkdownBlock::Code { language, source } => {
-            let mut cursor = LayoutCursor::new(x, y, usable_width(width), LINE_HEIGHT)
-                .markdown(measure, 13.0, 400);
+            // A fence is a panel: its text is inset from the block edge, and
+            // the drawing paints the panel behind it.
+            let inner_width = (usable_width(width) - CODE_PANEL_PADDING_X * 2.0).max(1.0);
+            let mut cursor = LayoutCursor::new(
+                x + CODE_PANEL_PADDING_X,
+                y + CODE_PANEL_PADDING_Y,
+                inner_width,
+                LINE_HEIGHT,
+            )
+            .markdown(measure, 13.0, 400);
             let start = run.graphemes.len();
             push_source(
                 run,
@@ -1960,7 +1973,7 @@ fn layout_block(
                 x,
                 y,
                 width,
-                cursor.height_from(y),
+                cursor.height_from(y + CODE_PANEL_PADDING_Y) + CODE_PANEL_PADDING_Y * 2.0,
                 language
                     .as_deref()
                     .filter(|value| !value.is_empty())

@@ -322,9 +322,11 @@ impl UiWorld {
                 trailing_icon,
                 icon_size,
                 icon_gap,
+                content_align,
                 ..
             } => {
-                // One centred group: [leading glyph] label [trailing glyph].
+                // One group: [leading glyph] label [trailing glyph], centred
+                // unless the button asks for an edge.
                 // The label gives up width first; the glyphs keep theirs.
                 let glyph = icon_size.min(content.height).min(content.width).max(0.0);
                 let has_leading = *loading || icon.is_some();
@@ -345,7 +347,13 @@ impl UiWorld {
                     metrics.width.min((content.width - reserved).max(0.0))
                 });
                 let group_width = (label_width + reserved).min(content.width);
-                let group_x = content.x + (content.width - group_width) / 2.0;
+                let group_x = match content_align {
+                    crate::TextHorizontalAlignment::Start => content.x,
+                    crate::TextHorizontalAlignment::Center => {
+                        content.x + (content.width - group_width) / 2.0
+                    }
+                    crate::TextHorizontalAlignment::End => content.x + content.width - group_width,
+                };
                 let glyph_box = |x: f32, size: f32| LayoutBox {
                     x,
                     y: content.y + (content.height - size) / 2.0,
