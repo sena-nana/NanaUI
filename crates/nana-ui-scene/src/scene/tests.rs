@@ -1,6 +1,4 @@
 use nana_ui_core::{UI_METRICS, type_scale};
-#[cfg(all(feature = "charts", feature = "rich-text"))]
-use nana_ui_runtime::TimeSeriesChart;
 use std::sync::Arc;
 
 use nana_ui_runtime::{
@@ -6790,32 +6788,8 @@ fn graph_canvas_high_slots_stay_in_paint_order_across_incremental_updates() {
 }
 
 #[test]
-#[cfg(feature = "charts")]
 #[cfg(feature = "rich-text")]
 fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
-    let mut chart = node(1, None, &[]);
-    chart.standard_visual = Some(StandardVisual::TimeSeriesChart {
-        values: Arc::from([0.0, 1.0]),
-    });
-    chart.component_geometry = Some(Box::new(ComponentGeometry::TimeSeriesChart {
-        grid: vec![LayoutBox {
-            x: 8.0,
-            y: 10.0,
-            width: 92.0,
-            height: 1.0,
-        }],
-        area: vec![LayoutBox {
-            x: 8.0,
-            y: 40.0,
-            width: 2.0,
-            height: 70.0,
-        }],
-        line: vec![[8.0, 40.0], [54.0, 40.0]],
-        grid_color: [0.2, 0.2, 0.2, 0.55],
-        area_color: [0.3, 0.5, 0.8, 0.16],
-        line_color: [0.3, 0.5, 0.9, 1.0],
-    }));
-
     let mut markdown = node(2, None, &[]);
     markdown.layout = LayoutBox {
         x: 0.0,
@@ -6858,53 +6832,7 @@ fn new_component_geometry_paints_owned_quads_and_skips_generic_text() {
     }));
 
     let mut scene = UiScene::new();
-    scene.apply_delta([chart, markdown], []);
-
-    assert!(matches!(
-        scene
-            .primitive(PrimitiveId {
-                node: id(1),
-                slot: 10
-            })
-            .map(|primitive| &primitive.kind),
-        Some(ScenePrimitiveKind::QuadBatch { .. })
-    ));
-    assert!(matches!(
-        scene
-            .primitive(PrimitiveId {
-                node: id(1),
-                slot: 11
-            })
-            .map(|primitive| &primitive.kind),
-        Some(ScenePrimitiveKind::QuadBatch { .. })
-    ));
-    assert!(matches!(
-        scene
-            .primitive(PrimitiveId {
-                node: id(1),
-                slot: 12
-            })
-            .map(|primitive| &primitive.kind),
-        Some(ScenePrimitiveKind::Stroke {
-            width,
-            points,
-            widths,
-            cap: StrokeCap::Round,
-            pattern: None,
-            ..
-        }) if (*width - TimeSeriesChart::LINE_WIDTH).abs() < f32::EPSILON
-            && points.len() == 2
-            && widths.is_empty()
-    ));
-    assert!(
-        scene
-            .primitive(PrimitiveId {
-                node: id(1),
-                slot: 2
-            })
-            .is_none(),
-        "time series does not emit generic text"
-    );
+    scene.apply_delta([markdown], []);
 
     assert!(matches!(
         scene
@@ -8629,51 +8557,84 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
     );
 }
 
+#[cfg(feature = "charts")]
+fn chart_geometry(option: &nana_ui_charts::ChartOption, motion: bool) -> ComponentGeometry {
+    let palette = nana_ui_core::SemanticPalette::dark();
+    let theme = nana_ui_charts::ChartTheme::new(&palette, option, |_| [0.5; 4]);
+    let mut layout = nana_ui_charts::layout(&nana_ui_charts::LayoutInput {
+        option,
+        size: [300.0, 200.0],
+        theme: &theme,
+        measure: &nana_ui_charts::ApproximateMeasure,
+        state: &nana_ui_charts::ChartViewState::default(),
+    });
+    if motion {
+        nana_ui_charts::transition::begin(&mut layout, None, option, std::time::Duration::ZERO);
+    } else {
+        nana_ui_charts::transition::settle(&mut layout);
+    }
+    ComponentGeometry::Chart {
+        layout: Arc::new(layout),
+        hover: nana_ui_charts::hit::HoverState::default(),
+        origin: [10.0, 20.0],
+    }
+}
+
 #[test]
 #[cfg(feature = "charts")]
-fn timestamp_chart_gap_segments_share_one_stroke_without_visible_bridges() {
+fn a_chart_is_one_marks_primitive_and_its_labels() {
+    use nana_ui_charts::{Axis, ChartOption, LineSeries};
+    let option = ChartOption::new()
+        .x_axis(Axis::category((0..300).map(|i| i.to_string())))
+        .y_axis(Axis::value())
+        .series(LineSeries::new(
+            "v",
+            (0..300).map(f64::from).collect::<Vec<_>>(),
+        ));
     let mut chart = node(1, None, &[]);
-    chart.standard_visual = Some(StandardVisual::TimestampSeriesChart {
-        samples: Arc::from([]),
-        unit: None,
-        time_labels: None,
-    });
-    let segments = (0..300)
-        .map(|index| vec![[index as f32 * 3.0, 10.0], [index as f32 * 3.0 + 1.0, 20.0]])
-        .collect();
-    chart.component_geometry = Some(Box::new(ComponentGeometry::TimestampSeriesChart {
-        grid: Vec::new(),
-        area: Vec::new(),
-        segments,
-        labels: Vec::new(),
-        grid_color: [0.2; 4],
-        area_color: [0.3; 4],
-        line_color: [0.5, 0.5, 1.0, 1.0],
-    }));
+    chart.component_geometry = Some(Box::new(chart_geometry(&option, false)));
     let mut scene = UiScene::new();
     scene.apply_delta([chart], []);
-    let strokes: Vec<_> = scene
+    let marks: Vec<_> = scene
         .primitives()
-        .filter_map(|primitive| {
-            if let ScenePrimitiveKind::Stroke {
-                points,
-                pattern: Some(pattern),
-                ..
-            } = &primitive.kind
-            {
-                Some((points, pattern))
-            } else {
-                None
-            }
-        })
+        .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Chart { .. }))
         .collect();
-    assert_eq!(strokes.len(), 1);
-    let (points, pattern) = strokes[0];
-    assert_eq!(points.len(), 600);
-    assert_eq!(pattern.colors.len(), points.len());
-    for (index, color) in pattern.colors.iter().enumerate() {
-        assert_eq!(color[3], if index % 2 == 0 { 1.0 } else { 0.0 });
-    }
+    assert_eq!(marks.len(), 1, "every series and guide in one primitive");
+    let Some(ScenePrimitiveKind::Chart { origin, .. }) = marks.first().map(|p| &p.kind) else {
+        unreachable!()
+    };
+    assert_eq!(*origin, [10.0, 20.0]);
+    let labels = scene
+        .primitives()
+        .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Text { .. }))
+        .count();
+    assert!(labels > 2, "axis labels paint as text: {labels}");
+    // Labels live in their own namespace, past the fixed slots.
+    assert!(
+        scene
+            .primitives()
+            .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Text { .. }))
+            .all(|primitive| primitive.id.slot > 255)
+    );
+    assert!(!scene.chart_presentation_live());
+}
+
+#[test]
+#[cfg(feature = "charts")]
+fn a_chart_in_motion_keeps_the_scene_ticking() {
+    use nana_ui_charts::{Axis, BarSeries, ChartOption};
+    let option = ChartOption::new()
+        .x_axis(Axis::category(["a", "b"]))
+        .y_axis(Axis::value())
+        .series(BarSeries::new("b", [1.0, 2.0]));
+    let mut chart = node(1, None, &[]);
+    chart.component_geometry = Some(Box::new(chart_geometry(&option, true)));
+    let mut scene = UiScene::new();
+    scene.apply_delta([chart.clone()], []);
+    assert!(scene.chart_presentation_live());
+    assert!(scene.compositor_needs_tick());
+    scene.apply_delta([], [chart.id]);
+    assert!(!scene.chart_presentation_live());
 }
 
 #[cfg(feature = "graph-canvas")]

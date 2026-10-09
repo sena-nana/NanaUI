@@ -683,10 +683,7 @@ impl UiWorld {
                 paint(role(ComponentRecipeId::Content, false))
             }
             #[cfg(feature = "charts")]
-            StandardVisual::TimeSeriesChart { .. }
-            | StandardVisual::TimestampSeriesChart { .. }
-            | StandardVisual::DonutChart { .. }
-            | StandardVisual::StackedTimeSeriesChart { .. } => {
+            StandardVisual::Chart { .. } | StandardVisual::ChartTooltip { .. } => {
                 paint(role(ComponentRecipeId::Content, false))
             }
             #[cfg(feature = "controls")]

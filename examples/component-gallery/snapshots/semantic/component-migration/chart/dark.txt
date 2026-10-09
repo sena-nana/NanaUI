@@ -1,0 +1,41 @@
+component: chart
+mode: dark
+state: line
+  target: 20.00,20.00 380.00x180.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  chart #2/11 20.00,20.00 380.00x180.00 opacity=1.00 draws=7 points=97 shapes=20 styles=[#7bb9f0ff #eb988fff #303030ff #eb988fff #eb988f40 #202020ff #3a3a3aff]
+  text #2/176093659136 156.50,30.00 50.00x17.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659137 233.50,30.00 49.00x17.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659138 78.38,170.00 17.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659139 165.12,170.00 17.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659140 251.88,170.00 17.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659141 338.62,170.00 17.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659142 30.00,154.50 8.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659143 30.00,130.62 8.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659144 30.00,106.75 8.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659145 30.00,82.88 8.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659146 30.00,59.00 8.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: pie
+  target: 20.00,20.00 220.00x180.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  chart #2/11 20.00,20.00 220.00x180.00 opacity=1.00 draws=1 points=0 shapes=3 styles=[#7bb9f0ff #eb988fff #cf9cd8ff]
+state: radar
+  target: 20.00,20.00 220.00x180.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  chart #2/11 20.00,20.00 220.00x180.00 opacity=1.00 draws=16 points=55 shapes=5 styles=[#292929ff #303030ff #7bb9f0ff #7bb9f040 #202020ff]
+  text #2/176093659136 126.00,30.00 9.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659137 62.08,73.53 9.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659138 84.97,160.97 9.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659139 167.03,160.97 10.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659140 189.92,73.53 9.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: gauge
+  target: 20.00,20.00 220.00x180.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  chart #2/11 20.00,20.00 220.00x180.00 opacity=1.00 draws=3 points=0 shapes=55 styles=[#292929ff #7bb9f0ff #a3a3a3ff #202020ff]
+  text #2/176093659136 109.53,126.47 8.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659137 99.30,105.75 15.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659138 112.10,88.12 15.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659139 133.90,88.12 15.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659140 146.70,105.75 15.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659141 136.97,126.47 21.00x17.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/176093659142 121.00,134.00 19.00x22.00 opacity=1.00 color=#ddddddff size=16.00 weight=500 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

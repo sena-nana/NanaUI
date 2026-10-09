@@ -4464,9 +4464,10 @@ mod feature_tests {
 
     #[test]
     fn optional_tags_report_missing_features_before_allocating_nodes() {
+        // A component without tags (Chart) is Rust-only: no markup reaches it.
         for descriptor in nana_ui_runtime::component_descriptors::BUILTIN_COMPONENTS
             .iter()
-            .filter(|entry| entry.required_feature.is_some())
+            .filter(|entry| entry.required_feature.is_some() && !entry.tags.is_empty())
         {
             let host = crate::VueHost::new();
             let api = host.host_api_registry();

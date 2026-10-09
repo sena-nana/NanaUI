@@ -96,8 +96,6 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `<tr>` | TableRow | Runtime `TableRow` |
 | `<td>` / `<th>` | TableCell | Runtime `TableCell`（`th` / `header` 标列表头） |
 | `nana-reorder-list` | ReorderList | Runtime `ReorderList` |
-| `nana-donut-chart` | DonutChart | Runtime `DonutChart` |
-| `nana-time-series-chart` | TimeSeriesChart | Runtime `TimeSeriesChart` |
 | `nana-desktop-shell` | DesktopShell | Runtime `DesktopShell` |
 | `nana-app-title-bar` | AppTitleBar | Runtime `AppTitleBar` |
 | `nana-pane-chrome` | PaneChrome | Runtime `PaneChrome` |
@@ -202,8 +200,6 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `NanaDivider` `orientation` | Runtime `Divider` |
 | `NanaList` / `NanaListItem` / `<ul>` `<li>` | Runtime `List` / `ListItem`；槽 `leading` / `content` / `trailing` |
 | `NanaTable` / `NanaTableRow` / `NanaTableCell` / `<table>` `<tr>` `<td>` | Runtime 表格 |
-| `NanaTimeSeriesChart` `values` / `data` / `layers` / `axisLabels` / `tooltipDetails` | Runtime `TimeSeriesChart` |
-| `NanaDonutChart` `slices` / `labels` / `cutout` | Runtime `DonutChart` |
 | `NanaReorderList` `options` / `items` | Runtime `ReorderList` |
 | `NanaSidebarSection` / `NanaSidebarFooter` | Runtime 侧栏节与页脚 |
 | `<details>` / `<summary>` / `NanaSettingsCollapsibleCard` `open` | Runtime `SettingsCollapsibleCard`；槽 `summary` / `details` / `accessory` |

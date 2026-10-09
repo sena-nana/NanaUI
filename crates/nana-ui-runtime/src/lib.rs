@@ -176,9 +176,7 @@ pub use calendar::{
     build_calendar_heatmap_model, build_calendar_heatmap_model_in, calendar_cell_fill,
 };
 #[cfg(feature = "charts")]
-pub use charts::{
-    DonutChart, DonutSlice, TimeSeriesChart, TimeSeriesLayer, TimeSeriesPaint, time_series_paint,
-};
+pub use charts::{Chart, ChartEvent, ChartHoverVisual, ChartSpec, ChartTooltip};
 pub use chip::{Chip, ChipDismissed};
 pub use color_field::{
     ColorChanged, ColorField, ColorInput, format_hex, hsv_to_rgb, parse_hex, rgb_to_hsv,
@@ -244,10 +242,10 @@ pub(crate) use framework::UiBuilder;
 pub use framework::{
     ASSEMBLY_PATH_SEPARATOR, ActiveRuntimeOverlay, AppContext, AssemblyScope, BuiltinComponents,
     Entity, ExtensionRegistrar, FormValidity, FrameworkError, HeadlessInput, InputBindError,
-    InputCounters, InputRouteError, InputRouteOutcome, OverlayKey, OverlayPointerDecision,
-    OverlayPointerPhase, RoutedEvent, RuntimeOverlayKind, Subscription, Task, TextDeleteKind,
-    TextEditOrigin, TextFindScope, UiExtension, View, ViewContext, VirtualListItems,
-    VirtualTableItems, VirtualTreeItems,
+    InputCounters, InputRouteError, InputRouteOutcome, NodePointer, NodePointerHooks, NodeWheel,
+    OverlayKey, OverlayPointerDecision, OverlayPointerPhase, RoutedEvent, RuntimeOverlayKind,
+    Subscription, Task, TextDeleteKind, TextEditOrigin, TextFindScope, UiExtension, View,
+    ViewContext, VirtualListItems, VirtualTableItems, VirtualTreeItems,
 };
 #[doc(hidden)]
 pub use framework::{EditableHooks, TypeBehavior, TypeHooks};
@@ -300,6 +298,9 @@ pub use menus::{
 };
 pub use motion_api::{FlipBuilder, NodeMotion, SpringBuilder, TimelineBuilder, TransitionBuilder};
 pub use mutation::{MutationQueue, UiMutation};
+/// The chart model: options, layout and the GPU mark contract.
+#[cfg(feature = "charts")]
+pub use nana_ui_charts as chart;
 pub use nana_ui_core::FrameworkStrings;
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, ClipCircle, ClipEllipse, ClipInset, ClipPath,

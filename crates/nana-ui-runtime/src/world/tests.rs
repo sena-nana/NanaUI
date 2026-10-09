@@ -10656,7 +10656,6 @@ fn backend_neutral_text_geometry_treats_crlf_and_graphemes_atomically() {
 
 #[test]
 #[cfg(feature = "calendar")]
-#[cfg(feature = "charts")]
 fn new_standard_visuals_derive_scene_geometry() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();
@@ -10667,28 +10666,12 @@ fn new_standard_visuals_derive_scene_geometry() {
             tag: "calendar-heatmap".into(),
         },
     );
-    queue.create(
-        node(2),
-        document(1),
-        NodeKind::Element {
-            tag: "time-series-chart".into(),
-        },
-    );
     queue.write_layout(
         node(1),
         LayoutBox {
             x: 10.0,
             y: 20.0,
             width: 200.0,
-            height: 120.0,
-        },
-    );
-    queue.write_layout(
-        node(2),
-        LayoutBox {
-            x: 0.0,
-            y: 0.0,
-            width: 108.0,
             height: 120.0,
         },
     );
@@ -10722,12 +10705,6 @@ fn new_standard_visuals_derive_scene_geometry() {
             max_level: 4,
             active: Some(1),
             active_title: Some(Arc::from("2026-06-03: 8")),
-        }),
-    );
-    queue.set_standard_visual(
-        node(2),
-        Some(StandardVisual::TimeSeriesChart {
-            values: Arc::from([0.0, 5.0, 10.0]),
         }),
     );
     world.commit(queue).unwrap();
@@ -10785,29 +10762,6 @@ fn new_standard_visuals_derive_scene_geometry() {
     let hover = hover.expect("active cell paints hover chrome");
     assert_eq!(hover.title.content.as_ref(), "2026-06-03: 8");
     assert!(hover.tooltip.width < 176.0);
-
-    let crate::ComponentGeometry::TimeSeriesChart {
-        grid, area, line, ..
-    } = world.component_geometry(node(2)).expect("chart geometry")
-    else {
-        panic!("expected time series geometry");
-    };
-    assert_eq!(grid.len(), 4);
-    assert_eq!(grid[0].x, 8.0);
-    assert_eq!(grid[0].height, 1.0);
-    assert!(!area.is_empty());
-    assert!(area.iter().all(|strip| strip.width <= 2.0 + f32::EPSILON));
-    let expected_line = crate::TimeSeriesChart::new([0.0, 5.0, 10.0])
-        .points(LayoutBox {
-            x: 0.0,
-            y: 0.0,
-            width: 108.0,
-            height: 120.0,
-        })
-        .into_iter()
-        .map(|(x, y)| [x, y])
-        .collect::<Vec<_>>();
-    assert_eq!(line, expected_line);
 }
 
 #[test]

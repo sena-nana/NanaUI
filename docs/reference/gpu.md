@@ -39,6 +39,8 @@ window/event-loop 线程一致（Metal 的 surface 查询有线程亲和性）�
 变化仍由 resize/recovery/rebind 重新解析 profile；headroom 通知本身只更新 uniform。
 
 Scene painter 的工作像素是 premultiplied linear scRGB；它们不是普通 sRGB 图片。
+
+图表的标记（`ScenePrimitiveKind::Chart`）由 painter 的三条 chart 管线画：折线、面积、形状（矩形、环形扇区、点符号、指针），边缘都是一个设备像素的解析式过渡，不靠 MSAA。点、形状和样式数组按标记的 revision 常驻在 target 的 GPU 缓冲里；画面不变的帧不上传，被回滚的帧随 target 重建。管线在 painter 第一次遇到图表时才编译。
 `FrameExchange` 只复制 producer 提供的纹理和格式，不做色彩转换。需要跨线程传递
 色彩信息时，producer 调用 `copy_from_with_metadata`（或 raw-WGPU 对应方法），把
 `FrameColorMetadata` 一起交给 lease；consumer 从 `FrameLease::color_metadata()` 或

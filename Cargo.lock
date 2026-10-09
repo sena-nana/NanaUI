@@ -2733,6 +2733,7 @@ dependencies = [
  "nana-package",
  "nana-svg-raster",
  "nana-text",
+ "nana-ui-charts",
  "nana-ui-core",
  "nana-ui-platform",
  "nana-ui-runtime",
@@ -2747,6 +2748,14 @@ dependencies = [
  "wgpu",
  "windows 0.62.2",
  "winit",
+]
+
+[[package]]
+name = "nana-ui-charts"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "nana-ui-core",
 ]
 
 [[package]]
@@ -2847,6 +2856,7 @@ dependencies = [
  "mermaid-svg",
  "nana-diagnostics",
  "nana-text",
+ "nana-ui-charts",
  "nana-ui-core",
  "nana-ui-input",
  "nana-ui-view-macros",
@@ -2873,6 +2883,7 @@ dependencies = [
  "lyon_tessellation",
  "nana-diagnostics",
  "nana-text",
+ "nana-ui-charts",
  "nana-ui-core",
  "nana-ui-input",
  "nana-ui-runtime",

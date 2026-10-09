@@ -2855,12 +2855,17 @@ impl UiWorld {
         for &id in &parked {
             #[cfg(feature = "charts")]
             if let Some(mut visual) = self.standard_visual(id) {
-                let active = match &mut visual {
-                    StandardVisual::DonutChart { active, .. }
-                    | StandardVisual::StackedTimeSeriesChart { active, .. } => Some(active),
-                    _ => None,
+                // A parked chart shows nothing hovered.
+                let cleared = match &mut visual {
+                    StandardVisual::Chart { hover, .. }
+                        if *hover != crate::ChartHoverVisual::default() =>
+                    {
+                        *hover = crate::ChartHoverVisual::default();
+                        true
+                    }
+                    _ => false,
                 };
-                if active.is_some_and(|active| active.take().is_some()) {
+                if cleared {
                     self.apply(
                         &UiMutation::SetStandardVisual {
                             id,

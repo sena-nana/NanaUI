@@ -191,41 +191,48 @@ fn command_palette_shortcut_is_as_wide_as_its_measured_text() {
 
 #[cfg(feature = "charts")]
 #[test]
-fn stacked_chart_legend_labels_take_their_measured_widths() {
+fn chart_labels_take_their_measured_widths() {
+    use nana_ui::runtime::chart::{Axis, BarSeries, ChartOption, Legend};
     let mut cx = AppContext::new();
     let doc = DocumentId::new(1).unwrap();
     let chart = cx
         .create_component(
             doc,
-            TimeSeriesChart::new([3.0, 5.0, 4.0]).stacked([
-                TimeSeriesLayer::new(
-                    "Revenue",
-                    [1.0, 2.0, 1.5],
-                    nana_ui_core::SemanticColorRole::Accent,
-                ),
-                TimeSeriesLayer::new(
-                    "成本",
-                    [2.0, 3.0, 2.5],
-                    nana_ui_core::SemanticColorRole::Success,
-                ),
-            ]),
+            Chart::new(
+                ChartOption::new()
+                    .legend(Legend::default())
+                    .x_axis(Axis::category(["一月", "February"]))
+                    .y_axis(Axis::value())
+                    .series(BarSeries::new("Revenue", [1.0, 2.0]))
+                    .series(BarSeries::new("成本", [2.0, 3.0])),
+            ),
         )
         .unwrap();
     let mut shaper = NanaTextShaper::default();
     frame(&mut cx, doc, &mut shaper);
-    let Some(ComponentGeometry::StackedTimeSeriesChart { labels, .. }) =
+    let Some(ComponentGeometry::Chart { layout, .. }) =
         cx.world().component_geometry(chart.stable_id())
     else {
-        panic!("stacked chart geometry");
+        panic!("chart geometry");
     };
-    for name in ["Revenue", "成本"] {
-        let label = labels
+    for name in ["Revenue", "成本", "一月", "February"] {
+        let label = layout
+            .texts
             .iter()
-            .find(|label| label.content.as_ref() == name)
-            .expect("legend label");
+            .find(|label| label.text.as_ref() == name)
+            .expect("chart label");
+        // The rect is the measured run and a pixel of slack.
         assert_eq!(
-            label.bounds.width,
-            measured(&cx, &mut shaper, chart.stable_id(), label)
+            label.rect[2] - label.rect[0],
+            measured_text(
+                &cx,
+                &mut shaper,
+                chart.stable_id(),
+                name,
+                label.size,
+                label.weight
+            ) + 1.0,
+            "{name}"
         );
     }
 }

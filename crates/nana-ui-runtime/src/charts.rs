@@ -1,145 +1,203 @@
-//! Retained charts. Applications own values and localized labels.
+//! Charts: an ECharts-shaped [`ChartOption`] the application owns, laid out
+//! by `nana-ui-charts` and drawn by the chart shaders.
+//!
+//! The component owns interaction, which is presentation and never touches
+//! the option: hover (emphasis, axis pointer, tooltip), legend selection
+//! and the zoom window. A layout depends on the option, the view state, the
+//! box size and the theme; hover is answered from the finished layout and
+//! drawn from a uniform, so a moving pointer never lays the chart out.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use nana_ui_core::{SemanticColor, SemanticPalette};
+pub use nana_ui_charts::hit::HoverState as ChartHoverVisual;
+use nana_ui_charts::hit::TooltipContent;
+use nana_ui_charts::{
+    ChartLayout, ChartOption, ChartTheme, ChartViewState, LabelMeasure, LayoutInput, layout,
+    transition,
+};
+use nana_ui_core::{SemanticColorRole, SemanticPalette};
 
 use crate::view_components::project_common;
 use crate::{
-    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LayoutBox, LengthSpec,
+    AccessibilityRole, AccessibilityState, ComponentView, InteractionState, LengthSpec,
     MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
 };
 
-mod donut;
-mod stacked;
-pub use donut::{DonutChart, DonutSlice};
-pub use stacked::TimeSeriesLayer;
+/// One option and view, laid out once per box size and theme.
+///
+/// A new spec is made whenever the option or the view state changes; it
+/// keeps the layout that was on screen before it, so its first layout can
+/// move from there.
+pub struct ChartSpec {
+    pub option: Arc<ChartOption>,
+    pub view: ChartViewState,
+    animate: bool,
+    previous: Option<Arc<ChartLayout>>,
+    memo: Mutex<Option<ChartMemo>>,
+}
 
-const DEFAULT_LABEL: &str = "Time series";
+struct ChartMemo {
+    size: [f32; 2],
+    palette: SemanticPalette,
+    /// The text engine that measured the labels.
+    measure: usize,
+    layout: Arc<ChartLayout>,
+}
 
-/// Backend-neutral time-series geometry. Scene paint of the grid/area/line is not here.
+impl std::fmt::Debug for ChartSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChartSpec")
+            .field("series", &self.option.series.len())
+            .field("view", &self.view)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for ChartSpec {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl ChartSpec {
+    fn new(
+        option: Arc<ChartOption>,
+        view: ChartViewState,
+        previous: Option<Arc<ChartLayout>>,
+        animate: bool,
+    ) -> Self {
+        Self {
+            option,
+            view,
+            animate,
+            previous,
+            memo: Mutex::new(None),
+        }
+    }
+
+    /// The layout last made of this spec.
+    pub fn shown(&self) -> Option<Arc<ChartLayout>> {
+        self.memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|memo| Arc::clone(&memo.layout))
+    }
+
+    /// The layout at `size` under `palette`, made at most once per pair. The
+    /// first layout of a spec starts its motion at `now`; a later one (a
+    /// resize, a theme change) settles at once.
+    pub(crate) fn layout_for(
+        &self,
+        size: [f32; 2],
+        palette: &SemanticPalette,
+        resolve: impl Fn(SemanticColorRole) -> [f32; 4],
+        measure: &dyn LabelMeasure,
+        measure_identity: usize,
+        now: Duration,
+    ) -> Arc<ChartLayout> {
+        let mut memo = self
+            .memo
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(memo) = memo.as_ref()
+            && memo.size == size
+            && memo.palette == *palette
+            && memo.measure == measure_identity
+        {
+            return Arc::clone(&memo.layout);
+        }
+        let theme = ChartTheme::new(palette, &self.option, resolve);
+        let mut fresh = layout(&LayoutInput {
+            option: &self.option,
+            size,
+            theme: &theme,
+            measure,
+            state: &self.view,
+        });
+        if memo.is_none() && self.animate {
+            transition::begin(&mut fresh, self.previous.as_deref(), &self.option, now);
+        } else {
+            transition::settle(&mut fresh);
+        }
+        let fresh = Arc::new(fresh);
+        *memo = Some(ChartMemo {
+            size,
+            palette: *palette,
+            measure: measure_identity,
+            layout: Arc::clone(&fresh),
+        });
+        fresh
+    }
+}
+
+/// What a chart tells its application.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TimeSeriesChart {
-    pub values: Vec<f64>,
-    pub layers: Vec<TimeSeriesLayer>,
-    pub axis_labels: Vec<Arc<str>>,
-    pub tooltip_details: Vec<Arc<str>>,
-    pub active: Option<usize>,
-    /// Unix milliseconds and optional samples. None and non-finite samples leave gaps.
-    pub samples: Option<Vec<(i64, Option<f64>)>>,
-    pub unit: Option<Arc<str>>,
-    pub time_labels: Option<(Arc<str>, Arc<str>)>,
+pub enum ChartEvent {
+    /// A press and release on an item, without a drag between.
+    Click { series: usize, index: usize },
+    /// The legend switched a series (pie: a slice) on or off.
+    LegendSelect { name: Arc<str>, selected: bool },
+    /// The zoom window of `option.data_zoom[index]` moved, in percent.
+    DataZoom { index: usize, start: f64, end: f64 },
+}
+
+/// What a press on the chart started.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ChartDrag {
+    /// A press that is a click unless it moves.
+    Press { x: f32, y: f32, hover: [u32; 2] },
+    /// Moving the zoom window `zoom` (or one of its ends) from `window`,
+    /// by `per_px` percent for each px the pointer moves from `x`: panning
+    /// inside the plot, or dragging the slider.
+    Zoom {
+        zoom: usize,
+        grab: ZoomGrab,
+        x: f32,
+        window: (f64, f64),
+        per_px: f64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZoomGrab {
+    Window,
+    Start,
+    End,
+}
+
+/// A chart. Applications give it an option and replace the option to
+/// change it; the chart animates from what it showed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Chart {
+    pub option: Arc<ChartOption>,
+    /// The accessible name. Charts have no visible title of their own.
     pub label: Option<Arc<str>>,
     pub style: NodeStyle,
+    /// Legend selection and zoom, as the user left them.
+    pub view: ChartViewState,
+    pub(crate) hover: ChartHoverVisual,
+    pub(crate) drag: Option<ChartDrag>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TimeSeriesPaint {
-    pub grid: SemanticColor,
-    pub area: SemanticColor,
-    pub line: SemanticColor,
-}
+impl Chart {
+    /// The box height a chart takes when the application sets none.
+    pub const INTRINSIC_HEIGHT: f32 = 300.0;
 
-impl TimeSeriesChart {
-    pub const INTRINSIC_HEIGHT: f32 = 148.0;
-    pub const INSET_X: f32 = nana_ui_core::space::MD;
-    pub const INSET_Y: f32 = nana_ui_core::space::LG;
-    pub const GRID_LINE_COUNT: usize = 4;
-    pub const LINE_WIDTH: f32 = nana_ui_core::space::XXS;
-
-    pub fn new(values: impl IntoIterator<Item = f64>) -> Self {
+    pub fn new(option: impl Into<Arc<ChartOption>>) -> Self {
         Self {
-            values: values.into_iter().map(sanitize_value).collect(),
-            layers: Vec::new(),
-            axis_labels: Vec::new(),
-            tooltip_details: Vec::new(),
-            active: None,
-            samples: None,
-            unit: None,
-            time_labels: None,
+            option: option.into(),
             label: None,
             style: NodeStyle::default(),
+            view: ChartViewState::default(),
+            hover: ChartHoverVisual::default(),
+            drag: None,
         }
-    }
-
-    /// Creates a time-proportional series, ordered by Unix milliseconds.
-    /// Missing/non-finite values interrupt the line; repeated timestamps retain input order.
-    pub fn from_samples(samples: impl IntoIterator<Item = (i64, Option<f64>)>) -> Self {
-        let mut samples: Vec<_> = samples
-            .into_iter()
-            .map(|(time, value)| {
-                (
-                    time,
-                    value
-                        .filter(|value| value.is_finite())
-                        .map(|value| value.max(0.0)),
-                )
-            })
-            .collect();
-        samples.sort_by_key(|sample| sample.0);
-        Self {
-            samples: Some(samples),
-            ..Self::new([])
-        }
-    }
-
-    pub fn unit(mut self, unit: impl Into<Arc<str>>) -> Self {
-        self.unit = Some(unit.into());
-        self
-    }
-
-    /// Localized endpoint labels; formatting/timezone remains the consumer's responsibility.
-    pub fn time_labels(mut self, start: impl Into<Arc<str>>, end: impl Into<Arc<str>>) -> Self {
-        self.time_labels = Some((start.into(), end.into()));
-        self
-    }
-
-    /// Independent contiguous runs. Unlike `points`, this preserves missing-data gaps.
-    pub fn segments(&self, bounds: LayoutBox) -> Vec<Vec<(f32, f32)>> {
-        let Some(samples) = &self.samples else {
-            let points = self.points(bounds);
-            return if points.is_empty() {
-                Vec::new()
-            } else {
-                vec![points]
-            };
-        };
-        let Some(first) = samples.first() else {
-            return Vec::new();
-        };
-        let span = (samples.last().unwrap().0 as i128 - first.0 as i128).max(1) as f64;
-        let maximum = samples
-            .iter()
-            .filter_map(|sample| sample.1)
-            .fold(1.0_f64, f64::max);
-        let width = (bounds.width - Self::INSET_X * 2.0).max(1.0);
-        let height = (bounds.height - Self::INSET_Y * 2.0).max(1.0);
-        let mut runs = Vec::new();
-        let mut run = Vec::new();
-        for (time, value) in samples {
-            if let Some(value) = value.filter(|value| value.is_finite()) {
-                let elapsed = (*time as i128 - first.0 as i128) as f64;
-                run.push((
-                    Self::INSET_X + width * (elapsed / span) as f32,
-                    Self::INSET_Y + height * (1.0 - (value / maximum).clamp(0.0, 1.0) as f32),
-                ));
-            } else if !run.is_empty() {
-                runs.push(std::mem::take(&mut run));
-            }
-        }
-        if !run.is_empty() {
-            runs.push(run);
-        }
-        runs
     }
 
     pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
-        let label = label.into();
-        self.label = Some(if label.is_empty() {
-            Arc::from(DEFAULT_LABEL)
-        } else {
-            label
-        });
+        self.label = Some(label.into());
         self
     }
 
@@ -148,42 +206,14 @@ impl TimeSeriesChart {
         self
     }
 
-    /// Local points using inset (`INSET_X=8`, `INSET_Y=10`).
-    /// Use `segments` when drawing timestamp samples to retain missing-data gaps.
-    pub fn points(&self, bounds: LayoutBox) -> Vec<(f32, f32)> {
-        if self.samples.is_some() {
-            return self.segments(bounds).into_iter().flatten().collect();
-        }
-        let values: Vec<f64> = self.values.iter().copied().map(sanitize_value).collect();
-        if values.is_empty() {
-            return Vec::new();
-        }
-        let width = (bounds.width - Self::INSET_X * 2.0).max(1.0);
-        let height = (bounds.height - Self::INSET_Y * 2.0).max(1.0);
-        let maximum = values.iter().copied().fold(0.0_f64, f64::max).max(1.0);
-        let denominator = values.len().saturating_sub(1).max(1) as f32;
-        values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                let x = Self::INSET_X + width * index as f32 / denominator;
-                let normalized = (*value / maximum).clamp(0.0, 1.0) as f32;
-                (x, Self::INSET_Y + height * (1.0 - normalized))
-            })
-            .collect()
+    /// What the pointer emphasises now.
+    pub fn hover_state(&self) -> ChartHoverVisual {
+        self.hover
     }
 
-    /// Four horizontal grid-line Y coordinates (`0..=3`).
-    pub fn grid_ys(bounds: LayoutBox) -> [f32; 4] {
-        let span = (bounds.height - Self::INSET_Y * 2.0).max(1.0);
-        core::array::from_fn(|division| Self::INSET_Y + span * division as f32 / 3.0)
-    }
-
-    fn resolved_label(&self) -> Arc<str> {
-        self.label
-            .clone()
-            .filter(|label| !label.is_empty())
-            .unwrap_or_else(|| Arc::from(DEFAULT_LABEL))
+    /// Replaces the option; the chart moves from what it shows to it.
+    pub fn set_option(&mut self, option: impl Into<Arc<ChartOption>>) {
+        self.option = option.into();
     }
 
     fn effective_style(&self) -> NodeStyle {
@@ -193,79 +223,55 @@ impl TimeSeriesChart {
         layout
             .height
             .get_or_insert(LengthSpec::Px(Self::INTRINSIC_HEIGHT));
-        layout
-            .min_height
-            .get_or_insert(LengthSpec::Px(Self::INTRINSIC_HEIGHT));
         style
     }
-}
 
-/// Sparkline colors: grid `border_soft` at 0.55, area accent at 0.16, line `accent_strong`.
-pub fn time_series_paint(palette: SemanticPalette) -> TimeSeriesPaint {
-    TimeSeriesPaint {
-        grid: SemanticColor {
-            a: 0.55,
-            ..palette.border_soft
-        },
-        area: SemanticColor {
-            a: 0.16,
-            ..palette.accent
-        },
-        line: palette.accent_strong,
+    fn spec(&self, world: &UiWorld, id: StableNodeId) -> Arc<ChartSpec> {
+        let current = match world.standard_visual(id) {
+            Some(StandardVisual::Chart { spec, .. }) => Some(spec),
+            _ => None,
+        };
+        match current {
+            Some(spec) if Arc::ptr_eq(&spec.option, &self.option) && spec.view == self.view => spec,
+            current => {
+                // Moving the zoom window redraws at once; everything else
+                // animates as the option says.
+                let zoom_only = current.as_ref().is_some_and(|spec| {
+                    Arc::ptr_eq(&spec.option, &self.option) && spec.view.hidden == self.view.hidden
+                });
+                Arc::new(ChartSpec::new(
+                    Arc::clone(&self.option),
+                    self.view.clone(),
+                    current.and_then(|spec| spec.shown()),
+                    !zoom_only,
+                ))
+            }
+        }
     }
 }
 
-fn sanitize_value(value: f64) -> f64 {
-    if value.is_finite() {
-        value.max(0.0)
-    } else {
-        0.0
-    }
-}
+impl ComponentView for Chart {
+    const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
+        pointer: Some(&crate::framework::CHART_POINTER),
+        ..crate::TypeBehavior::NONE
+    };
 
-#[cfg(test)]
-fn inert() -> InteractionState {
-    InteractionState {
-        pointer_events: false,
-        focusable: false,
-    }
-}
-
-impl ComponentView for TimeSeriesChart {
-    fn share_layouts(
-        &mut self,
-        share: &mut dyn FnMut(&mut std::sync::Arc<nana_ui_core::LayoutStyle>),
-    ) {
+    fn share_layouts(&mut self, share: &mut dyn FnMut(&mut Arc<nana_ui_core::LayoutStyle>)) {
         share(&mut self.style.layout);
     }
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
-            tag: "time-series-chart".into(),
+            tag: "chart".into(),
         }
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let visual = if let Some(samples) = &self.samples {
-            StandardVisual::TimestampSeriesChart {
-                samples: samples.clone().into(),
-                unit: self.unit.clone(),
-                time_labels: self.time_labels.clone(),
-            }
-        } else if !self.layers.is_empty() {
-            StandardVisual::StackedTimeSeriesChart {
-                title: self.resolved_label(),
-                values: self.values.clone().into(),
-                layers: self.layers.clone().into(),
-                labels: self.axis_labels.clone().into(),
-                active: self.active,
-            }
-        } else {
-            StandardVisual::TimeSeriesChart {
-                values: self.values.clone().into(),
-            }
+        let visual = StandardVisual::Chart {
+            spec: self.spec(world, id),
+            hover: self.hover,
         };
-        if world.standard_visual(id) != Some(visual.clone()) {
+        if world.standard_visual(id).as_ref() != Some(&visual) {
             mutations.set_standard_visual(id, Some(visual));
         }
         project_common(
@@ -274,180 +280,143 @@ impl ComponentView for TimeSeriesChart {
             mutations,
             &self.effective_style(),
             InteractionState {
-                pointer_events: self.samples.is_none() && !self.layers.is_empty(),
+                pointer_events: true,
                 focusable: false,
             },
             AccessibilityState {
                 role: AccessibilityRole::Image,
-                label: Some(self.resolved_label()),
+                label: self.label.clone(),
                 ..AccessibilityState::default()
             },
         );
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::framework::AppContext;
-    use crate::{DocumentId, NodeKind, StandardVisual};
+/// [`LabelMeasure`] over the world's text engine.
+pub(crate) struct ChromeLabelMeasure<'a>(pub crate::text_width::ChromeTextMeasure<'a>);
 
-    fn document() -> DocumentId {
-        DocumentId::new(1).unwrap()
+impl LabelMeasure for ChromeLabelMeasure<'_> {
+    fn measure(&self, text: &str, size: f32) -> [f32; 2] {
+        [self.0.width(text, size, None), (size * 1.35).ceil()]
     }
+}
 
-    fn bounds(width: f32, height: f32) -> LayoutBox {
-        LayoutBox {
-            x: 0.0,
-            y: 0.0,
-            width,
-            height,
+/// A chart's tooltip: a floating panel with a title and one row per item,
+/// each with its color, name and value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartTooltip {
+    pub content: Arc<TooltipContent>,
+    pub style: NodeStyle,
+}
+
+impl ChartTooltip {
+    pub const PADDING_X: f32 = nana_ui_core::space::LG;
+    pub const PADDING_Y: f32 = nana_ui_core::space::MD;
+    pub const ROW_GAP: f32 = nana_ui_core::space::XS;
+    pub const DOT: f32 = 8.0;
+    pub const COLUMN_GAP: f32 = nana_ui_core::space::XXL;
+    pub const FONT: f32 = nana_ui_core::type_scale::META;
+
+    pub(crate) fn new(content: Arc<TooltipContent>) -> Self {
+        Self {
+            content,
+            style: tooltip_style(),
         }
     }
 
-    #[test]
-    fn timestamps_control_spacing_and_missing_values_split_runs() {
-        let chart = TimeSeriesChart::from_samples([
-            (10_000, Some(10.0)),
-            (0, Some(0.0)),
-            (1_000, Some(5.0)),
-            (2_000, None),
-            (9_000, Some(8.0)),
-        ]);
-        let segments = chart.segments(bounds(116.0, 120.0));
-        assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0], vec![(8.0, 110.0), (18.0, 60.0)]);
-        assert_eq!(segments[1].len(), 2);
-        assert_eq!(segments[1][0].0, 98.0);
-        assert_eq!(segments[1][1], (108.0, 10.0));
+    pub(crate) fn line_height() -> f32 {
+        (Self::FONT * 1.35).ceil()
     }
 
-    #[test]
-    fn missing_samples_are_not_zero_and_extreme_timestamps_do_not_overflow() {
-        let chart = TimeSeriesChart::from_samples([
-            (i64::MIN, Some(3.0)),
-            (0, Some(f64::NAN)),
-            (i64::MAX, Some(3.0)),
-        ]);
-        let segments = chart.segments(bounds(116.0, 120.0));
-        assert_eq!(segments, vec![vec![(8.0, 10.0)], vec![(108.0, 10.0)]]);
-        assert!(
-            TimeSeriesChart::from_samples([(0, None), (1, None)])
-                .segments(bounds(116.0, 120.0))
-                .is_empty()
-        );
+    /// `[width, height]` of the panel, padding included.
+    pub(crate) fn measure(content: &TooltipContent, measure: &dyn LabelMeasure) -> [f32; 2] {
+        let line = Self::line_height();
+        let mut width = if content.title.is_empty() {
+            0.0
+        } else {
+            measure.measure(&content.title, Self::FONT)[0]
+        };
+        for row in &content.rows {
+            let name = measure.measure(&row.name, Self::FONT)[0];
+            let value = measure.measure(&row.value, Self::FONT)[0];
+            let dot = if row.color.is_some() {
+                Self::DOT + nana_ui_core::space::SM
+            } else {
+                0.0
+            };
+            let gap = if row.value.is_empty() {
+                0.0
+            } else {
+                Self::COLUMN_GAP
+            };
+            width = width.max(dot + name + gap + value);
+        }
+        let lines = content.rows.len() + usize::from(!content.title.is_empty());
+        let height = lines as f32 * line + (lines.saturating_sub(1)) as f32 * Self::ROW_GAP;
+        [
+            (width + Self::PADDING_X * 2.0).ceil(),
+            (height + Self::PADDING_Y * 2.0).ceil(),
+        ]
+    }
+}
+
+fn tooltip_style() -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            position: nana_ui_core::PositionSpec::Fixed,
+            border_width: Some(nana_ui_core::HAIRLINE),
+            border_radius: Some(nana_ui_core::TooltipConfig::RADIUS),
+            pointer_events: Some(nana_ui_core::PointerEventsSpec::None),
+            z_index: Some(1_000),
+            ..nana_ui_core::LayoutStyle::default()
+        }),
+        background: Some(SemanticColorRole::Surface),
+        border: Some(SemanticColorRole::BorderSoft),
+        foreground: Some(SemanticColorRole::Text),
+        ..NodeStyle::default()
+    }
+}
+
+impl ComponentView for ChartTooltip {
+    fn share_layouts(&mut self, share: &mut dyn FnMut(&mut Arc<nana_ui_core::LayoutStyle>)) {
+        share(&mut self.style.layout);
     }
 
-    #[test]
-    fn timestamp_chart_projects_samples_and_localized_axis_metadata() {
-        let mut context = AppContext::new();
-        let chart = context
-            .create_component(
-                document(),
-                TimeSeriesChart::from_samples([(0, Some(1.0)), (1000, None), (5000, Some(2.0))])
-                    .unit("people")
-                    .time_labels("10:00", "10:05"),
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "chart-tooltip".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let visual = StandardVisual::ChartTooltip {
+            content: Arc::clone(&self.content),
+        };
+        if world.standard_visual(id).as_ref() != Some(&visual) {
+            mutations.set_standard_visual(id, Some(visual));
+        }
+        let label: Arc<str> = std::iter::once(self.content.title.to_string())
+            .chain(
+                self.content
+                    .rows
+                    .iter()
+                    .map(|row| format!("{} {}", row.name, row.value)),
             )
-            .unwrap();
-        let Some(StandardVisual::TimestampSeriesChart {
-            samples,
-            unit,
-            time_labels,
-        }) = context.world().standard_visual(chart.stable_id())
-        else {
-            panic!("timestamp visual");
-        };
-        assert_eq!(samples.len(), 3);
-        assert_eq!(samples[1].1, None);
-        assert_eq!(unit.as_deref(), Some("people"));
-        assert!(time_labels.is_some());
-    }
-
-    #[test]
-    fn empty_series_has_no_points() {
-        let chart = TimeSeriesChart::new([]);
-        assert!(chart.values.is_empty());
-        assert!(chart.points(bounds(108.0, 120.0)).is_empty());
-        assert_eq!(TimeSeriesChart::grid_ys(bounds(108.0, 120.0)).len(), 4);
-    }
-
-    #[test]
-    fn single_value_sits_on_the_left_inset() {
-        let chart = TimeSeriesChart::new([10.0]);
-        let points = chart.points(bounds(108.0, 120.0));
-        assert_eq!(points.len(), 1);
-        assert_eq!(points[0], (8.0, 10.0));
-    }
-
-    #[test]
-    fn multiple_values_span_and_scale_to_the_largest() {
-        let chart = TimeSeriesChart::new([0.0, 5.0, 10.0]);
-        let points = chart.points(bounds(108.0, 120.0));
-        assert_eq!(points.len(), 3);
-        assert_eq!(points[0], (8.0, 110.0));
-        assert_eq!(points[1], (54.0, 60.0));
-        assert_eq!(points[2], (100.0, 10.0));
-    }
-
-    #[test]
-    fn non_finite_and_negative_values_become_zero() {
-        let chart = TimeSeriesChart::new([f64::NAN, -2.0, 4.0, f64::INFINITY]);
-        assert_eq!(chart.values, vec![0.0, 0.0, 4.0, 0.0]);
-        let points = chart.points(bounds(108.0, 120.0));
-        assert_eq!(points.len(), 4);
-        assert_eq!(points[2].1, 10.0);
-        assert!(points[0].1 > points[2].1);
-        assert_eq!(points[0].1, points[1].1);
-        assert_eq!(points[0].1, points[3].1);
-    }
-
-    #[test]
-    fn higher_values_have_smaller_y() {
-        let chart = TimeSeriesChart::new([1.0, 3.0, 2.0]);
-        let points = chart.points(bounds(108.0, 120.0));
-        assert_eq!(points.len(), 3);
-        assert!(points[1].1 < points[2].1);
-        assert!(points[2].1 < points[0].1);
-    }
-
-    #[test]
-    fn chart_projects_a_fill_width_inert_leaf() {
-        let mut context = AppContext::new();
-        let chart = context
-            .create_component(document(), TimeSeriesChart::new([1.0, 2.0, 3.0]))
-            .unwrap();
-        let id = chart.stable_id();
-        assert!(matches!(
-            context.world().node(id).unwrap().kind,
-            NodeKind::Element { tag } if tag == "time-series-chart"
-        ));
-        assert!(matches!(
-            context.world().standard_visual(id),
-            Some(StandardVisual::TimeSeriesChart { .. })
-        ));
-        let style = context.world().node_style(id).unwrap();
-        assert_eq!(style.layout.width, Some(LengthSpec::Fill));
-        assert_eq!(
-            style.layout.height,
-            Some(LengthSpec::Px(TimeSeriesChart::INTRINSIC_HEIGHT))
-        );
-        assert_eq!(context.world().interaction(id), Some(inert()));
-        let accessibility = context.world().accessibility(id).unwrap();
-        assert_eq!(accessibility.role, AccessibilityRole::Image);
-        assert_eq!(accessibility.label.as_deref(), Some(DEFAULT_LABEL));
-    }
-
-    #[test]
-    fn chart_commits_time_series_standard_visual() {
-        let mut context = AppContext::new();
-        let view = TimeSeriesChart::new([1.0, 2.0, 3.0]);
-        let expected = StandardVisual::TimeSeriesChart {
-            values: view.values.clone().into(),
-        };
-        let chart = context.create_component(document(), view).unwrap();
-        assert_eq!(
-            context.world().standard_visual(chart.stable_id()),
-            Some(expected)
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into();
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style,
+            InteractionState::default(),
+            AccessibilityState {
+                role: AccessibilityRole::Tooltip,
+                label: Some(label),
+                ..AccessibilityState::default()
+            },
         );
     }
 }

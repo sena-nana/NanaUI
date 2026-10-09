@@ -187,6 +187,24 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
         ),
         // A custom node's contents are the host's, not the theme's.
         ScenePrimitiveKind::Custom { .. } => format!("custom {head}"),
+        // A chart's marks: what they draw and the theme colours they draw
+        // with.
+        ScenePrimitiveKind::Chart { marks, .. } => format!(
+            "chart {head} draws={} points={} shapes={} styles=[{}]",
+            marks.draws.len(),
+            marks.points.len(),
+            marks.shapes.len(),
+            marks
+                .styles
+                .iter()
+                .map(|style| rgba(Some(if style.fill[3] > 0.0 {
+                    style.fill
+                } else {
+                    style.stroke
+                })))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
     }
 }
 

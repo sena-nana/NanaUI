@@ -662,7 +662,7 @@ fn graph_canvas_stroke_paints_capsule_coverage_on_gpu() {
         scene
             .primitives()
             .any(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. })),
-        "GraphCanvas edges must extract as Stroke, not TimeSeriesChart quads"
+        "GraphCanvas edges must extract as Stroke, not quads"
     );
     let viewport = ScenePaintViewport {
         logical_size: [64.0, 64.0],
@@ -1562,87 +1562,6 @@ fn spinner_ticks_paint_capsule_coverage_on_gpu() {
 }
 
 #[test]
-#[cfg(feature = "charts")]
-fn time_series_line_paints_capsule_coverage_on_gpu() {
-    let (device, queue) = test_device();
-    let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::for_test(format);
-    let mut scene = UiScene::new();
-    scene.apply_delta(
-        [
-            colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [0.0, 0.0, 1.0, 1.0]),
-            time_series_stroke_node(
-                2,
-                vec![[8.0, 32.0], [56.0, 32.0], [56.0, 12.0]],
-                [1.0, 0.0, 0.0, 1.0],
-            ),
-        ],
-        [],
-    );
-    assert!(
-        scene
-            .primitives()
-            .any(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Stroke { .. })),
-        "TimeSeriesChart line must extract as Stroke, not tiled QuadBatch"
-    );
-    let pixels = paint_scene_rgba(
-        &device,
-        &queue,
-        &mut painter,
-        &scene,
-        [64.0, 64.0],
-        [64, 64],
-        1.0,
-    );
-    let midline = pixel(&pixels, 64, 32, 32);
-    assert!(
-        is_red_slot(midline),
-        "chart line midline must ink the 2px capsule, got {midline:?}"
-    );
-    let join = pixel(&pixels, 64, 56, 32);
-    assert!(
-        join[0] > 120,
-        "articulated join must keep the shared endpoint disc, got {join:?}"
-    );
-    let far = pixel(&pixels, 64, 32, 8);
-    assert!(
-        is_blue_slot(far),
-        "pixels outside the 2px capsule must stay the sibling fill, got {far:?}"
-    );
-    let covering_corner = pixel(&pixels, 64, 32, 28);
-    assert!(
-        covering_corner[2] > 120 && covering_corner[0] < 80,
-        "covering-quad corners 4px off the 1px radius must be discarded, got {covering_corner:?}"
-    );
-}
-
-#[cfg(feature = "charts")]
-fn time_series_stroke_node(value: u64, points: Vec<[f32; 2]>, color: [f32; 4]) -> ExtractedNode {
-    let mut node = extracted_div(
-        value,
-        &[],
-        0.0,
-        0.0,
-        64.0,
-        64.0,
-        nana_ui_core::LayoutStyle::default(),
-        None,
-    );
-    node.standard_visual = Some(StandardVisual::TimeSeriesChart {
-        values: Arc::from([0.0, 1.0]),
-    });
-    node.component_geometry = Some(Box::new(ComponentGeometry::TimeSeriesChart {
-        grid: Vec::new(),
-        area: Vec::new(),
-        line: points,
-        grid_color: [0.0, 0.0, 0.0, 0.0],
-        area_color: [0.0, 0.0, 0.0, 0.0],
-        line_color: color,
-    }));
-    node
-}
-
-#[test]
 #[cfg(feature = "graph-canvas")]
 fn graph_canvas_stroke_gpu_upload_scales_with_segment_count() {
     let (device, queue) = test_device();
@@ -1773,7 +1692,7 @@ pub(super) fn paint_scene_rgba(
     pixels
 }
 
-#[cfg(feature = "graph-canvas")]
+#[cfg(any(feature = "graph-canvas", feature = "charts"))]
 fn encode_scene_gpu_work(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -3517,75 +3436,513 @@ fn rectangle_and_polygon_clip_edges_stay_one_device_pixel_under_a_transform() {
 }
 
 #[cfg(feature = "charts")]
-#[test]
-fn a_donut_slice_is_one_solid_colour_across_its_whole_sweep() {
-    // A clip edge ramps over one device pixel, so a slice cut into wedges
-    // painted edge to edge leaves each side of a cut about half its colour:
-    // over each other, a seam at three quarters. Off the box's pixel grid,
-    // a cut along an axis shows as well as a diagonal one.
-    use nana_ui_runtime::{DonutChart, DonutSlice};
-    let chart = DonutChart::new([5.0, 3.0, 2.0].map(|value| DonutSlice {
-        value,
-        color: SemanticColorRole::Accent,
-    }));
-    let bounds = LayoutBox {
-        x: 4.3,
-        y: 6.7,
-        width: 116.0,
-        height: 116.0,
-    };
-    let (device, queue) = test_device();
-    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
-    let mut context = AppContext::new();
-    let document = DocumentId::new(1).unwrap();
-    let entity = context.create_component(document, chart.clone()).unwrap();
-    let mut layout = MutationQueue::new();
-    write_box(
-        &mut layout,
-        entity.stable_id(),
-        bounds.x,
-        bounds.y,
-        bounds.width,
-        bounds.height,
-    );
-    context.commit_mutations(layout).unwrap();
-    let scene = commit_scene(&mut context);
-    let pixels = paint_scene_rgba(
-        &device,
-        &queue,
-        &mut painter,
-        &scene,
-        [128.0, 128.0],
-        [128, 128],
-        1.0,
-    );
-    let mut solid: [Option<[u8; 4]>; 3] = [None; 3];
-    let mut checked = [0; 3];
-    for py in 0..128 {
-        for px in 0..128 {
-            let [x, y] = [px as f32 + 0.5, py as f32 + 0.5];
-            // At least 1.4 px inside its slice: clear of the gaps between
-            // slices and of the ring's own edges.
-            let Some(slice) = chart.slice_at(bounds, x, y) else {
-                continue;
-            };
-            let inside = (0..8).all(|step| {
-                let angle = step as f32 * std::f32::consts::FRAC_PI_4;
-                chart.slice_at(bounds, x + 1.5 * angle.cos(), y + 1.5 * angle.sin()) == Some(slice)
-            });
-            if !inside {
-                continue;
-            }
-            let got = pixel(&pixels, 128, px, py);
-            let colour = *solid[slice].get_or_insert(got);
-            assert!(
-                got.iter().zip(colour).all(|(a, b)| a.abs_diff(b) <= 2),
-                "slice {slice}: ({px},{py}) is {got:?}, the rest of it {colour:?}"
+mod chart_gpu {
+    //! Chart marks on the GPU: every edge one device pixel of ramp, a
+    //! translucent line painted once where its segments overlap, slices and
+    //! area cells without seams, and arrays kept while nothing changes.
+    use super::*;
+    use nana_ui_charts::hit::ItemRegion;
+    use nana_ui_charts::*;
+
+    const SIZE: f32 = 128.0;
+
+    /// A chart filling a `SIZE` box at `(x, y)`, its layout and its paint
+    /// over black. Motion is off so the first frame is the last.
+    fn paint(option: ChartOption, at: [f32; 2], scale: f32) -> (Vec<u8>, Arc<ChartLayout>) {
+        let option = option.animation(Animation::disabled());
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let chart = context
+            .create_component(document, nana_ui_runtime::Chart::new(option))
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, chart.stable_id(), at[0], at[1], SIZE, SIZE);
+        context.commit_mutations(layout).unwrap();
+        let scene = commit_scene(&mut context);
+        let Some(ComponentGeometry::Chart { layout, .. }) =
+            context.world().component_geometry(chart.stable_id())
+        else {
+            panic!("chart geometry");
+        };
+        let (device, queue) = test_device();
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+        let side = ((SIZE + at[0].max(at[1])) * scale).ceil() as u32 + 2;
+        let logical = side as f32 / scale;
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [logical, logical],
+            [side, side],
+            scale,
+        );
+        (pixels, layout)
+    }
+
+    fn side(pixels: &[u8]) -> u32 {
+        ((pixels.len() / 4) as f64).sqrt() as u32
+    }
+
+    /// A bare plot: no axes, labels, split lines or tooltip.
+    fn bare() -> ChartOption {
+        ChartOption::new()
+            .grid(Grid {
+                left: Some(Length::Px(0.0)),
+                right: Some(Length::Px(0.0)),
+                top: Some(Length::Px(0.0)),
+                bottom: Some(Length::Px(0.0)),
+                contain_label: false,
+            })
+            .tooltip(Tooltip::hidden())
+            .x_axis(Axis::value().show(false).split_line(false))
+            .y_axis(Axis::value().show(false).split_line(false))
+    }
+
+    fn white(alpha: f32) -> ChartColor {
+        ChartColor::Rgba([1.0, 1.0, 1.0, alpha])
+    }
+
+    fn brightest(pixels: &[u8]) -> u8 {
+        pixels.chunks(4).map(|p| p[0]).max().unwrap()
+    }
+
+    #[test]
+    fn a_translucent_line_is_painted_once_where_its_segments_meet() {
+        let line = |points: Vec<[f64; 2]>| {
+            bare().series(
+                LineSeries::new("l", points)
+                    .color(white(0.5))
+                    .width(8.0)
+                    .symbol(Symbol::None, 0.0),
+            )
+        };
+        let (straight, _) = paint(line(vec![[0.0, 0.5], [1.0, 0.5]]), [0.0, 0.0], 1.0);
+        let reference = brightest(&straight);
+        assert!(reference > 40, "the straight line inks: {reference}");
+        // Short segments a fraction of the width, turning sharply.
+        let zigzag: Vec<[f64; 2]> = (0..40)
+            .map(|i| [i as f64 / 39.0, if i % 2 == 0 { 0.45 } else { 0.55 }])
+            .collect();
+        let (pixels, _) = paint(line(zigzag), [0.0, 0.0], 1.0);
+        let peak = brightest(&pixels);
+        assert!(
+            peak <= reference + 2,
+            "overlapping segments blended twice: {peak} over a single {reference}"
+        );
+    }
+
+    #[test]
+    fn line_edges_ramp_over_one_device_pixel_at_any_scale() {
+        for scale in [1.0_f32, 2.0] {
+            let option = bare().series(
+                LineSeries::new("l", vec![[0.0, 0.5], [1.0, 0.5]])
+                    .color(white(1.0))
+                    .width(3.0)
+                    .symbol(Symbol::None, 0.0),
             );
-            checked[slice] += 1;
+            let (pixels, _) = paint(option, [0.3, 0.3], scale);
+            let width = side(&pixels);
+            let column = width / 2;
+            let partial = (0..width)
+                .map(|y| pixel(&pixels, width, column, y)[0])
+                .filter(|v| *v > 8 && *v < 247)
+                .count();
+            // One partial pixel above the line and one below.
+            assert!(
+                (1..=3).contains(&partial),
+                "scale {scale}: {partial} partly covered pixels across the edge"
+            );
         }
     }
-    assert!(checked.iter().all(|&count| count > 300), "{checked:?}");
+
+    #[test]
+    fn bar_edges_ramp_and_their_insides_are_solid() {
+        let option = ChartOption::new()
+            .tooltip(Tooltip::hidden())
+            .x_axis(Axis::category(["a", "b"]).show(false))
+            .y_axis(Axis::value().show(false).split_line(false))
+            .series(BarSeries::new("b", [1.0, 0.6]).color(white(1.0)));
+        let (pixels, layout) = paint(option, [0.37, 0.61], 1.0);
+        let width = side(&pixels);
+        let bar = layout
+            .marks
+            .shapes
+            .iter()
+            .find(|s| s.kind() == ShapeKind::Rect as u32 && s.meta[2] == 0)
+            .expect("a bar")
+            .to;
+        let (x0, x1) = (bar[0] + 0.37, bar[2] + 0.37);
+        let y = ((bar[1] + bar[3]) * 0.5 + 0.61) as u32;
+        let inside = pixel(&pixels, width, ((x0 + x1) * 0.5) as u32, y)[0];
+        assert!(inside >= 250, "a bar's inside is solid: {inside}");
+        let outside = pixel(&pixels, width, (x0 - 2.0) as u32, y)[0];
+        assert!(outside <= 4, "left of the bar is clear: {outside}");
+        // The pixel the edge cuts is covered by about the part it covers.
+        let edge = x0.floor() as u32;
+        let cover = 1.0 - (x0 - x0.floor());
+        let got = pixel(&pixels, width, edge, y)[0] as f32 / 255.0;
+        assert!(
+            got > 0.02 && got < 0.98 && (got - cover).abs() < 0.35,
+            "edge pixel {got} for coverage {cover}"
+        );
+    }
+
+    #[test]
+    fn a_pie_slice_is_one_solid_colour_across_its_whole_sweep() {
+        let option = ChartOption::new().tooltip(Tooltip::hidden()).series(
+            PieSeries::new(
+                "p",
+                [
+                    PieItem::new("a", 5.0).color(ChartColor::Rgba([1.0, 0.0, 0.0, 1.0])),
+                    PieItem::new("b", 3.0).color(ChartColor::Rgba([0.0, 1.0, 0.0, 1.0])),
+                    PieItem::new("c", 2.0).color(ChartColor::Rgba([0.0, 0.0, 1.0, 1.0])),
+                ],
+            )
+            .ring(0.4, 0.9)
+            .label(PieLabelPosition::None),
+        );
+        let at = [4.3, 6.7];
+        let (pixels, layout) = paint(option, at, 1.0);
+        let width = side(&pixels);
+        let slice_at = |x: f32, y: f32| {
+            layout.hit.items.iter().position(|item| match item.region {
+                // The hit region reaches past the ring for the hover
+                // growth; draw only the ring itself.
+                ItemRegion::Sector {
+                    center,
+                    start,
+                    end,
+                    inner,
+                    outer,
+                } => ItemRegion::Sector {
+                    center,
+                    start,
+                    end,
+                    inner,
+                    outer: outer - nana_ui_charts::hit::EMPHASIS_GROWTH,
+                }
+                .contains([x - at[0], y - at[1]]),
+                region => region.contains([x - at[0], y - at[1]]),
+            })
+        };
+        let mut solid: [Option<[u8; 4]>; 3] = [None; 3];
+        let mut checked = [0; 3];
+        for py in 0..width {
+            for px in 0..width {
+                let [x, y] = [px as f32 + 0.5, py as f32 + 0.5];
+                let Some(slice) = slice_at(x, y) else {
+                    continue;
+                };
+                // Well clear of the gaps and the ring's edges.
+                let clear = (0..8).all(|step| {
+                    let angle = step as f32 * std::f32::consts::FRAC_PI_4;
+                    slice_at(x + 3.0 * angle.cos(), y + 3.0 * angle.sin()) == Some(slice)
+                });
+                if !clear {
+                    continue;
+                }
+                let got = pixel(&pixels, width, px, py);
+                let colour = *solid[slice].get_or_insert(got);
+                assert!(
+                    got.iter().zip(colour).all(|(a, b)| a.abs_diff(b) <= 2),
+                    "slice {slice}: ({px},{py}) is {got:?}, the rest of it {colour:?}"
+                );
+                checked[slice] += 1;
+            }
+        }
+        assert!(checked.iter().all(|&count| count > 150), "{checked:?}");
+        // The gap between slices is clear.
+        assert!(solid.iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn area_cells_meet_without_seams() {
+        let points: Vec<[f64; 2]> = (0..60)
+            .map(|i| {
+                let t = i as f64 / 59.0;
+                [t, 0.6 + 0.3 * (t * 9.0).sin()]
+            })
+            .collect();
+        let option = bare().series(
+            LineSeries::new("a", points)
+                .color(white(0.0))
+                .width(0.0)
+                .symbol(Symbol::None, 0.0)
+                .area(AreaStyle {
+                    color: Some(white(0.5)),
+                    opacity: 1.0,
+                    gradient: false,
+                }),
+        );
+        let (pixels, layout) = paint(option, [0.5, 0.5], 1.0);
+        let width = side(&pixels);
+        let plot = layout.plot.expect("plot");
+        // Just above the base, every column is covered once.
+        let row = (plot[3] - 3.0) as u32;
+        let values: Vec<u8> = (plot[0] as u32 + 2..plot[2] as u32 - 1)
+            .map(|x| pixel(&pixels, width, x, row)[0])
+            .collect();
+        let first = values[0];
+        assert!(first > 40, "the area inks: {first}");
+        assert!(
+            values.iter().all(|v| v.abs_diff(first) <= 2),
+            "a seam between cells: {values:?}"
+        );
+    }
+
+    #[test]
+    fn radar_and_gauge_draw() {
+        let radar = ChartOption::new()
+            .tooltip(Tooltip::hidden())
+            .radar(RadarCoord::new([
+                RadarIndicator::new("a").max(1.0),
+                RadarIndicator::new("b").max(1.0),
+                RadarIndicator::new("c").max(1.0),
+            ]))
+            .series(
+                RadarSeries::new("r", [RadarItem::new("x", vec![1.0, 0.5, 0.8])])
+                    .area(AreaStyle::default()),
+            );
+        let (pixels, _) = paint(radar, [0.0, 0.0], 1.0);
+        assert!(brightest(&pixels) > 40);
+        let gauge = ChartOption::new()
+            .tooltip(Tooltip::hidden())
+            .series(GaugeSeries::new("g", 40.0));
+        let (pixels, _) = paint(gauge, [0.0, 0.0], 1.0);
+        assert!(brightest(&pixels) > 40);
+    }
+
+    /// Timings and upload volumes for the chart paths that run often. Not
+    /// a gate: run with `--release -- --ignored --nocapture` and read.
+    #[test]
+    #[ignore = "measurement; run in release with --nocapture"]
+    fn chart_cost_probe() {
+        use std::time::Instant;
+        let theme_option = ChartOption::new();
+        let palette = nana_ui_core::SemanticPalette::dark();
+        let lay = |option: &ChartOption| {
+            let theme = ChartTheme::new(&palette, option, |_| [0.5; 4]);
+            layout(&LayoutInput {
+                option,
+                size: [800.0, 400.0],
+                theme: &theme,
+                measure: &ApproximateMeasure,
+                state: &ChartViewState::default(),
+            })
+        };
+        let _ = theme_option;
+        let time = |label: &str, runs: u32, mut work: Box<dyn FnMut()>| {
+            work();
+            let started = Instant::now();
+            for _ in 0..runs {
+                work();
+            }
+            let each = started.elapsed() / runs;
+            eprintln!("{label}: {each:?}");
+        };
+        let scatter: Vec<[f64; 2]> = (0..100_000)
+            .map(|i| {
+                let t = i as f64 * 0.001;
+                [
+                    t.sin() * 100.0 + (i % 97) as f64,
+                    t.cos() * 50.0 + (i % 89) as f64,
+                ]
+            })
+            .collect();
+        let scatter_option = ChartOption::new()
+            .x_axis(Axis::value())
+            .y_axis(Axis::value())
+            .series(ScatterSeries::new("s", scatter).symbol(Symbol::Circle, 3.0));
+        time(
+            "layout scatter 100k",
+            5,
+            Box::new(|| {
+                let _ = lay(&scatter_option);
+            }),
+        );
+        let long: Vec<f64> = (0..100_000).map(|i| (i as f64 * 0.01).sin()).collect();
+        let long_option = ChartOption::new()
+            .x_axis(Axis::category((0..100_000).map(|i| i.to_string())).show(false))
+            .y_axis(Axis::value())
+            .series(
+                LineSeries::new("l", long)
+                    .sampling(Sampling::MinMax)
+                    .symbol(Symbol::None, 0.0),
+            );
+        time(
+            "layout line 100k min-max",
+            5,
+            Box::new(|| {
+                let _ = lay(&long_option);
+            }),
+        );
+        let stream = |offset: usize| {
+            ChartOption::new()
+                .animation(Animation::disabled())
+                .x_axis(Axis::category(
+                    (offset..offset + 600).map(|i| i.to_string()),
+                ))
+                .y_axis(Axis::value())
+                .series(
+                    LineSeries::new(
+                        "frame ms",
+                        (offset..offset + 600)
+                            .map(|i| 16.0 + (i as f64 * 0.3).sin() * 3.0)
+                            .collect::<Vec<_>>(),
+                    )
+                    .symbol(Symbol::None, 0.0),
+                )
+        };
+        let mut offset = 0;
+        time(
+            "layout stream 600 (one append)",
+            200,
+            Box::new(move || {
+                offset += 1;
+                let _ = lay(&stream(offset));
+            }),
+        );
+        let hover_layout = lay(&stream(0));
+        let hover_option = stream(0);
+        let mut x = 0.0_f32;
+        time(
+            "hover_at (axis trigger, 600 points)",
+            10_000,
+            Box::new(move || {
+                x = (x + 7.0) % 800.0;
+                let _ = hover_layout.hover_at(&hover_option, [x, 200.0]);
+            }),
+        );
+        let scatter_hover = lay(&scatter_option);
+        let scatter_option_ref = scatter_option.clone();
+        let mut y = 0.0_f32;
+        time(
+            "hover_at (item trigger, 100k symbols)",
+            200,
+            Box::new(move || {
+                y = (y + 3.0) % 400.0;
+                let _ = scatter_hover.hover_at(&scatter_option_ref, [400.0, y]);
+            }),
+        );
+
+        // The painter: a chart in motion, a frame where only time moved,
+        // and a streaming append.
+        let (device, queue) = test_device();
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let chart = context
+            .create_component(document, nana_ui_runtime::Chart::new(stream(0)))
+            .unwrap();
+        let mut boxes = MutationQueue::new();
+        write_box(&mut boxes, chart.stable_id(), 0.0, 0.0, 64.0, 64.0);
+        context.commit_mutations(boxes).unwrap();
+        let scene = commit_scene(&mut context);
+        let first = encode_scene_gpu_work(&device, &queue, &mut painter, &scene);
+        let still = encode_scene_gpu_work(&device, &queue, &mut painter, &scene);
+        eprintln!("painter first frame: {first:?}");
+        eprintln!("painter frame, nothing changed: {still:?}");
+        context
+            .update_component(chart, |chart, _| chart.set_option(stream(1)))
+            .unwrap();
+        let scene = commit_scene(&mut context);
+        let appended = encode_scene_gpu_work(&device, &queue, &mut painter, &scene);
+        eprintln!("painter frame after one append: {appended:?}");
+    }
+
+    /// The shaders sample a transition the way `MarkTransition::progress`
+    /// says: a bar half way through its entry is as tall as the CPU curve.
+    #[test]
+    fn a_bar_mid_entry_is_as_tall_as_the_cpu_easing_says() {
+        let option = ChartOption::new()
+            .animation(Animation {
+                duration: 1.0,
+                easing: nana_ui_core::Easing::EaseOutCubic,
+                ..Animation::default()
+            })
+            .tooltip(Tooltip::hidden())
+            .x_axis(Axis::category(["a"]).show(false))
+            .y_axis(Axis::value().show(false).split_line(false))
+            .series(BarSeries::new("b", [1.0]).color(white(1.0)));
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let chart = context
+            .create_component(document, nana_ui_runtime::Chart::new(option))
+            .unwrap();
+        let mut boxes = MutationQueue::new();
+        write_box(&mut boxes, chart.stable_id(), 0.0, 0.0, SIZE, SIZE);
+        context.commit_mutations(boxes).unwrap();
+        let mut scene = commit_scene(&mut context);
+        let Some(ComponentGeometry::Chart { layout, .. }) =
+            context.world().component_geometry(chart.stable_id())
+        else {
+            panic!("chart geometry");
+        };
+        let motion = layout.marks.transition.expect("entry motion");
+        let bar = layout
+            .marks
+            .shapes
+            .iter()
+            .find(|s| s.kind() == ShapeKind::Rect as u32 && s.meta[2] == 0)
+            .unwrap();
+        let (device, queue) = test_device();
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+        for at in [0.25_f32, 0.5, 0.8] {
+            let now = motion.start + std::time::Duration::from_secs_f32(at);
+            scene.apply_presentation(context.world().presentation_store(), now, None);
+            let t = motion.progress(now);
+            let top = bar.from[1] + (bar.to[1] - bar.from[1]) * t;
+            let pixels = paint_scene_rgba(
+                &device,
+                &queue,
+                &mut painter,
+                &scene,
+                [SIZE, SIZE],
+                [SIZE as u32, SIZE as u32],
+                1.0,
+            );
+            // The column's coverage sums to the painted height.
+            let column = ((bar.to[0] + bar.to[2]) * 0.5) as u32;
+            let painted: f32 = (0..SIZE as u32)
+                .map(|y| pixel(&pixels, SIZE as u32, column, y)[0] as f32 / 255.0)
+                .sum();
+            let expected = bar.to[3] - top;
+            assert!(
+                (painted - expected).abs() < 0.75,
+                "at {at}s the bar is {painted}px, the CPU curve says {expected}px"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unchanged_chart_uploads_nothing_the_second_time() {
+        let option = ChartOption::new()
+            .animation(Animation::disabled())
+            .x_axis(Axis::category(["a", "b", "c"]))
+            .y_axis(Axis::value())
+            .series(LineSeries::new("l", [1.0, 3.0, 2.0]));
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let chart = context
+            .create_component(document, nana_ui_runtime::Chart::new(option))
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        write_box(&mut layout, chart.stable_id(), 0.0, 0.0, 64.0, 64.0);
+        context.commit_mutations(layout).unwrap();
+        let scene = commit_scene(&mut context);
+        let (device, queue) = test_device();
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
+        let first = encode_scene_gpu_work(&device, &queue, &mut painter, &scene);
+        assert!(first.gpu_upload_bytes > 0);
+        // A clone is a new scene instance: the batch is rebuilt, the chart's
+        // arrays are not sent again.
+        let again = encode_scene_gpu_work(&device, &queue, &mut painter, &scene.clone());
+        assert!(
+            again.gpu_upload_bytes < first.gpu_upload_bytes / 4,
+            "{again:?} after {first:?}"
+        );
+    }
 }
 
 #[test]

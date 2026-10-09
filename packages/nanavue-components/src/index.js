@@ -68,8 +68,6 @@ export { NanaTable } from "./NanaTable.js";
 export { NanaTableRow } from "./NanaTableRow.js";
 export { NanaTableCell } from "./NanaTableCell.js";
 export { NanaReorderList } from "./NanaReorderList.js";
-export { NanaDonutChart } from "./NanaDonutChart.js";
-export { NanaTimeSeriesChart } from "./NanaTimeSeriesChart.js";
 export { NanaDropdown } from "./NanaDropdown.js";
 export { NanaSearch } from "./NanaSearch.js";
 export { NanaThemeToggle } from "./NanaThemeToggle.js";

@@ -1542,7 +1542,8 @@ mod tests {
         );
         assert_eq!(
             resolve_kind_from_hints("nana-time-series-chart", None, None, None),
-            Some(WidgetKind::TimeSeriesChart)
+            None,
+            "charts are Rust-only: an option is typed data"
         );
         assert_eq!(
             resolve_kind_from_hints("nana-settings-collapsible-card", None, None, None),

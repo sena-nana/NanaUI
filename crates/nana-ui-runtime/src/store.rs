@@ -868,8 +868,6 @@ fn measures_text_each_pass(visual: &StandardVisual) -> bool {
         | StandardVisual::CommandPalette { .. } => true,
         #[cfg(feature = "calendar")]
         StandardVisual::CalendarHeatmap { .. } => true,
-        #[cfg(feature = "charts")]
-        StandardVisual::StackedTimeSeriesChart { .. } => true,
         _ => false,
     }
 }

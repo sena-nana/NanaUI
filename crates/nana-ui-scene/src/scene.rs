@@ -367,6 +367,31 @@ pub enum ScenePrimitiveKind {
     },
     /// The layer closes, after `mask` has been applied to it.
     LayerEnd { mask: Option<LayerMask> },
+    /// A chart's marks (`nana-ui-charts`), drawn by the chart shaders from
+    /// arrays the painter keeps on the GPU while `marks.revision` holds.
+    /// Marks are node-local; `origin` places them in layout space. Motion
+    /// and hover emphasis are sampled on the motion clock, so neither
+    /// rebuilds anything per frame.
+    Chart {
+        marks: nana_ui_charts::ChartMarks,
+        origin: [f32; 2],
+        hover: SceneChartHover,
+    },
+}
+
+/// What a chart's shaders emphasise, and since when.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneChartHover {
+    /// `(series, index)` emphasised now and before.
+    pub current: [u32; 2],
+    pub previous: [u32; 2],
+    /// Focused series now and before.
+    pub focus: [u32; 2],
+    pub since: std::time::Duration,
+    /// Seconds an emphasis change takes.
+    pub duration: f32,
+    /// px a hovered slice grows.
+    pub growth: f32,
 }
 
 /// A mesh applied to a painter layer before it composites.
@@ -1224,6 +1249,8 @@ pub struct UiScene {
     /// changing (`None`: a looping effect). What keeps frames coming while a
     /// reveal plays and stops them once it has finished.
     glyph_live: NodeMap<Option<std::time::Duration>>,
+    /// Charts in motion, by node: until when their marks or emphasis move.
+    chart_live: NodeMap<std::time::Duration>,
     /// Inline objects of presenting text nodes, as laid out, so each
     /// compositor tick can move, scale and fade them the way the glyphs
     /// around them are (the text shader cannot reach them: they are images).
@@ -1264,6 +1291,7 @@ impl Default for UiScene {
             custom_paint: NodeMap::default(),
             dest_group_candidates: 0,
             glyph_live: NodeMap::default(),
+            chart_live: NodeMap::default(),
             glyph_objects: NodeMap::default(),
             instance: next_scene_instance(),
             corner_shape: nana_ui_core::CornerShape::Round,
@@ -1301,6 +1329,7 @@ impl Clone for UiScene {
             custom_paint: self.custom_paint.clone(),
             dest_group_candidates: self.dest_group_candidates,
             glyph_live: self.glyph_live.clone(),
+            chart_live: self.chart_live.clone(),
             glyph_objects: self.glyph_objects.clone(),
             instance: next_scene_instance(),
             corner_shape: self.corner_shape,
@@ -2173,6 +2202,7 @@ impl UiScene {
 
     fn remove_node_primitives(&mut self, id: StableNodeId) {
         self.glyph_live.remove(&id);
+        self.chart_live.remove(&id);
         self.glyph_objects.remove(&id);
         self.retire_node_primitives(id, |_| true);
     }
@@ -2226,6 +2256,13 @@ impl UiScene {
 
     /// Whether a text node's per-glyph presentation still changes what is
     /// drawn at the motion clock's time.
+    /// Whether a chart's marks or emphasis are still moving: the painter
+    /// cannot reuse the painted frame, and the host keeps presenting.
+    pub fn chart_presentation_live(&self) -> bool {
+        let now = self.compositor_now();
+        self.chart_live.values().any(|until| *until > now)
+    }
+
     pub fn glyph_presentation_live(&self) -> bool {
         let now = self.compositor_now();
         self.glyph_live

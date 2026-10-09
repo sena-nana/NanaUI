@@ -597,9 +597,9 @@ pub(super) fn write_evidence(
                     })
             })
         }
-    } else if fixture.component == Component::TimeSeriesChart && fixture.state == "stacked" {
-        // A stacked chart answers hover with a per-datum tooltip, so the
-        // pointer has to reach it — unlike the plain series below.
+    } else if fixture.component == Component::Chart {
+        // A chart answers hover with emphasis and a tooltip, so the pointer
+        // has to reach it.
         hit == Some(runtime.target)
     } else if matches!(
         fixture.component,
@@ -614,7 +614,6 @@ pub(super) fn write_evidence(
             | Component::Thumbnail
             | Component::Avatar
             | Component::QrCode
-            | Component::TimeSeriesChart
             | Component::KeyCaptureLayer
             | Component::KeymapLayer
     ) {
@@ -1061,8 +1060,7 @@ pub(super) fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         ),
         (
             Component::CalendarHeatmap
-            | Component::TimeSeriesChart
-            | Component::DonutChart
+            | Component::Chart
             | Component::ReorderList
             | Component::NativeMarkdown
             | Component::SelectableRichText

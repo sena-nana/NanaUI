@@ -390,6 +390,12 @@ impl AppContext {
                 if let Some(target) = hit {
                     if *button == 0
                         && !activation_click
+                        && self.press_pointer_hook(*pointer_id, target, *x, *y, modifiers.shift)?
+                    {
+                        return Ok(CONSUMED);
+                    }
+                    if *button == 0
+                        && !activation_click
                         && optional_input!(
                             "rich-text",
                             self.begin_rich_text_pointer(document, *pointer_id, target, *x, *y)
@@ -490,6 +496,9 @@ impl AppContext {
             }
             PointerPhase::Up if (*is_primary && *button == 0) || *button == 1 => {
                 if self.end_text_area_resize(document, *pointer_id, false)? {
+                    return Ok(CONSUMED);
+                }
+                if self.release_pointer_hook(document, *pointer_id, *x, *y, modifiers.shift)? {
                     return Ok(CONSUMED);
                 }
                 if optional_input!(
@@ -684,6 +693,24 @@ impl AppContext {
             *y,
         )?;
         *landed = overlay.target;
+        if let Some(target) = overlay.target
+            && let Some(hooks) = self.pointer_hooks(target)
+            && let Some(pointer) = self.node_pointer(target, wheel.pointer_id.0, *x, *y, false)
+            && hooks.wheel(
+                self,
+                target,
+                crate::NodeWheel {
+                    pointer_id: wheel.pointer_id.0,
+                    x: pointer.x,
+                    y: pointer.y,
+                    delta_x: dx * scale,
+                    delta_y: dy * scale,
+                    ctrl: wheel.modifiers.control || wheel.modifiers.meta,
+                },
+            )?
+        {
+            return Ok(CONSUMED);
+        }
         // 锚定浮层（补全弹层 / hover 浮窗）优先：指针落在浮层面板
         #[cfg(feature = "image-viewer")]
         if let Some(viewer) = overlay

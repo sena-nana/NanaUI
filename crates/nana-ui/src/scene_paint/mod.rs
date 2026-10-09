@@ -7,6 +7,7 @@
 
 mod backdrop;
 mod buffer_upload;
+mod chart;
 mod clip;
 mod color;
 mod dest;
@@ -405,6 +406,10 @@ pub struct SceneWgpuPainter {
     /// Shared by every target; target-local bindings follow `image_revision`.
     url_cache: UrlTextureCache,
     backdrop: BackdropPipeline,
+    /// Built on the first chart this painter draws.
+    charts: Option<chart::ChartPipeline>,
+    /// The active target's chart arrays.
+    chart_target: chart::ChartPipelineTarget,
     dest: Option<DestTarget>,
     /// Shared across resize-driven `DestTarget` recreations so the blit
     /// pipeline is not recompiled on every interactive resize event. `None`
@@ -463,6 +468,7 @@ struct TargetState {
     icons: Option<icon::IconPipelineTarget>,
     text: Option<text::TextPipelineTarget>,
     backdrop: Option<backdrop::BackdropPipelineTarget>,
+    charts: chart::ChartPipelineTarget,
     host_textures: crate::gpu_texture::GpuTextureTarget,
     dest: Option<DestTarget>,
     painted: Option<PaintedDest>,
@@ -509,6 +515,12 @@ enum DrawCommand {
     },
     Path {
         range: PathRange,
+        scissor: PhysicalRect,
+    },
+    /// Draw `draw` of the chart in batch slot `slot`.
+    Chart {
+        slot: u32,
+        draw: u32,
         scissor: PhysicalRect,
     },
     /// A painter layer's mask, applied to the open group before it pops.
@@ -649,6 +661,8 @@ impl SceneWgpuPainter {
                 cache
             },
             backdrop,
+            charts: None,
+            chart_target: chart::ChartPipelineTarget::default(),
             dest: None,
             // Pipeline-cache reuse requires a host-enabled device feature;
             // the painter must not demand it, so degrade to per-recreate
@@ -899,6 +913,7 @@ impl SceneWgpuPainter {
         self.icons.swap_target(&mut state.icons, &self.device);
         self.text.swap_target(&mut state.text, &self.device);
         self.backdrop.swap_target(&mut state.backdrop, &self.device);
+        std::mem::swap(&mut self.chart_target, &mut state.charts);
         self.host_textures.swap_target(&mut state.host_textures);
     }
 
@@ -1093,7 +1108,8 @@ impl SceneWgpuPainter {
             .motion_gpu_descriptors()
             .iter()
             .any(|descriptor| descriptor.is_live())
-            || scene.glyph_presentation_live();
+            || scene.glyph_presentation_live()
+            || scene.chart_presentation_live();
         self.text
             .write_motion(&self.queue, scene.motion_gpu_now(), Some(&gpu_work));
         if self.painted == Some(painted)
@@ -1176,6 +1192,7 @@ impl SceneWgpuPainter {
             self.icons.begin_frame(dest_physical);
             self.text.begin_frame(dest_physical);
             self.backdrop.begin_frame();
+            self.chart_target.begin_frame();
             self.quads.set_corner_exponent(corner_exponent);
             self.meshes.set_corner_exponent(corner_exponent);
             self.icons.set_corner_exponent(corner_exponent);
@@ -1876,6 +1893,64 @@ impl SceneWgpuPainter {
                             );
                         }
                     }
+                    ScenePrimitiveKind::Chart {
+                        marks,
+                        origin: chart_origin,
+                        hover,
+                    } => {
+                        let pipeline = self.charts.get_or_insert_with(|| {
+                            chart::ChartPipeline::new(
+                                &self.device,
+                                self.format,
+                                self.quads.motion_layout(),
+                            )
+                        });
+                        let chart_affine = mesh_affine(affine, persp);
+                        if let Some(slot) = self.chart_target.push(
+                            pipeline,
+                            &self.device,
+                            &self.queue,
+                            primitive.id,
+                            chart::ChartPlacement {
+                                marks,
+                                origin: *chart_origin,
+                                hover,
+                                affine: chart_affine,
+                                opacity,
+                                clip: frag_clip,
+                                viewport_scale: scale,
+                            },
+                            corner_exponent,
+                            dest_physical,
+                            Some(&gpu_work),
+                        ) {
+                            let drawn = marks.extent.map_or(bounds, |[x0, y0, x1, y1]| {
+                                LogicalRect::from_xywh(
+                                    chart_origin[0] + x0,
+                                    chart_origin[1] + y0,
+                                    x1 - x0,
+                                    y1 - y0,
+                                )
+                            });
+                            let painted = painted_bounds(
+                                drawn,
+                                hover.growth + 2.0,
+                                chart_affine,
+                                [0.0, 0.0],
+                                scale,
+                                scissor,
+                            );
+                            for draw in 0..self.chart_target.draw_count(slot) {
+                                batching.note_geometry();
+                                batching.open(commands.len(), painted);
+                                commands.push(DrawCommand::Chart {
+                                    slot,
+                                    draw,
+                                    scissor,
+                                });
+                            }
+                        }
+                    }
                     ScenePrimitiveKind::Custom {
                         node: custom,
                         mask,
@@ -2000,6 +2075,7 @@ impl SceneWgpuPainter {
             // Text prepare stays inside the batch window: it is the same
             // work the per-primitive prepare did, only once per run.
             self.text.flush_runs();
+            self.chart_target.finish_frame();
             self.painted_demand.commit(host_textures);
             self.url_cache.commit_demand(self.painted_demand.id());
             let batch = batch_started.elapsed();
@@ -2108,6 +2184,8 @@ impl SceneWgpuPainter {
                 &mut EncodeOrdered {
                     quads: &self.quads,
                     meshes: &self.meshes,
+                    charts: self.charts.as_ref(),
+                    chart_target: &self.chart_target,
                     icons: &self.icons,
                     text: &self.text,
                     host_textures: &self.host_textures,
@@ -2153,6 +2231,24 @@ impl SceneWgpuPainter {
                             sample_count,
                             Some(&gpu_work),
                         );
+                    }
+                    DrawCommand::Chart {
+                        slot,
+                        draw,
+                        scissor,
+                    } => {
+                        if let Some(pipeline) = &self.charts {
+                            self.chart_target.draw(
+                                pipeline,
+                                &mut pass,
+                                *slot,
+                                *draw,
+                                *scissor,
+                                sample_count,
+                                self.motion.bind_group(),
+                                Some(&gpu_work),
+                            );
+                        }
                     }
                     // A mask only ever sits inside a group, and a frame with
                     // groups is encoded in order, not here.
@@ -2295,6 +2391,7 @@ fn clip_dests_for(
         ScenePrimitiveKind::Stroke { .. }
             | ScenePrimitiveKind::Spinner { .. }
             | ScenePrimitiveKind::Path { .. }
+            | ScenePrimitiveKind::Chart { .. }
             | ScenePrimitiveKind::Text { .. }
     ) {
         // Their shaders test the innermost polygon or ellipse themselves.
@@ -2764,6 +2861,8 @@ fn push_path_draw(
 struct EncodeOrdered<'a> {
     quads: &'a QuadPipeline,
     meshes: &'a MeshPipeline,
+    charts: Option<&'a chart::ChartPipeline>,
+    chart_target: &'a chart::ChartPipelineTarget,
     icons: &'a IconPipeline,
     text: &'a TextPipeline,
     host_textures: &'a HostTexturePipeline,
@@ -2816,6 +2915,7 @@ fn group_extents(
             DrawCommand::Quads { .. }
             | DrawCommand::Mesh { .. }
             | DrawCommand::Path { .. }
+            | DrawCommand::Chart { .. }
             | DrawCommand::Text { .. }
             | DrawCommand::Icon { .. } => batched
                 .next()
@@ -3042,6 +3142,24 @@ fn encode_ordered(
                                 SAMPLE_COUNT,
                                 Some(pipelines.gpu_work),
                             );
+                        }
+                        DrawCommand::Chart {
+                            slot,
+                            draw,
+                            scissor,
+                        } => {
+                            if let Some(pipeline) = pipelines.charts {
+                                pipelines.chart_target.draw(
+                                    pipeline,
+                                    &mut pass,
+                                    *slot,
+                                    *draw,
+                                    *scissor,
+                                    SAMPLE_COUNT,
+                                    pipelines.motion,
+                                    Some(pipelines.gpu_work),
+                                );
+                            }
                         }
                         DrawCommand::PathMask {
                             range,

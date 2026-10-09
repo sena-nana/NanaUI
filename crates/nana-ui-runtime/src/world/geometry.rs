@@ -7,8 +7,6 @@ pub(super) use calendar::*;
 
 #[cfg(feature = "charts")]
 mod charts;
-#[cfg(feature = "charts")]
-pub(super) use charts::*;
 
 #[cfg(feature = "controls")]
 mod controls;
@@ -111,41 +109,6 @@ pub(super) fn key_badge_region(
         font_size,
         font_weight: Some(FONT_WEIGHT),
     }
-}
-
-#[cfg(feature = "charts")]
-pub(super) fn area_under_polyline(points: &[[f32; 2]], baseline: f32) -> Vec<LayoutBox> {
-    const STRIP: f32 = nana_ui_core::space::XXS;
-    let mut strips = Vec::new();
-    for pair in points.windows(2) {
-        let [x0, y0] = pair[0];
-        let [x1, y1] = pair[1];
-        let span = x1 - x0;
-        if !span.is_finite() || span.abs() < f32::EPSILON {
-            continue;
-        }
-        let left = x0.min(x1);
-        let right = x0.max(x1);
-        let mut x = left;
-        while x < right {
-            let width = STRIP.min(right - x);
-            let mid = x + width * 0.5;
-            let t = (mid - x0) / span;
-            let y = y0 + (y1 - y0) * t;
-            let top = y.min(baseline);
-            let height = (baseline - top).max(0.0);
-            if height > 0.0 {
-                strips.push(LayoutBox {
-                    x,
-                    y: top,
-                    width,
-                    height,
-                });
-            }
-            x += STRIP;
-        }
-    }
-    strips
 }
 
 impl UiWorld {
@@ -2485,66 +2448,13 @@ impl UiWorld {
                 self.chrome_text_measure(id),
             )),
             #[cfg(feature = "charts")]
-            StandardVisual::DonutChart {
-                slices,
-                cutout,
-                separator,
-                active,
-            } => {
-                let mut chart = crate::DonutChart::new(slices.iter().copied()).cutout(*cutout);
-                chart.separator = *separator;
-                chart.active = *active;
-                let (width, regions) = chart.ring_regions(bounds);
-                Some(crate::ComponentGeometry::DonutChart {
-                    width,
-                    regions: regions
-                        .into_iter()
-                        .map(|(circle, polygon, role)| {
-                            (
-                                circle,
-                                polygon,
-                                self.style_model.color(role).as_rgba_array(),
-                            )
-                        })
-                        .collect(),
-                })
+            StandardVisual::Chart { spec, hover } => {
+                Some(self.chart_geometry(id, bounds, spec, hover))
             }
             #[cfg(feature = "charts")]
-            StandardVisual::StackedTimeSeriesChart {
-                title,
-                values,
-                layers,
-                labels,
-                active,
-            } => Some(stacked_time_series_geometry(
-                bounds,
-                title,
-                values,
-                layers,
-                labels,
-                *active,
-                &self.style_model.palette,
-                self.style_model.opacity,
-                self.chrome_text_measure(id),
-            )),
-            #[cfg(feature = "charts")]
-            StandardVisual::TimeSeriesChart { values } => Some(time_series_geometry(
-                bounds,
-                values,
-                self.style_model.palette,
-            )),
-            #[cfg(feature = "charts")]
-            StandardVisual::TimestampSeriesChart {
-                samples,
-                unit,
-                time_labels,
-            } => Some(timestamp_series_geometry(
-                bounds,
-                samples,
-                unit.as_deref(),
-                time_labels.as_ref(),
-                self.style_model.palette,
-            )),
+            StandardVisual::ChartTooltip { content } => {
+                Some(self.chart_tooltip_geometry(id, bounds, content))
+            }
             #[cfg(feature = "controls")]
             StandardVisual::ReorderList {
                 rows,

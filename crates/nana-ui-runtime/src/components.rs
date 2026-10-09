@@ -990,29 +990,13 @@ pub enum StandardVisual {
         active_title: Option<Arc<str>>,
     },
     #[cfg(feature = "charts")]
-    DonutChart {
-        slices: Arc<[crate::DonutSlice]>,
-        cutout: f32,
-        separator: f32,
-        active: Option<usize>,
+    Chart {
+        spec: Arc<crate::ChartSpec>,
+        hover: crate::ChartHoverVisual,
     },
     #[cfg(feature = "charts")]
-    StackedTimeSeriesChart {
-        title: Arc<str>,
-        values: Arc<[f64]>,
-        layers: Arc<[crate::TimeSeriesLayer]>,
-        labels: Arc<[Arc<str>]>,
-        active: Option<usize>,
-    },
-    #[cfg(feature = "charts")]
-    TimeSeriesChart {
-        values: Arc<[f64]>,
-    },
-    #[cfg(feature = "charts")]
-    TimestampSeriesChart {
-        samples: Arc<[(i64, Option<f64>)]>,
-        unit: Option<Arc<str>>,
-        time_labels: Option<(Arc<str>, Arc<str>)>,
+    ChartTooltip {
+        content: Arc<nana_ui_charts::hit::TooltipContent>,
     },
     #[cfg(feature = "controls")]
     ReorderList {
@@ -1598,36 +1582,17 @@ pub enum ComponentGeometry {
         labels: Vec<ComponentTextRegion>,
         hover: Option<CalendarHoverGeometry>,
     },
-    DonutChart {
-        regions: Vec<(LayoutBox, Vec<[f32; 2]>, [f32; 4])>,
-        width: f32,
+    /// A laid-out chart: its marks, its text and its hover. Everything in
+    /// `layout` is node-local; `origin` is the node's box in layout space.
+    Chart {
+        layout: Arc<nana_ui_charts::ChartLayout>,
+        hover: nana_ui_charts::hit::HoverState,
+        origin: [f32; 2],
     },
-    StackedTimeSeriesChart {
-        bars: Vec<(LayoutBox, [f32; 4])>,
-        legend: Vec<(LayoutBox, [f32; 4])>,
-        grid: Vec<LayoutBox>,
-        line: Vec<[f32; 2]>,
-        labels: Vec<ComponentTextRegion>,
-        marker: Option<LayoutBox>,
-        grid_color: [f32; 4],
-        line_color: [f32; 4],
-    },
-    TimeSeriesChart {
-        grid: Vec<LayoutBox>,
-        area: Vec<LayoutBox>,
-        line: Vec<[f32; 2]>,
-        grid_color: [f32; 4],
-        area_color: [f32; 4],
-        line_color: [f32; 4],
-    },
-    TimestampSeriesChart {
-        grid: Vec<LayoutBox>,
-        area: Vec<LayoutBox>,
-        segments: Vec<Vec<[f32; 2]>>,
-        labels: Vec<ComponentTextRegion>,
-        grid_color: [f32; 4],
-        area_color: [f32; 4],
-        line_color: [f32; 4],
+    /// A chart tooltip's color dots and text.
+    ChartTooltip {
+        dots: Vec<(LayoutBox, [f32; 4])>,
+        texts: Vec<ComponentTextRegion>,
     },
     ReorderList {
         rows: Vec<(LayoutBox, ComponentTextRegion, Option<[f32; 4]>)>,
@@ -4037,10 +4002,7 @@ impl StandardVisual {
             #[cfg(feature = "calendar")]
             Self::CalendarHeatmap { .. } => Some("calendar"),
             #[cfg(feature = "charts")]
-            Self::TimeSeriesChart { .. }
-            | Self::TimestampSeriesChart { .. }
-            | Self::DonutChart { .. }
-            | Self::StackedTimeSeriesChart { .. } => Some("charts"),
+            Self::Chart { .. } | Self::ChartTooltip { .. } => Some("charts"),
             #[cfg(feature = "controls")]
             Self::ReorderList { .. } => Some("controls"),
             #[cfg(feature = "rich-text")]

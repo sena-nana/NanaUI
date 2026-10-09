@@ -20,6 +20,7 @@ benchmark = ["dep:serde", "dep:serde_json", "dep:nana-text", "nana-ui-core/bundl
 [dependencies]
 nana-diagnostics.workspace = true
 nana-ui-core.workspace = true
+nana-ui-charts.workspace = true
 nana-ui-runtime.workspace = true
 lyon_tessellation.workspace = true
 i_overlay.workspace = true

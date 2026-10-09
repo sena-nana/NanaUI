@@ -69,7 +69,7 @@ const _: () = assert!(std::mem::size_of::<MeshInstance>() == 72);
 /// GPU clip record. Matches `GpuClip` in `triangle_solid.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-struct GpuClip {
+pub(super) struct GpuClip {
     rect: [f32; 4],
     inv_abcd: [f32; 4],
     /// `xyz` = clip inverse e/f + corner radius; `w` = polygon vertex count.
@@ -99,7 +99,7 @@ fn pack_clip_polygon(polygon: &[[f32; 2]; 8]) -> [[f32; 4]; 4] {
 }
 
 impl GpuClip {
-    fn from_fragment(clip: FragmentClip) -> Self {
+    pub(super) fn from_fragment(clip: FragmentClip) -> Self {
         let polys = pack_clip_polygon(&clip.polygon);
         Self {
             rect: clip.rect,

@@ -267,7 +267,6 @@ pub(crate) fn can_bind_from_semantic(widget: &SemanticWidgetView<'_>) -> bool {
                 | crate::WidgetKind::TableRow
                 | crate::WidgetKind::TableCell
                 | crate::WidgetKind::ReorderList
-                | crate::WidgetKind::TimeSeriesChart
                 | crate::WidgetKind::GpuTextureView
                 | crate::WidgetKind::GpuView
                 | crate::WidgetKind::DropTarget
@@ -619,9 +618,6 @@ pub(crate) fn bind_native_json_attrs(widget: &SemanticWidgetView<'_>) -> Vec<(St
         crate::WidgetKind::ReorderList => {
             push(&mut extras, "tree-drop", &["tree-drop", "treedrop"]);
             push(&mut extras, "spacing", &["spacing", "gap"]);
-        }
-        crate::WidgetKind::TimeSeriesChart => {
-            push_json(&mut extras, "values", &["values", "data", "series"]);
         }
         crate::WidgetKind::AppTitleBar => {
             push(&mut extras, "maximized", &["maximized"]);

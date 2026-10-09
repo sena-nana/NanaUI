@@ -128,8 +128,6 @@ pub enum WidgetKind {
     TableCell,
     /// Drag-reorder list → Runtime `ReorderList`.
     ReorderList,
-    /// Sparkline / series leaf → Runtime `TimeSeriesChart`.
-    TimeSeriesChart,
     /// Host-owned texture slot → Runtime `GpuTextureView`.
     GpuTextureView,
     /// In-pass GPU node → Runtime `GpuView`.
@@ -263,7 +261,6 @@ widget_kind_table! {
     TableRow => { aliases: ["table-row"], as_str: "tr", tag: "tr" },
     TableCell => { aliases: ["th", "table-cell"], as_str: "td", tag: "td" },
     ReorderList => { aliases: [], as_str: "reorder-list", tag: "nana-reorder-list" },
-    TimeSeriesChart => { aliases: [], as_str: "time-series-chart", tag: "nana-time-series-chart" },
     GpuTextureView => { aliases: [], as_str: "gpu", tag: "nana-gpu" },
     GpuView => { aliases: [], as_str: "gpu-view", tag: "nana-gpu-view" },
     Video => { aliases: [], as_str: "video", tag: "nana-video" },

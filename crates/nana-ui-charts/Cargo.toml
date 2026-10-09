@@ -1,0 +1,15 @@
+[package]
+name = "nana-ui-charts"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Backend-neutral chart model for NanaUI: options, scales, layout and GPU mark data"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_ui_charts"
+path = "src/lib.rs"
+
+[dependencies]
+nana-ui-core.workspace = true
+bytemuck = { version = "1.24", features = ["derive"] }

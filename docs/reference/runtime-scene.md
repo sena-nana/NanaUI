@@ -68,7 +68,7 @@ host adapter 做 Instant 到 Duration 的转换，也做指针转换。它不另
 | --- | --- | --- | --- |
 | `transform` / `opacity` | Compositor | overlay；Quad（含 QuadBatch / QuadColorBatch）剥 overlay 走 GPU `evaluate()`；Text / Icon / Mesh / HostTexture 走 CPU overlay | 稳态不写 `UiWorld`；非 Quad 仍是 CPU presentation |
 | `clip` / `clip-path` | Compositor | overlay；`compositor_gpu_motion_ids` 目前只绑 transform/opacity | 稳态不写 `UiWorld`；clip 呈现仍 CPU overlay |
-| `shader-parameter` | Compositor | overlay；需注册 typed codec | 无默认 Quad GPU 路径 |
+| `shader-parameter` | Compositor | overlay；需注册 typed codec | 无默认 Quad GPU 路径；图表不走它（见「图表呈现时钟」） |
 | `color` / `background` / `blur` / `filter` / `shadow` | Paint | CPU 插值（`frame_interval` 稀疏采样） | 可能每 sample 脏 paint/extract；不是 filter GPU |
 | `width` / `height` / `padding` / `margin` | Layout | CPU layout，采样写 px 并脏 LAYOUT | 每 sample layout；不要偷成 scale |
 | `font-size` / `font-axis` | Layout | 非 compositor（排版 / 绘制也会受影响） | [#85](https://github.com/sena-nana/NanaUI/issues/85) 不强制 GPU |
@@ -97,6 +97,12 @@ Promotion 阈值：`LAYER_PROMOTE_HOLD` 是 16ms，`LAYER_DEMOTE_HOLD` 是 120ms
 `OpacityGroup` 和 `FilterGroup` 仍是 dest 隔离组。它们不是 motion layer。
 
 Layer 上的 `CompositorMotionBinding { track_id, index, generation }` 对齐 D 的 `MotionHandle`。`generation == 0` 表示没有 live descriptor。
+
+## 图表呈现时钟
+
+图表的入场、数据更新和悬停强调不经 Motion IR。布局给每个元素写好 `from` 和 `to`，`ChartMarks::transition` 记开始时刻、时长和缓动；悬停记 `HoverState::since`。chart 着色器按 `motion_time` 求进度，所以一帧里只有时间在走时，Runtime 不写 `UiWorld`、Scene 不重新抽取、painter 不重新上传。
+
+Scene 用 `chart_live` 按节点记到期时刻，并入 `compositor_needs_tick()`，宿主在到期前持续出帧；painter 在到期前不复用画好的 dest。数据更新时，新布局的 `from` 取上一份布局在那一刻显示的位置（过渡中途也算），所以连续更新不会跳。
 
 Painter 按 `presentation_epoch` 失效 dest 缓存。有 live GPU descriptor 时，跳过 dest blit 复用。稳态帧只写 shared time uniform，不重传整表。
 

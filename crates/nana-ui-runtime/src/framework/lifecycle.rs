@@ -826,11 +826,15 @@ impl AppContext {
             changed = true;
         }
         #[cfg(feature = "charts")]
-        if let Some(view) = self.views.get_mut(&id) {
-            if let Some(chart) = view.downcast_mut::<crate::DonutChart>() {
-                changed |= chart.active.take().is_some();
-            } else if let Some(chart) = view.downcast_mut::<crate::TimeSeriesChart>() {
-                changed |= chart.active.take().is_some();
+        if let Some(chart) = self
+            .views
+            .get_mut(&id)
+            .and_then(|view| view.downcast_mut::<crate::Chart>())
+        {
+            changed |= chart.drag.take().is_some();
+            if chart.hover != crate::ChartHoverVisual::default() {
+                chart.hover = crate::ChartHoverVisual::default();
+                changed = true;
             }
         }
         if let Some(button) = self

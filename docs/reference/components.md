@@ -29,7 +29,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 **表格与树。** `Table` / `TableRow` / `TableCell`、`TreeView`、`ReorderList`。列可 `sortable(true)`。表头激活走 `VirtualTableLayout::toggle_sort`（升序 → 降序 → 取消）。`move_column` 重排列。**排序本身仍由应用做。** 只有你知道数据怎么比。
 
-**展示。** `Card`、`List` / `ListItem`、`FormField`、`EmptyState`、`Progress`、`Skeleton`、`Spinner`、`StatusBadge`、`Chip`、`Avatar`、`Tooltip`、`ValidationMessage`、`QrCode`、`ImageViewer`、`NativeMarkdown`、`CalendarHeatmap`、`TimeSeriesChart`、`DonutChart`、`GraphCanvas`、`GraphMinimap`。
+**展示。** `Card`、`List` / `ListItem`、`FormField`、`EmptyState`、`Progress`、`Skeleton`、`Spinner`、`StatusBadge`、`Chip`、`Avatar`、`Tooltip`、`ValidationMessage`、`QrCode`、`ImageViewer`、`NativeMarkdown`、`CalendarHeatmap`、`Chart`、`GraphCanvas`、`GraphMinimap`。
 
 **浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里。靠近边缘时收进视口。不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种。图标触发器渲染为 28×28 方形按钮。图标在按钮内几何居中。可访问名由 `trigger_icon` 的 label 提供。裸符号（如 `+`）不要用文本触发器。要「图标 + 文字 + 计数」这类触发器（收藏 1800），用视图的 `.trigger(view)` 具名 slot（`Popover::trigger_content(id)`）。那段内容是触发器自己的子节点。它在触发器的外壳里横排。面板关着时照样显示。不算面板的条目。`trigger` 文本仍是可访问名。**触发器仍是 popover 自己。** 按下、焦点、Enter / 空格、面板的锚点都是它的。所以这段内容只做显示。里面不要放可按的控件。面板因按它的触发器、Escape、点外面或应用写 `open = false` 关上时，焦点若还在面板里的条目上，回到触发器。取舍：没有做成「任意元素 `anchor: NodeRef` 打开 popover」。那样面板要跟随另一个节点的盒子。布局里要多一条跨节点依赖（锚点挪了而 popover 没重新布局时面板会留在旧处）。还要额外接线打开、焦点归还和点外判定。slot 让锚点、命中、键盘和关闭沿用 popover 现有的一条路径。代价是触发器的外壳（默认 Subtle 底、控件高度）由 popover 给。`Popover::bare_trigger(true)`（`ActionMenu` 同样转发）去掉静止底色和描边，悬停、按下和打开时仍铺一层洗色。不传则保持浅底加描边。弹出表面是 viewport-fixed。**不进入父级 isolation group。** 卡内菜单会画到后面的兄弟卡之上。重叠处命中同一排序。应用不必给整张卡抬 `z_index`。所在面板的 overflow 裁剪也裁不到它。卡面和面板内容同一层。盖在触发器和页面后面的内容（包括 `z_index` 更高的后出现兄弟）之上。卡面空白处的按下留在面板里。不落到底下。也不开合面板。`Popover` / `ActionMenu` / `HoverCard` 的弹出层挂在触发器**显示的位置**上（经过祖先滚动与变换之后的盒子）。按 `placement` 的一侧放不下而对侧放得下时，翻到对侧。再沿两轴收进视口。两侧都放不下才会压住触发器。打开后滚动页面，弹出层留在原处，直到下一次布局。`DesktopShell` 有两层 `OverlayHost`。`overlay` 放对话框。`status` 放 toast。确认框打开时 toast 仍可显示。模态面板（对话框、抽屉）打开时，它的表面拿下落在上面的每一次按下。底下侧栏、分栏、Dock 的拖动手柄靠「几像素容差」抢按下的规则，只对没被模态盖住的手柄生效。光标也不会在面板上变成拖动样式。
 
@@ -251,11 +251,9 @@ IME 预编辑存在 world 的 `ime` 槽里，不在编辑器的 `value` 里。�
 
 ### 图表与带图标按钮
 
-`DonutChart::new([DonutSlice { value, color }])` 使用主题语义色绘制环形组成。`.labels(...)` 提供各项名称。`.cutout(...)` 控制中心孔比例。无效或负数值不占面积。原下标保留。`active` 是正常指针悬停命中的项。中心孔和分隔缝不会选中。图表内部使用普通 Tooltip 节点。离开、卸载或 park 后关闭。合法的 live reparent 保留当前状态。业务分组、Top N 与数值格式来源仍由应用提供。
+`Chart::new(option)` 画一张图。`ChartOption` 的结构对应 ECharts 的 `option`（`grid`、`x_axis`、`y_axis`、`series`、`tooltip`、`legend`、`data_zoom`），值是 Rust 类型，模型在 `nana_ui::runtime::chart`（`nana-ui-charts` crate）。系列有折线/面积、柱状、饼/环/玫瑰、散点、雷达、仪表盘。换一份 option 就是一次更新：元素从屏幕上正在显示的位置过渡到新位置。悬停按类目或按项触发，强调和轴指针由着色器按动效时钟画，提示是图表自己的浮层，带颜色点和右对齐的数值。离开、卸载或 park 后关闭。图例切换、缩放窗口存在 `Chart::view`，事件是 `ChartEvent`。数据、名称和数值格式仍由应用提供。见 [Chart](../components/chart.md)。
 
-`TimeSeriesChart::stacked([TimeSeriesLayer::new(label, values, color), ...])` 在总量曲线下绘制分类堆叠柱。总量 `values` 决定样本数量。每层缺少的项按零处理。超出的项不增加日期。`.axis_labels(...)` 与 `.tooltip_details(...)` 由应用提供本地化日期和补充说明。正常悬停同步 `active`、标记与提示。显式高度保留。未设置 layers 的既有 sparkline 不变。`from_samples` 继续按真实时间间隔定位，并保留缺失样本的断线。时间戳数据优先于 layers。
-
-Vue 使用 `NanaDonutChart` 的 `slices` / `labels` / `cutout`，以及 `NanaTimeSeriesChart` 的 `layers` / `axisLabels` / `tooltipDetails`。图层与扇区 `color` 使用 `SemanticColorRole` 名称（如 `Accent`、`Success`）。进入同一 Runtime 组件注册和绘制路径。
+`Chart` 只走 Rust：option 是类型化数据，没有 Vue 标签。
 
 `Button::icon(icon).icon_size(px).icon_gap(px)` 把图标与文字作为同一内容组量测、居中和裁剪。保持一个按钮的 Activate、焦点与禁用语义。loading 用 spinner 替换图标，而不叠加第二个槽位。仅 spinner 相位变化不触发布局。`trailing_icon(icon)` 在文字之后放第二个图标（选择器、菜单按钮的下拉箭头）。尺寸与间距沿用前置图标。宽度不够时先裁文字。两个图标保持原尺寸。
 

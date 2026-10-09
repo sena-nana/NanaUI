@@ -255,6 +255,7 @@ impl UiScene {
             || !self.compositor.phases.is_empty()
             || !self.compositor.requested.is_empty()
             || self.glyph_presentation_live()
+            || self.chart_presentation_live()
     }
 
     pub(super) fn compositor_now(&self) -> Duration {

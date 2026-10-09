@@ -1410,7 +1410,6 @@ impl NanaTreeDocument {
                         | crate::WidgetKind::TableRow
                         | crate::WidgetKind::TableCell
                         | crate::WidgetKind::ReorderList
-                        | crate::WidgetKind::TimeSeriesChart
                         | crate::WidgetKind::GpuTextureView
                         | crate::WidgetKind::GpuView
                 )

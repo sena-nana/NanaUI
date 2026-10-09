@@ -36,14 +36,13 @@ use nana_ui::runtime::{
     ConfirmDialog as RuntimeConfirmDialog, ContextMenu as RuntimeContextMenu,
     ContextMenuItem as RuntimeContextMenuItem, DesktopShell as RuntimeDesktopShell,
     Dialog as RuntimeDialog, Dock as RuntimeDock, DockNode as RuntimeDockNode,
-    DockPanel as RuntimeDockPanel, DocumentId, DonutChart as RuntimeDonutChart,
-    DonutSlice as RuntimeDonutSlice, Drawer as RuntimeDrawer, Dropdown as RuntimeDropdown,
-    DropdownOption as RuntimeDropdownOption, EmptyState as RuntimeEmptyState, Entity,
-    FormField as RuntimeFormField, GpuTextureView as RuntimeGpuTextureView,
-    GpuView as RuntimeGpuView, GpuViewPalette as RuntimeGpuViewPalette,
-    GraphCanvas as RuntimeGraphCanvas, HOST_TEXTURE_RENDERER,
-    HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton,
-    ImageViewer as RuntimeImageViewer, ImageViewerContent,
+    DockPanel as RuntimeDockPanel, DocumentId, Drawer as RuntimeDrawer,
+    Dropdown as RuntimeDropdown, DropdownOption as RuntimeDropdownOption,
+    EmptyState as RuntimeEmptyState, Entity, FormField as RuntimeFormField,
+    GpuTextureView as RuntimeGpuTextureView, GpuView as RuntimeGpuView,
+    GpuViewPalette as RuntimeGpuViewPalette, GraphCanvas as RuntimeGraphCanvas,
+    HOST_TEXTURE_RENDERER, HostedTextarea as RuntimeHostedTextarea,
+    IconButton as RuntimeIconButton, ImageViewer as RuntimeImageViewer, ImageViewerContent,
     InteractiveCard as RuntimeInteractiveCard, KeyCaptureLayer as RuntimeKeyCaptureLayer,
     KeymapLayer as RuntimeKeymapLayer, LabeledValue as RuntimeLabeledValue, LayoutViewport,
     LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
@@ -67,11 +66,9 @@ use nana_ui::runtime::{
     TabOption as RuntimeTabOption, Tabs as RuntimeTabs, Text as RuntimeText,
     TextArea as RuntimeTextArea, TextDiagnosticSeverity, TextDiagnosticSpan,
     TextHorizontalAlignment, TextInput as RuntimeTextInput, TextSelection, TextSignatureHelp,
-    TextVerticalAlignment, Thumbnail as RuntimeThumbnail,
-    TimeSeriesChart as RuntimeTimeSeriesChart, TimeSeriesLayer as RuntimeTimeSeriesLayer,
-    Toast as RuntimeToast, TreeNode, TreeView as RuntimeTreeView,
-    ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
-    XYPad as RuntimeXYPad,
+    TextVerticalAlignment, Thumbnail as RuntimeThumbnail, Toast as RuntimeToast, TreeNode,
+    TreeView as RuntimeTreeView, ValidationMessage as RuntimeValidationMessage, ValueEmphasis,
+    Workspace as RuntimeWorkspace, XYPad as RuntimeXYPad,
 };
 use nana_ui::{
     ActionId, AppearanceSettings, CardKind, CommandPaletteItem, ComponentId, ControlSize,
@@ -164,8 +161,7 @@ enum Component {
     DesktopShell,
     AppTitleBar,
     CalendarHeatmap,
-    TimeSeriesChart,
-    DonutChart,
+    Chart,
     ReorderList,
     NativeMarkdown,
     SelectableRichText,
@@ -245,8 +241,7 @@ impl Component {
             Self::DesktopShell => component_ids::APP_SHELL,
             Self::AppTitleBar => component_ids::APP_TITLE_BAR,
             Self::CalendarHeatmap => component_ids::CALENDAR_HEATMAP,
-            Self::TimeSeriesChart => component_ids::TIME_SERIES_CHART,
-            Self::DonutChart => component_ids::DONUT_CHART,
+            Self::Chart => component_ids::CHART,
             Self::ReorderList => component_ids::REORDER_LIST,
             Self::NativeMarkdown => component_ids::NATIVE_MARKDOWN,
             Self::SelectableRichText => component_ids::SELECTABLE_RICH_TEXT,
@@ -471,8 +466,8 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::DesktopShell, _) => Size::new(560, 360),
         (Component::AppTitleBar, _) => Size::new(560, 80),
         (Component::CalendarHeatmap, _) => Size::new(280, 180),
-        (Component::TimeSeriesChart, _) => Size::new(420, 180),
-        (Component::DonutChart, _) => Size::new(220, 180),
+        (Component::Chart, "line") => Size::new(420, 220),
+        (Component::Chart, _) => Size::new(260, 220),
         (Component::NativeMarkdown, _) => Size::new(420, 140),
         (Component::ImageViewer, _) => Size::new(420, 240),
         (Component::GraphCanvas, _) => Size::new(420, 180),
@@ -709,54 +704,58 @@ fn runtime_fixture(
                 ]),
             )?
             .stable_id(),
-        Component::TimeSeriesChart if fixture.state == "stacked" => document
-            .context_mut()
-            .create_component(
-                document_id,
-                RuntimeTimeSeriesChart::new([3.0, 5.0, 4.0, 7.0])
-                    .stacked([
-                        RuntimeTimeSeriesLayer::new(
-                            "Revenue",
-                            [2.0, 3.0, 2.5, 4.0],
-                            SemanticColorRole::Accent,
-                        ),
-                        RuntimeTimeSeriesLayer::new(
-                            "运营成本",
-                            [1.0, 2.0, 1.5, 3.0],
-                            SemanticColorRole::Success,
-                        ),
-                    ])
-                    .axis_labels(["Q1", "Q2", "Q3", "Q4"]),
-            )?
-            .stable_id(),
-        Component::TimeSeriesChart => document
-            .context_mut()
-            .create_component(
-                document_id,
-                RuntimeTimeSeriesChart::new([2.0, 5.0, 3.0, 8.0]),
-            )?
-            .stable_id(),
-        Component::DonutChart => document
-            .context_mut()
-            .create_component(
-                document_id,
-                RuntimeDonutChart::new([
-                    RuntimeDonutSlice {
-                        value: 5.0,
-                        color: SemanticColorRole::Accent,
-                    },
-                    RuntimeDonutSlice {
-                        value: 3.0,
-                        color: SemanticColorRole::Success,
-                    },
-                    RuntimeDonutSlice {
-                        value: 2.0,
-                        color: SemanticColorRole::Warning,
-                    },
-                ])
-                .labels(["Accent", "Success", "Warning"]),
-            )?
-            .stable_id(),
+        Component::Chart => {
+            use nana_ui::runtime::chart::{
+                Animation, AreaStyle, Axis, BarSeries, ChartOption, GaugeSeries, Legend,
+                LineSeries, PieItem, PieLabelPosition, PieSeries, RadarCoord, RadarIndicator,
+                RadarItem, RadarSeries,
+            };
+            let option = match fixture.state {
+                "pie" => ChartOption::new().series(
+                    PieSeries::new(
+                        "Share",
+                        [
+                            PieItem::new("Accent", 5.0),
+                            PieItem::new("Second", 3.0),
+                            PieItem::new("Third", 2.0),
+                        ],
+                    )
+                    .ring(0.5, 0.85)
+                    .corner_radius(4.0)
+                    .label(PieLabelPosition::None),
+                ),
+                "radar" => ChartOption::new()
+                    .radar(RadarCoord::new(
+                        ["A", "B", "C", "D", "E"].map(|name| RadarIndicator::new(name).max(10.0)),
+                    ))
+                    .series(
+                        RadarSeries::new("R", [RadarItem::new("x", vec![8.0, 5.0, 7.0, 4.0, 9.0])])
+                            .area(AreaStyle::default()),
+                    ),
+                "gauge" => ChartOption::new().series(GaugeSeries::new("Load", 64.0)),
+                _ => ChartOption::new()
+                    .legend(Legend::default())
+                    .x_axis(Axis::category(["Q1", "Q2", "Q3", "Q4"]))
+                    .y_axis(Axis::value())
+                    .series(BarSeries::new("Revenue", [2.0, 3.0, 2.5, 4.0]))
+                    .series(
+                        LineSeries::new("运营成本", [1.0, 2.0, 1.5, 3.0])
+                            .smooth(true)
+                            .area(AreaStyle::default()),
+                    ),
+            };
+            // The viewport less its padding.
+            let mut style = NodeStyle::default();
+            Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(180.0));
+            document
+                .context_mut()
+                .create_component(
+                    document_id,
+                    nana_ui::runtime::Chart::new(option.animation(Animation::disabled()))
+                        .style(style),
+                )?
+                .stable_id()
+        }
         Component::ReorderList => document
             .context_mut()
             .create_component(

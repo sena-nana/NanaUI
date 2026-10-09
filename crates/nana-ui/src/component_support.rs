@@ -124,8 +124,7 @@ component_catalog! {
     TABS => { id: "tabs", name: "Tabs", family: Navigation, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     REORDER_LIST => { id: "reorder-list", name: "ReorderList", family: Navigation, feature: Some("controls"), compiled: nana_ui_runtime::component_descriptors::REORDER_LIST.compiled, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     CALENDAR_HEATMAP => { id: "calendar-heatmap", name: "CalendarHeatmap", family: Data, feature: Some("calendar"), compiled: nana_ui_runtime::component_descriptors::CALENDAR_HEATMAP.compiled, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
-    DONUT_CHART => { id: "donut-chart", name: "DonutChart", family: Data, feature: Some("charts"), compiled: nana_ui_runtime::component_descriptors::DONUT_CHART.compiled, capabilities: [Render, Accessibility, Pointer, Overlay] },
-    TIME_SERIES_CHART => { id: "time-series-chart", name: "TimeSeriesChart", family: Data, feature: Some("charts"), compiled: nana_ui_runtime::component_descriptors::TIME_SERIES_CHART.compiled, capabilities: [Render, Accessibility, Pointer, Overlay] },
+    CHART => { id: "chart", name: "Chart", family: Data, feature: Some("charts"), compiled: nana_ui_runtime::component_descriptors::CHART.compiled, capabilities: [Render, Accessibility, Pointer, Animation, Overlay] },
     PROGRESS => { id: "progress", name: "Progress", family: Feedback, feature: None, compiled: true, capabilities: [Render, Pointer, Keyboard, Focus, Accessibility] },
     SPINNER => { id: "spinner", name: "Spinner", family: Feedback, feature: None, compiled: true, capabilities: [Render, Animation, Accessibility] },
     SKELETON => { id: "skeleton", name: "Skeleton", family: Feedback, feature: None, compiled: true, capabilities: [Render, Animation] },
@@ -270,7 +269,7 @@ mod tests {
             component_ids::HOSTED_TEXTAREA,
             component_ids::REORDER_LIST,
             component_ids::CALENDAR_HEATMAP,
-            component_ids::TIME_SERIES_CHART,
+            component_ids::CHART,
             component_ids::KEY_CAPTURE_LAYER,
             component_ids::KEYMAP_LAYER,
             component_ids::NATIVE_MARKDOWN,
@@ -353,7 +352,8 @@ mod tests {
     #[cfg(feature = "image-viewer")]
     fn candidate_cutover_public_exports_include_new_runtime_leaves() {
         let _: nana_ui_runtime::CalendarHeatmap = crate::runtime::CalendarHeatmap::new([]);
-        let _: nana_ui_runtime::TimeSeriesChart = crate::runtime::TimeSeriesChart::new([1.0]);
+        let _: nana_ui_runtime::Chart =
+            crate::runtime::Chart::new(nana_ui_runtime::chart::ChartOption::new());
         let _: nana_ui_runtime::ReorderList = crate::runtime::ReorderList::new([]);
         let _: nana_ui_runtime::NativeMarkdown = crate::runtime::NativeMarkdown::new();
         let _: nana_ui_runtime::SelectableRichText = crate::runtime::SelectableRichText::new([]);

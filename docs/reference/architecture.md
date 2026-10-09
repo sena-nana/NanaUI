@@ -22,6 +22,8 @@ nana-ui                 宿主适配器：run_runtime、控件再导出、SceneW
     ├── nana-ui-runtime 保留树权威（UiWorld）、内建控件、Shell、Workspace、
     │                   Dock、GPU 槽。不依赖 WGPU
     ├── nana-ui-scene   绘制图权威（UiScene）。依赖 runtime，不依赖 WGPU
+    ├── nana-ui-charts  图表模型：ChartOption、刻度、布局、命中与 GPU 标记数组。
+    │                   只依赖 nana-ui-core
     ├── nana-ui-core    共享合同：Style Model、主题令牌、WorkspaceModel、几何
     ├── nana-ui-platform  WindowId、输入、IME、剪贴板、显示器与全屏合同
     │                     （与 winit 转换隔离）
@@ -50,7 +52,7 @@ Vue + JS L1/L2（可选宿主）
                           链接器剔除未引用图标；不属于产品绘制路径
 ```
 
-依赖方向是这样的。`nana-ui`（适配器加 painter）依赖 `nana-ui-runtime` 和 `nana-ui-scene`。`nana-ui-scene` 依赖 `nana-ui-runtime`。`nana-ui` 和 `nana-frame-exchange` 依赖 `nana-gpu`。
+依赖方向是这样的。`nana-ui`（适配器加 painter）依赖 `nana-ui-runtime` 和 `nana-ui-scene`。`nana-ui-scene` 依赖 `nana-ui-runtime`。三者都依赖 `nana-ui-charts`，它只依赖 `nana-ui-core`。`nana-ui` 和 `nana-frame-exchange` 依赖 `nana-gpu`。
 
 `SceneWgpuPainter` 在 `nana-ui` 里，建在宿主的 `GpuContext` 上。每一帧画进宿主的 `FrameContext`。
 

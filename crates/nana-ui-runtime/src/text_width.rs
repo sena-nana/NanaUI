@@ -49,6 +49,13 @@ impl<'a> ChromeTextMeasure<'a> {
         Self { engine, base }
     }
 
+    /// Which engine measures: equal values measure alike.
+    #[cfg(feature = "charts")]
+    pub(crate) fn engine_identity(&self) -> usize {
+        self.engine
+            .map_or(0, |engine| std::ptr::from_ref(engine) as *const () as usize)
+    }
+
     /// The advance of `text` on one unwrapped line, rounded up to a whole
     /// pixel so a region exactly this wide never ellipsizes its own run on
     /// float noise.

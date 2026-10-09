@@ -2,6 +2,8 @@
 /// editor kind, so each generic editor operation dispatches in one place.
 #[cfg(feature = "charts")]
 mod charts;
+#[cfg(feature = "charts")]
+pub(crate) use charts::CHART_POINTER;
 mod choice;
 mod events;
 mod frame;
@@ -16,7 +18,7 @@ mod lifecycle;
 mod modal;
 mod registry;
 pub(crate) use hooks::{ChoiceHooks, DockHooks, NavigateHooks, WorkspaceHooks, hooked};
-pub use hooks::{TypeBehavior, TypeHooks};
+pub use hooks::{NodePointer, NodePointerHooks, NodeWheel, TypeBehavior, TypeHooks};
 pub(crate) use lifecycle::lifecycle_hooks;
 pub(crate) use text_edit::Editable;
 pub use text_edit::EditableHooks;
@@ -653,6 +655,7 @@ pub struct ExtensionRegistrar {
     presenters: Vec<Box<dyn TextPresenter>>,
     components: ComponentRegistry,
     activations: HashMap<TypeId, ActivationFn>,
+    pointers: HashMap<TypeId, &'static dyn hooks::ErasedPointer>,
 }
 
 impl ExtensionRegistrar {
@@ -705,6 +708,20 @@ impl ExtensionRegistrar {
             type_id,
             Arc::new(move |context, id| handler(context, Entity::from_stable_id(id))),
         );
+        Ok(())
+    }
+
+    /// Register hover, drag and wheel handling over every node of `C`, as a
+    /// built-in installs it with [`TypeBehavior::pointer`].
+    pub fn register_pointer<C: View>(
+        &mut self,
+        hooks: &'static NodePointerHooks<C>,
+    ) -> Result<(), FrameworkError> {
+        let type_id = TypeId::of::<C>();
+        if self.pointers.contains_key(&type_id) {
+            return Err(FrameworkError::DuplicateActivation);
+        }
+        self.pointers.insert(type_id, hooks);
         Ok(())
     }
 
@@ -1026,6 +1043,8 @@ pub struct AppContext {
     extensions: HashSet<String>,
     components: ComponentRegistry,
     activations: HashMap<TypeId, ActivationFn, crate::BuildIdHasher>,
+    /// Pointer hooks extensions registered ([`ExtensionRegistrar::register_pointer`]).
+    pointer_extensions: HashMap<TypeId, &'static dyn hooks::ErasedPointer, crate::BuildIdHasher>,
     secondary_presses: HashMap<TypeId, SecondaryPressFn, crate::BuildIdHasher>,
     file_drops: HashMap<TypeId, FileDropFn, crate::BuildIdHasher>,
     /// [`reproject_erased`] per component type created through this context.
@@ -1409,6 +1428,7 @@ impl AppContext {
             extensions: HashSet::new(),
             components: ComponentRegistry::default(),
             activations: HashMap::default(),
+            pointer_extensions: HashMap::default(),
             secondary_presses: HashMap::default(),
             file_drops: HashMap::default(),
             reprojectors: HashMap::default(),
@@ -2709,8 +2729,7 @@ impl AppContext {
         } else if let Some(target) = target {
             self.reposition_follow_cursor_tooltip(target)?;
         }
-        #[cfg(feature = "charts")]
-        self.sync_chart_hover(previous, target)?;
+        self.sync_pointer_hooks(document, pointer_id, previous, target)?;
         Ok(previous)
     }
 

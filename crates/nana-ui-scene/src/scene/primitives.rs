@@ -2,8 +2,6 @@
 
 use super::*;
 use nana_ui_runtime::HOST_TEXTURE_RENDERER;
-#[cfg(feature = "charts")]
-use nana_ui_runtime::TimeSeriesChart;
 
 #[cfg(feature = "calendar")]
 mod calendar;
@@ -55,6 +53,7 @@ impl UiScene {
         self.unadjustable_projections.remove(&id);
         // Written again below when the node still presents per glyph.
         self.glyph_live.remove(&id);
+        self.chart_live.remove(&id);
         self.glyph_objects.remove(&id);
         let Some(node) = self.nodes.get(&id).cloned() else {
             return;
@@ -668,12 +667,13 @@ impl UiScene {
                     calendar::build(&context, &mut emit)
                 }
                 #[cfg(feature = "charts")]
-                Some(ComponentGeometry::TimeSeriesChart { .. })
-                | Some(ComponentGeometry::DonutChart { .. })
-                | Some(ComponentGeometry::StackedTimeSeriesChart { .. })
-                | Some(ComponentGeometry::TimestampSeriesChart { .. }) => {
+                Some(ComponentGeometry::Chart { .. })
+                | Some(ComponentGeometry::ChartTooltip { .. }) => {
                     charts::build(&context, &mut emit)
                 }
+                #[cfg(not(feature = "charts"))]
+                Some(ComponentGeometry::Chart { .. })
+                | Some(ComponentGeometry::ChartTooltip { .. }) => {}
                 #[cfg(feature = "controls")]
                 Some(ComponentGeometry::ReorderList { .. }) => controls::build(&context, &mut emit),
                 #[cfg(feature = "rich-text")]
@@ -704,11 +704,6 @@ impl UiScene {
                 Some(ComponentGeometry::Scrollbar { .. }) | None => {}
                 #[cfg(not(feature = "calendar"))]
                 Some(ComponentGeometry::CalendarHeatmap { .. }) => {}
-                #[cfg(not(feature = "charts"))]
-                Some(ComponentGeometry::TimeSeriesChart { .. })
-                | Some(ComponentGeometry::DonutChart { .. })
-                | Some(ComponentGeometry::StackedTimeSeriesChart { .. })
-                | Some(ComponentGeometry::TimestampSeriesChart { .. }) => {}
                 #[cfg(not(feature = "controls"))]
                 Some(ComponentGeometry::ReorderList { .. }) => {}
                 #[cfg(not(feature = "rich-text"))]
@@ -721,6 +716,18 @@ impl UiScene {
                 Some(ComponentGeometry::GraphMinimap { .. }) => {}
                 #[cfg(not(feature = "image-viewer"))]
                 Some(ComponentGeometry::ImageViewer { .. }) => {}
+            }
+            // A chart keeps the host presenting while its marks or emphasis
+            // move.
+            if let Some(ComponentGeometry::Chart { layout, hover, .. }) =
+                node.component_geometry.as_deref()
+            {
+                let until = layout
+                    .marks
+                    .transition
+                    .map_or(std::time::Duration::ZERO, |motion| motion.end())
+                    .max(hover.live_until());
+                self.chart_live.insert(id, until);
             }
             let visual_context = VisualPrimitiveContext {
                 node: id,
@@ -2048,10 +2055,7 @@ impl UiScene {
                 #[cfg(feature = "calendar")]
                 Some(StandardVisual::CalendarHeatmap { .. }) => {}
                 #[cfg(feature = "charts")]
-                Some(StandardVisual::TimeSeriesChart { .. })
-                | Some(StandardVisual::DonutChart { .. })
-                | Some(StandardVisual::StackedTimeSeriesChart { .. })
-                | Some(StandardVisual::TimestampSeriesChart { .. }) => {}
+                Some(StandardVisual::Chart { .. }) | Some(StandardVisual::ChartTooltip { .. }) => {}
                 #[cfg(feature = "controls")]
                 Some(StandardVisual::ReorderList { .. }) => {}
                 #[cfg(feature = "rich-text")]

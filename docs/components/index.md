@@ -73,8 +73,7 @@
 - [ImageViewer](image-viewer.md) — 遮罩、表面、舞台和说明行。
 - [NativeMarkdown](native-markdown.md) — Markdown。复制取的是它的选区快照。
 - [CalendarHeatmap](calendar-heatmap.md) — 日历热力。日期、数值和标题由你提供。
-- [TimeSeriesChart](time-series-chart.md) — 时间序列。数值和本地化标签由你提供。
-- [DonutChart](donut-chart.md) — 环形图。分组和数值格式由你提供。
+- [Chart](chart.md) — 图表：折线、柱状、饼环、散点、雷达、仪表盘。option 和 ECharts 对应，数据和标签由你提供。
 - [GraphCanvas](graph-canvas.md) — 图布。模型和持久化由你保存。
 - [GraphMinimap](graph-minimap.md) — 按 `GraphModel::bounds` 画出节点和视口。
 

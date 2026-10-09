@@ -37,7 +37,14 @@ FORBIDDEN_IN_READER = {
     "aws-lc-rs",
     "aws-lc-sys",
 }
-EMBEDDABLE = {"nana-ui-core", "nana-ui-runtime", "nana-ui-scene", "nana-text", "nana-ui-platform"}
+EMBEDDABLE = {
+    "nana-ui-core",
+    "nana-ui-charts",
+    "nana-ui-runtime",
+    "nana-ui-scene",
+    "nana-text",
+    "nana-ui-platform",
+}
 
 
 def metadata() -> dict:

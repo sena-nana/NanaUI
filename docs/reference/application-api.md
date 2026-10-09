@@ -249,8 +249,13 @@ slots / overlay 组装接口。`mount` 仍用于按 key 构造并销毁缺席组
 | 仅 JS 命令 / props 白名单 | `NativeComponentRegistry` + `Nana.components.call` |
 | GPU 内容 | `GpuTextureView` + 宿主纹理；直写见 `GpuView` |
 | 改一个节点长什么样 | `Painter` 挂到 `NodeStyle::painter`（`Card::painter` / `Stack::painter` / `Panel::painter`），见下 |
+| 悬停、拖拽、滚轮 | `NodePointerHooks` + `ExtensionRegistrar::register_pointer`（内建控件写在 `TypeBehavior::pointer`），见下 |
 
 不支持动态 dylib。
+
+### 节点指针（`NodePointerHooks`）
+
+一个控件要自己处理整个盒子上的指针时（图表、画布），给它的类型装一组 `NodePointerHooks`：`moved` 在指针经过节点、或节点持有捕获时调用；`left` 在指针离开或节点不再可达时调用；`pressed` 是主键按下，返回 `true` 就拿到捕获直到抬起；`released` 是这次捕获的抬起；`wheel` 返回 `false` 时滚轮照常滚动下面的容器。坐标都是节点自己的布局 px（盒子左上角是 `0, 0`）。`Chart` 用的就是这条路径。
 
 ### 节点自绘（`Painter`）
 

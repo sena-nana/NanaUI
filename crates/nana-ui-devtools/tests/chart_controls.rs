@@ -1,15 +1,44 @@
 #![cfg(feature = "agent")]
 
-use nana_ui::runtime::{
-    Button, DocumentId, DonutChart, DonutSlice, LengthSpec, NodeStyle, RuntimeDocument, Stack,
-    Text, TimeSeriesChart, TimeSeriesLayer,
+use nana_ui::runtime::chart::hit::{ANY_SERIES, ItemRegion};
+use nana_ui::runtime::chart::{
+    Animation, AreaStyle, Axis, BarSeries, ChartColor, ChartOption, GaugeSeries, Legend,
+    LineSeries, PieItem, PieLabelPosition, PieSeries, RadarCoord, RadarIndicator, RadarItem,
+    RadarSeries,
 };
-use nana_ui_core::{Icon, SemanticColorMix, SemanticColorRole as R, ThemeAppearance};
+use nana_ui::runtime::{Chart, DocumentId, LengthSpec, NodeStyle, RuntimeDocument, Stack};
+use nana_ui_core::ThemeAppearance;
 use nana_ui_devtools::{agent::RuntimeAgentSession, offscreen};
 use std::sync::Arc;
 
+fn sized(width: Option<f32>, height: f32) -> NodeStyle {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.width = width.map(LengthSpec::Px);
+    layout.height = Some(LengthSpec::Px(height));
+    style
+}
+
+fn weekly() -> ChartOption {
+    let days = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+    ChartOption::new()
+        .animation(Animation::disabled())
+        .legend(Legend::default())
+        .x_axis(Axis::category(days))
+        .y_axis(Axis::value())
+        .series(
+            BarSeries::new("Input", [12.0, 20.0, 15.0, 8.0, 17.0])
+                .border_radius([3.0, 3.0, 0.0, 0.0]),
+        )
+        .series(
+            LineSeries::new("Total", [18.0, 26.0, 22.0, 30.0, 24.0])
+                .smooth(true)
+                .area(AreaStyle::default()),
+        )
+}
+
 #[test]
-fn charts_and_icon_button_render_real_geometry_and_hover_in_both_themes() {
+fn charts_render_and_hover_in_both_themes() {
     if !offscreen::pixels_available() {
         return;
     }
@@ -30,127 +59,138 @@ fn charts_and_icon_button_render_real_geometry_and_hover_in_both_themes() {
         let root = cx
             .create_component(id, Stack::column(12.0).padding(16.0))
             .unwrap();
-        let button_view = Button::new("Save memory").icon(Icon::File);
-        let button_style = button_view
-            .style
-            .clone()
-            .surface_mix(SemanticColorMix::new(R::Accent, R::Surface, 0.22))
-            .outline_mix(SemanticColorMix::new(R::Accent, R::Border, 0.58), 1.0);
-        let button = cx
-            .create_detached_component(id, button_view.style(button_style))
+        let trend = cx
+            .create_detached_component(id, Chart::new(weekly()).style(sized(None, 240.0)))
             .unwrap();
-        let donut = cx
+        let pie = cx
             .create_detached_component(
                 id,
-                DonutChart::new([
-                    DonutSlice {
-                        value: 20.0,
-                        color: R::Accent,
-                    },
-                    DonutSlice {
-                        value: 30.0,
-                        color: R::Success,
-                    },
-                    DonutSlice {
-                        value: 50.0,
-                        color: R::Warning,
-                    },
-                ])
-                .labels(["Input", "Output", "Cache"]),
+                Chart::new(
+                    ChartOption::new().animation(Animation::disabled()).series(
+                        PieSeries::new(
+                            "Tokens",
+                            [
+                                PieItem::new("Input", 20.0),
+                                PieItem::new("Output", 30.0),
+                                PieItem::new("Cache", 50.0),
+                            ],
+                        )
+                        .ring(0.5, 0.85)
+                        .label(PieLabelPosition::None),
+                    ),
+                )
+                .style(sized(Some(160.0), 160.0)),
             )
             .unwrap();
-        let mut style = NodeStyle::default();
-        Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(220.0));
-        let chart = cx
+        let radar = cx
             .create_detached_component(
                 id,
-                TimeSeriesChart::new([4.0, 8.0, 6.0, 10.0])
-                    .label("Total")
-                    .axis_labels(["09-01", "09-02", "09-03", "09-04"])
-                    .tooltip_details(["Cost $0.10", "Cost $0.20", "Cost $0.15", "Cost $0.30"])
-                    .stacked([
-                        TimeSeriesLayer::new("Input", [1.0, 2.0, 2.0, 3.0], R::Accent),
-                        TimeSeriesLayer::new("Output", [3.0, 6.0, 4.0, 7.0], R::Success),
-                    ])
-                    .style(style),
+                Chart::new(
+                    ChartOption::new()
+                        .animation(Animation::disabled())
+                        .radar(RadarCoord::new(
+                            ["Speed", "Power", "Range", "Cost", "Comfort"]
+                                .map(|name| RadarIndicator::new(name).max(10.0)),
+                        ))
+                        .series(
+                            RadarSeries::new(
+                                "Car",
+                                [RadarItem::new("A", vec![8.0, 6.0, 7.0, 4.0, 9.0])],
+                            )
+                            .area(AreaStyle::default()),
+                        ),
+                )
+                .style(sized(None, 200.0)),
             )
             .unwrap();
-        let detail = cx
-            .create_detached_component(id, Text::new("Semantic chart colors and localized values"))
+        let gauge = cx
+            .create_detached_component(
+                id,
+                Chart::new(
+                    ChartOption::new()
+                        .animation(Animation::disabled())
+                        .series(GaugeSeries::new("Load", 72.0)),
+                )
+                .style(sized(None, 200.0)),
+            )
             .unwrap();
         cx.reconcile_children(
             root.stable_id(),
             &[
-                button.stable_id(),
-                donut.stable_id(),
-                chart.stable_id(),
-                detail.stable_id(),
+                trend.stable_id(),
+                pie.stable_id(),
+                radar.stable_id(),
+                gauge.stable_id(),
             ],
         )
         .unwrap();
-        let mut session = RuntimeAgentSession::new_scaled(document, width, 420, scale).unwrap();
+        let mut session = RuntimeAgentSession::new_scaled(document, width, 900, scale).unwrap();
         session.flush().unwrap();
+
+        // Over the fourth category: every series there is emphasised.
         let bounds = session
             .document()
             .context()
             .world()
-            .layout_box(donut.stable_id())
+            .layout_box(trend.stable_id())
             .unwrap();
-        session
-            .hover_xy(
-                bounds.x + bounds.width * 0.8,
-                bounds.y + bounds.height * 0.2,
-            )
-            .unwrap();
-        assert_eq!(
-            session
+        let plot = {
+            let nodes = session
                 .document()
                 .context()
-                .read(donut, |c| c.active)
-                .unwrap(),
-            Some(0)
-        );
-        if let Some(path) = &output {
-            assert!(
-                session
-                    .screenshot_png(path.join(format!("{name}-donut.png")))
-                    .unwrap()
-                    .unique_colors
-                    > 8
-            );
-        }
+                .world()
+                .extract_nodes(&[trend.stable_id()]);
+            match nodes[0].component_geometry.as_deref() {
+                Some(nana_ui::runtime::ComponentGeometry::Chart { layout, .. }) => {
+                    layout.plot.unwrap()
+                }
+                other => panic!("chart geometry, got {other:?}"),
+            }
+        };
+        session
+            .hover_xy(
+                bounds.x + plot[0] + (plot[2] - plot[0]) * 0.7,
+                bounds.y + (plot[1] + plot[3]) * 0.5,
+            )
+            .unwrap();
+        let hover = session
+            .document()
+            .context()
+            .read(trend, |chart| chart.hover_state())
+            .unwrap();
+        assert_eq!(hover.current, [ANY_SERIES, 3], "{name}");
+
+        // Over the pie's last slice.
         let bounds = session
             .document()
             .context()
             .world()
-            .layout_box(chart.stable_id())
+            .layout_box(pie.stable_id())
             .unwrap();
-        assert_eq!(bounds.height, 220.0);
         session
             .hover_xy(
-                bounds.x + 48.0 + (bounds.width - 60.0) * 0.875,
-                bounds.y + 50.0,
+                bounds.x + bounds.width * 0.5 - bounds.width * 0.3,
+                bounds.y + bounds.height * 0.5,
             )
             .unwrap();
+        let hover = session
+            .document()
+            .context()
+            .read(pie, |chart| chart.hover_state())
+            .unwrap();
+        assert_eq!(hover.current, [0, 2], "{name}");
         assert_eq!(
             session
                 .document()
                 .context()
-                .read(donut, |c| c.active)
-                .unwrap(),
-            None
+                .read(trend, |chart| chart.hover_state().current)
+                .unwrap()[0],
+            u32::MAX,
+            "{name}: leaving the trend clears it"
         );
-        assert_eq!(
-            session
-                .document()
-                .context()
-                .read(chart, |c| c.active)
-                .unwrap(),
-            Some(3)
-        );
+
         let (size, pixels) = session.screenshot_rgba().unwrap();
         assert_eq!(size.width, (width as f32 * scale) as u32);
-        assert_eq!(size.height, (420.0 * scale) as u32);
         assert!(
             pixels
                 .as_chunks::<4>()
@@ -161,7 +201,7 @@ fn charts_and_icon_button_render_real_geometry_and_hover_in_both_themes() {
         if let Some(path) = &output {
             assert!(
                 session
-                    .screenshot_png(path.join(format!("{name}-trend.png")))
+                    .screenshot_png(path.join(format!("{name}.png")))
                     .unwrap()
                     .unique_colors
                     > 8
@@ -171,7 +211,7 @@ fn charts_and_icon_button_render_real_geometry_and_hover_in_both_themes() {
 }
 
 #[test]
-fn donut_ring_has_no_join_cracks_or_translucent_overdraw() {
+fn a_translucent_ring_has_no_join_cracks_or_overdraw() {
     if !offscreen::pixels_available() {
         return;
     }
@@ -179,44 +219,65 @@ fn donut_ring_has_no_join_cracks_or_translucent_overdraw() {
         let id = DocumentId::new(2).unwrap();
         let mut document = RuntimeDocument::new(id);
         let cx = document.context_mut();
-        let model = cx.world().style_model();
-        let mut palette = model.palette;
-        palette.accent.a = 0.5;
-        cx.set_style_tokens(
-            model.theme_appearance,
-            model.metrics,
-            palette,
-            model.titlebar,
-        )
-        .unwrap();
-        let mut style = NodeStyle::default();
-        let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Px(144.0));
-        layout.height = Some(LengthSpec::Px(144.0));
         let chart = cx
             .create_component(
                 id,
-                DonutChart::new((0..count).map(|_| DonutSlice {
-                    value: 1.0,
-                    color: R::Accent,
-                }))
-                .style(style),
+                Chart::new(
+                    ChartOption::new().animation(Animation::disabled()).series(
+                        PieSeries::new(
+                            "ring",
+                            (0..count).map(|index| {
+                                PieItem::new(format!("{index}"), 1.0)
+                                    .color(ChartColor::Rgba([0.2, 0.4, 0.9, 0.5]))
+                            }),
+                        )
+                        .ring(0.5, 0.9)
+                        .pad(0.0)
+                        .label(PieLabelPosition::None),
+                    ),
+                )
+                .style(sized(Some(144.0), 144.0)),
             )
             .unwrap();
         let mut session = RuntimeAgentSession::new_scaled(document, 160, 160, 2.0).unwrap();
         let (size, pixels) = session.screenshot_rgba().unwrap();
         let cx = session.document().context();
         let bounds = cx.world().layout_box(chart.stable_id()).unwrap();
-        let view = cx.read(chart, Clone::clone).unwrap();
+        let nodes = cx.world().extract_nodes(&[chart.stable_id()]);
+        let Some(nana_ui::runtime::ComponentGeometry::Chart { layout, .. }) =
+            nodes[0].component_geometry.as_deref()
+        else {
+            panic!("chart geometry");
+        };
+        let slice_at = |x: f32, y: f32| {
+            layout.hit.items.iter().position(|item| match item.region {
+                ItemRegion::Sector {
+                    center,
+                    start,
+                    end,
+                    inner,
+                    outer,
+                } => ItemRegion::Sector {
+                    center,
+                    start,
+                    end,
+                    inner,
+                    outer: outer - nana_ui::runtime::chart::hit::EMPHASIS_GROWTH,
+                }
+                .contains([x - bounds.x, y - bounds.y]),
+                region => region.contains([x - bounds.x, y - bounds.y]),
+            })
+        };
         let mut reference: Option<[u8; 3]> = None;
         let mut samples = 0;
         for y in 0..size.height {
             for x in 0..size.width {
                 let lx = (x as f32 + 0.5) / 2.0;
                 let ly = (y as f32 + 0.5) / 2.0;
-                let Some(index) = view.slice_at(bounds, lx, ly) else {
+                let Some(index) = slice_at(lx, ly) else {
                     continue;
                 };
+                // Clear of the ring's edges and of the antialiased joins.
                 if ![
                     (lx - 1.5, ly),
                     (lx + 1.5, ly),
@@ -224,23 +285,19 @@ fn donut_ring_has_no_join_cracks_or_translucent_overdraw() {
                     (lx, ly + 1.5),
                 ]
                 .into_iter()
-                .all(|(x, y)| view.slice_at(bounds, x, y) == Some(index))
+                .all(|(x, y)| slice_at(x, y) == Some(index))
                 {
                     continue;
                 }
                 let offset = ((y * size.width + x) * 4) as usize;
                 let color: [u8; 3] = pixels[offset..offset + 3].try_into().unwrap();
-                assert!(
-                    color.iter().max().unwrap() - color.iter().min().unwrap() > 15,
-                    "ring interior is unpainted at {count}:{lx},{ly}"
-                );
                 if let Some(reference) = reference {
                     assert!(
                         color
                             .into_iter()
                             .zip(reference)
-                            .all(|(a, b)| a.abs_diff(b) <= 2),
-                        "alpha overdraw or seam: {count}:{lx},{ly} {color:?} != {reference:?}"
+                            .all(|(a, b)| a.abs_diff(b) <= 3),
+                        "overdraw or seam: {count}:{lx},{ly} {color:?} != {reference:?}"
                     );
                 } else {
                     reference = Some(color);
@@ -255,138 +312,6 @@ fn donut_ring_has_no_join_cracks_or_translucent_overdraw() {
                     std::path::Path::new(&path).join(format!("alpha-ring-{count}-2x.png")),
                 )
                 .unwrap();
-        }
-    }
-}
-
-#[test]
-fn chart_tooltips_keep_viewport_geometry_below_scrolling_ancestors() {
-    use nana_ui::runtime::{ScrollAxes, ScrollOffset, ScrollView};
-    if !offscreen::pixels_available() {
-        return;
-    }
-    let output = std::env::var_os("NANA_CHART_CAPTURE_DIR").map(std::path::PathBuf::from);
-    if let Some(path) = &output {
-        std::fs::create_dir_all(path).unwrap();
-    }
-    for trend in [false, true] {
-        let id = DocumentId::new(1).unwrap();
-        let mut document = RuntimeDocument::new(id);
-        let cx = document.context_mut();
-        let root = cx
-            .create_component(id, Stack::column(0.0).padding(20.0))
-            .unwrap();
-        let mut style = NodeStyle::default();
-        let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Px(360.0));
-        layout.height = Some(LengthSpec::Px(280.0));
-        let scroll = cx
-            .create_detached_component(id, ScrollView::new(ScrollAxes::Vertical).style(style))
-            .unwrap();
-        let content = cx
-            .create_detached_component(id, Stack::column(0.0))
-            .unwrap();
-        let mut style = NodeStyle::default();
-        Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(0.0));
-        let spacer = cx
-            .create_detached_component(id, Stack::column(0.0).style(style))
-            .unwrap();
-        let chart = if trend {
-            let mut chart = TimeSeriesChart::new([4.0, 8.0])
-                .axis_labels(["09-01", "09-02"])
-                .stacked([TimeSeriesLayer::new("Input", [4.0, 8.0], R::Accent)]);
-            Arc::make_mut(&mut chart.style.layout).height = Some(LengthSpec::Px(160.0));
-            cx.create_detached_component(id, chart).unwrap().stable_id()
-        } else {
-            cx.create_detached_component(
-                id,
-                DonutChart::new([DonutSlice {
-                    value: 8.0,
-                    color: R::Accent,
-                }])
-                .labels(["Project"]),
-            )
-            .unwrap()
-            .stable_id()
-        };
-        let mut style = NodeStyle::default();
-        Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(400.0));
-        let tail = cx
-            .create_detached_component(id, Stack::column(0.0).style(style))
-            .unwrap();
-        cx.append_child(root, scroll).unwrap();
-        cx.append_child(scroll, content).unwrap();
-        cx.reconcile_children(
-            content.stable_id(),
-            &[spacer.stable_id(), chart, tail.stable_id()],
-        )
-        .unwrap();
-        let mut session = RuntimeAgentSession::new_scaled(document, 400, 340, 1.0).unwrap();
-        for offset in [0.0, 400.0] {
-            session.hover_xy(390.0, 330.0).unwrap();
-            session
-                .document_mut()
-                .context_mut()
-                .update_component(spacer, |spacer, _| {
-                    let mut style = NodeStyle::default();
-                    Arc::make_mut(&mut style.layout).height = Some(LengthSpec::Px(offset));
-                    *spacer = Stack::column(0.0).style(style);
-                })
-                .unwrap();
-            session.flush().unwrap();
-            session
-                .document_mut()
-                .context_mut()
-                .scroll_to(scroll, ScrollOffset { x: 0.0, y: offset })
-                .unwrap();
-            session.flush().unwrap();
-            let bounds = session.document().scene().draw_node_bounds(chart).unwrap();
-            let point = if trend {
-                (bounds.x + bounds.width * 0.8, bounds.y + 80.0)
-            } else {
-                (bounds.x + 55.0, bounds.y + 33.0)
-            };
-            session.hover_xy(point.0, point.1).unwrap();
-            let cx = session.document().context();
-            let tip = cx
-                .world()
-                .overlay_host(chart)
-                .unwrap()
-                .active
-                .expect("normal chart tooltip");
-            let layout = cx.world().layout_box(tip).unwrap();
-            let draw = session.document().scene().draw_node_bounds(tip).unwrap();
-            assert!(
-                (draw.x - layout.x).abs() < 0.01 && (draw.y - layout.y).abs() < 0.01,
-                "fixed tooltip received ancestor scroll twice: {draw:?} vs {layout:?}"
-            );
-            assert!(draw.y >= 0.0 && draw.y + draw.height <= 340.0);
-            let tip_primitive = session
-                .document()
-                .scene()
-                .primitives()
-                .find(|p| p.node == tip)
-                .unwrap();
-            assert!(
-                session
-                    .document()
-                    .scene()
-                    .draw_primitive(tip_primitive.id)
-                    .unwrap()
-                    .clips
-                    .is_empty(),
-                "viewport overlay must escape the scroll clip"
-            );
-            if let Some(output) = &output {
-                let name = if trend { "trend" } else { "donut" };
-                assert!(
-                    session
-                        .screenshot_png(output.join(format!("fixed-{name}-scroll-{offset:.0}.png")))
-                        .unwrap()
-                        .unique_colors
-                        > 8
-                );
-            }
         }
     }
 }

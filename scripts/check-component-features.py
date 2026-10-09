@@ -10,7 +10,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FAMILIES = {
-    "calendar": "CalendarHeatmap", "charts": "TimeSeriesChart", "controls": "ReorderList",
+    "calendar": "CalendarHeatmap", "charts": "Chart", "controls": "ReorderList",
     "graph-canvas": "GraphCanvas", "image-viewer": "ImageViewer", "rich-text": "NativeMarkdown",
 }
 

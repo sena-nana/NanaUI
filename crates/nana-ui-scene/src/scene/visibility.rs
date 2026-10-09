@@ -193,6 +193,20 @@ fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<Bounds> {
             bounds.bottom += 4.0;
             return Some(bounds);
         }
+        ScenePrimitiveKind::Chart {
+            marks,
+            origin,
+            hover,
+        } => {
+            let [x0, y0, x1, y1] = marks.extent?;
+            let reach = hover.growth + 2.0;
+            bounds = Bounds {
+                left: origin[0] + x0 - reach,
+                top: origin[1] + y0 - reach,
+                right: origin[0] + x1 + reach,
+                bottom: origin[1] + y1 + reach,
+            };
+        }
         ScenePrimitiveKind::Custom { .. }
         | ScenePrimitiveKind::Icon { .. }
         | ScenePrimitiveKind::QuadColorBatch { .. }

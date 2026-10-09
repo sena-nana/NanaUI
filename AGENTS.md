@@ -18,6 +18,7 @@ Rust / Vue input
 Supporting boundaries:
 
 - \`nana-text\` is the product text measurement, shaping, and retained text-layout authority.
+- \`nana-ui-charts\` is the chart model: the typed ECharts-shaped option, scales, layout, hit data and the GPU mark arrays the chart shaders read. It depends only on \`nana-ui-core\`; the \`Chart\` component lives in \`nana-ui-runtime\` and the chart pipelines in \`nana-ui\`.
 - \`nana-ui-css\` is the one CSS engine: stylesheet parse, cascade and the mapping onto the Style Model. The Vue path runs it at run time; the \`.vue\` compiler, \`view!\` and \`css!\` run it at build time and hand the runtime Style Model data. CSS parsing stays out of \`nana-ui-core\`, \`nana-ui-runtime\`, \`nana-ui-scene\` and \`nana-ui\`.
 - \`nana-ui-input\` owns the canonical input event, endpoint, sequencer, and \`HostServices\` contract; hosts lower native input into it and the per-\`AppContext\` router in \`nana-ui-runtime\` is its only consumer.
 - \`nana-ui-platform\` owns platform-neutral window contracts and re-exports the input contract; \`nana-window\` owns native handles, materials, title-bar chrome, scaling, and fullscreen behavior.

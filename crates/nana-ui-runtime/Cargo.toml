@@ -45,6 +45,7 @@ hashbrown = "0.16.1"
 nana-ui-view-schema = { path = "../nana-ui-view-schema" }
 futures-core.workspace = true
 nana-ui-core.workspace = true
+nana-ui-charts.workspace = true
 nana-diagnostics.workspace = true
 # Canonical input and the host services contract. Input routing, focus and IME
 # state are Runtime responsibilities; the contract crate has no platform deps.

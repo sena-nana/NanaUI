@@ -842,6 +842,141 @@ fn dispatch_program_all_keeps_every_message_of_one_type_in_order() {
 }
 
 #[test]
+fn plugin_pointer_hooks_hear_hover_drags_and_wheel() {
+    use crate::{AccessibilityState, InteractionState, NodePointer, NodePointerHooks, NodeWheel};
+    use nana_ui_input::{InputModifiers, InputPayload, PointerPhase, WheelInput, WheelUnit};
+
+    static HEARD: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    fn note(line: String) {
+        HEARD.lock().unwrap().push(line);
+    }
+    #[derive(Clone, PartialEq)]
+    struct Pad;
+    impl ComponentView for Pad {
+        fn node_kind(&self) -> NodeKind {
+            NodeKind::Element { tag: "pad".into() }
+        }
+        fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+            let mut style = NodeStyle::default();
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.width = Some(LengthSpec::Px(100.0));
+            layout.height = Some(LengthSpec::Px(100.0));
+            crate::view_components::project_common(
+                id,
+                world,
+                mutations,
+                &style,
+                InteractionState {
+                    pointer_events: true,
+                    focusable: false,
+                },
+                AccessibilityState::default(),
+            );
+        }
+    }
+    impl crate::RegisterableComponent for Pad {
+        const TYPE_ID: &'static str = "test.pad";
+        const TAGS: &'static [&'static str] = &["pad"];
+        fn from_semantic(_: &crate::SemanticSpec<'_>) -> Self {
+            Pad
+        }
+    }
+    fn moved(_: &mut AppContext, _: Entity<Pad>, p: NodePointer) -> Result<bool, FrameworkError> {
+        note(format!("move {} {} {}", p.x, p.y, p.captured));
+        Ok(true)
+    }
+    fn left(_: &mut AppContext, _: Entity<Pad>) -> Result<(), FrameworkError> {
+        note("leave".into());
+        Ok(())
+    }
+    fn pressed(_: &mut AppContext, _: Entity<Pad>, p: NodePointer) -> Result<bool, FrameworkError> {
+        note(format!("press {} {}", p.x, p.y));
+        Ok(true)
+    }
+    fn released(
+        _: &mut AppContext,
+        _: Entity<Pad>,
+        p: NodePointer,
+    ) -> Result<bool, FrameworkError> {
+        note(format!("release {} {}", p.x, p.y));
+        Ok(true)
+    }
+    fn wheel(_: &mut AppContext, _: Entity<Pad>, w: NodeWheel) -> Result<bool, FrameworkError> {
+        note(format!("wheel {}", w.delta_y));
+        Ok(w.delta_y > 0.0)
+    }
+    static HOOKS: NodePointerHooks<Pad> = NodePointerHooks {
+        moved,
+        left,
+        pressed,
+        released,
+        wheel,
+    };
+    struct PadExt;
+    impl UiExtension for PadExt {
+        fn name(&self) -> &'static str {
+            "test.pad"
+        }
+        fn install(&self, registrar: &mut ExtensionRegistrar) -> Result<(), FrameworkError> {
+            registrar.register_component::<Pad>()?;
+            registrar.register_pointer::<Pad>(&HOOKS)
+        }
+    }
+
+    let mut context = AppContext::new();
+    context.install(&PadExt).unwrap();
+    let document = DocumentId::new(1).unwrap();
+    context.create_component(document, Pad).unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(300.0, 300.0))
+        .unwrap();
+    context.rebuild_hit_test(document);
+    let mut input = crate::HeadlessInput::bind(&mut context, document);
+    input
+        .pointer(&mut context, PointerPhase::Move, 10.0, 20.0)
+        .unwrap();
+    input
+        .pointer(&mut context, PointerPhase::Down, 10.0, 20.0)
+        .unwrap();
+    // Captured: the drag is heard past the node's edge.
+    input
+        .pointer(&mut context, PointerPhase::Move, 150.0, 20.0)
+        .unwrap();
+    input
+        .pointer(&mut context, PointerPhase::Up, 150.0, 20.0)
+        .unwrap();
+    input
+        .pointer(&mut context, PointerPhase::Move, 200.0, 200.0)
+        .unwrap();
+    let turn = |delta_y: f32| {
+        InputPayload::Wheel(WheelInput {
+            pointer_id: nana_ui_input::PointerId(0),
+            x: 10.0,
+            y: 10.0,
+            delta_x: 0.0,
+            delta_y,
+            unit: WheelUnit::Pixels,
+            modifiers: InputModifiers::default(),
+        })
+    };
+    assert!(input.route(&mut context, turn(5.0)).unwrap().handled);
+    // The hook declined: the wheel goes on to whatever scrolls.
+    let declined = input.route(&mut context, turn(-5.0)).unwrap();
+    assert!(!declined.handled);
+    let heard = HEARD.lock().unwrap().clone();
+    assert_eq!(heard[0], "move 10 20 false");
+    assert!(heard.contains(&"press 10 20".to_owned()), "{heard:?}");
+    assert!(heard.contains(&"move 150 20 true".to_owned()), "{heard:?}");
+    assert!(heard.contains(&"release 150 20".to_owned()), "{heard:?}");
+    let release = heard
+        .iter()
+        .position(|line| line.starts_with("release"))
+        .unwrap();
+    assert!(heard[release..].contains(&"leave".to_owned()), "{heard:?}");
+    assert!(heard.contains(&"wheel 5".to_owned()), "{heard:?}");
+}
+
+#[test]
 fn plugin_register_activation_reaches_activate_node() {
     #[derive(Clone, PartialEq)]
     struct Ping;
@@ -7628,7 +7763,6 @@ fn documented_containers_and_chrome_carry_a_type_identity() {
         ("tr", "nana.table-row"),
         ("td", "nana.table-cell"),
         ("reorder-list", "nana.reorder-list"),
-        ("time-series-chart", "nana.time-series-chart"),
         ("desktop-shell", "nana.desktop-shell"),
         ("app-title-bar", "nana.app-title-bar"),
         ("pane-chrome", "nana.pane-chrome"),
@@ -7673,14 +7807,17 @@ fn documented_containers_and_chrome_carry_a_type_identity() {
         Some("nana.sidebar-section")
     );
     let chart = context
-        .create_component(document, crate::TimeSeriesChart::new([1.0, 2.0]))
+        .create_component(
+            document,
+            crate::Chart::new(nana_ui_charts::ChartOption::new()),
+        )
         .unwrap();
     assert_eq!(
         context
             .world()
             .component_type(chart.stable_id())
             .map(ComponentTypeId::as_str),
-        Some("nana.time-series-chart")
+        Some("nana.chart")
     );
 }
 

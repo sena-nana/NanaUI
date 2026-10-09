@@ -38,7 +38,7 @@ pub use nana_ui_runtime::{
     build_calendar_heatmap_model,
 };
 #[cfg(feature = "charts")]
-pub use nana_ui_runtime::{DonutChart, DonutSlice, TimeSeriesChart, TimeSeriesLayer};
+pub use nana_ui_runtime::{Chart, ChartEvent, chart};
 #[cfg(feature = "graph-canvas")]
 pub use nana_ui_runtime::{GraphCanvas, GraphCanvasEvent, GraphNodeContent};
 pub use nana_ui_runtime::{KeyCaptureEvent, KeyCaptureLayer, KeymapLayer};

@@ -269,19 +269,24 @@ pub(super) const FIXTURE_REGISTRY: &[Fixture] = &[
         "week columns and level fills use theme accent, not a second canvas",
     ),
     f(
-        Component::TimeSeriesChart,
-        "series",
-        "grid, area and line stay inside the 148px chart box",
+        Component::Chart,
+        "line",
+        "bars, the smoothed line and its area stay in the plot; labels are as wide as nana-text measures them",
     ),
     f(
-        Component::TimeSeriesChart,
-        "stacked",
-        "legend labels are as wide as nana-text measures them",
+        Component::Chart,
+        "pie",
+        "ring sectors share one center, keep the authored cutout and a gap between them",
     ),
     f(
-        Component::DonutChart,
-        "slices",
-        "ring sectors share one center and keep the authored cutout",
+        Component::Chart,
+        "radar",
+        "the web, the series polygon and its fill share one center",
+    ),
+    f(
+        Component::Chart,
+        "gauge",
+        "track, progress, ticks and needle share one center; the value reads below it",
     ),
     f(
         Component::ReorderList,

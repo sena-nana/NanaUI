@@ -130,12 +130,17 @@ impl AppContext {
             .activations
             .keys()
             .any(|type_id| self.activations.contains_key(type_id))
+            || registrar
+                .pointers
+                .keys()
+                .any(|type_id| self.pointer_extensions.contains_key(type_id))
         {
             return Err(FrameworkError::DuplicateActivation);
         }
         self.components.extend(registrar.components)?;
         self.actions.extend(registrar.actions);
         self.activations.extend(registrar.activations);
+        self.pointer_extensions.extend(registrar.pointers);
         for presenter in registrar.presenters {
             self.world.register_presenter(presenter)?;
         }

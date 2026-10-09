@@ -7,6 +7,7 @@ members = [
     "crates/nana-ui-css",
     "crates/nana-ui-sfc",
     "crates/nana-ui-view-macros",
+    "crates/nana-ui-charts",
     "crates/nana-ui-scene",
     "crates/nana-ui",
     "crates/nana-window",
@@ -45,6 +46,7 @@ nana-ui-core = { path = "crates/nana-ui-core" }
 nana-icons-tabler = { path = "crates/nana-icons-tabler" }
 nana-ui-runtime = { path = "crates/nana-ui-runtime" }
 nana-ui-scene = { path = "crates/nana-ui-scene" }
+nana-ui-charts = { path = "crates/nana-ui-charts" }
 nana-js-engine = { path = "crates/nana-js-engine" }
 nana-js-v8 = { path = "crates/nana-js-v8" }
 nana-ui-web-api = { path = "crates/nana-ui-web-api" }
