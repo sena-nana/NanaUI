@@ -43,7 +43,7 @@ Vue 也不在调用的那一刻改树。host op 进待提交队列，`PendingHos
 
 没有变更时，flush 是空转。宿主不该为了空转去刷一整帧。动画、实时画面和普通界面的唤醒是分开的。一块纹理在动，不该迫使整棵 `UiWorld` 全量更新。
 
-viewport 变了，即使没有应用这边的 mutation，也会触发布局。脏的是 document root，加上 `position: fixed` 和 `vw` / `vh` 节点。未移动的子树复用保留的缓存。
+viewport 变了，即使没有应用这边的 mutation，也会触发布局。document root 按 viewport 变化的轴重新布局，往下只有消费这条轴约束的盒子跟着重新测量；`position: fixed` 和 `vw` / `vh` 节点按自己的尺寸变化处理。其余子树复用保留的缓存：不读 viewport 的盒子，它的测量缓存和布局计划不因 viewport 变化失效。
 
 滚动不写回 Runtime 的布局盒。JS 查询用的盒子是绘制阶段的投影。`LayoutBoxStore` 是这份投影，不是另一份布局权威。
 

@@ -70,6 +70,9 @@ impl TextDirty {
     /// transform and opacity it never reaches a shaping, layout or paint
     /// revision, so a span that only changes its effect costs no text work.
     pub const GLYPH_PRESENTATION: Self = Self(1 << 8);
+    /// The language the text shapes in (`locl` forms, fallback faces): its
+    /// own, its subtree's, the application's or the engine's.
+    pub const LANGUAGE: Self = Self(1 << 9);
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -95,7 +98,12 @@ impl TextDirty {
     /// The text work this class implies. The whole dependency graph.
     pub const fn work(self) -> TextWork {
         let mut work = TextWork::NONE.0;
-        if self.intersects(Self::CONTENT.union(Self::FONT).union(Self::SHAPE_STYLE)) {
+        if self.intersects(
+            Self::CONTENT
+                .union(Self::FONT)
+                .union(Self::SHAPE_STYLE)
+                .union(Self::LANGUAGE),
+        ) {
             work |= TextWork::SHAPE.0 | TextWork::LAYOUT.0 | TextWork::SCENE_GEOMETRY.0;
         }
         if self.intersects(Self::CONSTRAINT) {
@@ -249,13 +257,45 @@ pub(crate) struct TextNodeState {
     stamp: Option<TextStamp>,
     /// The layout this node retains in its world's layout store, or null.
     pub layout: TextLayoutId,
+    /// The language the node last resolved in, and whether a language change
+    /// invalidated it since: together they say whether that change was one
+    /// the text depends on.
+    shaped_language: Option<nana_text::font::LanguageTag>,
+    language_pending: bool,
+    /// Whether a typography scale change reached this text since it last
+    /// resolved: the pass that lays it out again counts that as the scale's.
+    scale_pending: bool,
 }
 
 impl TextNodeState {
+    /// Whether a pass has resolved this node before: a later resolution is a
+    /// change to text that already exported metrics, not its first layout.
+    pub(crate) fn resolved_before(&self) -> bool {
+        self.stamp.is_some()
+    }
+
+    /// A typography scale change reached this text, if it had resolved
+    /// before: text laid out for the first time under a scale is not one a
+    /// change reached. Returns whether it had.
+    pub(crate) fn note_scale(&mut self) -> bool {
+        let resolved = self.resolved_before();
+        self.scale_pending |= resolved;
+        resolved
+    }
+
+    /// Whether a typography scale change reached this text since it last
+    /// resolved, clearing it.
+    pub(crate) fn take_scale_pending(&mut self) -> bool {
+        std::mem::take(&mut self.scale_pending)
+    }
+
     /// Applies `dirty` as revision bumps, through [`TextDirty::work`]: a
     /// revision moves exactly when its work is implied. Classes that imply no
     /// text work bump nothing, so they cannot make a resolved node stale.
     pub fn invalidate(&mut self, dirty: TextDirty) {
+        if dirty.intersects(TextDirty::LANGUAGE) {
+            self.language_pending = true;
+        }
         let work = dirty.work();
         let revisions = &mut self.revisions;
         if dirty.intersects(TextDirty::CONTENT) {
@@ -300,6 +340,10 @@ impl TextNodeState {
     }
 
     /// Records that the node was resolved at its current revisions.
+    ///
+    /// Returns whether a language change had invalidated it although it
+    /// resolved in the language it had before: work a language dependency
+    /// that coarse costs.
     pub fn mark_resolved(
         &mut self,
         backend: TextBackendEpoch,
@@ -308,7 +352,12 @@ impl TextNodeState {
             TextHorizontalAlignment,
         )>,
         text_node: bool,
-    ) {
+        language: Option<&nana_text::font::LanguageTag>,
+    ) -> bool {
+        let wasted_language = std::mem::take(&mut self.language_pending)
+            && self.stamp.is_some()
+            && self.shaped_language.as_ref() == language;
+        self.shaped_language = language.cloned();
         let measured = constraints.is_some();
         self.stamp = Some(TextStamp {
             content: self.revisions.content,
@@ -320,6 +369,7 @@ impl TextNodeState {
             #[cfg(debug_assertions)]
             constraints,
         });
+        wasted_language
     }
 
     /// Drops the copy of the text built for the engine.
@@ -562,6 +612,9 @@ pub(crate) fn classify_computed_style_change(
     {
         dirty |= TextDirty::SHAPE_STYLE;
     }
+    if previous.language != next.language {
+        dirty |= TextDirty::LANGUAGE;
+    }
     if previous.line_height != next.line_height
         || previous.word_break != next.word_break
         || previous.line_break != next.line_break
@@ -613,6 +666,7 @@ pub(crate) fn nana_text_style(style: &ComputedStyle) -> NanaTextStyle {
         features: style.font_features.clone(),
         variations: style.font_variations.clone(),
         kerning: style.font_kerning,
+        language: style.language.clone(),
     }
 }
 
@@ -712,10 +766,11 @@ pub(crate) fn text_metrics_of_layout(layout: &TextLayout) -> TextMetrics {
 mod tests {
     use super::*;
 
-    const ALL: [TextDirty; 9] = [
+    const ALL: [TextDirty; 10] = [
         TextDirty::CONTENT,
         TextDirty::FONT,
         TextDirty::SHAPE_STYLE,
+        TextDirty::LANGUAGE,
         TextDirty::CONSTRAINT,
         TextDirty::EDIT_STATE,
         TextDirty::PAINT,
@@ -727,7 +782,12 @@ mod tests {
     #[test]
     fn the_dependency_graph_is_the_one_the_issue_draws() {
         let shape_class = TextWork::SHAPE;
-        for class in [TextDirty::CONTENT, TextDirty::FONT, TextDirty::SHAPE_STYLE] {
+        for class in [
+            TextDirty::CONTENT,
+            TextDirty::FONT,
+            TextDirty::SHAPE_STYLE,
+            TextDirty::LANGUAGE,
+        ] {
             let work = class.work();
             assert!(work.contains(shape_class), "{class:?} must reshape");
             assert!(work.contains(TextWork::LAYOUT), "{class:?} must relayout");
@@ -757,7 +817,7 @@ mod tests {
         };
         for class in ALL {
             let mut node = TextNodeState::default();
-            node.mark_resolved(backend, None, true);
+            let _ = node.mark_resolved(backend, None, true, None);
             node.invalidate(class);
             let needs_text_work = class.work().intersects(TextWork::SHAPE.union_layout());
             assert_eq!(
@@ -798,13 +858,14 @@ mod tests {
     #[test]
     fn a_new_font_set_makes_a_resolved_node_stale_without_any_revision_bump() {
         let mut node = TextNodeState::default();
-        node.mark_resolved(
+        let _ = node.mark_resolved(
             TextBackendEpoch::Host {
                 shaper: 7,
                 font_generation: 3,
             },
             None,
             true,
+            None,
         );
         assert!(node.is_current(TextBackendEpoch::Host {
             shaper: 7,

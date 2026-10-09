@@ -26,6 +26,9 @@ mod component_registry;
 mod components;
 mod custom_paint;
 mod paint_script;
+/// The BCP 47 tag [`MutationQueue::set_language`] and
+/// [`UiWorld::set_default_language`] take.
+pub use nana_text::font::LanguageTag;
 pub use paint_script::PaintScript;
 mod date_picker;
 mod diff_view;
@@ -54,9 +57,8 @@ mod key_layers;
 mod layout_engine;
 mod layout_frontier;
 mod layout_result;
-/// Benchmark-only view of whether scoped layout actually reused its cached
-/// container placements. Hosts use it to tell "the dirty set is small" apart
-/// from "the frame was cheap".
+/// Benchmark-only coarse phase clocks for `--profile-layout`. How much work
+/// layout did, plan reuse included, is on [`WorkCounters`].
 #[cfg(feature = "benchmark")]
 pub use layout_engine::plan_stats;
 mod browser_view;
@@ -65,6 +67,7 @@ mod motion_api;
 mod mutation;
 mod native_content;
 pub use browser_view::BrowserView;
+mod i18n;
 #[cfg(feature = "rich-text")]
 mod markdown_drawing;
 mod media_transport;
@@ -82,6 +85,17 @@ mod profiler;
 mod qr_code;
 mod query;
 mod range_span;
+mod responsive;
+#[cfg(feature = "icu")]
+pub use i18n::IcuFormatter;
+pub use i18n::{
+    DateStyle, FormatterCounts, Locale, LocaleFormatter, LocalizedText, MessageArg, MessageArgs,
+    MessageCatalog, MessageDateTime, MessageId, MessageTable, MissingMessage, NumberStyle,
+    PlainFormatter, PluralCategory,
+};
+pub use responsive::{
+    MAX_RESPONSIVE_BREAKPOINTS, ResponsiveAxis, ResponsiveContainer, ResponsiveRule,
+};
 #[cfg(feature = "controls")]
 mod reorder_list;
 #[cfg(feature = "rich-text")]
@@ -406,8 +420,9 @@ pub use view_components::{
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{
-    BuildIdHasher, CommitReport, DocumentId, IdHasher, InputModality, NodeKind, NodeMap, NodeSet,
-    NodeSnapshot, StableNodeId, UiWorld, UiWorldError,
+    BuildIdHasher, CommitReport, DocumentId, IdHasher, InputModality, LocaleGenerations,
+    LocaleScope, NodeKind, NodeMap, NodeSet, NodeSnapshot, ReplacedMetadata, ReplacedResource,
+    StableNodeId, UiWorld, UiWorldError,
 };
 pub use xy_pad::{
     XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadValue, xy_pad_height,

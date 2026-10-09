@@ -54,7 +54,14 @@ impl UiWorld {
                 !record.resolved.0.visible && parent_style.visible,
             )
         };
-        if !inherited {
+        // A node that names its own language or typography scale, or follows
+        // a responsive rule, resolves a style of its own.
+        if !inherited
+            || self.nodes.language(id).is_some()
+            || self.nodes.text_scale(id).is_some()
+            || self.responsive.follows(id)
+            || self.localized_text(id).is_some()
+        {
             return Ok(false);
         }
         {
@@ -67,17 +74,7 @@ impl UiWorld {
             return Ok(true);
         }
         if has_text {
-            let dirty = crate::text_node::classify_computed_style_change(
-                &self.record(id).resolved.0,
-                &parent_style,
-            );
-            let text_work = dirty.work();
-            if text_work.intersects(crate::text_node::TextWork::SHAPE)
-                || text_work.intersects(crate::text_node::TextWork::LAYOUT)
-            {
-                work.record_text_invalidation(1);
-            }
-            self.nodes.invalidate_text(id, dirty);
+            self.invalidate_text_for_style(id, &parent_style, work);
         }
         if show_text {
             self.text_shown.push(id);
@@ -106,7 +103,9 @@ impl UiWorld {
         if SHARE && self.publish_inherited_computed_style(id, parent, work)? {
             return Ok(());
         }
-        let layout = self.motion_layout(id, &self.record(id).style.layout);
+        // The layout the pipeline reads: design intent and a responsive
+        // variant applied. Text, paint and visibility follow the variant.
+        let layout = self.motion_layout(id, &self.record(id).resolved_layout);
         // Only a handful of fields are read out of the parent, so share its Arc
         // instead of cloning the whole `ComputedStyle` (and its three heap
         // fields) once per node. A borrow would pin `&mut self` to the end.
@@ -134,6 +133,13 @@ impl UiWorld {
             && self.menu_branch_open(id);
         let pointer_events =
             PointerEventsSpec::inherit_from(layout.pointer_events, inherited.pointer_events);
+        let text_scale = match self.nodes.text_scale(id) {
+            Some(own) => *own,
+            None if parent.is_some() => inherited.text_scale,
+            None => self.root_text_scale(self.record(id).document),
+        };
+        let font_size_base = layout.font_size.unwrap_or(inherited.font_size_base);
+        let line_height_base = layout.line_height.or(inherited.line_height_base);
         let next = ComputedStyle {
             paint_colors: nana_ui_core::PaintColorSlots {
                 color: layout.paint_colors.color.or_else(|| {
@@ -183,7 +189,7 @@ impl UiWorld {
                 .selection_background
                 .or(inherited.selection_background),
             selection_color: layout.selection_color.or(inherited.selection_color),
-            font_size: layout.font_size.unwrap_or(inherited.font_size),
+            font_size: font_size_base * text_scale,
             font_weight: layout.font_weight.or(inherited.font_weight),
             italic: layout.font_italic.unwrap_or(inherited.italic),
             font_family: layout
@@ -191,7 +197,7 @@ impl UiWorld {
                 .as_deref()
                 .map(Arc::<str>::from)
                 .or_else(|| inherited.font_family.clone()),
-            line_height: layout.line_height.or(inherited.line_height),
+            line_height: line_height_base.map(|spec| scaled_line_height(spec, text_scale)),
             letter_spacing: layout.letter_spacing.unwrap_or(inherited.letter_spacing),
             font_features: layout
                 .font_features
@@ -220,6 +226,19 @@ impl UiWorld {
             text_orientation: layout
                 .text_orientation
                 .unwrap_or(inherited.text_orientation),
+            // Its own language; else, for localized text, the language its
+            // locale shapes in; else its parent's.
+            language: match self.nodes.language(id) {
+                Some(own) => Some(own.clone()),
+                None => match self.localized_language(id) {
+                    Some(localized) => Some(localized),
+                    None if parent.is_some() => inherited.language.clone(),
+                    None => self.root_language(),
+                },
+            },
+            text_scale,
+            font_size_base,
+            line_height_base,
         };
         // Written before the early return: a node that declares its own
         // writing mode resolves to the same style when its parent's changes,
@@ -262,18 +281,7 @@ impl UiWorld {
                 Arc::new(next)
             }
         };
-        let dirty =
-            crate::text_node::classify_computed_style_change(&self.record(id).resolved.0, &next);
-        // What this class costs the text pipeline is `TextDirty::work`'s
-        // answer, not a second copy of that mapping here. A colour-only change
-        // implies SCENE_PAINT, so a palette switch stays paint work.
-        let text_work = dirty.work();
-        if text_work.intersects(crate::text_node::TextWork::SHAPE)
-            || text_work.intersects(crate::text_node::TextWork::LAYOUT)
-        {
-            work.record_text_invalidation(1);
-        }
-        self.nodes.invalidate_text(id, dirty);
+        self.invalidate_text_for_style(id, &next, work);
         if !self.record(id).resolved.0.visible && next.visible {
             // Text passes skip hidden nodes without resolving them, so a node
             // whose box changed while hidden comes back stale. The scheduled
@@ -458,12 +466,13 @@ impl UiWorld {
         } else {
             self.layouts.intern(&mut style.layout);
         }
-        let (mut resolved, copied) = Self::resolve_layout_intent(&style, self.style_model.metrics);
-        if copied {
-            self.record_resolved_layout_copy();
-            self.layouts.intern(&mut resolved);
+        let resolved = self.resolve_node_layout(id, &style);
+        let depends_on_viewport = resolved.depends_on_viewport();
+        if style_declares_intent(&style) {
+            self.intent_nodes.insert(id);
+        } else {
+            self.intent_nodes.remove(&id);
         }
-        let depends_on_viewport = style.layout.depends_on_viewport();
         let record = self.record_mut(id);
         record.style = style;
         record.resolved_layout = resolved;
@@ -475,40 +484,90 @@ impl UiWorld {
     /// place. A node without design intent keeps sharing the same `Arc`. The
     /// caller records the layout cause, which moves the input epoch.
     pub(crate) fn refresh_resolved_layout(&mut self, id: StableNodeId) {
-        let (mut resolved, copied) =
-            Self::resolve_layout_intent(&self.record(id).style, self.style_model.metrics);
+        let style = self.record(id).style.clone();
+        let resolved = self.resolve_node_layout(id, &style);
+        self.record_mut(id).resolved_layout = resolved;
+    }
+
+    /// The layout the pipeline reads for `id` authored as `style`, and
+    /// whether it is a copy: its design intent resolved against the installed
+    /// metrics, then the variant its responsive rule's bucket picks (Issue
+    /// #265). A node with neither keeps sharing its authored `Arc`.
+    fn node_layout(
+        &self,
+        id: StableNodeId,
+        style: &NodeStyle,
+    ) -> (Arc<nana_ui_core::LayoutStyle>, bool) {
+        let (mut resolved, mut copied) =
+            Self::resolve_layout_intent(style, self.style_model.metrics);
+        if let Some(variant) = self.responsive_variant(id) {
+            variant.apply(Arc::make_mut(&mut resolved));
+            copied = true;
+        }
+        // A locale's direction, where the node names none (Issue #269).
+        if resolved.dir.is_none()
+            && let Some(direction) = self.locale_direction(id)
+        {
+            Arc::make_mut(&mut resolved).dir = Some(direction);
+            copied = true;
+        }
+        (resolved, copied)
+    }
+
+    /// [`Self::node_layout`], shared with an equal layout written recently.
+    pub(super) fn resolve_node_layout(
+        &mut self,
+        id: StableNodeId,
+        style: &NodeStyle,
+    ) -> Arc<nana_ui_core::LayoutStyle> {
+        let (mut resolved, copied) = self.node_layout(id, style);
         if copied {
             self.record_resolved_layout_copy();
             self.layouts.intern(&mut resolved);
         }
-        self.record_mut(id).resolved_layout = resolved;
+        resolved
     }
 
-    /// Re-resolve every node's layout intent after a metrics install. The
-    /// caller records a layout cause for each node, which moves the input
-    /// epoch.
-    fn reresolve_layout_intent(&mut self, ids: &[StableNodeId]) {
-        let metrics = self.style_model.metrics;
-        for &id in ids {
-            let style = &self.record(id).style;
-            if style.radius.is_none()
-                && style.corner_radii.is_none()
-                && style.control_height.is_none()
-                && style.control_padding_x.is_none()
-                && style.control_padding_y.is_none()
-                && style.surface_padding.is_none()
-                && style.square.is_none()
-            {
+    /// Re-resolve the layout intent of every node that declares some, after
+    /// a metrics install, and seed each live one whose resolved layout moved
+    /// by what moved: a padding step moves the boxes that use it and no
+    /// other. Returns how many moved.
+    fn reresolve_layout_intent(&mut self) -> usize {
+        let mut ids: Vec<StableNodeId> = self.intent_nodes.iter().copied().collect();
+        ids.sort_unstable();
+        let mut moved = 0;
+        for id in ids {
+            let (mut resolved, copied) = self.node_layout(id, &self.record(id).style);
+            let previous = Arc::clone(&self.record(id).resolved_layout);
+            let changed = if Arc::ptr_eq(&previous, &resolved) {
+                nana_ui_core::LayoutStyleChange::NONE
+            } else {
+                previous.changed_fields(resolved.as_ref())
+            };
+            if changed.is_empty() {
                 continue;
             }
-            let (mut resolved, copied) =
-                Self::resolve_layout_intent(&self.record(id).style, metrics);
             if copied {
                 self.record_resolved_layout_copy();
                 self.layouts.intern(&mut resolved);
             }
             self.record_mut(id).resolved_layout = resolved;
+            self.note_layout_source_change();
+            moved += 1;
+            if !self.presence_live(id) {
+                continue;
+            }
+            let classified = self.classify_layout_change(id, changed);
+            self.record_layout_invalidation(
+                id,
+                nana_ui_core::LayoutInvalidation {
+                    source: nana_ui_core::LayoutInvalidationSource::Resource,
+                    reason: nana_ui_core::InvalidationReason::RESOURCE,
+                    ..classified
+                },
+            );
         }
+        moved
     }
 
     /// Read one role out of the token authority, counted for Issue #101 §4.
@@ -817,51 +876,43 @@ impl UiWorld {
         for id in painted {
             self.mark_repaint(id);
         }
-        let mut bits = DirtyMask::RENDER;
         // A corner shape only paints: it moves no box.
         let metrics_changed = !self.style_model.metrics.same_layout(&previous_metrics);
-        if metrics_changed {
-            bits |= DirtyMask::LAYOUT;
-        }
+        let seeds_before = self.layout_seeds_created;
         let mut ids = Vec::new();
         for roots in self.live_document_roots.values() {
             for &root in roots {
                 ids.extend(self.subtree_ids(root));
             }
         }
-        // Installing a theme today invalidates every live node (Issue #101 §4
-        // baseline; Issue #100 §7 is where that becomes dependency-scoped).
-        // Recording the real width is what makes the later narrowing visible.
+        // Every live node paints against the new palette. Layout hears only
+        // of the boxes whose design intent resolves differently against new
+        // metrics, each by what moved; the rest of a document lays nothing
+        // out again.
         let mut work = ThemeWorkCounters::default();
         work.record_paint_invalidation(ids.len());
-        if metrics_changed {
-            work.record_layout_invalidation(ids.len());
-        }
         if !ids.is_empty() {
             work.record_allocation(1, ids.len().saturating_mul(size_of::<StableNodeId>()));
         }
-        self.record_theme_work(work);
+        let mut dependents = 0;
         if metrics_changed {
             // Design intent resolves against the metrics, so a metrics install
             // is the one event that has to re-run it. Doing it here, once, is
             // what keeps it off every frame's read path.
-            self.reresolve_layout_intent(&ids);
+            dependents = self.reresolve_layout_intent();
+            work.record_layout_invalidation(dependents);
         }
+        self.record_theme_work(work);
         for id in ids {
-            if metrics_changed {
-                self.record_layout_invalidation(
-                    id,
-                    nana_ui_core::LayoutInvalidation::new(
-                        nana_ui_core::LayoutInvalidationSource::Resource,
-                        nana_ui_core::InvalidationReason::RESOURCE,
-                        nana_ui_core::InvalidationKind::MEASURE
-                            .union(nana_ui_core::InvalidationKind::PLACEMENT),
-                        nana_ui_core::LayoutFieldMask::ALL,
-                        nana_ui_core::LayoutDependencyFootprint::ALL,
-                    ),
-                );
-            }
-            self.mark(id, bits & !DirtyMask::LAYOUT);
+            self.mark(id, DirtyMask::RENDER);
+        }
+        let seeds = (self.layout_seeds_created - seeds_before) as usize;
+        let counts = &mut self.pending_drain_counts;
+        if metrics_changed {
+            counts.theme_to_layout_seeds += seeds;
+            counts.theme_metric_dependents_invalidated += dependents;
+        } else {
+            counts.theme_palette_layout_invalidations += seeds;
         }
     }
 }
@@ -1017,4 +1068,251 @@ fn carries_non_inherited_paint(style: &ComputedStyle) -> bool {
         || slots.border_bottom.is_some()
         || slots.border_left.is_some()
         || slots.outline.is_some()
+}
+
+impl UiWorld {
+    /// The language a root inherits: the application's, else the text
+    /// engine's fallback.
+    fn root_language(&self) -> Option<nana_text::font::LanguageTag> {
+        self.default_language
+            .clone()
+            .or_else(|| self.engine_fallback_language.clone())
+    }
+
+    /// Set the application's language, which every node without a language
+    /// of its own or above it inherits. Text whose language moves shapes
+    /// again; the rest only resolves its style again.
+    pub fn set_default_language(&mut self, language: Option<nana_text::font::LanguageTag>) {
+        let before = self.root_language();
+        self.default_language = language;
+        if self.root_language() != before {
+            self.mark_root_language_dependents();
+        }
+    }
+
+    /// The language `id` names for itself, if any; see
+    /// [`crate::MutationQueue::set_language`].
+    pub fn node_language(&self, id: StableNodeId) -> Option<&nana_text::font::LanguageTag> {
+        self.nodes.language(id)
+    }
+
+    /// The text engine's fallback language moved. It only reaches text when
+    /// the application names no language of its own.
+    pub(crate) fn observe_engine_fallback_language(
+        &mut self,
+        language: Option<nana_text::font::LanguageTag>,
+    ) {
+        if self.engine_fallback_language == language {
+            return;
+        }
+        let before = self.root_language();
+        self.engine_fallback_language = language;
+        if self.root_language() != before {
+            self.mark_root_language_dependents();
+        }
+    }
+
+    /// `id`'s computed style is going from the one it holds to `next`: what
+    /// that costs its text, by the class of change.
+    fn invalidate_text_for_style(
+        &mut self,
+        id: StableNodeId,
+        next: &ComputedStyle,
+        work: &mut ThemeWorkCounters,
+    ) {
+        let previous = Arc::clone(&self.record(id).resolved.0);
+        let dirty = crate::text_node::classify_computed_style_change(&previous, next);
+        // What this class costs the text pipeline is `TextDirty::work`'s
+        // answer, not a second copy of that mapping here. A colour-only change
+        // implies SCENE_PAINT, so a palette switch stays paint work.
+        let text_work = dirty.work();
+        if text_work.intersects(crate::text_node::TextWork::SHAPE)
+            || text_work.intersects(crate::text_node::TextWork::LAYOUT)
+        {
+            work.record_text_invalidation(1);
+        }
+        self.note_language_invalidation(id, dirty);
+        self.note_text_scale_change(id, previous.text_scale, next.text_scale);
+        self.nodes.invalidate_text(id, dirty);
+    }
+
+    /// Text whose computed language moved: a language change reached it.
+    /// It shapes again, and the scene takes its new layout and language.
+    fn note_language_invalidation(&mut self, id: StableNodeId, dirty: crate::text_node::TextDirty) {
+        if dirty.intersects(crate::text_node::TextDirty::LANGUAGE) && self.shows_text(id) {
+            self.bump_last_counters(|counters| counters.record_text_language(1, 0));
+            self.mark(id, DirtyMask::RENDER);
+        }
+    }
+
+    /// The typography scale a node with no parent starts from: its window's,
+    /// else the application's.
+    fn root_text_scale(&self, document: DocumentId) -> f32 {
+        self.document_text_scales
+            .get(&document)
+            .copied()
+            .unwrap_or(self.default_text_scale)
+    }
+
+    /// Set the application's typography scale, which text inherits unless a
+    /// window or a scope above it sets its own: an accessibility text size or
+    /// an application's content size level. Only the windows that inherit it
+    /// are visited, and of them only the scopes that do; see
+    /// [`crate::MutationQueue::set_text_scale`]. A scale that is not a
+    /// positive finite number is ignored.
+    pub fn set_default_text_scale(&mut self, scale: f32) {
+        if !valid_text_scale(scale) {
+            return;
+        }
+        if self.default_text_scale == scale {
+            self.note_equivalent_text_scale();
+            return;
+        }
+        self.default_text_scale = scale;
+        let mut documents: Vec<DocumentId> = self
+            .live_document_roots
+            .keys()
+            .copied()
+            .filter(|document| !self.document_text_scales.contains_key(document))
+            .collect();
+        documents.sort_unstable();
+        for document in documents {
+            self.mark_document_text_scale(document);
+        }
+    }
+
+    /// Set one window's typography scale over the application's; `None`
+    /// follows the application's again. Other windows are not visited. A
+    /// scale that is not a positive finite number is ignored.
+    pub fn set_document_text_scale(&mut self, document: DocumentId, scale: Option<f32>) {
+        if scale.is_some_and(|scale| !valid_text_scale(scale)) {
+            return;
+        }
+        let before = self.root_text_scale(document);
+        match scale {
+            Some(scale) => {
+                self.document_text_scales.insert(document, scale);
+            }
+            None => {
+                self.document_text_scales.remove(&document);
+            }
+        }
+        if self.root_text_scale(document) == before {
+            self.note_equivalent_text_scale();
+            return;
+        }
+        self.mark_document_text_scale(document);
+    }
+
+    /// The typography scale `id` sets for its subtree, if it sets one.
+    pub fn node_text_scale(&self, id: StableNodeId) -> Option<f32> {
+        self.nodes.text_scale(id).copied()
+    }
+
+    /// A window's scale moved: visit the scope of each of its roots that
+    /// does not set its own.
+    fn mark_document_text_scale(&mut self, document: DocumentId) {
+        for root in self.document_roots(document) {
+            if self.nodes.text_scale(root).is_none() {
+                self.mark_text_scale_scope(root);
+            }
+        }
+    }
+
+    /// Visit the scope of a typography scale `root` sets or inherits: `root`
+    /// and every node under it that inherits it, stopping at the nodes that
+    /// set their own, whose subtrees keep their scale. Their styles resolve
+    /// again and their text is considered again; text whose size moved is
+    /// laid out again, and layout hears of it only from metrics that moved.
+    pub(super) fn mark_text_scale_scope(&mut self, root: StableNodeId) {
+        let mut scanned = 0usize;
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            scanned += 1;
+            let record = self.record(id);
+            stack.extend(
+                record
+                    .hierarchy
+                    .children
+                    .iter()
+                    .rev()
+                    .copied()
+                    .filter(|child| self.nodes.text_scale(*child).is_none()),
+            );
+            let _ = self.mark(id, DirtyMask::STYLE | DirtyMask::TEXT);
+        }
+        self.pending_drain_counts
+            .typography_scale_scope_nodes_scanned += scanned;
+    }
+
+    /// A typography scale was set to the one it already was: nothing visited.
+    pub(super) fn note_equivalent_text_scale(&mut self) {
+        self.pending_drain_counts.typography_scale_equivalent_skips += 1;
+    }
+
+    /// `id`'s computed typography scale is going from `previous` to `next`.
+    /// What it paints from its font size paints again; text of it that had
+    /// resolved counts as reached, and its next layout as the scale's.
+    fn note_text_scale_change(&mut self, id: StableNodeId, previous: f32, next: f32) {
+        if previous == next {
+            return;
+        }
+        if !self.shows_text(id) && self.standard_visual_ref(id).is_none() {
+            return;
+        }
+        let _ = self.mark(id, DirtyMask::RENDER);
+        if self.nodes.note_text_scale(id) {
+            self.bump_last_counters(|counters| counters.record_typography_scale_text(1, 0, 0));
+        }
+    }
+
+    /// Every live root inherits the root language: resolve the styles under
+    /// them again and consider their text. Text that names its own language
+    /// keeps its computed style, and so its shape.
+    fn mark_root_language_dependents(&mut self) {
+        let roots: Vec<StableNodeId> = self
+            .live_document_roots
+            .values()
+            .flat_map(|roots| roots.iter().copied())
+            .collect();
+        for root in roots {
+            self.mark_subtree(root, DirtyMask::STYLE | DirtyMask::TEXT);
+        }
+    }
+}
+
+impl UiWorld {
+    /// A node with text of its own to shape: a text node, or an element
+    /// that holds text.
+    fn shows_text(&self, id: StableNodeId) -> bool {
+        self.nodes.get(id).is_some_and(|record| {
+            !record.text.value.is_empty() || matches!(record.kind.as_ref(), NodeKind::Text)
+        })
+    }
+}
+
+/// `spec` at typography scale `scale`: an absolute line height scales with the
+/// font; a relative one already follows the scaled font size.
+fn scaled_line_height(
+    spec: nana_ui_core::LineHeightSpec,
+    scale: f32,
+) -> nana_ui_core::LineHeightSpec {
+    match spec {
+        nana_ui_core::LineHeightSpec::Absolute(value) => {
+            nana_ui_core::LineHeightSpec::Absolute(value * scale)
+        }
+        relative @ nana_ui_core::LineHeightSpec::Relative(_) => relative,
+    }
+}
+
+/// Whether `style` declares design intent the installed metrics resolve: a
+/// radius tier, a control height or padding step, a surface inset, a square.
+fn style_declares_intent(style: &NodeStyle) -> bool {
+    style.radius.is_some()
+        || style.corner_radii.is_some()
+        || style.control_height.is_some()
+        || style.control_padding_x.is_some()
+        || style.control_padding_y.is_some()
+        || style.surface_padding.is_some()
+        || style.square.is_some()
 }

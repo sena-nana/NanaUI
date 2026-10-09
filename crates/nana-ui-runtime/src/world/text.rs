@@ -3770,12 +3770,7 @@ impl UiWorld {
                         .union(nana_ui_core::InvalidationKind::PLACEMENT),
                     nana_ui_core::LayoutFieldMask::INTRINSIC
                         .union(nana_ui_core::LayoutFieldMask::SPACING),
-                    nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
-                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
-                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_BASELINE)
-                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS)
-                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
-                        .union(nana_ui_core::LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+                    METRIC_EXPORTS,
                 ),
             );
             self.mark(id, DirtyMask::RENDER);
@@ -3806,6 +3801,9 @@ impl UiWorld {
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
         let mut resolved = Vec::new();
+        // Re-resolved text whose exported metrics held: the change stopped
+        // at the text and reached no parent.
+        let mut stopped = 0usize;
         #[cfg(any(test, feature = "benchmark"))]
         crate::text_shape_stats::note_scope(ids.len());
         // Run the loop as one fallible unit so an invalid metric still hands
@@ -3930,11 +3928,14 @@ impl UiWorld {
                         &mut work,
                     );
                     validate_text_metrics(id, metrics)?;
+                    let resolved_before = self.text_resolved_before(id);
                     resolved.push(PlainResolution::text(id, constraints, layout));
                     if self.record(id).text_metrics != metrics
                         || self.text_natural_width(id) != natural
                     {
                         shaped.push((id, metrics, natural, None));
+                    } else if resolved_before {
+                        stopped += 1;
                     }
                     continue;
                 };
@@ -3959,9 +3960,11 @@ impl UiWorld {
                     &previous_overlays,
                     &mut shaper,
                 );
-                if self.record(id).text_metrics != metrics
-                    || self.nodes.text_input_presentation(id) != Some(&presentation)
-                {
+                let metrics_held = self.record(id).text_metrics == metrics;
+                if metrics_held && self.text_resolved_before(id) {
+                    stopped += 1;
+                }
+                if !metrics_held || self.nodes.text_input_presentation(id) != Some(&presentation) {
                     shaped.push((id, metrics, None, Some(presentation)));
                 }
             }
@@ -3982,8 +3985,10 @@ impl UiWorld {
             self.glyph_cache = glyphs;
             return outcome.map(|()| false);
         }
-        self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
+        let mut scaled = self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
+        self.note_text_propagations_stopped(stopped);
         let mut changed = !shaped.is_empty() || !modal_shaped.is_empty();
+        let mut scale_parent_reflows = 0usize;
         for (id, metrics, natural, presentation) in shaped {
             let previous = self.record(id).text_metrics;
             let previous_natural = self.text_natural_width(id);
@@ -3997,15 +4002,22 @@ impl UiWorld {
             if let Some(presentation) = presentation {
                 self.nodes
                     .set_text_input_presentation(id, Some(presentation));
+                if self.nodes.take_text_scale_pending(id) {
+                    scaled.insert(id);
+                }
             }
             // Scoped shaping runs after a layout pass. Publish the same typed
             // metric seed as the initial shaping path so a wrapping change is
             // not lost when another node has a pending typed seed in the same
             // post-layout drain.
-            if text_intrinsic_changed(previous, metrics) || previous_natural != natural {
-                self.propagate_layout_from_node(id);
+            if (text_intrinsic_changed(previous, metrics) || previous_natural != natural)
+                && self.propagate_layout_from_node(id)
+                && scaled.contains(&id)
+            {
+                scale_parent_reflows += 1;
             }
         }
+        self.note_text_scale_relayouts(scaled.len(), scale_parent_reflows);
         for (id, presentation) in empty_shaped {
             changed |= self.apply_empty_state_text_presentation(id, presentation);
         }
@@ -4019,12 +4031,7 @@ impl UiWorld {
                     nana_ui_core::InvalidationKind::MEASURE
                         .union(nana_ui_core::InvalidationKind::PLACEMENT),
                     nana_ui_core::LayoutFieldMask::INTRINSIC,
-                    nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
-                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
-                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_BASELINE)
-                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS)
-                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
-                        .union(nana_ui_core::LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+                    METRIC_EXPORTS,
                 ),
             );
             self.mark(id, DirtyMask::RENDER);
@@ -4041,6 +4048,10 @@ impl UiWorld {
         self.refresh_document_text_highlights(host);
         // Taken last: document highlights measure through the host too.
         work.accumulate(host.take_text_work());
+        // This pass lays text out at the boxes layout just gave it: what it
+        // laid out again is what a resize cost text.
+        let (relayouts, reshapes) = (work.constraint_only_relayouts, work.text_nodes_shaped);
+        self.bump_last_counters(|counters| counters.record_resize_text(relayouts, reshapes));
         self.finish_text_pass(
             work,
             runs,
@@ -4251,12 +4262,14 @@ impl UiWorld {
     /// each node's layout, then stamps it at the revisions it was resolved at.
     /// Nothing is applied for a pass that failed, so a retry resolves the same
     /// nodes again rather than skipping them with metrics never written.
+    /// Returns the text among them a typography scale change had reached.
     fn apply_plain_resolutions(
         &mut self,
         resolutions: Vec<PlainResolution>,
         backend: TextBackendEpoch,
         work: &mut nana_text::TextWorkCounters,
-    ) {
+    ) -> HashSet<StableNodeId> {
+        let mut scaled = HashSet::new();
         for resolution in resolutions {
             match resolution.layout {
                 Some(layout) => {
@@ -4266,8 +4279,35 @@ impl UiWorld {
                 }
                 None => self.nodes.release_text_layout(resolution.id),
             }
-            self.nodes
-                .mark_text_resolved(resolution.id, backend, resolution.constraints);
+            // What the metrics this resolution wrote were wrapped against:
+            // the box width, or none yet. Layout reads it to know whether the
+            // width of those lines is one this node keeps in a given box.
+            let wrap_limit = resolution
+                .constraints
+                .filter(|constraints| constraints.wrap)
+                .map(|constraints| constraints.max_width.unwrap_or(f32::INFINITY));
+            self.nodes.set_text_wrap_limit(resolution.id, wrap_limit);
+            if self
+                .nodes
+                .mark_text_resolved(resolution.id, backend, resolution.constraints)
+            {
+                self.bump_last_counters(|counters| counters.record_text_language(0, 1));
+            }
+            if self.nodes.take_text_scale_pending(resolution.id) {
+                scaled.insert(resolution.id);
+            }
+        }
+        scaled
+    }
+
+    /// Counts what a typography scale change cost this pass's text: the text
+    /// it reached that laid out again, and of that the text whose metrics
+    /// moved its parent.
+    fn note_text_scale_relayouts(&mut self, relayouts: usize, parent_reflows: usize) {
+        if relayouts > 0 {
+            self.bump_last_counters(|counters| {
+                counters.record_typography_scale_text(0, relayouts, parent_reflows);
+            });
         }
     }
 
@@ -4287,7 +4327,13 @@ impl UiWorld {
         // runs and `TextLayoutCache` hits and misses. Engine work is reported
         // on the text work counters, where its caches are named.
         self.bump_last_counters(|counters| {
-            counters.record_text_shape(runs, hits, misses, wrap_layouts);
+            counters.record_text_shape(
+                runs,
+                hits,
+                misses,
+                wrap_layouts,
+                work.constraint_only_relayouts,
+            );
             counters.record_cache_eviction(evictions);
             if let Some((glyph_hits, glyph_misses)) = glyph_stats {
                 counters.record_glyph_cache(glyph_hits, glyph_misses);
@@ -4315,27 +4361,14 @@ impl UiWorld {
         // generation must not be answered with the last one's numbers.
         self.glyph_cache.clear();
         self.text_layout_cache.clear();
+        // Every resolved text shapes again against the new fonts. Layout hears
+        // only from the text whose exported metrics moved, as after any other
+        // reshape: a font registration that changes no text's metrics lays
+        // nothing out.
         let stale = self.nodes.text_bearing_nodes().collect::<Vec<_>>();
         for id in stale {
             self.nodes
                 .invalidate_text(id, crate::text_node::TextDirty::FONT);
-            self.record_layout_invalidation(
-                id,
-                nana_ui_core::LayoutInvalidation::new(
-                    nana_ui_core::LayoutInvalidationSource::Font,
-                    nana_ui_core::InvalidationReason::FONT,
-                    nana_ui_core::InvalidationKind::MEASURE
-                        .union(nana_ui_core::InvalidationKind::PLACEMENT),
-                    nana_ui_core::LayoutFieldMask::TYPOGRAPHY
-                        .union(nana_ui_core::LayoutFieldMask::INTRINSIC),
-                    nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
-                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
-                        .union(nana_ui_core::LayoutDependencyFootprint::EXPORTS_BASELINE)
-                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS)
-                        .union(nana_ui_core::LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
-                        .union(nana_ui_core::LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
-                ),
-            );
             self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
         }
         // A painter that measured text re-records against the new backend;
@@ -4393,6 +4426,7 @@ impl UiWorld {
         let backend = PlainTextBackend::of(host);
         self.paint_text_engine = backend.engine.clone();
         self.observe_text_backend(backend.epoch);
+        self.observe_engine_fallback_language(backend.fallback_language);
     }
 
     /// Text revisions of `id` (Issue #95): which classes of change its text
@@ -4458,16 +4492,31 @@ impl PlainResolution {
 pub(super) struct PlainTextBackend {
     pub epoch: TextBackendEpoch,
     pub engine: Option<nana_text::SharedTextEngine>,
+    /// The engine's fallback language. Text depends on it through its
+    /// computed style, like on any other language, not through the epoch.
+    pub fallback_language: Option<nana_text::font::LanguageTag>,
 }
 
 impl PlainTextBackend {
     pub(super) fn of<H: TextShaper + ?Sized>(host: &H) -> Self {
         match host.text_engine() {
             Some(engine) => {
-                let epoch = nana_text::lock_text_engine(&engine).epoch();
+                let (epoch, fallback_language) = {
+                    let engine = nana_text::lock_text_engine(&engine);
+                    (engine.epoch(), engine.language().cloned())
+                };
+                // The fallback language reaches text as the root of the
+                // language its style inherits, so a change of it re-resolves
+                // the text that inherits it and nothing else. Kept in the
+                // epoch, it would make every resolved node stale.
+                let epoch = nana_text::TextEngineEpoch {
+                    language_generation: 0,
+                    ..epoch
+                };
                 Self {
                     epoch: TextBackendEpoch::Engine(epoch),
                     engine: Some(engine),
+                    fallback_language,
                 }
             }
             None => Self {
@@ -4481,6 +4530,7 @@ impl PlainTextBackend {
                     font_generation: host.font_generation(),
                 },
                 engine: None,
+                fallback_language: None,
             },
         }
     }
@@ -4518,6 +4568,27 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// Whether a pass already resolved `id`'s text, so this pass changes text
+    /// that had exported metrics rather than laying it out for the first time.
+    fn text_resolved_before(&self, id: StableNodeId) -> bool {
+        self.nodes
+            .text_node(id)
+            .is_some_and(crate::text_node::TextNodeState::resolved_before)
+            || self.nodes.text_input_presentation(id).is_some()
+    }
+
+    /// Text that kept its exported metrics stops the change there. The
+    /// frontier never sees it, so the stop is counted where it happens.
+    fn note_text_propagations_stopped(&mut self, stopped: usize) {
+        if stopped > 0 {
+            self.bump_last_counters(|counters| {
+                counters.layout_propagations_stopped =
+                    counters.layout_propagations_stopped.saturating_add(stopped);
+                counters.record_text_metrics(0, stopped, 0);
+            });
+        }
+    }
+
     /// Shape only explicitly scheduled text. The runtime owns invalidation and
     /// storage while the renderer adapter supplies its real shaping backend.
     pub fn shape_text(
@@ -4623,10 +4694,11 @@ impl UiWorld {
                         &mut work,
                     );
                     validate_text_metrics(id, metrics)?;
+                    let resolved_before = self.text_resolved_before(id);
                     if stampable {
                         resolved.push(PlainResolution::text(id, constraints, layout));
                     }
-                    shaped.push((id, metrics, natural, None));
+                    shaped.push((id, metrics, natural, None, resolved_before));
                     continue;
                 };
                 self.nodes.release_text_layout(id);
@@ -4649,7 +4721,8 @@ impl UiWorld {
                     &previous_overlays,
                     &mut shaper,
                 );
-                shaped.push((id, metrics, None, Some(presentation)));
+                let resolved_before = self.text_resolved_before(id);
+                shaped.push((id, metrics, None, Some(presentation), resolved_before));
             }
             Ok(())
         })();
@@ -4668,8 +4741,10 @@ impl UiWorld {
             self.glyph_cache = glyphs;
             return outcome;
         }
-        self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
-        for (id, metrics, natural, presentation) in shaped {
+        let mut scaled = self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
+        let mut stopped = 0usize;
+        let mut scale_parent_reflows = 0usize;
+        for (id, metrics, natural, presentation, resolved_before) in shaped {
             let previous = self.record(id).text_metrics;
             let previous_natural = self.text_natural_width(id);
             if previous != metrics || previous_natural != natural {
@@ -4696,11 +4771,22 @@ impl UiWorld {
                 }
                 self.nodes
                     .set_text_input_presentation(id, Some(presentation));
+                if self.nodes.take_text_scale_pending(id) {
+                    scaled.insert(id);
+                }
             }
             if text_intrinsic_changed(previous, metrics) || previous_natural != natural {
-                self.propagate_layout_from_node(id);
+                if self.propagate_layout_from_node(id) && scaled.contains(&id) {
+                    scale_parent_reflows += 1;
+                }
+            } else if resolved_before {
+                // Re-shaped, and the width, height and baseline it exports
+                // held: the change stops at the text and reaches no parent.
+                stopped += 1;
             }
         }
+        self.note_text_propagations_stopped(stopped);
+        self.note_text_scale_relayouts(scaled.len(), scale_parent_reflows);
         for (id, presentation) in empty_shaped {
             self.apply_empty_state_text_presentation(id, presentation);
         }

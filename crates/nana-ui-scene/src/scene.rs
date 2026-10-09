@@ -1046,6 +1046,10 @@ pub struct SceneTextOpenType {
     pub writing_mode: WritingModeSpec,
     /// CSS `text-orientation` after inherit (#59).
     pub text_orientation: nana_ui_core::TextOrientationSpec,
+    /// The language the Runtime shaped this text in (BCP 47). A renderer that
+    /// lays the text out again shapes in the same one, or its `locl` forms
+    /// and fallback faces would differ from what was measured.
+    pub language: Option<nana_ui_runtime::LanguageTag>,
 }
 
 impl SceneTextOpenType {
@@ -1060,6 +1064,7 @@ impl SceneTextOpenType {
             direction: style.writing_context().direction,
             writing_mode: style.writing_mode,
             text_orientation: style.text_orientation,
+            language: style.language.clone(),
             // Not on `ComputedStyle`: `white-space` is a box-layout property,
             // so the caller that has the layout style sets it.
             preserve_lines: false,

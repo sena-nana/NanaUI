@@ -4,6 +4,38 @@
 //! Runtime fills these from dirty system work. GPU upload bytes are omitted
 //! rather than estimated: this crate does not observe renderer uploads.
 
+/// Writes `accumulate` for a counter struct from how each field folds:
+/// `latest` takes the other snapshot's value, `max` keeps the larger,
+/// `nested` folds a counter struct, `sum` adds, saturating, and `optional`
+/// adds when either side recorded one. `other` is destructured whole, so a
+/// field left off the lists does not compile.
+macro_rules! accumulate_counters {
+    (
+        $(#[$doc:meta])*
+        $ty:ident {
+            $(latest: $($latest:ident),+;)?
+            $(max: $($max:ident),+;)?
+            $(nested: $($nested:ident),+;)?
+            sum: $($sum:ident),+;
+            $(optional: $($optional:ident),+;)?
+        }
+    ) => {
+        impl $ty {
+            $(#[$doc])*
+            pub fn accumulate(&mut self, other: Self) {
+                let Self {
+                    $($($latest,)+)? $($($max,)+)? $($($nested,)+)? $($sum,)+ $($($optional,)+)?
+                } = other;
+                $($(self.$latest = $latest;)+)?
+                $($(self.$max = self.$max.max($max);)+)?
+                $($(self.$nested.accumulate($nested);)+)?
+                $(self.$sum = self.$sum.saturating_add($sum);)+
+                $($(fold_optional_count(&mut self.$optional, $optional);)+)?
+            }
+        }
+    };
+}
+
 /// Per-frame algorithm counts. Timing stays on the Runtime profiler; these
 /// fields are the stable CI signals.
 ///
@@ -60,16 +92,25 @@ pub struct WorkCounters {
     pub layout_frontier_seeds: usize,
     /// Seeds merged because they reached the same node in one frame.
     pub layout_frontier_seed_merges: usize,
-    /// Nodes that entered the measure frontier.
+    /// Nodes that entered the measure frontier. A metric delta that has to be
+    /// measured again is admitted here: Issue #255's
+    /// `layout_metric_deltas_measure` is this field.
     pub layout_frontier_nodes_measure: usize,
-    /// Nodes that entered the placement frontier.
+    /// Nodes that entered the placement frontier. Issue #255's
+    /// `layout_metric_deltas_placement` is this field.
     pub layout_frontier_nodes_placement: usize,
     /// Formatting contexts scheduled for a local solve.
     /// `layout_context_local_solves` is this field.
     pub layout_frontier_contexts: usize,
+    /// Nodes whose writing context changed: a mode or direction delta reached
+    /// them. Issue #255's `layout_metric_deltas_writing` is this field.
+    pub layout_frontier_nodes_writing: usize,
     /// Dependency edges inspected while building/propagating the frontier.
+    /// Each visit reads one compact footprint: Issue #255's
+    /// `layout_dependency_footprints_read` is this field.
     pub layout_dependency_edges_visited: usize,
     /// Propagation stopped because the exported metric delta was stable.
+    /// Issue #255's `layout_metric_deltas_none` is this field.
     pub layout_propagations_stopped: usize,
     /// Bounded local subtree fallbacks used for an unsupported context.
     pub layout_local_subtree_fallbacks: usize,
@@ -91,6 +132,49 @@ pub struct WorkCounters {
     pub layout_origin_only_updates: usize,
     /// Publish batches that wrote at least one changed layout result.
     pub layout_delta_commits: usize,
+    /// Children result publication looked at: the covered children a held
+    /// result was checked against, and every child of a result it rebuilt.
+    /// A local edit keeps this the same at any document size; only a
+    /// container whose own placements changed pays for its child count.
+    pub layout_result_children_visited: usize,
+    /// Layout mutations whose effective value changed and queued a typed
+    /// invalidation.
+    pub layout_invalidations_created: usize,
+    /// Layout classifications that came out empty: the write changed no
+    /// field layout reads, so nothing was queued.
+    pub layout_invalidations_zero_delta: usize,
+    /// Style writes equal in effect to the style already there. They queue
+    /// nothing and reach no frontier.
+    pub layout_equivalent_mutations_skipped: usize,
+    /// Containers placed from their retained plan, without a walk of their
+    /// children (Issue #259 `layout_plan_hits`, placement side).
+    pub layout_placement_plans_reused: usize,
+    /// Containers measured from a retained measure plan, without a walk of
+    /// their children (`layout_plan_hits`, measure side).
+    pub layout_measure_plans_reused: usize,
+    /// Sequential containers that kept their prefix and replayed only the
+    /// children from the first changed one on.
+    pub layout_suffixes_replayed: usize,
+    /// Children a container walk measured, in its measure and its placement.
+    /// A plan hit walks none; this is the scan a plan miss pays.
+    pub layout_children_measured: usize,
+    /// Containers that placed their children but could not record a plan,
+    /// so a later pass walks them again.
+    pub layout_containers_uncacheable: usize,
+    /// Containers that had a retained plan for the pass's inputs and walked
+    /// their children anyway (`layout_plan_misses`). Plan queries are the
+    /// two `*_plans_reused` hits plus these.
+    pub layout_plan_misses: usize,
+    /// Plans a walk recorded over an earlier plan for the same container
+    /// and constraint (`layout_plan_rebuilds`).
+    pub layout_plan_rebuilds: usize,
+    /// Retained-cache sweeps that dropped despawned ids.
+    pub layout_retain_sweeps: usize,
+    /// Adjacency entries of the dependency graphs layout built this frame:
+    /// the scratch a pass allocates for its closure and drops after it.
+    pub layout_scratch_entries: usize,
+    /// Bytes those entries take.
+    pub layout_scratch_bytes: usize,
     pub hit_test_candidates: usize,
     /// Unique live pointer hover, press, capture, and focus nodes this drain.
     pub input_targets: usize,
@@ -115,6 +199,118 @@ pub struct WorkCounters {
     pub text_layout_cache_misses: usize,
     /// Shape calls that requested wrapping (`TextShapeConstraints.wrap`).
     pub text_wrap_layouts: usize,
+    /// Typed layout seeds text queued once it shaped: its own cause, and the
+    /// one it hands its parent (Issue #260).
+    pub text_reflow_seeds: usize,
+    /// Text whose exported metrics (width, height, baseline, natural width)
+    /// moved when it shaped again.
+    pub text_external_metric_changes: usize,
+    /// Text shaped again whose exported metrics held: layout stopped at it.
+    pub text_external_metric_unchanged: usize,
+    /// Parents text asked to measure again because its metrics moved.
+    pub text_parent_reflows: usize,
+    /// Text laid out again for a new box from runs it had already shaped.
+    pub text_constraint_relayouts: usize,
+    /// Text a language change reached: its computed language moved.
+    pub text_language_scope_invalidations: usize,
+    /// Text a language change shaped again although its language held. Zero
+    /// unless an invalidation is coarser than the language text depends on.
+    pub text_literal_nodes_invalidated_by_language: usize,
+    /// Text a typography scale change reached: its computed scale moved.
+    pub typography_scale_dependents_notified: usize,
+    /// Of those, the text a pass then laid out again at the new size.
+    pub typography_scale_text_relayouts: usize,
+    /// Of those, the text whose metrics moved its parent's layout.
+    pub typography_scale_parent_reflows: usize,
+    /// Nodes a scale change visited inside its scope. Nothing outside the
+    /// scope is visited.
+    pub typography_scale_scope_nodes_scanned: usize,
+    /// Scale changes that set the scale a scope already had: nothing visited.
+    pub typography_scale_equivalent_skips: usize,
+    /// Layout seeds that moved a constraint children consume: a resized box,
+    /// a viewport resize on a root.
+    pub constraint_change_seeds: usize,
+    /// Children those seeds asked whether they consume the constraint that
+    /// moved.
+    pub constraint_dependents_considered: usize,
+    /// Of those, the ones that do, and measure again.
+    pub constraint_dependents_remeasured: usize,
+    /// Of those, the ones that do not -- fixed, or reading only the other
+    /// axis -- and keep their measurement.
+    pub constraint_dependents_skipped: usize,
+    /// Text laid out again at the box a layout pass gave it, from the runs it
+    /// had shaped.
+    pub resize_text_relayouts: usize,
+    /// Text a layout pass's new box made shape again. Zero when only a wrap
+    /// width moved.
+    pub resize_text_reshapes: usize,
+    /// Formatting contexts a constraint change solved again from scratch:
+    /// containers whose retained plan could not answer, or that keep none.
+    pub resize_context_solves: usize,
+    /// Layout seeds style writes queued: a box whose resolved layout moved.
+    pub style_to_layout_seeds: usize,
+    /// Layout seeds a theme install queued: boxes whose design intent
+    /// resolves to a different layout against the new metrics.
+    pub theme_to_layout_seeds: usize,
+    /// Layout seeds a component state change queued: hover, press, focus,
+    /// interaction and accessibility state.
+    pub component_state_layout_seeds: usize,
+    /// Boxes a metrics install resolved to a different layout.
+    pub theme_metric_dependents_invalidated: usize,
+    /// Layout seeds a theme install that moved no metric queued. Zero: a
+    /// palette is paint.
+    pub theme_palette_layout_invalidations: usize,
+    /// Style writes that moved no resolved layout field and no presentation:
+    /// equal in effect, however they were spelled.
+    pub equivalent_style_layout_skips: usize,
+    /// Replaced content that changed what it shows and not which resource:
+    /// a texture generation, a video frame, a fit or a sampling. Paint.
+    pub replaced_content_updates: usize,
+    /// Resources that reported a different natural size.
+    pub replaced_intrinsic_metadata_updates: usize,
+    /// Layout seeds replaced content queued: a natural size its box reads
+    /// moved, or it became or stopped being replaced.
+    pub replaced_layout_seeds: usize,
+    /// Layout seeds a content-only update queued. Zero: a frame is paint.
+    pub replaced_content_only_layout_invalidations: usize,
+    /// Nodes a natural size change reached through the resource index.
+    pub resource_intrinsic_dependents_notified: usize,
+    /// Virtual list rows whose extent moved in the list's row index: a
+    /// measured row that laid out at a new height (Issue #262).
+    pub virtual_row_metric_updates: usize,
+    /// Row index entries written: O(log C) for a row over C chunks, and a
+    /// chunk's rows once when it stops being one extent. Never the rows.
+    pub virtual_prefix_index_updates: usize,
+    /// Mounted rows a list took a new height from: a measured row that laid
+    /// out at a new height, or a row given a new imposed height.
+    pub virtual_rows_remeasured: usize,
+    /// Mounted rows a list moved: their placement was patched.
+    pub virtual_rows_repositioned: usize,
+    /// Logical rows a list looked up, a key by its index or an index by its
+    /// key. Bounded by its window, never by its collection.
+    pub virtual_logical_rows_scanned: usize,
+    /// Times a list's scroll extent, its total height, moved.
+    pub virtual_scroll_extent_updates: usize,
+    /// Rows a list created for its window.
+    pub virtual_rows_materialized_from_layout: usize,
+    /// Container axes whose content extent moved while responsive rules read
+    /// them (Issue #265).
+    pub container_query_size_changes: usize,
+    /// Responsive rules evaluated: only those on a container axis that moved.
+    pub container_query_rules_evaluated: usize,
+    /// Rules that changed bucket.
+    pub container_query_results_changed: usize,
+    /// Rules that stayed in their bucket, or held it to settle.
+    pub container_query_results_unchanged: usize,
+    /// Layout seeds the changed rules' variants queued.
+    pub container_query_downstream_invalidations: usize,
+    /// Evaluations that changed a bucket: the rounds a frame converged in.
+    pub container_query_convergence_rounds: usize,
+    /// Changes held to settle a frame: a bucket a rule already left this
+    /// frame, or a frame out of rounds.
+    pub container_query_cycle_fallbacks: usize,
+    /// Localization (Issues #268, #269, #270).
+    pub i18n: I18nCounters,
     /// Shared intrinsic measurement authority counters (Issue #198).
     pub intrinsic_measure_requests: usize,
     pub intrinsic_measure_cache_hits: usize,
@@ -165,6 +361,77 @@ pub struct WorkCounters {
     pub output_resolve_count: Option<usize>,
     pub output_gpu_copy_bytes: Option<usize>,
     pub output_gpu_convert_passes: Option<usize>,
+}
+
+/// What localization cost (Issues #268, #269, #270). Work counters add up;
+/// the index sizes are the largest seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct I18nCounters {
+    /// Localized nodes registered: the index size.
+    pub localized_nodes: usize,
+    /// Literal text a locale change resolved. Always zero: literal text
+    /// reads no locale; a sentinel, as `validation_nodes_scanned` is.
+    pub literal_nodes: usize,
+    /// Scope-to-node message dependencies held: the index size.
+    pub message_dependencies: usize,
+    /// Localized nodes whose shaping language follows their locale.
+    pub language_dependencies: usize,
+    /// Scope roots whose direction a locale sets.
+    pub direction_dependencies: usize,
+    /// Patterns asked of the lookup cache, and how it answered.
+    pub catalog_lookups: usize,
+    pub catalog_cache_hits: usize,
+    pub catalog_cache_misses: usize,
+    /// Localized nodes a locale change reached through the scope index.
+    pub scope_dependents_notified: usize,
+    /// Locale changes applied, each as one transaction.
+    pub switch_transactions: usize,
+    /// Localized nodes resolved.
+    pub nodes_resolved: usize,
+    /// Resolutions that showed a different string, and ones that did not.
+    pub resolved_content_changed: usize,
+    pub resolved_content_unchanged: usize,
+    /// Localized nodes whose shaping language moved.
+    pub language_changed_nodes: usize,
+    /// Scopes whose direction moved.
+    pub direction_changed_scopes: usize,
+    /// Layout seeds a switch queued itself: a scope root's direction. Text
+    /// that measures differently seeds from the text pass.
+    pub layout_seeds: usize,
+    /// Localized nodes resolved in rows a virtual list mounted: as they mount,
+    /// and in a switch.
+    pub virtual_rows_resolved: usize,
+    /// Transactions that landed whole.
+    pub switch_commits: usize,
+    /// Messages formatted, and the formatter cache's answers.
+    pub format_requests: usize,
+    pub format_cache_hits: usize,
+    pub format_cache_misses: usize,
+    /// Patterns parsed into a compiled message.
+    pub message_patterns_compiled: usize,
+    /// Argument sets that changed on a localized node.
+    pub args_revisions: usize,
+    /// Formats whose output differed from the last, and ones whose did not.
+    pub formatted_output_changed: usize,
+    pub formatted_output_unchanged: usize,
+    /// Localized nodes a catalog change reached.
+    pub catalog_messages_invalidated: usize,
+    /// Formatters built.
+    pub formatter_allocations: usize,
+}
+
+accumulate_counters! {
+    /// Fold another snapshot in: work adds up, index sizes keep the largest.
+    I18nCounters {
+        max: localized_nodes, message_dependencies, language_dependencies, direction_dependencies;
+        sum: literal_nodes, catalog_lookups, catalog_cache_hits, catalog_cache_misses,
+            scope_dependents_notified, switch_transactions, nodes_resolved,
+            resolved_content_changed, resolved_content_unchanged, language_changed_nodes,
+            direction_changed_scopes, layout_seeds, virtual_rows_resolved, switch_commits,
+            format_requests, format_cache_hits, format_cache_misses, message_patterns_compiled,
+            args_revisions, formatted_output_changed, formatted_output_unchanged,
+            catalog_messages_invalidated, formatter_allocations;
+    }
 }
 
 /// GPU work a renderer observed while encoding or submitting a real frame.
@@ -236,162 +503,62 @@ impl OutputWorkObservation {
     }
 }
 
-impl WorkCounters {
+accumulate_counters! {
     /// Fold another drain into this frame snapshot. `entities_total` is the
     /// latest live count; extract fields are added only when the other snapshot
     /// recorded them.
-    pub fn accumulate(&mut self, other: Self) {
-        self.entities_total = other.entities_total;
-        self.entities_changed = self.entities_changed.saturating_add(other.entities_changed);
-        self.entities_spawned = self.entities_spawned.saturating_add(other.entities_spawned);
-        self.entities_despawned = self
-            .entities_despawned
-            .saturating_add(other.entities_despawned);
-        self.style_processed = self.style_processed.saturating_add(other.style_processed);
-        self.text_shaped = self.text_shaped.saturating_add(other.text_shaped);
-        self.layout_nodes = self.layout_nodes.saturating_add(other.layout_nodes);
-        self.layout_frontier_seeds = self
-            .layout_frontier_seeds
-            .saturating_add(other.layout_frontier_seeds);
-        self.layout_frontier_seed_merges = self
-            .layout_frontier_seed_merges
-            .saturating_add(other.layout_frontier_seed_merges);
-        self.layout_frontier_nodes_measure = self
-            .layout_frontier_nodes_measure
-            .saturating_add(other.layout_frontier_nodes_measure);
-        self.layout_frontier_nodes_placement = self
-            .layout_frontier_nodes_placement
-            .saturating_add(other.layout_frontier_nodes_placement);
-        self.layout_frontier_contexts = self
-            .layout_frontier_contexts
-            .saturating_add(other.layout_frontier_contexts);
-        self.layout_dependency_edges_visited = self
-            .layout_dependency_edges_visited
-            .saturating_add(other.layout_dependency_edges_visited);
-        self.layout_propagations_stopped = self
-            .layout_propagations_stopped
-            .saturating_add(other.layout_propagations_stopped);
-        self.layout_local_subtree_fallbacks = self
-            .layout_local_subtree_fallbacks
-            .saturating_add(other.layout_local_subtree_fallbacks);
-        self.layout_full_document_fallbacks = self
-            .layout_full_document_fallbacks
-            .saturating_add(other.layout_full_document_fallbacks);
-        self.layout_measure_nodes = self
-            .layout_measure_nodes
-            .saturating_add(other.layout_measure_nodes);
-        self.layout_measure_cache_hits = self
-            .layout_measure_cache_hits
-            .saturating_add(other.layout_measure_cache_hits);
-        self.layout_measure_cache_misses = self
-            .layout_measure_cache_misses
-            .saturating_add(other.layout_measure_cache_misses);
-        self.layout_placement_nodes = self
-            .layout_placement_nodes
-            .saturating_add(other.layout_placement_nodes);
-        self.layout_result_reused = self
-            .layout_result_reused
-            .saturating_add(other.layout_result_reused);
-        self.layout_result_changed = self
-            .layout_result_changed
-            .saturating_add(other.layout_result_changed);
-        self.layout_origin_only_updates = self
-            .layout_origin_only_updates
-            .saturating_add(other.layout_origin_only_updates);
-        self.layout_delta_commits = self
-            .layout_delta_commits
-            .saturating_add(other.layout_delta_commits);
-        self.hit_test_candidates = self
-            .hit_test_candidates
-            .saturating_add(other.hit_test_candidates);
-        self.input_targets = self.input_targets.saturating_add(other.input_targets);
-        self.accessibility_nodes_updated = self
-            .accessibility_nodes_updated
-            .saturating_add(other.accessibility_nodes_updated);
-        self.render_nodes_changed = self
-            .render_nodes_changed
-            .saturating_add(other.render_nodes_changed);
-        self.render_nodes_extracted = self
-            .render_nodes_extracted
-            .saturating_add(other.render_nodes_extracted);
-        self.extracted_text_spans = self
-            .extracted_text_spans
-            .saturating_add(other.extracted_text_spans);
-        self.allocations = self.allocations.saturating_add(other.allocations);
-        self.allocated_bytes = self.allocated_bytes.saturating_add(other.allocated_bytes);
-        self.text_shaped_runs = self.text_shaped_runs.saturating_add(other.text_shaped_runs);
-        self.text_layout_cache_hits = self
-            .text_layout_cache_hits
-            .saturating_add(other.text_layout_cache_hits);
-        self.text_layout_cache_misses = self
-            .text_layout_cache_misses
-            .saturating_add(other.text_layout_cache_misses);
-        self.text_wrap_layouts = self
-            .text_wrap_layouts
-            .saturating_add(other.text_wrap_layouts);
-        self.intrinsic_measure_requests = self
-            .intrinsic_measure_requests
-            .saturating_add(other.intrinsic_measure_requests);
-        self.intrinsic_measure_cache_hits = self
-            .intrinsic_measure_cache_hits
-            .saturating_add(other.intrinsic_measure_cache_hits);
-        self.intrinsic_measure_cache_misses = self
-            .intrinsic_measure_cache_misses
-            .saturating_add(other.intrinsic_measure_cache_misses);
-        self.intrinsic_measure_full_subtrees = self
-            .intrinsic_measure_full_subtrees
-            .saturating_add(other.intrinsic_measure_full_subtrees);
-        self.intrinsic_generation_bumps = self
-            .intrinsic_generation_bumps
-            .saturating_add(other.intrinsic_generation_bumps);
-        self.baseline_queries = self.baseline_queries.saturating_add(other.baseline_queries);
-        self.cross_context_measure_hits = self
-            .cross_context_measure_hits
-            .saturating_add(other.cross_context_measure_hits);
-        self.cross_context_measure_misses = self
-            .cross_context_measure_misses
-            .saturating_add(other.cross_context_measure_misses);
-        fold_optional_count(&mut self.glyph_cache_hits, other.glyph_cache_hits);
-        fold_optional_count(&mut self.glyph_cache_misses, other.glyph_cache_misses);
-        fold_optional_count(&mut self.cache_eviction, other.cache_eviction);
-        fold_optional_count(&mut self.batch_rebuilds, other.batch_rebuilds);
-        fold_optional_count(&mut self.draw_batches, other.draw_batches);
-        fold_optional_count(&mut self.draw_calls, other.draw_calls);
-        fold_optional_count(&mut self.gpu_upload_bytes, other.gpu_upload_bytes);
-        fold_optional_count(
-            &mut self.gpu_buffer_reallocations,
-            other.gpu_buffer_reallocations,
-        );
-        fold_optional_count(
-            &mut self.validation_nodes_scanned,
-            other.validation_nodes_scanned,
-        );
-        fold_optional_count(
-            &mut self.hit_test_nodes_rebuilt,
-            other.hit_test_nodes_rebuilt,
-        );
-        fold_optional_count(&mut self.output_extra_passes, other.output_extra_passes);
-        fold_optional_count(&mut self.output_gpu_copies, other.output_gpu_copies);
-        fold_optional_count(
-            &mut self.output_target_recreates,
-            other.output_target_recreates,
-        );
-        fold_optional_count(
-            &mut self.output_content_revisions,
-            other.output_content_revisions,
-        );
-        fold_optional_count(
-            &mut self.output_idle_reuse_frames,
-            other.output_idle_reuse_frames,
-        );
-        fold_optional_count(&mut self.output_resolve_count, other.output_resolve_count);
-        fold_optional_count(&mut self.output_gpu_copy_bytes, other.output_gpu_copy_bytes);
-        fold_optional_count(
-            &mut self.output_gpu_convert_passes,
-            other.output_gpu_convert_passes,
-        );
+    WorkCounters {
+        latest: entities_total;
+        nested: i18n;
+        sum: entities_changed, entities_spawned, entities_despawned, style_processed, text_shaped,
+            layout_nodes, layout_frontier_seeds, layout_frontier_seed_merges,
+            layout_frontier_nodes_measure, layout_frontier_nodes_placement,
+            layout_frontier_contexts, layout_frontier_nodes_writing,
+            layout_dependency_edges_visited, layout_propagations_stopped,
+            layout_local_subtree_fallbacks, layout_full_document_fallbacks, layout_measure_nodes,
+            layout_measure_cache_hits, layout_measure_cache_misses, layout_placement_nodes,
+            layout_result_reused, layout_result_changed, layout_origin_only_updates,
+            layout_delta_commits, layout_result_children_visited, layout_invalidations_created,
+            layout_invalidations_zero_delta, layout_equivalent_mutations_skipped,
+            layout_placement_plans_reused, layout_measure_plans_reused, layout_suffixes_replayed,
+            layout_children_measured, layout_containers_uncacheable, layout_plan_misses,
+            layout_plan_rebuilds, layout_retain_sweeps, layout_scratch_entries,
+            layout_scratch_bytes, hit_test_candidates, input_targets, accessibility_nodes_updated,
+            render_nodes_changed, render_nodes_extracted, extracted_text_spans, allocations,
+            allocated_bytes, text_shaped_runs, text_layout_cache_hits, text_layout_cache_misses,
+            text_wrap_layouts, text_reflow_seeds, text_external_metric_changes,
+            text_external_metric_unchanged, text_parent_reflows, text_constraint_relayouts,
+            text_language_scope_invalidations, text_literal_nodes_invalidated_by_language,
+            typography_scale_dependents_notified, typography_scale_text_relayouts,
+            typography_scale_parent_reflows, typography_scale_scope_nodes_scanned,
+            typography_scale_equivalent_skips, constraint_change_seeds,
+            constraint_dependents_considered, constraint_dependents_remeasured,
+            constraint_dependents_skipped, resize_text_relayouts, resize_text_reshapes,
+            resize_context_solves, style_to_layout_seeds, theme_to_layout_seeds,
+            component_state_layout_seeds, theme_metric_dependents_invalidated,
+            theme_palette_layout_invalidations, equivalent_style_layout_skips,
+            replaced_content_updates, replaced_intrinsic_metadata_updates, replaced_layout_seeds,
+            replaced_content_only_layout_invalidations, resource_intrinsic_dependents_notified,
+            virtual_row_metric_updates, virtual_prefix_index_updates, virtual_rows_remeasured,
+            virtual_rows_repositioned, virtual_logical_rows_scanned, virtual_scroll_extent_updates,
+            virtual_rows_materialized_from_layout, container_query_size_changes,
+            container_query_rules_evaluated, container_query_results_changed,
+            container_query_results_unchanged, container_query_downstream_invalidations,
+            container_query_convergence_rounds, container_query_cycle_fallbacks,
+            intrinsic_measure_requests, intrinsic_measure_cache_hits,
+            intrinsic_measure_cache_misses, intrinsic_measure_full_subtrees,
+            intrinsic_generation_bumps, baseline_queries, cross_context_measure_hits,
+            cross_context_measure_misses;
+        optional: glyph_cache_hits, glyph_cache_misses, cache_eviction, batch_rebuilds,
+            draw_batches, draw_calls, gpu_upload_bytes, gpu_buffer_reallocations,
+            validation_nodes_scanned, hit_test_nodes_rebuilt, output_extra_passes,
+            output_gpu_copies, output_target_recreates, output_content_revisions,
+            output_idle_reuse_frames, output_resolve_count, output_gpu_copy_bytes,
+            output_gpu_convert_passes;
     }
+}
 
+impl WorkCounters {
     /// Record hit-test entries built by a rebuild or patch that actually ran.
     /// Not recorded when the frame left the index alone.
     pub fn record_hit_test_rebuild(&mut self, nodes: usize) {
@@ -419,11 +586,127 @@ impl WorkCounters {
         cache_hits: usize,
         cache_misses: usize,
         wrap_layouts: usize,
+        constraint_relayouts: usize,
     ) {
         self.text_shaped_runs = self.text_shaped_runs.saturating_add(shaped_runs);
         self.text_layout_cache_hits = self.text_layout_cache_hits.saturating_add(cache_hits);
         self.text_layout_cache_misses = self.text_layout_cache_misses.saturating_add(cache_misses);
         self.text_wrap_layouts = self.text_wrap_layouts.saturating_add(wrap_layouts);
+        self.text_constraint_relayouts = self
+            .text_constraint_relayouts
+            .saturating_add(constraint_relayouts);
+    }
+
+    /// Fold what text that shaped again did to layout: whether its exported
+    /// metrics moved or held, and whether a moved one sent its parent to
+    /// measure again.
+    pub fn record_text_metrics(&mut self, changed: usize, unchanged: usize, parent_reflows: usize) {
+        self.text_external_metric_changes =
+            self.text_external_metric_changes.saturating_add(changed);
+        self.text_external_metric_unchanged = self
+            .text_external_metric_unchanged
+            .saturating_add(unchanged);
+        self.text_parent_reflows = self.text_parent_reflows.saturating_add(parent_reflows);
+    }
+
+    /// Fold what language changes reached: text whose language moved, and
+    /// text shaped again although its language held.
+    pub fn record_text_language(&mut self, scope_invalidations: usize, literal: usize) {
+        self.text_language_scope_invalidations = self
+            .text_language_scope_invalidations
+            .saturating_add(scope_invalidations);
+        self.text_literal_nodes_invalidated_by_language = self
+            .text_literal_nodes_invalidated_by_language
+            .saturating_add(literal);
+    }
+
+    /// Fold what a pass's constraint changes asked of children: the seeds
+    /// that moved a constraint, the children asked whether they consume it,
+    /// and of those the ones measured again and the ones left alone.
+    pub fn record_constraint_dependents(
+        &mut self,
+        seeds: usize,
+        considered: usize,
+        remeasured: usize,
+        skipped: usize,
+    ) {
+        self.constraint_change_seeds = self.constraint_change_seeds.saturating_add(seeds);
+        self.constraint_dependents_considered = self
+            .constraint_dependents_considered
+            .saturating_add(considered);
+        self.constraint_dependents_remeasured = self
+            .constraint_dependents_remeasured
+            .saturating_add(remeasured);
+        self.constraint_dependents_skipped =
+            self.constraint_dependents_skipped.saturating_add(skipped);
+    }
+
+    /// Fold the text a layout pass's new boxes laid out again, and of it the
+    /// text that had to shape again.
+    pub fn record_resize_text(&mut self, relayouts: usize, reshapes: usize) {
+        self.resize_text_relayouts = self.resize_text_relayouts.saturating_add(relayouts);
+        self.resize_text_reshapes = self.resize_text_reshapes.saturating_add(reshapes);
+    }
+
+    /// Fold what evaluating responsive rules cost: container axes that moved,
+    /// rules read on them, and of those the ones that changed bucket and the
+    /// ones that did not.
+    pub fn record_container_query_evaluation(
+        &mut self,
+        size_changes: usize,
+        evaluated: usize,
+        changed: usize,
+        unchanged: usize,
+    ) {
+        self.container_query_size_changes = self
+            .container_query_size_changes
+            .saturating_add(size_changes);
+        self.container_query_rules_evaluated = self
+            .container_query_rules_evaluated
+            .saturating_add(evaluated);
+        self.container_query_results_changed =
+            self.container_query_results_changed.saturating_add(changed);
+        self.container_query_results_unchanged = self
+            .container_query_results_unchanged
+            .saturating_add(unchanged);
+    }
+
+    /// Fold what the changed rules cost: the layout seeds their variants
+    /// queued, the rounds of changes, and the changes held to settle.
+    pub fn record_container_query_results(
+        &mut self,
+        downstream: usize,
+        rounds: usize,
+        fallbacks: usize,
+    ) {
+        self.container_query_downstream_invalidations = self
+            .container_query_downstream_invalidations
+            .saturating_add(downstream);
+        self.container_query_convergence_rounds = self
+            .container_query_convergence_rounds
+            .saturating_add(rounds);
+        self.container_query_cycle_fallbacks = self
+            .container_query_cycle_fallbacks
+            .saturating_add(fallbacks);
+    }
+
+    /// Fold what a typography scale change cost text: text it reached, text
+    /// laid out again at the new size, and text whose metrics moved its parent.
+    pub fn record_typography_scale_text(
+        &mut self,
+        notified: usize,
+        relayouts: usize,
+        parent_reflows: usize,
+    ) {
+        self.typography_scale_dependents_notified = self
+            .typography_scale_dependents_notified
+            .saturating_add(notified);
+        self.typography_scale_text_relayouts = self
+            .typography_scale_text_relayouts
+            .saturating_add(relayouts);
+        self.typography_scale_parent_reflows = self
+            .typography_scale_parent_reflows
+            .saturating_add(parent_reflows);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -469,6 +752,7 @@ impl WorkCounters {
         nodes_measure: usize,
         nodes_placement: usize,
         contexts: usize,
+        nodes_writing: usize,
         edges_visited: usize,
         propagations_stopped: usize,
         local_subtree_fallbacks: usize,
@@ -484,6 +768,9 @@ impl WorkCounters {
             .layout_frontier_nodes_placement
             .saturating_add(nodes_placement);
         self.layout_frontier_contexts = self.layout_frontier_contexts.saturating_add(contexts);
+        self.layout_frontier_nodes_writing = self
+            .layout_frontier_nodes_writing
+            .saturating_add(nodes_writing);
         self.layout_dependency_edges_visited = self
             .layout_dependency_edges_visited
             .saturating_add(edges_visited);
@@ -525,10 +812,59 @@ impl WorkCounters {
         reused: usize,
         changed: usize,
         delta_commits: usize,
+        children_visited: usize,
     ) {
         self.layout_result_reused = self.layout_result_reused.saturating_add(reused);
         self.layout_result_changed = self.layout_result_changed.saturating_add(changed);
         self.layout_delta_commits = self.layout_delta_commits.saturating_add(delta_commits);
+        self.layout_result_children_visited = self
+            .layout_result_children_visited
+            .saturating_add(children_visited);
+    }
+
+    /// Fold one pass's retained-plan work. A positioned context laid out whole
+    /// because its plan was stale is a bounded local fallback, counted with
+    /// the frontier's.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_layout_plans(
+        &mut self,
+        placement_plans_reused: usize,
+        measure_plans_reused: usize,
+        suffixes_replayed: usize,
+        children_measured: usize,
+        containers_uncacheable: usize,
+        plan_misses: usize,
+        plan_rebuilds: usize,
+        local_context_fallbacks: usize,
+        retain_sweeps: usize,
+    ) {
+        self.layout_placement_plans_reused = self
+            .layout_placement_plans_reused
+            .saturating_add(placement_plans_reused);
+        self.layout_measure_plans_reused = self
+            .layout_measure_plans_reused
+            .saturating_add(measure_plans_reused);
+        self.layout_suffixes_replayed = self
+            .layout_suffixes_replayed
+            .saturating_add(suffixes_replayed);
+        self.layout_children_measured = self
+            .layout_children_measured
+            .saturating_add(children_measured);
+        self.layout_containers_uncacheable = self
+            .layout_containers_uncacheable
+            .saturating_add(containers_uncacheable);
+        self.layout_plan_misses = self.layout_plan_misses.saturating_add(plan_misses);
+        self.layout_plan_rebuilds = self.layout_plan_rebuilds.saturating_add(plan_rebuilds);
+        self.layout_local_subtree_fallbacks = self
+            .layout_local_subtree_fallbacks
+            .saturating_add(local_context_fallbacks);
+        self.layout_retain_sweeps = self.layout_retain_sweeps.saturating_add(retain_sweeps);
+    }
+
+    /// Fold the scratch one pass's dependency graph held.
+    pub fn record_layout_scratch(&mut self, entries: usize, bytes: usize) {
+        self.layout_scratch_entries = self.layout_scratch_entries.saturating_add(entries);
+        self.layout_scratch_bytes = self.layout_scratch_bytes.saturating_add(bytes);
     }
 
     /// Record `TextLayoutCache` FIFO evictions. Does not invent glyph evictions.
@@ -769,39 +1105,6 @@ impl ThemeWorkCounters {
         self.paint_nodes_from_style = self.paint_nodes_from_style.saturating_add(nodes);
     }
 
-    /// Fold another pass into this snapshot.
-    pub fn accumulate(&mut self, other: Self) {
-        self.style_nodes_considered = self
-            .style_nodes_considered
-            .saturating_add(other.style_nodes_considered);
-        self.style_nodes_resolved = self
-            .style_nodes_resolved
-            .saturating_add(other.style_nodes_resolved);
-        self.style_nodes_skipped = self
-            .style_nodes_skipped
-            .saturating_add(other.style_nodes_skipped);
-        self.theme_reads = self.theme_reads.saturating_add(other.theme_reads);
-        self.style_allocations = self
-            .style_allocations
-            .saturating_add(other.style_allocations);
-        self.style_allocated_bytes = self
-            .style_allocated_bytes
-            .saturating_add(other.style_allocated_bytes);
-        self.layout_copies = self.layout_copies.saturating_add(other.layout_copies);
-        self.layout_copied_bytes = self
-            .layout_copied_bytes
-            .saturating_add(other.layout_copied_bytes);
-        self.layout_nodes_from_style = self
-            .layout_nodes_from_style
-            .saturating_add(other.layout_nodes_from_style);
-        self.text_nodes_from_style = self
-            .text_nodes_from_style
-            .saturating_add(other.text_nodes_from_style);
-        self.paint_nodes_from_style = self
-            .paint_nodes_from_style
-            .saturating_add(other.paint_nodes_from_style);
-    }
-
     /// An idle steady frame resolved no style and asked the theme nothing.
     /// Issue #100 §15: a retained frame must not re-walk or re-resolve.
     pub fn is_idle(self) -> bool {
@@ -817,6 +1120,15 @@ impl ThemeWorkCounters {
         self.layout_nodes_from_style == 0
             && self.text_nodes_from_style == 0
             && self.layout_copies == 0
+    }
+}
+
+accumulate_counters! {
+    /// Fold another pass into this snapshot.
+    ThemeWorkCounters {
+        sum: style_nodes_considered, style_nodes_resolved, style_nodes_skipped, theme_reads,
+            style_allocations, style_allocated_bytes, layout_copies, layout_copied_bytes,
+            layout_nodes_from_style, text_nodes_from_style, paint_nodes_from_style;
     }
 }
 
@@ -909,25 +1221,27 @@ mod tests {
     #[test]
     fn frontier_counters_record_and_accumulate_structural_work() {
         let mut first = WorkCounters::default();
-        first.record_layout_frontier(3, 1, 5, 7, 2, 11, 1, 0, 0);
+        first.record_layout_frontier(3, 1, 5, 7, 2, 4, 11, 1, 0, 0);
         assert_eq!(first.layout_frontier_seeds, 3);
         assert_eq!(first.layout_frontier_seed_merges, 1);
         assert_eq!(first.layout_frontier_nodes_measure, 5);
         assert_eq!(first.layout_frontier_nodes_placement, 7);
         assert_eq!(first.layout_frontier_contexts, 2);
+        assert_eq!(first.layout_frontier_nodes_writing, 4);
         assert_eq!(first.layout_dependency_edges_visited, 11);
         assert_eq!(first.layout_propagations_stopped, 1);
         assert_eq!(first.layout_local_subtree_fallbacks, 0);
         assert_eq!(first.layout_full_document_fallbacks, 0);
 
         let mut second = WorkCounters::default();
-        second.record_layout_frontier(2, 4, 1, 0, 1, 3, 2, 1, 1);
+        second.record_layout_frontier(2, 4, 1, 0, 1, 1, 3, 2, 1, 1);
         first.accumulate(second);
         assert_eq!(first.layout_frontier_seeds, 5);
         assert_eq!(first.layout_frontier_seed_merges, 5);
         assert_eq!(first.layout_frontier_nodes_measure, 6);
         assert_eq!(first.layout_frontier_nodes_placement, 7);
         assert_eq!(first.layout_frontier_contexts, 3);
+        assert_eq!(first.layout_frontier_nodes_writing, 5);
         assert_eq!(first.layout_dependency_edges_visited, 14);
         assert_eq!(first.layout_propagations_stopped, 3);
         assert_eq!(first.layout_local_subtree_fallbacks, 1);
@@ -938,7 +1252,7 @@ mod tests {
     fn execution_counters_record_and_accumulate_layout_work() {
         let mut first = WorkCounters::default();
         first.record_layout_execution(4, 3, 2, 6, 5);
-        first.record_layout_result_publish(8, 1, 1);
+        first.record_layout_result_publish(8, 1, 1, 12);
         assert_eq!(first.layout_measure_nodes, 4);
         assert_eq!(first.layout_measure_cache_hits, 3);
         assert_eq!(first.layout_measure_cache_misses, 2);
@@ -947,10 +1261,11 @@ mod tests {
         assert_eq!(first.layout_result_reused, 8);
         assert_eq!(first.layout_result_changed, 1);
         assert_eq!(first.layout_delta_commits, 1);
+        assert_eq!(first.layout_result_children_visited, 12);
 
         let mut second = WorkCounters::default();
         second.record_layout_execution(1, 0, 1, 2, 2);
-        second.record_layout_result_publish(1, 0, 0);
+        second.record_layout_result_publish(1, 0, 0, 3);
         first.accumulate(second);
         assert_eq!(first.layout_measure_nodes, 5);
         assert_eq!(first.layout_measure_cache_hits, 3);
@@ -960,6 +1275,125 @@ mod tests {
         assert_eq!(first.layout_result_reused, 9);
         assert_eq!(first.layout_result_changed, 1);
         assert_eq!(first.layout_delta_commits, 1);
+        assert_eq!(first.layout_result_children_visited, 15);
+    }
+
+    #[test]
+    fn layout_plan_and_scratch_counters_record_and_accumulate() {
+        let mut first = WorkCounters::default();
+        first.record_layout_plans(1, 2, 3, 4, 5, 8, 9, 6, 7);
+        first.record_layout_scratch(8, 64);
+        assert_eq!(first.layout_placement_plans_reused, 1);
+        assert_eq!(first.layout_measure_plans_reused, 2);
+        assert_eq!(first.layout_suffixes_replayed, 3);
+        assert_eq!(first.layout_children_measured, 4);
+        assert_eq!(first.layout_containers_uncacheable, 5);
+        assert_eq!(first.layout_plan_misses, 8);
+        assert_eq!(first.layout_plan_rebuilds, 9);
+        assert_eq!(first.layout_local_subtree_fallbacks, 6);
+        assert_eq!(first.layout_retain_sweeps, 7);
+        assert_eq!(first.layout_scratch_entries, 8);
+        assert_eq!(first.layout_scratch_bytes, 64);
+        let mut second = WorkCounters::default();
+        second.record_layout_plans(1, 1, 1, 1, 1, 1, 1, 1, 1);
+        second.record_layout_scratch(2, 16);
+        first.accumulate(second);
+        assert_eq!(first.layout_placement_plans_reused, 2);
+        assert_eq!(first.layout_children_measured, 5);
+        assert_eq!(first.layout_local_subtree_fallbacks, 7);
+        assert_eq!(first.layout_scratch_entries, 10);
+        assert_eq!(first.layout_scratch_bytes, 80);
+    }
+
+    #[test]
+    fn text_reflow_counters_record_and_accumulate() {
+        let mut first = WorkCounters::default();
+        first.record_text_shape(1, 2, 3, 4, 5);
+        first.record_text_metrics(2, 3, 1);
+        first.record_text_language(4, 0);
+        assert_eq!(first.text_constraint_relayouts, 5);
+        assert_eq!(first.text_external_metric_changes, 2);
+        assert_eq!(first.text_external_metric_unchanged, 3);
+        assert_eq!(first.text_parent_reflows, 1);
+        assert_eq!(first.text_language_scope_invalidations, 4);
+        assert_eq!(first.text_literal_nodes_invalidated_by_language, 0);
+        let mut second = WorkCounters::default();
+        second.record_text_metrics(1, 1, 1);
+        second.record_text_language(1, 2);
+        first.accumulate(second);
+        assert_eq!(first.text_external_metric_changes, 3);
+        assert_eq!(first.text_external_metric_unchanged, 4);
+        assert_eq!(first.text_parent_reflows, 2);
+        assert_eq!(first.text_language_scope_invalidations, 5);
+        assert_eq!(first.text_literal_nodes_invalidated_by_language, 2);
+    }
+
+    #[test]
+    fn i18n_counters_add_work_and_keep_the_largest_index() {
+        let mut first = WorkCounters::default();
+        first.i18n.localized_nodes = 5_000;
+        first.i18n.nodes_resolved = 5_000;
+        let mut second = WorkCounters::default();
+        second.i18n.localized_nodes = 4_000;
+        second.i18n.nodes_resolved = 10;
+        second.i18n.switch_commits = 1;
+        first.accumulate(second);
+        assert_eq!(first.i18n.localized_nodes, 5_000);
+        assert_eq!(first.i18n.nodes_resolved, 5_010);
+        assert_eq!(first.i18n.switch_commits, 1);
+    }
+
+    #[test]
+    fn container_query_counters_record_and_accumulate() {
+        let mut first = WorkCounters::default();
+        first.record_container_query_evaluation(1, 100, 10, 90);
+        first.record_container_query_results(10, 1, 0);
+        let mut second = WorkCounters::default();
+        second.record_container_query_evaluation(1, 100, 0, 100);
+        second.record_container_query_results(0, 0, 2);
+        first.accumulate(second);
+        assert_eq!(first.container_query_size_changes, 2);
+        assert_eq!(first.container_query_rules_evaluated, 200);
+        assert_eq!(first.container_query_results_changed, 10);
+        assert_eq!(first.container_query_results_unchanged, 190);
+        assert_eq!(first.container_query_downstream_invalidations, 10);
+        assert_eq!(first.container_query_convergence_rounds, 1);
+        assert_eq!(first.container_query_cycle_fallbacks, 2);
+    }
+
+    #[test]
+    fn constraint_and_resize_counters_record_and_accumulate() {
+        let mut first = WorkCounters::default();
+        first.record_constraint_dependents(1, 10, 4, 6);
+        first.record_resize_text(3, 0);
+        first.resize_context_solves = 2;
+        let mut second = WorkCounters::default();
+        second.record_constraint_dependents(2, 5, 5, 0);
+        second.record_resize_text(1, 1);
+        second.resize_context_solves = 1;
+        first.accumulate(second);
+        assert_eq!(first.constraint_change_seeds, 3);
+        assert_eq!(first.constraint_dependents_considered, 15);
+        assert_eq!(first.constraint_dependents_remeasured, 9);
+        assert_eq!(first.constraint_dependents_skipped, 6);
+        assert_eq!(first.resize_text_relayouts, 4);
+        assert_eq!(first.resize_text_reshapes, 1);
+        assert_eq!(first.resize_context_solves, 3);
+    }
+
+    #[test]
+    fn typography_scale_counters_record_and_accumulate() {
+        let mut first = WorkCounters::default();
+        first.record_typography_scale_text(3, 2, 1);
+        assert_eq!(first.typography_scale_dependents_notified, 3);
+        assert_eq!(first.typography_scale_text_relayouts, 2);
+        assert_eq!(first.typography_scale_parent_reflows, 1);
+        let mut second = WorkCounters::default();
+        second.record_typography_scale_text(1, 1, 0);
+        first.accumulate(second);
+        assert_eq!(first.typography_scale_dependents_notified, 4);
+        assert_eq!(first.typography_scale_text_relayouts, 3);
+        assert_eq!(first.typography_scale_parent_reflows, 1);
     }
 
     #[test]

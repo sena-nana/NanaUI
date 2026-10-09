@@ -32,11 +32,13 @@ impl UiWorld {
         document: DocumentId,
         pointer_id: u64,
     ) -> Option<StableNodeId> {
+        let seeds_before = self.layout_seeds_created;
         let previous = self.input.pointer_press.remove(&(document, pointer_id));
         if let Some(previous) = previous {
             self.generation = self.generation.wrapping_add(1);
             self.mark_interaction_style(previous);
         }
+        self.note_state_seeds(seeds_before);
         previous
     }
 }
@@ -49,6 +51,7 @@ impl UiWorld {
         target: StableNodeId,
     ) -> Result<Option<StableNodeId>, UiWorldError> {
         self.validate_pointer_target(document, target)?;
+        let seeds_before = self.layout_seeds_created;
         let previous = self
             .input
             .pointer_press
@@ -64,6 +67,7 @@ impl UiWorld {
             }
             self.mark_interaction_style(target);
         }
+        self.note_state_seeds(seeds_before);
         Ok(previous)
     }
 }
@@ -81,6 +85,7 @@ impl UiWorld {
         if let Some(target) = target {
             self.validate_pointer_target(document, target)?;
         }
+        let seeds_before = self.layout_seeds_created;
         let key = (document, pointer_id);
         let old = self.input.pointer_hover.get(&key).copied();
         let paints = [old, target].map(|id| id.map(|id| (id, self.hover_paint(id))));
@@ -100,6 +105,7 @@ impl UiWorld {
                 self.mark_interaction_style(target);
             }
         }
+        self.note_state_seeds(seeds_before);
         Ok(previous)
     }
 }

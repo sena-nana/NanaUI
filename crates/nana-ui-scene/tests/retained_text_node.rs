@@ -666,8 +666,8 @@ fn identical_labels_share_one_layout_however_many_there_are() {
 }
 
 /// The #33 workload: resizing the first row shifts every row below it, so the
-/// layout-scoped text pass visits every label. What it may not do is pay for
-/// any of them beyond an O(1) revision check.
+/// layout-scoped text pass visits every label that moved. What it may not do
+/// is pay for any of them beyond an O(1) revision check.
 fn head_dirty_counters(rows: usize, shaper: &mut impl TextShaper) -> TextWorkCounters {
     let (mut runtime, rows) = document(numbered(rows));
     settle(&mut runtime, shaper);
@@ -690,9 +690,12 @@ fn head_dirty_counters(rows: usize, shaper: &mut impl TextShaper) -> TextWorkCou
             work.text_nodes_revision_skipped, work.text_nodes_considered,
             "every candidate is decided on revision"
         );
+        // Every label below the first row moved. The first row grew on the
+        // block axis only, which its label does not read: its box held, so
+        // the pass does not visit it.
         assert!(
-            work.text_nodes_revision_skipped >= rows,
-            "the scope covers every label"
+            work.text_nodes_revision_skipped >= rows - 1,
+            "the scope covers every label that moved"
         );
         total.accumulate(work);
     }
@@ -709,10 +712,12 @@ fn the_head_dirty_workload_skips_every_label_on_revision_with_either_backend() {
             engine.text_nodes_revision_skipped
         );
     }
-    // Twice the document, twice the candidates: linear, never quadratic.
-    let half = head_dirty_counters(400, &mut MeasureTextShaper).text_nodes_considered;
-    let full = head_dirty_counters(800, &mut MeasureTextShaper).text_nodes_considered;
-    assert_eq!(full, half * 2);
+    // Each of the six frames visits every label that moved once: linear in
+    // the document, never quadratic.
+    for rows in [400, 800] {
+        let considered = head_dirty_counters(rows, &mut MeasureTextShaper).text_nodes_considered;
+        assert_eq!(considered, 6 * (rows - 1));
+    }
 }
 
 #[test]
@@ -1739,5 +1744,42 @@ fn another_host_shaper_at_the_same_font_generation_measures_again() {
             .unwrap()
             .height,
         99.0
+    );
+}
+
+/// Issue #260: a language a node names reaches the text under it, and the
+/// scene carries it, so a renderer that lays the text out again shapes in
+/// the language it was measured in. Text elsewhere keeps none.
+#[test]
+fn a_named_language_reaches_the_text_under_it_and_the_scene() {
+    let (mut runtime, _) = document(numbered(4));
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    let untouched = runtime.context().world().text_revisions(label_id(0));
+    commit(&mut runtime, |queue| {
+        queue.set_language(row_id(1), nana_ui_runtime::LanguageTag::new("ja"));
+    });
+    settle(&mut runtime, &mut shaper);
+    let language_of = |label: StableNodeId| {
+        runtime
+            .scene()
+            .primitives()
+            .find_map(|primitive| match &primitive.kind {
+                ScenePrimitiveKind::Text { opentype, .. } if primitive.node == label => {
+                    Some(opentype.language.clone())
+                }
+                _ => None,
+            })
+            .expect("the label paints text")
+    };
+    assert_eq!(
+        language_of(label_id(1)),
+        nana_ui_runtime::LanguageTag::new("ja")
+    );
+    assert_eq!(language_of(label_id(0)), None);
+    assert_eq!(
+        runtime.context().world().text_revisions(label_id(0)),
+        untouched,
+        "a sibling row's text was invalidated"
     );
 }

@@ -285,8 +285,33 @@ impl<'a> ValidationPlan<'a> {
                 UiMutation::SetText { id, .. }
                 | UiMutation::SetRichText { id, .. }
                 | UiMutation::SetRichEditorMarks { id, .. }
+                | UiMutation::SetLanguage { id, .. }
+                | UiMutation::SetLocale { id, .. }
+                | UiMutation::SetLocalizedText { id, .. }
                 | UiMutation::SetGlyphPresentation { id, .. } => {
                     self.require_exists(*id)?;
+                }
+                UiMutation::SetTextScale { id, scale } => {
+                    self.require_exists(*id)?;
+                    if scale.is_some_and(|scale| !valid_text_scale(scale)) {
+                        return Err(UiWorldError::InvalidStyle(*id));
+                    }
+                }
+                UiMutation::SetResponsive { id, rule } => {
+                    self.require_exists(*id)?;
+                    if let Some(rule) = rule {
+                        if !rule.is_valid() {
+                            return Err(UiWorldError::InvalidResponsiveRule(*id));
+                        }
+                        if let crate::ResponsiveContainer::Node(container) = rule.container() {
+                            self.require_exists(container)?;
+                        }
+                    }
+                }
+                UiMutation::SetReplacedMetadata { metadata, .. } => {
+                    if metadata.is_some_and(|metadata| !metadata.is_valid()) {
+                        return Err(UiWorldError::InvalidReplacedMetadata);
+                    }
                 }
                 UiMutation::WriteLayout { id, layout } => {
                     self.require_exists(*id)?;
@@ -1239,11 +1264,7 @@ impl UiWorld {
                 self.clear_layout_result_ancestors(*parent);
                 if let Some(old_parent) = old_parent {
                     self.clear_layout_result_ancestors(old_parent);
-                }
-                if let Some(old_parent) = old_parent {
-                    let hierarchy = self.hierarchy_mut(old_parent);
-                    Arc::make_mut(&mut hierarchy.children).retain(|id| id != child);
-                    intern_empty_children(&mut hierarchy.children);
+                    self.remove_child(old_parent, *child);
                 }
                 let parent_hierarchy = self.hierarchy_mut(*parent);
                 let siblings = Arc::make_mut(&mut parent_hierarchy.children);
@@ -1252,7 +1273,12 @@ impl UiWorld {
                     .unwrap_or(siblings.len());
                 siblings.insert(index, *child);
                 let _parent_hierarchy = parent_hierarchy;
+                self.renumber_children_from(*parent, index);
                 self.hierarchy_mut(*child).parent = Some(*parent);
+                if old_parent != Some(*parent) {
+                    self.responsive_reparented(*child);
+                    self.i18n_reparented(*child, old_parent);
+                }
                 let parent_mount = self.record(*parent).mount;
                 if self.record(*child).mount != parent_mount {
                     self.set_subtree_mount_state(*child, parent_mount);
@@ -1319,10 +1345,7 @@ impl UiWorld {
                 if let Some(parent) = root_snapshot.parent {
                     self.record_child_list_invalidation(parent);
                     self.clear_layout_result_ancestors(parent);
-                    let hierarchy = self.hierarchy_mut(parent);
-                    Arc::make_mut(&mut hierarchy.children).retain(|child| child != root);
-                    intern_empty_children(&mut hierarchy.children);
-                    let _hierarchy = hierarchy;
+                    self.remove_child(parent, *root);
                     self.mark_ancestors(
                         parent,
                         DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
@@ -1385,6 +1408,10 @@ impl UiWorld {
                     self.surface_motion.remove(&id);
                     self.closing_surfaces.remove(&id);
                     self.hover_transitions.remove(&id);
+                    self.intent_nodes.remove(&id);
+                    self.forget_replaced(id);
+                    self.forget_responsive(id);
+                    self.forget_i18n(id, snapshot.document);
                     self.clear_overlay_references(id);
                     self.overlay_host_nodes.remove(&id);
                     self.drop_targets.remove(&id);
@@ -1405,178 +1432,7 @@ impl UiWorld {
                 }
             }
             UiMutation::SetStyle { id, style } => {
-                let previous = self.record(*id).style.clone();
-                let inherited_text_changed = previous.layout.font_size != style.layout.font_size
-                    || previous.layout.font_weight != style.layout.font_weight
-                    || previous.layout.font_italic != style.layout.font_italic
-                    || previous.layout.font_family != style.layout.font_family
-                    || previous.layout.line_height != style.layout.line_height
-                    || previous.layout.letter_spacing != style.layout.letter_spacing
-                    || previous.layout.font_features != style.layout.font_features
-                    || previous.layout.font_variation_settings
-                        != style.layout.font_variation_settings
-                    || previous.layout.font_kerning != style.layout.font_kerning
-                    || previous.layout.word_break != style.layout.word_break
-                    || previous.layout.line_break != style.layout.line_break
-                    // Writing mode and direction inherit into layout, not just
-                    // text: a descendant container lays out along them too, and
-                    // the INPUT bit re-projects the accessibility nodes that
-                    // report which way their text reads.
-                    || previous.layout.dir != style.layout.dir
-                    || previous.layout.writing_mode != style.layout.writing_mode
-                    || previous.layout.text_orientation != style.layout.text_orientation;
-                let inherited_paint_changed = previous.foreground != style.foreground
-                    || previous.layout.color != style.layout.color
-                    || previous.layout.selection_background != style.layout.selection_background
-                    || previous.layout.selection_color != style.layout.selection_color
-                    || previous.layout.paint_colors.color != style.layout.paint_colors.color
-                    || previous.layout.paint_colors.selection_background
-                        != style.layout.paint_colors.selection_background
-                    || previous.layout.paint_colors.selection_color
-                        != style.layout.paint_colors.selection_color;
-                let inherited_opacity_changed = previous.layout.opacity != style.layout.opacity;
-                let paint_visibility_changed =
-                    previous.layout.paint.visibility != style.layout.paint.visibility;
-                let pointer_events_changed =
-                    previous.layout.pointer_events != style.layout.pointer_events;
-                let cursor_changed = previous.layout.cursor != style.layout.cursor;
-                let user_select_changed = previous.layout.user_select != style.layout.user_select;
-                let omits_box_changed = previous.layout.omits_box() != style.layout.omits_box();
-                // One pass over the layout fields, read by every
-                // classification below.
-                let changed = if Arc::ptr_eq(&previous.layout, &style.layout) {
-                    nana_ui_core::LayoutStyleChange::NONE
-                } else {
-                    previous.layout.changed_fields(style.layout.as_ref())
-                };
-                let transform_changed =
-                    changed.intersects(nana_ui_core::LayoutStyleChange::TRANSFORM);
-                let stacking_changed =
-                    changed.intersects(nana_ui_core::LayoutStyleChange::STACKING);
-                let layout_changed = changed.intersects(nana_ui_core::LayoutStyleChange::LAYOUT);
-                let style_layout_invalidation = layout_style_invalidation(changed);
-                if !super::text::same_text_constraint_inputs(&previous, style) {
-                    self.nodes
-                        .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
-                }
-                if previous.text_horizontal_alignment != style.text_horizontal_alignment
-                    && self
-                        .nodes
-                        .text_node(*id)
-                        .is_some_and(|text| !text.layout.is_null())
-                {
-                    // Only a retained layout places lines by alignment; host
-                    // metrics do not read it. It moves no box, so no layout
-                    // scope reaches the text: schedule it explicitly.
-                    self.nodes
-                        .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
-                    self.mark(*id, DirtyMask::TEXT);
-                }
-                self.write_node_style(*id, style.clone());
-                self.release_rewritten_holds(*id, &previous.layout, &style.layout);
-                self.sync_node_presence(*id);
-
-                if !style_layout_invalidation.is_empty() {
-                    self.record_layout_invalidation(*id, style_layout_invalidation);
-                }
-                if omits_box_changed {
-                    self.record_layout_invalidation(
-                        *id,
-                        LayoutInvalidation::new(
-                            LayoutInvalidationSource::Structure,
-                            InvalidationReason::TOPOLOGY,
-                            InvalidationKind::TOPOLOGY
-                                .union(InvalidationKind::MEASURE)
-                                .union(InvalidationKind::PLACEMENT),
-                            LayoutFieldMask::FLOW.union(LayoutFieldMask::VISIBILITY),
-                            LayoutDependencyFootprint::ALL,
-                        ),
-                    );
-                }
-
-                if !style_excluding_transform_and_cursor_eq(&previous, style, changed) {
-                    self.mark(*id, DirtyMask::STYLE);
-                    if !style_change_is_layout_geometry_only(&previous, style, changed) {
-                        self.mark(*id, DirtyMask::RENDER);
-                    }
-                }
-                if previous.painter != style.painter {
-                    // The hit index entry holds the painter (Issue #217).
-                    self.mark(*id, DirtyMask::INPUT);
-                    if style.painter.is_none() && !self.painter_overrides.contains_key(id) {
-                        self.paint_recordings.get_mut().remove(id);
-                    }
-                }
-                if inherited_paint_changed {
-                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::RENDER);
-                } else if inherited_opacity_changed {
-                    // Descendants resolve a new accumulated opacity, but they
-                    // do not paint differently for it: nothing downstream of
-                    // extraction reads `ComputedStyle::opacity`. The renderer
-                    // walks the ancestor chain itself, and a container with
-                    // descendants to fade is an opacity group, whose opacity
-                    // composites once at the group instead of reaching each
-                    // descendant's primitive. Re-extracting the subtree every
-                    // frame of a fade would rebuild primitives byte for byte
-                    // the same.
-                    self.mark_subtree(*id, DirtyMask::STYLE);
-                }
-                if inherited_text_changed || omits_box_changed || layout_changed {
-                    // Keep the Arc so a bit-equivalent recompute can reuse it.
-                    self.suppress_layout_results_subtree(*id);
-                    self.suppress_layout_result_chain(*id, true);
-                }
-                if inherited_text_changed {
-                    self.mark_subtree(*id, super::motion::INHERITED_TEXT_DIRTY);
-                }
-                if omits_box_changed || paint_visibility_changed {
-                    self.mark_subtree(
-                        *id,
-                        DirtyMask::STYLE
-                            | DirtyMask::INPUT
-                            | DirtyMask::FOCUS_IME
-                            | DirtyMask::ACCESSIBILITY
-                            | DirtyMask::RENDER,
-                    );
-                    if let Some(parent) = self.parent_id(*id) {
-                        self.mark(parent, DirtyMask::ACCESSIBILITY);
-                    }
-                }
-                if pointer_events_changed {
-                    // Inherited: unspecified descendants pick up the new used
-                    // value. Not a layout dirty.
-                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::INPUT);
-                    self.clear_hover_for_pointer_events_none(*id);
-                }
-                if cursor_changed {
-                    self.cursor_style_dirty = true;
-                    // Cursor is inherited and consumed by the host from the
-                    // resolved style; descendants need fresh computed values,
-                    // but no layout, hit-test, or render extraction is required.
-                    self.mark_subtree(*id, DirtyMask::STYLE);
-                }
-                if user_select_changed {
-                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::RENDER);
-                }
-                if transform_changed {
-                    // Scene extract and hit-test read `layout.transform`; LAYOUT
-                    // does not, so paint-transform is not a layout dirty.
-                    self.mark_subtree(*id, DirtyMask::TRANSFORM | DirtyMask::INPUT);
-                    // Only this node is extracted again. A descendant's
-                    // primitives are built in its own space and projected by
-                    // the chain above it, and the renderer re-projects a
-                    // retained descendant from the ancestor's new transform
-                    // rather than rebuilding it. Extracting the subtree every
-                    // frame of an animation would hand back the same geometry.
-                    self.mark(*id, DirtyMask::RENDER);
-                } else if stacking_changed {
-                    self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
-                }
-                if (inherited_text_changed || omits_box_changed)
-                    && let Some(parent) = self.parent_id(*id)
-                {
-                    self.mark_ancestors(parent, DirtyMask::RENDER);
-                }
+                self.restyle(*id, Some(style));
             }
             UiMutation::SetPresetTheme { mode } => {
                 self.install_theme(nana_ui_core::builtin_theme_arc(*mode));
@@ -1585,29 +1441,46 @@ impl UiWorld {
                 self.install_theme(Arc::clone(theme));
             }
             UiMutation::SetText { id, text } => {
+                // Written text is literal: a locale no longer rewrites it.
+                self.set_localized_text(*id, None);
                 // Re-setting the same text is not a content change: nothing
                 // about the node's shaping or layout moved.
-                let text_changed = self.record(*id).text != *text;
-                if text_changed {
-                    self.record_mut(*id).text = text.clone();
-                    // Spans over the old text would style the wrong bytes.
-                    self.nodes.set_rich_text(*id, None);
-                    self.invalidate_text_content(*id);
+                if self.record(*id).text != *text {
+                    self.replace_text_content(*id, text.clone());
                 }
                 self.mark(
                     *id,
                     DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
-                if let Some(document) = self.nodes.get(*id).map(|node| node.document)
-                    && self
-                        .document_text_selections
-                        .get(&document)
-                        .is_some_and(|selection| selection.node == *id)
-                {
-                    self.set_document_text_selection(document, None);
-                }
+            }
+            UiMutation::SetLocale { id, locale } => {
+                self.set_scope_locale(*id, locale.clone());
+            }
+            // A localized text, language, typography scale or responsive rule
+            // equal to the one in place never gets here: the commit skips it
+            // as a no-op.
+            UiMutation::SetLocalizedText { id, text } => {
+                self.set_localized_text(*id, text.clone());
             }
             UiMutation::SetRichText { id, rich } => self.apply_rich_text(*id, rich.as_ref()),
+            UiMutation::SetLanguage { id, language } => {
+                self.nodes.set_language(*id, language.clone());
+                // The subtree resolves its styles again and its text is
+                // considered again; text whose computed language moved is
+                // shaped again, the rest keeps its revision. Layout hears
+                // of it only from metrics that moved.
+                self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::TEXT);
+            }
+            UiMutation::SetTextScale { id, scale } => {
+                self.nodes.set_text_scale(*id, *scale);
+                self.mark_text_scale_scope(*id);
+            }
+            UiMutation::SetResponsive { id, rule } => {
+                self.set_responsive_rule(*id, rule.clone());
+            }
+            UiMutation::SetReplacedMetadata { resource, metadata } => {
+                self.apply_replaced_metadata(resource, *metadata);
+            }
             UiMutation::SetGlyphPresentation { id, presentation } => {
                 if self.nodes.glyph_presentation(*id) != presentation.as_ref() {
                     self.nodes.set_glyph_presentation(*id, presentation.clone());
@@ -1649,6 +1522,7 @@ impl UiWorld {
                 if resized {
                     self.nodes
                         .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
+                    self.note_responsive_resize(*id);
                 }
                 // Padding and fragment changes that keep this border box are
                 // scheduled when their result publishes.
@@ -1715,8 +1589,28 @@ impl UiWorld {
                 );
             }
             UiMutation::SetCustomRender { id, content } => {
+                let previous = self.nodes.custom_render(*id);
+                let same_resource = match (previous, content.as_ref()) {
+                    (Some(previous), Some(next)) => {
+                        previous.renderer == next.renderer && previous.resource == next.resource
+                    }
+                    _ => false,
+                };
+                let seeds_before = self.layout_seeds_created;
                 self.nodes.set_custom_render(*id, content.clone());
+                if same_resource {
+                    // A frame, a texture generation, a fit: what the node shows
+                    // moved and its size did not. Paint.
+                    self.pending_drain_counts.replaced_content_updates += 1;
+                } else {
+                    self.reindex_replaced(*id);
+                }
                 self.mark(*id, DirtyMask::RENDER);
+                if same_resource {
+                    self.pending_drain_counts
+                        .replaced_content_only_layout_invalidations +=
+                        (self.layout_seeds_created - seeds_before) as usize;
+                }
             }
             UiMutation::SetPainter { id, painter } => {
                 let changed = match painter {
@@ -1853,6 +1747,8 @@ impl UiWorld {
                 };
                 let text_path_changed = super::text_visual_key(self.nodes.visual(*id))
                     != super::text_visual_key(visual.as_ref());
+                let markdown_changed =
+                    markdown_blocks_changed(self.nodes.visual(*id), visual.as_ref());
                 self.nodes.set_visual(*id, visual.clone());
                 if text_path_changed {
                     // The text path or a leading indicator's inset changed; the
@@ -1882,7 +1778,8 @@ impl UiWorld {
                 let visual_layout_changed = button_layout_changed
                     || text_input_presentation_changed
                     || empty_state_presentation_changed
-                    || modal_presentation_changed;
+                    || modal_presentation_changed
+                    || markdown_changed;
                 if visual_layout_changed {
                     self.record_layout_invalidation(
                         *id,
@@ -2596,10 +2493,30 @@ impl UiWorld {
                 self.unlinked_root(*root) && self.mount_state(*root) == Some(MountState::Parked)
             }
             UiMutation::Detach { id } => self.unlinked_root(*id),
+            UiMutation::SetLanguage { id, language } => {
+                self.nodes.language(*id) == language.as_ref()
+            }
+            UiMutation::SetTextScale { id, scale } => self.nodes.text_scale(*id).copied() == *scale,
+            UiMutation::SetResponsive { id, rule } => self.responsive_rule(*id) == rule.as_ref(),
+            UiMutation::SetLocale { id, locale } => {
+                self.scope_locale(LocaleScope::Node(*id)) == locale.as_ref()
+            }
+            UiMutation::SetLocalizedText { id, text } => self.localized_text(*id) == text.as_ref(),
+            UiMutation::SetReplacedMetadata { resource, metadata } => {
+                self.replaced_metadata(resource) == *metadata
+            }
             UiMutation::PatchPlacement { id, top, height } => self
                 .node_style(*id)
                 .is_some_and(|style| placement_already(style.layout.as_ref(), *top, *height)),
             _ => false,
+        }
+    }
+
+    /// A skipped no-op that sets the typography scale a scope already has
+    /// counts as one: nothing is visited for it.
+    pub(crate) fn note_noop_text_scale(&mut self, mutation: &UiMutation) {
+        if matches!(mutation, UiMutation::SetTextScale { .. }) {
+            self.note_equivalent_text_scale();
         }
     }
 
@@ -2723,6 +2640,7 @@ impl UiWorld {
         let mut layout_result_ids = Vec::new();
         for mutation in queue.as_slice() {
             if self.is_structural_noop(mutation) {
+                self.note_noop_text_scale(mutation);
                 continue;
             }
             if !applied {
@@ -2739,7 +2657,16 @@ impl UiWorld {
                 | UiMutation::SetScrollMetrics { id, .. } => Some(*id),
                 _ => None,
             };
+            let seeds_before = self.layout_seeds_created;
             self.apply(mutation, &mut report);
+            if matches!(
+                mutation,
+                UiMutation::RequestFocus { .. }
+                    | UiMutation::SetInteraction { .. }
+                    | UiMutation::SetAccessibility { .. }
+            ) {
+                self.note_state_seeds(seeds_before);
+            }
             if let Some(id) = layout_result_id {
                 layout_result_ids.push(id);
             }
@@ -2761,6 +2688,9 @@ impl UiWorld {
                 self.scroll_to_clamped(id, offset);
             }
         }
+        // Containers this commit resized read their rules now: a variant
+        // that changed is a style change the frame's next round lays out.
+        self.evaluate_responsive();
         self.publish_layout_results(
             &layout_result_ids,
             crate::LayoutResultSource::CompatibilityWrite,
@@ -3070,4 +3000,261 @@ fn edit_keeping_preedit(
         work.composition_updates = 0;
     }
     work
+}
+
+/// Whether a markdown block list changed. Its measured size follows its
+/// blocks -- an image's resolved size among them -- so layout hears of it.
+fn markdown_blocks_changed(
+    previous: Option<&StandardVisual>,
+    next: Option<&StandardVisual>,
+) -> bool {
+    #[cfg(feature = "rich-text")]
+    {
+        let blocks = |visual: Option<&StandardVisual>| match visual {
+            Some(StandardVisual::NativeMarkdown { blocks, .. }) => Some(Arc::clone(blocks)),
+            _ => None,
+        };
+        blocks(previous) != blocks(next)
+    }
+    #[cfg(not(feature = "rich-text"))]
+    {
+        let _ = (previous, next);
+        false
+    }
+}
+
+impl UiWorld {
+    /// A node's style moves: its authored style to `authored`, a style write,
+    /// or -- with `None` -- only what resolves from it, its responsive variant
+    /// (Issue #265). Every comparison below reads the style the pipeline
+    /// reads, the authored one over its resolved layout, so a variant is
+    /// classified, marked and seeded exactly as the same change written as a
+    /// style.
+    pub(super) fn restyle(&mut self, id: StableNodeId, authored: Option<&NodeStyle>) {
+        let previous_authored = self.record(id).style.clone();
+        let previous_resolved = Arc::clone(&self.record(id).resolved_layout);
+        self.write_node_style(
+            id,
+            authored
+                .cloned()
+                .unwrap_or_else(|| previous_authored.clone()),
+        );
+        let next_authored = self.record(id).style.clone();
+        let resolved = Arc::clone(&self.record(id).resolved_layout);
+        let previous = NodeStyle {
+            layout: Arc::clone(&previous_resolved),
+            ..previous_authored.clone()
+        };
+        let style = &NodeStyle {
+            layout: Arc::clone(&resolved),
+            ..next_authored.clone()
+        };
+        let inherited_text_changed = previous.layout.font_size != style.layout.font_size
+            || previous.layout.font_weight != style.layout.font_weight
+            || previous.layout.font_italic != style.layout.font_italic
+            || previous.layout.font_family != style.layout.font_family
+            || previous.layout.line_height != style.layout.line_height
+            || previous.layout.letter_spacing != style.layout.letter_spacing
+            || previous.layout.font_features != style.layout.font_features
+            || previous.layout.font_variation_settings
+                != style.layout.font_variation_settings
+            || previous.layout.font_kerning != style.layout.font_kerning
+            || previous.layout.word_break != style.layout.word_break
+            || previous.layout.line_break != style.layout.line_break
+            // Writing mode and direction inherit into layout, not just
+            // text: a descendant container lays out along them too, and
+            // the INPUT bit re-projects the accessibility nodes that
+            // report which way their text reads.
+            || previous.layout.dir != style.layout.dir
+            || previous.layout.writing_mode != style.layout.writing_mode
+            || previous.layout.text_orientation != style.layout.text_orientation;
+        let inherited_paint_changed = previous.foreground != style.foreground
+            || previous.layout.color != style.layout.color
+            || previous.layout.selection_background != style.layout.selection_background
+            || previous.layout.selection_color != style.layout.selection_color
+            || previous.layout.paint_colors.color != style.layout.paint_colors.color
+            || previous.layout.paint_colors.selection_background
+                != style.layout.paint_colors.selection_background
+            || previous.layout.paint_colors.selection_color
+                != style.layout.paint_colors.selection_color;
+        let inherited_opacity_changed = previous.layout.opacity != style.layout.opacity;
+        let paint_visibility_changed =
+            previous.layout.paint.visibility != style.layout.paint.visibility;
+        let pointer_events_changed = previous.layout.pointer_events != style.layout.pointer_events;
+        let cursor_changed = previous.layout.cursor != style.layout.cursor;
+        let user_select_changed = previous.layout.user_select != style.layout.user_select;
+        let omits_box_changed = previous.layout.omits_box() != style.layout.omits_box();
+        if !super::text::same_text_constraint_inputs(&previous, style) {
+            self.nodes
+                .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
+        }
+        if previous.text_horizontal_alignment != style.text_horizontal_alignment
+            && self
+                .nodes
+                .text_node(id)
+                .is_some_and(|text| !text.layout.is_null())
+        {
+            // Only a retained layout places lines by alignment; host
+            // metrics do not read it. It moves no box, so no layout
+            // scope reaches the text: schedule it explicitly.
+            self.nodes
+                .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
+            self.mark(id, DirtyMask::TEXT);
+        }
+        // One pass over the resolved layout -- the authored one with
+        // its design intent applied, which layout and paint read --
+        // read by every classification below. A write of intent
+        // alone (a control's padding step, its radius tier) moves it
+        // and nothing authored; a write that moves neither is
+        // equivalent, however it was spelled.
+        let changed = if Arc::ptr_eq(&previous_resolved, &resolved) {
+            nana_ui_core::LayoutStyleChange::NONE
+        } else {
+            previous_resolved.changed_fields(resolved.as_ref())
+        };
+        let transform_changed = changed.intersects(nana_ui_core::LayoutStyleChange::TRANSFORM);
+        let stacking_changed = changed.intersects(nana_ui_core::LayoutStyleChange::STACKING);
+        let style_layout_invalidation = self.classify_layout_change(id, changed);
+        if previous_resolved.paint.content_image != resolved.paint.content_image {
+            self.reindex_replaced(id);
+        }
+        // A write's own counts; a variant counts as a responsive result.
+        if authored.is_some() {
+            if changed.is_empty() && super::node_presentation_eq(&previous, style) {
+                self.pending_layout_invalidations_counted
+                    .layout_equivalent_mutations_skipped += 1;
+                self.pending_drain_counts.equivalent_style_layout_skips += 1;
+            }
+            if !style_layout_invalidation.is_empty() {
+                self.pending_drain_counts.style_to_layout_seeds += 1;
+            }
+            self.release_rewritten_holds(id, &previous_authored.layout, &next_authored.layout);
+        }
+        self.sync_node_presence(id);
+
+        // An empty classification is counted there and queues nothing.
+        self.record_layout_invalidation(id, style_layout_invalidation);
+        if omits_box_changed {
+            self.record_layout_invalidation(
+                id,
+                LayoutInvalidation::new(
+                    LayoutInvalidationSource::Structure,
+                    InvalidationReason::TOPOLOGY,
+                    InvalidationKind::TOPOLOGY
+                        .union(InvalidationKind::MEASURE)
+                        .union(InvalidationKind::PLACEMENT),
+                    LayoutFieldMask::FLOW.union(LayoutFieldMask::VISIBILITY),
+                    LayoutDependencyFootprint::ALL,
+                ),
+            );
+        }
+
+        if !style_excluding_transform_and_cursor_eq(&previous, style, changed) {
+            self.mark(id, DirtyMask::STYLE);
+            if !style_change_is_layout_geometry_only(&previous, style, changed) {
+                self.mark(id, DirtyMask::RENDER);
+            }
+        }
+        if previous.painter != style.painter {
+            // The hit index entry holds the painter (Issue #217).
+            self.mark(id, DirtyMask::INPUT);
+            if style.painter.is_none() && !self.painter_overrides.contains_key(&id) {
+                self.paint_recordings.get_mut().remove(&id);
+            }
+        }
+        if inherited_paint_changed {
+            self.mark_subtree(id, DirtyMask::STYLE | DirtyMask::RENDER);
+        } else if inherited_opacity_changed {
+            // Descendants resolve a new accumulated opacity, but they
+            // do not paint differently for it: nothing downstream of
+            // extraction reads `ComputedStyle::opacity`. The renderer
+            // walks the ancestor chain itself, and a container with
+            // descendants to fade is an opacity group, whose opacity
+            // composites once at the group instead of reaching each
+            // descendant's primitive. Re-extracting the subtree every
+            // frame of a fade would rebuild primitives byte for byte
+            // the same.
+            self.mark_subtree(id, DirtyMask::STYLE);
+        }
+        if inherited_text_changed || omits_box_changed {
+            // Inherited text and a box that appears or goes change
+            // what descendants resolve, so their results wait for the
+            // next pass. A layout field of this node does not: the
+            // typed seed above is the whole classification, and the
+            // frontier reaches the descendants that depend on it.
+            // Keep the Arc so a bit-equivalent recompute can reuse it.
+            self.suppress_layout_results_subtree(id);
+            self.suppress_layout_result_chain(id, true);
+        }
+        if inherited_text_changed {
+            self.mark_subtree(id, super::motion::INHERITED_TEXT_DIRTY);
+        }
+        if omits_box_changed || paint_visibility_changed {
+            self.mark_subtree(
+                id,
+                DirtyMask::STYLE
+                    | DirtyMask::INPUT
+                    | DirtyMask::FOCUS_IME
+                    | DirtyMask::ACCESSIBILITY
+                    | DirtyMask::RENDER,
+            );
+            if let Some(parent) = self.parent_id(id) {
+                self.mark(parent, DirtyMask::ACCESSIBILITY);
+            }
+        }
+        if pointer_events_changed {
+            // Inherited: unspecified descendants pick up the new used
+            // value. Not a layout dirty.
+            self.mark_subtree(id, DirtyMask::STYLE | DirtyMask::INPUT);
+            self.clear_hover_for_pointer_events_none(id);
+        }
+        if cursor_changed {
+            self.cursor_style_dirty = true;
+            // Cursor is inherited and consumed by the host from the
+            // resolved style; descendants need fresh computed values,
+            // but no layout, hit-test, or render extraction is required.
+            self.mark_subtree(id, DirtyMask::STYLE);
+        }
+        if user_select_changed {
+            self.mark_subtree(id, DirtyMask::STYLE | DirtyMask::RENDER);
+        }
+        if transform_changed {
+            // Scene extract and hit-test read `layout.transform`; LAYOUT
+            // does not, so paint-transform is not a layout dirty.
+            self.mark_subtree(id, DirtyMask::TRANSFORM | DirtyMask::INPUT);
+            // Only this node is extracted again. A descendant's
+            // primitives are built in its own space and projected by
+            // the chain above it, and the renderer re-projects a
+            // retained descendant from the ancestor's new transform
+            // rather than rebuilding it. Extracting the subtree every
+            // frame of an animation would hand back the same geometry.
+            self.mark(id, DirtyMask::RENDER);
+        } else if stacking_changed {
+            self.mark_subtree(id, DirtyMask::INPUT | DirtyMask::RENDER);
+        }
+        if (inherited_text_changed || omits_box_changed)
+            && let Some(parent) = self.parent_id(id)
+        {
+            self.mark_ancestors(parent, DirtyMask::RENDER);
+        }
+    }
+}
+
+impl UiWorld {
+    /// Replace `id`'s text with `text`: its spans go, its shaped text is
+    /// stale, and a document selection in it is dropped. The caller marks.
+    pub(super) fn replace_text_content(&mut self, id: StableNodeId, text: TextContent) {
+        self.record_mut(id).text = text;
+        // Spans over the old text would style the wrong bytes.
+        self.nodes.set_rich_text(id, None);
+        self.invalidate_text_content(id);
+        if let Some(document) = self.nodes.get(id).map(|node| node.document)
+            && self
+                .document_text_selections
+                .get(&document)
+                .is_some_and(|selection| selection.node == id)
+        {
+            self.set_document_text_selection(document, None);
+        }
+    }
 }

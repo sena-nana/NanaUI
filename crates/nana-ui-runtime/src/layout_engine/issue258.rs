@@ -62,7 +62,6 @@ fn scoped(
 ) -> Step {
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    plan_stats::reset();
     let emitted = RuntimeLayoutEngine
         .layout_document_with_frontier(
             world,
@@ -73,10 +72,11 @@ fn scoped(
             false,
         )
         .unwrap();
+    let cache = &retained.documents[&document];
     let step = Step {
         emitted: emitted.iter().map(|(id, _)| *id).collect(),
-        children_measured: plan_stats::children_measured(),
-        full_document_fallbacks: plan_stats::full_document_fallbacks(),
+        children_measured: cache.execution_stats.children_measured,
+        full_document_fallbacks: cache.frontier_stats.full_document_fallbacks,
     };
     write_changed(world, &emitted);
     let _ = world.take_system_work();

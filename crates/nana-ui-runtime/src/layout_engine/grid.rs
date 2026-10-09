@@ -1024,6 +1024,8 @@ pub(super) fn place_grid_2d_items(
                 origin: child_origin,
                 size: child_size,
                 cursor_before: 0.0,
+                // A grid aligns baseline items to the start of their area.
+                baseline: None,
             });
         }
         if !subtree_unchanged(

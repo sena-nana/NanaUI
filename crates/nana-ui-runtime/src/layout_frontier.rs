@@ -31,6 +31,26 @@ struct DependencyLink {
     footprint: LayoutDependencyFootprint,
 }
 
+/// One node's links in insertion order, indexed by target so a repeated edge
+/// merges in O(1). Scanning the list instead made a parent whose children all
+/// carry a link quadratic in its child count.
+#[derive(Debug, Clone, Default)]
+struct Adjacency {
+    links: Vec<DependencyLink>,
+    by_target: HashMap<StableNodeId, usize>,
+}
+
+impl Adjacency {
+    fn add(&mut self, target: StableNodeId, footprint: LayoutDependencyFootprint) {
+        if let Some(&index) = self.by_target.get(&target) {
+            self.links[index].footprint = self.links[index].footprint.union(footprint);
+            return;
+        }
+        self.by_target.insert(target, self.links.len());
+        self.links.push(DependencyLink { target, footprint });
+    }
+}
+
 /// Bounded dependency index used by [`LayoutFrontier::from_dependency_graph`].
 ///
 /// `add_parent_dependency(parent, child, footprint)` records both directions:
@@ -39,13 +59,37 @@ struct DependencyLink {
 /// intended for flex/grid/inline sibling domains.
 #[derive(Debug, Clone, Default)]
 pub struct LayoutDependencyGraph {
-    parents: HashMap<StableNodeId, Vec<DependencyLink>>,
-    children: HashMap<StableNodeId, Vec<DependencyLink>>,
-    contexts: HashMap<StableNodeId, Vec<DependencyLink>>,
+    parents: HashMap<StableNodeId, Adjacency>,
+    children: HashMap<StableNodeId, Adjacency>,
+    contexts: HashMap<StableNodeId, Adjacency>,
     isolated: HashSet<StableNodeId>,
+    constraint: ConstraintDescentCounts,
+}
+
+/// What building a pass's dependency graph did with the constraint changes
+/// among its seeds: the seeds that moved a constraint children consume, the
+/// children asked whether they consume it, and of those the ones measured
+/// again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConstraintDescentCounts {
+    pub seeds: usize,
+    pub considered: usize,
+    pub remeasured: usize,
 }
 
 impl LayoutDependencyGraph {
+    /// A seed that moved a constraint children consume.
+    pub(crate) fn note_constraint_seed(&mut self) {
+        self.constraint.seeds += 1;
+    }
+
+    /// A child asked whether it consumes a constraint that moved: it does,
+    /// and measures again, or it does not.
+    pub(crate) fn note_constraint_dependent(&mut self, remeasured: bool) {
+        self.constraint.considered += 1;
+        self.constraint.remeasured += usize::from(remeasured);
+    }
+
     pub fn add_parent_dependency(
         &mut self,
         parent: StableNodeId,
@@ -98,33 +142,63 @@ impl LayoutDependencyGraph {
     }
 
     fn parents(&self, node: StableNodeId) -> &[DependencyLink] {
-        self.parents.get(&node).map(Vec::as_slice).unwrap_or(&[])
+        Self::links(&self.parents, node)
     }
 
     fn children(&self, node: StableNodeId) -> &[DependencyLink] {
-        self.children.get(&node).map(Vec::as_slice).unwrap_or(&[])
+        Self::links(&self.children, node)
     }
 
     fn contexts(&self, node: StableNodeId) -> &[DependencyLink] {
-        self.contexts.get(&node).map(Vec::as_slice).unwrap_or(&[])
+        Self::links(&self.contexts, node)
+    }
+
+    fn links(
+        adjacency: &HashMap<StableNodeId, Adjacency>,
+        node: StableNodeId,
+    ) -> &[DependencyLink] {
+        adjacency
+            .get(&node)
+            .map(|adjacency| adjacency.links.as_slice())
+            .unwrap_or(&[])
     }
 
     fn is_isolated(&self, node: StableNodeId) -> bool {
         self.isolated.contains(&node)
     }
 
+    /// Distinct dependency edges: each parent link once (the downward mirror
+    /// is the same edge walked the other way) and each context link.
+    pub fn edges(&self) -> usize {
+        Self::link_count(&self.parents) + Self::link_count(&self.contexts)
+    }
+
+    /// Bytes one adjacency entry takes: the link and its index slot.
+    pub const ENTRY_BYTES: usize =
+        std::mem::size_of::<DependencyLink>() + std::mem::size_of::<(StableNodeId, usize)>();
+
+    /// Adjacency entries the graph holds, mirrors included: the scratch a
+    /// pass builds and drops.
+    pub fn scratch_entries(&self) -> usize {
+        Self::link_count(&self.parents)
+            + Self::link_count(&self.children)
+            + Self::link_count(&self.contexts)
+    }
+
+    fn link_count(adjacency: &HashMap<StableNodeId, Adjacency>) -> usize {
+        adjacency
+            .values()
+            .map(|adjacency| adjacency.links.len())
+            .sum()
+    }
+
     fn add_link(
-        links: &mut HashMap<StableNodeId, Vec<DependencyLink>>,
+        links: &mut HashMap<StableNodeId, Adjacency>,
         source: StableNodeId,
         target: StableNodeId,
         footprint: LayoutDependencyFootprint,
     ) {
-        let entries = links.entry(source).or_default();
-        if let Some(existing) = entries.iter_mut().find(|link| link.target == target) {
-            existing.footprint = existing.footprint.union(footprint);
-        } else {
-            entries.push(DependencyLink { target, footprint });
-        }
+        links.entry(source).or_default().add(target, footprint);
     }
 }
 
@@ -156,6 +230,9 @@ struct FrontierEntry {
     writing: bool,
     scroll: bool,
     topology: bool,
+    /// A mutation queued this node itself; otherwise a dependency edge
+    /// reached it.
+    seed: bool,
 }
 
 impl FrontierEntry {
@@ -170,6 +247,7 @@ impl FrontierEntry {
             writing: kind.intersects(InvalidationKind::WRITING_CONTEXT),
             scroll: kind.intersects(InvalidationKind::SCROLL_OVERFLOW),
             topology: kind.intersects(InvalidationKind::TOPOLOGY),
+            seed: false,
         }
     }
 
@@ -251,6 +329,12 @@ pub struct LayoutFrontier {
     propagations_stopped: usize,
     local_subtree_fallbacks: usize,
     full_document_fallbacks: usize,
+    /// Distinct edges of the dependency graph this frontier was built from.
+    graph_edges: usize,
+    /// Adjacency entries that graph held; it is dropped with the pass.
+    scratch_entries: usize,
+    /// What that graph did with the constraint changes among the seeds.
+    constraint: ConstraintDescentCounts,
 }
 
 /// Compact snapshot copied onto the retained document cache after a pass.
@@ -263,10 +347,20 @@ pub struct LayoutFrontierStats {
     pub nodes_measure: usize,
     pub nodes_placement: usize,
     pub contexts: usize,
+    pub nodes_writing: usize,
     pub dependency_edges_visited: usize,
     pub propagations_stopped: usize,
     pub local_subtree_fallbacks: usize,
     pub full_document_fallbacks: usize,
+    /// Distinct edges of the dependency graph the pass built: the union
+    /// closure of its seeds. `dependency_edges_visited` over this is how many
+    /// times an edge was walked.
+    pub graph_edges: usize,
+    /// Adjacency entries of that graph, mirrors included. Built per pass and
+    /// dropped with it; it tracks the closure, not the document.
+    pub scratch_entries: usize,
+    /// The constraint changes among the seeds and the children they asked.
+    pub constraint: ConstraintDescentCounts,
 }
 
 impl LayoutFrontierStats {
@@ -277,10 +371,14 @@ impl LayoutFrontierStats {
             nodes_measure: frontier.measure_nodes().len(),
             nodes_placement: frontier.placement_nodes().len(),
             contexts: frontier.context_nodes().len(),
+            nodes_writing: frontier.writing_nodes().len(),
             dependency_edges_visited: frontier.dependency_edges_visited(),
             propagations_stopped: frontier.propagations_stopped(),
             local_subtree_fallbacks: frontier.local_subtree_fallbacks(),
             full_document_fallbacks: frontier.full_document_fallbacks(),
+            graph_edges: frontier.graph_edges,
+            scratch_entries: frontier.scratch_entries,
+            constraint: frontier.constraint,
         }
     }
 }
@@ -313,7 +411,12 @@ impl LayoutFrontier {
     where
         I: IntoIterator<Item = LayoutFrontierSeed>,
     {
-        let mut frontier = Self::default();
+        let mut frontier = Self {
+            graph_edges: graph.edges(),
+            scratch_entries: graph.scratch_entries(),
+            constraint: graph.constraint,
+            ..Self::default()
+        };
         let mut pending = VecDeque::new();
         let seeds = seeds.into_iter().collect::<Vec<_>>();
         // An isolation boundary stops metrics exported by descendants, but a
@@ -338,6 +441,9 @@ impl LayoutFrontier {
             }
             let existed = frontier.entries.contains_key(&seed.node);
             let changed = frontier.insert_entry(seed.node, seed.invalidation);
+            if let Some(entry) = frontier.entries.get_mut(&seed.node) {
+                entry.seed = true;
+            }
             frontier.refresh_sets(seed.node);
             if existed {
                 frontier.seed_merges = frontier.seed_merges.saturating_add(1);
@@ -614,6 +720,12 @@ impl LayoutFrontier {
                 entry.invalidation.affected_axes,
             )
         })
+    }
+
+    /// Whether a mutation queued `node` itself, rather than a dependency
+    /// edge reaching it.
+    pub fn is_seed(&self, node: StableNodeId) -> bool {
+        self.entries.get(&node).is_some_and(|entry| entry.seed)
     }
 
     pub fn seeds(&self) -> usize {

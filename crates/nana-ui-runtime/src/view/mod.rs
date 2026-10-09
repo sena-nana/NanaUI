@@ -46,8 +46,8 @@ pub use crate::VirtualAlignment;
 pub use controls::{
     Px, StyledComponent, action_menu, action_menu_item, avatar, button, checkbox, chip,
     color_field, column, divider, empty_state, fields, icon_button, labeled_value, list_item,
-    number_input, progress, range_span, row, select, slider, spinner, status_badge, switch, tabs,
-    text, text_area, text_input, texture, thumbnail, tree_view,
+    localized, number_input, progress, range_span, row, select, slider, spinner, status_badge,
+    switch, tabs, text, text_area, text_input, texture, thumbnail, tree_view,
 };
 pub(crate) use controls::{edit_control, inspect_control};
 pub use each_virtual::{EachVirtual, VirtualItem, VirtualListRef, each_virtual, virtual_list_ref};
@@ -62,7 +62,7 @@ pub use node::{
     NodeBindings, NodeRef, Refs, SourceLocation, ViewBuilder, WithRefs, detached, entity_ref,
     keyed, node_ref, widget, with_refs,
 };
-pub use node::{InspectedField, Inspection};
+pub use node::{InspectedField, Inspection, LayoutCause};
 pub(crate) use node::{NodePatch, StructuralBinding, ViewParts, ViewState};
 #[doc(hidden)]
 pub use prop::Fixed;

@@ -88,6 +88,8 @@ pub enum VirtualListMaterializationError {
 pub struct VirtualListMaterializer<K> {
     revision: u64,
     mounted: Vec<K>,
+    /// The data index of each mounted key when its plan was made.
+    indices: Vec<usize>,
 }
 
 impl<K> Default for VirtualListMaterializer<K> {
@@ -95,6 +97,7 @@ impl<K> Default for VirtualListMaterializer<K> {
         Self {
             revision: 0,
             mounted: Vec::new(),
+            indices: Vec::new(),
         }
     }
 }
@@ -109,6 +112,30 @@ where
 
     pub fn mounted(&self) -> &[K] {
         &self.mounted
+    }
+
+    /// The data index of each [`Self::mounted`] key when the plan that
+    /// mounted it was made: current for as long as the data is unchanged.
+    pub fn mounted_indices(&self) -> &[usize] {
+        &self.indices
+    }
+
+    /// The plan for `window` when its `indices` are the ones already mounted
+    /// and the data has not changed since: the mounted keys, with none looked
+    /// up again. `None` when the indices differ.
+    pub fn prepare_unchanged(
+        &self,
+        window: VirtualListWindow,
+        indices: &[usize],
+    ) -> Option<VirtualListMaterialization<K>> {
+        (self.indices == indices).then(|| VirtualListMaterialization {
+            base_revision: self.revision,
+            window,
+            mounts: Vec::new(),
+            unmounts: Vec::new(),
+            order: self.mounted.clone(),
+            indices: self.indices.clone(),
+        })
     }
 
     pub fn prepare(
@@ -206,6 +233,8 @@ where
         if plan.base_revision != self.revision {
             return Err(VirtualListMaterializationError::StalePlan);
         }
+        // The same keys can sit at new indices after an insert above them.
+        self.indices = plan.indices;
         if self.mounted == plan.order {
             return Ok(false);
         }
@@ -215,12 +244,248 @@ where
     }
 }
 
+/// Rows a chunk holds before it splits: an insert or a measurement touches
+/// one chunk, and the index above the chunks is logarithmic in their count.
+const CHUNK_ROWS: usize = 512;
+
+/// `len` rows of one extent, as chunks of at most `CHUNK_ROWS` rows.
+fn uniform_chunks(len: usize, extent: f32) -> impl Iterator<Item = ExtentChunk> {
+    (0..len)
+        .step_by(CHUNK_ROWS)
+        .map(move |start| ExtentChunk::Uniform {
+            len: (len - start).min(CHUNK_ROWS),
+            extent,
+        })
+}
+
+/// A run of rows in a [`VirtualListLayout`]. Rows of one extent -- an
+/// estimate nothing measured yet, or rows that measured alike -- are a count;
+/// rows measured apart are their own extents.
+#[derive(Debug, Clone)]
+enum ExtentChunk {
+    Uniform { len: usize, extent: f32 },
+    Measured(Vec<f32>),
+}
+
+impl ExtentChunk {
+    /// `extents` as one chunk: a count when they are all one extent.
+    fn of(extents: &[f32]) -> Self {
+        match extents.first() {
+            Some(&first) if extents.iter().all(|extent| *extent == first) => Self::Uniform {
+                len: extents.len(),
+                extent: first,
+            },
+            _ => Self::Measured(extents.to_vec()),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Uniform { len, .. } => *len,
+            Self::Measured(extents) => extents.len(),
+        }
+    }
+
+    fn sum(&self) -> f64 {
+        self.prefix(self.len())
+    }
+
+    fn get(&self, index: usize) -> f32 {
+        match self {
+            Self::Uniform { extent, .. } => *extent,
+            Self::Measured(extents) => extents[index],
+        }
+    }
+
+    /// The extent of this chunk's first `rows` rows.
+    fn prefix(&self, rows: usize) -> f64 {
+        match self {
+            Self::Uniform { extent, .. } => rows as f64 * f64::from(*extent),
+            Self::Measured(extents) => extents[..rows].iter().copied().map(f64::from).sum(),
+        }
+    }
+
+    /// How many of this chunk's leading row ends, measured from `base`,
+    /// satisfy `before`: `prefix(1..=n)`, which only grows.
+    fn rows_before(&self, base: f64, before: &impl Fn(f64) -> bool) -> usize {
+        match self {
+            Self::Uniform { len, extent } => {
+                let extent = f64::from(*extent);
+                // Rows whose end the predicate holds for form a prefix, and
+                // each row's end is a product: search for where it stops.
+                let mut rows = 0;
+                let mut step = (*len).next_power_of_two();
+                while step > 0 {
+                    let next = rows + step;
+                    if next <= *len && before(base + next as f64 * extent) {
+                        rows = next;
+                    }
+                    step >>= 1;
+                }
+                rows
+            }
+            Self::Measured(extents) => {
+                let mut sum = base;
+                let mut rows = 0;
+                for extent in extents {
+                    sum += f64::from(*extent);
+                    if !before(sum) {
+                        break;
+                    }
+                    rows += 1;
+                }
+                rows
+            }
+        }
+    }
+
+    /// Rows this chunk holds as a list of their own, for an edit.
+    fn measured(&mut self) -> &mut Vec<f32> {
+        if let Self::Uniform { len, extent } = *self {
+            *self = Self::Measured(vec![extent; len]);
+        }
+        match self {
+            Self::Measured(extents) => extents,
+            Self::Uniform { .. } => unreachable!("converted above"),
+        }
+    }
+}
+
 /// Retained variable-height item geometry with logarithmic range queries and
 /// single-item measurement updates.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// Rows live in chunks of a few hundred; a run of one extent is stored as a
+/// count, so a million estimated rows take a few thousand chunks, not a
+/// million floats. Two Fenwick trees over the chunks -- their extents and
+/// their row counts -- answer prefix and offset queries in O(log C) plus a
+/// walk inside one chunk. Measuring a row touches its chunk and O(log C)
+/// index entries; inserting rows touches their chunk, and rebuilds the
+/// index (O(C)) only when that chunk splits; removing rows rebuilds it.
+#[derive(Debug, Clone, Default)]
 pub struct VirtualListLayout {
-    item_extents: Vec<f32>,
-    fenwick: Vec<f32>,
+    chunks: Vec<ExtentChunk>,
+    /// Fenwick tree (1-based) over the chunks' extents.
+    sums: Vec<f64>,
+    /// Fenwick tree (1-based) over the chunks' row counts.
+    lens: Vec<usize>,
+    len: usize,
+    /// Index entries and chunk rows written since the layout was made.
+    touched: u64,
+}
+
+impl PartialEq for VirtualListLayout {
+    /// Equal rows, however they are chunked.
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.extents().eq(other.extents())
+    }
+}
+
+impl VirtualListLayout {
+    /// `len` rows of one extent: an estimate, stored as a count.
+    pub fn uniform(len: usize, extent: f32) -> Self {
+        let mut layout = Self {
+            chunks: uniform_chunks(len, sanitize_extent(extent)).collect(),
+            ..Self::default()
+        };
+        layout.rebuild_index();
+        layout
+    }
+
+    /// Index entries and chunk rows written since the layout was made: the
+    /// work its edits cost, which a measurement keeps logarithmic.
+    pub fn index_entries_touched(&self) -> u64 {
+        self.touched
+    }
+
+    /// The extent of row `index`, if there is one.
+    pub fn item_extent(&self, index: usize) -> Option<f32> {
+        (index < self.len).then(|| {
+            let (chunk, row) = self.locate(index);
+            self.chunks[chunk].get(row)
+        })
+    }
+
+    /// Every row's extent, in order.
+    fn extents(&self) -> impl Iterator<Item = f32> + '_ {
+        self.chunks
+            .iter()
+            .flat_map(|chunk| (0..chunk.len()).map(move |row| chunk.get(row)))
+    }
+
+    fn rebuild_index(&mut self) {
+        let count = self.chunks.len();
+        self.sums.clear();
+        self.sums.resize(count + 1, 0.0);
+        self.lens.clear();
+        self.lens.resize(count + 1, 0);
+        self.len = 0;
+        for (index, chunk) in self.chunks.iter().enumerate() {
+            let node = index + 1;
+            let (sum, len) = (chunk.sum(), chunk.len());
+            self.len += len;
+            self.sums[node] += sum;
+            self.lens[node] += len;
+            let parent = node + low_bit(node);
+            if parent <= count {
+                let (sum, len) = (self.sums[node], self.lens[node]);
+                self.sums[parent] += sum;
+                self.lens[parent] += len;
+            }
+        }
+        self.touched += count as u64;
+    }
+
+    /// Add `extent` and `rows` to chunk `chunk`'s index entries.
+    fn index_add(&mut self, chunk: usize, extent: f64, rows: isize) {
+        let mut node = chunk + 1;
+        while node < self.sums.len() {
+            self.sums[node] += extent;
+            self.lens[node] = self.lens[node].wrapping_add_signed(rows);
+            node += low_bit(node);
+            self.touched += 1;
+        }
+        self.len = self.len.wrapping_add_signed(rows);
+    }
+
+    /// Extent of the first `chunks` chunks.
+    fn chunks_extent(&self, chunks: usize) -> f64 {
+        let mut node = chunks.min(self.chunks.len());
+        let mut sum = 0.0;
+        while node > 0 {
+            sum += self.sums[node];
+            node -= low_bit(node);
+        }
+        sum
+    }
+
+    /// The chunk holding row `index < len`, and the row within it.
+    fn locate(&self, index: usize) -> (usize, usize) {
+        let mut chunk = 0;
+        let mut rows = 0;
+        let mut step = self.chunks.len().next_power_of_two();
+        while step > 0 {
+            let next = chunk + step;
+            if next <= self.chunks.len() && rows + self.lens[next] <= index {
+                chunk = next;
+                rows += self.lens[next];
+            }
+            step >>= 1;
+        }
+        (chunk, index - rows)
+    }
+
+    /// Split chunk `chunk` into chunks of at most `CHUNK_ROWS` rows, each a
+    /// count where it can be one.
+    fn split(&mut self, chunk: usize) {
+        let pieces: Vec<ExtentChunk> = match &self.chunks[chunk] {
+            ExtentChunk::Uniform { len, extent } => uniform_chunks(*len, *extent).collect(),
+            ExtentChunk::Measured(extents) => {
+                self.touched += extents.len() as u64;
+                extents.chunks(CHUNK_ROWS).map(ExtentChunk::of).collect()
+            }
+        };
+        self.chunks.splice(chunk..chunk + 1, pieces);
+    }
 }
 
 impl VirtualListLayout {
@@ -337,7 +602,7 @@ impl VirtualListLayout {
         viewport_extent: f32,
         alignment: VirtualAlignment,
     ) -> Option<f32> {
-        let extent = *self.item_extents.get(index)?;
+        let extent = self.item_extent(index)?;
         let viewport = sanitize_extent(viewport_extent);
         let max_offset = (self.total_extent() - viewport).max(0.0);
         let offset = sanitize_extent(offset).min(max_offset);
@@ -398,8 +663,9 @@ impl VirtualListLayout {
             return 0.0;
         }
         let index = anchor.index.min(self.len() - 1);
-        (self.prefix_extent(index) + sanitize_extent(anchor.inset).min(self.item_extents[index]))
-            .min((self.total_extent() - sanitize_extent(viewport_extent)).max(0.0))
+        (self.prefix_extent(index)
+            + sanitize_extent(anchor.inset).min(self.item_extent(index).unwrap_or(0.0)))
+        .min((self.total_extent() - sanitize_extent(viewport_extent)).max(0.0))
     }
 
     /// Measure one item and preserve the visible anchor in O(log N).
@@ -416,6 +682,7 @@ impl VirtualListLayout {
         }
         changed
     }
+
     pub fn new(item_extents: impl IntoIterator<Item = f32>) -> Self {
         let mut layout = Self::default();
         layout.set_item_extents(item_extents);
@@ -423,58 +690,112 @@ impl VirtualListLayout {
     }
 
     pub fn set_item_extents(&mut self, item_extents: impl IntoIterator<Item = f32>) {
-        self.item_extents = item_extents.into_iter().map(sanitize_extent).collect();
-        self.rebuild_fenwick();
+        let extents: Vec<f32> = item_extents.into_iter().map(sanitize_extent).collect();
+        self.chunks = extents.chunks(CHUNK_ROWS).map(ExtentChunk::of).collect();
+        self.touched += extents.len() as u64;
+        self.rebuild_index();
     }
 
     /// Insert measured rows at `at` without requiring callers to rebuild the
-    /// rest of the data set. Used when a disclosure tree expands.
+    /// rest of the data set. Used when a disclosure tree expands: the rows go
+    /// into one chunk, and only a chunk that outgrew its size splits.
     pub fn insert_items(&mut self, at: usize, extents: impl IntoIterator<Item = f32>) {
         let at = at.min(self.len());
         let inserted = extents.into_iter().map(sanitize_extent).collect::<Vec<_>>();
         if inserted.is_empty() {
             return;
         }
-        self.item_extents.splice(at..at, inserted);
-        self.rebuild_fenwick();
+        if self.chunks.is_empty() {
+            self.set_item_extents(inserted);
+            return;
+        }
+        let (chunk, row) = if at == self.len {
+            let last = self.chunks.len() - 1;
+            (last, self.chunks[last].len())
+        } else {
+            self.locate(at)
+        };
+        let added = inserted.len();
+        let extent: f64 = inserted.iter().copied().map(f64::from).sum();
+        let target = &mut self.chunks[chunk];
+        match target {
+            ExtentChunk::Uniform {
+                len,
+                extent: uniform,
+            } if inserted.iter().all(|inserted| inserted == uniform) => {
+                *len += added;
+            }
+            _ => {
+                target.measured().splice(row..row, inserted);
+            }
+        }
+        self.touched += added as u64;
+        if self.chunks[chunk].len() > 2 * CHUNK_ROWS {
+            self.split(chunk);
+            self.rebuild_index();
+        } else {
+            self.index_add(chunk, extent, added as isize);
+        }
     }
 
-    /// Remove a contiguous measured range. Used when a disclosure tree collapses.
+    /// Remove a contiguous measured range. Used when a disclosure tree
+    /// collapses: the rows leave their chunks, and the index over the chunks
+    /// is rebuilt.
     pub fn remove_items(&mut self, range: Range<usize>) {
         let start = range.start.min(self.len());
         let end = range.end.max(start).min(self.len());
         if start == end {
             return;
         }
-        self.item_extents.drain(start..end);
-        self.rebuild_fenwick();
+        let (mut chunk, mut row) = self.locate(start);
+        let mut left = end - start;
+        while left > 0 {
+            let len = self.chunks[chunk].len();
+            let take = left.min(len - row);
+            if row == 0 && take == len {
+                self.chunks.remove(chunk);
+            } else {
+                match &mut self.chunks[chunk] {
+                    ExtentChunk::Uniform { len, .. } => *len -= take,
+                    ExtentChunk::Measured(extents) => {
+                        extents.drain(row..row + take);
+                    }
+                }
+                chunk += 1;
+                row = 0;
+            }
+            left -= take;
+            self.touched += take as u64;
+        }
+        self.rebuild_index();
     }
 
-    /// Update one measured row without rebuilding all following prefix sums.
+    /// Update one measured row: its chunk and O(log C) index entries.
     pub fn update_item_extent(&mut self, index: usize, extent: f32) -> bool {
-        let Some(previous) = self.item_extents.get_mut(index) else {
+        if index >= self.len {
             return false;
-        };
+        }
         let extent = sanitize_extent(extent);
-        if *previous == extent {
+        let (chunk, row) = self.locate(index);
+        let previous = self.chunks[chunk].get(row);
+        if previous == extent {
             return false;
         }
-        let delta = extent - *previous;
-        *previous = extent;
-        let mut tree_index = index + 1;
-        while tree_index < self.fenwick.len() {
-            self.fenwick[tree_index] += delta;
-            tree_index += low_bit(tree_index);
+        if let ExtentChunk::Uniform { len, .. } = self.chunks[chunk] {
+            // The run stops being one extent: its rows become their own.
+            self.touched += len as u64;
         }
+        self.chunks[chunk].measured()[row] = extent;
+        self.index_add(chunk, f64::from(extent) - f64::from(previous), 0);
         true
     }
 
     pub fn len(&self) -> usize {
-        self.item_extents.len()
+        self.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.item_extents.is_empty()
+        self.len == 0
     }
 
     pub fn total_extent(&self) -> f32 {
@@ -541,31 +862,20 @@ impl VirtualListLayout {
         }
     }
 
-    fn rebuild_fenwick(&mut self) {
-        self.fenwick.clear();
-        self.fenwick.resize(self.item_extents.len() + 1, 0.0);
-        for (index, extent) in self.item_extents.iter().copied().enumerate() {
-            let tree_index = index + 1;
-            self.fenwick[tree_index] += extent;
-            let parent = tree_index + low_bit(tree_index);
-            if parent < self.fenwick.len() {
-                self.fenwick[parent] += self.fenwick[tree_index];
-            }
-        }
-    }
-
     fn prefix_extent(&self, end: usize) -> f32 {
-        let mut tree_index = end.min(self.len());
-        let mut sum = 0.0;
-        while tree_index > 0 {
-            sum += self.fenwick[tree_index];
-            tree_index -= low_bit(tree_index);
+        let end = end.min(self.len);
+        if end == self.len {
+            return self.chunks_extent(self.chunks.len()) as f32;
         }
-        sum
+        let (chunk, row) = self.locate(end);
+        (self.chunks_extent(chunk) + self.chunks[chunk].prefix(row)) as f32
     }
 
+    /// How many of the prefixes `prefix(0..=len)` satisfy `before(offset)`:
+    /// whole chunks through the index, then rows within one chunk.
     fn prefix_partition_point(&self, offset: f32, inclusive: bool) -> usize {
-        let before = |prefix: f32| {
+        let offset = f64::from(offset);
+        let before = |prefix: f64| {
             if inclusive {
                 prefix <= offset
             } else {
@@ -575,25 +885,22 @@ impl VirtualListLayout {
         if !before(0.0) {
             return 0;
         }
-        let mut index = 0;
-        let mut prefix = 0.0;
-        let mut step = 1;
-        while step <= self.len() / 2 {
-            step <<= 1;
-        }
+        let (mut chunk, mut rows, mut sum) = (0, 0, 0.0);
+        let mut step = self.chunks.len().next_power_of_two();
         while step > 0 {
-            let next = index + step;
-            if next <= self.len() {
-                let candidate = prefix + self.fenwick[next];
-                if before(candidate) {
-                    index = next;
-                    prefix = candidate;
-                }
+            let next = chunk + step;
+            if next <= self.chunks.len() && before(sum + self.sums[next]) {
+                chunk = next;
+                sum += self.sums[next];
+                rows += self.lens[next];
             }
             step >>= 1;
         }
+        if chunk == self.chunks.len() {
+            return self.len + 1;
+        }
         // Include prefix[0], which is known to satisfy the predicate here.
-        index + 1
+        rows + 1 + self.chunks[chunk].rows_before(sum, &before)
     }
 
     fn item_at_offset(&self, offset: f32) -> usize {
@@ -622,6 +929,96 @@ fn sanitize_extent(extent: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A million estimated rows are a few thousand counts, and measuring one
+    /// writes its chunk and a logarithmic number of index entries.
+    #[test]
+    fn a_million_uniform_rows_stay_compact_and_measure_in_log_time() {
+        let mut layout = VirtualListLayout::uniform(1_000_000, 20.0);
+        assert_eq!(layout.len(), 1_000_000);
+        assert!(layout.chunks.len() <= 1_000_000 / CHUNK_ROWS + 1);
+        assert_eq!(layout.total_extent(), 20_000_000.0);
+        let before = layout.index_entries_touched();
+        assert!(layout.update_item_extent(600_000, 28.0));
+        let touched = layout.index_entries_touched() - before;
+        // The run the row leaves becomes rows of their own, once.
+        assert!(
+            touched <= CHUNK_ROWS as u64 + 20,
+            "{touched} entries touched"
+        );
+        let before = layout.index_entries_touched();
+        assert!(layout.update_item_extent(600_001, 30.0));
+        assert!(layout.index_entries_touched() - before <= 20);
+        assert_eq!(layout.total_extent(), 20_000_018.0);
+        assert_eq!(layout.extent(0..600_000), 12_000_000.0);
+        assert_eq!(layout.item_extent(600_000), Some(28.0));
+        let window = layout.window(12_000_000.0, 100.0, 0.0);
+        assert_eq!(window.range.start, 600_000);
+        assert_eq!(window.leading_extent, 12_000_000.0);
+    }
+
+    /// Edits in any order agree with a list of extents summed by hand.
+    #[test]
+    fn chunked_edits_agree_with_a_plain_list() {
+        let mut layout = VirtualListLayout::uniform(3_000, 10.0);
+        let mut model = vec![10.0f32; 3_000];
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound.max(1) as u64) as usize
+        };
+        for step in 0..600 {
+            match step % 4 {
+                0 => {
+                    let at = next(model.len() + 1);
+                    let rows = 1 + next(1_400);
+                    let extent = (1 + next(5)) as f32 * 4.0;
+                    layout.insert_items(at, std::iter::repeat_n(extent, rows));
+                    model.splice(at..at, std::iter::repeat_n(extent, rows));
+                }
+                1 if model.len() > 10 => {
+                    let start = next(model.len());
+                    let end = (start + 1 + next(900)).min(model.len());
+                    layout.remove_items(start..end);
+                    model.drain(start..end);
+                }
+                _ => {
+                    if model.is_empty() {
+                        continue;
+                    }
+                    let index = next(model.len());
+                    let extent = (next(40)) as f32 * 1.5;
+                    layout.update_item_extent(index, extent);
+                    model[index] = extent;
+                }
+            }
+            assert_eq!(layout.len(), model.len(), "step {step}");
+            for probe in [0, model.len() / 3, model.len() / 2, model.len()] {
+                let expected: f64 = model[..probe].iter().copied().map(f64::from).sum();
+                assert_eq!(
+                    layout.extent(0..probe),
+                    expected as f32,
+                    "step {step} probe {probe}"
+                );
+            }
+            let offset = layout.total_extent() * 0.4;
+            let window = layout.window(offset, 200.0, 0.0);
+            let mut sum = 0.0f64;
+            let mut first = model.len().saturating_sub(1);
+            for (index, extent) in model.iter().enumerate() {
+                if sum + f64::from(*extent) > f64::from(offset) {
+                    first = index;
+                    break;
+                }
+                sum += f64::from(*extent);
+            }
+            if !model.is_empty() {
+                assert_eq!(window.range.start, first, "step {step}");
+            }
+        }
+    }
 
     #[test]
     fn frozen_prefix_reserves_space_without_materializing_all_frozen_data() {

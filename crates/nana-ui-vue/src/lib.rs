@@ -136,7 +136,7 @@ pub mod frame_profile {
         "        ^ writeback+commit",
         "        ^ scroll metrics",
         "        & dirty seeds",
-        "        & affected closure",
+        "        & frontier placement nodes",
         "        & retain sweeps",
         "      · projection_ids",
         "      · prepare loop body",

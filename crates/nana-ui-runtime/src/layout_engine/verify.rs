@@ -4,7 +4,32 @@
 //! skipped. On in tests and with the `layout-verify` feature.
 #![cfg(any(test, feature = "layout-verify"))]
 
+use std::cell::Cell;
+
 use super::*;
+
+thread_local! {
+    static SKIPPED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Turns the guard off on this thread until the returned value drops. For a
+/// soak whose frame count makes a full layout per frame unaffordable; such a
+/// test compares against a cold layout itself.
+#[cfg(test)]
+pub(crate) fn skip_layout_verify() -> SkipLayoutVerify {
+    SKIPPED.with(|skipped| skipped.set(true));
+    SkipLayoutVerify(())
+}
+
+#[cfg(test)]
+pub(crate) struct SkipLayoutVerify(());
+
+#[cfg(test)]
+impl Drop for SkipLayoutVerify {
+    fn drop(&mut self) {
+        SKIPPED.with(|skipped| skipped.set(false));
+    }
+}
 
 fn same(a: LayoutBox, b: LayoutBox) -> bool {
     const EPSILON: f32 = 0.01;
@@ -27,15 +52,15 @@ pub(super) fn retained_matches_full_layout(
     seeds: &[LayoutFrontierSeed],
     force_full: bool,
 ) {
+    if SKIPPED.with(Cell::get) {
+        return;
+    }
     let Some(cache) = retained.documents.get(&document) else {
         return;
     };
-    #[cfg(any(test, feature = "benchmark"))]
-    let counted = plan_stats::save();
-    let full = engine.layout_document(world, document, viewport);
-    #[cfg(any(test, feature = "benchmark"))]
-    plan_stats::restore(counted);
-    let Ok(full) = full else {
+    // The full layout runs on its own pass cache: it counts nothing on the
+    // retained document's execution stats.
+    let Ok(full) = engine.layout_document(world, document, viewport) else {
         return;
     };
     let mut wrong = Vec::new();

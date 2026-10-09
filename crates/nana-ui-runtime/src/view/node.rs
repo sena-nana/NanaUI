@@ -233,6 +233,23 @@ pub struct Inspection {
     pub element: Option<&'static Location<'static>>,
     /// Original source position, when supplied by a compiler.
     pub source_element: Option<SourceLocation>,
+    /// Why layout last reached the node, or why it waits for the next pass.
+    pub layout: Option<LayoutCause>,
+}
+
+/// Why layout reached a node: the typed cause the mutation authority
+/// queued, or the merged cause the last pass's frontier admitted it with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutCause {
+    /// `reason` and `changed_inputs` say why the node was marked, `kind`
+    /// which stages it runs, `affected_axes` which dependencies the frontier
+    /// follows from it.
+    pub invalidation: nana_ui_core::LayoutInvalidation,
+    /// Queued and not laid out yet.
+    pub pending: bool,
+    /// A mutation queued this node itself, rather than a dependency edge of
+    /// another node reaching it.
+    pub seed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

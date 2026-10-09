@@ -109,12 +109,19 @@ impl NativeTextEngine {
         }
     }
 
-    /// Language hint passed to shaping (`locl`) and to font fallback.
+    /// Fallback language hint passed to shaping (`locl`) and to font
+    /// fallback for text whose style names no language of its own
+    /// ([`TextStyle::language`]).
     pub fn set_language(&mut self, language: Option<LanguageTag>) {
         if self.language != language {
             self.language = language;
             self.language_generation += 1;
         }
+    }
+
+    /// The fallback language hint, if one is set.
+    pub fn language(&self) -> Option<&LanguageTag> {
+        self.language.as_ref()
     }
 
     /// The identity and generation every layout this engine returns is
@@ -174,8 +181,8 @@ impl NativeTextEngine {
         base: &TextStyle,
         constraints: &TextConstraints,
     ) -> Arc<ShapedText> {
-        let request =
-            ShapeRequest::new(source, base, constraints).with_language(self.language.as_ref());
+        let language = base.language.as_ref().or(self.language.as_ref());
+        let request = ShapeRequest::new(source, base, constraints).with_language(language);
         self.shaper.shape(&mut self.fonts, &request)
     }
 
@@ -209,7 +216,8 @@ impl NativeTextEngine {
     /// from. Without them a line containing one taller fallback glyph would
     /// move its own baseline.
     fn strut_metrics(&mut self, base: &TextStyle, scale: f32) -> Option<RunMetrics> {
-        let query = FontQuery::from_style(base, self.language.clone());
+        let language = base.language.clone().or_else(|| self.language.clone());
+        let query = FontQuery::from_style(base, language);
         let selection = self.fonts.select(&query);
         let primary = selection.primary?;
         let variations = FontVariations::from_settings(&base.variations);

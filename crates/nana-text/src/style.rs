@@ -45,6 +45,12 @@ pub struct TextStyle {
     pub variations: Vec<FontVariationSetting>,
     #[serde(default)]
     pub kerning: FontKerningSpec,
+    /// The text's language, resolved upstream: the node's own, else the one
+    /// its subtree inherits, else the application's. `None` leaves the
+    /// engine's fallback hint ([`crate::NativeTextEngine::set_language`]) to
+    /// choose `locl` forms and fallback faces.
+    #[serde(default)]
+    pub language: Option<crate::font::LanguageTag>,
 }
 
 impl Default for TextStyle {
@@ -59,6 +65,7 @@ impl Default for TextStyle {
             features: Vec::new(),
             variations: Vec::new(),
             kerning: FontKerningSpec::default(),
+            language: None,
         }
     }
 }

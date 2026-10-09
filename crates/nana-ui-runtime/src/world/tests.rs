@@ -8966,10 +8966,23 @@ fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
 fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();
-    queue.create(
+    // A control height step resolves against the metrics; a box that
+    // declares no intent does not, and lays nothing out again.
+    for id in [1, 2] {
+        queue.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+    }
+    queue.set_style(
         node(1),
-        document(1),
-        NodeKind::Element { tag: "div".into() },
+        NodeStyle {
+            control_height: Some(nana_ui_core::ControlHeight::Min(
+                nana_ui_core::ControlSize::Medium,
+            )),
+            ..NodeStyle::default()
+        },
     );
     world.commit(queue).unwrap();
     let work = world.take_system_work();
@@ -8990,8 +9003,71 @@ fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
 
     let counters = world.last_theme_work_counters();
     assert_eq!(counters.layout_nodes_from_style, 1);
-    assert_eq!(counters.paint_nodes_from_style, 1);
+    assert_eq!(counters.paint_nodes_from_style, 2);
     assert!(!counters.is_paint_only());
+    assert_eq!(
+        seed_nodes(&world.take_system_work().layout_frontier_seeds),
+        vec![node(1)]
+    );
+}
+
+/// A metrics install resolves design intent again without dropping what
+/// else the node's layout resolves from: a locale scope that declares intent
+/// keeps its locale's right-to-left direction, and the seed it gets moves
+/// its size and no writing context.
+#[test]
+fn a_metrics_install_keeps_a_locale_scope_direction() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            control_height: Some(nana_ui_core::ControlHeight::Min(
+                nana_ui_core::ControlSize::Medium,
+            )),
+            ..NodeStyle::default()
+        },
+    );
+    queue.set_locale(node(1), crate::Locale::parse("ar"));
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let _ = world.take_system_work();
+    let rtl = Some(nana_ui_core::DirSpec::Rtl);
+    assert_eq!(world.record(node(1)).resolved_layout.dir, rtl);
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.control_height += 4.0;
+    let mut tokens = MutationQueue::new();
+    tokens.set_theme_tokens(test_theme(
+        ThemeAppearance::Dark,
+        metrics,
+        nana_ui_core::SemanticPalette::dark(),
+        nana_ui_core::SemanticPalette::dark().surface,
+    ));
+    world.commit(tokens).unwrap();
+
+    assert_eq!(world.record(node(1)).resolved_layout.dir, rtl);
+    let cause = world.pending_layout_invalidation(node(1));
+    assert!(
+        cause.changed_inputs.contains(LayoutFieldMask::SIZING),
+        "{cause:?}"
+    );
+    assert!(
+        !cause.kind.intersects(InvalidationKind::WRITING_CONTEXT),
+        "{cause:?}"
+    );
+    assert!(
+        !cause
+            .affected_axes
+            .intersects(LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT),
+        "{cause:?}"
+    );
 }
 
 /// A theme that changes only the corner shape repaints and lays nothing out:

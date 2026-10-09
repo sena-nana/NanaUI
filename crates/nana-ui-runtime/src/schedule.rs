@@ -158,27 +158,6 @@ impl SystemWork {
             style_processed: self.style.len(),
             text_shaped: self.text.len(),
             layout_nodes: self.layout_frontier_seeds.len(),
-            // Frontier counters are emitted by the retained layout pass, not
-            // by this coarse dirty-bit drain. Keep them zero here so a
-            // scheduler snapshot cannot claim that every LAYOUT bit became a
-            // frontier node before dependency classification runs.
-            layout_frontier_seeds: 0,
-            layout_frontier_seed_merges: 0,
-            layout_frontier_nodes_measure: 0,
-            layout_frontier_nodes_placement: 0,
-            layout_frontier_contexts: 0,
-            layout_dependency_edges_visited: 0,
-            layout_propagations_stopped: 0,
-            layout_local_subtree_fallbacks: 0,
-            layout_full_document_fallbacks: 0,
-            layout_measure_nodes: 0,
-            layout_measure_cache_hits: 0,
-            layout_measure_cache_misses: 0,
-            layout_placement_nodes: 0,
-            layout_result_reused: 0,
-            layout_result_changed: 0,
-            layout_origin_only_updates: 0,
-            layout_delta_commits: 0,
             hit_test_candidates: self.input_hit_test.len(),
             input_targets: self.input_targets,
             accessibility_nodes_updated: self.accessibility.len(),
@@ -202,21 +181,14 @@ impl SystemWork {
             glyph_cache_hits: self.glyph_cache_hits,
             glyph_cache_misses: self.glyph_cache_misses,
             cache_eviction: self.cache_eviction,
-            batch_rebuilds: None,
-            draw_batches: None,
-            draw_calls: None,
-            gpu_upload_bytes: None,
-            gpu_buffer_reallocations: None,
             validation_nodes_scanned: self.validation_nodes_scanned,
-            hit_test_nodes_rebuilt: None,
-            output_extra_passes: None,
-            output_gpu_copies: None,
-            output_target_recreates: None,
-            output_content_revisions: None,
-            output_idle_reuse_frames: None,
-            output_resolve_count: None,
-            output_gpu_copy_bytes: None,
-            output_gpu_convert_passes: None,
+            // Every other count is recorded by the pass, authority or host
+            // that does the work and folded onto the frame's counters. This
+            // coarse dirty-bit drain observes none of it, so its copy reports
+            // zero, or `None` until observed, and cannot claim that every
+            // LAYOUT bit became a frontier node before dependency
+            // classification runs.
+            ..WorkCounters::default()
         }
     }
 

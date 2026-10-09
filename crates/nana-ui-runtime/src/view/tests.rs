@@ -2930,6 +2930,71 @@ fn a_measured_virtual_grid_measures_cells_at_their_column_width() {
     }
 }
 
+/// A measured row whose content grows after it was measured -- nothing
+/// scrolled, the items did not change -- moves the rows below it: the list
+/// reads its rows back after every layout pass (Issue #262).
+#[test]
+fn a_measured_row_that_grows_later_moves_the_rows_below_it() {
+    let (mut cx, document, parent) = setup();
+    let grown = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let extra = signal(false);
+            grown.set(Some(extra));
+            each_virtual(
+                signal(virtual_items(40)),
+                |row| row.id,
+                30.0,
+                move |row| {
+                    let id = row.id;
+                    column().children((
+                        widget(
+                            Stack::column(0.0)
+                                .with_layout(|l| l.height = Some(LengthSpec::Px(30.0))),
+                        ),
+                        when(
+                            move || id == 2 && extra.get(),
+                            || {
+                                widget(
+                                    Stack::column(0.0)
+                                        .with_layout(|l| l.height = Some(LengthSpec::Px(20.0))),
+                                )
+                            },
+                        ),
+                    ))
+                },
+            )
+            .measured()
+            .overscan(0.0)
+            .height(400.0)
+        })
+        .unwrap();
+    let scroll = view.roots()[0];
+    let list = children(&cx, scroll)[0];
+    let viewport = LayoutViewport::new(320.0, 600.0);
+    settle(&mut cx, document, viewport);
+    let rows = |cx: &AppContext| {
+        let mut rows = children(cx, list)
+            .into_iter()
+            .map(|slot| cx.world().layout_box(slot).unwrap())
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| a.y.total_cmp(&b.y));
+        rows
+    };
+    let before = rows(&cx);
+    assert!((before[3].y - before[2].y - 30.0).abs() < 0.5, "{before:?}");
+
+    grown.get().unwrap().set(true);
+    cx.flush_reactive().unwrap();
+    settle(&mut cx, document, viewport);
+    let after = rows(&cx);
+    assert!((after[2].height - 50.0).abs() < 0.5, "{after:?}");
+    assert!(
+        (after[3].y - (after[2].y + 50.0)).abs() < 0.5,
+        "the row below follows the grown row: {after:?}"
+    );
+}
+
 /// A measured row is as tall as its content: something in it that fills
 /// its parent's height has nothing definite to fill (the row's height is
 /// the content's), instead of the list's height, which the rows' heights

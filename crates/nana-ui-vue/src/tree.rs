@@ -256,6 +256,12 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::SetText { .. } => "SetText",
         UiMutation::SetRichText { .. } => "SetRichText",
         UiMutation::SetRichEditorMarks { .. } => "SetRichEditorMarks",
+        UiMutation::SetLanguage { .. } => "SetLanguage",
+        UiMutation::SetTextScale { .. } => "SetTextScale",
+        UiMutation::SetResponsive { .. } => "SetResponsive",
+        UiMutation::SetLocale { .. } => "SetLocale",
+        UiMutation::SetLocalizedText { .. } => "SetLocalizedText",
+        UiMutation::SetReplacedMetadata { .. } => "SetReplacedMetadata",
         UiMutation::SetGlyphPresentation { .. } => "SetGlyphPresentation",
         UiMutation::WriteLayout { .. } => "WriteLayout",
         UiMutation::PatchPlacement { .. } => "PatchPlacement",
@@ -1485,6 +1491,17 @@ impl NanaTreeDocument {
             };
             if let Some(style) = changed_style {
                 mutations.set_style(id, style);
+            }
+            // `lang` names the language this element's text, and its
+            // subtree's, shapes in.
+            let language = widget
+                .props
+                .attrs
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case("lang"))
+                .and_then(|(_, value)| nana_ui_runtime::LanguageTag::new(value));
+            if self.runtime.context().world().node_language(id) != language.as_ref() {
+                mutations.set_language(id, language);
             }
             let interaction = InteractionState {
                 pointer_events: !widget.props.disabled
@@ -3259,16 +3276,6 @@ impl NanaTreeDocument {
             .expect("vue runtime frame");
         #[cfg(feature = "benchmark")]
         {
-            crate::frame_profile::add(39, nana_ui_runtime::plan_stats::plans_reused() as u64);
-            crate::frame_profile::add(
-                40,
-                nana_ui_runtime::plan_stats::containers_uncacheable() as u64,
-            );
-            crate::frame_profile::add(41, nana_ui_runtime::plan_stats::children_measured() as u64);
-            crate::frame_profile::add(46, nana_ui_runtime::plan_stats::dirty_seeds() as u64);
-            crate::frame_profile::add(47, nana_ui_runtime::plan_stats::affected() as u64);
-            crate::frame_profile::add(48, nana_ui_runtime::plan_stats::retain_sweeps() as u64);
-            nana_ui_runtime::plan_stats::reset();
             // The four sub-stages inside `FrameStage::Layout`:
             // tooltip positioning, the engine itself, layout writeback plus its
             // commit, and scroll-metric publication.
@@ -3288,6 +3295,21 @@ impl NanaTreeDocument {
             // of the five flushes an event makes are idle, so reading
             // unconditionally counted the one real frame five times.
             if !update.is_idle() {
+                let work = self
+                    .runtime
+                    .runtime_document()
+                    .context()
+                    .last_work_counters();
+                for (slot, count) in [
+                    (39, work.layout_placement_plans_reused),
+                    (40, work.layout_containers_uncacheable),
+                    (41, work.layout_children_measured),
+                    (46, work.layout_frontier_seeds),
+                    (47, work.layout_frontier_nodes_placement),
+                    (48, work.layout_retain_sweeps),
+                ] {
+                    crate::frame_profile::add(slot, count as u64);
+                }
                 let profile = self
                     .runtime
                     .runtime_document()

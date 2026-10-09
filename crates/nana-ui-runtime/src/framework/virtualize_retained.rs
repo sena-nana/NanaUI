@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::Stack;
+use crate::world::VirtualRowCounts;
 use nana_ui_core::{PositionSpec, VirtualViewport};
+use std::cell::Cell;
 
 #[cfg(test)]
 mod tests;
@@ -64,6 +66,43 @@ impl AppContext {
         layout: &VirtualListLayout,
         viewport: VirtualViewport,
         retained_keys: &[K],
+        key_at: impl FnMut(usize) -> K,
+        index_of_key: impl FnMut(&K) -> Option<usize>,
+        build: impl FnMut(usize, &K) -> C,
+        on_mount: impl FnMut(&mut Self, Entity<C>, usize, &K) -> Result<(), FrameworkError>,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        self.place_virtual_list(
+            list,
+            items,
+            layout,
+            viewport,
+            None,
+            retained_keys,
+            key_at,
+            index_of_key,
+            build,
+            on_mount,
+        )
+    }
+
+    /// [`Self::materialize_virtual_list_retained_with`] for a caller that
+    /// knows the `data` fingerprint. While it and the row count hold, the
+    /// indices the mounted rows were placed at are current: a window over
+    /// the same indices -- a measurement moved rows, not the window -- is
+    /// placed without looking any key up again.
+    #[allow(clippy::too_many_arguments)]
+    fn place_virtual_list<K, C>(
+        &mut self,
+        list: Entity<List>,
+        items: &mut VirtualListItems<K, C>,
+        layout: &VirtualListLayout,
+        viewport: VirtualViewport,
+        data: Option<u64>,
+        retained_keys: &[K],
         mut key_at: impl FnMut(usize) -> K,
         mut index_of_key: impl FnMut(&K) -> Option<usize>,
         mut build: impl FnMut(usize, &K) -> C,
@@ -78,6 +117,8 @@ impl AppContext {
             .world
             .node(list.id)
             .ok_or(FrameworkError::MissingView(list.id))?;
+        // Localized text resolved under the list counts as virtual rows.
+        self.world.note_virtual_list(list.id);
         let mounted = items.materializer.mounted();
         let owned = items
             .containers
@@ -116,6 +157,16 @@ impl AppContext {
             }
         }
 
+        // Every logical row the pass looks up, by index or by key.
+        let scanned = Cell::new(0usize);
+        let mut key_at = |index: usize| {
+            scanned.set(scanned.get() + 1);
+            key_at(index)
+        };
+        let mut index_of_key = |key: &K| {
+            scanned.set(scanned.get() + 1);
+            index_of_key(key)
+        };
         let focused = self.world.focused(root.document);
         let ime_owner = focused
             .filter(|id| self.world.ime(*id).is_some())
@@ -144,14 +195,27 @@ impl AppContext {
                 (index < layout.len() && key_at(index) == *key).then_some(index)
             })
             .collect::<Vec<_>>();
-        let plan = items
-            .materializer
-            .prepare_retained(layout, viewport, retained.iter().copied(), &mut key_at)
-            .map_err(|_| FrameworkError::InvalidVirtualization)?;
-        let indices = layout
-            .retained_ranges(&plan.window, retained)
-            .into_iter()
-            .flatten();
+        let placed_under = data.map(|fingerprint| (fingerprint, layout.len()));
+        let window = layout.window_for(viewport);
+        let unchanged = placed_under
+            .filter(|current| items.placed_under == Some(*current))
+            .and_then(|_| {
+                let indices = layout
+                    .retained_ranges(&window, retained.iter().copied())
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
+                items
+                    .materializer
+                    .prepare_unchanged(window.clone(), &indices)
+            });
+        let plan = match unchanged {
+            Some(plan) => plan,
+            None => items
+                .materializer
+                .prepare_retained_window(layout, window, retained.iter().copied(), &mut key_at)
+                .map_err(|_| FrameworkError::InvalidVirtualization)?,
+        };
 
         let mut mutations = MutationQueue::new();
         let mut next_entities = items.entities.clone();
@@ -180,20 +244,26 @@ impl AppContext {
         // layout arc after commit so a later reproject does not restore the
         // previous top.
         let mut patched_containers = Vec::new();
-        for (index, key) in indices.zip(&plan.order) {
+        // Rows given a new imposed height, which lay out again at it.
+        let mut remeasured = 0;
+        for (&index, key) in plan.indices.iter().zip(&plan.order) {
             let top = layout.extent(0..index);
             let height = layout.extent(index..index + 1);
             // A measured row sizes to its content; its extent is read back
             // after layout instead of imposed on it.
             let imposed_height = (!items.measured).then_some(height);
             if let Some(entity) = next_containers.get(key).copied() {
-                let unchanged = self.world.node_style(entity.id).is_some_and(|style| {
-                    placement_matches(style.layout.as_ref(), top, imposed_height)
-                });
-                if !unchanged {
+                let (top_held, height_held) = self
+                    .world
+                    .node_style(entity.id)
+                    .map_or((false, false), |style| {
+                        placement_held(style.layout.as_ref(), top, imposed_height)
+                    });
+                if !(top_held && height_held) {
                     mutations.patch_placement(entity.id, top, imposed_height);
                     patched_containers.push(entity.id);
                     items.pending_measure |= items.measured;
+                    remeasured += usize::from(!height_held);
                 }
             } else {
                 let container = placement_container(top, imposed_height);
@@ -228,9 +298,16 @@ impl AppContext {
         content_layout.min_height = content_layout.height;
         content_layout.max_height = content_layout.height;
         content_layout.flex_shrink = Some(0.0);
-        if self.read(list, |old| old.style.layout != content.style.layout)? {
+        let (restyled, extent_moved) = self.read(list, |old| {
+            (
+                old.style.layout != content.style.layout,
+                old.style.layout.height != content.style.layout.height,
+            )
+        })?;
+        if restyled {
             content.project(list.id, &self.world, &mut mutations);
         }
+        let repositioned = patched_containers.len();
 
         // Publish external identities and component data only after atomic commit.
         if !mutations.is_empty() {
@@ -273,6 +350,24 @@ impl AppContext {
             .commit(plan)
             .map_err(|_| FrameworkError::InvalidVirtualization)?;
         items.publish_list(layout, &window, activity, 0);
+        items.placed_under = placed_under;
+        // Row index writes since the list last placed its rows: its own
+        // measurements, and the caller's inserts, removals and measurements.
+        // A layout younger than the one last seen counts all it holds.
+        let touched = layout.index_entries_touched();
+        let index_writes = touched
+            .checked_sub(items.index_writes_seen)
+            .unwrap_or(touched);
+        items.index_writes_seen = touched;
+        self.world.note_virtual_rows(VirtualRowCounts {
+            prefix_index_updates: usize::try_from(index_writes).unwrap_or(usize::MAX),
+            rows_remeasured: remeasured,
+            rows_repositioned: repositioned,
+            logical_rows_scanned: scanned.get(),
+            scroll_extent_updates: usize::from(extent_moved),
+            rows_materialized: mounted_now.len(),
+            ..VirtualRowCounts::default()
+        });
         for (id, index, key) in mounted_now {
             on_mount(self, Entity::from_stable_id(id), index, &key)?;
         }
@@ -417,11 +512,12 @@ impl AppContext {
         if items.list_range_unchanged(layout, &window, &activity, fingerprint) {
             return Ok(window);
         }
-        let result = self.materialize_virtual_list_retained_with(
+        let result = self.place_virtual_list(
             list,
             items,
             layout,
             viewport,
+            Some(fingerprint),
             retained_keys,
             key_at,
             index_of_key,
@@ -513,11 +609,22 @@ impl AppContext {
             viewport.offset[1] = at.max(0.0);
         }
         let before = viewport.offset[1];
-        let mut measured = false;
         let mut unmeasured = false;
-        for key in items.materializer.mounted() {
-            let Some(index) = index_of_key(key) else {
-                continue;
+        let mut counts = VirtualRowCounts::default();
+        // Rows sit at the indices they were placed at while the data they
+        // were placed under holds; otherwise each is looked up again.
+        let trusted = items.placed_under == Some((fingerprint, layout.len()));
+        let placed = items.materializer.mounted_indices();
+        for (at, key) in items.materializer.mounted().iter().enumerate() {
+            let index = match placed.get(at) {
+                Some(&index) if trusted => index,
+                _ => {
+                    counts.logical_rows_scanned += 1;
+                    let Some(index) = index_of_key(key) else {
+                        continue;
+                    };
+                    index
+                }
             };
             match items
                 .containers
@@ -525,12 +632,16 @@ impl AppContext {
                 .and_then(|container| self.world.component_layout_box(container.id))
             {
                 Some(bounds) if bounds.height > 0.0 => {
-                    measured |= layout.measure_anchored(index, bounds.height, &mut viewport);
+                    if layout.measure_anchored(index, bounds.height, &mut viewport) {
+                        counts.metric_updates += 1;
+                        counts.rows_remeasured += 1;
+                    }
                 }
                 _ => unmeasured = true,
             }
         }
-        if measured {
+        self.world.note_virtual_rows(counts);
+        if counts.metric_updates > 0 {
             // Rows move with the new extents even when the window is the same.
             items.published = None;
             items.measurements = items.measurements.wrapping_add(1);
@@ -598,6 +709,8 @@ impl AppContext {
             .node(table.id)
             .ok_or(FrameworkError::MissingView(table.id))?
             .document;
+        // Localized text resolved under the table counts as virtual rows.
+        self.world.note_virtual_list(table.id);
         let focused = self.world.focused(document);
         let ime = focused
             .filter(|id| self.world.ime(*id).is_some())
@@ -1001,7 +1114,13 @@ fn placement_container(top: f32, height: Option<f32>) -> Stack {
     })
 }
 
-fn placement_matches(layout: &nana_ui_core::LayoutStyle, top: f32, height: Option<f32>) -> bool {
+/// Whether a placement container already sits at `top`, and already has
+/// `height` imposed (or none, for a row that sizes to its content).
+fn placement_held(
+    layout: &nana_ui_core::LayoutStyle,
+    top: f32,
+    height: Option<f32>,
+) -> (bool, bool) {
     let top_matches = matches!(
         layout.offset_top,
         Some(LengthSpec::Px(current)) if current.to_bits() == top.to_bits()
@@ -1011,7 +1130,7 @@ fn placement_matches(layout: &nana_ui_core::LayoutStyle, top: f32, height: Optio
         (Some(LengthSpec::Px(current)), Some(next)) => current.to_bits() == next.to_bits(),
         _ => false,
     };
-    top_matches && height_matches
+    (top_matches, height_matches)
 }
 
 fn clamp_virtual_table_viewport(

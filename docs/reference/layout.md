@@ -16,8 +16,35 @@ component-default；默认值允许作者覆盖，required 值保留给组件。
 Runtime 写入口提交，`LayoutBox` 和滚动投影是输出，不是可写的前端属性。
 
 Vue 的 containing block 传播以 layout mutation footprint 为 seed。静态帧和
-paint-only 更新不再扫描整棵投影树；视口变化与结构变更仍从根节点重算，以保持
-百分比、Fill 和 intrinsic sizing 的正确性。
+paint-only 更新不再扫描整棵投影树；视口变化按约束轴传播（见下文「约束变化（#264）」），
+结构变更仍从根节点重算，以保持百分比、Fill 和 intrinsic sizing 的正确性。
+
+样式、主题与组件状态（#261）都按变化的 footprint 进入布局：
+- 样式写入按**解析后**的布局分类，即作者写的布局再套上设计意图（圆角档位、控件高度、
+  padding 档位、面板内边距）。只改意图的写入也会排出对应的 seed；解析结果不变的写入，
+  不论写法是否相同，都算等价写入，不排 seed、不标脏。
+- 主题只换调色板（Light↔Dark）时只重绘，零布局。主题度量变化时，只重新解析声明了设计意图
+  的节点（有一份索引，不扫描整个文档），并且只给解析结果真的变了的节点按变化的字段排 seed：
+  改 Button 的水平 padding 档位，只有用这个档位的按钮重新布局，输入框、卡片和列表行不测量；
+  放在固定尺寸格子里的按钮，变化停在格子上。
+- Button 的配方只改颜色角色，配方变化让按钮重新投影，但零布局。
+- 悬停、按下、焦点这些组件状态只改绘制时，零布局。
+
+计数都在 `WorkCounters` 上：
+- `style_to_layout_seeds`：样式写入排出的 seed；
+- `theme_to_layout_seeds` / `theme_metric_dependents_invalidated`：主题度量变化排出的 seed，
+  以及解析结果变了的节点；
+- `theme_palette_layout_invalidations`：没有改度量的主题安装排出的 seed，应当为 0；
+- `component_state_layout_seeds`：悬停、按下、焦点、交互和无障碍状态变化排出的 seed；
+- `equivalent_style_layout_skips`：等价的样式写入。
+
+门禁在 `world/issue261.rs`：悬停零布局；调色板切换不整形、不测量、不放置；改 Button 的
+padding 档位只排这些按钮的 seed；单个按钮改 padding 的开销在 1k 与 10k 控件下相同；
+1000 次等价写入不排 seed；配方变化零布局；度量变化与只改意图的写入逐趟对照全量布局。
+#259 也加了主题负载：1k、10k、100k 页面上切换调色板和度量都零布局。
+
+还没做的：字体相关的继承属性（字号、字重、行高、书写方向）变化仍对子树做整体重排，
+没有按依赖 em 单位的后代精确传播。
 
 Intrinsic metrics 由 Runtime 的 `IntrinsicCache` 统一保存。它记录内容和样式
 事实（min/max inline/block、preferred size、首尾 baseline、aspect ratio）以及
@@ -41,14 +68,288 @@ placement。顺序容器只对进入 measure frontier 的子项重新测量，�
 已测尺寸。一次重算若 `LayoutResult` 与已发布结果逐位相同，则不推进 layout
 generation，已发布的结果对象保持不变。
 
-执行计数和 frontier 计数是同一份 `WorkCounters`。`layout_measure_nodes` 只计真正算出 used size 的节点；retained used-size 与 measure plan 的命中记在 `layout_measure_cache_hits`，未命中后重算记在 `layout_measure_cache_misses`。Intrinsic metrics 的命中仍是 `intrinsic_measure_cache_hits`，不另计一份。`layout_placement_nodes` 是这次 placement 写下的盒子，不是 frontier 成员数；Foundation 的 `layout_nodes_placed` 只统计 adapter 的 `publish_result`。`layout_origin_only_updates` 是尺寸没变、只改了原点的写入。`layout_result_reused` / `layout_result_changed` 来自结果发布：几何相同就留着原来的对象，几何变了才替换。`layout_delta_commits` 是真正写下变更结果的那一次发布。`layout_context_local_solves` 不单列，它就是已排进 frontier 的 `layout_frontier_contexts`。
+样式写入只按这个节点自己的字段分类，不遍历文档，也不遍历它的后代。效果相同的写入
+（同一个值，或者 `direction: None` 和 `Some(Column)` 这类同义写法）什么都不排队，
+记在 `layout_equivalent_mutations_skipped`；分类结果为空的写入（包括只改颜色、
+opacity、transform 的写入）记在 `layout_invalidations_zero_delta`；真正排进队列的
+typed cause 记在 `layout_invalidations_created`。一个节点最多挂一个待处理的
+`LayoutInvalidation`，同一帧的多次写入合并进这一格，不按写入历史增长。布局字段的
+变更只隐藏这个节点和它到固定边框为止的祖先链上的结果；后代的结果留到 frontier
+收录它们的那一趟再重新发布。
+
+文本重新整形后，对外的宽、高和基线都没变，变化就停在文本上：不排 seed，不布局父级，
+在文本 pass 里记一次 `layout_propagations_stopped`。文字属于一个固定尺寸的盒子本身时
+（比如固定尺寸的按钮的标签），只要这个盒子不是行内级、父级也不按基线对齐它，度量变了
+也只在盒子里重新布局：它导出的边框盒不变，父级不进入 measure。产品帧在布局之后对这趟的范围重新
+整形；整形改了度量的文本自己排出 typed seed，下一趟只按这些 seed 走 frontier，不再把
+整个范围当成全依赖的 seed 重排一遍。
+
+同一批节点里的多个 seed 先合成一张依赖图（seed 的并集闭包），每条边至多走两遍；这张
+图的边数和邻接条目记在 `LayoutFrontierStats` 的 `graph_edges` 和 `scratch_entries`，
+随闭包变化，不随文档变大。一个不再生成盒子的节点即使被容器写成了零盒子，它整棵子树
+保留的盒子也一起收成零尺寸，和全量布局一致。
+
+DevTools 的 `inspect` 回答一个节点为什么被布局：还没布局时是排队的 cause，布局之后
+是上一趟 frontier 收录它时合并的 cause，并标明它是种子本身，还是被别的节点的依赖边
+带进来的。`reason` 和 `changed_inputs` 说为什么被标记，`kind` 说跑哪几个阶段，
+`affected_axes` 说 frontier 从它沿哪些依赖往外走。
+
+Issue #255 点名的计数没有另设第二份：`layout_dependency_footprints_read` 就是
+`layout_dependency_edges_visited`（每访问一条边读一个 footprint），
+`layout_metric_deltas_none` 就是 `layout_propagations_stopped`，
+`layout_metric_deltas_measure`、`layout_metric_deltas_placement` 和
+`layout_metric_deltas_writing` 分别是 `layout_frontier_nodes_measure`、
+`layout_frontier_nodes_placement` 和 `layout_frontier_nodes_writing`。
+
+执行计数和 frontier 计数是同一份 `WorkCounters`。`layout_measure_nodes` 只计真正算出 used size 的节点；retained used-size 与 measure plan 的命中记在 `layout_measure_cache_hits`，未命中后重算记在 `layout_measure_cache_misses`。Intrinsic metrics 的命中仍是 `intrinsic_measure_cache_hits`，不另计一份。`layout_placement_nodes` 是这次 placement 写下的盒子，不是 frontier 成员数。`layout_origin_only_updates` 是尺寸没变、只改了原点的写入。`layout_result_reused` / `layout_result_changed` 来自结果发布：几何相同就留着原来的对象，几何变了才替换。`layout_delta_commits` 是真正写下变更结果的那一次发布。`layout_context_local_solves` 不单列，它就是已排进 frontier 的 `layout_frontier_contexts`。
+
+Issue #259 点名的其余计数也在这份 `WorkCounters` 上，不另设权威。
+`layout_measure_requests`、`layout_measure_hits` / `layout_measure_misses` 和
+`layout_full_subtree_measures` 是 #198 的 `intrinsic_measure_requests`、
+`intrinsic_measure_cache_hits` / `intrinsic_measure_cache_misses` 和
+`intrinsic_measure_full_subtrees`；最后一个就是真正走了一遍子项的测量。
+计划命中分两种：`layout_placement_plans_reused` 是容器按保留的 placement 计划放下子项，
+`layout_measure_plans_reused` 是按保留的 measure 计划得出尺寸，两者都不遍历子项。
+`layout_plan_misses` 是手里有对应输入的计划、却仍然遍历了子项的容器。
+`layout_plan_queries` 不单列，它等于两种命中加未命中。
+`layout_plan_rebuilds` 是遍历后在同一容器、同一约束的旧计划上重新记下的计划；
+容器的第一份计划不算重建。`layout_suffixes_replayed` 是只重放变化子项之后那一段的顺序容器，
+`layout_children_measured` 是容器遍历时读过尺寸的子项，`layout_containers_uncacheable`
+是放下了子项却记不下计划的容器，`layout_retain_sweeps` 是清掉已销毁 id 的保留缓存清扫。
+定位上下文因计划过期而整个重排，记进 `layout_local_subtree_fallbacks`。
+`layout_scratch_allocations` 就是 `layout_scratch_entries`：这一帧各趟依赖图分配的邻接条目，
+趟结束即释放；`layout_scratch_bytes` 是这些条目占的字节。
+`plan_stats` 只做 benchmark 的阶段计时，不计数。
+
+增量结果靠两层冷对照校验。第一层是 `layout_engine::verify`：测试里，以及打开
+`layout-verify` feature 时，每一趟保留布局之后都从头做一次全量布局，逐个比对盒子。
+第二层是测试用的 `world::reflow_oracle`，它比对发布出去的结果：同一组输入，在一个从没跑过
+增量帧的世界里布局一次，再逐节点比较以下各项：
+- 盒子；
+- `LayoutResult::geometry_eq` 覆盖的全部几何：边框盒、内边距盒、内容盒、基线、fragments、
+  overflow、scroll extent、containing block 等；
+- 命中几何；
+- 无障碍边界。
+
+增量帧之间留下的状态（整形结果、计划、保留尺寸）只存在于增量那一边，冷的世界没有，
+所以这些状态出的错藏不住。#256 和 #259 的门禁都以这一层收尾。
+
+`world/issue259.rs` 是 #259 的规模矩阵，覆盖这些维度：
+- 文档规模：1k、10k、100k 节点；
+- 同一帧的编辑：1、8、100 处；
+- 编辑位置：头、中、尾；
+- 嵌套深度：浅层，或 8 层包裹；
+- 书写方向：LTR、RTL、vertical-rl。
+
+场景有九种：只改绘制、固定边界内的内容、顺序尺寸变化、父约束、flex 重新分配、grid 贡献、
+行内重排、语言作用域（#260，见 [文本引擎](./text-engine.md) 的「语言作用域与外部度量」）、
+字号缩放作用域（#266，见 [文本引擎](./text-engine.md) 的「字号缩放作用域」）。
+有 2000 段文字的作用域放在 100k 节点文档里的规模门禁，在 `world/issue266.rs`。
+
+门禁只读计数，不看时间：
+- 只改绘制时，所有布局计数为零。
+- 局部编辑的 frontier、走过的边、放下的盒子、遍历的子项、整棵测量的子树数和结果发布
+  走过的子项，在 1k、10k、100k 下完全相同。
+- 顺序编辑放下的盒子不少于真正移动的盒子，也不超过移动的盒子加上通往编辑处的路径；
+  整棵测量的子树数不随文档增长。在增长不推动后面任何东西的那一端（正向块轴的尾、
+  vertical-rl 反向块轴的头），一帧的全部工作都是常数。
+- 100 处编辑走同一张并集闭包，每条边至多两遍，任何一项都不超过 100 次单独编辑之和。
+- 100k 节点上连续 1 万次编辑之后，以下各项满足：
+  - 保留缓存的盒子、placement、两类计划和计划条目数与开始时相同；
+  - 产品帧不保留全量布局副本；
+  - 保留的 used size 每个节点至多两个变体，intrinsic facts 至多四个；
+  - 没有哪一帧的 scratch 超过一次编辑的闭包。
+
+规模在 10k 及以上的页面跳过每趟守卫（`skip_layout_verify`），最后以冷对照收尾；
+1k 页面每一趟都校验。
+
+下面几处做法让局部编辑的工作不随文档增长。
+
+反向主轴（vertical-rl 的块轴、RTL 的行内轴）。原点从远端量起：容器的主轴尺寸变了，
+远端移动多少，变化处之前的子项就一起平移多少。只移动真正移动了的盒子，什么都不重新测量；
+`ContainerPlan::placed_main` 记着这些原点是按哪个主轴长度放的。
+
+保留的 intrinsic facts。预算随活树变化（每个节点四个约束变体），并且按内容分组存放：
+一个节点的事实变了，只替换它自己的几个变体；删除一个节点也只删它的那组，都不扫整张表。
+
+保留的 used size。一个节点在一趟里可能按好几个约束被测量，但只留两个变体：按这一趟测量的
+先后写回，留下最后测到的两个，计数是确定的。
+
+结果发布。一个已发布的结果，只要还在，就是在它的子项列表最后一次被编辑之后建的：插入、
+移动、detach、park、despawn 都会先丢掉父节点的结果。所以检查祖先的结果是否仍然成立时，
+只需要核对这次发布覆盖到的子项（通过 `index_in_parent` 直接定位），不用把宽容器的每个子项
+都比一遍。结果的来源（布局写回时先按兼容写入发布、随后按布局再发布一次）不算几何变化：
+几何不变的结果保留原对象和原来的来源。`layout_result_children_visited` 记下发布核对或重建时
+走过的子项；局部编辑下它不随文档增长，只有自己的子项放置真的变了的容器，才为自己的子项数
+付出一次重建。
+
+计时门槛：`issue259_local_frame_time_scales_flat_to_100k` 在固定机器上记录局部编辑一帧的
+p50、p95、p99，并检查 p95 从 1k 到 100k 的增长不超过 1.75 倍：
+
+```bash
+cargo test --release -p nana-ui-runtime --lib issue259_local_frame_time -- --ignored --nocapture
+```
+
+PR CI 只以计数为硬门禁，计时不在 CI 里判定。
+
+约束变化（#264）。视口缩放、容器改尺寸、拖动分隔条、Dock 改面板比例，都走同一条约束传播：
+- 样式写入按轴分类。宽度及其上下限只改变子项的行内约束，高度及其上下限只改变块约束；
+  flex 的 grow、shrink、basis 只改变父级那一行所沿的轴；box-sizing、aspect-ratio、间距、
+  对齐和流的形状两轴都算。
+- 视口缩放给文档根按变化的轴播种，往下只有消费这条轴约束的子项重新测量；`position: fixed`
+  和用了视口单位的盒子，按两轴尺寸都可能变化处理。引擎记着每个文档上次布局用的视口，
+  不论从哪个入口进来，视口一变都由引擎补上这些 seed。
+- 不读视口的盒子，测量缓存和布局计划不因视口变化失效：键和计划只比较 `viewport_basis`。
+- 某一轴尺寸是自己的确定长度、不读包含块的盒子，测量缓存的键里不放这一轴的可用尺寸。
+  父级变了，它直接命中缓存，不再遍历子项。
+- 只因位置变化被触及的兄弟，不再把整棵子树拉进 frontier。它在新原点重新放置时子树跟着放，
+  原点没变时子树保持原样。
+- 主轴尺寸变了，读取容器主轴尺寸的子项（主轴方向的百分比、fill、basis）不再沿用旧计划。
+
+计数都在 `WorkCounters` 上：
+- `constraint_change_seeds`：改变了子项约束的 seed；
+- `constraint_dependents_considered` / `_remeasured` / `_skipped`：被问到是否消费这次变化的
+  子项，以及其中重新测量的和保持原测量的；
+- `resize_text_relayouts` / `resize_text_reshapes`：布局之后那一趟按新盒子重新排版的文字，
+  以及其中需要重新整形的（只有换行宽度变时为 0）；
+- `resize_context_solves`：约束变化触发的那一趟里，从头求解的格式化上下文，即计划无法复用
+  或没有计划的容器。
+
+门禁在 `world/issue264.rs`：
+- 10k 节点的工作区里拖动真实的 `SplitPane` 240 次。固定盒子和 Dock 不测量，文字不重新整形，
+  节点不增不减，最后与冷布局一致；1k 工作区逐趟对照全量布局。
+- 只改宽度时，只读高度的盒子不测量；只改高度时，只读宽度的行不测量。
+- 固定尺寸的子树和它的后代不测量。
+- 拖动一次的开销在 1k 与 100k 节点下相同，问到的子项也相同。
+- 视口缩放的开销在 1k 与 100k 节点下相同，Dock 不进布局。
+- 像 Dock 那样改 flex 比例时，只读高度的盒子不测量。
+
+#259 加了缩放风暴：在 1k、10k、100k 的页面上连续缩放视口 240 次，开销相同；vertical-rl
+页面逐趟对照全量布局。
+
+还没做的：#264 的 Gate E（可用尺寸仍落在缓存的包络里时不重排）要用 #207 / #213 的
+Dynamic Layout 求解器，Runtime 里还没有这个求解器。
+
+替换内容（#263）。图片、视频、HostTexture、CustomRender 的三种修订分开处理：
+- 内容修订（像素、视频帧、纹理代际）和 fit、采样只重绘，零布局，也不推进 intrinsic generation。
+- 只有固有元数据进入布局：资源上报的自然尺寸。图片解码出的尺寸、视频或纹理的分辨率，用
+  `MutationQueue::set_replaced_metadata` 上报。
+- 每个资源记着显示它的节点（资源到节点的索引），上报只通知这些节点，不扫描文档。其中盒子
+  读取自然尺寸的（宽或高是 auto）才重新布局；宽高都由样式决定的，只重绘。
+- 宽高都没写的盒子用自然尺寸；只写了一边的，另一边按自然宽高比换算。
+- 节点变成或不再是替换内容时，它对齐用的基线跟着变，也重新布局。
+- Markdown 里的图片解析出尺寸后，块列表变了，文档的新高度会进入布局。
+- 宽度由自己决定的容器，不再因为子项在交叉轴上变宽而退回遍历全部子项。
+
+计数都在 `WorkCounters` 上：
+- `replaced_content_updates`：只换了内容、没换资源的更新；
+- `replaced_intrinsic_metadata_updates`：上报了不同自然尺寸的资源；
+- `replaced_layout_seeds`：替换内容排出的布局 seed；
+- `replaced_content_only_layout_invalidations`：只换内容的更新排出的 seed，应当为 0；
+- `resource_intrinsic_dependents_notified`：经资源索引通知到的节点。
+
+门禁在 `world/issue263.rs`：
+- 1200 帧视频零布局，intrinsic generation 不变；
+- 图片自然尺寸到达，只重排读取它的那个盒子；固定 300×200 的只重绘；宽 400 的按比例得出高度；
+- 一张共享图片经索引通知 100 个节点，在 10k 与 100k 文档里开销相同，只有读尺寸的 50 个重新布局；
+- fit 与采样变化零布局；
+- 显式尺寸下视频分辨率连变 100 次，零回流；
+- 每一趟对照全量布局，结尾对照冷布局。
+
+#259 加了替换内容负载：在 1k、10k、100k 页面末尾，视频帧、图片自然尺寸、共享图片的开销相同。
+
+还没做的：宿主还没把解码得到的自然尺寸报上来。nana-ui 的 URL 纹理缓存在工作线程里解码图片，
+拿到了尺寸，但只用于绘制。接上之后，没写尺寸的 `<img>` 才会按自然尺寸布局。
+
+虚拟列表（#262）。行高变化按差值移动列表，不扫描逻辑集合：
+- 行高索引 `VirtualListLayout` 按 512 行分块。同一高度的一段行存成一个计数：一百万行估计高度
+  只占约两千个块。两棵 Fenwick 树（块的总高、块的行数）回答前缀和偏移查询：O(log C)，再加
+  一个块内的一段。
+- 量出一行的新高度：只改它所在的块和 O(log C) 个索引项。一个块第一次不再等高时，它的 512 行
+  展开一次。插入行只动所在的块，块拆分时才重建块索引；删除行每次都重建块索引。重建是 O(C)。
+- 树 `VirtualTreeLayout` 的每行后代数和深度也分块存。展开、折叠时按深度往上找祖先，整块都比
+  目标深的直接跳过，不逐行扫描父节点前面的行。
+- 按内容量高的列表（`VirtualListItems::measured`）只读挂着的行的高度。数据没变（fingerprint
+  和行数都没变）时，挂着的行还在上次放置的下标上，不再按 key 查。窗口还是那些下标时（量高只
+  让行移动了），窗口的 key 也不再查。
+- 一行变高：下面挂着的行只改 `top`，做原点平移；列表总高变一次。定位容器的测量计划比较样式时
+  不看 inset，只改了 `top` 的行复用测量，不再整棵重测。
+- `each_virtual(..).measured()` 每次布局之后都重读行高。行内容后来变高（展开、换行）时，下面的
+  行跟着移动。
+
+计数都在 `WorkCounters` 上：
+- `virtual_row_metric_updates`：行高索引里变了的行；
+- `virtual_prefix_index_updates`：写入的索引项，从列表上次放置行算起，包括使用方自己的插入、删除；
+- `virtual_rows_remeasured`：列表拿到新高度的行，即量出新高度的行，或被施加了新高度的行；
+- `virtual_rows_repositioned`：改了放置的行；
+- `virtual_logical_rows_scanned`：按下标取 key、按 key 取下标的次数；
+- `virtual_scroll_extent_updates`：列表总高变化的次数；
+- `virtual_rows_materialized_from_layout`：为窗口新建的行。
+
+门禁在 `world/issue262.rs`。一百万行，视口 40 行，上下各 8 行 overscan：
+- A：可见的一行高 8 px。不查任何逻辑行（上限 64），只量出这一行；索引写入不超过一个块加
+  O(log C) 项；下面的行只做原点平移。
+- B：单元格从 "99" 改成 "98"，行高不变：列表总高、其他行的放置都不变，列表不重排。
+- C：窗口第 21 行变高：前 20 行的放置不变，后面的行只平移；测量量和窗口顶部附近一行变高时相同。
+- D：没挂出来的行数据变了：零布局。使用方因此改了 fingerprint，也只重查窗口的 key。滚过去，
+  看到的是新数据。
+- E：一百万行的树里，展开一个可见节点的 10 个子节点：只新建这 10 行，其余行不重建，只查窗口
+  的 key。
+- 表格单元格改文字、尺寸不变：零布局，窗口不重新放置。
+
+#259 加了虚拟列表负载：10 万行和 100 万行的列表里一行变高，开销相同。只有索引深度
+O(log C) 跟着集合变。
+
+还没做的：
+- `each_virtual` 的数据（`Keyed`）一变，就按全部项重新分组，O(N)：它拿到的是整个列表。保留式
+  API（`sync_virtual_list_*`）的数据在使用方手里，没有这一步。
+- 树的行高固定，按内容量高只用于列表。虚拟表格的列宽固定，没有按内容定的列。
+- 文字比所在的盒子还宽、放不下一个词时（例如列表宽度为 0），重新排版前后它的宽度会变，增量
+  布局和全量布局对不上。门禁给列表定了宽度，这个问题单独跟进。
+
+响应式规则（#265）。节点可以按某个容器的尺寸换布局：`MutationQueue::set_responsive(节点,
+ResponsiveRule)`。
+- 规则读容器内容盒的一条轴（inline 或 block，按容器的书写方向）。容器是节点的父节点
+  （`ResponsiveContainer::Parent`），或指定的节点（`ResponsiveContainer::Node`）。
+- 断点把尺寸分成有限个桶，最多 16 个断点。每个桶可以带一个变体：在节点自己的布局上打的补丁
+  （`ResponsiveRule::below` / `at_least`）。没有变体的桶用节点自己的布局。
+- 变体是布局意图，不是第二套引擎。节点解析后的布局 = 作者写的布局，套上设计意图，再套上当前
+  桶的变体。换桶就是一次样式变化，按 `SetStyle` 同一套规则分类、标脏、排 seed，进同一个增量
+  布局。计算样式也读解析后的布局，所以变体改字号、隐藏节点时，文字、绘制和可见性跟着变。
+- 规则登记时按容器建索引。布局写回让容器内容盒变了的轴，在那次提交结束时只评估读这条轴的
+  规则，不扫描文档。还在原来桶里的规则什么也不改。
+- 收敛：一帧里换桶的轮数最多 4 轮。某条规则要回到这一帧已经离开过的桶，或者轮数用完，就停在
+  当前的桶上（计一次 fallback），这一帧收敛；下一次尺寸变化重新评估。变体会改变容器自己尺寸的
+  规则由此确定地停下，不会在 240Hz 缩放下来回振荡。
+- 节点挪到别的父节点下，`Parent` 规则改读新父节点；被摘下（Detach、Park）时不读任何容器，回到自己的布局；规则清掉后也回到自己的布局。
+
+计数都在 `WorkCounters` 上：
+- `container_query_size_changes`：规则读到的、变了的容器轴；
+- `container_query_rules_evaluated`：评估的规则，只有轴变了的才评估；
+- `container_query_results_changed` / `container_query_results_unchanged`：换了桶 / 没换桶的规则；
+- `container_query_downstream_invalidations`：换桶的变体排出的布局 seed；
+- `container_query_convergence_rounds`：有规则换桶的评估轮数；
+- `container_query_cycle_fallbacks`：为收敛停下的换桶。
+
+门禁在 `world/issue265.rs`：
+- A：一个面板下 100 条规则，面板宽度变化只评估这 100 条，在 1 万与 10 万节点的文档里开销相同；
+- B：同一个桶里连续缩放 240 次，没有规则换桶，变体不排 seed，行不测量；
+- C：跨过一个断点，只有在这里断开的 10 条规则换桶，每条排一个 seed，其余 90 个固定行不测量；
+- D：嵌套 8 层容器，每层 50 个固定叶子：缩放只评估 7 条规则、不碰叶子，最多 4 轮收敛，没有
+  fallback，结果和同样输入的冷布局一致；
+- E：索引只存登记的规则；一帧换桶的历史到下一帧就清空。
+
+#259 加了响应式负载：在 1k、10k、100k 页面末尾，桶内缩放、跨断点、跨回、嵌套缩放的开销相同。
+
+还没做的：Vue / CSS 这一层还不能写响应式规则。`@container` 没有投影到 `ResponsiveRule`，
+目前只有 Rust 的 `set_responsive`。
 
 有依赖索引的格式化上下文可以使用 `LayoutDependencyGraph` 表达父约束、包含块、
 写作方向和 flex/grid/inline 的局部耦合。Runtime mutation authority 和产品帧统一发布
 按节点合并的 typed seeds；Vue bridge 维护
 `SnapshotChanges::layout_invalidations`，而普通 semantic `dirty` 仍负责属性和
 投影同步。布局调度直接消费 typed seeds。
-不确定的 viewport 或结构变化保留根级重算边界。
+不确定的结构变化保留根级重算边界。
 
 ## 能用的
 
@@ -75,6 +376,8 @@ generation，已发布的结果对象保持不变。
 不折行的 flex 行上，`min-content` 和 `max-content` 都是子项之和。折行、块、列轴上，`min-content` 取最宽的子项。
 
 `fit-content` 以最宽子项为下限，以可用宽为上限。折过行的文字，按它不折行的宽度量内容宽，并且不超过可用宽。所以按内容收窄的盒子，在上限放宽后会变宽。它不会停在上次折行的宽度。
+
+会折行的文字，只有在不宽于这个盒子的宽度上折出的行，才按行自己的宽度算：放不下的长单词让行、也让盒子更宽。还没有盒子时（第一次整形）或在更宽的盒子里折出的行不算，文字按这个盒子重新折行。所以同一棵树的结果不取决于文字上一次是在多宽的盒子里整形的，增量布局与从头布局一致。
 
 flex 子项的 `min-width` 或 `min-height` 写成 `min-content`、`max-content` 或 `fit-content` 时，下限取它量出的内容尺寸。行里空间不够时，先压别的子项。它不小于自己的内容。主轴尺寸要是 `auto`，`100%` 或 `Fill` 量出来的是可用宽。
 
@@ -158,6 +461,9 @@ grid 的列是 inline 轴上的轨道。行是 block 轴上的轨道。这是 CS
 `nana-text` 保留的首行和末行 baseline；宿主只提供 ascent 时才使用该
 fallback。替换内容和 Custom 节点以 block 轴末端作为明确 fallback。Flex、Grid
 和 IFC 不各自估算一套基线。
+
+flex 行的保留计划记下每个按基线对齐的子项当时用的基线。下一趟里，子项的尺寸没变
+但基线变了（固定尺寸的按钮里字号变了），这一行照样重新对齐，不沿用旧位置。
 
 **浮动子集。** `float: left | right` 把盒子从块流里拿出来。同侧多个浮动按几何并排。放不下就折到下一行。
 

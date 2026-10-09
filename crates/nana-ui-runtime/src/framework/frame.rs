@@ -188,31 +188,48 @@ impl AppContext {
         self.layout_document_impl_with_seeds(document, viewport, &[], false, Some(seeds))
     }
 
-    /// Relayout after a viewport change. Document roots plus any live
-    /// `position: fixed` / `vw` / `vh` boxes are dirty; unchanged subtrees keep
-    /// the retained cache.
+    /// Relayout after a viewport change, with `seeds` the frame drained for
+    /// its other edits. The roots lay out again against the new viewport,
+    /// and of their descendants only the boxes that consume the axis it
+    /// moved on, and the `position: fixed` / `vw` / `vh` boxes that resolve
+    /// against it; unchanged subtrees keep the retained cache.
     pub fn layout_document_for_viewport(
         &mut self,
         document: DocumentId,
         viewport: crate::LayoutViewport,
+        seeds: &[crate::LayoutFrontierSeed],
     ) -> Result<crate::CommitReport, FrameworkError> {
-        let mut dirty = self.world.document_roots(document);
-        dirty.extend(self.world.viewport_basis_ids_for(document));
-        // Viewport roots/basis nodes are the root boundary for this pass. They
-        // remain in the typed graph even when text shaping queued another
-        // invalidation in the same frame; conservative seeds preserve the
-        // viewport closure.
-        let seeds = dirty
-            .iter()
-            .copied()
-            .map(crate::LayoutFrontierSeed::layout)
-            .collect::<Vec<_>>();
-        self.layout_document_impl_with_seeds(document, viewport, &dirty, false, Some(&seeds))
+        // The engine plants the resize's seeds against the viewport its cache
+        // was laid out at. A document laid out for the first time has none:
+        // it lays out whole.
+        let mut typed = if self.world.document_viewport(document).is_none() {
+            self.world.viewport_resize_seeds(document, None, viewport)
+        } else {
+            Vec::new()
+        };
+        typed.extend_from_slice(seeds);
+        let dirty = typed.iter().map(|seed| seed.node).collect::<Vec<_>>();
+        self.layout_document_impl_with_seeds(document, viewport, &dirty, false, Some(&typed))
     }
 
     /// Nodes recomputed by the most recent layout pass; drains on read.
     pub fn take_last_layout_scope(&mut self) -> Vec<StableNodeId> {
         std::mem::take(&mut self.last_layout_scope)
+    }
+
+    /// Frontier counters of the most recent layout pass for `document`,
+    /// including the size of the dependency graph it built.
+    pub fn layout_frontier_stats(&self, document: DocumentId) -> crate::LayoutFrontierStats {
+        self.layout_cache.frontier_stats(document)
+    }
+
+    /// What the retained layout cache holds for `document`.
+    #[cfg(test)]
+    pub(crate) fn retained_layout_footprint(
+        &self,
+        document: DocumentId,
+    ) -> crate::layout_engine::RetainedLayoutFootprint {
+        self.layout_cache.footprint(document)
     }
 
     /// Drain typed layout seeds emitted after the current work batch, such as
@@ -357,10 +374,15 @@ impl AppContext {
             let intrinsic_counters = self.layout_cache.take_intrinsic_counters();
             self.world
                 .record_intrinsic_measure_counters(intrinsic_counters);
-            self.world
-                .record_layout_frontier(self.layout_cache.frontier_stats(document));
-            self.world
-                .record_layout_execution(self.layout_cache.execution_stats(document));
+            let frontier = self.layout_cache.frontier_stats(document);
+            let execution = self.layout_cache.execution_stats(document);
+            self.world.record_layout_frontier(frontier);
+            self.world.record_layout_execution(execution);
+            if frontier.constraint.seeds > 0 {
+                self.world.record_resize_context_solves(
+                    execution.plan_misses + execution.containers_uncacheable,
+                );
+            }
             completed(1);
             #[cfg(feature = "benchmark")]
             let mut phase = crate::layout_engine::plan_stats::PhaseClock::start();

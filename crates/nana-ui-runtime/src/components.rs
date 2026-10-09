@@ -1991,10 +1991,15 @@ pub struct ComputedStyle {
     pub selection_background: Option<[f32; 4]>,
     /// Author `::selection` foreground after inheritance. `None` keeps text color.
     pub selection_color: Option<[f32; 4]>,
+    /// The size text is set at: [`Self::font_size_base`] times
+    /// [`Self::text_scale`].
     pub font_size: f32,
     pub font_weight: Option<u16>,
     pub italic: bool,
     pub font_family: Option<Arc<str>>,
+    /// The line height text is set at. An absolute one is
+    /// [`Self::line_height_base`]'s times [`Self::text_scale`]; a relative
+    /// one follows [`Self::font_size`].
     pub line_height: Option<LineHeightSpec>,
     pub letter_spacing: f32,
     pub font_features: Vec<FontFeatureSetting>,
@@ -2008,6 +2013,19 @@ pub struct ComputedStyle {
     pub writing_mode: nana_ui_core::WritingModeSpec,
     /// CSS `text-orientation` after inherit (initial `mixed`).
     pub text_orientation: nana_ui_core::TextOrientationSpec,
+    /// The language text under this node is shaped in: the node's own
+    /// (`lang`), else its parent's, else the application's default, else the
+    /// text engine's fallback. `None` when none of them names one.
+    pub language: Option<nana_text::font::LanguageTag>,
+    /// The typography scale text under this node is set at: the node's own
+    /// ([`crate::MutationQueue::set_text_scale`]), else its parent's, else
+    /// its window's, else the application's. 1 unless one of them sets one.
+    pub text_scale: f32,
+    /// The font size before [`Self::text_scale`]: the node's own, else its
+    /// parent's. Children inherit this one, so a scope scales its text once.
+    pub font_size_base: f32,
+    /// The line height before [`Self::text_scale`]; children inherit it.
+    pub line_height_base: Option<LineHeightSpec>,
 }
 
 impl ComputedStyle {
@@ -2050,6 +2068,10 @@ impl Default for ComputedStyle {
             direction: nana_ui_core::DirSpec::Ltr,
             writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
             text_orientation: nana_ui_core::TextOrientationSpec::Mixed,
+            language: None,
+            text_scale: 1.0,
+            font_size_base: UI_BASE_TEXT_SIZE,
+            line_height_base: None,
         }
     }
 }

@@ -1814,6 +1814,7 @@ impl TextPipeline {
             features: opentype.features.clone(),
             variations: opentype.variations.clone(),
             kerning: opentype.kerning,
+            language: opentype.language.clone(),
         };
         // The box dimension lines stack along — the height, or the width of
         // vertical text — is a truncation budget, so it only goes to the

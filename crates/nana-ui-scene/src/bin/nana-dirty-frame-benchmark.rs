@@ -614,7 +614,6 @@ fn measure_with(
         dirty(runtime.context_mut(), shape, &targets, hovered);
         let _ = runtime.context_mut().take_layout_substage_totals();
         text_shape_stats::reset();
-        nana_ui_runtime::plan_stats::reset();
         let started = Instant::now();
         let update = runtime.flush(viewport, shaper).unwrap();
         let elapsed = started.elapsed();
@@ -625,10 +624,11 @@ fn measure_with(
             "dirty frame reported idle at rows={rows} dirty={dirty_rows}"
         );
         let substages = runtime.context_mut().take_layout_substage_totals();
+        let work = runtime.context().last_work_counters();
         let plan = [
-            nana_ui_runtime::plan_stats::children_measured(),
-            nana_ui_runtime::plan_stats::plans_reused(),
-            nana_ui_runtime::plan_stats::suffixes_replayed(),
+            work.layout_children_measured,
+            work.layout_placement_plans_reused,
+            work.layout_suffixes_replayed,
         ];
         if iteration < warmup {
             continue;

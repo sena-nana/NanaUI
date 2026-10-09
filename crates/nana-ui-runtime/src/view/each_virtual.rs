@@ -713,10 +713,6 @@ where
                 slot,
                 mount,
             )?;
-            // Rows mounted now are measured after the next layout pass.
-            if self.state.pending_measure() {
-                cx.notify_laid_out(scroll);
-            }
             target.map(|_| offset)
         } else {
             cx.sync_virtual_list_retained_at(
@@ -770,10 +766,12 @@ where
                 shared.request = again;
             }
         });
-        if self.within.is_some() || self.grid.is_some() {
-            // Content above the list, or the list's own width, can change
-            // with no scroll or viewport change: look again after the next
-            // layout pass (one only happens when something changed).
+        if self.within.is_some() || self.grid.is_some() || self.measured {
+            // Content above the list, the list's own width, or the height a
+            // measured row lays out at -- rows mounted now, or a row whose
+            // content grew -- can change with no scroll or viewport change:
+            // look again after the next layout pass (one only happens when
+            // something changed).
             cx.notify_laid_out(scroll);
         }
         Ok(())

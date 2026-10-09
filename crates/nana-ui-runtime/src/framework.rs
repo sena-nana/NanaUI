@@ -1141,6 +1141,12 @@ pub struct VirtualListItems<K, C: ComponentView> {
     pending_measure: bool,
     /// Bumped each time a measurement changed the layout's extents.
     measurements: u64,
+    /// The data fingerprint and row count the mounted rows were placed
+    /// under. While both hold, the indices they were placed at are current
+    /// and a pass looks none of their keys up again.
+    placed_under: Option<(u64, usize)>,
+    /// The layout's row index writes already counted (Issue #262).
+    index_writes_seen: u64,
 }
 
 /// Application-owned visible row/cell identities for a virtual Table. The
@@ -1271,6 +1277,8 @@ impl<K, C: ComponentView> Default for VirtualListItems<K, C> {
             measured: false,
             pending_measure: false,
             measurements: 0,
+            placed_under: None,
+            index_writes_seen: 0,
         }
     }
 }
@@ -1446,6 +1454,47 @@ impl AppContext {
 
     pub fn world(&self) -> &UiWorld {
         &self.world
+    }
+
+    /// The application's language: the one every node shapes its text in
+    /// unless it, or a node above it, names its own
+    /// ([`crate::MutationQueue::set_language`]). Only text whose language
+    /// moves is shaped again.
+    pub fn set_default_language(&mut self, language: Option<crate::LanguageTag>) {
+        self.world.set_default_language(language);
+    }
+
+    /// Set the application's typography scale: an accessibility text size or
+    /// a content size level. Text inherits it unless its window
+    /// ([`Self::set_document_text_scale`]) or a scope above it
+    /// ([`crate::MutationQueue::set_text_scale`]) sets its own. Only the text
+    /// that inherits it lays out again, and layout follows only the metrics
+    /// that moved. A scale that is not a positive finite number is ignored.
+    pub fn set_default_text_scale(&mut self, scale: f32) {
+        self.world.set_default_text_scale(scale);
+    }
+
+    /// Set one window's typography scale over the application's; `None`
+    /// follows the application's again. Other windows are not visited.
+    pub fn set_document_text_scale(&mut self, document: DocumentId, scale: Option<f32>) {
+        self.world.set_document_text_scale(document, scale);
+    }
+
+    /// Install the catalog localized text resolves from; see
+    /// [`crate::UiWorld::set_message_catalog`].
+    pub fn set_message_catalog(&mut self, catalog: Option<Arc<dyn crate::MessageCatalog>>) {
+        self.world.set_message_catalog(catalog);
+    }
+
+    /// Switch the application's locale. Every window without its own takes
+    /// it in one transaction: the next frame shows all of it or none of it.
+    pub fn set_default_locale(&mut self, locale: Option<crate::Locale>) {
+        self.world.set_default_locale(locale);
+    }
+
+    /// Switch one window's locale; other windows are not visited.
+    pub fn set_document_locale(&mut self, document: DocumentId, locale: Option<crate::Locale>) {
+        self.world.set_document_locale(document, locale);
     }
 
     /// Whether view-layer motion is reduced: implicit property transitions
@@ -1744,6 +1793,9 @@ impl AppContext {
         // A structural no-op only matches nodes that exist in a consistent
         // relation, so there is nothing to validate either.
         if !mutations.is_empty() && self.world.is_noop_batch(&mutations) {
+            for mutation in mutations.as_slice() {
+                self.world.note_noop_text_scale(mutation);
+            }
             self.collect_child_reprojects();
             self.drain_child_reprojects()?;
             return Ok(crate::CommitReport::unchanged(

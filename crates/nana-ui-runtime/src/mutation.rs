@@ -63,6 +63,41 @@ pub enum UiMutation {
         id: StableNodeId,
         rich: Option<nana_ui_core::RichText>,
     },
+    /// The language a node names for itself (`lang`). Its subtree inherits
+    /// it; see [`MutationQueue::set_language`].
+    SetLanguage {
+        id: StableNodeId,
+        language: Option<nana_text::font::LanguageTag>,
+    },
+    /// What a replaced resource reports of its size; see
+    /// [`MutationQueue::set_replaced_metadata`].
+    SetReplacedMetadata {
+        resource: crate::ReplacedResource,
+        metadata: Option<crate::ReplacedMetadata>,
+    },
+    /// The typography scale a node sets for its subtree; see
+    /// [`MutationQueue::set_text_scale`].
+    SetTextScale {
+        id: StableNodeId,
+        scale: Option<f32>,
+    },
+    /// The locale a node's subtree reads; see [`MutationQueue::set_locale`].
+    SetLocale {
+        id: StableNodeId,
+        locale: Option<crate::Locale>,
+    },
+    /// Localized text a node shows; see
+    /// [`MutationQueue::set_localized_text`].
+    SetLocalizedText {
+        id: StableNodeId,
+        text: Option<crate::LocalizedText>,
+    },
+    /// The responsive rule a node follows; see
+    /// [`MutationQueue::set_responsive`].
+    SetResponsive {
+        id: StableNodeId,
+        rule: Option<std::sync::Arc<crate::ResponsiveRule>>,
+    },
     /// A node's per-glyph presentation. Presentation only.
     SetGlyphPresentation {
         id: StableNodeId,
@@ -333,6 +368,82 @@ impl MutationQueue {
             id,
             rich: Some(rich),
         });
+    }
+
+    /// Name the language `id` and the subtree under it are written in, as
+    /// HTML's `lang` does; `None` inherits the parent's again. Text shapes in
+    /// its nearest named language, then the application's default, then the
+    /// text engine's fallback. A change reaches only the text that inherits
+    /// it: the subtree's styles resolve again, and text whose language moved
+    /// is shaped again and lays out again only if its metrics moved.
+    pub fn set_language(
+        &mut self,
+        id: StableNodeId,
+        language: Option<nana_text::font::LanguageTag>,
+    ) {
+        self.mutations
+            .push(UiMutation::SetLanguage { id, language });
+    }
+
+    /// Set the typography scale text under `id` is set at, as an
+    /// accessibility or content-size scope does; `None` inherits the
+    /// parent's again. A scale multiplies the font size and an absolute line
+    /// height; box lengths, `em` ones among them, resolve against the size
+    /// before it. Text takes its nearest scope's scale, then its window's
+    /// ([`crate::UiWorld::set_document_text_scale`]), then the application's
+    /// ([`crate::UiWorld::set_default_text_scale`]). A change reaches only
+    /// the scope: nodes under it that set their own scale are not visited,
+    /// its text is laid out again at the new size, and layout hears of it
+    /// only from metrics that moved. The scale must be a positive finite
+    /// number.
+    pub fn set_text_scale(&mut self, id: StableNodeId, scale: Option<f32>) {
+        self.mutations.push(UiMutation::SetTextScale { id, scale });
+    }
+
+    /// Make `id` a locale scope: the localized text under it, itself included,
+    /// resolves in `locale`, shapes in its language, and the subtree lays out
+    /// in its direction. `None` returns the subtree to the scope above. Only
+    /// the localized text the scope holds is visited; literal text is not.
+    pub fn set_locale(&mut self, id: StableNodeId, locale: Option<crate::Locale>) {
+        self.mutations.push(UiMutation::SetLocale { id, locale });
+    }
+
+    /// Show `text` on `id`, resolved in the locale of the scope it is in and
+    /// again whenever that locale changes. `None` keeps what it shows and
+    /// makes it literal again.
+    pub fn set_localized_text(&mut self, id: StableNodeId, text: Option<crate::LocalizedText>) {
+        self.mutations
+            .push(UiMutation::SetLocalizedText { id, text });
+    }
+
+    /// Make `id` follow `rule`: it takes the layout variant of the bucket its
+    /// container's size is in, over its own layout. `None` returns it to its
+    /// own layout. A container that already has a box is read now; one that
+    /// does not is read after its first layout. A named container must exist
+    /// when the rule is set. Breakpoints must be finite and ascend, at most
+    /// [`crate::MAX_RESPONSIVE_BREAKPOINTS`] of them.
+    pub fn set_responsive(
+        &mut self,
+        id: StableNodeId,
+        rule: Option<std::sync::Arc<crate::ResponsiveRule>>,
+    ) {
+        self.mutations.push(UiMutation::SetResponsive { id, rule });
+    }
+
+    /// Report what `resource` knows of its size: an image's natural size
+    /// once it decoded, a texture's or a video's resolution. `None` forgets
+    /// it. The nodes that show the resource paint again; of them only the
+    /// ones whose box reads a natural size -- an auto width or height --
+    /// lay out again, found through an index, not a scan. A new frame or
+    /// texture generation of the same resource is not this: it is
+    /// [`Self::set_custom_render`], and paint.
+    pub fn set_replaced_metadata(
+        &mut self,
+        resource: crate::ReplacedResource,
+        metadata: Option<crate::ReplacedMetadata>,
+    ) {
+        self.mutations
+            .push(UiMutation::SetReplacedMetadata { resource, metadata });
     }
 
     /// Present `id`'s glyphs with `presentation`: the effects its rich spans'

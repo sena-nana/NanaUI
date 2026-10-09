@@ -187,6 +187,28 @@ pub mod text {
         Severity::Warn,
         &[F::u64("slots"), F::u64("limit"), F::u64("skipped")],
     );
+    /// A localized message no locale in its chain has: once per locale
+    /// asked and message, as the lookup cache is filled.
+    pub static I18N_MESSAGE_MISSING: EventDescriptor =
+        EventDescriptor::new(D, 5, "text.i18n.message_missing", Severity::Warn, &[]);
+    /// Fault: a catalog pattern that is not a message; it is shown as
+    /// written. `at` is the byte the parse stopped at.
+    pub static I18N_PATTERN_INVALID: EventDescriptor = EventDescriptor::new(
+        D,
+        6,
+        "text.i18n.pattern_invalid",
+        Severity::Error,
+        &[F::u64("at")],
+    );
+    /// A message argument a localized `node` does not give, or gives as the
+    /// wrong kind; the output names it.
+    pub static I18N_ARGUMENT_INVALID: EventDescriptor = EventDescriptor::new(
+        D,
+        7,
+        "text.i18n.argument_invalid",
+        Severity::Warn,
+        &[F::u64("node")],
+    );
 }
 
 pub mod gpu {

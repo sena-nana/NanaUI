@@ -104,8 +104,8 @@ impl RuntimeDocument {
     }
 
     /// Drain one Runtime frame: host shaping, framework layout. A viewport
-    /// change relayouts from the roots and reuses every subtree the new size
-    /// did not move.
+    /// change lays out the roots again and the boxes that consume the axis it
+    /// moved on, and reuses every subtree the new size did not reach.
     pub fn flush(
         &mut self,
         viewport: LayoutViewport,
@@ -125,7 +125,7 @@ impl RuntimeDocument {
             seeds.extend(context.take_layout_frontier_seeds(document));
             if force_layout || !seeds.is_empty() {
                 if force_layout {
-                    context.layout_document_for_viewport(document, viewport)?;
+                    context.layout_document_for_viewport(document, viewport, &seeds)?;
                 } else {
                     context.layout_document_with_frontier(document, viewport, &seeds)?;
                 }
@@ -139,35 +139,17 @@ impl RuntimeDocument {
                     if !context.shape_text_for_layout_scoped(&shape_scope, shaper)? {
                         break;
                     }
-                    // Shaping re-dirtied layout (empty-state padding, modal
-                    // presentations); relayout that closure plus the scope
-                    // whose boxes may have shifted again.
-                    let mut seeds = context.take_layout_frontier_seeds(document);
-                    seeds.extend(
-                        shape_scope
-                            .drain(..)
-                            .map(nana_ui_runtime::LayoutFrontierSeed::layout),
-                    );
-                    seeds.sort_unstable_by_key(|seed| seed.node);
-                    // A node may be present in both the post-shape authority
-                    // queue and the conservative layout scope. Merge the
-                    // typed causes so the broad scope cannot be lost to a
-                    // key-only deduplication.
-                    let mut merged: Vec<nana_ui_runtime::LayoutFrontierSeed> =
-                        Vec::with_capacity(seeds.len());
-                    for seed in seeds {
-                        if let Some(previous) = merged.last_mut()
-                            && previous.node == seed.node
-                        {
-                            previous.invalidation = previous.invalidation.merge(seed.invalidation);
-                        } else {
-                            merged.push(seed);
-                        }
-                    }
-                    if merged.is_empty() {
+                    // Shaping re-dirtied layout (a wrap that changed a text's
+                    // height, empty-state padding, modal presentations). Each
+                    // of those queued its own typed cause, and the frontier
+                    // from it reaches every box the change moves. Seeding the
+                    // whole scope again with an all-dependency cause would
+                    // lay out every touched ancestor's subtree a second time.
+                    let seeds = context.take_layout_frontier_seeds(document);
+                    if seeds.is_empty() {
                         break;
                     }
-                    context.layout_document_with_frontier(document, viewport, &merged)?;
+                    context.layout_document_with_frontier(document, viewport, &seeds)?;
                     shape_scope = context.take_last_layout_scope();
                 }
                 force_layout = false;

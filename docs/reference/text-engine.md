@@ -892,14 +892,14 @@ ExtractedNode.text_layout ──► ScenePrimitiveKind::Text { layout: Option<Re
 
 | 类 | 工作 | bump 的 revision |
 | --- | --- | --- |
-| `CONTENT` / `FONT` / `SHAPE_STYLE` | shape + layout + scene 几何 | content（仅 `CONTENT`）、shape、constraint |
+| `CONTENT` / `FONT` / `SHAPE_STYLE` / `LANGUAGE` | shape + layout + scene 几何 | content（仅 `CONTENT`）、shape、constraint |
 | `CONSTRAINT` | layout + scene 几何 | constraint |
 | `EDIT_STATE` | editor overlay（Phase 5） | edit |
 | `PAINT` | 只重新提取 paint | paint |
 | `TRANSFORM` / `OPACITY` | 只走 compositor | 无 |
 | `GLYPH_PRESENTATION` | 只走 compositor（富文本逐字特效、揭示） | 无 |
 
-`TextDirty` / `TextWork` 是 `u16` 位集。`GLYPH_PRESENTATION` 是第九类，放不进 `u8`。它和
+`TextDirty` / `TextWork` 是 `u16` 位集。`GLYPH_PRESENTATION` 是第九类，`LANGUAGE` 是第十类，放不进 `u8`。前者和
 transform / opacity 一样不碰任何 revision，连 paint 也不碰。只改特效索引的 span 因此不重新整形、
 不重新排版，也不重建字形实例。
 
@@ -912,7 +912,7 @@ transform / opacity 一样不碰任何 revision，连 paint 也不碰。只改�
 - 计算样式落定时（`world/style.rs`）`classify_computed_style_change`：字体族 / 字号 / 字重 /
   斜体 / 字距 / feature / 变体轴 / kerning / direction → `SHAPE_STYLE`。行高 / word-break /
   line-break / writing-mode → `CONSTRAINT`。颜色 / 前景角色 / 选区色 → `PAINT`。opacity →
-  `OPACITY`。其余字段不产生文本工作。
+  `OPACITY`。计算出的 `language` → `LANGUAGE`。其余字段不产生文本工作。
 - `SetStyle` 只比较文本约束真正读的 `LayoutStyle` 字段（wrap / white-space / 省略号 / line-clamp /
   高度与最大高度是否确定 / 边框 / padding / 对齐）。paint、transform、opacity 与它们同在一个
   `LayoutStyle` 上。**刻意不比**。其余约束输入都会调度 layout、进 layout-scoped 趟。对齐不移动
@@ -925,9 +925,10 @@ transform / opacity 一样不碰任何 revision，连 paint 也不碰。只改�
 - visual 变化只在「文本走哪条路径 / 前导指示器占多宽」变了时记 `CONSTRAINT` 并标 TEXT
   （`text_visual_key`。加一个 Checkbox 不改盒子尺寸）。进度这类采样值不算。
 - 字体集合变化不逐节点 bump：解析戳里带后端代际（宿主的 shaper 类型与 `TextShaper::font_generation()`。换一个 shaper 就是另一次测量。或引擎
-  的字体系统身份 + `FontGeneration` + 语言提示代际。`set_language` 同样改变 `locl` 与 fallback）。`RuntimeDocument::flush` 每帧开头调
+  的字体系统身份 + `FontGeneration`）。`RuntimeDocument::flush` 每帧开头调
   `UiWorld::observe_text_shaper`。代际一变就把测量过的已解析节点（含只量一个空行盒的空 Text
-  节点）与 EmptyState / ModalFrame / TextInput 排进这一帧（`FONT`）。静止文档也会在新字体上重新结算。按字符与样式缓存的 glyph advance 与宿主路径的 `TextLayoutCache` 同时清空（它们的 key 不含测量者。换 shaper 时同样清空）。
+  节点）与 EmptyState / ModalFrame / TextInput 排进这一帧（`FONT`）重新整形。静止文档也会在新字体上重新结算。按字符与样式缓存的 glyph advance 与宿主路径的 `TextLayoutCache` 同时清空（它们的 key 不含测量者。换 shaper 时同样清空）。重新整形之后，只有导出度量（宽、高、基线、自然宽度）真的变了的文本才排布局 seed；字体换了而度量不变的文本不排任何布局。
+- 语言不在后端代际里。引擎的 `set_language` 只是兜底提示，它经计算样式到达文本，和其它语言一样（见下一节）。
 
 transform / opacity 不 bump 任何 revision（Runtime 也从不需要发出 `TRANSFORM`：transform 从来不是文本的
 输入）。所以稳态 compositor 动画在构造上就碰不到 shaping /
@@ -940,6 +941,207 @@ shape / layout。scene 提取仍按 RENDER 脏整节点重新提取。`SCENE_PAI
 `EDITOR_OVERLAY` / `COMPOSITOR` 与 `paint` / `edit` revision 是给绘制 retained layout（#97 换了
 renderer。#99 才把产品路径的段落换成 `TextLayout`）和可编辑路径 #96 的合同。还没有更细的提取
 消费者。
+
+### 语言作用域与外部度量（#260）
+
+文本按什么语言整形，优先级如下：
+1. 节点自己命名的语言：`MutationQueue::set_language`，相当于 HTML 的 `lang`。Vue 宿主把元素的 `lang` 属性投影到这里。
+2. 继承自子树的语言。
+3. 应用的默认语言：`AppContext::set_default_language`。
+4. 文本引擎的兜底提示：`NativeTextEngine::set_language`。
+
+解析结果是继承型的计算样式字段 `ComputedStyle::language`。它进 nana-text 的 `TextStyle::language`，于是进入 `ShapeKey` 和字体回退查询。它也经 `SceneTextOpenType::language` 送到画笔，画笔重新排版时用同一个语言，不会画出和测量不同的 `locl` 字形。
+
+一次语言变化只重新解析受影响子树的样式：
+- 计算语言真的变了的文本记 `LANGUAGE`，重新整形；
+- 被更深一层的显式语言遮住的文本，计算样式不变，修订也不动；
+- 作用域外的文本完全不碰。
+
+改应用默认语言或引擎兜底，影响的是所有继承根语言的文本；在已有应用默认语言时改兜底，什么也不动。语言变化本身不排布局：整形之后度量变了才排。
+
+整形完成的文本只按导出的外部度量（宽、高、基线、自然宽度）向父级传播。`"99"` 改成 `"98"` 这类度量不变的编辑停在文本上，不重排父级。
+
+父级约束只变宽度时，文本从已有的整形结果重新断行，不重新整形。固定尺寸的输入框里打字，不重排它的盒子之外。光标和选区的移动不进入盒布局。
+
+计数都在 `WorkCounters` 上：
+- `text_reflow_seeds`：文本整形后排的布局 seed；
+- `text_external_metric_changes` / `text_external_metric_unchanged`：重新整形后，外部度量变了或没变的文本；
+- `text_parent_reflows`：被文本要求重新测量的父级；
+- `text_constraint_relayouts`：不重新整形、只重新断行的文本（即 nana-text 的 `constraint_only_relayouts`）；
+- `text_language_scope_invalidations`：被语言变化触及的文本；
+- `text_literal_nodes_invalidated_by_language`：语言没变却因语言失效被重新整形的文本。正常为 0，用来防止有人把语言失效改回粗粒度。
+
+门禁在 `world/issue260.rs`，五项：
+- 1k 与 10k 文档中固定输入框连续输入，开销相同；
+- `"99"→"98"` 零父级重排；
+- 240 次宽度变化不重新整形；
+- 作用域语言只触及作用域内的文本；
+- 光标和选区零盒布局。
+
+#259 的规模矩阵里也有语言场景。
+
+### 字号缩放作用域（#266）
+
+无障碍字号和应用的内容字号级别，都是保留在树上、有作用域的依赖，不是进程全局的一个浮点数。
+文本按哪个缩放排版，优先级如下：
+1. 节点自己设的缩放：`MutationQueue::set_text_scale`。子树继承它；设成 `1.0` 就把子树钉在原始字号上，这就是显式字号覆盖。
+2. 继承自父级的缩放。
+3. 窗口的缩放：`AppContext::set_document_text_scale`。
+4. 应用的缩放：`AppContext::set_default_text_scale`。
+5. 都没有设时为 1。
+
+缩放必须是有限正数。变更校验拒绝不合法的值；窗口和应用的设置函数直接忽略它。
+
+解析结果是计算样式上的 `ComputedStyle::text_scale`：
+- `font_size` 是缩放后的实际字号；`font_size_base` 是缩放前的字号，子节点继承后者，所以嵌套的作用域不会把缩放乘两次；
+- 绝对行高同理：`line_height` 是缩放后的，`line_height_base` 供继承；
+- 相对行高本来就跟着字号走。
+
+缩放只作用于文字：
+- 盒子的长度按缩放前的字号解析，包括 `em`、`rem`，以及没有文字的元素为自己的字号保留的行盒；
+- 图片、自定义渲染和只改绘制的表面不受影响；
+- 组件几何里画的内部标签（表单字段的标签和提示、进度条的标签）用组件自己的固定字号，不跟缩放。
+
+一次缩放变化只访问它的作用域：作用域根，以及其下继承这个缩放的节点。遇到自己设了缩放的节点就停下，不进它的子树。
+被访问的节点重新解析样式；计算缩放真的变了的文本重新排版，并重新绘制。
+
+布局只从变化了的外部度量得知这次变化：
+- 尺寸随文字变化的盒子，向父级传播度量差；
+- 固定尺寸的盒子（宽高都是 px，没有 min/max），只要不是行内级、父级也不按基线对齐它，文字的变化就停在盒子里，它以上什么都不测量。固定尺寸的按钮就是这样；
+- 父级按基线对齐的盒子会导出新的基线，所以只有它所在的那一行重新对齐，不按基线对齐的行不进入测量。
+
+窗口的缩放只访问该窗口的根；应用的缩放只访问没有自己缩放的窗口。把作用域、窗口或应用设成它已有的值，什么都不做。
+
+计数都在 `WorkCounters` 上：
+- `typography_scale_scope_nodes_scanned`：缩放变化访问的作用域节点；
+- `typography_scale_dependents_notified`：计算缩放变了的已排版文本；
+- `typography_scale_text_relayouts`：其中随后按新字号重新排版的文本；
+- `typography_scale_parent_reflows`：其中度量变化让父级重新测量的文本；
+- `typography_scale_equivalent_skips`：设成已有值、什么都没访问的缩放设置。
+
+作用域访问数和等价跳过在提交变更时就数了，但记在处理这次变更的那一帧上。
+
+门禁在 `world/issue266.rs`，五项：
+- 10k 与 100k 节点的文档里，一个有 2000 段文字的固定面板从 1 缩放到 1.25。只访问面板自己的 3001 个节点；钉住缩放的嵌套作用域不访问；面板外没有文字、样式或测量发生变化；两种规模的开销相同；
+- 1000 个固定尺寸的按钮：标签在按钮里重新排版，父级零重排，按钮之间的间隔元素不进布局；
+- 基线：按基线对齐的一行重新对齐，钉住缩放的那个按钮被对齐到新的基线；不按基线对齐的一行，以及作用域外的基线行，都不测量；
+- 设成已有值零工作；
+- 两个各 1 万节点的窗口：一个窗口的缩放不碰另一个窗口的文字和布局。
+
+#259 的规模矩阵里也有缩放场景：卡片给它的标签设缩放。
+
+### 本地化文本与 locale 作用域（#268、#269）
+
+节点的文字要么是字面文字，要么是本地化文字：
+- 字面文字（`SetText`）原样显示，不属于任何 locale，切换 locale 不碰它；
+- 本地化文字（`MutationQueue::set_localized_text`）是一条消息加参数：`LocalizedText { message, args }`。
+  它按节点所在作用域的 locale 解析，locale 变了就重新解析。对本地化节点 `SetText` 会让它回到字面文字。
+
+locale 作用域有三层：
+- 子树：`MutationQueue::set_locale(节点, Locale)`；
+- 窗口：`AppContext::set_document_locale`；
+- 应用：`AppContext::set_default_locale`，没有自己 locale 的窗口都用它。
+
+一个 `Locale` 分开描述四件事，各自有 generation（`UiWorld::locale_generations`）：
+- 选哪套消息；
+- 本地化文字按哪种语言排版（字体回退、`locl`）：默认是消息实际取自的 locale，也可以单独指定；
+- 作用域的书写方向：默认按消息 locale 的文字系统（阿拉伯文、希伯来文等从右到左），也可以单独指定；
+- 数字和日期按哪个 locale 格式化。
+
+消息来自 `MessageCatalog`。它是后端无关的接口：只回答某条消息在某个确切 locale 下的模式串。
+回退链由运行时走：先是作用域 locale 的各级前缀（`zh-hant-tw` → `zh-hant` → `zh`），再是配置的
+回退 locale（`UiWorld::set_fallback_locale`）。都没有时按 `MissingMessage` 处理：显示消息键，
+或保留原来显示的内容。`MessageTable` 是一个现成的表格实现。消息 ID 是驻留过的整数，热路径不按
+字符串查表。查找结果按（所问 locale，消息）缓存；换目录或回退 locale 时清空。
+
+依赖索引：每个本地化节点登记在它读取 locale 的作用域下（最近的子树作用域，否则是它的窗口）。
+- 切换只访问被切换作用域登记的本地化节点，不扫描文档，不碰字面文字，也不碰别的窗口；
+- 只换消息时，不改语言和方向，语言和方向的依赖也不失效；
+- 解析结果和原来相同的节点不排版、不布局；只有排版语言变了的节点才重新排版：locale 命名的语言变了，或没有命名时消息实际取自的 locale 变了；
+- 方向只在作用域的方向真的变了时，作为作用域根的布局意图改变（子树作用域落在作用域节点上，窗口落在
+  窗口根上，从右到左的窗口才设），之后按普通的书写方向变化走 #254；
+- 同方向的切换（en-US → zh-CN）不触发书写方向的重排；
+- 一次切换是一个事务：在同一次调用里全部解析、全部写入，下一帧要么全是新 locale，要么全是旧的，不会
+  出现一半中文一半英文的帧；
+- 虚拟列表没挂出来的行不是节点，切换不解析它们；挂出来时按当前 locale 直接解析。
+- 作用域建立、移除，节点换父节点或被摘下（Detach、Park）时，受影响的本地化节点从原作用域的登记里挪过来，只访问原作用域的节点。
+
+计数在 `WorkCounters::i18n`（`I18nCounters`）上：
+- 索引大小：`localized_nodes`、`message_dependencies`、`language_dependencies`、`direction_dependencies`；
+- `literal_nodes`：切换解析的字面文字，恒为 0（哨兵）；
+- `catalog_lookups` / `catalog_cache_hits` / `catalog_cache_misses`；
+- `scope_dependents_notified`：经作用域索引通知到的本地化节点；
+- `switch_transactions` / `switch_commits`：切换事务和整体落地的提交；
+- `nodes_resolved`、`resolved_content_changed` / `resolved_content_unchanged`；
+- `virtual_rows_resolved`：虚拟列表挂出来的行里解析的本地化节点，挂出时和切换时都算；
+- `language_changed_nodes`、`direction_changed_scopes`、`layout_seeds`（切换自己排的 seed，即方向）；
+- 格式化的计数见下一节。
+
+切换在提交时就数了，记在处理它的那一帧上。
+
+门禁在 `world/issue268.rs`（五项）与 `world/issue269.rs`（六项）：
+- 静态帧不查目录、不访问作用域、不解析；
+- 10 万节点、约 5% 本地化：只换消息时恰好通知这些本地化节点，字面节点、语言、方向都不动；
+- 两个窗口：切一个，另一个的文字、样式和布局都不进下一帧；
+- 索引只随登记变化：1 万次挂载卸载后回到原样；
+- 切换不解析字面文字；
+- en-US → zh-CN：解析恰好是本地化节点，没有方向变化，布局只从这些文字和它们所在的容器开始，没有整文档回退；
+- 等价翻译：读起来一样的字符串不排版，下一帧只排版变了的；
+- 1000 个固定尺寸按钮切语言：标签在按钮里重新排版，按钮的位置和尺寸都不变；
+- 子树作用域切到从右到左：只有这个子树进下一帧；
+- 一百万行的虚拟列表：只解析挂出来的行，都记作虚拟行，不查逻辑行；
+- 切换在下一帧之前就整体落地。
+
+#259 加了 locale 负载：1k、10k、100k 窗口末尾的 40 个本地化标签切换 locale（同方向、等价翻译、成为子树作用域后切到从右到左），开销相同；本地化的虚拟列表在 10 万行与 100 万行下切换，开销相同。
+
+消息格式化（#270）。模式串按 ICU MessageFormat 的常用子集写：
+- `{name}`：参数原样（文字照写，数字按 locale 写，日期时间用中等长度）；
+- `{name, number}`、`{name, number, integer}`、`{name, number, percent}`、`{name, number, currency}`；
+- `{name, date}`、`{name, time}`、`{name, datetime}`，可加 `short` / `medium` / `long` / `full`；
+- `{name, plural, offset:1 =0 {..} one {..} other {..}}`、`{name, selectordinal, ..}`，`#` 是减去 offset 的数；
+- `{name, select, a {..} other {..}}`；
+- `''` 是撇号；撇号后面紧跟 `{`、`}`、`#` 时，引到下一个单独的撇号为止。
+
+参数是带类型的 `MessageArgs`：文字、数字、货币（金额和 ISO 4217 代码）、日期时间。
+
+格式化走 `LocaleFormatter` 这个后端无关的接口：
+- 运行时默认装的是 `IcuFormatter`（`icu` 特性，默认开启），用 ICU4X 和它编译进来的 CLDR 数据：复数规则、数字、日期和时间；
+- 关掉这个特性时用 `PlainFormatter`：英语复数规则、`.` 作小数点的数字、ISO 日期；
+- 应用也可以装自己的实现：`UiWorld::set_locale_formatter`。ICU 的类型不出这个接口。
+- 货币目前写成「代码 + 按 locale 分组的两位小数」（`USD 1,234.50`）。ICU4X 的货币格式化还在 experimental 里，没有用。
+
+缓存：
+- 消息在查找时编译一次，按（所问 locale，消息）缓存。同一条消息在一个 locale 下只编译一次，不按节点重复编译；
+- 每个 locale 和选项的格式化器（复数规则、数字、日期、时间）第一次用到时构建，之后一直复用；
+- 格式化写进一个复用的缓冲区。
+
+参数修订：对同一个节点用同一条消息换参数，算一次参数修订，只重新格式化这一个节点。输出和原来一样时
+（例如被取整吸收），不排版、不布局。
+
+目录热更新：`UiWorld::update_message_catalog(新目录, 变了的消息)` 只让说这些消息的节点重新解析，
+经消息到节点的索引找到，不扫描文档；`set_message_catalog` 则让全部本地化节点重新解析。
+
+诊断走 `nana-diagnostics`：找不到的消息（每个 locale 和消息只报一次）、不是合法模式的模式串（按原文显示）、
+缺少或类型不对的参数（输出里写出参数名）。都不会让界面帧 panic。
+
+格式化的计数也在 `I18nCounters` 上：`format_requests`、`format_cache_hits` / `format_cache_misses`（格式化器缓存）、
+`message_patterns_compiled`、`args_revisions`、`formatted_output_changed` / `formatted_output_unchanged`、
+`catalog_messages_invalidated`、`formatter_allocations`（构建的格式化器）。
+
+门禁在 `world/issue270.rs`（五项）与 `tests/i18n_alloc.rs`：
+- 1 万个本地化节点里，一个计数器每帧换数：每帧一次格式化请求，不漏查目录，别的节点不格式化，只有计数器排版；
+- 取整吸收的参数变化：输出不变，不排版、不布局；
+- 一万个数字在一个 locale 下：模式编译一次，格式化器建一个；切到德语后格式化器缓存命中率不低于 99%；
+- 更新一条消息只通知说这条消息的约 100 个节点，其余不解析；
+- 切换 locale：每条消息编译一次，不是每个节点；
+- 稳定的单条消息更新，每次的分配数在小文档小目录和大文档大目录下相同（实测 2 次，其中一次是节点显示的新字符串）。
+
+#259 加了格式化负载：在 1 万与 10 万节点的窗口里，计数器换数、更新一条消息、切到格式化器还没建的德语，开销相同。
+
+还没做的：
+- Vue/CSS 这一层还没有本地化文字的写法；Rust 有 `Text::localized` 和视图里的 `localized(...)`。
+- 文字变长时，第一次排版按旧盒宽折行，同一帧里会先变高再变回去，标签以下的内容跟着移动两次。
+  这是文字管线的问题，不是本地化特有的，单独跟进。
 
 ### 零工作快路径
 

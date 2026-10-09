@@ -6,7 +6,7 @@
 //! Rust layout and component projection can therefore describe the same
 //! invalidation without depending on one another's implementation.
 
-use crate::layout_authority::LayoutFieldMask;
+use crate::layout_authority::{LayoutFieldMask, flag_names};
 use std::ops::{BitOr, BitOrAssign};
 
 /// What a layout node consumes or exports at a dependency boundary.
@@ -74,6 +74,19 @@ impl LayoutDependencyFootprint {
             .union(Self::EXPORTS_INTRINSIC_BLOCK)
             .union(Self::DEPENDS_ON_CHILD_METRICS)
     }
+
+    flag_names! {
+        CONSUMES_PARENT_INLINE_CONSTRAINT: "consumes_parent_inline_constraint",
+        CONSUMES_PARENT_BLOCK_CONSTRAINT: "consumes_parent_block_constraint",
+        EXPORTS_INTRINSIC_INLINE: "exports_intrinsic_inline",
+        EXPORTS_INTRINSIC_BLOCK: "exports_intrinsic_block",
+        EXPORTS_BASELINE: "exports_baseline",
+        DEPENDS_ON_CHILD_METRICS: "depends_on_child_metrics",
+        DEPENDS_ON_SIBLING_PREFIX: "depends_on_sibling_prefix",
+        DEPENDS_ON_CONTAINING_BLOCK: "depends_on_containing_block",
+        DEPENDS_ON_WRITING_CONTEXT: "depends_on_writing_context",
+        CONTEXT_LOCAL_COUPLING: "context_local_coupling",
+    }
 }
 
 impl BitOr for LayoutDependencyFootprint {
@@ -127,6 +140,15 @@ impl InvalidationKind {
 
     pub const fn without(self, other: Self) -> Self {
         Self(self.0 & !other.0)
+    }
+
+    flag_names! {
+        MEASURE: "measure",
+        PLACEMENT: "placement",
+        CONTEXT_REFLOW: "context_reflow",
+        WRITING_CONTEXT: "writing_context",
+        SCROLL_OVERFLOW: "scroll_overflow",
+        TOPOLOGY: "topology",
     }
 }
 
@@ -184,6 +206,23 @@ impl InvalidationReason {
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    flag_names! {
+        STYLE: "style",
+        TEXT: "text",
+        FONT: "font",
+        PARENT_CONSTRAINT: "parent_constraint",
+        CONTAINING_BLOCK: "containing_block",
+        SIBLING: "sibling",
+        CONTEXT: "context",
+        WRITING: "writing",
+        SCROLL: "scroll",
+        RESOURCE: "resource",
+        LOCALE: "locale",
+        VIEWPORT: "viewport",
+        TOPOLOGY: "topology",
+        UNKNOWN: "unknown",
     }
 }
 

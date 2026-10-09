@@ -338,6 +338,9 @@ pub trait ComponentView: Clone + PartialEq + Send + 'static {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Text {
     pub value: String,
+    /// Shown instead of [`Self::value`]: a message resolved in the locale of
+    /// the scope the text is in, and again when that locale changes.
+    pub localized: Option<crate::LocalizedText>,
     /// Painted, but omitted from accessibility projection.
     pub decorative: bool,
     pub style: NodeStyle,
@@ -347,8 +350,17 @@ impl Text {
     pub fn new(value: impl Into<String>) -> Self {
         Self {
             value: value.into(),
+            localized: None,
             decorative: false,
             style: NodeStyle::default(),
+        }
+    }
+
+    /// Text that says `localized` in the locale of the scope it is in.
+    pub fn localized(localized: crate::LocalizedText) -> Self {
+        Self {
+            localized: Some(localized),
+            ..Self::new("")
         }
     }
 
@@ -439,13 +451,24 @@ impl ComponentView for Text {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        if world.text(id) != Some(self.value.as_str()) {
-            mutations.set_text(
-                id,
-                TextContent {
-                    value: self.value.clone().into(),
-                },
-            );
+        match &self.localized {
+            Some(localized) => {
+                if world.localized_text(id) != Some(localized) {
+                    mutations.set_localized_text(id, Some(localized.clone()));
+                }
+            }
+            // Written text is literal; writing it ends a localization.
+            None => {
+                if world.text(id) != Some(self.value.as_str()) || world.localized_text(id).is_some()
+                {
+                    mutations.set_text(
+                        id,
+                        TextContent {
+                            value: self.value.clone().into(),
+                        },
+                    );
+                }
+            }
         }
         project_common(
             id,

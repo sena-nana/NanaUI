@@ -47,6 +47,10 @@ pub(crate) fn intern_empty_children(children: &mut Arc<Vec<StableNodeId>>) {
 pub(crate) struct Hierarchy {
     pub parent: Option<StableNodeId>,
     pub children: Arc<Vec<StableNodeId>>,
+    /// This node's index in its parent's `children`. Every edit of a child
+    /// list renumbers the children it shifted, which that edit already moves,
+    /// so finding a sibling never scans the list.
+    pub index_in_parent: u32,
 }
 
 impl Default for Hierarchy {
@@ -54,6 +58,7 @@ impl Default for Hierarchy {
         Self {
             parent: None,
             children: Arc::clone(&EMPTY_CHILDREN),
+            index_in_parent: 0,
         }
     }
 }
@@ -399,6 +404,17 @@ pub(crate) struct NodeStore {
     /// holds an entry: its metrics are the lines it wrapped to, and layout
     /// needs this to give it more room once its box may grow.
     text_natural_widths: HashMap<StableNodeId, f32>,
+    /// The width a plain text that wraps was last shaped against: its box
+    /// width then, or infinity when it had no box yet. Text that does not
+    /// wrap holds no entry. Layout trusts the lines' own width only within a
+    /// box at least this narrow; see `text_inline_size`.
+    text_wrap_limits: HashMap<StableNodeId, f32>,
+    /// Languages nodes name for themselves (`lang`). Only those nodes hold an
+    /// entry; their subtrees inherit through `ComputedStyle::language`.
+    languages: HashMap<StableNodeId, nana_text::font::LanguageTag>,
+    /// Typography scales nodes set for themselves. Only those nodes hold an
+    /// entry; their subtrees inherit through `ComputedStyle::text_scale`.
+    text_scales: HashMap<StableNodeId, f32>,
     /// Application-owned rich text (spans over the node's text), only for
     /// nodes given one with `SetRichText`.
     rich_texts: HashMap<StableNodeId, nana_ui_core::RichText>,
@@ -490,6 +506,9 @@ impl NodeStore {
         self.text_viewport_pins.remove(&id);
         self.text_drop_indicators.remove(&id);
         self.text_natural_widths.remove(&id);
+        self.text_wrap_limits.remove(&id);
+        self.languages.remove(&id);
+        self.text_scales.remove(&id);
         self.rich_texts.remove(&id);
         self.rich_editor_marks.remove(&id);
         self.glyph_presentations.remove(&id);
@@ -668,6 +687,14 @@ impl NodeStore {
         text_natural_width,
         set_text_natural_width
     );
+    sparse!(text_wrap_limits, f32, text_wrap_limit, set_text_wrap_limit);
+    sparse!(
+        languages,
+        nana_text::font::LanguageTag,
+        language,
+        set_language
+    );
+    sparse!(text_scales, f32, text_scale, set_text_scale);
     sparse!(rich_texts, nana_ui_core::RichText, rich_text, set_rich_text);
     sparse!(
         glyph_presentations,
@@ -697,23 +724,42 @@ impl NodeStore {
         }
     }
 
-    /// Stamps `id`'s text as resolved at its current revisions.
+    /// Notes that a typography scale change reached `id`'s text; see
+    /// [`crate::text_node::TextNodeState::note_scale`].
+    pub(crate) fn note_text_scale(&mut self, id: StableNodeId) -> bool {
+        self.text_nodes
+            .get_mut(&id)
+            .is_some_and(crate::text_node::TextNodeState::note_scale)
+    }
+
+    /// Whether a typography scale change reached `id`'s text since it last
+    /// resolved, clearing it.
+    pub(crate) fn take_text_scale_pending(&mut self, id: StableNodeId) -> bool {
+        self.text_nodes
+            .get_mut(&id)
+            .is_some_and(crate::text_node::TextNodeState::take_scale_pending)
+    }
+
+    /// Stamps `id`'s text as resolved at its current revisions. Returns
+    /// whether a language change had invalidated it in vain; see
+    /// [`crate::text_node::TextNodeState::mark_resolved`].
     pub(crate) fn mark_text_resolved(
         &mut self,
         id: StableNodeId,
         backend: crate::text_node::TextBackendEpoch,
         constraints: Option<crate::TextShapeConstraints>,
-    ) {
+    ) -> bool {
         let Some(record) = self.nodes.get(id) else {
-            return;
+            return false;
         };
         let text_node = !record.text.value.is_empty()
             || matches!(record.kind.as_ref(), crate::world::NodeKind::Text);
         let constraints =
             constraints.map(|constraints| (constraints, record.style.text_horizontal_alignment));
-        if let Some(text) = self.text_nodes.get_mut(&id) {
-            text.mark_resolved(backend, constraints, text_node);
-        }
+        let language = record.resolved.0.language.clone();
+        self.text_nodes.get_mut(&id).is_some_and(|text| {
+            text.mark_resolved(backend, constraints, text_node, language.as_ref())
+        })
     }
 
     /// The `nana-text` source for `id`'s current text, built once per content

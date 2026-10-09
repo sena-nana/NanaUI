@@ -509,7 +509,7 @@ impl UiWorld {
         // A pixel length can only take a viewport dependency away.
         let record = self.record_mut(sample.target);
         if record.layout_depends_on_viewport {
-            record.layout_depends_on_viewport = record.style.layout.depends_on_viewport();
+            record.layout_depends_on_viewport = record.resolved_layout.depends_on_viewport();
         }
         if sample.property != crate::AnimatableProperty::Margin {
             // Written straight onto the authored style, not through
@@ -522,12 +522,12 @@ impl UiWorld {
         // that, as a style write would, rather than an unknown cause that
         // lays the whole subtree out again every frame.
         let changed = match sample.property {
-            crate::AnimatableProperty::Width | crate::AnimatableProperty::Height => {
-                nana_ui_core::LayoutStyleChange::SIZING
-            }
+            crate::AnimatableProperty::Width => nana_ui_core::LayoutStyleChange::WIDTH,
+            crate::AnimatableProperty::Height => nana_ui_core::LayoutStyleChange::HEIGHT,
             _ => nana_ui_core::LayoutStyleChange::SPACING,
         };
-        self.record_layout_invalidation(sample.target, super::layout_style_invalidation(changed));
+        let invalidation = self.classify_layout_change(sample.target, changed);
+        self.record_layout_invalidation(sample.target, invalidation);
         self.mark_subtree(
             sample.target,
             DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,

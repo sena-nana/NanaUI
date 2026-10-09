@@ -5006,14 +5006,14 @@ fn diff_tree(shape: &DiffShape, rows: usize) -> (UiWorld, DocumentId) {
 
 /// Run one scoped pass the way the frame driver does, then assert the retained
 /// cache agrees with a full recompute at EVERY node.
-/// Emitted boxes and children measured BY THE SCOPED PASS. The counters have to
-/// be read before the verification recompute below, which measures everything
-/// by definition.
+/// Emitted boxes and children measured BY THE SCOPED PASS.
 struct ScopedStep {
     emitted: usize,
     children_measured: usize,
     measure_plans_reused: usize,
     plans_reused: usize,
+    suffixes_replayed: usize,
+    full_document_fallbacks: usize,
 }
 
 fn scoped_step_matches_full(
@@ -5027,7 +5027,6 @@ fn scoped_step_matches_full(
     // Layout reads inherited writing context from the resolved style, as the
     // frame pipeline resolves it before layout.
     world.resolve_styles(&work.style).unwrap();
-    super::plan_stats::reset();
     let emitted = RuntimeLayoutEngine
         .layout_document_with_frontier(
             world,
@@ -5038,11 +5037,14 @@ fn scoped_step_matches_full(
             false,
         )
         .unwrap();
+    let execution = retained.execution_stats(document);
     let step = ScopedStep {
         emitted: emitted.len(),
-        children_measured: super::plan_stats::children_measured(),
-        measure_plans_reused: super::plan_stats::measure_plans_reused(),
-        plans_reused: super::plan_stats::plans_reused(),
+        children_measured: execution.children_measured,
+        measure_plans_reused: execution.measure_plans_reused,
+        plans_reused: execution.placement_plans_reused,
+        suffixes_replayed: execution.suffixes_replayed,
+        full_document_fallbacks: retained.frontier_stats(document).full_document_fallbacks,
     };
     write_changed_boxes(world, &emitted);
     let _ = world.take_system_work();
@@ -5104,7 +5106,6 @@ fn reversed_axes_keep_the_sequential_replay() {
                 },
             );
             world.commit(queue).unwrap();
-            super::plan_stats::reset();
             let work = world.take_system_work();
             let emitted = RuntimeLayoutEngine
                 .layout_document_with_frontier(
@@ -5116,10 +5117,9 @@ fn reversed_axes_keep_the_sequential_replay() {
                     false,
                 )
                 .unwrap();
-            let replayed = super::plan_stats::suffixes_replayed();
+            let replayed = retained.execution_stats(document).suffixes_replayed;
             write_changed_boxes(&mut world, &emitted);
             let _ = world.take_system_work();
-            // The full comparison, after the counter was read.
             let expected = full_boxes(&world, document, viewport);
             let cached = &retained.documents[&document].boxes;
             for (node, box_) in &expected {
@@ -5598,7 +5598,6 @@ fn content_growth_under_a_child_moves_its_siblings_with(container_height: Option
          exercising the case the style check cannot see"
     );
 
-    super::plan_stats::reset();
     let step = scoped_step_matches_full(
         &mut world,
         document,
@@ -5608,7 +5607,7 @@ fn content_growth_under_a_child_moves_its_siblings_with(container_height: Option
     );
     if container_height.is_some() {
         assert!(
-            super::plan_stats::plans_reused() > 0,
+            step.plans_reused > 0,
             "the container plan must be reached here, or the intrinsic check \
              this test exists to guard is never consulted"
         );
@@ -5846,8 +5845,7 @@ fn flex_line_intrinsic_change_does_not_measure_unaffected_lines() {
             "flex line cross size",
         );
         assert_eq!(
-            super::plan_stats::full_document_fallbacks(),
-            0,
+            step.full_document_fallbacks, 0,
             "{lines} lines fell back to the document"
         );
         let changed = world.layout_box(id(10)).expect("changed item");
@@ -5927,8 +5925,7 @@ fn grid_cell_intrinsic_change_does_not_measure_unaffected_cells() {
             "grid cell cross size",
         );
         assert_eq!(
-            super::plan_stats::full_document_fallbacks(),
-            0,
+            step.full_document_fallbacks, 0,
             "{rows} rows fell back to the document"
         );
         let changed = world.layout_box(id(10)).expect("changed cell");
@@ -6504,7 +6501,7 @@ fn a_default_spelled_two_ways_keeps_the_plan_but_a_real_direction_change_replays
             step.children_measured
         );
         assert_eq!(
-            super::plan_stats::suffixes_replayed() > 0,
+            step.suffixes_replayed > 0,
             expect_replay,
             "direction {spelling:?}: expected a replay from the edited child: {expect_replay}"
         );

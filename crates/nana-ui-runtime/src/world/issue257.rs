@@ -298,7 +298,6 @@ fn layout_with_seeds(
     retained: &mut RetainedLayoutCache,
     force_full: bool,
 ) -> Vec<(StableNodeId, crate::LayoutBox)> {
-    crate::layout_engine::plan_stats::reset();
     RuntimeLayoutEngine
         .layout_document_with_frontier(world, document(1), viewport, seeds, retained, force_full)
         .unwrap()
@@ -606,17 +605,16 @@ fn late_row_height(count: u64) -> GateBCounts {
         frontier.placement_nodes().contains(&following),
         "the next row stays on the placement frontier"
     );
-    assert!(
-        frontier.placement_nodes().contains(&following_label),
-        "a descendant that only moves stays on placement"
-    );
+    // A descendant that only moves moves with its row: placing the row at
+    // its new origin places it, so it is on neither frontier.
+    assert!(!frontier.placement_nodes().contains(&following_label));
     assert!(!frontier.measure_nodes().contains(&following_label));
     assert!(!frontier.measure_nodes().contains(&node(3_000)));
     assert!(!frontier.placement_nodes().contains(&node(3_000)));
     let prefix_emitted = emitted.iter().any(|(id, _)| *id == node(3_000));
     GateBCounts {
-        children_measured: crate::layout_engine::plan_stats::children_measured(),
-        suffixes_replayed: crate::layout_engine::plan_stats::suffixes_replayed(),
+        children_measured: retained.execution_stats(document(1)).children_measured,
+        suffixes_replayed: retained.execution_stats(document(1)).suffixes_replayed,
         following_measured,
         prefix_emitted,
         full_document_fallbacks: stats.full_document_fallbacks,

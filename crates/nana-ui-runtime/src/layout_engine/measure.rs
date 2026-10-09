@@ -80,24 +80,63 @@ fn block_containing_size_affects_leaf(
         || !length_ignores_block_containing_size(style.max_height)
 }
 
-pub(crate) fn length_ignores_block_containing_size(spec: Option<LengthSpec>) -> bool {
-    match spec {
-        None => true,
-        Some(spec) => matches!(
-            spec,
-            LengthSpec::Px(_)
-                | LengthSpec::Em(_)
-                | LengthSpec::Rem(_)
-                | LengthSpec::CalcEmOffset { .. }
-                | LengthSpec::CalcRemOffset { .. }
-                | LengthSpec::Viewport { .. }
-                | LengthSpec::CalcViewportOffset { .. }
-                | LengthSpec::Auto
-                | LengthSpec::Shrink
-                | LengthSpec::MinContent
-                | LengthSpec::MaxContent
-        ),
+/// Whether `style` sizes its box on each physical axis by a length of its
+/// own, reading no containing block: a definite width (height), limits that
+/// read none, and no box edge that does. Horizontal writing without an
+/// aspect ratio only; anything else says no.
+fn sizes_own_axes(
+    style: &nana_ui_core::LayoutStyle,
+    writing: nana_ui_core::WritingContext,
+) -> (bool, bool) {
+    if writing.is_vertical()
+        || aspect_ratio_is_usable(style)
+        || style.has_logical_box_edges()
+        || style
+            .flex_basis
+            .is_some_and(|basis| !definite_own_length(basis))
+        || box_edge_specs(style)
+            .into_iter()
+            .any(spec_tracks_containing_block)
+    {
+        return (false, false);
     }
+    let own = |size: Option<LengthSpec>, min: Option<LengthSpec>, max: Option<LengthSpec>| {
+        size.is_some_and(definite_own_length)
+            && length_ignores_block_containing_size(min)
+            && length_ignores_block_containing_size(max)
+    };
+    (
+        own(style.width, style.min_width, style.max_width),
+        own(style.height, style.min_height, style.max_height),
+    )
+}
+
+/// A length that is the box's own: absolute, font-relative or
+/// viewport-relative, never one resolved against the box's surroundings.
+fn definite_own_length(spec: LengthSpec) -> bool {
+    matches!(
+        spec,
+        LengthSpec::Px(_)
+            | LengthSpec::Em(_)
+            | LengthSpec::Rem(_)
+            | LengthSpec::CalcEmOffset { .. }
+            | LengthSpec::CalcRemOffset { .. }
+            | LengthSpec::Viewport { .. }
+            | LengthSpec::CalcViewportOffset { .. }
+    )
+}
+
+pub(crate) fn length_ignores_block_containing_size(spec: Option<LengthSpec>) -> bool {
+    spec.is_none_or(|spec| {
+        definite_own_length(spec)
+            || matches!(
+                spec,
+                LengthSpec::Auto
+                    | LengthSpec::Shrink
+                    | LengthSpec::MinContent
+                    | LengthSpec::MaxContent
+            )
+    })
 }
 
 /// A definite declaration can still resolve against a containing block. Such
@@ -119,6 +158,22 @@ pub(crate) fn depends_on_used_basis(spec: Option<LengthSpec>) -> bool {
 /// Percent, fill, fit-content, and calc that read a containing block.
 pub(crate) fn spec_tracks_containing_block(spec: Option<LengthSpec>) -> bool {
     depends_on_used_basis(spec) && !length_ignores_block_containing_size(spec)
+}
+
+/// Every padding and margin spec of `style`: each shorthand, then its sides.
+pub(super) fn box_edge_specs(style: &nana_ui_core::LayoutStyle) -> [Option<LengthSpec>; 10] {
+    [
+        style.padding,
+        style.padding_top,
+        style.padding_right,
+        style.padding_bottom,
+        style.padding_left,
+        style.margin,
+        style.margin_top,
+        style.margin_right,
+        style.margin_bottom,
+        style.margin_left,
+    ]
 }
 
 /// Compose the used size once the content-derived defaults are known.
@@ -341,6 +396,32 @@ pub(super) fn cross_follows_used_main(
         && (main_extent(measured, direction) - main_extent(used, direction)).abs() > 0.01
 }
 
+/// The inline size a text asks of a box `limit` wide.
+///
+/// Text that wrapped is as wide as the lines it wrapped to. The width it
+/// asks for is its lines unwrapped, as far as this box gives it room: a box
+/// that shrinks to its content widens again once its limit grows, and then
+/// the text rewraps to the new width. The lines' own width counts only when
+/// they were wrapped no wider than this box (`wrap_limit`): a word too long
+/// to break keeps such a line, and the box, wider. Lines wrapped against a
+/// wider box, or against none before the text had a box, are not lines this
+/// box holds; asking for them would keep a width the text no longer has, so
+/// the result would depend on which box the text was shaped in last.
+fn text_inline_size(
+    text: crate::TextMetrics,
+    natural: Option<f32>,
+    wrap_limit: Option<f32>,
+    limit: f32,
+) -> f32 {
+    let fits = natural.unwrap_or(text.width).min(limit);
+    let wrapped_within = wrap_limit.is_none_or(|wrapped| wrapped <= limit + 0.5);
+    if wrapped_within {
+        text.width.max(fits)
+    } else {
+        fits
+    }
+}
+
 /// A childless box whose own specs cannot move its border box off its text.
 ///
 /// Grid tracks, padding, border, min/max, and aspect ratio all can. Margin
@@ -401,10 +482,10 @@ fn measure_plain_childless(
     #[cfg(feature = "benchmark")]
     let mut clock = super::plan_stats::PhaseClock::start();
     let text_natural_width = text_metrics.and_then(|_| nodes.world.text_natural_width(id));
+    let text_wrap_limit = text_metrics.and_then(|_| nodes.world.text_wrap_limit(id));
     let text = text_metrics.unwrap_or_default();
     let limit = available.width.max(0.0);
-    let text_width =
-        text_natural_width.map_or(text.width, |natural| text.width.max(natural.min(limit)));
+    let text_width = text_inline_size(text, text_natural_width, text_wrap_limit, limit);
     let content_w = 0.0f32.max(text_width);
     let mut content_h = 0.0f32.max(text.height);
     if text_metrics.is_none()
@@ -542,11 +623,23 @@ fn measure_node(
     {
         keyed_available.height = 0.0;
     }
+    // A box whose size on an axis is its own -- a definite length, limits and
+    // box edges that read no containing block -- measures the same whatever
+    // extent it is offered on that axis: what it hands its children comes
+    // from that length. A resize that reaches its parent then finds its
+    // measurement instead of walking its children again.
+    let (own_width, own_height) = sizes_own_axes(node.style.as_ref(), node.writing);
+    if own_width {
+        keyed_available.width = 0.0;
+    }
+    if own_height {
+        keyed_available.height = 0.0;
+    }
     let cache_key = MeasurementKey::new(
         id,
         keyed_available,
         parent_direction,
-        viewport,
+        super::viewport_basis(node.style.as_ref(), viewport),
         parent_font_px,
         node.writing,
         node.containing_writing,
@@ -569,7 +662,6 @@ fn measure_node(
             .retained
             .intrinsic_metrics
             .get(&PassIntrinsicCache::intrinsic_key(cache_key))
-            .copied()
     {
         cache.seed_intrinsic(
             PassIntrinsicCache::intrinsic_key(cache_key),
@@ -600,6 +692,7 @@ fn measure_node(
         && child_ids.is_empty()
         && plain_childless_content(style_arc.as_ref())
         && nodes.world.standard_visual_ref(id).is_none()
+        && nodes.world.replaced_natural_size(id).is_none()
     {
         return measure_plain_childless(
             id,
@@ -635,6 +728,7 @@ fn measure_node(
         return Ok(size);
     }
     let text_natural_width = text_metrics.and_then(|_| nodes.world.text_natural_width(id));
+    let text_wrap_limit = text_metrics.and_then(|_| nodes.world.text_wrap_limit(id));
     let style = style_arc.as_ref();
     if style.omits_box() {
         return Ok(Size::default());
@@ -774,13 +868,21 @@ fn measure_node(
     // The container is content-sized on at least one axis, so it owes a look at
     // its children. Everything it needs from them may still be unchanged; see
     // [`MeasurePlan`].
-    if unforced
-        && let Some(scope) = scope
-        && let Some(plan) = scope
-            .retained
-            .measure_plans
-            .get(&id)
-            .and_then(|plans| plans.get(available))
+    let retained_plan = if unforced {
+        scope.and_then(|scope| scope.retained.measure_plans.get(&id)?.get(available))
+    } else {
+        None
+    };
+    let had_plan = retained_plan.is_some();
+    // A replaced box takes its resource's natural size where nothing else
+    // sizes it (Issue #263); with one axis set, the other follows the natural
+    // aspect ratio below.
+    let natural = nodes
+        .world
+        .replaced_natural_size(id)
+        .filter(|natural| natural.width > 0.0 && natural.height > 0.0);
+    if let Some(scope) = scope
+        && let Some(plan) = retained_plan
         && plan.inputs_match(
             available,
             parent_direction,
@@ -790,12 +892,16 @@ fn measure_node(
             &child_ids,
             text_metrics,
             text_natural_width,
+            text_wrap_limit,
             writing,
         )
         // An ancestor can rewrite a child's effective style without touching
         // the child (overlay hosting, an open menu surface), which would move
         // the measurement with every per-child input still comparing equal.
         && nodes.world.children_layout_style_is_local(id)
+        // A box a replaced resource sizes records no plan (see `cacheable`);
+        // one recorded before its natural size arrived no longer holds.
+        && natural.is_none()
     {
         let reused =
             if measure_plan_children_unchanged(plan, viewport, child_font_px, nodes, cache, scope)?
@@ -817,8 +923,7 @@ fn measure_node(
                 grid_measure_delta(id, plan, viewport, child_font_px, nodes, cache, scope)?
             };
         if let Some(size) = reused {
-            #[cfg(any(test, feature = "benchmark"))]
-            super::plan_stats::note_measure_plan_reused();
+            cache.note_measure_plan_reused();
             cache.note_measure_cache_hit();
             cache.insert(cache_key, size);
             return Ok(size);
@@ -828,6 +933,9 @@ fn measure_node(
     // We reached the actual child traversal. Fixed-size nodes, retained used
     // sizes, measure plans, and shared intrinsic facts all return above this
     // point and therefore do not count as full-subtree work.
+    if had_plan {
+        cache.note_plan_miss();
+    }
     cache.note_measure_node();
     if scope.is_some() {
         cache.note_measure_cache_miss();
@@ -880,8 +988,7 @@ fn measure_node(
         } else {
             content_available
         };
-        #[cfg(any(test, feature = "benchmark"))]
-        super::plan_stats::note_child_measured();
+        cache.note_child_measured();
         child_sizes.push(intrinsic_size_scoped(
             *child,
             child_available,
@@ -919,6 +1026,7 @@ fn measure_node(
     // `(child, used main, size)`, re-checked by a measure plan.
     let mut hypothetical: Vec<(StableNodeId, f32, Size)> = Vec::new();
     let mut recorded_grid = None;
+    let mut sequential_main_sum = 0.0f64;
     let children = if uses_2d_grid(style, &flow_children, nodes) {
         let grid = layout_grid_2d(
             style,
@@ -1036,15 +1144,18 @@ fn measure_node(
             }
         }
         let gaps = gap * flow_children.len().saturating_sub(1) as f32;
-        let mut main = gaps;
+        // Summed exactly: a plan that patches one child's share into the
+        // total then reaches the bits this sum does. See
+        // `sequential_main_term`.
+        let mut main = f64::from(gaps);
         let mut cross = 0.0f32;
         for ((child, size), used) in flow_children.iter().zip(&child_sizes).zip(&used_sizes) {
             let margin = child_margin(*child, nodes);
-            main += main_extent(*size, direction)
-                + main_start_margin(margin, direction)
-                + main_end_margin(margin, direction);
+            main += sequential_main_term(*size, margin, direction);
             cross = cross.max(cross_extent(*used, direction) + cross_margin(margin, direction));
         }
+        sequential_main_sum = main;
+        let main = main as f32;
         match direction {
             FlexDirection::Row => Size::new(main.max(0.0), cross),
             FlexDirection::Column => Size::new(cross, main.max(0.0)),
@@ -1055,13 +1166,12 @@ fn measure_node(
         clock.lap(5);
     }
     let text = text_metrics.unwrap_or_default();
-    // Text that wrapped is as wide as the lines it wrapped to. The width it
-    // asks for is its lines unwrapped, as far as this box gives it room: a
-    // box that shrinks to its content widens again once its limit grows,
-    // and then the text rewraps to the new width.
-    let text_width = text_natural_width.map_or(text.width, |natural| {
-        text.width.max(natural.min(content_available.width))
-    });
+    let text_width = text_inline_size(
+        text,
+        text_natural_width,
+        text_wrap_limit,
+        content_available.width,
+    );
     let mut content = Size::new(
         children.width.max(text_width),
         children.height.max(text.height),
@@ -1083,6 +1193,12 @@ fn measure_node(
         content = Size::new(
             crate::rich_text::markdown_content_width(&blocks, &geometry),
             geometry.bounds.height,
+        );
+    }
+    if let Some(natural) = natural {
+        content = Size::new(
+            content.width.max(natural.width),
+            content.height.max(natural.height),
         );
     }
     if text_metrics.is_none()
@@ -1153,7 +1269,7 @@ fn measure_node(
         _ => max_content_w,
     };
     let default_height = content.height + chrome.height;
-    let size = finish_intrinsic_size(
+    let mut size = finish_intrinsic_size(
         style,
         fonts,
         viewport,
@@ -1164,6 +1280,24 @@ fn measure_node(
         default_width,
         default_height,
     );
+    if let Some(natural) = natural
+        && style.aspect_ratio.is_none()
+    {
+        // One axis set and the other not: the natural aspect ratio carries
+        // the set one over, content box to content box.
+        let auto = |spec: Option<LengthSpec>| matches!(spec, None | Some(LengthSpec::Auto));
+        match (auto(style.width), auto(style.height)) {
+            (false, true) => {
+                let inner = (size.width - chrome.width).max(0.0);
+                size.height = inner * natural.height / natural.width + chrome.height;
+            }
+            (true, false) => {
+                let inner = (size.height - chrome.height).max(0.0);
+                size.width = inner * natural.width / natural.height + chrome.width;
+            }
+            _ => {}
+        }
+    }
     // Record only on a scoped pass. A full pass rebuilds every container in
     // the document, so recording there costs an `Arc` clone per child and a
     // sort per container across the whole tree -- 1.79 -> 2.55 ms on the
@@ -1197,7 +1331,9 @@ fn measure_node(
             && (!grid_measure || recorded_grid.is_some())
             && (!ifc || ifc_local)
             && grid_tracks.is_none_or(|tracks| tracks.is_empty())
-            && nodes.world.children_layout_style_is_local(id);
+            && nodes.world.children_layout_style_is_local(id)
+            // Plan deltas rebuild a size from the children alone, not the natural size above.
+            && natural.is_none();
         let sequential = cacheable
             && recorded_grid.is_none()
             && plain_main
@@ -1249,14 +1385,20 @@ fn measure_node(
                 children: Arc::clone(&child_ids),
                 text_metrics,
                 text_natural_width,
+                text_wrap_limit,
                 child_available: content_available,
                 child_direction: direction,
                 entries,
                 size,
                 sequential,
+                main_sum: sequential_main_sum,
+                default_cross: cross_extent(Size::new(default_width, default_height), direction),
                 grid: recorded_grid,
             }
         });
+        if had_plan && recorded.is_some() {
+            cache.note_plan_rebuilt();
+        }
         let slots = nodes.measure_plans.entry(id).or_default();
         match recorded {
             Some(plan) => slots.insert(plan),
@@ -1376,19 +1518,6 @@ pub(super) fn retained_style_matches(
     }
 }
 
-fn main_and_cross_margin(
-    style: &nana_ui_core::LayoutStyle,
-    edge_base: f32,
-    font_px: f32,
-    direction: FlexDirection,
-) -> (f32, f32) {
-    let margin = style.resolved_margin_against_fonts(Some(edge_base), fonts_of(style, font_px));
-    (
-        main_start_margin(margin, direction) + main_end_margin(margin, direction),
-        cross_margin(margin, direction),
-    )
-}
-
 /// Apply one measured child's main-size delta to a sequential container.
 ///
 /// Returns `None` when the cached sum is not a safe description of the used
@@ -1410,7 +1539,20 @@ fn sequential_measure_delta(
         .writing
         .logical_size(plan.child_available.width, plan.child_available.height)
         .0;
-    let mut main_delta = 0.0f32;
+    let margin_of = |style: &Option<Arc<nana_ui_core::LayoutStyle>>| {
+        style.as_ref().map_or_else(Default::default, |style| {
+            style.resolved_margin_against_fonts(Some(edge_base), fonts_of(style, child_font_px))
+        })
+    };
+    let mut main_sum = plan.main_sum;
+    // A container whose cross size is its own length does not read its
+    // children's cross extents: a child that grew sideways changes nothing
+    // the patch below cannot express.
+    let (own_width, own_height) = sizes_own_axes(plan.style.as_ref(), plan.writing);
+    let cross_own = match direction {
+        FlexDirection::Column => own_width,
+        FlexDirection::Row => own_height,
+    };
     let mut patches: Vec<(StableNodeId, Size, Option<Arc<nana_ui_core::LayoutStyle>>)> = Vec::new();
     for affected in scope.affected.iter().copied() {
         let Some(entry) = plan.entry(affected) else {
@@ -1436,31 +1578,37 @@ fn sequential_measure_delta(
             cache,
             Some(scope),
         )?;
-        let (old_margin, old_cross) = entry.style.as_ref().map_or((0.0, 0.0), |style| {
-            main_and_cross_margin(style, edge_base, child_font_px, direction)
-        });
-        let (new_margin, new_cross) = current_style.as_ref().map_or((0.0, 0.0), |style| {
-            main_and_cross_margin(style, edge_base, child_font_px, direction)
-        });
-        if (cross_extent(measured, direction) + new_cross)
-            != (cross_extent(old, direction) + old_cross)
+        let (old_margin, new_margin) = (margin_of(&entry.style), margin_of(&current_style));
+        if !cross_own
+            && (cross_extent(measured, direction) + cross_margin(new_margin, direction))
+                != (cross_extent(old, direction) + cross_margin(old_margin, direction))
         {
             return Ok(None);
         }
-        main_delta += (main_extent(measured, direction) + new_margin)
-            - (main_extent(old, direction) + old_margin);
+        // Exact, as the full sum is: the patched total has the bits summing
+        // every child again would, however many edits came before.
+        main_sum += sequential_main_term(measured, new_margin, direction)
+            - sequential_main_term(old, old_margin, direction);
         patches.push((entry.child, measured, current_style));
     }
     if patches.is_empty() {
         return Ok(None);
     }
-    let mut size = plan.size;
-    match direction {
-        FlexDirection::Column => size.height += main_delta,
-        FlexDirection::Row => size.width += main_delta,
-    }
+    let main = (main_sum as f32).max(0.0);
+    let Some(size) = finish_planned_size(id, plan, nodes, |chrome| match direction {
+        FlexDirection::Column => (plan.default_cross, main + chrome.height),
+        // A root with no parent flow stretches to the available width.
+        FlexDirection::Row if plan.parent_direction.is_none() => {
+            (plan.available.width, plan.default_cross)
+        }
+        FlexDirection::Row => (main + chrome.width, plan.default_cross),
+    })?
+    else {
+        return Ok(None);
+    };
     let mut updated = plan.clone();
     updated.size = size;
+    updated.main_sum = main_sum;
     for (child, intrinsic, style) in patches {
         if let Ok(slot) = updated
             .entries
@@ -1474,6 +1622,59 @@ fn sequential_measure_delta(
     }
     nodes.measure_plans.entry(id).or_default().insert(updated);
     Ok(Some(size))
+}
+
+/// One in-flow child's share of a sequential container's main size: its
+/// border box and both main margins. Every share is a few `f32` and every
+/// total a sum of them, both exact in `f64` at any size a document reaches,
+/// so taking one child's share out of a retained total and putting its new
+/// one in gives the bits summing every child would. In `f32` the patched
+/// total drifted from the summed one by an ulp an edit.
+fn sequential_main_term(
+    size: Size,
+    margin: nana_ui_core::PaddingSpec,
+    direction: FlexDirection,
+) -> f64 {
+    f64::from(main_extent(size, direction))
+        + f64::from(main_start_margin(margin, direction))
+        + f64::from(main_end_margin(margin, direction))
+}
+
+/// A planned container's used size, the final step the full measure takes:
+/// `defaults` turns the container's chrome into its content-derived default
+/// width and height. `None` when the node is gone.
+fn finish_planned_size(
+    id: StableNodeId,
+    plan: &MeasurePlan,
+    nodes: &mut LayoutInputMap<'_>,
+    defaults: impl FnOnce(Size) -> (f32, f32),
+) -> Result<Option<Size>, UiWorldError> {
+    let Some(node) = nodes.get(id)? else {
+        return Ok(None);
+    };
+    let edge_base = node
+        .containing_writing
+        .inline_size(plan.available.width, plan.available.height);
+    let style = plan.style.as_ref();
+    let fonts = fonts_of(style, plan.parent_font_px);
+    let padding = style.resolved_padding_against_fonts(Some(edge_base), fonts);
+    let border = style.resolved_border_edges();
+    let chrome = Size::new(
+        padding.left + padding.right + border.left + border.right,
+        padding.top + padding.bottom + border.top + border.bottom,
+    );
+    let (default_width, default_height) = defaults(chrome);
+    Ok(Some(finish_intrinsic_size(
+        style,
+        fonts,
+        plan.viewport,
+        plan.available,
+        edge_base,
+        chrome,
+        plan.parent_direction,
+        default_width,
+        default_height,
+    )))
 }
 
 /// Recompute a wrapping flex from the lines whose items changed.
@@ -1787,17 +1988,6 @@ fn grid_measure_delta(
         cache,
         Some(scope),
     )?;
-    let containing_writing = match nodes.get(id)? {
-        Some(node) => node.containing_writing,
-        None => return Ok(None),
-    };
-    let edge_base = containing_writing.inline_size(plan.available.width, plan.available.height);
-    let padding = style.resolved_padding_against_fonts(Some(edge_base), fonts);
-    let border = style.resolved_border_edges();
-    let chrome = Size::new(
-        padding.left + padding.right + border.left + border.right,
-        padding.top + padding.bottom + border.top + border.bottom,
-    );
     let (width, height) = plan.writing.physical_size(
         grid_axis_extent(&solved.col_sizes, solved.col_gap),
         grid_axis_extent(&solved.row_sizes, solved.row_gap),
@@ -1805,22 +1995,17 @@ fn grid_measure_delta(
     let content = Size::new(width, height);
     // A root with no parent flow stretches to the available width. Every other
     // container uses the track extent plus chrome, matching the full measure.
-    let default_width = if plan.parent_direction.is_none() {
-        plan.available.width
-    } else {
-        content.width + chrome.width
+    let Some(size) = finish_planned_size(id, plan, nodes, |chrome| {
+        let default_width = if plan.parent_direction.is_none() {
+            plan.available.width
+        } else {
+            content.width + chrome.width
+        };
+        (default_width, content.height + chrome.height)
+    })?
+    else {
+        return Ok(None);
     };
-    let size = finish_intrinsic_size(
-        style,
-        fonts,
-        plan.viewport,
-        plan.available,
-        edge_base,
-        chrome,
-        plan.parent_direction,
-        default_width,
-        content.height + chrome.height,
-    );
     let mut updated = plan.clone();
     updated.size = size;
     updated.grid = Some(GridTrackPlan::from_layout(&solved));

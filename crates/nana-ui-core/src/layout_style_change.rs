@@ -52,12 +52,38 @@ impl LayoutStyleChange {
     pub const VISIBILITY: Self = Self(1 << 16);
     /// Colours, opacity, radius and the rest of paint.
     pub const PAINT: Self = Self(1 << 17);
+    /// Of [`Self::SIZING`], a field that sizes the box horizontally.
+    pub const SIZING_WIDTH: Self = Self(1 << 18);
+    /// Of [`Self::SIZING`], a field that sizes the box vertically.
+    pub const SIZING_HEIGHT: Self = Self(1 << 19);
+    /// Width and its limits.
+    pub const WIDTH: Self = Self(Self::SIZING.0 | Self::SIZING_WIDTH.0);
+    /// Height and its limits.
+    pub const HEIGHT: Self = Self(Self::SIZING.0 | Self::SIZING_HEIGHT.0);
+    /// A sizing field of neither axis alone -- box sizing, aspect ratio --
+    /// sizes the box on both.
+    pub const SIZING_BOTH: Self =
+        Self(Self::SIZING.0 | Self::SIZING_WIDTH.0 | Self::SIZING_HEIGHT.0);
+    /// Of [`Self::FLOW`], a field that sizes a flex item along its parent's
+    /// line: grow, shrink and basis.
+    pub const FLEX_FACTOR: Self = Self(1 << 20);
+    /// Of [`Self::FLOW`], a field that shapes the flow itself: display,
+    /// order, wrapping, direction of the line, isolation.
+    pub const FLOW_SHAPE: Self = Self(1 << 21);
+    /// Grow, shrink and basis.
+    pub const FLEX_SIZING: Self = Self(Self::FLOW.0 | Self::FLEX_FACTOR.0);
+    /// Display, order, wrapping, line direction, isolation.
+    pub const FLOW_STRUCTURE: Self = Self(Self::FLOW.0 | Self::FLOW_SHAPE.0);
 
     /// Kinds that move or resize boxes.
     pub const LAYOUT: Self = Self(
         Self::WRITING.0
             | Self::FLOW.0
             | Self::SIZING.0
+            | Self::SIZING_WIDTH.0
+            | Self::SIZING_HEIGHT.0
+            | Self::FLEX_FACTOR.0
+            | Self::FLOW_SHAPE.0
             | Self::SPACING.0
             | Self::POSITION.0
             | Self::ALIGNMENT.0
@@ -73,6 +99,10 @@ impl LayoutStyleChange {
         Self::WRITING.0
             | Self::FLOW.0
             | Self::SIZING.0
+            | Self::SIZING_WIDTH.0
+            | Self::SIZING_HEIGHT.0
+            | Self::FLEX_FACTOR.0
+            | Self::FLOW_SHAPE.0
             | Self::SPACING.0
             | Self::POSITION.0
             | Self::ALIGNMENT.0
@@ -146,17 +176,17 @@ macro_rules! layout_style_fields {
 
 layout_style_fields! {
     paint_colors: PAINT,
-    layout_isolation: FLOW,
+    layout_isolation: FLOW_STRUCTURE,
     direction: WRITING by same_direction,
     dir: WRITING,
     writing_mode: WRITING,
     unsupported_writing_mode: WRITING,
     text_orientation: WRITING,
-    flex_reverse: FLOW,
-    order: FLOW,
-    flex_wrap: FLOW,
-    display: FLOW,
-    box_sizing: SIZING,
+    flex_reverse: FLOW_STRUCTURE,
+    order: FLOW_STRUCTURE,
+    flex_wrap: FLOW_STRUCTURE,
+    display: FLOW_STRUCTURE,
+    box_sizing: SIZING_BOTH,
     position: POSITION,
     z_index: STACKING,
     isolation: STACKING,
@@ -187,22 +217,22 @@ layout_style_fields! {
     offset_bottom: POSITION,
     offset_left: POSITION,
     logical_inset: POSITION,
-    width: SIZING,
-    height: SIZING,
-    min_width: SIZING,
-    max_width: SIZING,
-    min_height: SIZING,
-    max_height: SIZING,
-    allow_shrink: SIZING,
+    width: WIDTH,
+    height: HEIGHT,
+    min_width: WIDTH,
+    max_width: WIDTH,
+    min_height: HEIGHT,
+    max_height: HEIGHT,
+    allow_shrink: SIZING_BOTH,
     align_items: ALIGNMENT,
     align_self: ALIGNMENT,
     align_content: ALIGNMENT,
     justify_content: ALIGNMENT,
     justify_items: ALIGNMENT,
     justify_self: ALIGNMENT,
-    flex_grow: FLOW,
-    flex_shrink: FLOW,
-    flex_basis: FLOW,
+    flex_grow: FLEX_SIZING,
+    flex_shrink: FLEX_SIZING,
+    flex_basis: FLEX_SIZING,
     overflow_x: SCROLL,
     overflow_y: SCROLL,
     text_overflow_ellipsis: TEXT_LAYOUT,
@@ -214,7 +244,7 @@ layout_style_fields! {
     white_space: TEXT_LAYOUT,
     word_break: TEXT_LAYOUT,
     overflow_wrap: TEXT_LAYOUT,
-    aspect_ratio: SIZING,
+    aspect_ratio: SIZING_BOTH,
     text_align: TEXT_LAYOUT,
     float: POSITION,
     clear: POSITION,
@@ -285,12 +315,39 @@ mod tests {
         wider.cursor = Some(crate::CursorSpec::Pointer);
         assert_eq!(
             base.changed_fields(&wider),
-            LayoutStyleChange::SIZING.union(LayoutStyleChange::CURSOR)
+            LayoutStyleChange::WIDTH.union(LayoutStyleChange::CURSOR)
         );
         let copied = base.with_fields_of(&wider, LayoutStyleChange::SIZING);
         assert_eq!(copied.width, Some(LengthSpec::Px(10.0)));
         assert_eq!(copied.cursor, None);
         assert!(base.changed_fields(&base).is_empty());
+    }
+
+    /// A sizing field says which axis it sizes; one of neither sizes both.
+    #[test]
+    fn sizing_fields_report_their_axis() {
+        let base = LayoutStyle::default();
+        let taller = LayoutStyle {
+            max_height: Some(LengthSpec::Px(10.0)),
+            ..base.clone()
+        };
+        let changed = base.changed_fields(&taller);
+        assert!(changed.intersects(LayoutStyleChange::SIZING));
+        assert!(changed.intersects(LayoutStyleChange::SIZING_HEIGHT));
+        assert!(!changed.intersects(LayoutStyleChange::SIZING_WIDTH));
+        let ratio = LayoutStyle {
+            aspect_ratio: Some(2.0),
+            ..base.clone()
+        };
+        assert_eq!(base.changed_fields(&ratio), LayoutStyleChange::SIZING_BOTH);
+        let growing = LayoutStyle {
+            flex_grow: Some(1.0),
+            ..base.clone()
+        };
+        assert_eq!(
+            base.changed_fields(&growing),
+            LayoutStyleChange::FLEX_SIZING
+        );
     }
 
     #[test]
@@ -320,7 +377,7 @@ mod tests {
                     layout_isolation: true,
                     ..LayoutStyle::default()
                 },
-                LayoutStyleChange::FLOW,
+                LayoutStyleChange::FLOW_STRUCTURE,
             ),
         ] {
             let changes = base.changed_fields(&changed);

@@ -361,7 +361,6 @@ fn measure(
         }
         let write = started.elapsed();
         let bumped = card.runtime.context().world().generation() - generation;
-        nana_ui_runtime::plan_stats::reset();
         let started = Instant::now();
         let update = card.runtime.flush(viewport, shaper).unwrap();
         let flush = started.elapsed();
@@ -371,12 +370,15 @@ fn measure(
         writes.push(write);
         flushes.push(flush);
         generations += bumped;
-        measured += nana_ui_runtime::plan_stats::children_measured();
-        reused += nana_ui_runtime::plan_stats::plans_reused();
+        // Counters survive an idle flush unchanged; an idle frame did no
+        // layout work, so it adds nothing.
         if update.is_idle() {
             idle += 1;
             continue;
         }
+        let work = card.runtime.context().last_work_counters();
+        measured += work.layout_children_measured;
+        reused += work.layout_placement_plans_reused;
         let profile = card.runtime.context().last_frame_profile();
         for (index, stage) in FrameStage::ALL.into_iter().enumerate() {
             let timing = profile.stage(stage).unwrap();

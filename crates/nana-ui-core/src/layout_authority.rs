@@ -6,6 +6,21 @@
 
 use crate::FlexDirection;
 
+/// `names(self)` for a set of flag constants, from a `FLAG: "name"` table:
+/// the name of every flag the set holds, in table order.
+macro_rules! flag_names {
+    ($($flag:ident: $name:literal),* $(,)?) => {
+        /// Names of the set flags, for diagnostics.
+        pub fn names(self) -> impl Iterator<Item = &'static str> {
+            [$((Self::$flag, $name)),*]
+                .into_iter()
+                .filter(move |(flag, _)| self.contains(*flag))
+                .map(|(_, name)| name)
+        }
+    };
+}
+pub(crate) use flag_names;
+
 /// Origin of a layout value before it is resolved into a retained node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutOrigin {
@@ -20,8 +35,12 @@ pub enum LayoutOrigin {
 /// Coarse field groups used for ownership and invalidation. A group is the
 /// smallest stable public unit needed by the current layout engine; individual
 /// CSS longhands remain parser concerns.
+///
+/// Every typed layout invalidation carries one of these, and a node holds
+/// at most one pending invalidation, so the width is per-node metadata: 32
+/// bits leave room for new groups without doubling that slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct LayoutFieldMask(u128);
+pub struct LayoutFieldMask(u32);
 
 impl LayoutFieldMask {
     pub const NONE: Self = Self(0);
@@ -40,7 +59,7 @@ impl LayoutFieldMask {
     pub const INTRINSIC: Self = Self(1 << 12);
     pub const ALL: Self = Self((1 << 13) - 1);
 
-    pub const fn bits(self) -> u128 {
+    pub const fn bits(self) -> u32 {
         self.0
     }
 
@@ -54,6 +73,22 @@ impl LayoutFieldMask {
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    flag_names! {
+        FLOW: "flow",
+        SIZING: "sizing",
+        SPACING: "spacing",
+        POSITION: "position",
+        ALIGNMENT: "alignment",
+        GRID: "grid",
+        TYPOGRAPHY: "typography",
+        PAINT: "paint",
+        VISIBILITY: "visibility",
+        INTERACTION: "interaction",
+        TRANSFORM: "transform",
+        SCROLL: "scroll",
+        INTRINSIC: "intrinsic",
     }
 
     /// Classify a CSS longhand (or the corresponding L3 field name).

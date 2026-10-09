@@ -130,6 +130,7 @@ impl AppContext {
         C: ComponentView,
     {
         self.read(list, |_| ())?;
+        self.world.note_virtual_list(list.id);
         let plan = items
             .materializer
             .prepare(
@@ -294,6 +295,7 @@ impl AppContext {
         C: Clone + Eq + Hash,
     {
         self.read(table, |_| ())?;
+        self.world.note_virtual_list(table.id);
         let plan = items
             .materializer
             .prepare(

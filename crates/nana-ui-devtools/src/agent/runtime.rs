@@ -405,7 +405,7 @@ impl AgentSession for RuntimeAgentSession {
     }
 
     fn inspect(&self, node: u64) -> Result<super::protocol::InspectDump, AgentError> {
-        use super::protocol::{CauseDump, FieldDump, InspectDump};
+        use super::protocol::{CauseDump, FieldDump, InspectDump, LayoutCauseDump};
         let target =
             StableNodeId::new(node).ok_or_else(|| AgentError("node id 0 is reserved".into()))?;
         let context = self.document.context();
@@ -446,6 +446,26 @@ impl AgentSession for RuntimeAgentSession {
                 })
                 .collect(),
             causes,
+            layout: inspection.layout.map(|cause| {
+                let invalidation = cause.invalidation;
+                LayoutCauseDump {
+                    pending: cause.pending,
+                    seed: cause.seed,
+                    source: format!("{:?}", invalidation.source).to_ascii_lowercase(),
+                    reasons: invalidation.reason.names().map(str::to_owned).collect(),
+                    stages: invalidation.kind.names().map(str::to_owned).collect(),
+                    changed: invalidation
+                        .changed_inputs
+                        .names()
+                        .map(str::to_owned)
+                        .collect(),
+                    dependencies: invalidation
+                        .affected_axes
+                        .names()
+                        .map(str::to_owned)
+                        .collect(),
+                }
+            }),
         })
     }
 

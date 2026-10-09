@@ -120,16 +120,8 @@ fn check_plan_children(
     let mut first_changed: Option<usize> = None;
     for index in plan.affected_entries(scope) {
         let index = index as usize;
-        let (child, cached_style, cached_intrinsic, at_main) = {
-            let entries = plan.entries.borrow();
-            let entry = &entries[index];
-            (
-                entry.child,
-                Arc::clone(&entry.style),
-                entry.intrinsic,
-                entry.at_main,
-            )
-        };
+        let entry = plan.entries.borrow()[index].clone();
+        let child = entry.child;
         let Some(current) = nodes.style(child) else {
             return Ok(PlanCheck::ChangedFrom(
                 index.min(first_changed.unwrap_or(index)),
@@ -142,7 +134,7 @@ fn check_plan_children(
         // compare only ever runs for children in the change closure, so it
         // stays off the per-sibling path.
         let style_moved =
-            !Arc::ptr_eq(&current, &cached_style) && !layout_inputs_equal(&current, &cached_style);
+            !Arc::ptr_eq(&current, &entry.style) && !layout_inputs_equal(&current, &entry.style);
         let on_measure = scope.measure.contains(&child);
         let measured = if on_measure {
             intrinsic_size_scoped(
@@ -156,10 +148,10 @@ fn check_plan_children(
                 Some(scope),
             )?
         } else {
-            cached_intrinsic
+            entry.intrinsic
         };
         let at_main_moved = on_measure
-            && match at_main {
+            && match entry.at_main {
                 Some((main, cached)) => {
                     intrinsic_size_at_main(
                         child,
@@ -175,7 +167,18 @@ fn check_plan_children(
                 }
                 None => false,
             };
-        if style_moved || measured != cached_intrinsic || at_main_moved {
+        // Aligned by a baseline that moved: the line aligns again, though no
+        // size changed.
+        let baseline_moved = on_measure
+            && entry.baseline.is_some_and(|aligned| {
+                let font_px = fonts_of(&current, plan.child_font_px).element_px;
+                intrinsic
+                    .baseline(child, crate::Baseline::First)
+                    .unwrap_or_else(|| nodes.baseline(child, font_px, entry.size))
+                    .to_bits()
+                    != aligned.to_bits()
+            });
+        if style_moved || measured != entry.intrinsic || at_main_moved || baseline_moved {
             first_changed = Some(first_changed.map_or(index, |current| current.min(index)));
         }
     }
@@ -202,6 +205,7 @@ fn replay_sequential_suffix(
     id: StableNodeId,
     plan: &ContainerPlan,
     from: usize,
+    content: Size,
     viewport: LayoutViewport,
     nodes: &mut LayoutInputMap<'_>,
     intrinsic: &mut PassIntrinsicCache,
@@ -212,10 +216,16 @@ fn replay_sequential_suffix(
     let writing = plan.writing;
     let container_align = plan.style.align_items;
     let container_cross = cross_extent(plan.content, direction);
-    let full_main = main_extent(plan.content, direction);
+    // The replay places against this pass's main extent: on a reversed main
+    // axis that is where the far edge, and every origin, is measured from.
+    let full_main = main_extent(content, direction);
     let (main_reversed, cross_reversed) = (plan.main_reversed, plan.cross_reversed);
     let count = plan.child_count();
-    let mut cursor = plan.entries.borrow()[from].cursor_before;
+    let mut cursor = plan
+        .entries
+        .borrow()
+        .get(from)
+        .map_or(0.0, |entry| entry.cursor_before);
     let mut replayed: Vec<PlannedChild> = Vec::with_capacity(count - from);
 
     for index in from..count {
@@ -368,16 +378,59 @@ fn replay_sequential_suffix(
             origin: child_origin,
             size: child_size,
             cursor_before,
+            // A sequential line aligns nothing by baseline.
+            baseline: None,
         });
     }
 
     let _ = (id, cursor);
+    // A reversed main axis measures every origin back from the far edge. When
+    // the container's main size moved, the children before `from` keep their
+    // flow positions and move with that edge, all by the same amount: the
+    // work is the boxes that really moved, and nothing is measured again.
+    let shift = if main_reversed {
+        full_main - plan.placed_main.get()
+    } else {
+        0.0
+    };
+    let mut shifted = Vec::new();
+    if shift != 0.0 {
+        let entries = plan.entries.borrow();
+        shifted.reserve(from);
+        for (index, entry) in entries[..from].iter().enumerate() {
+            let mut origin = entry.origin;
+            match direction {
+                FlexDirection::Row => origin.x += shift,
+                FlexDirection::Column => origin.y += shift,
+            }
+            shifted.push((index, entry.child, origin, entry.size));
+        }
+    }
+    for &(_, child, origin, size) in &shifted {
+        place_node_scoped(
+            child,
+            origin,
+            size,
+            plan.content,
+            viewport,
+            plan.child_font_px,
+            nodes,
+            intrinsic,
+            output,
+            Some(scope),
+            None,
+        )?;
+    }
     // Commit only after the whole suffix succeeded, so a bail-out above leaves
     // the cached plan exactly as it was.
     let mut entries = plan.entries.borrow_mut();
+    for (index, _, origin, _) in shifted {
+        entries[index].origin = origin;
+    }
     for (slot, entry) in entries[from..].iter_mut().zip(replayed) {
         *slot = entry;
     }
+    plan.placed_main.set(full_main);
     Ok(true)
 }
 
@@ -843,6 +896,7 @@ pub(super) fn place_node_scoped(
     // sizes are all unchanged places its children exactly where it did last
     // pass. Reuse that and touch only the children the change closure reaches;
     // otherwise a one-child edit pays a full sibling scan. See `ContainerPlan`.
+    let had_plan = scope.is_some_and(|scope| scope.retained.container_plans.contains_key(&id));
     if let Some(scope) = scope
         && inherited_grid.is_none()
         && let Some(plan) = scope.retained.container_plans.get(&id)
@@ -863,7 +917,18 @@ pub(super) fn place_node_scoped(
     {
         let grid_geometry_moved =
             plan.grid.is_some() && (plan.size != size || plan.content != content);
-        match check_plan_children(plan, viewport, nodes, intrinsic, scope)? {
+        // A reversed sequential axis whose main size moved: every cached
+        // origin moved with the far edge, even with no child changed.
+        let far_edge_moved = plan.sequential
+            && plan.main_reversed
+            && main_extent(content, plan.main_direction).to_bits()
+                != plan.placed_main.get().to_bits();
+        let check = check_plan_children(plan, viewport, nodes, intrinsic, scope)?;
+        let check = match check {
+            PlanCheck::Unchanged if far_edge_moved => PlanCheck::ChangedFrom(plan.child_count()),
+            check => check,
+        };
+        match check {
             PlanCheck::Unchanged if !grid_geometry_moved => {
                 // A fixed intermediate box can stay out of the frontier while
                 // a descendant inside it is affected. Re-enter the direct
@@ -904,8 +969,7 @@ pub(super) fn place_node_scoped(
                     output,
                     scope,
                 )?;
-                #[cfg(any(test, feature = "benchmark"))]
-                super::plan_stats::note_plan_reused();
+                intrinsic.note_placement_plan_reused();
                 return Ok(());
             }
             // Something the closure reaches resized or restyled. Children
@@ -913,7 +977,7 @@ pub(super) fn place_node_scoped(
             // only from there; a tail edit shifts nothing and costs O(1).
             PlanCheck::ChangedFrom(from) if plan.sequential => {
                 if replay_sequential_suffix(
-                    id, plan, from, viewport, nodes, intrinsic, output, scope,
+                    id, plan, from, content, viewport, nodes, intrinsic, output, scope,
                 )? {
                     place_unvisited_reaching(id, plan, viewport, nodes, intrinsic, output, scope)?;
                     finish_positioned_overlay(
@@ -931,11 +995,8 @@ pub(super) fn place_node_scoped(
                         output,
                         scope,
                     )?;
-                    #[cfg(any(test, feature = "benchmark"))]
-                    {
-                        super::plan_stats::note_plan_reused();
-                        super::plan_stats::note_suffix_replayed();
-                    }
+                    intrinsic.note_placement_plan_reused();
+                    intrinsic.note_suffix_replayed();
                     return Ok(());
                 }
             }
@@ -959,8 +1020,7 @@ pub(super) fn place_node_scoped(
                         output,
                         scope,
                     )?;
-                    #[cfg(any(test, feature = "benchmark"))]
-                    super::plan_stats::note_plan_reused();
+                    intrinsic.note_placement_plan_reused();
                     return Ok(());
                 }
                 if replay_grid(
@@ -992,14 +1052,16 @@ pub(super) fn place_node_scoped(
                         output,
                         scope,
                     )?;
-                    #[cfg(any(test, feature = "benchmark"))]
-                    super::plan_stats::note_plan_reused();
+                    intrinsic.note_placement_plan_reused();
                     return Ok(());
                 }
             }
         }
     }
 
+    if had_plan {
+        intrinsic.note_plan_miss();
+    }
     let (mut flow, descendant_dependent_flow) =
         collect_flow_children_reporting(&child_ids, nodes, style.display)?;
     if let Some(scope) = scope {
@@ -1086,8 +1148,7 @@ pub(super) fn place_node_scoped(
         } else {
             content
         };
-        #[cfg(any(test, feature = "benchmark"))]
-        super::plan_stats::note_child_measured();
+        intrinsic.note_child_measured();
         child_sizes.push(intrinsic_size_scoped(
             *child,
             child_available,
@@ -1133,6 +1194,7 @@ pub(super) fn place_node_scoped(
     // Narrowed to false by anything the suffix replay cannot express.
     let mut plan_sequential = cacheable;
     let mut cross_independent = cacheable;
+    let mut main_dependent = false;
     let plan_intrinsics: Option<HashMap<StableNodeId, Size>> = cacheable.then(|| {
         flow.iter()
             .copied()
@@ -1140,8 +1202,7 @@ pub(super) fn place_node_scoped(
             .collect()
     });
     if !cacheable {
-        #[cfg(any(test, feature = "benchmark"))]
-        super::plan_stats::note_container_uncacheable();
+        intrinsic.note_container_uncacheable();
         // Retire a plan recorded while this container was still cacheable.
         nodes.container_plans.insert(id, None);
     }
@@ -1524,14 +1585,17 @@ pub(super) fn place_node_scoped(
                     Some(writing.inline_size(content.width, content.height)),
                     child_fonts,
                 );
+                let aligned_baseline = (align == AlignSpec::Baseline).then(|| {
+                    intrinsic
+                        .baseline(child, crate::Baseline::First)
+                        .unwrap_or_else(|| {
+                            nodes.baseline(child, child_fonts.element_px, child_size)
+                        })
+                });
                 let cross_offset = match align {
                     AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
                     AlignSpec::Baseline => {
-                        let base = intrinsic
-                            .baseline(child, crate::Baseline::First)
-                            .unwrap_or_else(|| {
-                                nodes.baseline(child, child_fonts.element_px, child_size)
-                            });
+                        let base = aligned_baseline.unwrap_or_default();
                         cross_cursor + (line_baseline - base).max(0.0)
                     }
                     AlignSpec::Center => {
@@ -1595,6 +1659,7 @@ pub(super) fn place_node_scoped(
                         && matches!(align, AlignSpec::Start | AlignSpec::Stretch);
                     cross_independent &= matches!(align, AlignSpec::Start | AlignSpec::Stretch)
                         && !reads_container_size(child_style, direction);
+                    main_dependent |= reads_main_extent(child_style, direction);
                     entries.push(PlannedChild {
                         child,
                         style: Arc::clone(&child_style_arc),
@@ -1603,6 +1668,7 @@ pub(super) fn place_node_scoped(
                         origin: child_origin,
                         size: child_size,
                         cursor_before: cursor,
+                        baseline: aligned_baseline,
                     });
                 }
                 if !subtree_unchanged(
@@ -1642,6 +1708,9 @@ pub(super) fn place_node_scoped(
         clock.lap(7);
     }
     if let Some(entries) = plan_entries {
+        if had_plan {
+            intrinsic.note_plan_rebuilt();
+        }
         nodes.container_plans.insert(
             id,
             Some(ContainerPlan {
@@ -1672,8 +1741,10 @@ pub(super) fn place_node_scoped(
                 main_reversed,
                 cross_reversed,
                 entries: RefCell::new(entries),
+                placed_main: Cell::new(main_extent(content, direction)),
                 grid: recorded_grid,
                 cross_independent,
+                main_dependent,
                 overlay: Vec::new(),
             }),
         );
@@ -1775,23 +1846,48 @@ fn reads_container_size(style: &LayoutStyle, direction: FlexDirection) -> bool {
             style.min_height,
             style.max_height,
             style.flex_basis,
-            style.margin,
-            style.margin_top,
-            style.margin_right,
-            style.margin_bottom,
-            style.margin_left,
-            style.padding,
-            style.padding_top,
-            style.padding_right,
-            style.padding_bottom,
-            style.padding_left,
             style.offset_top,
             style.offset_right,
             style.offset_bottom,
             style.offset_left,
         ]
         .into_iter()
+        .chain(box_edge_specs(style))
         .any(depends_on_used_basis)
+}
+
+/// Whether an in-flow child's size or position reads its container's main
+/// extent: a main-axis size, limit or basis against the containing block, an
+/// inset on the main axis against it, or -- on a row, whose main axis is the
+/// inline one -- a percentage margin or padding, which resolve against the
+/// containing block's inline size.
+fn reads_main_extent(style: &LayoutStyle, direction: FlexDirection) -> bool {
+    if style.has_logical_box_edges() {
+        return true;
+    }
+    match direction {
+        FlexDirection::Column => [
+            style.height,
+            style.min_height,
+            style.max_height,
+            style.flex_basis,
+            style.offset_top,
+            style.offset_bottom,
+        ]
+        .into_iter()
+        .any(spec_tracks_containing_block),
+        FlexDirection::Row => [
+            style.width,
+            style.min_width,
+            style.max_width,
+            style.flex_basis,
+            style.offset_left,
+            style.offset_right,
+        ]
+        .into_iter()
+        .chain(box_edge_specs(style))
+        .any(spec_tracks_containing_block),
+    }
 }
 
 /// A child that stopped generating a box gets no flow slot, so the container
@@ -2050,8 +2146,7 @@ fn finish_positioned_overlay(
     });
     let mut placed: Vec<PlannedOverlay> = Vec::new();
     if stale {
-        #[cfg(any(test, feature = "benchmark"))]
-        super::plan_stats::note_local_context_fallback();
+        intrinsic.note_local_context_fallback();
         let live = collect_positioned_children(&plan.children, nodes)?;
         for child in live {
             if let Some(entry) = place_positioned_child(

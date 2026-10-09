@@ -223,6 +223,30 @@ pub struct InspectDump {
     /// Why the node last changed, newest cause first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub causes: Vec<CauseDump>,
+    /// Why layout last reached the node, or why it waits for the next pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<LayoutCauseDump>,
+}
+
+/// A typed layout cause, by flag name.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LayoutCauseDump {
+    /// Queued by a mutation and not laid out yet.
+    pub pending: bool,
+    /// Queued for this node itself; `false` when a dependency edge of
+    /// another node reached it.
+    pub seed: bool,
+    /// The authority that emitted it: `author`, `text`, `structure`, …
+    pub source: String,
+    /// Why: `style`, `text`, `topology`, …
+    pub reasons: Vec<String>,
+    /// Stages it runs: `measure`, `placement`, `context_reflow`, …
+    pub stages: Vec<String>,
+    /// Layout input groups that changed: `sizing`, `spacing`, …
+    pub changed: Vec<String>,
+    /// Dependencies the frontier follows from it:
+    /// `exports_intrinsic_block`, `depends_on_sibling_prefix`, …
+    pub dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

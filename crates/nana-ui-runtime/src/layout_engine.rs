@@ -15,7 +15,7 @@ mod inline_scope;
 use flex::*;
 // These caches use internal numeric identities/constraint bits, not external text keys.
 use hashbrown::HashMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -45,6 +45,23 @@ impl LayoutViewport {
         Self {
             width: finite_extent(width),
             height: finite_extent(height),
+        }
+    }
+}
+
+/// The viewport as far as one box's own layout reads it: all of it when the
+/// box resolves against the viewport (`position: fixed`, a viewport unit),
+/// none of it otherwise. Memo keys and plans compare this, so a viewport
+/// resize keeps every memo and plan of a box that does not read it. A box
+/// whose size moves with a descendant that does is on the frontier the
+/// resize seeds, which retires its memo and checks its plan.
+fn viewport_basis(style: &LayoutStyle, viewport: LayoutViewport) -> LayoutViewport {
+    if style.depends_on_viewport() {
+        viewport
+    } else {
+        LayoutViewport {
+            width: 0.0,
+            height: 0.0,
         }
     }
 }
@@ -167,6 +184,23 @@ impl RuntimeLayoutEngine {
         let retained = retained.documents.entry(document).or_default();
         // Reset before the full-layout reuse return, which runs no measure or placement.
         retained.execution_stats = LayoutExecutionStats::default();
+        retained.last_frontier = LayoutFrontier::default();
+        // A viewport the cache was not laid out against: plant the resize's
+        // seeds, whichever entry asked for this pass. Memos and plans of boxes
+        // that do not read the viewport no longer miss on it, so these seeds
+        // are what reaches the boxes that consume it.
+        let resized: Vec<LayoutFrontierSeed>;
+        let typed_seeds = match retained.viewport.replace(viewport) {
+            Some(previous) if !force_full && previous != viewport => {
+                resized = typed_seeds
+                    .iter()
+                    .copied()
+                    .chain(world.viewport_resize_seeds(document, Some(previous), viewport))
+                    .collect();
+                resized.as_slice()
+            }
+            _ => typed_seeds,
+        };
         if force_full && world.layout_source_reusable() {
             let viewport_width = viewport.width.to_bits();
             let viewport_height = viewport.height.to_bits();
@@ -247,10 +281,6 @@ impl RuntimeLayoutEngine {
         for id in frontier.measure_nodes() {
             retained.intrinsics.remove(id);
         }
-        #[cfg(any(test, feature = "benchmark"))]
-        plan_stats::note_scope(typed_seeds.len(), affected.len());
-        #[cfg(any(test, feature = "benchmark"))]
-        plan_stats::note_frontier(&frontier, force_full);
         let mut output = HashMap::with_capacity(nodes.len());
         let mut intrinsic = PassIntrinsicCache::with_capacity(nodes.len());
         let available = Size::new(viewport.width, viewport.height);
@@ -439,17 +469,20 @@ impl RuntimeLayoutEngine {
         let intrinsic_counters = intrinsic.counters();
         retained.execution_stats = intrinsic.execution_stats;
         let universe = if force_full { nodes.len() } else { world.len() };
-        for (key, size) in intrinsic.used {
+        for (key, size) in std::mem::take(&mut intrinsic.used_order) {
             retained
                 .intrinsics
                 .entry(key.id)
                 .or_default()
                 .insert(key, size);
         }
+        // Four constraint variants a live node, never a fixed count: a cap
+        // below the document's working set evicts facts the next frame reads,
+        // and every large document then measured again what it had evicted --
+        // work that grew with the document, not with the edit.
         let retained_metric_budget = universe
             .saturating_mul(4)
-            .max(1)
-            .min(crate::IntrinsicCacheBudget::default().max_entries);
+            .max(crate::IntrinsicCacheBudget::default().max_entries);
         retained.retain_intrinsic_metrics(intrinsic.new_metrics, retained_metric_budget);
         retained.materialized_inputs = nodes.materialized;
         retained.record_intrinsic_counters(intrinsic_counters);
@@ -457,8 +490,8 @@ impl RuntimeLayoutEngine {
         // Scoped passes only materialize a subset, so membership is the live
         // world, not the partial input map.
         if retained.boxes.len() > universe.saturating_mul(2) {
-            #[cfg(any(test, feature = "benchmark"))]
-            plan_stats::note_retain_sweep();
+            retained.execution_stats.retain_sweeps =
+                retained.execution_stats.retain_sweeps.saturating_add(1);
             retained.boxes.retain(|id, _| world.contains(*id));
             retained.placements.retain(|id, _| world.contains(*id));
             retained.used_padding.retain(|id, _| world.contains(*id));
@@ -470,8 +503,8 @@ impl RuntimeLayoutEngine {
             retained.intrinsics.retain(|id, _| world.contains(*id));
         }
         if retained.intrinsic_metrics.len() > universe.saturating_mul(2) {
-            retained.intrinsic_metrics.retain(|key, _| {
-                StableNodeId::new(key.content).is_some_and(|id| world.contains(id))
+            retained.intrinsic_metrics.retain_contents(|content| {
+                StableNodeId::new(content).is_some_and(|id| world.contains(id))
             });
         }
         #[cfg(feature = "benchmark")]
@@ -488,6 +521,10 @@ impl RuntimeLayoutEngine {
             retained.full_snapshots[1] = retained.full_snapshots[0].take();
             retained.full_snapshots[0] = Some(snapshot);
         }
+        // Kept for diagnostics until the next pass replaces it: why each node
+        // this pass reached was admitted. It holds the frontier, not the
+        // dependency graph, so it is bounded by this pass's own work.
+        retained.last_frontier = frontier;
         Ok(emitted)
     }
 
@@ -640,9 +677,7 @@ impl RetainedLayoutCache {
     pub fn remove_node(&mut self, document: DocumentId, id: StableNodeId) {
         if let Some(cache) = self.documents.get_mut(&document) {
             cache.intrinsics.remove(&id);
-            cache
-                .intrinsic_metrics
-                .retain(|key, _| key.content != id.get());
+            cache.intrinsic_metrics.remove_content(id.get());
             cache.boxes.remove(&id);
             cache.placements.remove(&id);
             cache.used_padding.remove(&id);
@@ -659,12 +694,29 @@ impl RetainedLayoutCache {
             .unwrap_or_default()
     }
 
+    /// What the retained cache holds for `document`.
+    #[cfg(test)]
+    pub(crate) fn footprint(&self, document: DocumentId) -> RetainedLayoutFootprint {
+        self.documents
+            .get(&document)
+            .map(DocumentLayoutCache::footprint)
+            .unwrap_or_default()
+    }
+
     /// Structural counters from the most recent pass for `document`.
     pub(crate) fn frontier_stats(&self, document: DocumentId) -> LayoutFrontierStats {
         self.documents
             .get(&document)
             .map(|cache| cache.frontier_stats)
             .unwrap_or_default()
+    }
+
+    /// The frontier of the most recent pass for `document`: why each node it
+    /// reached was laid out again. Empty after a full pass.
+    pub(crate) fn last_frontier(&self, document: DocumentId) -> Option<&LayoutFrontier> {
+        self.documents
+            .get(&document)
+            .map(|cache| &cache.last_frontier)
     }
 
     /// Which page axes the last placement of `id` laid its children out
@@ -718,7 +770,7 @@ impl RetainedIntrinsic {
 struct DocumentLayoutCache {
     intrinsics: HashMap<StableNodeId, RetainedIntrinsic>,
     /// Content-derived intrinsic facts, independent from retained used sizes.
-    intrinsic_metrics: HashMap<crate::IntrinsicCacheKey, crate::IntrinsicMetrics>,
+    intrinsic_metrics: RetainedIntrinsicMetrics,
     intrinsic_counters: crate::IntrinsicCacheCounters,
     boxes: HashMap<StableNodeId, LayoutBox>,
     materialized_inputs: usize,
@@ -732,11 +784,39 @@ struct DocumentLayoutCache {
     /// [`MeasurePlan`].
     measure_plans: HashMap<StableNodeId, MeasurePlanSlots>,
     frontier_stats: LayoutFrontierStats,
+    /// The frontier of the most recent pass, so diagnostics can say why a
+    /// node was laid out again. Empty after a full pass.
+    last_frontier: LayoutFrontier,
     execution_stats: LayoutExecutionStats,
     /// Last two full-layout results for this document, keyed by viewport and
     /// layout-input epoch. `clear` keeps them: a full pass is what consults
     /// them, and clearing first would drop the hit.
     full_snapshots: [Option<FullLayoutSnapshot>; 2],
+    /// The viewport the cache was last laid out against. A pass against
+    /// another one plants the resize's seeds itself.
+    viewport: Option<LayoutViewport>,
+}
+
+/// Entries one document's retained layout cache holds. The memory gate of
+/// Issue #259 reads it: every count follows the live tree and the cache
+/// budgets, never how many mutations came before.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RetainedLayoutFootprint {
+    pub boxes: usize,
+    pub placements: usize,
+    /// Retained used sizes, two constraints per node at most.
+    pub intrinsics: usize,
+    pub intrinsic_metrics: usize,
+    pub container_plans: usize,
+    pub measure_plans: usize,
+    /// Direct participants and tracks the plans store.
+    pub plan_entries: usize,
+    /// Full-layout results kept for a viewport round trip. Only a full pass
+    /// records one; the product frame never runs one.
+    pub full_snapshots: usize,
+    /// Nodes of the last pass's frontier, kept for diagnostics.
+    pub last_frontier: usize,
 }
 
 struct FullLayoutSnapshot {
@@ -746,6 +826,90 @@ struct FullLayoutSnapshot {
     emitted: Vec<(StableNodeId, LayoutBox)>,
     used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
     far_start: HashMap<StableNodeId, [bool; 2]>,
+}
+
+/// Retained intrinsic facts, grouped by the content they describe. A node has
+/// a few constraint variants; replacing or dropping one node's facts touches
+/// those variants and nothing else, so neither costs the document.
+#[derive(Default)]
+struct RetainedIntrinsicMetrics {
+    by_content: HashMap<u64, Vec<(crate::IntrinsicCacheKey, crate::IntrinsicMetrics)>>,
+    len: usize,
+}
+
+impl RetainedIntrinsicMetrics {
+    fn get(&self, key: &crate::IntrinsicCacheKey) -> Option<crate::IntrinsicMetrics> {
+        self.by_content
+            .get(&key.content)?
+            .iter()
+            .find(|(held, _)| held == key)
+            .map(|(_, metrics)| *metrics)
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn clear(&mut self) {
+        self.by_content.clear();
+        self.len = 0;
+    }
+
+    fn insert(&mut self, key: crate::IntrinsicCacheKey, metrics: crate::IntrinsicMetrics) {
+        let variants = self.by_content.entry(key.content).or_default();
+        if let Some(slot) = variants.iter_mut().find(|(held, _)| *held == key) {
+            slot.1 = metrics;
+        } else {
+            variants.push((key, metrics));
+            self.len += 1;
+        }
+    }
+
+    /// Drop every variant of one content's facts.
+    fn remove_content(
+        &mut self,
+        content: u64,
+    ) -> Option<Vec<(crate::IntrinsicCacheKey, crate::IntrinsicMetrics)>> {
+        let removed = self.by_content.remove(&content)?;
+        self.len -= removed.len();
+        Some(removed)
+    }
+
+    fn retain_contents(&mut self, mut keep: impl FnMut(u64) -> bool) {
+        let mut dropped = 0;
+        self.by_content.retain(|content, variants| {
+            let kept = keep(*content);
+            if !kept {
+                dropped += variants.len();
+            }
+            kept
+        });
+        self.len -= dropped;
+    }
+
+    /// Evict whole contents, first in table order, until at most `limit`
+    /// entries remain; returns how many entries went.
+    fn evict_to(&mut self, limit: usize) -> usize {
+        let excess = self.len.saturating_sub(limit);
+        if excess == 0 {
+            return 0;
+        }
+        // Collected in one walk: taking the first key again after every
+        // removal rescans the emptied front of the table each time.
+        let mut victims = Vec::new();
+        let mut covered = 0;
+        for (content, variants) in &self.by_content {
+            if covered >= excess {
+                break;
+            }
+            covered += variants.len();
+            victims.push(*content);
+        }
+        for content in victims {
+            self.remove_content(content);
+        }
+        covered
+    }
 }
 
 fn intrinsic_facts_changed(
@@ -767,60 +931,42 @@ impl DocumentLayoutCache {
         metrics: HashMap<crate::IntrinsicCacheKey, crate::IntrinsicMetrics>,
         max_entries: usize,
     ) {
-        let mut changed = HashSet::new();
-        for (key, incoming) in &metrics {
-            let differs = self
-                .intrinsic_metrics
-                .get(key)
-                .is_none_or(|existing| intrinsic_facts_changed(*existing, *incoming));
-            if differs {
-                changed.insert(key.content);
-            }
-        }
+        // A changed content drops every variant it held; the facts this pass
+        // produced for it carry the next generation. Dropping one content
+        // leaves every other content's comparison as it was.
         let mut next_generation = HashMap::new();
-        if !changed.is_empty() {
-            for (key, existing) in &self.intrinsic_metrics {
-                if changed.contains(&key.content) {
-                    let slot = next_generation.entry(key.content).or_insert(0);
-                    *slot = (*slot).max(existing.generation);
-                }
-            }
-            self.intrinsic_metrics
-                .retain(|key, _| !changed.contains(&key.content));
-        }
-        for (key, mut incoming) in metrics {
-            if !changed.contains(&key.content) {
+        for (key, incoming) in &metrics {
+            if next_generation.contains_key(&key.content)
+                || self
+                    .intrinsic_metrics
+                    .get(key)
+                    .is_some_and(|existing| !intrinsic_facts_changed(existing, *incoming))
+            {
                 continue;
             }
-            let previous = next_generation.get(&key.content).copied().unwrap_or(0);
+            let generation = self
+                .intrinsic_metrics
+                .remove_content(key.content)
+                .and_then(|variants| variants.iter().map(|(_, held)| held.generation).max())
+                .unwrap_or(0);
+            next_generation.insert(key.content, generation);
+        }
+        for (key, mut incoming) in metrics {
+            let Some(&previous) = next_generation.get(&key.content) else {
+                continue;
+            };
             incoming.generation = previous.saturating_add(1).max(1);
             self.intrinsic_metrics.insert(key, incoming);
         }
         self.intrinsic_counters.generation_bumps = self
             .intrinsic_counters
             .generation_bumps
-            .saturating_add(changed.len());
-        // The per-pass authority enforces the full byte budget. The retained
-        // mirror has a fixed-size value, so apply the same budget class here
-        // instead of allowing every viewport/constraint variant to accumulate
-        // forever across frames.
-        let bytes_per_entry = std::mem::size_of::<crate::IntrinsicCacheKey>()
-            .saturating_add(std::mem::size_of::<crate::IntrinsicMetrics>())
-            .max(1);
-        let byte_limited = crate::IntrinsicCacheBudget::default()
-            .max_bytes
-            .checked_div(bytes_per_entry)
-            .unwrap_or(1)
-            .max(1);
-        let limit = max_entries.min(byte_limited).max(1);
-        let mut evicted = 0usize;
-        while self.intrinsic_metrics.len() > limit {
-            let Some(key) = self.intrinsic_metrics.keys().next().copied() else {
-                break;
-            };
-            self.intrinsic_metrics.remove(&key);
-            evicted = evicted.saturating_add(1);
-        }
+            .saturating_add(next_generation.len());
+        // The per-pass authority enforces its byte budget. The retained mirror
+        // holds fixed-size entries for the live tree, so its entry budget,
+        // proportional to that tree, is its byte budget: it does not let every
+        // viewport or constraint variant accumulate across frames.
+        let evicted = self.intrinsic_metrics.evict_to(max_entries);
         self.intrinsic_counters.evictions =
             self.intrinsic_counters.evictions.saturating_add(evicted);
     }
@@ -854,6 +1000,25 @@ impl DocumentLayoutCache {
         count
     }
 
+    #[cfg(test)]
+    fn footprint(&self) -> RetainedLayoutFootprint {
+        RetainedLayoutFootprint {
+            boxes: self.boxes.len(),
+            placements: self.placements.len(),
+            intrinsics: self
+                .intrinsics
+                .values()
+                .map(|slots| slots.measurements.iter().flatten().count())
+                .sum(),
+            intrinsic_metrics: self.intrinsic_metrics.len(),
+            container_plans: self.container_plans.len(),
+            measure_plans: self.measure_plans.len(),
+            plan_entries: self.retained_plan_entries(),
+            full_snapshots: self.full_snapshots.iter().flatten().count(),
+            last_frontier: self.last_frontier.nodes().len(),
+        }
+    }
+
     fn clear(&mut self) {
         self.intrinsics.clear();
         self.intrinsic_metrics.clear();
@@ -865,255 +1030,16 @@ impl DocumentLayoutCache {
         self.container_plans.clear();
         self.measure_plans.clear();
         self.frontier_stats = LayoutFrontierStats::default();
+        self.last_frontier = LayoutFrontier::default();
         self.execution_stats = LayoutExecutionStats::default();
         self.materialized_inputs = 0;
     }
 }
 
-/// Test-only visibility into whether scoped layout is actually incremental.
-///
-/// The differential harness proves the result is CORRECT; these counters prove
-/// it is cheap. Without them a "fix" that quietly relayouts every sibling still
-/// passes every equivalence test.
-#[cfg(any(test, feature = "benchmark"))]
-#[allow(dead_code)]
+/// Coarse phase clocks for `--profile-layout`.
+#[cfg(feature = "benchmark")]
 pub mod plan_stats {
-    use super::LayoutFrontier;
     use std::cell::Cell;
-
-    thread_local! {
-        static PLANS_REUSED: Cell<usize> = const { Cell::new(0) };
-        static SUFFIXES_REPLAYED: Cell<usize> = const { Cell::new(0) };
-        static MEASURE_PLANS_REUSED: Cell<usize> = const { Cell::new(0) };
-        static CHILDREN_MEASURED: Cell<usize> = const { Cell::new(0) };
-        static CONTAINERS_UNCACHEABLE: Cell<usize> = const { Cell::new(0) };
-        static DIRTY_SEEDS: Cell<usize> = const { Cell::new(0) };
-        static AFFECTED: Cell<usize> = const { Cell::new(0) };
-        static RETAIN_SWEEPS: Cell<usize> = const { Cell::new(0) };
-        static FRONTIER_SEEDS: Cell<usize> = const { Cell::new(0) };
-        static FRONTIER_SEED_MERGES: Cell<usize> = const { Cell::new(0) };
-        static FRONTIER_NODES_MEASURE: Cell<usize> = const { Cell::new(0) };
-        static FRONTIER_NODES_PLACEMENT: Cell<usize> = const { Cell::new(0) };
-        static FRONTIER_CONTEXTS: Cell<usize> = const { Cell::new(0) };
-        static FRONTIER_EDGES: Cell<usize> = const { Cell::new(0) };
-        static FRONTIER_STOPPED: Cell<usize> = const { Cell::new(0) };
-        static FRONTIER_LOCAL_FALLBACKS: Cell<usize> = const { Cell::new(0) };
-        static FRONTIER_FULL_FALLBACKS: Cell<usize> = const { Cell::new(0) };
-    }
-
-    /// Every counter, to put back after a pass that must not count (the
-    /// layout guard's own full layout).
-    pub(crate) fn save() -> [usize; 17] {
-        [
-            &PLANS_REUSED,
-            &SUFFIXES_REPLAYED,
-            &MEASURE_PLANS_REUSED,
-            &CHILDREN_MEASURED,
-            &CONTAINERS_UNCACHEABLE,
-            &DIRTY_SEEDS,
-            &AFFECTED,
-            &RETAIN_SWEEPS,
-            &FRONTIER_SEEDS,
-            &FRONTIER_SEED_MERGES,
-            &FRONTIER_NODES_MEASURE,
-            &FRONTIER_NODES_PLACEMENT,
-            &FRONTIER_CONTEXTS,
-            &FRONTIER_EDGES,
-            &FRONTIER_STOPPED,
-            &FRONTIER_LOCAL_FALLBACKS,
-            &FRONTIER_FULL_FALLBACKS,
-        ]
-        .map(|counter| counter.with(Cell::get))
-    }
-
-    pub(crate) fn restore(saved: [usize; 17]) {
-        let counters = [
-            &PLANS_REUSED,
-            &SUFFIXES_REPLAYED,
-            &MEASURE_PLANS_REUSED,
-            &CHILDREN_MEASURED,
-            &CONTAINERS_UNCACHEABLE,
-            &DIRTY_SEEDS,
-            &AFFECTED,
-            &RETAIN_SWEEPS,
-            &FRONTIER_SEEDS,
-            &FRONTIER_SEED_MERGES,
-            &FRONTIER_NODES_MEASURE,
-            &FRONTIER_NODES_PLACEMENT,
-            &FRONTIER_CONTEXTS,
-            &FRONTIER_EDGES,
-            &FRONTIER_STOPPED,
-            &FRONTIER_LOCAL_FALLBACKS,
-            &FRONTIER_FULL_FALLBACKS,
-        ];
-        for (counter, value) in counters.into_iter().zip(saved) {
-            counter.with(|cell| cell.set(value));
-        }
-    }
-
-    pub(crate) fn note_scope(dirty: usize, affected: usize) {
-        DIRTY_SEEDS.with(|cell| cell.set(cell.get() + dirty));
-        AFFECTED.with(|cell| cell.set(cell.get() + affected));
-    }
-
-    pub(crate) fn note_frontier(frontier: &LayoutFrontier, force_full: bool) {
-        FRONTIER_SEEDS.with(|cell| cell.set(cell.get() + frontier.seeds()));
-        FRONTIER_SEED_MERGES.with(|cell| cell.set(cell.get() + frontier.seed_merges()));
-        FRONTIER_NODES_MEASURE.with(|cell| cell.set(cell.get() + frontier.measure_nodes().len()));
-        FRONTIER_NODES_PLACEMENT
-            .with(|cell| cell.set(cell.get() + frontier.placement_nodes().len()));
-        FRONTIER_CONTEXTS.with(|cell| cell.set(cell.get() + frontier.context_nodes().len()));
-        FRONTIER_EDGES.with(|cell| cell.set(cell.get() + frontier.dependency_edges_visited()));
-        FRONTIER_STOPPED.with(|cell| cell.set(cell.get() + frontier.propagations_stopped()));
-        FRONTIER_LOCAL_FALLBACKS
-            .with(|cell| cell.set(cell.get() + frontier.local_subtree_fallbacks()));
-        if force_full {
-            // A deliberate viewport/full rebuild is not a correctness
-            // fallback. Keep the fallback counter reserved for unsupported
-            // contexts that escape the bounded frontier.
-            return;
-        }
-        FRONTIER_FULL_FALLBACKS
-            .with(|cell| cell.set(cell.get() + frontier.full_document_fallbacks()));
-    }
-
-    pub(crate) fn note_retain_sweep() {
-        RETAIN_SWEEPS.with(|cell| cell.set(cell.get() + 1));
-    }
-
-    /// Nodes handed to `layout_document_with_frontier` as the change closure seed.
-    #[cfg(feature = "benchmark")]
-    pub fn dirty_seeds() -> usize {
-        DIRTY_SEEDS.with(Cell::get)
-    }
-
-    /// Seeds plus their ancestors: what the pass actually walks.
-    #[cfg(feature = "benchmark")]
-    pub fn affected() -> usize {
-        AFFECTED.with(Cell::get)
-    }
-
-    /// Times the retained caches were swept for despawned ids.
-    #[cfg(feature = "benchmark")]
-    pub fn retain_sweeps() -> usize {
-        RETAIN_SWEEPS.with(Cell::get)
-    }
-
-    pub fn reset() {
-        PLANS_REUSED.with(|cell| cell.set(0));
-        SUFFIXES_REPLAYED.with(|cell| cell.set(0));
-        MEASURE_PLANS_REUSED.with(|cell| cell.set(0));
-        CHILDREN_MEASURED.with(|cell| cell.set(0));
-        CONTAINERS_UNCACHEABLE.with(|cell| cell.set(0));
-        DIRTY_SEEDS.with(|cell| cell.set(0));
-        AFFECTED.with(|cell| cell.set(0));
-        RETAIN_SWEEPS.with(|cell| cell.set(0));
-        FRONTIER_SEEDS.with(|cell| cell.set(0));
-        FRONTIER_SEED_MERGES.with(|cell| cell.set(0));
-        FRONTIER_NODES_MEASURE.with(|cell| cell.set(0));
-        FRONTIER_NODES_PLACEMENT.with(|cell| cell.set(0));
-        FRONTIER_CONTEXTS.with(|cell| cell.set(0));
-        FRONTIER_EDGES.with(|cell| cell.set(0));
-        FRONTIER_STOPPED.with(|cell| cell.set(0));
-        FRONTIER_LOCAL_FALLBACKS.with(|cell| cell.set(0));
-        FRONTIER_FULL_FALLBACKS.with(|cell| cell.set(0));
-    }
-
-    pub(crate) fn note_plan_reused() {
-        PLANS_REUSED.with(|cell| cell.set(cell.get() + 1));
-    }
-
-    /// A reuse that replayed a sequential container's suffix, rather than
-    /// finding nothing changed.
-    pub(crate) fn note_suffix_replayed() {
-        SUFFIXES_REPLAYED.with(|cell| cell.set(cell.get() + 1));
-    }
-
-    /// Containers that kept their prefix and replayed only the children from
-    /// the first changed one on.
-    pub fn suffixes_replayed() -> usize {
-        SUFFIXES_REPLAYED.with(Cell::get)
-    }
-
-    pub(crate) fn note_measure_plan_reused() {
-        MEASURE_PLANS_REUSED.with(|cell| cell.set(cell.get() + 1));
-    }
-
-    /// Containers that returned a cached intrinsic size instead of re-measuring
-    /// their children. See [`super::MeasurePlan`].
-    pub fn measure_plans_reused() -> usize {
-        MEASURE_PLANS_REUSED.with(Cell::get)
-    }
-
-    pub(crate) fn note_child_measured() {
-        CHILDREN_MEASURED.with(|cell| cell.set(cell.get() + 1));
-    }
-
-    /// A container that took the placement path but could not be cached, so it
-    /// will rescan its children on every future frame.
-    pub(crate) fn note_container_uncacheable() {
-        CONTAINERS_UNCACHEABLE.with(|cell| cell.set(cell.get() + 1));
-    }
-
-    /// The positioned formatting context could not be applied incrementally,
-    /// so this pass laid out that context's positioned children and stopped
-    /// there. This is not a document fallback.
-    pub(crate) fn note_local_context_fallback() {
-        FRONTIER_LOCAL_FALLBACKS.with(|cell| cell.set(cell.get() + 1));
-    }
-
-    #[cfg(feature = "benchmark")]
-    pub fn containers_uncacheable() -> usize {
-        CONTAINERS_UNCACHEABLE.with(Cell::get)
-    }
-
-    pub fn plans_reused() -> usize {
-        PLANS_REUSED.with(Cell::get)
-    }
-
-    /// Children a container had to intrinsic-measure, counting BOTH sibling
-    /// scans: the one in its placement loop and the one in its own intrinsic
-    /// measurement. This is the scan that used to make every dirty frame O(N),
-    /// and the measure-side half of it is invisible unless both are counted.
-    pub fn children_measured() -> usize {
-        CHILDREN_MEASURED.with(Cell::get)
-    }
-
-    pub fn frontier_seeds() -> usize {
-        FRONTIER_SEEDS.with(Cell::get)
-    }
-
-    pub fn frontier_seed_merges() -> usize {
-        FRONTIER_SEED_MERGES.with(Cell::get)
-    }
-
-    pub fn frontier_nodes_measure() -> usize {
-        FRONTIER_NODES_MEASURE.with(Cell::get)
-    }
-
-    pub fn frontier_nodes_placement() -> usize {
-        FRONTIER_NODES_PLACEMENT.with(Cell::get)
-    }
-
-    pub fn frontier_contexts() -> usize {
-        FRONTIER_CONTEXTS.with(Cell::get)
-    }
-
-    pub fn dependency_edges_visited() -> usize {
-        FRONTIER_EDGES.with(Cell::get)
-    }
-
-    pub fn propagations_stopped() -> usize {
-        FRONTIER_STOPPED.with(Cell::get)
-    }
-
-    pub fn local_subtree_fallbacks() -> usize {
-        FRONTIER_LOCAL_FALLBACKS.with(Cell::get)
-    }
-
-    pub fn full_document_fallbacks() -> usize {
-        FRONTIER_FULL_FALLBACKS.with(Cell::get)
-    }
 
     /// Coarse clocks for `--profile-layout`. Slots:
     /// prefetch, root measure, root place, engine tail,
@@ -1204,6 +1130,10 @@ struct PlannedChild {
     /// preceding child's outer main extent plus gaps. Lets a suffix replay
     /// start at any index in O(1) instead of re-accumulating from zero.
     cursor_before: f32,
+    /// The first baseline the child's line aligned it by, when it aligns by
+    /// baseline. A child whose baseline moves moves the rest of its line,
+    /// even when no size changed: its text grew inside a fixed box.
+    baseline: Option<f32>,
 }
 
 /// One grid item's occupied tracks and the intrinsic contribution those
@@ -1387,6 +1317,12 @@ struct ContainerPlan {
     sequential: bool,
     /// In placement order.
     entries: RefCell<Vec<PlannedChild>>,
+    /// Main extent of the content box the entries' origins were placed in.
+    /// On a reversed main axis an origin is measured back from the far edge,
+    /// so when the container's main size moves, every child before the first
+    /// changed one moves with that edge. The replay shifts them by the
+    /// difference and records the new extent here.
+    placed_main: Cell<f32>,
     /// `(child, index into entries)`, sorted by child, so the pass can ask
     /// "which of my children are in the change closure?" without walking every
     /// entry. Scanning the entries instead would leave the fast path O(number
@@ -1399,6 +1335,10 @@ struct ContainerPlan {
     /// so a change of this container's own size refreshes positioned children
     /// only.
     cross_independent: bool,
+    /// Some in-flow child reads this container's main extent: a main size,
+    /// limit or basis against the containing block, say. Its entries hold
+    /// the sizes the old extent gave, so a new main size retires the plan.
+    main_dependent: bool,
     /// Positioned participants of this container. Empty on a flow-only plan.
     overlay: Vec<PlannedOverlay>,
 }
@@ -1422,7 +1362,7 @@ impl ContainerPlan {
             && self.origin == origin
             && self.containing_compatible(containing)
             && self.parent_font_px == parent_font_px
-            && self.viewport == viewport
+            && viewport_basis(&self.style, self.viewport) == viewport_basis(style, viewport)
             && Arc::ptr_eq(&self.style, style)
             && Arc::ptr_eq(&self.children, children)
     }
@@ -1500,7 +1440,9 @@ impl ContainerPlan {
     }
 
     /// A sequential plan places from the start edge. Its main size can grow
-    /// with a child without moving the cross axis or the prefix.
+    /// with a child without moving the cross axis or, on a forward main axis,
+    /// the prefix. On a reversed one the replay moves the prefix with the far
+    /// edge; see [`Self::placed_main`].
     fn size_compatible(&self, size: Size) -> bool {
         if self.size == size {
             return true;
@@ -1511,11 +1453,12 @@ impl ContainerPlan {
         if self.grid.is_some() {
             return true;
         }
-        if self.sequential && !self.main_reversed {
-            return match self.main_direction {
-                FlexDirection::Column => self.size.width.to_bits() == size.width.to_bits(),
-                FlexDirection::Row => self.size.height.to_bits() == size.height.to_bits(),
+        if self.sequential {
+            let held = |extent: fn(Size, FlexDirection) -> f32| {
+                extent(self.size, self.main_direction).to_bits()
+                    == extent(size, self.main_direction).to_bits()
             };
+            return held(cross_extent) && (!self.main_dependent || held(main_extent));
         }
         // A wrap container's cross size is the sum of its line cross sizes.
         // The main size is the line budget; if that moved, line membership
@@ -1674,6 +1617,34 @@ fn reads_containing_block_size(style: &nana_ui_core::LayoutStyle) -> bool {
         || percent(style.max_height)
 }
 
+/// [`layout_inputs_equal`] for a measurement, which no inset reaches: insets
+/// place a positioned box in its containing block. What they do to its size
+/// -- two opposite insets stretch it -- arrives as the constraint it is
+/// measured against, which a plan compares on its own. A virtual row moved
+/// down by the row above it keeps its measurement.
+fn measure_inputs_equal(a: &nana_ui_core::LayoutStyle, b: &nana_ui_core::LayoutStyle) -> bool {
+    if layout_inputs_equal(a, b) {
+        return true;
+    }
+    let insets = |style: &nana_ui_core::LayoutStyle| {
+        [
+            style.offset_top,
+            style.offset_right,
+            style.offset_bottom,
+            style.offset_left,
+        ]
+    };
+    if insets(a) == insets(b) {
+        return false;
+    }
+    let mut probe = a.clone();
+    probe.offset_top = b.offset_top;
+    probe.offset_right = b.offset_right;
+    probe.offset_bottom = b.offset_bottom;
+    probe.offset_left = b.offset_left;
+    layout_inputs_equal(&probe, b)
+}
+
 fn layout_inputs_equal(a: &nana_ui_core::LayoutStyle, b: &nana_ui_core::LayoutStyle) -> bool {
     if a == b {
         return true;
@@ -1807,6 +1778,8 @@ struct MeasurePlan {
     text_metrics: Option<crate::TextMetrics>,
     /// That text's unwrapped width, when it wrapped narrower.
     text_natural_width: Option<f32>,
+    /// The width that text was last wrapped against.
+    text_wrap_limit: Option<f32>,
     /// Available size in-flow children were measured against. Flex uses one
     /// value for every child. A grid stores the content box here; each item's
     /// contribution lives on [`GridTrackPlan`], and a fill axis is applied
@@ -1820,6 +1793,11 @@ struct MeasurePlan {
     size: Size,
     /// Main size is the sum of child border boxes, margins, and gaps.
     sequential: bool,
+    /// On a sequential plan, that sum, exact: see `sequential_main_term`.
+    main_sum: f64,
+    /// The cross-axis size the measurement handed its final step, before the
+    /// container's own size rules. A sequential patch keeps it.
+    default_cross: f32,
     /// Present when this measurement is a grid track solution.
     grid: Option<GridTrackPlan>,
 }
@@ -1889,17 +1867,19 @@ impl MeasurePlan {
         children: &Arc<Vec<StableNodeId>>,
         text_metrics: Option<crate::TextMetrics>,
         text_natural_width: Option<f32>,
+        text_wrap_limit: Option<f32>,
         writing: nana_ui_core::WritingContext,
     ) -> bool {
         self.writing == writing
             && self.available == available
             && self.parent_direction == parent_direction
-            && self.viewport == viewport
+            && viewport_basis(&self.style, self.viewport) == viewport_basis(style, viewport)
             && self.parent_font_px == parent_font_px
             && self.text_metrics == text_metrics
             && self.text_natural_width == text_natural_width
+            && self.text_wrap_limit == text_wrap_limit
             && Arc::ptr_eq(&self.children, children)
-            && (Arc::ptr_eq(&self.style, style) || layout_inputs_equal(&self.style, style))
+            && (Arc::ptr_eq(&self.style, style) || measure_inputs_equal(&self.style, style))
     }
 
     fn entry(&self, child: StableNodeId) -> Option<&MeasuredChild> {
@@ -2179,7 +2159,9 @@ fn collapse_omitted_boxes(
         }
     };
     for &id in affected {
-        if output.contains_key(&id) || !nodes.style(id).is_some_and(|style| style.omits_box()) {
+        // A container may write the omitted box itself, as a zero box, and
+        // stop there: its descendants still keep the boxes they had.
+        if !nodes.style(id).is_some_and(|style| style.omits_box()) {
             continue;
         }
         let mut stack = vec![id];
@@ -2431,6 +2413,31 @@ pub(crate) struct LayoutExecutionStats {
     pub measure_cache_misses: usize,
     pub placement_nodes: usize,
     pub origin_only_updates: usize,
+    /// Containers placed from their retained [`ContainerPlan`].
+    pub placement_plans_reused: usize,
+    /// Containers measured from a retained [`MeasurePlan`], without a walk of
+    /// their children.
+    pub measure_plans_reused: usize,
+    /// Sequential containers that kept their prefix and replayed only the
+    /// children from the first changed one on.
+    pub suffixes_replayed: usize,
+    /// Children a container walk measured, in its measure and in its
+    /// placement: the scan that makes a dirty frame O(N) when a plan misses.
+    pub children_measured: usize,
+    /// Containers that placed their children but could not record a plan,
+    /// so they walk them again on every later pass.
+    pub containers_uncacheable: usize,
+    /// Containers that had a retained plan for this pass's inputs and still
+    /// walked their children: the plan could not answer. A query is a hit
+    /// (one of the two `*_plans_reused`) or one of these.
+    pub plan_misses: usize,
+    /// Plans a walk recorded over an earlier plan for the same container
+    /// and constraint. A container's first plan is not a rebuild.
+    pub plan_rebuilds: usize,
+    /// Positioned contexts laid out whole because their plan was stale.
+    pub local_context_fallbacks: usize,
+    /// Retained-cache sweeps that dropped despawned ids.
+    pub retain_sweeps: usize,
 }
 
 /// Per-pass used-size memo.  The public [`crate::IntrinsicCache`] owns the
@@ -2444,10 +2451,15 @@ struct PassIntrinsicCache {
     /// fill, or stretch result is a resolution against one containing block;
     /// it must never become the preferred value in the shared authority.
     cache: crate::IntrinsicCache,
-    /// Used-size memo for this pass, and the writeback list merged into the
-    /// retained cache at the end. Its key contains the concrete available
+    /// Used-size memo for this pass. Its key contains the concrete available
     /// size because that is exactly what the placement algorithm resolves.
     used: HashMap<MeasurementKey, Size>,
+    /// Every entry of `used`, in the order this pass measured it: the
+    /// writeback merged into the retained cache at the end. A node keeps two
+    /// retained variants; writing them back in measuring order keeps the two
+    /// it measured last, where the table's own order would keep whichever two
+    /// its hashing visits last, a different pair on every run.
+    used_order: Vec<(MeasurementKey, Size)>,
     new_metrics: HashMap<crate::IntrinsicCacheKey, crate::IntrinsicMetrics>,
     latest_intrinsic_keys: HashMap<StableNodeId, crate::IntrinsicCacheKey>,
     seeded_intrinsic: HashSet<crate::IntrinsicCacheKey>,
@@ -2466,6 +2478,7 @@ impl PassIntrinsicCache {
                 max_bytes: usize::MAX,
             }),
             used: HashMap::with_capacity(capacity),
+            used_order: Vec::with_capacity(capacity),
             new_metrics: HashMap::with_capacity(capacity),
             latest_intrinsic_keys: HashMap::with_capacity(capacity),
             seeded_intrinsic: HashSet::with_capacity(capacity),
@@ -2488,6 +2501,50 @@ impl PassIntrinsicCache {
         self.execution_stats.measure_nodes = self.execution_stats.measure_nodes.saturating_add(1);
     }
 
+    fn note_placement_plan_reused(&mut self) {
+        self.execution_stats.placement_plans_reused = self
+            .execution_stats
+            .placement_plans_reused
+            .saturating_add(1);
+    }
+
+    fn note_measure_plan_reused(&mut self) {
+        self.execution_stats.measure_plans_reused =
+            self.execution_stats.measure_plans_reused.saturating_add(1);
+    }
+
+    fn note_suffix_replayed(&mut self) {
+        self.execution_stats.suffixes_replayed =
+            self.execution_stats.suffixes_replayed.saturating_add(1);
+    }
+
+    fn note_child_measured(&mut self) {
+        self.execution_stats.children_measured =
+            self.execution_stats.children_measured.saturating_add(1);
+    }
+
+    fn note_container_uncacheable(&mut self) {
+        self.execution_stats.containers_uncacheable = self
+            .execution_stats
+            .containers_uncacheable
+            .saturating_add(1);
+    }
+
+    fn note_plan_miss(&mut self) {
+        self.execution_stats.plan_misses = self.execution_stats.plan_misses.saturating_add(1);
+    }
+
+    fn note_plan_rebuilt(&mut self) {
+        self.execution_stats.plan_rebuilds = self.execution_stats.plan_rebuilds.saturating_add(1);
+    }
+
+    fn note_local_context_fallback(&mut self) {
+        self.execution_stats.local_context_fallbacks = self
+            .execution_stats
+            .local_context_fallbacks
+            .saturating_add(1);
+    }
+
     fn note_placement_node(&mut self) {
         self.execution_stats.placement_nodes =
             self.execution_stats.placement_nodes.saturating_add(1);
@@ -2506,6 +2563,7 @@ impl PassIntrinsicCache {
 
     fn insert(&mut self, key: MeasurementKey, size: Size) {
         self.used.insert(key, size);
+        self.used_order.push((key, size));
     }
 
     /// Publish content-derived facts. `preferred` is the natural border-box

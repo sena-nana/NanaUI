@@ -96,7 +96,6 @@ fn scoped(
         .unwrap_or(0);
     let work = world.take_system_work();
     world.resolve_styles(&work.style).unwrap();
-    plan_stats::reset();
     let emitted = RuntimeLayoutEngine
         .layout_document_with_frontier(
             world,
@@ -110,13 +109,13 @@ fn scoped(
     let cache = &retained.documents[&document];
     let step = Step {
         emitted: emitted.iter().map(|(id, _)| *id).collect(),
-        children_measured: plan_stats::children_measured(),
+        children_measured: cache.execution_stats.children_measured,
         measure_nodes: cache.execution_stats.measure_nodes,
         full_subtrees: cache
             .intrinsic_counters
             .intrinsic_measure_full_subtrees
             .saturating_sub(before),
-        full_document_fallbacks: plan_stats::full_document_fallbacks(),
+        full_document_fallbacks: cache.frontier_stats.full_document_fallbacks,
     };
     write_boxes(world, &emitted);
     let _ = world.take_system_work();

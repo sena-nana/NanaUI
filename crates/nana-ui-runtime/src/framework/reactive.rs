@@ -633,6 +633,29 @@ impl AppContext {
                 .collect(),
             element: bindings.as_ref().map(|info| info.element),
             source_element: bindings.as_ref().and_then(|info| info.source),
+            layout: self.layout_cause(node),
+        })
+    }
+
+    /// Why layout last reached `node`: the cause queued for the next pass,
+    /// or else the one the last pass of its document admitted it with.
+    /// `None` when neither touched it.
+    pub fn layout_cause(&self, node: StableNodeId) -> Option<crate::view::LayoutCause> {
+        let pending = self.world.pending_layout_invalidation(node);
+        if !pending.is_empty() {
+            return Some(crate::view::LayoutCause {
+                invalidation: pending,
+                pending: true,
+                seed: true,
+            });
+        }
+        let frontier = self
+            .layout_cache
+            .last_frontier(self.world.document_of(node)?)?;
+        Some(crate::view::LayoutCause {
+            invalidation: frontier.invalidation(node)?,
+            pending: false,
+            seed: frontier.is_seed(node),
         })
     }
 

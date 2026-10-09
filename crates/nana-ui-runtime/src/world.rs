@@ -5,11 +5,16 @@ mod focus_scope;
 mod geometry;
 pub(crate) use geometry::PROGRESS_GIRTH;
 mod hit_test;
+mod i18n;
 mod input;
 mod motion;
 mod mutation;
 mod overlay_index;
 mod presentation;
+pub use i18n::{LocaleGenerations, LocaleScope};
+mod replaced;
+mod responsive;
+pub use replaced::{ReplacedMetadata, ReplacedResource};
 mod scroll_bounds;
 mod style;
 mod text;
@@ -449,6 +454,12 @@ pub enum UiWorldError {
     InvalidHighlightRequest(StableNodeId),
     InvalidPresenter,
     DuplicatePresenter(String),
+    /// A replaced resource reported a natural size that is not a finite,
+    /// non-negative width and height.
+    InvalidReplacedMetadata,
+    /// A responsive rule whose breakpoints are not finite and ascending, or
+    /// that has more than the bounded number of them.
+    InvalidResponsiveRule(StableNodeId),
 }
 
 impl fmt::Display for UiWorldError {
@@ -515,6 +526,19 @@ impl fmt::Display for UiWorldError {
                 write!(
                     formatter,
                     "node {} has invalid custom render content",
+                    id.get()
+                )
+            }
+            Self::InvalidReplacedMetadata => {
+                write!(
+                    formatter,
+                    "a replaced resource reported an invalid natural size"
+                )
+            }
+            Self::InvalidResponsiveRule(id) => {
+                write!(
+                    formatter,
+                    "node {} has a responsive rule with invalid breakpoints",
                     id.get()
                 )
             }
@@ -704,11 +728,42 @@ pub struct UiWorld {
     /// Layout/document-order allocs recorded from `&self` hot paths.
     pending_hot_allocations: Cell<usize>,
     pending_hot_allocated_bytes: Cell<usize>,
+    /// What the layout mutation authority classified since the last fold.
+    /// An effective-equivalent write dirties nothing, so its count cannot
+    /// wait for a non-empty drain to be seen.
+    pending_layout_invalidations_counted: WorkCounters,
+    /// What changes made between frames cost, counted when they were made.
+    /// Their cost belongs to the frame that resolves them: these wait for
+    /// that frame's first drain, not for the start of the frame.
+    pending_drain_counts: WorkCounters,
+    /// Layout seeds queued since the world was made: a running count the
+    /// paths that make them read before and after, to say whose they were.
+    layout_seeds_created: u64,
+    /// Nodes whose style declares design intent (a radius tier, a control
+    /// height or padding step, a surface inset): the only ones a metrics
+    /// install can resolve differently.
+    intent_nodes: HashSet<StableNodeId, BuildIdHasher>,
+    /// Replaced nodes by the resource they show, and what each resource
+    /// reported of its size.
+    replaced: replaced::ReplacedIndex,
+    /// Responsive rules by container, and the bucket each is in (Issue #265).
+    responsive: responsive::ResponsiveIndex,
+    /// Localized text by the scope it reads its locale from (Issue #268).
+    i18n: i18n::I18nIndex,
     text_layout_cache: crate::text_layout_cache::TextLayoutCache,
     glyph_cache: crate::GlyphCache,
     /// The backend plain text last resolved against. A different one on a
     /// later pass means every resolved text node is stale.
     text_backend: Option<crate::text_node::TextBackendEpoch>,
+    /// The application's language, for text no node above it names one for.
+    default_language: Option<nana_text::font::LanguageTag>,
+    /// The text engine's fallback language, below the application's.
+    engine_fallback_language: Option<nana_text::font::LanguageTag>,
+    /// The application's typography scale, for text no scope or window
+    /// above it sets one for.
+    default_text_scale: f32,
+    /// Windows' typography scales, over the application's.
+    document_text_scales: HashMap<DocumentId, f32, BuildIdHasher>,
     /// Whether `text_backend` changed — its first install included —
     /// since the framework last asked, for geometry a component spends at
     /// projection time from a measurement.
@@ -902,9 +957,20 @@ impl UiWorld {
             accumulating_frame: false,
             pending_hot_allocations: Cell::new(0),
             pending_hot_allocated_bytes: Cell::new(0),
+            pending_layout_invalidations_counted: WorkCounters::default(),
+            pending_drain_counts: WorkCounters::default(),
+            layout_seeds_created: 0,
+            intent_nodes: HashSet::default(),
+            replaced: replaced::ReplacedIndex::default(),
+            responsive: responsive::ResponsiveIndex::default(),
+            i18n: i18n::I18nIndex::default(),
             text_layout_cache: crate::text_layout_cache::TextLayoutCache::default(),
             glyph_cache: crate::GlyphCache::default(),
             text_backend: None,
+            default_language: None,
+            engine_fallback_language: None,
+            default_text_scale: 1.0,
+            document_text_scales: HashMap::default(),
             text_backend_changed: false,
             text_work: nana_text::TextWorkCounters::default(),
             text_frame_work: nana_text::TextWorkCounters::default(),
@@ -973,16 +1039,46 @@ impl UiWorld {
         }
     }
 
+    /// Typed layout cause queued for `id` and not yet drained.
+    ///
+    /// The mutation authority already stored it: `reason` and
+    /// `changed_inputs` say why the node was marked, `kind` and
+    /// `affected_axes` which dependencies the frontier may follow from it. A
+    /// write equal in effect stores nothing, so this is
+    /// [`LayoutInvalidation::none`].
+    pub fn pending_layout_invalidation(&self, id: StableNodeId) -> LayoutInvalidation {
+        self.pending_layout_invalidations
+            .get(&id)
+            .copied()
+            .unwrap_or_else(LayoutInvalidation::none)
+    }
+
     /// Record a typed layout cause at a mutation boundary. The ordinary dirty
     /// bit schedules the entity for the next drain; this pending queue carries
     /// the layout payload consumed by the frame scheduler.
+    ///
+    /// Recording is the cause plus the node and its ancestor chain up to a
+    /// fixed border. It does not walk descendants: the frontier reaches the
+    /// ones that depend on this cause when layout runs, and the pass
+    /// republishes their results.
     pub(crate) fn record_layout_invalidation(
         &mut self,
         id: StableNodeId,
         invalidation: LayoutInvalidation,
     ) {
-        if !self.nodes.contains(id) || invalidation.is_empty() {
+        if !self.nodes.contains(id) {
             return;
+        }
+        if invalidation.is_empty() {
+            self.pending_layout_invalidations_counted
+                .layout_invalidations_zero_delta += 1;
+            return;
+        }
+        self.pending_layout_invalidations_counted
+            .layout_invalidations_created += 1;
+        self.layout_seeds_created += 1;
+        if invalidation.source == LayoutInvalidationSource::Text {
+            self.pending_layout_invalidations_counted.text_reflow_seeds += 1;
         }
         self.queue_layout_invalidation(id, invalidation);
         // A fixed border box absorbs an inner metric. Drop that box so a
@@ -996,9 +1092,27 @@ impl UiWorld {
             .kind
             .intersects(InvalidationKind::MEASURE.union(InvalidationKind::TOPOLOGY))
             || invalidation.affected_axes.intersects(metric_export);
-        self.suppress_layout_results_subtree(id);
         self.suppress_layout_result_chain(id, changes_border);
         let _ = self.mark_scroll_compatible(id, crate::schedule::DirtyMask::LAYOUT);
+    }
+
+    /// A virtual list's pass cost `rows`.
+    pub(crate) fn note_virtual_rows(&mut self, rows: VirtualRowCounts) {
+        let pending = &mut self.pending_drain_counts;
+        pending.virtual_row_metric_updates += rows.metric_updates;
+        pending.virtual_prefix_index_updates += rows.prefix_index_updates;
+        pending.virtual_rows_remeasured += rows.rows_remeasured;
+        pending.virtual_rows_repositioned += rows.rows_repositioned;
+        pending.virtual_logical_rows_scanned += rows.logical_rows_scanned;
+        pending.virtual_scroll_extent_updates += rows.scroll_extent_updates;
+        pending.virtual_rows_materialized_from_layout += rows.rows_materialized;
+    }
+
+    /// The layout seeds queued since `before` were a component state
+    /// change's.
+    pub(crate) fn note_state_seeds(&mut self, before: u64) {
+        let seeds = (self.layout_seeds_created - before) as usize;
+        self.pending_drain_counts.component_state_layout_seeds += seeds;
     }
 
     /// Queue `invalidation` for `id`, merged into a cause already pending:
@@ -1307,16 +1421,34 @@ impl UiWorld {
         let mut requested = ids.to_vec();
         requested.sort_unstable();
         requested.dedup();
+        // The children this publish covers, by parent. Every other child
+        // keeps the box its parent's held result recorded, so a parent is
+        // checked against these and not against all of its children.
+        let mut covered: HashMap<StableNodeId, Vec<StableNodeId>> =
+            HashMap::with_capacity(unique.len());
+        for &id in &unique {
+            if let Some(parent) = self.parent_id(id) {
+                covered.entry(parent).or_default().push(id);
+            }
+        }
         #[cfg(feature = "benchmark")]
         let mut phase = crate::layout_engine::plan_stats::PhaseClock::start();
         let mut built = Vec::new();
         let mut reused = 0usize;
+        let mut children_visited = 0usize;
         for &id in &unique {
-            if self.layout_result_geometry_current(id, source) {
+            let covered = covered.get(&id).map_or(&[][..], Vec::as_slice);
+            children_visited = children_visited.saturating_add(covered.len());
+            if self.layout_result_geometry_current(id, covered) {
                 self.layout_results_suppressed.remove(&id);
                 reused = reused.saturating_add(1);
                 continue;
             }
+            children_visited = children_visited.saturating_add(
+                self.nodes
+                    .get(id)
+                    .map_or(0, |node| node.hierarchy.children.len()),
+            );
             if let Some(result) = self.build_layout_result(id, source) {
                 built.push((id, result));
             }
@@ -1337,11 +1469,11 @@ impl UiWorld {
             published.push((id, result));
         }
         if published.is_empty() {
-            self.note_layout_result_publish(reused, 0, 0);
+            self.note_layout_result_publish(reused, 0, 0, children_visited);
             return;
         }
         let changed = published.len();
-        self.note_layout_result_publish(reused, changed, 1);
+        self.note_layout_result_publish(reused, changed, 1, children_visited);
         self.layout_generation = self.layout_generation.wrapping_add(1);
         let generation = self.layout_generation;
         for (id, mut result) in published {
@@ -1532,20 +1664,23 @@ impl UiWorld {
         Some(result)
     }
 
-    /// The previous result still describes `id`. A skipped node keeps its
-    /// generation and source; [`LayoutResult::geometry_eq`] ignores both, and
-    /// it also ignores the paint-only scroll offset.
-    fn layout_result_geometry_current(
-        &self,
-        id: StableNodeId,
-        source: crate::LayoutResultSource,
-    ) -> bool {
+    /// The result held for `id` still describes its geometry. `covered` are
+    /// the children the current publish covers: every edit of a child list
+    /// drops the parent's result, so a held result was built from this child
+    /// list, and a child no publish has covered since sits where it
+    /// recorded. Checking the covered children is checking them all, without
+    /// a walk of a wide container's children for an edit in one of them.
+    fn layout_result_geometry_current(&self, id: StableNodeId, covered: &[StableNodeId]) -> bool {
+        // Provenance is not geometry. A held result whose geometry still
+        // holds is kept with its stamp, which is what a rebuild would end in
+        // (`geometry_eq` ignores the source), so a different `source` alone
+        // does not force one: the writeback commit publishes as a
+        // compatibility write and the pass publishes again as layout, and
+        // rebuilding every ancestor for each would copy a wide container's
+        // placements twice a frame.
         let Some(previous) = self.layout_results.get(&id).map(Arc::clone) else {
             return false;
         };
-        if previous.source != source {
-            return false;
-        }
         let Some(facts) = self.layout_result_facts(id) else {
             return false;
         };
@@ -1579,11 +1714,20 @@ impl UiWorld {
         if previous.padding_box != padding_box || previous.content_box != content_box {
             return false;
         }
-        let children = facts.children.as_slice();
-        if !child_placements_current(&previous, children, |child| {
-            self.component_layout_box(child)
-        }) {
+        if previous.child_placements.len() != facts.child_count {
             return false;
+        }
+        for &child in covered {
+            let Some(index) = self.child_index(id, child) else {
+                return false;
+            };
+            let placement = &previous.child_placements[index];
+            if placement.node != child
+                || placement.index != index
+                || self.component_layout_box(child) != Some(placement.bounds)
+            {
+                return false;
+            }
         }
         let baseline = facts
             .text
@@ -1601,22 +1745,12 @@ impl UiWorld {
         ) {
             return false;
         }
-        let mut overflow = bounds;
-        for placement in previous.child_placements.iter() {
-            overflow = union_layout_boxes(overflow, placement.bounds);
-        }
-        if previous.overflow != overflow || previous.scroll_extent != overflow {
-            return false;
-        }
+        // Overflow is the box joined with the child placements, and the
+        // dependencies are the children plus the two anchors: with the box
+        // and every placement where the result recorded them, only the
+        // anchors are left to move.
         let (clip, containing_block) = self.layout_anchors(facts.parent);
-        previous.clip == clip
-            && previous.containing_block == containing_block
-            && dependencies_match(
-                previous.dependencies.as_ref(),
-                children,
-                clip,
-                containing_block,
-            )
+        previous.clip == clip && previous.containing_block == containing_block
     }
 
     fn layout_result_facts(&self, id: StableNodeId) -> Option<LayoutResultFacts> {
@@ -1627,7 +1761,7 @@ impl UiWorld {
             scroll_offset: node.scroll_offset,
             text: matches!(node.kind.as_ref(), NodeKind::Text) || !node.text.value.is_empty(),
             ascent: node.text_metrics.ascent,
-            children: Arc::clone(&node.hierarchy.children),
+            child_count: node.hierarchy.children.len(),
             parent: node.hierarchy.parent,
             border: node.resolved_layout.resolved_border_edges(),
             child_kind: child_fragment_kind(&node.resolved_layout),
@@ -1741,13 +1875,18 @@ impl UiWorld {
             self.pending_hot_allocations.get(),
             self.pending_hot_allocated_bytes.get(),
         );
+        add_pending_counts(&mut counters, self.pending_layout_invalidations_counted);
+        add_pending_counts(&mut counters, self.pending_drain_counts);
+        counters.i18n.accumulate(self.i18n_gauges());
         counters
     }
 
     /// Start a multi-pass frame accumulator. Idle drains still leave the
     /// previous snapshot in place until a non-empty pass runs.
     pub fn begin_frame_counters(&mut self) {
+        self.begin_responsive_frame();
         self.commit_pending_hot_allocs();
+        self.commit_pending_layout_invalidation_counts();
         self.commit_pending_theme_work();
         self.frame_counters = WorkCounters::default();
         self.text_frame_work = nana_text::TextWorkCounters::default();
@@ -1795,6 +1934,11 @@ impl UiWorld {
         if self.accumulating_frame {
             self.frame_counters.record_hot_path_allocation(count, bytes);
         }
+    }
+
+    fn commit_pending_layout_invalidation_counts(&mut self) {
+        let counted = std::mem::take(&mut self.pending_layout_invalidations_counted);
+        self.bump_last_counters(|counters| add_pending_counts(counters, counted));
     }
 
     /// Text work (Issue #95) of the last shaping pass, or of every pass of
@@ -1936,30 +2080,71 @@ impl UiWorld {
                 stats.measure_cache_misses,
                 stats.placement_nodes,
                 stats.origin_only_updates,
-            )
+            );
+            counters.record_layout_plans(
+                stats.placement_plans_reused,
+                stats.measure_plans_reused,
+                stats.suffixes_replayed,
+                stats.children_measured,
+                stats.containers_uncacheable,
+                stats.plan_misses,
+                stats.plan_rebuilds,
+                stats.local_context_fallbacks,
+                stats.retain_sweeps,
+            );
         });
     }
 
-    fn note_layout_result_publish(&mut self, reused: usize, changed: usize, delta_commits: usize) {
+    fn note_layout_result_publish(
+        &mut self,
+        reused: usize,
+        changed: usize,
+        delta_commits: usize,
+        children_visited: usize,
+    ) {
         self.bump_last_counters(|counters| {
-            counters.record_layout_result_publish(reused, changed, delta_commits);
+            counters.record_layout_result_publish(reused, changed, delta_commits, children_visited);
         });
     }
 
     pub(crate) fn record_layout_frontier(&mut self, stats: crate::LayoutFrontierStats) {
         self.bump_last_counters(|counters| {
+            counters.record_constraint_dependents(
+                stats.constraint.seeds,
+                stats.constraint.considered,
+                stats.constraint.remeasured,
+                stats.constraint.considered - stats.constraint.remeasured,
+            );
             counters.record_layout_frontier(
                 stats.seeds,
                 stats.seed_merges,
                 stats.nodes_measure,
                 stats.nodes_placement,
                 stats.contexts,
+                stats.nodes_writing,
                 stats.dependency_edges_visited,
                 stats.propagations_stopped,
                 stats.local_subtree_fallbacks,
                 stats.full_document_fallbacks,
-            )
+            );
+            counters.record_layout_scratch(
+                stats.scratch_entries,
+                stats
+                    .scratch_entries
+                    .saturating_mul(crate::LayoutDependencyGraph::ENTRY_BYTES),
+            );
         });
+    }
+
+    /// A pass a constraint change seeded solved `solves` formatting contexts
+    /// from scratch.
+    pub(crate) fn record_resize_context_solves(&mut self, solves: usize) {
+        if solves > 0 {
+            self.bump_last_counters(|counters| {
+                counters.resize_context_solves =
+                    counters.resize_context_solves.saturating_add(solves);
+            });
+        }
     }
 
     fn record_id_list_alloc(&self, len: usize) {
@@ -2143,6 +2328,13 @@ impl UiWorld {
             self.pending_hot_allocations.set(0);
             self.pending_hot_allocated_bytes.set(0);
             let mut counters = work.counters();
+            let counted = std::mem::take(&mut self.pending_layout_invalidations_counted);
+            add_pending_counts(&mut counters, counted);
+            add_pending_counts(
+                &mut counters,
+                std::mem::take(&mut self.pending_drain_counts),
+            );
+            counters.i18n.accumulate(self.i18n_gauges());
             // Extracted node/span fields are filled by [`Self::record_extract`]
             // on the product path, not by the planned render list.
             counters.render_nodes_extracted = 0;
@@ -2157,6 +2349,9 @@ impl UiWorld {
             }
         } else {
             self.commit_pending_hot_allocs();
+            self.commit_pending_layout_invalidation_counts();
+            let pending = std::mem::take(&mut self.pending_drain_counts);
+            self.bump_last_counters(|counters| add_pending_counts(counters, pending));
         }
         work
     }
@@ -2623,6 +2818,13 @@ impl UiWorld {
         self.nodes.text_natural_width(id).copied()
     }
 
+    /// The width a plain text that wraps was last shaped against: its box
+    /// then, or infinity before it had one. `None` for text that does not
+    /// wrap.
+    pub(crate) fn text_wrap_limit(&self, id: StableNodeId) -> Option<f32> {
+        self.nodes.text_wrap_limit(id).copied()
+    }
+
     /// The editor's IME state: its preedit, or an empty one while an IME is
     /// attached with nothing composed.
     pub fn ime(&self, id: StableNodeId) -> Option<crate::ImeView<'_>> {
@@ -2906,6 +3108,8 @@ impl UiWorld {
         if changed {
             self.nodes
                 .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
+            // Rules read the content box, which padding moves.
+            self.note_responsive_resize(id);
         }
         changed
     }
@@ -3246,13 +3450,13 @@ impl UiWorld {
         let record = self.nodes.get(id);
         debug_assert!(
             record.is_none_or(|record| record.layout_depends_on_viewport
-                == record.style.layout.depends_on_viewport()),
+                == record.resolved_layout.depends_on_viewport()),
             "{id:?}'s cached viewport dependency went stale"
         );
         PresenceFlags {
             confirm: is_confirm_modal(visual),
             clip: is_clip_visual(visual),
-            z_index: record.is_some_and(|record| record.style.layout.z_index.is_some())
+            z_index: record.is_some_and(|record| record.resolved_layout.z_index.is_some())
                 || is_triggered_menu_overlay(visual),
             triggered: is_triggered_menu_overlay(visual),
             viewport: record.is_some_and(|record| record.layout_depends_on_viewport),
@@ -3384,6 +3588,65 @@ impl UiWorld {
     /// Viewport `document` was last laid out against.
     pub(crate) fn document_viewport(&self, document: DocumentId) -> Option<crate::LayoutViewport> {
         self.document_viewports.get(&document).copied()
+    }
+
+    /// What a viewport resize of `document` from `previous` to `viewport`
+    /// seeds. Each root: the constraint it hands its children moved on the
+    /// axes the viewport did, so only the children that consume those axes
+    /// lay out again. Each box that resolves against the viewport: its own
+    /// size may move on either axis, as a sizing write would. With no
+    /// previous viewport, the whole document.
+    pub(crate) fn viewport_resize_seeds(
+        &self,
+        document: DocumentId,
+        previous: Option<crate::LayoutViewport>,
+        viewport: crate::LayoutViewport,
+    ) -> Vec<crate::LayoutFrontierSeed> {
+        let roots = self.document_roots(document);
+        let Some(previous) = previous else {
+            return roots
+                .into_iter()
+                .chain(self.viewport_basis_ids_for(document))
+                .map(crate::LayoutFrontierSeed::layout)
+                .collect();
+        };
+        let inline = previous.width.to_bits() != viewport.width.to_bits();
+        let block = previous.height.to_bits() != viewport.height.to_bits();
+        if !inline && !block {
+            return Vec::new();
+        }
+        let mut axes = LayoutDependencyFootprint::NONE;
+        if inline {
+            axes = axes.union(LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT);
+        }
+        if block {
+            axes = axes.union(LayoutDependencyFootprint::CONSUMES_PARENT_BLOCK_CONSTRAINT);
+        }
+        let root = LayoutInvalidation::new(
+            LayoutInvalidationSource::Viewport,
+            InvalidationReason::VIEWPORT,
+            InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+            LayoutFieldMask::SIZING,
+            axes,
+        );
+        let basis = LayoutInvalidation {
+            source: LayoutInvalidationSource::Viewport,
+            reason: InvalidationReason::VIEWPORT,
+            ..layout_style_invalidation(
+                nana_ui_core::LayoutStyleChange::SIZING_BOTH
+                    .union(nana_ui_core::LayoutStyleChange::POSITION),
+                false,
+                None,
+            )
+        };
+        roots
+            .into_iter()
+            .map(|id| crate::LayoutFrontierSeed::new(id, root))
+            .chain(
+                self.viewport_basis_ids_for(document)
+                    .map(|id| crate::LayoutFrontierSeed::new(id, basis)),
+            )
+            .collect()
     }
 
     /// Forgets a document's viewport once it holds no roots.
@@ -3805,27 +4068,30 @@ impl UiWorld {
         let document = node.document;
         let parent = node.hierarchy.parent;
         let live_root = parent.is_none() && self.presence_live(id);
-        if live_root {
+        let moved = if live_root {
             self.live_document_roots
                 .entry(document)
                 .or_default()
-                .insert(id);
-            return;
+                .insert(id)
+        } else {
+            self.remove_document_root(document, id)
+        };
+        // A window's right-to-left locale sits on its roots.
+        if moved && self.locale_sets_direction() {
+            self.restyle(id, None);
         }
-        self.remove_document_root(document, id);
     }
 
-    fn remove_document_root(&mut self, document: DocumentId, id: StableNodeId) {
-        let empty = self
-            .live_document_roots
-            .get_mut(&document)
-            .is_some_and(|roots| {
-                roots.remove(&id);
-                roots.is_empty()
-            });
-        if empty {
+    /// Returns whether `id` was one of `document`'s roots.
+    fn remove_document_root(&mut self, document: DocumentId, id: StableNodeId) -> bool {
+        let Some(roots) = self.live_document_roots.get_mut(&document) else {
+            return false;
+        };
+        let removed = roots.remove(&id);
+        if roots.is_empty() {
             self.live_document_roots.remove(&document);
         }
+        removed
     }
 
     pub fn document_order(&self, document: DocumentId) -> Vec<StableNodeId> {
@@ -3913,52 +4179,57 @@ impl UiWorld {
             }
         }
 
-        let mut uncertain = if parent_grid {
-            (inline_changed && !inline_definite) || (block_changed && !block_definite)
+        // Whether the child may read the changed constraint on each axis
+        // without a style that says so: per axis, so a width-only change
+        // never measures a child for its height.
+        let (mut uncertain_inline, mut uncertain_block) = if parent_grid {
+            (
+                inline_changed && !inline_definite,
+                block_changed && !block_definite,
+            )
         } else if parent_flex {
             if row {
-                block_changed && !block_definite
+                (false, block_changed && !block_definite)
             } else {
-                inline_changed && !inline_definite
+                (inline_changed && !inline_definite, false)
             }
         } else {
-            false
+            (false, false)
         };
         if has_wrapping_text && inline_changed && !inline_definite {
-            uncertain = true;
+            uncertain_inline = true;
         }
         let aspect = child
             .aspect_ratio
             .is_some_and(|ratio| ratio.is_finite() && ratio > 0.0);
+        // An aspect ratio carries a size from one axis to the other.
         if aspect && ((inline_changed && !inline_definite) || (block_changed && !block_definite)) {
-            uncertain = true;
+            uncertain_inline = true;
+            uncertain_block = true;
         }
         if writing_changed && child.has_logical_box_edges() {
-            uncertain = true;
+            uncertain_inline = true;
+            uncertain_block = true;
         }
-        if is_icon && !inline_consumes && !block_consumes && !uncertain && !writing_changed {
-            return (
-                LayoutDependencyFootprint::NONE,
-                LayoutDependencyFootprint::NONE,
-            );
-        }
+        let uncertain_inline = uncertain_inline && inline_changed;
+        let uncertain_block = uncertain_block && block_changed;
 
         let mut edge = LayoutDependencyFootprint::NONE;
         let mut pass = LayoutDependencyFootprint::NONE;
-        if inline_consumes || (uncertain && inline_changed) {
+        if inline_consumes || uncertain_inline {
             edge = edge.union(inline_flag);
         }
-        if block_consumes || (uncertain && block_changed) {
+        if block_consumes || uncertain_block {
             edge = edge.union(block_flag);
         }
         if writing_changed {
             edge = edge.union(writing_flag);
             pass = pass.union(writing_flag);
         }
-        if inline_changed && (inline_consumes || uncertain) && !content_inline_definite {
+        if (inline_consumes || uncertain_inline) && !content_inline_definite {
             pass = pass.union(inline_flag);
         }
-        if block_changed && (block_consumes || uncertain) && !content_block_definite {
+        if (block_consumes || uncertain_block) && !content_block_definite {
             pass = pass.union(block_flag);
         }
         (edge, pass)
@@ -3988,7 +4259,6 @@ impl UiWorld {
             .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING);
         let mut up_seen = HashSet::new();
         let mut constraint_seen = HashSet::new();
-        let mut placement_seen = HashSet::new();
         let mut context_seen = HashSet::new();
         let mut context_parents: HashMap<StableNodeId, LayoutDependencyFootprint> = HashMap::new();
         let mut pending = VecDeque::new();
@@ -4002,6 +4272,9 @@ impl UiWorld {
             // of it. A parent whose child list changed is not one; it carries
             // a narrower footprint of its own.
             let force_all = axes == LayoutDependencyFootprint::ALL;
+            if !force_all && axes.intersects(LayoutDependencyFootprint::parent_constraints()) {
+                graph.note_constraint_seed();
+            }
             pending.push_back((
                 seed.node,
                 axes,
@@ -4099,13 +4372,13 @@ impl UiWorld {
                             .union(LayoutDependencyFootprint::DEPENDS_ON_WRITING_CONTEXT),
                     )
                 };
-                let placement_only = constraint_axes.is_empty();
-                let seen = if placement_only {
-                    &mut placement_seen
-                } else {
-                    &mut constraint_seen
-                };
-                if seen.insert(node) {
+                // Reached only to be placed again, a node moves as a whole:
+                // placing it at a new origin places its subtree, and at the old
+                // one its subtree keeps its boxes. Neither needs a descendant in
+                // the frontier, where it would only keep the pass from pruning
+                // a subtree that did not move -- a splitter drag would place
+                // every box of every pane after it.
+                if !constraint_axes.is_empty() && constraint_seen.insert(node) {
                     let children = self
                         .nodes
                         .get(node)
@@ -4135,17 +4408,6 @@ impl UiWorld {
                             ));
                             continue;
                         }
-                        if placement_only {
-                            let place = LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX;
-                            graph.add_parent_dependency_split(
-                                node,
-                                child,
-                                LayoutDependencyFootprint::NONE,
-                                place,
-                            );
-                            pending.push_back((child, place, true, false, false));
-                            continue;
-                        }
                         let Some(parent_style) = parent_style.as_deref() else {
                             continue;
                         };
@@ -4164,6 +4426,7 @@ impl UiWorld {
                             has_wrapping_text,
                             is_icon,
                         );
+                        graph.note_constraint_dependent(!edge.is_empty());
                         if edge.is_empty() {
                             continue;
                         }
@@ -4202,8 +4465,26 @@ impl UiWorld {
                                 || display.is_grid_container()
                                 || display.is_inline_level()
                         });
-                let is_context = explicit_context || parent_record.hierarchy.children.len() > 1;
-                if !is_context {
+                if !explicit_context {
+                    // Block flow: only later siblings move, each because the
+                    // one before it did. Link this node to its next in-flow
+                    // sibling and expand that one the same way, so the chain
+                    // covers the suffix that moves and nothing before it. A
+                    // tail node links nothing, and finding the next sibling
+                    // reads the retained index instead of scanning the list.
+                    let Some(index) = self.child_index(parent, node) else {
+                        continue;
+                    };
+                    let next = parent_record.hierarchy.children[index + 1..]
+                        .iter()
+                        .copied()
+                        .find(|sibling| !self.positioned_out_of_flow(*sibling));
+                    if let Some(next) = next
+                        && self.document_of(next) == Some(document)
+                    {
+                        graph.add_context_dependency_forward(node, next, lateral);
+                        pending.push_back((next, lateral, true, true, false));
+                    }
                     continue;
                 }
                 let siblings = parent_record.hierarchy.children.as_ref();
@@ -4219,10 +4500,10 @@ impl UiWorld {
                     } else {
                         siblings
                     };
-                // Each sibling domain is built once, as a chain: a change
-                // reaches later siblings through the ones between, so linking
-                // every pair (or every later sibling) is quadratic in a wide
-                // container for nothing.
+                // A flex, grid or inline context couples its items both ways:
+                // its domain is built once, as a chain, since a change reaches
+                // the other items through the ones between, and linking every
+                // pair is quadratic in a wide container for nothing.
                 // A later node of the same domain with footprints the chain
                 // lacks widens it; that happens at most once per footprint bit.
                 let linked = context_parents.get(&parent).copied();
@@ -4232,11 +4513,7 @@ impl UiWorld {
                 let lateral = linked.map_or(lateral, |linked| linked.union(lateral));
                 context_parents.insert(parent, lateral);
                 for pair in flow_siblings.windows(2) {
-                    if explicit_context {
-                        graph.add_context_dependency(pair[0], pair[1], lateral);
-                    } else {
-                        graph.add_context_dependency_forward(pair[0], pair[1], lateral);
-                    }
+                    graph.add_context_dependency(pair[0], pair[1], lateral);
                 }
                 // Include the formatting-context siblings as seeds in the
                 // local graph; their own parent links let a lateral change
@@ -4253,6 +4530,47 @@ impl UiWorld {
 
     fn hierarchy_mut(&mut self, id: StableNodeId) -> &mut Hierarchy {
         &mut self.record_mut(id).hierarchy
+    }
+
+    /// Give `parent`'s children from `from` on the index they now have. The
+    /// list edit that shifted them already moved them, so this keeps that
+    /// edit's cost.
+    pub(crate) fn renumber_children_from(&mut self, parent: StableNodeId, from: usize) {
+        let Some(children) = self
+            .nodes
+            .get(parent)
+            .map(|record| Arc::clone(&record.hierarchy.children))
+        else {
+            return;
+        };
+        for (index, &child) in children.iter().enumerate().skip(from) {
+            if let Some(record) = self.nodes.get_mut(child) {
+                record.hierarchy.index_in_parent = u32::try_from(index).unwrap_or(u32::MAX);
+            }
+        }
+    }
+
+    /// Take `child` out of `parent`'s children and renumber the ones after
+    /// it.
+    fn remove_child(&mut self, parent: StableNodeId, child: StableNodeId) {
+        let Some(index) = self.child_index(parent, child) else {
+            return;
+        };
+        let hierarchy = self.hierarchy_mut(parent);
+        Arc::make_mut(&mut hierarchy.children).remove(index);
+        intern_empty_children(&mut hierarchy.children);
+        self.renumber_children_from(parent, index);
+    }
+
+    /// `child`'s index among `parent`'s children, without scanning them
+    /// while the retained index is current.
+    pub(crate) fn child_index(&self, parent: StableNodeId, child: StableNodeId) -> Option<usize> {
+        let children = &self.nodes.get(parent)?.hierarchy.children;
+        let index = self.nodes.get(child)?.hierarchy.index_in_parent as usize;
+        if children.get(index) == Some(&child) {
+            return Some(index);
+        }
+        children.iter().position(|id| *id == child)
     }
 
     fn mark(&mut self, id: StableNodeId, bits: u16) -> bool {
@@ -4337,16 +4655,17 @@ impl UiWorld {
         // parent in the typed frontier so the retained layout cannot preserve
         // the old child placement.
         self.record_child_list_invalidation(parent);
-        let hierarchy = self.hierarchy_mut(parent);
-        Arc::make_mut(&mut hierarchy.children).retain(|child| *child != id);
-        intern_empty_children(&mut hierarchy.children);
-        let _hierarchy = hierarchy;
+        self.remove_child(parent, id);
         self.hierarchy_mut(id).parent = None;
         self.mark_ancestors(
             parent,
             DirtyMask::LAYOUT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
         );
         self.note_structural_change(parent);
+        // A rule that read the parent, and localized text that read a scope
+        // above it, read what is above them now.
+        self.responsive_reparented(id);
+        self.i18n_reparented(id, Some(parent));
         true
     }
 
@@ -4464,26 +4783,71 @@ impl UiWorld {
         }
     }
 
-    fn propagate_layout_from_node(&mut self, id: StableNodeId) {
-        // A fixed inline-block's shaped text does not change the border box
-        // the outer line packed. Keep the seed on the atomic.
-        let fixed_atomic = self.is_fixed_metric_boundary(id)
-            && self.nodes.get(id).is_some_and(|record| {
-                record.resolved_layout.display == Some(nana_ui_core::DisplaySpec::InlineBlock)
+    /// Classify `changed`, a write to `id`'s layout, as `id` now stands:
+    /// whether its aspect ratio ties its axes, and the line its parent lays
+    /// it along, a column unless the parent says otherwise.
+    fn classify_layout_change(
+        &self,
+        id: StableNodeId,
+        changed: nana_ui_core::LayoutStyleChange,
+    ) -> LayoutInvalidation {
+        let aspect_ratio = self
+            .nodes
+            .get(id)
+            .is_some_and(|record| record.resolved_layout.aspect_ratio.is_some());
+        let parent_line = self
+            .parent_id(id)
+            .and_then(|parent| self.nodes.get(parent))
+            .map(|record| {
+                record
+                    .resolved_layout
+                    .direction
+                    .unwrap_or(nana_ui_core::FlexDirection::Column)
             });
-        if fixed_atomic {
+        layout_style_invalidation(changed, aspect_ratio, parent_line)
+    }
+
+    /// Seeds layout from text whose metrics moved. Returns whether the change
+    /// went on to the parent's measurement: a fixed box keeps it.
+    fn propagate_layout_from_node(&mut self, id: StableNodeId) -> bool {
+        let fixed = self.is_fixed_metric_boundary(id);
+        let display = self
+            .nodes
+            .get(id)
+            .and_then(|record| record.resolved_layout.display);
+        // A fixed box with text of its own -- a fixed-size button's label --
+        // exports the same border box whatever the text says, unless it is
+        // inline-level or its parent aligns it by baseline: its content lays
+        // out again, and nothing above it measures. A fixed inline-block's
+        // shaped text does not change the border box the outer line packed
+        // either: the seed stays on the atomic, which is only placed again.
+        let atomic = display == Some(nana_ui_core::DisplaySpec::InlineBlock);
+        if fixed
+            && (atomic
+                || !display
+                    .is_some_and(|display| display.is_inline_level() || display.is_contents()))
+        {
+            let (kind, fields) = if atomic {
+                (InvalidationKind::PLACEMENT, LayoutFieldMask::TYPOGRAPHY)
+            } else {
+                (
+                    InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
+                    LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
+                )
+            };
             self.record_layout_invalidation(
                 id,
                 LayoutInvalidation::new(
                     LayoutInvalidationSource::Text,
                     InvalidationReason::TEXT,
-                    InvalidationKind::PLACEMENT,
-                    LayoutFieldMask::TYPOGRAPHY,
+                    kind,
+                    fields,
                     LayoutDependencyFootprint::NONE,
                 ),
             );
             self.mark_scroll_compatible(id, DirtyMask::RENDER);
-            return;
+            self.bump_last_counters(|counters| counters.record_text_metrics(1, 0, 0));
+            return false;
         }
         self.record_layout_invalidation(
             id,
@@ -4492,17 +4856,13 @@ impl UiWorld {
                 InvalidationReason::TEXT,
                 InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
                 LayoutFieldMask::TYPOGRAPHY.union(LayoutFieldMask::INTRINSIC),
-                LayoutDependencyFootprint::EXPORTS_INTRINSIC_INLINE
-                    .union(LayoutDependencyFootprint::EXPORTS_INTRINSIC_BLOCK)
-                    .union(LayoutDependencyFootprint::EXPORTS_BASELINE)
-                    .union(LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS)
-                    .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
-                    .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+                METRIC_EXPORTS,
             ),
         );
         // Keep the original paint invalidation for the node whose shaped
         // metrics changed; the typed layout cause above remains narrow.
         self.mark_scroll_compatible(id, DirtyMask::RENDER);
+        let mut parent_reflows = 0;
         if let Some(parent) = self.parent_id(id) {
             if self.is_fixed_metric_boundary(parent) {
                 self.record_layout_invalidation(
@@ -4529,10 +4889,52 @@ impl UiWorld {
                     ),
                 );
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
+                parent_reflows = 1;
             }
         }
+        self.bump_last_counters(|counters| counters.record_text_metrics(1, 0, parent_reflows));
+        parent_reflows > 0
     }
 }
+
+/// Adds counts observed between drains onto `counters`. They carry no live
+/// entity count, so `counters` keeps its own.
+fn add_pending_counts(counters: &mut WorkCounters, mut pending: WorkCounters) {
+    pending.entities_total = counters.entities_total;
+    counters.accumulate(pending);
+}
+
+/// What a virtual list's pass cost (Issue #262). Counted into the next
+/// drain: the frame that lays the pass's commits out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct VirtualRowCounts {
+    /// Row extents that moved in the row index.
+    pub(crate) metric_updates: usize,
+    /// Row index entries written since the list last placed its rows.
+    pub(crate) prefix_index_updates: usize,
+    /// Mounted rows the list took a new height from.
+    pub(crate) rows_remeasured: usize,
+    /// Mounted rows whose placement the list patched.
+    pub(crate) rows_repositioned: usize,
+    /// Logical rows looked up, by index or by key.
+    pub(crate) logical_rows_scanned: usize,
+    /// Moves of the list's total height.
+    pub(crate) scroll_extent_updates: usize,
+    /// Rows created for the window.
+    pub(crate) rows_materialized: usize,
+}
+
+/// A typography scale text can be set at: a positive finite number.
+fn valid_text_scale(scale: f32) -> bool {
+    scale.is_finite() && scale > 0.0
+}
+
+/// What a box whose own metrics moved can move: its intrinsic size and
+/// baseline, read by its parent, and the siblings and context around it.
+const METRIC_EXPORTS: LayoutDependencyFootprint = LayoutDependencyFootprint::intrinsic_container()
+    .union(LayoutDependencyFootprint::EXPORTS_BASELINE)
+    .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
+    .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING);
 
 fn definite_fixed_border(style: &LayoutStyle) -> bool {
     matches!(style.width, Some(LengthSpec::Px(value)) if value.is_finite() && value >= 0.0)
@@ -4680,7 +5082,7 @@ struct LayoutResultFacts {
     scroll_offset: ScrollOffset,
     text: bool,
     ascent: Option<f32>,
-    children: Arc<Vec<StableNodeId>>,
+    child_count: usize,
     parent: Option<StableNodeId>,
     border: nana_ui_core::PaddingSpec,
     child_kind: crate::LayoutFragmentKind,
@@ -4703,26 +5105,10 @@ fn child_fragment_kind(style: &LayoutStyle) -> crate::LayoutFragmentKind {
         .unwrap_or(crate::LayoutFragmentKind::ChildPlacement)
 }
 
-fn child_placements_current(
-    previous: &crate::LayoutResult,
-    children: &[StableNodeId],
-    mut bounds_of: impl FnMut(StableNodeId) -> Option<LayoutBox>,
-) -> bool {
-    if previous.child_placements.len() != children.len() {
-        return false;
-    }
-    previous
-        .child_placements
-        .iter()
-        .zip(children)
-        .enumerate()
-        .all(|(index, (placement, &child))| {
-            placement.node == child
-                && placement.index == index
-                && bounds_of(child).is_some_and(|bounds| placement.bounds == bounds)
-        })
-}
-
+/// The held result's fragments and parts still project its placements under
+/// the current content box, baseline and child kind. Each child's fragment
+/// and part are made from its placement with one shared kind, so the kind of
+/// the first one stands for all of them.
 fn retained_projection_current(
     previous: &crate::LayoutResult,
     content_box: LayoutBox,
@@ -4739,29 +5125,7 @@ fn retained_projection_current(
     {
         return false;
     }
-    if fragments
-        .iter()
-        .zip(previous.child_placements.iter())
-        .any(|(fragment, placement)| {
-            fragment.kind != child_kind
-                || fragment.node != Some(placement.node)
-                || fragment.index != placement.index
-                || fragment.bounds != placement.bounds
-                || fragment.first_baseline.is_some()
-                || fragment.last_baseline.is_some()
-        })
-    {
-        return false;
-    }
-    if parts
-        .iter()
-        .zip(previous.child_placements.iter())
-        .any(|(part, placement)| {
-            part.kind != crate::LayoutPartKind::ChildPlacement
-                || part.node != Some(placement.node)
-                || part.bounds != placement.bounds
-        })
-    {
+    if child_count > 0 && fragments[0].kind != child_kind {
         return false;
     }
     let mut index = child_count;
@@ -4793,42 +5157,6 @@ fn retained_projection_current(
     tail.kind == crate::LayoutPartKind::ComponentContent
         && tail.node.is_none()
         && tail.bounds == content_box
-}
-
-fn dependencies_match(
-    previous: &[StableNodeId],
-    children: &[StableNodeId],
-    clip: Option<StableNodeId>,
-    containing_block: Option<StableNodeId>,
-) -> bool {
-    if children.is_empty() {
-        return match (clip, containing_block) {
-            (None, None) => previous.is_empty(),
-            (Some(only), None) | (None, Some(only)) => previous.len() == 1 && previous[0] == only,
-            (Some(clip), Some(containing_block)) if clip == containing_block => {
-                previous.len() == 1 && previous[0] == clip
-            }
-            (Some(clip), Some(containing_block)) => {
-                let (first, second) = if clip < containing_block {
-                    (clip, containing_block)
-                } else {
-                    (containing_block, clip)
-                };
-                previous.len() == 2 && previous[0] == first && previous[1] == second
-            }
-        };
-    }
-    let mut expected = Vec::with_capacity(children.len() + 2);
-    expected.extend_from_slice(children);
-    if let Some(clip) = clip {
-        expected.push(clip);
-    }
-    if let Some(containing_block) = containing_block {
-        expected.push(containing_block);
-    }
-    expected.sort_unstable();
-    expected.dedup();
-    previous == expected.as_slice()
 }
 
 fn union_layout_boxes(left: LayoutBox, right: LayoutBox) -> LayoutBox {
@@ -4931,7 +5259,14 @@ fn layout_result_projects_new_geometry(
 
 /// Classify a style mutation at the layout authority boundary: the
 /// dependency classes the retained frontier consumes, from what changed.
-fn layout_style_invalidation(changed: nana_ui_core::LayoutStyleChange) -> LayoutInvalidation {
+/// `aspect_ratio` says the node ties its two axes, so a size on one moves
+/// the other. `parent_line` is the direction of the line the node sits in,
+/// along which a flex factor sizes it; `None` when the node has no parent.
+fn layout_style_invalidation(
+    changed: nana_ui_core::LayoutStyleChange,
+    aspect_ratio: bool,
+    parent_line: Option<nana_ui_core::FlexDirection>,
+) -> LayoutInvalidation {
     use nana_ui_core::LayoutStyleChange as Change;
     if !changed.intersects(Change::LAYOUT) {
         return LayoutInvalidation::none();
@@ -5008,10 +5343,34 @@ fn layout_style_invalidation(changed: nana_ui_core::LayoutStyleChange) -> Layout
     }
     if sizing || spacing || flow || alignment {
         footprint = footprint
-            .union(LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT)
-            .union(LayoutDependencyFootprint::CONSUMES_PARENT_BLOCK_CONSTRAINT)
             .union(LayoutDependencyFootprint::DEPENDS_ON_SIBLING_PREFIX)
             .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING);
+        // The constraint the node hands its children moves on the axis the
+        // write sized: a width the inline one, a height the block one, a flex
+        // factor the one its parent's line runs along. Spacing, alignment and
+        // the shape of the flow move both, and so does a size on a box whose
+        // aspect ratio ties its axes.
+        let factors_only = flow && !changed.intersects(Change::FLOW_SHAPE);
+        let both = spacing
+            || alignment
+            || aspect_ratio
+            || (flow && !factors_only)
+            || (factors_only && parent_line.is_none());
+        let along = |line: nana_ui_core::FlexDirection| factors_only && parent_line == Some(line);
+        if both
+            || changed.intersects(Change::SIZING_WIDTH)
+            || along(nana_ui_core::FlexDirection::Row)
+        {
+            footprint =
+                footprint.union(LayoutDependencyFootprint::CONSUMES_PARENT_INLINE_CONSTRAINT);
+        }
+        if both
+            || changed.intersects(Change::SIZING_HEIGHT)
+            || along(nana_ui_core::FlexDirection::Column)
+        {
+            footprint =
+                footprint.union(LayoutDependencyFootprint::CONSUMES_PARENT_BLOCK_CONSTRAINT);
+        }
     }
     if position {
         footprint = footprint.union(LayoutDependencyFootprint::DEPENDS_ON_CONTAINING_BLOCK);
@@ -5036,6 +5395,34 @@ fn layout_style_invalidation(changed: nana_ui_core::LayoutStyleChange) -> Layout
 }
 
 #[cfg(test)]
+mod issue255;
+#[cfg(test)]
+mod issue256;
+#[cfg(test)]
 mod issue257;
+#[cfg(test)]
+mod issue259;
+#[cfg(test)]
+mod issue260;
+#[cfg(test)]
+mod issue261;
+#[cfg(test)]
+mod issue262;
+#[cfg(test)]
+mod issue263;
+#[cfg(test)]
+mod issue264;
+#[cfg(test)]
+mod issue265;
+#[cfg(test)]
+mod issue266;
+#[cfg(test)]
+mod issue268;
+#[cfg(test)]
+mod issue269;
+#[cfg(test)]
+mod issue270;
+#[cfg(test)]
+mod reflow_oracle;
 #[cfg(test)]
 mod tests;

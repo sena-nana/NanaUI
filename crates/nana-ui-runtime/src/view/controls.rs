@@ -378,6 +378,12 @@ pub fn text(value: impl IntoProp<String>) -> El<Text> {
     widget(Text::new("")).value(value)
 }
 
+/// Localized text: `text` resolved in the locale of the scope it is in.
+#[track_caller]
+pub fn localized(text: crate::LocalizedText) -> El<Text> {
+    widget(Text::localized(text))
+}
+
 #[track_caller]
 pub fn button(label: impl IntoProp<String>) -> El<Button> {
     widget(Button::new("")).label(label)
