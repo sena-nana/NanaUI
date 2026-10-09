@@ -1722,10 +1722,12 @@ static CARD_SHEET: Sheet = Sheet::new(
         SheetRule {
             classes: &[0],
             patch: &CARD,
+            query: None,
         },
         SheetRule {
             classes: &[1],
             patch: &DIM,
+            query: None,
         },
     ],
     &[],
@@ -1772,6 +1774,108 @@ fn compiled_styles_compose_once_per_class_set_and_follow_conditional_classes() {
     let dimmed = layout(&cx, rows[1]);
     assert_eq!(dimmed.opacity, Some(0.4), "the later rule wins");
     assert_eq!(dimmed.padding, Some(LengthSpec::Px(12.0)));
+}
+
+static QUERY_ROW: StylePatch = StylePatch::new(r#"{"height":{"Px":20.0}}"#);
+static QUERY_NARROW: StylePatch = StylePatch::new(r#"{"height":{"Px":40.0}}"#);
+static QUERY_DIM: StylePatch = StylePatch::new(r#"{"opacity":0.5}"#);
+/// `@container card (width < 300px)`.
+static NARROW_CARD: SheetQuery = SheetQuery::new(
+    Some("card"),
+    crate::ResponsiveAxis::Width,
+    &[(f32::NEG_INFINITY, 300.0)],
+);
+static QUERY_SHEET: Sheet = Sheet::new(
+    &[
+        SheetRule {
+            classes: &[0],
+            patch: &QUERY_ROW,
+            query: None,
+        },
+        SheetRule {
+            classes: &[0],
+            patch: &QUERY_NARROW,
+            query: Some(&NARROW_CARD),
+        },
+        SheetRule {
+            classes: &[1],
+            patch: &QUERY_DIM,
+            query: Some(&NARROW_CARD),
+        },
+    ],
+    &[],
+);
+const QUERY_ROW_CLASS: Class = Class::new(&QUERY_SHEET, 0);
+const QUERY_DIM_CLASS: Class = Class::new(&QUERY_SHEET, 1);
+
+/// Classes with `@container` rules give the node a responsive rule in the
+/// commit that builds it, and another (or none) when a conditional class
+/// changes which rules apply. The rule rides the node's own effect, so it
+/// stands beside a locale scope and on the container of a `when`.
+#[test]
+fn container_classes_give_a_responsive_rule_that_follows_conditional_classes() {
+    let (mut cx, _, parent) = setup();
+    let dim = std::cell::Cell::new(None);
+    let open = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let dimmed = signal(false);
+            let shown = signal(true);
+            dim.set(Some(dimmed));
+            open.set(Some(shown));
+            (
+                widget(Stack::column(0.0))
+                    .class(QUERY_ROW_CLASS)
+                    .class_when(QUERY_DIM_CLASS, dimmed)
+                    .locale("ar"),
+                widget(Stack::column(0.0)).class(QUERY_ROW_CLASS),
+                when(shown, || text("开"))
+                    .otherwise(|| text("关"))
+                    .class_when(QUERY_DIM_CLASS, dimmed),
+            )
+        })
+        .unwrap();
+    let roots = view.roots().to_vec();
+    let (both, fixed, chain) = (roots[0], roots[1], roots[2]);
+    let rule = |cx: &AppContext, id| cx.world().responsive_rule(id).cloned();
+    let first = rule(&cx, both).expect("installed with the node");
+    assert_eq!(
+        first.container(),
+        &crate::ResponsiveContainer::Nearest {
+            name: Some("card".into())
+        }
+    );
+    assert_eq!(first.axis(), crate::ResponsiveAxis::Width);
+    assert_eq!(
+        *rule(&cx, fixed).expect("a fixed class"),
+        *first,
+        "the same rules, the same rule"
+    );
+    assert!(rule(&cx, chain).is_none(), "no container rule applies yet");
+    assert!(
+        cx.world()
+            .scope_locale(crate::LocaleScope::Node(both))
+            .is_some(),
+        "the locale scope stands beside it"
+    );
+
+    dim.get().unwrap().set(true);
+    cx.flush_reactive().unwrap();
+    let dimmed = rule(&cx, both).expect("a rule");
+    assert_ne!(*dimmed, *first, "the dim class adds its variant");
+    assert!(rule(&cx, chain).is_some(), "the chain's container follows");
+    open.get().unwrap().set(false);
+    cx.flush_reactive().unwrap();
+    assert_eq!(children(&cx, chain).len(), 1, "the chain still switches");
+    assert!(rule(&cx, chain).is_some());
+
+    dim.get().unwrap().set(false);
+    cx.flush_reactive().unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(&rule(&cx, both).unwrap(), &first),
+        "the rule made for these classes before comes back"
+    );
+    assert!(rule(&cx, chain).is_none(), "and goes where none applies");
 }
 
 #[test]
@@ -4585,4 +4689,211 @@ fn teleported_content_outlives_its_target() {
     cx.flush_reactive().unwrap();
     let second = layer.get_untracked().unwrap();
     assert_eq!(children(&cx, second), content, "and under the new layer");
+}
+
+/// The messages the localized tests say, in English, Chinese and Arabic.
+fn catalog() -> std::sync::Arc<crate::MessageTable> {
+    std::sync::Arc::new(
+        crate::MessageTable::new()
+            .with("en", "title", "Files")
+            .with(
+                "en",
+                "files",
+                "{count, plural, one {# file} other {# files}}",
+            )
+            .with("zh-cn", "title", "文件")
+            .with("zh-cn", "files", "{count} 个文件")
+            .with("ar", "title", "الملفات")
+            .with("ar", "files", "{count} ملفات"),
+    )
+}
+
+/// [`setup`] with [`catalog`] installed and the application in English.
+fn localized_setup() -> (AppContext, DocumentId, StableNodeId) {
+    let (mut cx, document, parent) = setup();
+    cx.set_message_catalog(Some(catalog()));
+    cx.set_default_locale(crate::Locale::parse("en"));
+    (cx, document, parent)
+}
+
+/// What node `id` shows.
+fn shown(cx: &AppContext, id: StableNodeId) -> String {
+    cx.world().text(id).unwrap_or_default().to_owned()
+}
+
+/// `t` takes a constant, a signal or a closure. A binding that gives the
+/// message shown again sends nothing; a locale switch resolves every
+/// message in the world and runs no binding.
+#[test]
+fn t_follows_its_message_and_sends_it_only_when_it_changes() {
+    let (mut cx, _, parent) = localized_setup();
+    let handles = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let count = signal(1u64);
+            let title = signal(crate::LocalizedText::new("title"));
+            handles.set(Some((count, title)));
+            column().children((
+                t(crate::LocalizedText::new("title")).key("constant"),
+                t(title).key("signal"),
+                t(move || crate::LocalizedText::new("files").arg("count", count.get()))
+                    .key("closure"),
+            ))
+        })
+        .unwrap();
+    let (count, title) = handles.get().unwrap();
+    let root = view.roots()[0];
+    let at = |path: &str| cx.resolve_assembly_path(root, path).unwrap();
+    let (constant, bound, counted) = (at("constant"), at("signal"), at("closure"));
+    assert_eq!(shown(&cx, constant), "Files");
+    assert_eq!(shown(&cx, bound), "Files");
+    assert_eq!(shown(&cx, counted), "1 file");
+    assert!(
+        cx.view_bindings(constant).is_none(),
+        "a constant message binds nothing"
+    );
+
+    let before = reactive_stats();
+    count.set(1);
+    title.set(crate::LocalizedText::new("title"));
+    cx.flush_reactive().unwrap();
+    let same = delta(before);
+    assert_eq!(same.effects_run, 2, "both bindings ran");
+    assert_eq!(
+        (same.nodes_patched, same.commits),
+        (0, 0),
+        "an equal message is not sent again"
+    );
+
+    let before = reactive_stats();
+    count.set(3);
+    cx.flush_reactive().unwrap();
+    assert_eq!(shown(&cx, counted), "3 files");
+    assert_eq!(delta(before).nodes_patched, 1);
+
+    let before = reactive_stats();
+    cx.set_default_locale(crate::Locale::parse("zh-cn"));
+    cx.flush_reactive().unwrap();
+    assert_eq!(shown(&cx, constant), "文件");
+    assert_eq!(shown(&cx, bound), "文件");
+    assert_eq!(shown(&cx, counted), "3 个文件");
+    let switched = delta(before);
+    assert_eq!((switched.effects_run, switched.nodes_patched), (0, 0));
+}
+
+/// `.locale(..)` makes the element a locale scope: a constant from the
+/// commit that creates it, with no effect; a signal moves the scope, and its
+/// text resolves again in the world without a binding of it running.
+#[test]
+fn an_element_with_a_locale_scopes_its_subtree() {
+    use crate::{Locale, LocaleScope, LocalizedText};
+    let (mut cx, _, parent) = localized_setup();
+    let before = reactive_stats();
+    let arabic = cx
+        .mount_view(parent, || {
+            column()
+                .locale("ar")
+                .children(t(LocalizedText::new("title")).key("text"))
+        })
+        .unwrap()
+        .roots()[0];
+    assert_eq!(delta(before).effects, 0, "a constant scope follows nothing");
+    let in_arabic = cx.resolve_assembly_path(arabic, "text").unwrap();
+    assert_eq!(shown(&cx, in_arabic), "الملفات");
+    assert_eq!(
+        cx.world().scope_locale(LocaleScope::Node(arabic)),
+        Locale::parse("ar").as_ref()
+    );
+    assert_eq!(
+        cx.world().locale_scope(in_arabic),
+        Some(LocaleScope::Node(arabic))
+    );
+
+    let chosen = std::cell::Cell::new(None);
+    let view = cx
+        .mount_view(parent, || {
+            let locale = signal(None::<Locale>);
+            chosen.set(Some(locale));
+            column().children((
+                column()
+                    .key("scope")
+                    .locale(locale)
+                    .children(t(LocalizedText::new("title")).key("text")),
+                t(LocalizedText::new("title")).key("outside"),
+            ))
+        })
+        .unwrap();
+    let locale = chosen.get().unwrap();
+    let root = view.roots()[0];
+    let at = |path: &str| cx.resolve_assembly_path(root, path).unwrap();
+    let (scope, inside, outside) = (at("scope"), at("scope/text"), at("outside"));
+    assert_eq!(cx.world().scope_locale(LocaleScope::Node(scope)), None);
+    assert_eq!(shown(&cx, inside), "Files", "no locale: the scope above");
+
+    let before = reactive_stats();
+    locale.set(Locale::parse("zh-cn"));
+    cx.flush_reactive().unwrap();
+    assert_eq!(shown(&cx, inside), "文件");
+    assert_eq!(shown(&cx, outside), "Files");
+    assert_eq!(
+        delta(before).nodes_patched,
+        0,
+        "the text resolves in the world: no binding of it runs"
+    );
+
+    locale.set(None);
+    cx.flush_reactive().unwrap();
+    assert_eq!(cx.world().scope_locale(LocaleScope::Node(scope)), None);
+    assert_eq!(shown(&cx, inside), "Files");
+}
+
+/// The context keeps one structural binding per node: a reactive locale and
+/// a reactive caption on one element share it, and each follows its own
+/// signal without undoing the other.
+#[test]
+fn a_reactive_locale_and_caption_on_one_node_both_follow() {
+    use crate::{Locale, LocaleScope};
+    let (mut cx, _, parent) = localized_setup();
+    let handles = std::cell::Cell::new(None);
+    cx.mount_view(parent, || {
+        let (first, second, field) = (node_ref(), node_ref(), node_ref());
+        let later = signal(false);
+        let locale = signal(None::<Locale>);
+        handles.set(Some((first, second, field, later, locale)));
+        column().children((
+            text("音量").node_ref(first),
+            text("静音").node_ref(second),
+            switch("")
+                .labelled_by(move || {
+                    if later.get() {
+                        second.get()
+                    } else {
+                        first.get()
+                    }
+                })
+                .locale(locale)
+                .node_ref(field),
+        ))
+    })
+    .unwrap();
+    let (first, second, field, later, locale) = handles.get().unwrap();
+    let id = |node: NodeRef| node.get_untracked().unwrap();
+    let field = id(field);
+    assert_eq!(cx.world().labelled_by(field), Some(id(first)));
+
+    locale.set(Locale::parse("ar"));
+    cx.flush_reactive().unwrap();
+    assert_eq!(
+        cx.world().scope_locale(LocaleScope::Node(field)),
+        Locale::parse("ar").as_ref()
+    );
+    assert_eq!(cx.world().labelled_by(field), Some(id(first)));
+
+    later.set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(cx.world().labelled_by(field), Some(id(second)));
+    assert_eq!(
+        cx.world().scope_locale(LocaleScope::Node(field)),
+        Locale::parse("ar").as_ref()
+    );
 }

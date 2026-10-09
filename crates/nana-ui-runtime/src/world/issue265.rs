@@ -26,14 +26,14 @@
 
 use std::sync::Arc;
 
-use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, WorkCounters};
+use nana_ui_core::{ContainerType, FlexDirection, LayoutStyle, LengthSpec, WorkCounters};
 
 use super::reflow_oracle::{assert_matches_cold, bundled_face_shaper, node, product_frame, styled};
 use super::{DocumentId, NodeKind, StableNodeId};
 use crate::layout_engine::verify::skip_layout_verify;
 use crate::{
     AppContext, LayoutViewport, MutationQueue, NanaTextEngineShaper, NodeStyle, ResponsiveAxis,
-    ResponsiveContainer, ResponsiveRule,
+    ResponsiveContainer, ResponsiveRule, StyleVariant,
 };
 
 pub(super) const RULES: u64 = 100;
@@ -593,4 +593,223 @@ fn issue265_a_rule_follows_its_node_to_a_new_parent_and_can_be_dropped() {
     assert_eq!(panel.height(0), 24.0);
     assert_eq!(panel.context.world().responsive_bucket(moved), None);
     assert_eq!(panel.footprint().0, RULES as usize - 1);
+}
+
+/// A variant made of data, as CSS writes one: the fields it changes and their
+/// values. A paint-only variant paints and lays nothing out; the node keeps
+/// the style it was authored with, and a later style write starts from that
+/// and keeps the variant over it.
+#[test]
+fn issue265_a_data_variant_paints_without_layout_and_keeps_the_authored_style() {
+    let mut panel = Panel::new(1_000, 320.0, true);
+    let painted = row(RULES - 1);
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let authored = panel.context.world().node_style(painted).unwrap().clone();
+    let redder = LayoutStyle {
+        background: Some(red),
+        ..(*authored.layout).clone()
+    };
+    let rule = || {
+        Arc::new(
+            ResponsiveRule::from_buckets(
+                ResponsiveContainer::Parent,
+                ResponsiveAxis::Width,
+                vec![300.0],
+                vec![StyleVariant::between(&authored.layout, &redder), None],
+            )
+            .unwrap(),
+        )
+    };
+    let installed = rule();
+    let mut queue = MutationQueue::new();
+    queue.set_responsive(painted, Some(Arc::clone(&installed)));
+    panel.context.commit_mutations(queue).unwrap();
+    panel.frame();
+    let background = |panel: &Panel| {
+        panel
+            .context
+            .world()
+            .computed_style(painted)
+            .unwrap()
+            .background
+    };
+    assert_eq!(background(&panel), None);
+
+    let queries = Queries::from(panel.resize(280.0));
+    assert!(queries.changed >= 1, "{queries:?}");
+    assert_eq!(background(&panel), Some(red), "the variant paints");
+    assert_eq!(
+        queries.downstream, 0,
+        "a paint-only variant seeds no layout"
+    );
+    let world = panel.context.world();
+    assert_eq!(
+        world.node_style(painted),
+        Some(&authored),
+        "authored style kept"
+    );
+    // The same rule sent again is the rule it has.
+    let mut queue = MutationQueue::new();
+    queue.set_responsive(painted, Some(rule()));
+    panel.context.commit_mutations(queue).unwrap();
+    assert!(Arc::ptr_eq(
+        panel.context.world().responsive_rule(painted).unwrap(),
+        &installed
+    ));
+
+    // A write while in the bucket starts from the authored style; the
+    // variant stays written over it.
+    let taller = styled(fixed(200.0, 30.0));
+    let mut queue = MutationQueue::new();
+    queue.set_style(painted, taller.clone());
+    panel.context.commit_mutations(queue).unwrap();
+    panel.frame();
+    assert_eq!(panel.height(RULES - 1), 30.0);
+    assert_eq!(background(&panel), Some(red));
+    assert_eq!(panel.context.world().node_style(painted), Some(&taller));
+
+    panel.resize(320.0);
+    assert_eq!(background(&panel), None);
+    assert_eq!(panel.height(RULES - 1), 30.0);
+}
+
+/// `container-type` and `container-name`: a rule reads the nearest box above
+/// it that answers its query, past boxes that do not, and keeps its authored
+/// style while none does. A box that becomes or stops being a query
+/// container is found, or lost, by the rules below it.
+#[test]
+fn issue265_a_rule_reads_the_nearest_query_container_by_name() {
+    let document = DocumentId::new(1).unwrap();
+    let card = node(PANEL + 500);
+    let wrapper = node(PANEL + 501);
+    let named = node(PANEL + 502);
+    let unnamed = node(PANEL + 503);
+    let elsewhere = node(PANEL + 504);
+    let card_at = |width: f32| LayoutStyle {
+        container_type: ContainerType::InlineSize,
+        container_name: vec!["card".into()],
+        ..column(Some(width), Some(400.0))
+    };
+    let mut queue = MutationQueue::new();
+    page_with_filler(&mut queue, document, 1_000, 10);
+    element(&mut queue, document, node(2), card, styled(card_at(320.0)));
+    element(
+        &mut queue,
+        document,
+        card,
+        wrapper,
+        styled(column(None, None)),
+    );
+    let tall = fixed(100.0, 24.0);
+    let taller = fixed(100.0, 36.0);
+    for (id, name, axis) in [
+        (named, Some("card"), ResponsiveAxis::Width),
+        (unnamed, None, ResponsiveAxis::Inline),
+        (elsewhere, Some("sidebar"), ResponsiveAxis::Width),
+    ] {
+        element(&mut queue, document, wrapper, id, styled(tall.clone()));
+        queue.set_responsive(
+            id,
+            Some(Arc::new(
+                ResponsiveRule::from_buckets(
+                    ResponsiveContainer::Nearest {
+                        name: name.map(String::from),
+                    },
+                    axis,
+                    vec![300.0],
+                    vec![StyleVariant::between(&tall, &taller), None],
+                )
+                .unwrap(),
+            )),
+        );
+    }
+    let mut panel = Panel::laid_out(document, queue, true, card, card_at);
+    let height = |panel: &Panel, id| panel.context.world().layout_box(id).unwrap().height;
+    for id in [named, unnamed, elsewhere] {
+        assert_eq!(height(&panel, id), 24.0);
+    }
+
+    panel.resize(280.0);
+    assert_eq!(
+        height(&panel, named),
+        36.0,
+        "found by name, past the wrapper"
+    );
+    assert_eq!(height(&panel, unnamed), 36.0, "an unnamed query takes any");
+    assert_eq!(
+        height(&panel, elsewhere),
+        24.0,
+        "no box answers to its name"
+    );
+    assert_eq!(panel.context.world().responsive_bucket(elsewhere), None);
+
+    // The card stops being a query container: its rules keep their
+    // authored style.
+    let mut queue = MutationQueue::new();
+    queue.set_style(card, styled(column(Some(280.0), Some(400.0))));
+    panel.context.commit_mutations(queue).unwrap();
+    panel.frame();
+    assert_eq!(height(&panel, named), 24.0);
+    assert_eq!(panel.context.world().responsive_bucket(named), None);
+
+    // The wrapper becomes one, by that name: it is the nearest now.
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        wrapper,
+        styled(LayoutStyle {
+            container_type: ContainerType::Size,
+            container_name: vec!["card".into()],
+            ..column(None, None)
+        }),
+    );
+    panel.context.commit_mutations(queue).unwrap();
+    panel.frame();
+    assert_eq!(height(&panel, named), 36.0, "280 px wide: below 300");
+    assert_eq!(height(&panel, elsewhere), 24.0);
+}
+
+/// A node in a bucket is the node authored with the variant written over its
+/// style: the same computed style, the same box.
+#[test]
+fn issue265_a_node_in_a_bucket_matches_the_node_authored_that_way() {
+    let mut panel = Panel::new(1_000, 280.0, true);
+    let base = fixed(200.0, 24.0);
+    let narrow = LayoutStyle {
+        height: Some(LengthSpec::Px(40.0)),
+        padding: Some(LengthSpec::Px(6.0)),
+        background: Some([0.2, 0.4, 0.6, 1.0]),
+        opacity: Some(0.5),
+        font_size: Some(18.0),
+        ..base.clone()
+    };
+    let following = row(RULES - 1);
+    let authored = row(RULES - 2);
+    let mut queue = MutationQueue::new();
+    queue.set_responsive(
+        following,
+        Some(Arc::new(
+            ResponsiveRule::from_buckets(
+                ResponsiveContainer::Parent,
+                ResponsiveAxis::Inline,
+                vec![300.0],
+                vec![StyleVariant::between(&base, &narrow), None],
+            )
+            .unwrap(),
+        )),
+    );
+    queue.set_responsive(authored, None);
+    queue.set_style(authored, styled(narrow));
+    panel.context.commit_mutations(queue).unwrap();
+    panel.frame();
+    let world = panel.context.world();
+    assert_eq!(
+        world.computed_style(following),
+        world.computed_style(authored)
+    );
+    let size = |id| {
+        let layout = world.layout_box(id).unwrap();
+        (layout.width, layout.height)
+    };
+    assert_eq!(size(following), size(authored));
+    assert_eq!(size(following), (200.0, 40.0));
 }

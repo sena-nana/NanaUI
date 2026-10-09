@@ -138,10 +138,12 @@ impl UiWorld {
     /// Install the catalog messages come from; `None` leaves only the
     /// missing-message policy. Every localized node resolves again.
     pub fn set_message_catalog(&mut self, catalog: Option<Arc<dyn MessageCatalog>>) {
+        let shown = self.i18n_shown();
         self.i18n.catalog = catalog;
         self.i18n.catalog_generation += 1;
         self.i18n.lookups.clear();
         self.resolve_every_localized();
+        self.note_shown_since(shown);
     }
 
     /// Install `catalog`, in which only `changed` messages differ from the
@@ -153,6 +155,7 @@ impl UiWorld {
         catalog: Arc<dyn MessageCatalog>,
         changed: &[MessageId],
     ) {
+        let shown = self.i18n_shown();
         self.i18n.catalog = Some(catalog);
         self.i18n.catalog_generation += 1;
         self.i18n
@@ -173,6 +176,7 @@ impl UiWorld {
         }
         counts.switch_commits += 1;
         self.pending_drain_counts.i18n.accumulate(counts);
+        self.note_shown_since(shown);
     }
 
     /// How many catalogs were installed or updated.
@@ -183,8 +187,10 @@ impl UiWorld {
     /// Format messages through `formatter` instead of the default; every
     /// localized node resolves again.
     pub fn set_locale_formatter(&mut self, formatter: Arc<dyn LocaleFormatter>) {
+        let shown = self.i18n_shown();
         self.i18n.formatter = Some(formatter);
         self.resolve_every_localized();
+        self.note_shown_since(shown);
     }
 
     /// The locale every fallback chain ends in, after the scope's own; the
@@ -193,9 +199,11 @@ impl UiWorld {
         if self.i18n.fallback == locale {
             return;
         }
+        let shown = self.i18n_shown();
         self.i18n.fallback = locale;
         self.i18n.lookups.clear();
         self.resolve_every_localized();
+        self.note_shown_since(shown);
     }
 
     /// What a message no locale has shows; see [`MissingMessage`].
@@ -203,8 +211,10 @@ impl UiWorld {
         if self.i18n.missing == policy {
             return;
         }
+        let shown = self.i18n_shown();
         self.i18n.missing = policy;
         self.resolve_every_localized();
+        self.note_shown_since(shown);
     }
 
     /// The application's locale, which every window without its own takes.
@@ -212,6 +222,7 @@ impl UiWorld {
         if self.i18n.application == locale {
             return;
         }
+        let shown = self.i18n_shown();
         let before = self.i18n.application.clone();
         self.i18n.application = locale;
         // Windows with localized text, and windows whose roots take its
@@ -234,6 +245,7 @@ impl UiWorld {
             .map(|document| (LocaleScope::Document(document), before.clone()))
             .collect();
         self.switch_locale(reached);
+        self.note_shown_since(shown);
     }
 
     /// `document`'s locale; `None` takes the application's again.
@@ -241,12 +253,32 @@ impl UiWorld {
         if self.i18n.documents.get(&document) == locale.as_ref() {
             return;
         }
+        let shown = self.i18n_shown();
         let before = self.scope_locale(LocaleScope::Document(document)).cloned();
         match locale {
             Some(locale) => self.i18n.documents.insert(document, locale),
             None => self.i18n.documents.remove(&document),
         };
         self.switch_locale(vec![(LocaleScope::Document(document), before)]);
+        self.note_shown_since(shown);
+    }
+
+    /// What localization changed that a frame shows, counted since the last
+    /// drain: text shown, the language it shapes in, a scope's direction.
+    fn i18n_shown(&self) -> usize {
+        let counts = &self.pending_drain_counts.i18n;
+        counts.resolved_content_changed
+            + counts.language_changed_nodes
+            + counts.direction_changed_scopes
+    }
+
+    /// A change the application made outside a commit that changed what
+    /// shows moves the world's generation, as a commit does, so a host that
+    /// draws when the generation moves draws it.
+    fn note_shown_since(&mut self, before: usize) {
+        if self.i18n_shown() != before {
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 
     pub fn default_locale(&self) -> Option<&Locale> {

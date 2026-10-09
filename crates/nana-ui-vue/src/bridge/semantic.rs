@@ -393,6 +393,30 @@ pub struct WidgetProps {
     /// The `paint` value last parsed, as JSON text, so re-sending the same
     /// script (a Vue re-render of an object literal) does not parse it again.
     pub paint_source: Option<String>,
+    /// `message-id`: the message a text node says, resolved by the Runtime in
+    /// the locale of the scope the node is in (Issue #267).
+    pub message: Option<nana_ui_runtime::MessageId>,
+    /// `message-args`, kept apart from [`Self::message`] because Vue may set
+    /// either first.
+    pub message_args: nana_ui_runtime::MessageArgs,
+    /// The `message-args` text last parsed, so the same text is not parsed
+    /// again.
+    pub message_args_source: Option<String>,
+    /// Why part of `message-args` was left out.
+    pub message_args_error: Option<String>,
+    /// `locale`: makes the node a locale scope for its subtree.
+    pub locale: Option<nana_ui_runtime::Locale>,
+    /// The `@container` rules this element matches, as one responsive rule
+    /// the Runtime evaluates against its container's size (Issue #265);
+    /// `None` when none change it. Written by the cascade beside
+    /// [`Self::layout`], which stays the style with no container rule: the
+    /// rule's variants are what those rules write over it.
+    pub responsive: Option<std::sync::Arc<nana_ui_runtime::ResponsiveRule>>,
+    /// Whether [`Self::responsive`] changes text its children inherit
+    /// (`font-size`, `color`, …). They leave that text to the Runtime, which
+    /// passes down what this element shows in its container's current
+    /// bucket, rather than copy [`Self::layout`]'s.
+    pub(crate) responsive_text: bool,
 }
 
 impl Default for WidgetProps {
@@ -444,6 +468,13 @@ impl Default for WidgetProps {
             paint: None,
             paint_error: None,
             paint_source: None,
+            message: None,
+            message_args: nana_ui_runtime::MessageArgs::new(),
+            message_args_source: None,
+            message_args_error: None,
+            locale: None,
+            responsive: None,
+            responsive_text: false,
         }
     }
 }
@@ -1118,6 +1149,34 @@ impl WidgetProps {
                     self.attrs.insert("dir".into(), s);
                 }
             }
+            // The language this element's text, and its subtree's, shapes in.
+            // Read where the node is projected; kept as an attribute for
+            // `[lang]` selectors too.
+            "lang" => {
+                let s = host_string(value);
+                if s.trim().is_empty() {
+                    self.attrs.remove("lang");
+                } else {
+                    self.attrs.insert("lang".into(), s);
+                }
+            }
+            // A locale scope. Kept as an attribute for `[locale]` selectors
+            // and for the cascade, which lays the scope out in its direction.
+            "locale" => {
+                let s = host_string(value);
+                self.locale = nana_ui_runtime::Locale::parse(&s);
+                if self.locale.is_some() {
+                    self.attrs.insert("locale".into(), s.trim().to_owned());
+                } else {
+                    self.attrs.remove("locale");
+                }
+            }
+            "message-id" => {
+                let key = host_string(value);
+                let key = key.trim();
+                self.message = (!key.is_empty()).then(|| nana_ui_runtime::MessageId::new(key));
+            }
+            "message-args" => self.apply_message_args(value),
             "multiple" => {
                 if host_truthy(value) {
                     self.attrs.insert("multiple".into(), String::new());
@@ -1202,6 +1261,34 @@ impl WidgetProps {
                 self.paint_error = Some(error);
             }
         }
+    }
+
+    /// `message-args`: JSON text, read by [`crate::i18n::parse_message_args`].
+    /// An object set directly is read as its JSON. The same text again is not
+    /// parsed again: Vue re-sends an attribute only when it changed, but a
+    /// create seed and the patch after it both carry it.
+    fn apply_message_args(&mut self, value: &nana_js_engine::HostValue) {
+        use nana_js_engine::HostValue;
+        let text = match value {
+            HostValue::Null | HostValue::Undefined => String::new(),
+            HostValue::String(text) => text.clone(),
+            other => other.to_json_value().to_string(),
+        };
+        if self.message_args_source.as_deref().unwrap_or_default() == text {
+            return;
+        }
+        let (args, error) = crate::i18n::parse_message_args(&text);
+        self.message_args = args;
+        self.message_args_error = error;
+        self.message_args_source = (!text.is_empty()).then_some(text);
+    }
+
+    /// What `message-id` asks this node to say, with its `message-args`.
+    pub fn localized_text(&self) -> Option<nana_ui_runtime::LocalizedText> {
+        Some(nana_ui_runtime::LocalizedText {
+            message: self.message?,
+            args: self.message_args.clone(),
+        })
     }
 
     fn persist_native_payload(&mut self, key: &str, value: &nana_js_engine::HostValue) {

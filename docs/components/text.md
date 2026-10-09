@@ -63,4 +63,4 @@ text!("共 {count} 项")
 
 ## 参见
 
-[总览](index.md) · [控件](../reference/components.md)
+[总览](index.md) · [控件](../reference/components.md) · Vue 里的本地化文字 `<T id="files" :count="n" />`：[宿主边界](../reference/vue-host.md#本地化文字)

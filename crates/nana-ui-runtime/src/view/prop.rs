@@ -293,4 +293,9 @@ const_props! {
     (f64, f64) => (f64, f64), |v| v;
     [f32; 4] => [f32; 4], |v| v;
     Vec<nana_ui_core::TreeNode<Arc<str>>> => Vec<nana_ui_core::TreeNode<Arc<str>>>, |v| v;
+    crate::LocalizedText => crate::LocalizedText, |v| v;
+    crate::Locale => Option<crate::Locale>, |v| Some(v);
+    Option<crate::Locale> => Option<crate::Locale>, |v| v;
+    // A language tag: `.locale("ar")`. An empty one names no locale.
+    &'static str => Option<crate::Locale>, |v| crate::Locale::parse(v);
 }

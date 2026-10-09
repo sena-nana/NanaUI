@@ -1591,6 +1591,20 @@ impl PointerEventsSpec {
     }
 }
 
+/// CSS `container-type`: whether a box answers container-size queries
+/// (Issue #265), and on which axes. A query container is not
+/// size-contained here: its size still follows its content.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ContainerType {
+    /// Not a query container.
+    #[default]
+    Normal,
+    /// Answers queries on its inline size.
+    InlineSize,
+    /// Answers queries on its inline and its block size.
+    Size,
+}
+
 /// CSS `border-style` subset. Dashed/dotted stroke the existing rounded-box
 /// SDF ring; `double` / 3D keywords occupy used width but do not paint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3535,6 +3549,14 @@ pub struct LayoutStyle {
     pub border_bottom_style: Option<BorderStyle>,
     #[serde(default)]
     pub border_left_style: Option<BorderStyle>,
+    /// CSS `container-type`: whether container-size rules below this box
+    /// can query it. It moves no box.
+    #[serde(default)]
+    pub container_type: ContainerType,
+    /// CSS `container-name`: the names a named `@container` query finds
+    /// this box by. Empty, it answers unnamed queries only.
+    #[serde(default)]
+    pub container_name: Vec<String>,
 }
 
 impl Default for LayoutStyle {
@@ -3665,6 +3687,8 @@ impl Default for LayoutStyle {
             border_right_style: None,
             border_bottom_style: None,
             border_left_style: None,
+            container_type: ContainerType::Normal,
+            container_name: Vec::new(),
         }
     }
 }

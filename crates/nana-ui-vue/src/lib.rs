@@ -222,6 +222,7 @@ pub mod dev;
 mod host;
 #[cfg(feature = "hosted")]
 mod hosted_adapter;
+mod i18n;
 mod input;
 mod layout_map;
 mod measure;
@@ -915,6 +916,12 @@ impl VueHost {
                 current.font_variations - last.font_variations
             ));
         }
+        if current.container_queries > last.container_queries {
+            parts.push(format!(
+                "@container rules that cannot apply on {} element(s)",
+                current.container_queries - last.container_queries
+            ));
+        }
         if !parts.is_empty() {
             self.report_diagnostic(
                 "nana.css",
@@ -936,9 +943,9 @@ impl VueHost {
         }
     }
 
-    /// Forward host-op commit rejections and invalid `paint` scripts recorded
-    /// by [`NanaTreeDocument`] to the JS diagnostics sink instead of dropping
-    /// them silently.
+    /// Forward host-op commit rejections, invalid `paint` scripts and
+    /// `message-args` recorded by [`NanaTreeDocument`] to the JS diagnostics
+    /// sink instead of dropping them silently.
     #[cfg(feature = "scene-view")]
     fn report_commit_rejections(&self, doc: &mut NanaTreeDocument) {
         for rejection in doc.take_commit_rejections() {
@@ -951,6 +958,9 @@ impl VueHost {
         }
         for error in doc.take_paint_errors() {
             self.report_diagnostic("nana.paint", JsDiagnosticLevel::Warning, error, None);
+        }
+        for error in doc.take_i18n_errors() {
+            self.report_diagnostic("nana.i18n", JsDiagnosticLevel::Warning, error, None);
         }
     }
 

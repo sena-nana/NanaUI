@@ -208,6 +208,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | `NanaVirtualTable` `rowCount` / `columnCount` | 两轴窗口；默认槽 `{ row, column, rowKey, columnKey }` |
 | `NanaVirtualTree` 展开后的扁平行 | 与 `VirtualTreeLayout` 相同：折叠子树不进索引；槽 `{ index, key, depth }` |
 | `NanaContextMenu` option `icon` | Runtime `ContextMenuItem::icon`（`Icon::parse_name` 成功才设置） |
+| `T` / `NanaT` `id` / 其余属性 / `args` | `<nana-text>`：`message-id` 是消息名，参数编成 JSON 放进 `message-args`（`encodeMessageArgs`）；Runtime `set_localized_text`，按作用域 locale 解析。`class` / `style` / `lang` / `dir` / `locale` / `data-*` / `aria-*` / 监听器留在元素上 |
 
 浮层关闭：宿主 `Toggle false` / `SelectValue` → Vue `change` + `update:modelValue` / `update:open`。
 

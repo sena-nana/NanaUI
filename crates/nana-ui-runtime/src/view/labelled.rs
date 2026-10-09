@@ -18,33 +18,13 @@
 //!
 //! The caption may be declared before the control, after it, or in another
 //! view. The relation follows what `label` names now, so a caption rebuilt
-//! under a `when` names the control again.
+//! under a `when` names the control again. The binding that keeps it is in
+//! `relations.rs`, shared with the node's locale scope.
 
-use std::panic::Location;
-
-use super::node::{StructuralBinding, ViewBuilder};
-use super::prop::PropSource;
-use super::reactive::{self, EffectKey, EffectTarget, on_mount};
 use crate::{AppContext, FrameworkError, MutationQueue, StableNodeId};
 
-struct LabelledBy {
-    label: PropSource<Option<StableNodeId>>,
-}
-
-impl StructuralBinding for LabelledBy {
-    fn update(
-        &mut self,
-        cx: &mut AppContext,
-        control: StableNodeId,
-        effect: EffectKey,
-    ) -> Result<(), FrameworkError> {
-        let label = reactive::run_tracked(effect, || self.label.get());
-        relate(cx, control, label)
-    }
-}
-
 /// Name `control` by `label`, or by nothing while `label` names no node.
-fn relate(
+pub(super) fn relate(
     cx: &mut AppContext,
     control: StableNodeId,
     label: Option<StableNodeId>,
@@ -57,28 +37,6 @@ fn relate(
     let mut mutations = MutationQueue::new();
     mutations.set_labelled_by(control, label);
     cx.commit_mutations(mutations).map(|_| ())
-}
-
-/// Keep `control` named by what `label` names: once the view it is in is
-/// in the tree, and whenever `label` moves on.
-pub(super) fn bind(
-    vb: &mut ViewBuilder<'_, '_, '_>,
-    control: StableNodeId,
-    label: PropSource<Option<StableNodeId>>,
-    site: &'static Location<'static>,
-) {
-    let effect = reactive::create_effect(vb.st.tag, EffectTarget::Structural(control), None, site);
-    // What it reads is what it follows. A caption declared after the
-    // control is not built yet, so the relation is made on mount, when it
-    // is: reading `label` again there sees it.
-    reactive::run_tracked(effect, || label.get());
-    on_mount(move |cx| {
-        let _ = cx.run_structural_now(control);
-    });
-    vb.st
-        .parts
-        .structural
-        .push((control, effect, Box::new(LabelledBy { label })));
 }
 
 #[cfg(test)]

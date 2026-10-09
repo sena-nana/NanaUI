@@ -125,6 +125,12 @@ impl From<String> for MessageArg {
     }
 }
 
+impl From<Arc<str>> for MessageArg {
+    fn from(value: Arc<str>) -> Self {
+        Self::Text(value)
+    }
+}
+
 impl From<f64> for MessageArg {
     fn from(value: f64) -> Self {
         Self::Number(value)

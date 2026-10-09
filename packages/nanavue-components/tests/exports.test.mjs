@@ -97,6 +97,7 @@ const HOST_TAGS = {
   NanaVirtualList: "nana-scroll-view",
   NanaVirtualTable: "nana-scroll-view",
   NanaVirtualTree: "nana-scroll-view",
+  NanaT: "nana-text",
 };
 
 const SOURCE_FILES = Object.fromEntries(
@@ -327,6 +328,13 @@ describe("Runtime catalog Vue wrappers", () => {
       const src = readFileSync(join(root, file), "utf8");
       assert.match(src, new RegExp(`h\\(\\s*["']${tag}["']`));
     }
+  });
+
+  test("NanaT is exported as T and names its message on nana-text", () => {
+    assert.match(indexSrc, /export \{ NanaT, T \} from "\.\/NanaT\.js"/);
+    const src = readFileSync(join(root, "src/NanaT.js"), "utf8");
+    assert.match(src, /inheritAttrs:\s*false/);
+    assert.match(src, /messageTextProps\(props\.id, attrs, props\.args\)/);
   });
 
   test("NanaGpu forwards source onto nana-gpu", () => {

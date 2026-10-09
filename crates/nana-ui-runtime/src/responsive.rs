@@ -1,12 +1,13 @@
-//! Responsive policy (Issue #265): a node takes a layout variant by the size
+//! Responsive policy (Issue #265): a node takes a style variant by the size
 //! of a container box, from bounded size buckets.
 //!
-//! A rule is layout intent. The variant its bucket picks is a patch over
-//! the node's own layout, resolved where design intent is: the node's
-//! resolved layout is its authored layout, its design intent applied, then
-//! its variant. A bucket change is therefore a style change to the node,
-//! classified and seeded like one, and laid out by the one incremental
-//! layout. No query engine, renderer or callback writes a box.
+//! A rule is style intent. The variant its bucket picks is written over the
+//! node's authored layout as if the author had written it, so paint,
+//! typography and layout all follow it, and design intent resolves over the
+//! result as it does over any authored style. A bucket change is therefore a
+//! style change to the node, classified and seeded like one, and laid out by
+//! the one incremental layout. No query engine, renderer or callback writes
+//! a box.
 //!
 //! Rules are indexed by their container. A container whose content box moved
 //! on the axis its rules read evaluates those rules and no other; a rule
@@ -15,7 +16,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use nana_ui_core::LayoutStyle;
+use nana_ui_core::{LayoutFieldSet, LayoutStyle};
 
 use crate::StableNodeId;
 
@@ -23,42 +24,107 @@ use crate::StableNodeId;
 pub const MAX_RESPONSIVE_BREAKPOINTS: usize = 16;
 
 /// The box whose size a rule reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ResponsiveContainer {
     /// The node's parent: the space the node is given.
     Parent,
     /// A named box: a dock panel, a page.
     Node(StableNodeId),
+    /// The nearest box above the node that is a query container for the
+    /// rule's axis (`container-type`), and answers to `name` when one is
+    /// given (`container-name`): CSS `@container`. While there is none, the
+    /// node keeps its authored style.
+    Nearest { name: Option<String> },
 }
 
-/// The axis of the container's content box a rule reads, in the container's
-/// writing mode: inline is its width in horizontal writing.
+/// The axis of the container's content box a rule reads. Inline and block
+/// follow the container's writing mode; width and height do not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResponsiveAxis {
     Inline,
     Block,
+    Width,
+    Height,
 }
 
-/// A layout a rule applies in one bucket: a patch over the node's own
-/// layout. Two variants are the same variant when they are one patch.
+/// A style a rule applies in one bucket, written over the node's authored
+/// layout.
+///
+/// Built from data ([`Self::between`]) it is the layout fields that differ
+/// with their values, and two variants are equal when they write the same
+/// values; built from a closure ([`Self::patch`]) two are equal when they are
+/// one closure.
 #[derive(Clone)]
-pub(crate) struct LayoutVariant(Arc<dyn Fn(&mut LayoutStyle) + Send + Sync>);
+pub struct StyleVariant(Variant);
 
-impl LayoutVariant {
-    pub(crate) fn apply(&self, layout: &mut LayoutStyle) {
-        (self.0)(layout);
+#[derive(Clone)]
+enum Variant {
+    Fields {
+        fields: LayoutFieldSet,
+        /// The written values; every other field is the default.
+        values: Arc<LayoutStyle>,
+    },
+    Patch(Arc<dyn Fn(&mut LayoutStyle) + Send + Sync>),
+}
+
+impl StyleVariant {
+    /// The fields `styled` writes over `base`, with `styled`'s values;
+    /// `None` when the two are equal. Written over another base, it changes
+    /// those fields and keeps the rest of that base.
+    pub fn between(base: &LayoutStyle, styled: &LayoutStyle) -> Option<Self> {
+        let fields = base.differing_fields(styled);
+        if fields.is_empty() {
+            return None;
+        }
+        let mut values = LayoutStyle::default();
+        values.copy_fields(styled, &fields);
+        Some(Self(Variant::Fields {
+            fields,
+            values: Arc::new(values),
+        }))
+    }
+
+    /// A variant that runs `patch` over the node's authored layout.
+    pub fn patch(patch: impl Fn(&mut LayoutStyle) + Send + Sync + 'static) -> Self {
+        Self(Variant::Patch(Arc::new(patch)))
+    }
+
+    /// Write the variant over `layout`.
+    pub fn apply(&self, layout: &mut LayoutStyle) {
+        match &self.0 {
+            Variant::Fields { fields, values } => layout.copy_fields(values, fields),
+            Variant::Patch(patch) => patch(layout),
+        }
     }
 }
 
-impl fmt::Debug for LayoutVariant {
+impl fmt::Debug for StyleVariant {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("LayoutVariant(..)")
+        match &self.0 {
+            Variant::Fields { fields, .. } => {
+                write!(formatter, "StyleVariant({} fields)", fields.len())
+            }
+            Variant::Patch(_) => formatter.write_str("StyleVariant(..)"),
+        }
     }
 }
 
-impl PartialEq for LayoutVariant {
+impl PartialEq for StyleVariant {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        match (&self.0, &other.0) {
+            (
+                Variant::Fields { fields, values },
+                Variant::Fields {
+                    fields: other_fields,
+                    values: other_values,
+                },
+            ) => {
+                fields == other_fields
+                    && (Arc::ptr_eq(values, other_values) || values == other_values)
+            }
+            (Variant::Patch(patch), Variant::Patch(other)) => Arc::ptr_eq(patch, other),
+            _ => false,
+        }
     }
 }
 
@@ -67,7 +133,7 @@ impl PartialEq for LayoutVariant {
 ///
 /// Bucket 0 lies below the first breakpoint; bucket `i` runs from
 /// breakpoint `i - 1` up to the next. A bucket with no variant keeps the
-/// node's own layout.
+/// node's authored style.
 ///
 /// ```
 /// # use nana_ui_runtime::{ResponsiveAxis, ResponsiveContainer, ResponsiveRule};
@@ -83,12 +149,12 @@ pub struct ResponsiveRule {
     container: ResponsiveContainer,
     axis: ResponsiveAxis,
     breakpoints: Vec<f32>,
-    variants: Vec<Option<LayoutVariant>>,
+    variants: Vec<Option<StyleVariant>>,
 }
 
 impl ResponsiveRule {
-    /// A rule on `axis` of `container` with one bucket: the node's own
-    /// layout at every size.
+    /// A rule on `axis` of `container` with one bucket: the node's authored
+    /// style at every size.
     pub fn new(container: ResponsiveContainer, axis: ResponsiveAxis) -> Self {
         Self {
             container,
@@ -96,6 +162,24 @@ impl ResponsiveRule {
             breakpoints: Vec::new(),
             variants: vec![None],
         }
+    }
+
+    /// A rule from its buckets: `breakpoints` finite and strictly ascending,
+    /// at most [`MAX_RESPONSIVE_BREAKPOINTS`], and one variant or `None` per
+    /// bucket, `breakpoints.len() + 1` of them. `None` when they are not.
+    pub fn from_buckets(
+        container: ResponsiveContainer,
+        axis: ResponsiveAxis,
+        breakpoints: Vec<f32>,
+        variants: Vec<Option<StyleVariant>>,
+    ) -> Option<Self> {
+        let rule = Self {
+            container,
+            axis,
+            breakpoints,
+            variants,
+        };
+        rule.is_valid().then_some(rule)
     }
 
     /// Below `extent`, apply `patch`; from `extent` up, the buckets above.
@@ -106,7 +190,7 @@ impl ResponsiveRule {
         extent: f32,
         patch: impl Fn(&mut LayoutStyle) + Send + Sync + 'static,
     ) -> Self {
-        self.variants[0] = Some(LayoutVariant(Arc::new(patch)));
+        self.variants[0] = Some(StyleVariant::patch(patch));
         self.breakpoints.insert(0, extent);
         self.variants.insert(1, None);
         self
@@ -120,19 +204,20 @@ impl ResponsiveRule {
         patch: impl Fn(&mut LayoutStyle) + Send + Sync + 'static,
     ) -> Self {
         self.breakpoints.push(extent);
-        self.variants.push(Some(LayoutVariant(Arc::new(patch))));
+        self.variants.push(Some(StyleVariant::patch(patch)));
         self
     }
 
-    /// From `extent` up to the next breakpoint, keep the node's own layout.
+    /// From `extent` up to the next breakpoint, keep the node's authored
+    /// style.
     pub fn own_from(mut self, extent: f32) -> Self {
         self.breakpoints.push(extent);
         self.variants.push(None);
         self
     }
 
-    pub fn container(&self) -> ResponsiveContainer {
-        self.container
+    pub fn container(&self) -> &ResponsiveContainer {
+        &self.container
     }
 
     pub fn axis(&self) -> ResponsiveAxis {
@@ -146,14 +231,15 @@ impl ResponsiveRule {
     }
 
     /// The variant of `bucket`, if it has one.
-    pub(crate) fn variant(&self, bucket: usize) -> Option<&LayoutVariant> {
+    pub(crate) fn variant(&self, bucket: usize) -> Option<&StyleVariant> {
         self.variants.get(bucket).and_then(Option::as_ref)
     }
 
     /// Finite, strictly ascending breakpoints, at most
-    /// [`MAX_RESPONSIVE_BREAKPOINTS`] of them.
+    /// [`MAX_RESPONSIVE_BREAKPOINTS`] of them, and a variant slot per bucket.
     pub(crate) fn is_valid(&self) -> bool {
         self.breakpoints.len() <= MAX_RESPONSIVE_BREAKPOINTS
+            && self.variants.len() == self.breakpoints.len() + 1
             && self
                 .breakpoints
                 .iter()
@@ -165,6 +251,7 @@ impl ResponsiveRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nana_ui_core::LengthSpec;
 
     #[test]
     fn buckets_break_at_each_breakpoint_from_below() {
@@ -196,5 +283,49 @@ mod tests {
             many = many.own_from(step as f32 * 10.0);
         }
         assert!(!many.is_valid());
+        let short = ResponsiveRule::from_buckets(
+            ResponsiveContainer::Parent,
+            ResponsiveAxis::Inline,
+            vec![480.0],
+            vec![None],
+        );
+        assert!(short.is_none(), "a variant slot per bucket");
+    }
+
+    /// A data variant writes the fields it was taken from and keeps the rest
+    /// of whatever it is written over; equal data is one variant, so a rule
+    /// built again from the same styles equals the first.
+    #[test]
+    fn a_data_variant_writes_its_fields_and_compares_by_value() {
+        let base = LayoutStyle::default();
+        let narrow = LayoutStyle {
+            width: Some(LengthSpec::Px(120.0)),
+            background: Some([0.0, 0.0, 1.0, 1.0]),
+            ..LayoutStyle::default()
+        };
+        assert!(StyleVariant::between(&base, &base).is_none());
+        let variant = StyleVariant::between(&base, &narrow).unwrap();
+        let mut authored = LayoutStyle {
+            height: Some(LengthSpec::Px(40.0)),
+            ..LayoutStyle::default()
+        };
+        variant.apply(&mut authored);
+        assert_eq!(authored.width, Some(LengthSpec::Px(120.0)));
+        assert_eq!(authored.background, Some([0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(authored.height, Some(LengthSpec::Px(40.0)));
+        assert_eq!(variant, StyleVariant::between(&base, &narrow).unwrap());
+        let build = || {
+            ResponsiveRule::from_buckets(
+                ResponsiveContainer::Nearest {
+                    name: Some("card".into()),
+                },
+                ResponsiveAxis::Width,
+                vec![480.0f32.next_up()],
+                vec![StyleVariant::between(&base, &narrow), None],
+            )
+            .unwrap()
+        };
+        assert_eq!(build(), build());
+        assert_ne!(StyleVariant::patch(|_| {}), StyleVariant::patch(|_| {}));
     }
 }

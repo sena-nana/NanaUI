@@ -7212,3 +7212,310 @@ fn a_paint_attribute_paints_a_built_in_component_too() {
     doc.apply_layout_boxes(&[]);
     assert!(doc.runtime.world().painter_override(id).is_none());
 }
+
+fn localized_catalog() -> Arc<dyn nana_ui_runtime::MessageCatalog> {
+    Arc::new(
+        nana_ui_runtime::MessageTable::new()
+            .with(
+                "en",
+                "files",
+                "{count, plural, one {# file} other {# files}}",
+            )
+            .with("zh", "files", "{count} 个文件")
+            .with("en", "hint", "Hi")
+            .with("de", "hint", "Dies ist eine sehr viel längere Übersetzung"),
+    )
+}
+
+/// A `<nana-text>` naming `message`, as `<T>` renders it.
+fn mount_localized_text(
+    doc: &mut NanaTreeDocument,
+    bridge: &mut crate::MessageBridge,
+    parent: NodeHandle,
+    message: &str,
+    args: &str,
+) -> NodeHandle {
+    let text = doc.create_element("nana-text");
+    doc.insert(text, parent, None);
+    let mut props = crate::WidgetProps {
+        element_tag: "nana-text".into(),
+        ..Default::default()
+    };
+    props.apply_prop("message-id", &HostValue::string(message));
+    props.apply_prop("message-args", &HostValue::string(args));
+    bridge.register(text.0, crate::WidgetKind::Text, props);
+    if bridge.contains(parent.0) {
+        bridge.insert_child(text.0, parent.0, None);
+    }
+    text
+}
+
+fn settle_localized(doc: &mut NanaTreeDocument, bridge: &mut crate::MessageBridge) {
+    doc.sync_semantic_styles(&bridge.snapshot());
+    runtime_layout(doc, 400.0, 240.0);
+    doc.flush_runtime_systems();
+}
+
+fn announced(doc: &NanaTreeDocument) -> Vec<String> {
+    doc.accessibility_snapshot()
+        .into_iter()
+        .filter_map(|node| Some(node.label?.to_string()))
+        .collect()
+}
+
+/// `<T>` names a message; the Runtime resolves it and no sync writes the
+/// label over it. It paints and is announced once, keeps its message through
+/// a later whole-document sync, and follows a locale switch that the Vue side
+/// takes no part in.
+#[test]
+fn a_localized_text_node_is_resolved_by_the_runtime_and_survives_syncs() {
+    let mut doc = NanaTreeDocument::new(400, 240, 1.0);
+    doc.set_message_catalog(Some(localized_catalog()));
+    doc.set_default_locale(nana_ui_runtime::Locale::parse("en"));
+    let mut bridge = crate::MessageBridge::new();
+    let root = doc.mount_root();
+    let text = mount_localized_text(&mut doc, &mut bridge, root, "files", r#"{"count":3}"#);
+    let id = StableNodeId::try_from(text).unwrap();
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(doc.runtime.text(id), Some("3 files"));
+    assert_eq!(visible_text_primitive_count(&doc, text), 1);
+    assert_eq!(announced(&doc), ["3 files"]);
+
+    // A whole-document pass projects the node again and writes nothing over
+    // its message.
+    bridge.inject_stylesheet("nana-text { color: red; }");
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(
+        doc.runtime.localized_text(id).map(|text| text.message),
+        Some(nana_ui_runtime::MessageId::new("files"))
+    );
+    assert_eq!(doc.runtime.text(id), Some("3 files"));
+
+    // A switch resolves it again and moves the generation a host redraws on;
+    // the next sync leaves it localized.
+    let generation = doc.runtime_generation();
+    doc.set_default_locale(nana_ui_runtime::Locale::parse("zh"));
+    assert_ne!(doc.runtime_generation(), generation, "a host redraws on it");
+    settle_localized(&mut doc, &mut bridge);
+    bridge.inject_stylesheet("nana-text { color: blue; }");
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(doc.runtime.text(id), Some("3 个文件"));
+    assert_eq!(visible_text_primitive_count(&doc, text), 1);
+    assert_eq!(announced(&doc), ["3 个文件"]);
+    let generation = doc.runtime_generation();
+    doc.set_default_locale(nana_ui_runtime::Locale::parse("zh"));
+    assert_eq!(
+        doc.runtime_generation(),
+        generation,
+        "the same locale is no change"
+    );
+
+    // New arguments are a revision of the same message.
+    bridge.patch_prop(text.0, "message-args", &HostValue::string(r#"{"count":1}"#));
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(doc.runtime.text(id), Some("1 个文件"));
+
+    // Without its message the node is literal again and shows its own label.
+    bridge.patch_prop(text.0, "message-id", &HostValue::Null);
+    settle_localized(&mut doc, &mut bridge);
+    assert!(doc.runtime.localized_text(id).is_none());
+    assert_eq!(doc.runtime.text(id), Some(""));
+}
+
+/// A `locale` attribute makes a subtree a locale scope: the localized text in
+/// it resolves in that locale while the rest of the window keeps its own.
+#[test]
+fn a_locale_attribute_scopes_the_localized_text_under_it() {
+    let mut doc = NanaTreeDocument::new(400, 240, 1.0);
+    doc.set_message_catalog(Some(localized_catalog()));
+    doc.set_default_locale(nana_ui_runtime::Locale::parse("en"));
+    let mut bridge = crate::MessageBridge::new();
+    let panel = doc.create_element("div");
+    doc.insert(panel, doc.mount_root(), None);
+    bridge.register(
+        panel.0,
+        crate::WidgetKind::Column,
+        crate::WidgetProps {
+            element_tag: "div".into(),
+            ..Default::default()
+        },
+    );
+    let inside = mount_localized_text(&mut doc, &mut bridge, panel, "files", r#"{"count":2}"#);
+    let root = doc.mount_root();
+    let outside = mount_localized_text(&mut doc, &mut bridge, root, "files", r#"{"count":2}"#);
+    bridge.patch_prop(panel.0, "locale", &HostValue::string("zh"));
+    settle_localized(&mut doc, &mut bridge);
+    let panel_id = StableNodeId::try_from(panel).unwrap();
+    assert_eq!(
+        doc.runtime
+            .scope_locale(nana_ui_runtime::LocaleScope::Node(panel_id)),
+        nana_ui_runtime::Locale::parse("zh").as_ref()
+    );
+    assert_eq!(
+        doc.runtime.text(StableNodeId::try_from(inside).unwrap()),
+        Some("2 个文件")
+    );
+    assert_eq!(
+        doc.runtime.text(StableNodeId::try_from(outside).unwrap()),
+        Some("2 files")
+    );
+
+    bridge.patch_prop(panel.0, "locale", &HostValue::Null);
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(
+        doc.runtime
+            .scope_locale(nana_ui_runtime::LocaleScope::Node(panel_id)),
+        None
+    );
+    assert_eq!(
+        doc.runtime.text(StableNodeId::try_from(inside).unwrap()),
+        Some("2 files")
+    );
+}
+
+/// A translation longer than the last one is laid out again, and the box
+/// holding it grows to fit; nothing on the Vue side runs for it.
+#[test]
+fn a_longer_translation_reflows_the_box_that_holds_it() {
+    let mut doc = NanaTreeDocument::new(400, 240, 1.0);
+    doc.set_message_catalog(Some(localized_catalog()));
+    doc.set_default_locale(nana_ui_runtime::Locale::parse("en"));
+    let mut bridge = crate::MessageBridge::new();
+    let card = doc.create_element("div");
+    doc.insert(card, doc.mount_root(), None);
+    let mut props = crate::WidgetProps {
+        element_tag: "div".into(),
+        ..Default::default()
+    };
+    props.apply_prop("style", &HostValue::string("width: 80px"));
+    bridge.register(card.0, crate::WidgetKind::Column, props);
+    mount_localized_text(&mut doc, &mut bridge, card, "hint", "");
+    settle_localized(&mut doc, &mut bridge);
+    let short = doc.layout_box(card).expect("card box");
+    assert_eq!(short.width, 80.0);
+
+    doc.set_default_locale(nana_ui_runtime::Locale::parse("de"));
+    runtime_layout(&mut doc, 400.0, 240.0);
+    doc.flush_runtime_systems();
+    let long = doc.layout_box(card).expect("card box");
+    assert_eq!(long.width, 80.0);
+    assert!(
+        long.height > short.height * 2.0,
+        "the wrapped translation makes the card taller: {short:?} -> {long:?}"
+    );
+}
+
+/// `lang` reaches the node whatever projects it, a component included, and
+/// leaves it when removed.
+#[test]
+fn lang_names_the_shaping_language_of_text_and_components() {
+    let mut doc = NanaTreeDocument::new(400, 240, 1.0);
+    let mut bridge = crate::MessageBridge::new();
+    let paragraph = doc.create_element("p");
+    let button = doc.create_element("button");
+    doc.insert(paragraph, doc.mount_root(), None);
+    doc.insert(button, doc.mount_root(), None);
+    for (node, kind, tag) in [
+        (paragraph, crate::WidgetKind::Text, "p"),
+        (button, crate::WidgetKind::Button, "button"),
+    ] {
+        bridge.register(
+            node.0,
+            kind,
+            crate::WidgetProps {
+                element_tag: tag.into(),
+                label: "語".into(),
+                ..Default::default()
+            },
+        );
+        bridge.patch_prop(node.0, "lang", &HostValue::string("ja"));
+    }
+    settle_localized(&mut doc, &mut bridge);
+    for node in [paragraph, button] {
+        assert_eq!(
+            doc.runtime
+                .node_language(StableNodeId::try_from(node).unwrap()),
+            nana_ui_runtime::LanguageTag::new("ja").as_ref(),
+            "{node:?}"
+        );
+    }
+    bridge.patch_prop(button.0, "lang", &HostValue::Null);
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(
+        doc.runtime
+            .node_language(StableNodeId::try_from(button).unwrap()),
+        None
+    );
+}
+
+/// `<T>` inside a control that shows its children paints there, and follows
+/// a switch like any other localized text.
+#[test]
+fn a_localized_text_inside_a_button_paints_there() {
+    let mut doc = NanaTreeDocument::new(400, 240, 1.0);
+    doc.set_message_catalog(Some(localized_catalog()));
+    doc.set_default_locale(nana_ui_runtime::Locale::parse("en"));
+    let mut bridge = crate::MessageBridge::new();
+    let button = doc.create_element("button");
+    doc.insert(button, doc.mount_root(), None);
+    bridge.register(
+        button.0,
+        crate::WidgetKind::Button,
+        crate::WidgetProps {
+            element_tag: "button".into(),
+            ..Default::default()
+        },
+    );
+    let text = mount_localized_text(&mut doc, &mut bridge, button, "hint", "");
+    let painted = |doc: &NanaTreeDocument| -> Vec<String> {
+        doc.scene()
+            .primitives()
+            .filter_map(|primitive| match &primitive.kind {
+                nana_ui_scene::ScenePrimitiveKind::Text { content, .. }
+                    if primitive.node.get() == text.0 =>
+                {
+                    Some(content.to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(doc.parent_node(text), Some(button));
+    assert_eq!(painted(&doc), ["Hi"]);
+
+    doc.set_default_locale(nana_ui_runtime::Locale::parse("de"));
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(
+        painted(&doc),
+        ["Dies ist eine sehr viel längere Übersetzung"]
+    );
+}
+
+/// Broken `message-args` leaves the arguments out, says why once, and the
+/// message is shown with the gap named.
+#[test]
+fn broken_message_args_are_reported_once_and_do_not_stop_the_frame() {
+    let mut doc = NanaTreeDocument::new(400, 240, 1.0);
+    doc.set_message_catalog(Some(localized_catalog()));
+    doc.set_default_locale(nana_ui_runtime::Locale::parse("en"));
+    let mut bridge = crate::MessageBridge::new();
+    let root = doc.mount_root();
+    let text = mount_localized_text(&mut doc, &mut bridge, root, "files", "{count: 3");
+    let id = StableNodeId::try_from(text).unwrap();
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(doc.runtime.text(id), Some("{count}"));
+    let errors = doc.take_i18n_errors();
+    assert!(
+        errors.len() == 1 && errors[0].starts_with("message-args:"),
+        "{errors:?}"
+    );
+    bridge.inject_stylesheet("nana-text { color: red; }");
+    settle_localized(&mut doc, &mut bridge);
+    assert!(doc.take_i18n_errors().is_empty(), "a lasting error once");
+
+    bridge.patch_prop(text.0, "message-args", &HostValue::string(r#"{"count":4}"#));
+    settle_localized(&mut doc, &mut bridge);
+    assert_eq!(doc.runtime.text(id), Some("4 files"));
+    assert!(doc.i18n.errors.is_empty());
+}

@@ -144,6 +144,39 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         self.vue.inject_stylesheet(css)
     }
 
+    /// See [`VueRuntime::set_message_catalog`].
+    pub fn set_message_catalog(
+        &self,
+        catalog: Option<Arc<dyn nana_ui_runtime::MessageCatalog>>,
+    ) -> Result<(), JsEngineError> {
+        self.vue.set_message_catalog(catalog)
+    }
+
+    /// See [`VueRuntime::set_fallback_locale`].
+    pub fn set_fallback_locale(
+        &self,
+        locale: Option<nana_ui_runtime::LanguageTag>,
+    ) -> Result<(), JsEngineError> {
+        self.vue.set_fallback_locale(locale)
+    }
+
+    /// See [`VueRuntime::set_default_locale`].
+    pub fn set_default_locale(
+        &self,
+        locale: Option<nana_ui_runtime::Locale>,
+    ) -> Result<(), JsEngineError> {
+        self.vue.set_default_locale(locale)
+    }
+
+    /// See [`VueRuntime::set_window_locale`].
+    pub fn set_window_locale(
+        &self,
+        id: WindowId,
+        locale: Option<nana_ui_runtime::Locale>,
+    ) -> Result<(), JsEngineError> {
+        self.vue.set_window_locale(VueWindowId(id.0), locale)
+    }
+
     /// Replace the artifact and rebuild the tree, keeping the window alive.
     ///
     /// Takes an engine **factory**, not an engine. V8 enters an isolate when it

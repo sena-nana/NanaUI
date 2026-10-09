@@ -90,6 +90,7 @@
     "./NanaVirtualList": "./src/NanaVirtualList.js",
     "./NanaVirtualTable": "./src/NanaVirtualTable.js",
     "./NanaVirtualTree": "./src/NanaVirtualTree.js",
+    "./NanaT": "./src/NanaT.js",
     "./controls.css": "./src/nana-controls.css",
     "./examples/appearance-workspace": "./examples/appearance-workspace.js",
     "./examples/overlay-controls": "./examples/overlay-controls.js"

@@ -886,8 +886,10 @@ pub(crate) fn class_has_compact(props: &WidgetProps) -> bool {
         .any(|class| class.contains("compact"))
 }
 
+/// Not `lang`: that names the human language text shapes in, and a
+/// `<textarea lang="ja">` is not source code.
 pub(crate) fn highlight_language(props: &WidgetProps) -> Option<&str> {
-    attr_value(props, &["language", "lang", "syntax"])
+    attr_value(props, &["language", "syntax"])
         .map(str::trim)
         .filter(|value| !value.is_empty())
 }

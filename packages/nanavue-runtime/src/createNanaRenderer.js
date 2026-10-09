@@ -24,6 +24,7 @@ import { flushHostFrame, installFlushHooks, setVueStyle, forgetStyle } from "./s
 import { contextForWindow } from "./windowContext.js";
 import { createEventDispatcher } from "./events.js";
 import { createNodeStore } from "./nodes.js";
+import { i18n, localeArg } from "./i18n.js";
 
 const events = createEventDispatcher((id) => nodes.wrapById(id));
 const nodes = createNodeStore(events, releaseNodeResources);
@@ -997,6 +998,10 @@ function createWindowHandle(descriptor) {
     setIcon(icon) {
       hostCall("windowSetIcon", [id, icon ?? null]);
     },
+    /** This window's own locale over the application's; `null` follows the application's again. */
+    setLocale(locale) {
+      hostCall("windowSetLocale", [id, localeArg(locale)]);
+    },
     geometry() {
       return hostCall("windowGeometry", [id]) || {};
     },
@@ -1086,6 +1091,7 @@ globalThis.Nana.windows = {
     // The host bridge drops `key` / `ref` / `on*` fields, so params travel as JSON.
     const { params, ...request } = options || {};
     if (params !== undefined) request.paramsJson = JSON.stringify(params);
+    if (request.locale !== undefined) request.locale = localeArg(request.locale);
     const descriptor = await globalThis.Nana.host.invoke("windowCreate", [request]);
     const handle = createWindowHandle(descriptor);
     await handle.ready;
@@ -1107,6 +1113,7 @@ globalThis.Nana.windows = {
     hostCall("windowSetApplicationIcon", [icon ?? null]);
   },
 };
+globalThis.Nana.i18n = i18n;
 
 // Two-phase startup (Issue #225). The host owns the state machine; this is a
 // read of its one record plus two requests. A bundle that loads late reads

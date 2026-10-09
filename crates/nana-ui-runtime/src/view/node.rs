@@ -62,6 +62,10 @@ impl<C, F: FnMut(&mut C) + Send> DynProp<C> for BindProp<F> {
 pub struct NodeBindings<C> {
     pub(crate) direct: Vec<DirectBinding<C>>,
     pub(crate) dynamic: Vec<DynBinding<C>>,
+    /// The responsive rule the element's `@container` classes give it
+    /// (`view/style.rs`), sent with the node's own changes. Not a field: it
+    /// moves only with the classes the bindings above evaluate.
+    pub(crate) responsive: Option<super::style::ResponsiveBinding>,
 }
 
 impl<C> Default for NodeBindings<C> {
@@ -69,6 +73,7 @@ impl<C> Default for NodeBindings<C> {
         Self {
             direct: Vec::new(),
             dynamic: Vec::new(),
+            responsive: None,
         }
     }
 }
@@ -188,7 +193,13 @@ impl<C: ComponentView> NodePatch for NodeBindings<C> {
         // Field-level check first: a re-run that reproduces the node's
         // values copies and projects nothing.
         let current = crate::framework::bound_view::<C>(cx, id)?;
-        if !self.evaluate(current) && !C::ALWAYS_REPROJECT {
+        let changed = self.evaluate(current);
+        // The classes may give another responsive rule while the layout
+        // they compose stays: it goes out in this batch either way.
+        if let Some(responsive) = &mut self.responsive {
+            responsive.send(id, mutations);
+        }
+        if !changed && !C::ALWAYS_REPROJECT {
             self.discard();
             return Ok(None);
         }
@@ -210,7 +221,8 @@ impl<C: ComponentView> NodePatch for NodeBindings<C> {
 
 /// A binding kept at a node that needs the context to apply: a keyed list
 /// or conditional block rebuilding part of its container, a teleport placing
-/// its content, a node named by another ([`El::labelled_by`]).
+/// its content, a node named by another ([`El::labelled_by`]) or scoped to a
+/// locale that moves ([`El::locale`]). The context keeps one per node.
 pub(crate) trait StructuralBinding: Send {
     fn update(
         &mut self,
@@ -742,6 +754,9 @@ pub struct El<C: ComponentView, K = ()> {
     /// The node whose text names this one ([`Self::labelled_by`]); boxed,
     /// as most elements have none.
     labelled_by: Option<Box<super::prop::PropSource<Option<StableNodeId>>>>,
+    /// The locale this node's subtree resolves in ([`Self::locale`]);
+    /// boxed, as most elements have none.
+    locale: Option<Box<super::prop::PropSource<Option<crate::Locale>>>>,
     bindings: NodeBindings<C>,
     events: Vec<EventInstall<C>>,
     /// Properties that animate to their new value when a binding changes
@@ -767,6 +782,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         key: None,
         node_refs: Vec::new(),
         labelled_by: None,
+        locale: None,
         bindings: NodeBindings::default(),
         events: Vec::new(),
         implicit: Vec::new(),
@@ -882,6 +898,19 @@ impl<C: ComponentView, K> El<C, K> {
         self
     }
 
+    /// Make this node a locale scope (`locale="ar"` in a template): the
+    /// localized text under it, its own included, resolves in `locale`,
+    /// shapes in its language, and the subtree lays out in its direction;
+    /// `None` leaves the subtree to the scope above. A constant, a
+    /// [`Locale`](crate::Locale) or a language tag such as `"ar"`, is set in
+    /// the commit that creates the node; a signal or a closure moves the
+    /// scope with its value. Literal text is not touched, and `lang` stays
+    /// the language that text shapes in. See `view/relations.rs`.
+    pub fn locale(mut self, locale: impl IntoProp<Option<crate::Locale>>) -> Self {
+        self.locale = Some(Box::new(locale.into_source()));
+        self
+    }
+
     /// The children, added in a block of ordinary Rust:
     ///
     /// ```ignore
@@ -910,6 +939,7 @@ impl<C: ComponentView, K> El<C, K> {
             key: self.key,
             node_refs: self.node_refs,
             labelled_by: self.labelled_by,
+            locale: self.locale,
             bindings: self.bindings,
             events: self.events,
             implicit: self.implicit,
@@ -979,6 +1009,7 @@ impl<C: ComponentView, K> El<C, K> {
             key,
             node_refs,
             labelled_by,
+            locale,
             mut bindings,
             events,
             mut implicit,
@@ -1026,8 +1057,23 @@ impl<C: ComponentView, K> El<C, K> {
         for node_ref in node_refs {
             node_ref.set(Some(id));
         }
-        if let Some(label) = labelled_by {
-            super::labelled::bind(vb, id, *label, site);
+        // The rule its classes give it, in the commit that creates it: the
+        // node lays out in its bucket from its first frame.
+        if let Some(rule) = bindings
+            .responsive
+            .as_mut()
+            .and_then(super::style::ResponsiveBinding::initial)
+        {
+            vb.ui.mutations().set_responsive(id, rule);
+        }
+        if labelled_by.is_some() || locale.is_some() {
+            super::relations::bind(
+                vb,
+                id,
+                labelled_by.map(|label| *label),
+                locale.map(|locale| *locale),
+                site,
+            );
         }
         if let Some(effect) = effect {
             reactive::set_effect_target(effect, EffectTarget::Node(id));

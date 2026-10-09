@@ -61,13 +61,13 @@ pub use box_layout::{
     AlignSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
     BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderImageTile, BorderStyle,
     BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, CalcExprRef, ClearSpec, ClipCircle, ClipEllipse,
-    ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, CssGradient, CursorSpec, DirSpec,
-    DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap, FloatSpec, FontFeatureSetting,
-    FontSizeContext, GradientStop, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto,
-    GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom,
-    LengthSpec, LineHeightSpec, LinearGradient, LogicalEdge, LogicalEdges, MAX_BACKGROUND_LAYERS,
-    MAX_BOX_SHADOWS, MaskImage, MixBlendMode, OutlineSpec, OutlineStyle, OverflowSpec,
-    OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
+    ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, ContainerType, CssGradient,
+    CursorSpec, DirSpec, DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap, FloatSpec,
+    FontFeatureSetting, FontSizeContext, GradientStop, GridAutoFlow, GridLine, GridPlacement,
+    GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec,
+    LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LinearGradient, LogicalEdge, LogicalEdges,
+    MAX_BACKGROUND_LAYERS, MAX_BOX_SHADOWS, MaskImage, MixBlendMode, OutlineSpec, OutlineStyle,
+    OverflowSpec, OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
     PointerEventsSpec, PositionSpec, RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec,
     TextDecorationLine, TextOrientationSpec, TextShadowSpec, TextStrokeSpec, TextWrapBreak,
     TransformBox, TransformOrigin, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec,
@@ -107,7 +107,7 @@ pub use layout_frontier::{
     InvalidationKind, InvalidationReason, LayoutDependencyFootprint, LayoutInvalidation,
     LayoutInvalidationSource, LayoutMetricDelta,
 };
-pub use layout_style_change::LayoutStyleChange;
+pub use layout_style_change::{LayoutFieldSet, LayoutStyleChange};
 pub use menu::{MenuConfirmation, MenuSelection};
 pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};
 pub use motion::{

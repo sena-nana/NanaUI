@@ -177,6 +177,11 @@ pub(super) struct State {
     pub(super) stylesheet_rules: Vec<StyleRule>,
     /// Subject-key bucket index over [`Self::stylesheet_rules`], rebuilt with it.
     pub(super) stylesheet_rule_index: crate::css_cascade::RuleIndex,
+    /// The style rules of the active sheets' `@container` blocks (Issue
+    /// #265). They never join the cascade above: an element takes the ones
+    /// it matches as a responsive rule the Runtime evaluates against its
+    /// container's size, so a container resize costs no cascade.
+    pub(super) container_rules: nana_ui_css::ContainerRuleSet,
     /// Deferred interactive (`:hover` / `:focus` / `:active`) rules.
     pub(super) interactive_rules: Vec<InteractiveStyleRule>,
     /// Deferred generated pseudo rules (`::before` / `::after`).
@@ -384,6 +389,104 @@ impl MessageBridge {
     }
 }
 
+/// What an element's cascade reads of the element itself: gathered once per
+/// cascade, for its base style and every `@container` bucket alike.
+struct CascadeSeed {
+    kind: WidgetKind,
+    parent_id: Option<WidgetId>,
+    classes: Vec<String>,
+    attrs: BTreeMap<String, String>,
+    tag: String,
+    element_id: String,
+    inline_style: String,
+    prop_style: String,
+    hidden: bool,
+    keep_bg: Option<[f32; 4]>,
+    keep_border_color: Option<[f32; 4]>,
+    keep_border_width: Option<f32>,
+    cb_w: Option<f32>,
+    cb_h: Option<f32>,
+    checked: bool,
+}
+
+/// Paint laid over an element's cascade while it runs: a CSS transition's
+/// interpolated paint and a FLIP transform. The base style takes it; no
+/// `@container` bucket does, so a variant holds only what container rules
+/// change.
+#[derive(Default)]
+struct RunningPaint {
+    transition: Option<CssPaintSnapshot>,
+    transform: Option<nana_ui_core::PaintTransform>,
+}
+
+impl RunningPaint {
+    fn is_empty(&self) -> bool {
+        self.transition.is_none() && self.transform.is_none()
+    }
+}
+
+/// An element's `@container` rules, as its cascade resolved them.
+#[derive(Default)]
+struct ContainerOutcome {
+    /// What they write over the base style, bucket by bucket; `None` when
+    /// they change nothing.
+    rule: Option<nana_ui_runtime::ResponsiveRule>,
+    /// One of them cannot apply: its query uses what this engine does not
+    /// evaluate, or the rules ask more than one container or axis.
+    unsupported: bool,
+    /// A bucket changes text the element's children inherit.
+    text: bool,
+}
+
+/// Whether `a` and `b` differ in text a child inherits that the Runtime
+/// itself passes down from its parent's effective style.
+fn inherited_text_differs(a: &LayoutStyle, b: &LayoutStyle) -> bool {
+    a.font_size != b.font_size
+        || a.font_weight != b.font_weight
+        || a.font_italic != b.font_italic
+        || a.font_family != b.font_family
+        || a.line_height != b.line_height
+        || a.letter_spacing != b.letter_spacing
+        || a.color != b.color
+        || a.paint_colors.color != b.paint_colors.color
+        || a.word_break != b.word_break
+        || a.line_break != b.line_break
+        || a.font_features != b.font_features
+        || a.font_variation_settings != b.font_variation_settings
+        || a.font_kerning != b.font_kerning
+}
+
+/// Undo the copy of that text from the parent: `layout` keeps what `own`,
+/// its style before inheriting, declares, and leaves the rest unset for the
+/// Runtime to pass down.
+fn keep_own_inherited_text(layout: &mut LayoutStyle, own: &LayoutStyle) {
+    layout.font_size = own.font_size;
+    layout.font_weight = own.font_weight;
+    layout.font_italic = own.font_italic;
+    layout.font_family.clone_from(&own.font_family);
+    layout.line_height = own.line_height;
+    layout.letter_spacing = own.letter_spacing;
+    layout.color = own.color;
+    layout.paint_colors.color = own.paint_colors.color;
+    layout.word_break = own.word_break;
+    layout.line_break = own.line_break;
+    layout.font_features.clone_from(&own.font_features);
+    layout
+        .font_variation_settings
+        .clone_from(&own.font_variation_settings);
+    layout.font_kerning = own.font_kerning;
+}
+
+/// The Runtime axis of a container query's axis; they are the same four.
+fn responsive_axis(axis: nana_ui_css::ContainerAxis) -> nana_ui_runtime::ResponsiveAxis {
+    match axis {
+        nana_ui_css::ContainerAxis::Inline => nana_ui_runtime::ResponsiveAxis::Inline,
+        nana_ui_css::ContainerAxis::Block => nana_ui_runtime::ResponsiveAxis::Block,
+        nana_ui_css::ContainerAxis::Width => nana_ui_runtime::ResponsiveAxis::Width,
+        nana_ui_css::ContainerAxis::Height => nana_ui_runtime::ResponsiveAxis::Height,
+    }
+}
+
 impl MessageBridge {
     pub(super) fn reapply_layout_for_inner(&mut self, id: WidgetId) {
         if self.is_generated_pseudo_widget(id) {
@@ -402,30 +505,9 @@ impl MessageBridge {
             Vec::new()
         };
         let is_empty = selectors && self.widget_is_empty(id);
-        let Some(widget) = self.widgets.get(&id) else {
+        let Some(seed) = self.cascade_seed(id) else {
             return;
         };
-        let kind = widget.kind;
-        let parent_id = widget.parent;
-        let class_names = widget.props.class_names.clone();
-        let element_tag = widget.props.element_tag.clone();
-        let element_id = widget.props.element_id.clone();
-        let attrs = cascade_attrs_from_widget(widget);
-        let inline_style = widget.props.inline_style.clone();
-        let prop_style = widget.props.prop_style.clone();
-        let hidden = widget.props.layout.hidden;
-        let keep_bg = widget.props.layout.background;
-        let keep_border_color = widget.props.layout.border_color;
-        let keep_border_width = widget.props.layout.border_width;
-        let cb_w = widget.props.containing_block_width;
-        let cb_h = widget.props.containing_block_height;
-        let checked = widget_checked_state(widget);
-
-        // ancestry is [self, parent, grandparent, …] — full chain for combinators.
-        let leaf_classes = class_names;
-        let leaf_attrs = attrs;
-        let leaf_tag = element_tag;
-        let leaf_id = element_id;
 
         let SiblingFacts {
             sibling_index,
@@ -435,14 +517,15 @@ impl MessageBridge {
             prev_snaps,
         } = self.sibling_facts(id, selectors);
 
+        // ancestry is [self, parent, grandparent, …] — full chain for combinators.
         let ancestor_nodes: Vec<MatchNode<'_>> =
             ancestry.iter().skip(1).map(|n| n.as_node()).collect();
         let prev_nodes: Vec<MatchNode<'_>> = prev_snaps.iter().map(|n| n.as_node()).collect();
         let ctx = MatchContext {
-            tag: leaf_tag.as_str(),
-            id: leaf_id.as_str(),
-            classes: leaf_classes.as_slice(),
-            attrs: &leaf_attrs,
+            tag: seed.tag.as_str(),
+            id: seed.element_id.as_str(),
+            classes: seed.classes.as_slice(),
+            attrs: &seed.attrs,
             ancestors: ancestor_nodes.as_slice(),
             preceding_siblings: prev_nodes.as_slice(),
             sibling_index,
@@ -458,7 +541,7 @@ impl MessageBridge {
             has_args: self.cascade.has_args.as_slice(),
             focus_within: self.focus_within_of(id),
             is_empty,
-            checked,
+            checked: seed.checked,
             media: self.media_env(),
             children: &[],
             following_siblings: &[],
@@ -471,6 +554,150 @@ impl MessageBridge {
             relative_id: id,
         };
 
+        let motion = self.resolve_element_motion(id, &ctx);
+        let running = self.running_paint(id, motion.as_ref());
+        let layout = self.cascade_layout(id, &seed, &ctx, &[], &running);
+        let ContainerOutcome {
+            rule,
+            unsupported,
+            text,
+        } = self.resolve_container_rules(id, &seed, &ctx, &layout, &running);
+
+        // Only this pass writes: the container buckets above computed styles
+        // and kept none of their side effects.
+        match motion {
+            Some(motion) => {
+                self.motion.computed_motion.insert(id, motion);
+            }
+            None => {
+                self.motion.computed_motion.remove(&id);
+            }
+        }
+
+        // Count declarations that parsed but name something layout does not
+        // implement, and container rules that cannot apply. Without this they
+        // are only visible as a box that silently did not move.
+        self.cascade.unsupported_css.observe(id, &layout);
+        self.cascade
+            .unsupported_css
+            .observe_container_queries(id, unsupported);
+
+        let author_mask = if !self.cascade.stylesheet_rules.is_empty()
+            || !self.cascade.authored_sheets.is_empty()
+            || !seed.inline_style.trim().is_empty()
+            || !seed.prop_style.trim().is_empty()
+            || !seed.classes.is_empty()
+        {
+            nana_ui_core::LayoutFieldMask::ALL
+        } else {
+            nana_ui_core::LayoutFieldMask::NONE
+        };
+        self.layout_author_masks.insert(id, author_mask);
+
+        if let Some(widget) = self.widgets.get_mut(&id) {
+            if widget.props.layout != layout {
+                widget.props.layout = layout;
+            }
+            // An equal rule keeps its `Arc`: the Runtime holds that one and is
+            // not sent it again.
+            match rule {
+                Some(rule) if widget.props.responsive.as_deref() == Some(&rule) => {}
+                rule => widget.props.responsive = rule.map(std::sync::Arc::new),
+            }
+            widget.props.responsive_text = text;
+            pin_svg_chart_min_height(&mut widget.props);
+        }
+    }
+
+    fn cascade_seed(&self, id: WidgetId) -> Option<CascadeSeed> {
+        let widget = self.widgets.get(&id)?;
+        Some(CascadeSeed {
+            kind: widget.kind,
+            parent_id: widget.parent,
+            classes: widget.props.class_names.clone(),
+            attrs: cascade_attrs_from_widget(widget),
+            tag: widget.props.element_tag.clone(),
+            element_id: widget.props.element_id.clone(),
+            inline_style: widget.props.inline_style.clone(),
+            prop_style: widget.props.prop_style.clone(),
+            hidden: widget.props.layout.hidden,
+            keep_bg: widget.props.layout.background,
+            keep_border_color: widget.props.layout.border_color,
+            keep_border_width: widget.props.layout.border_width,
+            cb_w: widget.props.containing_block_width,
+            cb_h: widget.props.containing_block_height,
+            checked: widget_checked_state(widget),
+        })
+    }
+
+    /// The element's `transition` / `animation` this pass; `None` when no
+    /// rule names any.
+    fn resolve_element_motion(
+        &self,
+        id: WidgetId,
+        ctx: &MatchContext<'_>,
+    ) -> Option<CssComputedMotion> {
+        if let Some(runtime) = &self.cascade.interactive_runtime {
+            let interactive_motion = self.interactive_motion_for(ctx, runtime, id);
+            Some(resolve_computed_motion(
+                &self.cascade.motion_rules,
+                interactive_motion,
+                None,
+                ctx,
+            ))
+        } else if !self.cascade.motion_rules.is_empty() {
+            Some(resolve_computed_motion(
+                &self.cascade.motion_rules,
+                None,
+                None,
+                ctx,
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn running_paint(&self, id: WidgetId, motion: Option<&CssComputedMotion>) -> RunningPaint {
+        let transition = self.motion.css_transitions.get(&id).map(|transition| {
+            let progress = self
+                .motion
+                .css_transition_progress
+                .get(&id)
+                .copied()
+                .unwrap_or(0.0);
+            let base = self
+                .motion
+                .css_transition_base
+                .get(&id)
+                .unwrap_or(&transition.from);
+            let properties = motion
+                .map(|motion| parse_transition_properties(&motion.transition_property))
+                .unwrap_or_default();
+            lerp_paint_for_properties(base, &transition.to, progress, &properties)
+        });
+        let transform = self
+            .motion
+            .paint_transform_overlays
+            .get(&id)
+            .copied()
+            .filter(|_| !self.motion.paint_transform_releases.contains(&id));
+        RunningPaint {
+            transition,
+            transform,
+        }
+    }
+
+    /// One style of the element: its base style with `extra` empty, an
+    /// `@container` bucket's with the container rules that hold there. It
+    /// changes nothing; the base pass writes what it keeps.
+    fn cascade_layout(
+        &self,
+        id: WidgetId,
+        seed: &CascadeSeed,
+        ctx: &MatchContext<'_>,
+        extra: &[&StyleRule],
+        running: &RunningPaint,
+    ) -> LayoutStyle {
         // Layer order: kind default → stylesheet → class hints → prop → inline
         // → stylesheet !important → prop / inline !important.
         // When any author text layer or retained stylesheet exists, rebuild from
@@ -486,8 +713,8 @@ impl MessageBridge {
         // height, clipping siblings (Repo evidence main pane painted empty).
         let mut base = if self.cascade.stylesheet_rules.is_empty()
             && self.cascade.authored_sheets.is_empty()
-            && inline_style.trim().is_empty()
-            && prop_style.trim().is_empty()
+            && seed.inline_style.trim().is_empty()
+            && seed.prop_style.trim().is_empty()
         {
             // Preserve LayoutStyle fields assigned directly (scaffold /
             // createWidget / register props) when no author CSS layers exist.
@@ -497,7 +724,7 @@ impl MessageBridge {
                 .map(|w| w.props.layout.clone())
                 .unwrap_or_default();
             if layout.direction.is_none() {
-                layout.direction = kind_default_direction(kind);
+                layout.direction = kind_default_direction(seed.kind);
             }
             layout
         } else {
@@ -508,8 +735,8 @@ impl MessageBridge {
             // Keeping this seed in the cascade resolver prevents the component
             // projection from writing `Some(Row)` back after every pass.
             let mut layout = LayoutStyle::default();
-            if matches!(kind, WidgetKind::Row | WidgetKind::TableRow) {
-                layout.direction = kind_default_direction(kind);
+            if matches!(seed.kind, WidgetKind::Row | WidgetKind::TableRow) {
+                layout.direction = kind_default_direction(seed.kind);
             }
             layout
         };
@@ -518,93 +745,77 @@ impl MessageBridge {
         // `padding-inline-start` on the child maps against RTL without requiring
         // the child to repeat `direction`. Do not seed flex `direction`.
         if base.dir.is_none()
-            && let Some(pid) = parent_id
+            && let Some(pid) = seed.parent_id
             && let Some(parent) = self.widgets.get(&pid)
         {
             base.dir = parent.props.layout.dir;
         }
+        // A `locale` scope lays its subtree out in its locale's direction, as
+        // the Runtime does: over the inherited one, under `dir` and author CSS.
+        // Seeded so logical properties map against the direction it lays out in.
+        if let Some(locale) = seed
+            .attrs
+            .get("locale")
+            .and_then(|tag| nana_ui_runtime::Locale::parse(tag))
+        {
+            base.dir = Some(locale.direction());
+        }
         // HTML `dir` is a presentational hint: overrides inherited dir, loses to
         // author CSS `direction`. `auto` is fail-closed (no specified value).
-        if let Some(attr_dir) = crate::widget_map::html_dir_spec_from_map(&leaf_attrs) {
+        if let Some(attr_dir) = crate::widget_map::html_dir_spec_from_map(&seed.attrs) {
             base.dir = Some(attr_dir);
         }
         // Custom-element shell contracts provide component defaults. Seed them
         // before authored CSS so an explicit stylesheet/inline direction wins.
-        if leaf_tag.starts_with("nana-") && !leaf_classes.iter().any(|c| c == &leaf_tag) {
-            base.apply_class_layout_hints(std::slice::from_ref(&leaf_tag));
+        if seed.tag.starts_with("nana-") && !seed.classes.iter().any(|c| c == &seed.tag) {
+            base.apply_class_layout_hints(std::slice::from_ref(&seed.tag));
         }
 
         // Author layers: stylesheet → class hints → prop style → class hints →
         // inline → class hints → stylesheet !important → prop !important →
         // inline !important. Layout sizing comes from those layers / public
         // class contracts — not from id / data-region-id / kind whitelists.
-        let mut layout = rebuild_layout_style_indexed(
+        // A bucket's container rules sit among the sheet's in cascade order.
+        let mut layout = rebuild_layout_style_indexed_with_extra(
             base,
             &self.cascade.stylesheet_rules,
             &self.cascade.stylesheet_rule_index,
-            &ctx,
-            &prop_style,
-            &inline_style,
-            cb_w,
-            cb_h,
+            extra,
+            ctx,
+            &seed.prop_style,
+            &seed.inline_style,
+            seed.cb_w,
+            seed.cb_h,
         );
         if !self.cascade.scrollbar_pseudo_rules.is_empty() {
             apply_scrollbar_pseudo_skin(
                 &mut layout,
                 &self.cascade.scrollbar_pseudo_rules,
-                &ctx,
-                cb_w,
-                cb_h,
+                ctx,
+                seed.cb_w,
+                seed.cb_h,
             );
         }
 
-        if let Some(runtime) = &self.cascade.interactive_runtime {
-            let subject = runtime.subject_flags(id);
+        if let Some(runtime) = &self.cascade.interactive_runtime
+            && !self.cascade.interactive_rules.is_empty()
+        {
             let ancestors = runtime.ancestor_flags(self, id);
             let istate = InteractiveMatchState {
-                subject,
+                subject: runtime.subject_flags(id),
                 ancestors: &ancestors,
             };
-            if !self.cascade.interactive_rules.is_empty() {
-                apply_interactive_layers(
-                    &mut layout,
-                    &ctx,
-                    &self.cascade.interactive_rules,
-                    &istate,
-                    cb_w,
-                    cb_h,
-                );
-            }
-            let interactive_motion = self.interactive_motion_for(&ctx, runtime, id);
-            let computed =
-                resolve_computed_motion(&self.cascade.motion_rules, interactive_motion, None, &ctx);
-            self.motion.computed_motion.insert(id, computed);
-        } else if !self.cascade.motion_rules.is_empty() {
-            let computed = resolve_computed_motion(&self.cascade.motion_rules, None, None, &ctx);
-            self.motion.computed_motion.insert(id, computed);
-        } else {
-            self.motion.computed_motion.remove(&id);
+            apply_interactive_layers(
+                &mut layout,
+                ctx,
+                &self.cascade.interactive_rules,
+                &istate,
+                seed.cb_w,
+                seed.cb_h,
+            );
         }
 
-        if let Some(transition) = self.motion.css_transitions.get(&id) {
-            let progress = self
-                .motion
-                .css_transition_progress
-                .get(&id)
-                .copied()
-                .unwrap_or(0.0);
-            let base = self
-                .motion
-                .css_transition_base
-                .get(&id)
-                .unwrap_or(&transition.from);
-            let properties = self
-                .motion
-                .computed_motion
-                .get(&id)
-                .map(|motion| parse_transition_properties(&motion.transition_property))
-                .unwrap_or_default();
-            let paint = lerp_paint_for_properties(base, &transition.to, progress, &properties);
+        if let Some(paint) = &running.transition {
             // Same contract as tick: compositor opacity/transform stay on the
             // overlay. Progress is 0 for compositor-only tracks, so
             // `apply_to_layout` would stamp the from value back onto logical.
@@ -614,27 +825,35 @@ impl MessageBridge {
         // unless the author explicitly declared `fill`/`stroke` this pass and
         // resolution failed (e.g. LightningCSS `light-dark` → `initial`). Keeping
         // a prior dark `#1c1c1c` would paint black empty heatmap cells on light.
-        let author_fill = css_decl_mentions(&inline_style, "fill")
-            || css_decl_mentions(&prop_style, "fill")
-            || leaf_attrs.contains_key("fill");
-        let author_stroke = css_decl_mentions(&inline_style, "stroke")
-            || css_decl_mentions(&prop_style, "stroke")
-            || leaf_attrs.contains_key("stroke");
+        let author_fill = css_decl_mentions(&seed.inline_style, "fill")
+            || css_decl_mentions(&seed.prop_style, "fill")
+            || seed.attrs.contains_key("fill");
+        let author_stroke = css_decl_mentions(&seed.inline_style, "stroke")
+            || css_decl_mentions(&seed.prop_style, "stroke")
+            || seed.attrs.contains_key("stroke");
         if layout.background.is_none() && !author_fill {
-            layout.background = keep_bg;
+            layout.background = seed.keep_bg;
         }
         if layout.border_color.is_none() && !author_stroke {
-            layout.border_color = keep_border_color;
+            layout.border_color = seed.keep_border_color;
         }
         if layout.border_width.is_none() && !author_stroke {
-            layout.border_width = keep_border_width;
+            layout.border_width = seed.keep_border_width;
         }
         // CSS typography inherits when the author layers leave fields unset.
-        if let Some(parent_id) = self.widgets.get(&id).and_then(|w| w.parent)
+        if let Some(parent_id) = seed.parent_id
             && let Some(parent) = self.widgets.get(&parent_id)
         {
             let declares_axes = layout.font_variation_settings.is_some();
+            // Text the parent's `@container` rules change is the Runtime's to
+            // pass down: it inherits from what the parent shows in its current
+            // bucket. A copy of the parent's base text would read there as this
+            // element's own and hold in every bucket.
+            let own = parent.props.responsive_text.then(|| layout.clone());
             layout.inherit_typography_from(&parent.props.layout);
+            if let Some(own) = own {
+                keep_own_inherited_text(&mut layout, &own);
+            }
             if !declares_axes {
                 // Runtime inherits the axes itself. A copy here would read as
                 // the child's own declaration there and hide the parent's
@@ -645,39 +864,40 @@ impl MessageBridge {
         if !self.cascade.generated_pseudo_rules.is_empty() {
             let matched = crate::css_interactive::matched_generated_pseudo(
                 &self.cascade.generated_pseudo_rules,
-                &ctx,
+                ctx,
             );
-            apply_selection_paint(&mut layout, &matched.selection, cb_w, cb_h);
+            apply_selection_paint(&mut layout, &matched.selection, seed.cb_w, seed.cb_h);
             if matches!(
-                kind,
+                seed.kind,
                 WidgetKind::Input | WidgetKind::NumberInput | WidgetKind::Textarea
             ) {
-                apply_placeholder_paint(&mut layout, &matched.placeholder, cb_w, cb_h);
+                apply_placeholder_paint(&mut layout, &matched.placeholder, seed.cb_w, seed.cb_h);
             }
         }
         // Preserve explicit hidden flag from the `hidden` attribute.
-        if hidden {
+        if seed.hidden {
             layout.hidden = true;
         }
 
-        if leaf_tag.eq_ignore_ascii_case("img") {
-            let src = leaf_attrs
+        if seed.tag.eq_ignore_ascii_case("img") {
+            let src = seed
+                .attrs
                 .get("src")
-                .or_else(|| leaf_attrs.get("data-src"))
+                .or_else(|| seed.attrs.get("data-src"))
                 .map(String::as_str)
                 .unwrap_or("");
             crate::css_paint::apply_img_replaced_content(&mut layout, src);
-        } else if leaf_tag.eq_ignore_ascii_case("video") {
-            let poster = leaf_attrs.get("poster").map(String::as_str).unwrap_or("");
-            let slotted = leaf_attrs.iter().any(|(key, value)| {
+        } else if seed.tag.eq_ignore_ascii_case("video") {
+            let poster = seed.attrs.get("poster").map(String::as_str).unwrap_or("");
+            let slotted = seed.attrs.iter().any(|(key, value)| {
                 key.eq_ignore_ascii_case("data-nana-video")
                     && value.trim().parse::<u64>().ok().is_some_and(|id| id > 0)
             });
             crate::css_paint::apply_video_poster(&mut layout, poster, slotted);
-        } else if leaf_tag.eq_ignore_ascii_case("iframe") {
+        } else if seed.tag.eq_ignore_ascii_case("iframe") {
             crate::css_paint::apply_iframe_skip(&mut layout);
-        } else if leaf_tag.eq_ignore_ascii_case("canvas") {
-            let slotted = leaf_attrs.iter().any(|(key, value)| {
+        } else if seed.tag.eq_ignore_ascii_case("canvas") {
+            let slotted = seed.attrs.iter().any(|(key, value)| {
                 !value.is_empty()
                     && (key.eq_ignore_ascii_case("data-nana-canvas")
                         || key.eq_ignore_ascii_case("data-nana-gpu"))
@@ -687,35 +907,114 @@ impl MessageBridge {
 
         crate::svg_inline::apply_inline_svg_replaced(self, id, &mut layout);
 
-        if let Some(overlay) = self.motion.paint_transform_overlays.get(&id).copied()
-            && !self.motion.paint_transform_releases.contains(&id)
-        {
-            layout.transform = Some(overlay);
+        if let Some(transform) = running.transform {
+            layout.transform = Some(transform);
         }
+        layout
+    }
 
-        // Count declarations that parsed but name something layout does not
-        // implement. Without this they are only visible as a box that silently
-        // did not move.
-        self.cascade.unsupported_css.observe(id, &layout);
-
-        let author_mask = if !self.cascade.stylesheet_rules.is_empty()
-            || !self.cascade.authored_sheets.is_empty()
-            || !inline_style.trim().is_empty()
-            || !prop_style.trim().is_empty()
-            || !leaf_classes.is_empty()
-        {
-            nana_ui_core::LayoutFieldMask::ALL
-        } else {
-            nana_ui_core::LayoutFieldMask::NONE
-        };
-        self.layout_author_masks.insert(id, author_mask);
-
-        if let Some(widget) = self.widgets.get_mut(&id) {
-            if widget.props.layout != layout {
-                widget.props.layout = layout;
+    /// The responsive rule the element takes from the `@container` rules it
+    /// matches (Issue #265): its style in each bucket of their container's
+    /// size, as what that writes over `base`. The Runtime picks the bucket
+    /// from the container's measured size, so a resize costs no cascade.
+    fn resolve_container_rules(
+        &self,
+        id: WidgetId,
+        seed: &CascadeSeed,
+        ctx: &MatchContext<'_>,
+        base: &LayoutStyle,
+        running: &RunningPaint,
+    ) -> ContainerOutcome {
+        let rules = &self.cascade.container_rules;
+        if rules.is_empty() {
+            return ContainerOutcome::default();
+        }
+        let matched = rules.matching(ctx);
+        if matched.is_empty() {
+            return ContainerOutcome::default();
+        }
+        let unsupported = rules.any_unsupported(&matched);
+        let plan = match rules.plan(&matched) {
+            Ok(Some(plan)) => plan,
+            Ok(None) => {
+                return ContainerOutcome {
+                    unsupported,
+                    ..ContainerOutcome::default()
+                };
             }
-            pin_svg_chart_min_height(&mut widget.props);
+            // One rule reads one container on one axis: rules that ask more,
+            // or more breakpoints than a rule holds, never apply.
+            Err(_) => {
+                return ContainerOutcome {
+                    unsupported: true,
+                    ..ContainerOutcome::default()
+                };
+            }
+        };
+        // A variant is what the container rules change; paint a running
+        // transition lays over the base is not part of it.
+        let resting;
+        let base = if running.is_empty() {
+            base
+        } else {
+            resting = self.cascade_layout(id, seed, ctx, &[], &RunningPaint::default());
+            &resting
+        };
+        let mut text = false;
+        let variants: Vec<Option<nana_ui_runtime::StyleVariant>> = (0..plan.active.len())
+            .map(|bucket| {
+                let active = rules.active_rules(&plan, bucket);
+                if active.is_empty() {
+                    return None;
+                }
+                let styled = self.cascade_bucket(id, seed, ctx, &active);
+                text |= inherited_text_differs(base, &styled);
+                nana_ui_runtime::StyleVariant::between(base, &styled)
+            })
+            .collect();
+        if variants.iter().all(Option::is_none) {
+            return ContainerOutcome {
+                unsupported,
+                ..ContainerOutcome::default()
+            };
         }
+        let rule = nana_ui_runtime::ResponsiveRule::from_buckets(
+            nana_ui_runtime::ResponsiveContainer::Nearest { name: plan.name },
+            responsive_axis(plan.axis),
+            plan.breakpoints,
+            variants,
+        );
+        ContainerOutcome {
+            text: text && rule.is_some(),
+            rule,
+            unsupported,
+        }
+    }
+
+    /// [`Self::cascade_layout`] for the container rules `active` in one
+    /// bucket. The custom properties they declare are the element's own in
+    /// that bucket, so its `var()`s read them there.
+    fn cascade_bucket(
+        &self,
+        id: WidgetId,
+        seed: &CascadeSeed,
+        ctx: &MatchContext<'_>,
+        active: &[&StyleRule],
+    ) -> LayoutStyle {
+        let resting = RunningPaint::default();
+        let declares_vars = active.iter().any(|rule| {
+            rule.declaration_entries
+                .iter()
+                .any(|entry| entry.property.starts_with("--"))
+        });
+        if !declares_vars {
+            return self.cascade_layout(id, seed, ctx, active, &resting);
+        }
+        let own = self.own_custom_properties(ctx, &seed.prop_style, &seed.inline_style, active);
+        let vars = self.inherited_css_vars_with(id, Some(own));
+        crate::css_map::with_active_css_vars(&vars, || {
+            self.cascade_layout(id, seed, ctx, active, &resting)
+        })
     }
 }
 
@@ -794,15 +1093,29 @@ impl MessageBridge {
             relative: None,
             relative_id: 0,
         };
-        let mut map = crate::css_cascade::matched_custom_properties_indexed(
+        self.own_custom_properties(&ctx, &prop_style, &inline_style, &[])
+    }
+
+    /// The custom properties `ctx`'s element declares itself: its matched
+    /// rules, with `extra` container rules among them, then its prop and
+    /// inline style.
+    fn own_custom_properties(
+        &self,
+        ctx: &MatchContext<'_>,
+        prop_style: &str,
+        inline_style: &str,
+        extra: &[&StyleRule],
+    ) -> BTreeMap<String, String> {
+        let mut map = crate::css_cascade::matched_custom_properties_indexed_with_extra(
             &self.cascade.stylesheet_rules,
             &self.cascade.stylesheet_rule_index,
-            &ctx,
+            extra,
+            ctx,
         );
-        for (k, v) in crate::css_map::extract_css_custom_properties_from_decls(&prop_style) {
+        for (k, v) in crate::css_map::extract_css_custom_properties_from_decls(prop_style) {
             map.insert(k, v);
         }
-        for (k, v) in crate::css_map::extract_css_custom_properties_from_decls(&inline_style) {
+        for (k, v) in crate::css_map::extract_css_custom_properties_from_decls(inline_style) {
             map.insert(k, v);
         }
         map
@@ -812,6 +1125,16 @@ impl MessageBridge {
 impl MessageBridge {
     /// Document vars + ancestor/self matched `--*` + inline/prop (root → leaf).
     pub(super) fn inherited_css_vars_for(&self, id: WidgetId) -> BTreeMap<String, String> {
+        self.inherited_css_vars_with(id, None)
+    }
+
+    /// [`Self::inherited_css_vars_for`] with `own` as `id`'s own declarations
+    /// in place of the ones it matches unconditionally.
+    fn inherited_css_vars_with(
+        &self,
+        id: WidgetId,
+        mut own: Option<BTreeMap<String, String>>,
+    ) -> BTreeMap<String, String> {
         let mut chain = Vec::new();
         let mut cur = Some(id);
         while let Some(cid) = cur {
@@ -821,7 +1144,10 @@ impl MessageBridge {
         chain.reverse();
         let mut map = self.cascade.stylesheet_vars.clone();
         for cid in chain {
-            let overlay = self.authored_custom_properties_on(cid);
+            let overlay = match (cid == id).then(|| own.take()).flatten() {
+                Some(own) => own,
+                None => self.authored_custom_properties_on(cid),
+            };
             if !overlay.is_empty() {
                 map = crate::css_map::merge_css_custom_properties(&map, &overlay);
             }
@@ -916,14 +1242,21 @@ fn layout_affects_containing_block(
 
 impl MessageBridge {
     /// Parent computed font-size as `em` base while applying this node's CSS.
+    ///
+    /// The nearest ancestor that holds one: a parent leaves its font-size to
+    /// the Runtime when a container rule above changes it, and outside that
+    /// rule's buckets it is the one above.
     pub(super) fn font_context_for(&self, id: WidgetId) -> crate::css_map::FontSizeContext {
         let root_px = self.document_root_font_px();
-        let parent_px = self
-            .widgets
-            .get(&id)
-            .and_then(|w| w.parent)
-            .and_then(|pid| self.widgets.get(&pid))
-            .and_then(|p| p.props.layout.font_size)
+        let parent_px =
+            std::iter::successors(self.widgets.get(&id).and_then(|w| w.parent), |pid| {
+                self.widgets.get(pid).and_then(|w| w.parent)
+            })
+            .find_map(|pid| {
+                self.widgets
+                    .get(&pid)
+                    .and_then(|p| p.props.layout.font_size)
+            })
             .unwrap_or(root_px);
         crate::css_map::FontSizeContext::new(root_px, parent_px)
     }
@@ -1229,7 +1562,12 @@ impl MessageBridge {
     /// Total work is O(n·k) with k unique simple `:has()` args (cap 64).
     pub(super) fn refresh_has_descendant_index(&mut self) {
         let mut args = Vec::new();
-        for rule in &self.cascade.stylesheet_rules {
+        for rule in self
+            .cascade
+            .stylesheet_rules
+            .iter()
+            .chain(self.cascade.container_rules.rules())
+        {
             for sel in &rule.selectors {
                 push_has_args(&sel.subject, &mut args);
             }
@@ -1355,14 +1693,19 @@ impl MessageBridge {
         self.cascade.stylesheet_rules = combined.static_rules;
         self.cascade.stylesheet_rule_index =
             crate::css_cascade::RuleIndex::build(&self.cascade.stylesheet_rules);
+        self.cascade.container_rules =
+            nana_ui_css::ContainerRuleSet::build(&combined.container_rules);
         self.cascade.interactive_rules = combined.interactive_rules;
         self.cascade.generated_pseudo_rules = combined.generated_pseudo_rules;
         self.cascade.scrollbar_pseudo_rules = combined.scrollbar_pseudo_rules;
         self.cascade.motion_rules = combined.motion_rules;
+        // Container rules are matched like any other: what their selectors
+        // read of the tree is read for them too.
         self.cascade.selector_topology = self
             .cascade
             .stylesheet_rules
             .iter()
+            .chain(self.cascade.container_rules.rules())
             .flat_map(|rule| &rule.selectors)
             .any(selector_needs_topology)
             || self
@@ -1390,6 +1733,7 @@ impl MessageBridge {
             .cascade
             .stylesheet_rules
             .iter()
+            .chain(self.cascade.container_rules.rules())
             .flat_map(|rule| &rule.selectors)
             .chain(
                 self.cascade
@@ -1419,11 +1763,12 @@ impl MessageBridge {
         // Other rules may ask other `:has()` questions.
         self.cascade.has_index_ready = false;
         self.cascade.keyframes = combined.keyframes;
-        self.cascade.uses_focus_within = stylesheet_uses_focus_within(
-            &self.cascade.stylesheet_rules,
-            &self.cascade.interactive_rules,
-            &self.cascade.generated_pseudo_rules,
-        );
+        self.cascade.uses_focus_within =
+            stylesheet_uses_focus_within(
+                &self.cascade.stylesheet_rules,
+                &self.cascade.interactive_rules,
+                &self.cascade.generated_pseudo_rules,
+            ) || stylesheet_uses_focus_within(self.cascade.container_rules.rules(), &[], &[]);
         self.discard_interactive_runtime_if_unused();
     }
 }
@@ -1586,7 +1931,15 @@ impl MessageBridge {
         for face in &flattened.font_faces {
             self.consider_font_face(face);
         }
-        let new_static = flattened.static_rules;
+        // The elements a container rule matches take it through their own
+        // cascade, as for the sheet's other rules: those are cascaded again.
+        let mut new_static = flattened.static_rules;
+        new_static.extend(
+            flattened
+                .container_rules
+                .into_iter()
+                .flat_map(|block| block.sheet.static_rules),
+        );
         self.cascade.authored_sheets.push(AuthoredSheet {
             key: key.map(str::to_owned),
             source: css.to_owned(),

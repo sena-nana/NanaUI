@@ -307,15 +307,30 @@ O(log C) 跟着集合变。
 - 文字比所在的盒子还宽、放不下一个词时（例如列表宽度为 0），重新排版前后它的宽度会变，增量
   布局和全量布局对不上。门禁给列表定了宽度，这个问题单独跟进。
 
-响应式规则（#265）。节点可以按某个容器的尺寸换布局：`MutationQueue::set_responsive(节点,
+响应式规则（#265）。节点可以按某个容器的尺寸换样式：`MutationQueue::set_responsive(节点,
 ResponsiveRule)`。
-- 规则读容器内容盒的一条轴（inline 或 block，按容器的书写方向）。容器是节点的父节点
-  （`ResponsiveContainer::Parent`），或指定的节点（`ResponsiveContainer::Node`）。
-- 断点把尺寸分成有限个桶，最多 16 个断点。每个桶可以带一个变体：在节点自己的布局上打的补丁
-  （`ResponsiveRule::below` / `at_least`）。没有变体的桶用节点自己的布局。
-- 变体是布局意图，不是第二套引擎。节点解析后的布局 = 作者写的布局，套上设计意图，再套上当前
-  桶的变体。换桶就是一次样式变化，按 `SetStyle` 同一套规则分类、标脏、排 seed，进同一个增量
-  布局。计算样式也读解析后的布局，所以变体改字号、隐藏节点时，文字、绘制和可见性跟着变。
+- 规则读容器内容盒的一条轴：inline 或 block（按容器的书写方向），或者 width 或 height（不随书写
+  方向）。
+- 容器有三种：
+  - 节点的父节点（`ResponsiveContainer::Parent`）；
+  - 指定的节点（`ResponsiveContainer::Node`）；
+  - 往上最近的查询容器（`ResponsiveContainer::Nearest { name }`），也就是 CSS `@container` 的语义：
+    `container-type` 不是 `normal`、回答这条轴的祖先。`inline-size` 只回答它的 inline 轴，`size` 两条都回答。
+    写了名字时，还要 `container-name` 里有这个名字。找不到这样的祖先时，节点保持作者写的样式。
+    祖先改了 `container-type` 或 `container-name`，或者节点挪了位置，下面的规则会重新找容器。
+- 查询容器不做尺寸包含（size containment）：它的尺寸仍然随内容变。变体反过来撑大、缩小容器时，靠下面的收敛规则停住，
+  这一点和浏览器不同。
+- 断点把尺寸分成有限个桶，最多 16 个断点。每个桶可以带一个变体：
+  - `ResponsiveRule::below` / `at_least` 用闭包写，按是不是同一个闭包比较；
+  - `ResponsiveRule::from_buckets` 直接给出断点和每个桶的 `StyleVariant`。
+  `StyleVariant::between(基础, 目标)` 是数据：记录两份布局里不同的字段和目标的值，按值比较，
+  所以同一份规则再发一次是空操作。没有变体的桶用作者写的样式。
+- 变体写在作者的样式上，就像作者直接这样写：设计意图在变体之后解析，和它对待作者写的样式一样。
+  `LayoutStyle` 里的字段都能变，布局之外，颜色、背景、字体、不透明度也会跟着变。
+  - 节点在有变体的桶里时有两份样式：作者写的（`node_style()` 返回这一份，投影拿它比较，之后的
+    `SetStyle` 也从它出发），和生效的（作者样式加上变体，管线读这一份）。
+  - 换桶就是一次样式变化，按 `SetStyle` 同一套规则分类、标脏、排 seed，进同一个增量布局。只改
+    绘制的变体只重绘，不排 seed。
 - 规则登记时按容器建索引。布局写回让容器内容盒变了的轴，在那次提交结束时只评估读这条轴的
   规则，不扫描文档。还在原来桶里的规则什么也不改。
 - 收敛：一帧里换桶的轮数最多 4 轮。某条规则要回到这一帧已经离开过的桶，或者轮数用完，就停在
@@ -341,8 +356,14 @@ ResponsiveRule)`。
 
 #259 加了响应式负载：在 1k、10k、100k 页面末尾，桶内缩放、跨断点、跨回、嵌套缩放的开销相同。
 
-还没做的：Vue / CSS 这一层还不能写响应式规则。`@container` 没有投影到 `ResponsiveRule`，
-目前只有 Rust 的 `set_responsive`。
+各层都投影到同一种规则：
+- Rust：`MutationQueue::set_responsive`；
+- `.vue` 的 `<style>`、`view!`、`stylesheet!`：构建期把 `@container` 编进样式表，元素挂载时装上规则
+  （见 [响应式视图](reactive-view.md)；`css!` 只写声明，里面的 `@container` 给出警告）；
+- Vue + JS 宿主：运行期层叠时为命中 `@container` 的元素算出各桶的变体，发 `set_responsive`。
+
+两条 CSS 路径都只产出数据，不量容器（见下文「`@container`」）。L2 的 NanaVue 组件没有单独的
+写法，组件自己的样式里写 `@container` 即可。
 
 有依赖索引的格式化上下文可以使用 `LayoutDependencyGraph` 表达父约束、包含块、
 写作方向和 flex/grid/inline 的局部耦合。Runtime mutation authority 和产品帧统一发布
@@ -747,6 +768,28 @@ JS 的 `matchMedia` 经 host op `evaluateMediaQuery`，和 CSS flatten 共用同
 谓词子集是 L1 已有的。`display: flex|grid|block`，以及 L1 已经解析的其它 `display` 关键字。`color` 是 `parse_css_color` 能解析的值。`width` 是 `LengthSpec::parse` 能解析的值。可以加 `not`、`and`、`or`。
 
 未知谓词整块 fail-closed，计入 `skipped_at_rules`。例如 `selector()`、`lab()`、`display-p3`，以及未列入的属性。
+
+**`@container`。** 引擎只把它编译成数据，不去量容器；容器尺寸由 Runtime 的响应式规则读（见上文「响应式规则（#265）」）。
+
+prelude 是 `[名字] 条件`：
+- 条件可以用 `and`、`or`、`not` 组合，同一层不混用 `and` 和 `or`。
+- 特性是 `width`、`height`、`inline-size`、`block-size`，可以带 `min-` / `max-`，也可以写成区间 `(width < 480px)`、`(400px <= width < 800px)`。
+- 长度只认 px，以及不带单位的 0。
+
+每条查询编成一条轴上的半开区间。`max-width: 480px` 含 480，上界是 `480f32.next_up()`；`<` 不含边界。
+
+元素命中的 `@container` 规则把容器尺寸切成桶，最多 16 个断点。每个桶里成立的规则按 cascade 顺序（`!important`、特异度、源序）并入，得到这个桶的整份样式。它和基础样式不同的字段就是这个桶的变体，交给 Runtime 的规则：`ResponsiveContainer::Nearest { name }`，找最近的、名字相同、回答这条轴的容器。
+
+`container-type`（`normal`、`inline-size`、`size`）、`container-name` 和 `container` 简写写进 `LayoutStyle`。查询容器不做尺寸包含，尺寸仍随内容。
+
+下面这些一律 fail closed，计入 `skipped_at_rules`：
+- 其它单位，`aspect-ratio`、`orientation`、`style()`、`scroll-state()`；
+- 一条查询里有两条轴；
+- 逗号列表，只有名字，嵌套的 `@container`。
+
+一个元素命中的规则问到两个容器或两条轴，或者断点超过 16 个时，它的 `@container` 规则全部不生效，计入 `container_queries`。
+
+块里只有普通样式规则生效。`:hover`、伪元素、`transition`、`@keyframes`、`@font-face` 写在里面不生效。
 
 **`@layer`。** `@layer name { }` 和匿名的 `@layer { }` 把内部规则按作者源序并进 cascade，并记下层名（`ParsedStylesheet.layer_names`）。
 

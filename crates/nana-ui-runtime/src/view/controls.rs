@@ -384,6 +384,35 @@ pub fn localized(text: crate::LocalizedText) -> El<Text> {
     widget(Text::localized(text))
 }
 
+/// Localized text that follows its message (`<T id="files" :count="n" />`
+/// in a template): a [`LocalizedText`](crate::LocalizedText), a signal or
+/// computed of one, or a closure building one,
+/// `t(move || LocalizedText::new("files").arg("count", n.get()))`. The text
+/// resolves in the locale of the scope it is in. A message equal to the one
+/// shown, the same key with the same arguments, changes nothing and is not
+/// sent again; a locale switch resolves the text in the world and runs no
+/// binding.
+#[track_caller]
+pub fn t(text: impl IntoProp<crate::LocalizedText>) -> El<Text> {
+    widget(Text::new("")).prop::<crate::LocalizedText, Localized>(text)
+}
+
+/// The message a [`Text`] says, resolved in its scope's locale: what [`t`]
+/// binds. Writing one makes the text localized.
+pub struct Localized;
+
+impl FieldWrite<Text, crate::LocalizedText> for Localized {
+    const FIELD: &'static str = "Text.localized";
+
+    fn write(target: &mut Text, text: crate::LocalizedText) {
+        target.localized = Some(text);
+    }
+
+    fn differs(target: &Text, text: &crate::LocalizedText) -> bool {
+        target.localized.as_ref() != Some(text)
+    }
+}
+
 #[track_caller]
 pub fn button(label: impl IntoProp<String>) -> El<Button> {
     widget(Button::new("")).label(label)
@@ -600,12 +629,13 @@ impl<K> El<EmptyState, K> {
 ///   `text`), so a writer can be named and wrapped;
 /// - [`fields::Visible`]: whether a node takes part in layout, paint and hit
 ///   testing (what `.visible(..)` binds);
+/// - [`fields::Localized`]: the message a text says (what [`t`] binds);
 /// - [`fields::HiddenWhenEmpty`]: any of those fields, with the node hidden
 ///   while the value is empty (`.prop::<_, HiddenWhenEmpty<fields::text::value>>(title)`).
 pub mod fields {
-    pub use super::Visible;
     pub use super::generated::*;
     pub use super::{Blank, HiddenWhenEmpty};
+    pub use super::{Localized, Visible};
 
     /// [`crate::ActionMenu`] fields (not a template tag: its items are its
     /// children).

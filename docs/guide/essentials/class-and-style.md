@@ -63,6 +63,15 @@ Rust 词法写不出的值放进双引号，例如 `font-size: "1.5em"`。构建
 
 构建时只级联类选择器，例如 `.todos` 和 `.todos.empty`。标签、id、组合器、`:hover`、`@media`、`@keyframes` 不会编进去，落在对应的那一段 CSS 上作为警告。写了不认识的属性也一样。不要假设「写进样式表就一定生效」。
 
+`@container` 块里的类规则也编进去，按容器的尺寸生效。容器用 `container-type` 和 `container-name` 声明：
+
+```css
+.card { container-type: inline-size; container-name: card; }
+@container card (max-width: 300px) { .row { height: 40px; } }
+```
+
+`card` 的宽度不超过 300px 时，里面的 `.row` 高 40px。尺寸由运行时量，跨过断点时只重排受影响的节点。写在后面的普通规则仍然压过容器规则。一个元素同一时刻只跟一个容器的一条轴，至多 16 个断点，超出时在元素上报警告。`css!` 里不能写 `@container`。能写的条件和不支持的部分见 [布局（CSS 子集）](../../reference/layout.md)。
+
 `each`、`when` 的容器同样接受 `.class`、`.class_when` 和 `.css`。模板里用 `<Block class="strip">` 包住一个 `v-for` 或一条 `v-if` 链，类给容器，不给每一行。行和分支自己的 `class` 仍然留在行上。
 
 ## 跟着主题走的表面

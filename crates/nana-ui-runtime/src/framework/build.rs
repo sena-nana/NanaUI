@@ -136,6 +136,13 @@ impl<'a> UiBuilder<'a> {
         self.error.is_some()
     }
 
+    /// The batch this build commits, for what a view sets on a node it just
+    /// placed beside the node's own projection: a locale scope, there before
+    /// the children it holds are inserted.
+    pub(crate) fn mutations(&mut self) -> &mut MutationQueue {
+        &mut self.queue
+    }
+
     pub(crate) fn fail<C: View>(&mut self, error: FrameworkError) -> Entity<C> {
         if self.error.is_none() {
             self.error = Some(error);

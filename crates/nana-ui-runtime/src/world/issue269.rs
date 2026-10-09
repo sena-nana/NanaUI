@@ -390,3 +390,22 @@ fn issue269_a_switch_that_names_a_language_shapes_in_it() {
     app.frame(0);
     assert_eq!(language(&app), Some(tag("en")));
 }
+
+/// A switch the application makes outside a commit moves the world's
+/// generation when it changed what shows, as a commit does, so a host that
+/// draws when the generation moves draws it; a switch that changes nothing
+/// leaves it.
+#[test]
+fn issue269_a_switch_outside_a_commit_moves_the_generation() {
+    let mut app = App::new(&[1_000], true);
+    let generation = app.context.world().generation();
+    app.context.set_default_locale(Locale::parse("zh-cn"));
+    let switched = app.context.world().generation();
+    assert_ne!(switched, generation, "the text changed");
+    app.context.set_default_locale(Locale::parse("zh-cn"));
+    assert_eq!(
+        app.context.world().generation(),
+        switched,
+        "nothing changed"
+    );
+}

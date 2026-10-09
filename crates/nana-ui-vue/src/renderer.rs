@@ -1076,6 +1076,32 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
             Ok(HostValue::Array(unknown))
         });
     }
+    // `Nana.i18n` for a document hosted on its own, where it is the whole
+    // application. `VueRuntime` registers application-wide ones over these.
+    {
+        let host = host.clone();
+        api.register("i18nSetCatalog", move |args| {
+            let request = crate::i18n::CatalogRequest::parse(args)?;
+            lock_doc(&host.document)?.install_catalog_request(&request);
+            Ok(HostValue::Null)
+        });
+    }
+    {
+        let host = host.clone();
+        api.register("i18nSetLocale", move |args| {
+            let locale = crate::i18n::parse_locale(args.first())?;
+            lock_doc(&host.document)?.set_default_locale(locale);
+            Ok(HostValue::Null)
+        });
+    }
+    {
+        let host = host.clone();
+        api.register("i18nGetLocale", move |_args| {
+            Ok(crate::i18n::locale_tag_value(
+                lock_doc(&host.document)?.default_locale(),
+            ))
+        });
+    }
     {
         let host = host.clone();
         api.register("getDocumentTheme", move |_args| {
@@ -1632,7 +1658,7 @@ fn seed_element_attrs(guard: &mut NanaTreeDocument, handle: NodeHandle, props: &
     }
 }
 
-fn lock_doc(
+pub(crate) fn lock_doc(
     doc: &Arc<Mutex<NanaTreeDocument>>,
 ) -> Result<std::sync::MutexGuard<'_, NanaTreeDocument>, JsException> {
     doc.try_lock()
@@ -1748,6 +1774,9 @@ fn seed_bridge_node(
                 } else if key.eq_ignore_ascii_case("role") {
                     props.role = value.clone();
                     props.attrs.insert(key, value);
+                } else if matches!(key.as_str(), "locale" | "message-id" | "message-args") {
+                    // Read into their fields, not only kept as attributes.
+                    props.apply_prop(&key, &HostValue::String(value));
                 } else {
                     props.attrs.insert(key, value);
                 }
@@ -1997,6 +2026,278 @@ mod tests {
         assert_eq!(w.kind, WidgetKind::Button);
         assert_eq!(w.props.label, "Increment");
         assert_eq!(w.props.button_kind, nana_ui_core::ButtonKind::Primary);
+    }
+
+    /// CSS `@container` end to end (Issue #265): the row's container rules
+    /// reach the Runtime as one responsive rule, which restyles the row as
+    /// its card resizes, and a cascade that changes nothing sends no rule
+    /// again.
+    #[test]
+    fn container_rules_restyle_an_element_as_its_container_resizes() {
+        const SHEET: &str =
+            ".card { container-type: inline-size; container-name: card; width: 320px }
+             .row { height: 100px }
+             @container card (max-width: 300px) {
+                 .row { background: rgb(255, 0, 0); height: 40px }
+             }";
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(800, 600, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap();
+        let patch = |element: f64, key: &str, value: &str| {
+            api.call(
+                "patchProp",
+                &[
+                    HostValue::Number(element),
+                    HostValue::string(key),
+                    HostValue::string(value),
+                ],
+            )
+            .unwrap();
+        };
+        let element = |class: &str, parent: f64| {
+            let element = api
+                .call("createElement", &[HostValue::string("div")])
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            patch(element, "class", class);
+            api.call(
+                "insert",
+                &[
+                    HostValue::Number(element),
+                    HostValue::Number(parent),
+                    HostValue::Null,
+                ],
+            )
+            .unwrap();
+            element
+        };
+        let card = element("card", body);
+        let wrapper = element("wrapper", card);
+        let row = element("row", wrapper);
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(SHEET), HostValue::string("card.css")],
+        )
+        .unwrap();
+        let row_id = nana_ui_runtime::StableNodeId::new(row as u64).unwrap();
+        let resolve = || {
+            api.call("resolveLayout", &[]).unwrap();
+        };
+        let red = |doc: &NanaTreeDocument| {
+            doc.world()
+                .computed_style(row_id)
+                .and_then(|style| style.background)
+                .is_some_and(|[r, g, b, _]| r > 0.99 && g < 0.01 && b < 0.01)
+        };
+        // The wrapper sizes to the row: what the variant does to the row's
+        // box reaches its parent's too.
+        let heights = |doc: &NanaTreeDocument| {
+            let height = |element: f64| doc.layout_box(NodeHandle(element as u64)).unwrap().height;
+            (height(row), height(wrapper))
+        };
+
+        resolve();
+        {
+            let doc = doc.lock().unwrap();
+            assert!(!red(&doc), "320px is above the query");
+            assert_eq!(heights(&doc), (100.0, 100.0));
+        }
+
+        patch(card, "style", "width: 280px");
+        resolve();
+        let rule = {
+            let doc = doc.lock().unwrap();
+            assert!(red(&doc), "280px is within the query");
+            assert_eq!(heights(&doc), (40.0, 40.0));
+            Arc::clone(doc.world().responsive_rule(row_id).unwrap())
+        };
+
+        // The sheet again, as a hot reload that changed no rule sends it:
+        // the whole document cascades, and the world keeps the very rule it
+        // holds rather than taking an equal copy.
+        api.call(
+            "replaceStylesheet",
+            &[
+                HostValue::string("card.css"),
+                HostValue::string(format!("{SHEET} ")),
+            ],
+        )
+        .unwrap();
+        resolve();
+        {
+            let doc = doc.lock().unwrap();
+            assert!(Arc::ptr_eq(
+                &rule,
+                doc.world().responsive_rule(row_id).unwrap()
+            ));
+            assert!(red(&doc));
+        }
+
+        patch(card, "style", "width: 320px");
+        resolve();
+        let doc = doc.lock().unwrap();
+        assert!(!red(&doc), "back above the query");
+        assert_eq!(heights(&doc), (100.0, 100.0));
+    }
+
+    /// Text a container rule changes reaches the text inside the element,
+    /// however deep: the Runtime passes down what the element shows in its
+    /// container's current bucket, over the base text it declares too.
+    #[test]
+    fn container_rule_text_reaches_the_text_inside() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(800, 600, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let body = api.call("mountRoot", &[]).unwrap().as_f64().unwrap() as u64;
+        let card = seeded_element(&mut api, body, "div", &[("class", "card")]);
+        let title = seeded_element(&mut api, card, "h2", &[("class", "title")]);
+        let text = text_child(&mut api, title, "Hello");
+        let inner = seeded_element(&mut api, title, "span", &[]);
+        let nested = text_child(&mut api, inner, "world");
+        api.call(
+            "injectStylesheet",
+            &[HostValue::string(
+                ".card { container-type: inline-size; container-name: card; width: 320px }
+                 .title { font-size: 16px; color: rgb(0, 0, 255) }
+                 @container card (max-width: 300px) {
+                     .title { font-size: 30px; color: rgb(255, 0, 0) }
+                 }",
+            )],
+        )
+        .unwrap();
+        let resize = |api: &mut HostApiRegistry, width: &str| {
+            api.call(
+                "patchProp",
+                &[
+                    HostValue::Number(card as f64),
+                    HostValue::string("style"),
+                    HostValue::string(format!("width: {width}")),
+                ],
+            )
+            .unwrap();
+            api.call("resolveLayout", &[]).unwrap();
+        };
+        let shown = |doc: &Arc<Mutex<NanaTreeDocument>>| {
+            let doc = doc.lock().unwrap();
+            [text, nested].map(|id| {
+                let style = doc
+                    .world()
+                    .computed_style(nana_ui_runtime::StableNodeId::new(id).unwrap())
+                    .unwrap();
+                (style.font_size, style.color)
+            })
+        };
+        let blue = (16.0, Some([0.0, 0.0, 1.0, 1.0]));
+        let red = (30.0, Some([1.0, 0.0, 0.0, 1.0]));
+
+        api.call("resolveLayout", &[]).unwrap();
+        assert_eq!(shown(&doc), [blue, blue]);
+        resize(&mut api, "280px");
+        assert_eq!(shown(&doc), [red, red]);
+        resize(&mut api, "320px");
+        assert_eq!(shown(&doc), [blue, blue]);
+    }
+
+    /// `<T>` as the host sees it: a `nana-text` with `message-id` and
+    /// `message-args`, and `Nana.i18n` on a document hosted on its own.
+    #[test]
+    fn a_message_text_and_the_i18n_ops_reach_the_world() {
+        let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 300, 1.0)));
+        let bridge = Arc::new(Mutex::new(MessageBridge::new()));
+        let mut api = HostApiRegistry::new();
+        register_dom_host_ops_with_bridge(
+            &mut api,
+            Arc::clone(&doc),
+            Arc::clone(&bridge),
+            shared_web_api_state(),
+        );
+        let entry = |locale: &str, pattern: &str| {
+            HostValue::Array(vec![
+                HostValue::string(locale),
+                HostValue::string("files"),
+                HostValue::string(pattern),
+            ])
+        };
+        let catalog = HostValue::Array(vec![
+            entry("en", "{count} files"),
+            entry("zh", "{count} 个文件"),
+        ]);
+        api.call("i18nSetCatalog", std::slice::from_ref(&catalog))
+            .expect("catalog");
+        api.call("i18nSetLocale", &[HostValue::string("en")])
+            .expect("locale");
+        assert_eq!(
+            api.call("i18nGetLocale", &[]).unwrap(),
+            HostValue::string("en")
+        );
+
+        let text = api
+            .call(
+                "createWidget",
+                &[
+                    HostValue::string("text"),
+                    HostValue::Object(
+                        [("message-id".into(), HostValue::string("files"))]
+                            .into_iter()
+                            .collect(),
+                    ),
+                ],
+            )
+            .expect("create")
+            .as_f64()
+            .expect("id") as u64;
+        api.call(
+            "patchProp",
+            &[
+                HostValue::Number(text as f64),
+                HostValue::string("message-args"),
+                HostValue::string(r#"{"count":2}"#),
+            ],
+        )
+        .expect("patch");
+        let root = doc.lock().unwrap().mount_root().0;
+        api.call(
+            "insert",
+            &[
+                HostValue::Number(text as f64),
+                HostValue::Number(root as f64),
+                HostValue::Null,
+            ],
+        )
+        .expect("insert");
+        let snapshot = bridge.lock().unwrap().snapshot();
+        doc.lock().unwrap().sync_semantic_styles(&snapshot);
+        let id = nana_ui_runtime::StableNodeId::new(text).unwrap();
+        assert_eq!(doc.lock().unwrap().world().text(id), Some("2 files"));
+
+        api.call("i18nSetLocale", &[HostValue::string("zh")])
+            .expect("switch");
+        assert_eq!(doc.lock().unwrap().world().text(id), Some("2 个文件"));
+
+        // The same catalog again, as an application script run again sends
+        // it, installs nothing.
+        let installed = doc.lock().unwrap().world().catalog_generation();
+        api.call("i18nSetCatalog", std::slice::from_ref(&catalog))
+            .expect("same catalog");
+        assert_eq!(doc.lock().unwrap().world().catalog_generation(), installed);
+        assert!(
+            api.call("i18nSetLocale", &[HostValue::Number(1.0)])
+                .is_err()
+        );
     }
 
     #[test]

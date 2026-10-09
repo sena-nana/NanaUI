@@ -170,6 +170,8 @@ const WITNESS_DECLARATIONS: &[(&str, &str)] = &[
     ("position", "absolute"),
     ("z-index", "3"),
     ("isolation", "isolate"),
+    ("container-type", "size"),
+    ("container-name", "witness"),
     ("transform", "translate(1px, 2px)"),
     ("transform", "rotateX(30deg)"),
     ("transform", "nonsense(1)"),
@@ -354,6 +356,12 @@ mod tests {
         assert_eq!(written(&[("position", "static")]), ["position"]);
         assert_eq!(written(&[("flex-wrap", "nowrap")]), ["flex_wrap"]);
         assert_eq!(written(&[("outline-width", "0")]), ["paint.outline.width"]);
+        assert_eq!(written(&[("container-type", "normal")]), ["container_type"]);
+        // The shorthand resets the type it leaves out.
+        assert_eq!(
+            written(&[("container", "card")]),
+            ["container_name", "container_type"]
+        );
     }
 
     #[test]

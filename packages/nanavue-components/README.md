@@ -46,6 +46,7 @@ import "@nanaui/nanavue-components/controls.css";
 | `NanaScrollView` | `ScrollView` |
 | `NanaVirtualList` / `NanaVirtualTable` / `NanaVirtualTree` | `ScrollView` + 可见窗口（对齐 `materialize_virtual_*`） |
 | `NanaGpu` | `GpuTextureView`（`<nana-gpu>`） |
+| `T` / `NanaT` | 本地化文字（`<nana-text>` + `message-id` / `message-args`，Runtime 按 locale 解析） |
 | `NanaFormField` | `FormField` |
 | `NanaEmptyState` | `EmptyState` |
 | `NanaProgress` | `Progress` |

@@ -8,13 +8,19 @@
 //! bucket re-resolves its node's layout and seeds what that moved; one that
 //! stays changes nothing.
 //!
+//! A node in a bucket with a variant keeps two styles: the one it was
+//! authored with, which projection compares against and every later write
+//! starts from, and the effective one, the authored style with the variant
+//! written over it, which the record holds and everything downstream reads.
+//!
 //! Variants can resize the container they read. Within one frame a rule that
 //! would return to a bucket it already left, or a frame past
 //! [`MAX_ROUNDS`] rounds of changes, keeps the bucket it has: the frame
 //! settles, and the next resize evaluates afresh.
 
 use super::*;
-use crate::responsive::{LayoutVariant, ResponsiveAxis, ResponsiveContainer, ResponsiveRule};
+use crate::responsive::{ResponsiveAxis, ResponsiveContainer, ResponsiveRule, StyleVariant};
+use nana_ui_core::ContainerType;
 
 /// Rounds of bucket changes one frame converges in before its rules hold.
 const MAX_ROUNDS: usize = 4;
@@ -31,15 +37,22 @@ struct Dependent {
 /// A container's content box, as its rules last read it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Extents {
-    inline: f32,
-    block: f32,
+    width: f32,
+    height: f32,
+    /// Whether the container writes vertically: its inline axis is its
+    /// height.
+    vertical: bool,
 }
 
 impl Extents {
     fn on(self, axis: ResponsiveAxis) -> f32 {
-        match axis {
-            ResponsiveAxis::Inline => self.inline,
-            ResponsiveAxis::Block => self.block,
+        match (axis, self.vertical) {
+            (ResponsiveAxis::Width, _)
+            | (ResponsiveAxis::Inline, false)
+            | (ResponsiveAxis::Block, true) => self.width,
+            (ResponsiveAxis::Height, _)
+            | (ResponsiveAxis::Inline, true)
+            | (ResponsiveAxis::Block, false) => self.height,
         }
     }
 }
@@ -56,11 +69,28 @@ pub(super) struct ResponsiveIndex {
     /// This frame's rounds of changes, and the buckets each node left.
     rounds: usize,
     left: HashMap<StableNodeId, Vec<usize>, BuildIdHasher>,
+    /// The authored style of each node whose record holds a variant.
+    authored: HashMap<StableNodeId, NodeStyle, BuildIdHasher>,
 }
 
 impl ResponsiveIndex {
     pub(super) fn follows(&self, id: StableNodeId) -> bool {
         self.dependents.contains_key(&id)
+    }
+
+    /// The style `id` was authored with, while its record holds a variant.
+    pub(super) fn authored(&self, id: StableNodeId) -> Option<&NodeStyle> {
+        self.authored.get(&id)
+    }
+
+    /// Keep `style` as what `id` was authored with: its record holds a
+    /// variant written over it.
+    pub(super) fn keep_authored(&mut self, id: StableNodeId, style: NodeStyle) {
+        self.authored.insert(id, style);
+    }
+
+    pub(super) fn drop_authored(&mut self, id: StableNodeId) {
+        self.authored.remove(&id);
     }
 
     fn queue(&mut self, container: StableNodeId) {
@@ -132,8 +162,8 @@ impl UiWorld {
             .and_then(|dependent| dependent.bucket)
     }
 
-    /// The variant `id`'s resolved layout takes, if its bucket has one.
-    pub(super) fn responsive_variant(&self, id: StableNodeId) -> Option<&LayoutVariant> {
+    /// The variant `id`'s style takes, if its bucket has one.
+    pub(super) fn responsive_variant(&self, id: StableNodeId) -> Option<&StyleVariant> {
         let dependent = self.responsive.dependents.get(&id)?;
         dependent.rule.variant(dependent.bucket?)
     }
@@ -146,8 +176,33 @@ impl UiWorld {
     ) -> Option<StableNodeId> {
         match rule.container() {
             ResponsiveContainer::Parent => self.parent_id(id),
-            ResponsiveContainer::Node(container) => self.contains(container).then_some(container),
+            ResponsiveContainer::Node(container) => self.contains(*container).then_some(*container),
+            ResponsiveContainer::Nearest { name } => {
+                std::iter::successors(self.parent_id(id), |node| self.parent_id(*node))
+                    .find(|node| self.answers_query(*node, rule.axis(), name.as_deref()))
+            }
         }
+    }
+
+    /// Whether `node` is a query container for `axis` that answers to
+    /// `name`: CSS `container-type` and `container-name`. An inline-size
+    /// container answers on its inline axis only, whichever physical axis
+    /// that is.
+    fn answers_query(&self, node: StableNodeId, axis: ResponsiveAxis, name: Option<&str>) -> bool {
+        let record = self.record(node);
+        let layout = &record.resolved_layout;
+        let vertical = record.resolved.0.writing_mode.is_vertical();
+        let axis_answered = match layout.container_type {
+            ContainerType::Normal => false,
+            ContainerType::Size => true,
+            ContainerType::InlineSize => match axis {
+                ResponsiveAxis::Inline => true,
+                ResponsiveAxis::Block => false,
+                ResponsiveAxis::Width => !vertical,
+                ResponsiveAxis::Height => vertical,
+            },
+        };
+        axis_answered && name.is_none_or(|name| layout.container_name.iter().any(|own| own == name))
     }
 
     /// Set or clear the rule `id` follows. A container already measured is
@@ -185,16 +240,49 @@ impl UiWorld {
     }
 
     /// `id` left the tree or moved under another parent: a rule that reads
-    /// its parent reads the new one.
+    /// its parent reads the new one, and rules at or below it that read
+    /// the nearest query container find theirs again.
     pub(super) fn responsive_reparented(&mut self, id: StableNodeId) {
-        let Some(dependent) = self.responsive.dependents.get(&id) else {
-            return;
-        };
-        if dependent.rule.container() != ResponsiveContainer::Parent {
-            return;
+        if let Some(dependent) = self.responsive.dependents.get(&id)
+            && *dependent.rule.container() == ResponsiveContainer::Parent
+        {
+            let rule = Arc::clone(&dependent.rule);
+            self.set_responsive_rule(id, Some(rule));
         }
-        let rule = Arc::clone(&dependent.rule);
-        self.set_responsive_rule(id, Some(rule));
+        self.find_query_containers_again(id);
+    }
+
+    /// Whether `id` became or stopped being a query container, or changed
+    /// name, moved: the rules below it that read the nearest one find it
+    /// again. Visits the rules that read a nearest container, not the
+    /// subtree.
+    pub(super) fn find_query_containers_again(&mut self, id: StableNodeId) {
+        let mut nearest: Vec<StableNodeId> = self
+            .responsive
+            .dependents
+            .iter()
+            .filter(|(_, dependent)| {
+                matches!(
+                    dependent.rule.container(),
+                    ResponsiveContainer::Nearest { .. }
+                )
+            })
+            .map(|(node, _)| *node)
+            .filter(|node| {
+                std::iter::successors(Some(*node), |node| self.parent_id(*node))
+                    .any(|above| above == id)
+            })
+            .collect();
+        nearest.sort_unstable();
+        for node in nearest {
+            let Some(dependent) = self.responsive.dependents.get(&node) else {
+                continue;
+            };
+            let rule = Arc::clone(&dependent.rule);
+            if self.responsive_container_of(node, &rule) != dependent.container {
+                self.set_responsive_rule(node, Some(rule));
+            }
+        }
     }
 
     /// Forget a node that is gone: as a follower and as a container. The
@@ -204,6 +292,7 @@ impl UiWorld {
             self.responsive.unlink(id, dependent.container);
             self.responsive.left.remove(&id);
         }
+        self.responsive.authored.remove(&id);
         if let Some(followers) = self.responsive.containers.remove(&id) {
             for follower in followers {
                 if let Some(dependent) = self.responsive.dependents.get_mut(&follower) {
@@ -229,7 +318,7 @@ impl UiWorld {
     }
 
     /// The content box of `container` as its rules read it: its border box
-    /// less padding and border, inline and block in its writing mode.
+    /// less padding and border, and which way it writes.
     fn responsive_extents(&self, container: StableNodeId) -> Option<Extents> {
         let record = self.nodes.get(container)?;
         let bounds = record.layout;
@@ -242,12 +331,11 @@ impl UiWorld {
             (bounds.width - padding.left - padding.right - border.left - border.right).max(0.0);
         let height =
             (bounds.height - padding.top - padding.bottom - border.top - border.bottom).max(0.0);
-        let (inline, block) = if record.resolved.0.writing_mode.is_vertical() {
-            (height, width)
-        } else {
-            (width, height)
-        };
-        Some(Extents { inline, block })
+        Some(Extents {
+            width,
+            height,
+            vertical: record.resolved.0.writing_mode.is_vertical(),
+        })
     }
 
     /// Evaluate the rules of the containers this commit resized. Each rule
@@ -264,10 +352,10 @@ impl UiWorld {
                 continue;
             };
             let read = self.responsive.read.insert(container, extents);
-            let inline_moved = read.is_none_or(|read| read.inline != extents.inline);
-            let block_moved = read.is_none_or(|read| read.block != extents.block);
-            cost.size_changes += usize::from(inline_moved) + usize::from(block_moved);
-            if !inline_moved && !block_moved {
+            let width_moved = read.is_none_or(|read| read.width != extents.width);
+            let height_moved = read.is_none_or(|read| read.height != extents.height);
+            cost.size_changes += usize::from(width_moved) + usize::from(height_moved);
+            if !width_moved && !height_moved {
                 continue;
             }
             let mut followers = self

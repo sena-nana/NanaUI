@@ -81,13 +81,13 @@ pub fn control(tag: &str) -> Option<&'static Control> {
     CONTROLS.iter().find(|control| control.tag == tag)
 }
 
-/// Whether `tag` is built in: a control, `Column`, `Row`, `Widget`,
-/// `Virtual`, `Transition`, `TransitionGroup`, `KeepAlive`, `Suspense`,
-/// `Teleport` or `ErrorBoundary`.
+/// Whether `tag` is built in: a control, `T` (localized text), `Column`,
+/// `Row`, `Widget`, `Block`, `Virtual`, `Transition`, `TransitionGroup`,
+/// `KeepAlive`, `Suspense`, `Teleport` or `ErrorBoundary`.
 pub fn is_builtin(tag: &str) -> bool {
     matches!(
         tag,
-        "Column"
+        "T" | "Column"
             | "Row"
             | "Widget"
             | "Block"
@@ -118,6 +118,168 @@ pub fn is_argument(tag: &str, attribute: &str) -> bool {
                     .any(|(name, kind)| *name == attribute && *kind != "text")
             }),
         }
+}
+
+/// What `<T>` gives its node rather than its message: what every element
+/// takes, the class its `<style>` compiled, and `Text`'s `decorative`. The
+/// theme roles ([`STYLE_ROLES`]) are its node's too.
+const T_NODE_ATTRIBUTES: &[&str] = &["key", "ref", "labelled_by", "locale", "class", "decorative"];
+
+/// Whether `attribute` of `tag` is part of the message `<T>` says: `id`,
+/// which names the message, or one of its arguments, which is every
+/// attribute its node does not take.
+pub fn is_message_part(tag: &str, attribute: &str) -> bool {
+    tag == "T" && !T_NODE_ATTRIBUTES.contains(&attribute) && !STYLE_ROLES.contains(&attribute)
+}
+
+/// What `<T id="files" count={n}>` says, as the expression
+/// `LocalizedText::new("files").arg("count", n)`: `id` names the message and
+/// every other part of it is an argument, in the order written. A string is
+/// a constant. An expression goes through `read` first, which writes the
+/// value a signal it names holds (the `.vue` compiler writes `n` as
+/// `n.get()`); left as it is, a path or a field is cloned, so the expression
+/// can run again in a closure.
+pub fn localized_text(
+    krate: &TokenStream,
+    element: &Element,
+    read: &dyn Fn(&Expr) -> Option<TokenStream>,
+) -> syn::Result<TokenStream> {
+    let span = element.name.span();
+    let mut key = None;
+    let mut args = Vec::new();
+    let mut names = Vec::new();
+    for attr in &element.attrs {
+        let AttrName::Plain(name) = &attr.name else {
+            continue;
+        };
+        let text = name.to_string();
+        if !is_message_part("T", &text) {
+            continue;
+        }
+        let at = name.span();
+        if text == "id" {
+            key = Some(match &attr.value {
+                AttrValue::Lit(Expr::Lit(syn::ExprLit {
+                    lit: Lit::Str(key), ..
+                })) if !key.value().trim().is_empty() => quote!(#key),
+                AttrValue::Expr(expr) => {
+                    let key = read(expr).unwrap_or_else(|| quote!(#expr));
+                    quote_spanned!(expr.span()=> &(#key))
+                }
+                AttrValue::Verbatim(key) => quote!(&(#key)),
+                _ => {
+                    return Err(syn::Error::new(
+                        at,
+                        "`id` is the key of the message: a string that is not empty, or an \
+                         expression choosing one",
+                    ));
+                }
+            });
+            continue;
+        }
+        if names.contains(&text) {
+            return Err(syn::Error::new(
+                at,
+                format!("`<T>` has the argument `{text}` twice"),
+            ));
+        }
+        let value = match &attr.value {
+            AttrValue::Lit(literal) => quote!(#literal),
+            AttrValue::Expr(expr) => read(expr).unwrap_or_else(|| argument(expr)),
+            AttrValue::Verbatim(value) => value.clone(),
+            AttrValue::None | AttrValue::For(..) | AttrValue::View(_) => {
+                return Err(syn::Error::new(
+                    at,
+                    format!("the argument `{text}` of `<T>` needs a value: `{text}=\"…\"`"),
+                ));
+            }
+        };
+        let name = LitStr::new(&text, at);
+        args.push(quote_spanned!(at=> .arg(#name, #value)));
+        names.push(text);
+    }
+    let key = key.ok_or_else(|| {
+        syn::Error::new(
+            span,
+            "`<T>` needs `id=\"…\"`, the key of the message it says",
+        )
+    })?;
+    Ok(quote_spanned!(span=> #krate::LocalizedText::new(#key) #(#args)*))
+}
+
+/// A message argument as a value the closure it may sit in can give again:
+/// a path or a field cloned (`count`, `todo.title`), anything else as it is.
+fn argument(expr: &Expr) -> TokenStream {
+    match expr {
+        Expr::Path(_) | Expr::Field(_) => {
+            quote_spanned!(expr.span()=> ::core::clone::Clone::clone(&#expr))
+        }
+        _ => quote!(#expr),
+    }
+}
+
+/// `locale=` as `El::locale` takes it: a language tag, checked here
+/// (`locale="ar"`), or a `Locale`, a signal or a closure, as any prop.
+/// Errors are at `span`, the attribute's name.
+fn locale(value: &AttrValue, span: Span) -> syn::Result<TokenStream> {
+    match value {
+        AttrValue::Lit(Expr::Lit(syn::ExprLit {
+            lit: Lit::Str(tag), ..
+        })) => {
+            if is_language_tag(tag.value().trim()) {
+                Ok(quote!(#tag))
+            } else {
+                Err(syn::Error::new(
+                    span,
+                    format!(
+                        "`locale=\"{}\"` is not a language tag such as `ar` or `zh-CN`",
+                        tag.value()
+                    ),
+                ))
+            }
+        }
+        AttrValue::None => Err(syn::Error::new(
+            span,
+            "`locale` needs a language tag: `locale=\"ar\"`",
+        )),
+        value => Ok(prop(value)),
+    }
+}
+
+/// Whether `tag` is shaped like a BCP 47 language tag: subtags of one to
+/// eight ASCII letters or digits joined by `-` (or `_`), the first of them
+/// letters.
+fn is_language_tag(tag: &str) -> bool {
+    let fits = |subtag: &str, digits: bool| {
+        (1..=8).contains(&subtag.len())
+            && subtag
+                .bytes()
+                .all(|byte| byte.is_ascii_alphabetic() || (digits && byte.is_ascii_digit()))
+    };
+    let mut subtags = tag.split(['-', '_']);
+    subtags.next().is_some_and(|first| fits(first, false))
+        && subtags.all(|subtag| fits(subtag, true))
+}
+
+/// `locale` makes an element a locale scope. The blocks a template wraps
+/// around a chain or a list, and the views it builds from one, are not
+/// elements: refuse it on them rather than drop it.
+fn reject_locale(element: &Element) -> syn::Result<()> {
+    let Some(Attr {
+        name: AttrName::Plain(name),
+        ..
+    }) = element.plain("locale")
+    else {
+        return Ok(());
+    };
+    Err(syn::Error::new(
+        name.span(),
+        format!(
+            "`<{}>` takes no `locale`: it is not an element. Put `locale` on the element it \
+             holds, or on one around it (`<Column locale=\"ar\">`)",
+            element.name
+        ),
+    ))
 }
 
 /// Expand `nodes` into one view expression. `krate` is the path of
@@ -630,10 +792,16 @@ impl Gen<'_> {
             Node::Verbatim(value, _) => quote!(#krate::view::text(#value)),
         };
         let needs_marker = match node {
-            Node::Element(element) => element
-                .attrs
-                .iter()
-                .any(|attr| matches!(&attr.value, AttrValue::Expr(_) | AttrValue::For(_, _))),
+            Node::Element(element) => {
+                element
+                    .attrs
+                    .iter()
+                    .any(|attr| matches!(&attr.value, AttrValue::Expr(_) | AttrValue::For(_, _)))
+                    // A `<T>` whose message a front end wrote holds the
+                    // expressions of its arguments there.
+                    || (element.name == "T"
+                        && matches!(element.children.as_slice(), [Node::Verbatim(..)]))
+            }
             Node::Text(_) => false,
             Node::Mixed(..) | Node::Verbatim(..) => true,
             Node::Expr(..) => false,
@@ -881,6 +1049,8 @@ impl Gen<'_> {
     ) -> syn::Result<TokenStream> {
         let span = element.name.span();
         let tag = element.name.to_string();
+        // Nested blocks come here without passing `single`.
+        reject_locale(element)?;
         container.extend(container_classes(element)?);
         let lists = match tag.as_str() {
             "Block" => {
@@ -1130,6 +1300,34 @@ impl Gen<'_> {
         })
     }
 
+    /// What `t` takes for `<T>`: the message a front end already wrote as a
+    /// prop (its one child), else the one its attributes give
+    /// ([`localized_text`]), a constant while they are literals and
+    /// re-evaluated when what it reads changes otherwise.
+    fn message(&self, element: &Element) -> syn::Result<TokenStream> {
+        match element.children.as_slice() {
+            [Node::Verbatim(message, _)] => return Ok(message.clone()),
+            [] => {}
+            _ => {
+                return Err(syn::Error::new(
+                    element.name.span(),
+                    "`<T>` takes no children: `id` names the message it says, and its other \
+                     attributes are the message's arguments",
+                ));
+            }
+        }
+        let message = localized_text(self.krate, element, &|_| None)?;
+        let reads = element.attrs.iter().any(|attr| {
+            matches!(&attr.name, AttrName::Plain(name) if is_message_part("T", &name.to_string()))
+                && matches!(attr.value, AttrValue::Expr(_))
+        });
+        Ok(if reads {
+            quote_spanned!(element.name.span()=> move || #message)
+        } else {
+            message
+        })
+    }
+
     /// The element itself: constructor, fields, directives, handlers.
     fn single(&self, element: &Element) -> syn::Result<TokenStream> {
         if !element.module.is_empty() {
@@ -1139,8 +1337,26 @@ impl Gen<'_> {
         let tag = element.name.to_string();
         let span = element.name.span();
         let children = &element.children;
-        let control = control(&tag);
+        if matches!(
+            tag.as_str(),
+            "Block"
+                | "Virtual"
+                | "Transition"
+                | "TransitionGroup"
+                | "KeepAlive"
+                | "Suspense"
+                | "Teleport"
+                | "ErrorBoundary"
+        ) {
+            reject_locale(element)?;
+        }
+        // `<T>` is a `Text`: its node takes `Text`'s fields.
+        let control = control(if tag == "T" { "Text" } else { &tag });
         let (mut out, consumed): (TokenStream, Vec<&str>) = match (tag.as_str(), control) {
+            ("T", _) => {
+                let message = self.message(element)?;
+                (quote_spanned!(span=> #krate::view::t(#message)), Vec::new())
+            }
             ("Column" | "Row", _) => {
                 let make = format_ident!("{}", tag.to_lowercase(), span = span);
                 let gap = match element.plain("gap") {
@@ -1258,7 +1474,8 @@ impl Gen<'_> {
             match &attr.name {
                 AttrName::Plain(name) => {
                     let text = name.to_string();
-                    if consumed.contains(&text.as_str()) {
+                    // `<T>`'s message is its constructor's argument.
+                    if consumed.contains(&text.as_str()) || is_message_part(&tag, &text) {
                         continue;
                     }
                     if text == "key" {
@@ -1278,6 +1495,11 @@ impl Gen<'_> {
                         // id; or a node id, or a closure choosing one.
                         let label = named_ref(&attr.value, name.span())?;
                         out = quote!(#out.labelled_by(#label));
+                        continue;
+                    }
+                    if text == "locale" {
+                        let locale = locale(&attr.value, name.span())?;
+                        out = quote!(#out.locale(#locale));
                         continue;
                     }
                     if STYLE_ROLES.contains(&text.as_str()) {
@@ -1392,8 +1614,9 @@ impl Gen<'_> {
         for attr in &element.attrs {
             let (name, at) = match &attr.name {
                 AttrName::Plain(name)
-                    if control
-                        .is_some_and(|control| control.field(&name.to_string()).is_some()) =>
+                    if !is_message_part(&tag, &name.to_string())
+                        && control
+                            .is_some_and(|control| control.field(&name.to_string()).is_some()) =>
                 {
                     (name.to_string(), name.span())
                 }
@@ -1436,6 +1659,8 @@ impl Gen<'_> {
                         .unwrap_or(*at),
                     _ => continue,
                 };
+                // `<T>`'s child is its message, which `t` binds.
+                let name = if tag == "T" { "localized" } else { name };
                 let at = self.source_site(at).expect("source file is set");
                 fields.push(quote!((#name, #at)));
             }
@@ -1611,5 +1836,38 @@ mod tests {
         .to_string();
         assert!(dynamic.contains("\"n {{{}\""), "{dynamic}");
         assert!(dynamic.starts_with("move ||"), "{dynamic}");
+    }
+
+    #[test]
+    fn locale_takes_language_tags_and_refuses_the_rest() {
+        for tag in ["ar", "zh-CN", "zh_Hant_TW", "en-US-x-twain", "x-klingon"] {
+            assert!(is_language_tag(tag), "{tag}");
+        }
+        for tag in [
+            "",
+            "a r",
+            "ar-",
+            "-ar",
+            "1ar",
+            "zh--cn",
+            "abcdefghi",
+            "ar.b",
+        ] {
+            assert!(!is_language_tag(tag), "{tag}");
+        }
+    }
+
+    /// `<T>`'s `id` and arguments are its message; what any element takes
+    /// stays the node's.
+    #[test]
+    fn t_tells_its_message_from_its_node() {
+        for part in ["id", "count", "value", "name"] {
+            assert!(is_message_part("T", part), "{part}");
+        }
+        for node in ["key", "ref", "locale", "decorative", "class", "foreground"] {
+            assert!(!is_message_part("T", node), "{node}");
+        }
+        assert!(!is_message_part("Text", "count"));
+        assert!(is_builtin("T"));
     }
 }

@@ -41,9 +41,11 @@ use nana_ui_scene::{RuntimeDocument, UiScene};
 
 mod component_binding;
 mod gpu_slots;
+mod i18n;
 mod kits;
 mod layout;
 pub(crate) mod semantic_read;
+use i18n::DocumentI18n;
 use semantic_read::{PreparedSemanticSync, SemanticRead, SemanticWidgetView};
 
 pub(crate) use component_binding::*;
@@ -241,6 +243,20 @@ impl PendingHostOps {
     }
 }
 
+/// Whether a node's responsive rule in the Runtime is other than `next`. The
+/// same `Arc`, or an equal rule, is no change, so a cascade that rebuilt the
+/// rule it had queues nothing.
+fn responsive_rule_differs(
+    current: Option<&Arc<nana_ui_runtime::ResponsiveRule>>,
+    next: Option<&Arc<nana_ui_runtime::ResponsiveRule>>,
+) -> bool {
+    match (current, next) {
+        (None, None) => false,
+        (Some(current), Some(next)) => !Arc::ptr_eq(current, next) && current != next,
+        _ => true,
+    }
+}
+
 /// Variant name for a rejected mutation, kept out of diagnostics payloads to
 /// avoid dumping whole node styles into the sink.
 fn mutation_label(mutation: &UiMutation) -> &'static str {
@@ -413,6 +429,9 @@ pub struct NanaTreeDocument {
     /// Newly failed `paint` scripts, drained by the host into the JS
     /// diagnostics sink.
     pending_paint_errors: Vec<String>,
+    /// The catalog and locales installed on this window, and `message-args`
+    /// errors (Issue #267).
+    i18n: DocumentI18n,
     native_events: Arc<Mutex<Vec<NativeDomEvent>>>,
     /// Every `<svg>` element in the document.
     ///
@@ -545,6 +564,7 @@ impl NanaTreeDocument {
             paint_scripts: HashMap::new(),
             paint_errors: HashMap::new(),
             pending_paint_errors: Vec::new(),
+            i18n: DocumentI18n::default(),
             native_events: Arc::new(Mutex::new(Vec::new())),
             svg_root_nodes: HashSet::new(),
             svg_rasters: HashMap::new(),
@@ -603,6 +623,7 @@ impl NanaTreeDocument {
     /// `LayoutStyle` `PartialEq`. Current Vue call sites still own a distinct
     /// `LayoutStyle`, so unchanged widgets pay one `PartialEq` here — no dirty
     /// bit / epoch skip, because a wrong fast path would drop a real write.
+    /// An element written here follows no `@container` rule.
     pub fn sync_widget_layouts<'a>(
         &mut self,
         layouts: impl IntoIterator<Item = (u64, &'a nana_ui_core::LayoutStyle)>,
@@ -610,10 +631,13 @@ impl NanaTreeDocument {
         self.sync_widget_layouts_with_authority(
             layouts
                 .into_iter()
-                .map(|(id, layout)| (id, layout, nana_ui_core::LayoutFieldMask::NONE)),
+                .map(|(id, layout)| (id, layout, nana_ui_core::LayoutFieldMask::NONE, None)),
         );
     }
 
+    /// [`Self::sync_widget_layouts`] with the layout groups author CSS wrote,
+    /// for a component that owns the rest, and the responsive rule each
+    /// element's `@container` rules make (Issue #265); `None` clears one.
     pub fn sync_widget_layouts_with_authority<'a>(
         &mut self,
         layouts: impl IntoIterator<
@@ -621,12 +645,13 @@ impl NanaTreeDocument {
                 u64,
                 &'a nana_ui_core::LayoutStyle,
                 nana_ui_core::LayoutFieldMask,
+                Option<&'a Arc<nana_ui_runtime::ResponsiveRule>>,
             ),
         >,
     ) {
         let mut mutations = MutationQueue::new();
         let mut surface_ids = Vec::new();
-        for (raw_id, layout, author_mask) in layouts {
+        for (raw_id, layout, author_mask, responsive) in layouts {
             let Some(id) = StableNodeId::new(raw_id) else {
                 continue;
             };
@@ -645,6 +670,12 @@ impl NanaTreeDocument {
                 // ownership, such as a row's default flow axis, is allowed to
                 // receive author CSS through this common write path.
                 continue;
+            }
+            // The Runtime writes the rule's variant over the style below. It
+            // changes only the fields container rules set; every other field
+            // keeps what is merged below, a component's own included.
+            if responsive_rule_differs(self.runtime.responsive_rule(id), responsive) {
+                mutations.set_responsive(id, responsive.cloned());
             }
             let current = self.runtime.node_style(id);
             let effective_layout = match (
@@ -1304,6 +1335,7 @@ impl NanaTreeDocument {
         let mut pending = PendingAssembly::default();
         let mut component_owned_layout = HashMap::new();
         let mut paint_errors = Vec::new();
+        let mut i18n_errors = Vec::new();
         if self.runtime.theme() != snapshot.theme_tokens.as_ref() {
             mutations.set_theme_tokens(snapshot.theme_tokens.clone());
         }
@@ -1438,6 +1470,30 @@ impl NanaTreeDocument {
             if painter.is_some() || self.runtime.world().painter_override(id).is_some() {
                 mutations.set_painter(id, painter);
             }
+            if widget.props.message_args_source.is_some()
+                || self.i18n.errors.contains_key(&id.get())
+            {
+                i18n_errors.push((id.get(), widget.props.message_args_error.clone()));
+            }
+            // A `locale` scope and a `lang` belong to the node whichever
+            // component projects it, so both are queued before one takes the
+            // node over below. `lang` names the language this element's text,
+            // and its subtree's, shapes in.
+            if self
+                .runtime
+                .scope_locale(nana_ui_runtime::LocaleScope::Node(id))
+                != widget.props.locale.as_ref()
+            {
+                mutations.set_locale(id, widget.props.locale.clone());
+            }
+            let language = widget
+                .props
+                .attrs
+                .get("lang")
+                .and_then(|value| nana_ui_runtime::LanguageTag::new(value));
+            if self.runtime.node_language(id) != language.as_ref() {
+                mutations.set_language(id, language);
+            }
             let migrated = {
                 #[cfg(feature = "benchmark")]
                 let _timer = crate::frame_profile::ScopeTimer::new(16);
@@ -1491,16 +1547,11 @@ impl NanaTreeDocument {
             if let Some(style) = changed_style {
                 mutations.set_style(id, style);
             }
-            // `lang` names the language this element's text, and its
-            // subtree's, shapes in.
-            let language = widget
-                .props
-                .attrs
-                .iter()
-                .find(|(key, _)| key.eq_ignore_ascii_case("lang"))
-                .and_then(|(_, value)| nana_ui_runtime::LanguageTag::new(value));
-            if self.runtime.context().world().node_language(id) != language.as_ref() {
-                mutations.set_language(id, language);
+            if responsive_rule_differs(
+                self.runtime.responsive_rule(id),
+                widget.props.responsive.as_ref(),
+            ) {
+                mutations.set_responsive(id, widget.props.responsive.clone());
             }
             let interaction = InteractionState {
                 pointer_events: !widget.props.disabled
@@ -1597,14 +1648,30 @@ impl NanaTreeDocument {
                 }
             }
             if matches!(widget.kind, crate::WidgetKind::Text) {
-                let label = widget.props.display_label();
-                if !label.is_empty() && self.runtime.text(id) != Some(label) {
-                    mutations.set_text(
-                        id,
-                        TextContent {
-                            value: label.into(),
-                        },
-                    );
+                match widget.props.localized_text() {
+                    // The Runtime resolves it in the node's locale, and again on
+                    // every switch. The label is never written as well: written
+                    // text is literal and would end the localization.
+                    Some(text) => {
+                        if self.runtime.localized_text(id) != Some(&text) {
+                            mutations.set_localized_text(id, Some(text));
+                        }
+                    }
+                    None => {
+                        let label = widget.props.display_label();
+                        // A node that stops being localized shows its own
+                        // label again, empty or not.
+                        if self.runtime.localized_text(id).is_some()
+                            || (!label.is_empty() && self.runtime.text(id) != Some(label))
+                        {
+                            mutations.set_text(
+                                id,
+                                TextContent {
+                                    value: label.into(),
+                                },
+                            );
+                        }
+                    }
                 }
             }
             if matches!(
@@ -1638,6 +1705,7 @@ impl NanaTreeDocument {
             full_pass,
             revision: snapshot.revision,
             paint_errors,
+            i18n_errors,
         }
     }
 
@@ -1650,9 +1718,13 @@ impl NanaTreeDocument {
             full_pass,
             revision,
             paint_errors,
+            i18n_errors,
         } = prepared;
         for (id, error) in paint_errors {
             self.note_paint_error(id, error.as_ref());
+        }
+        for (id, error) in i18n_errors {
+            self.note_message_args_error(id, error);
         }
         if full_pass {
             self.component_owned_layout = component_owned_layout;
@@ -3226,6 +3298,7 @@ impl NanaTreeDocument {
             self.svg_rasters.remove(&id);
             self.paint_scripts.remove(&id);
             self.paint_errors.remove(&id);
+            self.i18n.errors.remove(&id);
             self.pending.parent.remove(&id);
             self.pending.children.remove(&id);
             self.pending.kinds.remove(&id);

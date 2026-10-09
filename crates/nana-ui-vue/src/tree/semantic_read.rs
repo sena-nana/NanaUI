@@ -185,4 +185,7 @@ pub(super) struct PreparedSemanticSync {
     pub revision: u64,
     /// Projected widgets whose `paint` prop was set, and its parse error.
     pub paint_errors: Vec<(u64, Option<String>)>,
+    /// Projected widgets whose `message-args` was set, and why part of it was
+    /// left out.
+    pub i18n_errors: Vec<(u64, Option<String>)>,
 }

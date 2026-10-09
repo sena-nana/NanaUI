@@ -61,7 +61,14 @@ pub(crate) fn apply_inline_svg_replaced(
     if is_lucide_svg(widget.kind, &widget.props) {
         return;
     }
-    let Some(url) = serialize_svg_data_url(bridge, id, layout.color) else {
+    // `currentColor` is baked into the image. An element whose color a
+    // container rule above changes leaves it to the Runtime, and outside that
+    // rule's buckets it is the color of the nearest element above holding one.
+    let used_color = layout.color.or_else(|| {
+        std::iter::successors(widget.parent, |id| bridge.get(*id).and_then(|w| w.parent))
+            .find_map(|id| bridge.get(id).and_then(|w| w.props.layout.color))
+    });
+    let Some(url) = serialize_svg_data_url(bridge, id, used_color) else {
         return;
     };
     let fit = layout
@@ -502,6 +509,49 @@ mod tests {
         assert!(
             !markup.to_ascii_lowercase().contains("currentcolor"),
             "serialized svg must not leave currentColor for resvg, got {markup}"
+        );
+    }
+
+    /// A container rule above that changes the color leaves it to the
+    /// Runtime; the image still bakes the color shown outside its buckets.
+    #[test]
+    fn current_color_under_a_container_rule_color_bakes_the_base_color() {
+        let mut bridge = MessageBridge::new();
+        let mut card = WidgetProps::default();
+        card.element_tag = "div".into();
+        card.class_names = vec!["card".into()];
+        bridge.register(1, WidgetKind::Column, card);
+        let mut title = WidgetProps::default();
+        title.element_tag = "div".into();
+        title.class_names = vec!["title".into()];
+        bridge.register(2, WidgetKind::Column, title);
+        bridge.insert_child(2, 1, None);
+
+        let mut svg = WidgetProps::default();
+        svg.element_tag = "svg".into();
+        svg.attrs.insert("viewBox".into(), "0 0 8 8".into());
+        svg.attrs.insert("width".into(), "8".into());
+        svg.attrs.insert("height".into(), "8".into());
+        bridge.register(3, WidgetKind::Column, svg);
+        bridge.insert_child(3, 2, None);
+
+        let mut path = WidgetProps::default();
+        path.element_tag = "path".into();
+        path.attrs.insert("d".into(), "M0 0 H8 V8 H0 Z".into());
+        path.attrs.insert("fill".into(), "currentColor".into());
+        bridge.register(4, WidgetKind::Box, path);
+        bridge.insert_child(4, 3, None);
+
+        bridge.inject_stylesheet(
+            ".card { container-type: inline-size }
+             .title { color: #ba7a7a }
+             @container (max-width: 300px) { .title { color: #00ff00 } }",
+        );
+        assert_eq!(bridge.get(3).unwrap().props.layout.color, None);
+        let markup = decoded_markup(&content_url(&bridge, 3));
+        assert!(
+            markup.contains("fill=\"#ba7a7a\""),
+            "currentColor fill must bake the base color, got {markup}"
         );
     }
 

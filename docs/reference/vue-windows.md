@@ -45,11 +45,18 @@ tracking.mount(tracking.tag === "tracking" ? TrackingPanel : Main);
 
 拼错的关键字、未知字段或非法数值直接报错。实际结果以宿主为准。见 [窗口](window.md) 的 WindowShadow 一节。
 
-打开方拿到的句柄可以控制窗口。例如 `focus`、`close`、`setBounds`、`ready`、`closed`。但不能 `mount`。窗口内容由它自己的上下文挂载。句柄上的 `window`、`document`、`root` 为 `null`。
+`locale` 给窗口一个自己的 locale，盖过应用的（`Nana.i18n.setLocale`）。取值和 `setLocale` 一样：语言标签、`{ messages, language, direction, formatting }` 或 `null`。之后用句柄的 `setLocale(locale)` 换，`null` 回到应用的。只有这扇窗里的本地化文字重新解析，别的窗口不动。从右到左的 locale 让窗口的根从右到左排版。共享窗口和隔离窗口都能用。本地化文字的写法见 [宿主边界](vue-host.md#本地化文字)。
+
+```js
+const help = await Nana.windows.create({ title: "帮助", locale: "ar" });
+help.setLocale(null); // 跟着应用
+```
+
+打开方拿到的句柄可以控制窗口。例如 `focus`、`close`、`setBounds`、`setLocale`、`ready`、`closed`。但不能 `mount`。窗口内容由它自己的上下文挂载。句柄上的 `window`、`document`、`root` 为 `null`。
 
 在隔离窗口里再打开的共享窗口，属于这个隔离上下文。`Nana.windows.list()` 只列出当前上下文里的窗口。一个隔离上下文在它最后一扇窗口关闭、`window-closed` 送达并完成卸载之后销毁。
 
-**两种模式都跨窗的**有这些：GPU Device 和 Queue，以及 WebGPU、Canvas、SVG、媒体、视频运行时，原生组件和宿主纹理注册表，应用样式表，动画时钟，诊断输出，你注册的宿主命令（它们的 Rust 状态），以及按窗口 id 生效的窗口控制。
+**两种模式都跨窗的**有这些：GPU Device 和 Queue，以及 WebGPU、Canvas、SVG、媒体、视频运行时，原生组件和宿主纹理注册表，应用样式表，应用的消息目录和 locale（`Nana.i18n`），动画时钟，诊断输出，你注册的宿主命令（它们的 Rust 状态），以及按窗口 id 生效的窗口控制。
 
 所有上下文还共用同一个 V8 堆、同一个线程和同一个微任务队列。隔离的是状态。**不是**性能，也**不是**故障。一个窗口里的死循环仍会卡住所有窗口。
 

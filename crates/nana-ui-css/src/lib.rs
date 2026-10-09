@@ -3,7 +3,9 @@
 //! A stylesheet is ordinary CSS within the subset `docs/reference/layout.md` lists:
 //! selectors, the cascade, custom properties, `@media`, `@import`,
 //! `@font-face`, `@keyframes` and the interactive pseudo-classes, mapped onto
-//! the one Style Model ([`nana_ui_core::LayoutStyle`]). Two consumers share
+//! the one Style Model ([`nana_ui_core::LayoutStyle`]). `@container` is
+//! compiled into data the runtime evaluates ([`css_container`]): this crate
+//! never measures a container. Two consumers share
 //! it: the Vue path parses and cascades at run time (`nana-ui-vue`), and the
 //! `.vue` compiler parses and matches at build time (`nana-ui-sfc`), so an
 //! L3 view carries its styles as data and parses nothing while it runs.
@@ -17,6 +19,7 @@
 
 pub mod css_at_rule;
 pub mod css_cascade;
+pub mod css_container;
 pub mod css_font_face;
 pub mod css_interactive;
 pub mod css_map;
@@ -44,6 +47,12 @@ pub use css_cascade::{
     parse_stylesheet_full_with_layers, parse_stylesheet_full_with_options,
     parse_stylesheet_with_report, rebuild_layout_style, selector_matches,
     stylesheet_needs_relative,
+};
+pub use css_container::{
+    ContainerAxis, ContainerInterval, ContainerPlan, ContainerPlanUnsupported, ContainerQuery,
+    ContainerQueryUnsupported, ContainerRule, ContainerRuleSet, MAX_CONTAINER_BREAKPOINTS,
+    parse_container_name, parse_container_prelude, parse_container_shorthand, parse_container_type,
+    plan_container_queries,
 };
 pub use css_font_face::{
     FontFaceSrcKind, FontFaceStyle, parse_font_face_at_rule, parse_font_face_rules,

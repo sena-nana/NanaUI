@@ -454,18 +454,34 @@ impl UiWorld {
         self.layouts.intern(layout);
     }
 
-    /// Write a node's authored style and keep its resolved layout in step.
+    /// Write a node's authored style and keep its effective style and
+    /// resolved layout in step.
     ///
-    /// The two have to move together: projection diffs against the authored
-    /// style, while layout and extraction read the resolved one. Every path
-    /// that writes `record.style` goes through here so the pair cannot drift.
+    /// They have to move together: projection diffs against the authored
+    /// style, while layout, paint and extraction read the effective one --
+    /// the authored style with its responsive variant written over it
+    /// (Issue #265) -- and its resolved layout. Every path that writes
+    /// `record.style` goes through here so they cannot drift.
     pub(crate) fn write_node_style(&mut self, id: StableNodeId, mut style: NodeStyle) {
-        let current = &self.record(id).style.layout;
+        let current = &self.authored_style(id).layout;
         if !Arc::ptr_eq(current, &style.layout) && **current == *style.layout {
             style.layout = Arc::clone(current);
         } else {
             self.layouts.intern(&mut style.layout);
         }
+        let style = match self.responsive_variant(id) {
+            Some(variant) => {
+                let mut effective = style.clone();
+                variant.apply(Arc::make_mut(&mut effective.layout));
+                self.layouts.intern(&mut effective.layout);
+                self.responsive.keep_authored(id, style);
+                effective
+            }
+            None => {
+                self.responsive.drop_authored(id);
+                style
+            }
+        };
         let resolved = self.resolve_node_layout(id, &style);
         let depends_on_viewport = resolved.depends_on_viewport();
         if style_declares_intent(&style) {
@@ -489,10 +505,10 @@ impl UiWorld {
         self.record_mut(id).resolved_layout = resolved;
     }
 
-    /// The layout the pipeline reads for `id` authored as `style`, and
-    /// whether it is a copy: its design intent resolved against the installed
-    /// metrics, then the variant its responsive rule's bucket picks (Issue
-    /// #265). A node with neither keeps sharing its authored `Arc`.
+    /// The layout the pipeline reads for `id` with effective style `style`,
+    /// and whether it is a copy: its design intent resolved against the
+    /// installed metrics, then a locale's direction. A node with neither
+    /// keeps sharing its effective `Arc`.
     fn node_layout(
         &self,
         id: StableNodeId,
@@ -500,10 +516,6 @@ impl UiWorld {
     ) -> (Arc<nana_ui_core::LayoutStyle>, bool) {
         let (mut resolved, mut copied) =
             Self::resolve_layout_intent(style, self.style_model.metrics);
-        if let Some(variant) = self.responsive_variant(id) {
-            variant.apply(Arc::make_mut(&mut resolved));
-            copied = true;
-        }
         // A locale's direction, where the node names none (Issue #269).
         if resolved.dir.is_none()
             && let Some(direction) = self.locale_direction(id)

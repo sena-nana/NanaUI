@@ -1276,6 +1276,101 @@ mod styles {
         assert_eq!(layout_of(&cx, panel).padding, Some(LengthSpec::Px(2.0)));
         assert_eq!(layout_of(&cx, panel).opacity, None);
     }
+
+    stylesheet! {
+        mod card_styles;
+        .card { container-type: inline-size; container-name: card; width: 400px; height: 300px; }
+        .card.narrow { width: 280px; }
+        .row { height: 20px; background: red; }
+        @container card (max-width: 300px) { .row { background: blue; height: 40px; } }
+    }
+
+    /// One product frame, run until the tree settles: work drained, styles
+    /// resolved, the document laid out. A container a layout resizes reads
+    /// its rules at the end of that commit; the bucket that changes is the
+    /// next round's style and layout. The frame bounds that (a rule does not
+    /// return to a bucket it left in the same frame), as a host's does.
+    fn frames(cx: &mut AppContext, document: DocumentId) {
+        let viewport = nana_ui_runtime::LayoutViewport::new(800.0, 600.0);
+        cx.begin_frame_profile();
+        for _ in 0..6 {
+            let work = cx.take_system_work();
+            cx.resolve_styles(&work.style).unwrap();
+            cx.layout_document(document, viewport).unwrap();
+        }
+        cx.finish_frame_profile();
+    }
+
+    /// `@container card (max-width: 300px)` in a template's `<style>` and in
+    /// `stylesheet!`: the row under a card 400 px wide keeps its own style;
+    /// once the card is 280 px wide the row takes the container rule's
+    /// background and height, and gives them back at 400. Both spellings
+    /// give the row the same responsive rule.
+    #[test]
+    fn a_container_rule_follows_its_container_across_the_breakpoint() {
+        let document = DocumentId::new(1).unwrap();
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let blue = [0.0, 0.0, 1.0, 1.0];
+        let mut rules = Vec::new();
+        for template in [true, false] {
+            let mut cx = AppContext::new();
+            let flag = std::cell::Cell::new(None);
+            let view = cx
+                .mount_view_root(document, || {
+                    let narrow = signal(false);
+                    flag.set(Some(narrow));
+                    if template {
+                        view! {
+                            <style>
+                                .card { container-type: inline-size; container-name: card; width: 400px; height: 300px; }
+                                .card.narrow { width: 280px; }
+                                .row { height: 20px; background: red; }
+                                @container card (max-width: 300px) { .row { background: blue; height: 40px; } }
+                            </style>
+                            <Column class="card" class:narrow={narrow}>
+                                <Column class="row" />
+                            </Column>
+                        }
+                        .into_any()
+                    } else {
+                        column()
+                            .class(card_styles::card)
+                            .class_when(card_styles::narrow, narrow)
+                            .children(column().class(card_styles::row))
+                            .into_any()
+                    }
+                })
+                .unwrap();
+            let card = view.roots()[0];
+            let row = cx.world().node(card).unwrap().children[0];
+            let shown = |cx: &AppContext| {
+                (
+                    cx.world().layout_box(row).unwrap().height,
+                    cx.world().computed_style(row).unwrap().background,
+                )
+            };
+            rules.push(cx.world().responsive_rule(row).cloned().expect("a rule"));
+            assert_eq!(
+                layout_of(&cx, card).container_type,
+                nana_ui_core::ContainerType::InlineSize
+            );
+            frames(&mut cx, document);
+            assert_eq!(shown(&cx), (20.0, Some(red)), "400 px wide");
+            flag.get().unwrap().set(true);
+            frames(&mut cx, document);
+            assert_eq!(cx.world().layout_box(card).unwrap().width, 280.0);
+            assert_eq!(shown(&cx), (40.0, Some(blue)), "280 px wide");
+            assert_eq!(
+                layout_of(&cx, row).height,
+                Some(LengthSpec::Px(20.0)),
+                "the authored style stays"
+            );
+            flag.get().unwrap().set(false);
+            frames(&mut cx, document);
+            assert_eq!(shown(&cx), (20.0, Some(red)), "back at 400 px");
+        }
+        assert_eq!(*rules[0], *rules[1], "a template and a stylesheet! agree");
+    }
 }
 
 /// Each block written as a template and in Rust mounts the same tree and
@@ -1674,4 +1769,101 @@ fn a_template_names_controls_by_label_and_by_caption() {
     let slider = Entity::<RangeField>::from_stable_id(volume.get_untracked().unwrap());
     assert!(!cx.read(slider, |slider| slider.show_label).unwrap());
     assert_eq!(mounted.roots().len(), 1);
+}
+
+/// `<T id=… name=…/>` is `t(LocalizedText::new(id).arg(name, …))` and
+/// `locale=` is `.locale(..)`: a template and its function calls mount the
+/// same localized tree, and follow the same writes and the same switch.
+#[test]
+fn localized_text_and_locale_scopes_mount_like_their_function_calls() {
+    use nana_ui_runtime::view::t;
+    use nana_ui_runtime::{Locale, LocalizedText, MessageTable};
+    let document = DocumentId::new(1).unwrap();
+    let mount = |template: bool| {
+        let mut cx = AppContext::new();
+        cx.set_message_catalog(Some(std::sync::Arc::new(
+            MessageTable::new()
+                .with("en", "title", "Files")
+                .with(
+                    "en",
+                    "files",
+                    "{count, plural, one {# file} other {# files}}",
+                )
+                .with("en", "hello", "Hello, {name}")
+                .with("zh-cn", "title", "文件")
+                .with("zh-cn", "files", "{count} 个文件")
+                .with("zh-cn", "hello", "你好，{name}")
+                .with("ar", "title", "الملفات")
+                .with("ar", "files", "{count} ملفات")
+                .with("ar", "hello", "مرحبا {name}"),
+        )));
+        cx.set_default_locale(Locale::parse("en"));
+        let mut signals = None;
+        let mounted = cx
+            .mount_view_root(document, || {
+                let count = signal(1u64);
+                let chosen = signal(None::<Locale>);
+                signals = Some((count, chosen));
+                let name = "Nana";
+                if template {
+                    view! {
+                        <Column>
+                            <T id="title" />
+                            <T id="files" count={count.get()} />
+                            <T id="hello" name={name} />
+                            <Column locale="ar"><T id="title" /></Column>
+                            <Column locale={chosen}><T id="files" count={count.get()} /></Column>
+                        </Column>
+                    }
+                    .into_any()
+                } else {
+                    column()
+                        .children((
+                            t(LocalizedText::new("title")),
+                            t(move || LocalizedText::new("files").arg("count", count.get())),
+                            t(move || LocalizedText::new("hello").arg("name", name)),
+                            column()
+                                .children(t(LocalizedText::new("title")))
+                                .locale("ar"),
+                            column()
+                                .children(t(move || {
+                                    LocalizedText::new("files").arg("count", count.get())
+                                }))
+                                .locale(chosen),
+                        ))
+                        .into_any()
+                }
+            })
+            .unwrap();
+        let (count, chosen) = signals.unwrap();
+        (cx, mounted.roots()[0], count, chosen)
+    };
+    let (mut cx_t, root_t, count_t, chosen_t) = mount(true);
+    let (mut cx_f, root_f, count_f, chosen_f) = mount(false);
+    let before = dump(&cx_t, root_t);
+    assert_eq!(before, dump(&cx_f, root_f));
+    for shown in ["\"Files\"", "\"1 file\"", "\"Hello, Nana\"", "\"الملفات\""] {
+        assert!(before.contains(shown), "{shown} in {before}");
+    }
+
+    for (count, chosen) in [(count_t, chosen_t), (count_f, chosen_f)] {
+        count.set(2);
+        chosen.set(Locale::parse("zh-cn"));
+    }
+    cx_t.flush_reactive().unwrap();
+    cx_f.flush_reactive().unwrap();
+    let after = dump(&cx_t, root_t);
+    assert_eq!(after, dump(&cx_f, root_f));
+    assert!(after.contains("\"2 files\""), "{after}");
+    assert!(after.contains("\"2 个文件\""), "the scope moved: {after}");
+
+    cx_t.set_default_locale(Locale::parse("zh-cn"));
+    cx_f.set_default_locale(Locale::parse("zh-cn"));
+    let switched = dump(&cx_t, root_t);
+    assert_eq!(switched, dump(&cx_f, root_f));
+    assert!(switched.contains("\"你好，Nana\""), "{switched}");
+    assert!(
+        switched.contains("\"الملفات\""),
+        "a scope of its own keeps it: {switched}"
+    );
 }

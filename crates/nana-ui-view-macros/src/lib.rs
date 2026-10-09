@@ -498,6 +498,40 @@ mod tests {
         );
     }
 
+    /// An `@container` prelude written as tokens comes back as CSS: `<=`
+    /// stays one operator, and the space between tokens follows the source.
+    #[test]
+    fn container_queries_come_back_as_they_were_written() {
+        let source = "@container card (400px <= width < 800px) { .g { container-type: inline-size; } }\n\
+                      @container (width<480px) { .h { opacity: 0.5; } }";
+        assert_eq!(sheet(source).text, source);
+    }
+
+    #[test]
+    fn container_warnings_point_at_their_tokens() {
+        let source = "@container style(--x: 1) { .a { opacity: 0.5; } }\n\
+                      @container (width > 1px) { .b .c { opacity: 1; } .a { opacity: 0.5; } }";
+        let css = sheet(source);
+        let template = "crate = x; <Column class=\"a\"/>";
+        let mut nodes = parse_template
+            .parse2(template.parse().unwrap())
+            .unwrap()
+            .nodes;
+        let compiled = nana_ui_view_codegen::compile_styles(&css.text, &mut nodes, &quote!(x));
+        let warnings = locate(&css, compiled.warnings);
+        let at = |needle: &str| {
+            let warning = warnings
+                .iter()
+                .find(|w| w.message.contains(needle))
+                .unwrap_or_else(|| panic!("no warning about {needle}: {warnings:?}"));
+            let start = warning.span.start();
+            (start.line, start.column)
+        };
+        assert_eq!(at("`style()`"), (1, 0));
+        assert_eq!(at("class selectors"), (2, 27));
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
     #[test]
     fn a_quoted_value_compiles_as_the_bare_one() {
         let compile = |css: &str| {
@@ -591,5 +625,61 @@ mod tests {
         );
         let unnamed = expand("crate = x; <Column><template>\"a\"</template></Column>");
         assert!(unnamed.contains("#slot-name"), "{unnamed}");
+    }
+
+    /// `<T>` is `t(…)`: literals make a constant message, any expression a
+    /// closure building it again; `locale` scopes an element.
+    #[test]
+    fn t_says_a_message_and_locale_scopes_an_element() {
+        let constant = flat("crate = x; <T id=\"files\" count=3 />");
+        assert!(
+            constant.contains("x::view::t(x::LocalizedText::new(\"files\").arg(\"count\",3))"),
+            "literals are a constant: {constant}"
+        );
+        let bound = flat("crate = x; <T id=\"files\" count={n.get()} who={name} decorative />");
+        assert!(
+            bound.contains(
+                "x::view::t(move||x::LocalizedText::new(\"files\").arg(\"count\",n.get())\
+                 .arg(\"who\",::core::clone::Clone::clone(&name)))"
+            ),
+            "an expression is read again, a path cloned: {bound}"
+        );
+        assert!(bound.contains(".decorative(true)"), "{bound}");
+        let scoped = flat("crate = x; <Column locale=\"ar\"><T id=\"title\" /></Column>");
+        assert!(scoped.contains(".locale(\"ar\")"), "{scoped}");
+        let chosen = flat("crate = x; <Row locale={chosen} />");
+        assert!(chosen.contains(".locale(chosen)"), "{chosen}");
+    }
+
+    #[test]
+    fn t_and_locale_mistakes_name_what_is_wrong() {
+        for (source, token) in [
+            ("<T count={n} />", "id="),
+            ("<T id=3 />", "key of the message"),
+            ("<T id=\"a\">\"x\"</T>", "no children"),
+            ("<T id=\"a\" n=1 n=2 />", "twice"),
+            ("<Column locale=\"a b\" />", "language tag"),
+            ("<Column locale />", "needs a language tag"),
+            (
+                "<Block locale=\"ar\"><Text v-if={a}>\"x\"</Text></Block>",
+                "takes no `locale`",
+            ),
+            (
+                "<Transition><Block locale=\"ar\"><Text v-if={a}>\"x\"</Text></Block></Transition>",
+                "takes no `locale`",
+            ),
+            (
+                "<Suspense fallback={f} locale=\"ar\">\"x\"</Suspense>",
+                "takes no `locale`",
+            ),
+            (
+                "<ErrorBoundary fallback={f} locale=\"ar\">\"x\"</ErrorBoundary>",
+                "takes no `locale`",
+            ),
+        ] {
+            let expanded = expand(&format!("crate = x; {source}"));
+            assert!(expanded.contains("compile_error"), "{source}: {expanded}");
+            assert!(expanded.contains(token), "{source}: {expanded}");
+        }
     }
 }

@@ -14,9 +14,11 @@ use nana_js_engine::{
     RuntimeArtifact,
 };
 use nana_ui_core::ThemeAppearance;
+use nana_ui_runtime::{LanguageTag, Locale, MessageCatalog, MissingMessage};
 
 use crate::{
-    DocumentId, NodeHandle, SemanticSnapshot, VueHost, WindowLifecycleEvent, compose_vue_artifact,
+    DocumentId, NanaTreeDocument, NodeHandle, SemanticSnapshot, VueHost, WindowLifecycleEvent,
+    compose_vue_artifact,
 };
 use nana_ui_platform::WindowIcon;
 
@@ -265,6 +267,10 @@ pub enum VueWindowCommand {
 
 struct WindowEntry {
     host: Arc<Mutex<VueHost>>,
+    /// The host's document. Host operations JavaScript calls reach a window
+    /// through this, never through `host`: a frame pump holds `host` while
+    /// JavaScript runs.
+    document: Arc<Mutex<NanaTreeDocument>>,
     api: HostApiRegistry,
     options: VueWindowOptions,
     geometry: VueWindowGeometry,
@@ -299,6 +305,8 @@ struct VueRuntimeState {
     /// Application sheets replayed into every window, keyed so a replace
     /// updates the entry a late-created window will inherit.
     stylesheets: Vec<(Option<String>, String)>,
+    /// The application's catalog and locale, replayed the same way.
+    i18n: AppI18n,
     #[cfg(feature = "scene-view")]
     components: crate::NativeComponentRegistry,
     #[cfg(feature = "scene-view")]
@@ -319,12 +327,46 @@ struct VueRuntimeState {
     host_animation_epoch: Option<std::time::Instant>,
 }
 
+/// The application's catalog and locale (Issue #267). Every window has its
+/// own world and holds its own copy; this is what a window created later
+/// starts from.
+#[derive(Default)]
+struct AppI18n {
+    catalog: Option<Arc<dyn MessageCatalog>>,
+    /// Of the catalog JavaScript sent; `None` for one from Rust.
+    fingerprint: Option<u64>,
+    fallback: Option<LanguageTag>,
+    missing: MissingMessage,
+    locale: Option<Locale>,
+}
+
+impl AppI18n {
+    fn apply_to(&self, document: &mut NanaTreeDocument) {
+        if self.catalog.is_some() {
+            document.install_catalog(self.fingerprint, || self.catalog.clone());
+        }
+        document.set_fallback_locale(self.fallback.clone());
+        document.set_missing_message(self.missing);
+        document.set_default_locale(self.locale.clone());
+    }
+}
+
 impl VueRuntimeState {
+    /// Every window's document, to apply an application-wide change to.
+    fn documents(&self) -> Vec<Arc<Mutex<NanaTreeDocument>>> {
+        self.windows
+            .values()
+            .map(|entry| Arc::clone(&entry.document))
+            .collect()
+    }
+
+    /// `locale` is the window's own, over the application's.
     fn create_window(
         &mut self,
         options: VueWindowOptions,
         caller: VueWindowId,
         params_json: Option<String>,
+        locale: Option<Locale>,
     ) -> Result<(VueWindowId, NodeHandle), JsException> {
         // 2^21 document namespaces * 2^32 local ids stay below Number::MAX_SAFE_INTEGER.
         if self.next_id >= (1 << 21) - 1 {
@@ -404,6 +446,15 @@ impl VueRuntimeState {
         for (key, stylesheet) in &self.stylesheets {
             host.inject_stylesheet_keyed(key.as_deref(), stylesheet);
         }
+        let document = host.document();
+        {
+            // Not shared yet: nothing else can hold it or have poisoned it.
+            let mut document = document
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.i18n.apply_to(&mut document);
+            document.set_document_locale(locale);
+        }
         if let Some(epoch) = self.host_animation_epoch {
             host.set_host_animation_epoch(epoch);
         }
@@ -413,6 +464,7 @@ impl VueRuntimeState {
             id,
             WindowEntry {
                 host: Arc::new(Mutex::new(host)),
+                document,
                 api,
                 geometry: VueWindowGeometry {
                     width: options.width,
@@ -556,12 +608,14 @@ impl VueRuntime {
             primary.share_host_textures(host_textures.clone());
         }
         let primary_api = primary.host_api_registry();
+        let primary_document = primary.document();
         Self {
             state: Arc::new(Mutex::new(VueRuntimeState {
                 windows: [(
                     VueWindowId::PRIMARY,
                     WindowEntry {
                         host: Arc::new(Mutex::new(primary)),
+                        document: primary_document,
                         api: primary_api,
                         options: VueWindowOptions {
                             width: physical_width as f64 / f64::from(scale_factor.max(0.01)),
@@ -597,6 +651,7 @@ impl VueRuntime {
                 .collect(),
                 released_realms: Vec::new(),
                 stylesheets: Vec::new(),
+                i18n: AppI18n::default(),
                 #[cfg(feature = "scene-view")]
                 components,
                 #[cfg(feature = "scene-view")]
@@ -942,6 +997,72 @@ impl VueRuntime {
         Ok(())
     }
 
+    /// Install the catalog localized text resolves from, in every current
+    /// and future window: what `Nana.i18n.setCatalog` does, for any
+    /// [`MessageCatalog`]. Every localized node resolves again. Set before
+    /// the application script runs, the script finds it in place.
+    pub fn set_message_catalog(
+        &self,
+        catalog: Option<Arc<dyn MessageCatalog>>,
+    ) -> Result<(), JsEngineError> {
+        change_app_i18n(
+            &self.state,
+            |app| {
+                app.catalog.clone_from(&catalog);
+                app.fingerprint = None;
+            },
+            |document, _| document.set_message_catalog(catalog.clone()),
+        )
+        .map_err(JsEngineError::from_exception)
+    }
+
+    /// The locale every fallback chain ends in, in every current and future
+    /// window.
+    pub fn set_fallback_locale(&self, locale: Option<LanguageTag>) -> Result<(), JsEngineError> {
+        change_app_i18n(
+            &self.state,
+            |app| app.fallback.clone_from(&locale),
+            |document, _| document.set_fallback_locale(locale.clone()),
+        )
+        .map_err(JsEngineError::from_exception)
+    }
+
+    /// What a message no locale has shows, in every current and future
+    /// window.
+    pub fn set_missing_message(&self, policy: MissingMessage) -> Result<(), JsEngineError> {
+        change_app_i18n(
+            &self.state,
+            |app| app.missing = policy,
+            |document, _| document.set_missing_message(policy),
+        )
+        .map_err(JsEngineError::from_exception)
+    }
+
+    /// The application's locale (`Nana.i18n.setLocale`): every window
+    /// without its own takes it.
+    pub fn set_default_locale(&self, locale: Option<Locale>) -> Result<(), JsEngineError> {
+        change_app_i18n(
+            &self.state,
+            |app| app.locale.clone_from(&locale),
+            |document, _| document.set_default_locale(locale.clone()),
+        )
+        .map_err(JsEngineError::from_exception)
+    }
+
+    pub fn default_locale(&self) -> Option<Locale> {
+        self.state.lock().ok()?.i18n.locale.clone()
+    }
+
+    /// One window's own locale (`handle.setLocale`); `None` takes the
+    /// application's again.
+    pub fn set_window_locale(
+        &self,
+        id: VueWindowId,
+        locale: Option<Locale>,
+    ) -> Result<(), JsEngineError> {
+        set_window_locale(&self.state, id, locale).map_err(JsEngineError::from_exception)
+    }
+
     /// Surface a failed dev reload on the diagnostics channel.
     ///
     /// The previous artifact is already back on screen by the time this runs,
@@ -1091,6 +1212,7 @@ impl VueRuntime {
                 if let Some(icon) = optional_icon(request.and_then(|map| map.get("icon")))? {
                     options.icon = Some(icon);
                 }
+                let locale = crate::i18n::parse_locale(request.and_then(|map| map.get("locale")))?;
                 let params_json = request
                     .and_then(|map| map.get("paramsJson"))
                     .and_then(HostValue::as_str)
@@ -1099,8 +1221,65 @@ impl VueRuntime {
                     options.clone(),
                     realm,
                     params_json,
+                    locale,
                 )?;
                 Ok(options.to_host_value(id, mount_root))
+            });
+        }
+        // `Nana.i18n` is the application's, whichever realm calls it: these
+        // replace the document-local operations of the same names, reach every
+        // window, and are what a window created later starts from.
+        {
+            let state = Arc::clone(&self.state);
+            api.register("i18nSetCatalog", move |args| {
+                let request = crate::i18n::CatalogRequest::parse(args)?;
+                change_app_i18n(
+                    &state,
+                    |app| {
+                        // The same catalog again keeps the table the windows
+                        // share, and no window installs it again.
+                        if app.fingerprint != Some(request.fingerprint) {
+                            app.catalog = Some(request.table());
+                            app.fingerprint = Some(request.fingerprint);
+                        }
+                        app.fallback.clone_from(&request.fallback);
+                        app.missing = request.missing;
+                        app.catalog.clone()
+                    },
+                    |document, catalog| {
+                        document.install_catalog(Some(request.fingerprint), || catalog.clone());
+                        document.set_fallback_locale(request.fallback.clone());
+                        document.set_missing_message(request.missing);
+                    },
+                )?;
+                Ok(HostValue::Null)
+            });
+        }
+        {
+            let state = Arc::clone(&self.state);
+            api.register("i18nSetLocale", move |args| {
+                let locale = crate::i18n::parse_locale(args.first())?;
+                change_app_i18n(
+                    &state,
+                    |app| app.locale.clone_from(&locale),
+                    |document, _| document.set_default_locale(locale.clone()),
+                )?;
+                Ok(HostValue::Null)
+            });
+        }
+        {
+            let state = Arc::clone(&self.state);
+            api.register("i18nGetLocale", move |_| {
+                let state = state.lock().map_err(state_poisoned)?;
+                Ok(crate::i18n::locale_tag_value(state.i18n.locale.as_ref()))
+            });
+        }
+        {
+            let state = Arc::clone(&self.state);
+            api.register("windowSetLocale", move |args| {
+                let id = window_id_arg(args.first())?;
+                set_window_locale(&state, id, crate::i18n::parse_locale(args.get(1))?)?;
+                Ok(HostValue::Null)
             });
         }
         {
@@ -2165,6 +2344,42 @@ fn state_poisoned<T>(_error: std::sync::PoisonError<T>) -> JsException {
     JsException::new("Vue runtime state poisoned")
 }
 
+/// Record an application-wide localization change, then apply it to every
+/// window's document. Never through a window's host: a frame pump holds that
+/// while JavaScript, which may be the caller, runs.
+fn change_app_i18n<T>(
+    state: &Mutex<VueRuntimeState>,
+    record: impl FnOnce(&mut AppI18n) -> T,
+    apply: impl Fn(&mut NanaTreeDocument, &T),
+) -> Result<(), JsException> {
+    let (recorded, documents) = {
+        let mut state = state.lock().map_err(state_poisoned)?;
+        let recorded = record(&mut state.i18n);
+        (recorded, state.documents())
+    };
+    for document in documents {
+        apply(&mut *crate::renderer::lock_doc(&document)?, &recorded);
+    }
+    Ok(())
+}
+
+/// One window's own locale, set on its document for the same reason.
+fn set_window_locale(
+    state: &Mutex<VueRuntimeState>,
+    id: VueWindowId,
+    locale: Option<Locale>,
+) -> Result<(), JsException> {
+    let document = state
+        .lock()
+        .map_err(state_poisoned)?
+        .windows
+        .get(&id)
+        .map(|entry| Arc::clone(&entry.document))
+        .ok_or_else(|| JsException::new(format!("unknown Vue window {}", id.0)))?;
+    crate::renderer::lock_doc(&document)?.set_document_locale(locale);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2298,6 +2513,182 @@ mod tests {
                     && options.role == VueWindowRole::Tool
                     && options.frameless
         ));
+    }
+
+    fn window_document(runtime: &VueRuntime, id: u64) -> Arc<Mutex<NanaTreeDocument>> {
+        runtime
+            .host(VueWindowId(id))
+            .unwrap()
+            .lock()
+            .unwrap()
+            .document()
+    }
+
+    /// `Nana.i18n` is the application's: its catalog and locale reach every
+    /// window, a window created later starts from them, and a window may
+    /// have a locale of its own.
+    #[test]
+    fn the_application_catalog_and_locale_reach_every_window_and_a_late_one() {
+        let runtime = VueRuntime::new(800, 600, 1.0);
+        let api = runtime.host_api_registry();
+        let entry = |locale: &str, pattern: &str| {
+            HostValue::Array(vec![
+                HostValue::string(locale),
+                HostValue::string("files"),
+                HostValue::string(pattern),
+            ])
+        };
+        let catalog = HostValue::Array(vec![
+            entry("en", "{count} files"),
+            // No number in it: Arabic writes its digits as the locale says.
+            entry("ar", "ملفات"),
+        ]);
+        api.call("i18nSetCatalog", std::slice::from_ref(&catalog))
+            .unwrap();
+        api.call("i18nSetLocale", &[HostValue::string("en")])
+            .unwrap();
+
+        // Opened with a locale of its own, after both were set.
+        let created = api
+            .call(
+                "windowCreate",
+                &[HostValue::Object(
+                    [("locale".into(), HostValue::string("ar"))]
+                        .into_iter()
+                        .collect(),
+                )],
+            )
+            .unwrap();
+        let id = created
+            .as_object()
+            .and_then(|created| created.get("id"))
+            .and_then(HostValue::as_f64)
+            .unwrap() as u64;
+        let mount_root = created
+            .as_object()
+            .and_then(|created| created.get("mountRoot"))
+            .and_then(HostValue::as_f64)
+            .unwrap();
+        let call = |operation: &str, args: Vec<HostValue>| {
+            api.call(
+                "windowCall",
+                &[
+                    HostValue::Number(id as f64),
+                    HostValue::string(operation),
+                    HostValue::Array(args),
+                ],
+            )
+            .unwrap()
+        };
+        let text = call(
+            "createWidget",
+            vec![
+                HostValue::string("text"),
+                HostValue::Object(
+                    [
+                        ("message-id".into(), HostValue::string("files")),
+                        ("message-args".into(), HostValue::string(r#"{"count":2}"#)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            ],
+        )
+        .as_f64()
+        .unwrap() as u64;
+        call(
+            "insert",
+            vec![
+                HostValue::Number(text as f64),
+                HostValue::Number(mount_root),
+                HostValue::Null,
+            ],
+        );
+        runtime.semantic_snapshot(VueWindowId(id)).unwrap();
+        let text = nana_ui_runtime::StableNodeId::new(text).unwrap();
+        let late = window_document(&runtime, id);
+        assert_eq!(late.lock().unwrap().world().text(text), Some("ملفات"));
+        let primary = window_document(&runtime, 0);
+        assert_eq!(
+            primary.lock().unwrap().default_locale(),
+            Locale::parse("en").as_ref()
+        );
+        assert_eq!(primary.lock().unwrap().document_locale(), None);
+
+        // The script of an isolated window sends the same catalog again: no
+        // window installs it again.
+        let installed =
+            [&primary, &late].map(|document| document.lock().unwrap().world().catalog_generation());
+        api.call("i18nSetCatalog", std::slice::from_ref(&catalog))
+            .unwrap();
+        assert_eq!(
+            [&primary, &late].map(|document| document.lock().unwrap().world().catalog_generation()),
+            installed
+        );
+
+        // Without its own locale the window follows the application's.
+        api.call(
+            "windowSetLocale",
+            &[HostValue::Number(id as f64), HostValue::Null],
+        )
+        .unwrap();
+        assert_eq!(late.lock().unwrap().world().text(text), Some("2 files"));
+        api.call("i18nSetLocale", &[HostValue::string("ar")])
+            .unwrap();
+        assert_eq!(late.lock().unwrap().world().text(text), Some("ملفات"));
+        assert_eq!(
+            api.call("i18nGetLocale", &[]).unwrap(),
+            HostValue::string("ar")
+        );
+        assert_eq!(
+            primary.lock().unwrap().default_locale(),
+            Locale::parse("ar").as_ref()
+        );
+        assert!(
+            api.call(
+                "windowCreate",
+                &[HostValue::Object(
+                    [("locale".into(), HostValue::Number(1.0))]
+                        .into_iter()
+                        .collect(),
+                )],
+            )
+            .is_err()
+        );
+    }
+
+    /// Rust sets the catalog and the locale before the script runs, and the
+    /// script reads them.
+    #[test]
+    fn rust_seeds_the_catalog_and_locale_javascript_reads() {
+        let runtime = VueRuntime::new(800, 600, 1.0);
+        runtime
+            .set_message_catalog(Some(Arc::new(nana_ui_runtime::MessageTable::new().with(
+                "he",
+                "files",
+                "{count} קבצים",
+            ))))
+            .unwrap();
+        runtime.set_default_locale(Locale::parse("he")).unwrap();
+        let api = runtime.host_api_registry();
+        assert_eq!(
+            api.call("i18nGetLocale", &[]).unwrap(),
+            HostValue::string("he")
+        );
+        api.call("windowCreate", &[]).unwrap();
+        let late = window_document(&runtime, 1);
+        assert_eq!(
+            late.lock().unwrap().default_locale(),
+            Locale::parse("he").as_ref()
+        );
+        assert_eq!(late.lock().unwrap().world().catalog_generation(), 1);
+        runtime
+            .set_window_locale(VueWindowId(1), Locale::parse("en"))
+            .unwrap();
+        assert_eq!(
+            late.lock().unwrap().document_locale(),
+            Locale::parse("en").as_ref()
+        );
     }
 
     #[test]

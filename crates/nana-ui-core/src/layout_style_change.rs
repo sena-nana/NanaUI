@@ -74,6 +74,9 @@ impl LayoutStyleChange {
     pub const FLEX_SIZING: Self = Self(Self::FLOW.0 | Self::FLEX_FACTOR.0);
     /// Display, order, wrapping, line direction, isolation.
     pub const FLOW_STRUCTURE: Self = Self(Self::FLOW.0 | Self::FLOW_SHAPE.0);
+    /// Whether and by which names the box answers container-size queries.
+    /// It moves no box; the rules that query a container find it again.
+    pub const CONTAINER: Self = Self(1 << 22);
 
     /// Kinds that move or resize boxes.
     pub const LAYOUT: Self = Self(
@@ -139,9 +142,68 @@ fn same_direction(left: &Option<FlexDirection>, right: &Option<FlexDirection>) -
     left.unwrap_or(FlexDirection::Column) == right.unwrap_or(FlexDirection::Column)
 }
 
+/// A set of [`LayoutStyle`] fields, one bit each: what a patch writes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct LayoutFieldSet([u64; 2]);
+
+impl LayoutFieldSet {
+    pub const EMPTY: Self = Self([0; 2]);
+
+    pub const fn is_empty(&self) -> bool {
+        self.0[0] == 0 && self.0[1] == 0
+    }
+
+    /// How many fields are in the set.
+    pub const fn len(&self) -> u32 {
+        self.0[0].count_ones() + self.0[1].count_ones()
+    }
+
+    fn insert(&mut self, field: usize) {
+        self.0[field / 64] |= 1 << (field % 64);
+    }
+
+    fn contains(&self, field: usize) -> bool {
+        self.0[field / 64] & (1 << (field % 64)) != 0
+    }
+}
+
 macro_rules! layout_style_fields {
     ($($field:ident: $kind:ident $(by $eq:path)?,)*) => {
+        /// Each field's bit in a [`LayoutFieldSet`].
+        #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+        #[derive(Clone, Copy)]
+        enum Field {
+            $($field,)*
+        }
+
+        const _: () = assert!(
+            [$(Field::$field),*].len() <= 128,
+            "LayoutFieldSet holds 128 fields"
+        );
+
         impl LayoutStyle {
+            /// The fields whose values differ between `self` and `other`,
+            /// one by one: what a patch from `self` to `other` writes.
+            pub fn differing_fields(&self, other: &Self) -> LayoutFieldSet {
+                let Self { $($field),* } = self;
+                let mut fields = LayoutFieldSet::EMPTY;
+                $(
+                    if *$field != other.$field {
+                        fields.insert(Field::$field as usize);
+                    }
+                )*
+                fields
+            }
+
+            /// Write the fields in `fields` from `other` over `self`'s.
+            pub fn copy_fields(&mut self, other: &Self, fields: &LayoutFieldSet) {
+                $(
+                    if fields.contains(Field::$field as usize) {
+                        self.$field = other.$field.clone();
+                    }
+                )*
+            }
+
             /// The kinds of field that differ between `self` and `other`.
             pub fn changed_fields(&self, other: &Self) -> LayoutStyleChange {
                 let Self { $($field),* } = self;
@@ -300,6 +362,8 @@ layout_style_fields! {
     border_right_style: BORDER_STYLE,
     border_bottom_style: BORDER_STYLE,
     border_left_style: BORDER_STYLE,
+    container_type: CONTAINER,
+    container_name: CONTAINER,
 }
 
 #[cfg(test)]
@@ -321,6 +385,37 @@ mod tests {
         assert_eq!(copied.width, Some(LengthSpec::Px(10.0)));
         assert_eq!(copied.cursor, None);
         assert!(base.changed_fields(&base).is_empty());
+    }
+
+    /// A patch is the fields that differ, value for value: copied over the
+    /// base it was taken against, it gives the styled layout back, and it
+    /// writes nothing else over another base.
+    #[test]
+    fn differing_fields_copy_back_field_by_field() {
+        let base = LayoutStyle::default();
+        let styled = LayoutStyle {
+            width: Some(LengthSpec::Px(10.0)),
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            container_name: vec!["card".into()],
+            ..LayoutStyle::default()
+        };
+        let fields = base.differing_fields(&styled);
+        assert_eq!(fields.len(), 3);
+        assert!(base.differing_fields(&base).is_empty());
+        let mut patched = base.clone();
+        patched.copy_fields(&styled, &fields);
+        assert_eq!(patched, styled);
+        let mut other = LayoutStyle {
+            height: Some(LengthSpec::Px(4.0)),
+            ..LayoutStyle::default()
+        };
+        other.copy_fields(&styled, &fields);
+        assert_eq!(other.height, Some(LengthSpec::Px(4.0)));
+        assert_eq!(other.width, Some(LengthSpec::Px(10.0)));
+        assert!(
+            base.changed_fields(&styled)
+                .intersects(LayoutStyleChange::CONTAINER)
+        );
     }
 
     /// A sizing field says which axis it sizes; one of neither sizes both.

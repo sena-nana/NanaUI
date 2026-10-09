@@ -1,7 +1,9 @@
 use super::*;
 use crate::css_map::JustifySpec;
 use nana_js_engine::HostValue;
+use nana_ui_runtime::{ResponsiveAxis, ResponsiveContainer, ResponsiveRule, StyleVariant};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 #[test]
 fn subject_only_rules_do_not_recascade_unrelated_siblings_on_insert() {
@@ -736,6 +738,56 @@ fn html_dir_loses_to_author_css_direction() {
     assert_eq!(layout.dir, Some(crate::css_map::DirSpec::Ltr));
     assert_eq!(layout.padding_left, Some(LengthSpec::Px(12.0)));
     assert!(layout.padding_right.is_none());
+}
+
+/// A `locale` scope lays its subtree out in its locale's direction, as the
+/// Runtime does, so logical properties map the way it lays them out: over the
+/// inherited direction, under `dir` and author CSS.
+#[test]
+fn a_locale_scope_lays_its_subtree_out_in_the_locale_direction() {
+    use crate::css_map::DirSpec;
+    let mut bridge = MessageBridge::new();
+    let mut panel = WidgetProps::default();
+    panel.element_tag = "div".into();
+    bridge.register(1, WidgetKind::Column, panel);
+    let mut child = WidgetProps::default();
+    child.element_tag = "div".into();
+    child.class_names = vec!["box".into()];
+    bridge.register(2, WidgetKind::Box, child);
+    bridge.insert_child(2, 1, None);
+    bridge.inject_stylesheet(".box { padding-inline-start: 12px; }");
+
+    bridge.patch_prop(1, "locale", &HostValue::string("ar"));
+    assert_eq!(bridge.get(1).unwrap().props.layout.dir, Some(DirSpec::Rtl));
+    assert_eq!(
+        bridge
+            .get(1)
+            .unwrap()
+            .props
+            .attrs
+            .get("locale")
+            .map(String::as_str),
+        Some("ar")
+    );
+    let layout = &bridge.get(2).unwrap().props.layout;
+    assert_eq!(layout.dir, Some(DirSpec::Rtl));
+    assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
+    assert!(layout.padding_left.is_none());
+
+    // A left-to-right scope inside it turns the inherited direction back.
+    bridge.patch_prop(2, "locale", &HostValue::string("en-US"));
+    let layout = &bridge.get(2).unwrap().props.layout;
+    assert_eq!(layout.dir, Some(DirSpec::Ltr));
+    assert_eq!(layout.padding_left, Some(LengthSpec::Px(12.0)));
+    assert!(layout.padding_right.is_none());
+
+    // `dir` names the direction over the locale's.
+    bridge.patch_prop(2, "dir", &HostValue::string("rtl"));
+    assert_eq!(bridge.get(2).unwrap().props.layout.dir, Some(DirSpec::Rtl));
+
+    bridge.patch_prop(1, "locale", &HostValue::Null);
+    assert_eq!(bridge.get(1).unwrap().props.layout.dir, None);
+    assert!(bridge.get(1).unwrap().props.locale.is_none());
 }
 
 #[test]
@@ -6766,4 +6818,173 @@ fn has_follows_descendants_through_the_ancestor_chain_only() {
         bridge.get(1).unwrap().props.layout.min_width,
         Some(LengthSpec::Px(3.0))
     );
+}
+
+const CARD_SHEET: &str = ".card { container-type: inline-size; container-name: card; width: 320px }
+     @container card (max-width: 300px) { .row { background: rgb(255, 0, 0); height: 40px } }";
+
+/// `.card > .wrapper > .row`, each registered with its class.
+fn card_tree(bridge: &mut MessageBridge) -> WidgetId {
+    bridge.register(1, WidgetKind::Column, classed("div", "card"));
+    bridge.register(2, WidgetKind::Column, classed("div", "wrapper"));
+    bridge.register(3, WidgetKind::Column, classed("div", "row"));
+    bridge.insert_child(2, 1, None);
+    bridge.insert_child(3, 2, None);
+    3
+}
+
+fn responsive_of(bridge: &MessageBridge, id: WidgetId) -> Option<Arc<ResponsiveRule>> {
+    bridge.get(id).unwrap().props.responsive.clone()
+}
+
+/// An element's `@container` rules become one responsive rule: the nearest
+/// container of that name, the axis its query reads, and per bucket what
+/// those rules write over the element's style. The style itself is the one
+/// with no container rule.
+#[test]
+fn container_rules_become_one_responsive_rule_over_the_base_style() {
+    let mut bridge = MessageBridge::new();
+    let row = card_tree(&mut bridge);
+    bridge.inject_stylesheet(CARD_SHEET);
+
+    let base = bridge.get(row).unwrap().props.layout.clone();
+    assert_eq!(base.background, None);
+    let card = &bridge.get(1).unwrap().props.layout;
+    assert_eq!(card.container_type, nana_ui_core::ContainerType::InlineSize);
+    assert_eq!(card.container_name, ["card"]);
+    assert!(responsive_of(&bridge, 1).is_none(), "the card matches none");
+
+    // Within the query the row is styled as if the rule were unconditional.
+    let mut unconditional = MessageBridge::new();
+    let same_row = card_tree(&mut unconditional);
+    unconditional.inject_stylesheet(
+        ".card { container-type: inline-size; container-name: card; width: 320px }
+         .row { background: rgb(255, 0, 0); height: 40px }",
+    );
+    let narrow = unconditional.get(same_row).unwrap().props.layout.clone();
+    assert_eq!(narrow.background, Some([1.0, 0.0, 0.0, 1.0]));
+    assert_eq!(narrow.height, Some(LengthSpec::Px(40.0)));
+    let expected = ResponsiveRule::from_buckets(
+        ResponsiveContainer::Nearest {
+            name: Some("card".into()),
+        },
+        ResponsiveAxis::Width,
+        vec![300f32.next_up()],
+        vec![StyleVariant::between(&base, &narrow), None],
+    )
+    .unwrap();
+    let rule = responsive_of(&bridge, row).expect("the row's rule");
+    assert_eq!(*rule, expected);
+    assert_eq!(rule.bucket_for(300.0), 0, "max-width includes 300");
+    assert_eq!(rule.bucket_for(320.0), 1);
+}
+
+/// A cascade that changes nothing keeps the rule's `Arc`: the Runtime is not
+/// sent it again. A theme or viewport change cascades the whole document and
+/// keeps it too, and taking the container rules away clears it.
+#[test]
+fn recascading_keeps_an_equal_container_rule() {
+    let mut bridge = MessageBridge::new();
+    let row = card_tree(&mut bridge);
+    bridge.inject_stylesheet(CARD_SHEET);
+    let rule = responsive_of(&bridge, row).expect("the row's rule");
+    let same = |bridge: &MessageBridge| {
+        Arc::ptr_eq(&rule, &responsive_of(bridge, row).expect("still a rule"))
+    };
+
+    bridge.reapply_layout_cascade_all();
+    assert!(same(&bridge), "an unchanged cascade");
+    bridge.inject_stylesheet(CARD_SHEET);
+    assert!(same(&bridge), "the same sheet sent again");
+    bridge.patch_prop(row, "data-extra", &HostValue::string("yes"));
+    assert!(same(&bridge), "a change no rule reads");
+    bridge.set_preset_theme(ThemeAppearance::Dark);
+    assert!(same(&bridge), "a theme change");
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(500.0, 400.0));
+    bridge.sync_layout_containing_blocks(ParentBox::from_viewport(900.0, 700.0));
+    assert!(same(&bridge), "a viewport change");
+
+    bridge.inject_stylesheet_keyed(Some("app.css"), ".row { height: 40px }");
+    let narrowed = responsive_of(&bridge, row).expect("a rule");
+    assert!(
+        !Arc::ptr_eq(&rule, &narrowed),
+        "the base now has the height the rule set, so the variant changed"
+    );
+    bridge.clear_authored_stylesheets();
+    assert!(responsive_of(&bridge, row).is_none());
+}
+
+/// Container rules that ask two containers or two axes, or a query this
+/// engine does not evaluate, never apply; the element is counted where the
+/// other unsupported CSS is.
+#[test]
+fn container_rules_that_cannot_apply_are_counted_and_make_no_rule() {
+    for sheet in [
+        "@container card (max-width: 300px) { .row { height: 40px } }
+         @container side (max-width: 300px) { .row { width: 10px } }",
+        "@container card (max-width: 300px) { .row { height: 40px } }
+         @container card (min-height: 100px) { .row { width: 10px } }",
+        "@container card (orientation: portrait) { .row { height: 40px } }",
+    ] {
+        let mut bridge = MessageBridge::new();
+        let row = card_tree(&mut bridge);
+        bridge.inject_stylesheet_keyed(Some("queries.css"), sheet);
+        assert!(responsive_of(&bridge, row).is_none(), "{sheet}");
+        assert_eq!(bridge.unsupported_css().container_queries, 1, "{sheet}");
+
+        bridge.replace_stylesheet(
+            "queries.css",
+            "@container card (max-width: 300px) { .row { height: 40px } }",
+        );
+        assert!(responsive_of(&bridge, row).is_some(), "{sheet}");
+        assert_eq!(bridge.unsupported_css().container_queries, 0, "{sheet}");
+    }
+}
+
+/// Custom properties a container rule declares are the element's own in
+/// that bucket: its `var()`s read them there.
+#[test]
+fn container_rule_custom_properties_resolve_in_their_bucket() {
+    let mut bridge = MessageBridge::new();
+    let row = card_tree(&mut bridge);
+    bridge.inject_stylesheet(
+        ".row { --h: 10px; height: var(--h) }
+         @container (width < 300px) { .row { --h: 40px } }",
+    );
+    let base = bridge.get(row).unwrap().props.layout.clone();
+    assert_eq!(base.height, Some(LengthSpec::Px(10.0)));
+    let mut narrow = base.clone();
+    narrow.height = Some(LengthSpec::Px(40.0));
+    let expected = ResponsiveRule::from_buckets(
+        ResponsiveContainer::Nearest { name: None },
+        ResponsiveAxis::Width,
+        vec![300.0],
+        vec![StyleVariant::between(&base, &narrow), None],
+    )
+    .unwrap();
+    assert_eq!(*responsive_of(&bridge, row).expect("a rule"), expected);
+}
+
+/// Below an element whose font-size a container rule changes, the font-size
+/// is left to the Runtime to pass down; `em` there still reads the size the
+/// element has outside that rule's buckets.
+#[test]
+fn em_below_a_container_rule_font_size_reads_the_base_size() {
+    let mut bridge = MessageBridge::new();
+    bridge.register(1, WidgetKind::Column, classed("div", "card"));
+    bridge.register(2, WidgetKind::Column, classed("h2", "title"));
+    bridge.register(3, WidgetKind::Column, classed("span", "inner"));
+    bridge.register(4, WidgetKind::Column, classed("i", "icon"));
+    bridge.insert_child(2, 1, None);
+    bridge.insert_child(3, 2, None);
+    bridge.insert_child(4, 3, None);
+    bridge.inject_stylesheet(
+        ".card { container-type: inline-size }
+         .title { font-size: 20px }
+         .icon { font-size: 2em }
+         @container (max-width: 300px) { .title { font-size: 30px } }",
+    );
+    assert_eq!(bridge.get(2).unwrap().props.layout.font_size, Some(20.0));
+    assert_eq!(bridge.get(3).unwrap().props.layout.font_size, None);
+    assert_eq!(bridge.get(4).unwrap().props.layout.font_size, Some(40.0));
 }

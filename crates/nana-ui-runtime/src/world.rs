@@ -2634,8 +2634,19 @@ impl UiWorld {
         }
     }
 
+    /// The style `id` was authored with. What the pipeline reads is its
+    /// effective style, with a responsive variant written over it while its
+    /// rule's bucket has one (Issue #265).
     pub fn node_style(&self, id: StableNodeId) -> Option<&NodeStyle> {
-        self.nodes.get(id).map(|node| &node.style)
+        let node = self.nodes.get(id)?;
+        Some(self.responsive.authored(id).unwrap_or(&node.style))
+    }
+
+    /// [`Self::node_style`] of a live node.
+    pub(super) fn authored_style(&self, id: StableNodeId) -> &NodeStyle {
+        self.responsive
+            .authored(id)
+            .unwrap_or(&self.record(id).style)
     }
 
     pub fn computed_style(&self, id: StableNodeId) -> Option<&ComputedStyle> {

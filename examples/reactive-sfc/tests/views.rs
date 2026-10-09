@@ -348,3 +348,114 @@ fn the_benchmark_views_build_what_their_hand_written_twins_build() {
     assert_eq!(compiled, list(|l| idiomatic::row_list(l).into_any()));
     assert_eq!(compiled, list(|l| hot::row_list(l).into_any()));
 }
+
+/// `tests/views/`: views the app does not show, compiled as its views are.
+mod test_views {
+    include!(concat!(env!("OUT_DIR"), "/nana_test_views.rs"));
+}
+
+/// `@container` compiled from a `.vue` file (`Cards.vue`): the row under a
+/// card 400 px wide keeps its own style, takes the container rule's
+/// background and height once the card is 280 px wide, and gives them back.
+#[test]
+fn a_container_rule_follows_its_card_across_the_breakpoint() {
+    let mut cx = AppContext::typed();
+    let document = DocumentId::new(1).unwrap();
+    let narrow = std::cell::Cell::new(None);
+    let card = cx
+        .mount_view_root(document, || {
+            let flag = signal(false);
+            narrow.set(Some(flag));
+            test_views::cards(flag)
+        })
+        .unwrap()
+        .roots()[0];
+    let narrow = narrow.get().unwrap();
+    let row = cx.resolve_assembly_path(card, "row").unwrap();
+    // One product frame, run until the tree settles.
+    let frame = |cx: &mut AppContext| {
+        let viewport = nana_ui::runtime::LayoutViewport::new(800.0, 600.0);
+        cx.begin_frame_profile();
+        for _ in 0..6 {
+            let work = cx.take_system_work();
+            cx.resolve_styles(&work.style).unwrap();
+            cx.layout_document(document, viewport).unwrap();
+        }
+        cx.finish_frame_profile();
+    };
+    let shown = |cx: &AppContext| {
+        (
+            cx.world().layout_box(row).unwrap().height,
+            cx.world().computed_style(row).unwrap().background,
+        )
+    };
+    let red = Some([1.0, 0.0, 0.0, 1.0]);
+    let blue = Some([0.0, 0.0, 1.0, 1.0]);
+    frame(&mut cx);
+    assert_eq!(shown(&cx), (20.0, red));
+    narrow.set(true);
+    frame(&mut cx);
+    assert_eq!(shown(&cx), (40.0, blue));
+    narrow.set(false);
+    frame(&mut cx);
+    assert_eq!(shown(&cx), (20.0, red));
+}
+
+/// `<T>` and `locale=` compiled from a `.vue` file: messages follow their
+/// arguments, a scope written as a tag holds its locale, and a scope bound
+/// to a signal moves with it.
+#[test]
+fn localized_text_follows_its_arguments_and_its_scope() {
+    use nana_ui::runtime::{Locale, MessageTable};
+    let before = reactive_stats();
+    let mut cx = AppContext::typed();
+    cx.set_message_catalog(Some(std::sync::Arc::new(
+        MessageTable::new()
+            .with("en", "title", "Files")
+            .with(
+                "en",
+                "files",
+                "{count, plural, one {# file} other {# files}}",
+            )
+            .with("en", "owned", "{owner} has {count} files")
+            .with("zh-cn", "files", "{count} 个文件")
+            .with("ar", "title", "الملفات"),
+    )));
+    cx.set_default_locale(Locale::parse("en"));
+    let document = DocumentId::new(1).unwrap();
+    let page = cx
+        .mount_view_root(document, || test_views::files("Nana".into()))
+        .unwrap()
+        .roots()[0];
+    let shown = |cx: &AppContext, path: &str| {
+        let id = cx.resolve_assembly_path(page, path).unwrap();
+        cx.world().text(id).unwrap().to_owned()
+    };
+    assert_eq!(shown(&cx, "title"), "Files");
+    assert_eq!(shown(&cx, "count"), "1 file");
+    assert_eq!(shown(&cx, "owned"), "Nana has 7 files");
+    assert_eq!(shown(&cx, "arabic/text"), "الملفات");
+    assert_eq!(shown(&cx, "chosen/text"), "1 file");
+
+    let more = cx.resolve_assembly_entity::<Button>(page, "more").unwrap();
+    cx.activate_button(more).unwrap();
+    cx.flush_reactive().unwrap();
+    assert_eq!(shown(&cx, "count"), "2 files");
+    assert_eq!(shown(&cx, "chosen/text"), "2 files");
+
+    let chinese = cx
+        .resolve_assembly_entity::<Button>(page, "chinese")
+        .unwrap();
+    cx.activate_button(chinese).unwrap();
+    cx.flush_reactive().unwrap();
+    assert_eq!(shown(&cx, "chosen/text"), "2 个文件");
+    assert_eq!(shown(&cx, "count"), "2 files", "outside the scope");
+
+    // The arguments the compiler declared are what the messages read.
+    if cfg!(debug_assertions) {
+        assert_eq!(
+            reactive_stats().static_deps_mismatches - before.static_deps_mismatches,
+            0
+        );
+    }
+}

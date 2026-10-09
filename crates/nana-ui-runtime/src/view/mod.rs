@@ -28,6 +28,7 @@ mod node;
 mod panes;
 mod prop;
 pub(crate) mod reactive;
+mod relations;
 mod resource;
 mod selection;
 mod settings;
@@ -47,7 +48,7 @@ pub use controls::{
     Px, StyledComponent, action_menu, action_menu_item, avatar, button, checkbox, chip,
     color_field, column, divider, empty_state, fields, icon_button, labeled_value, list_item,
     localized, number_input, progress, range_span, row, select, slider, spinner, status_badge,
-    switch, tabs, text, text_area, text_input, texture, thumbnail, tree_view,
+    switch, t, tabs, text, text_area, text_input, texture, thumbnail, tree_view,
 };
 pub(crate) use controls::{edit_control, inspect_control};
 pub use each_virtual::{EachVirtual, VirtualItem, VirtualListRef, each_virtual, virtual_list_ref};
@@ -86,7 +87,7 @@ pub use structural::{Dynamic, Each, EachExt, EachIn, When, WhenExt, dynamic, eac
 pub use style::ComposedLayout;
 pub use style::{Class, InlineStyle, Sheet, StylePatch, StyleSite};
 #[doc(hidden)]
-pub use style::{SheetRule, SheetTransition};
+pub use style::{SheetQuery, SheetRule, SheetTransition};
 pub use task::{
     Task, has_woken_tasks, poll_tasks, set_task_wake, spawn_blocking, spawn_local, task_count,
 };

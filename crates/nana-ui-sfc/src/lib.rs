@@ -41,7 +41,7 @@ use std::path::Path;
 
 use nana_ui_view_codegen::{Attr, AttrName, AttrValue, Element, Node, TextPart};
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{Expr, Ident, Pat, PatType, Stmt};
 
@@ -692,17 +692,35 @@ impl Rewrite<'_> {
 
     fn element(&mut self, element: &mut Element) -> Result<(), Error> {
         let name = tag(element);
+        // A built-in tag builds the built-in. A view of the batch named like
+        // it is still a function Rust can call, but its tag would never reach
+        // it: say so rather than build the built-in in its place.
+        if self.known.contains_key(&name) && is_builtin(element) {
+            return Err(parse::syn_error(
+                self.file,
+                syn::Error::new(
+                    element.name.span(),
+                    format!(
+                        "`<{name}>` is built in: this tag builds the built-in, never the view \
+                         `{name}.vue`. Rename that view to use it as a tag"
+                    ),
+                ),
+            ));
+        }
         if let Some(props) = self.known.get(&name) {
             self.component(element, props)?;
             return self.nodes(&mut element.children);
         }
         // A Rust function component's arguments pass as written; its
-        // conditions are still bindings.
+        // conditions are still bindings. `<T>`'s message is one binding of
+        // its own.
         let builtin = is_builtin(element);
         for attr in &mut element.attrs {
             let label = match &attr.name {
                 AttrName::Plain(ident)
-                    if builtin && !nana_ui_view_codegen::is_argument(&name, &ident.to_string()) =>
+                    if builtin
+                        && !nana_ui_view_codegen::is_argument(&name, &ident.to_string())
+                        && !nana_ui_view_codegen::is_message_part(&name, &ident.to_string()) =>
                 {
                     format!("<{name} :{ident}>")
                 }
@@ -719,6 +737,9 @@ impl Rewrite<'_> {
             {
                 attr.value = AttrValue::Verbatim(value);
             }
+        }
+        if builtin && name == "T" {
+            return self.message(element);
         }
         // A text-bearing element's one child is its value.
         if builtin
@@ -781,6 +802,68 @@ impl Rewrite<'_> {
             class,
         });
         value
+    }
+
+    /// `<T>`'s message as one binding, classified as text interpolation is:
+    /// `LocalizedText::new(id).arg(..)…` with each tracked name read (`n`
+    /// is `n.get()`), written once while it reads no live signal, checked
+    /// while the compiler sees what it reads, and tracked at run time
+    /// otherwise. It becomes the element's one child, the prop `t` takes. A
+    /// message of literals is left to the code generator, which writes it as
+    /// a constant.
+    fn message(&mut self, element: &mut Element) -> Result<(), Error> {
+        // Checked here, not left to the code generator: in hot mode static
+        // text is already a prop, and would pass for the message.
+        if !element.children.is_empty() {
+            return Err(parse::syn_error(
+                self.file,
+                syn::Error::new(
+                    element.name.span(),
+                    "`<T>` takes no children: `id` names the message it says, and its other \
+                     attributes are the message's arguments",
+                ),
+            ));
+        }
+        let is_part = |attr: &Attr| {
+            matches!(&attr.name, AttrName::Plain(name)
+                if nana_ui_view_codegen::is_message_part("T", &name.to_string()))
+        };
+        let exprs: Vec<&Expr> = element
+            .attrs
+            .iter()
+            .filter(|attr| is_part(attr))
+            .filter_map(|attr| match &attr.value {
+                AttrValue::Expr(expr) => Some(expr),
+                _ => None,
+            })
+            .collect();
+        let Some(first) = exprs.first() else {
+            return Ok(());
+        };
+        let span = first.span();
+        let class = self.analysis.classify_all(&exprs);
+        let analysis = self.analysis;
+        let message = nana_ui_view_codegen::localized_text(self.runtime, element, &|expr| {
+            analysis
+                .tracks(expr)
+                .then(|| quote_spanned!(expr.span()=> #expr.get()))
+        })
+        .map_err(|error| parse::syn_error(self.file, error))?;
+        let runtime = self.runtime;
+        let value = match &class {
+            Class::Value => quote!(#runtime::view::Fixed(#message)),
+            Class::Static(deps) => self.checked(span, deps, message),
+            // `classify_all` answers `Static` for a lone signal.
+            Class::Direct(_) | Class::Dynamic => quote!(move || #message),
+        };
+        self.rows.push(Row {
+            site: site(self.file, span),
+            what: "<T> 消息".to_owned(),
+            class,
+        });
+        element.attrs.retain(|attr| !is_part(attr));
+        element.children.push(Node::Verbatim(value, span));
+        Ok(())
     }
 
     fn checked(&self, span: Span, deps: &[String], value: TokenStream) -> TokenStream {

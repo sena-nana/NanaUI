@@ -420,6 +420,13 @@ impl Analysis {
         }
     }
 
+    /// Whether `expr` is only a tracked name: a signal, a computed, one
+    /// folded into a constant, or a store path. What it holds is read with
+    /// `.get()`.
+    pub fn tracks(&self, expr: &Expr) -> bool {
+        single_ident(expr).is_some_and(|name| self.index.contains_key(&name))
+    }
+
     fn is_store(&self, name: &str) -> bool {
         self.index
             .get(name)

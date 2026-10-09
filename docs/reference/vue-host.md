@@ -1,12 +1,18 @@
 # 宿主边界
 
-同一棵树上，Vue 标签能落到什么、网络和存储有哪些、扩展控件怎么登记。接入步骤在 [Vue](vue.md)，多窗口在 [窗口](vue-windows.md)。
+同一棵树上，Vue 标签能落到什么、本地化文字怎么写、网络和存储有哪些、扩展控件怎么登记。接入步骤在 [Vue](vue.md)，多窗口在 [窗口](vue-windows.md)。
 
 ## 两种写法，同一棵树
 
 **Nana 控件。** `NanaButton`、`NanaInput`、`NanaDialog` 直接表达语义。Vue 标签和 Rust 的 `create_component` 通过同一份 `ComponentRegistry` 解析组件类型。
 
 **普通标签和 CSS。** `div`、flex、间距、字号这一类网页习惯可以用。但只覆盖 [布局](layout.md) 列出的子集。适合结构骨架。不适合冒充完整浏览器。
+
+**`@container`。** 支持的写法见 [布局](layout.md#能用的) 的 `@container` 一段。一个元素命中的容器规则编成一条 Runtime 响应式规则。容器缩放时由 Runtime 换桶，不重跑 CSS。
+
+规则改的字号、颜色这类继承的文字属性，由 Runtime 往下传，元素里的文字跟着变。下面用 `em` 写的字号仍按桶外的字号算。`direction`、`writing-mode`、`text-decoration`、`overflow-wrap` 不往下传。
+
+一个元素的规则问到两个容器或两条轴时，全部不生效，和其它不支持的 CSS 一起报出。
 
 和 Runtime 同语义的 Vue 标签会落到对应控件。这些标签是 `button`、`a`、`input`（含 `checkbox`、`radio`、`range`、`number`）、`textarea`、`select` 加 `option`、`ul` / `ol` / `menu` / `li`、`table` / `tr` / `td` / `th`、`progress`、`meter`、`hr`、`dialog`、`details` / `summary`。
 
@@ -61,6 +67,70 @@ class 和 role hints 把地标标签改成具体控件时，保留控件角色�
 `NanaMarkdown` 用 `modelValue` 或 `value` 传入原始 Markdown。需要启用 `rich-text`。
 
 源码未变化时，保留解析结果和选区。源码变化后，重新解析。高亮由共享的 Runtime 绑定路径处理。
+
+## 本地化文字
+
+模板里用 `<T>` 写本地化文字。它来自 `@nanaui/nanavue-components`，也叫 `NanaT`：
+
+```vue
+<script setup>
+import { T } from "@nanaui/nanavue-components";
+</script>
+
+<template>
+  <T id="files" :count="files.length" />
+</template>
+```
+
+`id` 是消息在目录里的名字。别的属性是消息的参数，属性名照写就是参数名：`:fileCount="n"` 对应 `{fileCount}`。`class`、`style`、`lang`、`dir`、`locale`、`data-*`、`aria-*` 和监听器除外，它们留在元素上。和这些同名的参数放进 `args`：`<T id="greeting" :args="{ class: role }" />`。`args` 里的参数盖过同名属性。
+
+`<T>` 渲染一个 `<nana-text>`，它带着消息的名字和参数。消息由 Runtime 按节点所在作用域的 locale 解析。切换 locale 时 Runtime 重新解析，Vue 不重新渲染。译文变长或变短，只有这段文字和装着它的盒子重新排版。参数没变时 `<T>` 重新渲染也不碰宿主。
+
+参数的类型决定格式：
+
+- 数字给 `plural` 和 `{n, number}` 用。要绑定成数字：`:count="3"`。`count="3"` 是字符串。
+- 字符串原样写出。
+- 布尔值写成 `"true"` 或 `"false"`，给 `select` 用。
+- `Date` 取它本地的年月日和时分秒。只有日期时写 `{ year, month, day }`，月份从 1 开始。
+- 金额写 `{ amount, currency }`，`currency` 是 ISO 4217 代码。
+- `null` 和 `undefined` 不传。输出里写出缺的参数名。
+
+模式串的写法、回退链和格式化在 [文本引擎](text-engine.md) 的「本地化文字与 locale 作用域」一节。
+
+目录和 locale 是应用的。`Nana.i18n` 设置它们。它们到达每一扇窗口，之后打开的窗口也从它们开始：
+
+```js
+Nana.i18n.setCatalog(
+  {
+    "en-US": { files: "{count, plural, one {# file} other {# files}}" },
+    "zh-CN": { files: "{count} 个文件" },
+  },
+  { fallback: "en-US" },
+);
+Nana.i18n.setLocale("zh-CN");
+```
+
+嵌套的对象用点连成消息名。`{ settings: { title: "…" } }` 是 `settings.title`。
+
+`fallback` 是每次查找最后落到的 locale。`missing` 决定哪个 locale 都没有的消息显示什么：`"key"` 显示消息名，是默认；`"keep-previous"` 保留原来显示的内容。没有 locale 也没有 `fallback` 时，本地化文字显示消息名。
+
+`setLocale` 接受一个语言标签，或 `{ messages, language, direction, formatting }`。四部分各自变化：选哪套消息、按哪种语言排版、往哪个方向排、数字和日期按哪个 locale 格式化。没写的部分跟着 `messages`。`null` 去掉应用的 locale。`Nana.i18n.locale` 读回应用 locale 的消息标签，没有时是 `null`。
+
+窗口自己的 locale 在 [窗口](vue-windows.md)。子树的 locale 写 `locale` 属性：`<section locale="ar">`。里面的本地化文字按它解析，子树按它的方向排版。`dir` 和 CSS `direction` 仍然优先。
+
+`lang` 只决定文字按哪种语言排版（字体回退、`locl`）。它不选消息。
+
+同一份目录装第二次，什么都不做。隔离窗口会把应用脚本重新执行一遍，目录不会因此重新解析。脚本开头的 `setLocale` 也会再执行一遍，会把用户切过的 locale 改回去。先读一下：
+
+```js
+if (!Nana.i18n.locale) Nana.i18n.setLocale("en-US");
+```
+
+Rust 宿主可以在脚本执行前设好：`VueRuntime::set_message_catalog`（任何 `MessageCatalog`）、`set_default_locale`、`set_fallback_locale`、`set_missing_message`、`set_window_locale`。`VueHostedRuntime` 有同名方法。
+
+`message-args` 不是 JSON，或某个参数的类型不对时，诊断输出一条 `nana.i18n` 警告。消息照常显示，缺的参数写出名字。
+
+本地化文字是 `<nana-text>` 自己的文字。放进会显示子节点的控件里，比如按钮，它就画在那里。从子节点复制文字的地方读不到它：设置行的标签槽、标题栏的标题、按钮自己的无障碍名称。
 
 ## 它提供的 Web 面，以及明确没有的
 

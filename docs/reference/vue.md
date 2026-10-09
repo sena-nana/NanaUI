@@ -57,6 +57,10 @@ Vue 标签怎样落到控件、普通标签覆盖哪一段 CSS、输入只有一
 
 `NanaMarkdown` 的取值和 `rich-text` feature 在 [宿主边界](vue-host.md#markdown)。
 
+## 本地化文字
+
+`<T id="files" :count="n" />`、`Nana.i18n` 的目录和 locale，以及子树的 `locale` 属性，在 [宿主边界](vue-host.md#本地化文字)。窗口自己的 locale 在 [窗口](vue-windows.md)。
+
 ## 它提供的 Web 面，以及明确没有的
 
 `window` / `document` 子集、`fetch`、存储、音频，以及明确没有的浏览器能力，在 [宿主边界](vue-host.md#它提供的-web-面以及明确没有的)。

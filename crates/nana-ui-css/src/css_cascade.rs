@@ -51,8 +51,12 @@
 //! `@import` / `@media` (width/height/orientation/prefers-color-scheme) /
 //! `@font-face` / matching `@supports` / `@layer { }` (author source order,
 //! names recorded) merge into the same [`ParsedStylesheet`] (not a second cascade).
+//! `@container` blocks stay in [`ParsedStylesheet::container_rules`]: they join
+//! this cascade per bucket of the element's container, through
+//! [`rebuild_layout_style_indexed_with_extra`], never unconditionally (see
+//! [`crate::css_container`]).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::css_at_rule::{
     ImportPrelude, MAX_IMPORT_DEPTH, ParseStylesheetOptions, evaluate_media_query,
@@ -61,6 +65,9 @@ use crate::css_at_rule::{
 };
 
 pub use crate::css_at_rule::MediaQuery;
+use crate::css_container::{
+    ContainerQueryUnsupported, ContainerRule, parse_container_prelude, take_nested_container_rules,
+};
 use crate::css_interactive::{
     GeneratedPseudo, GeneratedPseudoRule, InteractivePseudo, InteractiveSelector,
     InteractiveStyleRule, MediaRule, MotionDeclarations, MotionStyleRule, ParsedStylesheet,
@@ -480,8 +487,9 @@ pub struct StylesheetParseReport {
     /// Selectors that failed to parse (deferred/unsupported syntax).
     pub skipped_selectors: usize,
     /// At-rule blocks skipped entirely (unknown `@supports` predicates, failed
-    /// `@import`, unknown at-rules). Applied `@supports` / `@layer` do not
-    /// increment this.
+    /// `@import`, unknown at-rules, `@container` blocks whose query is
+    /// unsupported or nested in another). Applied `@supports` / `@layer` and
+    /// supported `@container` blocks do not increment this.
     pub skipped_at_rules: usize,
     /// Successfully loaded `@import` stylesheets (cycle / depth / missing are skipped).
     pub imported_sheets: usize,
@@ -506,6 +514,13 @@ pub struct UnsupportedCssReport {
     /// Nodes whose `font-variation-settings` transition or animation moves an
     /// axis no face of their text has: it runs, and changes nothing.
     pub font_axis_animations: usize,
+    /// Nodes matched by an `@container` rule that cannot apply to them: its
+    /// query uses something this engine does not evaluate
+    /// ([`crate::css_container::ContainerQueryUnsupported`]), or their
+    /// container rules cannot share one plan
+    /// ([`crate::css_container::ContainerPlanUnsupported`]). Such rules never
+    /// apply to them.
+    pub container_queries: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -545,6 +560,8 @@ impl UnsupportedCssReport {
 pub struct UnsupportedCssTally {
     report: UnsupportedCssReport,
     seen: HashMap<u64, UnsupportedCssFlags>,
+    /// Nodes counted in [`UnsupportedCssReport::container_queries`].
+    container_queries: HashSet<u64>,
 }
 
 impl UnsupportedCssTally {
@@ -578,8 +595,24 @@ impl UnsupportedCssTally {
         );
     }
 
+    /// Records whether one node is matched by an `@container` rule that
+    /// cannot apply to it (see [`UnsupportedCssReport::container_queries`]),
+    /// replacing what it recorded last time. Called once per node per
+    /// cascade pass, beside [`Self::observe`].
+    pub fn observe_container_queries(&mut self, node: u64, unsupported: bool) {
+        let was = if unsupported {
+            !self.container_queries.insert(node)
+        } else {
+            self.container_queries.remove(&node)
+        };
+        adjust(&mut self.report.container_queries, was, unsupported);
+    }
+
     /// Drops a removed node's contribution.
     pub fn forget(&mut self, node: u64) {
+        if self.container_queries.remove(&node) {
+            adjust(&mut self.report.container_queries, true, false);
+        }
         let Some(previous) = self.seen.remove(&node) else {
             return;
         };
@@ -740,6 +773,35 @@ fn parse_known_at_rule<'a>(
             query,
             sheet: inner,
         });
+        return Some(next);
+    }
+    if name.eq_ignore_ascii_case("container") {
+        let (prelude, body, next) = split_at_rule_tail(after_name)?;
+        let Some(inner_css) = body else {
+            report.skipped_at_rules += 1;
+            return Some(next);
+        };
+        let query = parse_container_prelude(prelude);
+        let mut inner = ParsedStylesheet::default();
+        // Inner rules share the global order: they interleave with the rest
+        // of the sheet in the cascade.
+        parse_stylesheet_into(inner_css, order, &mut inner, report, ctx, false);
+        let nested = take_nested_container_rules(&mut inner);
+        if query.is_err() {
+            report.skipped_at_rules += 1;
+        }
+        sheet.container_rules.push(ContainerRule {
+            query,
+            sheet: inner,
+        });
+        // A block inside another would have to hold with it: not evaluated.
+        for mut rule in nested {
+            if rule.query.is_ok() {
+                report.skipped_at_rules += 1;
+                rule.query = Err(ContainerQueryUnsupported::Nested);
+            }
+            sheet.container_rules.push(rule);
+        }
         return Some(next);
     }
     if name.eq_ignore_ascii_case("font-face") {
@@ -1455,7 +1517,21 @@ pub fn matched_custom_properties_indexed(
     index: &RuleIndex,
     ctx: &MatchContext<'_>,
 ) -> BTreeMap<String, String> {
-    matched_custom_properties_from(&index.candidates(rules, ctx), ctx)
+    matched_custom_properties_indexed_with_extra(rules, index, &[], ctx)
+}
+
+/// [`matched_custom_properties_indexed`] with `extra` rules sorted in among
+/// the candidates: the `@container` rules that hold in one bucket, as for
+/// [`rebuild_layout_style_indexed_with_extra`].
+pub fn matched_custom_properties_indexed_with_extra(
+    rules: &[StyleRule],
+    index: &RuleIndex,
+    extra: &[&StyleRule],
+    ctx: &MatchContext<'_>,
+) -> BTreeMap<String, String> {
+    let mut candidates = index.candidates(rules, ctx);
+    candidates.extend_from_slice(extra);
+    matched_custom_properties_from(&candidates, ctx)
 }
 
 fn matched_custom_properties_from(
@@ -1566,7 +1642,7 @@ pub fn rebuild_layout_style(
 /// [`rebuild_layout_style`] restricted to [`RuleIndex`] candidates. Cascade
 /// order inside the candidate set is unchanged, so results are identical.
 pub fn rebuild_layout_style_indexed(
-    mut layout: LayoutStyle,
+    layout: LayoutStyle,
     rules: &[StyleRule],
     index: &RuleIndex,
     ctx: &MatchContext<'_>,
@@ -1575,7 +1651,41 @@ pub fn rebuild_layout_style_indexed(
     percent_w: Option<f32>,
     percent_h: Option<f32>,
 ) -> LayoutStyle {
-    let candidates = index.candidates(rules, ctx);
+    rebuild_layout_style_indexed_with_extra(
+        layout,
+        rules,
+        index,
+        &[],
+        ctx,
+        prop_style,
+        inline_style,
+        percent_w,
+        percent_h,
+    )
+}
+
+/// [`rebuild_layout_style_indexed`] with `extra` rules in the stylesheet
+/// layers: the `@container` rules that hold in one bucket
+/// ([`crate::css_container::ContainerRuleSet::active_rules`]).
+///
+/// They are matched and sorted together with the sheet's candidates (normal
+/// before `!important`, then specificity, then source order), exactly where
+/// they would sit as ordinary rules of the sheet; they are never appended
+/// after it. Their `!important` declarations join the stylesheet-important
+/// layer, so prop / inline `!important` still beats them.
+pub fn rebuild_layout_style_indexed_with_extra(
+    mut layout: LayoutStyle,
+    rules: &[StyleRule],
+    index: &RuleIndex,
+    extra: &[&StyleRule],
+    ctx: &MatchContext<'_>,
+    prop_style: &str,
+    inline_style: &str,
+    percent_w: Option<f32>,
+    percent_h: Option<f32>,
+) -> LayoutStyle {
+    let mut candidates = index.candidates(rules, ctx);
+    candidates.extend_from_slice(extra);
     apply_matched_stylesheet_from(&mut layout, &candidates, ctx, percent_w, percent_h, false);
     layout.apply_class_layout_hints(ctx.classes);
     if !prop_style.trim().is_empty() {

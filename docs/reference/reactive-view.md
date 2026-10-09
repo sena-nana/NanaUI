@@ -227,8 +227,9 @@ column()
 - **写法**：`class="a b"` 是固定的类。`class:名字="条件"` 是条件为真时才有的类（Rust 表达式写不出 Vue 的 `{ active: x }` 对象语法。所以用 Svelte 的写法）。函数 API 用 `.css(css! { padding: 12px; opacity: 0.8 })` 给单个元素写一段声明。写法规则和 `<style>` 相同。
 - **编译**：`.a` 和 `.a.b` 这样的类选择器。按 `!important`、特异性、源码顺序排好级联。每条规则的补丁是它的声明写了的 Style Model 字段和写入的值（按字段路径。如 `align_items`、`paint.outline.width`）。以 JSON 数据嵌进程序。哪些字段被写了由 `nana-ui-css` 的 `written_layout` 给出：声明分别施加到默认布局和一份每个字段都不取默认值的见证布局上。任一边改动了、且见证那边落到和默认那边同一个值的字段就是被写了的。所以写回默认值（`align-items: flex-start`、`position: static`）也在补丁里。而新值取决于原值的字段（`direction` 改变后按原有逻辑边距重新推出的物理边距）不算。补丁按字段整体替换。枚举和 `Option` 不和元素原来的值逐键合并。`var()` 按样式表自己的自定义属性在构建时求值。样式表成为一张按级联顺序排好的"需要哪些类 → 补丁"的表。
 - **运行时**：不解析 CSS。`nana-ui-runtime` 里也没有 CSS 代码。一个元素第一次以某组"固定类 + 条件类"出现时。样式表从表里挑出这组类可能命中的规则（比较的是类的编号）。之后同一组类直接复用。再按"基础布局 + 当前生效的条件类"合成一次。结果是一份共享的布局。同一组类的所有实例（包括 `v-for` 的每一行）都只拿它的引用。条件类的条件是普通绑定。变化时换一份合成结果。
+- **`@container`**：`@container [名字] (条件)` 块里的类规则同样编进表里，按源码位置排在级联中。每条带上它的查询，以数据嵌进程序：读哪个容器（同名的最近一个；没写名字就是对这条轴合格的最近一个）、读哪条轴、在轴上成立的区间。`max-width: 480px` 包含 480，区间上界就是 `480f32.next_up()`。合成时跳过这些规则。同一组"基础布局 + 生效的条件类"下，把它们用到的边界当断点，切成至多 17 个桶。每个桶按级联顺序合成一次，写在后面的普通规则照样赢。比不带容器规则的合成多写的字段，就是这个桶的变体。结果是一条 `ResponsiveRule`（`ResponsiveContainer::Nearest { name }`），在建出节点的那次提交里交给 Runtime。条件类改变了生效的规则，就换一条；同一组类拿到的是缓存的同一个 `Arc`。容器的尺寸由 Runtime 量，视图层不量。容器用 `container-type`、`container-name` 或 `container` 简写声明，它们是普通字段。一个元素同一时刻只跟一个容器的一条轴，至多 16 个断点。类带进来的容器规则问到两个容器或两条轴，或者断点超过 16 个，模板和 `.vue` 在那个元素上报警告；运行时这组类下的容器规则都不生效，记一条 `runtime.view.container_query_unsupported` 诊断。换桶不播 `transition`。`css!` 只是一段声明，里面的 `@container` 会报警告并被忽略：写在 `<style>` 或 `stylesheet!` 里。
 - **`transition`**：编成隐式动画（`El::animate`）。绑定改变了 `opacity`、`transform`、`width`、`height` 或 `background` 时。在合成器轨道上从当前显示的值播到新值。逻辑样式直接取新值。只认元素固定类上的 `transition`。
-- **不编译、会报警告的**：其他选择器（标签、id、组合器、属性）、`:hover` / `:focus` / `:active`、`@media`、`@keyframes` 和 `animation`、`@font-face`、伪元素、Style Model 里没有对应字段的声明、元素上没有规则用到的类、绑定式的 `:class`。
+- **不编译、会报警告的**：其他选择器（标签、id、组合器、属性）、`:hover` / `:focus` / `:active`、`@media`、`@keyframes` 和 `animation`、`@font-face`、伪元素、Style Model 里没有对应字段的声明、元素上没有规则用到的类、绑定式的 `:class`、引擎不求值的 `@container` 查询（`style()`、`scroll-state()`、`aspect-ratio`、`orientation`、px 以外的单位、一条查询里两条轴、嵌套的 `@container`），以及 `@container` 里的 `:hover`、`transition`、`@media` 和伪元素。
 - **主题色**：样式表的颜色在构建时按亮色主题求值。所以随主题变化的颜色写成语义角色：每个元素都有 `.foreground(..)`、`.background(..)`、`.border(..)`（`SemanticColorRole`）和 `.radius(..)`（`RadiusTier`）。可绑定。模板里是同名属性。例如 `<Text foreground={SemanticColorRole::Muted}>`。
 - **写回默认值**：类会覆盖元素建出来时的值。包括写回默认值：`Stack::row` 默认居中。类里写 `align-items: flex-start` 就回到顶端对齐。`column()` 的高度随内容。类里写 `height: auto` 就是 `auto`。
 - **已知取舍**：颜色在构建时按亮色主题求值。跟随主题切换的颜色请用组件自带的语义色。
@@ -293,6 +294,47 @@ column()
 :::
 
 只需要换行、放得下就并排的排法。优先用 `flex-wrap` 加 `flex-basis`（见[布局](layout.md)）。不必经过信号。
+
+## 本地化文字
+
+`t(..)` 建一个说某条消息的文本节点。消息按节点所在作用域的 locale 解析。`.locale(..)` 让元素成为一个 locale 作用域。消息目录、回退、格式化和切换的成本见[文本引擎](text-engine.md)的「本地化文本与 locale 作用域」一节。
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+
+let count = signal(3u64);
+view! {
+    <Column>
+        <T id="title" />
+        <T id="files" count={count.get()} />
+        <Column locale="ar">
+            <T id="title" />
+        </Column>
+    </Column>
+}
+```
+
+```rust rust
+use nana_ui::runtime::LocalizedText;
+use nana_ui::runtime::view::{column, t};
+
+let count = signal(3u64);
+column().children((
+    t(LocalizedText::new("title")),
+    t(move || LocalizedText::new("files").arg("count", count.get())),
+    column().locale("ar").children(t(LocalizedText::new("title"))),
+))
+```
+
+:::
+
+- **`t(消息)`** 接受 `LocalizedText` 常量、它的信号或 `Computed`、或者构造它的闭包。常量在建节点时写进去。闭包读到的信号变了就重算。算出的消息（键和参数）和显示着的相同时什么也不发。切换 locale 时由 world 直接重新解析。不跑任何绑定。它绑的字段是 `fields::Localized`。
+- **模板里的 `<T>`**：`id` 是消息键。其余属性都是消息参数。`key`、`ref`、`labelled_by`、`locale`、`class`、`decorative` 和主题色属性（`foreground` 等）仍然给节点。全是字面量时是常量：`<T id="title"/>` 就是 `t(LocalizedText::new("title"))`。有表达式时整条消息是一个绑定。参数是值：`view!` 里信号写成 `count={count.get()}`。路径和字段按引用克隆一份。所以这个值别处还能用。`<T>` 没有子节点。
+- **`.locale(..)`**（模板里 `locale="ar"`、`locale={sig}`）：元素成为 locale 作用域。它下面的本地化文字（包括它自己）按这个 locale 解析、按它的语言排版。子树按它的方向排布。`None` 回到上层作用域。常量（`Locale`，或 `"ar"` 这样的语言标签）在建节点的那次提交里设好。在子节点插入之前。不建副作用。信号或闭包的第一个值也这样设。之后跟着它变。和作用域现有 locale 相同的值不提交。字面文字不受影响。`lang` 仍只是字面文字的排版语言。模板在构建时检查语言标签的写法。
+- Runtime 给每个节点只留一个结构绑定。所以 `.labelled_by(..)` 和 `.locale(..)` 都跟着信号时共用这一个：任一个变了。两个都重读一遍。只多一次比较。
+- `locale` 只能写在元素上。`<Block>`、`<Transition>`、`<TransitionGroup>`、`<KeepAlive>`、`<Virtual>`、`<Suspense>`、`<Teleport>`、`<ErrorBoundary>` 不是元素。在它们上面写 `locale` 是编译错误。写到它里面的元素上。或者在外面包一层 `<Column locale="ar">`。组件标签上的 `locale` 是普通的 prop。
 
 ## 进出场与移动动画
 
@@ -429,6 +471,7 @@ fn todos() -> impl IntoView {
 | --- | --- |
 | `<Column gap=8>…</Column>` / `<Row>` | `column().gap(8_f32).children((…))` / `row()…`；数字字面量带上类型后缀，表达式原样传入 |
 | `<Text>"计数 {count}"</Text>` | `text!("计数 {count}")`；没有 `{…}` 的字符串是 `text("…")` |
+| `<T id="files" count={n.get()} />` | `t(move \|\| LocalizedText::new("files").arg("count", n.get()))`；全是字面量时是常量，`<T id="title"/>` 是 `t(LocalizedText::new("title"))` |
 | `<Button>"加一"</Button>`、`<Checkbox>` | `button("加一")`、`checkbox(…)` |
 | `<Slider min=0 max=1 step=0.05/>`、`<TextInput/>` | `slider(0_f64, 1_f64, 0.05_f64)`、`text_input()` |
 | `<Widget of={component}>…</Widget>` | `widget(component).children((…))` |
@@ -443,6 +486,7 @@ fn todos() -> impl IntoView {
 | `v-for={pat in items} key={…}` | `each(items, move \|item\| { let pat = item; key }, move \|pat\| 元素)`；手写也可以 `items.each(key, row)` |
 | `<Block class="a">` 包住 `v-for` 元素或 `v-if` 链 | `each(..).class(s::a)` / `when(..).class(s::a)`：类给结构块的容器 |
 | `v-show={x}`、`v-model={sig}`、`key="x"` | `.visible(x)`、`.model(sig)`、`.key("x")` |
+| `locale="ar"`、`locale={sig}` | `.locale("ar")`、`.locale(sig)`：元素成为 locale 作用域 |
 | `<style>…</style>`、`class="a"`、`class:a={c}` | `stylesheet! { mod s; … }`、`.class(s::a)`、`.class_when(s::a, c)` |
 | `<template #navigation>…</template>`（具名 slot） | `.navigation(…)`：元素上同名的方法，`#title-trailing` 是 `.title_trailing(…)`；`#default` 就是普通子节点 |
 
@@ -497,6 +541,8 @@ pub mod views {
 - 具名插槽：子组件声明 `header: impl IntoView` 这样的视图参数。模板里用 `<slot name="header"/>` 放置（`<slot/>` 放 `children`）。父组件写 `<template #header>…</template>`。`#default` 等于其余子节点。插槽内容是按值传入的视图。只能放一次。也没有后备内容。
 - `ref="name"` 把元素的节点 id 写进脚本里的 `let name = node_ref();`。`on_mount(move |cx| …)` 在视图进树之后执行。可以拿它聚焦、读布局。`labelled-by="name"` 让控件用这个节点的文字当无障碍名字（`aria-labelledby`）。
 - 组件上的 `key` 落在组件的第一个根节点上（`keyed`）。不在这一批里的标签。按 `view!` 的规则调用同名的 Rust 函数。
+- `<T id="files" :count="n" />` 是 `t(..)`。参数和 `{{ }}` 插值一样分类：单独的信号读成 `n.get()` 并声明为依赖。只读常量的消息写成 `Fixed(..)`，只写一次。`count="3"` 是字符串参数，数字写 `:count="3"`。`locale="ar"` 在构建时检查。`:locale="sig"` 和其他属性一样是绑定。
+- 内置标签总是建内置的那个。同一批里和它同名的视图（例如 `T.vue`）仍是 Rust 能调用的函数（`views::t(..)`），但在模板里写它的标签是编译错误，不会悄悄换成内置的。
 - `<style>`（写不写 `scoped` 都一样。总是只作用于本组件）在构建时编译。见下文"样式表"。模板里仍然要遵守 Rust 的所有权规则。例如同一个值既要传给组件又要被事件闭包使用时。得写 `todo.clone()`。
 - 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`，同时写出版本化的 `$OUT_DIR/nana_views.map.json`。rustc 原生 JSON 诊断仍指向生成文件；把诊断逐行送给 `nana-sfc-remap <nana_views.map.json>` 后，primary/child span 会回指 `.vue` 文件、行和列。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出。带文件、行、列。
 
@@ -582,6 +628,7 @@ impl ApplicationState for App {
 | `reactive({ … })` | `store(value)` + `#[derive(Store)]`，按字段追踪 |
 | `watchEffect` | `watch_effect(move \|\| …)` |
 | `{{ x }}`、`:label="x"` | `text!("{x}")`、`.label(x)`，或者 `.bind(move \|c\| …)` |
+| vue-i18n 的 `$t('files', { count })`、`<i18n-t keypath>` | `<T id="files" :count="n" />`；Rust 里 `t(move \|\| LocalizedText::new("files").arg("count", n.get()))`。子树的 locale 用 `locale="ar"` / `.locale(..)` |
 | `@click` | `.on_activate(move \|\| …)`，其他事件用 `.on(move \|e: &E\| …)` |
 | `v-if` / `v-else` | `when(cond, \|\| a).otherwise(\|\| b)` |
 | `v-show` | `.visible(sig)` |
@@ -799,7 +846,7 @@ fn page() -> impl IntoView {
 - 字段真的改变时。仍然会复制整个组件、完整投影一遍。再由 world 按字段比对标脏。采样显示投影里真正贵的是没变字段的比较和复制。已经在公共路径和 `Button`、`Text`、`Chip` 上去掉。其余控件的投影仍然先复制再比较。按需逐个改（写法见 `Button::project`）。
 - `.bind(|c| …)` 看不出改了哪个字段。所以每次都按"有改动"处理。走复制路径。
 - 闭包绑定每个各自装箱一次。只有 `view!` 能看到的整段模板。才有机会把同一节点的闭包合成一个。
-- 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`RangeSpan`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`、`Thumbnail`、`Avatar`、`Texture`（`GpuTextureView`）、`IconButton`、`Chip`、`StatusBadge`、`EmptyState`（`#action` slot）、`LabeledValue`、`Tabs`、`TreeView`、`ColorField`、`ActionMenuItem`。外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
+- 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`RangeSpan`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`、`Thumbnail`、`Avatar`、`Texture`（`GpuTextureView`）、`IconButton`、`Chip`、`StatusBadge`、`EmptyState`（`#action` slot）、`LabeledValue`、`Tabs`、`TreeView`、`ColorField`、`ActionMenuItem`。外加 `T`（本地化文字）、`Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
 
 **无障碍检查**：编译模板时。读屏器无法命名的控件会得到一条警告。不会编译失败。规则两条：`Button`、`Checkbox`、`Switch`、`ListItem` 没有文字（空的子节点或空的 `label`）。`TextInput`、`TextArea`、`NumberInput`、`Slider`、`Progress` 没写 `label`（它们的无障碍名字只来自 `label`。占位文字不算）。写了 `labelled_by` 的控件由那段文字起名，不报。`.vue` 的警告经 `cargo:warning` 带行列打印。`view!` 在稳定版上没有警告接口。警告以"使用了已弃用常量"的形式出现在宏调用处。说明写在弃用提示里。
 

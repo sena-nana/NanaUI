@@ -94,7 +94,7 @@ pub use i18n::{
     PlainFormatter, PluralCategory,
 };
 pub use responsive::{
-    MAX_RESPONSIVE_BREAKPOINTS, ResponsiveAxis, ResponsiveContainer, ResponsiveRule,
+    MAX_RESPONSIVE_BREAKPOINTS, ResponsiveAxis, ResponsiveContainer, ResponsiveRule, StyleVariant,
 };
 #[cfg(feature = "controls")]
 mod reorder_list;

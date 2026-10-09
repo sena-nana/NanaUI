@@ -2486,6 +2486,24 @@ impl LayoutStyleCss for LayoutStyle {
                     _ => {}
                 }
             }
+            "container-type" => {
+                if let Some(container_type) = crate::css_container::parse_container_type(val) {
+                    self.container_type = container_type;
+                }
+            }
+            "container-name" => {
+                if let Some(names) = crate::css_container::parse_container_name(val) {
+                    self.container_name = names;
+                }
+            }
+            "container" => {
+                if let Some((names, container_type)) =
+                    crate::css_container::parse_container_shorthand(val)
+                {
+                    self.container_name = names;
+                    self.container_type = container_type;
+                }
+            }
             "transform" => {
                 if val.trim().eq_ignore_ascii_case("none") {
                     self.transform = None;

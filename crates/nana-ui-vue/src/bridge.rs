@@ -48,7 +48,7 @@ use crate::{
     css_cascade::{
         MatchContext, MatchNode, SimpleCompound, StyleRule, StylesheetParseReport,
         collect_document_custom_properties_from_rules, parse_stylesheet_full_with_options,
-        rebuild_layout_style_indexed, simple_matches, stylesheet_matches,
+        rebuild_layout_style_indexed_with_extra, simple_matches, stylesheet_matches,
         stylesheet_may_match_subject, stylesheet_needs_relative,
     },
     css_interactive::{
@@ -228,6 +228,7 @@ impl MessageBridge {
                         .get(id)
                         .copied()
                         .unwrap_or(nana_ui_core::LayoutFieldMask::NONE),
+                    widget.props.responsive.as_ref(),
                 )
             })
         }));
@@ -1830,6 +1831,7 @@ impl MessageBridge {
                     .get(id)
                     .copied()
                     .unwrap_or(nana_ui_core::LayoutFieldMask::NONE),
+                widget.props.responsive.as_ref(),
             )
         }));
     }
@@ -2457,6 +2459,10 @@ impl MessageBridge {
                 | "title"
                 | "value"
                 | "dir"
+                // A locale lays its scope out in its direction; both are
+                // attributes selectors can match.
+                | "locale"
+                | "lang"
                 | "src"
                 | "data-src"
                 | "poster"

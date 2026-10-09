@@ -304,7 +304,7 @@ impl<'a> ValidationPlan<'a> {
                             return Err(UiWorldError::InvalidResponsiveRule(*id));
                         }
                         if let crate::ResponsiveContainer::Node(container) = rule.container() {
-                            self.require_exists(container)?;
+                            self.require_exists(*container)?;
                         }
                     }
                 }
@@ -1198,28 +1198,6 @@ impl UiWorld {
             UiMutation::Insert { parent, child, .. } => {
                 self.invalidate_scroll_topology(*child, Some(*parent));
                 self.scroll_layout_touched = true;
-            }
-            UiMutation::SetStyle { id, style } => {
-                let layout = &self.record(*id).style.layout;
-                // A paint-only restyle shares the layout style it replaces.
-                if !Arc::ptr_eq(layout, &style.layout) {
-                    let omits_box = layout.omits_box() != style.layout.omits_box();
-                    let visual = self.nodes.visual(*id);
-                    let was = scroll_container(layout, visual);
-                    let now = scroll_container(&style.layout, visual);
-                    // By value: a `ScrollView` re-projects an equal style in
-                    // a fresh `Arc` on every update.
-                    let restyled = (was || now) && **layout != *style.layout;
-                    if omits_box {
-                        self.invalidate_scroll_content(*id);
-                        self.scroll_layout_touched = true;
-                    }
-                    // A container that starts or stops scrolling, or
-                    // restyles, is re-measured even when no box moved.
-                    if restyled {
-                        self.track_scroll_container(*id, now);
-                    }
-                }
             }
             UiMutation::SetStandardVisual { id, visual } => {
                 let layout = &self.record(*id).style.layout;
@@ -2789,6 +2767,35 @@ impl UiWorld {
         }
     }
 
+    /// `id`'s effective layout moved from `previous` to `next`, by a style
+    /// write or a responsive variant: a box that appears or disappears
+    /// changes its scroll ancestors' content, and a container that starts or
+    /// stops scrolling, or restyles, is re-measured even when no box moved.
+    fn track_scroll_style(
+        &mut self,
+        id: StableNodeId,
+        previous: &Arc<nana_ui_core::LayoutStyle>,
+        next: &Arc<nana_ui_core::LayoutStyle>,
+    ) {
+        // A paint-only restyle shares the layout style it replaces.
+        if Arc::ptr_eq(previous, next) {
+            return;
+        }
+        let visual = self.nodes.visual(id);
+        let was = scroll_container(previous, visual);
+        let now = scroll_container(next, visual);
+        // By value: a `ScrollView` re-projects an equal style in a fresh
+        // `Arc` on every update.
+        let restyled = (was || now) && **previous != **next;
+        if previous.omits_box() != next.omits_box() {
+            self.invalidate_scroll_content(id);
+            self.scroll_layout_touched = true;
+        }
+        if restyled {
+            self.track_scroll_container(id, now);
+        }
+    }
+
     fn track_scroll_container(&mut self, id: StableNodeId, scrolls: bool) {
         if scrolls {
             self.scroll_containers.insert(id);
@@ -3033,11 +3040,13 @@ impl UiWorld {
     /// A node's style moves: its authored style to `authored`, a style write,
     /// or -- with `None` -- only what resolves from it, its responsive variant
     /// (Issue #265). Every comparison below reads the style the pipeline
-    /// reads, the authored one over its resolved layout, so a variant is
+    /// reads, the effective one over its resolved layout, so a variant is
     /// classified, marked and seeded exactly as the same change written as a
     /// style.
     pub(super) fn restyle(&mut self, id: StableNodeId, authored: Option<&NodeStyle>) {
-        let previous_authored = self.record(id).style.clone();
+        let previous_authored = self.authored_style(id).clone();
+        let previous_effective = Arc::clone(&self.record(id).style.layout);
+        let previous_presentation = self.record(id).style.clone();
         let previous_resolved = Arc::clone(&self.record(id).resolved_layout);
         self.write_node_style(
             id,
@@ -3045,15 +3054,17 @@ impl UiWorld {
                 .cloned()
                 .unwrap_or_else(|| previous_authored.clone()),
         );
-        let next_authored = self.record(id).style.clone();
+        let next_authored = self.authored_style(id).clone();
+        let next_presentation = self.record(id).style.clone();
         let resolved = Arc::clone(&self.record(id).resolved_layout);
+        self.track_scroll_style(id, &previous_effective, &next_presentation.layout);
         let previous = NodeStyle {
             layout: Arc::clone(&previous_resolved),
-            ..previous_authored.clone()
+            ..previous_presentation
         };
         let style = &NodeStyle {
             layout: Arc::clone(&resolved),
-            ..next_authored.clone()
+            ..next_presentation
         };
         let inherited_text_changed = previous.layout.font_size != style.layout.font_size
             || previous.layout.font_weight != style.layout.font_weight
@@ -3119,6 +3130,9 @@ impl UiWorld {
             previous_resolved.changed_fields(resolved.as_ref())
         };
         let transform_changed = changed.intersects(nana_ui_core::LayoutStyleChange::TRANSFORM);
+        if changed.intersects(nana_ui_core::LayoutStyleChange::CONTAINER) {
+            self.find_query_containers_again(id);
+        }
         let stacking_changed = changed.intersects(nana_ui_core::LayoutStyleChange::STACKING);
         let style_layout_invalidation = self.classify_layout_change(id, changed);
         if previous_resolved.paint.content_image != resolved.paint.content_image {

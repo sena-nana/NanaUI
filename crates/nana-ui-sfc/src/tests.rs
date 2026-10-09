@@ -700,3 +700,218 @@ let done = signal(false);
     at("Card.vue: 17:", "frobnicate");
     at("Card.vue: 7:", "ghost");
 }
+
+/// The class rules of an `@container` block compile with the block's query
+/// as data; a query the engine does not evaluate is a warning at its line,
+/// and the container properties are fields like any other.
+#[test]
+fn container_rules_in_a_style_block_compile_with_their_query() {
+    let out = compile(&[(
+        "Panel.vue",
+        r#"<template>
+  <Column class="card">
+    <Row class="row" />
+  </Column>
+</template>
+<style scoped>
+.card { container-type: inline-size; container-name: card; }
+.row { height: 20px; }
+@container card (max-width: 300px) { .row { height: 40px; } }
+@container (aspect-ratio > 1) { .row { opacity: 0.5; } }
+</style>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    assert!(
+        code.contains(&squash(
+            r#"::nana_ui_runtime::view::SheetQuery::new(::core::option::Option::Some("card"),
+            ::nana_ui_runtime::ResponsiveAxis::Width"#
+        )),
+        "{code}"
+    );
+    assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
+    assert!(
+        out.warnings[0].contains("Panel.vue: 10:") && out.warnings[0].contains("aspect-ratio"),
+        "{:?}",
+        out.warnings
+    );
+}
+
+/// `<T>` is `t(…)`: `id` names the message and every other attribute is an
+/// argument. The arguments are one binding, classified as `{{ … }}` text is:
+/// a lone signal is read with `.get()` and declared, a folded one is written
+/// once, a call nobody sees into is tracked at run time.
+#[test]
+fn localized_text_is_one_binding_over_its_arguments() {
+    let out = compile(&[(
+        "Files.vue",
+        r#"<script setup lang="rust">
+defineProps!(owner: String);
+let count = signal(1u64);
+let fixed = signal(7u64);
+</script>
+<template>
+  <Column>
+    <T id="title" decorative />
+    <T id="files" :count="count" />
+    <T id="seven" :count="fixed" :who="owner" label="x" />
+    <T :id="choose(count.get())" />
+    <Button @activate="count.update(|c| *c += 1)">加一</Button>
+  </Column>
+</template>"#,
+    )])
+    .unwrap();
+    let code = squash(&out.code);
+    let has = |needle: &str| assert!(code.contains(&squash(needle)), "{needle}: {code}");
+    has(r#"view::t(::nana_ui_runtime::LocalizedText::new("title")).decorative(true)"#);
+    has(r#"view::t(::nana_ui_runtime::view::__checked("Files.vue:9:27", [count.dep()]"#);
+    has(r#"::nana_ui_runtime::LocalizedText::new("files").arg("count", count.get())"#);
+    has(
+        r#"view::t(::nana_ui_runtime::view::Fixed(::nana_ui_runtime::LocalizedText::new("seven")
+        .arg("count", fixed.get())
+        .arg("who", ::core::clone::Clone::clone(&owner))
+        .arg("label", "x")))"#,
+    );
+    has(r#"view::t(move || ::nana_ui_runtime::LocalizedText::new(&(choose(count.get()))))"#);
+    assert!(
+        out.report.contains("<T> 消息"),
+        "each message is a row of the report: {}",
+        out.report
+    );
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+
+    for (template, token) in [
+        ("<T :count=\"1\" />", "`id=\"…\"`"),
+        ("<T id=\"\" />", "not empty"),
+        ("<T id=\"a\">文字</T>", "no children"),
+        ("<T id=\"a\" :n=\"1\" :n=\"2\" />", "twice"),
+        ("<T id=\"a\" n />", "needs a value"),
+    ] {
+        let error = compile(&[("Bad.vue", &format!("<template>\n{template}\n</template>"))])
+            .err()
+            .expect("an error");
+        assert!(error.message.contains(token), "{template}: {error}");
+        assert_eq!(error.line, 2, "{template}: {error}");
+    }
+}
+
+/// Static text is a prop already in hot mode; a child of `<T>` is still an
+/// error, not taken for its message.
+#[test]
+fn a_child_of_t_is_an_error_in_hot_mode_too() {
+    let error = Compiler::new("::nana_ui_runtime")
+        .hot(true)
+        .compile(&[(
+            "Hot.vue".into(),
+            "<template>\n<T id=\"a\">文字</T>\n</template>".into(),
+        )])
+        .err()
+        .expect("an error");
+    assert!(error.message.contains("no children"), "{error}");
+}
+
+/// A built-in tag builds the built-in. A view named like one is still a
+/// function Rust can call, but using its tag is an error, not a silent swap
+/// for the built-in.
+#[test]
+fn a_tag_naming_a_built_in_never_reaches_a_view_of_that_name() {
+    let own = (
+        "T.vue",
+        "<script setup lang=\"rust\">\ndefineProps!(id: &'static str);\n</script>\n\
+         <template><Text>{{ id }}</Text></template>",
+    );
+    let alone = compile(&[own]).unwrap();
+    assert!(
+        squash(&alone.code).contains("pubfnt(id:&'staticstr)"),
+        "{}",
+        alone.code
+    );
+    for compiler in [
+        Compiler::new("::nana_ui_runtime"),
+        Compiler::new("::nana_ui_runtime").hot(true),
+    ] {
+        let used = compiler
+            .compile(&[
+                (own.0.into(), own.1.into()),
+                (
+                    "Page.vue".into(),
+                    "<template>\n<Column>\n  <T id=\"files\" />\n</Column>\n</template>".into(),
+                ),
+            ])
+            .err()
+            .expect("an error");
+        assert_eq!((used.file.as_str(), used.line), ("Page.vue", 3), "{used}");
+        assert!(
+            used.message.contains("`<T>` is built in") && used.message.contains("T.vue"),
+            "{used}"
+        );
+    }
+}
+
+/// `locale` on an element makes it a scope, a tag checked at build time or
+/// any binding; a block is not an element and refuses it; a view takes it as
+/// the prop it declares.
+#[test]
+fn locale_scopes_an_element_and_is_refused_on_a_block() {
+    let out = compile(&[
+        (
+            "Panel.vue",
+            r#"<script setup lang="rust">
+defineProps!(locale: &'static str);
+</script>
+<template><Column :locale="locale"><T id="title" /></Column></template>"#,
+        ),
+        (
+            "Page.vue",
+            r#"<script setup lang="rust">
+let chosen = signal(None);
+let rtl = signal(false);
+let hebrew = Locale::parse("he");
+</script>
+<template>
+  <Column locale="ar">
+    <Row :locale="chosen" />
+    <Text :locale="if rtl.get() { hebrew.clone() } else { None }">x</Text>
+    <Panel locale="zh-CN" />
+    <Button @activate="{ chosen.set(None); rtl.set(true) }">切换</Button>
+  </Column>
+</template>"#,
+        ),
+    ])
+    .unwrap();
+    let code = squash(&out.code);
+    let has = |needle: &str| assert!(code.contains(&squash(needle)), "{needle}: {code}");
+    has(r#".locale("ar")"#);
+    has(".locale(chosen)");
+    has(".locale(locale)");
+    has("[rtl.dep()]");
+    has(r#"panel(::core::convert::Into::into("zh-CN"))"#);
+
+    for (template, token) in [
+        ("<Column locale=\"a r\" />", "language tag"),
+        ("<Column locale=\"\" />", "language tag"),
+        ("<Column locale />", "needs a language tag"),
+        (
+            "<Block locale=\"ar\"><Text v-if=\"true\">x</Text></Block>",
+            "takes no `locale`",
+        ),
+        (
+            "<Transition><KeepAlive locale=\"ar\"><Text v-if=\"true\">x</Text></KeepAlive></Transition>",
+            "takes no `locale`",
+        ),
+        (
+            "<Virtual row-height=\"24\" locale=\"ar\"><Text v-for=\"n in rows\" :key=\"*n\">x</Text></Virtual>",
+            "takes no `locale`",
+        ),
+        (
+            "<Teleport :to=\"layer\" locale=\"ar\"><Text>x</Text></Teleport>",
+            "takes no `locale`",
+        ),
+    ] {
+        let error = compile(&[("Bad.vue", &format!("<template>\n{template}\n</template>"))])
+            .err()
+            .expect("an error");
+        assert!(error.message.contains(token), "{template}: {error}");
+        assert_eq!(error.line, 2, "{template}: {error}");
+    }
+}

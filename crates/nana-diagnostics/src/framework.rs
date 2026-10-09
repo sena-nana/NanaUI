@@ -128,6 +128,17 @@ pub mod runtime {
     /// it. The message carries the error.
     pub static VIEW_ERROR_UNHANDLED: EventDescriptor =
         EventDescriptor::new(D, 4, "runtime.view.error_unhandled", Severity::Error, &[]);
+    /// A compiled `@container` rule set an element cannot follow: the
+    /// container rules its classes apply ask more than one container or
+    /// axis, or use more than 16 breakpoints. None of them apply to it; the
+    /// message names where the element's classes were given.
+    pub static VIEW_CONTAINER_QUERY_UNSUPPORTED: EventDescriptor = EventDescriptor::new(
+        D,
+        5,
+        "runtime.view.container_query_unsupported",
+        Severity::Warn,
+        &[F::u64("breakpoints")],
+    );
 }
 
 pub mod layout {

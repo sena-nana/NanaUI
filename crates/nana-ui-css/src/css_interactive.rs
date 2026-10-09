@@ -16,6 +16,7 @@ use crate::css_cascade::{
     Combinator, CompoundSelector, DeclarationEntry, MatchContext, Selector, Specificity, StyleRule,
     compound_matches, parse_declaration_entries,
 };
+use crate::css_container::ContainerRule;
 
 /// Interactive pseudo-class supported at parse time.
 ///
@@ -213,7 +214,9 @@ pub struct MediaRule {
 ///
 /// `static_rules` / interactive / … are **unconditional**. Matching `@media`
 /// inner rules are applied through [`ParsedStylesheet::flatten`] so viewport
-/// / theme changes do not re-parse CSS text.
+/// / theme changes do not re-parse CSS text. `@container` blocks stay in
+/// `container_rules`: the runtime decides where they hold, per element
+/// ([`crate::css_container`]).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ParsedStylesheet {
     pub static_rules: Vec<StyleRule>,
@@ -223,6 +226,9 @@ pub struct ParsedStylesheet {
     pub keyframes: BTreeMap<String, KeyframesRule>,
     pub motion_rules: Vec<MotionStyleRule>,
     pub media_rules: Vec<MediaRule>,
+    /// `@container` blocks, never part of the unconditional cascade. The
+    /// parser lifts one nested in another out to here, as unsupported.
+    pub container_rules: Vec<ContainerRule>,
     pub font_faces: Vec<FontFaceRule>,
     /// First-seen `@layer` names (order recorded; cascade-layer *priority* is not applied).
     pub layer_names: Vec<String>,
@@ -237,10 +243,14 @@ impl ParsedStylesheet {
             && self.motion_rules.is_empty()
             && self.keyframes.is_empty()
             && self.media_rules.is_empty()
+            && self.container_rules.is_empty()
             && self.font_faces.is_empty()
     }
 
     /// Copy unconditional buckets plus inner sheets whose `@media` matches `env`.
+    ///
+    /// `@container` blocks stay blocks, kept with those of matching `@media`;
+    /// an `@media` inside one is flattened within it.
     pub fn flatten(&self, env: &MediaEnvironment) -> ParsedStylesheet {
         let mut out = ParsedStylesheet {
             static_rules: self.static_rules.clone(),
@@ -250,6 +260,14 @@ impl ParsedStylesheet {
             keyframes: self.keyframes.clone(),
             motion_rules: self.motion_rules.clone(),
             media_rules: Vec::new(),
+            container_rules: self
+                .container_rules
+                .iter()
+                .map(|rule| ContainerRule {
+                    query: rule.query.clone(),
+                    sheet: rule.sheet.flatten(env),
+                })
+                .collect(),
             font_faces: self.font_faces.clone(),
             layer_names: self.layer_names.clone(),
         };
@@ -265,7 +283,9 @@ impl ParsedStylesheet {
         let nested = self
             .media_rules
             .iter()
-            .filter_map(|m| m.sheet.max_source_order());
+            .map(|m| &m.sheet)
+            .chain(self.container_rules.iter().map(|c| &c.sheet))
+            .filter_map(ParsedStylesheet::max_source_order);
         [
             self.static_rules.last().map(|r| r.source_order),
             self.interactive_rules.last().map(|r| r.source_order),
@@ -304,6 +324,7 @@ pub fn merge_parsed_stylesheet(dest: &mut ParsedStylesheet, src: ParsedStyleshee
     dest.motion_rules.extend(src.motion_rules);
     dest.font_faces.extend(src.font_faces);
     dest.media_rules.extend(src.media_rules);
+    dest.container_rules.extend(src.container_rules);
     for name in src.layer_names {
         if !name.is_empty() && !dest.layer_names.iter().any(|existing| existing == &name) {
             dest.layer_names.push(name);
@@ -338,6 +359,9 @@ pub fn offset_source_order(sheet: &mut ParsedStylesheet, delta: u32) {
     }
     for media in &mut sheet.media_rules {
         offset_source_order(&mut media.sheet, delta);
+    }
+    for container in &mut sheet.container_rules {
+        offset_source_order(&mut container.sheet, delta);
     }
 }
 
