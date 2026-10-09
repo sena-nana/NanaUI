@@ -229,9 +229,14 @@ mod tests {
                 // descriptor. Only compare identities that both layers own.
                 continue;
             };
+            // `gpu` gates only nana-ui's half of an always-declared GPU node.
+            if support.required_feature == Some("gpu") {
+                continue;
+            }
 
             assert_eq!(
-                support.compiled, descriptor.compiled,
+                (support.required_feature, support.compiled),
+                (descriptor.required_feature, descriptor.compiled),
                 "component availability drift for {}",
                 support.id
             );
