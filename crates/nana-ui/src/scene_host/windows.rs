@@ -653,11 +653,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 ));
             }
         }
-        if settings.role == WindowRole::Underlay {
-            let parent = settings.parent.expect("validated underlay parent");
-            if self.settings_of(parent).role == WindowRole::Underlay {
-                return Err("an underlay window cannot be the parent of another".into());
-            }
+        if let (WindowRole::Underlay, Some(parent)) = (settings.role, settings.parent) {
             normalize_underlay(&mut settings, &self.geometry_of(parent));
         }
         let parent = settings
@@ -879,7 +875,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.mutate_window_visibility(id, |window| {
             set_native_visible(window, visible, focus_on_show)
         });
-        self.sync_underlay(id);
+        // Shown in place, then put back under its parent.
+        if let Some(underlay) = self
+            .window_contexts
+            .get(&id)
+            .and_then(|host| host.underlay.as_ref())
+        {
+            underlay.sync();
+        }
         window.request_redraw();
         self.prepare_window_chrome(id, geometry.maximized);
         crate::host_diagnostics::window_opened(id, &geometry);
@@ -1227,17 +1230,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         self.sync_underlays_of(id);
         changed
-    }
-
-    /// Put `id` back under its parent, if it is an underlay.
-    pub(super) fn sync_underlay(&self, id: WindowId) {
-        if let Some(underlay) = self
-            .window_contexts
-            .get(&id)
-            .and_then(|host| host.underlay.as_ref())
-        {
-            underlay.sync();
-        }
     }
 
     /// Bring every underlay of `parent` to its current frame, level and
