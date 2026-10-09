@@ -80,7 +80,11 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 
 拖放：`set_drop_target(entity, DropAccepts::files())` 登记节点接受什么。`drop_target_at(document, x, y, kind)` 回答某点上最内层接受该载荷的节点（按布局盒匹配，不要求节点可点击）。**框架只回答落在哪里。** 落下之后做什么仍是应用的。和 `SecondaryPress` 一样。Tab / Dock / `ReorderList` 的拖动移动的是框架自己的结构。仍走各自的合同。
 
-悬停显隐：给节点挂 `PointerHoverChanged` 处理函数，指针进入它的子树时收到 `hovered: true`，离开时收到 `false`。在子树内的两个后代之间移动不会重复发。只有挂了处理函数的节点收到，由内向外。`Stack` 默认不参与命中，指针停在行的空白处时命中不到它，要用 `.hittable()` 让整行接住悬停。框架只报告进出，显示哪些工具是应用的事。键盘用户够不到隐藏的控件，所以重要操作不要只靠悬停露出。
+悬停显隐：给节点挂 `PointerHoverChanged` 处理函数，指针进入它的子树时收到 `hovered: true`，离开时收到 `false`。在子树内的两个后代之间移动不会重复发。只有挂了处理函数的节点收到，由内向外。`Stack` 默认不参与命中，指针停在行的空白处时命中不到它，要用 `.hittable()` 让整行接住悬停。框架只报告进出，显示哪些工具是应用的事。
+
+键盘焦点用 `FocusWithinChanged` 报告，规则和悬停相同：焦点进入节点子树时收到 `focused: true`，离开时收到 `false`，在子树内移动不重复发。监听者正在 `update_component` 里时，事件等这次更新结束再送到。`VisibilitySpec::Hidden` 的节点不进 Tab 顺序，所以悬停才露出的工具要用 `opacity: 0` 收起，让 Tab 仍能落到它们上面，再在 `FocusWithinChanged` 里和悬停一起显出来。
+
+选区位置：`UiWorld::text_selection_bounds(id)` 回答 `NativeMarkdown` / `SelectableRichText` 的选区在窗口里的外接矩形，已计入上层滚动和变换，没有选区时为 `None`。用来把浮动工具条锚在选区上：在改变选区的更新返回之后再问，滚动后重新问。配合 `resolve_popover_origin` 决定放在选区上方还是下方。
 
 `ColorField` 是色块 + hex。`assemble_color_field` 挂 HSV 选择器。提交发 `ColorChanged`。拖动发 `ColorInput`。`PathField` 是路径 + 浏览按钮。浏览只发 `BrowseRequested`。由应用打开系统对话框。
 

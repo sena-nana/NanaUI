@@ -2446,6 +2446,11 @@ impl UiWorld {
         self.input.focused.get(&document).copied()
     }
 
+    /// Documents that have a focused node.
+    pub(crate) fn focused_documents(&self) -> impl Iterator<Item = DocumentId> + '_ {
+        self.input.focused.keys().copied()
+    }
+
     /// Record which kind of device the event being routed came from.
     ///
     /// Hosts call this from their one input entry point. The modality is read

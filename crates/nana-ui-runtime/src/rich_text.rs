@@ -2722,6 +2722,80 @@ mod tests {
     }
 
     #[test]
+    fn selection_bounds_follow_the_selected_text_through_scrolling() {
+        use crate::LayoutViewport;
+        use nana_ui_core::LengthSpec;
+        let mut context = AppContext::new();
+        let scroll = context
+            .create_component(
+                document(),
+                crate::ScrollView::new(crate::ScrollAxes::Vertical)
+                    .with_layout(|layout| layout.height = Some(LengthSpec::Px(200.0))),
+            )
+            .unwrap();
+        let column = context
+            .create_detached_component(document(), crate::Stack::column(0.0))
+            .unwrap();
+        let spacer = context
+            .create_detached_component(
+                document(),
+                crate::Stack::column(0.0).height(LengthSpec::Px(100.0)),
+            )
+            .unwrap();
+        let markdown = context
+            .create_detached_component(
+                document(),
+                NativeMarkdown::from_blocks([
+                    MarkdownBlock::paragraph([MarkdownSpan::plain("Hello")]),
+                    MarkdownBlock::paragraph([MarkdownSpan::plain("World")]),
+                ]),
+            )
+            .unwrap();
+        let tail = context
+            .create_detached_component(
+                document(),
+                crate::Stack::column(0.0).height(LengthSpec::Px(400.0)),
+            )
+            .unwrap();
+        context.append_child(column, spacer).unwrap();
+        context.append_child(column, markdown).unwrap();
+        context.append_child(column, tail).unwrap();
+        context.append_child(scroll, column).unwrap();
+        let relayout = |context: &mut AppContext| {
+            context
+                .layout_document(document(), LayoutViewport::new(400.0, 200.0))
+                .unwrap();
+        };
+        relayout(&mut context);
+        let id = markdown.stable_id();
+        assert_eq!(context.world().text_selection_bounds(id), None);
+
+        let area = bounds(400.0, 80.0);
+        let second_line = 8.0 + LINE_HEIGHT + BLOCK_GAP;
+        context
+            .update_component(markdown, |markdown, _| {
+                markdown.pointer_down(caret_x(1), second_line, area);
+                markdown.pointer_move(caret_x(3), second_line, area);
+                markdown.pointer_up(caret_x(3), second_line, area);
+            })
+            .unwrap();
+        relayout(&mut context);
+        let text = context.world().canonical_layout_box(id).unwrap();
+        let selected = context.world().text_selection_bounds(id).unwrap();
+        assert!(selected.y > text.y + LINE_HEIGHT, "{selected:?} in {text:?}");
+        assert!(selected.x > text.x && selected.width > 0.0);
+        assert!(selected.height <= LINE_HEIGHT + 1.0);
+
+        context
+            .scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 60.0 })
+            .unwrap();
+        relayout(&mut context);
+        let scrolled = context.world().text_selection_bounds(id).unwrap();
+        assert!((scrolled.y - (selected.y - 60.0)).abs() < 0.5, "{scrolled:?}");
+        assert_eq!(scrolled.x, selected.x);
+    }
+
+    #[test]
     fn rich_text_projects_selection_after_pointer_drag() {
         let mut context = AppContext::new();
         let text = context

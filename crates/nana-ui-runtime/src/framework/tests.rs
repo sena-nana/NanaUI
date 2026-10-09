@@ -10051,6 +10051,78 @@ fn a_typed_context_refuses_to_build_a_builtin_from_a_tag() {
 }
 
 #[test]
+fn focus_within_listeners_hear_focus_enter_and_leave_their_subtree_once() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let page = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let row = context
+        .create_detached_component(document, Stack::row(0.0))
+        .unwrap();
+    let copy = context
+        .create_detached_component(document, Button::new("Copy"))
+        .unwrap();
+    let quote = context
+        .create_detached_component(document, Button::new("Quote"))
+        .unwrap();
+    let outside = context
+        .create_detached_component(document, Button::new("Next"))
+        .unwrap();
+    context.append_child(row, copy).unwrap();
+    context.append_child(row, quote).unwrap();
+    context.append_child(page, row).unwrap();
+    context.append_child(page, outside).unwrap();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&heard);
+    context
+        .on(row, move |_, event: &crate::FocusWithinChanged, _| {
+            log.lock().unwrap().push(event.focused);
+        })
+        .unwrap();
+
+    for target in [copy, quote, outside, quote] {
+        assert!(context.focus_node(document, target.stable_id()).unwrap());
+    }
+    context.clear_focus(document).unwrap();
+    assert_eq!(*heard.lock().unwrap(), [true, false, true, false]);
+
+    context.focus_node(document, copy.stable_id()).unwrap();
+    let mut despawn = MutationQueue::new();
+    despawn.despawn_subtree(row.stable_id());
+    context.commit_mutations(despawn).unwrap();
+    assert_eq!(context.world().focused(document), None);
+    assert_eq!(heard.lock().unwrap().len(), 5);
+}
+
+#[test]
+fn a_focus_within_listener_busy_updating_hears_the_move_when_it_finishes() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let row = context.create_component(document, Stack::row(0.0)).unwrap();
+    let copy = context
+        .create_detached_component(document, Button::new("Copy"))
+        .unwrap();
+    context.append_child(row, copy).unwrap();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&heard);
+    context
+        .on(row, move |_, event: &crate::FocusWithinChanged, _| {
+            log.lock().unwrap().push(event.focused);
+        })
+        .unwrap();
+
+    context
+        .update_component(row, |_, cx| {
+            cx.mutations()
+                .request_focus(document, Some(copy.stable_id()));
+        })
+        .unwrap();
+    assert_eq!(context.world().focused(document), Some(copy.stable_id()));
+    assert_eq!(*heard.lock().unwrap(), [true]);
+}
+
+#[test]
 fn hover_listeners_hear_entry_and_exit_of_their_subtree_once() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

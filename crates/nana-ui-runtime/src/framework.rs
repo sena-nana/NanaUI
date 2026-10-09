@@ -59,19 +59,19 @@ use crate::Dialog;
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
     AnimationFrame, Button, Checkbox, Chip, CodeEditing, CommandPalette, ComponentView,
-    ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent, FormField,
-    FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton, LabeledValue, List, ListItem,
-    ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
-    NumberInput, OverlayChanged, OverlayHost, PointerHoverChanged, Popover, PopoverClosed,
-    PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeDragging,
-    RangeField, RangeInput, RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollLaidOut,
-    ScrollMetrics, ScrollOffset, ScrollView, ScrollViewportChanged, SearchDropdown,
-    SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
-    SidebarSection, SizeChanged, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea,
-    TextChanged, TextClamped, TextInput, TextInputState, TextPresenter, TextSelection,
-    ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
-    XYPadEvent,
+    ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent,
+    FocusWithinChanged, FormField, FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton,
+    LabeledValue, List, ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState,
+    MutationQueue, NodeKind, NumberChanged, NumberInput, OverlayChanged, OverlayHost,
+    PointerHoverChanged, Popover, PopoverClosed, PopoverToggled, Progress, ProgressCancelled,
+    RangeAdjustment, RangeChanged, RangeDragging, RangeField, RangeInput, RovingFocusIntent,
+    ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollMetrics, ScrollOffset, ScrollView,
+    ScrollViewportChanged, SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl,
+    SegmentedOption, SegmentedSelectionRequested, Select, SettingsCollapsibleCard,
+    SidebarFooterButton, SidebarRow, SidebarSection, SizeChanged, StableNodeId, Switch, Table,
+    TableCell, TableRow, Tabs, TextArea, TextChanged, TextClamped, TextInput, TextInputState,
+    TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError,
+    Workspace, XYPad, XYPadDragState, XYPadEvent,
     component_registry::{
         ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
         RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
@@ -657,6 +657,14 @@ type PointerHoverFn = Arc<
         + Sync,
 >;
 
+/// Emit [`FocusWithinChanged`] on a node whose concrete component type the
+/// caller no longer knows. Registered per type when a component is created.
+type FocusWithinFn = Arc<
+    dyn Fn(&mut AppContext, StableNodeId, FocusWithinChanged) -> Result<(), FrameworkError>
+        + Send
+        + Sync,
+>;
+
 /// Emit [`FileDropEvent`] on a node whose concrete component type the caller
 /// no longer knows. Registered per type when a component is created.
 type FileDropFn = Arc<
@@ -1075,6 +1083,14 @@ pub struct AppContext {
     pointer_extensions: HashMap<TypeId, &'static dyn hooks::ErasedPointer, crate::BuildIdHasher>,
     secondary_presses: HashMap<TypeId, SecondaryPressFn, crate::BuildIdHasher>,
     pointer_hovers: HashMap<TypeId, PointerHoverFn, crate::BuildIdHasher>,
+    focus_withins: HashMap<TypeId, FocusWithinFn, crate::BuildIdHasher>,
+    /// Per document, the focused node the focus-within listeners last heard
+    /// about and the listeners told it is inside them.
+    focus_within: HashMap<DocumentId, (StableNodeId, Vec<StableNodeId>)>,
+    /// Focus-within notices not yet delivered, some to a listener that is
+    /// out being updated.
+    pending_focus_within: Vec<(StableNodeId, bool)>,
+    draining_focus_within: bool,
     file_drops: HashMap<TypeId, FileDropFn, crate::BuildIdHasher>,
     /// [`reproject_erased`] per component type created through this context.
     reprojectors: HashMap<TypeId, ReprojectFn, crate::BuildIdHasher>,
@@ -1462,6 +1478,10 @@ impl AppContext {
             pointer_extensions: HashMap::default(),
             secondary_presses: HashMap::default(),
             pointer_hovers: HashMap::default(),
+            focus_withins: HashMap::default(),
+            focus_within: HashMap::new(),
+            pending_focus_within: Vec::new(),
+            draining_focus_within: false,
             file_drops: HashMap::default(),
             reprojectors: HashMap::default(),
             behaviors: HashMap::default(),
@@ -1987,6 +2007,7 @@ impl AppContext {
         }
         suspended?;
         self.end_drags_that_lost_their_capture(&lost_captures)?;
+        self.sync_focus_within_listeners()?;
         Ok(report)
     }
 
@@ -2441,6 +2462,83 @@ impl AppContext {
             }
         }
         Ok(())
+    }
+
+    /// Tell the focus-within listeners focus entered or left them, in every
+    /// document whose focus moved since they last heard.
+    fn sync_focus_within_listeners(&mut self) -> Result<(), FrameworkError> {
+        let mut moved = self
+            .focus_within
+            .iter()
+            .filter(|(document, (node, _))| self.world.focused(**document) != Some(*node))
+            .map(|(document, _)| *document)
+            .collect::<Vec<_>>();
+        moved.extend(
+            self.world
+                .focused_documents()
+                .filter(|document| !self.focus_within.contains_key(document)),
+        );
+        for document in moved {
+            let focused = self.world.focused(document);
+            let mut entered = Vec::new();
+            let mut current = focused;
+            while let Some(id) = current {
+                if self
+                    .event_handlers
+                    .contains_key(&(id, TypeId::of::<FocusWithinChanged>()))
+                {
+                    entered.push(id);
+                }
+                current = self.world.parent_id(id);
+            }
+            let left = match focused {
+                Some(node) => self.focus_within.insert(document, (node, entered.clone())),
+                None => self.focus_within.remove(&document),
+            }
+            .map(|(_, listeners)| listeners)
+            .unwrap_or_default();
+            self.pending_focus_within.extend(
+                left.iter()
+                    .filter(|id| !entered.contains(id))
+                    .map(|&id| (id, false)),
+            );
+            self.pending_focus_within.extend(
+                entered
+                    .iter()
+                    .filter(|id| !left.contains(id))
+                    .map(|&id| (id, true)),
+            );
+        }
+        self.drain_focus_within()
+    }
+
+    /// Deliver queued focus-within notices. One for a listener that is out
+    /// being updated waits for the end of that update.
+    fn drain_focus_within(&mut self) -> Result<(), FrameworkError> {
+        if self.draining_focus_within {
+            return Ok(());
+        }
+        self.draining_focus_within = true;
+        let mut outcome = Ok(());
+        let mut waiting = Vec::new();
+        while !self.pending_focus_within.is_empty() {
+            for (id, focused) in std::mem::take(&mut self.pending_focus_within) {
+                if !self.world.contains(id) {
+                    continue;
+                }
+                let Some(view) = self.views.get(&id) else {
+                    waiting.push((id, focused));
+                    continue;
+                };
+                let emit = self.focus_withins.get(&view.as_ref().type_id()).cloned();
+                if let Some(emit) = emit {
+                    outcome = outcome.and(emit(self, id, FocusWithinChanged { focused }));
+                }
+            }
+        }
+        self.pending_focus_within = waiting;
+        self.draining_focus_within = false;
+        outcome
     }
 
     fn enclosing_sidebar_row(&self, id: StableNodeId) -> Option<Entity<SidebarRow>> {
@@ -3510,8 +3608,10 @@ impl AppContext {
         let observed = self.follow_up_observers(entity.id, observers);
         own.and(observed)?;
         // A surface that asked to open or close while this view was out
-        // being updated asks again now that it is back.
+        // being updated asks again now that it is back, and a focus move it
+        // missed reaches it.
         self.drain_modal_syncs()?;
+        self.drain_focus_within()?;
         Ok(result)
     }
 

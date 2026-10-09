@@ -411,9 +411,9 @@ pub use tree_view::TreeView;
 pub use video::Video;
 pub use view_components::{
     Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, DialogCloseRequested,
-    DialogToggled, Divider, FileDropEvent, HostedTextarea, IconButton, IconButtonTooltip,
-    IconGlyph, List, ListItem, ListItemRole, ListItemSlots, NumberChanged, NumberInput,
-    OverlayChanged, OverlayClosing, OverlayHost, PointerHoverChanged, RangeAdjustment,
+    DialogToggled, Divider, FileDropEvent, FocusWithinChanged, HostedTextarea, IconButton,
+    IconButtonTooltip, IconGlyph, List, ListItem, ListItemRole, ListItemSlots, NumberChanged,
+    NumberInput, OverlayChanged, OverlayClosing, OverlayHost, PointerHoverChanged, RangeAdjustment,
     RangeChanged, RangeDragState, RangeDragging, RangeField, RangeInput, RangeMarker, ScrollAnchor,
     ScrollAxes, ScrollChanged, ScrollLaidOut, ScrollView, ScrollViewportChanged,
     ScrollbarDragState, SecondaryPress, SizeChanged, Stack, Switch, Table, TableCell,

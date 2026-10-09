@@ -235,6 +235,15 @@ impl AppContext {
                     })
                 })
             });
+        self.focus_withins
+            .entry(TypeId::of::<C>())
+            .or_insert_with(|| {
+                Arc::new(|context: &mut AppContext, id, focus| {
+                    context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {
+                        cx.emit(focus);
+                    })
+                })
+            });
         self.file_drops.entry(TypeId::of::<C>()).or_insert_with(|| {
             Arc::new(|context: &mut AppContext, id, event| {
                 context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {

@@ -348,6 +348,32 @@ impl UiWorld {
         self.project_input_bounds(id, self.component_layout_box(id)?)
     }
 
+    /// Where the selected text of a `NativeMarkdown` or `SelectableRichText`
+    /// shows in the viewport: the smallest box around every selected glyph,
+    /// through the scroll offsets and transforms above the node. `None`
+    /// without a selection, or for any other node.
+    ///
+    /// For anchoring a floating toolbar to a selection. Ask after the update
+    /// that changed the selection returns, and again after a scroll moves it.
+    pub fn text_selection_bounds(&self, id: StableNodeId) -> Option<LayoutBox> {
+        let selection = match self.component_geometry(id)? {
+            crate::ComponentGeometry::NativeMarkdown { selection, .. }
+            | crate::ComponentGeometry::SelectableRichText { selection, .. } => selection,
+            _ => return None,
+        };
+        let enclosing = selection.into_iter().reduce(|a, b| {
+            let left = a.x.min(b.x);
+            let top = a.y.min(b.y);
+            LayoutBox {
+                x: left,
+                y: top,
+                width: (a.x + a.width).max(b.x + b.width) - left,
+                height: (a.y + a.height).max(b.y + b.height) - top,
+            }
+        })?;
+        self.project_input_bounds(id, enclosing)
+    }
+
     /// Focus geometry follows compositor presentation, not the logical rest
     /// transform.
     pub fn focused_geometry(&self, document: DocumentId) -> Option<LayoutBox> {

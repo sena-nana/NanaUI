@@ -1684,6 +1684,18 @@ pub struct PointerHoverChanged {
     pub hovered: bool,
 }
 
+/// Keyboard focus entered (`focused`) or left this node's subtree.
+///
+/// Only nodes with a handler for it receive it, innermost first. Moving focus
+/// between two descendants of the same node does not repeat it. A row that
+/// reveals its tools on [`PointerHoverChanged`] reveals them on this too, so
+/// Tab can reach them. A listener being updated when focus moves hears it
+/// once its update finishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FocusWithinChanged {
+    pub focused: bool,
+}
+
 /// Platform file drag resolved onto a registered drop target.
 ///
 /// The framework picks the innermost accepting node and paints hover chrome.
