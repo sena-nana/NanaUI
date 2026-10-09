@@ -156,7 +156,9 @@ fn pack_caps(start: StrokeCap, end: StrokeCap) -> f32 {
 struct Uniforms {
     transform: [f32; 16],
     viewport_scale: f32,
-    _pad: [f32; 3],
+    /// The scene's corner curve exponent ([`nana_ui_core::CornerShape::exponent`]).
+    corner_exponent: f32,
+    _pad: [f32; 2],
 }
 
 pub(super) struct MeshRange {
@@ -554,6 +556,8 @@ pub(super) struct MeshPipeline {
     pending_clips: Vec<GpuClip>,
     clip_intern: HashMap<ClipInternKey, u32>,
     uploaded_clips: Vec<GpuClip>,
+    /// The scene's corner curve exponent, set each frame before upload.
+    corner_exponent: f32,
 }
 
 impl MeshPipeline {
@@ -721,7 +725,14 @@ impl MeshPipeline {
             pending_clips: Vec::new(),
             clip_intern: HashMap::new(),
             uploaded_clips: Vec::new(),
+            corner_exponent: 2.0,
         }
+    }
+
+    /// The scene's corner curve exponent, for the clips of the meshes and
+    /// paths pushed this frame.
+    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
+        self.corner_exponent = exponent;
     }
 
     pub(super) fn begin_frame(&mut self) {
@@ -1002,7 +1013,8 @@ impl MeshPipeline {
         let uniforms = Uniforms {
             transform: orthographic_scaled(physical_size[0], physical_size[1], viewport_scale),
             viewport_scale,
-            _pad: [0.0; 3],
+            corner_exponent: self.corner_exponent,
+            _pad: [0.0; 2],
         };
         // A write has a fixed cost far above these bytes; the size rarely changes.
         if self.uploaded_uniforms != Some(uniforms) {

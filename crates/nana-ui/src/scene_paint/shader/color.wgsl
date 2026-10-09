@@ -80,7 +80,8 @@ fn polygon_edge_distance(
 // How much of this fragment the clip keeps, 0 (discard) to 1. Every edge,
 // rectangle, rounded, elliptical or polygonal, ramps over one device pixel
 // like the quad's own edge. `pixels_per_world` is the scale factor for
-// logical `world`, 1 for a clip `for_physical_pixels`.
+// logical `world`, 1 for a clip `for_physical_pixels`; `corner_exponent`
+// shapes a rounded clip's corners as `rounded_box_distance` does.
 fn fragment_clip_coverage(
     world: vec2<f32>,
     rect: vec4<f32>,
@@ -93,6 +94,7 @@ fn fragment_clip_coverage(
     poly2: vec4<f32>,
     poly3: vec4<f32>,
     pixels_per_world: f32,
+    corner_exponent: f32,
 ) -> f32 {
     // `FragmentClip::PASS`, what most unclipped fragments carry, keeps all.
     if (polygon_count == 0u && corner_radius <= 0.0 && all(rect.zw >= vec2(1.0e7))) {
@@ -117,7 +119,11 @@ fn fragment_clip_coverage(
     }
     let half = rect.zw * 0.5;
     let radius = min(corner_radius, min(half.x, half.y));
-    var cover = clamp(0.5 - rounded_box_distance(rel - half, half, vec4(radius), dx, dy), 0.0, 1.0);
+    var cover = clamp(
+        0.5 - rounded_box_distance(rel - half, half, vec4(radius), dx, dy, corner_exponent),
+        0.0,
+        1.0,
+    );
     if (polygon_count >= 3u) {
         let edge = polygon_edge_distance(rel, polygon_count, poly0, poly1, poly2, poly3, dx, dy);
         let inside = point_in_clip_polygon(rel, polygon_count, poly0, poly1, poly2, poly3);
@@ -180,6 +186,23 @@ fn apply_color_filter_channels(
     return vec4(rgb, color.a * opacity);
 }
 
+// The length of a corner offset `q` (both components at least 0) under the
+// corner curve's norm: Euclidean for a circular arc (`exponent` 2), the
+// `exponent`-norm for the superellipse of CSS `corner-shape:
+// superellipse(k)`, `exponent = 2^k`. Taken over the larger component, so a
+// fragment far past the corner cannot overflow `pow`.
+fn corner_norm(q: vec2<f32>, exponent: f32) -> f32 {
+    if exponent <= 2.0 {
+        return length(q);
+    }
+    let m = max(q.x, q.y);
+    if m <= 0.0 {
+        return 0.0;
+    }
+    let u = q / m;
+    return m * pow(pow(u.x, exponent) + pow(u.y, exponent), 1.0 / exponent);
+}
+
 // Signed distance in device px from `p` to a rounded box of half extents
 // `half` and per-corner `radii` (in `rounded_box_sdf`'s order), all in the
 // local px `p` is measured in; `dx`/`dy` are that position's screen
@@ -187,8 +210,16 @@ fn apply_color_filter_channels(
 // on screen wins, which a distance taken in local px and scaled afterwards
 // gets wrong under an anisotropic transform; past a square corner the corner
 // is the nearest point. Both exact under any affine map, a rounded corner's
-// arc to first order along its normal.
-fn rounded_box_distance(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
+// curve to first order along its normal. `corner_exponent` shapes the
+// corners: 2 is a circular arc, more a superellipse (see `corner_norm`).
+fn rounded_box_distance(
+    p: vec2<f32>,
+    half: vec2<f32>,
+    radii: vec4<f32>,
+    dx: vec2<f32>,
+    dy: vec2<f32>,
+    corner_exponent: f32,
+) -> f32 {
     let pair = select(radii.yz, radii.xw, p.x > 0.0);
     let radius = select(pair.y, pair.x, p.y > 0.0);
     let q = abs(p) - half + radius;
@@ -205,6 +236,17 @@ fn rounded_box_distance(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, dx: vec
         }
     }
     if radius > 0.0 && all(q > vec2(0.0)) {
+        if corner_exponent > 2.0 {
+            // f = |q|_n - r, with |q|_n taken over the larger component as in
+            // `corner_norm`. Its gradient is (q / |q|_n)^(n - 1) per axis,
+            // signed like `v`; over that gradient's length on screen, f is
+            // device px, as the arc's below.
+            let m = max(q.x, q.y);
+            let u = q / m;
+            let norm = pow(pow(u.x, corner_exponent) + pow(u.y, corner_exponent), 1.0 / corner_exponent);
+            let g = pow(u / norm, vec2(corner_exponent - 1.0)) * s;
+            return (m * norm - radius) / max(length(vec2(dot(g, dx), dot(g, dy))), 1.0e-6);
+        }
         let n = normalize(v);
         return (length(q) - radius) / max(length(vec2(dot(n, dx), dot(n, dy))), 1.0e-6);
     }

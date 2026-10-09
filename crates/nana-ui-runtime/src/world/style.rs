@@ -806,7 +806,8 @@ impl UiWorld {
             self.mark_repaint(id);
         }
         let mut bits = DirtyMask::RENDER;
-        let metrics_changed = self.style_model.metrics != previous_metrics;
+        // A corner shape only paints: it moves no box.
+        let metrics_changed = !self.style_model.metrics.same_layout(&previous_metrics);
         if metrics_changed {
             bits |= DirtyMask::LAYOUT;
         }

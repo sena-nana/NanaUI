@@ -105,7 +105,8 @@ struct CompositeUniforms {
     quad_abcd: [f32; 4],
     quad_ef: [f32; 2],
     paint_index: u32,
-    _pad_end: u32,
+    /// The scene's corner curve exponent ([`nana_ui_core::CornerShape::exponent`]).
+    corner_exponent: f32,
 }
 
 const COMPOSITE_UNIFORM_SIZE: usize = 224;
@@ -149,6 +150,8 @@ pub(super) struct BackdropPipeline {
     uniform_slab: ManagedBuffer,
     uniform_slab_passes: u64,
     pending: Vec<BackdropRequest>,
+    /// The scene's corner curve exponent, set each frame before upload.
+    corner_exponent: f32,
 }
 
 impl BackdropPipeline {
@@ -349,6 +352,7 @@ impl BackdropPipeline {
             })),
             uniform_slab_passes: initial_passes,
             pending: Vec::new(),
+            corner_exponent: 2.0,
         }
     }
 
@@ -559,6 +563,12 @@ impl BackdropPipeline {
         self.pending.clear();
     }
 
+    /// The scene's corner curve exponent, for the frosted shapes and clips
+    /// pushed this frame.
+    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
+        self.corner_exponent = exponent;
+    }
+
     pub(super) fn needs_backdrop(&self) -> bool {
         !self.pending.is_empty()
     }
@@ -687,7 +697,7 @@ impl BackdropPipeline {
                 quad_abcd: request.quad_abcd,
                 quad_ef: request.quad_ef,
                 paint_index: request.paint_index,
-                _pad_end: 0,
+                corner_exponent: self.corner_exponent,
             };
             let composite_offset = Self::uniform_offset(slot, PASS_COMPOSITE);
             let composite_bytes = bytemuck::bytes_of(&composite_uniforms);

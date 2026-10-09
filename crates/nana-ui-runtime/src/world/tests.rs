@@ -8994,6 +8994,46 @@ fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
     assert!(!counters.is_paint_only());
 }
 
+/// A theme that changes only the corner shape repaints and lays nothing out:
+/// the shape moves no box.
+#[test]
+fn a_corner_shape_change_is_paint_only() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    let metrics = nana_ui_core::ThemeMetrics {
+        corner_shape: nana_ui_core::CornerShape::SQUIRCLE,
+        ..world.theme_metrics()
+    };
+    world.begin_frame_counters();
+    let mut tokens = MutationQueue::new();
+    tokens.set_theme_tokens(test_theme(
+        ThemeAppearance::Dark,
+        metrics,
+        nana_ui_core::SemanticPalette::dark(),
+        nana_ui_core::SemanticPalette::dark().surface,
+    ));
+    world.commit(tokens).unwrap();
+    world.end_frame_counters();
+
+    assert_eq!(
+        world.theme_metrics().corner_shape,
+        nana_ui_core::CornerShape::SQUIRCLE
+    );
+    let counters = world.last_theme_work_counters();
+    assert_eq!(counters.layout_nodes_from_style, 0);
+    assert_eq!(counters.paint_nodes_from_style, 1);
+    assert!(counters.is_paint_only());
+}
+
 /// Issue #100 §15: a retained frame that changed nothing must not walk or
 /// re-read the theme. `considered` counts nodes the pass evaluated, and it
 /// splits exactly into resolved plus skipped.

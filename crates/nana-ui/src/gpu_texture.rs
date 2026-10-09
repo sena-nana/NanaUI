@@ -26,7 +26,8 @@ var source: texture_2d<f32>;
 var source_sampler: sampler;
 
 struct LayerUniform {
-    // opacity, reserved, dest width, dest height
+    // opacity, the scene's corner curve exponent (2 is a circular arc), dest
+    // width, dest height
     params: vec4<f32>,
     // opaque flag, scale factor, dest tex width, dest tex height
     source: vec4<f32>,
@@ -77,8 +78,16 @@ struct VertexOutput {
 
 // The scene quads' `rounded_box_distance` (`color.wgsl`), so a HostTexture and
 // its sibling Quad share an edge: signed device px to a rounded box of half
-// extents `half`, `p` in local px with screen derivatives `dx`/`dy`.
-fn rounded_box_distance(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
+// extents `half`, `p` in local px with screen derivatives `dx`/`dy`, its
+// corners shaped by `corner_exponent` (2 is a circular arc).
+fn rounded_box_distance(
+    p: vec2<f32>,
+    half: vec2<f32>,
+    radii: vec4<f32>,
+    dx: vec2<f32>,
+    dy: vec2<f32>,
+    corner_exponent: f32,
+) -> f32 {
     let pair = select(radii.yz, radii.xw, p.x > 0.0);
     let radius = select(pair.y, pair.x, p.y > 0.0);
     let q = abs(p) - half + radius;
@@ -95,6 +104,14 @@ fn rounded_box_distance(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, dx: vec
         }
     }
     if radius > 0.0 && all(q > vec2(0.0)) {
+        if corner_exponent > 2.0 {
+            // The superellipse corner of `color.wgsl`, term for term.
+            let m = max(q.x, q.y);
+            let u = q / m;
+            let norm = pow(pow(u.x, corner_exponent) + pow(u.y, corner_exponent), 1.0 / corner_exponent);
+            let g = pow(u / norm, vec2(corner_exponent - 1.0)) * s;
+            return (m * norm - radius) / max(length(vec2(dot(g, dx), dot(g, dy))), 1.0e-6);
+        }
         let n = normalize(v);
         return (length(q) - radius) / max(length(vec2(dot(n, dx), dot(n, dy))), 1.0e-6);
     }
@@ -106,7 +123,7 @@ fn rounded_box_distance(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, dx: vec
 // `local`, ramping over one device pixel (`dx`/`dy`: its screen derivatives).
 fn box_cover(local: vec2<f32>, lo: vec2<f32>, size: vec2<f32>, radii: vec4<f32>, dx: vec2<f32>, dy: vec2<f32>) -> f32 {
     let p = -(local - lo - size * 0.5);
-    return clamp(0.5 - rounded_box_distance(p, size * 0.5, radii, dx, dy), 0.0, 1.0);
+    return clamp(0.5 - rounded_box_distance(p, size * 0.5, radii, dx, dy, layer.params.y), 0.0, 1.0);
 }
 
 fn to_world(local: vec2<f32>) -> vec2<f32> {
@@ -186,7 +203,11 @@ fn overflow_clip_coverage(world: vec2<f32>) -> f32 {
     let dx = layer.clip_inv_abcd.xy / scale;
     let dy = layer.clip_inv_abcd.zw / scale;
     let center = local - layer.clip_rect.xy - half;
-    return clamp(0.5 - rounded_box_distance(center, half, vec4(corner), dx, dy), 0.0, 1.0);
+    return clamp(
+        0.5 - rounded_box_distance(center, half, vec4(corner), dx, dy, layer.params.y),
+        0.0,
+        1.0,
+    );
 }
 
 fn gradient_axis(angle_deg: f32) -> vec2<f32> {
@@ -897,6 +918,8 @@ pub(crate) struct HostTextureLayer {
     checkerboard: bool,
     zoom: f32,
     sampling: nana_ui_core::ImageSampling,
+    /// The scene's corner curve exponent, for the rounded box and clip.
+    corner_exponent: f32,
 }
 
 impl HostTextureLayer {
@@ -919,6 +942,7 @@ impl HostTextureLayer {
             zoom: 1.0,
             mask: None,
             sampling: nana_ui_core::ImageSampling::Resample,
+            corner_exponent: 2.0,
         }
     }
 
@@ -968,6 +992,17 @@ impl HostTextureLayer {
             corner_radius.max(0.0)
         } else {
             0.0
+        };
+        self
+    }
+
+    /// Shape the rounded box and clip as the sibling Quad's corners are: the
+    /// scene's [`nana_ui_core::CornerShape::exponent`].
+    pub fn with_corner_exponent(mut self, exponent: f32) -> Self {
+        self.corner_exponent = if exponent.is_finite() {
+            exponent.max(2.0)
+        } else {
+            2.0
         };
         self
     }
@@ -1519,7 +1554,7 @@ fn make_layer_uniform(
     LayerUniform {
         params: [
             layer.opacity,
-            0.0,
+            layer.corner_exponent,
             bounds.width.max(0.0),
             bounds.height.max(0.0),
         ],

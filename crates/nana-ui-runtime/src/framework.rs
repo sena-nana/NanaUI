@@ -2076,7 +2076,7 @@ impl AppContext {
         if *self.world.installed_theme() == *theme {
             return Ok(false);
         }
-        let metrics_changed = self.world.theme_metrics() != theme.metrics();
+        let metrics_changed = !self.world.theme_metrics().same_layout(&theme.metrics());
         let recipes_changed = self.world.theme().recipes() != theme.recipes();
         let mut queue = MutationQueue::new();
         queue.set_theme_tokens(theme);

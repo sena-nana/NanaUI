@@ -1230,6 +1230,10 @@ pub struct UiScene {
     /// this id. Never zero: two freshly created scenes must not share an
     /// identity.
     instance: u64,
+    /// How every rounded corner of this scene is shaped: the installed
+    /// theme's, set by the document that extracts into the scene. See
+    /// [`UiScene::corner_shape`].
+    corner_shape: nana_ui_core::CornerShape,
 }
 
 impl Default for UiScene {
@@ -1257,6 +1261,7 @@ impl Default for UiScene {
             glyph_live: NodeMap::default(),
             glyph_objects: NodeMap::default(),
             instance: next_scene_instance(),
+            corner_shape: nana_ui_core::CornerShape::Round,
         }
     }
 }
@@ -1293,6 +1298,7 @@ impl Clone for UiScene {
             glyph_live: self.glyph_live.clone(),
             glyph_objects: self.glyph_objects.clone(),
             instance: next_scene_instance(),
+            corner_shape: self.corner_shape,
         }
     }
 }
@@ -1332,6 +1338,23 @@ impl UiScene {
     /// rebuilding the same answer every frame.
     pub const fn projection_revision(&self) -> (u64, u64) {
         (self.instance, self.attribute_epoch)
+    }
+
+    /// How every rounded corner in this scene is shaped. Primitives carry
+    /// only their radii; a painter reads the shape once per frame.
+    pub const fn corner_shape(&self) -> nana_ui_core::CornerShape {
+        self.corner_shape
+    }
+
+    /// Shape every rounded corner. The document that extracts into the scene
+    /// sets its installed theme's shape here. A change is a new
+    /// [`Self::instance_id`], so a painter does not reuse a frame it painted
+    /// with the old shape.
+    pub fn set_corner_shape(&mut self, shape: nana_ui_core::CornerShape) {
+        if self.corner_shape != shape {
+            self.corner_shape = shape;
+            self.instance = next_scene_instance();
+        }
     }
 
     pub fn is_empty(&self) -> bool {

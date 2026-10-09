@@ -5,6 +5,8 @@ use crate::{HostTextureBinding, PhysicalRect};
 
 pub(super) struct HostTexturePipeline {
     pipeline: GpuTexturePipeline,
+    /// The scene's corner curve exponent, set each frame before prepare.
+    corner_exponent: f32,
 }
 
 pub(super) struct PreparedHostTexture {
@@ -40,7 +42,14 @@ impl HostTexturePipeline {
                 Some(policy),
                 Some(gpu),
             ),
+            corner_exponent: 2.0,
         }
+    }
+
+    /// The scene's corner curve exponent, for the host textures prepared
+    /// this frame.
+    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
+        self.corner_exponent = exponent;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -89,7 +98,8 @@ impl HostTexturePipeline {
                 .with_mask(mask)
                 .with_checkerboard(checkerboard)
                 .with_zoom(zoom)
-                .with_sampling(sampling),
+                .with_sampling(sampling)
+                .with_corner_exponent(self.corner_exponent),
         );
         primitive.prepare(
             &mut self.pipeline,

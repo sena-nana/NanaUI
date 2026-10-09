@@ -73,6 +73,8 @@ const ICON_SHADER: &str = concat!(
     r#"
 struct Globals {
     transform: mat4x4<f32>,
+    // The scene's corner curve exponent: 2 is a circular arc (`corner_norm`).
+    corner_exponent: f32,
 }
 
 @group(0) @binding(0)
@@ -105,6 +107,8 @@ struct VsOut {
     // The glyph's cell in the atlas: the taps a shrunk glyph averages stay in
     // it rather than read a neighbour.
     @location(6) @interpolate(flat) cell: vec4<f32>,
+    // `globals.corner_exponent`: the uniform is bound to the vertex stage only.
+    @location(7) @interpolate(flat) corner_exponent: f32,
 }
 
 @vertex
@@ -118,6 +122,7 @@ fn vs_main(input: VsIn) -> VsOut {
     out.clip_inv_abcd = input.clip_inv_abcd;
     out.clip_inv_ef = input.clip_inv_ef;
     out.cell = input.cell;
+    out.corner_exponent = globals.corner_exponent;
     return out;
 }
 
@@ -162,6 +167,7 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
         vec4<f32>(0.0),
         vec4<f32>(0.0),
         1.0,
+        input.corner_exponent,
     );
     if clip_cover <= 0.0 {
         discard;
@@ -176,6 +182,9 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct Uniforms {
     transform: [f32; 16],
+    /// The scene's corner curve exponent ([`nana_ui_core::CornerShape::exponent`]).
+    corner_exponent: f32,
+    _pad: [f32; 3],
 }
 
 #[repr(C)]
@@ -247,7 +256,10 @@ pub(super) struct IconPipeline {
     pending_vertices: Vec<IconVertex>,
     uploaded_vertices: Vec<IconVertex>,
     physical_size: [u32; 2],
-    uploaded_size: Option<[u32; 2]>,
+    /// The scene's corner curve exponent, set each frame before upload.
+    corner_exponent: f32,
+    /// The target size and corner exponent the uniforms were written with.
+    uploaded_globals: Option<([u32; 2], f32)>,
     frame_slots: Vec<FrameSlot>,
     atlas: Atlas,
     entries: HashMap<AtlasKey, AtlasEntry>,
@@ -446,7 +458,8 @@ impl IconPipeline {
             pending_vertices: Vec::new(),
             uploaded_vertices: Vec::new(),
             physical_size: [0; 2],
-            uploaded_size: None,
+            corner_exponent: 2.0,
+            uploaded_globals: None,
             frame_slots: Vec::new(),
             atlas,
             entries: HashMap::new(),
@@ -461,6 +474,12 @@ impl IconPipeline {
         self.frame_keys.clear();
         self.exhausted = false;
         self.physical_size = physical_size;
+    }
+
+    /// The scene's corner curve exponent, for the clips of the icons pushed
+    /// this frame.
+    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
+        self.corner_exponent = exponent;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -561,9 +580,12 @@ impl IconPipeline {
         if self.pending_vertices.is_empty() {
             return;
         }
-        if self.uploaded_size != Some(self.physical_size) {
+        let globals = (self.physical_size, self.corner_exponent);
+        if self.uploaded_globals != Some(globals) {
             let uniforms = Uniforms {
                 transform: orthographic(self.physical_size[0], self.physical_size[1]),
+                corner_exponent: self.corner_exponent,
+                _pad: [0.0; 3],
             };
             let uniform_bytes = bytemuck::bytes_of(&uniforms);
             if let Some(work) = work {
@@ -571,7 +593,7 @@ impl IconPipeline {
             } else {
                 queue.write_buffer(&self.uniforms, 0, uniform_bytes);
             }
-            self.uploaded_size = Some(self.physical_size);
+            self.uploaded_globals = Some(globals);
         }
         if self.pending_vertices.len() > self.vertex_capacity {
             self.uploaded_vertices.clear();
@@ -1213,7 +1235,8 @@ pub(super) struct IconPipelineTarget {
     pending_vertices: Vec<IconVertex>,
     uploaded_vertices: Vec<IconVertex>,
     physical_size: [u32; 2],
-    uploaded_size: Option<[u32; 2]>,
+    /// The target size and corner exponent the uniforms were written with.
+    uploaded_globals: Option<([u32; 2], f32)>,
     frame_slots: Vec<FrameSlot>,
     atlas: Atlas,
     entries: HashMap<AtlasKey, AtlasEntry>,
@@ -1254,7 +1277,7 @@ impl IconPipeline {
                 pending_vertices: Vec::new(),
                 uploaded_vertices: Vec::new(),
                 physical_size: [0; 2],
-                uploaded_size: None,
+                uploaded_globals: None,
                 frame_slots: Vec::new(),
                 atlas: new_atlas(device, &self.atlas_layout, &self.sampler, ATLAS_START_PX),
                 entries: HashMap::new(),
@@ -1269,7 +1292,7 @@ impl IconPipeline {
         std::mem::swap(&mut self.pending_vertices, &mut target.pending_vertices);
         std::mem::swap(&mut self.uploaded_vertices, &mut target.uploaded_vertices);
         std::mem::swap(&mut self.physical_size, &mut target.physical_size);
-        std::mem::swap(&mut self.uploaded_size, &mut target.uploaded_size);
+        std::mem::swap(&mut self.uploaded_globals, &mut target.uploaded_globals);
         std::mem::swap(&mut self.frame_slots, &mut target.frame_slots);
         std::mem::swap(&mut self.atlas, &mut target.atlas);
         std::mem::swap(&mut self.entries, &mut target.entries);

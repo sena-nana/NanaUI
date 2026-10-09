@@ -174,6 +174,7 @@ fn solid_fs_main(
         vec4<f32>(0.0),
         vec4<f32>(0.0),
         globals.scale,
+        globals.corner_exponent,
     );
     if clip_cover <= 0.0 {
         discard;
@@ -209,7 +210,14 @@ fn solid_fs_main(
 
     let outer_p = -(input.local_pos - input.pos - input.scale * 0.5);
     let half = input.scale * 0.5;
-    let edge = rounded_box_distance(outer_p, half, input.border_radius, local_dx, local_dy);
+    let edge = rounded_box_distance(
+        outer_p,
+        half,
+        input.border_radius,
+        local_dx,
+        local_dy,
+        globals.corner_exponent,
+    );
 
     if (max(max(input.border_widths.x, input.border_widths.y), max(input.border_widths.z, input.border_widths.w)) > 0.0) {
         let inner_shift = vec2(
@@ -234,7 +242,14 @@ fn solid_fs_main(
         );
         inner_radii = min(inner_radii, vec4(min(inner_size.x, inner_size.y) * 0.5));
         let inner_p = outer_p + inner_shift;
-        let inner_dist = rounded_box_distance(inner_p, inner_size * 0.5, inner_radii, local_dx, local_dy);
+        let inner_dist = rounded_box_distance(
+            inner_p,
+            inner_size * 0.5,
+            inner_radii,
+            local_dx,
+            local_dy,
+            globals.corner_exponent,
+        );
         let lp = input.local_pos - input.pos;
         let dt = select(1e8, lp.y / max(input.border_widths.x, 1e-4), input.border_widths.x > 0.0);
         let dr = select(1e8, (input.scale.x - lp.x) / max(input.border_widths.y, 1e-4), input.border_widths.y > 0.0);
@@ -302,6 +317,7 @@ fn solid_fs_main(
             input.border_radius + outline_px,
             local_dx,
             local_dy,
+            globals.corner_exponent,
         );
         let cover = clamp(0.5 - outline_edge, 0.0, 1.0);
         let outline_premult = premultiply(paint.outline_color);
@@ -329,13 +345,19 @@ fn solid_fs_main(
         // Distance past the shadow's edge, away from where it paints: local
         // px for the blur, device px for an unblurred edge.
         let flip = select(1.0, -1.0, inset);
-        let shadow_dist = rounded_box_sdf(shadow_p * 2.0, shadow_size, shadow_radius * 2.0) / 2.0 * flip;
+        let shadow_dist = rounded_box_sdf(
+            shadow_p * 2.0,
+            shadow_size,
+            shadow_radius * 2.0,
+            globals.corner_exponent,
+        ) / 2.0 * flip;
         let shadow_edge = rounded_box_distance(
             shadow_p,
             shadow_size * 0.5,
             shadow_radius,
             local_dx,
             local_dy,
+            globals.corner_exponent,
         ) * flip;
         // A blur ramps from full strength `blur` inside the edge to none `blur`
         // past it, as the Path shadow's band, and scales with the transform; an

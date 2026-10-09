@@ -29,7 +29,8 @@ struct CompositeUniforms {
     quad_abcd: vec4<f32>,
     quad_ef: vec2<f32>,
     paint_index: u32,
-    _pad_end: u32,
+    // The scene's corner curve exponent: 2 is a circular arc (`corner_norm`).
+    corner_exponent: f32,
 }
 
 @group(0) @binding(2)
@@ -102,6 +103,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         composite.clip_poly2,
         composite.clip_poly3,
         1.0,
+        composite.corner_exponent,
     );
     if clip_cover <= 0.0 {
         discard;
@@ -130,6 +132,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         composite.corner_radius,
         local_dx,
         local_dy,
+        composite.corner_exponent,
     );
     var alpha = clamp(0.5 - edge, 0.0, 1.0) * clip_cover;
 

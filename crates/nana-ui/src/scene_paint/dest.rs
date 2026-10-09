@@ -144,7 +144,7 @@ fn pack_polygon(polygon: &[[f32; 2]; 8], count: u8) -> [[f32; 4]; 4] {
     packed
 }
 
-fn pack_group_slot(slot: &GroupSlot) -> [u8; GROUP_UNIFORM_SIZE as usize] {
+fn pack_group_slot(slot: &GroupSlot, corner_exponent: f32) -> [u8; GROUP_UNIFORM_SIZE as usize] {
     let mut bytes = [0u8; GROUP_UNIFORM_SIZE as usize];
     let fields = [
         (0, slot.opacity),
@@ -178,6 +178,7 @@ fn pack_group_slot(slot: &GroupSlot) -> [u8; GROUP_UNIFORM_SIZE as usize] {
     bytes[128..132].copy_from_slice(&slot.filter_hue.to_le_bytes());
     bytes[132..136].copy_from_slice(&slot.filter_blur.to_le_bytes());
     bytes[136..140].copy_from_slice(&slot.mix_blend.to_le_bytes());
+    bytes[140..144].copy_from_slice(&corner_exponent.to_le_bytes());
     bytes[144..148].copy_from_slice(&slot.drop_shadow_offset[0].to_le_bytes());
     bytes[148..152].copy_from_slice(&slot.drop_shadow_offset[1].to_le_bytes());
     bytes[152..156].copy_from_slice(&slot.drop_shadow_blur.to_le_bytes());
@@ -917,6 +918,7 @@ impl DestTarget {
         queue: &wgpu::Queue,
         layers: usize,
         slots: &[GroupSlot],
+        corner_exponent: f32,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         while self.group_layers.len() < layers {
@@ -927,7 +929,7 @@ impl DestTarget {
             self.resize_group_uniforms(device, needed, gpu_work);
         }
         for (index, slot) in slots.iter().enumerate() {
-            let bytes = pack_group_slot(slot);
+            let bytes = pack_group_slot(slot, corner_exponent);
             let offset = index as u64 * GROUP_UNIFORM_STRIDE;
             if let Some(work) = gpu_work {
                 work.write_buffer(queue, &self.group_uniforms, offset, &bytes);

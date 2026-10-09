@@ -51,6 +51,8 @@ struct PathVertexOutput {
     @location(6) @interpolate(flat) pixel_scale: f32,
     // 1 on an AA fringe or the interior it bounds, 0 on a shadow's band.
     @location(7) fringe: f32,
+    // `globals.corner_exponent`, bound to the vertex stage as the scale is.
+    @location(8) @interpolate(flat) corner_exponent: f32,
 }
 
 @vertex
@@ -64,6 +66,7 @@ fn path_vs_main(input: PathVertexInput) -> PathVertexOutput {
     out.coverage = input.coverage;
     out.clip_index = input.clip_index;
     out.pixel_scale = globals.viewport_scale;
+    out.corner_exponent = globals.corner_exponent;
     out.paint_pos = input.paint_pos;
     out.gradient = input.gradient;
     return out;
@@ -178,6 +181,7 @@ fn path_clip_cover(input: PathVertexOutput) -> f32 {
         clip.poly2,
         clip.poly3,
         input.pixel_scale,
+        input.corner_exponent,
     );
 }
 

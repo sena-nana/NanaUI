@@ -143,7 +143,9 @@ const _: () = assert!(std::mem::align_of::<QuadPaintData>() == 4);
 struct Uniforms {
     transform: [f32; 16],
     scale: f32,
-    _padding: [f32; 3],
+    /// The scene's corner curve exponent ([`nana_ui_core::CornerShape::exponent`]).
+    corner_exponent: f32,
+    _padding: [f32; 2],
 }
 
 pub(super) struct QuadPipeline {
@@ -176,6 +178,8 @@ pub(super) struct QuadPipeline {
     /// Physical px per logical px this frame: the grid a translated quad's
     /// position is put on (`clip::on_grid`).
     grid_scale: f32,
+    /// The scene's corner curve exponent, set each frame before upload.
+    corner_exponent: f32,
 }
 
 impl QuadPipeline {
@@ -410,7 +414,14 @@ impl QuadPipeline {
             motion_ids: (0, 0),
             motion_origin: [0.0, 0.0],
             grid_scale: 1.0,
+            corner_exponent: 2.0,
         }
+    }
+
+    /// The scene's corner curve exponent, for the corners and clips of the
+    /// quads pushed this frame.
+    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
+        self.corner_exponent = exponent;
     }
 
     pub(super) fn begin_frame(&mut self, scale: f32) {
@@ -783,7 +794,8 @@ impl QuadPipeline {
         let uniforms = Uniforms {
             transform: orthographic(physical_size[0], physical_size[1]),
             scale: scale_factor,
-            _padding: [0.0; 3],
+            corner_exponent: self.corner_exponent,
+            _padding: [0.0; 2],
         };
         // A write has a fixed cost far above these bytes; the size rarely changes.
         if self.uploaded_uniforms != Some(uniforms) {

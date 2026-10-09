@@ -4,7 +4,8 @@ struct Globals {
     // Logical → physical scale (`ScenePaintViewport.scale_factor`). Combined
     // with instance affine σ_min so the covering quad contains the AA band.
     viewport_scale: f32,
-    _pad0: f32,
+    // The scene's corner curve exponent: 2 is a circular arc (`corner_norm`).
+    corner_exponent: f32,
     _pad1: f32,
     _pad2: f32,
 }

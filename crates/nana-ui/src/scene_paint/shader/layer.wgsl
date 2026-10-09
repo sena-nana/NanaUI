@@ -20,7 +20,8 @@ struct LayerUniforms {
     filter_hue: f32,
     filter_blur: f32,
     mix_blend: u32,
-    _pad_blend: u32,
+    // The scene's corner curve exponent: 2 is a circular arc (`corner_norm`).
+    corner_exponent: f32,
     drop_shadow_offset: vec2<f32>,
     drop_shadow_blur: f32,
     filter_invert: f32,
@@ -86,6 +87,7 @@ fn layer_source(input: VertexOutput) -> vec4<f32> {
         layer.clip_poly2,
         layer.clip_poly3,
         1.0,
+        layer.corner_exponent,
     );
     if clip_cover <= 0.0 {
         discard;

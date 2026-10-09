@@ -1033,6 +1033,10 @@ impl SceneWgpuPainter {
             self.host_textures.invalidate_image_bindings();
         }
         let instance = scene.instance_id();
+        // Every rounded corner this frame paints takes the scene's shape. A
+        // change of shape is a new scene instance, so a reused batch or dest
+        // was painted with this one.
+        let corner_exponent = scene.corner_shape().exponent();
         // Also resolves this frame's `PreparedBatch` key, so nothing below
         // walks `FramePlan::custom_nodes` again.
         let resolved = validate_scene(scene, host_textures, gpu_renderers, self.gpu.generation())?;
@@ -1172,6 +1176,12 @@ impl SceneWgpuPainter {
             self.icons.begin_frame(dest_physical);
             self.text.begin_frame(dest_physical);
             self.backdrop.begin_frame();
+            self.quads.set_corner_exponent(corner_exponent);
+            self.meshes.set_corner_exponent(corner_exponent);
+            self.icons.set_corner_exponent(corner_exponent);
+            self.text.set_corner_exponent(corner_exponent);
+            self.backdrop.set_corner_exponent(corner_exponent);
+            self.host_textures.set_corner_exponent(corner_exponent);
 
             let mut commands = Vec::new();
             let mut batching = Batching::default();
@@ -2076,6 +2086,7 @@ impl SceneWgpuPainter {
                 &self.queue,
                 max_group_depth,
                 &group_slots_uniforms,
+                corner_exponent,
                 Some(&gpu_work),
             );
         }

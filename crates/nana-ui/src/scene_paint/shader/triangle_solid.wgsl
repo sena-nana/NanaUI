@@ -47,6 +47,8 @@ struct SolidVertexOutput {
     @location(7) @interpolate(flat) affine_ef: vec2<f32>,
     // `globals.viewport_scale`: the uniform is bound to the vertex stage only.
     @location(8) @interpolate(flat) pixel_scale: f32,
+    // `globals.corner_exponent`, for the same reason.
+    @location(9) @interpolate(flat) corner_exponent: f32,
 }
 
 fn unit_corner(vertex_index: u32) -> vec2<f32> {
@@ -187,6 +189,7 @@ fn solid_vs_main(
     out.world_pos = world;
     out.clip_index = input.clip_index;
     out.pixel_scale = globals.viewport_scale;
+    out.corner_exponent = globals.corner_exponent;
     out.p0 = input.p0;
     out.p1 = input.p1;
     out.radii_caps = vec4<f32>(input.radii, cap0, cap1);
@@ -278,6 +281,7 @@ fn stroke_clip_and_distance(input: SolidVertexOutput) -> vec2<f32> {
         clip.poly2,
         clip.poly3,
         input.pixel_scale,
+        input.corner_exponent,
     );
     if cover <= 0.0 {
         discard;

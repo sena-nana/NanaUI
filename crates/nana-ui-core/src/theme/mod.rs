@@ -198,6 +198,50 @@ pub struct ThemeMetrics {
     /// loads.
     #[serde(default)]
     pub switch: SwitchMetrics,
+    /// How every rounded corner is shaped, whatever its radius. Painted only:
+    /// see [`CornerShape`]. `serde(default)` so a metrics blob written before
+    /// this field still loads with round corners.
+    #[serde(default)]
+    pub corner_shape: CornerShape,
+}
+
+/// How a rounded corner is shaped: CSS `corner-shape`, for every corner the
+/// installed theme paints.
+///
+/// A corner of radius `r` follows `|x / r|^n + |y / r|^n = 1` with `n = 2^k`
+/// for [`Self::Superellipse`]`(k)`, the parameter of CSS `superellipse(k)`:
+/// `k = 1` is the circular arc of [`Self::Round`], `k = 2` the squircle. The
+/// corner keeps its box whatever its shape, so a shape-only theme change
+/// repaints and lays nothing out again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub enum CornerShape {
+    /// Circular arcs: CSS `corner-shape: round`.
+    #[default]
+    Round,
+    /// CSS `corner-shape: superellipse(k)`, `k` in
+    /// [`Self::SUPERELLIPSE_RANGE`].
+    Superellipse(f32),
+}
+
+impl CornerShape {
+    /// CSS `corner-shape: squircle`, which is `superellipse(2)`.
+    pub const SQUIRCLE: Self = Self::Superellipse(2.0);
+    /// The `k` a theme may ask for: from the round arc to all but square.
+    pub const SUPERELLIPSE_RANGE: std::ops::RangeInclusive<f32> = 1.0..=4.0;
+
+    /// The exponent `n` of the corner curve: 2 for a circular arc. A `k` the
+    /// theme compiler would refuse is read as the nearest one it accepts, and
+    /// a non-finite one as round.
+    pub fn exponent(self) -> f32 {
+        match self {
+            Self::Round => 2.0,
+            Self::Superellipse(k) if k.is_finite() => 2f32.powf(k.clamp(
+                *Self::SUPERELLIPSE_RANGE.start(),
+                *Self::SUPERELLIPSE_RANGE.end(),
+            )),
+            Self::Superellipse(_) => 2.0,
+        }
+    }
 }
 
 /// Switch track geometry, in logical pixels.
@@ -451,6 +495,7 @@ pub const UI_METRICS: ThemeMetrics = ThemeMetrics {
     large_control_padding_x: space::XXL,
     scrollbar: crate::scrollbar::SCROLLBAR_METRICS,
     switch: SWITCH_METRICS,
+    corner_shape: CornerShape::Round,
 };
 
 impl Default for ThemeMetrics {
@@ -491,6 +536,15 @@ impl ThemeMetrics {
     /// Large control horizontal inset.
     pub const fn large_control_padding_x(self) -> f32 {
         self.large_control_padding_x
+    }
+
+    /// Whether `other` lays a document out the same: it differs from these
+    /// metrics in [`Self::corner_shape`] at most, which only paints.
+    pub fn same_layout(&self, other: &Self) -> bool {
+        Self {
+            corner_shape: other.corner_shape,
+            ..*self
+        } == *other
     }
 }
 
@@ -601,5 +655,60 @@ mod tests {
         let restored: super::ThemeMetrics =
             serde_json::from_value(value).expect("legacy metrics restore");
         assert_eq!(restored, super::UI_METRICS);
+    }
+
+    /// Metrics written before corners had a shape load round, and a shaped
+    /// one survives the round trip.
+    #[test]
+    fn corner_shape_defaults_to_round_and_round_trips() {
+        use super::CornerShape;
+        let encoded = serde_json::to_string(&super::UI_METRICS).expect("metrics serializes");
+        let mut value: serde_json::Value = serde_json::from_str(&encoded).expect("json");
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("corner_shape");
+        let restored: super::ThemeMetrics =
+            serde_json::from_value(value).expect("legacy metrics restore");
+        assert_eq!(restored.corner_shape, CornerShape::Round);
+
+        let shaped = super::ThemeMetrics {
+            corner_shape: CornerShape::SQUIRCLE,
+            ..super::UI_METRICS
+        };
+        let encoded = serde_json::to_string(&shaped).expect("metrics serializes");
+        let restored: super::ThemeMetrics = serde_json::from_str(&encoded).expect("restores");
+        assert_eq!(restored, shaped);
+    }
+
+    /// `superellipse(k)` is the curve of exponent `2^k`; a `k` outside what a
+    /// theme may ask for reads as the nearest one, and a broken one as round.
+    #[test]
+    fn corner_shape_exponent_follows_css_superellipse() {
+        use super::CornerShape;
+        assert_eq!(CornerShape::Round.exponent(), 2.0);
+        assert_eq!(CornerShape::Superellipse(1.0).exponent(), 2.0);
+        assert_eq!(CornerShape::SQUIRCLE.exponent(), 4.0);
+        assert_eq!(CornerShape::Superellipse(3.0).exponent(), 8.0);
+        assert_eq!(CornerShape::Superellipse(9.0).exponent(), 16.0);
+        assert_eq!(CornerShape::Superellipse(0.0).exponent(), 2.0);
+        assert_eq!(CornerShape::Superellipse(f32::NAN).exponent(), 2.0);
+    }
+
+    /// A shape-only change lays nothing out again; any other metric does.
+    #[test]
+    fn only_the_corner_shape_keeps_the_same_layout() {
+        let base = super::UI_METRICS;
+        let shaped = super::ThemeMetrics {
+            corner_shape: super::CornerShape::SQUIRCLE,
+            ..base
+        };
+        assert!(base.same_layout(&shaped));
+        assert_ne!(base, shaped);
+        let taller = super::ThemeMetrics {
+            control_height: base.control_height + 4.0,
+            ..shaped
+        };
+        assert!(!base.same_layout(&taller));
     }
 }

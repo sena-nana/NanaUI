@@ -11,6 +11,9 @@ struct Globals {
     // The motion clock: whole seconds, the fraction (f32 bits), and the
     // per-glyph effect clock (seconds modulo an hour, f32 bits).
     motion: vec4<u32>,
+    // x: the scene's corner curve exponent, 2 for a circular arc
+    // (`corner_norm`), which a rounded clip takes.
+    corner: vec4<f32>,
 }
 
 @group(0) @binding(0)

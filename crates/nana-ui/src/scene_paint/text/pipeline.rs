@@ -266,6 +266,7 @@ fn shade(input: VsOut) -> TextShade {
             presentation.polygon[2],
             presentation.polygon[3],
             1.0,
+            globals.corner.x,
         );
         if clip_cover <= 0.0 {
             discard;
@@ -373,6 +374,9 @@ struct Globals {
     contrast: [f32; 8],
     /// [`MotionClock`]: whole seconds, fraction bits, effect-clock bits.
     motion: [u32; 4],
+    /// The scene's corner curve exponent in `x`
+    /// ([`nana_ui_core::CornerShape::exponent`]).
+    corner: [f32; 4],
 }
 
 /// Byte offset of [`Globals::motion`], written alone every presenting frame.
@@ -569,7 +573,8 @@ pub(super) struct TextTargetGpu {
     uploaded_motion: Option<MotionClock>,
     globals: wgpu::Buffer,
     globals_bind_group: Option<wgpu::BindGroup>,
-    uploaded_size: Option<[u32; 2]>,
+    /// The target size and corner exponent the globals were written with.
+    uploaded_globals: Option<([u32; 2], f32)>,
     /// GPU allocations this target could not avoid this frame.
     allocations: usize,
 }
@@ -823,11 +828,13 @@ impl TextGpu {
     ) -> TextUploadBytes {
         let mut rebind = false;
         let physical_size = frame.physical_size;
-        if target.uploaded_size != Some(physical_size) {
+        let written = (physical_size, frame.corner_exponent);
+        if target.uploaded_globals != Some(written) {
             let globals = Globals {
                 transform: orthographic(physical_size[0], physical_size[1]),
                 contrast: self.contrast.to_gpu(),
                 motion: target.uploaded_motion.unwrap_or_default().words(),
+                corner: [frame.corner_exponent, 0.0, 0.0, 0.0],
             };
             let global_bytes = bytemuck::bytes_of(&globals);
             if let Some(work) = work {
@@ -835,7 +842,7 @@ impl TextGpu {
             } else {
                 queue.write_buffer(&target.globals, 0, global_bytes);
             }
-            target.uploaded_size = Some(physical_size);
+            target.uploaded_globals = Some(written);
         }
         let mut bytes = TextUploadBytes::default();
         // Both ways: the arena and the order only change capacity inside a
@@ -1142,6 +1149,8 @@ pub(super) struct FrameUpload<'a> {
     /// The per-glyph presentation table this frame, word 0 reserved.
     pub fx: &'a [u32],
     pub uploaded_fx: &'a [u32],
+    /// The scene's corner curve exponent, for rounded clips.
+    pub corner_exponent: f32,
 }
 
 /// One coalesced run of arena or index slots to write, staged contiguously.
@@ -1446,7 +1455,7 @@ impl TextTargetGpu {
             // Replaced below, once the buffers the real layout needs exist.
             globals_bind_group: None,
             globals,
-            uploaded_size: None,
+            uploaded_globals: None,
             allocations: 0,
         };
         target.globals_bind_group = Some(target.bind(device, globals_layout));

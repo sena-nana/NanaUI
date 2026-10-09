@@ -113,6 +113,8 @@ CSS `font-family`（以及 weight 和 style）会映射到刚载入的 face。�
 
 主区域贴着展开的侧栏时，挨着侧栏的那两个角收成直角。另一侧保持页面圆角。这由工作区表面统一画。不靠页面自己设相同的圆角。
 
+圆角的形状是主题的一项：`ThemeMetrics.corner_shape`。默认 `CornerShape::Round`，是圆弧。`CornerShape::SQUIRCLE` 是 CSS `corner-shape: superellipse(2)`；`CornerShape::Superellipse(k)` 对应 `superellipse(k)`，`k` 取 1 到 4。用 `ThemeDefinition::with_corner_shape` 设，经 `set_theme_definition` 装进文档。它管这份文档里 GPU 画出的每一个圆角：控件和卡片自己的角、描边、阴影、`overflow` 圆角裁剪、毛玻璃、HostTexture、`Painter` 里没有裁剪的实心圆角矩形，全圆的胶囊也跟着变。`clip-path: inset() round` 同样跟着变，这一点和 CSS 不同。在 CPU 上三角化的圆角仍是圆弧：`Painter` 在裁剪里、用渐变或在非等比缩放下画的圆角矩形，以及窗口阴影。每份文档按自己的主题画，两扇窗口、离屏会话互不影响。只改形状不重排，只重画。
+
 ## 运动与浮层
 
 Runtime 侧栏折叠是 260ms。分组展开也是 260ms。缓动是 EaseInOutCubic。

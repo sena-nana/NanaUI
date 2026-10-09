@@ -863,6 +863,9 @@ pub(super) struct TextPipeline {
     /// to use their compatibility sRGB colors; only the run row changes.
     linear_color_override: Option<[f32; 4]>,
     paint_color_override: Option<nana_ui_core::PaintColor>,
+    /// The scene's corner curve exponent, for rounded clips: set each frame
+    /// before upload.
+    corner_exponent: f32,
 }
 
 impl TextPipeline {
@@ -927,6 +930,7 @@ impl TextPipeline {
             subpixel: GlyphRenderMode::Mask,
             linear_color_override: None,
             paint_color_override: None,
+            corner_exponent: 2.0,
         }
     }
 
@@ -1001,6 +1005,12 @@ impl TextPipeline {
         self.gpu.set_subpixel(device, mode != GlyphRenderMode::Mask);
         self.subpixel = mode;
         true
+    }
+
+    /// The scene's corner curve exponent, for the clips of the text drawn
+    /// this frame.
+    pub(super) fn set_corner_exponent(&mut self, exponent: f32) {
+        self.corner_exponent = exponent;
     }
 
     pub(super) fn begin_frame(&mut self, physical_size: [u32; 2]) {
@@ -2781,6 +2791,7 @@ impl TextPipeline {
                 uploaded_presentations: &target.uploaded_presentations,
                 fx: &target.fx,
                 uploaded_fx: &target.uploaded_fx,
+                corner_exponent: self.corner_exponent,
             },
             work,
         );

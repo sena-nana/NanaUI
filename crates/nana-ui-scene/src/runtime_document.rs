@@ -311,6 +311,12 @@ impl RuntimeDocument {
                 .time_stage_duration(FrameStage::Extract, started.elapsed());
             scene
         };
+        // The installed theme shapes every corner the scene paints. A theme
+        // install marks every node for render, so this lands with that delta.
+        let corner_shape = self.context.world().theme_metrics().corner_shape;
+        if self.scene.corner_shape() != corner_shape {
+            Arc::make_mut(&mut self.scene).set_corner_shape(corner_shape);
+        }
         {
             let world = self.context.world();
             let presentation = world.presentation_store();

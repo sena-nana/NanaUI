@@ -267,6 +267,9 @@ pub enum ThemeCompileError {
         token: &'static str,
         value: u16,
     },
+    /// A superellipse corner asked for a `k` outside
+    /// [`CornerShape::SUPERELLIPSE_RANGE`](super::CornerShape::SUPERELLIPSE_RANGE).
+    CornerShapeOutOfRange { theme: ThemeId, value: i32 },
     /// A transition that never advances is a disabled transition written by
     /// accident; say so rather than freezing a control mid-fade.
     ZeroDuration { theme: ThemeId, token: &'static str },
@@ -337,6 +340,10 @@ impl std::fmt::Display for ThemeCompileError {
             } => write!(
                 f,
                 "theme `{theme}` font weight `{token}` is outside 1..=1000 ({value})"
+            ),
+            Self::CornerShapeOutOfRange { theme, value } => write!(
+                f,
+                "theme `{theme}` corner shape superellipse is outside 1..=4 ({value} thousandths)"
             ),
             Self::ZeroDuration { theme, token } => {
                 write!(f, "theme `{theme}` duration `{token}` is zero")
@@ -453,6 +460,20 @@ impl Check<'_> {
             });
         }
     }
+
+    fn corner_shape(&mut self, shape: super::CornerShape) {
+        let super::CornerShape::Superellipse(k) = shape else {
+            return;
+        };
+        if self.finite("metrics.corner_shape", k)
+            && !super::CornerShape::SUPERELLIPSE_RANGE.contains(&k)
+        {
+            self.fail(ThemeCompileError::CornerShapeOutOfRange {
+                theme: self.theme.clone(),
+                value: thousandths(k),
+            });
+        }
+    }
 }
 
 impl ThemeDefinition {
@@ -483,6 +504,13 @@ impl ThemeDefinition {
     /// Replace the control metrics (radius, heights, insets, scrollbar).
     pub const fn with_metrics(mut self, metrics: ThemeMetrics) -> Self {
         self.tokens.metrics = metrics;
+        self.bump()
+    }
+
+    /// Shape every rounded corner: CSS `corner-shape` for the whole theme.
+    /// Leaves the radius steps as they are.
+    pub const fn with_corner_shape(mut self, shape: super::CornerShape) -> Self {
+        self.tokens.metrics.corner_shape = shape;
         self.bump()
     }
 
@@ -557,6 +585,7 @@ impl ThemeDefinition {
         for (name, value) in metrics_fields(tokens.metrics) {
             check.length(name, value);
         }
+        check.corner_shape(tokens.metrics.corner_shape);
         for (index, step) in tokens.spacing.steps().into_iter().enumerate() {
             check.length(SPACING_NAMES[index], step);
         }
@@ -1026,6 +1055,22 @@ mod tests {
         }
     }
 
+    /// Built-in themes keep round corners; a squircle theme compiles, bumps
+    /// its revision and reaches the compiled metrics with its radii intact.
+    #[test]
+    fn a_corner_shape_reaches_the_compiled_metrics() {
+        use super::super::CornerShape;
+        assert_eq!(
+            dark().compile().expect("compiles").metrics().corner_shape,
+            CornerShape::Round
+        );
+        let squircle = dark().with_corner_shape(CornerShape::SQUIRCLE);
+        assert!(squircle.generation.0 > dark().generation.0);
+        let metrics = squircle.compile().expect("compiles").metrics();
+        assert_eq!(metrics.corner_shape, CornerShape::SQUIRCLE);
+        assert!(metrics.same_layout(&UI_METRICS));
+    }
+
     #[test]
     fn custom_theme_compiles_with_custom_appearance_metadata() {
         let definition = ThemeDefinition::NANA_LIGHT
@@ -1295,6 +1340,21 @@ mod tests {
             frozen.compile(),
             Err(ThemeCompileError::ZeroDuration { token, .. }) if token == "motion.hover_color"
         ));
+
+        assert!(matches!(
+            dark()
+                .with_corner_shape(super::super::CornerShape::Superellipse(f32::INFINITY))
+                .compile(),
+            Err(ThemeCompileError::NotFinite { token, .. }) if token == "metrics.corner_shape"
+        ));
+        for k in [0.0, 4.5] {
+            assert!(matches!(
+                dark()
+                    .with_corner_shape(super::super::CornerShape::Superellipse(k))
+                    .compile(),
+                Err(ThemeCompileError::CornerShapeOutOfRange { .. })
+            ));
+        }
 
         let mut ghost_color = dark();
         ghost_color.tokens.palette.text = SemanticColor::rgba(2.0, 0.0, 0.0, 1.0);

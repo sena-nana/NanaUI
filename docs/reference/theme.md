@@ -124,6 +124,7 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 | `SurfacePadding` | 同上 | 面板 inset：`Panel` 写四边，`PanelX` 只写左右 | **保留**：卡片/设置组/表单表面用，不是 control |
 | `SquareSize` | 同上 | 方盒：`IconButton` 或 `Control(ControlSize)`，写 `min_width`/`min_height` | **保留**：icon button 默认走 `icon_button_size`，`size()` 才换成 ControlSize |
 | `ChromeRadii` | 同上 | 已解析的四档圆角，搭 `ExtractedNode` 运到 renderer | **保留**：让 renderer 只消费不解析，`nana-ui-scene` 因此一处都不再读 `UI_METRICS` |
+| `CornerShape` | [theme/mod.rs](../../crates/nana-ui-core/src/theme/mod.rs) | 圆角形状：`Round`（圆弧，默认）或 CSS `superellipse(k)`，由 `ThemeMetrics.corner_shape` 持有 | **场景级的值**，不像 `ChromeRadii` 搭 `ExtractedNode`：painter 按一次绘制写 uniform，而不是按图元——quad 的顶点属性和裁剪数据都已占满，逐图元携带要扩每条管线的实例结构。`RuntimeDocument` 每帧把它同步成 `UiScene::corner_shape`，变了就换 scene instance；只改形状不标 LAYOUT，主题安装照旧把全部节点标 RENDER，形状随同一帧的增量落地 |
 | `AppearanceSettings` | [settings.rs](../../crates/nana-ui-core/src/settings.rs) | 用户/系统 policy：radius ×4、window material、backdrop target/opacity、titlebar 跟随、workspace corners | **演进**为 #100 §11 的 policy overlay，不是第二套 theme |
 | `NodeStyle` / `InteractionStyle` / `SemanticPaint` | [nana-ui-runtime](../../crates/nana-ui-runtime/src) | 节点本地样式意图（语义色角色 + 圆角档位）+ 7 个交互状态的 paint overlay | **保留**，是 explicit local style intent 与 state 输入；意图字段是尺寸/颜色收敛的落点 |
 | `ComputedStyle` + `ResolvedStyle(Arc<ComputedStyle>, palette_epoch)` | [nana-ui-runtime](../../crates/nana-ui-runtime/src) | 继承解析结果 + 主题代 | **演进**为 #100 §6 的 `ResolvedStyle`（现在已经叫这个名字，但只覆盖继承与颜色，不覆盖 metrics/recipe） |
@@ -748,6 +749,7 @@ cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 | --- | --- | --- | --- |
 | Color | `SemanticPalette` | 全树 | 同左（直接持有，没有第二份） |
 | Control metrics | `ThemeMetrics` | 全树 | 同左 |
+| Corner shape | `CornerShape`（`ThemeMetrics.corner_shape`） | painter 每帧从 `UiScene::corner_shape` 读一次，写进 quad、mesh、图标、文字、backdrop、组和 HostTexture 各自的 uniform；圆角距离、描边、阴影和圆角裁剪都按它算 | 没有：圆角只有圆弧 |
 | Spacing | `SpacingTokens` | `space::*` 读它的 `DEFAULT` | 10 个裸 `const` |
 | Typography | `TypographyTokens` | `type_scale::*` / `UI_BASE_TEXT_SIZE` 读它的 `DEFAULT` | 13 个裸 `const` |
 | Border | `BorderTokens` | `HAIRLINE` 读它的 `DEFAULT` | 1 个裸 `const` |
