@@ -103,9 +103,9 @@ pub fn is_builtin(tag: &str) -> bool {
 
 /// Attributes of a built-in `tag` that are construction arguments rather
 /// than bindings: numbers the element function takes, `gap`, `of`, `key`,
-/// `ref`.
+/// `ref`, `labelled_by`.
 pub fn is_argument(tag: &str, attribute: &str) -> bool {
-    matches!(attribute, "key" | "ref")
+    matches!(attribute, "key" | "ref" | "labelled_by")
         || match tag {
             "Column" | "Row" => attribute == "gap",
             "Widget" => attribute == "of",
@@ -377,6 +377,18 @@ fn typed_number(value: &AttrValue, ty: &str) -> Option<TokenStream> {
             }
         }
         _ => None,
+    }
+}
+
+/// A `NodeRef` as `ref` and `labelled_by` take it: a string (`ref="input"`
+/// in `.vue`) names the variable, anything else is the expression itself.
+fn named_ref(value: &AttrValue, span: Span) -> syn::Result<TokenStream> {
+    match value {
+        AttrValue::Lit(Expr::Lit(syn::ExprLit {
+            lit: Lit::Str(name),
+            ..
+        })) => Ok(Ident::new(&name.value(), name.span()).into_token_stream()),
+        value => raw(value, span),
     }
 }
 
@@ -1257,15 +1269,15 @@ impl Gen<'_> {
                         continue;
                     }
                     if text == "ref" {
-                        // `ref="input"` (`.vue`) names the `NodeRef` as a string.
-                        let node_ref = match &attr.value {
-                            AttrValue::Lit(Expr::Lit(syn::ExprLit {
-                                lit: Lit::Str(name),
-                                ..
-                            })) => Ident::new(&name.value(), name.span()).into_token_stream(),
-                            value => raw(value, name.span())?,
-                        };
+                        let node_ref = named_ref(&attr.value, name.span())?;
                         out = quote!(#out.node_ref(#node_ref));
+                        continue;
+                    }
+                    if text == "labelled_by" {
+                        // The caption's `ref`, as `aria-labelledby` names an
+                        // id; or a node id, or a closure choosing one.
+                        let label = named_ref(&attr.value, name.span())?;
+                        out = quote!(#out.labelled_by(#label));
                         continue;
                     }
                     if STYLE_ROLES.contains(&text.as_str()) {
@@ -1489,6 +1501,10 @@ impl Gen<'_> {
     /// by it.
     fn check_name(&self, element: &Element, control: &Control) {
         let tag = control.tag;
+        // Another node's text names it.
+        if element.plain("labelled_by").is_some() {
+            return;
+        }
         let empty_text = |name: &str| match element.plain(name) {
             Some(attr) => matches!(&attr.value, AttrValue::Lit(Expr::Lit(syn::ExprLit {
                 lit: Lit::Str(text), ..

@@ -208,7 +208,9 @@ impl<C: ComponentView> NodePatch for NodeBindings<C> {
     }
 }
 
-/// A keyed list or conditional block that rebuilds part of its container.
+/// A binding kept at a node that needs the context to apply: a keyed list
+/// or conditional block rebuilding part of its container, a teleport placing
+/// its content, a node named by another ([`El::labelled_by`]).
 pub(crate) trait StructuralBinding: Send {
     fn update(
         &mut self,
@@ -720,6 +722,9 @@ pub struct El<C: ComponentView, K = ()> {
     /// Every [`NodeRef`] (an [`EntityRef`]'s among them) to record the node
     /// in once it is built.
     node_refs: Vec<NodeRef>,
+    /// The node whose text names this one ([`Self::labelled_by`]); boxed,
+    /// as most elements have none.
+    labelled_by: Option<Box<super::prop::PropSource<Option<StableNodeId>>>>,
     bindings: NodeBindings<C>,
     events: Vec<EventInstall<C>>,
     /// Properties that animate to their new value when a binding changes
@@ -744,6 +749,7 @@ pub fn widget<C: ComponentView>(component: C) -> El<C> {
         component,
         key: None,
         node_refs: Vec::new(),
+        labelled_by: None,
         bindings: NodeBindings::default(),
         events: Vec::new(),
         implicit: Vec::new(),
@@ -848,6 +854,17 @@ impl<C: ComponentView, K> El<C, K> {
         self.node_ref(entity_ref.node)
     }
 
+    /// Name this node for assistive technology by `label`'s text while it
+    /// has no non-empty name of its own (`aria-labelledby`): a select, a
+    /// slider or a bare switch beside the caption that says what it is for.
+    /// `label` is a [`NodeRef`], a node id or a closure choosing one,
+    /// declared before this element or after it; the name follows it and
+    /// the caption's text. See `view/labelled.rs`.
+    pub fn labelled_by(mut self, label: impl IntoProp<Option<StableNodeId>>) -> Self {
+        self.labelled_by = Some(Box::new(label.into_source()));
+        self
+    }
+
     /// The children, added in a block of ordinary Rust:
     ///
     /// ```ignore
@@ -875,6 +892,7 @@ impl<C: ComponentView, K> El<C, K> {
             component: self.component,
             key: self.key,
             node_refs: self.node_refs,
+            labelled_by: self.labelled_by,
             bindings: self.bindings,
             events: self.events,
             implicit: self.implicit,
@@ -943,6 +961,7 @@ impl<C: ComponentView, K> El<C, K> {
             mut component,
             key,
             node_refs,
+            labelled_by,
             mut bindings,
             events,
             mut implicit,
@@ -989,6 +1008,9 @@ impl<C: ComponentView, K> El<C, K> {
         }
         for node_ref in node_refs {
             node_ref.set(Some(id));
+        }
+        if let Some(label) = labelled_by {
+            super::labelled::bind(vb, id, *label, site);
         }
         if let Some(effect) = effect {
             reactive::set_effect_target(effect, EffectTarget::Node(id));

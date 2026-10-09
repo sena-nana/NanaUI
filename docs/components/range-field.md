@@ -42,7 +42,7 @@ slider(0.0, 100.0, 1.0).label("音量").model(volume)
 
 ## 轨道上的值和标签
 
-轨道旁默认画当前值和单位。`show_value(false)` 只留轨道，读屏仍能读到数值。`show_label(false)` 不画标签，轨道占满，标签仍是读屏名称。这两项不在 `<Slider>` 的字段表里，`slider` 上也没有同名方法。要改，在 `RangeField` 上调用这两个方法，或 `.bind(|field| field.show_value = false)`。
+轨道旁默认画当前值和单位。`show_value(false)` 只留轨道，读屏仍能读到数值。`show_label(false)` 不画标签，轨道占满，标签仍是读屏名称；模板里是 `<Slider label="音量" show_label={false}>`，`slider(..)` 上是 `.show_label(false)`。`show_value` 不在 `<Slider>` 的字段表里，`slider` 上也没有同名方法。要改，在 `RangeField` 上调用 `show_value(false)`，或 `.bind(|field| field.show_value = false)`。
 
 ## 细轨
 
@@ -55,7 +55,7 @@ Arc::make_mut(&mut seek.style.layout).height = Some(LengthSpec::Px(16.0));
 
 ## 读屏
 
-没人给滑块起名、又放进设置行时，读屏用行标签。自己有 `label` 时用标签。
+没人给滑块起名、又放进设置行时，读屏用行标签。自己有 `label` 时用标签。旁边另有可见标题时，`labelled_by={caption}`（`slider(..).labelled_by(caption)`）用那段标题的文字。
 
 ## 边界和翻页
 
@@ -72,7 +72,7 @@ Arc::make_mut(&mut seek.style.layout).height = Some(LengthSpec::Px(16.0));
 | `disabled` | `bool` | 字段 |
 | `min` / `max` / `step` | `f64` | `slider` 的三个参数。起点就是 `min`，内部是 `RangeField::new(minimum, minimum, maximum, step)` |
 | `show_value` | — | 不在 `<Slider>` 字段表里，`slider` 上也没有同名方法。默认在轨道旁画当前值和单位；`false` 只留轨道，读屏仍能读到数值 |
-| `show_label` | — | 同样不在字段表里，`slider` 上没有同名方法。`false` 不画标签，轨道占满，标签仍是读屏名称 |
+| `show_label` | `bool` | `false` 不画标签，轨道占满，标签仍是读屏名称 |
 | `page_step` | — | 翻页步进，默认是 `step` 的十倍 |
 | `rail` | `Option<f32>` | `rail(粗细)` 只画这么粗的细轨，横贯整个控件，没有标签、数值和内边距，圆点只在焦点可见时出现；控件高度就是命中区 |
 

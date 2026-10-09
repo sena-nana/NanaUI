@@ -79,6 +79,7 @@ macro_rules! for_each_control {
             Slider => slider(min: f64, max: f64, step: f64) for RangeField {
                 value: f64 = clamp,
                 label: Option<Arc<str>> = set,
+                show_label: bool = set,
                 disabled: bool = set,
             }
             with { on_input: RangeInput, on_change: RangeChanged }
@@ -125,6 +126,7 @@ macro_rules! for_each_control {
             Select => select() for Select {
                 value: Option<Arc<str>> = set,
                 options: Vec<SelectOption> = set,
+                label: Option<Arc<str>> = set,
                 placeholder: Option<Arc<str>> = set,
                 disabled: bool = set,
                 loading: bool = set,

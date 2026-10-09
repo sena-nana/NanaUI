@@ -600,6 +600,35 @@ let name = signal(String::new());
     assert_eq!(out.warnings.len(), 3, "{:?}", out.warnings);
 }
 
+/// A control named by a caption (`labelled-by` naming the caption's `ref`,
+/// as `aria-labelledby` names an id) has a name: no warning, and the ref is
+/// passed as written.
+#[test]
+fn a_control_named_by_a_caption_is_not_a_warning() {
+    let out = compile(&[(
+        "Field.vue",
+        r#"<script setup lang="rust">
+let caption = node_ref();
+let on = signal(false);
+</script>
+<template>
+  <Column>
+    <Text ref="caption">静音</Text>
+    <Switch labelled-by="caption" v-model="on" />
+    <Slider min="0" max="1" step="0.1" :labelled-by="caption" />
+  </Column>
+</template>"#,
+    )])
+    .unwrap();
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    let code = squash(&out.code);
+    assert_eq!(
+        code.matches(&squash(".labelled_by(caption)")).count(),
+        2,
+        "{code}"
+    );
+}
+
 #[test]
 fn hot_mode_moves_static_text_into_a_table_and_hashes_the_rest() {
     let view = r#"<script setup lang="rust">

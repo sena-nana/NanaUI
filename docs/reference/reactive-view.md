@@ -495,7 +495,7 @@ pub mod views {
 - 属性写法和 Vue 一致：`name="x"` 是字符串。`:name="表达式"` 是 Rust 表达式。`{{ 表达式 }}` 用 `Display` 插值。
 - 同一批编译的组件之间按 prop 名匹配参数。不按书写顺序：`@remove` 对应 `on_remove` 回调。子节点对应最后一个名为 `children` 的 prop。缺少的参数、多余的参数都是编译错误。
 - 具名插槽：子组件声明 `header: impl IntoView` 这样的视图参数。模板里用 `<slot name="header"/>` 放置（`<slot/>` 放 `children`）。父组件写 `<template #header>…</template>`。`#default` 等于其余子节点。插槽内容是按值传入的视图。只能放一次。也没有后备内容。
-- `ref="name"` 把元素的节点 id 写进脚本里的 `let name = node_ref();`。`on_mount(move |cx| …)` 在视图进树之后执行。可以拿它聚焦、读布局。
+- `ref="name"` 把元素的节点 id 写进脚本里的 `let name = node_ref();`。`on_mount(move |cx| …)` 在视图进树之后执行。可以拿它聚焦、读布局。`labelled-by="name"` 让控件用这个节点的文字当无障碍名字（`aria-labelledby`）。
 - 组件上的 `key` 落在组件的第一个根节点上（`keyed`）。不在这一批里的标签。按 `view!` 的规则调用同名的 Rust 函数。
 - `<style>`（写不写 `scoped` 都一样。总是只作用于本组件）在构建时编译。见下文"样式表"。模板里仍然要遵守 Rust 的所有权规则。例如同一个值既要传给组件又要被事件闭包使用时。得写 `todo.clone()`。
 - 生成的代码用 prettyplease 排版后写进 `$OUT_DIR/nana_views.rs`，同时写出版本化的 `$OUT_DIR/nana_views.map.json`。rustc 原生 JSON 诊断仍指向生成文件；把诊断逐行送给 `nana-sfc-remap <nana_views.map.json>` 后，primary/child span 会回指 `.vue` 文件、行和列。模板和脚本本身的错误（语法、标签不配对、缺 `key`、缺参数、computed 成环）在构建时报出。带文件、行、列。
@@ -596,6 +596,7 @@ impl ApplicationState for App {
 | props / emits | 函数参数 / `impl Fn(T)` 回调参数 |
 | slot / 具名 slot | `impl IntoView` 参数；`.vue` 里 `<slot name="x"/>` 与 `<template #x>` |
 | 模板 `ref` | `node_ref()` + `.node_ref(r)`；`.vue` 里 `ref="r"` |
+| `aria-labelledby` | `.labelled_by(r)`；模板 `labelled_by={r}`，`.vue` 里 `labelled-by="r"` |
 | `onMounted` | `on_mount(move \|cx\| …)` |
 | `provide` / `inject` | `provide(value)` / `use_context::<T>()` |
 | `onUnmounted` | `on_cleanup` |
@@ -800,7 +801,7 @@ fn page() -> impl IntoView {
 - 闭包绑定每个各自装箱一次。只有 `view!` 能看到的整段模板。才有机会把同一节点的闭包合成一个。
 - 按名字认识的内置控件只有 `nana-ui-view-schema` 控件表里的这些：`Text`、`Button`、`Checkbox`、`Switch`、`Slider`、`RangeSpan`、`TextInput`、`TextArea`、`NumberInput`、`Select`、`ListItem`、`Progress`、`Spinner`、`Divider`、`Thumbnail`、`Avatar`、`Texture`（`GpuTextureView`）、`IconButton`、`Chip`、`StatusBadge`、`EmptyState`（`#action` slot）、`LabeledValue`、`Tabs`、`TreeView`、`ColorField`、`ActionMenuItem`。外加 `Column`、`Row`、`Widget`。其他控件用 `widget(C)` 加 `.bind` / `.on`。
 
-**无障碍检查**：编译模板时。读屏器无法命名的控件会得到一条警告。不会编译失败。规则两条：`Button`、`Checkbox`、`Switch`、`ListItem` 没有文字（空的子节点或空的 `label`）。`TextInput`、`TextArea`、`NumberInput`、`Slider`、`Progress` 没写 `label`（它们的无障碍名字只来自 `label`。占位文字不算）。`.vue` 的警告经 `cargo:warning` 带行列打印。`view!` 在稳定版上没有警告接口。警告以"使用了已弃用常量"的形式出现在宏调用处。说明写在弃用提示里。
+**无障碍检查**：编译模板时。读屏器无法命名的控件会得到一条警告。不会编译失败。规则两条：`Button`、`Checkbox`、`Switch`、`ListItem` 没有文字（空的子节点或空的 `label`）。`TextInput`、`TextArea`、`NumberInput`、`Slider`、`Progress` 没写 `label`（它们的无障碍名字只来自 `label`。占位文字不算）。写了 `labelled_by` 的控件由那段文字起名，不报。`.vue` 的警告经 `cargo:warning` 带行列打印。`view!` 在稳定版上没有警告接口。警告以"使用了已弃用常量"的形式出现在宏调用处。说明写在弃用提示里。
 
 控件表是唯一来源：每条写明模板标签、元素函数及其参数、可绑定字段和类型、`v-model` 对应的字段和事件、事件方法。运行时由它生成 setter、`model` 和事件方法。`view!` 和 `.vue` 编译器由它得知哪些标签是内置的、接受哪些属性。写错的属性名、不存在的事件、对没有 `v-model` 的控件写 `v-model`。都在编译模板时报出行列。数值字段接受 `max="100"` 这样的字面量。生成带类型后缀的常量。没有数据的事件（`@activate`）接受 `|| …`。带数据的事件（`@change`、`@input`、`@submit`）接受 `|e| …`。`e` 的类型自动推断。不用标注。模板里的语句式写法两种都可以。编译器会生成对应的闭包。
 

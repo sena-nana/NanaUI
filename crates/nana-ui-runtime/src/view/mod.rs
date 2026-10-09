@@ -23,6 +23,7 @@ mod controls;
 mod each_virtual;
 mod error;
 mod hot;
+mod labelled;
 mod node;
 mod panes;
 mod prop;

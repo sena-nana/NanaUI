@@ -34,7 +34,46 @@ select().placeholder("语言").options(options).model(language)
 
 ## 加载、禁用和名字
 
-`loading` 和 `disabled` 可以是常量、信号或闭包。没有单独的 `label` 字段。放进设置行、又没人给它起名时，读屏仍按显示的文字命名；显示出来的选项是它的值。行标签存在时，无障碍名字用行标签，不再拿选项文字当名字。
+`loading` 和 `disabled` 可以是常量、信号或闭包。
+
+下拉框画出来的是它的值，不是名字。`label` 是它的名字：读屏说它是做什么的，不画出来（`aria-label`）。什么都没给时，读屏只能拿显示的选项当名字，读出「升序」而不是「排序方向」。显示出来的选项始终是它的值。
+
+:::api
+
+```rust view
+view! {
+    <Select label="排序方向" options={directions} v-model={direction} />
+}
+```
+
+```rust rust
+select().label("排序方向").options(directions).model(direction)
+```
+
+:::
+
+旁边已经有可见的字段标题时，不必再写一遍名字：`labelled_by` 指向那段标题（`aria-labelledby`），读屏用标题的文字，标题改了跟着改。标题写在下拉框前后都行，模板里写标题的 `ref`：
+
+:::api
+
+```rust view
+view! {
+    <Text ref={caption}>"排序方向"</Text>
+    <Select labelled_by={caption} options={directions} v-model={direction} />
+}
+```
+
+```rust rust
+let caption = node_ref();
+(
+    text("排序方向").node_ref(caption),
+    select().labelled_by(caption).options(directions).model(direction),
+)
+```
+
+:::
+
+放进设置行时，行标签同样给它起名。自己的 `label` 不为空时，用自己的。
 
 不写 `placeholder` 就是 `None`。类型是 `Option<Arc<str>>`。
 
@@ -52,6 +91,7 @@ select().placeholder("语言").options(options).model(language)
 | --- | --- | --- |
 | `value` | `Option<Arc<str>>` | 当前选中。`model` 在选中后写成 `Some(event.value)` |
 | `options` | `Vec<SelectOption>` | 也可以是这个类型的信号 |
+| `label` | `Option<Arc<str>>` | 读屏名字，不画出来。不写时由 `labelled_by` 或设置行起名，再没有就读显示的选项 |
 | `placeholder` | `Option<Arc<str>>` | 不写就是 `None` |
 | `disabled` | `bool` | 常量、信号或闭包 |
 | `loading` | `bool` | 常量、信号或闭包 |

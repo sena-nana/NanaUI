@@ -51,6 +51,11 @@ pub struct SelectChanged {
 pub struct Select {
     pub value: Option<Arc<str>>,
     pub options: Vec<SelectOption>,
+    /// What the field is for, said by assistive technology and never drawn
+    /// (`aria-label`): a select shows its value, not its name. `None` leaves
+    /// the name to whatever names the field (a settings row's label,
+    /// [`crate::view::El::labelled_by`]), else to the option it shows.
+    pub label: Option<Arc<str>>,
     pub placeholder: Option<Arc<str>>,
     pub size: ControlSize,
     pub disabled: bool,
@@ -74,6 +79,7 @@ impl Select {
         Self {
             value: value.map(Into::into),
             options: Vec::new(),
+            label: None,
             placeholder: None,
             size: ControlSize::Medium,
             disabled: false,
@@ -87,6 +93,13 @@ impl Select {
 
     pub fn options(mut self, options: impl IntoIterator<Item = SelectOption>) -> Self {
         self.options = options.into_iter().collect();
+        self
+    }
+
+    /// See [`Self::label`]; an empty name is none.
+    pub fn label(mut self, label: impl Into<Arc<str>>) -> Self {
+        let label = label.into();
+        self.label = (!label.is_empty()).then_some(label);
         self
     }
 
@@ -376,11 +389,11 @@ impl crate::ComponentView for Select {
             },
             AccessibilityState {
                 role: AccessibilityRole::ComboBox,
-                // Named by its field (a settings row's label, see
-                // `MutationQueue::set_labelled_by`), or by the option it shows
-                // through its text when nothing names it; the option shown
-                // is its value.
-                label: None,
+                // Its own name first; else named by its field (a settings
+                // row's label, see `MutationQueue::set_labelled_by`), or by
+                // the option it shows through its text when nothing names
+                // it. The option shown is its value either way.
+                label: self.label.clone(),
                 value: (!placeholder).then_some(label),
                 disabled: self.inactive(),
                 busy: self.loading,

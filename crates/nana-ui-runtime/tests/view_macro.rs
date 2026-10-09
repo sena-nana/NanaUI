@@ -1605,3 +1605,73 @@ fn a_range_span_binds_its_pair_both_ways_and_its_indicator_one_way() {
     cx.flush_reactive().unwrap();
     assert_eq!(span.get(), (0.4, 0.9));
 }
+
+/// A template names a control without drawing a caption for it: `label` on
+/// a select (`aria-label`), `labelled_by` naming the caption's `ref`
+/// (`aria-labelledby`) on any control, and `show_label={false}` on a slider
+/// whose label is only its name.
+#[test]
+fn a_template_names_controls_by_label_and_by_caption() {
+    use nana_ui_runtime::view::node_ref;
+    use nana_ui_runtime::{LayoutViewport, RangeField, Select, SelectOption};
+    let mut cx = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let refs = std::cell::Cell::new(None);
+    let mounted = cx
+        .mount_view_root(document, || {
+            let (caption, by_caption, by_label) = (node_ref(), node_ref(), node_ref());
+            let (bare, volume) = (node_ref(), node_ref());
+            refs.set(Some((by_caption, by_label, bare, volume)));
+            let options = vec![
+                SelectOption::new("asc", "升序"),
+                SelectOption::new("desc", "降序"),
+            ];
+            let (options_a, options_b) = (options.clone(), options);
+            let asc = Some(std::sync::Arc::<str>::from("asc"));
+            let (asc_a, asc_b) = (asc.clone(), asc);
+            view! {
+                <Column>
+                    <Text ref={caption}>"排序方向"</Text>
+                    <Select options={options_a} value={asc_a} labelled_by={caption} ref={by_caption} />
+                    <Select options={options_b} value={asc_b} label="排序方向" ref={by_label} />
+                    <Switch labelled_by="caption" ref={bare} />
+                    <Slider min=0 max=1 step=0.1 label="音量" show_label={false} ref={volume} />
+                </Column>
+            }
+        })
+        .unwrap();
+    cx.layout_document(document, LayoutViewport::new(800.0, 600.0))
+        .unwrap();
+    let (by_caption, by_label, bare, volume) = refs.get().unwrap();
+    let spoken = |node: nana_ui_runtime::view::NodeRef| {
+        let id = node.get_untracked().unwrap();
+        cx.world()
+            .project_accessibility(document)
+            .into_iter()
+            .find(|projected| projected.id == id)
+            .map(|projected| {
+                (
+                    projected.label.as_deref().map(str::to_owned),
+                    projected.value.as_deref().map(str::to_owned),
+                )
+            })
+            .unwrap()
+    };
+    let named = (Some("排序方向".to_owned()), Some("升序".to_owned()));
+    assert_eq!(spoken(by_caption), named);
+    assert_eq!(spoken(by_label), named);
+    assert_eq!(spoken(bare).0.as_deref(), Some("排序方向"));
+    assert_eq!(spoken(volume).0.as_deref(), Some("音量"));
+    let read_select = |node: nana_ui_runtime::view::NodeRef| {
+        cx.read(
+            Entity::<Select>::from_stable_id(node.get_untracked().unwrap()),
+            |select| select.label.clone(),
+        )
+        .unwrap()
+    };
+    assert_eq!(read_select(by_label).as_deref(), Some("排序方向"));
+    assert_eq!(read_select(by_caption), None);
+    let slider = Entity::<RangeField>::from_stable_id(volume.get_untracked().unwrap());
+    assert!(!cx.read(slider, |slider| slider.show_label).unwrap());
+    assert_eq!(mounted.roots().len(), 1);
+}

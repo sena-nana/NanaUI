@@ -425,6 +425,20 @@ impl AppContext {
         outcome
     }
 
+    /// Run the binding kept at `node` now, as its effect would: one made in
+    /// a view that may name a node built after it (`El::labelled_by`).
+    pub(crate) fn run_structural_now(&mut self, node: StableNodeId) -> Result<(), FrameworkError> {
+        let Some(effect) = self
+            .reactive
+            .structural
+            .get(&node)
+            .map(|entry| entry.effect)
+        else {
+            return Ok(());
+        };
+        self.run_structural(node, effect)
+    }
+
     fn keep_structural(&mut self, node: StableNodeId, entry: StructuralEntry) {
         if self.world.contains(node) {
             self.reactive.structural.insert(node, entry);
