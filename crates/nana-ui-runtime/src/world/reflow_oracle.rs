@@ -16,6 +16,8 @@
 //! that never ran an incremental frame, so state a pass keeps between frames
 //! (shaped text, plans, retained sizes) cannot hide in both sides.
 
+#![cfg(test)]
+
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 

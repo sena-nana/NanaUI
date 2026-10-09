@@ -17,6 +17,8 @@
 //!
 //! Gate F, allocation, is `tests/i18n_alloc.rs`.
 
+#![cfg(test)]
+
 use std::sync::Arc;
 
 use nana_ui_core::WorkCounters;

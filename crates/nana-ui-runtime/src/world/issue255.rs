@@ -10,6 +10,8 @@
 //! queued cause, and after a pass the cause the frontier admitted each node
 //! with.
 
+#![cfg(test)]
+
 use std::sync::Arc;
 
 use nana_ui_core::{

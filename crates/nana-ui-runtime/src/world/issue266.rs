@@ -20,6 +20,8 @@
 //! - Gate E: two windows of 10k nodes; one's scale reaches none of the
 //!   other's text or layout.
 
+#![cfg(test)]
+
 use std::collections::HashSet;
 use std::sync::Arc;
 

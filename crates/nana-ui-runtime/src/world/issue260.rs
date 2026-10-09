@@ -18,6 +18,8 @@
 //!   the engine's fallback reach exactly the text that inherits them.
 //! - Gate E: caret and selection moves lay nothing out.
 
+#![cfg(test)]
+
 use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, WorkCounters};
 
 use super::reflow_oracle::{

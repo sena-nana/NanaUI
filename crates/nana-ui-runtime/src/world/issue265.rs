@@ -22,6 +22,8 @@
 //! A rule whose variant moves its own container back across its breakpoint
 //! settles in its frame: it keeps the bucket it reached, deterministically.
 
+#![cfg(test)]
+
 use std::sync::Arc;
 
 use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, WorkCounters};

@@ -17,6 +17,8 @@
 //! - Correctness: after a run of edits, every box, published result, hit
 //!   entry and accessibility bound equals a cold layout of the same tree.
 
+#![cfg(test)]
+
 use std::collections::HashSet;
 
 use nana_ui_core::WorkCounters;

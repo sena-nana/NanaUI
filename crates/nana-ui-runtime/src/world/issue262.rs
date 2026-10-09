@@ -26,6 +26,8 @@
 //! The layout guard checks every retained pass against a full layout; the
 //! world holds only the window, so it stays on at a million rows.
 
+#![cfg(test)]
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;

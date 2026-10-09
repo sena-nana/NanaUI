@@ -15,6 +15,8 @@
 //! - Gate E: a thousand writes equal in effect -- spelled differently or
 //!   not -- seed nothing and build no frontier.
 
+#![cfg(test)]
+
 use std::sync::Arc;
 use std::time::Duration;
 

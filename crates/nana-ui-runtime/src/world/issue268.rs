@@ -13,6 +13,8 @@
 //!   unmounts leave it where it was.
 //! - Gate E: a switch resolves no literal text.
 
+#![cfg(test)]
+
 use std::sync::Arc;
 
 use nana_text::font::LanguageTag;

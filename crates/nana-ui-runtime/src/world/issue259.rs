@@ -40,6 +40,8 @@
 //! Every page ends against the cold oracle ([`super::reflow_oracle`]); 1k
 //! pages also run the per-pass guard on every frame.
 
+#![cfg(test)]
+
 use std::collections::HashSet;
 use std::sync::Arc;
 

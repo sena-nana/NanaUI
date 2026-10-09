@@ -59,10 +59,7 @@ fn viewport_basis(style: &LayoutStyle, viewport: LayoutViewport) -> LayoutViewpo
     if style.depends_on_viewport() {
         viewport
     } else {
-        LayoutViewport {
-            width: 0.0,
-            height: 0.0,
-        }
+        LayoutViewport::new(0.0, 0.0)
     }
 }
 

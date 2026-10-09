@@ -25,6 +25,8 @@
 //! the Dynamic Layout solver of #207 and #213, which the runtime does not
 //! have yet.
 
+#![cfg(test)]
+
 use nana_ui_core::{
     AlignSpec, FlexDirection, LayoutStyle, LengthSpec, SplitAxis, SplitPaneModel,
     SplitPaneMutation, WorkCounters,

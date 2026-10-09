@@ -16,6 +16,8 @@
 //!   row.
 //! - Gate F: a switch is one transaction, landed whole before the frame.
 
+#![cfg(test)]
+
 use nana_ui_core::{
     DirSpec, FlexDirection, I18nCounters, LayoutStyle, LengthSpec, VirtualListLayout,
 };

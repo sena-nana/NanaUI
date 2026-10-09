@@ -6,7 +6,10 @@ control will say to a user: those belong in
 `crates/nana-ui-core/src/framework_strings.rs`, where a consumer can replace
 them. This check fails on any such literal outside that file, the tests, and
 the entries below (diagnostics, test content kept in non-test files, and
-theme data names that the settings page localizes at display time).
+theme data names that the settings page localizes at display time). A test
+is a test file, a module file that opens with `#![cfg(test)]` (or
+`#![cfg(any(test, ...))]`), or a `tests` module under `#[cfg(test)]` or
+`#[cfg(all(test, ...))]`.
 """
 
 from __future__ import annotations
@@ -50,6 +53,10 @@ ALLOWED_FILES = {
     "crates/nana-ui/src/scene_paint/text/mod.rs",
 }
 
+# A module file compiled only for tests, as audit-theme-hardcoding.py reads it.
+TEST_ONLY_FILE = re.compile(r"(?:\s*//[^\n]*\n)*\s*#!\[cfg\((?:test|any\(test\b[^\]]*\))\)\]")
+TEST_MODULE = re.compile(r"#\[cfg\((?:test|all\(test\b[^\n]*\))\)\]\nmod tests\b")
+
 LITERAL = re.compile(r'"((?:[^"\\\n]|\\.)*[一-鿿](?:[^"\\\n]|\\.)*)"')
 
 
@@ -71,9 +78,11 @@ def scan() -> list[str]:
             if relative == TABLE or relative in ALLOWED_FILES or is_test_path(path.relative_to(ROOT)):
                 continue
             text = path.read_text(encoding="utf-8")
-            cut = text.find("#[cfg(test)]\nmod tests")
-            if cut >= 0:
-                text = text[:cut]
+            if TEST_ONLY_FILE.match(text):
+                continue
+            cut = TEST_MODULE.search(text)
+            if cut:
+                text = text[: cut.start()]
             for number, line in enumerate(text.splitlines(), start=1):
                 stripped = line.strip()
                 if stripped.startswith("//") or "assert" in stripped:

@@ -18,6 +18,8 @@
 //! - Gate E: a video's resolution changes a hundred times under an explicit
 //!   size: nothing above it reflows.
 
+#![cfg(test)]
+
 use std::sync::Arc;
 
 use nana_ui_core::{
