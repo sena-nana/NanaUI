@@ -20,7 +20,10 @@
 //! - text: a label at the head of a page, in a column it does not fill,
 //!   takes a longer string that still fits: the frame lays out once, as for
 //!   a label that cannot wrap, and nothing below the label moves, at 1k and
-//!   10k nodes;
+//!   10k nodes. With the page's groups directly after the column, the frame
+//!   builds, walks and places the same at both sizes; a string that wraps
+//!   grows the column and moves every group after it, and the frontier that
+//!   found them is still the same;
 //! - batch: a hundred seeds walk each edge of their union closure at most
 //!   twice and cost no more than a hundred single edits;
 //! - memory: 10k edits on 100k nodes leave the retained cache what the tree
@@ -1467,4 +1470,125 @@ fn issue259_a_longer_label_moves_nothing_below_it() {
         costs.push(row[1]);
     }
     assert_eq!(costs[0], costs[1]);
+}
+
+/// A label at the head of a page, in a column, and the page's groups of
+/// cards directly after that column: the flow the column heads is as long
+/// as the page, 1k and 10k nodes. The label takes a longer string. One that
+/// fits its line, wrapping or not, leaves the column as tall as it was: the
+/// frame builds, walks and places the same at both sizes, and only the label
+/// moves. One that wraps in a narrow column grows it: every group after it
+/// moves down once -- real output, which grows with the page -- while what
+/// was built, walked and measured to find them does not.
+#[test]
+fn issue259_a_label_costs_its_column_not_the_groups_after_it() {
+    use super::reflow_oracle::{self, Builder, FILLER_GROUP_NODES};
+    const FITS: &str = "A much longer label that still fits on one line of the column";
+    const WRAPS: &str = "A much longer label that wraps in a column three hundred pixels wide";
+    let viewport = LayoutViewport::new(1200.0, 800.0);
+    let build = |nodes: u64, width: f32, wraps: bool, value: &str| {
+        let document = DocumentId::new(1).unwrap();
+        let (mut b, page) = Builder::page(document, 1, 1200.0);
+        let head = b.element(page, reflow_oracle::column(Some(width)));
+        let label = b.label(head, value);
+        if !wraps {
+            b.queue.set_style(
+                label,
+                styled(LayoutStyle {
+                    white_space_nowrap: true,
+                    ..LayoutStyle::default()
+                }),
+            );
+        }
+        b.filler(page, nodes / FILLER_GROUP_NODES);
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        let mut shaper = bundled_face_shaper();
+        product_frame(&mut context, document, viewport, &mut shaper);
+        (context, document, label, shaper)
+    };
+    // The case, the column's width, whether the label wraps, the string it
+    // takes, and whether that grows the column.
+    for (case, width, wraps, value, grows) in [
+        ("fits, cannot wrap", 1200.0, false, FITS, false),
+        ("fits, wraps", 1200.0, true, FITS, false),
+        ("grows", 300.0, true, WRAPS, true),
+    ] {
+        let mut found = Vec::new();
+        let mut costs = Vec::new();
+        for nodes in [1_000, 10_000] {
+            let _unguarded = (nodes > 1_000).then(skip_layout_verify);
+            let label_case = format!("{case}, {nodes} nodes");
+            let (mut context, document, label, mut shaper) = build(nodes, width, wraps, "Short");
+            let order = context.world().document_order(document);
+            // The document, the page, the column and the label; the groups
+            // are everything after them.
+            let groups = order.iter().position(|id| *id == label).unwrap() + 1;
+            let boxes = |context: &AppContext| {
+                order
+                    .iter()
+                    .map(|id| context.world().layout_box(*id))
+                    .collect::<Vec<_>>()
+            };
+            let before = boxes(&context);
+            let passes = context.layout_invocations();
+            let mut queue = MutationQueue::new();
+            queue.set_text(
+                label,
+                TextContent {
+                    value: value.into(),
+                },
+            );
+            context.commit_mutations(queue).unwrap();
+            let counters = product_frame(&mut context, document, viewport, &mut shaper);
+            let passes = context.layout_invocations() - passes;
+            let moved: Vec<bool> = before
+                .iter()
+                .zip(boxes(&context))
+                .map(|(old, new)| *old != new)
+                .collect();
+            let cost = Cost::from(counters);
+            if grows {
+                // Every group moved, and only once.
+                assert!(moved[groups..].iter().all(|moved| *moved), "{label_case}");
+                assert_eq!(cost.origin_only, order.len() - groups, "{label_case}");
+                let moved = moved.iter().filter(|moved| **moved).count();
+                assert!(
+                    cost.placed >= moved && cost.placed <= moved + cost.frontier_placement,
+                    "{label_case}: {moved} boxes moved, {} placed: {cost:?}",
+                    cost.placed
+                );
+            } else {
+                let moved: Vec<StableNodeId> = order
+                    .iter()
+                    .zip(&moved)
+                    .filter(|(_, moved)| **moved)
+                    .map(|(id, _)| *id)
+                    .collect();
+                assert_eq!(moved, [label], "{label_case}");
+                assert_eq!(cost.origin_only, 0, "{label_case}");
+                assert_eq!(passes, 1, "{label_case}");
+            }
+            let (mut cold, ..) = build(nodes, width, wraps, value);
+            assert_matches_cold(&mut context, &mut cold, document);
+            found.push((
+                passes,
+                cost.frontier(),
+                cost.full_subtrees,
+                context.layout_frontier_stats(document),
+            ));
+            costs.push(cost);
+        }
+        // What was built, walked and measured to find what moved.
+        assert_eq!(found[0], found[1], "{case}");
+        if !grows {
+            assert_eq!(costs[0].structural(), costs[1].structural(), "{case}");
+        }
+        assert!(
+            costs[1].measured <= 2 * costs[0].measured + 8,
+            "{case}: {} nodes measured at 1k, {} at 10k",
+            costs[0].measured,
+            costs[1].measured
+        );
+    }
 }

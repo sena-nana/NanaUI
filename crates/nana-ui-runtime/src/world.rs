@@ -4905,6 +4905,12 @@ impl UiWorld {
                 );
                 self.mark_scroll_compatible(parent, DirtyMask::RENDER);
             } else {
+                // The parent measures again for the metrics it reads; whether
+                // its own box moved is what that finds out. Like every other
+                // ancestor on the text's export path it couples no siblings:
+                // when it did grow, its container's placement moves the ones
+                // after it. Coupled, it linked every later sibling of a long
+                // page into the frontier.
                 self.record_layout_invalidation(
                     parent,
                     LayoutInvalidation::new(
@@ -4912,8 +4918,7 @@ impl UiWorld {
                         InvalidationReason::TEXT,
                         InvalidationKind::MEASURE.union(InvalidationKind::PLACEMENT),
                         LayoutFieldMask::INTRINSIC.union(LayoutFieldMask::FLOW),
-                        LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS
-                            .union(LayoutDependencyFootprint::CONTEXT_LOCAL_COUPLING),
+                        LayoutDependencyFootprint::DEPENDS_ON_CHILD_METRICS,
                     ),
                 );
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
