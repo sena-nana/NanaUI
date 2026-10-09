@@ -313,7 +313,7 @@ impl ChartTooltip {
     pub const PADDING_X: f32 = nana_ui_core::space::LG;
     pub const PADDING_Y: f32 = nana_ui_core::space::MD;
     pub const ROW_GAP: f32 = nana_ui_core::space::XS;
-    pub const DOT: f32 = 8.0;
+    pub const DOT: f32 = nana_ui_core::space::MD;
     pub const COLUMN_GAP: f32 = nana_ui_core::space::XXL;
     pub const FONT: f32 = nana_ui_core::type_scale::META;
 

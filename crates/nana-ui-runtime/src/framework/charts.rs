@@ -19,9 +19,9 @@ pub(crate) const CHART_POINTER: NodePointerHooks<Chart> = NodePointerHooks {
 /// The smallest zoom window, percent.
 const MIN_ZOOM_SPAN: f64 = 1.0;
 /// A press that moves less than this is a click.
-const CLICK_SLOP: f32 = 4.0;
+const CLICK_SLOP: f32 = nana_ui_core::space::XS;
 /// How near a slider end a press grabs it, px.
-const HANDLE_REACH: f32 = 8.0;
+const HANDLE_REACH: f32 = nana_ui_core::space::MD;
 
 fn shown(cx: &AppContext, id: StableNodeId) -> Option<(Arc<ChartSpec>, Arc<ChartLayout>)> {
     match cx.world.standard_visual(id)? {

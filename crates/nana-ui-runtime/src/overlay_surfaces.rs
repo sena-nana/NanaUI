@@ -731,7 +731,7 @@ impl ModalChrome {
 
     /// The hairline under the header, when the recipe draws one.
     pub fn header_divider_box(self, surface: crate::LayoutBox) -> Option<crate::LayoutBox> {
-        (self.header_divider > 0.0).then(|| crate::LayoutBox {
+        (self.header_divider > 0.0).then_some(crate::LayoutBox {
             x: surface.x,
             y: surface.y + self.header_height - self.header_divider,
             width: surface.width,
@@ -741,7 +741,7 @@ impl ModalChrome {
 
     /// The hairline over the footer, when the recipe draws one.
     pub fn footer_divider_box(self, surface: crate::LayoutBox) -> Option<crate::LayoutBox> {
-        (self.footer_divider > 0.0).then(|| crate::LayoutBox {
+        (self.footer_divider > 0.0).then_some(crate::LayoutBox {
             x: surface.x,
             y: surface.y + surface.height - self.footer_height,
             width: surface.width,
