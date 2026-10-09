@@ -403,10 +403,13 @@ pub(super) fn cross_follows_used_main(
 /// that shrinks to its content widens again once its limit grows, and then
 /// the text rewraps to the new width. The lines' own width counts only when
 /// they were wrapped no wider than this box (`wrap_limit`): a word too long
-/// to break keeps such a line, and the box, wider. Lines wrapped against a
-/// wider box, or against none before the text had a box, are not lines this
-/// box holds; asking for them would keep a width the text no longer has, so
-/// the result would depend on which box the text was shaped in last.
+/// to break keeps such a line, and the box, wider. A widest line that cannot
+/// break counts as wrapped no wider than any box (`UiWorld::text_wrap_limit`),
+/// so the box stays that wide once the text is shaped again in the box the
+/// line widened, where it fits. Lines wrapped against a wider box, or against
+/// none before the text had a box, are not lines this box holds; asking for
+/// them would keep a width the text no longer has, so the result would
+/// depend on which box the text was shaped in last.
 fn text_inline_size(
     text: crate::TextMetrics,
     natural: Option<f32>,

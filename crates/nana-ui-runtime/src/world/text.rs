@@ -3989,10 +3989,22 @@ impl UiWorld {
             self.glyph_cache = glyphs;
             return outcome.map(|()| false);
         }
-        let mut scaled = self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
-        self.note_text_propagations_stopped(stopped);
-        let mut changed = !shaped.is_empty() || !modal_shaped.is_empty();
+        let (mut scaled, mut unbreakable_moved) =
+            self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
+        // Text whose widest line was found not to break, or to break after
+        // all, asks layout for another width with the metrics it held: it
+        // did not stop at itself, and reaches layout below.
+        unbreakable_moved.retain(|id| !shaped.iter().any(|(shaped, ..)| shaped == id));
+        self.note_text_propagations_stopped(stopped.saturating_sub(unbreakable_moved.len()));
+        let mut changed =
+            !shaped.is_empty() || !modal_shaped.is_empty() || !unbreakable_moved.is_empty();
         let mut scale_parent_reflows = 0usize;
+        for id in unbreakable_moved {
+            self.note_layout_source_change();
+            if self.propagate_layout_from_node(id) && scaled.contains(&id) {
+                scale_parent_reflows += 1;
+            }
+        }
         for (id, metrics, natural, presentation) in shaped {
             let previous = self.record(id).text_metrics;
             let previous_natural = self.text_natural_width(id);
@@ -4266,15 +4278,44 @@ impl UiWorld {
     /// each node's layout, then stamps it at the revisions it was resolved at.
     /// Nothing is applied for a pass that failed, so a retry resolves the same
     /// nodes again rather than skipping them with metrics never written.
-    /// Returns the text among them a typography scale change had reached.
+    /// Returns the text among them a typography scale change had reached, and
+    /// the text whose widest line was found not to break, or to break after
+    /// all: the width it asks of layout moved, whether or not its metrics did.
     fn apply_plain_resolutions(
         &mut self,
         resolutions: Vec<PlainResolution>,
         backend: TextBackendEpoch,
         work: &mut nana_text::TextWorkCounters,
-    ) -> HashSet<StableNodeId> {
+    ) -> (HashSet<StableNodeId>, HashSet<StableNodeId>) {
         let mut scaled = HashSet::new();
+        let mut unbreakable_moved = HashSet::new();
         for resolution in resolutions {
+            // What the metrics this resolution wrote were wrapped against:
+            // the box width, or none yet. Layout reads it to know whether the
+            // width of those lines is one this node keeps in a given box. A
+            // widest line that cannot break is that wide in every box, so it
+            // counts as wrapped against less than any.
+            let unbreakable = |limit: Option<f32>| limit == Some(f32::NEG_INFINITY);
+            let previous = self.text_wrap_limit(resolution.id);
+            let wrap_limit = resolution
+                .constraints
+                .filter(|constraints| constraints.wrap)
+                .map(|constraints| {
+                    if self.widest_line_cannot_break(
+                        resolution.id,
+                        &constraints,
+                        resolution.layout.as_deref(),
+                        unbreakable(previous),
+                        work,
+                    ) {
+                        f32::NEG_INFINITY
+                    } else {
+                        constraints.max_width.unwrap_or(f32::INFINITY)
+                    }
+                });
+            if unbreakable(previous) != unbreakable(wrap_limit) {
+                unbreakable_moved.insert(resolution.id);
+            }
             match resolution.layout {
                 Some(layout) => {
                     if self.nodes.retain_text_layout(resolution.id, layout) {
@@ -4283,13 +4324,6 @@ impl UiWorld {
                 }
                 None => self.nodes.release_text_layout(resolution.id),
             }
-            // What the metrics this resolution wrote were wrapped against:
-            // the box width, or none yet. Layout reads it to know whether the
-            // width of those lines is one this node keeps in a given box.
-            let wrap_limit = resolution
-                .constraints
-                .filter(|constraints| constraints.wrap)
-                .map(|constraints| constraints.max_width.unwrap_or(f32::INFINITY));
             self.nodes.set_text_wrap_limit(resolution.id, wrap_limit);
             if self
                 .nodes
@@ -4301,7 +4335,63 @@ impl UiWorld {
                 scaled.insert(resolution.id);
             }
         }
-        scaled
+        (scaled, unbreakable_moved)
+    }
+
+    /// Whether the widest line `id` was just laid out to cannot break, so the
+    /// text is that wide in a box of any width (see
+    /// [`UiWorld::text_wrap_limit`]).
+    ///
+    /// A line wider than the box it wrapped to cannot: it would have broken.
+    /// Once its box has grown to hold that line, the line fits and shows
+    /// nothing; laid out half a pixel narrower, a line that cannot break
+    /// sticks out again just as wide. Only text whose widest line could not
+    /// break when it last resolved (`unbroken_before`) is laid out that
+    /// second time, so a label as wide as its line costs nothing more. Only
+    /// an engine's layout says where its lines stuck out; a host shaper's
+    /// lines count as wrapped to their box.
+    fn widest_line_cannot_break(
+        &mut self,
+        id: StableNodeId,
+        constraints: &crate::TextShapeConstraints,
+        layout: Option<&nana_text::TextLayout>,
+        unbroken_before: bool,
+        work: &mut nana_text::TextWorkCounters,
+    ) -> bool {
+        let Some(layout) = layout.filter(|layout| !layout.is_vertical()) else {
+            return false;
+        };
+        if constraints.max_width.is_none() {
+            return false;
+        }
+        if layout
+            .overflow
+            .contains(nana_text::OverflowFlags::CLIPPED_WIDTH)
+        {
+            return true;
+        }
+        let engine = match &self.paint_text_engine {
+            Some(engine) if unbroken_before => Arc::clone(engine),
+            _ => return false,
+        };
+        let widest = crate::text_node::text_metrics_of_layout(layout).width;
+        let inside = crate::TextShapeConstraints {
+            max_width: Some((widest - 0.5).max(0.0)),
+            ..*constraints
+        };
+        let style = Arc::clone(&self.record(id).resolved.0);
+        let alignment = self.record(id).style.text_horizontal_alignment;
+        let Some((source, _)) = self.nodes.text_source(id, &style) else {
+            return false;
+        };
+        let narrower = nana_text::lock_text_engine(&engine).layout(
+            crate::text_node::text_kind(&inside),
+            source,
+            &crate::text_node::nana_text_style(&style),
+            &crate::text_node::nana_text_constraints(&style, &inside, alignment),
+            work,
+        );
+        crate::text_node::text_metrics_of_layout(&narrower).width >= widest - 0.01
     }
 
     /// Counts what a typography scale change cost this pass's text: the text
@@ -4745,13 +4835,17 @@ impl UiWorld {
             self.glyph_cache = glyphs;
             return outcome;
         }
-        let mut scaled = self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
+        let (mut scaled, unbreakable_moved) =
+            self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
         let mut stopped = 0usize;
         let mut scale_parent_reflows = 0usize;
         for (id, metrics, natural, presentation, resolved_before) in shaped {
             let previous = self.record(id).text_metrics;
             let previous_natural = self.text_natural_width(id);
-            if previous != metrics || previous_natural != natural {
+            // A widest line found not to break, or to break after all, moves
+            // the width this text asks of layout with the metrics it held.
+            let width_moved = unbreakable_moved.contains(&id);
+            if previous != metrics || previous_natural != natural || width_moved {
                 // Layout reads every metric, not only those that seed it: a
                 // full-layout snapshot taken before this write is stale.
                 self.note_layout_source_change();
@@ -4779,7 +4873,10 @@ impl UiWorld {
                     scaled.insert(id);
                 }
             }
-            if text_intrinsic_changed(previous, metrics) || previous_natural != natural {
+            if text_intrinsic_changed(previous, metrics)
+                || previous_natural != natural
+                || width_moved
+            {
                 if self.propagate_layout_from_node(id) && scaled.contains(&id) {
                     scale_parent_reflows += 1;
                 }

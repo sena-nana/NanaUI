@@ -2843,8 +2843,9 @@ impl UiWorld {
     }
 
     /// The width a plain text that wraps was last shaped against: its box
-    /// then, or infinity before it had one. `None` for text that does not
-    /// wrap.
+    /// then, or infinity before it had one. Negative infinity when its
+    /// widest line cannot break: that line is as wide in a box of any width,
+    /// however narrow. `None` for text that does not wrap.
     pub(crate) fn text_wrap_limit(&self, id: StableNodeId) -> Option<f32> {
         self.nodes.text_wrap_limit(id).copied()
     }

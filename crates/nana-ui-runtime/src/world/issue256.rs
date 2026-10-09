@@ -462,3 +462,105 @@ fn issue256_a_height_back_to_fill_under_an_auto_parent_lays_out_again() {
     product_frame(&mut cold, document, viewport, &mut shaper);
     assert_matches_cold(&mut context, &mut cold, document);
 }
+
+/// Labels wider than their rows: rows spanning a list that has no width of
+/// its own, so none, each hold words longer than that. A label is as wide as
+/// its widest word whichever box it was last shaped in -- none yet, the
+/// empty row, or the width that word gave it -- so every pass matches a full
+/// layout and the frames end as a cold layout of the same inputs does. Words
+/// that take a line each in the empty row and share one in the wider box
+/// settle there too.
+#[test]
+fn issue256_a_word_wider_than_its_row_keeps_its_width_after_a_reshape() {
+    use nana_ui_core::{LayoutStyle, LengthSpec, PositionSpec};
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(320.0, 480.0);
+    let label = |height: f32| {
+        styled(LayoutStyle {
+            height: Some(LengthSpec::Px(height)),
+            ..LayoutStyle::default()
+        })
+    };
+    for words in ["99", "9999 9 9"] {
+        // Two rows of a list, each placed at its offset and holding a label.
+        let rows = |queue: &mut MutationQueue, first_height: f32| {
+            for (row, top, height) in [(4, 72.0, first_height), (6, 96.0, 24.0)] {
+                queue.create(node(row), document, NodeKind::Element { tag: "div".into() });
+                queue.insert(node(3), node(row), None);
+                queue.set_style(
+                    node(row),
+                    styled(LayoutStyle {
+                        position: PositionSpec::Absolute,
+                        offset_top: Some(LengthSpec::Px(top)),
+                        offset_left: Some(LengthSpec::Px(0.0)),
+                        width: Some(LengthSpec::Percent(100.0)),
+                        flex_shrink: Some(0.0),
+                        ..LayoutStyle::default()
+                    }),
+                );
+                queue.create(node(row + 1), document, NodeKind::Text);
+                queue.insert(node(row), node(row + 1), None);
+                queue.set_text(
+                    node(row + 1),
+                    TextContent {
+                        value: words.into(),
+                    },
+                );
+                queue.set_style(node(row + 1), label(height));
+            }
+        };
+        let build = |first_height: Option<f32>| {
+            let mut queue = MutationQueue::new();
+            queue.create(node(1), document, NodeKind::Document);
+            let mut element = |id: u64, parent: u64, layout: LayoutStyle| {
+                queue.create(node(id), document, NodeKind::Element { tag: "div".into() });
+                queue.insert(node(parent), node(id), None);
+                queue.set_style(node(id), styled(layout));
+            };
+            element(
+                2,
+                1,
+                LayoutStyle {
+                    width: Some(LengthSpec::Px(320.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            element(
+                3,
+                2,
+                LayoutStyle {
+                    height: Some(LengthSpec::Px(200.0)),
+                    ..LayoutStyle::default()
+                },
+            );
+            if let Some(height) = first_height {
+                rows(&mut queue, height);
+            }
+            let mut context = AppContext::new();
+            context.commit_mutations(queue).unwrap();
+            context
+        };
+        let mut shaper = bundled_face_shaper();
+        let mut context = build(None);
+        product_frame(&mut context, document, viewport, &mut shaper);
+        let mut queue = MutationQueue::new();
+        rows(&mut queue, 24.0);
+        context.commit_mutations(queue).unwrap();
+        product_frame(&mut context, document, viewport, &mut shaper);
+        let mut queue = MutationQueue::new();
+        queue.set_style(node(5), label(32.0));
+        context.commit_mutations(queue).unwrap();
+        product_frame(&mut context, document, viewport, &mut shaper);
+        let world = context.world();
+        for text in [node(5), node(7)] {
+            assert_eq!(
+                world.layout_box(text).map(|layout| layout.width),
+                world.text_metrics(text).map(|metrics| metrics.width),
+                "{words:?}: a label is as wide as its widest line"
+            );
+        }
+        let mut cold = build(Some(32.0));
+        product_frame(&mut cold, document, viewport, &mut shaper);
+        assert_matches_cold(&mut context, &mut cold, document);
+    }
+}
