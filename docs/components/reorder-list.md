@@ -64,6 +64,20 @@ widget(
 
 `.live_rows(true)` 表示行由你挂的子节点来画，列表仍用 `items` 做命中和拖动，不再按标签自绘。这个开关在构造时声明，不会在投影时从树上推断。
 
+拖动时每行的盒子取自列表自己的直接子节点，所以行要直接挂在列表下面。用带键的 `each` 建行时，把列表交给 `.container(..)`，行就直接建在列表里，增删、重排时按键保留各行的节点：
+
+```rust
+use nana_ui::runtime::view::{each, widget};
+use nana_ui::runtime::{ReorderList, ReorderListEvent};
+
+each(ids, |id| id.clone(), entry_row).container(
+    widget(ReorderList::new(items).live_rows(true).label("条目"))
+        .on(|event: &ReorderListEvent| { /* 按 source 和 before 重排 */ }),
+)
+```
+
+`items` 要和行一一对应：重排、增删时同步写回 `items`（例如绑 `fields::reorder_list::items`）。
+
 ## 手势
 
 拖动要超过 4px 才算移动。

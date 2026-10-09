@@ -2398,6 +2398,86 @@ fn a_hidden_child_is_not_content_of_an_app_shells_overlay_region() {
     assert!(!takes_pointer(&cx), "hidden again, it is not");
 }
 
+/// `each(..).container(element)` builds the rows straight into the element,
+/// which keeps its own bindings: the rows are its children, in order, and a
+/// kept row keeps its node when the items reorder.
+#[test]
+fn a_keyed_list_builds_its_rows_straight_into_the_container_it_is_given() {
+    let (mut cx, document, _) = setup();
+    let state = std::cell::Cell::new(None);
+    let (_view, strip) = cx
+        .mount_view_root(document, || {
+            let items = signal(vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+            let shown = signal(true);
+            state.set(Some((items, shown)));
+            let strip = entity_ref::<Stack>();
+            with_refs(
+                each(items, |id: &String| id.clone(), |id: String| text(id))
+                    .container(widget(Stack::row(4.0)).entity_ref(strip).visible(shown)),
+                strip,
+            )
+        })
+        .unwrap();
+    let (items, shown) = state.get().unwrap();
+    let rows = |cx: &AppContext| {
+        children(cx, strip.stable_id())
+            .into_iter()
+            .map(|row| cx.world().text(row).unwrap_or("?").to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        rows(&cx),
+        ["a", "b", "c"],
+        "the rows are the element's own children"
+    );
+    let b = children(&cx, strip.stable_id())[1];
+
+    items.set(vec!["c".to_string(), "b".to_string()]);
+    cx.flush_reactive().unwrap();
+    assert_eq!(rows(&cx), ["c", "b"]);
+    assert_eq!(
+        children(&cx, strip.stable_id())[1],
+        b,
+        "a kept row keeps its node"
+    );
+
+    shown.set(false);
+    cx.flush_reactive().unwrap();
+    assert!(
+        cx.world()
+            .node_style(strip.stable_id())
+            .is_some_and(|style| style.layout.omits_box()),
+        "the element's own binding still holds"
+    );
+}
+
+/// A `ReorderList` with live rows reads each row's box from its own
+/// children: given to a keyed list as its container, its rows are those
+/// children.
+#[cfg(feature = "controls")]
+#[test]
+fn a_keyed_list_inside_a_reorder_list_puts_its_rows_straight_into_it() {
+    use crate::{ReorderItem, ReorderList};
+    let (mut cx, document, _) = setup();
+    let (_view, list) = cx
+        .mount_view_root(document, || {
+            let items = signal(vec!["a".to_string(), "b".to_string()]);
+            let list = entity_ref::<ReorderList>();
+            let rows = ["a", "b"].map(|id| ReorderItem::new(id, id));
+            with_refs(
+                each(items, |id: &String| id.clone(), |id: String| text(id))
+                    .container(widget(ReorderList::new(rows).live_rows(true)).entity_ref(list)),
+                list,
+            )
+        })
+        .unwrap();
+    let rows = children(&cx, list.stable_id())
+        .into_iter()
+        .map(|row| cx.world().text(row).unwrap_or("?").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(rows, ["a", "b"]);
+}
+
 fn dock_layout(
     files: Option<StableNodeId>,
     preview: Option<StableNodeId>,

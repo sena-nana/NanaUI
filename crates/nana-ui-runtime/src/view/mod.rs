@@ -81,7 +81,7 @@ pub use store::{
 };
 #[doc(hidden)]
 pub use store::{Paths, StoreKey};
-pub use structural::{Dynamic, Each, EachExt, When, WhenExt, dynamic, each, when};
+pub use structural::{Dynamic, Each, EachExt, EachIn, When, WhenExt, dynamic, each, when};
 #[doc(hidden)]
 pub use style::ComposedLayout;
 pub use style::{Class, InlineStyle, Sheet, StylePatch, StyleSite};

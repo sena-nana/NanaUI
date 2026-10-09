@@ -22,7 +22,9 @@ use super::prop::{IntoProp, PropSource};
 use super::reactive::{self, EffectKey, EffectTarget, Readable, ScopeKey};
 use super::style::{ContainerStyle, container_styles};
 use super::transition::Transition;
-use crate::{AppContext, ComponentView, FrameworkError, MutationQueue, StableNodeId, Stack};
+use crate::{
+    AppContext, ComponentView, Entity, FrameworkError, MutationQueue, StableNodeId, Stack,
+};
 
 pub(super) struct Built {
     pub(super) scope: ScopeKey,
@@ -254,9 +256,30 @@ impl<T, K, S, KF, RF> Each<T, K, S, KF, RF> {
         self
     }
 
+    /// Build the rows straight into `element`, the list's container in
+    /// place of a stack of its own: for a component that takes its rows as
+    /// its own children, such as a `ReorderList` with live rows, which reads
+    /// each row's box. The element keeps its bindings, events, refs and key;
+    /// the list's own `gap`, `horizontal`, styles and key are not used. The
+    /// list owns all of the element's children, so it takes none of its
+    /// own, and its component places no slots and assembles nothing.
+    pub fn container<C: ComponentView>(self, element: El<C>) -> EachIn<T, K, S, KF, RF, C> {
+        EachIn {
+            each: self,
+            element,
+        }
+    }
+
     fn container_style_mut(&mut self) -> &mut ContainerStyle {
         &mut self.style
     }
+}
+
+/// A keyed list whose rows are an element's own children
+/// ([`Each::container`]).
+pub struct EachIn<T, K, S, KF, RF, C: ComponentView> {
+    each: Each<T, K, S, KF, RF>,
+    element: El<C>,
 }
 
 container_styles!(
@@ -323,6 +346,25 @@ where
         })
     }
 
+    /// Build the rows under `container`, placed already, and keep them
+    /// bound to the items.
+    fn mount<C: ComponentView>(
+        mut self,
+        vb: &mut ViewBuilder<'_, '_, '_>,
+        container: Entity<C>,
+        site: &'static Location<'static>,
+    ) {
+        let id = container.stable_id();
+        let effect = reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, site);
+        let (keys, fresh) = reactive::run_tracked(effect, || self.read());
+        vb.nest(container, |vb| {
+            let built = self.build_rows(vb, fresh);
+            self.rows.extend(built);
+        });
+        self.order = keys;
+        vb.st.parts.structural.push((id, effect, Box::new(self)));
+    }
+
     fn build_rows(&self, vb: &mut ViewBuilder<'_, '_, '_>, fresh: Vec<(K, T)>) -> Vec<(K, Built)> {
         fresh
             .into_iter()
@@ -344,31 +386,62 @@ where
     V: IntoView,
 {
     fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
-        let Some(container) = container(self.container, self.key, self.style, self.site).place(vb)
-        else {
-            return;
-        };
-        let id = container.stable_id();
-        let effect =
-            reactive::create_effect(vb.st.tag, EffectTarget::Structural(id), None, self.site);
-        let mut binding = EachBinding {
-            items: self.items,
-            key_fn: self.key_fn,
-            row_fn: self.row_fn,
-            transition: self.transition,
+        let Each {
+            items,
+            key_fn,
+            row_fn,
+            transition,
+            container: stack,
+            style,
+            key,
+            site,
+            ..
+        } = self;
+        if let Some(container) = container(stack, key, style, site).place(vb) {
+            EachBinding::new(items, key_fn, row_fn, transition).mount(vb, container, site);
+        }
+    }
+}
+
+impl<T, K, S, KF, RF, V, C> IntoView for EachIn<T, K, S, KF, RF, C>
+where
+    T: Clone + 'static,
+    K: Eq + Hash + Clone + Send + 'static,
+    S: Readable<Vec<T>>,
+    KF: Fn(&T) -> K + Send + 'static,
+    RF: Fn(T) -> V + Send + 'static,
+    V: IntoView,
+    C: ComponentView,
+{
+    fn build(self, vb: &mut ViewBuilder<'_, '_, '_>) {
+        let Each {
+            items,
+            key_fn,
+            row_fn,
+            transition,
+            site,
+            ..
+        } = self.each;
+        if let Some(container) = self.element.place(vb) {
+            EachBinding::new(items, key_fn, row_fn, transition).mount(vb, container, site);
+        }
+    }
+}
+
+impl<T, K, S, KF, RF> EachBinding<T, K, S, KF, RF> {
+    /// A list's binding, in the scope it is built in.
+    fn new(items: S, key_fn: KF, row_fn: RF, transition: Option<Transition>) -> Self {
+        Self {
+            items,
+            key_fn,
+            row_fn,
+            transition,
             leaving: Vec::new(),
             scope: reactive::current_scope(),
             rows: HashMap::new(),
             order: Vec::new(),
             _types: PhantomData,
-        };
-        let (keys, fresh) = reactive::run_tracked(effect, || binding.read());
-        vb.nest(container, |vb| {
-            let built = binding.build_rows(vb, fresh);
-            binding.rows.extend(built);
-        });
-        binding.order = keys;
-        vb.st.parts.structural.push((id, effect, Box::new(binding)));
+        }
     }
 }
 
