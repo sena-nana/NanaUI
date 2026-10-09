@@ -289,6 +289,8 @@ impl UiWorld {
                             .footer_divider
                             .map(|role| self.style_model.color(role).as_rgba_array()),
                     ),
+                    scrim_color: self.theme.effects().modal_scrim.as_rgba_array(),
+                    scrim_blur: self.theme.effects().modal_scrim_blur,
                 })
             }
             StandardVisual::Button {

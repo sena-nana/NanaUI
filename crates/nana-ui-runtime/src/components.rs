@@ -1357,6 +1357,11 @@ pub enum ComponentGeometry {
         /// The hairline over the footer and its colour, when the recipe
         /// draws one.
         footer_divider: Option<(LayoutBox, [f32; 4])>,
+        /// The scrim's colour: the theme's modal scrim.
+        scrim_color: [f32; 4],
+        /// How much the scrim blurs what is behind it: CSS `blur(r)`, `r`
+        /// the standard deviation in logical px.
+        scrim_blur: f32,
     },
     Button {
         icon: Option<(nana_ui_core::Icon, LayoutBox)>,

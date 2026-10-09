@@ -21,9 +21,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
             corner_radius,
             header_divider,
             footer_divider,
+            scrim_color,
+            scrim_blur,
             ..
         }) => {
-            emit(visual_quad(
+            let mut scrim_quad = visual_quad(
                 &VisualPrimitiveContext {
                     node: id,
                     transform,
@@ -34,8 +36,21 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 },
                 10,
                 scene_rect(*scrim),
-                VisualQuadStyle::solid([0.0, 0.0, 0.0, 0.45]),
-            ));
+                VisualQuadStyle::solid(*scrim_color),
+            );
+            // The theme's backdrop blur: the window behind the scrim is
+            // blurred first, then the scrim's colour laid over it, as CSS
+            // paints an element's `backdrop-filter` under its background.
+            let blur = nana_ui_core::BackdropFilter {
+                blur_radius: scrim_blur.clamp(0.0, nana_ui_core::BackdropFilter::MAX_BLUR_RADIUS),
+                saturate: 1.0,
+            };
+            if blur.is_active()
+                && let ScenePrimitiveKind::Quad { surface, .. } = &mut scrim_quad.kind
+            {
+                surface.backdrop_filter = Some(blur);
+            }
+            emit(scrim_quad);
             let radius = *corner_radius;
             let docked = match node.standard_visual.as_ref() {
                 Some(StandardVisual::ModalFrame {

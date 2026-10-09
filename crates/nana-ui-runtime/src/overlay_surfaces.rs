@@ -1634,6 +1634,52 @@ mod tests {
         );
     }
 
+    /// The scrim is the theme's: its colour and how much it blurs the
+    /// window behind it are effect tokens, and a dialog or drawer paints
+    /// the ones installed.
+    #[test]
+    fn the_scrim_is_the_installed_themes() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let dialog = cx
+            .create_component(document, crate::Dialog::new("导出"))
+            .unwrap();
+        let drawer = cx.create_component(document, Drawer::new("筛选")).unwrap();
+        shaped_layout(&mut cx, document, 800.0, 600.0);
+        for modal in [dialog.stable_id(), drawer.stable_id()] {
+            let crate::ComponentGeometry::ModalFrame {
+                scrim_color,
+                scrim_blur,
+                ..
+            } = modal_geometry(&cx, modal)
+            else {
+                panic!("modal geometry")
+            };
+            assert_eq!(scrim_color, [0.0, 0.0, 0.0, 0.45]);
+            assert_eq!(scrim_blur, 0.0);
+        }
+
+        let css = nana_ui_core::linear_scrim_alpha(0.45);
+        let mut effects = nana_ui_core::EffectTokens::DARK;
+        effects.modal_scrim = nana_ui_core::SemanticColor::rgba(0.0, 0.0, 0.0, css);
+        effects.modal_scrim_blur = 2.0;
+        cx.set_theme_definition(&nana_ui_core::ThemeDefinition::NANA_DARK.with_effects(effects))
+            .unwrap();
+        shaped_layout(&mut cx, document, 800.0, 600.0);
+        for modal in [dialog.stable_id(), drawer.stable_id()] {
+            let crate::ComponentGeometry::ModalFrame {
+                scrim_color,
+                scrim_blur,
+                ..
+            } = modal_geometry(&cx, modal)
+            else {
+                panic!("modal geometry")
+            };
+            assert_eq!(scrim_color, [0.0, 0.0, 0.0, css]);
+            assert_eq!(scrim_blur, 2.0);
+        }
+    }
+
     #[test]
     fn dialog_wraps_against_final_surface_width_and_settles_at_top_inset() {
         let mut cx = AppContext::new();

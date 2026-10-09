@@ -308,6 +308,8 @@ mod tests {
                 corner_radius: 10.0,
                 header_divider: None,
                 footer_divider: None,
+                scrim_color: [0.0, 0.0, 0.0, 0.45],
+                scrim_blur: 0.0,
             }
         } else {
             ComponentGeometry::EmptyState {

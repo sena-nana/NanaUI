@@ -5070,6 +5070,8 @@ fn modal_frame_emits_distinct_scrim_surface_and_intrinsic_text_slots() {
         corner_radius: 10.0,
         header_divider: None,
         footer_divider: None,
+        scrim_color: [0.0, 0.0, 0.0, 0.45],
+        scrim_blur: 0.0,
     }));
     let mut scene = UiScene::default();
     scene.apply_delta([modal], []);
@@ -5204,6 +5206,8 @@ fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
         corner_radius: 20.0,
         header_divider: Some((header_rule, rule_color)),
         footer_divider: Some((footer_rule, rule_color)),
+        scrim_color: [0.0, 0.0, 0.0, 0.73],
+        scrim_blur: 2.0,
     }));
     let mut scene = UiScene::default();
     scene.apply_delta([modal], []);
@@ -5217,6 +5221,18 @@ fn modal_frame_paints_the_recipe_radius_and_section_dividers() {
         quad(11).1,
         ScenePrimitiveKind::Quad { corner_radius, .. }
             if corner_radius.iter().all(|r| (*r - 20.0).abs() < f32::EPSILON)
+    ));
+    // The theme's scrim: its colour, over the window blurred by its blur.
+    assert!(matches!(
+        quad(10).1,
+        ScenePrimitiveKind::Quad {
+            background: Some(nana_ui_core::PaintColor::Srgb { rgba }),
+            surface: QuadSurfacePaint {
+                backdrop_filter: Some(nana_ui_core::BackdropFilter { blur_radius, saturate }),
+                ..
+            },
+            ..
+        } if rgba == [0.0, 0.0, 0.0, 0.73] && blur_radius == 2.0 && saturate == 1.0
     ));
     for (slot, rule) in [(15, header_rule), (16, footer_rule)] {
         let (bounds, kind) = quad(slot);
@@ -5399,6 +5415,8 @@ fn docked_drawer_extends_the_flush_edge_so_clipping_squares_that_side() {
         corner_radius: 10.0,
         header_divider: None,
         footer_divider: None,
+        scrim_color: [0.0, 0.0, 0.0, 0.45],
+        scrim_blur: 0.0,
     }));
     let mut scene = UiScene::default();
     scene.apply_delta([drawer], []);

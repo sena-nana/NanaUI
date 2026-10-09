@@ -644,7 +644,35 @@ pub struct EffectTokens {
     /// A danger control over media (a window's close) keeps its danger fill
     /// on hover; pressed, the fill at this alpha.
     pub media_danger_pressed_alpha: f32,
+    /// The scrim a modal dialog or drawer lays over the window behind it.
+    ///
+    /// The painter composites in linear light, where black at alpha `a`
+    /// leaves `1 - a` of the light behind it. CSS's `rgba(0, 0, 0, c)`
+    /// darkens the sRGB-encoded value instead, which leaves about
+    /// `(1 - c)^2.2` of the light: a CSS scrim of 0.45 is
+    /// [`linear_scrim_alpha`]`(0.45)`, about 0.73, here. The built-in 0.45
+    /// is the lighter linear scrim NanaUI has always drawn.
+    pub modal_scrim: SemanticColor,
+    /// How much the scrim blurs what is behind it: CSS
+    /// `backdrop-filter: blur(r)`, `r` the standard deviation in logical px.
+    /// 0 blurs nothing.
+    pub modal_scrim_blur: f32,
 }
+
+/// The alpha that darkens a backdrop in linear light as much as CSS's
+/// `rgba(0, 0, 0, css_alpha)` darkens it in sRGB: `1 - (1 - css_alpha)^2.2`.
+///
+/// The painter blends in linear light; a browser blends the encoded values.
+/// Black at CSS alpha `c` keeps `1 - c` of the encoded value, and an encoded
+/// value is roughly the light to the power `1 / 2.2`, so it keeps
+/// `(1 - c)^2.2` of the light. A theme that takes its scrim from a CSS
+/// design writes this alpha, not the CSS one: 0.45 becomes about 0.73.
+pub fn linear_scrim_alpha(css_alpha: f32) -> f32 {
+    1.0 - (1.0 - css_alpha.clamp(0.0, 1.0)).powf(2.2)
+}
+
+/// The modal scrim both built-in modes use: black at 0.45 in linear light.
+const MODAL_SCRIM: SemanticColor = SemanticColor::rgba(0.0, 0.0, 0.0, 0.45);
 
 /// The media scrim both built-in modes use.
 ///
@@ -688,6 +716,8 @@ impl EffectTokens {
         media_hover_alpha: MEDIA_HOVER_ALPHA,
         media_pressed_alpha: MEDIA_PRESSED_ALPHA,
         media_danger_pressed_alpha: MEDIA_DANGER_PRESSED_ALPHA,
+        modal_scrim: MODAL_SCRIM,
+        modal_scrim_blur: 0.0,
     };
 
     /// Lilia `--shadow-surface` light: `0 10px 26px -24px rgba(17,24,39,.24)`.
@@ -713,6 +743,8 @@ impl EffectTokens {
         media_hover_alpha: MEDIA_HOVER_ALPHA,
         media_pressed_alpha: MEDIA_PRESSED_ALPHA,
         media_danger_pressed_alpha: MEDIA_DANGER_PRESSED_ALPHA,
+        modal_scrim: MODAL_SCRIM,
+        modal_scrim_blur: 0.0,
     };
 
     pub const fn shadow(self, role: ElevationRole) -> ShadowToken {

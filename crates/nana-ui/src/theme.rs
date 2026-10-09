@@ -33,7 +33,8 @@ pub use nana_ui_core::{
     SurfaceSpec, SurfaceTokens, SwitchMetrics, TextWeight, ThemeAppearance, ThemeChoice,
     ThemeCompileError, ThemeDefinition, ThemeGeneration, ThemeId, ThemeIdentity, ThemeMetrics,
     ThemeRegistry, ThemeRegistryError, ThemeResolution, ThemeSchemaVersion, TypeRole,
-    TypographyTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme_arc, space, type_scale,
+    TypographyTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme_arc, linear_scrim_alpha, space,
+    type_scale,
 };
 
 /// Compatibility name for applications that used the pre-registry theme

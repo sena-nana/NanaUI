@@ -520,6 +520,12 @@ impl ThemeDefinition {
         self.bump()
     }
 
+    /// Replace the effect tokens: shadows, scrims and media chrome.
+    pub const fn with_effects(mut self, effects: EffectTokens) -> Self {
+        self.effects = effects;
+        self.bump()
+    }
+
     /// Place the dialog card: where it stands in its scrim and how tall it
     /// may grow. See [`DialogRecipe`](super::DialogRecipe).
     pub const fn with_dialog(mut self, dialog: super::DialogRecipe) -> Self {
@@ -623,6 +629,8 @@ impl ThemeDefinition {
             let _ = check.finite(name, shadow.spread_radius);
         }
         check.color("effects.media_scrim", self.effects.media_scrim);
+        check.color("effects.modal_scrim", self.effects.modal_scrim);
+        check.length("effects.modal_scrim_blur", self.effects.modal_scrim_blur);
         check.color("effects.media_foreground", self.effects.media_foreground);
         for (name, alpha) in [
             ("effects.media_hover_alpha", self.effects.media_hover_alpha),
@@ -1396,6 +1404,14 @@ mod tests {
             ));
         }
 
+        let mut veiled = dark();
+        veiled.effects.modal_scrim_blur = -2.0;
+        assert!(matches!(
+            veiled.compile(),
+            Err(ThemeCompileError::NegativeLength { token, .. })
+                if token == "effects.modal_scrim_blur"
+        ));
+
         let mut ghost_color = dark();
         ghost_color.tokens.palette.text = SemanticColor::rgba(2.0, 0.0, 0.0, 1.0);
         assert!(matches!(
@@ -1556,6 +1572,22 @@ mod tests {
         assert_eq!(
             *themed.compile().expect("compiles").recipes().dialog(),
             placed
+        );
+    }
+
+    /// A CSS scrim's darkness in linear light: black at CSS 0.45 keeps
+    /// 0.55 of the encoded value, about 0.268 of the light, so the linear
+    /// alpha is about 0.73. The ends stay where they are.
+    #[test]
+    fn a_css_scrim_alpha_becomes_the_linear_light_alpha_of_the_same_darkness() {
+        let alpha = super::super::linear_scrim_alpha(0.45);
+        assert!((alpha - 0.7316).abs() < 1e-3, "{alpha}");
+        assert!((1.0 - alpha - 0.55_f32.powf(2.2)).abs() < 1e-6);
+        assert_eq!(super::super::linear_scrim_alpha(0.0), 0.0);
+        assert_eq!(super::super::linear_scrim_alpha(1.0), 1.0);
+        assert_eq!(
+            ThemeDefinition::NANA_DARK.effects.modal_scrim,
+            SemanticColor::rgba(0.0, 0.0, 0.0, 0.45)
         );
     }
 

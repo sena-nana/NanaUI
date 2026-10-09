@@ -22,7 +22,7 @@ pub use tokens::{
     AccentRamp, BorderTokens, BorderWidth, EasingRole, EffectTokens, ElevationRole, LineRole,
     MotionRole, MotionTokens, OpacityTokens, ShadowToken, SpacingStep, SpacingTokens, StateLayer,
     SurfaceMaterial, SurfaceRole, SurfaceSpec, SurfaceTokens, TextWeight, TypeRole,
-    TypographyTokens,
+    TypographyTokens, linear_scrim_alpha,
 };
 
 /// NanaUI's standard body and medium-control text size.

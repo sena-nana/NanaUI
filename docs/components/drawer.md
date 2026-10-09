@@ -59,6 +59,10 @@ widget(
 
 关闭先停掉交互并恢复焦点，退出动画期间节点还在。
 
+## 遮罩
+
+抽屉身后的遮罩和对话框是同一份：主题的 `EffectTokens::modal_scrim` 和 `modal_scrim_blur`，见 [Dialog](dialog.md#遮罩)。
+
 ## 按下
 
 模态表面打开时，落在它上面的按下由表面接住。

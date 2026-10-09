@@ -148,6 +148,22 @@ let theme = ThemeDefinition::NANA_DARK.with_dialog(DialogRecipe {
 });
 ```
 
+## 遮罩
+
+对话框和抽屉身后的遮罩归主题的效果 token：`EffectTokens::modal_scrim`（颜色和不透明度，内置是黑色 0.45）和 `modal_scrim_blur`（遮罩把身后的窗口模糊多少，CSS `backdrop-filter: blur(r)`，`r` 是高斯标准差，逻辑 px；内置 0，不模糊）。先模糊身后的窗口，再把遮罩的颜色叠上去，和 CSS 给元素的 `backdrop-filter` 与背景色的先后一样。
+
+画家在线性光里合成：黑色 α 留下身后 `1 - α` 的光。浏览器的 `rgba(0, 0, 0, c)` 是在 sRGB 编码值上混的，留下 `1 - c` 的编码值，约等于 `(1 - c)^2.2` 的光。所以照 CSS 写的遮罩，不透明度要换算：`nana_ui::theme::linear_scrim_alpha(c)` 就是 `1 - (1 - c)^2.2`，CSS 的 0.45 是这里的约 0.73。
+
+```rust
+use nana_ui::theme::{EffectTokens, SemanticColor, ThemeDefinition, linear_scrim_alpha};
+
+// .modal-overlay { background: rgba(0, 0, 0, .45); backdrop-filter: blur(2px) }
+let mut effects = EffectTokens::DARK;
+effects.modal_scrim = SemanticColor::rgba(0.0, 0.0, 0.0, linear_scrim_alpha(0.45));
+effects.modal_scrim_blur = 2.0;
+let theme = ThemeDefinition::NANA_DARK.with_effects(effects);
+```
+
 ## 由应用决定开合
 
 用户想关掉对话框有三种手势：按 Escape、在对话框外按下再松开、激活关闭位（`.close_action`）。每一种都先在对话框自己身上发一次 `DialogCloseRequested`，`trigger` 说是哪一种。然后才看 `.close_policy`：允许这个手势，框架接着关掉它，宿主随后发 `OverlayClosing`；不允许，它留着。Escape 和点外面只送到挂在 `OverlayHost` 下、用 `activate_overlay` 打开的对话框（浮层约定）；关闭位挂没挂都会发请求。
