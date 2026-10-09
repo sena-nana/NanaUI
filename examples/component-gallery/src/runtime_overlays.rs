@@ -149,6 +149,7 @@ impl GalleryOverlaysRuntime {
                 context.set_confirm_slots(
                     overlay,
                     ConfirmSlots {
+                        title_icon: None,
                         body: Some(body.stable_id()),
                         close_action: Some(close.stable_id()),
                         cancel: actions.0,

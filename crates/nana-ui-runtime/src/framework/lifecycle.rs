@@ -312,6 +312,7 @@ impl AppContext {
         self.set_confirm_slots(
             dialog,
             crate::ConfirmSlots {
+                title_icon: requested.title_icon,
                 body: requested.body,
                 close_action: requested.close_action,
                 cancel,

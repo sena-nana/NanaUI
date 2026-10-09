@@ -1,10 +1,19 @@
-//! [`DialogRecipe`]: how a dialog card sits in the window.
+//! [`DialogRecipe`]: how a dialog card sits in the window and lays out its
+//! header.
 //!
 //! The Overlay family's recipe for the dialog card that `Dialog` and
 //! `ConfirmDialog` paint over their scrim. Like every recipe it is the theme
-//! answering for the component: where the card stands and how tall it may
-//! grow are design decisions, so a theme states them and a dialog only names
-//! its width.
+//! answering for the component: where the card stands, how tall it may grow
+//! and how its header row spaces an icon, the title and the close button are
+//! design decisions, so a theme states them and a dialog only names its
+//! width and fills its slots.
+//!
+//! The header is one row, as a flex row with `align-items: center` lays it
+//! out: `[icon] title [close]`, each in its own square or block and every
+//! item centred in the row. The row is as tall as the title block, the icon
+//! and [`DialogRecipe::header_min_height`]; the close button does not grow
+//! it, so a close button that a busy confirmation hides does not move the
+//! body under it.
 //!
 //! Lengths are CSS lengths resolved against the scrim, which covers the
 //! window: `%` of its height, `vw` / `vh` of its size. A design that writes
@@ -14,7 +23,7 @@
 
 use crate::box_layout::LengthSpec;
 
-/// The dialog card's placement in its scrim.
+/// The dialog card's placement in its scrim and its header row.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DialogRecipe {
     /// Distance from the top of the scrim to the card. A card too tall to
@@ -22,15 +31,40 @@ pub struct DialogRecipe {
     pub top: LengthSpec,
     /// Tallest the card grows; content beyond it is clipped to the body.
     pub max_height: LengthSpec,
+    /// The square the title's icon slot is placed in, before the title.
+    pub icon_size: f32,
+    /// The square the close button is placed in, after the title.
+    pub close_size: f32,
+    /// Space between the icon and the title, and the title and the close
+    /// button: CSS `gap` on the header row.
+    pub header_gap: f32,
+    /// The header row's least height, the CSS `min-height` of the row. A
+    /// design whose header row is as tall as its close button states that
+    /// height here.
+    pub header_min_height: f32,
 }
 
 impl DialogRecipe {
     /// What both built-in themes use: 90px from the top, at most 76% of the
-    /// scrim's height.
+    /// scrim's height; a 16px icon, a 28px close button, 12px apart.
     pub const DEFAULT: Self = Self {
         top: LengthSpec::Px(90.0),
         max_height: LengthSpec::Percent(76.0),
+        icon_size: 16.0,
+        close_size: 28.0,
+        header_gap: 12.0,
+        header_min_height: 0.0,
     };
+
+    /// The recipe's plain lengths with their token names, for validation.
+    pub(super) const fn lengths(&self) -> [(&'static str, f32); 4] {
+        [
+            ("dialog.icon_size", self.icon_size),
+            ("dialog.close_size", self.close_size),
+            ("dialog.header_gap", self.header_gap),
+            ("dialog.header_min_height", self.header_min_height),
+        ]
+    }
 
     /// [`Self::top`] over a scrim of `width` × `height`.
     pub fn top_in(&self, width: f32, height: f32) -> f32 {
@@ -89,6 +123,7 @@ mod tests {
                 axis: ViewportAxis::Height,
                 value: 72.0,
             },
+            ..DialogRecipe::DEFAULT
         };
         assert!((recipe.top_in(1000.0, 500.0) - 60.0).abs() < 1e-3);
         assert!((recipe.max_height_in(1000.0, 500.0) - 360.0).abs() < 1e-3);

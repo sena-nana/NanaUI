@@ -35,7 +35,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 `Chip`、`ColorField`、`PathField`、`FileTab` 这类**叶子复合件**在你写 props 的那一刻自己重建子节点。不需要再记一次 `assemble_*`。`Shell` / `Workspace` / `Dock` / `SplitPane` / `PaneSection` 不走这条。它们协调的是应用自己的槽位，而且不便宜。挂到每次写入会破坏「无变更不弄脏」的脏帧合同。这几个仍在装配好槽位后显式调用对应的 `assemble_*`。
 
-`ConfirmDialog` 的确认 / 取消按钮由 `AppContext::assemble_confirm_dialog(dialog)` 建好，并接上 `ConfirmIntent`。不需要自己造两个按钮再拼槽位。按钮文案用 `confirm_label` / `cancel_label` 覆盖。`danger(true)` 让确认按钮走危险色。需要次要动作、关闭钮或自定义正文时，仍用 `set_confirm_slots` 自己装配。这时 `assemble_confirm_dialog` 不会覆盖你已有的槽位。
+`ConfirmDialog` 的确认 / 取消按钮由 `AppContext::assemble_confirm_dialog(dialog)` 建好，并接上 `ConfirmIntent`。不需要自己造两个按钮再拼槽位。按钮文案用 `confirm_label` / `cancel_label` 覆盖。`danger(true)` 让确认按钮走危险色，标题用危险口气（`Dialog::danger` 同一个口气）。需要次要动作、关闭钮或自定义正文时，仍用 `set_confirm_slots` 自己装配。这时 `assemble_confirm_dialog` 不会覆盖你已有的槽位。
 
 `ContextMenu` 同样挂在 `OverlayHost` 下，并用 `activate_overlay` 打开。框架按 Menu 语义负责 Escape 与点击外部收起。应用不再自建点外判定。框架驱动的收起会同步组件自身的 `open`，并发出 `ContextMenuEvent::Dismiss`。与选中项收起走同一条回执。应用不需要事后对账两份状态。
 

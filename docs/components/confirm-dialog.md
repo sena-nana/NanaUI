@@ -42,9 +42,7 @@ widget(
 
 ## 危险
 
-字段 `danger` 为真时，确认按钮走危险色。
-
-这是字段，不是 `.danger(...)` 方法。
+`danger` 为真时（字段，或 `.danger(true)`），确认按钮走危险色，标题也用危险口气：取主题 status 配方里危险的那个语义色。和 [Dialog](dialog.md#口气与标题图标) 的 `.danger` 是同一个口气。
 
 ## 尺寸与关闭
 
@@ -85,7 +83,7 @@ widget(
 | `ConfirmDialog::new(title, message)` | — | 默认按钮文案是「确认」和「取消」 |
 | `.confirm_label` | — | 换成你的话 |
 | `.cancel_label` | — | 换成你的话 |
-| `danger` | — | 为真时，确认按钮走危险色。这是字段，不是 `.danger(...)` 方法 |
+| `danger` / `.danger` | `bool` | 为真时，确认按钮走危险色，标题用危险口气 |
 | `.size` | `nana_ui::DialogSize` | `Compact`、`Default`、`Medium`、`Wide`、`Workspace`，或 `Width(长度)` / `capped(px, vw)` |
 | `.close_policy` | — | 决定 Escape 和点外面能不能关 |
 | `.initial_focus` | `ModalInitialFocus` | 默认落在第一个动作上 |
@@ -100,12 +98,13 @@ widget(
 
 ## 插槽
 
-视图上的槽是 `.body`、`.close_action`、`.cancel`、`.secondary`、`.confirm`。
+视图上的槽是 `.title_icon`、`.body`、`.close_action`、`.cancel`、`.secondary`、`.confirm`。
 
 这是 `slot_assembler`：视图提交时会跑。
 
 | 插槽 | 说明 |
 | --- | --- |
+| `.title_icon` | 标题前的图标，排法见 [Dialog](dialog.md#口气与标题图标) |
 | `.body` | 正文不止一句话时放你的内容，装配不会拿默认正文换掉它 |
 | `.close_action` | 视图上的槽 |
 | `.cancel` | 视图上的槽。确认或取消槽还空着的时候，装配才建按钮 |

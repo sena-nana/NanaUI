@@ -2390,14 +2390,13 @@ pub(super) fn place_modal_children(
     output: &mut HashMap<StableNodeId, LayoutBox>,
     scope: Option<&ScopeContext<'_>>,
 ) -> Result<(), UiWorldError> {
-    let has_close = modal.slots.close_action.is_some();
-    let has_footer = modal.slots.footer.is_some() || !modal.slots.actions.is_empty();
+    let recipe = *nodes.world.theme().recipes().dialog();
     let chrome = crate::overlay_surfaces::ModalChrome::measure(
         modal.kind,
         modal.title,
         modal.description,
-        has_close,
-        has_footer,
+        &modal.slots,
+        &recipe,
     );
     let body_copy = modal.body_text.map_or(0.0, |metrics| metrics.height);
     let body_gap = if body_copy > 0.0 && modal.slots.body.is_some() {
@@ -2411,7 +2410,6 @@ pub(super) fn place_modal_children(
         width: size.width,
         height: size.height,
     };
-    let recipe = *nodes.world.theme().recipes().dialog();
     let surface = match modal.kind {
         crate::ModalSurfaceKind::Dialog(_) | crate::ModalSurfaceKind::Confirm(_) => {
             let provisional =
@@ -2483,18 +2481,24 @@ pub(super) fn place_modal_children(
             scope,
         )?;
     }
-    if let Some(id) = modal.slots.close_action
-        && nodes.get(id)?.is_some()
-    {
-        let close = chrome.close_box(surface, modal.kind);
+    for (id, square) in [
+        (modal.slots.title_icon, chrome.icon_box(surface)),
+        (modal.slots.close_action, chrome.close_box(surface)),
+    ] {
+        let (Some(id), Some(square)) = (id, square) else {
+            continue;
+        };
+        if nodes.get(id)?.is_none() {
+            continue;
+        }
         place_modal_slot(
             id,
             Point {
-                x: close.x,
-                y: close.y,
+                x: square.x,
+                y: square.y,
             },
-            Size::new(close.width, close.height),
-            Size::new(close.width, close.height),
+            Size::new(square.width, square.height),
+            Size::new(square.width, square.height),
             viewport,
             parent_font_px,
             nodes,

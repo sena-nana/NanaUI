@@ -3863,11 +3863,10 @@ impl UiWorld {
                             *kind,
                             crate::TextMetrics::default(),
                             None,
-                            slots.close_action.is_some(),
-                            slots.footer.is_some() || !slots.actions.is_empty(),
+                            slots,
+                            self.theme.recipes().dialog(),
                         );
-                        let wrap_width =
-                            chrome.text_width(surface.width, *kind, slots.close_action.is_some());
+                        let wrap_width = chrome.text_width(surface.width);
                         let runs = shaper.runs;
                         let intrinsic =
                             shape_modal_text(id, visual, computed, Some(wrap_width), &mut shaper);

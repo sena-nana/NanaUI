@@ -3616,6 +3616,44 @@ fn a_form_field_control_and_a_modal_close_action_mount_as_their_setters_place_th
 }
 
 #[test]
+fn a_title_icon_view_leads_the_header_of_a_dialog_and_a_confirm_dialog() {
+    use crate::{ConfirmDialog, Dialog, ModalSurface};
+    let (mut cx, document, _) = setup();
+    let (_view, (dialog, confirm)) = cx
+        .mount_view_root(document, || {
+            let (dialog, confirm) = (entity_ref::<Dialog>(), entity_ref::<ConfirmDialog>());
+            with_refs(
+                (
+                    widget(Dialog::new("删除").danger(true))
+                        .entity_ref(dialog)
+                        .title_icon(text("!"))
+                        .body(text("正文")),
+                    widget(ConfirmDialog::new("删除？", "不能撤销").danger(true))
+                        .entity_ref(confirm)
+                        .title_icon(text("!")),
+                ),
+                (dialog, confirm),
+            )
+        })
+        .unwrap();
+    let icon = children(&cx, dialog.stable_id())[0];
+    assert_eq!(cx.world().text(icon), Some("!"));
+    assert_eq!(
+        cx.read(dialog, |dialog| dialog.slots().title_icon).unwrap(),
+        Some(icon)
+    );
+    let icon = children(&cx, confirm.stable_id())[0];
+    assert_eq!(cx.world().text(icon), Some("!"));
+    assert_eq!(
+        cx.read(confirm, |confirm| confirm
+            .confirm_slots()
+            .and_then(|slots| slots.title_icon))
+            .unwrap(),
+        Some(icon)
+    );
+}
+
+#[test]
 fn a_confirm_dialog_places_the_actions_it_is_given_and_makes_the_rest() {
     use crate::{ConfirmDialog, ConfirmSlots};
     let (mut cx, document, _) = setup();
@@ -3642,6 +3680,7 @@ fn a_confirm_dialog_places_the_actions_it_is_given_and_makes_the_rest() {
     cx.set_confirm_slots(
         by_hand,
         ConfirmSlots {
+            title_icon: None,
             body: Some(parts[0]),
             close_action: Some(parts[1]),
             cancel: parts[2],

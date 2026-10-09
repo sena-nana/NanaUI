@@ -3308,6 +3308,9 @@ pub struct Dialog {
     pub title: Arc<str>,
     pub description: Option<Arc<str>>,
     pub size: nana_ui_core::DialogSize,
+    /// A destructive dialog: the title takes the theme's danger colour, the
+    /// tone a [`crate::ConfirmDialog`] with `danger` speaks in.
+    pub danger: bool,
     pub close_policy: nana_ui_core::DialogClosePolicy,
     pub initial_focus: crate::ModalInitialFocus,
     pub slots: crate::ModalSlots,
@@ -3321,6 +3324,7 @@ impl Dialog {
             title: title.into(),
             description: None,
             size,
+            danger: false,
             close_policy: nana_ui_core::DialogClosePolicy::default(),
             initial_focus: crate::ModalInitialFocus::default(),
             slots: crate::ModalSlots::default(),
@@ -3335,6 +3339,12 @@ impl Dialog {
 
     pub fn description(mut self, description: impl Into<Arc<str>>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// Speak in the danger tone: the title takes the theme's danger colour.
+    pub fn danger(mut self, danger: bool) -> Self {
+        self.danger = danger;
         self
     }
 
@@ -3389,7 +3399,7 @@ impl ComponentView for Dialog {
             None,
             crate::ModalSurfaceKind::Dialog(self.size),
             false,
-            false,
+            self.danger,
             &self.slots,
         );
     }

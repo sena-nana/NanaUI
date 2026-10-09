@@ -752,6 +752,17 @@ impl ThemeDefinition {
                 });
             }
         }
+        let mut error = None;
+        let mut check = Check {
+            theme: self.id.clone(),
+            error: &mut error,
+        };
+        for (token, value) in dialog.lengths() {
+            check.length(token, value);
+        }
+        if let Some(error) = error {
+            return Err(error);
+        }
 
         Ok(CompiledRecipes::new(
             families,
@@ -1407,6 +1418,15 @@ mod tests {
                 Err(ThemeCompileError::NotFinite { token, .. }) if token == "dialog.top"
             ));
         }
+        let mut shrunk = dark();
+        shrunk.components.dialog = Some(super::super::DialogRecipe {
+            close_size: -4.0,
+            ..super::super::DialogRecipe::DEFAULT
+        });
+        assert!(matches!(
+            shrunk.compile(),
+            Err(ThemeCompileError::NegativeLength { token, .. }) if token == "dialog.close_size"
+        ));
 
         let mut ancient = dark();
         ancient.schema = ThemeSchemaVersion::new(0, 9);
@@ -1529,6 +1549,7 @@ mod tests {
                 axis: ViewportAxis::Height,
                 value: 72.0,
             },
+            ..super::super::DialogRecipe::DEFAULT
         };
         let themed = dark().with_dialog(placed);
         assert_eq!(themed.generation, dark().generation.next());

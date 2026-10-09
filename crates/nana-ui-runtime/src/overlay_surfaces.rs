@@ -33,6 +33,8 @@ pub struct ModalBehavior {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModalSlots {
+    /// An icon before the title, in the header row.
+    pub title_icon: Option<StableNodeId>,
     pub body: Option<StableNodeId>,
     pub footer: Option<StableNodeId>,
     pub close_action: Option<StableNodeId>,
@@ -41,6 +43,8 @@ pub struct ModalSlots {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmSlots {
+    /// An icon before the title, in the header row.
+    pub title_icon: Option<StableNodeId>,
     pub body: Option<StableNodeId>,
     pub close_action: Option<StableNodeId>,
     pub cancel: StableNodeId,
@@ -51,6 +55,7 @@ pub struct ConfirmSlots {
 impl ConfirmSlots {
     pub(crate) fn modal_slots(&self) -> ModalSlots {
         ModalSlots {
+            title_icon: self.title_icon,
             body: self.body,
             close_action: self.close_action,
             actions: std::iter::once(self.cancel)
@@ -71,8 +76,9 @@ pub enum ConfirmIntent {
 
 impl ModalSlots {
     pub(crate) fn ordered(&self) -> Vec<StableNodeId> {
-        self.body
+        self.title_icon
             .into_iter()
+            .chain(self.body)
             .chain(self.footer)
             .chain(self.close_action)
             .chain(self.actions.iter().copied())
@@ -112,6 +118,7 @@ pub struct ConfirmDialog {
 /// What a dialog was given before its first assembly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct RequestedConfirmSlots {
+    pub title_icon: Option<StableNodeId>,
     pub body: Option<StableNodeId>,
     pub close_action: Option<StableNodeId>,
     pub cancel: Option<StableNodeId>,
@@ -142,6 +149,14 @@ impl ConfirmDialog {
     /// Label of the dismissing action. Applications localize it here.
     pub fn cancel_label(mut self, label: impl Into<Arc<str>>) -> Self {
         self.cancel_label = Some(label.into());
+        self
+    }
+
+    /// A destructive confirmation: the confirming action the dialog makes
+    /// takes the danger kind, and the title the theme's danger colour, the
+    /// same tone a [`crate::Dialog::danger`] dialog speaks in.
+    pub fn danger(mut self, danger: bool) -> Self {
+        self.danger = danger;
         self
     }
 
@@ -178,6 +193,12 @@ impl ConfirmDialog {
 
     pub fn behavior(&self) -> ModalBehavior {
         self.behavior
+    }
+
+    /// An icon before the title, placed on assembly.
+    pub fn title_icon(mut self, icon: StableNodeId) -> Self {
+        self.requested.title_icon = Some(icon);
+        self
     }
 
     /// Content between the message and the actions, placed on assembly.
@@ -446,12 +467,28 @@ pub(crate) const MODAL_FOOTER_PAD_BOTTOM: f32 = nana_ui_core::space::XXL;
 pub(crate) const DRAWER_FOOTER_PAD_Y: f32 = nana_ui_core::space::XL;
 pub(crate) const MODAL_TITLE_DESC_GAP: f32 = nana_ui_core::space::XS;
 pub(crate) const MODAL_CLOSE_SIZE: f32 = ControlSize::Small.height_in(UI_METRICS);
-pub(crate) const MODAL_CLOSE_GAP: f32 = nana_ui_core::space::XL;
 pub(crate) const DRAWER_CLOSE_GAP: f32 = nana_ui_core::space::LG;
 pub(crate) const MODAL_ACTION_GAP: f32 = nana_ui_core::space::MD;
 pub(crate) const MODAL_ACTION_HEIGHT: f32 = ControlSize::Medium.height_in(UI_METRICS);
 pub(crate) const MODAL_BODY_TEXT_SIZE: f32 = nana_ui_core::type_scale::BODY;
 
+/// A drawer's title icon square: the built-in dialog's. A dialog's comes
+/// from its theme recipe; a drawer keeps its own fixed chrome.
+pub(crate) const DRAWER_ICON_SIZE: f32 = nana_ui_core::DialogRecipe::DEFAULT.icon_size;
+
+/// A modal surface's chrome: the header row, the body's insets and the
+/// footer band.
+///
+/// The header is one row laid out the way a flex row with
+/// `align-items: center` lays it out: `[icon] title [close]`, each centred
+/// in the row. A drawer's row is as tall as the tallest of the three, as it
+/// always was. A dialog card's row is as tall as its title block, its icon
+/// and its recipe's least height, but not its close button: a busy
+/// confirmation hides that button, and the body must not jump when it
+/// does. The card takes the icon square, the close square, the gap and the
+/// least height from the theme's [`DialogRecipe`].
+///
+/// [`DialogRecipe`]: nana_ui_core::DialogRecipe
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ModalChrome {
     pub header_height: f32,
@@ -459,6 +496,12 @@ pub(crate) struct ModalChrome {
     pub body_pad_top: f32,
     pub body_pad_bottom: f32,
     pub pad_x: f32,
+    row_top: f32,
+    row_height: f32,
+    text_height: f32,
+    icon: Option<f32>,
+    close: Option<f32>,
+    gap: f32,
 }
 
 impl ModalChrome {
@@ -466,23 +509,34 @@ impl ModalChrome {
         kind: ModalSurfaceKind,
         title: crate::TextMetrics,
         description: Option<crate::TextMetrics>,
-        has_close: bool,
-        has_footer: bool,
+        slots: &ModalSlots,
+        recipe: &nana_ui_core::DialogRecipe,
     ) -> Self {
+        let has_footer = slots.footer.is_some() || !slots.actions.is_empty();
+        let drawer = matches!(kind, ModalSurfaceKind::Drawer(_));
         let text_height =
             title.height + description.map_or(0.0, |metrics| MODAL_TITLE_DESC_GAP + metrics.height);
-        let (header_pad_top, header_pad_bottom) = match kind {
-            ModalSurfaceKind::Drawer(_) => (DRAWER_HEADER_PAD_Y, DRAWER_HEADER_PAD_Y),
-            _ => (MODAL_HEADER_PAD_TOP, MODAL_HEADER_PAD_BOTTOM),
+        let (header_pad_top, header_pad_bottom) = if drawer {
+            (DRAWER_HEADER_PAD_Y, DRAWER_HEADER_PAD_Y)
+        } else {
+            (MODAL_HEADER_PAD_TOP, MODAL_HEADER_PAD_BOTTOM)
         };
-        let header_content = match kind {
-            ModalSurfaceKind::Drawer(_) if has_close => text_height.max(MODAL_CLOSE_SIZE),
-            _ => text_height,
+        let (icon_size, close_size, gap) = if drawer {
+            (DRAWER_ICON_SIZE, MODAL_CLOSE_SIZE, DRAWER_CLOSE_GAP)
+        } else {
+            (recipe.icon_size, recipe.close_size, recipe.header_gap)
         };
-        let header_height = header_pad_top + header_content + header_pad_bottom;
+        let icon = slots.title_icon.map(|_| icon_size);
+        let close = slots.close_action.map(|_| close_size);
+        let row_height = text_height.max(icon.unwrap_or(0.0)).max(if drawer {
+            close.unwrap_or(0.0)
+        } else {
+            recipe.header_min_height
+        });
+        let header_height = header_pad_top + row_height + header_pad_bottom;
         let footer_height = if !has_footer {
             0.0
-        } else if matches!(kind, ModalSurfaceKind::Drawer(_)) {
+        } else if drawer {
             DRAWER_FOOTER_PAD_Y * 2.0 + MODAL_ACTION_HEIGHT
         } else {
             MODAL_ACTION_HEIGHT + MODAL_FOOTER_PAD_BOTTOM
@@ -498,18 +552,29 @@ impl ModalChrome {
             body_pad_top: MODAL_BODY_PAD_TOP,
             body_pad_bottom,
             pad_x: MODAL_PAD_X,
+            row_top: header_pad_top,
+            row_height,
+            text_height,
+            icon,
+            close,
+            gap,
         }
     }
 
-    pub fn text_width(self, surface_width: f32, kind: ModalSurfaceKind, has_close: bool) -> f32 {
-        let close_reserve = if !has_close {
-            0.0
-        } else if matches!(kind, ModalSurfaceKind::Drawer(_)) {
-            DRAWER_CLOSE_GAP + MODAL_CLOSE_SIZE
-        } else {
-            MODAL_CLOSE_GAP + MODAL_CLOSE_SIZE
-        };
-        (surface_width - self.pad_x * 2.0 - close_reserve).max(0.0)
+    /// How wide the title and its description may run: the header row less
+    /// the icon and the close button with their gaps.
+    pub fn text_width(self, surface_width: f32) -> f32 {
+        let icon = self.icon.map_or(0.0, |size| size + self.gap);
+        let close = self.close.map_or(0.0, |size| self.gap + size);
+        (surface_width - self.pad_x * 2.0 - icon - close).max(0.0)
+    }
+
+    /// Where the title block starts: after the icon, centred in the row.
+    pub fn title_origin(self, surface: crate::LayoutBox) -> (f32, f32) {
+        (
+            surface.x + self.pad_x + self.icon.map_or(0.0, |size| size + self.gap),
+            surface.y + self.row_top + (self.row_height - self.text_height) / 2.0,
+        )
     }
 
     pub fn chrome_height(self, body_content: f32) -> f32 {
@@ -534,19 +599,26 @@ impl ModalChrome {
         }
     }
 
-    pub fn close_box(self, surface: crate::LayoutBox, kind: ModalSurfaceKind) -> crate::LayoutBox {
-        let y = match kind {
-            ModalSurfaceKind::Drawer(_) => {
-                surface.y + (self.header_height - MODAL_CLOSE_SIZE) / 2.0
-            }
-            _ => surface.y + MODAL_HEADER_PAD_TOP,
-        };
-        crate::LayoutBox {
-            x: surface.x + surface.width - self.pad_x - MODAL_CLOSE_SIZE,
-            y,
-            width: MODAL_CLOSE_SIZE,
-            height: MODAL_CLOSE_SIZE,
-        }
+    /// The square the title icon slot is placed in, at the row's start.
+    pub fn icon_box(self, surface: crate::LayoutBox) -> Option<crate::LayoutBox> {
+        let size = self.icon?;
+        Some(crate::LayoutBox {
+            x: surface.x + self.pad_x,
+            y: surface.y + self.row_top + (self.row_height - size) / 2.0,
+            width: size,
+            height: size,
+        })
+    }
+
+    /// The square the close button is placed in, at the row's end.
+    pub fn close_box(self, surface: crate::LayoutBox) -> Option<crate::LayoutBox> {
+        let size = self.close?;
+        Some(crate::LayoutBox {
+            x: surface.x + surface.width - self.pad_x - size,
+            y: surface.y + self.row_top + (self.row_height - size) / 2.0,
+            width: size,
+            height: size,
+        })
     }
 }
 
@@ -757,6 +829,7 @@ mod tests {
             .create_detached_component(foreign_document, Button::new("Foreign"))
             .unwrap();
         let slots = ConfirmSlots {
+            title_icon: None,
             body: None,
             close_action: None,
             cancel: cancel.stable_id(),
@@ -1063,6 +1136,7 @@ mod tests {
                 axis: ViewportAxis::Height,
                 value: 72.0,
             },
+            ..nana_ui_core::DialogRecipe::DEFAULT
         };
         // The host's incremental path: lay out only what the install dirtied.
         cx.take_system_work();
@@ -1084,6 +1158,175 @@ mod tests {
             "the body slot moved with the card"
         );
         assert!(body_box.y + body_box.height <= surface.y + surface.height);
+    }
+
+    fn modal_geometry(cx: &AppContext, modal: StableNodeId) -> crate::ComponentGeometry {
+        cx.world().component_geometry(modal).unwrap()
+    }
+
+    fn shaped_layout(cx: &mut AppContext, document: DocumentId, width: f32, height: f32) {
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        let mut shaper = WrappingShaper;
+        cx.shape_text(&work.text, &mut shaper).unwrap();
+        cx.layout_document(document, crate::LayoutViewport::new(width, height))
+            .unwrap();
+        cx.shape_text_for_layout(document, &mut shaper).unwrap();
+        cx.layout_document(document, crate::LayoutViewport::new(width, height))
+            .unwrap();
+    }
+
+    /// A danger dialog's title speaks in the theme's danger tone, and so
+    /// does a confirm dialog's; a plain one keeps the text colour. An icon
+    /// slot leads the header row: it and the close button are centred on
+    /// the title block, the title starts past the icon and wraps short of
+    /// both, and the close button does not grow the row.
+    #[test]
+    fn a_danger_dialog_speaks_in_the_danger_tone_and_an_icon_leads_its_header() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let dialog = cx
+            .create_component(document, crate::Dialog::new("删除资源库").danger(true))
+            .unwrap();
+        let icon = cx
+            .create_detached_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        let close = cx
+            .create_detached_component(
+                document,
+                crate::IconButton::new(nana_ui_core::Icon::Close, "Close"),
+            )
+            .unwrap();
+        cx.set_modal_slots(
+            dialog,
+            ModalSlots {
+                title_icon: Some(icon.stable_id()),
+                close_action: Some(close.stable_id()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        shaped_layout(&mut cx, document, 800.0, 600.0);
+
+        let palette = cx.world().theme().style_model();
+        let danger = palette
+            .color(nana_ui_core::SemanticColorRole::Danger)
+            .as_rgba_array();
+        let text = palette
+            .color(nana_ui_core::SemanticColorRole::Text)
+            .as_rgba_array();
+        let crate::ComponentGeometry::ModalFrame {
+            surface,
+            body,
+            title,
+            ..
+        } = modal_geometry(&cx, dialog.stable_id())
+        else {
+            panic!("dialog geometry")
+        };
+        assert_eq!(title.color, Some(danger));
+        let recipe = nana_ui_core::DialogRecipe::DEFAULT;
+        let icon_box = cx.world().canonical_layout_box(icon.stable_id()).unwrap();
+        let close_box = cx.world().canonical_layout_box(close.stable_id()).unwrap();
+        assert_eq!(icon_box.x, surface.x + MODAL_PAD_X);
+        assert_eq!(
+            (icon_box.width, icon_box.height),
+            (recipe.icon_size, recipe.icon_size)
+        );
+        assert_eq!(
+            title.bounds.x,
+            icon_box.x + recipe.icon_size + recipe.header_gap
+        );
+        assert!(
+            (title.bounds.width
+                - (surface.width
+                    - MODAL_PAD_X * 2.0
+                    - recipe.icon_size
+                    - recipe.header_gap * 2.0
+                    - recipe.close_size))
+                .abs()
+                < 0.01,
+            "{title:?}"
+        );
+        let title_middle = title.bounds.y + title.bounds.height / 2.0;
+        for square in [icon_box, close_box] {
+            assert!(
+                (square.y + square.height / 2.0 - title_middle).abs() < 0.01,
+                "{square:?} is centred on {title:?}"
+            );
+        }
+        assert_eq!(
+            body.y,
+            surface.y
+                + MODAL_HEADER_PAD_TOP
+                + title.bounds.height
+                + MODAL_HEADER_PAD_BOTTOM
+                + MODAL_BODY_PAD_TOP,
+            "the close button does not grow the header row"
+        );
+
+        let plain = cx
+            .create_component(document, crate::Dialog::new("重命名"))
+            .unwrap();
+        let confirm = cx
+            .create_component(
+                document,
+                ConfirmDialog::new("删除", "不能恢复").danger(true),
+            )
+            .unwrap();
+        cx.assemble_confirm_dialog(confirm).unwrap();
+        shaped_layout(&mut cx, document, 800.0, 600.0);
+        let crate::ComponentGeometry::ModalFrame { title, .. } =
+            modal_geometry(&cx, plain.stable_id())
+        else {
+            panic!("dialog geometry")
+        };
+        assert_eq!(title.color, Some(text));
+        let crate::ComponentGeometry::ModalFrame { title, .. } =
+            modal_geometry(&cx, confirm.stable_id())
+        else {
+            panic!("confirm geometry")
+        };
+        assert_eq!(title.color, Some(danger));
+    }
+
+    /// A theme whose header row is as tall as its close button states that
+    /// least height; the title block is then centred in the taller row.
+    #[test]
+    fn a_header_min_height_holds_the_row_open() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        cx.set_theme_definition(&nana_ui_core::ThemeDefinition::NANA_DARK.with_dialog(
+            nana_ui_core::DialogRecipe {
+                header_min_height: 40.0,
+                ..nana_ui_core::DialogRecipe::DEFAULT
+            },
+        ))
+        .unwrap();
+        let dialog = cx
+            .create_component(document, crate::Dialog::new("导出"))
+            .unwrap();
+        shaped_layout(&mut cx, document, 800.0, 600.0);
+        let crate::ComponentGeometry::ModalFrame {
+            surface,
+            body,
+            title,
+            ..
+        } = modal_geometry(&cx, dialog.stable_id())
+        else {
+            panic!("dialog geometry")
+        };
+        assert_eq!(
+            body.y,
+            surface.y + MODAL_HEADER_PAD_TOP + 40.0 + MODAL_HEADER_PAD_BOTTOM + MODAL_BODY_PAD_TOP
+        );
+        assert!(
+            (title.bounds.y
+                - (surface.y + MODAL_HEADER_PAD_TOP + (40.0 - title.bounds.height) / 2.0))
+                .abs()
+                < 0.01,
+            "{title:?}"
+        );
     }
 
     #[test]
@@ -1188,6 +1431,7 @@ mod tests {
             cx.set_confirm_slots(
                 confirm,
                 ConfirmSlots {
+                    title_icon: None,
                     body: None,
                     close_action: close.map(|close| close.stable_id()),
                     cancel: cancel.stable_id(),
@@ -1251,6 +1495,7 @@ mod tests {
         cx.set_confirm_slots(
             confirm,
             ConfirmSlots {
+                title_icon: None,
                 body: Some(body.stable_id()),
                 close_action: Some(close.stable_id()),
                 cancel: cancel.stable_id(),

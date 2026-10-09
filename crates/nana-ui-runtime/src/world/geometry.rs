@@ -160,17 +160,17 @@ impl UiWorld {
                 body_text,
                 kind,
                 slots,
+                danger,
                 ..
             } => {
                 let presentation = self.nodes.modal_text(id).copied().unwrap_or_default();
-                let has_close = slots.close_action.is_some();
-                let has_footer = slots.footer.is_some() || !slots.actions.is_empty();
+                let recipe = self.theme.recipes().dialog();
                 let chrome = crate::overlay_surfaces::ModalChrome::measure(
                     *kind,
                     presentation.title,
                     presentation.description,
-                    has_close,
-                    has_footer,
+                    slots,
+                    recipe,
                 );
                 let body_copy = presentation.body.map_or(0.0, |metrics| metrics.height);
                 let body_slot = slots
@@ -187,20 +187,32 @@ impl UiWorld {
                     bounds,
                     *kind,
                     Some(intrinsic_height),
-                    self.theme.recipes().dialog(),
+                    recipe,
                 );
-                let LayoutBox { x, y, width, .. } = surface;
-                let text_width = chrome.text_width(width, *kind, has_close);
+                let text_width = chrome.text_width(surface.width);
                 let body = chrome.body_box(surface);
-                let text_block = presentation.title.height
-                    + presentation.description.map_or(0.0, |metrics| {
-                        crate::overlay_surfaces::MODAL_TITLE_DESC_GAP + metrics.height
-                    });
-                let title_y = match kind {
-                    crate::ModalSurfaceKind::Drawer(_) => {
-                        y + (chrome.header_height - text_block) / 2.0
-                    }
-                    _ => y + crate::overlay_surfaces::MODAL_HEADER_PAD_TOP,
+                let (title_x, title_y) = chrome.title_origin(surface);
+                // A danger dialog speaks in the status recipe's danger tone,
+                // over whatever colour the node's text would take.
+                let title_color = if *danger {
+                    self.style_model
+                        .color(
+                            self.theme
+                                .recipes()
+                                .status()
+                                .role(nana_ui_core::StatusTone::Danger),
+                        )
+                        .as_rgba_array()
+                } else {
+                    style.color.unwrap_or_else(|| {
+                        self.style_model
+                            .color(
+                                self.theme
+                                    .recipes()
+                                    .foreground(nana_ui_core::ComponentRecipeId::Overlay, false),
+                            )
+                            .as_rgba_array()
+                    })
                 };
                 // Was `if background.r > 0.5 { 0.28 } else { 0.45 }` — the
                 // modal's lift decided by sniffing how bright the page is. It
@@ -211,22 +223,25 @@ impl UiWorld {
                     scrim: bounds,
                     surface,
                     body,
-                    title: text_region(
-                        LayoutBox {
-                            x: x + chrome.pad_x,
-                            y: title_y,
-                            width: text_width,
-                            height: presentation.title.height,
-                        },
-                        Arc::clone(title),
-                        false,
-                        14.0,
-                        Some(600),
-                    ),
+                    title: crate::ComponentTextRegion {
+                        color: Some(title_color),
+                        ..text_region(
+                            LayoutBox {
+                                x: title_x,
+                                y: title_y,
+                                width: text_width,
+                                height: presentation.title.height,
+                            },
+                            Arc::clone(title),
+                            false,
+                            14.0,
+                            Some(600),
+                        )
+                    },
                     description: description.as_ref().map(|description| {
                         text_region(
                             LayoutBox {
-                                x: x + chrome.pad_x,
+                                x: title_x,
                                 y: title_y
                                     + presentation.title.height
                                     + crate::overlay_surfaces::MODAL_TITLE_DESC_GAP,

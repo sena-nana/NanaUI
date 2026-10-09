@@ -42,6 +42,14 @@ modal_focus!(Dialog, Drawer, ConfirmDialog);
 macro_rules! modal_slots {
     ($($surface:ty),*) => {$(
         impl<K> El<$surface, K> {
+            /// An icon before the title, centred in the header row.
+            pub fn title_icon(self, view: impl IntoView) -> Self {
+                self.slot(view, |mut modal: $surface, id| {
+                    modal.slots_mut().title_icon = Some(id);
+                    modal
+                })
+            }
+
             /// The surface's content, under its title.
             pub fn body(self, view: impl IntoView) -> Self {
                 self.slot(view, |mut modal: $surface, id| {
@@ -72,6 +80,11 @@ macro_rules! modal_slots {
 modal_slots!(Dialog, Drawer);
 
 impl<K> El<ConfirmDialog, K> {
+    /// An icon before the title, centred in the header row.
+    pub fn title_icon(self, view: impl IntoView) -> Self {
+        self.slot(view, ConfirmDialog::title_icon)
+    }
+
     /// Content between the message and the actions.
     pub fn body(self, view: impl IntoView) -> Self {
         self.slot(view, ConfirmDialog::body)
