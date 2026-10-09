@@ -299,6 +299,19 @@ Linux portal 返回 URI 数组。可保留路径中的换行。zenity fallback �
 
 `describe_configured_dialog(&request)` 读回平台实际配置（标题、起始目录、扩展名）。不呈现对话框。`crates/nana-window/examples/file-dialog-probe.rs` 检查这部分配置。macOS 从 AppKit panel 读回三项。Windows 起始目录来自 `GetFolder`。`IFileDialog` 没有 GetTitle / GetFileTypes。标题是 `SetTitle` 成功后的回显。目录选择不应用过滤器（因此扩展名为空）。也不应用预填文件名。真实交互使用 `crates/nana-ui/examples/hosted-file-dialog-probe.rs`：在应用窗口内覆盖五种选择、重复与忙碌拒绝、取消、窗口退出。并观察对话框打开时持续 `window_frame_presented`。配置检查和交叉编译不能代替各平台原生交互验收。
 
+## 在文件管理器中显示
+
+`reveal_in_file_manager(&path)`（`nana_window` 与 `nana_ui` 的 `hosted` 特性导出）在系统文件管理器里显示一个路径：文件在其所在目录中被选中，目录被打开。文件管理器是另一个进程，不需要父窗口句柄。调用把请求交出去就返回，不等文件管理器本身。
+
+| 平台 | 执行方式 |
+| --- | --- |
+| macOS | `/usr/bin/open -R` 选中文件；普通目录用 `open` 打开。带扩展名的目录（`.app` 等包）也用 `-R` 选中，避免被 `open` 启动或交给应用 |
+| Windows | `explorer.exe /select,"<path>"` 选中文件，`explorer.exe "<path>"` 打开目录；参数原样传给 explorer，路径先转成绝对路径、反斜杠、去掉 `\\?\` 前缀。explorer 成功也返回 1，不看退出码 |
+| Linux | 工作线程上调用 `org.freedesktop.FileManager1` 的 `ShowItems`（文件）/ `ShowFolders`（目录）；没有服务应答时退回 `xdg-open` 打开目录（文件则打开其父目录）。这一步的失败不回传 |
+| 其它 | `RevealError::Unavailable` |
+
+路径不存在返回 `RevealError::NotFound`，不启动任何进程。读不到元数据或启动进程失败返回 `RevealError::Unavailable(原因)`。子进程在后台线程回收，不留僵尸进程。单元测试只覆盖路径分类和各平台拼出的命令，不启动文件管理器；真实显示需要在目标平台上手动确认。
+
 ## 图标
 
 任务栏、exe、Dock 上的图标是应用身份。不是界面里的 `Icon` 字形。

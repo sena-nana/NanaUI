@@ -310,6 +310,8 @@ pub use nana_window::{
     hosted_platform_material_support, install_menu_bar, menu_bar_support,
     platform_material_support, take_menu_activations,
 };
+#[cfg(feature = "hosted")]
+pub use nana_window::{RevealError, reveal_in_file_manager};
 pub use overlay::ExclusiveOverlay;
 pub use pane::ratio_pane_split;
 pub use runtime_animation::RuntimeAnimationClock;

@@ -17,6 +17,7 @@ mod material;
 mod menu;
 mod motion_preference;
 mod platform;
+mod reveal;
 pub mod shadow;
 mod size_move;
 mod splash;
@@ -61,6 +62,7 @@ pub use menu::{
 };
 pub use motion_preference::{system_reduced_motion, take_reduced_motion_change};
 pub use pointer::pointer_in_client_area;
+pub use reveal::{RevealError, reveal_in_file_manager};
 pub use size_move::LiveSizeMove;
 pub use splash::{
     LogoInfo, MAX_LOGO_DECODED_BYTES, MAX_LOGO_EDGE, MAX_LOGO_ENCODED_BYTES, NativeSplash,
