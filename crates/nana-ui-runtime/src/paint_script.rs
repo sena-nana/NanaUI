@@ -65,8 +65,8 @@ impl PaintScript {
     ///   x, y, w, h], ["roundedRect", x, y, w, h, 圆角或四个圆角], ["ellipse", x, y,
     ///   w, h], ["Z"]]`，分段里的长度可以写相对值；要指定填充规则时写成
     ///   `{ "d": 上面任一种, "fillRule": "nonzero" | "evenodd" }`。
-    /// - 圆角：长度，档位名 `"xs" | "sm" | "md" | "lg" | "xl"`，或四个这样的值（左上、
-    ///   右上、右下、左下）。
+    /// - 圆角：长度，档位名 `"xs" | "sm" | "md" | "lg" | "xl" | "xxl"`（`"xxl"` 是
+    ///   2xl 档），或四个这样的值（左上、右上、右下、左下）。
     /// - 混合方式：CSS `mix-blend-mode` 的全部取值（`"normal"`、`"multiply"`、
     ///   `"screen"`、`"overlay"`、`"darken"`、`"lighten"`、`"color-dodge"`、
     ///   `"color-burn"`、`"hard-light"`、`"soft-light"`、`"difference"`、
@@ -1106,9 +1106,10 @@ fn parse_radius(value: &Value) -> Result<ScriptRadius, String> {
         Some("md") => Ok(ScriptRadius::Tier(RadiusTier::Md)),
         Some("lg") => Ok(ScriptRadius::Tier(RadiusTier::Lg)),
         Some("xl") => Ok(ScriptRadius::Tier(RadiusTier::Xl)),
+        Some("xxl") => Ok(ScriptRadius::Tier(RadiusTier::Xxl)),
         _ => parse_len(value)
             .map(ScriptRadius::Len)
-            .map_err(|_| "a radius is a length or xs / sm / md / lg / xl".into()),
+            .map_err(|_| "a radius is a length or xs / sm / md / lg / xl / xxl".into()),
     }
 }
 
@@ -1651,6 +1652,35 @@ mod tests {
         assert!(parse_len(&Value::from("inf% + 1")).is_err());
         assert!(parse_svg_path("M0 0 L1e99 0").is_err());
         assert!(PaintScript::from_json_str(r#"[{"op":"opacity","value":1e39}]"#).is_err());
+    }
+
+    /// Every theme step has a script name; the 2xl one is `"xxl"`, after the
+    /// Rust step it names.
+    #[test]
+    fn a_rounded_rect_names_every_radius_step() {
+        let recording = record(
+            r##"[{"op": "roundedRect", "rect": [0, 0, 100, 100],
+                  "radii": ["xs", "lg", "xl", "xxl"], "fill": "accent"}]"##,
+            [100.0, 100.0],
+            PaintState::default(),
+        );
+        let [PaintOp::RoundedRect { radii, .. }] = &recording.behind_children[..] else {
+            panic!("{recording:?}");
+        };
+        let metrics = nana_ui_core::UI_METRICS;
+        assert_eq!(
+            *radii,
+            [
+                metrics.radius_xs,
+                metrics.radius_lg,
+                metrics.radius_xl,
+                metrics.radius_xxl
+            ]
+        );
+        assert!(
+            PaintScript::from_json_str(r#"[{"op":"roundedRect","rect":[0,0,1,1],"radii":"xxxl"}]"#)
+                .is_err()
+        );
     }
 
     #[test]

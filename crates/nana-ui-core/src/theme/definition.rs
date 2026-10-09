@@ -885,13 +885,14 @@ fn palette_fields(palette: &SemanticPalette) -> [(&'static str, SemanticColor); 
     ]
 }
 
-fn metrics_fields(metrics: ThemeMetrics) -> [(&'static str, f32); 23] {
+fn metrics_fields(metrics: ThemeMetrics) -> [(&'static str, f32); 24] {
     [
         ("metrics.radius_xs", metrics.radius_xs),
         ("metrics.radius_sm", metrics.radius_sm),
         ("metrics.radius_md", metrics.radius_md),
         ("metrics.radius_lg", metrics.radius_lg),
         ("metrics.radius_xl", metrics.radius_xl),
+        ("metrics.radius_xxl", metrics.radius_xxl),
         (
             "metrics.compact_control_height",
             metrics.compact_control_height,
@@ -1367,6 +1368,13 @@ mod tests {
         assert!(matches!(
             dark().with_metrics(negative).compile(),
             Err(ThemeCompileError::NegativeLength { token, .. }) if token == "metrics.radius_md"
+        ));
+
+        let mut negative_2xl = UI_METRICS;
+        negative_2xl.radius_xxl = -1.0;
+        assert!(matches!(
+            dark().with_metrics(negative_2xl).compile(),
+            Err(ThemeCompileError::NegativeLength { token, .. }) if token == "metrics.radius_xxl"
         ));
 
         let mut nan = UI_METRICS;

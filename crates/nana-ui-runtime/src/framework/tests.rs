@@ -5264,6 +5264,45 @@ fn an_installed_radius_reaches_a_control_that_named_the_tier() {
     );
 }
 
+/// The 2xl step is a tier like the others: a node that names it follows the
+/// installed metrics, not the default it was built under.
+#[test]
+fn a_node_that_names_the_2xl_radius_follows_the_installed_theme() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let card = context
+        .create_component(
+            document,
+            crate::Stack::column(0.0)
+                .style(crate::NodeStyle::default().radius(nana_ui_core::RadiusTier::Xxl)),
+        )
+        .unwrap();
+    let radius_of = |context: &AppContext| {
+        context.world().extract_nodes(&[card.stable_id()])[0]
+            .source_style
+            .layout
+            .border_radius
+    };
+    assert_eq!(
+        radius_of(&context),
+        Some(nana_ui_core::UI_METRICS.radius_xxl)
+    );
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.radius_xxl = 32.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeAppearance::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(radius_of(&context), Some(32.0));
+}
+
 /// Per-corner steps follow the installed theme the way a uniform one does.
 ///
 /// Two blocks joined edge to edge round their outer corners and meet square,

@@ -107,6 +107,8 @@ CSS `font-family`（以及 weight 和 style）会映射到刚载入的 face。�
 
 `RadiusTier::Xl`（默认 20）给浮在页面上的轨道用。它比卡片圆一档。它不是单独的设置，始终跟在页面档之上。
 
+`RadiusTier::Xxl` 是 2xl 档（默认 24，`ThemeMetrics::radius_xxl`），给播放条、详情卡这类独立的大块表面用，比轨道再圆一档。它也不是单独的设置，和 `Xl` 一样跟在页面档之上。照 CSS `--radius-2xl` 写的主题，把那个值给 `radius_xxl`。Paint 脚本里档位名是 `"xxl"`。
+
 `standard_radius` 仍是 md（10）的别名。只改这一档，不会重算另外三档。
 
 遗留 JSON 若只有 `standard_radius`，仍按旧规则一次推导 ±4 和 ±8。

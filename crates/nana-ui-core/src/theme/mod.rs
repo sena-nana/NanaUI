@@ -154,6 +154,11 @@ pub struct ThemeMetrics {
     /// field still loads.
     #[serde(default = "default_radius_xl")]
     pub radius_xl: f32,
+    /// The 2xl step, one rounder than [`Self::radius_xl`]: large standalone
+    /// surfaces. `serde(default)` so a metrics blob written before this
+    /// field still loads.
+    #[serde(default = "default_radius_xxl")]
+    pub radius_xxl: f32,
     pub compact_control_height: f32,
     pub control_height: f32,
     /// Horizontal inset of a small control. Matches
@@ -294,6 +299,9 @@ pub enum RadiusTier {
     /// Floating rails — a dock, a tool strip — one step rounder than the
     /// cards beside them.
     Xl,
+    /// The 2xl step: large standalone surfaces — a player bar, a detail
+    /// card — one step rounder than the rails.
+    Xxl,
 }
 
 impl RadiusTier {
@@ -304,6 +312,7 @@ impl RadiusTier {
             Self::Md => metrics.radius_md,
             Self::Lg => metrics.radius_lg,
             Self::Xl => metrics.radius_xl,
+            Self::Xxl => metrics.radius_xxl,
         }
     }
 }
@@ -440,6 +449,10 @@ fn default_radius_xl() -> f32 {
     UI_METRICS.radius_xl
 }
 
+fn default_radius_xxl() -> f32 {
+    UI_METRICS.radius_xxl
+}
+
 /// The four radius steps, already resolved against the installed theme.
 ///
 /// This travels on the extracted node so the renderer never resolves a tier.
@@ -484,6 +497,7 @@ pub const UI_METRICS: ThemeMetrics = ThemeMetrics {
     radius_md: space::LG,
     radius_lg: space::XXL,
     radius_xl: space::PAGE_TIGHT,
+    radius_xxl: space::PAGE,
     compact_control_height: 28.0,
     control_height: 32.0,
     compact_control_padding_x: space::MD,
@@ -657,6 +671,33 @@ mod tests {
         let restored: super::ThemeMetrics =
             serde_json::from_value(value).expect("legacy metrics restore");
         assert_eq!(restored, super::UI_METRICS);
+    }
+
+    #[test]
+    fn a_metrics_blob_without_the_2xl_radius_still_loads() {
+        let encoded = serde_json::to_string(&super::UI_METRICS).expect("metrics serializes");
+        let mut value: serde_json::Value = serde_json::from_str(&encoded).expect("json");
+        value.as_object_mut().expect("object").remove("radius_xxl");
+        let restored: super::ThemeMetrics =
+            serde_json::from_value(value).expect("legacy metrics restore");
+        assert_eq!(restored, super::UI_METRICS);
+    }
+
+    /// Each step of the default scale is rounder than the one before it, and
+    /// the 2xl step is the spacing step after the one `Xl` reads.
+    #[test]
+    fn every_radius_step_is_rounder_than_the_one_before() {
+        use super::RadiusTier::{Lg, Md, Sm, Xl, Xs, Xxl};
+        let metrics = super::UI_METRICS;
+        let steps = [Xs, Sm, Md, Lg, Xl, Xxl].map(|tier| tier.resolve(metrics));
+        assert!(steps.windows(2).all(|pair| pair[0] < pair[1]), "{steps:?}");
+        assert_eq!(Xxl.resolve(metrics), super::space::PAGE);
+
+        let installed = super::ThemeMetrics {
+            radius_xxl: 40.0,
+            ..metrics
+        };
+        assert_eq!(Xxl.resolve(installed), 40.0);
     }
 
     /// Metrics written before corners had a shape load round, and a shaped
