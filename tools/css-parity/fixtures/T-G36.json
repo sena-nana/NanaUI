@@ -1,0 +1,52 @@
+{
+  "id": "T-G36",
+  "title": "auto 行高按解析后的列宽量可折行内容（芯片按 197px 折两行，不按最窄宽度量）",
+  "status": "pass",
+  "viewport": [800, 300],
+  "tolerance_px": 2,
+  "tree": {
+    "id": "root",
+    "style": "display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:6px;width:400px",
+    "children": [
+      {
+        "id": "a",
+        "style": "display:flex;flex-wrap:wrap;gap:6px",
+        "children": [
+          { "id": "a0", "style": "width:60px;height:20px;flex-shrink:0" },
+          { "id": "a1", "style": "width:60px;height:20px;flex-shrink:0" },
+          { "id": "a2", "style": "width:60px;height:20px;flex-shrink:0" },
+          { "id": "a3", "style": "width:60px;height:20px;flex-shrink:0" },
+          { "id": "a4", "style": "width:60px;height:20px;flex-shrink:0" }
+        ]
+      },
+      {
+        "id": "w",
+        "style": "width:100%;display:flex;flex-wrap:wrap;gap:6px",
+        "children": [
+          { "id": "w0", "style": "width:60px;height:20px;flex-shrink:0" },
+          { "id": "w1", "style": "width:60px;height:20px;flex-shrink:0" },
+          { "id": "w2", "style": "width:60px;height:20px;flex-shrink:0" },
+          { "id": "w3", "style": "width:60px;height:20px;flex-shrink:0" },
+          { "id": "w4", "style": "width:60px;height:20px;flex-shrink:0" }
+        ]
+      },
+      { "id": "c", "style": "height:20px" }
+    ]
+  },
+  "expected": [
+    { "id": "root", "x": 0, "y": 0, "w": 400, "h": 72 },
+    { "id": "a", "x": 0, "y": 0, "w": 197, "h": 46 },
+    { "id": "a0", "x": 0, "y": 0, "w": 60, "h": 20 },
+    { "id": "a1", "x": 66, "y": 0, "w": 60, "h": 20 },
+    { "id": "a2", "x": 132, "y": 0, "w": 60, "h": 20 },
+    { "id": "a3", "x": 0, "y": 26, "w": 60, "h": 20 },
+    { "id": "a4", "x": 66, "y": 26, "w": 60, "h": 20 },
+    { "id": "w", "x": 203, "y": 0, "w": 197, "h": 46 },
+    { "id": "w0", "x": 203, "y": 0, "w": 60, "h": 20 },
+    { "id": "w1", "x": 269, "y": 0, "w": 60, "h": 20 },
+    { "id": "w2", "x": 335, "y": 0, "w": 60, "h": 20 },
+    { "id": "w3", "x": 203, "y": 26, "w": 60, "h": 20 },
+    { "id": "w4", "x": 269, "y": 26, "w": 60, "h": 20 },
+    { "id": "c", "x": 0, "y": 52, "w": 197, "h": 20 }
+  ]
+}

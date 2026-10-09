@@ -406,6 +406,10 @@ fn t_g27_auto_fit_two_tracks() {
     assert_pass_case("T-G27");
 }
 #[test]
+fn t_g36_auto_row_measures_wrapping_content_at_its_column_width() {
+    assert_pass_case("T-G36");
+}
+#[test]
 fn t_g28_justify_self_end() {
     assert_pass_case("T-G28");
 }

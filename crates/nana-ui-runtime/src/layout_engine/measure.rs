@@ -927,9 +927,12 @@ fn measure_node(
             &child_sizes,
             content_available,
             fonts,
-            nodes,
             None,
-        );
+            viewport,
+            nodes,
+            cache,
+            scope,
+        )?;
         // Subgrid tracks belong to the parent. Re-solving them from this
         // container's template would invent a different grid.
         if !style.is_subgrid_columns() && !style.is_subgrid_rows() {
@@ -1778,9 +1781,12 @@ fn grid_measure_delta(
         &sizes,
         plan.child_available,
         fonts,
-        nodes,
         None,
-    );
+        viewport,
+        nodes,
+        cache,
+        Some(scope),
+    )?;
     let containing_writing = match nodes.get(id)? {
         Some(node) => node.containing_writing,
         None => return Ok(None),

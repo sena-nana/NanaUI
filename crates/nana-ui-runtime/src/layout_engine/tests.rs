@@ -2421,6 +2421,137 @@ fn grid_auto_fit_fills_two_minmax_tracks_in_500px() {
     assert!((boxes["a"].x - 0.0).abs() < 0.5);
 }
 
+/// A wrapping row of chips sized at no width: one chip per line.
+fn wrapping_chips(id: &str, width: Option<LengthSpec>) -> StyleLayoutNode {
+    StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            direction: Some(FlexDirection::Row),
+            flex_wrap: FlexWrap::Wrap,
+            gap: Some(LengthSpec::Px(6.0)),
+            width,
+            ..LayoutStyle::default()
+        },
+        children: (0..5)
+            .map(|index| px_box(&format!("{id}{index}"), 60.0, 20.0))
+            .collect(),
+        text: None,
+    }
+}
+
+/// An auto row holds its items laid out at the width their columns give
+/// them (CSS Grid §11.5), measured in Chromium as fixture T-G36: two 197px
+/// columns, five 60px chips wrapping three and two, a 46px row. Measured
+/// before the columns were sized, a `width: 100%` row of chips stood one
+/// chip per line (124px) and an auto-width one all on one line.
+#[test]
+fn grid_auto_row_holds_wrapping_content_at_its_column_width() {
+    let grid = |children| StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            width: Some(LengthSpec::Px(400.0)),
+            gap: Some(LengthSpec::Px(6.0)),
+            grid_columns_repeat: Some(GridRepeatAuto {
+                kind: GridTrackListUnsupported::RepeatAutoFit,
+                tracks: vec![GridTrack::MinMax {
+                    min_px: 132.0,
+                    fr: 1.0,
+                    max_px: None,
+                }],
+                ..Default::default()
+            }),
+            ..LayoutStyle::default()
+        },
+        children,
+        text: None,
+    };
+    for width in [
+        Some(LengthSpec::Percent(100.0)),
+        Some(LengthSpec::Fill),
+        None,
+    ] {
+        let boxes = box_map(
+            &grid(vec![
+                wrapping_chips("a", width),
+                px_box("b", 50.0, 20.0),
+                px_box("c", 50.0, 20.0),
+            ]),
+            800.0,
+            300.0,
+        );
+        assert_eq!(boxes["a"].height, 46.0, "{width:?}: {:?}", boxes["a"]);
+        assert_eq!(boxes["a4"].y, 26.0, "{width:?}: wraps three and two");
+        assert_eq!(boxes["c"].y, 52.0, "{width:?}: {:?}", boxes["c"]);
+        assert_eq!(boxes["root"].height, 72.0, "{width:?}");
+    }
+}
+
+/// The retained passes follow the columns: a grid that widens lays its row
+/// out again at the new column width, where the chips fit on one line.
+#[test]
+fn a_grid_auto_row_follows_its_columns_when_the_grid_resizes() {
+    use crate::{AppContext, Stack};
+    let document = DocumentId::new(1).unwrap();
+    let mut cx = AppContext::new();
+    let page = cx.create_component(document, Stack::column(0.0)).unwrap();
+    let grid = cx
+        .create_component(
+            document,
+            Stack::column(0.0).with_layout(|layout| {
+                layout.display = Some(DisplaySpec::Grid);
+                layout.width = Some(LengthSpec::Px(400.0));
+                layout.gap = Some(LengthSpec::Px(6.0));
+                layout.grid_columns = Some(vec![GridTrack::Fr(1.0), GridTrack::Fr(1.0)]);
+            }),
+        )
+        .unwrap();
+    cx.append_child(page, grid).unwrap();
+    let chips = cx
+        .create_component(
+            document,
+            Stack::row(6.0).with_layout(|layout| {
+                layout.flex_wrap = FlexWrap::Wrap;
+                layout.width = Some(LengthSpec::Fill);
+            }),
+        )
+        .unwrap();
+    cx.append_child(grid, chips).unwrap();
+    for _ in 0..5 {
+        let chip = cx
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(60.0));
+                    layout.height = Some(LengthSpec::Px(20.0));
+                }),
+            )
+            .unwrap();
+        cx.append_child(chips, chip).unwrap();
+    }
+    let viewport = LayoutViewport::new(800.0, 300.0);
+    cx.layout_document(document, viewport).unwrap();
+    // 197px columns: three chips and two.
+    assert_eq!(
+        cx.world().layout_box(chips.stable_id()).unwrap().height,
+        46.0
+    );
+    cx.update_component(grid, |grid, _| {
+        Arc::make_mut(&mut grid.style_mut().layout).width = Some(LengthSpec::Px(700.0));
+    })
+    .unwrap();
+    cx.layout_document(document, viewport).unwrap();
+    // 347px columns: all five on one line.
+    assert_eq!(
+        cx.world().layout_box(chips.stable_id()).unwrap().height,
+        20.0
+    );
+    assert_eq!(
+        cx.world().layout_box(grid.stable_id()).unwrap().height,
+        20.0
+    );
+}
+
 #[test]
 fn white_space_pre_measures_explicit_newlines() {
     let tree = StyleLayoutNode {

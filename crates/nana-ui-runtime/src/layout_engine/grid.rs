@@ -432,6 +432,11 @@ pub(super) fn collapse_unoccupied_tracks(
     next
 }
 
+/// Place the items on the grid and size its tracks: columns from what each
+/// item measured (`child_sizes`), then rows from each item laid out at the
+/// inline size of the columns it spans ([`item_block_at_columns`]). Items are
+/// measured, so this takes the pass's measuring context.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn layout_grid_2d(
     style: &LayoutStyle,
     writing: nana_ui_core::WritingContext,
@@ -439,9 +444,12 @@ pub(super) fn layout_grid_2d(
     child_sizes: &[Size],
     content: Size,
     fonts: FontSizeContext,
-    nodes: &LayoutInputMap<'_>,
     inherited: Option<&InheritedGridTracks>,
-) -> Grid2DLayout {
+    viewport: LayoutViewport,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<Grid2DLayout, UiWorldError> {
     // Columns are tracks along the inline axis and rows along the block one
     // (CSS Grid §3): the page's width and height in `horizontal-tb`, its
     // height and width in a vertical mode. Everything below sizes tracks on
@@ -671,43 +679,116 @@ pub(super) fn layout_grid_2d(
         row_tracks = collapse_unoccupied_tracks(&row_tracks, &mut items, false);
     }
 
+    let margins = items
+        .iter()
+        .map(|item| {
+            nodes
+                .style(item.id)
+                .map(|style| {
+                    style.resolved_margin_against_fonts(
+                        Some(writing.inline_size(content.width, content.height)),
+                        fonts_of(&style, fonts.element_px),
+                    )
+                })
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
     let mut col_auto = vec![0.0f32; col_tracks.len()];
-    let mut row_auto = vec![0.0f32; row_tracks.len()];
-    for item in &items {
-        let margin = nodes
-            .style(item.id)
-            .map(|style| {
-                style.resolved_margin_against_fonts(
-                    Some(writing.inline_size(content.width, content.height)),
-                    fonts_of(&style, fonts.element_px),
-                )
-            })
-            .unwrap_or_default();
-        let (inline, block) = writing.logical_size(item.intrinsic.width, item.intrinsic.height);
-        let inline_margins =
-            margin_at(margin, writing.inline_start()) + margin_at(margin, writing.inline_end());
-        let block_margins =
-            margin_at(margin, writing.block_start()) + margin_at(margin, writing.block_end());
+    for (item, margin) in items.iter().zip(&margins) {
         if item.col_span == 1 && item.col < col_auto.len() {
+            let inline = writing
+                .logical_size(item.intrinsic.width, item.intrinsic.height)
+                .0;
+            let inline_margins = margin_at(*margin, writing.inline_start())
+                + margin_at(*margin, writing.inline_end());
             col_auto[item.col] = col_auto[item.col].max(inline + inline_margins);
-        }
-        if item.row_span == 1 && item.row < row_auto.len() {
-            row_auto[item.row] = row_auto[item.row].max(block + block_margins);
         }
     }
     let col_sizes = resolve_grid_track_sizes(&col_tracks, content_inline, col_gap, &col_auto);
+    // Rows are sized once the columns are (CSS Grid §11.5): an auto row
+    // holds its items as they lay out in their columns.
+    let mut row_auto = vec![0.0f32; row_tracks.len()];
+    for (item, margin) in items.iter().zip(&margins) {
+        if item.row_span != 1 || !matches!(row_tracks.get(item.row), Some(GridTrack::Auto)) {
+            continue;
+        }
+        let block = item_block_at_columns(
+            item,
+            &col_sizes,
+            col_gap,
+            writing,
+            viewport,
+            fonts.element_px,
+            nodes,
+            cache,
+            scope,
+        )?;
+        let block_margins =
+            margin_at(*margin, writing.block_start()) + margin_at(*margin, writing.block_end());
+        row_auto[item.row] = row_auto[item.row].max(block + block_margins);
+    }
     let mut row_sizes = resolve_grid_track_sizes(&row_tracks, content_block, row_gap, &row_auto);
     // Leftover definite block extent goes to *empty* auto rows so
     // `height:100%` / empty stretch have a cell, without inflating
     // content-sized auto rows.
     distribute_auto_track_leftover(&row_tracks, &mut row_sizes, content_block, row_gap);
-    Grid2DLayout {
+    Ok(Grid2DLayout {
         col_sizes,
         row_sizes,
         col_gap,
         row_gap,
         items,
+    })
+}
+
+/// An item's block size laid out at the inline size of the columns it spans,
+/// with no definite block size yet: what its auto row holds (CSS Grid §11.5,
+/// "use the grid column sizes calculated in the previous step").
+///
+/// Its first measurement was taken before any column was sized: a wrapping
+/// row of chips measured at the width `width: 100%` demotes to (none: one
+/// chip per line), or at the container's (all of them on one line). It
+/// stands only when it already has the columns' inline size, or when its
+/// block size is its own.
+#[allow(clippy::too_many_arguments)]
+fn item_block_at_columns(
+    item: &GridPlacedItem,
+    col_sizes: &[f32],
+    col_gap: f32,
+    writing: nana_ui_core::WritingContext,
+    viewport: LayoutViewport,
+    child_font_px: f32,
+    nodes: &mut LayoutInputMap<'_>,
+    cache: &mut PassIntrinsicCache,
+    scope: Option<&ScopeContext<'_>>,
+) -> Result<f32, UiWorldError> {
+    let (inline, block) = writing.logical_size(item.intrinsic.width, item.intrinsic.height);
+    let area = grid_span_extent(col_sizes, item.col, item.col_span, col_gap);
+    let Some(style) = nodes.style(item.id) else {
+        return Ok(block);
+    };
+    let block_spec = if writing.is_vertical() {
+        style.width
+    } else {
+        style.height
+    };
+    if inline.to_bits() == area.to_bits()
+        || block_spec.is_some_and(LengthSpec::is_definite_declared)
+    {
+        return Ok(block);
     }
+    let (width, height) = writing.physical_size(area, 0.0);
+    let measured = intrinsic_size_scoped(
+        item.id,
+        Size::new(width, height),
+        Some(FlexDirection::Row),
+        viewport,
+        child_font_px,
+        nodes,
+        cache,
+        scope,
+    )?;
+    Ok(writing.logical_size(measured.width, measured.height).1)
 }
 
 pub(super) fn distribute_auto_track_leftover(

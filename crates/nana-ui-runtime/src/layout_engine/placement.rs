@@ -637,9 +637,12 @@ fn replay_grid(
         &sizes,
         content,
         fonts,
-        nodes,
         None,
-    );
+        viewport,
+        nodes,
+        intrinsic,
+        Some(scope),
+    )?;
     let previous_items: HashMap<StableNodeId, &GridItemPlan> = old_grid
         .items
         .iter()
@@ -1152,9 +1155,12 @@ pub(super) fn place_node_scoped(
             &child_sizes,
             content,
             fonts,
-            nodes,
             inherited_grid,
-        );
+            viewport,
+            nodes,
+            intrinsic,
+            scope,
+        )?;
         if grid_recordable {
             recorded_grid = Some(GridTrackPlan::from_layout(&grid));
         }
