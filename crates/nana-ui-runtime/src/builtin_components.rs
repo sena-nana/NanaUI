@@ -2014,9 +2014,9 @@ fn textarea_placeholder<'a>(spec: &'a SemanticSpec<'_>) -> &'a str {
     }
 }
 
+/// Not `lang`: that names the human language text shapes in.
 fn highlight_language_from_spec<'a>(spec: &'a SemanticSpec<'_>) -> Option<&'a str> {
     spec.attr("language")
-        .or_else(|| spec.attr("lang"))
         .or_else(|| spec.attr("syntax"))
         .map(str::trim)
         .filter(|value| !value.is_empty())

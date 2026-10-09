@@ -1149,15 +1149,17 @@ impl WidgetProps {
                     self.attrs.insert("dir".into(), s);
                 }
             }
-            // The language this element's text, and its subtree's, shapes in.
-            // Read where the node is projected; kept as an attribute for
-            // `[lang]` selectors too.
-            "lang" => {
+            // `lang`: the language this element's text, and its subtree's,
+            // shapes in, read where the node is projected. `language` /
+            // `syntax`: the one a code editor highlights, read by
+            // `widget_map::highlight_language`. Kept as attributes for
+            // selectors too.
+            "lang" | "language" | "syntax" => {
                 let s = host_string(value);
                 if s.trim().is_empty() {
-                    self.attrs.remove("lang");
+                    self.attrs.remove(&key);
                 } else {
-                    self.attrs.insert("lang".into(), s);
+                    self.attrs.insert(key, s);
                 }
             }
             // A locale scope. Kept as an attribute for `[locale]` selectors

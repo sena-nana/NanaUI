@@ -2783,6 +2783,60 @@ fn highlighted_textarea_binds_language_and_restores_input() {
     );
 }
 
+/// `<NanaTextarea language="rust">` through the Vue + JS host ops: the
+/// `createElement` seed alone, or a later `patchProp`, makes a highlighted
+/// code editor. `syntax` names the same; `lang` does neither.
+#[test]
+fn vue_textarea_language_reaches_the_runtime_as_a_highlighted_editor() {
+    let host = crate::VueHost::new();
+    let api = host.host_api_registry();
+    let body = api.call("mountRoot", &[]).unwrap();
+    let seed = [("language".to_owned(), HostValue::string("rust"))].into();
+    let area = api
+        .call(
+            "createElement",
+            &[
+                HostValue::string("textarea"),
+                HostValue::Null,
+                HostValue::Null,
+                HostValue::Object(seed),
+            ],
+        )
+        .unwrap();
+    api.call("insert", &[area.clone(), body, HostValue::Null])
+        .unwrap();
+    let id = StableNodeId::new(area.as_f64().unwrap() as u64).unwrap();
+    // Patch (`""` as the `null` an empty prop sends), sync as a frame does, and
+    // read back whether the node is the code editor and which grammar it asks for.
+    let editor = |patches: &[(&str, &str)]| {
+        for (key, value) in patches {
+            let value = match *value {
+                "" => HostValue::Null,
+                value => HostValue::string(value),
+            };
+            let args = [area.clone(), HostValue::string(*key), value];
+            api.call("patchProp", &args).unwrap();
+        }
+        host.sync_semantics();
+        let document = host.document();
+        let doc = document.lock().unwrap();
+        let hosted = doc.runtime.component_type(id).map(ComponentTypeId::as_str)
+            == Some("nana.hosted-textarea");
+        let grammar = doc
+            .runtime
+            .highlight_request(id)
+            .map(|r| r.language.to_string());
+        (hosted, grammar)
+    };
+    let code = |language: &str| (true, Some(language.to_owned()));
+
+    assert_eq!(editor(&[]), code("rust"), "createElement seed");
+    assert_eq!(editor(&[("language", "")]), (false, None));
+    assert_eq!(editor(&[("language", "rust")]), code("rust"), "patchProp");
+    assert_eq!(editor(&[("language", ""), ("lang", "ja")]), (false, None));
+    assert_eq!(editor(&[("syntax", "rs")]), code("rs"));
+}
+
 #[test]
 fn terminal_diff_and_drop_target_bind_from_semantic() {
     let mut doc = NanaTreeDocument::new(320, 200, 1.0);
