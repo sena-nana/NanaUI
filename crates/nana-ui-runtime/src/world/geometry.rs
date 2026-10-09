@@ -187,6 +187,7 @@ impl UiWorld {
                     bounds,
                     *kind,
                     Some(intrinsic_height),
+                    self.theme.recipes().dialog(),
                 );
                 let LayoutBox { x, y, width, .. } = surface;
                 let text_width = chrome.text_width(width, *kind, has_close);

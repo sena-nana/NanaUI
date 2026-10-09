@@ -26,14 +26,14 @@ pub use nana_ui_core::{
     AccentRamp, BorderTokens, BorderWidth, ButtonRecipe, ButtonRecipeDraft, ButtonVariantDraft,
     ButtonVariantRecipe, ChromeRadii, CompiledRecipes, CompiledTheme, ComponentRecipe,
     ComponentRecipeDraft, ComponentRecipeId, ComponentThemeRegistry, ControlHeight, ControlPadding,
-    CornerShape, DesignTokens, EasingRole, EffectTokens, ElevationRole, FoundationTokens, HAIRLINE,
-    LineRole, MotionRole, MotionTokens, OpacityTokens, RadiusTier, SWITCH_METRICS, SemanticColor,
-    SemanticPalette, ShadowToken, SpacingStep, SpacingTokens, SquareSize, StateLayer, StatusRecipe,
-    SurfaceMaterial, SurfacePadding, SurfaceRole, SurfaceSpec, SurfaceTokens, SwitchMetrics,
-    TextWeight, ThemeAppearance, ThemeChoice, ThemeCompileError, ThemeDefinition, ThemeGeneration,
-    ThemeId, ThemeIdentity, ThemeMetrics, ThemeRegistry, ThemeRegistryError, ThemeResolution,
-    ThemeSchemaVersion, TypeRole, TypographyTokens, UI_BASE_TEXT_SIZE, UI_METRICS,
-    builtin_theme_arc, space, type_scale,
+    CornerShape, DesignTokens, DialogRecipe, EasingRole, EffectTokens, ElevationRole,
+    FoundationTokens, HAIRLINE, LineRole, MotionRole, MotionTokens, OpacityTokens, RadiusTier,
+    SWITCH_METRICS, SemanticColor, SemanticPalette, ShadowToken, SpacingStep, SpacingTokens,
+    SquareSize, StateLayer, StatusRecipe, SurfaceMaterial, SurfacePadding, SurfaceRole,
+    SurfaceSpec, SurfaceTokens, SwitchMetrics, TextWeight, ThemeAppearance, ThemeChoice,
+    ThemeCompileError, ThemeDefinition, ThemeGeneration, ThemeId, ThemeIdentity, ThemeMetrics,
+    ThemeRegistry, ThemeRegistryError, ThemeResolution, ThemeSchemaVersion, TypeRole,
+    TypographyTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme_arc, space, type_scale,
 };
 
 /// Compatibility name for applications that used the pre-registry theme

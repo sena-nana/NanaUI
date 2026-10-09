@@ -48,7 +48,7 @@ widget(
 
 ## 尺寸与关闭
 
-`.size` 用 `nana_ui::DialogSize`：`Compact`、`Default`、`Medium`、`Wide`、`Workspace`。
+`.size` 用 `nana_ui::DialogSize`：`Compact`、`Default`、`Medium`、`Wide`、`Workspace`，或者 `Width(长度)` / `capped(px, vw)` 给一个自己的宽度，见 [Dialog](dialog.md#尺寸)。卡片距顶和最高高度归主题的 `DialogRecipe`。
 
 `.close_policy` 决定 Escape 和点外面能不能关。这两种手势和关闭位每次都先在确认框自己身上发 `DialogCloseRequested`；`DialogClosePolicy::requests_only()` 让框架一种都不关，由应用决定，见 [Dialog](dialog.md#由应用决定开合)。
 
@@ -86,7 +86,7 @@ widget(
 | `.confirm_label` | — | 换成你的话 |
 | `.cancel_label` | — | 换成你的话 |
 | `danger` | — | 为真时，确认按钮走危险色。这是字段，不是 `.danger(...)` 方法 |
-| `.size` | `nana_ui::DialogSize` | `Compact`、`Default`、`Medium`、`Wide`、`Workspace` |
+| `.size` | `nana_ui::DialogSize` | `Compact`、`Default`、`Medium`、`Wide`、`Workspace`，或 `Width(长度)` / `capped(px, vw)` |
 | `.close_policy` | — | 决定 Escape 和点外面能不能关 |
 | `.initial_focus` | `ModalInitialFocus` | 默认落在第一个动作上 |
 | `busy` | — | 为真时，框架按忙碌处理这次确认 |

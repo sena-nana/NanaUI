@@ -2411,9 +2411,11 @@ pub(super) fn place_modal_children(
         width: size.width,
         height: size.height,
     };
+    let recipe = *nodes.world.theme().recipes().dialog();
     let surface = match modal.kind {
         crate::ModalSurfaceKind::Dialog(_) | crate::ModalSurfaceKind::Confirm(_) => {
-            let provisional = crate::overlay_surfaces::modal_surface_bounds(root, modal.kind, None);
+            let provisional =
+                crate::overlay_surfaces::modal_surface_bounds(root, modal.kind, None, &recipe);
             let body_available = Size::new(
                 (provisional.width - chrome.pad_x * 2.0).max(0.0),
                 (provisional.height
@@ -2449,9 +2451,10 @@ pub(super) fn place_modal_children(
                 root,
                 modal.kind,
                 Some(chrome.chrome_height(body_copy + body_gap + body_slot)),
+                &recipe,
             )
         }
-        _ => crate::overlay_surfaces::modal_surface_bounds(root, modal.kind, None),
+        _ => crate::overlay_surfaces::modal_surface_bounds(root, modal.kind, None, &recipe),
     };
     let body = chrome.body_box(surface);
     let slot_y = body.y

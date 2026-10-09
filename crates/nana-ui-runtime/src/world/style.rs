@@ -863,6 +863,9 @@ impl UiWorld {
             self.cancel_hover_transition(id);
         }
         let previous_metrics = self.style_model.metrics;
+        // A dialog card is placed from its recipe, which no layout input
+        // names; a change to it reaches only the modal frames.
+        let dialog_changed = self.theme.recipes().dialog() != next.recipes().dialog();
         self.style_model = next.style_model();
         self.theme = next;
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
@@ -887,8 +890,22 @@ impl UiWorld {
         }
         // Every live node paints against the new palette. Layout hears only
         // of the boxes whose design intent resolves differently against new
-        // metrics, each by what moved; the rest of a document lays nothing
-        // out again.
+        // metrics, each by what moved, and -- when the dialog recipe moved --
+        // of the modal frames, whose cards it places; the rest of a document
+        // lays nothing out again.
+        let modal_frames = if dialog_changed {
+            ids.iter()
+                .copied()
+                .filter(|id| {
+                    matches!(
+                        self.nodes.visual(*id),
+                        Some(StandardVisual::ModalFrame { .. })
+                    )
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         let mut work = ThemeWorkCounters::default();
         work.record_paint_invalidation(ids.len());
         if !ids.is_empty() {
@@ -902,7 +919,26 @@ impl UiWorld {
             dependents = self.reresolve_layout_intent();
             work.record_layout_invalidation(dependents);
         }
+        work.record_layout_invalidation(modal_frames.len());
         self.record_theme_work(work);
+        for id in modal_frames {
+            // The card's width wraps its title, and its slots are placed in
+            // it: the frame measures and places again by its recipe.
+            self.nodes
+                .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
+            self.mark(id, DirtyMask::TEXT);
+            self.record_layout_invalidation(
+                id,
+                nana_ui_core::LayoutInvalidation::new(
+                    nana_ui_core::LayoutInvalidationSource::Resource,
+                    nana_ui_core::InvalidationReason::RESOURCE,
+                    nana_ui_core::InvalidationKind::MEASURE
+                        .union(nana_ui_core::InvalidationKind::PLACEMENT),
+                    nana_ui_core::LayoutFieldMask::ALL,
+                    nana_ui_core::LayoutDependencyFootprint::ALL,
+                ),
+            );
+        }
         for id in ids {
             self.mark(id, DirtyMask::RENDER);
         }

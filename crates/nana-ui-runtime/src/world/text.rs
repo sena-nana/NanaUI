@@ -3853,8 +3853,12 @@ impl UiWorld {
                         let Some(root) = self.component_layout_box(id) else {
                             continue;
                         };
-                        let surface =
-                            crate::overlay_surfaces::modal_surface_bounds(root, *kind, None);
+                        let surface = crate::overlay_surfaces::modal_surface_bounds(
+                            root,
+                            *kind,
+                            None,
+                            self.theme.recipes().dialog(),
+                        );
                         let chrome = crate::overlay_surfaces::ModalChrome::measure(
                             *kind,
                             crate::TextMetrics::default(),

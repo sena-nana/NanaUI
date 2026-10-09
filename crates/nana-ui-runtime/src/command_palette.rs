@@ -308,10 +308,13 @@ pub(crate) fn command_palette_geometry(
         + INPUT_GAP
         + list_height
         + nana_ui_core::space::XXXL;
+    // The palette borrows the dialog card's placement, not a theme's: a
+    // theme that moves its dialogs does not move the palette with them.
     let surface = modal_surface_bounds(
         bounds,
         crate::ModalSurfaceKind::Dialog(DialogSize::Wide),
         Some(intrinsic),
+        &nana_ui_core::DialogRecipe::DEFAULT,
     );
     let mut y = surface.y + nana_ui_core::space::XXXL;
     let title_region = ComponentTextRegion {

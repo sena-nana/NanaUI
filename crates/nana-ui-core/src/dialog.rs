@@ -1,5 +1,11 @@
-/// Width presets shared with LiliaUI dialogs.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+use crate::box_layout::LengthSpec;
+
+/// How wide a dialog card is: a preset shared with LiliaUI dialogs, or a
+/// length of its own.
+///
+/// The card is never wider than the room its scrim leaves; see
+/// [`Self::width_in`].
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum DialogSize {
     Compact,
     #[default]
@@ -7,16 +13,44 @@ pub enum DialogSize {
     Medium,
     Wide,
     Workspace,
+    /// A width of the dialog's own, with CSS length semantics: `Px(560.0)`
+    /// is 560px; `Min2(Px(560.0), Viewport { Width, 92.0 })` is CSS
+    /// `min(560px, 92vw)`. Percentages and viewport units resolve against
+    /// the scrim, which covers the window. A length that names no size
+    /// (`auto`, `fill`) asks for the whole width.
+    Width(LengthSpec),
 }
 
 impl DialogSize {
-    pub const fn max_width(self) -> f32 {
-        match self {
+    /// CSS `min(px, viewport%)`: `px` wide, but never more than `viewport`
+    /// percent of the window's width.
+    pub const fn capped(px: f32, viewport: f32) -> Self {
+        Self::Width(LengthSpec::Min2(
+            crate::box_layout::LengthAtom::Px(px),
+            crate::box_layout::LengthAtom::Viewport {
+                axis: crate::box_layout::ViewportAxis::Width,
+                value: viewport,
+            },
+        ))
+    }
+
+    /// The card width this size asks for over a scrim of `scrim_width` ×
+    /// `scrim_height` logical px, before the scrim's own margin caps it.
+    pub fn width_in(self, scrim_width: f32, scrim_height: f32) -> f32 {
+        let width = match self {
             Self::Compact => 420.0,
             Self::Default => 520.0,
             Self::Medium => 600.0,
             Self::Wide => 680.0,
             Self::Workspace => 1080.0,
+            Self::Width(length) => length
+                .resolve_with(Some(scrim_width), Some((scrim_width, scrim_height)))
+                .unwrap_or(scrim_width),
+        };
+        if width.is_finite() {
+            width.max(0.0)
+        } else {
+            0.0
         }
     }
 }
@@ -76,14 +110,48 @@ impl DialogClosePolicy {
 #[cfg(test)]
 mod tests {
     use super::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
+    use crate::box_layout::{LengthSpec, ViewportAxis};
 
     #[test]
     fn dialog_sizes_match_the_shared_contract() {
-        assert_eq!(DialogSize::Compact.max_width(), 420.0);
-        assert_eq!(DialogSize::Default.max_width(), 520.0);
-        assert_eq!(DialogSize::Medium.max_width(), 600.0);
-        assert_eq!(DialogSize::Wide.max_width(), 680.0);
-        assert_eq!(DialogSize::Workspace.max_width(), 1080.0);
+        assert_eq!(DialogSize::Compact.width_in(2000.0, 1000.0), 420.0);
+        assert_eq!(DialogSize::Default.width_in(2000.0, 1000.0), 520.0);
+        assert_eq!(DialogSize::Medium.width_in(2000.0, 1000.0), 600.0);
+        assert_eq!(DialogSize::Wide.width_in(2000.0, 1000.0), 680.0);
+        assert_eq!(DialogSize::Workspace.width_in(2000.0, 1000.0), 1080.0);
+    }
+
+    /// A width of the dialog's own follows CSS: a px length is that wide,
+    /// `min(px, vw)` gives way to the window, `%` and `vh` read the scrim.
+    #[test]
+    fn a_width_of_its_own_resolves_like_css() {
+        assert_eq!(
+            DialogSize::Width(LengthSpec::Px(560.0)).width_in(400.0, 300.0),
+            560.0
+        );
+        let capped = DialogSize::capped(560.0, 92.0);
+        assert_eq!(capped.width_in(1200.0, 800.0), 560.0);
+        assert!((capped.width_in(400.0, 800.0) - 368.0).abs() < 1e-3);
+        assert_eq!(
+            DialogSize::Width(LengthSpec::Percent(50.0)).width_in(800.0, 600.0),
+            400.0
+        );
+        assert_eq!(
+            DialogSize::Width(LengthSpec::Viewport {
+                axis: ViewportAxis::Height,
+                value: 50.0,
+            })
+            .width_in(800.0, 600.0),
+            300.0
+        );
+        assert_eq!(
+            DialogSize::Width(LengthSpec::Fill).width_in(800.0, 600.0),
+            800.0
+        );
+        assert_eq!(
+            DialogSize::Width(LengthSpec::Px(-20.0)).width_in(800.0, 600.0),
+            0.0
+        );
     }
 
     #[test]

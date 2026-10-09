@@ -24,6 +24,7 @@
 //! leaves a required slot unset is rejected, never silently defaulted. That is
 //! the whole reason the authoring and compiled forms are different types.
 
+use super::dialog::DialogRecipe;
 use crate::semantics::{ButtonKind, StatusTone};
 use crate::style_model::SemanticColorRole;
 
@@ -309,11 +310,13 @@ impl StatusRecipe {
 }
 
 /// Authoring form of the whole registry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ComponentThemeRegistry {
     pub families: [ComponentRecipeDraft; ComponentRecipeId::COUNT],
     pub button: ButtonRecipeDraft,
     pub status: Option<StatusRecipe>,
+    /// The Overlay family's dialog card. See [`DialogRecipe`].
+    pub dialog: Option<DialogRecipe>,
 }
 
 impl ComponentThemeRegistry {
@@ -327,6 +330,7 @@ impl ComponentThemeRegistry {
             }; ComponentRecipeId::COUNT],
             button: ButtonRecipeDraft::empty(),
             status: None,
+            dialog: None,
         }
     }
 
@@ -342,11 +346,12 @@ impl ComponentThemeRegistry {
 
 /// The validated registry the runtime reads. Every slot is present; lookups
 /// are array indexing by a typed enum, never a string hash.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompiledRecipes {
     families: [ComponentRecipe; ComponentRecipeId::COUNT],
     button: ButtonRecipe,
     status: StatusRecipe,
+    dialog: DialogRecipe,
 }
 
 impl CompiledRecipes {
@@ -354,11 +359,13 @@ impl CompiledRecipes {
         families: [ComponentRecipe; ComponentRecipeId::COUNT],
         button: ButtonRecipe,
         status: StatusRecipe,
+        dialog: DialogRecipe,
     ) -> Self {
         Self {
             families,
             button,
             status,
+            dialog,
         }
     }
 
@@ -385,5 +392,9 @@ impl CompiledRecipes {
 
     pub const fn status(&self) -> StatusRecipe {
         self.status
+    }
+
+    pub const fn dialog(&self) -> &DialogRecipe {
+        &self.dialog
     }
 }

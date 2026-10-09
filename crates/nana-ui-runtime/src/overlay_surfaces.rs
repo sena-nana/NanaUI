@@ -10,7 +10,7 @@ use crate::{
     NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld, view_components::project_common,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ModalSurfaceKind {
     Dialog(DialogSize),
     Confirm(DialogSize),
@@ -436,8 +436,6 @@ pub(crate) fn modal_root_style() -> NodeStyle {
 
 pub(crate) const DRAWER_WIDTH: f32 = 360.0;
 pub(crate) const MODAL_PAD_X: f32 = nana_ui_core::space::XXXL;
-/// Dialog overlay top inset. Compact scrims clamp this so the card stays inside.
-pub(crate) const MODAL_SCRIM_TOP_INSET: f32 = 90.0;
 pub(crate) const MODAL_HEADER_PAD_TOP: f32 = nana_ui_core::space::XXL;
 pub(crate) const MODAL_HEADER_PAD_BOTTOM: f32 = nana_ui_core::space::MD;
 pub(crate) const DRAWER_HEADER_PAD_Y: f32 = nana_ui_core::space::XXL;
@@ -556,20 +554,31 @@ pub(crate) fn drawer_width(viewport_width: f32) -> f32 {
     DRAWER_WIDTH.min(viewport_width * 0.92)
 }
 
+/// Where a modal surface sits in its scrim `bounds`. A dialog card is as
+/// wide as its size asks and stands where the theme's [`DialogRecipe`] puts
+/// it; both give way to the scrim's margin, so the card stays inside it.
+///
+/// [`DialogRecipe`]: nana_ui_core::DialogRecipe
 pub(crate) fn modal_surface_bounds(
     bounds: crate::LayoutBox,
     kind: ModalSurfaceKind,
     intrinsic_height: Option<f32>,
+    recipe: &nana_ui_core::DialogRecipe,
 ) -> crate::LayoutBox {
     let margin = 16.0_f32.min(bounds.width / 2.0).min(bounds.height / 2.0);
     let available_width = (bounds.width - margin * 2.0).max(0.0);
     let available_height = (bounds.height - margin * 2.0).max(0.0);
     match kind {
         ModalSurfaceKind::Dialog(size) | ModalSurfaceKind::Confirm(size) => {
-            let width = size.max_width().min(available_width);
-            let max_height = (bounds.height * 0.76).min(available_height);
+            let width = size
+                .width_in(bounds.width, bounds.height)
+                .min(available_width);
+            let max_height = recipe
+                .max_height_in(bounds.width, bounds.height)
+                .min(available_height);
             let height = intrinsic_height.unwrap_or(max_height).min(max_height);
-            let top = MODAL_SCRIM_TOP_INSET
+            let top = recipe
+                .top_in(bounds.width, bounds.height)
                 .min((bounds.height - margin - height).max(0.0))
                 .max(margin);
             crate::LayoutBox {
@@ -974,12 +983,107 @@ mod tests {
             scrim,
             ModalSurfaceKind::Dialog(DialogSize::Default),
             Some(46.0),
+            &nana_ui_core::DialogRecipe::DEFAULT,
         );
         assert!(surface.x >= scrim.x);
         assert!(surface.y >= scrim.y);
         assert!(surface.x + surface.width <= scrim.x + scrim.width);
         assert!(surface.y + surface.height <= scrim.y + scrim.height);
         assert!(surface.contains(150.0, 150.0));
+    }
+
+    fn dialog_frame(cx: &AppContext, dialog: StableNodeId) -> (crate::LayoutBox, crate::LayoutBox) {
+        let crate::ComponentGeometry::ModalFrame { surface, body, .. } =
+            cx.world().component_geometry(dialog).unwrap()
+        else {
+            panic!("dialog geometry")
+        };
+        (surface, body)
+    }
+
+    /// A dialog names its own width with CSS semantics (`min(560px, 92vw)`
+    /// gives way to a narrow window), and the theme's dialog recipe stands
+    /// the card 12vh from the top and stops it at 72vh. Installing such a
+    /// theme moves a dialog that is already laid out, slots and all.
+    #[test]
+    fn a_dialog_width_of_its_own_and_the_theme_recipe_place_the_card() {
+        use nana_ui_core::{LengthSpec, ViewportAxis};
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        // Nested the way an application nests it: under a host, under its page.
+        let page = cx
+            .create_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        let host = cx
+            .create_detached_component(document, crate::OverlayHost::new())
+            .unwrap();
+        cx.append_child(page, host).unwrap();
+        let dialog = cx
+            .create_detached_component(
+                document,
+                crate::Dialog::new("Export").size(DialogSize::capped(560.0, 92.0)),
+            )
+            .unwrap();
+        cx.append_child(host, dialog).unwrap();
+        let body = cx
+            .create_detached_component(
+                document,
+                crate::Stack::column(0.0).height(LengthSpec::Px(2000.0)),
+            )
+            .unwrap();
+        cx.set_modal_slots(
+            dialog,
+            ModalSlots {
+                body: Some(body.stable_id()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(cx.activate_overlay(host, dialog).unwrap());
+
+        cx.layout_document(document, crate::LayoutViewport::new(1200.0, 800.0))
+            .unwrap();
+        let (surface, _) = dialog_frame(&cx, dialog.stable_id());
+        assert_eq!(surface.width, 560.0);
+        assert_eq!(surface.y, 90.0);
+        assert!((surface.height - 800.0 * 0.76).abs() < 0.01);
+
+        cx.layout_document(document, crate::LayoutViewport::new(500.0, 800.0))
+            .unwrap();
+        let (surface, _) = dialog_frame(&cx, dialog.stable_id());
+        assert!((surface.width - 460.0).abs() < 0.01, "{surface:?}");
+        assert!((surface.x - 20.0).abs() < 0.01, "{surface:?}");
+
+        let recipe = nana_ui_core::DialogRecipe {
+            top: LengthSpec::Viewport {
+                axis: ViewportAxis::Height,
+                value: 12.0,
+            },
+            max_height: LengthSpec::Viewport {
+                axis: ViewportAxis::Height,
+                value: 72.0,
+            },
+        };
+        // The host's incremental path: lay out only what the install dirtied.
+        cx.take_system_work();
+        cx.set_theme_definition(&nana_ui_core::ThemeDefinition::NANA_DARK.with_dialog(recipe))
+            .unwrap();
+        let work = cx.take_system_work();
+        cx.layout_document_with_frontier(
+            document,
+            crate::LayoutViewport::new(500.0, 800.0),
+            &work.layout_frontier_seeds,
+        )
+        .unwrap();
+        let (surface, body_region) = dialog_frame(&cx, dialog.stable_id());
+        assert!((surface.y - 96.0).abs() < 0.01, "{surface:?}");
+        assert!((surface.height - 576.0).abs() < 0.01, "{surface:?}");
+        let body_box = cx.world().canonical_layout_box(body.stable_id()).unwrap();
+        assert_eq!(
+            body_box.y, body_region.y,
+            "the body slot moved with the card"
+        );
+        assert!(body_box.y + body_box.height <= surface.y + surface.height);
     }
 
     #[test]
@@ -1014,7 +1118,7 @@ mod tests {
         else {
             panic!("dialog geometry")
         };
-        assert_eq!(surface.y, MODAL_SCRIM_TOP_INSET);
+        assert_eq!(surface.y, 90.0);
         assert!(surface.height <= 456.0);
         assert!(title.bounds.height > 14.0 * 1.2);
         assert!(description.bounds.height > 12.0 * 1.2);
@@ -1053,7 +1157,7 @@ mod tests {
         assert!(description.is_none());
         assert_eq!(message.font_size, MODAL_BODY_TEXT_SIZE);
         assert!(message.bounds.y >= title.bounds.y + title.bounds.height);
-        assert!(surface.width <= DialogSize::Default.max_width());
+        assert!(surface.width <= 520.0);
         assert_eq!(border, [0.0; 4]);
     }
 

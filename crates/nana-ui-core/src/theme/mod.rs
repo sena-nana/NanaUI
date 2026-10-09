@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod compiled;
 pub mod definition;
+pub mod dialog;
 pub mod recipe;
 pub mod registry;
 pub mod tokens;
@@ -11,6 +12,7 @@ pub use definition::{
     DesignTokens, FoundationTokens, ThemeCompileError, ThemeDefinition, ThemeGeneration, ThemeId,
     ThemeIdentity, ThemeSchemaVersion,
 };
+pub use dialog::DialogRecipe;
 pub use recipe::{
     ButtonRecipe, ButtonRecipeDraft, ButtonVariantDraft, ButtonVariantRecipe, CompiledRecipes,
     ComponentRecipe, ComponentRecipeDraft, ComponentRecipeId, ComponentThemeRegistry, StatusRecipe,

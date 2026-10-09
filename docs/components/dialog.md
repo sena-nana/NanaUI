@@ -53,6 +53,24 @@ widget(Dialog::new("重命名"))
 
 插槽在对话框之前就建好。对话框自己的装配会把它们放进标题下面、底栏和关闭位。打开、关闭、逃出键和焦点归还走浮层的约定，见 [控件](../reference/components.md) 的浮层一节。
 
+## 尺寸
+
+宽度由对话框自己说。`.size` 收 `nana_ui::DialogSize`：五档预设 `Compact` 420、`Default` 520、`Medium` 600、`Wide` 680、`Workspace` 1080，或者 `DialogSize::Width(长度)` 给一个自己的宽度。长度按 CSS 理解：`LengthSpec::Px(560.0)` 就是 560；`DialogSize::capped(560.0, 92.0)` 是 CSS 的 `min(560px, 92vw)`，窗口窄了就让给窗口。`%` 和 `vw` / `vh` 相对遮罩，遮罩铺满窗口。无论哪种，卡片都不会超出遮罩留出的 16px 边距。
+
+卡片站在哪、最高多高是设计系统的事，归主题：`ThemeDefinition::with_dialog(DialogRecipe { top, max_height })`。内置主题是距顶 90px、最高为遮罩高度的 76%。照 `margin-top: 12vh; max-height: 72vh` 写的设计，写成 `LengthSpec::Viewport { axis: ViewportAxis::Height, value: 12.0 }` 和 `value: 72.0`。卡片太高、站不下时往上挪，但不越过边距。装上新的配方，已经打开的对话框连同插槽一起重新摆放。
+
+```rust
+use nana_ui::DialogSize;
+use nana_ui::runtime::{Dialog, LengthSpec, ViewportAxis};
+use nana_ui::theme::{DialogRecipe, ThemeDefinition};
+
+let theme = ThemeDefinition::NANA_DARK.with_dialog(DialogRecipe {
+    top: LengthSpec::Viewport { axis: ViewportAxis::Height, value: 12.0 },
+    max_height: LengthSpec::Viewport { axis: ViewportAxis::Height, value: 72.0 },
+});
+let export = Dialog::new("导出资源库").size(DialogSize::capped(560.0, 92.0));
+```
+
 ## 由应用决定开合
 
 用户想关掉对话框有三种手势：按 Escape、在对话框外按下再松开、激活关闭位（`.close_action`）。每一种都先在对话框自己身上发一次 `DialogCloseRequested`，`trigger` 说是哪一种。然后才看 `.close_policy`：允许这个手势，框架接着关掉它，宿主随后发 `OverlayClosing`；不允许，它留着。Escape 和点外面只送到挂在 `OverlayHost` 下、用 `activate_overlay` 打开的对话框（浮层约定）；关闭位挂没挂都会发请求。
@@ -102,7 +120,7 @@ widget(Dialog::new("重命名").close_policy(DialogClosePolicy::requests_only())
 | --- | --- | --- |
 | 标题 | `Dialog::new` 的参数 | 构造时给出 |
 | `.description` | 文本 | 标题下的说明 |
-| `.size` | 尺寸 | 对话框尺寸 |
+| `.size` | `nana_ui::DialogSize` | 卡片宽度：五档预设，或 `Width(长度)` / `capped(px, vw)`。距顶和最高高度归主题的 `DialogRecipe` |
 | `.close_policy` | 关闭策略 | 哪些手势由框架直接关掉。`DialogClosePolicy::requests_only()` 一种都不关，全交给应用 |
 | `.initial_focus_on` | `entity_ref` | 打开时把焦点放到已经放进插槽的控件上 |
 

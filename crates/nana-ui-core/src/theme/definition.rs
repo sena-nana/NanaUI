@@ -520,6 +520,13 @@ impl ThemeDefinition {
         self.bump()
     }
 
+    /// Place the dialog card: where it stands in its scrim and how tall it
+    /// may grow. See [`DialogRecipe`](super::DialogRecipe).
+    pub const fn with_dialog(mut self, dialog: super::DialogRecipe) -> Self {
+        self.components.dialog = Some(dialog);
+        self.bump()
+    }
+
     /// Re-derive the whole accent family from one ramp.
     ///
     /// This is the foundation layer earning its place: setting
@@ -726,10 +733,31 @@ impl ThemeDefinition {
                 theme: self.id.clone(),
             })?;
 
+        let dialog = self
+            .components
+            .dialog
+            .ok_or(ThemeCompileError::MissingRecipe {
+                theme: self.id.clone(),
+                component: ComponentRecipeId::Overlay,
+                slot: "dialog",
+            })?;
+        for (token, length) in [
+            ("dialog.top", dialog.top),
+            ("dialog.max_height", dialog.max_height),
+        ] {
+            if !super::dialog::is_dialog_length(length) {
+                return Err(ThemeCompileError::NotFinite {
+                    theme: self.id.clone(),
+                    token,
+                });
+            }
+        }
+
         Ok(CompiledRecipes::new(
             families,
             ButtonRecipe::from_variants(variants, invalid_border),
             status,
+            dialog,
         ))
     }
 }
@@ -899,6 +927,7 @@ const fn builtin_registry() -> ComponentThemeRegistry {
         },
         button: builtin_button_recipe(),
         status: Some(StatusRecipe::DEFAULT),
+        dialog: Some(super::DialogRecipe::DEFAULT),
     }
 }
 
@@ -1363,6 +1392,22 @@ mod tests {
             Err(ThemeCompileError::AlphaOutOfRange { token, .. }) if token == "palette.text"
         ));
 
+        for broken in [
+            crate::box_layout::LengthSpec::Px(-1.0),
+            crate::box_layout::LengthSpec::Px(f32::NAN),
+            crate::box_layout::LengthSpec::Auto,
+        ] {
+            let mut misplaced = dark();
+            misplaced.components.dialog = Some(super::super::DialogRecipe {
+                top: broken,
+                ..super::super::DialogRecipe::DEFAULT
+            });
+            assert!(matches!(
+                misplaced.compile(),
+                Err(ThemeCompileError::NotFinite { token, .. }) if token == "dialog.top"
+            ));
+        }
+
         let mut ancient = dark();
         ancient.schema = ThemeSchemaVersion::new(0, 9);
         assert!(matches!(
@@ -1415,6 +1460,17 @@ mod tests {
             Err(ThemeCompileError::MissingStatusRecipe { .. })
         ));
 
+        let mut forgot_dialog = dark();
+        forgot_dialog.components.dialog = None;
+        assert!(matches!(
+            forgot_dialog.compile(),
+            Err(ThemeCompileError::MissingRecipe {
+                component: ComponentRecipeId::Overlay,
+                slot: "dialog",
+                ..
+            })
+        ));
+
         // An empty registry is rejected on its first family, not accepted with
         // defaults filled in behind the author's back.
         let mut empty = dark();
@@ -1452,6 +1508,33 @@ mod tests {
         assert_eq!(
             compiled.recipes().button().invalid_border,
             SemanticColorRole::Danger
+        );
+    }
+
+    /// A theme places the dialog card; the built-ins keep where it always
+    /// stood, and placing it is a token change like any other.
+    #[test]
+    fn a_dialog_recipe_reaches_the_compiled_theme() {
+        use crate::box_layout::{LengthSpec, ViewportAxis};
+        assert_eq!(
+            *dark().compile().expect("compiles").recipes().dialog(),
+            super::super::DialogRecipe::DEFAULT
+        );
+        let placed = super::super::DialogRecipe {
+            top: LengthSpec::Viewport {
+                axis: ViewportAxis::Height,
+                value: 12.0,
+            },
+            max_height: LengthSpec::Viewport {
+                axis: ViewportAxis::Height,
+                value: 72.0,
+            },
+        };
+        let themed = dark().with_dialog(placed);
+        assert_eq!(themed.generation, dark().generation.next());
+        assert_eq!(
+            *themed.compile().expect("compiles").recipes().dialog(),
+            placed
         );
     }
 
