@@ -251,14 +251,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
     }
     pub(super) fn can_present(&self, id: WindowId) -> bool {
-        self.window_contexts
-            .get(&id)
-            .is_some_and(|host| host.surface_retry.is_none())
+        let Some(host) = self.window_contexts.get(&id) else {
+            return false;
+        };
+        host.surface_retry.is_none()
             // An underlay is covered by its parent by design, and what it
             // draws is still read — by capture software — while covered.
             && (!self.occluded.contains(&id)
                 || self.startup_presentation_held(id)
-                || host_is_underlay(self.window_contexts.get(&id)))
+                || host.settings.role == WindowRole::Underlay)
             && self.window(id).is_some_and(|window| {
                 window.is_visible() != Some(false) && window.is_minimized() != Some(true)
             })
@@ -809,8 +810,4 @@ mod queue_fairness_tests {
     fn empty_or_stopped_queue_does_not_schedule_another_wake() {
         assert!(!drain_host_batch(|| false, Instant::now));
     }
-}
-
-fn host_is_underlay(host: Option<&super::WindowContext>) -> bool {
-    host.is_some_and(|host| host.settings.role == WindowRole::Underlay)
 }

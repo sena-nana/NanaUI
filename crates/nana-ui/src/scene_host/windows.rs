@@ -2437,6 +2437,4 @@ fn normalize_underlay(settings: &mut WindowDescriptor, parent: &WindowGeometry) 
     settings.skip_taskbar = true;
     settings.persist_key = None;
     settings.resizable = false;
-    settings.modal = false;
-    settings.system_caption = false;
 }
