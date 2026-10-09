@@ -39,6 +39,49 @@ macro_rules! modal_focus {
 
 modal_focus!(Dialog, Drawer, ConfirmDialog);
 
+/// A modal surface's `open`: the field `.open(..)` binds on a `Dialog`,
+/// `ConfirmDialog` or `Drawer`.
+pub struct ModalOpen;
+
+impl<C: ModalSurface> super::FieldWrite<C, bool> for ModalOpen {
+    const FIELD: &'static str = "open";
+
+    fn write(target: &mut C, open: bool) {
+        target.set_open(open);
+    }
+
+    fn differs(target: &C, open: &bool) -> bool {
+        target.is_open() != *open
+    }
+}
+
+macro_rules! modal_open {
+    ($($surface:ty),*) => {$(
+        impl<K> El<$surface, K> {
+            /// Open while it is in a tree under an `OverlayHost`, closed
+            /// (exit and all) when this turns false: the declarative form
+            /// of `activate_overlay` / `dismiss_overlay`. See
+            /// [`Dialog::open`](field@crate::Dialog::open).
+            #[track_caller]
+            pub fn open(self, open: impl super::IntoProp<bool>) -> Self {
+                self.prop::<bool, ModalOpen>(open)
+            }
+
+            /// `v-model` on `open`: shows the signal, and writes back what
+            /// the host does on its own (a close gesture its policy allows,
+            /// another overlay opening in its place), so the signal always
+            /// says whether the surface is open.
+            #[track_caller]
+            pub fn model(self, open: super::reactive::Signal<bool>) -> Self {
+                self.open(open)
+                    .on(move |toggled: &crate::DialogToggled| open.set(toggled.open))
+            }
+        }
+    )*};
+}
+
+modal_open!(Dialog, Drawer, ConfirmDialog);
+
 macro_rules! modal_slots {
     ($($surface:ty),*) => {$(
         impl<K> El<$surface, K> {

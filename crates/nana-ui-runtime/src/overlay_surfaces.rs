@@ -89,6 +89,10 @@ impl ModalSlots {
 pub trait ModalSurface: ComponentView {
     fn slots(&self) -> &ModalSlots;
     fn slots_mut(&mut self) -> &mut ModalSlots;
+    /// Whether the surface wants to be its host's open overlay. See
+    /// [`crate::Dialog::open`].
+    fn is_open(&self) -> bool;
+    fn set_open(&mut self, open: bool);
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +110,9 @@ pub struct ConfirmDialog {
     pub size: DialogSize,
     pub danger: bool,
     pub busy: bool,
+    /// Open while it is in a tree under an [`crate::OverlayHost`]; see
+    /// [`crate::Dialog::open`].
+    pub open: bool,
     behavior: ModalBehavior,
     slots: ModalSlots,
     confirm_slots: Option<ConfirmSlots>,
@@ -160,6 +167,13 @@ impl ConfirmDialog {
         self
     }
 
+    /// Open while it is in a tree under an [`crate::OverlayHost`]; see
+    /// [`crate::Dialog::open`].
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
+        self
+    }
+
     pub fn new(title: impl Into<Arc<str>>, message: impl Into<Arc<str>>) -> Self {
         Self {
             title: title.into(),
@@ -169,6 +183,7 @@ impl ConfirmDialog {
             size: DialogSize::Default,
             danger: false,
             busy: false,
+            open: false,
             behavior: ModalBehavior::default(),
             slots: ModalSlots::default(),
             confirm_slots: None,
@@ -253,11 +268,18 @@ impl ModalSurface for ConfirmDialog {
     fn slots_mut(&mut self) -> &mut ModalSlots {
         &mut self.slots
     }
+    fn is_open(&self) -> bool {
+        self.open
+    }
+    fn set_open(&mut self, open: bool) {
+        self.open = open;
+    }
 }
 
 impl ComponentView for ConfirmDialog {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(crate::AppContext::assemble_confirm_dialog),
+        lifecycle: Some(crate::AppContext::sync_modal_open::<Self>),
         ..crate::TypeBehavior::NONE
     };
 
@@ -297,6 +319,9 @@ pub struct Drawer {
     pub title: Arc<str>,
     pub description: Option<Arc<str>>,
     pub side: DrawerSide,
+    /// Open while it is in a tree under an [`crate::OverlayHost`]; see
+    /// [`crate::Dialog::open`].
+    pub open: bool,
     behavior: ModalBehavior,
     slots: ModalSlots,
     pub style: NodeStyle,
@@ -316,6 +341,7 @@ impl Drawer {
             title: title.into(),
             description: None,
             side: DrawerSide::Right,
+            open: false,
             behavior: ModalBehavior::default(),
             slots: ModalSlots::default(),
             style: modal_root_style(),
@@ -324,6 +350,13 @@ impl Drawer {
 
     pub fn side(mut self, side: DrawerSide) -> Self {
         self.side = side;
+        self
+    }
+
+    /// Open while it is in a tree under an [`crate::OverlayHost`]; see
+    /// [`crate::Dialog::open`].
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
         self
     }
     pub fn description(mut self, description: impl Into<Arc<str>>) -> Self {
@@ -357,11 +390,18 @@ impl ModalSurface for Drawer {
     fn slots_mut(&mut self) -> &mut ModalSlots {
         &mut self.slots
     }
+    fn is_open(&self) -> bool {
+        self.open
+    }
+    fn set_open(&mut self, open: bool) {
+        self.open = open;
+    }
 }
 
 impl ComponentView for Drawer {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(crate::AppContext::assemble_modal_slots::<Self>),
+        lifecycle: Some(crate::AppContext::sync_modal_open::<Self>),
         ..crate::TypeBehavior::NONE
     };
 
@@ -1846,6 +1886,126 @@ mod tests {
             cx.world().overlay_host(host.stable_id()).unwrap().active,
             None
         );
+    }
+
+    /// A detached dialog with its body slot placed, not yet under a host.
+    fn bodied_dialog(
+        cx: &mut AppContext,
+        document: DocumentId,
+        dialog: crate::Dialog,
+    ) -> crate::Entity<crate::Dialog> {
+        let dialog = cx.create_detached_component(document, dialog).unwrap();
+        let body = cx
+            .create_detached_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        cx.set_modal_slots(
+            dialog,
+            ModalSlots {
+                body: Some(body.stable_id()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        dialog
+    }
+
+    fn shows(
+        cx: &AppContext,
+        host: crate::Entity<crate::OverlayHost>,
+        dialog: crate::Entity<crate::Dialog>,
+    ) -> bool {
+        cx.world().overlay_host(host.stable_id()).unwrap().active == Some(dialog.stable_id())
+            && !cx.world().surface_closed(dialog.stable_id())
+    }
+
+    /// `open` is the declarative `activate_overlay` / `dismiss_overlay`: a
+    /// dialog declared open opens once it is under its host (even when its
+    /// host's own update put it there), closes when it turns false and opens
+    /// again when it turns back. Parked, it loses its host, as an overlay
+    /// always has, and `open` says so: put back, it stays closed until it is
+    /// opened again.
+    #[test]
+    fn a_dialog_declared_open_opens_under_its_host_and_follows_its_field() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = cx
+            .create_component(document, crate::OverlayHost::new())
+            .unwrap();
+        let dialog = bodied_dialog(&mut cx, document, crate::Dialog::new("导出").open(true));
+        assert_eq!(
+            cx.world().overlay_host(host.stable_id()).unwrap().active,
+            None
+        );
+        cx.append_child(host, dialog).unwrap();
+        assert!(
+            shows(&cx, host, dialog),
+            "it opens once it is under its host"
+        );
+
+        cx.update_component(dialog, |dialog, _| dialog.open = false)
+            .unwrap();
+        assert!(!shows(&cx, host, dialog), "and closes when it turns false");
+        cx.update_component(dialog, |dialog, _| dialog.open = true)
+            .unwrap();
+        assert!(shows(&cx, host, dialog), "and opens when it turns back");
+
+        cx.update_component(host, |_, cx| {
+            cx.mutations().park_subtree(dialog.stable_id());
+        })
+        .unwrap();
+        assert!(!shows(&cx, host, dialog), "parked, the host lets it go");
+        assert!(!cx.read(dialog, |dialog| dialog.open).unwrap());
+        cx.update_component(host, |_, cx| {
+            cx.mutations()
+                .insert(host.stable_id(), dialog.stable_id(), None);
+        })
+        .unwrap();
+        assert!(!shows(&cx, host, dialog), "put back, it stays closed");
+        cx.update_component(dialog, |dialog, _| dialog.open = true)
+            .unwrap();
+        assert!(shows(&cx, host, dialog), "until it is opened again");
+
+        // Put in by its host's own update, it opens once the host is back.
+        let late = bodied_dialog(&mut cx, document, crate::Dialog::new("稍后").open(true));
+        cx.update_component(host, |_, cx| {
+            cx.mutations()
+                .insert(host.stable_id(), late.stable_id(), None);
+        })
+        .unwrap();
+        assert!(shows(&cx, host, late));
+    }
+
+    /// What the host does on its own reaches `open`: a dialog the host
+    /// opened is open, one another overlay replaced or the host closed is
+    /// not.
+    #[test]
+    fn the_hosts_own_opens_and_closes_reach_a_dialogs_open() {
+        let mut cx = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = cx
+            .create_component(document, crate::OverlayHost::new())
+            .unwrap();
+        let first = bodied_dialog(&mut cx, document, crate::Dialog::new("导出"));
+        let second = bodied_dialog(&mut cx, document, crate::Dialog::new("设置"));
+        cx.append_child(host, first).unwrap();
+        cx.append_child(host, second).unwrap();
+        let open = |cx: &AppContext, dialog| {
+            cx.read(dialog, |dialog: &crate::Dialog| dialog.open)
+                .unwrap()
+        };
+
+        assert!(cx.activate_overlay(host, first).unwrap());
+        assert!(open(&cx, first));
+        assert!(cx.activate_overlay(host, second).unwrap());
+        assert!(!open(&cx, first), "replaced");
+        assert!(open(&cx, second));
+        assert!(
+            shows(&cx, host, second),
+            "writing it back leaves the host as it is"
+        );
+        assert!(cx.dismiss_overlay(host).unwrap());
+        assert!(!open(&cx, second), "closed by the host");
+        assert!(!shows(&cx, host, second));
     }
 
     #[test]

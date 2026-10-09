@@ -1786,6 +1786,17 @@ pub struct DialogCloseRequested {
     pub trigger: nana_ui_core::DialogCloseTrigger,
 }
 
+/// The host opened or closed a modal surface, and its `open` now says so.
+/// Emitted on the `Dialog`, `ConfirmDialog` or `Drawer` itself when the
+/// host made the change, not the application's own write of `open`: a close
+/// gesture its policy allows, `dismiss_overlay`, `activate_overlay`, another
+/// overlay of the host opening in its place, or the surface being parked. A
+/// view's `.model(signal)` writes it back into the signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DialogToggled {
+    pub open: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextInput {
     pub state: TextInputState,
@@ -3311,6 +3322,14 @@ pub struct Dialog {
     /// A destructive dialog: the title takes the theme's danger colour, the
     /// tone a [`crate::ConfirmDialog`] with `danger` speaks in.
     pub danger: bool,
+    /// Open while it is in a tree under an [`OverlayHost`]: the framework
+    /// makes it the host's open overlay as soon as it, its host and its
+    /// slots are there, and closes it, exit and all, when this turns false.
+    /// It follows the host too: opening it with
+    /// [`crate::AppContext::activate_overlay`] sets it; a close the framework
+    /// makes, another overlay of the host opening in its place, or parking
+    /// it (the host lets go of a parked overlay) clears it.
+    pub open: bool,
     pub close_policy: nana_ui_core::DialogClosePolicy,
     pub initial_focus: crate::ModalInitialFocus,
     pub slots: crate::ModalSlots,
@@ -3325,6 +3344,7 @@ impl Dialog {
             description: None,
             size,
             danger: false,
+            open: false,
             close_policy: nana_ui_core::DialogClosePolicy::default(),
             initial_focus: crate::ModalInitialFocus::default(),
             slots: crate::ModalSlots::default(),
@@ -3345,6 +3365,13 @@ impl Dialog {
     /// Speak in the danger tone: the title takes the theme's danger colour.
     pub fn danger(mut self, danger: bool) -> Self {
         self.danger = danger;
+        self
+    }
+
+    /// Open while it is in a tree under an [`OverlayHost`]; see
+    /// [`Self::open`](field@Self::open).
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
         self
     }
 
@@ -3371,6 +3398,7 @@ impl Dialog {
 impl ComponentView for Dialog {
     const BEHAVIOR: crate::TypeBehavior<Self> = crate::TypeBehavior {
         slot_assembler: Some(crate::AppContext::assemble_modal_slots::<Self>),
+        lifecycle: Some(crate::AppContext::sync_modal_open::<Self>),
         ..crate::TypeBehavior::NONE
     };
 
@@ -3411,6 +3439,12 @@ impl crate::ModalSurface for Dialog {
     }
     fn slots_mut(&mut self) -> &mut crate::ModalSlots {
         &mut self.slots
+    }
+    fn is_open(&self) -> bool {
+        self.open
+    }
+    fn set_open(&mut self, open: bool) {
+        self.open = open;
     }
 }
 

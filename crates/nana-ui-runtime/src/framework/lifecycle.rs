@@ -866,6 +866,11 @@ impl AppContext {
             mutations.start_animation(spec);
             self.world.commit(mutations)?;
         }
+        // A modal surface declared open opens once it is in the tree, as
+        // when a block built detached is first inserted.
+        if self.world.is_mounted(id) {
+            self.sync_modal_open_at(id)?;
+        }
         // Parking cancels a component's own timeline; remounting restarts it.
         // Projections only start timelines and surface motion for mounted
         // nodes, and a remount may never project again on its own.

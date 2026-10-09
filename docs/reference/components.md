@@ -55,6 +55,8 @@ inactive overlay 与关闭菜单属于结构性隐藏。`ComputedStyle::box_visi
 
 用户的关闭手势（Escape、点外面、关闭位）先在 `Dialog`、`ConfirmDialog`、`Drawer` 自己身上发 `DialogCloseRequested { trigger }`，再按 `close_policy` 决定框架关不关。策略不允许的手势只发请求，浮层留着。`DialogClosePolicy::requests_only()` 让框架一种都不关，开合全由应用决定。应用不必轮询无障碍树去发现「对话框被框架关了」。
 
+`Dialog`、`ConfirmDialog`、`Drawer` 也可以声明开合：`.open(..)` / `.model(信号)`，挂在 `OverlayHost` 下时就是 `activate_overlay` / `dismiss_overlay`，宿主自己做的开合发 `DialogToggled` 并写回 `open`（见 [Dialog](../components/dialog.md#声明式开合)）。
+
 `dismiss_overlay` 先关闭交互并恢复焦点。再保留菜单/对话框绘制到退出动画结束。宿主通过 `OverlayClosing { root }` 同步业务打开状态。通过 `OverlayChanged { active: None }` 处理最终释放。排队的关闭通知应在下一次投影前消费，并核对浮层身份，避免覆盖快速重开。退出期间保留父子关系和 `DesktopShell.overlays` 中的节点。直接 `remove_view` 会立即释放，并跳过退出动画。
 
 **壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Toolbar`、`StatusBar`、`MediaTransportBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构。每个区域里放什么由应用决定。见 [工作区](workspace.md)。主区域圆不圆角（外观设置里的「工作区圆角」）写在 `DesktopShell::workspace_corners` 上。壳装配时交给它建的 `Workspace`。不要去改框架建的 `Workspace` 节点。下一次装配会用壳上的值盖掉。

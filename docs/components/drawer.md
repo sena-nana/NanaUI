@@ -59,6 +59,8 @@ widget(
 
 关闭先停掉交互并恢复焦点，退出动画期间节点还在。
 
+也可以声明：`.open(..)` 写 `true` 打开、`false` 关上；`.model(信号)` 还把宿主做的开合写回信号。见 [Dialog](dialog.md#声明式开合)。
+
 ## 遮罩
 
 抽屉身后的遮罩和对话框是同一份：主题的 `EffectTokens::modal_scrim` 和 `modal_scrim_blur`，见 [Dialog](dialog.md#遮罩)。
@@ -91,7 +93,8 @@ widget(
 
 | 事件 | 载荷 | 说明 |
 | --- | --- | --- |
-| 无 | 无 | 无 |
+| `DialogCloseRequested` | `trigger` | 用户按 Escape、点外面或激活关闭位，先于 `close_policy` |
+| `DialogToggled` | `open` | 宿主打开或关上了它。应用自己写 `open` 不发 |
 
 ## 插槽
 

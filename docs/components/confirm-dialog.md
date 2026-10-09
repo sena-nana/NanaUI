@@ -68,6 +68,8 @@ widget(
 
 关上用 `dismiss_overlay(host)`。
 
+也可以声明：`.open(..)` 写 `true` 就在装配建好按钮后打开，写 `false` 关上；`.model(信号)` 还把宿主做的开合写回信号。见 [Dialog](dialog.md#声明式开合)。
+
 ## 忙碌与正文
 
 `busy` 为真时，框架按忙碌处理这次确认。
@@ -95,6 +97,7 @@ widget(
 | 事件 | 载荷 | 说明 |
 | --- | --- | --- |
 | `ConfirmIntent` | — | 确认和取消按钮由装配建好，并接上 `ConfirmIntent` |
+| `DialogToggled` | `open` | 宿主打开或关上了它。应用自己写 `open` 不发 |
 
 ## 插槽
 

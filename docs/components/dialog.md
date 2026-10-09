@@ -199,6 +199,25 @@ let theme = ThemeDefinition::NANA_DARK.with_dialog(DialogRecipe {
 
 时长为 0、偏移或缩放不是有限值、缩放不是正数，主题拒装。应用或系统要求减弱动态效果时（`AppContext::set_reduced_motion`，或宿主报上来的系统偏好），对话框、抽屉和菜单都不放过渡：直接出现、直接消失，开合事件照常发。抽屉不读这份配方，保持内置的淡入淡出。
 
+## 声明式开合
+
+对话框挂在 `OverlayHost` 下时，`.open(..)` 就是声明式的 `activate_overlay` / `dismiss_overlay`。写成 `true`，等它、它的宿主和插槽都在树上了就打开（插槽由装配放进来的，等装配放好）；写成 `false`，连退场一起关上。它所在的块被停放时（`keep_alive` 的分支切走了），宿主照旧放开它，`open` 也跟着变成 `false`；放回来以后保持关着，要再写一次 `true` 才打开。`ConfirmDialog` 和 `Drawer` 一样。
+
+宿主自己开合它时，`open` 跟着变，并在它自己身上发 `DialogToggled { open }`：策略允许的关闭手势、`dismiss_overlay`、`activate_overlay`、同一个宿主上另一个浮层顶替了它，或者它被停放。应用自己写 `open` 不发。`.model(信号)` 是双向的：信号开合它，宿主做的开合写回信号。只用 `.open(信号)` 时，框架关掉它以后要在 `DialogToggled` 里把自己的状态写回 `false`，不然信号一直是 `true`，下一次写 `true` 不算变化，就打不开了。
+
+```rust
+use nana_ui::runtime::view::{signal, text, widget};
+use nana_ui::runtime::{Dialog, OverlayHost};
+
+let exporting = signal(false);
+widget(OverlayHost::new()).children((
+    widget(Dialog::new("导出")).body(text("…")).model(exporting),
+))
+// exporting.set(true) 打开；用户按 Escape 关掉后，exporting 自己变回 false。
+```
+
+对话框常驻在宿主下、靠 `open` 开合，退场才放得完。把它放进 `when(..)`、关的时候连节点一起拿掉，就没有退场。
+
 ## 由应用决定开合
 
 用户想关掉对话框有三种手势：按 Escape、在对话框外按下再松开、激活关闭位（`.close_action`）。每一种都先在对话框自己身上发一次 `DialogCloseRequested`，`trigger` 说是哪一种。然后才看 `.close_policy`：允许这个手势，框架接着关掉它，宿主随后发 `OverlayClosing`；不允许，它留着。Escape 和点外面只送到挂在 `OverlayHost` 下、用 `activate_overlay` 打开的对话框（浮层约定）；关闭位挂没挂都会发请求。
@@ -252,12 +271,15 @@ widget(Dialog::new("重命名").close_policy(DialogClosePolicy::requests_only())
 | `.danger` | `bool` | 危险口气：标题取主题的危险语义色 |
 | `.close_policy` | 关闭策略 | 哪些手势由框架直接关掉。`DialogClosePolicy::requests_only()` 一种都不关，全交给应用 |
 | `.initial_focus_on` | `entity_ref` | 打开时把焦点放到已经放进插槽的控件上 |
+| `.open` | `bool` 或信号 | 挂在 `OverlayHost` 下时打开或关上它，见[声明式开合](#声明式开合) |
+| `.model` | `Signal<bool>` | 双向的 `open`：宿主做的开合写回信号 |
 
 ## 事件
 
 | 事件 | 载荷 | 说明 |
 | --- | --- | --- |
 | `.on(\|e: &DialogCloseRequested\| …)`，模板 `on:DialogCloseRequested` | `&DialogCloseRequested` | 用户按 Escape、点外面或激活关闭位，`trigger` 是 `Escape` / `Outside` / `CloseButton`。发在对话框自己身上，先于 `close_policy` |
+| `.on(\|e: &DialogToggled\| …)` | `&DialogToggled` | 宿主打开或关上了它，`open` 是现在的样子。应用自己写 `open` 不发 |
 
 打开、关闭和焦点归还走浮层约定。框架关掉对话框时，宿主发 `OverlayClosing { root }`。
 

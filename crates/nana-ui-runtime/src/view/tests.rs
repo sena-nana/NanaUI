@@ -3615,6 +3615,83 @@ fn a_form_field_control_and_a_modal_close_action_mount_as_their_setters_place_th
     );
 }
 
+/// `.model(signal)` on a dialog: the signal opens and closes it, and what
+/// the host does on its own (here, closing it) comes back into the signal,
+/// so the next `true` opens it again.
+#[test]
+fn a_dialogs_model_opens_it_and_hears_the_host_close_it() {
+    use crate::{Dialog, OverlayHost};
+    let (mut cx, document, _) = setup();
+    let open = std::cell::Cell::new(None);
+    let (_view, (host, dialog)) = cx
+        .mount_view_root(document, || {
+            let shown = signal(false);
+            open.set(Some(shown));
+            let (host, dialog) = (entity_ref::<OverlayHost>(), entity_ref::<Dialog>());
+            with_refs(
+                widget(OverlayHost::new())
+                    .entity_ref(host)
+                    .children((widget(Dialog::new("导出"))
+                        .entity_ref(dialog)
+                        .body(text("正文"))
+                        .model(shown),)),
+                (host, dialog),
+            )
+        })
+        .unwrap();
+    let open = open.get().unwrap();
+    let active = |cx: &AppContext| cx.world().overlay_host(host.stable_id()).unwrap().active;
+    assert_eq!(active(&cx), None);
+
+    open.set(true);
+    cx.flush_reactive().unwrap();
+    assert_eq!(active(&cx), Some(dialog.stable_id()));
+
+    assert!(cx.dismiss_overlay(host).unwrap());
+    cx.flush_reactive().unwrap();
+    assert!(!open.get_untracked(), "the host closed it");
+
+    open.set(true);
+    cx.flush_reactive().unwrap();
+    assert!(cx.read(dialog, |dialog| dialog.open).unwrap());
+    assert!(!cx.world().surface_closed(dialog.stable_id()), "open again");
+}
+
+/// A confirm dialog and a drawer declared open open as soon as their slots
+/// are placed: the confirm dialog's buttons are made by its assembler after
+/// it is built, and it waits for them.
+#[test]
+fn a_confirm_dialog_and_a_drawer_declared_open_open_once_their_slots_are_placed() {
+    use crate::{ConfirmDialog, Drawer, OverlayHost};
+    let (mut cx, document, _) = setup();
+    let (_view, (hosts, confirm, drawer)) = cx
+        .mount_view_root(document, || {
+            let hosts = (entity_ref::<OverlayHost>(), entity_ref::<OverlayHost>());
+            let (confirm, drawer) = (entity_ref::<ConfirmDialog>(), entity_ref::<Drawer>());
+            with_refs(
+                (
+                    widget(OverlayHost::new())
+                        .entity_ref(hosts.0)
+                        .children((widget(ConfirmDialog::new("删除？", "不能撤销"))
+                            .entity_ref(confirm)
+                            .open(true),)),
+                    widget(OverlayHost::new())
+                        .entity_ref(hosts.1)
+                        .children((widget(Drawer::new("筛选"))
+                            .entity_ref(drawer)
+                            .body(text("条件"))
+                            .open(true),)),
+                ),
+                (hosts, confirm, drawer),
+            )
+        })
+        .unwrap();
+    let active =
+        |host: Entity<OverlayHost>| cx.world().overlay_host(host.stable_id()).unwrap().active;
+    assert_eq!(active(hosts.0), Some(confirm.stable_id()));
+    assert_eq!(active(hosts.1), Some(drawer.stable_id()));
+}
+
 #[test]
 fn a_title_icon_view_leads_the_header_of_a_dialog_and_a_confirm_dialog() {
     use crate::{ConfirmDialog, Dialog, ModalSurface};

@@ -1035,6 +1035,10 @@ pub struct AppContext {
     pending_child_reprojects: Vec<StableNodeId>,
     /// Guards reentrant drains while a reproject commits its own mutations.
     draining_child_reprojects: bool,
+    /// Modal surfaces whose declared `open` met a host or surface in the
+    /// middle of its own update; they ask again once both are back
+    /// (`drain_modal_syncs`).
+    pending_modal_syncs: Vec<StableNodeId>,
     event_handlers: HashMap<(StableNodeId, TypeId), Vec<EventHandler>, crate::BuildIdHasher>,
     key_handlers: HashMap<StableNodeId, keyboard::KeyHandler, crate::BuildIdHasher>,
     event_dependencies:
@@ -1421,6 +1425,7 @@ impl AppContext {
             text_backend_reproject_views: HashMap::default(),
             pending_child_reprojects: Vec::new(),
             draining_child_reprojects: false,
+            pending_modal_syncs: Vec::new(),
             event_handlers: HashMap::default(),
             key_handlers: HashMap::default(),
             event_dependencies: HashMap::default(),
@@ -1936,7 +1941,11 @@ impl AppContext {
         // A failed reprojection must not leave the rest unsuspended.
         let mut suspended = Ok(());
         for id in parked {
-            suspended = suspended.and(self.suspend(id));
+            // A parked surface has lost its host (the world let go of it),
+            // and its own `open` says so, as when the host closes it.
+            suspended = suspended
+                .and(self.suspend(id))
+                .and(self.note_modal_open(id, false));
         }
         for id in inserted {
             if self.world.is_mounted(id) {
@@ -1945,6 +1954,7 @@ impl AppContext {
         }
         self.collect_child_reprojects();
         self.drain_child_reprojects()?;
+        self.drain_modal_syncs()?;
         if !menu_focus.is_empty() {
             self.hand_over_menu_focus(menu_focus)?;
         }
@@ -3413,6 +3423,9 @@ impl AppContext {
         // follows even when this component's own follow-up fails.
         let observed = self.follow_up_observers(entity.id, observers);
         own.and(observed)?;
+        // A surface that asked to open or close while this view was out
+        // being updated asks again now that it is back.
+        self.drain_modal_syncs()?;
         Ok(result)
     }
 
@@ -3770,6 +3783,7 @@ impl AppContext {
             .retain(|id, _| !removed.contains(id));
         self.pending_child_reprojects
             .retain(|id| !removed.contains(id));
+        self.pending_modal_syncs.retain(|id| !removed.contains(id));
         self.component_lifecycle
             .tooltips
             .retain(|_, tooltip| !removed.contains(&tooltip.overlay));
