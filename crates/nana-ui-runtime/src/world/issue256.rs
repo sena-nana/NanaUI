@@ -407,3 +407,58 @@ fn issue256_child_indices_follow_inserts_moves_and_removals() {
         indices_hold(context.world());
     }
 }
+
+/// A child whose height goes from a length back to filling, under a parent
+/// whose height follows its content, lays out again: every pass matches a
+/// cold layout of the same inputs.
+#[test]
+fn issue256_a_height_back_to_fill_under_an_auto_parent_lays_out_again() {
+    use nana_ui_core::{LayoutStyle, LengthSpec};
+    let document = DocumentId::new(1).unwrap();
+    let viewport = LayoutViewport::new(800.0, 600.0);
+    let fill = LayoutStyle {
+        width: Some(LengthSpec::Fill),
+        height: Some(LengthSpec::Fill),
+        ..LayoutStyle::default()
+    };
+    let build = |row_height: Option<LengthSpec>| {
+        let mut queue = MutationQueue::new();
+        queue.create(node(1), document, NodeKind::Document);
+        let mut element = |id: u64, parent: u64, layout: LayoutStyle| {
+            queue.create(node(id), document, NodeKind::Element { tag: "div".into() });
+            queue.insert(node(parent), node(id), None);
+            queue.set_style(node(id), styled(layout));
+        };
+        element(2, 1, column(Some(320.0)));
+        element(3, 2, column(None));
+        element(
+            4,
+            3,
+            LayoutStyle {
+                height: row_height,
+                ..fill.clone()
+            },
+        );
+        let mut context = AppContext::new();
+        context.commit_mutations(queue).unwrap();
+        context
+    };
+    let mut shaper = bundled_face_shaper();
+    let mut context = build(Some(LengthSpec::Fill));
+    product_frame(&mut context, document, viewport, &mut shaper);
+    for height in [Some(LengthSpec::Px(40.0)), Some(LengthSpec::Fill)] {
+        let mut queue = MutationQueue::new();
+        queue.set_style(
+            node(4),
+            styled(LayoutStyle {
+                height,
+                ..fill.clone()
+            }),
+        );
+        context.commit_mutations(queue).unwrap();
+        product_frame(&mut context, document, viewport, &mut shaper);
+    }
+    let mut cold = build(Some(LengthSpec::Fill));
+    product_frame(&mut cold, document, viewport, &mut shaper);
+    assert_matches_cold(&mut context, &mut cold, document);
+}

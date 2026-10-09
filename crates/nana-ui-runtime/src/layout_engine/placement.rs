@@ -37,6 +37,9 @@ enum PlanCheck {
     /// The lowest entry index whose style or intrinsic size moved. Children
     /// before it keep their positions; from here on the container must replay.
     ChangedFrom(usize),
+    /// A child restyled so that what the plan assumed of its children when
+    /// it was built no longer holds: the container places in full.
+    Stale,
 }
 
 /// Direct children of `container` that the closure reaches, including a child
@@ -135,6 +138,21 @@ fn check_plan_children(
         // stays off the per-sibling path.
         let style_moved =
             !Arc::ptr_eq(&current, &entry.style) && !layout_inputs_equal(&current, &entry.style);
+        // The plan read its children's styles once, when it was built: that
+        // none reads its main extent let a main size change keep the plan,
+        // and that none reads its cross size kept the flow under a cross
+        // size change. A child restyled to read either -- a fixed height
+        // back to filling -- would keep a size the container no longer has.
+        if style_moved
+            && ((!plan.main_dependent && reads_main_extent(&current, plan.main_direction))
+                || (plan.cross_independent
+                    && (!matches!(
+                        current.resolved_align_self(plan.style.align_items),
+                        AlignSpec::Start | AlignSpec::Stretch
+                    ) || reads_container_size(&current, plan.main_direction))))
+        {
+            return Ok(PlanCheck::Stale);
+        }
         let on_measure = scope.measure.contains(&child);
         let measured = if on_measure {
             intrinsic_size_scoped(
@@ -1000,6 +1018,7 @@ pub(super) fn place_node_scoped(
                     return Ok(());
                 }
             }
+            PlanCheck::Stale => {}
             PlanCheck::Unchanged | PlanCheck::ChangedFrom(_) => {
                 if !grid_geometry_moved
                     && replay_wrapped_flex_line(plan, viewport, nodes, intrinsic, output, scope)?
