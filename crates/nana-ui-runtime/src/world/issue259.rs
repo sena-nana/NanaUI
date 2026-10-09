@@ -17,6 +17,10 @@
 //! - sequential: a frame places the boxes that moved and the way down to the
 //!   edit, and measures the same subtrees at every size. At the flow end
 //!   whose growth moves nothing after it, all of that is a constant;
+//! - text: a label at the head of a page, in a column it does not fill,
+//!   takes a longer string that still fits: the frame lays out once, as for
+//!   a label that cannot wrap, and nothing below the label moves, at 1k and
+//!   10k nodes;
 //! - batch: a hundred seeds walk each edge of their union closure at most
 //!   twice and cost no more than a hundred single edits;
 //! - memory: 10k edits on 100k nodes leave the retained cache what the tree
@@ -1380,6 +1384,87 @@ fn issue259_formatting_costs_the_same_at_any_size() {
             app.context.set_default_locale(Locale::parse("de"))
         });
         costs.push(row);
+    }
+    assert_eq!(costs[0], costs[1]);
+}
+
+/// A label at the head of a page, in a column 1200 px wide that it does not
+/// fill, above 1k and 10k nodes of cards, takes a longer string that still
+/// fits the column. Its box was only as wide as the string it held, so the
+/// new one is not wrapped to that width: the frame lays out once, the label
+/// on one line at its new width, and nothing below it moves -- what the same
+/// edit costs a label that cannot wrap, and the same at both sizes.
+#[test]
+fn issue259_a_longer_label_moves_nothing_below_it() {
+    use super::reflow_oracle::{self, Builder, FILLER_GROUP_NODES};
+    const SHORT: &str = "Short";
+    const LONGER: &str = "A much longer label that still fits on one line of its column";
+    let viewport = LayoutViewport::new(1200.0, 800.0);
+    // The cards sit in a column of their own: the page holds two boxes at
+    // any size.
+    let build = |nodes: u64, wraps: bool, value: &str| {
+        let document = DocumentId::new(1).unwrap();
+        let (mut b, page) = Builder::page(document, 1, 1200.0);
+        let head = b.element(page, reflow_oracle::column(Some(1200.0)));
+        let label = b.label(head, value);
+        if !wraps {
+            b.queue.set_style(
+                label,
+                styled(LayoutStyle {
+                    white_space_nowrap: true,
+                    ..LayoutStyle::default()
+                }),
+            );
+        }
+        let body = b.element(page, reflow_oracle::column(None));
+        b.filler(body, nodes / FILLER_GROUP_NODES);
+        let mut context = AppContext::new();
+        context.commit_mutations(b.queue).unwrap();
+        let mut shaper = bundled_face_shaper();
+        product_frame(&mut context, document, viewport, &mut shaper);
+        (context, document, label, shaper)
+    };
+    let mut costs = Vec::new();
+    for nodes in [1_000, 10_000] {
+        let _unguarded = (nodes > 1_000).then(skip_layout_verify);
+        let mut row = Vec::new();
+        for wraps in [false, true] {
+            let case = format!("{nodes} nodes, wraps {wraps}");
+            let (mut context, document, label, mut shaper) = build(nodes, wraps, SHORT);
+            let order = context.world().document_order(document);
+            let boxes = |context: &AppContext| {
+                order
+                    .iter()
+                    .map(|id| context.world().layout_box(*id))
+                    .collect::<Vec<_>>()
+            };
+            let before = boxes(&context);
+            let passes = context.layout_invocations();
+            let mut queue = MutationQueue::new();
+            queue.set_text(
+                label,
+                TextContent {
+                    value: LONGER.into(),
+                },
+            );
+            context.commit_mutations(queue).unwrap();
+            let counters = product_frame(&mut context, document, viewport, &mut shaper);
+            let moved: Vec<StableNodeId> = order
+                .iter()
+                .zip(before.iter().zip(boxes(&context)))
+                .filter(|(_, (old, new))| **old != *new)
+                .map(|(id, _)| *id)
+                .collect();
+            assert_eq!(moved, [label], "{case}");
+            // Nor did anything move and move back on the way.
+            assert_eq!(counters.layout_origin_only_updates, 0, "{case}");
+            assert_eq!(context.layout_invocations() - passes, 1, "{case}");
+            let (mut cold, ..) = build(nodes, wraps, LONGER);
+            assert_matches_cold(&mut context, &mut cold, document);
+            row.push(Cost::from(counters).structural());
+        }
+        assert_eq!(row[0], row[1], "{nodes} nodes: wrapping costs extra");
+        costs.push(row[1]);
     }
     assert_eq!(costs[0], costs[1]);
 }

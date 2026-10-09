@@ -3452,6 +3452,9 @@ pub(super) struct PlainText {
     natural: Option<f32>,
     /// The `nana-text` layout it retains, with an engine.
     layout: Option<Arc<nana_text::TextLayout>>,
+    /// Resolved to its unwrapped lines, not to its box's width, which only
+    /// held the text it replaced.
+    provisional: bool,
 }
 
 /// The same constraints without the box width: the line as long as it runs.
@@ -3924,6 +3927,7 @@ impl UiWorld {
                         metrics,
                         natural,
                         layout,
+                        provisional,
                     } = self.resolve_plain_text(
                         id,
                         constraints,
@@ -3933,7 +3937,7 @@ impl UiWorld {
                     );
                     validate_text_metrics(id, metrics)?;
                     let resolved_before = self.text_resolved_before(id);
-                    resolved.push(PlainResolution::text(id, constraints, layout));
+                    resolved.push(PlainResolution::text(id, constraints, layout, provisional));
                     if self.record(id).text_metrics != metrics
                         || self.text_natural_width(id) != natural
                     {
@@ -4135,6 +4139,14 @@ impl UiWorld {
     /// one the host shaper measures it. Text that wrapped to its box also
     /// reports its unwrapped width when that is wider (see
     /// [`UiWorld::text_natural_width`]).
+    ///
+    /// Text shaped anew in a box only as wide as the text it replaces (see
+    /// [`Self::shapes_anew_in_a_hugging_box`]) is not held to that width:
+    /// when it wraps there, it resolves to its unwrapped lines instead,
+    /// provisionally, and layout gives it the room the box really has. A
+    /// longer label in a wide column lays out once, on the line it fits,
+    /// rather than tall for a pass that moves everything after it down and
+    /// back.
     fn resolve_plain_text<S: TextShaper>(
         &mut self,
         id: StableNodeId,
@@ -4149,6 +4161,8 @@ impl UiWorld {
         // text node: its measurement is counted, but not as a node.
         let is_text_node =
             text_bytes > 0 || matches!(self.record(id).kind.as_ref(), NodeKind::Text);
+        // Read before the engine borrows the node's source.
+        let hugged = self.shapes_anew_in_a_hugging_box(id, &constraints);
         let mut node_work = nana_text::TextWorkCounters::default();
         let resolved = match engine {
             Some(engine) => {
@@ -4192,7 +4206,7 @@ impl UiWorld {
                 // text's own width is its lines unwrapped. Layout needs that
                 // to widen a box that shrinks to its content once the box's
                 // limit grows, rather than keep the width it wrapped to.
-                let natural = (wraps_to_its_box(&constraints)
+                let unwrapped = (wraps_to_its_box(&constraints)
                     && !layout.is_vertical()
                     && layout
                         .lines
@@ -4210,19 +4224,29 @@ impl UiWorld {
                         ),
                         &mut node_work,
                     );
-                    crate::text_node::text_metrics_of_layout(&natural).width
+                    (crate::text_node::text_metrics_of_layout(&natural), natural)
                 })
-                .filter(|natural| *natural > metrics.width);
+                .filter(|(natural, _)| natural.width > metrics.width);
                 if copied {
                     node_work.text_source_clones += 1;
                     self.record_string_clone(text_bytes);
                 }
+                let (metrics, natural, layout, provisional) = match unwrapped {
+                    Some((natural, unwrapped)) if hugged => (natural, None, unwrapped, true),
+                    unwrapped => (
+                        metrics,
+                        unwrapped.map(|(natural, _)| natural.width),
+                        layout,
+                        false,
+                    ),
+                };
                 // An empty Text node still has a line box to measure, but
                 // nothing to draw: it retains no layout.
                 PlainText {
                     metrics,
                     natural,
                     layout: (text_bytes > 0).then_some(layout),
+                    provisional,
                 }
             }
             None => {
@@ -4245,24 +4269,27 @@ impl UiWorld {
                 // more than one may have wrapped, so ask for them unwrapped
                 // (cached by its constraints, like the first).
                 let lines_tall = crate::components::resolved_text_line_height(&style) * 1.5;
-                let natural = (wraps_to_its_box(&constraints) && metrics.height > lines_tall)
+                let unwrapped = (wraps_to_its_box(&constraints) && metrics.height > lines_tall)
                     .then(|| {
-                        shaper
-                            .shape(id, &self.record(id).text, &style, unbounded(constraints))
-                            .width
+                        shaper.shape(id, &self.record(id).text, &style, unbounded(constraints))
                     })
-                    .filter(|natural| *natural > metrics.width);
+                    .filter(|natural| natural.width > metrics.width);
                 if constraint_only {
                     // `shape` still runs; a width constraint is not a new shaped run.
                     shaper.runs = runs;
                 }
                 node_work.record_text_pass(1, usize::from(shaper.runs > runs));
+                let (metrics, natural, provisional) = match unwrapped {
+                    Some(natural) if hugged => (natural, None, true),
+                    unwrapped => (metrics, unwrapped.map(|natural| natural.width), false),
+                };
                 // No layout: one from an engine this host no longer offers is
                 // not what the host measures now.
                 PlainText {
                     metrics,
                     natural,
                     layout: None,
+                    provisional,
                 }
             }
         };
@@ -4272,6 +4299,30 @@ impl UiWorld {
         }
         work.accumulate(node_work);
         resolved
+    }
+
+    /// Whether `id` shapes anew (new content, font, shaping style or
+    /// language) in a wrapping box only as wide as the text it held: lines
+    /// that did not wrap and filled it. That width was the old text's, not
+    /// room the box was given -- a box that shrinks to its content has what
+    /// its parent offers, which only layout knows -- so it is no width to
+    /// wrap new lines to.
+    ///
+    /// A paragraph that wrapped fills the room it has: its box's width is a
+    /// constraint, and it keeps wrapping to it.
+    fn shapes_anew_in_a_hugging_box(
+        &self,
+        id: StableNodeId,
+        constraints: &crate::TextShapeConstraints,
+    ) -> bool {
+        let Some(width) = constraints.max_width.filter(|_| constraints.wrap) else {
+            return false;
+        };
+        self.nodes
+            .text_node(id)
+            .is_some_and(crate::text_node::TextNodeState::reshapes)
+            && self.text_natural_width(id).is_none()
+            && (self.record(id).text_metrics.width - width).abs() <= 0.5
     }
 
     /// Applies a successful pass's plain text resolutions: retains or releases
@@ -4330,6 +4381,13 @@ impl UiWorld {
                 .mark_text_resolved(resolution.id, backend, resolution.constraints)
             {
                 self.bump_last_counters(|counters| counters.record_text_language(0, 1));
+            }
+            if resolution.provisional {
+                // Not resolved at its box: stamped one constraint revision
+                // behind, so the pass after layout, which its new metrics
+                // reach, lays it out again at the box layout gave it.
+                self.nodes
+                    .invalidate_text(resolution.id, crate::text_node::TextDirty::CONSTRAINT);
             }
             if self.nodes.take_text_scale_pending(resolution.id) {
                 scaled.insert(resolution.id);
@@ -4558,18 +4616,28 @@ pub(super) struct PlainResolution {
     constraints: Option<crate::TextShapeConstraints>,
     /// The layout to retain; `None` releases whatever the node held.
     layout: Option<Arc<nana_text::TextLayout>>,
+    /// Resolved without its box's width ([`PlainText::provisional`]).
+    provisional: bool,
 }
 
 impl PlainResolution {
+    /// A node with text, resolved in a box that gives it `constraints`, or
+    /// `provisional`ly without that box's width.
     fn text(
         id: StableNodeId,
         constraints: crate::TextShapeConstraints,
         layout: Option<Arc<nana_text::TextLayout>>,
+        provisional: bool,
     ) -> Self {
         Self {
             id,
-            constraints: Some(constraints),
+            constraints: Some(if provisional {
+                unbounded(constraints)
+            } else {
+                constraints
+            }),
             layout,
+            provisional,
         }
     }
 
@@ -4578,6 +4646,7 @@ impl PlainResolution {
             id,
             constraints: None,
             layout: None,
+            provisional: false,
         }
     }
 }
@@ -4780,6 +4849,7 @@ impl UiWorld {
                         metrics,
                         natural,
                         layout,
+                        provisional,
                     } = self.resolve_plain_text(
                         id,
                         constraints,
@@ -4790,7 +4860,7 @@ impl UiWorld {
                     validate_text_metrics(id, metrics)?;
                     let resolved_before = self.text_resolved_before(id);
                     if stampable {
-                        resolved.push(PlainResolution::text(id, constraints, layout));
+                        resolved.push(PlainResolution::text(id, constraints, layout, provisional));
                     }
                     shaped.push((id, metrics, natural, None, resolved_before));
                     continue;

@@ -324,6 +324,14 @@ impl TextNodeState {
         })
     }
 
+    /// True when the node resolved before and shapes again now: its content,
+    /// font, shaping style or language moved since the stamp, not only its
+    /// box.
+    pub(crate) fn reshapes(&self) -> bool {
+        self.stamp
+            .is_some_and(|stamp| stamp.shape != self.revisions.shape)
+    }
+
     /// True when the node was resolved by `backend` at its current content,
     /// shape and constraint revisions. O(1), reads no text.
     pub fn is_current(&self, backend: TextBackendEpoch) -> bool {
