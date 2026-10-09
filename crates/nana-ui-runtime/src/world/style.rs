@@ -323,9 +323,19 @@ impl UiWorld {
                 padding.resolve_y(metrics).map(nana_ui_core::LengthSpec::Px),
             )
         });
+        // A square is the box a control has when nothing else says. An axis
+        // whose length the author wrote is the author's: holding it open at
+        // the square's minimum turned a 22px icon button back into a 28px
+        // one (a CSS box keeps its size over `Select`'s and `Switch`'s size
+        // steps the same way).
         let square = style
             .square
             .map(|size| nana_ui_core::LengthSpec::Px(size.resolve(metrics)));
+        let authored = |extent: Option<nana_ui_core::LengthSpec>| {
+            extent.is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
+        };
+        let square_width = square.filter(|_| !authored(style.layout.width));
+        let square_height = square.filter(|_| !authored(style.layout.height));
         // CSS `aspect-ratio` fills an automatic height from a definite width;
         // it does not shrink `width:auto` from a definite height. A control
         // that names Exact height and a ratio still has to resolve the inline
@@ -363,9 +373,9 @@ impl UiWorld {
             });
             horizontal && vertical
         });
-        let square_settled = square.is_none_or(|length| {
-            style.layout.min_width == Some(length) && style.layout.min_height == Some(length)
-        });
+        let square_settled = square_width
+            .is_none_or(|length| style.layout.min_width == Some(length))
+            && square_height.is_none_or(|length| style.layout.min_height == Some(length));
         let control_settled = control.is_none_or(|(exact, length)| {
             if exact {
                 style.layout.height == Some(length)
@@ -419,8 +429,10 @@ impl UiWorld {
                 target.padding_bottom.get_or_insert(y);
             }
         }
-        if let Some(length) = square {
+        if let Some(length) = square_width {
             target.min_width = Some(length);
+        }
+        if let Some(length) = square_height {
             target.min_height = Some(length);
         }
         if let Some(length) = aspect_width {

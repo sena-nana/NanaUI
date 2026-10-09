@@ -93,6 +93,8 @@ CSS `font-family`（以及 weight 和 style）会映射到刚载入的 face。�
 
 `control_padding_x` 会盖掉节点自己的左右内边距。这是「用命名档位，而不是花掉数字」的代价。要退出，就把它设成 `None`，再自己写 padding。`sidebar.rs` 就是这么做的。
 
+`square` 不一样。它只是没人给尺寸时的方盒，写成 `min_width` / `min_height`。节点自己写了 `width` 或 `height` 的那一轴，方盒不再写最小值，写的尺寸生效。给图标按钮定 22×22 不必先把 `square` 置空。
+
 四个角不同档的形状，用 `corner_radii`。两块拼成一体时，外侧是圆角，接缝是直角。四个值按左上、右上、右下、左下。`None` 是直角。
 
 接缝处不要给圆角。哪怕是 `Xs`，两段弧分开的地方都会露出缺口。

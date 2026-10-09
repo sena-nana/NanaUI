@@ -44,6 +44,10 @@ icon_button(Icon::Search, "搜索")
 
 悬停气泡不是 `label`。可访问名是 `label`。气泡用组件上的 `IconButton::with_tooltip`，配置是默认的 `TooltipConfig`。这不是字段表里的方法。
 
+## 尺寸
+
+默认是方的：边长取主题的 `icon_button_size`（28），`IconButton::size` 换成控件高度档。这是没人给尺寸时的方盒（`NodeStyle::square`）。应用自己写了宽或高（`style.layout.width` / `height`，或模板 CSS 的 `width` / `height`），那一轴就照写的来，不必再把 `square` 置空：22×22 的关闭钮就是 22×22。只写了宽的按钮，高仍是方盒的边长。装别的主题密度时，变的只是方盒，不动应用写的尺寸。
+
 ## 种类
 
 构造时的种类是 `ButtonKind::Ghost`。`selected` 为真，或种类本身是 Selected，绘制都走选中色。要改种类用 `IconButton::kind`。`colors_from_style` 让这一颗按钮改用自己 `style` 里的颜色，不再被种类盖掉；只影响设了它的那一颗。

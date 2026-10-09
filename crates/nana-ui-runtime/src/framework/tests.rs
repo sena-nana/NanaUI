@@ -4529,6 +4529,62 @@ fn an_installed_icon_button_size_reaches_the_square() {
     assert_eq!(extent_of(&context), (Some(px(36.0)), Some(px(36.0))));
 }
 
+/// An icon button the application gave a box keeps it. The square is the
+/// size it has when nothing else says; an axis whose length the application
+/// wrote is the application's, so a button given only a width keeps the
+/// square's height, and an installed density moves the square, not the box.
+#[test]
+fn an_icon_buttons_authored_box_wins_over_its_square() {
+    use nana_ui_core::LengthSpec;
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let row = context
+        .create_component(
+            document,
+            crate::Stack::row(0.0).align(nana_ui_core::AlignSpec::Start),
+        )
+        .unwrap();
+    let button = |context: &mut AppContext, width: Option<f32>, height: Option<f32>| {
+        let mut button = crate::IconButton::new(nana_ui_core::Icon::Close, "Close");
+        let layout = Arc::make_mut(&mut button.style.layout);
+        layout.width = width.map(LengthSpec::Px);
+        layout.height = height.map(LengthSpec::Px);
+        let button = context.create_component(document, button).unwrap();
+        context.append_child(row, button).unwrap();
+        button
+    };
+    let small = button(&mut context, Some(22.0), Some(22.0));
+    let wide = button(&mut context, Some(40.0), None);
+    let plain = button(&mut context, None, None);
+    let size_of = |context: &mut AppContext, button: Entity<crate::IconButton>| {
+        context
+            .layout_document(document, crate::LayoutViewport::new(320.0, 120.0))
+            .unwrap();
+        let bounds = context.world().layout_box(button.stable_id()).unwrap();
+        (bounds.width, bounds.height)
+    };
+    let square = nana_ui_core::UI_METRICS.icon_button_size;
+    assert_eq!(size_of(&mut context, small), (22.0, 22.0));
+    assert_eq!(size_of(&mut context, wide), (40.0, square));
+    assert_eq!(size_of(&mut context, plain), (square, square));
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.icon_button_size = 36.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeAppearance::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(size_of(&mut context, small), (22.0, 22.0));
+    assert_eq!(size_of(&mut context, wide), (40.0, 36.0));
+    assert_eq!(size_of(&mut context, plain), (36.0, 36.0));
+}
+
 #[test]
 fn an_installed_field_padding_reaches_a_textarea_block_inset() {
     let mut context = AppContext::new();

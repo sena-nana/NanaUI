@@ -1779,7 +1779,8 @@ pub struct NodeStyle {
     pub surface_padding: Option<nana_ui_core::SurfacePadding>,
     /// Square min box (`min_width` and `min_height`), resolved against the
     /// installed metrics. Icon buttons name [`nana_ui_core::SquareSize::IconButton`]
-    /// so a density setting can move them.
+    /// so a density setting can move them. It is the box when nothing else
+    /// says: an axis whose `width` / `height` the layout writes keeps that.
     pub square: Option<nana_ui_core::SquareSize>,
     pub interaction: InteractionStyle,
     pub text_horizontal_alignment: TextHorizontalAlignment,

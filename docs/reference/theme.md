@@ -122,7 +122,7 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 | `ControlHeight` | [theme.rs](../../crates/nana-ui-core/src/theme.rs) | 控件高度意图：`Min(ControlSize)` / `Exact(ControlSize)`，由 `NodeStyle.control_height` 携带、样式写入时解析 | **保留**：`Min` / `Exact` 的区分以前藏在调用点写 `min_height` 还是 `height` 里，现在是被说出来的意图 |
 | `ControlPadding` | 同上 | 水平 inset 意图：`Compact` / `Standard` / `Roomy` / `Field` / `ListItem`，由 `NodeStyle.control_padding_x` 携带；多行 field 另用 `control_padding_y` | **保留**：不是 `ControlSize` 的包装——text field 与 list row 各有独立 metrics 字段 |
 | `SurfacePadding` | 同上 | 面板 inset：`Panel` 写四边，`PanelX` 只写左右 | **保留**：卡片/设置组/表单表面用，不是 control |
-| `SquareSize` | 同上 | 方盒：`IconButton` 或 `Control(ControlSize)`，写 `min_width`/`min_height` | **保留**：icon button 默认走 `icon_button_size`，`size()` 才换成 ControlSize |
+| `SquareSize` | 同上 | 方盒：`IconButton` 或 `Control(ControlSize)`，写 `min_width`/`min_height`；节点自己写了 `width` / `height` 的轴不写 | **保留**：icon button 默认走 `icon_button_size`，`size()` 才换成 ControlSize |
 | `ChromeRadii` | 同上 | 已解析的四档圆角，搭 `ExtractedNode` 运到 renderer | **保留**：让 renderer 只消费不解析，`nana-ui-scene` 因此一处都不再读 `UI_METRICS` |
 | `CornerShape` | [theme/mod.rs](../../crates/nana-ui-core/src/theme/mod.rs) | 圆角形状：`Round`（圆弧，默认）或 CSS `superellipse(k)`，由 `ThemeMetrics.corner_shape` 持有 | **场景级的值**，不像 `ChromeRadii` 搭 `ExtractedNode`：painter 按一次绘制写 uniform，而不是按图元——quad 的顶点属性和裁剪数据都已占满，逐图元携带要扩每条管线的实例结构。`RuntimeDocument` 每帧把它同步成 `UiScene::corner_shape`，变了就换 scene instance；只改形状不标 LAYOUT，主题安装照旧把全部节点标 RENDER，形状随同一帧的增量落地 |
 | `AppearanceSettings` | [settings.rs](../../crates/nana-ui-core/src/settings.rs) | 用户/系统 policy：radius ×4、window material、backdrop target/opacity、titlebar 跟随、workspace corners | **演进**为 #100 §11 的 policy overlay，不是第二套 theme |
@@ -284,7 +284,7 @@ runtime crate 里 `const NAME: f32/u16/u64 = <数字>` 共 217 个（`ROW_HEIGHT
 同一条路继续走完还开着的尺寸接口：
 
 - `SurfacePadding::{Panel, PanelX}`：卡片 / 设置组 / 表单表面 / pane 页签。`Panel` 写四边。`PanelX` 只写左右。页签不能吃进垂直 panel padding。否则会变高。
-- `SquareSize::{IconButton, Control(size)}`：icon button 默认走 `icon_button_size`。`size()` 才换成 ControlSize。显式边长（sidebar 20px 工具）会清掉 `square`。避免意图把花掉的盒子写回去。
+- `SquareSize::{IconButton, Control(size)}`：icon button 默认走 `icon_button_size`。`size()` 才换成 ControlSize。显式边长优先：节点写了 `width` / `height` 的那一轴，`square` 不写最小值（sidebar 20px 工具、应用给的 22px 关闭钮），意图不会把花掉的盒子撑回方盒。
 - `control_padding_y`：多行 TextArea 用 `Field` 做块轴 inset。单行 field 不写。避免撑开行盒。
 - `ThemeMetrics.large_control_padding_x`：`serde(default)` 仍是 `space::XXL`。旧 settings blob 能读。Large / Roomy 终于能被安装主题移动。
 - 工作区主区圆角改成 `RadiusTier::Lg`。L1 card 缺 CSS radius 时命名 `Md`。不再花 `UI_METRICS.radius_md`。
