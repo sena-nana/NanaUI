@@ -176,6 +176,8 @@ struct TextStyle {
 #[derive(Debug, Clone)]
 pub(super) struct BuiltPaint {
     recording: Arc<PaintRecording>,
+    /// Built for a node with a `mask-image`: see [`build_ops`].
+    masked: bool,
     behind: Arc<[BuiltOp]>,
     over: Arc<[BuiltOp]>,
 }
@@ -210,6 +212,27 @@ pub(super) fn custom_paint_stack(recording: &PaintRecording, slot: u64) -> Optio
     }
 }
 
+/// The node's `mask-image` as its painter's output takes it: a gradient
+/// over a box with area. A `url()` mask is counted and not applied — the
+/// painter's output draws unmasked — and neither is a mask over an empty box.
+pub(super) fn node_mask(node: &ExtractedNode) -> Option<NodeMask> {
+    let image = node.source_style.layout.paint.mask.as_ref()?;
+    let size = [node.layout.width, node.layout.height];
+    if !size.iter().all(|axis| axis.is_finite() && *axis > 0.0) {
+        return None;
+    }
+    match image {
+        nana_ui_core::MaskImage::Gradient(gradient) => Some(NodeMask {
+            gradient: gradient.clone(),
+            size,
+        }),
+        nana_ui_core::MaskImage::Url(_) => {
+            nana_diagnostics::metric!(nana_diagnostics::framework::runtime::PAINT_MASK_UNSUPPORTED);
+            None
+        }
+    }
+}
+
 impl UiScene {
     /// The geometry of a painted node's recording, built once per recording.
     ///
@@ -219,14 +242,18 @@ impl UiScene {
         &mut self,
         id: StableNodeId,
         recording: &Arc<PaintRecording>,
+        masked: bool,
     ) -> BuiltPaint {
         match self.custom_paint.get(&id) {
-            Some(built) if Arc::ptr_eq(&built.recording, recording) => built.clone(),
+            Some(built) if Arc::ptr_eq(&built.recording, recording) && built.masked == masked => {
+                built.clone()
+            }
             _ => {
                 let built = BuiltPaint {
                     recording: Arc::clone(recording),
-                    behind: build_ops(&recording.behind_children).into(),
-                    over: build_ops(&recording.over_children).into(),
+                    masked,
+                    behind: build_ops(&recording.behind_children, masked).into(),
+                    over: build_ops(&recording.over_children, masked).into(),
                 };
                 self.custom_paint.insert(id, built.clone());
                 built
@@ -237,15 +264,24 @@ impl UiScene {
     /// Emit a painted node's own primitives. The built-in ones, if the
     /// recording asked for them, are already in; they get the path clips,
     /// local transform and opacity active at `draw_default()`.
+    ///
+    /// `node_mask` is the node's `mask-image` (see [`node_mask`]); `built`
+    /// was prepared for it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The node's emission state, as the built-in primitives get it"
+    )]
     pub(super) fn emit_custom_paint(
         &mut self,
         node: &ExtractedNode,
         built: &BuiltPaint,
+        node_mask: Option<&Arc<NodeMask>>,
         transform: AffineTransform,
         clips: &Arc<[ClipRegion]>,
         opacity: f32,
         node_order: usize,
     ) {
+        debug_assert_eq!(built.masked, node_mask.is_some());
         let origin = [node.layout.x, node.layout.y];
         for (ops, pre, post) in [
             (&built.behind, PAINT_BEHIND_PRE, PAINT_BEHIND_POST),
@@ -325,6 +361,9 @@ impl UiScene {
                                 mesh: Arc::clone(mesh),
                                 origin,
                                 mode: *mode,
+                                node_mask: (*mode == LayerMaskMode::Keep)
+                                    .then(|| node_mask.cloned())
+                                    .flatten(),
                             }),
                         },
                         Arc::clone(clips),
@@ -335,6 +374,7 @@ impl UiScene {
                         ScenePrimitiveKind::Path {
                             mesh: Arc::clone(mesh),
                             origin,
+                            node_mask: node_mask.cloned(),
                         },
                         Arc::clone(clips),
                         transform,
@@ -600,7 +640,12 @@ struct OpState {
     opacity: f32,
 }
 
-fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
+/// `masked`: the node has a `mask-image` its painter output takes. Then
+/// every fill, stroke and shadow is a mesh, which the path shader masks —
+/// none takes the quad shortcut, whose shader evaluates a mask over the
+/// quad's own box — and glyphs, icons and images, which no shader of theirs
+/// masks, each go into a layer the mask is kept on.
+fn build_ops(ops: &[PaintOp], masked: bool) -> Vec<BuiltOp> {
     let mut built = Vec::with_capacity(ops.len());
     let mut stack: Vec<ActiveClip> = Vec::new();
     let no_clips: Arc<[LocalClip]> = Arc::from(Vec::new());
@@ -650,7 +695,8 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 // A solid (rounded) rectangle is a quad: nothing to
                 // triangulate, and a handful of instance bytes a frame instead
                 // of a mesh's worth of vertices.
-                if clip.is_none()
+                if !masked
+                    && clip.is_none()
                     && let Some(color) = paint_srgb(paint)
                     && let Some((rect, radii)) = quad_shape(path)
                 {
@@ -675,7 +721,8 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
             } => {
                 // Likewise a solid, undashed stroke of one: a border drawn on
                 // the rectangle grown by half the width.
-                if clip.is_none()
+                if !masked
+                    && clip.is_none()
                     && let Some(color) = paint_srgb(paint)
                     && let Some((rect, radii)) = quad_shape(path)
                     && let Some(outer) = stroke_quad_radii(radii, stroke)
@@ -731,7 +778,8 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 // does a shadow under more than a translation — the quad
                 // would turn and scale it, and a painter's shadows do not.
                 let translation = t[..4] == AFFINE_IDENTITY[..4];
-                if clip.is_none()
+                if !masked
+                    && clip.is_none()
                     && (shadow.is_none() || translation)
                     && let Some(fill) = solid
                 {
@@ -791,6 +839,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 radii,
             } => {
                 let rect = scene_rect(*rect);
+                let start = built.len();
                 clipped(&mut built, clip, &no_clips, |clips| BuiltOp::Image {
                     rect,
                     source: Arc::clone(source),
@@ -801,6 +850,9 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                     clips,
                     transform: t,
                 });
+                if masked {
+                    keep_mask(&mut built, start, local_area(rect, 1.0, t));
+                }
             }
             PaintOp::FillImage {
                 path,
@@ -818,6 +870,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                     continue;
                 };
                 let area = outset(area, 1.0);
+                let start = built.len();
                 built.push(BuiltOp::LayerBegin {
                     opacity: 1.0,
                     blend: BlendMode::Normal,
@@ -836,6 +889,9 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 built.push(BuiltOp::LayerEnd {
                     mask: erase_outside(area, &shapes).map(|mesh| (mesh, LayerMaskMode::Erase)),
                 });
+                if masked {
+                    keep_mask(&mut built, start, Some(area));
+                }
             }
             PaintOp::Text {
                 rect,
@@ -867,6 +923,7 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 // Glyphs can reach past their box: italics, a clipped
                 // ellipsis. A tint must reach them too.
                 let reach = size * 0.5;
+                let start = built.len();
                 tinted(
                     &mut built,
                     paint,
@@ -884,9 +941,13 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                         })
                     },
                 );
+                if masked {
+                    keep_mask(&mut built, start, local_area(rect, reach, t));
+                }
             }
             PaintOp::Icon { rect, icon, paint } => {
                 let rect = scene_rect(*rect);
+                let start = built.len();
                 tinted(&mut built, paint, rect, 1.0, state, |color, paint_color| {
                     clipped_op(clip, &no_clips, |clips| BuiltOp::Icon {
                         rect,
@@ -897,6 +958,9 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                         transform: t,
                     })
                 });
+                if masked {
+                    keep_mask(&mut built, start, local_area(rect, 1.0, t));
+                }
             }
             PaintOp::DrawDefault => {
                 let ops = clipped_op(clip, &no_clips, |clips| BuiltOp::Default {
@@ -1054,6 +1118,40 @@ fn tinted(
             });
         }
     }
+}
+
+/// Under a node mask, put what was built from `start` on into a layer cut to
+/// `area` (node-local px), and keep the mask on that layer as it closes.
+/// `area` must hold everything those ops draw: what falls outside is cut.
+fn keep_mask(built: &mut Vec<BuiltOp>, start: usize, area: Option<SceneRect>) {
+    let Some(area) = area else {
+        return;
+    };
+    if built.len() == start {
+        return;
+    }
+    let mut mesh = MeshBuilder::default();
+    mesh.fill(&rect_shapes(area), [1.0; 4]);
+    let Some(mesh) = mesh.finish() else {
+        return;
+    };
+    built.insert(
+        start,
+        BuiltOp::LayerBegin {
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+            clip: Some(area),
+        },
+    );
+    built.push(BuiltOp::LayerEnd {
+        mask: Some((Arc::new(mesh), LayerMaskMode::Keep)),
+    });
+}
+
+/// Node-local bounds of `rect` grown by `reach`, under the painter's local
+/// transform `t`.
+fn local_area(rect: SceneRect, reach: f32, t: Affine) -> Option<SceneRect> {
+    shapes_bounds(&rounded_shapes(outset(rect, reach), [0.0; 4], t))
 }
 
 /// Coverage of everything in `area` outside `shapes`, for erasing a layer
@@ -2325,6 +2423,11 @@ fn lerp_vertex(a: PathVertex, b: PathVertex, t: f32) -> PathVertex {
 mod tests {
     use super::*;
 
+    /// What an unmasked node builds.
+    fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
+        super::build_ops(ops, false)
+    }
+
     fn rect_path(x: f32, y: f32, width: f32, height: f32) -> PaintPath {
         // Drawn edge by edge, so it stays a path: `PaintPath::rect` would be
         // drawn as a quad and these tests are about the path geometry.
@@ -2948,6 +3051,9 @@ mod tests {
                 BuiltOp::LayerEnd {
                     mask: Some((_, LayerMaskMode::Tint)),
                 } => "end-tint",
+                BuiltOp::LayerEnd {
+                    mask: Some((_, LayerMaskMode::Keep)),
+                } => "end-keep",
             })
             .collect()
     }
@@ -3108,5 +3214,101 @@ mod tests {
         let at = |p| coverage_at(mesh, p).0;
         assert!(at([1.3, 30.7]) > at([6.3, 30.7]), "darker at the edge");
         assert!(at([50.3, 30.7]) < 0.05, "clear in the middle");
+    }
+
+    #[test]
+    fn a_masked_node_draws_no_quads_and_keeps_its_mask_on_glyphs_and_images() {
+        let card = Arc::new({
+            let mut card = PaintPath::new();
+            card.rect(LayoutBox {
+                x: 10.0,
+                y: 10.0,
+                width: 80.0,
+                height: 40.0,
+            });
+            card
+        });
+        let solid = ResolvedPaint::Solid([1.0, 0.0, 0.0, 1.0]);
+        let ops = [
+            PaintOp::FillPath {
+                path: Arc::clone(&card),
+                paint: solid.clone(),
+            },
+            PaintOp::StrokePath {
+                path: Arc::clone(&card),
+                paint: solid.clone(),
+                stroke: StrokeStyle::new(2.0),
+            },
+            PaintOp::RoundedRect {
+                rect: LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 40.0,
+                    height: 20.0,
+                },
+                radii: [4.0; 4],
+                fill: Some(solid.clone()),
+                border: None,
+                border_paint: None,
+                shadow: Some(ComponentElevation {
+                    color: nana_ui_core::PaintColor::Srgb {
+                        rgba: [0.0, 0.0, 0.0, 0.5],
+                    },
+                    offset_x: 0.0,
+                    offset_y: 2.0,
+                    blur_radius: 6.0,
+                    spread_radius: 0.0,
+                    inset: false,
+                }),
+            },
+            text_op(solid.clone()),
+            PaintOp::Image {
+                rect: LayoutBox {
+                    x: 50.0,
+                    y: 0.0,
+                    width: 20.0,
+                    height: 20.0,
+                },
+                source: Arc::from("a.png"),
+                fit: ImageFit::Fill,
+                sampling: nana_ui_core::ImageSampling::Resample,
+                radii: [0.0; 4],
+            },
+        ];
+        assert_eq!(
+            kinds(&super::build_ops(&ops, false)),
+            ["quad", "quad", "quad", "text", "image"]
+        );
+        // The quad shader would evaluate the mask over each quad's own box:
+        // every shape is a mesh instead, glyphs and images a kept layer.
+        let masked = super::build_ops(&ops, true);
+        assert_eq!(
+            kinds(&masked),
+            [
+                "mesh", "mesh", "mesh", "mesh", "begin", "text", "end-keep", "begin", "image",
+                "end-keep"
+            ]
+        );
+        // Each layer holds what it keeps: glyphs reach half their size past
+        // the text box.
+        let BuiltOp::LayerBegin {
+            clip: Some(area), ..
+        } = &masked[4]
+        else {
+            panic!("{:?}", masked[4]);
+        };
+        assert_eq!(
+            (area.x, area.y, area.width, area.height),
+            (-6.5, -6.5, 53.0, 29.0)
+        );
+        let BuiltOp::LayerEnd {
+            mask: Some((mesh, LayerMaskMode::Keep)),
+        } = &masked[6]
+        else {
+            panic!("{:?}", masked[6]);
+        };
+        assert!(
+            (mesh.bounds.x - area.x).abs() < 1.0 && (mesh.bounds.width - area.width).abs() < 2.0
+        );
     }
 }

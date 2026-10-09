@@ -359,6 +359,9 @@ pub enum ScenePrimitiveKind {
     Path {
         mesh: Arc<PathMesh>,
         origin: [f32; 2],
+        /// The node's `mask-image`, multiplied into every fragment of the
+        /// mesh. See [`NodeMask`].
+        node_mask: Option<Arc<NodeMask>>,
     },
     /// A painter layer opens (Issue #217): what the node paints from here to
     /// the matching [`Self::LayerEnd`] draws into its own layer, which then
@@ -406,6 +409,9 @@ pub struct LayerMask {
     /// [`ScenePrimitiveKind::Path`].
     pub origin: [f32; 2],
     pub mode: LayerMaskMode,
+    /// The node's `mask-image`, for [`LayerMaskMode::Keep`]; `None` for the
+    /// other modes.
+    pub node_mask: Option<Arc<NodeMask>>,
 }
 
 /// What a [`LayerMask`] does to the layer under it.
@@ -415,6 +421,27 @@ pub enum LayerMaskMode {
     Erase,
     /// Recolour the layer with the mesh's paint, keeping the layer's alpha.
     Tint,
+    /// Scale the layer by [`LayerMask::node_mask`] where the mesh covers it.
+    /// Glyphs, icons and images a painter draws on a masked node take the
+    /// node's mask this way: their pipelines do not evaluate one.
+    Keep,
+}
+
+/// A node's `mask-image` as its `Painter`'s output takes it (Issue #217).
+///
+/// The mask lies over the node's own layout box exactly as it does over the
+/// node's own quad: node-local `p` samples it at `p / size`, so a painted
+/// shape and the node's background fade alike. Past the box — a shadow or a
+/// glow reaching out — it holds the value at the box's edge (a gradient's
+/// end stops), where CSS `mask-clip: border-box` would cut everything off.
+///
+/// Only gradients: a `url()` mask is not applied to painter output (the node
+/// counts it in `runtime.paint.mask_unsupported`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeMask {
+    pub gradient: nana_ui_core::CssGradient,
+    /// The node's layout size, logical px, both axes positive.
+    pub size: [f32; 2],
 }
 
 impl ScenePrimitiveKind {

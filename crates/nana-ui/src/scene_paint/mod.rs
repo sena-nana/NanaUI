@@ -1348,6 +1348,7 @@ impl SceneWgpuPainter {
                                 mesh_affine(affine, persp),
                                 1.0,
                                 clip::FragmentClip::PASS,
+                                mask.node_mask.as_ref(),
                             ) {
                                 commands.push(DrawCommand::PathMask {
                                     range,
@@ -1865,12 +1866,20 @@ impl SceneWgpuPainter {
                     ScenePrimitiveKind::LayerBegin { .. } | ScenePrimitiveKind::LayerEnd { .. } => {
                         unreachable!("painter layers are handled before culling")
                     }
-                    ScenePrimitiveKind::Path { mesh, origin } => {
+                    ScenePrimitiveKind::Path {
+                        mesh,
+                        origin,
+                        node_mask,
+                    } => {
                         let path_affine = mesh_affine(affine, persp);
-                        if let Some(range) =
-                            self.meshes
-                                .push_path(mesh, *origin, path_affine, opacity, frag_clip)
-                        {
+                        if let Some(range) = self.meshes.push_path(
+                            mesh,
+                            *origin,
+                            path_affine,
+                            opacity,
+                            frag_clip,
+                            node_mask.as_ref(),
+                        ) {
                             // The AA fringe is physical pixels past the
                             // mesh whatever the transform: one along an
                             // edge, up to the miter limit (4) at a corner.

@@ -2554,6 +2554,21 @@ pub struct PaintStyle {
     #[serde(default)]
     pub object_position: Option<BackgroundPosition>,
     /// `mask-image` / `-webkit-mask-image` (gradient alpha or `url()` texture).
+    ///
+    /// Evaluated over the node's layout box, it applies to what the node
+    /// itself draws, not to its subtree:
+    ///
+    /// - the node's own quad (background fill; not its border or
+    ///   `box-shadow`) and a HostTexture's content;
+    /// - a gradient mask also to everything the node's `Painter` records —
+    ///   fills, strokes, shadows, text, icons and images — in the same
+    ///   node-local space. Past the box (a painted shadow or glow) it holds
+    ///   its value at the box's edge instead of cutting the paint off. A
+    ///   `url()` mask is not applied to painter output (counted in
+    ///   `runtime.paint.mask_unsupported`).
+    ///
+    /// Children and the node's own text are not masked: CSS masking of a
+    /// whole subtree needs it isolated into a layer, which NanaUI does not do.
     #[serde(default)]
     pub mask: Option<MaskImage>,
     #[serde(default)]

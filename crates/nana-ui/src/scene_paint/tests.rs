@@ -11304,6 +11304,53 @@ fn paint_one_painter_onto(
     clear_color: [f32; 4],
     configure: impl FnOnce(&mut SceneWgpuPainter),
 ) -> Vec<u8> {
+    paint_painter_node(
+        painter,
+        [w as f32, h as f32],
+        w,
+        h,
+        format,
+        clear_color,
+        configure,
+        |_| {},
+    )
+}
+
+/// Paint one `node_size` node carrying `painter`, styled by `style`, at the
+/// origin of a `w × h` viewport cleared to black, and read the frame back.
+fn paint_styled_painter(
+    painter: impl nana_ui_runtime::Painter,
+    node_size: [f32; 2],
+    w: u32,
+    h: u32,
+    style: impl FnOnce(&mut nana_ui_core::LayoutStyle),
+) -> Vec<u8> {
+    paint_painter_node(
+        painter,
+        node_size,
+        w,
+        h,
+        wgpu::TextureFormat::Rgba8Unorm,
+        [0.0, 0.0, 0.0, 1.0],
+        |_| {},
+        style,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Every knob the painter tests turn"
+)]
+fn paint_painter_node(
+    painter: impl nana_ui_runtime::Painter,
+    node_size: [f32; 2],
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    clear_color: [f32; 4],
+    configure: impl FnOnce(&mut SceneWgpuPainter),
+    style: impl FnOnce(&mut nana_ui_core::LayoutStyle),
+) -> Vec<u8> {
     use nana_ui_runtime::Stack;
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
@@ -11312,8 +11359,9 @@ fn paint_one_painter_onto(
             document,
             Stack::column(0.0)
                 .with_layout(|layout| {
-                    layout.width = Some(LengthSpec::Px(w as f32));
-                    layout.height = Some(LengthSpec::Px(h as f32));
+                    layout.width = Some(LengthSpec::Px(node_size[0]));
+                    layout.height = Some(LengthSpec::Px(node_size[1]));
+                    style(layout);
                 })
                 .painter(painter),
         )
@@ -12970,4 +13018,248 @@ fn text_in_linear_sc_rgb_paints_like_the_equal_srgb_text() {
         .max()
         .unwrap_or(0);
     assert!(worst <= 2, "the two paths disagree by {worst}");
+}
+
+/// `mask-image: linear-gradient(90deg, …)` with white stops at these
+/// `(position, alpha)` pairs.
+fn left_to_right_mask(stops: &[(f32, f32)]) -> nana_ui_core::MaskImage {
+    use nana_ui_core::{CssGradient, GradientStop, LinearGradient, MaskImage};
+    MaskImage::Gradient(CssGradient::Linear(LinearGradient {
+        angle_deg: 90.0,
+        stops: stops
+            .iter()
+            .map(|&(position, alpha)| GradientStop {
+                paint_color: None,
+                position,
+                color: [1.0, 1.0, 1.0, alpha],
+            })
+            .collect(),
+    }))
+}
+
+#[test]
+fn a_masked_node_fades_its_painted_fill_exactly_as_its_own_background() {
+    let mask = left_to_right_mask(&[(0.0, 0.0), (1.0, 1.0)]);
+    let background = paint_styled_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| cx.draw_default()),
+        [120.0, 20.0],
+        120,
+        20,
+        |layout| {
+            layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+            layout.paint.mask = Some(mask.clone());
+        },
+    );
+    let fill = |mask: Option<nana_ui_core::MaskImage>| {
+        paint_styled_painter(
+            PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+                // A rectangle: unmasked, this is the quad shortcut.
+                cx.fill_path(&full_rect(120.0, 20.0), [1.0, 1.0, 1.0, 1.0]);
+            }),
+            [120.0, 20.0],
+            120,
+            20,
+            |layout| layout.paint.mask = mask,
+        )
+    };
+    let painted = fill(Some(mask.clone()));
+    let unmasked = fill(None);
+    let at = |pixels: &[u8], x| pixel(pixels, 120, x, 10);
+    // Inside the box: a mesh's edge pixel is anti-aliased where a quad's is
+    // not, mask or no mask.
+    for x in (1..119).step_by(7) {
+        assert!(
+            distance(at(&painted, x), at(&background, x)) <= 2,
+            "x={x}: painted {:?}, background {:?}",
+            at(&painted, x),
+            at(&background, x)
+        );
+        assert_eq!(at(&unmasked, x)[0], 255, "unmasked stays solid at {x}");
+    }
+    assert!(at(&painted, 2)[0] < 16, "faded out: {:?}", at(&painted, 2));
+    assert!(
+        at(&painted, 117)[0] > 240,
+        "faded in: {:?}",
+        at(&painted, 117)
+    );
+    assert_eq!(at(&unmasked, 2)[0], 255);
+    let row: Vec<u8> = (0..120).step_by(10).map(|x| at(&painted, x)[0]).collect();
+    assert!(row.windows(2).all(|w| w[0] < w[1]), "rises: {row:?}");
+}
+
+#[test]
+fn a_painted_shadow_takes_its_nodes_mask_and_keeps_the_end_value_past_the_box() {
+    use nana_ui_runtime::PaintShadow;
+    // The glow NanaLive draws: a capsule's shadow, faded in from the middle.
+    let glow = |mask: Option<nana_ui_core::MaskImage>| {
+        paint_styled_painter(
+            PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+                let mut capsule = nana_ui_runtime::PaintPath::new();
+                capsule.rounded_rect(
+                    LayoutBox {
+                        x: 20.0,
+                        y: 12.0,
+                        width: 98.0,
+                        height: 16.0,
+                    },
+                    [8.0; 4],
+                );
+                cx.shadow(
+                    &capsule,
+                    PaintShadow::Custom {
+                        color: [1.0, 1.0, 1.0, 1.0].into(),
+                        offset: [0.0, 0.0],
+                        blur: 8.0,
+                        spread: 0.0,
+                        inset: false,
+                    },
+                );
+            }),
+            [120.0, 40.0],
+            160,
+            40,
+            |layout| layout.paint.mask = mask,
+        )
+    };
+    let masked = glow(Some(left_to_right_mask(&[
+        (0.0, 0.0),
+        (0.5, 0.0),
+        (0.85, 1.0),
+        (1.0, 1.0),
+    ])));
+    let plain = glow(None);
+    let at = |pixels: &[u8], x, y| pixel(pixels, 160, x, y)[0];
+    // A few px off the capsule. Where the mask is clear, the glow is gone;
+    // it was there unmasked.
+    for (x, y) in [(17, 20), (60, 9), (40, 31)] {
+        assert!(at(&plain, x, y) > 24, "unmasked glow at ({x}, {y})");
+        assert!(
+            at(&masked, x, y) <= 1,
+            "masked at ({x}, {y}): {}",
+            at(&masked, x, y)
+        );
+    }
+    // Where it is opaque, the glow is untouched — also past the node's right
+    // edge (x = 120), where the mask holds its last stop.
+    for (x, y) in [(108, 9), (119, 20), (121, 20), (120, 14)] {
+        assert!(at(&plain, x, y) > 24, "unmasked glow at ({x}, {y})");
+        assert!(
+            at(&masked, x, y).abs_diff(at(&plain, x, y)) <= 2,
+            "({x}, {y}): masked {} vs plain {}",
+            at(&masked, x, y),
+            at(&plain, x, y)
+        );
+    }
+}
+
+#[test]
+fn a_painted_image_on_a_masked_node_fades_as_a_painted_fill_does() {
+    use base64::Engine as _;
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"><path d=\"M0 0 H8 V8 H0 Z\" fill=\"#00ff00\"/></svg>";
+    let url = format!(
+        "data:image/svg+xml;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(svg.as_bytes())
+    );
+    let mask = left_to_right_mask(&[(0.0, 0.0), (1.0, 1.0)]);
+    let image = paint_styled_painter(
+        PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.image(
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 120.0,
+                    height: 20.0,
+                },
+                url.clone(),
+                nana_ui_runtime::ImageFit::Fill,
+                0.0,
+            );
+        }),
+        [120.0, 20.0],
+        120,
+        20,
+        |layout| layout.paint.mask = Some(mask.clone()),
+    );
+    let fill = paint_styled_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.fill_path(&full_rect(120.0, 20.0), [0.0, 1.0, 0.0, 1.0]);
+        }),
+        [120.0, 20.0],
+        120,
+        20,
+        |layout| layout.paint.mask = Some(mask),
+    );
+    for x in (1..119).step_by(7) {
+        let (image, fill) = (pixel(&image, 120, x, 10), pixel(&fill, 120, x, 10));
+        assert!(
+            distance(image, fill) <= 3,
+            "x={x}: image {image:?}, fill {fill:?}"
+        );
+    }
+    assert!(pixel(&image, 120, 2, 10)[1] < 16);
+    assert!(pixel(&image, 120, 117, 10)[1] > 240);
+}
+
+#[test]
+fn a_painted_fill_matches_the_background_under_angled_and_radial_masks() {
+    use nana_ui_core::{CssGradient, GradientStop, LinearGradient, MaskImage, RadialGradient};
+    let stops = || {
+        [(0.0, 1.0), (0.4, 0.7), (1.0, 0.0)]
+            .iter()
+            .map(|&(position, alpha)| GradientStop {
+                paint_color: None,
+                position,
+                color: [1.0, 1.0, 1.0, alpha],
+            })
+            .collect::<Vec<_>>()
+    };
+    let masks = [
+        MaskImage::Gradient(CssGradient::Linear(LinearGradient {
+            angle_deg: 30.0,
+            stops: stops(),
+        })),
+        MaskImage::Gradient(CssGradient::Radial(RadialGradient {
+            circle: true,
+            center: [LengthSpec::Percent(30.0), LengthSpec::Px(10.0)],
+            stops: stops(),
+        })),
+        MaskImage::Gradient(CssGradient::Radial(RadialGradient {
+            circle: false,
+            center: [LengthSpec::Percent(60.0), LengthSpec::Percent(50.0)],
+            stops: stops(),
+        })),
+    ];
+    for mask in masks {
+        let background = paint_styled_painter(
+            PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| cx.draw_default()),
+            [100.0, 40.0],
+            100,
+            40,
+            |layout| {
+                layout.background = Some([1.0, 1.0, 1.0, 1.0]);
+                layout.paint.mask = Some(mask.clone());
+            },
+        );
+        let painted = paint_styled_painter(
+            PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+                cx.fill_path(&full_rect(100.0, 40.0), [1.0, 1.0, 1.0, 1.0]);
+            }),
+            [100.0, 40.0],
+            100,
+            40,
+            |layout| layout.paint.mask = Some(mask.clone()),
+        );
+        let mut spread = (255u8, 0u8);
+        for y in (1..39).step_by(5) {
+            for x in (1..99).step_by(6) {
+                let (a, b) = (pixel(&painted, 100, x, y), pixel(&background, 100, x, y));
+                assert!(
+                    distance(a, b) <= 2,
+                    "{mask:?} at ({x}, {y}): {a:?} vs {b:?}"
+                );
+                spread = (spread.0.min(b[0]), spread.1.max(b[0]));
+            }
+        }
+        assert!(spread.1 - spread.0 > 100, "{mask:?} varies: {spread:?}");
+    }
 }

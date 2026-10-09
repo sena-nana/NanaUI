@@ -559,6 +559,15 @@ Spinner、stroke mesh，以及非 HostTexture 的 Custom，在透视下画 **ide
 
 `mask-image` 和 `-webkit-mask-image` 可以是线性或径向渐变的 alpha，或 `url()` 纹理。GPU 最多 8 个 mask 色标。
 
+mask 在节点的布局盒上求值，只作用于节点自己画的东西，不作用于子树：
+
+- 节点自己的 quad（背景填充；边框和 `box-shadow` 不受影响）和 HostTexture 的内容。
+- 渐变 mask 还作用于 `.painter` 录下的全部命令：填充、描边、阴影、文字、图标和图片，坐标同样是节点内坐标。所以自绘的形状和节点背景按同一条渐变淡出。超出布局盒的部分（自绘阴影、外发光）取盒边上的值，不会被裁掉。这一点和 CSS 的 `mask-clip: border-box` 不同，是有意的：方向性的光晕要能伸出盒外。
+- 有 mask 时，自绘里的矩形不再走 quad 快路径，一律三角化后由 path shader 乘上 mask。文字、图标和图片各画进一个图层，图层合成前乘上 mask。
+- `url()` mask 不作用于自绘，那部分照常不加 mask 画出，并计入指标 `runtime.paint.mask_unsupported`。
+
+子节点和节点自己的文字都不受 mask 影响。CSS 那种对整棵子树的遮罩，要先把子树隔离成一个图层，NanaUI 没有做。需要遮住子节点时，把 mask 放到子节点自己身上。
+
 `clip-path` 支持 `inset(...)`、`polygon(...)`、`circle(...)`、`ellipse(...)`。inset 的 `round` 写入 rounded-box SDF。非平移 transform 下仍保留半径。polygon 对自身和子项做点内多边形测试。子项经 dest-group 合成。不是包围盒 clip。
 
 `filter` 支持 `brightness()`、`saturate()`、`contrast()`、`hue-rotate()`、`invert()`、`opacity()`、`blur()`、`drop-shadow()`。`blur` 和 `drop-shadow` 是元素自身的滤镜。blur 上限 16px。它们和 `backdrop-filter` 分开。

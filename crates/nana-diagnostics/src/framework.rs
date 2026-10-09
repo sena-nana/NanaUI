@@ -91,6 +91,10 @@ pub mod runtime {
     pub static REACTIVE_COMMITS: Metric =
         Metric::counter(D, 44, "runtime.reactive.commits", "count");
     histogram!(pub REACTIVE_FLUSH_NS, D, 45, "runtime.reactive.flush", "ns");
+    /// Painted nodes emitted with a `url()` `mask-image`, which their
+    /// painter's output does not take: it draws unmasked.
+    pub static PAINT_MASK_UNSUPPORTED: Metric =
+        Metric::counter(D, 46, "runtime.paint.mask_unsupported", "count");
 
     /// Fault: effects kept re-queueing each other past the round limit; the
     /// rest of the queue was dropped.

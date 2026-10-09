@@ -27,6 +27,12 @@ use crate::{ComponentElevation, LayoutBox, TextHorizontalAlignment, TextVertical
 ///
 /// Rust 没有继承，这里用组合实现「重写」：`paint` 就是这个节点的 `paintEvent`。
 /// 它只接管节点自己的外观（背景、边框、阴影、装饰），子节点照常布局和绘制。
+///
+/// 节点的渐变 `mask-image`（`LayoutStyle::paint.mask`）也作用在录下的每条
+/// 命令上，和它作用在节点自己背景上一样：在节点布局盒上求值，坐标是节点内
+/// 坐标。超出布局盒的部分（阴影、外发光）取盒边上的值，不会被裁掉。文字、
+/// 图标和图片为此各画进一个图层。`url()` mask 不作用在自绘上；子节点也不
+/// 受 mask 影响。
 pub trait Painter: Send + Sync + 'static {
     /// 画在子节点下面。不调用 [`PaintContext::draw_default`] 就等于完全替换内建外观。
     fn paint(&self, cx: &mut PaintContext<'_>);

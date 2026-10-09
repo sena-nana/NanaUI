@@ -62,6 +62,8 @@ widget(Stack::row(8.0)).children((
 
 `.painter` 可以自绘这个容器的外观。要在内建绘制上加装饰，在 `paint` 里调用 `cx.draw_default()`。
 
+容器的渐变 `mask-image`（`layout.paint.mask`）也作用在自绘内容上，和作用在背景上一样。一条阴影加一个 mask 就能画出只朝一侧的光晕；伸出容器的那部分取盒边上的 mask 值。子节点不受影响。细节见 [布局](../reference/layout.md) 的绘制一节。
+
 ## 命中
 
 二维码卡片的空白也要接到指针时，用 `Stack::column(...).hittable()`，事件才归这张容器。

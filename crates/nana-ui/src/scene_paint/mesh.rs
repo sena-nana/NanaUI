@@ -179,9 +179,12 @@ struct GpuPathVertex {
     /// Gradient-space position; read only when `gradient` is not `NO_GRADIENT`.
     paint_pos: [f32; 2],
     gradient: u32,
+    /// The node's `mask-image` as a gradient of the palette, evaluated at the
+    /// fragment through the gradient's `space`; `NO_GRADIENT` for none.
+    mask: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<GpuPathVertex>() == 52);
+const _: () = assert!(std::mem::size_of::<GpuPathVertex>() == 56);
 
 const NO_GRADIENT: u32 = u32::MAX;
 /// Colour stops a GPU gradient holds. A gradient with more is resampled.
@@ -202,6 +205,10 @@ struct GpuGradient {
     offsets: [[f32; 4]; GRADIENT_STOPS / 4],
     /// Premultiplied stops, in the space `header.w` names.
     colors: [[f32; 4]; GRADIENT_STOPS],
+    /// A mask's map from scene px into its `geometry`'s space, `[a, b, c, d]`
+    /// and `[e, f, _, _]` as an [`Affine`](nana_ui_runtime::Affine). Unused by
+    /// a paint gradient, which is evaluated at its vertices' `paint_pos`.
+    space: [[f32; 4]; 2],
 }
 
 impl GpuGradient {
@@ -252,6 +259,106 @@ impl GpuGradient {
         }
         packed
     }
+}
+
+impl GpuGradient {
+    /// A node's `mask-image` as the path shader evaluates it, and the affine
+    /// that takes node-local px into the space it is evaluated in (to be
+    /// composed into [`Self::space`]).
+    ///
+    /// This is `mask_alpha` of `quad_paint_data.wgsl` over the node's own
+    /// box, rewritten as a palette gradient: the same gradient line, the same
+    /// eight stops at most, interpolated premultiplied in linear scRGB. A
+    /// point past the box takes the gradient's end value. `None` for a radial
+    /// gradient whose centre does not resolve, which the quad skips too.
+    fn from_node_mask(mask: &nana_ui_scene::NodeMask) -> Option<(Self, [f32; 6])> {
+        use nana_ui_core::CssGradient;
+        let [width, height] = mask.size;
+        let (kind, geometry, to_mask, stops) = match &mask.gradient {
+            CssGradient::Linear(linear) => {
+                // `gradient_t`: t = dot(uv − ½, axis) / (|axis.x| + |axis.y|)
+                // + ½, the line from ½ − d/2 to ½ + d/2 with d = axis · denom.
+                let rad = linear.angle_deg.to_radians();
+                let axis = [rad.sin(), -rad.cos()];
+                let denom = axis[0].abs() + axis[1].abs();
+                let d = [axis[0] * denom, axis[1] * denom];
+                let start = [0.5 - d[0] * 0.5, 0.5 - d[1] * 0.5];
+                (
+                    0,
+                    [start[0], start[1], start[0] + d[0], start[1] + d[1]],
+                    [1.0 / width, 0.0, 0.0, 1.0 / height, 0.0, 0.0],
+                    linear.stops.as_slice(),
+                )
+            }
+            CssGradient::Radial(radial) => {
+                let [cx, cy] = radial.resolved_center(width, height)?;
+                if radial.circle {
+                    // `radial_gradient_t`: distance in uv over the farthest
+                    // corner's.
+                    let farthest = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+                        .iter()
+                        .map(|[x, y]| ((x - cx) * (x - cx) + (y - cy) * (y - cy)).sqrt())
+                        .fold(0.0f32, f32::max)
+                        .max(1e-4);
+                    (
+                        1,
+                        [cx, cy, farthest, 0.0],
+                        [1.0 / width, 0.0, 0.0, 1.0 / height, 0.0, 0.0],
+                        radial.stops.as_slice(),
+                    )
+                } else {
+                    // An ellipse reaching the farther side on each axis: in
+                    // uv scaled by its radii it is the unit circle.
+                    let rx = cx.max(1.0 - cx).max(1e-4);
+                    let ry = cy.max(1.0 - cy).max(1e-4);
+                    (
+                        1,
+                        [cx / rx, cy / ry, 1.0, 0.0],
+                        [1.0 / (width * rx), 0.0, 0.0, 1.0 / (height * ry), 0.0, 0.0],
+                        radial.stops.as_slice(),
+                    )
+                }
+            }
+        };
+        let mut packed = Self::zeroed();
+        let stops = &stops[..stops.len().min(8)];
+        // No stops at all is one transparent stop, as the quad reads it.
+        packed.header = [kind, 0, stops.len().max(1) as u32, 1];
+        packed.geometry = geometry;
+        for (index, stop) in stops.iter().enumerate() {
+            let [r, g, b, a] = stop
+                .paint_color
+                .map(pack_paint_color)
+                .unwrap_or_else(|| pack_linear(stop.color));
+            let a = a.clamp(0.0, 1.0);
+            packed.offsets[index / 4][index % 4] = stop.position;
+            packed.colors[index] = [r * a, g * a, b * a, a];
+        }
+        Some((packed, to_mask))
+    }
+}
+
+/// `first`, then `then`: affines as `[a, b, c, d, e, f]`, `x' = a·x + c·y + e`.
+fn affine_then(first: [f32; 6], then: [f32; 6]) -> [f32; 6] {
+    let [a, b, c, d, e, f] = then;
+    let [fa, fb, fc, fd, fe, ff] = first;
+    [
+        a * fa + c * fb,
+        b * fa + d * fb,
+        a * fc + c * fd,
+        b * fc + d * fd,
+        a * fe + c * ff + e,
+        b * fe + d * ff + f,
+    ]
+}
+
+fn affine_inverse([a, b, c, d, e, f]: [f32; 6]) -> Option<[f32; 6]> {
+    let det = a * d - b * c;
+    if !det.is_finite() || det.abs() < 1e-12 {
+        return None;
+    }
+    let (ia, ib, ic, id) = (d / det, -b / det, -c / det, a / det);
+    Some([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)])
 }
 
 /// Straight colour of sorted stops at `t`, interpolated premultiplied in the
@@ -541,6 +648,7 @@ pub(super) struct MeshPipeline {
     /// Layer masks (Issue #217). Groups are only ever single-sampled.
     erase_pipeline: wgpu::RenderPipeline,
     tint_pipeline: wgpu::RenderPipeline,
+    keep_pipeline: wgpu::RenderPipeline,
     paths: PathBuffers,
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
@@ -683,6 +791,7 @@ impl MeshPipeline {
             &layout,
             format,
             1,
+            "path_fs_main",
             wgpu::BlendState {
                 color: erase,
                 alpha: erase,
@@ -694,9 +803,23 @@ impl MeshPipeline {
             &layout,
             format,
             1,
+            "path_fs_main",
             wgpu::BlendState {
                 color: tint,
                 alpha: tint,
+            },
+        );
+        // Erases what the node's mask takes away.
+        let keep_pipeline = create_path_pipeline(
+            device,
+            &shader,
+            &layout,
+            format,
+            1,
+            "path_keep_fs_main",
+            wgpu::BlendState {
+                color: erase,
+                alpha: erase,
             },
         );
         Self {
@@ -706,6 +829,7 @@ impl MeshPipeline {
             path_pipeline_msaa,
             erase_pipeline,
             tint_pipeline,
+            keep_pipeline,
             paths,
             bind_layout,
             bind_group,
@@ -749,6 +873,9 @@ impl MeshPipeline {
     /// node-local vertices in layout space, then `affine` maps them to the
     /// scene. The fringe extrusion is carried through the same linear map and
     /// normalised so it stays one physical pixel under scale.
+    ///
+    /// `node_mask` is the painted node's `mask-image`, evaluated at each
+    /// vertex's node-local position.
     pub(super) fn push_path(
         &mut self,
         mesh: &nana_ui_scene::PathMesh,
@@ -756,6 +883,7 @@ impl MeshPipeline {
         affine: [f32; 6],
         opacity: f32,
         fragment_clip: FragmentClip,
+        node_mask: Option<&Arc<nana_ui_scene::NodeMask>>,
     ) -> Option<PathRange> {
         if mesh.indices.is_empty() || opacity <= 0.0 {
             return None;
@@ -781,6 +909,19 @@ impl MeshPipeline {
                     })
             }
         };
+        // The mask is evaluated where each fragment lands, AA fringe
+        // included: scene px back to node-local, then into the mask's space.
+        // Its own entry each time, as that map depends on where the mesh is.
+        let mask = node_mask
+            .and_then(|node_mask| GpuGradient::from_node_mask(node_mask))
+            .zip(affine_inverse(affine))
+            .map_or(NO_GRADIENT, |((mut gradient, to_mask), to_layout)| {
+                let to_local = affine_then(to_layout, [1.0, 0.0, 0.0, 1.0, -origin[0], -origin[1]]);
+                let [a, b, c, d, e, f] = affine_then(to_local, to_mask);
+                gradient.space = [[a, b, c, d], [e, f, 0.0, 0.0]];
+                self.paths.pending_gradients.push(gradient);
+                self.paths.pending_gradients.len() as u32 - 1
+            });
         let base = self.paths.pending_vertices.len() as u32;
         let mut last_color = ([f32::NAN; 4], [0.0f32; 4]);
         self.paths
@@ -808,6 +949,7 @@ impl MeshPipeline {
                     color: last_color.1,
                     paint_pos: vertex.paint_pos,
                     gradient,
+                    mask,
                 }
             }));
         let first_index = self.paths.pending_indices.len() as u32;
@@ -835,6 +977,7 @@ impl MeshPipeline {
         pass.set_pipeline(match mode {
             nana_ui_scene::LayerMaskMode::Erase => &self.erase_pipeline,
             nana_ui_scene::LayerMaskMode::Tint => &self.tint_pipeline,
+            nana_ui_scene::LayerMaskMode::Keep => &self.keep_pipeline,
         });
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.paths.vertices.slice(..));
@@ -1232,6 +1375,7 @@ fn cached_path_pipeline(
             layout,
             format,
             sample_count,
+            "path_fs_main",
             wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         )
     };
@@ -1264,6 +1408,7 @@ fn create_path_pipeline(
     layout: &wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
     sample_count: u32,
+    fragment_entry: &str,
     blend: wgpu::BlendState,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1283,13 +1428,14 @@ fn create_path_pipeline(
                     4 => Float32x4,
                     5 => Float32x2,
                     6 => Uint32,
+                    7 => Uint32,
                 ),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("path_fs_main"),
+            entry_point: Some(fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 blend: Some(blend),

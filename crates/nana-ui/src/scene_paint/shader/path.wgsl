@@ -14,6 +14,9 @@ struct GpuGradient {
     offsets: array<vec4<f32>, 4>,
     // Premultiplied, in the space `header.w` names.
     colors: array<vec4<f32>, 16>,
+    // A mask's map from scene px into the space of `geometry`: a, b, c, d
+    // and e, f. A paint gradient leaves it unused.
+    space: array<vec4<f32>, 2>,
 }
 
 struct GradientPalette {
@@ -37,6 +40,8 @@ struct PathVertexInput {
     // Where the vertex sits in the gradient's space.
     @location(5) paint_pos: vec2<f32>,
     @location(6) gradient: u32,
+    // The node's `mask-image`, a gradient of the palette, or `NO_GRADIENT`.
+    @location(7) mask: u32,
 }
 
 struct PathVertexOutput {
@@ -53,6 +58,7 @@ struct PathVertexOutput {
     @location(7) fringe: f32,
     // `globals.corner_exponent`, bound to the vertex stage as the scale is.
     @location(8) @interpolate(flat) corner_exponent: f32,
+    @location(9) @interpolate(flat) mask: u32,
 }
 
 @vertex
@@ -69,6 +75,7 @@ fn path_vs_main(input: PathVertexInput) -> PathVertexOutput {
     out.corner_exponent = globals.corner_exponent;
     out.paint_pos = input.paint_pos;
     out.gradient = input.gradient;
+    out.mask = input.mask;
     return out;
 }
 
@@ -185,6 +192,26 @@ fn path_clip_cover(input: PathVertexOutput) -> f32 {
     );
 }
 
+// The node's `mask-image` at `input`'s fragment, as `mask_alpha` in
+// quad_paint_data.wgsl takes it over the node's own quad: the stops' alpha,
+// or their luminance where they are opaque.
+fn path_node_mask(input: PathVertexOutput) -> f32 {
+    if input.mask == NO_GRADIENT {
+        return 1.0;
+    }
+    let space = gradient_palette.items[input.mask].space;
+    let p = input.world_pos;
+    let at = vec2<f32>(
+        space[0].x * p.x + space[0].z * p.y + space[1].x,
+        space[0].y * p.x + space[0].w * p.y + space[1].y,
+    );
+    let color = gradient_color(input.mask, at);
+    if color.a < 1.0 {
+        return color.a;
+    }
+    return clamp(dot(color.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+}
+
 // The premultiplied colour of `input`'s fragment at coverage `alpha`.
 fn path_shade(input: PathVertexOutput, alpha: f32) -> vec4<f32> {
     if input.gradient != NO_GRADIENT {
@@ -218,9 +245,22 @@ fn path_fs_main(
             fringe,
         );
     }
-    let alpha = coverage * path_clip_cover(input);
+    let alpha = coverage * path_clip_cover(input) * path_node_mask(input);
     if alpha <= 0.0 {
         discard;
     }
     return path_shade(input, alpha);
+}
+
+// A painter layer keeping its node's mask (`LayerMaskMode::Keep`), drawn
+// with the erase blend: the layer keeps `mask` of itself where the mesh
+// covers it. One device pixel ramps the mesh's own edge, as `path_fs_main`.
+@fragment
+fn path_keep_fs_main(input: PathVertexOutput) -> @location(0) vec4<f32> {
+    let coverage = path_alpha(input.coverage, input.fringe > 0.5);
+    let erased = coverage * path_clip_cover(input) * (1.0 - path_node_mask(input));
+    if erased <= 0.0 {
+        discard;
+    }
+    return vec4<f32>(0.0, 0.0, 0.0, erased);
 }

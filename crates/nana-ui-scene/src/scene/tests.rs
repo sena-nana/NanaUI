@@ -10001,6 +10001,64 @@ mod custom_paint {
     }
 
     #[test]
+    fn a_painted_node_hands_its_gradient_mask_to_its_paths_but_not_a_url_mask() {
+        let mask = nana_ui_core::MaskImage::Gradient(nana_ui_core::CssGradient::Linear(
+            nana_ui_core::LinearGradient {
+                angle_deg: 90.0,
+                stops: vec![
+                    nana_ui_core::GradientStop {
+                        paint_color: None,
+                        position: 0.0,
+                        color: [1.0, 1.0, 1.0, 0.0],
+                    },
+                    nana_ui_core::GradientStop {
+                        paint_color: None,
+                        position: 1.0,
+                        color: [1.0, 1.0, 1.0, 1.0],
+                    },
+                ],
+            },
+        ));
+        let recording = Arc::new(PaintRecording {
+            behind_children: vec![fill(rect(0.0, 0.0, 10.0, 10.0), CARD)],
+            over_children: Vec::new(),
+        });
+        let painted_with = |mask: Option<nana_ui_core::MaskImage>| {
+            let mut node = node(1, None, &[]);
+            node.custom_paint = Some(Arc::clone(&recording));
+            Arc::make_mut(&mut node.source_style.layout).paint.mask = mask;
+            let mut scene = UiScene::new();
+            scene.apply_delta([node.clone()], []);
+            let masks: Vec<_> = scene
+                .primitives()
+                .filter_map(|p| match &p.kind {
+                    ScenePrimitiveKind::Path { node_mask, .. } => Some(node_mask.clone()),
+                    _ => None,
+                })
+                .collect();
+            (masks, [node.layout.width, node.layout.height])
+        };
+        let (masks, size) = painted_with(Some(mask.clone()));
+        let [Some(node_mask)] = &masks[..] else {
+            panic!("{masks:?}");
+        };
+        let nana_ui_core::MaskImage::Gradient(gradient) = &mask else {
+            unreachable!()
+        };
+        assert_eq!(
+            **node_mask,
+            NodeMask {
+                gradient: gradient.clone(),
+                size,
+            }
+        );
+        let (masks, _) = painted_with(Some(nana_ui_core::MaskImage::Url("fade.png".into())));
+        assert!(matches!(&masks[..], [None]), "{masks:?}");
+        let (masks, _) = painted_with(None);
+        assert!(matches!(&masks[..], [None]), "{masks:?}");
+    }
+
+    #[test]
     fn a_moved_node_keeps_its_tessellation() {
         let recording = Arc::new(PaintRecording {
             behind_children: vec![fill(rect(0.0, 0.0, 100.0, 80.0), CARD)],
@@ -10014,7 +10072,9 @@ mod custom_paint {
             scene
                 .primitives()
                 .find_map(|p| match &p.kind {
-                    ScenePrimitiveKind::Path { mesh, origin } => Some((Arc::clone(mesh), *origin)),
+                    ScenePrimitiveKind::Path { mesh, origin, .. } => {
+                        Some((Arc::clone(mesh), *origin))
+                    }
                     _ => None,
                 })
                 .unwrap()
