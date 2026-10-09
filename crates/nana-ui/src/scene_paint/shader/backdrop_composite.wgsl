@@ -31,6 +31,8 @@ struct CompositeUniforms {
     paint_index: u32,
     // The scene's corner curve exponent: 2 is a circular arc (`corner_norm`).
     corner_exponent: f32,
+    // Texels of the blurred copy per device pixel: one over its downsample.
+    blur_scale: f32,
 }
 
 @group(0) @binding(2)
@@ -117,7 +119,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let local_uv = input.local / max(quad_size, vec2(0.0001));
     let paint = paint_buffer.items[composite.paint_index];
 
-    let blur_uv = input.world / composite.dest_size;
+    // The blurred copy holds the padded region shrunk by its downsample;
+    // past its edge texels it holds nothing, so reads stop at them.
+    let blur_lo = composite.padded_origin * composite.blur_scale + 0.5;
+    let blur_hi = (composite.padded_origin + composite.padded_size) * composite.blur_scale - 0.5;
+    let blur_uv = clamp(input.world * composite.blur_scale, blur_lo, max(blur_hi, blur_lo))
+        / composite.dest_size;
     var color = textureSample(blurred, blurred_sampler, blur_uv);
 
     if (composite.saturate != 1.0) {

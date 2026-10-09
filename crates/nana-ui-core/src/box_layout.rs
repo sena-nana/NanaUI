@@ -2446,7 +2446,8 @@ impl ColorFilter {
 /// Per-node CSS `backdrop-filter` (dest sampling, not window material).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BackdropFilter {
-    /// Gaussian blur radius in logical px (`blur(Npx)`), clamped at parse time.
+    /// CSS `blur(Npx)`: the gaussian's standard deviation in logical px, so
+    /// the blur reaches about three times as far. Clamped at parse time.
     pub blur_radius: f32,
     /// `saturate()` multiplier (default 1).
     pub saturate: f32,

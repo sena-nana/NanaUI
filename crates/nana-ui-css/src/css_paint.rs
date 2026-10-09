@@ -931,6 +931,7 @@ pub fn parse_color_filter(input: &str) -> Option<ColorFilter> {
 }
 
 /// Parse `backdrop-filter: blur(Npx) saturate(M)`; unknown functions are skipped.
+/// `blur`'s length is the gaussian's standard deviation, as in CSS.
 pub fn parse_backdrop_filter(input: &str) -> Option<BackdropFilter> {
     let trimmed = input.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {

@@ -1,4 +1,11 @@
 //! Per-node CSS backdrop-filter: sample dest.color, separable blur, composite.
+//!
+//! `blur(r)` is CSS's: `r` is the gaussian's standard deviation, so the
+//! blur reaches three times as far. The kernel reads every texel in that
+//! reach; a sparse kernel sums shifted copies of the backdrop and bands. A
+//! deviation past [`DENSE_SIGMA`] device pixels is blurred on a copy shrunk
+//! by a power of two, averaged block by block, so a window-sized panel at
+//! the widest blur still reads a few dozen texels per pixel.
 
 use std::num::NonZeroU64;
 
@@ -39,19 +46,42 @@ struct CopyUniforms {
     src_origin: [f32; 2],
     src_size: [f32; 2],
     dest_size: [f32; 2],
-    _pad: [f32; 2],
+    /// Device pixels per texel of the copy, along each axis.
+    downsample: f32,
+    _pad: f32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct BlurUniforms {
     direction: [f32; 2],
-    radius: f32,
+    /// Standard deviation in texels of the (shrunk) copy.
+    sigma: f32,
     _pad0: f32,
     texel_size: [f32; 2],
+    /// The copy's texels this blur writes and reads.
     region_origin: [f32; 2],
     region_size: [f32; 2],
     dest_size: [f32; 2],
+}
+
+/// The widest standard deviation, in device pixels, blurred at full
+/// resolution. Past it the copy is shrunk until the deviation fits, which
+/// keeps the kernel at most 49 texels across.
+const DENSE_SIGMA: f32 = 8.0;
+/// The most a copy is shrunk: enough for [`BackdropFilter::MAX_BLUR_RADIUS`]
+/// at a scale factor of four.
+const MAX_DOWNSAMPLE: u32 = 64;
+
+/// How many device pixels, along each axis, one texel of the blurred copy
+/// stands for: the least power of two that brings `sigma` within
+/// [`DENSE_SIGMA`].
+fn blur_downsample(sigma: f32) -> u32 {
+    let mut downsample = 1;
+    while sigma / downsample as f32 > DENSE_SIGMA && downsample < MAX_DOWNSAMPLE {
+        downsample *= 2;
+    }
+    downsample
 }
 
 fn pack_clip_polygon(clip: &FragmentClip) -> [[f32; 4]; 4] {
@@ -107,9 +137,12 @@ struct CompositeUniforms {
     paint_index: u32,
     /// The scene's corner curve exponent ([`nana_ui_core::CornerShape::exponent`]).
     corner_exponent: f32,
+    /// Texels of the blurred copy per device pixel: one over its downsample.
+    blur_scale: f32,
+    _pad_blur: [f32; 3],
 }
 
-const COMPOSITE_UNIFORM_SIZE: usize = 224;
+const COMPOSITE_UNIFORM_SIZE: usize = 240;
 const _: () = assert!(std::mem::size_of::<CompositeUniforms>() == COMPOSITE_UNIFORM_SIZE);
 
 #[derive(Clone, Copy)]
@@ -118,7 +151,10 @@ pub(super) struct BackdropRequest {
     pub paint_index: u32,
     pub physical_bounds: [f32; 4],
     pub corner_radius: [f32; 4],
-    pub blur_radius: f32,
+    /// The blur's standard deviation in device pixels.
+    pub sigma: f32,
+    /// Device pixels per texel of the blurred copy, along each axis.
+    pub downsample: u32,
     pub saturate: f32,
     pub clip: FragmentClip,
     pub padded_origin: [f32; 2],
@@ -127,6 +163,18 @@ pub(super) struct BackdropRequest {
     pub quad_logical_size: [f32; 2],
     pub quad_abcd: [f32; 4],
     pub quad_ef: [f32; 2],
+}
+
+impl BackdropRequest {
+    /// The padded region in texels of the shrunk copy: origin and size.
+    fn blur_region(&self) -> ([u32; 2], [u32; 2]) {
+        let downsample = self.downsample.max(1);
+        let origin = self.padded_origin.map(|edge| edge as u32 / downsample);
+        let size = self
+            .padded_size
+            .map(|edge| edge.div_ceil(downsample).max(1));
+        (origin, size)
+    }
 }
 
 struct PingPong {
@@ -586,18 +634,22 @@ impl BackdropPipeline {
         logical_bounds: super::clip::LogicalRect,
         affine: [f32; 6],
     ) -> u32 {
-        let blur_physical = filter.blur_radius * scale;
-        let pad = blur_physical.ceil() as u32 + 2;
+        // CSS: the radius is the standard deviation, in CSS px.
+        let sigma = filter.blur_radius.max(0.0) * scale;
+        let downsample = blur_downsample(sigma);
+        // Three deviations reach every texel a pixel of the panel reads;
+        // the slack keeps the shrunk copy's blocks whole.
+        let pad = (3.0 * sigma).ceil() as u32 + 2 * downsample;
         let x = physical_bounds[0].floor().max(0.0) as u32;
         let y = physical_bounds[1].floor().max(0.0) as u32;
         let w = physical_bounds[2].ceil().max(1.0) as u32;
         let h = physical_bounds[3].ceil().max(1.0) as u32;
-        let padded_x = x.saturating_sub(pad);
-        let padded_y = y.saturating_sub(pad);
-        let padded_w = (w + pad * 2)
+        let padded_x = x.saturating_sub(pad) / downsample * downsample;
+        let padded_y = y.saturating_sub(pad) / downsample * downsample;
+        let padded_w = (x + w + pad - padded_x)
             .min(dest_physical[0].saturating_sub(padded_x))
             .max(1);
-        let padded_h = (h + pad * 2)
+        let padded_h = (y + h + pad - padded_y)
             .min(dest_physical[1].saturating_sub(padded_y))
             .max(1);
         let index = self.pending.len() as u32;
@@ -606,7 +658,8 @@ impl BackdropPipeline {
             paint_index,
             physical_bounds,
             corner_radius,
-            blur_radius: blur_physical,
+            sigma,
+            downsample,
             saturate: filter.saturate,
             clip,
             padded_origin: [padded_x as f32, padded_y as f32],
@@ -638,11 +691,13 @@ impl BackdropPipeline {
         let dest_size = [dest_physical[0] as f32, dest_physical[1] as f32];
         for request in &self.pending {
             let slot = request.uniform_slot;
+            let downsample = request.downsample as f32;
             let copy_uniforms = CopyUniforms {
                 src_origin: request.padded_origin,
                 src_size: [request.padded_size[0] as f32, request.padded_size[1] as f32],
                 dest_size,
-                _pad: [0.0, 0.0],
+                downsample,
+                _pad: 0.0,
             };
             let copy_offset = Self::uniform_offset(slot, PASS_COPY);
             let copy_bytes = bytemuck::bytes_of(&copy_uniforms);
@@ -652,12 +707,13 @@ impl BackdropPipeline {
                 queue.write_buffer(&self.uniform_slab, copy_offset, copy_bytes);
             }
 
-            let region_origin = request.padded_origin;
-            let region_size = [request.padded_size[0] as f32, request.padded_size[1] as f32];
+            let ([region_x, region_y], [region_w, region_h]) = request.blur_region();
+            let region_origin = [region_x as f32, region_y as f32];
+            let region_size = [region_w as f32, region_h as f32];
             for (pass, direction) in [(PASS_BLUR_H, [1.0, 0.0]), (PASS_BLUR_V, [0.0, 1.0])] {
                 let blur_uniforms = BlurUniforms {
                     direction,
-                    radius: request.blur_radius,
+                    sigma: request.sigma / downsample,
                     _pad0: 0.0,
                     texel_size: texel,
                     region_origin,
@@ -698,6 +754,8 @@ impl BackdropPipeline {
                 quad_ef: request.quad_ef,
                 paint_index: request.paint_index,
                 corner_exponent: self.corner_exponent,
+                blur_scale: 1.0 / downsample,
+                _pad_blur: [0.0; 3],
             };
             let composite_offset = Self::uniform_offset(slot, PASS_COMPOSITE);
             let composite_bytes = bytemuck::bytes_of(&composite_uniforms);
@@ -768,11 +826,12 @@ impl BackdropPipeline {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            let ([region_x, region_y], [region_w, region_h]) = request.blur_region();
             pass.set_viewport(
-                request.padded_origin[0],
-                request.padded_origin[1],
-                request.padded_size[0] as f32,
-                request.padded_size[1] as f32,
+                region_x as f32,
+                region_y as f32,
+                region_w as f32,
+                region_h as f32,
                 0.0,
                 1.0,
             );
@@ -822,11 +881,12 @@ impl BackdropPipeline {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            let ([region_x, region_y], [region_w, region_h]) = request.blur_region();
             pass.set_viewport(
-                request.padded_origin[0],
-                request.padded_origin[1],
-                request.padded_size[0] as f32,
-                request.padded_size[1] as f32,
+                region_x as f32,
+                region_y as f32,
+                region_w as f32,
+                region_h as f32,
                 0.0,
                 1.0,
             );

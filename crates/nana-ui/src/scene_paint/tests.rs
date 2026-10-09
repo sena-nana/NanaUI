@@ -6157,6 +6157,97 @@ fn backdrop_blurs_content_behind_frost_panel() {
     drop(texture);
 }
 
+/// The normal distribution's cumulative function, to a few parts in ten
+/// thousand (Abramowitz–Stegun 7.1.26 on erf).
+fn normal_cdf(z: f32) -> f32 {
+    let x = (z.abs() / std::f32::consts::SQRT_2) as f64;
+    let t = 1.0 / (1.0 + 0.3275911 * x);
+    let poly = t
+        * (0.254829592
+            + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    let erf = 1.0 - poly * (-x * x).exp();
+    let half = 0.5 * erf as f32;
+    if z < 0.0 { 0.5 - half } else { 0.5 + half }
+}
+
+/// CSS `blur(r)` makes `r` the gaussian's standard deviation. Across a hard
+/// black / white edge a frosted row must therefore follow the normal CDF
+/// with σ = r device pixels, and climb it smoothly: a kernel that steps
+/// over texels sums shifted copies of the edge and leaves a staircase of
+/// bands. Six pixels is blurred at full resolution, 24 on a shrunk copy.
+#[test]
+fn backdrop_blur_is_the_css_standard_deviation_and_does_not_band() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let (width, height) = (512u32, 64u32);
+    let edge = 256.0;
+    for (radius, tolerance) in [(6.0_f32, 0.03_f32), (24.0, 0.04)] {
+        let mut painter = SceneWgpuPainter::for_test(format);
+        let mut scene = UiScene::new();
+        let frost = nana_ui_core::BackdropFilter {
+            blur_radius: radius,
+            saturate: 1.0,
+        };
+        scene.apply_delta(
+            [
+                colored_quad_node(1, 0.0, 0.0, edge, height as f32, [0.0, 0.0, 0.0, 1.0]),
+                colored_quad_node(2, edge, 0.0, edge, height as f32, [1.0, 1.0, 1.0, 1.0]),
+                frost_quad_node_with_fill(
+                    3,
+                    16.0,
+                    16.0,
+                    width as f32 - 32.0,
+                    32.0,
+                    [0.0, 0.0, 0.0, 0.0],
+                    frost,
+                ),
+            ],
+            [],
+        );
+        let viewport = ScenePaintViewport {
+            logical_size: [width as f32, height as f32],
+            physical_size: [width, height],
+            scale_factor: 1.0,
+            scene_origin: [0.0, 0.0],
+            target_origin: [0.0, 0.0],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            clear: true,
+        };
+        let (texture, view) = test_copy_target(&device, format, width, height);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui frost blur profile"),
+        });
+        painter
+            .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
+            .unwrap();
+        let pixels = readback_rgba(&device, &queue, encoder, &texture, width, height);
+        let reach = (3.0 * radius) as u32;
+        let row = (edge as u32 - reach..edge as u32 + reach)
+            .map(|x| pixel(&pixels, width, x, 32)[0])
+            .collect::<Vec<_>>();
+        for (index, value) in row.iter().enumerate() {
+            let x = edge as u32 - reach + index as u32;
+            let expected = normal_cdf((x as f32 + 0.5 - edge) / radius);
+            let actual = *value as f32 / 255.0;
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "blur({radius}px) at {x}: {actual} against the σ = {radius} profile {expected}; row {row:?}"
+            );
+        }
+        // The steepest step of the profile is at the edge: φ(0) / σ of the
+        // range per pixel. A banded blur steps several times that at once.
+        let steepest = 255.0 * 0.398_942_3 / radius;
+        for pair in row.windows(2) {
+            let step = pair[1] as f32 - pair[0] as f32;
+            assert!(
+                (-1.0..=steepest * 1.5 + 2.0).contains(&step),
+                "blur({radius}px) must climb smoothly, stepped {step} in {row:?}"
+            );
+        }
+        drop(texture);
+    }
+}
+
 #[test]
 fn backdrop_two_frost_panels_use_independent_regions() {
     let (device, queue) = test_device();

@@ -168,6 +168,8 @@ blur 半径的上限是 16px。多层 `drop-shadow`、spread 和 `inset` 仍 fai
 
 背后的内容是 document order 里排在该节点之前的 Quad、HostTexture、自定义 GPU 槽等。它们经 separable Gaussian 模糊，再合成回节点区域。圆角、clip-path 和 mask-image 仍然生效。最后才画半透明的 fill 或 gradient。
 
+`blur(r)` 照 CSS：`r` 是高斯的标准差（逻辑 px，乘缩放到设备 px），模糊伸到大约三倍远，采样范围也扩三倍。核读到三倍标准差以内的每一个纹素（相邻两个纹素合成一次双线性读取），不会跨着纹素取样，所以宽的模糊也不出条纹。标准差超过 8 个设备像素时，先把要模糊的区域按 2 的幂缩小，每个纹素是它代表的那一块设备像素的平均，再在缩小的副本上模糊、合成时双线性放大；最宽的 64px 在任何缩放下都只读几十个纹素。区域的边缘往外按边缘像素延伸，而不是淡成透明的黑。
+
 这和 Windows `nana-window` 的整窗 Mica / Acrylic 无关。也和 Appearance 的 `backdrop_*` 无关。
 
 含 HostTexture、自定义 GPU 节点、dest 组或 backdrop-filter 的帧，走 interleaved dest（`sample_count = 1`）。仅含 CSS `url()` 的 quad 仍走 4× MSAA。

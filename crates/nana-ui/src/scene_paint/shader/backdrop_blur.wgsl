@@ -1,3 +1,12 @@
+// CSS `blur(r)`: a separable gaussian whose standard deviation is `r`.
+//
+// One pass blurs along `direction`. `sigma` is in texels of the source,
+// which a wide blur has already shrunk (see backdrop.rs): a texel then
+// stands for a block of device pixels, so the kernel still reads every
+// texel within three standard deviations. Reading every texel is what keeps
+// a wide blur smooth; a kernel that stepped over texels would sum shifted
+// copies of the backdrop and leave bands.
+
 @group(0) @binding(0)
 var source: texture_2d<f32>;
 @group(0) @binding(1)
@@ -5,9 +14,11 @@ var source_sampler: sampler;
 
 struct BlurUniforms {
     direction: vec2<f32>,
-    radius: f32,
+    // Standard deviation, in source texels.
+    sigma: f32,
     _pad0: f32,
     texel_size: vec2<f32>,
+    // The texels this pass writes and may read, in source texels.
     region_origin: vec2<f32>,
     region_size: vec2<f32>,
     dest_size: vec2<f32>,
@@ -38,20 +49,35 @@ fn gaussian_weight(offset: f32, sigma: f32) -> f32 {
     return exp(-0.5 * (offset * offset) / (sigma * sigma));
 }
 
+// The texel at `at` (a texel centre, or between two), with the region's
+// edge texels standing in for everything past them: CSS blurs a backdrop
+// with its edges duplicated, not faded into transparent black.
+fn read(at: vec2<f32>) -> vec4<f32> {
+    let lo = blur.region_origin + 0.5;
+    let hi = blur.region_origin + blur.region_size - 0.5;
+    return textureSampleLevel(source, source_sampler, clamp(at, lo, hi) * blur.texel_size, 0.0);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let sigma = max(blur.radius * 0.333333, 0.5);
-    let step = max(blur.radius * 0.333333, 1.0);
-    var accum = vec4(0.0);
-    var weight_sum = 0.0;
-    for (var i = -3; i <= 3; i = i + 1) {
-        let offset = f32(i) * step;
-        let w = gaussian_weight(offset, sigma);
-        let dest_uv =
-            (blur.region_origin + input.local * blur.region_size) / blur.dest_size;
-        let sample_uv = dest_uv + blur.direction * offset * blur.texel_size;
-        accum += textureSample(source, source_sampler, sample_uv) * w;
-        weight_sum += w;
+    let center = floor(input.position.xy) + 0.5;
+    let sigma = blur.sigma;
+    if sigma < 0.01 {
+        return read(center);
     }
-    return accum / max(weight_sum, 0.0001);
+    let reach = i32(ceil(3.0 * sigma));
+    var accum = read(center);
+    var total = 1.0;
+    // Texels k and k + 1 on each side in one bilinear read, placed between
+    // them by their weights, so their sum is exact with half the reads.
+    for (var k = 1; k <= reach; k = k + 2) {
+        let near = gaussian_weight(f32(k), sigma);
+        let far = select(0.0, gaussian_weight(f32(k + 1), sigma), k + 1 <= reach);
+        let weight = near + far;
+        let offset = (f32(k) * near + f32(k + 1) * far) / weight;
+        let step = blur.direction * offset;
+        accum += (read(center + step) + read(center - step)) * weight;
+        total += 2.0 * weight;
+    }
+    return accum / total;
 }

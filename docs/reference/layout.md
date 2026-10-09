@@ -603,7 +603,7 @@ SVG 的 `<image href>` 不读本地文件。
 
 CSS `url()` 的帧仍走 4× MSAA。它和 HostTexture、backdrop 的 interleaved 路径分开。
 
-`backdrop-filter: blur()` 是逐节点的 dest 采样模糊。它做旋转映射，也做祖先的 inset 和 polygon clip。不是整窗的 Mica 或 Acrylic。
+`backdrop-filter: blur()` 是逐节点的 dest 采样模糊。`blur(r)` 的 `r` 和 CSS 一样是高斯的标准差。它做旋转映射，也做祖先的 inset 和 polygon clip。不是整窗的 Mica 或 Acrylic。
 
 `<img>` 的 `object-fit: cover | contain | fill | none | scale-down` 经 cascade 写入 `PaintStyle`，再落到 `CustomRenderNode.fit`。HTML attr 是 presentational hint。样式表压过 attr。inline 再压过样式表。
 
