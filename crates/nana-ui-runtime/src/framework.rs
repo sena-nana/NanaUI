@@ -2524,13 +2524,7 @@ impl AppContext {
                 return Ok(false);
             }
             if close_action == Some(id) {
-                let Some(host) = self.world.parent_id(root) else {
-                    return Ok(false);
-                };
-                return self.request_dialog_close(
-                    Entity::from_stable_id(host),
-                    nana_ui_core::DialogCloseTrigger::CloseButton,
-                );
+                return self.close_gesture(root, nana_ui_core::DialogCloseTrigger::CloseButton);
             }
         }
         let handler = self
@@ -3025,13 +3019,7 @@ impl AppContext {
                 return Ok(false);
             }
             if close_action == Some(entity.id) {
-                let Some(host) = self.world.parent_id(root) else {
-                    return Ok(false);
-                };
-                return self.request_dialog_close(
-                    Entity::from_stable_id(host),
-                    nana_ui_core::DialogCloseTrigger::CloseButton,
-                );
+                return self.close_gesture(root, nana_ui_core::DialogCloseTrigger::CloseButton);
             }
             if let Some(intent) = intent {
                 self.update_component(

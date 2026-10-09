@@ -1751,6 +1751,18 @@ pub struct OverlayClosing {
     pub root: StableNodeId,
 }
 
+/// The user asked a modal surface to close: Escape, a press outside it, or
+/// its close button (`trigger`). Emitted on the `Dialog`, `ConfirmDialog` or
+/// `Drawer` itself, before its `close_policy` is applied. A policy that lets
+/// that gesture close it closes it right after, and its host emits
+/// [`OverlayClosing`]; one that does not leaves it open, for the application
+/// to close or keep. [`nana_ui_core::DialogClosePolicy::requests_only`] leaves
+/// every gesture to the application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DialogCloseRequested {
+    pub trigger: nana_ui_core::DialogCloseTrigger,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextInput {
     pub state: TextInputState,

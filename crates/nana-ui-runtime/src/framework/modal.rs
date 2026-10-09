@@ -299,6 +299,41 @@ impl AppContext {
         self.request_dialog_close(host, trigger)
     }
 
+    /// A user gesture asked the modal surface `root` to close. The surface
+    /// hears it first ([`crate::DialogCloseRequested`]); then, when it is
+    /// the active overlay of its host and its policy lets `trigger` close
+    /// it, the host dismisses it. Otherwise it stays open: the application
+    /// heard the request and decides.
+    pub(super) fn close_gesture(
+        &mut self,
+        root: StableNodeId,
+        trigger: nana_ui_core::DialogCloseTrigger,
+    ) -> Result<bool, FrameworkError> {
+        let request = crate::DialogCloseRequested { trigger };
+        if self.view_is::<crate::Dialog>(root) {
+            self.update(Entity::<crate::Dialog>::from_stable_id(root), |_, cx| {
+                cx.emit(request)
+            })?;
+        } else if self.view_is::<crate::ConfirmDialog>(root) {
+            self.update(
+                Entity::<crate::ConfirmDialog>::from_stable_id(root),
+                |_, cx| cx.emit(request),
+            )?;
+        } else if self.view_is::<crate::Drawer>(root) {
+            self.update(Entity::<crate::Drawer>::from_stable_id(root), |_, cx| {
+                cx.emit(request)
+            })?;
+        }
+        let Some(host) = self.world.parent_id(root).filter(|host| {
+            self.world
+                .overlay_host(*host)
+                .is_some_and(|state| state.active == Some(root))
+        }) else {
+            return Ok(false);
+        };
+        self.request_dialog_close(Entity::from_stable_id(host), trigger)
+    }
+
     pub fn request_dialog_close(
         &mut self,
         host: Entity<OverlayHost>,

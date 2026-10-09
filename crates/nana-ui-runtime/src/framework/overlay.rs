@@ -264,11 +264,7 @@ impl AppContext {
         {
             dismissed = match overlay.kind {
                 RuntimeOverlayKind::Dialog => {
-                    if self.dialog_allows(overlay.root, DialogCloseTrigger::Outside) {
-                        self.dismiss_overlay(Entity::from_stable_id(overlay.host))?
-                    } else {
-                        false
-                    }
+                    self.close_gesture(overlay.root, DialogCloseTrigger::Outside)?
                 }
                 RuntimeOverlayKind::Menu => {
                     self.dismiss_overlay(Entity::from_stable_id(overlay.host))?
@@ -297,9 +293,7 @@ impl AppContext {
                 };
                 match overlay.kind {
                     RuntimeOverlayKind::Dialog => {
-                        if self.dialog_allows(overlay.root, DialogCloseTrigger::Escape) {
-                            self.dismiss_overlay(Entity::from_stable_id(overlay.host))?;
-                        }
+                        self.close_gesture(overlay.root, DialogCloseTrigger::Escape)?;
                     }
                     RuntimeOverlayKind::Panel => {
                         if !self
@@ -999,6 +993,211 @@ mod tests {
         assert_eq!(
             context.world.overlay_host(host.stable_id()).unwrap().active,
             Some(dialog.stable_id())
+        );
+    }
+
+    /// A dialog left to the application hears Escape, a press outside and
+    /// its close button as requests, each with its gesture, and stays open
+    /// until the application closes it. With the default policy the request
+    /// still comes first, and the framework then closes it.
+    #[test]
+    fn close_gestures_reach_the_dialog_as_requests_before_its_policy() {
+        use crate::{Activate, ModalSlots};
+        use nana_ui_core::{DialogClosePolicy, DialogCloseTrigger};
+        use std::sync::{Arc, Mutex};
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let dialog = context
+            .create_component(
+                document,
+                Dialog::new("重命名").close_policy(DialogClosePolicy::requests_only()),
+            )
+            .unwrap();
+        let close = context
+            .create_detached_component(document, Button::new("关闭"))
+            .unwrap();
+        context
+            .set_modal_slots(
+                dialog,
+                ModalSlots {
+                    close_action: Some(close.stable_id()),
+                    ..ModalSlots::default()
+                },
+            )
+            .unwrap();
+        context.append_child(host, dialog).unwrap();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&heard);
+        context
+            .on(
+                dialog,
+                move |_, request: &crate::DialogCloseRequested, _| {
+                    log.lock().unwrap().push(("request", Some(request.trigger)));
+                },
+            )
+            .unwrap();
+        let log = Arc::clone(&heard);
+        context
+            .on(host, move |_, _: &crate::OverlayClosing, _| {
+                log.lock().unwrap().push(("closing", None));
+            })
+            .unwrap();
+        let log = Arc::clone(&heard);
+        context
+            .on(close, move |_, _: &Activate, _| {
+                log.lock().unwrap().push(("activate", None));
+            })
+            .unwrap();
+        context.activate_overlay(host, dialog).unwrap();
+        write_layout(
+            &mut context,
+            dialog.stable_id(),
+            LayoutBox {
+                x: 100.0,
+                y: 100.0,
+                width: 100.0,
+                height: 100.0,
+            },
+        );
+        context.rebuild_hit_test(document);
+        let active =
+            |context: &AppContext| context.world.overlay_host(host.stable_id()).unwrap().active;
+
+        assert!(
+            context
+                .route_overlay_key(document, OverlayKey::Escape)
+                .unwrap()
+        );
+        for phase in [
+            OverlayPointerPhase::PrimaryDown,
+            OverlayPointerPhase::PrimaryUp,
+        ] {
+            let outside = context
+                .route_overlay_pointer(document, 1, phase, 20.0, 20.0)
+                .unwrap();
+            assert!(!outside.dismissed);
+        }
+        assert!(!context.activate_node(close.stable_id()).unwrap());
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [
+                ("request", Some(DialogCloseTrigger::Escape)),
+                ("request", Some(DialogCloseTrigger::Outside)),
+                ("request", Some(DialogCloseTrigger::CloseButton)),
+            ],
+            "each gesture is one request on the dialog, and nothing else"
+        );
+        assert_eq!(active(&context), Some(dialog.stable_id()), "still open");
+
+        // The application decides: it closes the dialog itself.
+        heard.lock().unwrap().clear();
+        assert!(context.dismiss_overlay(host).unwrap());
+        assert_eq!(*heard.lock().unwrap(), [("closing", None)]);
+
+        // A policy that lets Escape close it: the request first, then the close.
+        context
+            .update_component(dialog, |dialog, _| {
+                dialog.close_policy = DialogClosePolicy::default();
+            })
+            .unwrap();
+        context.activate_overlay(host, dialog).unwrap();
+        heard.lock().unwrap().clear();
+        assert!(
+            context
+                .route_overlay_key(document, OverlayKey::Escape)
+                .unwrap()
+        );
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [
+                ("request", Some(DialogCloseTrigger::Escape)),
+                ("closing", None),
+            ]
+        );
+    }
+
+    /// A drawer and a confirm dialog take the same close policy, and hear
+    /// the same requests on themselves.
+    #[test]
+    fn a_drawer_and_a_confirm_dialog_hear_close_requests_too() {
+        use nana_ui_core::{DialogClosePolicy, DialogCloseTrigger};
+        use std::sync::Mutex;
+
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let drawer_host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let drawer = context
+            .create_component(
+                document,
+                Drawer::new("筛选").close_policy(DialogClosePolicy::requests_only()),
+            )
+            .unwrap();
+        context.append_child(drawer_host, drawer).unwrap();
+        let log = Arc::clone(&heard);
+        context
+            .on(
+                drawer,
+                move |_, request: &crate::DialogCloseRequested, _| {
+                    log.lock().unwrap().push(("drawer", request.trigger));
+                },
+            )
+            .unwrap();
+        context.activate_overlay(drawer_host, drawer).unwrap();
+        assert!(
+            context
+                .route_overlay_key(document, OverlayKey::Escape)
+                .unwrap()
+        );
+        assert!(context.dismiss_overlay(drawer_host).unwrap());
+
+        let confirm_host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let confirm = context
+            .create_component(
+                document,
+                ConfirmDialog::new("删除？", "不能撤销")
+                    .close_policy(DialogClosePolicy::requests_only()),
+            )
+            .unwrap();
+        context.append_child(confirm_host, confirm).unwrap();
+        let log = Arc::clone(&heard);
+        context
+            .on(
+                confirm,
+                move |_, request: &crate::DialogCloseRequested, _| {
+                    log.lock().unwrap().push(("confirm", request.trigger));
+                },
+            )
+            .unwrap();
+        context.assemble_confirm_dialog(confirm).unwrap();
+        context.activate_overlay(confirm_host, confirm).unwrap();
+        assert!(
+            context
+                .route_overlay_key(document, OverlayKey::Escape)
+                .unwrap()
+        );
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [
+                ("drawer", DialogCloseTrigger::Escape),
+                ("confirm", DialogCloseTrigger::Escape),
+            ]
+        );
+        assert_eq!(
+            context
+                .world
+                .overlay_host(confirm_host.stable_id())
+                .unwrap()
+                .active,
+            Some(confirm.stable_id())
         );
     }
 

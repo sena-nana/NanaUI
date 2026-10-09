@@ -53,6 +53,49 @@ widget(Dialog::new("重命名"))
 
 插槽在对话框之前就建好。对话框自己的装配会把它们放进标题下面、底栏和关闭位。打开、关闭、逃出键和焦点归还走浮层的约定，见 [控件](../reference/components.md) 的浮层一节。
 
+## 由应用决定开合
+
+用户想关掉对话框有三种手势：按 Escape、在对话框外按下再松开、激活关闭位（`.close_action`）。每一种都先在对话框自己身上发一次 `DialogCloseRequested`，`trigger` 说是哪一种。然后才看 `.close_policy`：允许这个手势，框架接着关掉它，宿主随后发 `OverlayClosing`；不允许，它留着。Escape 和点外面只送到挂在 `OverlayHost` 下、用 `activate_overlay` 打开的对话框（浮层约定）；关闭位挂没挂都会发请求。
+
+`DialogClosePolicy::requests_only()` 一种手势都不让框架关。开合全由应用决定：处理函数里要关，就改应用自己的打开状态（对话框随视图卸载），或者调 `dismiss_overlay(host)` 走退出动画；不关就什么都不做，比如先问一句有没有没保存的修改。
+
+:::api
+
+```rust view
+use nana_ui::runtime::view;
+use nana_ui::runtime::view::widget;
+use nana_ui::runtime::{Dialog, DialogCloseRequested};
+use nana_ui::DialogClosePolicy;
+
+widget(Dialog::new("重命名").close_policy(DialogClosePolicy::requests_only()))
+    .on(move |_: &DialogCloseRequested| {
+        if !dirty.get() {
+            open.set(false);
+        }
+    })
+    .body(view! {
+        <TextInput placeholder="名称" v-model={name} />
+    })
+```
+
+```rust rust
+use nana_ui::runtime::view::{text_input, widget};
+use nana_ui::runtime::{Dialog, DialogCloseRequested};
+use nana_ui::DialogClosePolicy;
+
+widget(Dialog::new("重命名").close_policy(DialogClosePolicy::requests_only()))
+    .on(move |_: &DialogCloseRequested| {
+        if !dirty.get() {
+            open.set(false);
+        }
+    })
+    .body(text_input().placeholder("名称").model(name))
+```
+
+:::
+
+以前不允许的手势被悄悄吞掉：Escape 不再传给 `on_key`，点外面也没有事件，应用只能事后看对话框还在不在。现在不必轮询，听这个请求就行。
+
 ## 属性
 
 | 属性 | 类型 | 说明 |
@@ -60,12 +103,16 @@ widget(Dialog::new("重命名"))
 | 标题 | `Dialog::new` 的参数 | 构造时给出 |
 | `.description` | 文本 | 标题下的说明 |
 | `.size` | 尺寸 | 对话框尺寸 |
-| `.close_policy` | 关闭策略 | 怎样允许关掉 |
+| `.close_policy` | 关闭策略 | 哪些手势由框架直接关掉。`DialogClosePolicy::requests_only()` 一种都不关，全交给应用 |
 | `.initial_focus_on` | `entity_ref` | 打开时把焦点放到已经放进插槽的控件上 |
 
 ## 事件
 
-这一页没有单独的事件名。打开、关闭、逃出键和焦点归还走浮层约定。
+| 事件 | 载荷 | 说明 |
+| --- | --- | --- |
+| `.on(\|e: &DialogCloseRequested\| …)`，模板 `on:DialogCloseRequested` | `&DialogCloseRequested` | 用户按 Escape、点外面或激活关闭位，`trigger` 是 `Escape` / `Outside` / `CloseButton`。发在对话框自己身上，先于 `close_policy` |
+
+打开、关闭和焦点归还走浮层约定。框架关掉对话框时，宿主发 `OverlayClosing { root }`。
 
 ## 插槽
 

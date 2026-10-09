@@ -71,7 +71,7 @@ widget(
 
 `.description` 写在标题下面。
 
-`.close_policy` 接收 `nana_ui::DialogClosePolicy`。
+`.close_policy` 接收 `nana_ui::DialogClosePolicy`。Escape、点外面和关闭位每次都先在抽屉自己身上发 `DialogCloseRequested`，策略不允许的手势只发请求、不关。`DialogClosePolicy::requests_only()` 把开合全交给应用，见 [Dialog](dialog.md#由应用决定开合)。
 
 `.initial_focus` 决定打开后焦点落在表面、第一个动作，还是你指定的节点。
 

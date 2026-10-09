@@ -50,7 +50,7 @@ widget(
 
 `.size` 用 `nana_ui::DialogSize`：`Compact`、`Default`、`Medium`、`Wide`、`Workspace`。
 
-`.close_policy` 决定 Escape 和点外面能不能关。
+`.close_policy` 决定 Escape 和点外面能不能关。这两种手势和关闭位每次都先在确认框自己身上发 `DialogCloseRequested`；`DialogClosePolicy::requests_only()` 让框架一种都不关，由应用决定，见 [Dialog](dialog.md#由应用决定开合)。
 
 `.initial_focus` 用 `ModalInitialFocus`，默认落在第一个动作上。
 
