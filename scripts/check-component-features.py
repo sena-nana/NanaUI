@@ -25,13 +25,10 @@ def main():
     offline = ["--offline"] if args.offline else []
     for family in [None, *FAMILIES, "components"]:
         features = ["--features", family] if family else []
-        for package, test in [("nana-ui-runtime", "declarations_match_installed_component_registry"), ("nana-ui-vue", "optional_tags_report_missing_features")]:
+        for package, test in [("nana-ui-runtime", "declarations_match_installed_component_registry"), ("nana-ui-vue", "optional_tags_report_missing_features"), ("nana-ui", "component_support::")]:
             result = run(cargo + ["test", "-p", package, "--lib", "--no-default-features", "--locked", *offline, *features, test])
             if result.returncode:
                 raise SystemExit(result.stdout + result.stderr)
-        result = run(cargo + ["check", "-p", "nana-ui", "--lib", "--no-default-features", "--locked", *offline, *features])
-        if result.returncode:
-            raise SystemExit(result.stderr)
         print(f"isolated {family or 'base'}: registry, Vue and host OK", flush=True)
     with tempfile.TemporaryDirectory(prefix="nanaui-feature-probe-") as directory:
         probe = Path(directory)
