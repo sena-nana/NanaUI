@@ -653,6 +653,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 ));
             }
         }
+        if settings.role == WindowRole::Underlay {
+            let parent = settings.parent.expect("validated underlay parent");
+            if self.settings_of(parent).role == WindowRole::Underlay {
+                return Err("an underlay window cannot be the parent of another".into());
+            }
+            normalize_underlay(&mut settings, &self.geometry_of(parent));
+        }
         let parent = settings
             .parent
             .and_then(|parent| self.window(parent).cloned());
@@ -744,6 +751,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         };
         let surface_target = attempt;
         let mut pending_native = PendingNativeWindow(Some(window.clone()));
+        // Glued beneath the parent before anything is shown, so the first
+        // show already lands under it.
+        let underlay = match (settings.role, parent.as_deref()) {
+            (WindowRole::Underlay, Some(parent)) => Some(
+                nana_window::Underlay::attach(parent, window.as_ref())
+                    .map_err(|error| error.to_string())?,
+            ),
+            _ => None,
+        };
         // The surface has answered, so this window's effective material and the
         // chrome that matches it are settled together, before it is shown.
         let presentation = ResolvedWindowPresentation::resolve(
@@ -767,14 +783,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         );
         let profile = surface.profile().scene_profile();
         let _ = self.painter_mut(profile);
+        // An underlay repeats part of its parent's picture; the parent's tree
+        // is the one assistive technology reads.
         #[cfg(not(target_os = "android"))]
-        let accessibility = {
-            Some(HostedAccessibility::new(
-                Arc::clone(&window),
-                true,
-                window.scale_factor() as f32,
-            ))
-        };
+        let accessibility = (settings.role != WindowRole::Underlay).then(|| {
+            HostedAccessibility::new(Arc::clone(&window), true, window.scale_factor() as f32)
+        });
         let geometry = window_geometry(window.as_ref());
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
@@ -852,6 +866,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 monitor: window.current_monitor().map(|monitor| monitor.id()),
                 shadow: nana_window::shadow::WindowShadowState::default(),
                 shadow_body: None,
+                underlay,
             },
         );
         #[cfg(target_os = "windows")]
@@ -864,6 +879,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.mutate_window_visibility(id, |window| {
             set_native_visible(window, visible, focus_on_show)
         });
+        self.sync_underlay(id);
         window.request_redraw();
         self.prepare_window_chrome(id, geometry.maximized);
         crate::host_diagnostics::window_opened(id, &geometry);
@@ -1209,7 +1225,32 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if changed {
             self.persist_geometry(id);
         }
+        self.sync_underlays_of(id);
         changed
+    }
+
+    /// Put `id` back under its parent, if it is an underlay.
+    pub(super) fn sync_underlay(&self, id: WindowId) {
+        if let Some(underlay) = self
+            .window_contexts
+            .get(&id)
+            .and_then(|host| host.underlay.as_ref())
+        {
+            underlay.sync();
+        }
+    }
+
+    /// Bring every underlay of `parent` to its current frame, level and
+    /// visibility. Cheap and idempotent; on Windows a subclass on the parent
+    /// already follows it within the same message.
+    pub(super) fn sync_underlays_of(&self, parent: WindowId) {
+        for host in self.window_contexts.values() {
+            if host.settings.parent == Some(parent)
+                && let Some(underlay) = host.underlay.as_ref()
+            {
+                underlay.sync();
+            }
+        }
     }
 
     fn persist_geometry(&self, id: WindowId) {
@@ -1653,6 +1694,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let result = self.window(id).map(|window| mutate(window.as_ref()));
         if result.is_some() {
             self.reconcile_native_chrome(id);
+            self.sync_underlays_of(id);
         }
         result
     }
@@ -1673,6 +1715,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let result = self.window(id).map(|window| mutate(window.as_ref()));
         if result.is_some() {
             self.reconcile_native_chrome(id);
+            self.sync_underlays_of(id);
             self.request_redraw(id);
         }
         result
@@ -2372,4 +2415,28 @@ fn move_to_desktop_position(window: &dyn winit::window::Window, position: (f32, 
         (f64::from(position.0), f64::from(position.1)),
         scale,
     ));
+}
+
+/// What an underlay keeps of its descriptor: its title, tag, surface and
+/// visibility. The rest follows from being glued beneath `parent`.
+fn normalize_underlay(settings: &mut WindowDescriptor, parent: &WindowGeometry) {
+    settings.initial_size = (
+        f64::from(parent.logical_size.0.max(1.0)),
+        f64::from(parent.logical_size.1.max(1.0)),
+    );
+    settings.minimum_size = (1.0, 1.0);
+    settings.initial_position = None;
+    settings.content_aspect_ratio = None;
+    settings.maximized = false;
+    settings.fullscreen = None;
+    settings.transparent = true;
+    settings.shadow = nana_ui_platform::WindowShadow::None;
+    settings.always_on_top = false;
+    settings.focus_on_show = false;
+    settings.constrain_to_work_area = false;
+    settings.skip_taskbar = true;
+    settings.persist_key = None;
+    settings.resizable = false;
+    settings.modal = false;
+    settings.system_caption = false;
 }

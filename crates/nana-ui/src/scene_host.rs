@@ -33,7 +33,7 @@ use nana_ui_platform::{
     CompositionInput, DisplayBounds, FileDragInput, FileDragKind, FullscreenRequest,
     InputModifiers, InputPayload, MousePassthroughMode, PointerInput, PointerPhase, PointerType,
     SystemAppearance, WindowEvent, WindowGeometry, WindowIcon, WindowId, WindowLevel,
-    WindowModeState, WindowResizeEdge, clamp_position_to_displays,
+    WindowModeState, WindowResizeEdge, WindowRole, clamp_position_to_displays,
     clear_registered_application_icon, persist_live_window_geometry, register_application_icon,
     restore_window_geometry, window_resize_edge,
 };
@@ -223,6 +223,8 @@ struct WindowContext {
     /// The visible body the shadow follows, with the scene projection and
     /// size it was derived for; derived again only when either changes.
     shadow_body: Option<ShadowBody>,
+    /// Set for a `WindowRole::Underlay`: its binding beneath the parent.
+    underlay: Option<nana_window::Underlay>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -235,8 +237,9 @@ struct ShadowBody {
 
 impl Drop for WindowContext {
     fn drop(&mut self) {
-        // The companion goes before the window it follows.
+        // The companion and the underlay binding go before the window.
         self.shadow.release();
+        self.underlay = None;
         clear_system_material(self.surface.window().as_ref());
     }
 }
@@ -1241,6 +1244,7 @@ fn complete_startup<Program: RuntimeProgram>(
         monitor: window.current_monitor().map(|monitor| monitor.id()),
         shadow: nana_window::shadow::WindowShadowState::default(),
         shadow_body: None,
+        underlay: None,
     };
     pending_native.keep();
     let mut ready = WindowManager {
@@ -2358,6 +2362,16 @@ fn scene_aux_window_attributes(
     if settings.modal && parent.is_none() {
         return Err("modal window requires a parent".into());
     }
+    // An underlay is an unowned, undecorated window: an owned one would sit
+    // above its parent, and a title bar would show around the picture.
+    let underlay = settings.role == WindowRole::Underlay;
+    let attributes = if underlay {
+        attributes.with_decorations(false)
+    } else {
+        attributes
+    };
+    #[cfg(target_os = "windows")]
+    let parent = parent.filter(|_| !underlay);
     // Any child is owned by its parent HWND, modal or not: it stays above the
     // parent, minimizes with it and never gets its own taskbar button.
     #[cfg(target_os = "windows")]

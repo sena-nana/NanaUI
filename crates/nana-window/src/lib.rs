@@ -20,6 +20,7 @@ mod platform;
 pub mod shadow;
 mod size_move;
 mod splash;
+mod underlay;
 mod web_surface;
 #[cfg(target_os = "windows")]
 mod win32;
@@ -67,6 +68,7 @@ pub use splash::{
     SplashLogo, SplashLogoError, SplashLogoSource, SplashOutcome, SplashPackageError, SplashSkip,
     SplashSpec, SplashStaticReason, SplashWork, validate_logo,
 };
+pub use underlay::{Underlay, UnderlayError};
 pub use web_surface::{
     WebFrame, WebFrameSink, WebSurface, WebSurfaceCommand, WebSurfaceCompletion, WebSurfaceDesc,
     WebSurfaceEvent, WebSurfaceWake, web_surface_support,

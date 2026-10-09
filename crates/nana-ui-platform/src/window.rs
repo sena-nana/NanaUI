@@ -291,6 +291,15 @@ pub enum WindowRole {
     #[default]
     Main,
     Tool,
+    /// Glued directly beneath its `parent`: the same client area, moving,
+    /// resizing, hiding and changing level with it, never taking input or
+    /// activation, and kept drawing while the parent covers it. It is a
+    /// separate top-level window with its own title, so screen-capture
+    /// software can capture it on its own; one visual window becomes two
+    /// native ones. Requires `parent`; the host fills in its geometry, keeps
+    /// it out of the taskbar and gives it no shadow, persistence or
+    /// accessibility tree. Platforms without one fail to open it.
+    Underlay,
 }
 
 /// Unpremultiplied 32-bit RGBA window / taskbar / Dock identity image.

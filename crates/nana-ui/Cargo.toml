@@ -169,6 +169,10 @@ name = "transparent-window"
 required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
+name = "underlay-probe"
+required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
 name = "window-chrome-multi-window"
 required-features = ["hosted", "bundled-fonts"]
 

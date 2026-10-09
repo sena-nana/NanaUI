@@ -251,6 +251,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(mode) = mode_change(previous, observed) else {
             return;
         };
+        // Fullscreen and level changes; underlays follow.
+        self.sync_underlays_of(id);
         if let Some(host) = self.window_contexts.get_mut(&id) {
             host.mode = Some(mode);
             // Native fullscreen transitions restore the window buttons, in

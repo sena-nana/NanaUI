@@ -68,6 +68,8 @@ let window = service.create_window(WindowDescriptor {
 
 创建要等隐藏的原生窗口、Surface、输入和应用文档都就绪才完成。失败会回滚，不发送 `Ready`。程序自己选 `WindowId` 再 `WindowCommand::Open`，只留给框架适配器。普通应用不用它来区分窗口。
 
+`WindowRole::Underlay` 是贴在父窗正下方的伴随窗口：同一块客户区，跟着父窗动和藏，不收输入，被父窗盖着也照常出帧，录屏软件能单独捕获它。用来把画面和界面拆成两扇原生窗口，看起来仍是一扇。细节见参考文档的「贴底窗口」。
+
 关掉一扇窗口，只释放这扇和它的原生子窗口。standalone 的最后一扇关掉后退出。需要关主窗口就退出整个应用时，你自己返回退出。
 
 已有事件循环时用 `EmbeddedRuntime`。它不创建、也不退出宿主的事件循环。已有的设备用 `HostedGpuShared::from_device` 注入。不要再申请第二个 Device。`with_native_handle` 只在回调期间借用原始句柄。不能把指针留下来，也拿不到窗口的所有权。

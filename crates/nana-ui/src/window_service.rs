@@ -470,6 +470,13 @@ pub(crate) fn validate_descriptor(descriptor: &WindowDescriptor) -> Result<(), W
             "modal window requires a parent".into(),
         ));
     }
+    if descriptor.role == nana_ui_platform::WindowRole::Underlay
+        && (descriptor.parent.is_none() || descriptor.modal)
+    {
+        return Err(WindowError::InvalidParameter(
+            "an underlay window requires a parent and cannot be modal".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -549,6 +556,16 @@ mod tests {
             },
             WindowDescriptor {
                 persist_key: Some(String::new()),
+                ..Default::default()
+            },
+            WindowDescriptor {
+                role: nana_ui_platform::WindowRole::Underlay,
+                ..Default::default()
+            },
+            WindowDescriptor {
+                role: nana_ui_platform::WindowRole::Underlay,
+                parent: Some(WindowId::PRIMARY),
+                modal: true,
                 ..Default::default()
             },
             WindowDescriptor {

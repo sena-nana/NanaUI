@@ -252,6 +252,8 @@ Scene Host                       →  唯一负责 transaction Commit
 
 DPI 与多显示器：指针、拖拽与缩放都用逻辑坐标。物理像素只用于 Surface。窗口位置由宿主记录。创建前按当前显示器工作区 clamp（原屏断开则主屏居中）。带 `parent` 的辅助窗（模态与非模态）在 Windows 上以 `with_owner_window` 绑定父 HWND：保持在父窗之上、随父窗最小化。且没有独立任务栏按钮。
 
+贴底窗口（`WindowRole::Underlay`，必须带 `parent`，不能是模态）：一扇普通顶层窗口，始终盖住父窗的客户区、紧贴在父窗正下方（与父窗同一置顶层级），随父窗移动、缩放、全屏、最小化与隐藏，不接收输入也不激活，点击都落在上面的父窗。用途是把一扇看起来的窗口拆成两扇原生窗口：父窗是透明的界面层，贴底窗口画画面；它有自己的标题，录屏软件能单独列出并捕获它，捕获里没有父窗的界面。宿主按父窗填几何，并强制透明、无阴影、不进任务栏、不持久化几何、没有无障碍树（父窗的树才是读屏读的那份）；父窗遮住它时它照常出帧。macOS 是一扇独立的无边框窗口，每次父窗几何、焦点、显隐或模式变化时 `orderWindow:NSWindowBelow` 排回父窗下方——不用子窗口，因为 ScreenCaptureKit 捕获一扇窗口时会把它的子窗口一起带上。Windows 不归父窗 own（own 的窗口在父窗之上），也不是 `WS_EX_TOOLWINDOW`（OBS 的窗口列表会滤掉）：父窗的子类在 `WM_WINDOWPOSCHANGED` 里同一条消息内把它放到父窗之后，最小化或隐藏时用 DWM cloak 藏起，它自己的子类保证 `WS_EX_NOACTIVATE`、`HTTRANSPARENT`，被重排时仍插在父窗之后。其他平台打开失败（`Unsupported`）。真机入口：`nana-ui` 的 `underlay-probe` 示例（`UNDERLAY_PROBE_STEPS=1` 自动移动、缩放、最小化再还原）。
+
 IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（hint / purpose、caret 盒、非密码的 surrounding text）。之后 caret、purpose 或 surrounding 变化走 `Update`。能力集变了先 `Disable` 再 `Enable`。失焦 `Disable`。候选框相对 caret。不相对系统非客户区。AccessKit 增量更新与视觉几何同一套 layout box。composition 期间不得出现悬空 `parent_and_index`。
 
 透明 Alpha（`settings.transparent`）强制 `MaterialEffect::Transparent`。不会改试 Mica / Acrylic。失败只能回不透明实色。并带 `MaterialFallback`。真机入口：`vue-hosted-acceptance --chrome-probe`、`--input-probe`、`--hybrid --windows`。以及 `nana-ui` 的 `transparent-window` 示例。

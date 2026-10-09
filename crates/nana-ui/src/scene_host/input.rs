@@ -241,6 +241,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     window = id.0,
                     occluded = *occluded
                 );
+                // Minimizing and restoring arrive as occlusion changes.
+                self.sync_underlays_of(id);
                 if *occluded {
                     self.occluded.insert(id);
                     // Nothing of an occluded window shows — minimized or
@@ -260,6 +262,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 self.sync_window_mode(event_loop, id);
             }
             WinitWindowEvent::Focused(focused) => {
+                // Activation raised the window; its underlay goes back under it.
+                if *focused {
+                    self.sync_underlays_of(id);
+                }
                 if !*focused {
                     self.input_mut(id).clear_pointers();
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
