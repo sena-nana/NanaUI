@@ -788,11 +788,18 @@ impl AppShell {
             // An `OverlayHost` decides this from the active overlay's kind, and
             // that activation changes without re-projecting the shell, so the
             // host has to own the field. Any other node the caller supplied as
-            // the overlay region keeps the content-presence rule.
+            // the overlay region takes the pointer while it holds content: a
+            // child that is not hidden. Its children change without the shell
+            // changing (a `when` placed as the region swapping its branch), so
+            // the shell watches them (`assemble_app_shell`).
             if world.overlay_host(overlay).is_none() {
-                let has_content = world
-                    .node(overlay)
-                    .is_some_and(|node| !node.children.is_empty());
+                let has_content = world.node(overlay).is_some_and(|node| {
+                    node.children.iter().any(|child| {
+                        !world
+                            .node_style(*child)
+                            .is_some_and(|style| style.layout.omits_box())
+                    })
+                });
                 let interaction = InteractionState {
                     pointer_events: has_content,
                     focusable: false,
@@ -826,6 +833,12 @@ impl ComponentView for AppShell {
 
     /// Patches the title bar, body and overlay nodes, which other components own and project.
     const ALWAYS_REPROJECT: bool = true;
+
+    /// Whether the overlay region takes the pointer follows its children,
+    /// which the shell watches.
+    fn wants_child_reproject() -> bool {
+        true
+    }
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -1121,6 +1134,12 @@ impl AppContext {
                 .unwrap_or(false);
         }
         let overlay = resolve_app_overlay(self, document, parent, &snapshot)?;
+        // The region's content decides whether it takes the pointer
+        // (`project_slots`); an `OverlayHost` decides that itself.
+        self.watch_child_structure(
+            parent,
+            overlay.filter(|region| self.world().overlay_host(*region).is_none()),
+        );
         let body = snapshot
             .body
             .filter(|id| {

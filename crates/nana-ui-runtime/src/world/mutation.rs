@@ -3153,6 +3153,11 @@ impl UiWorld {
                     LayoutDependencyFootprint::ALL,
                 ),
             );
+            // Shown or hidden, a child changes what its parent holds, as an
+            // insert or a removal would.
+            if let Some(parent) = self.parent_id(id) {
+                self.note_structural_change(parent);
+            }
         }
 
         if !style_excluding_transform_and_cursor_eq(&previous, style, changed) {

@@ -2897,9 +2897,11 @@ impl UiWorld {
         }
     }
 
-    /// Parents whose child list changed since the last drain, deduplicated in
-    /// ascending order. Consumers must drain per commit so scheduled
-    /// reprojections observe the post-mutation tree.
+    /// Parents whose child list changed since the last drain, or one of
+    /// whose children started or stopped generating a box (`hidden`,
+    /// `display: none`), deduplicated in ascending order. Consumers must
+    /// drain per commit so scheduled reprojections observe the post-mutation
+    /// tree.
     pub fn take_structural_change_parents(&mut self) -> Vec<StableNodeId> {
         let mut parents = std::mem::take(&mut self.structural_change_parents);
         parents.sort_unstable();

@@ -2310,6 +2310,94 @@ fn app_shell_and_workspace_slots_build_what_their_assemblers_build() {
     );
 }
 
+/// An AppShell's overlay region takes the pointer only while it holds
+/// content, and follows it when a structural block placed as the region
+/// swaps its branch, kept alive or not: closed, the body gets the pointer
+/// back.
+#[test]
+fn an_app_shells_overlay_region_follows_the_branch_a_block_swaps_in() {
+    use crate::AppShell;
+    let (mut cx, document, _) = setup();
+    let open = std::cell::Cell::new(None);
+    let (_view, shells) = cx
+        .mount_view_root(document, || {
+            let shown = signal(false);
+            open.set(Some(shown));
+            let shells = (entity_ref::<AppShell>(), entity_ref::<AppShell>());
+            with_refs(
+                (
+                    widget(AppShell::new())
+                        .entity_ref(shells.0)
+                        .body(text("正文"))
+                        .overlay(when(shown, || text("浮层"))),
+                    widget(AppShell::new())
+                        .entity_ref(shells.1)
+                        .body(text("正文"))
+                        .overlay(when(shown, || text("浮层")).keep_alive()),
+                ),
+                shells,
+            )
+        })
+        .unwrap();
+    let open = open.get().unwrap();
+    let takes_pointer = |cx: &AppContext, shell: Entity<crate::AppShell>| {
+        let region = cx.read(shell, |shell| shell.overlay).unwrap().unwrap();
+        cx.world().interaction(region).unwrap().pointer_events
+    };
+    for shell in [shells.0, shells.1] {
+        assert!(
+            !takes_pointer(&cx, shell),
+            "empty, it lets the pointer through"
+        );
+    }
+    open.set(true);
+    cx.flush_reactive().unwrap();
+    for shell in [shells.0, shells.1] {
+        assert!(takes_pointer(&cx, shell), "the branch is content");
+    }
+    open.set(false);
+    cx.flush_reactive().unwrap();
+    for shell in [shells.0, shells.1] {
+        assert!(
+            !takes_pointer(&cx, shell),
+            "swapped out, the body gets it back"
+        );
+    }
+}
+
+/// A hidden child is not content: the region lets the pointer through
+/// while its only child is hidden, and takes it when the child shows.
+#[test]
+fn a_hidden_child_is_not_content_of_an_app_shells_overlay_region() {
+    use crate::AppShell;
+    let (mut cx, document, _) = setup();
+    let shown = std::cell::Cell::new(None);
+    let (_view, shell) = cx
+        .mount_view_root(document, || {
+            let visible = signal(false);
+            shown.set(Some(visible));
+            let shell = entity_ref::<AppShell>();
+            with_refs(
+                widget(AppShell::new())
+                    .entity_ref(shell)
+                    .body(text("正文"))
+                    .overlay(column().children((text("浮层").visible(visible),))),
+                shell,
+            )
+        })
+        .unwrap();
+    let shown = shown.get().unwrap();
+    let region = cx.read(shell, |shell| shell.overlay).unwrap().unwrap();
+    let takes_pointer = |cx: &AppContext| cx.world().interaction(region).unwrap().pointer_events;
+    assert!(!takes_pointer(&cx));
+    shown.set(true);
+    cx.flush_reactive().unwrap();
+    assert!(takes_pointer(&cx), "shown, it is content");
+    shown.set(false);
+    cx.flush_reactive().unwrap();
+    assert!(!takes_pointer(&cx), "hidden again, it is not");
+}
+
 fn dock_layout(
     files: Option<StableNodeId>,
     preview: Option<StableNodeId>,

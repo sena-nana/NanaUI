@@ -1031,6 +1031,10 @@ pub struct AppContext {
     /// Opt-in reproject when the host's text backend changes, registered from
     /// [`ComponentView::wants_text_backend_reproject`].
     text_backend_reproject_views: HashMap<StableNodeId, ChildReprojectFn, crate::BuildIdHasher>,
+    /// Nodes whose children another view's projection reads, and that view:
+    /// a child-structure change under the node reprojects it as well
+    /// ([`Self::watch_child_structure`]).
+    child_structure_owners: HashMap<StableNodeId, StableNodeId, crate::BuildIdHasher>,
     /// Nodes queued for one child-structure reproject; deduplicated per drain.
     pending_child_reprojects: Vec<StableNodeId>,
     /// Guards reentrant drains while a reproject commits its own mutations.
@@ -1423,6 +1427,7 @@ impl AppContext {
             metrics_reproject_views: HashMap::default(),
             recipe_reproject_views: HashMap::default(),
             text_backend_reproject_views: HashMap::default(),
+            child_structure_owners: HashMap::default(),
             pending_child_reprojects: Vec::new(),
             draining_child_reprojects: false,
             pending_modal_syncs: Vec::new(),
@@ -1963,16 +1968,36 @@ impl AppContext {
         Ok(report)
     }
 
-    /// Queue opt-in parents whose child structure just changed for one
+    /// Queue opt-in parents whose child structure just changed, and the
+    /// views watching it ([`Self::watch_child_structure`]), for one
     /// reproject through the `update_component` pipeline.
     fn collect_child_reprojects(&mut self) {
         for parent in self.world.take_structural_change_parents() {
-            if !self.child_reproject_views.contains_key(&parent)
-                || self.pending_child_reprojects.contains(&parent)
-            {
-                continue;
+            let owner = self.child_structure_owners.get(&parent).copied();
+            for id in std::iter::once(parent).chain(owner) {
+                if self.child_reproject_views.contains_key(&id)
+                    && !self.pending_child_reprojects.contains(&id)
+                {
+                    self.pending_child_reprojects.push(id);
+                }
             }
-            self.pending_child_reprojects.push(parent);
+        }
+    }
+
+    /// Reproject `owner` whenever the children of `node` change (or one of
+    /// them is shown or hidden), as if they were its own: its projection
+    /// reads them. `owner` must reproject on child changes
+    /// ([`ComponentView::wants_child_reproject`]). One node per owner; `None`
+    /// stops watching.
+    pub(crate) fn watch_child_structure(
+        &mut self,
+        owner: StableNodeId,
+        node: Option<StableNodeId>,
+    ) {
+        self.child_structure_owners
+            .retain(|watched, watcher| *watcher != owner || Some(*watched) == node);
+        if let Some(node) = node {
+            self.child_structure_owners.insert(node, owner);
         }
     }
 
@@ -3783,6 +3808,8 @@ impl AppContext {
             .retain(|id, _| !removed.contains(id));
         self.pending_child_reprojects
             .retain(|id| !removed.contains(id));
+        self.child_structure_owners
+            .retain(|node, owner| !removed.contains(node) && !removed.contains(owner));
         self.pending_modal_syncs.retain(|id| !removed.contains(id));
         self.component_lifecycle
             .tooltips

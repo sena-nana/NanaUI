@@ -253,8 +253,8 @@ pub trait ComponentView: Clone + PartialEq + Send + 'static {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue);
 
     /// Opt in to one reprojection when this node's child structure changes
-    /// (child insert, detach or despawn under this node) even though the
-    /// component's own data did not change. Components that probe the retained
+    /// (child insert, detach or despawn under this node, or a child shown or
+    /// hidden) even though the component's own data did not change. Components that probe the retained
     /// subtree during [`Self::project`] and memoize the result into visual or
     /// text state need this to avoid stale snapshots taken before children
     /// were attached. Defaults to `false`; existing components keep their
